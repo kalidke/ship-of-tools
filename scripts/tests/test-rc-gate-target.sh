@@ -5,7 +5,9 @@
 # so every run that passes the claim stops at rc-gate's container check and nothing is built. Exit: failed checks.
 set -u
 gate=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rc-gate.sh
-work=$(mktemp -d "${TMPDIR:-/tmp}/rc-gate-target-XXXXXX") || exit 2
+# macOS's TMPDIR ends in a slash: strip it, or the paths below hold `//` and rc-gate's printed path never matches them.
+base="${TMPDIR:-/tmp}"
+work=$(mktemp -d "${base%/}/rc-gate-target-XXXXXX") || exit 2
 trap 'rm -rf "${work:?}"' EXIT
 mkdir -p "$work/parent" "$work/head"
 fail=0

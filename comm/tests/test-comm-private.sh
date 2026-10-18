@@ -28,7 +28,9 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 umask 022
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-private-XXXXXX")"
+# macOS's TMPDIR ends in a slash: strip it, or WORK holds `//` and the product's normalized path never matches it.
+base="${TMPDIR:-/tmp}"
+WORK="$(mktemp -d "${base%/}/sot-comm-private-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "${WORK:?}"' EXIT
 guard_fresh_home "$WORK"

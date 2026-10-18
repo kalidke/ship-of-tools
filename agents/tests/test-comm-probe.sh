@@ -12,7 +12,9 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-probe-test-XXXXXX")"
+# macOS's TMPDIR ends in a slash: strip it, or WORK holds `//` and the product's normalized path never matches it.
+base="${TMPDIR:-/tmp}"
+WORK="$(mktemp -d "${base%/}/sot-comm-probe-test-XXXXXX")"
 if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
     echo "FATAL: mktemp did not produce a usable work directory (got: '$WORK')" >&2
     exit 1

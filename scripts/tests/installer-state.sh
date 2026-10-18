@@ -707,70 +707,75 @@ starts_with "restart judges this account's daemon by its exact label" "running d
 # shellcheck source=installer-entry.sh
 . "$(dirname "$0")/installer-entry.sh"
 
-# ---------------------------------------------------------------------------
-case_start "entry_repairs_an_install_json_that_cannot_be_read"
-# An interrupted write can cut install.json short. That file may hold a pin, so no automatic writer moves the install;
-# the person's own run (naming its target) is the repair (the entry fixture is installer-entry.sh's): it goes on and leaves a whole, pinned record.
-d="$WORK/dir-cut"; entry_fixture "$d"
-entry_record "$d" 9.9.8 1 0 none
-printf '{\n  "schema": 1,\n  "version": "9.9.8",\n  "pinned": tr' > "$d/home/.local/share/sot/install.json"
-entry_archive "$d" --be-only --no-service
-check "a run that names its target over a cut record goes on and ends in PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
-check "the record is whole and names the new version" "9.9.9" "$(entry_installed "$d")"
-check "and is pinned, as a named run leaves it" "true" "$(installer_json_bool "$d/home/.local/share/sot/install.json" pinned)"
-check "no temp file is left beside it" "0" "$(find "$d/home/.local/share/sot" -maxdepth 1 -name 'install.json.*' | wc -l | tr -d ' ')"
+# The entry cases call the helpers installer-entry.sh defines, which it defines only on Linux: elsewhere they SKIP.
+if ! declare -F entry_fixture >/dev/null; then
+    printf '  SKIP the entry-state cases (they call the helpers installer-entry.sh defines on Linux only)\n'
+else
+    # ---------------------------------------------------------------------------
+    case_start "entry_repairs_an_install_json_that_cannot_be_read"
+    # An interrupted write can cut install.json short. That file may hold a pin, so no automatic writer moves the install;
+    # the person's own run (naming its target) is the repair (the entry fixture is installer-entry.sh's): it goes on and leaves a whole, pinned record.
+    d="$WORK/dir-cut"; entry_fixture "$d"
+    entry_record "$d" 9.9.8 1 0 none
+    printf '{\n  "schema": 1,\n  "version": "9.9.8",\n  "pinned": tr' > "$d/home/.local/share/sot/install.json"
+    entry_archive "$d" --be-only --no-service
+    check "a run that names its target over a cut record goes on and ends in PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+    check "the record is whole and names the new version" "9.9.9" "$(entry_installed "$d")"
+    check "and is pinned, as a named run leaves it" "true" "$(installer_json_bool "$d/home/.local/share/sot/install.json" pinned)"
+    check "no temp file is left beside it" "0" "$(find "$d/home/.local/share/sot" -maxdepth 1 -name 'install.json.*' | wc -l | tr -d ' ')"
 
-# ---------------------------------------------------------------------------
-case_start "entry_without_a_version_goes_on_over_a_record_it_cannot_read"
-# "Update sot from the repo" names no version. Over an install.json cut short before its version, the direction is unknown
-# and the run goes on (it rewrites the record); where the version can still be read and sotd cannot say, it still stops.
-d="$WORK/dir-cut-implicit"; entry_fixture "$d"
-entry_record "$d" 9.9.8 1 0 none
-printf '{\n  "schema": 1,\n  "ver' > "$d/home/.local/share/sot/install.json"
-entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
-check "an implicit run over a record with no readable version goes on and ends in PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
-check "the record is whole, names the new version and is not pinned" "9.9.9 " "$(entry_installed "$d") $(installer_json_bool "$d/home/.local/share/sot/install.json" pinned)"
-d="$WORK/dir-cut-readable"; entry_fixture "$d"
-entry_record "$d" 9.9.8 1 0 none
-printf '{\n  "schema": 1,\n  "version": "9.9.10",\n  "pin' > "$d/home/.local/share/sot/install.json"
-printf 'nonsense\n' > "$d/ctl/direction"
-entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
-check "a readable version and a sotd that cannot say still stops an implicit run (exit 2)" "2" "$ENTRY_RC"
+    # ---------------------------------------------------------------------------
+    case_start "entry_without_a_version_goes_on_over_a_record_it_cannot_read"
+    # "Update sot from the repo" names no version. Over an install.json cut short before its version, the direction is unknown
+    # and the run goes on (it rewrites the record); where the version can still be read and sotd cannot say, it still stops.
+    d="$WORK/dir-cut-implicit"; entry_fixture "$d"
+    entry_record "$d" 9.9.8 1 0 none
+    printf '{\n  "schema": 1,\n  "ver' > "$d/home/.local/share/sot/install.json"
+    entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+    check "an implicit run over a record with no readable version goes on and ends in PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+    check "the record is whole, names the new version and is not pinned" "9.9.9 " "$(entry_installed "$d") $(installer_json_bool "$d/home/.local/share/sot/install.json" pinned)"
+    d="$WORK/dir-cut-readable"; entry_fixture "$d"
+    entry_record "$d" 9.9.8 1 0 none
+    printf '{\n  "schema": 1,\n  "version": "9.9.10",\n  "pin' > "$d/home/.local/share/sot/install.json"
+    printf 'nonsense\n' > "$d/ctl/direction"
+    entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+    check "a readable version and a sotd that cannot say still stops an implicit run (exit 2)" "2" "$ENTRY_RC"
 
-# The installed sotd's own version stands in where the record cannot say, for the channel (the prelude) and for the guard.
-d="$WORK/dir-cut-binary"; entry_fixture "$d"
-entry_record "$d" 9.9.8 1 0 none
-P="$d/home/.local/share/sot"; mkdir -p "$P/bin"
-printf '{\n  "schema": 1,\n  "version": "9.9.' > "$P/install.json"
-printf '#!/bin/sh\necho "sotd %s (abc 2026-10-17, protocol 3)"\n' 9.9.10 > "$P/bin/sotd"; chmod +x "$P/bin/sotd"
-printf 'older\n' > "$d/ctl/direction"
-entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
-check "a record cut inside its version, the binary at 9.9.10, the release 9.9.9: an implicit run stops (exit 2), and does not move the install back" "2 9.9.10" "$ENTRY_RC $("$P/bin/sotd" --version | cut -d' ' -f2)"
-check "the sotd was told the version it read from the binary" "1" "$(sotd_log "$d" | grep -c -F -- "update direction 9.9.9 --prefix $P --installed 9.9.10" || true)"
-rm -f "$d/ctl/direction"
-entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
-check "a sotd that cannot say, over a version the binary gives, still stops (exit 2)" "2" "$ENTRY_RC"
-printf '#!/bin/sh\necho "sotd 0.6.6-rc9.14-dev+abc123 (abc 2026-10-17, protocol 3)"\n' > "$P/bin/sotd"
-: > "$d/ctl/net.log"; : > "$d/ctl/prelude.log"
-entry_run "$d" --be-only --no-service
-check "the channel reads the binary too: a build with a + stops before any asset is fetched (exit 2)" "2 0" "$ENTRY_RC $(count_in "$d/ctl/net.log" 'raw.githubusercontent\|releases/download\|api.github.com\|releases/latest')"
+    # The installed sotd's own version stands in where the record cannot say, for the channel (the prelude) and for the guard.
+    d="$WORK/dir-cut-binary"; entry_fixture "$d"
+    entry_record "$d" 9.9.8 1 0 none
+    P="$d/home/.local/share/sot"; mkdir -p "$P/bin"
+    printf '{\n  "schema": 1,\n  "version": "9.9.' > "$P/install.json"
+    printf '#!/bin/sh\necho "sotd %s (abc 2026-10-17, protocol 3)"\n' 9.9.10 > "$P/bin/sotd"; chmod +x "$P/bin/sotd"
+    printf 'older\n' > "$d/ctl/direction"
+    entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+    check "a record cut inside its version, the binary at 9.9.10, the release 9.9.9: an implicit run stops (exit 2), and does not move the install back" "2 9.9.10" "$ENTRY_RC $("$P/bin/sotd" --version | cut -d' ' -f2)"
+    check "the sotd was told the version it read from the binary" "1" "$(sotd_log "$d" | grep -c -F -- "update direction 9.9.9 --prefix $P --installed 9.9.10" || true)"
+    rm -f "$d/ctl/direction"
+    entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+    check "a sotd that cannot say, over a version the binary gives, still stops (exit 2)" "2" "$ENTRY_RC"
+    printf '#!/bin/sh\necho "sotd 0.6.6-rc9.14-dev+abc123 (abc 2026-10-17, protocol 3)"\n' > "$P/bin/sotd"
+    : > "$d/ctl/net.log"; : > "$d/ctl/prelude.log"
+    entry_run "$d" --be-only --no-service
+    check "the channel reads the binary too: a build with a + stops before any asset is fetched (exit 2)" "2 0" "$ENTRY_RC $(count_in "$d/ctl/net.log" 'raw.githubusercontent\|releases/download\|api.github.com\|releases/latest')"
 
-# A missing record beside a binary that says a newer version: the guard still holds (the install's version is readable).
-d="$WORK/dir-missing-binary"; entry_fixture "$d"
-P="$d/home/.local/share/sot"; mkdir -p "$P/bin"
-printf '#!/bin/sh\necho "sotd 9.9.10 (abc 2026-10-17, protocol 3)"\n' > "$P/bin/sotd"; chmod +x "$P/bin/sotd"
-printf 'older\n' > "$d/ctl/direction"
-entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
-check "a missing record, the binary at 9.9.10, the release 9.9.9: an implicit run stops (exit 2) before anything is installed" "2 no" "$ENTRY_RC $([ -e "$P/install.json" ] && echo yes || echo no)"
-check "the sotd was handed the binary's version, the record naming none" "1" "$(sotd_log "$d" | grep -c -F -- "update direction 9.9.9 --prefix $P --installed 9.9.10" || true)"
-# A whole record's own version is not repeated to the sotd (one that predates the flag answers `unknown` to it).
-d="$WORK/dir-whole-record"; entry_fixture "$d"
-entry_record "$d" 9.9.8 1 0 none
-P="$d/home/.local/share/sot"; mkdir -p "$P/bin"
-printf '#!/bin/sh\necho "sotd 9.9.8 (abc 2026-10-17, protocol 3)"\n' > "$P/bin/sotd"; chmod +x "$P/bin/sotd"
-printf 'newer\n' > "$d/ctl/direction"
-entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
-check "a whole record: the sotd is asked without --installed" "1 0" "$(sotd_log "$d" | grep -c -x -F -- "sotd update direction 9.9.9 --prefix $P" || true) $(sotd_log "$d" | grep -c -F -- '--installed' || true)"
+    # A missing record beside a binary that says a newer version: the guard still holds (the install's version is readable).
+    d="$WORK/dir-missing-binary"; entry_fixture "$d"
+    P="$d/home/.local/share/sot"; mkdir -p "$P/bin"
+    printf '#!/bin/sh\necho "sotd 9.9.10 (abc 2026-10-17, protocol 3)"\n' > "$P/bin/sotd"; chmod +x "$P/bin/sotd"
+    printf 'older\n' > "$d/ctl/direction"
+    entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+    check "a missing record, the binary at 9.9.10, the release 9.9.9: an implicit run stops (exit 2) before anything is installed" "2 no" "$ENTRY_RC $([ -e "$P/install.json" ] && echo yes || echo no)"
+    check "the sotd was handed the binary's version, the record naming none" "1" "$(sotd_log "$d" | grep -c -F -- "update direction 9.9.9 --prefix $P --installed 9.9.10" || true)"
+    # A whole record's own version is not repeated to the sotd (one that predates the flag answers `unknown` to it).
+    d="$WORK/dir-whole-record"; entry_fixture "$d"
+    entry_record "$d" 9.9.8 1 0 none
+    P="$d/home/.local/share/sot"; mkdir -p "$P/bin"
+    printf '#!/bin/sh\necho "sotd 9.9.8 (abc 2026-10-17, protocol 3)"\n' > "$P/bin/sotd"; chmod +x "$P/bin/sotd"
+    printf 'newer\n' > "$d/ctl/direction"
+    entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
+    check "a whole record: the sotd is asked without --installed" "1 0" "$(sotd_log "$d" | grep -c -x -F -- "sotd update direction 9.9.9 --prefix $P" || true) $(sotd_log "$d" | grep -c -F -- '--installed' || true)"
+fi
 
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
