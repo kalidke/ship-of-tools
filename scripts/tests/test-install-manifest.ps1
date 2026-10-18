@@ -84,8 +84,9 @@ class P {
         return $prefix
     }
     # The script ends with an explicit `exit 0`, so $LASTEXITCODE after a run is its own answer, not a native command's.
-    function Invoke-Manifest([string]$prefix) {
-        & $script -Prefix $prefix -Repo $clone 6>&1 2>&1 | Out-Null
+    function Invoke-Manifest([string]$prefix, [string]$commit) {
+        if ($commit) { & $script -Prefix $prefix -Repo $clone -Commit $commit 6>&1 2>&1 | Out-Null }
+        else { & $script -Prefix $prefix -Repo $clone 6>&1 2>&1 | Out-Null }
     }
     function Check-Exit([string]$name) { Check "${name}: exit code 0" ($LASTEXITCODE -eq 0) "got $LASTEXITCODE" }
     function Pointer([string]$prefix) { return (Test-Path -LiteralPath (Join-Path $prefix "updates\$ptrName")) }
@@ -125,6 +126,20 @@ class P {
     Invoke-Manifest $p5
     Check-Exit 'p5'
     Check 'pointer dropped' (-not (Pointer $p5)) 'pointer kept'
+
+    Write-Host "`n=== 6. a '+' build: recorded only when its caller hands the pack's commit ===" -ForegroundColor Cyan
+    $packCommit = ('ab12' * 10)
+    $p6 = New-Prefix 'p6' '0.6.6-DEV+abcdef123' $null $null $false
+    Invoke-Manifest $p6 $packCommit
+    Check-Exit 'p6'
+    $m6 = if (Test-Path -LiteralPath (Join-Path $p6 'install.json')) { Manifest $p6 } else { '' }
+    Check 'a + build with the commit writes a record naming the + version, its tag and the commit' (($m6 -match '"version":\s*"0\.6\.6-DEV\+abcdef123"') -and ($m6 -match '"tag":\s*"v0\.6\.6-DEV\+abcdef123"') -and ($m6 -match $packCommit) -and ($m6 -match '"daemon":\s*true,\s*"frontend":\s*true')) $m6
+    $p7 = New-Prefix 'p7' '0.6.6-DEV+abcdef123' $null $null $false
+    Invoke-Manifest $p7
+    Check-Exit 'p7'
+    Check 'a + build with no commit (a source checkout) writes none' (-not (Test-Path -LiteralPath (Join-Path $p7 'install.json'))) 'a record was written'
+    Invoke-Manifest $p6
+    Check 'and a later call with no commit leaves the record it finds' ((Manifest $p6) -match $packCommit) (Manifest $p6)
 } finally {
     Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

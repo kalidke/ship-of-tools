@@ -612,10 +612,10 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
     $origin = $(if ($env:SOT_INSTALL_ORIGIN) { $env:SOT_INSTALL_ORIGIN } else { "https://github.com/$($script:Repo)" })
 
     if ($fresh) {
-        if ($pack.Version.Contains('+')) {
-            Stop-Entry 'target' "a fresh install needs a release: $($pack.Version) is a build of the line; install a release first, then move with -Archive" 2
-        }
         Install-Fresh $prefix $pack $base $versionDir $origin
+        # A pack of the line is recorded here, with the pack's commit: the manifest script writes no record for a '+' build
+        # that is not handed one (a source checkout), and the launcher's own call after this one has none to hand.
+        if ($pack.Version.Contains('+')) { & (Join-Path $PSScriptRoot 'install-manifest.ps1') -Prefix $prefix -Repo $base -Hub $o.Hub -Commit $pack.Commit 6>&1 | Out-Null }
         $installed = $pack.Version
     } else {
         $dir = Invoke-Native $newSotd @('update', 'direction', $pack.Version, '--prefix', $prefix)

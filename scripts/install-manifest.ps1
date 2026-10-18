@@ -32,7 +32,10 @@ param(
     # field) and used for the box's first `sotd topology sync --hub`, which
     # creates the hosts.toml the launcher's every-launch self-heal then
     # refreshes. Empty keeps whatever install.json already records.
-    [string]$Hub
+    [string]$Hub,
+    # The commit of a pack install of the line (a '+' version): only the installer, which unpacked the pack and so knows
+    # its COMMIT, hands one. Without it a '+' build is a source checkout and gets no record.
+    [string]$Commit
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,12 +76,16 @@ $version = $Matches[1]
 # Matching the '+' rather than enumerating the good shapes keeps this in step
 # with app_version() without re-deriving it.
 #
+# The one exception is a pack install of the line (install.ps1 -Archive of a pack from pack-build.ps1): the installer
+# hands the pack's COMMIT, and the record names the '+' version, its tag and that commit, as install.sh writes on Unix and
+# as sot-apply.ps1 leaves it after an apply. Such a record claims no release: the updaters still refuse a '+' build.
+#
 # There is no escape hatch. An -AllowDev switch used to force a manifest for
 # a dev build; nothing called it, and since is_release_build() became the
 # hard guard it could not buy what it was for -- a dev build with a manifest
 # still refuses to update. All it could still do was write a file claiming
 # to be a release install that isn't, so it is gone.
-if ($version -match '\+') {
+if ($version -match '\+' -and $Commit -notmatch '^[0-9a-f]{40}$') {
     Write-Host "install-manifest: $version is not a release build - no manifest written."
     Write-Host "  Dev machines update via the launcher's git pull + cargo rebuild, not the release updater."
     exit 0
@@ -88,10 +95,12 @@ $tag = "v$version"
 $config = Join-Path $env:APPDATA 'sot'
 # The RELEASE commit (what install.sh records), not the clone's HEAD: the
 # clone tracks main and its HEAD is usually past the staged binaries.
-$commit = ''
-try {
-    $commit = @(& git -C $Repo rev-parse "$tag^{commit}" 2>$null)[0]
-} catch {}
+$commit = $Commit
+if (-not $commit) {
+    try {
+        $commit = @(& git -C $Repo rev-parse "$tag^{commit}" 2>$null)[0]
+    } catch {}
+}
 if (-not $commit) { $commit = 'unknown' }
 $manifest = Join-Path $Prefix 'install.json'
 if (-not $Hub -and (Test-Path -LiteralPath $manifest)) {

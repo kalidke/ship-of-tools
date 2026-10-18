@@ -201,6 +201,9 @@ function Initialize-InstallLayout {
                 return
             }
             $tag = "v$version"
+            # A pack install of the line (install.ps1 -Archive) has laid down repo\versions\v<raw version> at the pack's
+            # commit; that folder is the checkout, and no tag names it.
+            if ($rawVersion -ne $version -and (Test-Path -LiteralPath (Join-Path $prefixDir "repo\versions\v$rawVersion"))) { $tag = "v$rawVersion" }
             $checkout = Join-Path $prefixDir "repo\versions\$tag"
             if (-not (Test-Path -LiteralPath $checkout)) {
                 if (-not ((git -C $repo tag -l $tag) -join '')) {

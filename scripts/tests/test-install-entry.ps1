@@ -96,7 +96,7 @@ public class P { public static int Main(string[] a) {
         [System.IO.File]::WriteAllText((Join-Path $pack 'SHA256SUMS'), (($lines -join "`n") + "`n"))
         return [pscustomobject]@{ Ver = $Ver; Pack = $pack; Commit = $commit; Short = $commit.Substring(0, 9) }
     }
-    $r98 = New-Release '9.9.8'; $r99 = New-Release '9.9.9'
+    $r98 = New-Release '9.9.8'; $r99 = New-Release '9.9.9'; $rdev = New-Release '9.9.9-dev+c0ffee123'
     $ErrorActionPreference = $eapGit
     Check '7: two releases and their packs are built' ((Test-Path (Join-Path $r98.Pack 'SHA256SUMS')) -and (Test-Path (Join-Path $r99.Pack 'COMMIT'))) 'the fixture did not build'
 
@@ -693,6 +693,14 @@ Write-Host 'sot-local-daemon: stopped'
         $e = Invoke-Entry @('-Archive', $r98.Pack)
         Check '7x: with no such shortcut it is ONE STEP LEFT to run this again at the desk' ($e.Rc -eq 0 -and $e.Last -like 'ONE STEP LEFT: run this again at the desk, not over ssh*') "rc=$($e.Rc) last='$($e.Last)'"
         function Test-JunctionTraversable([string]$ScriptPath) { return (Test-Path -LiteralPath $ScriptPath) }
+    }
+    # 24. Fresh from a pack of the line (a + version): the record names it, its tag and the pack's commit.
+    Invoke-Case '7a2' {
+        $hd = New-Home 'hd'
+        $e = Invoke-Entry @('-Archive', $rdev.Pack)
+        Check '7a2: a fresh install from a pack of the line ends in PASS, pinned' ("$($e.Rc) $($e.Verdicts) $($e.Last)" -ceq "0 1 PASS: Ship of Tools 9.9.9-dev+c0ffee123 at $($rdev.Short) on this computer$(Get-PinTail '9.9.9-dev+c0ffee123')") "rc=$($e.Rc) last='$($e.Last)'; $(($e.Out | Select-Object -Last 4) -join ' / ')"
+        $ijd = ''; try { $ijd = Get-Content -LiteralPath (Join-Path $hd.Prefix 'install.json') -Raw } catch { }
+        Check '7a2: install.json names the + version, its tag, the pack commit, daemon and frontend, and the pin' (($ijd -match '"version":\s*"9\.9\.9-dev\+c0ffee123"') -and ($ijd -match '"tag":\s*"v9\.9\.9-dev\+c0ffee123"') -and ($ijd -match $rdev.Commit) -and ($ijd -match '"daemon":\s*true,\s*"frontend":\s*true') -and ($ijd -match '"pinned":\s*true')) $ijd
     }
 } catch {
     Check '7: section ran' $false $_.Exception.Message
