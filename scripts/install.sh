@@ -485,11 +485,14 @@ installer_windows_running() {  # <prefix>
 }
 
 # The one verdict line a run ends with: FAIL (the first failed check, "<check>: <detail>"), else ONE STEP LEFT (the
-# steps that remain, joined), else PASS. Pure. FAIL is exit 1; the others are 0, since the install is whole.
-installer_verdict() {  # <version> <short commit> <fail> <steps>
+# steps that remain, joined), else PASS. A run that pinned the install (the fifth argument is the version) ends the PASS
+# and ONE STEP LEFT lines with where it is pinned. Pure. FAIL is exit 1; the others are 0, since the install is whole.
+installer_verdict() {  # <version> <short commit> <fail> <steps> [pinned version]
+    local pin=""
+    [ -z "${5:-}" ] || pin="; pinned at $5: automatic updates stay off until a run that names no version"
     if [ -n "$3" ]; then printf 'FAIL: %s\n' "$3"
-    elif [ -n "$4" ]; then printf 'ONE STEP LEFT: %s\n' "$4"
-    else printf 'PASS: Ship of Tools %s at %s on this computer\n' "$1" "$2"
+    elif [ -n "$4" ]; then printf 'ONE STEP LEFT: %s%s\n' "$4" "$pin"
+    else printf 'PASS: Ship of Tools %s at %s on this computer%s\n' "$1" "$2" "$pin"
     fi
 }
 
@@ -1669,7 +1672,6 @@ installer_manifest_json "$PREFIX" "$CONFIG" "$SERVICE" "${VERSION#v}" "$VERSION"
     > "$PREFIX/install.json.new.$$"
 mv "$PREFIX/install.json.new.$$" "$PREFIX/install.json"
 say "wrote $PREFIX/install.json (schema 1, daemon=$WANT_DAEMON frontend=$WANT_FRONTEND, service=$SERVICE)"
-[ "$PINNED" = 0 ] || say "pinned at $VER: automatic updates stay off for this install until a run that names no version"
 
 say "Ship of Tools $VERSION installed (daemon=$WANT_DAEMON frontend=$WANT_FRONTEND)."
 [ -n "$BE_ALIAS" ] && say "reminder: key-based ssh to '$BE_ALIAS' is required (ssh $BE_ALIAS true)"
@@ -1771,5 +1773,5 @@ if [ -n "$FAIL_FIRST" ]; then
     installer_verdict "$VER" "$SHORT" "$FAIL_FIRST" "" >&2
     exit 1
 fi
-installer_verdict "$VER" "$SHORT" "" "$STEPS_LEFT"
+installer_verdict "$VER" "$SHORT" "" "$STEPS_LEFT" "$([ "$PINNED" = 0 ] || printf '%s' "$VER")"
 exit 0

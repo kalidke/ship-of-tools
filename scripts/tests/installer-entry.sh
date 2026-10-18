@@ -200,7 +200,7 @@ check "nothing under the prefix, ~/.local or comm changed" "$before" "$(entry_pr
 check "the sotd was asked the installed way" "1" "$(sotd_log "$d" | grep -c -x -F "sotd update direction 9.9.9 --prefix $d/home/.local/share/sot" || true)"
 entry_archive "$d" --be-only --no-service
 check "naming the target (--archive) goes on and says older" "0 1" "$ENTRY_RC $(said 'this run moves the install from 9.9.10 to 9.9.9 (older)')"
-check "and ends in PASS" "PASS: Ship of Tools 9.9.9 at $(cat "$d/ctl/short") on this computer" "$ENTRY_LAST"
+check "and ends in PASS, which says the install is pinned" "PASS: Ship of Tools 9.9.9 at $(cat "$d/ctl/short") on this computer; pinned at 9.9.9: automatic updates stay off until a run that names no version" "$ENTRY_LAST"
 entry_record "$d" 9.9.10 1 0 none; printf 'older\n' > "$d/ctl/direction"
 entry_run "$d" SOT_INSTALL_TAG=v9.9.9 --be-only --no-service
 check "a pinned run (no implicit mark) goes on" "0" "$ENTRY_RC"
@@ -267,10 +267,13 @@ check "the hub stays recorded" "myhub" "$(sed -n 's/^ *"hub": *"\([^"]*\)".*/\1/
 case_start "entry_ends_with_one_verdict"
 check "PASS names the version and the commit" "PASS: Ship of Tools 1.2.3 at abc123def on this computer" "$(installer_verdict 1.2.3 abc123def '' '')"
 check "a step left is ONE STEP LEFT, steps joined" "ONE STEP LEFT: quit it; start it" "$(installer_verdict 1.2.3 abc '' 'quit it; start it')"
+check "a pinned PASS ends with where it is pinned" "PASS: Ship of Tools 1.2.3 at abc on this computer; pinned at 1.2.3: automatic updates stay off until a run that names no version" "$(installer_verdict 1.2.3 abc '' '' 1.2.3)"
+check "a pinned ONE STEP LEFT does too" "ONE STEP LEFT: quit it; pinned at 1.2.3: automatic updates stay off until a run that names no version" "$(installer_verdict 1.2.3 abc '' 'quit it' 1.2.3)"
+check "a FAIL names no pin" "FAIL: comm: stale" "$(installer_verdict 1.2.3 abc 'comm: stale' 'quit it' 1.2.3)"
 check "a failed check is FAIL and wins over a step" "FAIL: comm: stale" "$(installer_verdict 1.2.3 abc 'comm: stale' 'quit it')"
 d="$WORK/vd"; entry_fixture "$d"; short="$(cat "$d/ctl/short")"
 entry_archive "$d" --be-only --no-service
-check "a whole install ends PASS, as its one last line" "PASS: Ship of Tools 9.9.9 at $short on this computer|0" "$ENTRY_LAST|$ENTRY_RC"
+check "a whole install ends PASS, as its one last line (a pack names its version, so it is pinned)" "PASS: Ship of Tools 9.9.9 at $short on this computer; pinned at 9.9.9: automatic updates stay off until a run that names no version|0" "$ENTRY_LAST|$ENTRY_RC"
 check "the verdict is the only line that starts with PASS, FAIL or ONE STEP" "1" "$(printf '%s\n' "$ENTRY_OUT" | grep -c -E '^(PASS|FAIL|ONE STEP LEFT):' || true)"
 broken() {  # <description> <expected fail prefix> <hook>: a run whose comm refresh leaves the install broken one way
     local dd="$WORK/vd-$RANDOM"; entry_fixture "$dd"; printf '%s\n' "$3" > "$dd/ctl/hook"
@@ -385,7 +388,7 @@ entry_record "$d" 9.9.8 1 1 none
 printf '4242 sot %s/bin/sot --socket /x/sot.sock\n4243 sotd %s/bin/sotd --socket /x\n4244 sot /elsewhere/bin/sot\n' "$P" "$P" > "$d/ctl/ps"
 check "the windows of this install are found by argv0 alone" "4242" "$(CTL="$d/ctl" PATH="$d/stubs:$ENTRY_TOOLS" installer_windows_running "$P" | tr '\n' ' ' | sed 's/ $//')"
 entry_archive "$d" --no-service
-check "a window on the old version: ONE STEP LEFT" "0 ONE STEP LEFT: quit Ship of Tools and start it again: its window still runs 9.9.8" "$ENTRY_RC $ENTRY_LAST"
+check "a window on the old version: ONE STEP LEFT, with the pin in the line" "0 ONE STEP LEFT: quit Ship of Tools and start it again: its window still runs 9.9.8; pinned at 9.9.9: automatic updates stay off until a run that names no version" "$ENTRY_RC $ENTRY_LAST"
 entry_archive "$d" --no-service
 check "the same run again, at the installed version: PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
 
@@ -711,17 +714,28 @@ for f in agents/claude/sot-install/SKILL.md docs/INSTALL-AGENT.md; do
 done
 
 # ---------------------------------------------------------------------------
+case_start "entry_records_name_no_version_in_a_routine_command"
+# A routine command (the fallbacks for an install that predates the entry, a fresh install) runs the fetched installer
+# with no version, so nothing is pinned. A version appears only as the person's choice, in a paragraph that says it pins.
+for f in agents/claude/sot-install/SKILL.md docs/INSTALL-AGENT.md docs/src/start/install.md; do
+    check "$f: no command runs the installer with --version <tag> through bash -s" "0" "$(grep -c -F 'bash -s -- --version' "$ENTRY_SRC/$f" || true)"
+    check "$f: every paragraph that names a version to run with says it pins" "0" "$(awk -v RS= '/(--version|-Version) (<|v[0-9X])/ && !/pin/ { n++ } END { print n + 0 }' "$ENTRY_SRC/$f")"
+done
+check "and none says to run the fetched installer with -Version <tag>" "0" "$(cat "$ENTRY_SRC/docs/INSTALL-AGENT.md" "$ENTRY_SRC/agents/claude/sot-install/SKILL.md" "$ENTRY_SRC/docs/src/start/install.md" | grep -c -F 'with `-Version <tag>`' || true)"
+
+# ---------------------------------------------------------------------------
 case_start "entry_pins_an_install_whose_run_named_the_version"
 # An operator's downgrade is not undone by the next daily check: a run that names what to install (--version, --archive)
 # records the pin in install.json, which the updater's arm guard reads; a run that names none removes it.
 d="$WORK/pin1"; entry_fixture "$d"
 entry_archive "$d" --be-only --no-service
 check "--archive: the record says pinned" "1" "$(grep -c '"pinned": true' "$d/home/.local/share/sot/install.json" || true)"
-check "and the run says what that means" "1" "$(said 'pinned at 9.9.9: automatic updates stay off for this install until a run that names no version')"
+check "and the verdict line says what that means" "PASS: Ship of Tools 9.9.9 at $(cat "$d/ctl/short") on this computer; pinned at 9.9.9: automatic updates stay off until a run that names no version" "$ENTRY_LAST"
 printf 'same\n' > "$d/ctl/direction"
 entry_run "$d" SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1 --be-only --no-service
 check "an implicit run removes the pin" "0 0" "$ENTRY_RC $(grep -c 'pinned' "$d/home/.local/share/sot/install.json" || true)"
 check "and says nothing of one" "0" "$(said 'pinned at')"
+check "an implicit run's PASS line carries no pin" "PASS: Ship of Tools 9.9.9 at $(cat "$d/ctl/short") on this computer" "$ENTRY_LAST"
 entry_run "$d" SOT_INSTALL_TAG=v9.9.9 --be-only --no-service
 check "a body run on a tag by hand is a named version" "1" "$(grep -c '"pinned": true' "$d/home/.local/share/sot/install.json" || true)"
 check "a record without the argument writes no pin" "0" "$(installer_manifest_json /p /c none 1.0.0 v1.0.0 abc 2026-10-17T00:00:00Z '' 1 0 | grep -c pinned || true)"
