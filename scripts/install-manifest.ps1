@@ -116,8 +116,21 @@ function Sync-Hub([bool]$WarnNoHub) {
 # still refuses to update. All it could still do was write a file claiming
 # to be a release install that isn't, so it is gone.
 if ($version -match '\+' -and $Commit -notmatch '^[0-9a-f]{40}$') {
-    Write-Host "install-manifest: $version is not a release build - no manifest written."
-    Write-Host "  Dev machines update via the launcher's git pull + cargo rebuild, not the release updater."
+    # install.ps1 writes the record of a pack of the line before the shortcut step calls this script without the commit:
+    # a record for this version is then the one to keep, and the line says so. A source checkout has none to keep.
+    $keptCommit = ''
+    if (Test-Path -LiteralPath $manifest) {
+        try {
+            $kept = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+            if ([string]$kept.version -eq $version) { $keptCommit = [string]$kept.commit }
+        } catch {}
+    }
+    if ($keptCommit -match '^[0-9a-f]{40}$') {
+        Write-Host "install-manifest: $version is a build of the line, not a release; keeping the record that names it at $($keptCommit.Substring(0, 9))."
+    } else {
+        Write-Host "install-manifest: $version is not a release build - no manifest written."
+        Write-Host "  Dev machines update via the launcher's git pull + cargo rebuild, not the release updater."
+    }
     Sync-Hub $false
     exit 0
 }
