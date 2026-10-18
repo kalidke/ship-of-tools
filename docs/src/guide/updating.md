@@ -40,7 +40,7 @@ line of its output. It ends with exactly one line:
 |-----------|---------|
 | `PASS: Ship of Tools <v> at <commit> on this computer` | Done: the binaries, the checkout, the Julia environments and the agent comm are on `<v>`. |
 | `ONE STEP LEFT: <step>` | The install is whole and one thing remains that only you can do, usually to quit the window and start it again, since it still runs the old version. |
-| `FAIL: <check>: <detail>` | Something did not hold. Run it again after fixing what the line names; a half-finished run is safe to repeat. |
+| `FAIL: <check>: <detail>` | Something did not hold. Run it again after fixing what the line names; a half-finished run is safe to repeat. A `FAIL` after the run wrote the pin ends with the pin text. On Windows, one after the run staged an update that is still armed also says `; the update to <tag> stays armed: the next start applies it` (`install.sh` arms no update itself). |
 
 Three `FAIL` lines are questions rather than faults:
 
@@ -49,9 +49,9 @@ Three `FAIL` lines are questions rather than faults:
   could read (a v0.6.5 daemon refuses the question, and a daemon older than the Pluto field cannot say whether its Pluto
   server is running, so the first update from either pays one flag). Updating restarts the backend, which ends those REPLs'
   and notebooks' variables (the rows and their agents keep running). Nothing under the install was changed. Run it again
-  with `--restart-daemon` (Windows: `-RestartDaemon`) when that is fine. A daemon that is running but cannot be told its
-  version (it does not answer, or refuses the question) is treated the same way: the run stops and asks, and a daemon that
-  already runs the target version is asked too before anything stops it.
+  with `--restart-daemon` (Windows: `-RestartDaemon`) when that is fine. On Windows, a daemon that is running but cannot be
+  told its version (it does not answer, or refuses the question) is treated the same way: the run stops and asks, and a
+  daemon that already runs the target version is asked too before anything stops it.
 - `target:` says the machine runs a build of the line (a `+` in its version). Install a pack of the line with
   `--archive <folder>`, a folder `scripts/pack-build.sh` packed; that runs the `install.sh` of the checkout that made the
   pack, not the installed one. A release named with `--version` is usually older than a build of the line and moves the
@@ -114,7 +114,7 @@ and the resource tree, and changes in it are not carried to the next version.
   until a run that names no version", and the `PASS` or `ONE STEP LEFT` line ends with it. A run that names no version removes the pin, and an `install.json` with no pin field (every install made before the
   field existed) is unpinned and follows its channel. Running the version a machine already runs, by name, is how a machine
   is pinned in place: when its daemon already answers as that version the run writes the pin, drops any update pointer
-  armed over the install, and restarts nothing (a named run of the installed version on Windows downloads nothing either).
+  armed over the install, and restarts nothing (on Windows a named run of the installed version fetches no release asset; the prelude still fetches the tag's `install.ps1` unless `SOT_INSTALL_TAG` is set).
   A build with a `+` never updates automatically, so a pin changes nothing there.
 - **Automatic rollback.** Applying a staged update is an offline pointer flip done by `sot-apply`, which records the
   previous install as *last good*. The `--local` launcher runs `sot-apply --rollback` if the frontend exits with an error

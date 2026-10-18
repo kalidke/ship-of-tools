@@ -194,7 +194,7 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   nothing running a session at the desk (a non-zero session id; an ssh logon runs in session 0) applies it here, and
   another leaves it armed with the step to start at the desk. The end check compares the supervisor's `code=` with the
   installed launcher's code id: a window on older launcher code is ONE STEP LEFT. A box with no Julia is a supported
-  state: the stage skips the Julia steps (`rust/backend/src/update.rs` `prepare_julia`) and the run ends ONE STEP LEFT
+  state: the stage skips the Julia steps (`rust/backend/src/update.rs` `prepare_julia`; only `JuliaError::NotFound` is skipped, a Julia the resolver refused stays the stage's error) and the run ends ONE STEP LEFT
   naming `winget install --id Julialang.Juliaup -e`. The stage prints one "staging and preparing" line first and a failed
   one reports sotd's last line only. `SOT_INSTALL_REPO` names the release repo (default `kalidke/ship-of-tools`). A daemon the converge restarted must answer as the target within
   `SOT_INSTALL_DAEMON_WAIT_S` by the clock. A run that names what to install (`-Version`, `-Archive`; `install.sh`'s
@@ -203,9 +203,13 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   that names no version", at the end of the `PASS` and `ONE STEP LEFT` lines of both entries), and a run that names none
   removes the pin (a record with no pin field is unpinned). A named run of the version already installed, with the daemon
   answering as it, is a repair run on both entries: it writes the pin, drops any update pointer armed over the install
-  and stages, applies and restarts nothing (on Windows it downloads nothing either). `tests/test-install-entry.ps1` pins
-  the URLs and the prelude, the verdicts, the daemon states, the pointer drop, the window check, the enroll refusal, the
-  Julia outcomes, the converge to its end, and the launcher's log lines it reads.
+  and stages, applies and restarts nothing (on Windows it fetches no release asset; the prelude still fetches the tag's
+  `install.ps1` unless `SOT_INSTALL_TAG` is set). A `FAIL` ends with the pin once the run wrote it (both entries) and, on
+  Windows, with "the update to <tag> stays armed: the next start applies it" when the run staged one that is still
+  armed (`install.sh` arms none itself). `tests/test-install-entry.ps1` pins the URLs and the prelude, the verdicts, the
+  daemon states (a renamed `sotd-stale-*.exe` image included), the pointer drop, the window check, the enroll refusal,
+  the Julia outcomes (a refused Julia is a stage error, none found is a skip), the converge to its end, the stop of a
+  running daemon before an apply, the untraversable junction, and the launcher's log lines it reads.
 - Entry-point paths are an interface and do not move, and neither do the option names of `install.sh` (`--version`,
   `--archive`, `--local`, `--backend`, `--be-only`, `--prefix`, `--hub`, `--no-service`, `--force-role-change`) or of
   `install.ps1` (`-Version`, `-Archive`, `-Hub`, `-Prefix`, `-RestartDaemon`); a new option is added, never renamed: an agent's instructions name
