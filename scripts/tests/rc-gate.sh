@@ -46,7 +46,7 @@ JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/vi
 
 envs() {
   D=$RCG_D L=$RCG_L
-  CE=(env -i HOME="$HOME" PATH="$RCG_CARGO_DIR:$RCG_JULIA_DIR:${RCG_NODE_DIR:+$RCG_NODE_DIR:}/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
+  CE=(env -i HOME="$HOME" PATH="$RCG_JULIA_DIR:${RCG_NODE_DIR:+$RCG_NODE_DIR:}$RCG_CARGO_DIR:/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
     XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
     ${CARGO_PROFILE_DEV_DEBUG:+CARGO_PROFILE_DEV_DEBUG="$CARGO_PROFILE_DEV_DEBUG"}
     ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
@@ -358,7 +358,8 @@ NODE_BIN=$(command -v node) || { echo "rc-gate: node not found" >&2; exit 2; }
 command -v jq > /dev/null || { echo "rc-gate: jq not found" >&2; exit 2; }
 PATH=/usr/bin:/bin command -v Xvfb > /dev/null || { echo "rc-gate: Xvfb not found in /usr/bin or /bin (the sotd sidecar tests start it)" >&2; exit 2; }
 # The jobs get node and julia, each alone from a folder of its own (on the servers node's folder also holds real agent
-# CLIs, and a julia in /usr/bin would put /usr/bin's node ahead of the node chosen here).
+# CLIs, and a julia in /usr/bin would put /usr/bin's node ahead of the node chosen here). Those two folders lead the Rust
+# jobs' PATH, ahead of cargo's folder: it is wherever cargo is installed, and whatever else it holds is not the gate's.
 mkdir -p "$L/bin" "$L/julia-bin" && ln -s "$NODE_BIN" "$L/bin/node" && ln -s "$JULIA_BIN" "$L/julia-bin/julia" || exit 2
 export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$L/julia-bin RCG_NODE_DIR=$L/bin
 envs
