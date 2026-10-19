@@ -76,7 +76,7 @@ pub(super) fn fixture() -> Fixture {
 }
 
 /// Serve `site` on loopback and return `(addr, nonce, serial)`.
-async fn serve(site: Site) -> (std::net::SocketAddr, String, u64) {
+pub(super) async fn serve(site: Site) -> (std::net::SocketAddr, String, u64) {
     let serial = NEXT_SERIAL.fetch_add(1, Ordering::SeqCst);
     let nonce = set_root(serial, site).expect("set_root");
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -92,7 +92,7 @@ async fn serve(site: Site) -> (std::net::SocketAddr, String, u64) {
 }
 
 /// GET `path` with extra request headers; `(status, response head, body)`.
-async fn get(
+pub(super) async fn get(
     addr: std::net::SocketAddr,
     path: &str,
     headers: &[&str],
@@ -121,7 +121,7 @@ async fn opened(f: &Fixture, site: PathBuf, ws: PathBuf) -> Site {
     s
 }
 
-async fn widened(f: &Fixture) -> Site {
+pub(super) async fn widened(f: &Fixture) -> Site {
     opened(f, f.repo.join("site"), f.repo.clone()).await
 }
 
@@ -140,7 +140,7 @@ fn bounds_of_this_account() -> (PathBuf, Bounds) {
     (home, b)
 }
 
-fn body_text(b: &[u8]) -> String {
+pub(super) fn body_text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 

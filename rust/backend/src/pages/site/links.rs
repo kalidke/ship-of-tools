@@ -531,7 +531,7 @@ fn refuse_leads_out(site: &Site, first: Option<&Path>, asked: &str) -> Result<()
     let l = link.to_string_lossy().into_owned();
     tracked_gate(site, link, asked, &l)?;
     tracing::info!(path = asked, why = "the link's target is not an absolute path of plain names under a mount folder", "site_serve: a linked path is outside the bounds");
-    Err(refused_r3(asked, &l))
+    Err(refused_r3(asked, &l, None))
 }
 
 /// R2e and R2b: git runs here, and tracks the link.
@@ -598,6 +598,25 @@ fn plain_mount_path(bounds: &Bounds, raw: &Path) -> Option<PathBuf> {
     plain.then(|| bounds.as_written(raw)).flatten()
 }
 
+/// The first symlink on the target of `link`, below the mount folder the target
+/// starts with: the folder the target runs through, which R3 names. `None` when
+/// the target is not a plain path under a mount folder or has no symlink on it.
+#[cfg(unix)]
+fn symlink_on_target(site: &Site, link: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_link(site.url_root.join(link)).ok()?;
+    let written = plain_mount_path(&site.bounds, &raw)?;
+    let mount = site.bounds.mounts.iter().find(|m| written.starts_with(m))?;
+    let mut cur = mount.clone();
+    for name in written.strip_prefix(mount).ok()?.components() {
+        cur.push(name);
+        let meta = std::fs::symlink_metadata(&cur).ok()?;
+        if meta.file_type().is_symlink() {
+            return Some(cur);
+        }
+    }
+    None
+}
+
 #[cfg(unix)]
 fn follow_link(
     site: &Site,
@@ -616,7 +635,7 @@ fn follow_link(
         Ok(v) => v,
         Err(why) => {
             tracing::info!(path = asked, why, "site_serve: a linked path is outside the bounds");
-            return Err(refused_r3(asked, l));
+            return Err(refused_r3(asked, l, symlink_on_target(site, link)));
         }
     };
     let rel = f.strip_prefix(&m).expect("base_for found f under m");
@@ -625,7 +644,7 @@ fn follow_link(
     // answer.
     match open_checked(&m, rel, shown) {
         Ok(file) if file.metadata().map_or(false, |md| md.is_file()) && !on_kernel_filesystem(&file) => Ok((file, f)),
-        _ => Err(refused_r3(asked, l)),
+        _ => Err(refused_r3(asked, l, None)),
     }
 }
 
@@ -702,11 +721,20 @@ fn on_kernel_filesystem(f: &std::fs::File) -> bool {
     }
 }
 
-/// R3's one answer to every linked path that does not serve.
+/// R3's one answer to every linked path that does not serve. `through` is the
+/// symlinked folder the link's target runs through: then the share may be
+/// mounted and still not served, so the refusal names that folder instead.
 #[cfg(unix)]
-fn refused_r3(asked: &str, l: &str) -> Refusal {
+fn refused_r3(asked: &str, l: &str, through: Option<PathBuf>) -> Refusal {
     let [a, b, c] = MOUNT_FOLDERS;
-    refuse(asked, "403 Forbidden", "R3", format!("refused: {asked} is behind the tracked link {l}, and a link serves only a file that exists on this host under {a}, {b} or {c}, outside the home folder and hidden folders, through a link written as an absolute path into those folders, with no symlink below it (is its share mounted?)"))
+    let hint = match through {
+        Some(folder) => format!(
+            "the link's target runs through the symlinked folder {}: write the target by its real path",
+            folder.display()
+        ),
+        None => "is its share mounted?".to_string(),
+    };
+    refuse(asked, "403 Forbidden", "R3", format!("refused: {asked} is behind the tracked link {l}, and a link serves only a file that exists on this host under {a}, {b} or {c}, outside the home folder and hidden folders, through a link written as an absolute path into those folders, with no symlink below it ({hint})"))
 }
 
 #[cfg(all(test, unix))]
