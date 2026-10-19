@@ -249,7 +249,7 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   `ExecStartPre=-` tolerates a missing script, and `launch-sot.sh` runs without `set -e`; `installer-apply.sh`'s
   `failed_apply_keeps_old_record_and_pending` and `test-sot-apply.ps1` pin the contract.
 - Files are published whole: written beside the destination under a name of their own, then renamed
-  (`sot_install_copy`, `render_sotd_unit`, `render_sot_launch`). The `one_copy_helper` and
+  (`sot_install_copy`, `render_sotd_unit`, `render_sot_launch`, `sot_boot_wants`). The `one_copy_helper` and
   `partial_wrapper_write_restores` cases of `installer-apply.sh` pin those distribution publishers. Folder-trust
   declaration publication belongs to agents; the agents → distribution connection defines exclusive creation,
   existing-file upgrades and the external-writer concurrency limit.

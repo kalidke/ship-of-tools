@@ -549,8 +549,9 @@ top line of the nav pane always shows the pane-switch keys.**
     they update by pulling and rebuilding.
 - Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`;
   if a unit was installed, `systemctl --user stop sotd` and remove
-  `~/.config/systemd/user/sotd.service` and `~/.config/systemd/user/default.target.d/sotd.conf` (on a shared home this
-  uninstalls every host); also remove the desktop entry
+  `~/.config/systemd/user/sotd.service`, its folder `sotd.service.d`, `~/.config/systemd/user/default.target.d/sotd.conf`
+  and any `~/.config/systemd/user/default.target.wants/sotd.service` link a pre-0.6.6 install left (on a shared home
+  this uninstalls every host); also remove the desktop entry
   (`~/.local/share/applications/ship-of-tools.desktop`, plus
   `~/.local/share/icons/hicolor/256x256/apps/ship-of-tools.png`) or the macOS
   app (`~/Applications/Ship of Tools.app`).

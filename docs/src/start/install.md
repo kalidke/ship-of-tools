@@ -73,12 +73,19 @@ boot, and the pin above picks the hosts. So `systemctl --user enable` and
 one on one host cannot turn boot start off for the others. Stop the daemon on
 a host now with `systemctl --user stop sotd.service`. What it does at the
 next boot is what the pin and `hosts.toml` decide: to move it, change
-`hosts.toml` (or, with none, run `sotd topology pin --claim` on the host that
-should run it). An install that runs no daemon on this host only stops this
-host's, unless the pin names this host alone: then it also removes the
-drop-in. An update moves a unit an earlier install enabled onto the drop-in
-and removes the old link; with neither, it writes nothing. The relay sockets
-and tunnels keep their rule: never `disable` them by hand.
+`hosts.toml` (or, with none, run
+`sotd topology pin --dir ~/.config/systemd/user --claim` on the host that
+should run it). On a home no other host shares, turn boot start off with
+`rm -f ~/.config/systemd/user/default.target.d/sotd.conf`; write that file
+again (`[Unit]` and `Wants=sotd.service`) to turn it back on. One rule governs
+both ways to update, running the installer again and the background update: a
+run that finds no `sotd.service` wires boot start, and a run over a unit moves
+an old enable link onto the drop-in or keeps the drop-in, and with neither
+writes nothing, so boot start you turned off stays off. An install that runs no
+daemon on this host only stops this host's, and moves an old link onto the
+drop-in, unless the pin names this host alone: then it also removes the
+drop-in. The relay sockets and tunnels keep their rule: never `disable` them
+by hand.
 
 The install itself is shared the same way: one `~/.local/share/sot` and one
 `install.json` serve every host that runs `sotd`. Run the installer on one of
@@ -248,7 +255,8 @@ hosts share these steps delete the shared install, so they uninstall every host:
 
 ```bash
 systemctl --user stop sotd.service
-rm -f ~/.config/systemd/user/sotd.service ~/.config/systemd/user/default.target.d/sotd.conf
+rm -rf ~/.config/systemd/user/sotd.service ~/.config/systemd/user/sotd.service.d \
+      ~/.config/systemd/user/default.target.d/sotd.conf ~/.config/systemd/user/default.target.wants/sotd.service
 systemctl --user daemon-reload
 loginctl disable-linger "$USER"   # skip if something else needs linger
 rm -rf ~/.local/share/sot ~/.config/sot ~/.sot-comm

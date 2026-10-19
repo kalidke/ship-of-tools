@@ -51,8 +51,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `installer-shared-home.sh`: a home several hosts share holds one install. Every path that writes, re-renders or
   retires `sotd.service` (`installer_enable_local_service`, `installer_retire_local_service`, `sot_rerender_owned`) pins
   it with `sotd topology pin` before any reload, and none disables the shared unit under a declared topology; with no
-  hosts.toml, two hosts on one home: the install claims the pin, and only the host it names alone removes the boot drop-in; a real `systemctl --root --global` enable or disable by hand changes no file;
-  an update moves an enabled unit onto the drop-in and writes nothing for a unit with neither; a
+  hosts.toml, two hosts on one home: the install claims the pin, and only the host it names alone removes the boot drop-in (a retire that keeps it moves an old enable link onto it); a real `systemctl --root --global` enable or disable by hand changes no file, read by `systemd --test` on scratch folders with its control;
+  one rule for `install.sh` and an update: a fresh install wires boot start, an existing unit only where its old link or the drop-in is; a
   hosts.toml sotd cannot read is still a declared topology; the tables of `installer_record_decision` and
   `installer_host_decision`; and `install.sh`, run end to end from a stub release on a host listed with neither key,
   on an unlisted host asking for a daemon, and with an unpacked sotd that cannot run, refuses and leaves every entry

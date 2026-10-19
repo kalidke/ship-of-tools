@@ -60,8 +60,11 @@ Each step's check must pass before the next one is worth doing.
 
 2. **`sotd` runs as a user service on the box**, started by the OS, not by
    a launcher, surviving with nobody logged in. On the box:
-   `systemctl --user is-enabled sotd.service` (plus `loginctl enable-linger`
-   where that applies) and `sotd status` answers. An instrument box wants
+   `systemctl --user show -p WantedBy --value sotd.service` (it names
+   `default.target` where the boot drop-in is loaded; `is-enabled` prints
+   `static` on every host, so it checks nothing), `systemctl --user cat
+   sotd.service` (its pin drop-in names this host), `loginctl enable-linger`
+   where that applies, and `sotd status` answers. An instrument box wants
    this regardless of anything on this page.
 
 3. **The bridge answers.** From the hub, pipe one hello frame through
