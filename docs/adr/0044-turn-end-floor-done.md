@@ -280,17 +280,36 @@ red after the answer (Codex: `blocked` then `stop`, cleared only by a typed prom
 
 - `dialog` is one more event fact: the new line on top of the reduction,
   `dialog set -> blocked, summary = dialog`, reads red over a running turn. The state
-  value is the existing `blocked`, so the registry contract, the daemon and the window
-  do not change. It never touches `question`, `waiting`, `done`, `note` or `floor`.
+  value is the existing `blocked`, so the registry contract and the window do not
+  change. It never touches `question`, `waiting`, `done`, `note` or `floor`.
   `dialog "<text>"` sets it and `resumed` clears it; both are events, so a second agent
   or a session with no row writes nothing.
 - Set on a Codex row by its `PermissionRequest` hook, `codex-status-blocked.sh`, which
   sends `dialog "codex permission request: <tool>"` and prints no decision, so the
   dialog shows as before.
-- Cleared by every event that proves the dialog is gone: the call's `PostToolUse` (the
-  heartbeat finds `state/dialog-<key>.marker`, keyed by `SOT_WORKSPACE_ID` or the
-  session id, with one `[ -e ]` per tool return, and sends `resumed`), the turn's
-  `stop`, and every `prompt` (typed, machine, a join). So `dialog` never outlives its
+- Set and cleared on a Claude row by the daemon, from the row's screen (the dialog
+  tick, `rust/backend/src/comm/wake/dialog.rs`). Every 5 s it reads each Ready Claude
+  capsule row with a registry entry, one watcher attach each.
+  - `dialog_of` (the wake's `screen.rs`) says a dialog shows only when no main input
+    box is on screen and one of the last 30 rows holds "Do you want to",
+    "Enter to select" or "Esc to cancel". A reply that quotes them sits above a live
+    box, so it never reads red.
+  - The tick writes only where the screen and the registry disagree: `dialog` when a
+    dialog shows and the row does not already read `blocked`, which leaves an
+    AskUserQuestion menu red by its question; `resumed` when none shows and the row
+    has the fact.
+  - It writes through `comm-status.sh` itself, with the entry `SOT_COMM_ROW_HANDLE`.
+    That entry takes `dialog` and `resumed` only, derives no identity and writes no
+    marker, so the reduction stays in one jq program and no Claude heartbeat clears
+    the daemon's fact. The entry exists because the daemon cannot run the script as
+    the row: the agent gate refuses a process that names a row it does not run
+    inside.
+  - It keeps nothing between ticks, so after a restart its first tick clears a fact
+    whose dialog has gone.
+- Cleared by every event that proves the dialog is gone: on a Codex row, the call's
+  `PostToolUse` (the heartbeat finds `state/dialog-<key>.marker`, keyed by `SOT_WORKSPACE_ID` or the
+  session id, with one `[ -e ]` per tool return, and sends `resumed`); on any row, the
+  turn's `stop` and every `prompt` (typed, machine, a join). So `dialog` never outlives its
   turn. `comm-status.sh` owns the marker with the fact: the `dialog` write creates it,
   and a `resumed`, `prompt` or `stop` write removes it, each only after it commits. A
   failed write leaves the marker as the fact is, so a failed `resumed` is retried by
@@ -306,10 +325,17 @@ red after the answer (Codex: `blocked` then `stop`, cleared only by a typed prom
   before for that reason (commit e820cacc3), and the payload carries no `tool_use_id`
   to key a call's own clearing by. Keying it per agent (a helper's request carries
   `agent_id`) and measuring it under auto mode is a 0.6.7 design.
-- Limits. (L0) A Claude row waiting on a permission dialog reads green while its turn
-  runs, then wilts (§5). (L1) Codex fires no hook at approval, so an approved call
-  reads red until it returns. (L2) The return of another call in the same Codex
-  session clears the red early. (L3) A denial fires no `PostToolUse`, and "No" or Esc
+- Limits. (L0) On Windows the daemon does not run the dialog tick (it has no route
+  to Git Bash there), so a Claude row waiting on a permission dialog reads green while
+  its turn runs, then wilts (§5). Elsewhere a Claude row's red lags its dialog by up to
+  one tick plus a read, and a turn boundary that clears the fact while the dialog still
+  shows is written again on the next tick. Any Claude screen that replaces the input
+  box and draws those words reads red while it shows, a menu a person opened included.
+  The dialog strings come from a screen watcher run on live rows; no dialog screen is
+  captured as a fixture, so the tests' dialog screens are synthetic. (L1) Codex fires
+  no hook at approval, so an approved call reads red until it returns. (L2) The return
+  of another call in the same Codex session clears the red early. (L3) On a Codex row
+  a denial fires no `PostToolUse`, and "No" or Esc
   that interrupts the turn fires no Stop: the row stays red until the turn's Stop or
   the next prompt. (L4) Another `PermissionRequest` hook that answers the request (a
   user's or a managed policy's) still leaves this stamp: allowed, red until the call

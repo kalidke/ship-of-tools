@@ -1,4 +1,5 @@
-//! Whether a captured screen is a free prompt: the glyph, box, panel and typed-line tests, and the rows the wake holds.
+//! Whether a captured screen is a free prompt: the glyph, box, panel and typed-line tests, and the rows the wake holds;
+//! and whether it shows a dialog that waits on a person, read from the same box test (`dialog_of`).
 
 use super::*;
 
@@ -180,6 +181,53 @@ fn panel_refusal(below: &[String]) -> Option<&'static str> {
         return Some("the panel's dot is not on main");
     }
     None
+}
+
+/// How many rows from the bottom of the screen [`dialog_of`] reads for a dialog's own text.
+const DIALOG_ROWS: usize = 30;
+
+/// The longest `dialog` summary [`dialog_of`] returns, in characters.
+const DIALOG_TEXT_MAX: usize = 120;
+
+/// Whether the main input box is on screen, wherever the cursor is: a line directly between two borders whose glyph,
+/// after nothing but spaces, is followed by U+00A0, the main prompt's own mark, or, where the NBSP is not required
+/// ([`NBSP_ON_WINDOWS`]), by a space or nothing. Menus and dialog inputs draw an ASCII space after the glyph.
+fn main_box_shown(lines: &[String], glyphs: &[char], windows: bool) -> bool {
+    (1..lines.len().saturating_sub(1)).any(|row| {
+        if !is_border(&lines[row - 1]) || !is_border(&lines[row + 1]) {
+            return false;
+        }
+        let cells: Vec<char> = lines[row].chars().collect();
+        let Some(g) = cells.iter().position(|c| glyphs.contains(c)) else {
+            return false;
+        };
+        cells[..g].iter().all(|c| *c == ' ')
+            && match cells.get(g + 1) {
+                Some('\u{a0}') => true,
+                Some(' ') | None => !nbsp_required(windows),
+                Some(_) => false,
+            }
+    })
+}
+
+/// The dialog the screen shows that waits on a person, as the row's `dialog` summary, or `None`. It is positively
+/// identified, both of: (a) no main input box is on screen ([`main_box_shown`]): a dialog replaces it, so text above a
+/// live box (a reply that quotes a dialog) is output, never a dialog; (b) one of the last [`DIALOG_ROWS`] rows holds the
+/// dialog's own text: a "Do you want to" line, or the footer's "Enter to select" or "Esc to cancel". The summary is the
+/// "Do you want to" line when there is one. An agent with no prompt glyphs is never read. The strings are those a
+/// screen watcher has matched on live rows since 2026-10-15; no dialog screen has been captured into a fixture.
+pub(crate) fn dialog_of(lines: &[String], agent: &str, windows: bool) -> Option<String> {
+    let glyphs = prompt_glyphs(agent, windows);
+    if glyphs.is_empty() || main_box_shown(lines, glyphs, windows) {
+        return None;
+    }
+    let tail = &lines[lines.len().saturating_sub(DIALOG_ROWS)..];
+    let trimmed = |l: &String| l.trim_matches(|c: char| c.is_whitespace() || c == '\u{2502}').to_string();
+    if let Some(ask) = tail.iter().map(trimmed).find(|l| l.starts_with("Do you want to")) {
+        return Some(format!("claude dialog: {ask}").chars().take(DIALOG_TEXT_MAX).collect());
+    }
+    let footer = tail.iter().any(|l| l.contains("Enter to select") || l.contains("Esc to cancel"));
+    footer.then(|| "claude dialog open".to_string())
 }
 
 /// The screen lines as the headless client reads them (`current_lines` in

@@ -8,7 +8,8 @@ delivery, of the address book and of the wake. Part of the backend; charter: com
   them, and the `agent.send` UI notification
 - `mod.rs`: declares the three folders and holds the comm folder rule (`sot_comm_home`)
 - `registry/`: the address book: which handle names which session, and the registry's lock, writes and poll
-- `wake/`: the wake: types a line into a session's free prompt when mail is unread
+- `wake/`: the wake: types a line into a session's free prompt when mail is unread; and the dialog tick, which reads a
+  Claude row's screen for a dialog that waits on a person and stamps its `dialog` fact
 
 ## Start here
 `mail/` for delivery, `registry/` for the address book, `wake/` for the wake of idle sessions.

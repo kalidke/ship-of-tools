@@ -17,19 +17,26 @@
 #            none): sets `done` when `floor` was `user` and neither `question`
 #            nor `waiting` is set, then clears `floor` and the Stop hook's
 #            `stop_at` mark. Row or no row, it removes the turn mark.
-#   dialog "T"  the agent shows a permission dialog that waits on a person
-#            (Codex's PermissionRequest hook sends it): sets `dialog` to T, which
-#            reads red over the running turn; no text is refused (rc 2). With
-#            SOT_WORKSPACE_ID or CLAUDE_CODE_SESSION_ID set, its write also
-#            creates state/dialog-<id>.marker, the cheap test the heartbeat
-#            makes on every tool return.
-#   resumed  the dialog's call has returned (the heartbeat sends it when it
-#            finds that marker): clears `dialog`. `prompt` and `stop` clear it
-#            too: it never outlives its turn. All three remove the marker
-#            once their write has committed.
+#   dialog "T"  the agent shows a dialog that waits on a person (Codex's
+#            PermissionRequest hook sends it; for a Claude row, the daemon,
+#            below): sets `dialog` to T, which reads red over the running turn;
+#            no text is refused (rc 2). With SOT_WORKSPACE_ID or
+#            CLAUDE_CODE_SESSION_ID set, its write also creates
+#            state/dialog-<id>.marker, the cheap test the heartbeat makes on
+#            every tool return.
+#   resumed  the dialog is gone (the heartbeat sends it when it finds that
+#            marker; for a Claude row, the daemon): clears `dialog`. `prompt`
+#            and `stop` clear it too: it never outlives its turn. All three
+#            remove the marker once their write has committed.
 #   join     the session has just written its row (comm-join.sh sends it):
 #            with a turn mark of its own session under five minutes old, sets
 #            `floor` to machine as a machine `prompt` does; else writes nothing.
+#
+# The daemon's entry: SOT_COMM_ROW_HANDLE=<handle> names the row whose screen
+# the daemon read (ADR 0044, dialog amendment). Only `dialog` and `resumed` take
+# it (any other verb is refused, rc 2); the agent gate still runs; no identity
+# is derived (NAME is the handle) and no marker is written or removed, so no
+# heartbeat clears a fact the daemon set.
 #
 # The turn mark, $COMM_HOME/state/turn-<the self slot's path>, holds the time
 # of the session's last `prompt` (epoch seconds) and its session
@@ -83,9 +90,9 @@
 #   otherwise                    -> idle      summary = note
 # `note` holds the last working/idle/done line so the summary can return to it
 # once red or purple lifts; a blocked or waiting stamp WITH text deletes it.
-# `dialog` is an event fact: only the hooks write it, and no declaration touches
-# `question`, `waiting`, `done`, `note` or `floor` on its account. The daemon
-# never touches it.
+# `dialog` is an event fact: only its setters (a Codex hook, the daemon for a
+# Claude row) write it, and it touches no `question`, `waiting`, `done`, `note`
+# or `floor`.
 #
 # READ-DECIDE-WRITE IS ONE CRITICAL SECTION (Codex review, #223): apply the
 # verb, delete legacy keys, reduce, and stamp are ONE jq program run inside
@@ -112,6 +119,11 @@ case "$VERB" in
     *)  echo "comm-status.sh: invalid verb '$VERB' (want prompt|stop|join|dialog|resumed|working|idle|blocked|done|waiting)" >&2; exit 2 ;;
 esac
 
+ROW_HANDLE="${SOT_COMM_ROW_HANDLE:-}"
+if [ -n "$ROW_HANDLE" ]; then
+    case "$VERB" in dialog|resumed) ;; *) echo "comm-status.sh: SOT_COMM_ROW_HANDLE stamps dialog or resumed only" >&2; exit 2 ;; esac
+fi
+
 # A second agent inside the session never stamps the row: an event is a silent
 # no-op, a declaration a loud failure. The gate comes before the context call, so
 # a refused child touches nothing.
@@ -122,7 +134,7 @@ fi
 if [ "$VERB" = dialog ] && [ -z "${2-}" ]; then
     echo "comm-status.sh: dialog needs its text -- stamp discarded" >&2; exit 2
 fi
-eval "$("$SCRIPT_DIR/comm-context.sh")"
+if [ -n "$ROW_HANDLE" ]; then NAME="$ROW_HANDLE"; else eval "$("$SCRIPT_DIR/comm-context.sh")"; fi
 
 # The turn mark (header), kept before the row check: the turn that joins has no
 # row when it starts. `join` ends here or goes on as a machine `prompt`.
@@ -234,7 +246,7 @@ rc=0; with_lock status_txn || rc=$?
 # tests it, so a write that failed leaves the marker as the fact is. The key is
 # sanitized (it becomes a filename); with no key there is no marker, and the
 # `prompt` or `stop` that ends the turn clears the fact.
-DIALOG_KEY="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+DIALOG_KEY=""; [ -n "$ROW_HANDLE" ] || DIALOG_KEY="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
 if [ "$rc" = 0 ] && [ -n "$DIALOG_KEY" ]; then
     DIALOG_MARKER="$COMM_HOME/state/dialog-$(printf '%s' "$DIALOG_KEY" | tr -c 'A-Za-z0-9._-' '_').marker"
     case "$VERB" in

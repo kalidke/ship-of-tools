@@ -1,13 +1,16 @@
-# rust/backend/src/comm/wake: the wake of idle sessions (backend)
+# rust/backend/src/comm/wake: the wake of idle sessions, and the dialog tick (backend)
 
 The daemon's tick that types a one-line wake into a session's free prompt when its handle has unread mail. The tick
-decides when, `unread.rs` counts the mail, `screen.rs` reads the screen and `attempt.rs` does the one attach. Part of the
+decides when, `unread.rs` counts the mail, `screen.rs` reads the screen and `attempt.rs` does the one attach. Beside it,
+the dialog tick reads each Claude row's screen with the same `screen.rs` and stamps the row's `dialog` fact. Part of the
 backend; charter: comm/CLAUDE.md.
 
 ## Files
 - `attempt.rs`: one wake's attach, hold, type and Enter, and its outcome
+- `dialog.rs`: the dialog tick: a Claude row whose screen shows a dialog that waits on a person gets `dialog`, and `resumed` once it has gone
+- `dialog_tests.rs`: the tests of the dialog tick, through the real `comm-status.sh`
 - `mod.rs`: the tick: when a row is woken, and the account of the whole wake
-- `screen.rs`: whether a captured screen is a free prompt, and the rows the hold compares
+- `screen.rs`: whether a captured screen is a free prompt, the rows the hold compares, and whether it shows a dialog (`dialog_of`)
 - `screen_tests.rs`: the tests of the screen reading, over captured frames
 - `unread.rs`: how much mail is unread: the inbox against the cursor
 
@@ -34,3 +37,10 @@ backend; charter: comm/CLAUDE.md.
   the tick's memory, so a restart can type it once more); one left without Enter is sent, Enter alone,
   by a later tick that finds it alone in main's input box (`decide`'s Complete, `Woken::enter_owed`). An Enter the leg
   refused as stale wrote nothing and leaves the line owed the same way (`WakeOutcome::EnterRefused`).
+- The dialog tick (`dialog.rs`, every DIALOG_EVERY, 5 s, Unix only) reads Ready capsule rows whose agent is `claude`, with
+  a declared handle and a registry entry, one watcher attach each (never the pen). `dialog_of` says a screen shows a
+  dialog only when no main input box (`main_box_shown`: a glyph and the NBSP between two borders) is on screen and the
+  last DIALOG_ROWS (30) rows hold "Do you want to", "Enter to select" or "Esc to cancel".
+- It writes only where screen and registry disagree (`stamp_for`): `dialog` when a dialog shows and the row does not
+  already read blocked, `resumed` when none shows and the row has the fact. It keeps nothing between ticks, and writes
+  through `comm-status.sh` with `SOT_COMM_ROW_HANDLE`, never with Rust's own reduction. A Codex row is never read.

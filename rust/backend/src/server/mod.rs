@@ -180,6 +180,11 @@ pub async fn run(opts: Opts) -> Result<()> {
     if let (Some(comm_home), Some(state_root)) =
         (crate::comm::sot_comm_home(), sot_log::host::state_dir::sot_state_dir())
     {
+        // The dialog tick reads Claude rows' screens and runs comm-status.sh with bash: Unix only (its module page).
+        if !cfg!(windows) {
+            let (home, root) = (comm_home.clone(), state_root.clone());
+            tokio::spawn(crate::comm::wake::dialog::run(home, root, workspaces.clone(), crate::comm::wake::dialog::DIALOG_EVERY));
+        }
         tokio::spawn(crate::comm::wake::run(comm_home, state_root, workspaces.clone(), crate::comm::wake::TICK));
     }
 

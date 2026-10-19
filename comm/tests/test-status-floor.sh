@@ -190,6 +190,7 @@ check "dialog: every turn boundary ends it" case_every_turn_boundary_ends_the_di
 check "dialog: it leaves a declared question alone" case_the_dialog_leaves_a_declared_question_alone
 check "dialog: a denied or interrupted dialog never comes back" case_a_denied_or_interrupted_dialog_never_comes_back
 check "dialog: a failed write leaves the marker as the fact is" case_a_failed_write_leaves_the_marker_as_the_fact_is
+check "dialog: the daemon's entry stamps the named row and no marker" case_the_daemon_entry_stamps_the_named_row_and_no_marker
 check "dialog: a Codex permission is red until the tool returns" case_codex_permission_is_red_until_the_tool_returns
 check "a genuine user turn ends blue" case_user_turn_ends_blue
 check "a machine-started turn ends gray" case_machine_turn_ends_gray

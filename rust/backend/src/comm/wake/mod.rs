@@ -83,6 +83,7 @@ use crate::rows::run::headless::HeadlessError;
 use crate::rows::Workspaces;
 
 mod attempt;
+pub mod dialog;
 mod screen;
 mod unread;
 

@@ -521,6 +521,20 @@ case_a_failed_write_leaves_the_marker_as_the_fact_is() (
     mkdir "$REGISTRY.tmp"; "$ST" dialog "$DIALOG_TEXT" >/dev/null 2>&1; rmdir "$REGISTRY.tmp"
     [ "$(dialog_fact)" = - ] && [ -z "$(dialog_marker)" ] || { echo "    a failed dialog left a fact or marker"; exit 1; }
 )
+# The daemon's entry (a Claude row's dialog, read from its screen): SOT_COMM_ROW_HANDLE stamps the named row with no
+# identity of its own (the self file here resolves none) and no marker, so the row's heartbeat leaves the fact alone.
+case_the_daemon_entry_stamps_the_named_row_and_no_marker() (
+    export SOT_WORKSPACE_ID=dlg-daemon
+    seed idle; W "$GENUINE"
+    SOT_COMM_SELF_FILE=/nonexistent SOT_COMM_ROW_HANDLE="$NAME" "$ST" dialog "claude dialog: Do you want to proceed?" || exit 1
+    expect blocked/user/-/-/- red || exit 1
+    [ "$(summ)" = "claude dialog: Do you want to proceed?" ] && [ -z "$(dialog_marker)" ] || { echo "    summary '$(summ)', or a marker"; exit 1; }
+    HB; expect blocked/user/-/-/- heartbeat-leaves-it || exit 1
+    SOT_COMM_SELF_FILE=/nonexistent SOT_COMM_ROW_HANDLE="$NAME" "$ST" resumed || exit 1
+    expect working/user/-/-/- resumed || exit 1
+    local rc=0; SOT_COMM_ROW_HANDLE="$NAME" "$ST" working x 2>/dev/null || rc=$?
+    [ "$rc" = 2 ] || { echo "    a declaration through the entry was not refused (rc $rc)"; exit 1; }
+)
 case_codex_permission_is_red_until_the_tool_returns() (
     export SOT_WORKSPACE_ID=dlg-codex
     seed idle; W "$GENUINE"

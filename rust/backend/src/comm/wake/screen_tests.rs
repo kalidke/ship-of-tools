@@ -604,3 +604,74 @@ fn free_test_lines_trims_spaces_and_keeps_a_no_break_space() {
     p.process("\x1b[3;1Ha\u{a0}  \x1b[1;1H".as_bytes());
     assert_eq!(free_test_lines(p.screen())[2], "a\u{a0}");
 }
+
+// ---- dialog_of: a dialog that waits on a person, for the dialog tick (dialog.rs) ----
+
+fn dialog(l: &[&str], windows: bool) -> Option<String> {
+    dialog_of(&lines(l), "claude", windows)
+}
+
+/// Output above, then `menu` (PERM_MENU, synthetic) and its footer where the input box was.
+fn perm_screen(menu: &[&str]) -> Vec<String> {
+    lines(&[&LINUX_TURN_A[..5], menu, &["", "Esc to cancel"]].concat())
+}
+
+#[test]
+fn a_permission_dialog_reads_with_its_question() {
+    let ask = Some("claude dialog: Do you want to proceed?".to_string());
+    for windows in [false, true] {
+        assert_eq!(dialog_of(&perm_screen(&PERM_MENU), "claude", windows), ask);
+    }
+    // Inside a rule frame: the selected option is a glyph and an ASCII space, never the main prompt's NBSP.
+    let framed = with_rules(PERM_MENU, [6, 8]);
+    assert_eq!(dialog_of(&perm_screen(&framed), "claude", false), ask);
+    // Where the NBSP is not required that frame reads as an input box: no red, as before this tick (fails closed).
+    assert_eq!(dialog_of(&perm_screen(&framed), "claude", true), None);
+}
+
+#[test]
+fn a_question_menu_reads_by_its_footer() {
+    let footer = "Enter to select \u{b7} \u{2191}/\u{2193} to navigate \u{b7} Esc to cancel";
+    assert_eq!(dialog(&[&ASKQ_MENU[..], &["", footer]].concat(), false), Some("claude dialog open".to_string()));
+    assert_eq!(dialog(&ASKQ_MENU, false), None, "no footer and no question line: not positively identified");
+}
+
+/// A reply that quotes the dialog's words sits above a live input box: never a dialog.
+#[test]
+fn a_reply_quoting_the_dialog_is_not_one() {
+    let mut idle = LINUX_IDLE;
+    idle[2] = "● It will ask: Do you want to proceed? Enter to select, Esc to cancel.";
+    idle[3] = "Do you want to proceed?";
+    assert_eq!(dialog(&idle, false), None);
+    idle[8] = "\u{276f}\u{a0}";
+    assert_eq!(dialog(&idle, false), None);
+    let mut turn = LINUX_TURN_A;
+    turn[1] = "Do you want to proceed?";
+    assert_eq!(dialog(&turn, false), None);
+}
+
+#[test]
+fn free_prompts_and_other_agents_show_no_dialog() {
+    let mut idle = LINUX_IDLE;
+    idle[8] = "\u{276f}\u{a0}";
+    assert_eq!(dialog(&idle, false), None);
+    assert_eq!(dialog(&WIN_REST, true), None);
+    for text in [
+        include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"),
+        include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-4-esc.txt"),
+    ] {
+        let (l, _) = cc288(text, true);
+        assert_eq!(dialog_of(&l, "claude", false), None);
+    }
+    assert_eq!(dialog_of(&perm_screen(&PERM_MENU), "codex", false), None);
+}
+
+/// Only the last rows are read: a question line far above them is old output.
+#[test]
+fn only_the_last_rows_hold_a_dialog() {
+    let mut screen = vec!["Do you want to proceed?"];
+    screen.extend(std::iter::repeat("output").take(DIALOG_ROWS));
+    assert_eq!(dialog(&screen, false), None);
+    screen.push("Esc to cancel");
+    assert_eq!(dialog(&screen, false), Some("claude dialog open".to_string()));
+}
