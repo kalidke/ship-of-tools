@@ -159,8 +159,8 @@ use it after editing the workflow or before a first-of-its-kind release.
   its line, and green CI at HEAD on main.
 - **Never** delete/re-cut a published tag that anyone may have fetched — cut a
   patch release instead. A broken candidate may be deleted (tag and release) and
-  re-cut under the same number only while its release is still a draft that
-  nobody can update to. Once it is published it is never re-cut: the fix goes
-  into the next rc.
+  re-cut under the same number only while its release is still a draft that no
+  box has installed by archive run. Once it is published, or any box has
+  installed it that way, it is never re-cut: the fix goes into the next rc.
 - Publishing visibility and release availability are maintainer-gated. **Never
   treat a local tag or release procedure as permission to publish the repo.**
