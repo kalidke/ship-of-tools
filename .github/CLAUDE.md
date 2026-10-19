@@ -60,8 +60,8 @@ scripts/CLAUDE.md.
   `musl-tools` installed first as the C compiler for sot-log's native launcher), `julia-check`, the three smokes
   `smoke`, `smoke-windows` and `smoke-macos`, `release-before` (the newest published release older than the run's
   version, by version order), the install smokes `install-linux`, `install-macos` and `install-windows` (the entry,
-  `scripts/install.sh` or `scripts/install.ps1`, against this run's artifacts: a fresh install and an update from the
-  release before, each ending in its PASS line; matrix legs, steps in `scripts/tests/install-smoke.sh` and
+  `scripts/install.sh` or `scripts/install.ps1`, against this run's artifacts: a fresh install, an update from the
+  release before and an `update-implicit` run (no arguments, the real repository), each ending in its PASS line; matrix legs, steps in `scripts/tests/install-smoke.sh` and
   `.ps1`), then `publish` (`SHA256SUMS`, `COMMIT`, git-cliff notes, the GitHub Release as a draft). The notes are cut at a whole line below 120000 bytes, with a link to every change since the previous
   tag, because GitHub rejects a release body over 125000 characters.
 - `workflows/gitleaks.yml`: a full-history secret scan on push to `main` and on pull requests.

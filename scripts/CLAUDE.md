@@ -243,7 +243,10 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   version order, never GitHub's "latest"), each ending in the entry's PASS line, then a repair run
   (`tests/install-smoke.sh`, `tests/install-smoke.ps1`). The `update-apply` legs (on Windows the `update-entry` leg too,
   in a runner session 0) run the release before's installed apply over a release staged by the new `sotd`, and require
-  that the staged release's own apply ran. Every leg ends in one state check: `install.json`, the checkout, the binaries,
+  that the staged release's own apply ran. The `update-implicit` legs install the release before by `--version`, then run
+  the entry with no arguments against the real repository, as a lab box does: the channel resolves to the release before
+  (this run's is still a draft), so the run is a repair run there that clears the pin, and the new `sotd` staging the run's
+  release must say `newer` and arm. Every other leg ends in one state check: `install.json`, the checkout, the binaries,
   the installed `sot-apply`, the launcher (the wrapper `render_sot_launch` writes; `Get-SotLauncherCodeId` on Windows)
   and comm are the new release's, so a release that changes nothing in the launcher still passes. The archive's `sot-apply` must be executable (a mode lost in packing ends the hand-off), the Linux legs take
   `--no-service` (a container has no user manager), and a dispatch on a branch runs them too (its artifacts are named

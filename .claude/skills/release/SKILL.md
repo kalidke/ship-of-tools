@@ -97,8 +97,15 @@ re-run with `git push --atomic origin main vX.Y.Z` once main is synced, with no 
    wave it through. The same holds for the install smokes (`install-linux`,
    `install-macos`, `install-windows`): `publish` requires them, and each runs
    the installer against this run's artifacts, fresh and as an update from the
-   release before (`scripts/tests/install-smoke.sh`, `install-smoke.ps1`). A
-   leg that fails is an installer or artifact defect to fix, not a flake.
+   release before (`scripts/tests/install-smoke.sh`, `install-smoke.ps1`). Each
+   install smoke also has an `update-implicit` leg: the release before installed
+   by `--version`, then the entry run with no arguments against the real
+   repository, which must end as a repair run at that release that clears the pin,
+   and the run's release staged afterwards must read `newer` and arm. A leg that
+   fails is an installer or artifact defect to fix, not a flake. The smokes do
+   not prove the Windows converge (a resident supervisor and a window; the hosted
+   runner has no desk) or the systemd path (the unit, `ExecStartPre`, the restart
+   check); those stay proofs on a lab box.
 2. On success, verify the release assets:
    `gh release view vX.Y.Z` must list `sot-<ver>-linux-x86_64.tar.gz`,
    `sot-<ver>-windows-x86_64.zip`, `sot-<ver>-macos-aarch64.tar.gz`,

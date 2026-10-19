@@ -12,8 +12,12 @@
 #   update-apply   BEFORE-TAG installed, the run's release staged and armed, the installed sot-apply run as the unit's
 #                  ExecStartPre runs it: the staged release's own apply must run, and leave the wrapper, comm and
 #                  install.json at the new release, then the entry's repair run
-# Every install names its target: --archive <folder> for the run's artifacts, --version for BEFORE-TAG (the fetch of
-# that tag's own installer is the entry's prelude). The folder --archive takes is made here from the artifacts:
+#   update-implicit  BEFORE-TAG installed (pinned), then the entry with NO arguments against the real repository, as a
+#                  lab box runs it: the channel resolves to BEFORE-TAG itself (this run's release is still a draft), so the
+#                  run is a repair run at BEFORE-TAG that clears the pin; then the run's release, staged by the new sotd,
+#                  must say `newer` and arm. The run's artifacts reach only that stage.
+# Every install but update-implicit's one run names its target: --archive <folder> for the run's artifacts, --version
+# for BEFORE-TAG (the fetch of that tag's own installer is the entry's prelude). The folder --archive takes is made here from the artifacts:
 # SHA256SUMS, COMMIT and the tarball, which keeps its name when that carries the binaries' own version and is repacked
 # under it otherwise (a branch run names its artifacts 0.0.0-ci.<sha>; the binaries carry the real, +-marked version).
 #
@@ -33,7 +37,7 @@ BEFORE="${4:-}"
 [ -f "$CHECKOUT/scripts/install.sh" ] || die "$CHECKOUT holds no scripts/install.sh"
 case "$SCENARIO" in
     fresh-local|fresh-be-only) ;;
-    update-entry|update-apply) [ -n "$BEFORE" ] || die "$SCENARIO needs BEFORE-TAG (scripts/tests/release-before.sh names it)" ;;
+    update-entry|update-apply|update-implicit) [ -n "$BEFORE" ] || die "$SCENARIO needs BEFORE-TAG (scripts/tests/release-before.sh names it)" ;;
     *) die "unknown scenario '$SCENARIO'" ;;
 esac
 
@@ -181,6 +185,29 @@ case "$SCENARIO" in
         state_is_new update
         repair_run
         state_is_new repair ;;
+    update-implicit)
+        install_before
+        vb="${BEFORE#v}"
+        # A release before that predates the pin records none: then only the repair half is proved, and the line says so.
+        PINNED_BEFORE="$(installed_flag pinned)"
+        if [ "$PINNED_BEFORE" = true ]; then say "before: $BEFORE pinned the install, as a named run does"
+        else say "note: $BEFORE records no pin, so this leg cannot prove the pin's removal"; fi
+        # No arguments: the prelude resolves the channel against the real repository, runs that tag's own installer as an
+        # implicit run, and the role comes from the record.
+        run implicit entry
+        case "$LAST" in
+            "PASS: Ship of Tools $vb at "*) [ "$RC" = 0 ] || die "implicit: PASS with exit $RC" ;;
+            *) die "implicit: the last line is '$LAST' (exit $RC), not PASS for $vb (the channel must resolve to $BEFORE)" ;;
+        esac
+        case "$LAST" in *"pinned at"*) die "implicit: the run pinned the install: $LAST" ;; esac
+        grep -q 'a repair run' "$SMOKE/implicit.out" || die "implicit: the run did not say it is a repair run at $vb"
+        expect_eq "implicit: install.json version" "$(installed_json version)" "$vb"
+        expect_eq "implicit: install.json pinned" "$(installed_flag pinned)" ""
+        # The pin is gone, so an update would be admitted: the run's release must read as newer and arm.
+        run stage "$NEW_SOTD" update stage "$PACK" --prefix "$PREFIX"
+        [ "$RC" = 0 ] || die "stage: sotd update stage ended with exit $RC; its last line: $LAST"
+        grep -q "armed .*(installed .*: newer)" "$SMOKE/stage.out" || die "stage: the run's release did not read as newer than $vb: $LAST"
+        [ -f "$PREFIX/updates/pending-$TARGET.json" ] || die "stage: no pointer is armed" ;;
     update-apply)
         install_before
         # The run's release staged and armed by its own sotd, as the daemon does; then the INSTALLED apply, as the unit's

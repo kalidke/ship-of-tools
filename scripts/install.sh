@@ -465,12 +465,24 @@ installer_channel() {  # <installed version, empty when none>
     esac
 }
 
-# The newest published release of any kind (the channel of a pre-release): its tag, else a failure.
+# The newest published release of any kind (the channel of a pre-release): its tag, else a failure that prints why. The
+# listing is an API call; it carries GITHUB_TOKEN (or GH_TOKEN) when one is set, and nothing when none is, because GitHub
+# limits anonymous calls per network address and a shared address spends that limit for everyone behind it.
 installer_newest_release() {
-    local list
-    list="$(curl "${CURL_BOUND[@]}" -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases?per_page=1")" \
-        || return 1
-    printf '%s\n' "$list" | grep -o '"tag_name": *"[^"]*"' | sed -n 1p | sed -E 's/.*: *"([^"]*)"/\1/'
+    local out code tok auth=() rc=0
+    tok="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+    [ -z "$tok" ] || auth=(-H "Authorization: Bearer $tok")
+    out="$(curl "${CURL_BOUND[@]}" -fsSL -w '\n%{http_code}' -H 'Accept: application/vnd.github+json' ${auth[@]+"${auth[@]}"} "https://api.github.com/repos/$REPO/releases?per_page=1")" || rc=$?
+    code="${out##*$'\n'}"
+    if [ "$rc" != 0 ]; then
+        case "$code" in
+            403|429)
+                if [ -n "$tok" ]; then printf 'GitHub refused the request (HTTP %s, its rate limit) even with the token in GITHUB_TOKEN or GH_TOKEN; retry in an hour, or name the release with --version <tag>, which needs no listing\n' "$code"
+                else printf 'GitHub refused the anonymous request (HTTP %s, its rate limit for this network address); retry in an hour, set GITHUB_TOKEN to send a token, or name the release with --version <tag>, which needs no listing\n' "$code"; fi ;;
+        esac
+        return 1
+    fi
+    printf '%s\n' "${out%$'\n'*}" | grep -o '"tag_name": *"[^"]*"' | sed -n 1p | sed -E 's/.*: *"([^"]*)"/\1/'
 }
 # Which way release TAG moves a build of the line (a version with a +), by ancestry and not by version text: the build's
 # commit (the record's, else the +<sha> of its version) against the release's COMMIT asset, in the install's own base
@@ -990,7 +1002,7 @@ if [ -z "${SOT_INSTALL_TAG:-}" ] && [ "$archived" = 0 ]; then
         installed="$(installer_installed_version "$pfx")"
         case "$(installer_channel "$installed")" in
             stop) fail 2 "this computer runs $installed, a build of the line, not a release: install a pack of the line with --archive <folder>; $(installer_build_advice "$pfx" "$installed"); ask the person who runs it which they want" ;;
-            newest) tag="$(installer_newest_release)" || die "could not list the releases of $REPO" ;;
+            newest) tag="$(installer_newest_release)" || die "could not list the releases of $REPO${tag:+: $tag}" ;;
             *)
                 loc="$(curl "${CURL_BOUND[@]}" -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
                     || die "could not resolve the latest release of $REPO"

@@ -472,7 +472,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [fresh-local, fresh-be-only, update-entry, update-apply]
+        scenario: [fresh-local, fresh-be-only, update-entry, update-apply, update-implicit]
     steps:
       - name: Install what a bare container lacks
         shell: bash
@@ -488,6 +488,7 @@ jobs:
         shell: bash
         env:
           SOT_SMOKE_COMMIT: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}  # read-only (contents: read): the implicit run's release listing is an API call, limited per address when anonymous
         run: bash scripts/tests/install-smoke.sh "${{ matrix.scenario }}" artifacts "$GITHUB_WORKSPACE" "${{ needs.release-before.outputs.tag }}"
 
   install-macos:
@@ -499,7 +500,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [fresh-local, update-entry, update-apply]
+        scenario: [fresh-local, update-entry, update-apply, update-implicit]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -513,6 +514,7 @@ jobs:
         shell: bash
         env:
           SOT_SMOKE_COMMIT: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}  # read-only (contents: read): the implicit run's release listing is an API call, limited per address when anonymous
         run: bash scripts/tests/install-smoke.sh "${{ matrix.scenario }}" artifacts "$GITHUB_WORKSPACE" "${{ needs.release-before.outputs.tag }}"
 
   install-windows:
@@ -527,7 +529,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [fresh, update-entry, update-apply]
+        scenario: [fresh, update-entry, update-apply, update-implicit]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -544,6 +546,7 @@ jobs:
         shell: powershell
         env:
           SOT_SMOKE_COMMIT: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}  # read-only (contents: read): the implicit run's release listing is an API call, limited per address when anonymous
         run: ./scripts/tests/install-smoke.ps1 -Scenario "${{ matrix.scenario }}" -Artifacts artifacts -Checkout "$env:GITHUB_WORKSPACE" -Before "${{ needs.release-before.outputs.tag }}"
 
   publish:

@@ -357,6 +357,12 @@ exit 0
         $e = Invoke-Entry @()
         Check '7k: an implicit run on an rc lists the newest release of the repo and fetches that tag''s install.ps1' (((@($textLog) -join ' ') -ceq 'https://api.github.com/repos/kalidke/ship-of-tools/releases?per_page=1') -and ((@($fetchLog) -join ' ') -ceq 'https://raw.githubusercontent.com/kalidke/ship-of-tools/v0.6.6-rc9.14/scripts/install.ps1')) "text=$(@($textLog) -join ' ') fetch=$(@($fetchLog) -join ' ')"
         Check '7k: and a release with no install.ps1 is a FAIL target with that URL in it' ($e.Rc -eq 1 -and $e.Last -ceq 'FAIL: target: v0.6.6-rc9.14 has no scripts/install.ps1 (or https://raw.githubusercontent.com/kalidke/ship-of-tools/v0.6.6-rc9.14/scripts/install.ps1 could not be fetched): install that release by its own procedure, docs/INSTALL-AGENT.md at v0.6.6-rc9.14') "last='$($e.Last)'"
+        # GitHub's anonymous rate limit on the listing: a 403 says what it is, when to retry and that -Version needs no listing.
+        $tokSave = @($env:GITHUB_TOKEN, $env:GH_TOKEN); $env:GITHUB_TOKEN = $null; $env:GH_TOKEN = $null
+        $script:curlTextImpl = { param([string]$Url, [bool]$Head) return [pscustomobject]@{ Ok = $false; Code = 22; Text = ''; Http = '403' } }
+        $e = Invoke-Entry @()
+        $env:GITHUB_TOKEN = $tokSave[0]; $env:GH_TOKEN = $tokSave[1]
+        Check '7k: a 403 from the release listing is a FAIL target that names the refusal, the retry and -Version' ($e.Rc -eq 1 -and $e.Last -ceq 'FAIL: target: could not list the releases of kalidke/ship-of-tools: GitHub refused the anonymous request (HTTP 403, its rate limit for this network address); retry in an hour, set GITHUB_TOKEN to send a token, or name the release with -Version <tag>, which needs no listing') "rc=$($e.Rc) last='$($e.Last)'"
         $hk2 = New-Home 'k2'
         $script:curlTextImpl = { param([string]$Url, [bool]$Head) return [pscustomobject]@{ Ok = $true; Code = 0; Text = 'https://github.com/kalidke/ship-of-tools/releases/tag/v0.6.6' } }
         $fetchLog.Clear(); $textLog.Clear()

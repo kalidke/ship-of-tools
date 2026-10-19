@@ -1,7 +1,7 @@
 # install-smoke.ps1 -- install.ps1 against the artifacts a release run built (Windows): release.yml's Windows install jobs
 # call it, and it runs off CI the same way. Windows PowerShell 5.1, ASCII only.
 #
-#   install-smoke.ps1 -Scenario fresh|update-entry|update-apply -Artifacts <folder> -Checkout <folder> [-Before <tag>]
+#   install-smoke.ps1 -Scenario fresh|update-entry|update-apply|update-implicit -Artifacts <folder> -Checkout <folder> [-Before <tag>]
 #
 # Artifacts holds the run's sot-<version>-windows-x86_64.zip; Checkout is the tree whose scripts\install.ps1 is the entry
 # under test. Scenarios, as install-smoke.sh's:
@@ -10,6 +10,10 @@
 #   update-apply  -Before installed, the run's release staged and armed by its own sotd, the installed sot-apply.ps1 run
 #                 as the launcher's start runs it: the staged release's own apply must run and leave the launcher code
 #                 and install.json at the new release; then the entry's repair run (it also brings comm to the commit)
+#   update-implicit  -Before installed (pinned), then install.ps1 with NO arguments against the real repository, as a lab
+#                 box runs it: the channel resolves to -Before itself (this run's release is still a draft), so the run is a
+#                 repair run at -Before that clears the pin; then the run's release, staged by its own sotd, must say
+#                 `newer` and arm. The run's artifacts reach only that stage. The Windows converge stays a lab-box proof.
 # The pack -Archive takes is made here from the artifacts: SHA256SUMS, COMMIT and the zip, which keeps its name when that
 # carries the binaries' own version and is repacked under it otherwise (a branch run names its artifacts 0.0.0-ci.<sha>).
 # -Before is installed by its own installer when its tag carries scripts\install.ps1 (the entry's prelude fetches it);
@@ -24,7 +28,7 @@
 # Environment: SOT_SMOKE_REPO (owner/name; default GITHUB_REPOSITORY), SOT_SMOKE_COMMIT (default HEAD of Checkout),
 # SOT_SMOKE_RAW_BASE and SOT_SMOKE_RELEASE_BASE (URL bases for a tag's files and a tag's release assets; default GitHub's).
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('fresh', 'update-entry', 'update-apply')][string]$Scenario,
+    [Parameter(Mandatory = $true)][ValidateSet('fresh', 'update-entry', 'update-apply', 'update-implicit')][string]$Scenario,
     [Parameter(Mandatory = $true)][string]$Artifacts,
     [Parameter(Mandatory = $true)][string]$Checkout,
     [string]$Before = ''
@@ -311,6 +315,36 @@ try {
             }
             Test-StateNew 'update' $pack
             Invoke-RepairRun $pack
+        }
+        'update-implicit' {
+            # The implicit run is the release before's own installer through the prelude: a tag laid by hand (it carries no
+            # install.ps1) has none to run, so the leg says it did not run rather than pass. Delete with Install-BeforeByHand.
+            if (-not (Test-RemoteFile "$rawBase/$Before/scripts/install.ps1")) {
+                Say "SKIPPED update-implicit: $Before carries no scripts\install.ps1, so no implicit run of it exists to prove"
+                exit 0
+            }
+            Install-Before $Before
+            $vb = $Before.TrimStart('v')
+            $ij = Join-Path $prefix 'install.json'
+            # A release before that predates the pin records none: then only the repair half is proved, and the line says so.
+            $pinnedBefore = (Test-Path -LiteralPath $ij) -and ([System.IO.File]::ReadAllText($ij) -match '"pinned"\s*:\s*true')
+            if ($pinnedBefore) { Say "before: $Before pinned the install, as a named run does" }
+            else { Say "note: $Before records no pin, so this leg cannot prove the pin's removal" }
+            # No arguments: the prelude resolves the channel against the real repository and runs that tag's own installer
+            # as an implicit run.
+            Invoke-Entry 'implicit' @()
+            if ($script:Last.StartsWith("PASS: Ship of Tools $vb at ", [System.StringComparison]::Ordinal)) {
+                if ($script:Rc -ne 0) { Stop-Smoke "implicit: PASS with exit $($script:Rc)" }
+            } else { Stop-Smoke "implicit: the last line is '$($script:Last)' (exit $($script:Rc)), not PASS for $vb (the channel must resolve to $Before)" }
+            if ($script:Last.Contains('pinned at')) { Stop-Smoke "implicit: the run pinned the install: $($script:Last)" }
+            if (-not (Test-OutHas 'a repair run')) { Stop-Smoke "implicit: the run did not say it is a repair run at $vb" }
+            Expect-Eq 'implicit: install.json version' (Get-JsonString $ij 'version') $vb
+            if ([System.IO.File]::ReadAllText($ij) -match '"pinned"\s*:\s*(true|false)') { Stop-Smoke 'implicit: install.json still records a pin' }
+            # The pin is gone, so an update would be admitted: the run's release must read as newer and arm.
+            Invoke-Logged 'stage' $pack.Sotd @('update', 'stage', $pack.Dir, '--prefix', $prefix)
+            if ($script:Rc -ne 0) { Stop-Smoke "stage: sotd update stage ended with exit $($script:Rc); its last line: $($script:Last)" }
+            if (-not (Test-OutHas 'armed .*\(installed .*: newer\)')) { Stop-Smoke "stage: the run's release did not read as newer than ${vb}: $($script:Last)" }
+            if (-not (Test-Path -LiteralPath (Join-Path $prefix 'updates\pending-windows-x86_64.json'))) { Stop-Smoke 'stage: no pointer is armed' }
         }
         'update-apply' {
             Install-Before $Before
