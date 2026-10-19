@@ -23,6 +23,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`, after the step that builds `sotd`, with `SOT_TEST_SOTD` naming
   the binary so the real-sotd cases run there instead of skipping) and in `rc-gate.sh`.
+- `installer-unit-limits.sh`: sourced by `installer-state.sh`, never run: a start's log prune counts the log it is about to create (`SOT_LOG_KEEP-1` old ones stay), and the unit render refuses, before any write and naming the character, a prefix or home holding `%`, `\`, `'`, `"` or `$`.
 - `installer-build-direction.sh`: sourced by `installer-entry.sh`, never run: a build of the line with no `--version` is told by ancestry (the release's COMMIT against the build's commit in the base clone) whether the newest release moves it forward or back, or why that cannot be told; it also asks the rule directly for a named tag and for a record's full commit, and pins that an `--archive` install on a build of the line makes no curl call and prints no ancestry line.
 - `installer-entry.sh`: sourced by `installer-state.sh`, never run: install.sh run end to end in a scratch HOME from a
   fixture release (a local git origin, an archive of stand-in binaries, and stand-in `curl`, `sotd`, `systemctl`,
