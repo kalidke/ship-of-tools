@@ -424,13 +424,14 @@ case_bind_row_binding_states() {
     local got
     got="$(bash -c 'source "$1/comm-lib.sh"; for a in "$2 $3" "$2 other-row" "$2 ''" "t-nobody $3"; do set -- $a; sot_row_binding "$1" "${2:-}" | cut -f1; done' _ "$SCRIPTS_DIR" "$NAME" "$ROW" | paste -sd ' ' -)"
     [ "$got" = "owner other other unbound" ] || { echo "  states: '$got'"; return 1; }
-    : > "$REG"
+    cp "$REG" "$WORK/registry.bind"; : > "$REG"
     got="$(bash -c 'source "$1/comm-lib.sh"; sot_row_binding "$2" ""' _ "$SCRIPTS_DIR" "$NAME")"
-    cp "$WORK/registry.saved" "$REG" 2>/dev/null || true
+    cp "$WORK/registry.bind" "$REG"
     [ "$got" = unreadable ] || { echo "  unreadable registry gave '$got'"; return 1; }
 }
 case_s1_a_stray_whose_self_file_names_a_held_handle() {
     bind_row ""; reset_inbox
+    jq -nc --arg to "$NAME" '{from:"peer",to:$to,repo:"r",msg:"held-row-mail",ts:"2026-01-01T00:00:02Z"}' > "$INBOX"   # what only @$NAME's reader sees
     held_by "$NAME"; start_stub_daemon
     local self="$WORK/stray-s1.txt" out
     cp "$SELF" "$self"
@@ -440,7 +441,7 @@ case_s1_a_stray_whose_self_file_names_a_held_handle() {
     case "$out" in *"handle=$NAME "*) echo "  kept @$NAME: $out"; return 1 ;; esac
     [ "$(sed -n 1p "$self")" != "$NAME" ] || { echo "  the self file still names @$NAME"; return 1; }
     poll "$self"
-    case "$POLL_OUT" in *unread-one*) echo "  the session still reads @$NAME's inbox: $POLL_OUT"; return 1 ;; esac
+    case "$POLL_OUT" in *held-row-mail*) echo "  the session still reads @$NAME's inbox: $POLL_OUT"; return 1 ;; esac
     [ "$(cat "$CURSOR")" = "0" ] || { echo "  @$NAME's cursor moved to '$(cat "$CURSOR")'"; return 1; }
 }
 case_s3_a_displaced_row_rejoins() {
