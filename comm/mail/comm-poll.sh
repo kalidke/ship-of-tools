@@ -18,10 +18,14 @@ fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 
 [ -z "$NAME" ] && { echo "No handle for this process — not this row's inbox (see any comm-context line above), or not joined: run comm-join.sh first." >&2; exit 1; }
-# Poll is the one reader of message bodies and the one cursor writer: with the registry unreadable nothing shows whose
-# row holds NAME, so it reads nothing.
-_reg_rc=0; sot_registry_read "$NAME" >/dev/null 2>&1 || _reg_rc=$?
-[ "$_reg_rc" -ne 2 ] || { echo "comm-poll: the registry could not be read; nothing was read" >&2; exit 1; }
+# Poll is the one reader of message bodies and the one cursor writer, so it asks the registry itself whose NAME is
+# (sot_row_binding, as the context does) rather than trusting the context's read: another row's, or an unreadable
+# registry, reads nothing.
+IFS=$'\t' read -r _bind _bind_ws _ <<< "$(sot_row_binding "$NAME" "$ROW_ID")"
+case "$_bind" in
+    unreadable) echo "comm-poll: the registry could not be read; nothing was read" >&2; exit 1 ;;
+    other) echo "comm-poll: @$NAME belongs to row $_bind_ws, not to this process (${ROW_ID:-no row id}); not this row's inbox, nothing was read" >&2; exit 1 ;;
+esac
 
 INBOX="$INBOX_DIR/$NAME.jsonl"
 CUR="$READ_DIR/$NAME.cursor"

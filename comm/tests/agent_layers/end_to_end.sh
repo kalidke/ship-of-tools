@@ -491,6 +491,13 @@ ROWID=ws-dev; run rown "$SELF_P2" "$SEND" "@$PEER" "matrix-orig"
 eq  "matrix: sending from the developer's row with the probe row's own self file exits 1 (the library's rc 2)" "$RC" 1
 has "matrix: that refusal names the cause" "$OUT" "$R_ROW_TEXT"
 eq  "matrix: that send filed nothing" "$(sum "$PINBOX")" "$pin0"
+# The probe row's entry is bound to its row (its join carried the row's id): a private copy names no row, so the
+# runner reads and sends as nobody (PROTOCOL.md's row rule). comm-matrix.sh needs the entry unbound to run.
+run rown "$PRIV" "$SEND" "@$PEER" "matrix-copy"
+eq  "matrix: with the probe row's entry bound to its row, the private copy exits 1" "$RC" 1
+has "matrix: that refusal says it is not the row's inbox" "$OUT" "not this row's inbox"
+eq  "matrix: that send filed nothing" "$(sum "$PINBOX")" "$pin0"
+jq '.agents["probe2-testhost"].workspace_id = ""' "$REG" > "$WORK/reg.tmp" && mv "$WORK/reg.tmp" "$REG"
 run rown "$PRIV" "$SEND" "@$PEER" "matrix-copy"
 eq  "matrix: sending with the private copy exits 0" "$RC" 0
 has "matrix: the private copy's send is filed" "$OUT" "filed -> @$PEER"

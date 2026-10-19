@@ -269,3 +269,19 @@ sot_registry_read() {
         2>/dev/null)" || return 2
     case "$out" in present$'\t'*) printf '%s\n' "${out#present$'\t'}" ;; absent) return 1 ;; *) return 2 ;; esac
 }
+
+# sot_row_binding HANDLE ROW_ID — whose row HANDLE's registry entry is, by ONE jq over the registry's bytes. ROW_ID is
+# the row id the calling process proves (comm-context.sh's ROW_ID), "" for a process that names no row. One line,
+# tab-separated: `owner<TAB>ws<TAB>host` (the entry binds ROW_ID), `other<TAB>ws<TAB>host` (it binds another row, or any row
+# to a process with no row id), `unbound` (no entry, or one with no workspace_id) or `unreadable` (the registry
+# cannot be read, or the entry is not an object). The one answer for the context's discard, poll's read and a join's check.
+sot_row_binding() {
+    local out
+    out="$(sot_registry_bytes | sot_jq -s -r --arg n "${1-}" --arg me "${2-}" '
+        if length != 1 or (.[0].agents | type) != "object" then "unreadable"
+        else (.[0].agents[$n] // {}) as $r
+        | ($r.workspace_id // "") as $w
+        | if $w == "" then "unbound"
+          else (if $w == $me then "owner" else "other" end) + "\t" + $w + "\t" + ($r.host // "") end end' 2>/dev/null)" || out=""
+    printf '%s\n' "${out:-unreadable}"
+}

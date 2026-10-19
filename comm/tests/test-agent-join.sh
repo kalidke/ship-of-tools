@@ -179,23 +179,24 @@ case_with_pins_reaches_the_daemon() {
     return 0
 }
 
-case_without_workspace_id_joins_as_today_with_no_agent_join_sent() {
+case_without_workspace_id_joins_as_today_declaring_no_row() {
     mkdir -p "$WORK/proj-b"
     local root; root="$(realpath "$WORK/proj-b")"
     start_stub_daemon
     # SOT_WORKSPACE_ID deliberately unset -- a bare join outside any
     # daemon-spawned workspace (the ordinary "just run it" case) must
     # behave exactly as before this lane: registry join only, no
-    # agent.join attempt at all.
+    # declaration of a row (its agent.join to the daemon, which asks only
+    # whether a row holds the handle, has an empty workspace_id).
     SOT_SOCKET="$SOCK" join_in "$root" --name proj-b-joiner
     local req
-    req="$(grep -m1 '"op":"agent.join"' "$REQLOG" 2>/dev/null || true)"
+    req="$(grep -m1 '"op":"agent.join".*"workspace_id":"[^"]' "$REQLOG" 2>/dev/null || true)"
     stop_stub_daemon
 
     [ "$JOIN_RC" -eq 0 ] || { echo "  comm-join.sh exited $JOIN_RC: $JOIN_ERR"; return 1; }
     contains "$JOIN_OUT" "Joined sot-comm as @proj-b-joiner" || { echo "  stdout: $JOIN_OUT"; return 1; }
     registry_has_row "proj-b-joiner" || { echo "  no registry row for proj-b-joiner"; return 1; }
-    [ -z "$req" ] || { echo "  an agent.join request was sent with no SOT_WORKSPACE_ID pinned: $req"; return 1; }
+    [ -z "$req" ] || { echo "  an agent.join declared a row with no SOT_WORKSPACE_ID pinned: $req"; return 1; }
     return 0
 }
 
@@ -241,7 +242,7 @@ case_a_scratch_identity_never_declares_into_the_ambient_row() {
     SOT_COMM_SELF_FILE="$WORK/scratch-self.txt" \
         SOT_WORKSPACE_ID="ws-live-row" SOT_SOCKET="$SOCK" join_in "$root" --name proj-e-scratch
     local req
-    req="$(grep -m1 '"op":"agent.join"' "$REQLOG" 2>/dev/null || true)"
+    req="$(grep -m1 '"op":"agent.join".*"workspace_id":"[^"]' "$REQLOG" 2>/dev/null || true)"
     stop_stub_daemon
 
     [ "$JOIN_RC" -eq 0 ] || { echo "  comm-join.sh exited $JOIN_RC: $JOIN_ERR"; return 1; }
@@ -276,8 +277,8 @@ case_the_identity_names_the_row_not_the_environment() {
 
 check "comm-join.sh with SOT_WORKSPACE_ID + SOT_SOCKET pinned declares its handle via agent.join" \
     case_with_pins_reaches_the_daemon
-check "comm-join.sh with no SOT_WORKSPACE_ID pinned joins as today and sends no agent.join" \
-    case_without_workspace_id_joins_as_today_with_no_agent_join_sent
+check "comm-join.sh with no SOT_WORKSPACE_ID pinned joins as today and declares no row" \
+    case_without_workspace_id_joins_as_today_declaring_no_row
 check "comm-join.sh still joins when the daemon doesn't answer agent.join, with a warning" \
     case_daemon_rejects_agent_join_warns_but_still_joins
 check "comm-join.sh with a scratch identity and an inherited SOT_WORKSPACE_ID declares nothing" \

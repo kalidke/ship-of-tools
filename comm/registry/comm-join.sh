@@ -120,15 +120,29 @@ if [ "$REPIN" != 1 ] && sot_self_file_project_conflict "$SELF_FILE" "$REPO" "$PR
     exit 3
 fi
 
-# A session outside any row (no row id) never takes a handle a live row holds: an explicit name is refused here, a
-# derived one steps past it (_SOT_ROW_HELD, read by _sot_tier_claimable). The daemon decides which rows are live.
-_SOT_ROW_HELD=" "
-if [ -z "$WORKSPACE_ID" ]; then
+# A session outside any row (no row id: ROW_ID, the id the walk proves) never takes a handle a live row holds. The
+# daemon decides, from its own rows, whatever the registry file says (sot_outside_join_clearance): an explicit name
+# is refused here, and a derived join is cleared per tier name before the lock, so it steps past a held tier to the
+# session's own. CLEARED is what was cleared, with the workspace_id each entry bound then; the writes under the lock
+# are held to it, so a row that binds a name in between is refused, never overwritten.
+OUTSIDE=""; CLEARED=""; HELD_TIER1=0
+if [ -z "$ROW_ID" ]; then
+    OUTSIDE=1
     if [ "$NEED_DERIVE" = true ]; then
-        _SOT_ROW_HELD=" $(sot_row_held_handles "$PROJECT_ROOT" | paste -sd ' ' -) "
-    elif ! _why="$(sot_outside_join_refusal "$NAME")"; then
-        echo "comm-join.sh: REFUSING to join: $_why" >&2
-        exit 1
+        _tier_host="$(_sot_handle_host "$HANDLE_HOST")" || exit 1
+        for _n in 1 2 3; do
+            _tier="$(_sot_tier "$_n" "$PROJECT_ROOT" "$_tier_host" 2>/dev/null | sed -n 2p)" || _tier=""   # a tier 3 with no digest: derive names it
+            [ -n "$_tier" ] || continue
+            if _ws="$(sot_outside_join_clearance "$_tier")"; then CLEARED="$CLEARED$_tier"$'\t'"$_ws"$'\n'
+            elif [ "$_n" = 1 ]; then HELD_TIER1=1; fi
+        done
+    else
+        _rc=0; _ws="$(sot_outside_join_clearance "$NAME")" || _rc=$?
+        case "$_rc" in
+            0) CLEARED="$NAME"$'\t'"$_ws" ;;
+            2) echo "comm-join.sh: FAILED: $_ws" >&2; exit 1 ;;
+            *) echo "comm-join.sh: REFUSING to join: $_ws" >&2; exit 1 ;;
+        esac
     fi
 fi
 
@@ -143,7 +157,7 @@ exp_json="$(printf '%s' "$EXPERTISE" \
 # PROJECT_ROOT can start with "/" (the POSIX form git-bash's own `pwd` fallback produces): it reaches jq on
 # stdin (comm-lib-base.sh, free text and jq).
 obj="$(printf '%s' "$PROJECT_ROOT" | jq -Rs \
-    --arg host "$HOST" --arg ws "$WORKSPACE_ID" \
+    --arg host "$HOST" --arg ws "$ROW_ID" \
     --arg repo "$REPO" --argjson exp "$exp_json" --arg ts "$ts" \
     '{host:$host, workspace_id:$ws, repo:$repo, root:., expertise:$exp,
       status:"idle", joined:$ts, last_seen:$ts}')"
@@ -154,7 +168,7 @@ if [ "$NEED_DERIVE" = true ]; then
     # makes a derivation failure (all three tiers taken by other roots;
     # Codex review F6) abort here with sot_derive_handle's own clear
     # stderr reason, rather than continuing with an empty/invalid NAME.
-    claim_derived_handle reclaim "$PROJECT_ROOT" "$HANDLE_HOST" "$obj"
+    claim_derived_handle reclaim "$PROJECT_ROOT" "$HANDLE_HOST" "$obj" ${OUTSIDE:+"$CLEARED"}
     NAME="$CLAIMED_NAME"
 
     # Stranding guard (field regression): escalating AWAY from the bare
@@ -173,8 +187,10 @@ if [ "$NEED_DERIVE" = true ]; then
     # operator/session can no longer strand silently; still proceed with the
     # qualified join (a fresh last_seen does not prove ownership), so this NEVER
     # auto-reclaims.
+    # A tier-1 handle a live row holds was stepped past on purpose (the plain line sot_derive_handle printed): not a
+    # stranding.
     if [ -n "$CLAIMED_QUALIFIER" ] && [ -n "$CLAIMED_TIER1" ] && [ "$CLAIMED_TIER1" != "$NAME" ] \
-       && sot_handle_live "$CLAIMED_TIER1"; then
+       && [ "$HELD_TIER1" = 0 ] && sot_handle_live "$CLAIMED_TIER1"; then
         # The printed recipe below uses THIS install's own SCRIPT_DIR —
         # never a hardcoded ~/.sot-comm/bin/, wrong under a non-default
         # $SOT_COMM_HOME (supported) — and %q-quotes every interpolated
@@ -206,7 +222,7 @@ if [ "$NEED_DERIVE" = true ]; then
 WARN
     fi
 else
-    with_lock registry_put "$NAME" "$obj"
+    if [ "$OUTSIDE" = 1 ]; then with_lock _sot_put_outside "$NAME" "$obj" "$CLEARED"; else with_lock registry_put "$NAME" "$obj"; fi
 fi
 # v2 self-file: identity + the repo it was claimed for, plus the canonical
 # project root (ADR 0028 addendum — additive; a self-file without a root=
