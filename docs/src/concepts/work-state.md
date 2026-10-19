@@ -48,11 +48,15 @@ A row's state is not a single value the agent sets; it is a small set of
   done flag. `waiting` clears an open question (it says nothing needs you), and a
   `blocked` or `waiting` with no text, and none of its own already on the row, is refused.
 
-The display picks the highest-priority fact that holds: an open question with
-no turn running is **red**; otherwise a running turn is **green**; otherwise a
-wait is **purple**; otherwise an unread result is **blue**; otherwise **gray**.
-So red always wins, and typing into a session (which starts a turn you own)
-clears both red and blue.
+The display picks the highest-priority fact that holds: a dialog that waits on
+you is **red**, even while its turn runs; an open question with no turn running
+is **red**; otherwise a running turn is **green**; otherwise a wait is
+**purple**; otherwise an unread result is **blue**; otherwise **gray**. So red
+always wins, and typing into a session (which starts a turn you own) clears both
+red and blue. A Codex session's permission request raises the dialog. For a
+Claude Code session, which sends no event when a dialog shows, the backend reads
+the session's screen every few seconds; on Windows it does not, and such a
+session still reads green.
 
 These facts live in the comm registry, next to each session's handle, which is
 why another agent — and every frontend attached to the backend — sees the same

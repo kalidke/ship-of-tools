@@ -32,6 +32,26 @@ else
 fi
 STUB
 chmod +x "$CLAUDE_STUB_DIR/claude"
+# The auditor skips a background candidate for a row the facts show waiting or blocked, never by its `state` alone: a
+# `dialog` fact reads blocked too, and clears within a tick of the dialog closing. AUDIT prints its findings.
+AUDIT() {
+    local tr="$WORK/audit.jsonl"
+    { jq -nc '{type:"user",message:{content:"go"}}'
+      jq -nc '{type:"assistant",message:{content:[{type:"tool_use",id:"t0",name:"Monitor",input:{command:"tail -f x"}}]}}'
+      jq -nc '{type:"assistant",message:{content:[{type:"text",text:"Watching it."}]}}'; } > "$tr"
+    rm -f "${SOT_COMM_HOME:?}/state/auditor-$NAME"
+    PATH="$CLAUDE_STUB_DIR:$PATH" SOT_AUDITOR_CHECKS=background \
+        SOT_TEST_CLAUDE_FINDINGS='{"findings":[{"kind":"background","message":"say what it waits on"}]}' \
+        bash "$FLAT_BIN_DIR/comm-turn-auditor.sh" "$NAME" "$tr"
+}
+case_the_auditor_reads_the_facts_not_the_state() {
+    seed_facts '{"state":"blocked","dialog":"claude dialog open"}'
+    [ -n "$(AUDIT)" ] || { echo "    a dialog-only row was not audited"; return 1; }
+    seed_facts '{"state":"blocked","question":"which?"}'
+    [ -z "$(AUDIT)" ] || { echo "    a question row was audited"; return 1; }
+    seed_facts '{"state":"waiting","waiting":"the build"}'
+    [ -z "$(AUDIT)" ] || { echo "    a waiting row was audited"; return 1; }
+}
 case_marker_artifact_audit_blocks_unsurfaced_result() {
     seed idle; W "$GENUINE"
     local out

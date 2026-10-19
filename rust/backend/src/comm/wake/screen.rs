@@ -1,4 +1,5 @@
-//! Whether a captured screen is a free prompt: the glyph, box, panel and typed-line tests, and the rows the wake holds.
+//! Whether a captured screen is a free prompt: the glyph, box, panel and typed-line tests, and the rows the wake holds;
+//! and whether it shows a dialog that waits on a person, read from the same box test (`dialog_of`).
 
 use super::*;
 
@@ -180,6 +181,64 @@ fn panel_refusal(below: &[String]) -> Option<&'static str> {
         return Some("the panel's dot is not on main");
     }
     None
+}
+
+/// How many rows from the bottom of the screen [`dialog_of`] reads for a dialog's own text.
+const DIALOG_ROWS: usize = 30;
+
+/// The longest `dialog` summary [`dialog_of`] returns, in characters.
+const DIALOG_TEXT_MAX: usize = 120;
+
+/// Whether the main input box is on screen, wherever the cursor is: a line directly between two borders whose glyph,
+/// after nothing but spaces, is followed by U+00A0, the main prompt's own mark, or, where the NBSP is not required
+/// ([`NBSP_ON_WINDOWS`]), by a space or nothing. Menus and dialog inputs draw an ASCII space after the glyph.
+fn main_box_shown(lines: &[String], glyphs: &[char], windows: bool) -> bool {
+    (1..lines.len().saturating_sub(1)).any(|row| {
+        if !is_border(&lines[row - 1]) || !is_border(&lines[row + 1]) {
+            return false;
+        }
+        let cells: Vec<char> = lines[row].chars().collect();
+        let Some(g) = cells.iter().position(|c| glyphs.contains(c)) else {
+            return false;
+        };
+        cells[..g].iter().all(|c| *c == ' ')
+            && match cells.get(g + 1) {
+                Some('\u{a0}') => true,
+                Some(' ') | None => !nbsp_required(windows),
+                Some(_) => false,
+            }
+    })
+}
+
+/// Whether `line` is a dialog's own footer: it starts, after spaces, with "Enter to select" or "Esc to cancel" and a
+/// middle dot joining the next key hint (`Enter to select · Tab/Arrow keys to navigate · Esc to cancel`, `Esc to cancel
+/// · Tab to amend`). Prose that quotes the words lacks the dot or does not start the line with them: a reply holding
+/// "Do you want to", and one quoting the whole footer mid-line, each false-alarmed a screen watcher that matched less.
+fn is_dialog_footer(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("Enter to select \u{b7}") || line.starts_with("Esc to cancel \u{b7}")
+}
+
+/// The dialog the screen shows that waits on a person, as the row's `dialog` summary, or `None`. It is positively
+/// identified, both of: (a) no main input box is on screen ([`main_box_shown`]): a dialog replaces it; (b) one of the
+/// last [`DIALOG_ROWS`] rows is the dialog's footer ([`is_dialog_footer`]), anywhere in them, since an agents panel can
+/// sit below it. The summary is the "Do you want to" line nearest the footer when the last rows hold one (a reply's
+/// line above the dialog is not it); the line alone identifies nothing. An agent with no prompt glyphs is never read.
+/// The footers are those of two real captures (a permission dialog's and a question menu's), each a fixture.
+pub(crate) fn dialog_of(lines: &[String], agent: &str, windows: bool) -> Option<String> {
+    let glyphs = prompt_glyphs(agent, windows);
+    if glyphs.is_empty() || main_box_shown(lines, glyphs, windows) {
+        return None;
+    }
+    let tail = &lines[lines.len().saturating_sub(DIALOG_ROWS)..];
+    if !tail.iter().any(|l| is_dialog_footer(l)) {
+        return None;
+    }
+    let trimmed = |l: &String| l.trim_matches(|c: char| c.is_whitespace() || c == '\u{2502}').to_string();
+    Some(match tail.iter().map(trimmed).rfind(|l| l.starts_with("Do you want to")) {
+        Some(ask) => format!("claude dialog: {ask}").chars().take(DIALOG_TEXT_MAX).collect(),
+        None => "claude dialog open".to_string(),
+    })
 }
 
 /// The screen lines as the headless client reads them (`current_lines` in

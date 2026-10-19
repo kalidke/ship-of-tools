@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# comm-status-heartbeat.sh — Claude Code `PostToolUse` hook. Two jobs:
+# comm-status-heartbeat.sh — Claude Code (and Codex) `PostToolUse` hook. Three jobs:
+#
+#   (0) A permission dialog's end: the call's return sends `resumed` (below).
 #
 #   (1) The AskUserQuestion ANSWER (ADR 0044 amendment): that tool's
 #       PostToolUse is the owner typing the answer — the session yielding to
@@ -66,6 +68,19 @@ _agent_gate() {
            echo "sot-comm: $_why" >&2; exit 0 ;;
     esac
 }
+
+# A permission dialog's end (ADR 0044 amendment, `dialog`): the answered call's
+# PostToolUse. comm-status.sh owns state/dialog-<key>.marker with the fact: its
+# `dialog` write creates it, and the `resumed`, `prompt` or `stop` write that
+# clears the fact removes it. This only tests for it, with one `[ -e ]` per tool
+# return, and, found, sends `resumed`, then goes on as it does for any call; a
+# `resumed` that fails leaves the marker for the next return. The key is
+# comm-status.sh's.
+_dialog_key="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+if [ -n "$_dialog_key" ] && [ -e "$COMM_HOME/state/dialog-$(printf '%s' "$_dialog_key" | tr -c 'A-Za-z0-9._-' '_').marker" ]; then
+    _agent_gate
+    "$COMM_HOME/bin/comm-status.sh" resumed >/dev/null 2>&1 || true
+fi
 
 # The AskUserQuestion ANSWER (ADR 0044 amendment): this tool's PostToolUse
 # fires once the owner has typed the answer and the harness resumes — the

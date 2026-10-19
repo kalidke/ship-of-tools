@@ -165,8 +165,12 @@ end
 # with zero model help. A row is a set of FACTS reduced to one display state
 # by comm-status.sh (ADR 0044 amendment, 2026-09-19): `blocked` keys off the
 # AskUserQuestion tool (PreToolUse), NOT Notification: Notification also fires
-# on plain idle, which lit agents red while merely waiting. A question asked
-# in plain text has no automatic signal — an agent self-reports
+# on plain idle, which lit agents red while merely waiting. No hook raises the
+# `dialog` fact on a Claude row (ADR 0044, dialog amendment): PermissionRequest
+# fires when a request is queued, not when its dialog shows, and the measured
+# design that would key it per agent is not built, so neither it nor
+# PostToolUseFailure is wired, and an install strips both. A question asked in
+# plain text has no automatic signal — an agent self-reports
 # `comm-status.sh blocked "<q>"` for those.
 const _COMM_STATE_HOOKS = [
     ("UserPromptSubmit", "comm-status-working.sh", nothing),     # turn starts    → prompt (sets floor)

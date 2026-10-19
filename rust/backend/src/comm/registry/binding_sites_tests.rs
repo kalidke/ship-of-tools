@@ -12,6 +12,8 @@ const SITES: &[(&str, &str, &[&str], &str)] = &[
     ("comm/registry/liveness.rs", "held_handles", &["comm_handle_for_workspace("], "rule: the liveness stamp's handles, by `comm_handle_for_workspace` with the daemon's whole row list"),
     ("comm/registry/registry.rs", "clear_comm_unread", &["comm_handle_for_workspace("], "rule: read-clears-done, by `comm_handle_for_workspace`"),
     ("comm/registry/registry.rs", "comm_handle_for_workspace", &[".agent_name", "agent_handle", "capsule_comm_handle("], "the rule: declared, else self-file, else stored name; a fallback another row declares binds nothing"),
+    ("comm/wake/dialog.rs", "run", &["agent_handle"], "declared: reads each Claude capsule row's screen and stamps its dialog by its declared handle"),
+    ("comm/wake/dialog.rs", "stamp_command", &["SOT_COMM_SELF_FILE"], "unpin: removed from the stamp command's child, which names its row by `SOT_COMM_ROW_HANDLE` alone"),
     ("comm/wake/mod.rs", "run", &["agent_handle"], "declared: wakes each capsule row by its declared handle"),
     ("lifecycle/shutdown.rs", "end_row", &[".agent_name", "remove_comm_agents_for_workspace("], "prune: the stored name to `remove_comm_agents_for_workspace`"),
     ("rows/anchor.rs", "end_default_row_run", &["remove_comm_agents_for_workspace("], "prune"),

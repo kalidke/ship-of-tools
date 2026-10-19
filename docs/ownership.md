@@ -96,7 +96,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `.registry.lock` and reclaim markers | lock | messaging | `comm/lib/comm-lib-registry-lock.sh` `with_lock`; `rust/backend/src/comm/registry/lock.rs` `acquire` |
 | `self/<host>__<ws>.txt` | disk | messaging | `comm/lib/comm-lib-identity.sh` `sot_write_self_file`; `comm/registry/comm-context.sh`; `comm/registry/comm-join.sh` |
 | derived handle `<repo>-<host>` (safe components and shortened host digest; raw host component retained) | rule | messaging | `comm/lib/comm-lib-identity.sh` `sot_derive_handle`, `sot_sanitize_component`, `sot_raw_host`, `_sot_handle_host`; the Codex launcher builds its default `<repo>-cx-<host>` from the same pieces in `agents/codex/bin/ccx` |
-| `state/*.tick`, `stop-feedback-*`, `askq-*`, `turn-*` | disk | messaging | `comm/work_state/hooks/comm-status-heartbeat.sh`; `comm/work_state/hooks/comm-status-idle.sh`; `comm/work_state/hooks/comm-status-blocked.sh`; `comm/work_state/comm-status.sh` (`turn-*`) |
+| `state/*.tick`, `stop-feedback-*`, `askq-*`, `dialog-*`, `turn-*` | disk | messaging | `comm/work_state/hooks/comm-status-heartbeat.sh`; `comm/work_state/hooks/comm-status-idle.sh`; `comm/work_state/hooks/comm-status-blocked.sh`; `comm/work_state/comm-status.sh` (`dialog-*`, `turn-*`) |
 | `<root>/.concept/` | disk | files | `rust/backend/src/files/concept.rs` `ConceptStore`, `target_to_path` |
 | annotation header grammar (fences and synced_against) | rule | wire | `rust/protocol/src/annotation.rs` `split_frontmatter`, `synced_against`; consumers in files and fe-ui |
 | `<root>/.sot-trash/` | disk | files | `rust/backend/src/files/io.rs` `trash_file`, `trash_file_fallback` |
@@ -155,6 +155,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | registry poll task (workspace.list refresh) | thread | messaging | `rust/backend/src/comm/registry/poll.rs` `spawn_registry_poll` |
 | row liveness stamp task (each running row's `last_seen`, every minute) | thread | messaging | `rust/backend/src/comm/registry/liveness.rs` `run` |
 | comm wake tick (2 s) | thread | messaging | `rust/backend/src/comm/wake/mod.rs` `run`, `TICK` |
+| comm dialog tick (5 s, Unix) | thread | messaging | `rust/backend/src/comm/wake/dialog.rs` `run`, `DIALOG_EVERY` |
 | comm filing blocking task, flock wait threads | thread | messaging | `rust/backend/src/comm/mail/filer.rs` `handle_comm_file`; `rust/backend/src/comm/mail/inbox.rs` `take_lock` |
 | update check task (2 min, then daily) | thread | distribution | `rust/backend/src/update.rs` `spawn_periodic`, `FIRST_CHECK_DELAY`, `CHECK_INTERVAL` |
 | monitor hub | thread | sidecars | `rust/backend/src/sidecars/monitor.rs` `MonitorHub`, `start` |
@@ -246,7 +247,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | the hub's linked daemons and their offers (`link` hello role) | state, op | messaging | `rust/backend/src/comm/mail/links.rs` `Links`, `LinkEnd`; `rust/protocol/src/ops/session.rs` `LINK_ROLE` |
 | `comm.file` | op | messaging | `rust/backend/src/comm/mail/filer.rs` `handle_comm_file`, `comm_file_verdict` |
 | `agent.join`; a row's `agent_handle` (stored in the row toml through the rows' API) | op, state | messaging | `rust/backend/src/comm/registry/join.rs` `handle_agent_join`; `rust/backend/src/rows/workspace.rs` `agent_handle` |
-| work-state fields (`floor, question, waiting, done, note, state, summary, status_at, stop_at`) | state | messaging | `comm/work_state/comm-status.sh`; `comm/work_state/hooks/comm-status-idle.sh` |
+| work-state fields (`floor, question, waiting, dialog, done, note, state, summary, status_at, stop_at`) | state | messaging | `comm/work_state/comm-status.sh`; `comm/work_state/hooks/comm-status-idle.sh` |
+| a Claude row's `dialog`, read from its screen (`dialog_of`), and its writer entry `SOT_COMM_ROW_HANDLE` | rule | messaging | `rust/backend/src/comm/wake/screen.rs` `dialog_of`, `main_box_shown`, `is_dialog_footer`; `rust/backend/src/comm/wake/dialog.rs` `due`, `stamp_for`, `stamp`; `comm/work_state/comm-status.sh` |
 | `clear_comm_unread` (clears `done` on view) | state | messaging | `rust/backend/src/comm/registry/registry.rs` `clear_comm_unread` |
 | `update.check`, `update.apply` | op | distribution | `rust/backend/src/update.rs` `handle_update_check`, `handle_update_apply` |
 | `sotd update stage <folder> --prefix <prefix>`, `sotd update pointer --prefix <prefix> --target <target>`, `sotd update direction <version> --prefix <prefix>`, `sotd update repls --endpoint <endpoint>` | command | distribution | `rust/backend/src/update/cli.rs` `stage_cli`, `pointer_cli`, `direction_cli`, `repls_cli`; `rust/backend/src/update.rs` `stage_prepare_arm_with` |

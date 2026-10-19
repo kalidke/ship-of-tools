@@ -604,3 +604,139 @@ fn free_test_lines_trims_spaces_and_keeps_a_no_break_space() {
     p.process("\x1b[3;1Ha\u{a0}  \x1b[1;1H".as_bytes());
     assert_eq!(free_test_lines(p.screen())[2], "a\u{a0}");
 }
+
+// ---- dialog_of: a dialog that waits on a person, for the dialog tick (dialog.rs) ----
+
+/// The footers of real dialogs: a permission prompt's (a capture, `real-permission-dialog.txt`), and a question menu's
+/// (a capture, `real-askq-menu.txt`).
+const PERM_FOOTER: &str = "Esc to cancel \u{b7} Tab to amend";
+const ASKQ_FOOTER: &str = "Enter to select \u{b7} \u{2191}/\u{2193} to navigate \u{b7} Esc to cancel";
+
+fn dialog(l: &[&str], windows: bool) -> Option<String> {
+    dialog_of(&lines(l), "claude", windows)
+}
+
+/// Output above, then `menu` (PERM_MENU, synthetic around the captured footer) where the input box was.
+fn perm_screen(menu: &[&str]) -> Vec<String> {
+    lines(&[&LINUX_TURN_A[..5], menu, &["", PERM_FOOTER]].concat())
+}
+
+/// A real capture read as `sot-fe screen` prints it, which trims the prompt's NBSP; `nbsp` puts it back on a bare
+/// glyph line, as the daemon's own reader keeps it.
+fn real(text: &str, nbsp: bool) -> Vec<String> {
+    text.lines().map(|l| if nbsp && l == "\u{276f}" { "\u{276f}\u{a0}".to_string() } else { l.to_string() }).collect()
+}
+
+/// REAL (2026-10-19, every word replaced by x's, layout, glyphs and footer kept): a question menu with a tab bar,
+/// no main input box, its footer the last dialog line and nine blank rows below it.
+#[test]
+fn a_real_question_menu_reads_as_a_dialog() {
+    let menu = real(include_str!("../../../tests/fixtures/comm_wake/real-askq-menu.txt"), true);
+    assert_eq!(dialog_of(&menu, "claude", false), Some("claude dialog open".to_string()));
+}
+
+/// REAL (captured 2026-10-17, scrubbed the same way, the question, options, countdown and footer kept): a permission
+/// dialog for a Bash command with auto mode's deny countdown, drawn where the input box was. It has no main input box and
+/// its footer is `Esc to cancel · Tab to amend`; the summary is its "Do you want to" line.
+#[test]
+fn a_real_permission_dialog_reads_with_its_question() {
+    let text = include_str!("../../../tests/fixtures/comm_wake/real-permission-dialog.txt");
+    let ask = Some("claude dialog: Do you want to proceed?".to_string());
+    assert_eq!(dialog_of(&real(text, true), "claude", false), ask);
+    assert_eq!(dialog_of(&real(text, false), "claude", false), ask);
+}
+
+/// REAL (2026-10-19, scrubbed the same way): a reply that quotes the whole footer, wrapped so its second half starts a
+/// line, above a live input box. Not a dialog by the box, and not by the footer either: the quoted text starts no line
+/// with the footer's opening words (as captured, the prompt's NBSP is trimmed and the box is not seen).
+#[test]
+fn a_real_reply_quoting_the_footer_is_not_a_dialog() {
+    let text = include_str!("../../../tests/fixtures/comm_wake/real-reply-quotes-footer.txt");
+    assert_eq!(dialog_of(&real(text, true), "claude", false), None);
+    assert_eq!(dialog_of(&real(text, false), "claude", false), None);
+}
+
+#[test]
+fn a_permission_dialog_reads_with_its_question() {
+    let ask = Some("claude dialog: Do you want to proceed?".to_string());
+    for windows in [false, true] {
+        assert_eq!(dialog_of(&perm_screen(&PERM_MENU), "claude", windows), ask);
+    }
+    // Inside a rule frame: the selected option is a glyph and an ASCII space, never the main prompt's NBSP.
+    let framed = with_rules(PERM_MENU, [6, 8]);
+    assert_eq!(dialog_of(&perm_screen(&framed), "claude", false), ask);
+    // Where the NBSP is not required that frame reads as an input box: no red, as before this tick (fails closed).
+    assert_eq!(dialog_of(&perm_screen(&framed), "claude", true), None);
+    // Auto mode adds a countdown that changes while the dialog stays open: still the one dialog.
+    let mut counting = perm_screen(&PERM_MENU);
+    counting.insert(counting.len() - 1, "Claude Code will automatically deny this request in 0:57".to_string());
+    assert_eq!(dialog_of(&counting, "claude", false), ask);
+}
+
+/// A reply's own "Do you want to" line above the dialog is not the summary: the line nearest the footer is.
+#[test]
+fn the_summary_is_the_ask_nearest_the_footer() {
+    let mut screen = perm_screen(&PERM_MENU);
+    screen.insert(0, "  Do you want to keep the old logs? Say so and I will.".to_string());
+    assert_eq!(dialog_of(&screen, "claude", false), Some("claude dialog: Do you want to proceed?".to_string()));
+}
+
+#[test]
+fn a_question_menu_reads_by_its_footer() {
+    assert_eq!(dialog(&[&ASKQ_MENU[..], &["", ASKQ_FOOTER]].concat(), false), Some("claude dialog open".to_string()));
+    assert_eq!(dialog(&ASKQ_MENU, false), None, "no footer: not positively identified");
+}
+
+/// An agents panel can sit below the footer: the footer is read anywhere in the last rows.
+#[test]
+fn a_footer_with_the_agents_panel_below_it_reads() {
+    let screen = [&PERM_MENU[..], &["", PERM_FOOTER, "", P_MAIN, P_SUB, F_LEADER]].concat();
+    assert_eq!(dialog(&screen, false), Some("claude dialog: Do you want to proceed?".to_string()));
+}
+
+/// A reply that quotes the dialog's words is never a dialog: not above a live input box, and not with no box on screen
+/// either, for "Do you want to" identifies nothing, the words without the middle dot are no footer, and a footer quoted
+/// mid-line starts no line.
+#[test]
+fn a_reply_quoting_the_dialog_is_not_one() {
+    let quoted = format!("\u{25cf} The menu's footer reads \"{ASKQ_FOOTER}\", as quoted.");
+    let mut idle = LINUX_IDLE;
+    idle[2] = &quoted;
+    idle[3] = "Do you want to proceed?";
+    idle[8] = "\u{276f}\u{a0}";
+    assert_eq!(dialog(&idle, false), None, "above a live input box");
+    let mut turn = LINUX_TURN_A;
+    turn[1] = "Do you want to proceed?";
+    assert_eq!(dialog(&turn, false), None);
+    // No input box at all.
+    assert_eq!(dialog(&["\u{25cf} Do you want to proceed with the release?", "  It asks first."], false), None);
+    assert_eq!(dialog(&["\u{25cf} Do you want to proceed?", "  Press Esc to cancel, or Enter to select one."], false), None);
+    assert_eq!(dialog(&["\u{25cf} Esc to cancel closes it.", "  Enter to select picks one."], false), None);
+    assert_eq!(dialog(&[quoted.as_str(), "  done."], false), None, "a whole footer quoted mid-line");
+}
+
+#[test]
+fn free_prompts_and_other_agents_show_no_dialog() {
+    let mut idle = LINUX_IDLE;
+    idle[8] = "\u{276f}\u{a0}";
+    assert_eq!(dialog(&idle, false), None);
+    assert_eq!(dialog(&WIN_REST, true), None);
+    for text in [
+        include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"),
+        include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-4-esc.txt"),
+    ] {
+        let (l, _) = cc288(text, true);
+        assert_eq!(dialog_of(&l, "claude", false), None);
+    }
+    assert_eq!(dialog_of(&perm_screen(&PERM_MENU), "codex", false), None);
+}
+
+/// Only the last rows are read: a footer far above them is old output.
+#[test]
+fn only_the_last_rows_hold_a_dialog() {
+    let mut screen = vec![PERM_FOOTER];
+    screen.extend(std::iter::repeat("output").take(DIALOG_ROWS));
+    assert_eq!(dialog(&screen, false), None);
+    screen.push(ASKQ_FOOTER);
+    assert_eq!(dialog(&screen, false), Some("claude dialog open".to_string()));
+}

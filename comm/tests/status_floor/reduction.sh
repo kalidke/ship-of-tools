@@ -439,6 +439,8 @@ case_headless_child_hooks_stand_down() {
     expect blocked/-/q/-/- parked || return 1
     SOT_COMM_HOOKS=off W "$GENUINE"; expect blocked/-/q/-/- child-prompt || return 1
     SOT_COMM_HOOKS=off HB; expect blocked/-/q/-/- child-tool || return 1
+    printf '{"tool_name":"Bash"}' | SOT_COMM_HOOKS=off bash "$HOOKS_DIR/codex-status-blocked.sh"
+    expect blocked/-/q/-/- child-permission || return 1; [ "$(dialog_fact)" = - ] || { echo "    the off permission hook raised a dialog"; return 1; }
     SOT_COMM_HOOKS=off I; expect blocked/-/q/-/- child-stop
 }
 case_pre_field_working_row_floors_gray() {
@@ -455,3 +457,110 @@ case_short_exchange_on_waiting_row_never_nudged() {
     expect waiting/-/-/w/- end
 }
 
+
+# ==== the dialog fact (`dialog`: Codex's PermissionRequest hook sets it; the call's return or any turn boundary clears it) ====
+DIALOG_TEXT="codex permission request: Bash"
+# D: the `dialog` event, as its setter sends it.
+D() { "$ST" dialog "$DIALOG_TEXT" >/dev/null; }
+dialog_fact() { jq -r --arg n "$NAME" '.agents[$n].dialog // "-"' "$REGISTRY"; }
+# DR: D, then the proof that it raised the dialog (a boundary case means nothing otherwise).
+DR() { D; [ "$(dialog_fact)" != - ] || { echo "    the dialog was not raised"; exit 1; }; }
+dialog_marker() { ls "$SOT_COMM_HOME/state/dialog-$SOT_WORKSPACE_ID.marker" 2>/dev/null; }
+# A row has SOT_WORKSPACE_ID; the marker is keyed by it.
+case_a_dialog_is_red_over_a_running_turn() (
+    export SOT_WORKSPACE_ID=dlg-red
+    seed idle; W "$GENUINE"; D
+    expect blocked/user/-/-/- red || exit 1
+    [ "$(summ)" = "$DIALOG_TEXT" ] || { echo "    summary '$(summ)'"; exit 1; }
+    [ -n "$(dialog_marker)" ] || { echo "    no marker"; exit 1; }
+)
+case_a_tool_return_ends_the_dialog() (
+    export SOT_WORKSPACE_ID=dlg-tool
+    seed idle; W "$GENUINE"; D; expect blocked/user/-/-/- red || exit 1
+    HB; expect working/user/-/-/- after-return || exit 1
+    [ "$(dialog_fact)" = - ] && [ -z "$(dialog_marker)" ] || { echo "    dialog or marker left"; exit 1; }
+)
+case_every_turn_boundary_ends_the_dialog() (
+    export SOT_WORKSPACE_ID=dlg-turn
+    seed idle; W "$RELAY"; DR; I
+    expect idle/-/-/-/- stop || exit 1; [ "$(dialog_fact)" = - ] || { echo "    stop left it"; exit 1; }
+    seed idle; W "$RELAY"; DR; W "$RELAY"
+    expect working/machine/-/-/- machine-prompt || exit 1; [ "$(dialog_fact)" = - ] || { echo "    machine prompt left it"; exit 1; }
+    seed idle; W "$RELAY"; DR; W "$GENUINE"
+    expect working/user/-/-/- user-prompt || exit 1; [ "$(dialog_fact)" = - ] || { echo "    user prompt left it"; exit 1; }
+    seed idle; W "$RELAY"; DR; "$ST" join
+    expect working/machine/-/-/- join || exit 1; [ "$(dialog_fact)" = - ] || { echo "    join left it"; exit 1; }
+)
+case_the_dialog_leaves_a_declared_question_alone() (
+    export SOT_WORKSPACE_ID=dlg-q
+    seed idle; W "$RELAY"; "$ST" blocked "q" >/dev/null; DR; HB
+    expect working/machine/q/-/- after-return || exit 1
+    [ "$(jq -r --arg n "$NAME" '.agents[$n].question' "$REGISTRY")" = q ] || { echo "    question lost"; exit 1; }
+    I; expect blocked/-/q/-/- stop || exit 1
+    [ "$(summ)" = q ]
+)
+case_a_denied_or_interrupted_dialog_never_comes_back() (
+    export SOT_WORKSPACE_ID=dlg-stale
+    # A denial fires no hook: the turn goes on or ends, and its Stop clears the red.
+    seed idle; W "$RELAY"; DR; I
+    expect idle/-/-/-/- denied-stop || exit 1
+    W "$GENUINE"; HB; expect working/user/-/-/- next-turn || exit 1
+    # An interrupt fires no Stop: the next prompt clears the red.
+    DR; W "$GENUINE"; expect working/user/-/-/- interrupted
+)
+# The marker follows the fact's write: a `resumed` whose registry write fails leaves both, so the next return clears
+# them; a `dialog` whose write fails leaves neither (review S1: the marker went before the write, and red stayed).
+case_a_failed_write_leaves_the_marker_as_the_fact_is() (
+    export SOT_WORKSPACE_ID=dlg-fail
+    seed idle; W "$GENUINE"; DR
+    mkdir "$REGISTRY.tmp"; HB; rmdir "$REGISTRY.tmp"
+    expect blocked/user/-/-/- failed-resumed || exit 1
+    [ -n "$(dialog_marker)" ] || { echo "    the marker went with the failed write"; exit 1; }
+    HB; expect working/user/-/-/- next-return || exit 1
+    [ -z "$(dialog_marker)" ] || { echo "    marker left"; exit 1; }
+    mkdir "$REGISTRY.tmp"; "$ST" dialog "$DIALOG_TEXT" >/dev/null 2>&1; rmdir "$REGISTRY.tmp"
+    [ "$(dialog_fact)" = - ] && [ -z "$(dialog_marker)" ] || { echo "    a failed dialog left a fact or marker"; exit 1; }
+)
+# The daemon's entry (a Claude row's dialog, read from its screen): SOT_COMM_ROW_HANDLE stamps the named row with no
+# identity of its own (the self file here resolves none) and no marker, so the row's heartbeat leaves the fact alone.
+# It is honored only for a caller whose parent is sotd: DAEMON runs its command beneath a stand-in named so.
+DAEMON() { ( exec -a sotd bash -c '"$@"; exit $?' sotd env SOT_COMM_SELF_FILE=/nonexistent SOT_COMM_ROW_HANDLE="$NAME" "$@" ); }
+case_the_daemon_entry_stamps_the_named_row_and_no_marker() (
+    export SOT_WORKSPACE_ID=dlg-daemon
+    seed idle; W "$GENUINE"
+    DAEMON "$ST" dialog "claude dialog: Do you want to proceed?" || exit 1
+    expect blocked/user/-/-/- red || exit 1
+    [ "$(summ)" = "claude dialog: Do you want to proceed?" ] && [ -z "$(dialog_marker)" ] || { echo "    summary '$(summ)', or a marker"; exit 1; }
+    HB; expect blocked/user/-/-/- heartbeat-leaves-it || exit 1
+    DAEMON "$ST" resumed || exit 1
+    expect working/user/-/-/- resumed || exit 1
+    local rc=0; DAEMON "$ST" working x 2>/dev/null || rc=$?
+    [ "$rc" = 2 ] || { echo "    a declaration through the entry was not refused (rc $rc)"; exit 1; }
+)
+# A decision made before the row's Stop must not paint the row at rest: the entry's dialog lands only on a row with a floor.
+case_the_daemon_entry_writes_nothing_on_a_row_whose_turn_ended() (
+    export SOT_WORKSPACE_ID=dlg-daemon-late
+    seed idle; W "$GENUINE"; I
+    expect done/-/-/-/d stopped || exit 1
+    local before; before="$(jq -c --arg n "$NAME" '.agents[$n]' "$REGISTRY")"
+    DAEMON "$ST" dialog "claude dialog open" || exit 1
+    [ "$(jq -c --arg n "$NAME" '.agents[$n]' "$REGISTRY")" = "$before" ] || { echo "    the entry wrote to a row at rest"; exit 1; }
+    expect done/-/-/-/d still-done
+)
+# Any caller but sotd's own child is refused, with nothing written.
+case_the_daemon_entry_is_refused_for_any_other_parent() (
+    export SOT_WORKSPACE_ID=dlg-daemon-other
+    seed idle; W "$GENUINE"
+    local before rc=0; before="$(jq -c --arg n "$NAME" '.agents[$n]' "$REGISTRY")"
+    SOT_COMM_SELF_FILE=/nonexistent SOT_COMM_ROW_HANDLE="$NAME" "$ST" dialog "claude dialog open" 2>/dev/null || rc=$?
+    [ "$rc" = 2 ] || { echo "    a caller with no sotd parent got rc $rc"; exit 1; }
+    ( exec -a notsotd bash -c '"$@"; exit $?' x env SOT_COMM_SELF_FILE=/nonexistent SOT_COMM_ROW_HANDLE="$NAME" "$ST" resumed 2>/dev/null ) && { echo "    a parent not named sotd was honored"; exit 1; }
+    [ "$(jq -c --arg n "$NAME" '.agents[$n]' "$REGISTRY")" = "$before" ] || { echo "    a refused caller wrote"; exit 1; }
+)
+case_codex_permission_is_red_until_the_tool_returns() (
+    export SOT_WORKSPACE_ID=dlg-codex
+    seed idle; W "$GENUINE"
+    printf '{"tool_name":"Bash"}' | bash "$HOOKS_DIR/codex-status-blocked.sh"
+    expect blocked/user/-/-/- red || exit 1
+    HB; expect working/user/-/-/- after-return
+)

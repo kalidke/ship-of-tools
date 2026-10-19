@@ -1,0 +1,26 @@
+  ⎿  x xxx xxxxxxxx xxxxx xx xxxxxxx xxxxxxxxxxx xx xxxx xxxxx xx xxxx xxxxxx xxxxxxxxxxxxxxxxxxxxxxxxxxxxx xxx x
+     xx xxxxxx xx xxxx x xxxxxxxx xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx xx xxxxxxxxxxx xxxx xxxx xx
+     xxxxxxxx xx xx xx xxx xxxx xx xxxx xxxxxxxx xxxxxxxxxx xxxxx xxxxxxxxxxxxxxxxxxxxxxxx
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ xxxxxx xxxx xxxxxx xxx xxxxxxx xxxxxxxx xx xxx xxxxx
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ xxx xxxxxxxx xxxxx xx xxxxxxx xxxxxxxxxxx xx xxxx xxxxx xx xxxx xxxxxx xxxxxxxxxxxxxxxxxxxxxxxxxxxxx xxx x xx
+ │ xxxxxx xx xxxx x xxxxxxxx xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx xx xxxxxxxxxxx xxxx xxxx xx
+ │ xxxxxxxx xx xx xx xxx xxxx xx xxxx xxxxxxxx xxxxxxxxxx xxxxx
+ │ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx xxx xxxxxxxx
+ │ xxxxxxxxxxxxxxxxxxxxxxx xxxxxx xx xxxx xx xxxxxxxxx xxxxxxxx
+ │ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx x xxxxxxxxxx
+ │ xxxxxxxxxx xxxxxx xxxxx xx xxx xxxxxxxx xxxxxx xx xxxxxxxxxxxxxxxxxxxxx
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ xxxxxxxxx xx xxxxxxxxx xx xxxxxxxxxxxxxx xxxxxxxx xxxxx xxxx xx xxx xxx xxxxx xxxx x xxxxxxx xxxxx xx xx xxx
+ │ xx xxxx xxxxxxx xxxx xxxxxxxxx xxxx xxxxx xxxxxx xxx xxxxxxx xxxxxxxxx xxx xxxx xxxx xxx xxxxx xx xxxxxx
+ ⚠ Claude Code will automatically deny this request in 0:57, to avoid blocking progress on an unattended session
+
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

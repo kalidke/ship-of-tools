@@ -184,6 +184,16 @@ check "reduction: a floor outranks question/waiting/done, summary is the note" c
 check "reduction: waiting outranks done, summary is the wait" case_reduction_waiting_outranks_done
 check "reduction: done alone, summary is the note" case_reduction_done_alone
 check "reduction: no facts is idle, summary is the note" case_reduction_nothing_is_idle
+check "dialog: it is red over a running turn" case_a_dialog_is_red_over_a_running_turn
+check "dialog: a tool return ends it" case_a_tool_return_ends_the_dialog
+check "dialog: every turn boundary ends it" case_every_turn_boundary_ends_the_dialog
+check "dialog: it leaves a declared question alone" case_the_dialog_leaves_a_declared_question_alone
+check "dialog: a denied or interrupted dialog never comes back" case_a_denied_or_interrupted_dialog_never_comes_back
+check "dialog: a failed write leaves the marker as the fact is" case_a_failed_write_leaves_the_marker_as_the_fact_is
+check "dialog: the daemon's entry stamps the named row and no marker" case_the_daemon_entry_stamps_the_named_row_and_no_marker
+check "dialog: the daemon entry writes nothing on a row whose turn ended" case_the_daemon_entry_writes_nothing_on_a_row_whose_turn_ended
+check "dialog: the daemon entry is refused for any parent but sotd" case_the_daemon_entry_is_refused_for_any_other_parent
+check "dialog: a Codex permission is red until the tool returns" case_codex_permission_is_red_until_the_tool_returns
 check "a genuine user turn ends blue" case_user_turn_ends_blue
 check "a machine-started turn ends gray" case_machine_turn_ends_gray
 check "a harness teammate report is a machine turn" case_teammate_report_is_a_machine_turn
@@ -261,6 +271,7 @@ check "an effort turn (many tool calls) ending green with no marker gets one sof
 check "a long quiet turn is an effort by duration" case_long_quiet_user_turn_is_an_effort_by_duration
 check "a short exchange step is never nudged" case_short_exchange_turn_is_never_nudged
 check "an effort on a machine wake is not nudged" case_effort_machine_turn_is_not_nudged
+check "the turn auditor reads the row's facts, not its state" case_the_auditor_reads_the_facts_not_the_state
 check "marker variants (bold closing before the colon, a heading) still stamp" case_marker_variants_bold_after_and_heading_still_stamp
 check "a turn that already has its block is never nudged, whatever the block says" case_turn_with_a_block_is_never_nudged_twice
 check "a marker naming an unsurfaced result is blocked by the artifact audit" case_marker_artifact_audit_blocks_unsurfaced_result

@@ -216,6 +216,12 @@ for kind in child nodechild; do
     nochange "comm-relay.sh send ($kind)"    "$kind" run_k "$SCRIPTS_DIR/comm-relay.sh" send "@$PEER" from-child
     nochange "comm-bootstrap.sh ($kind)"     "$kind" run_k "$SCRIPTS_DIR/comm-bootstrap.sh" some-row
     NC_IN='{"tool_name":"Bash"}' nochange "the heartbeat ($kind)" "$kind" run_k env CLAUDE_CODE_SESSION_ID="agl-nc-$kind" bash "$FLAT/comm-status-heartbeat.sh"
+    # A permission dialog is the owner's too: a child's request raises none, and its tool return does not clear one.
+    NC_IN='{"tool_name":"Bash"}' nochange "the Codex PermissionRequest hook ($kind)" "$kind" run_k env SOT_WORKSPACE_ID="agl-nc-dlg-$kind" bash "$HOOKS_DIR/codex-status-blocked.sh"
+    mkdir -p "$SOT_COMM_HOME/state"; DLG="$SOT_COMM_HOME/state/dialog-agl-dlg-$kind.marker"; : > "$DLG"
+    NC_IN='{"tool_name":"Bash"}' nochange "the heartbeat with a dialog marker ($kind)" "$kind" run_k env CLAUDE_CODE_SESSION_ID="agl-dlg-$kind" bash "$FLAT/comm-status-heartbeat.sh"
+    if [ -f "$DLG" ]; then ok "child: the dialog marker survives the heartbeat ($kind)"; else bad "child: the dialog marker survives the heartbeat ($kind)"; fi
+    rm -f "${DLG:?}"
     # An AskUserQuestion answer marker is the owner's: a child's hook must not consume it.
     mkdir -p "$SOT_COMM_HOME/state"; ASKQ="$SOT_COMM_HOME/state/askq-agl-q-$kind.marker"; : > "$ASKQ"
     NC_IN='{"tool_name":"AskUserQuestion","tool_use_id":"agl-q-'"$kind"'"}' nochange "the heartbeat on an AskUserQuestion answer ($kind)" "$kind" run_k env CLAUDE_CODE_SESSION_ID="agl-nc-q-$kind" bash "$FLAT/comm-status-heartbeat.sh"
@@ -240,6 +246,15 @@ nq0="$(ls "$SOT_COMM_HOME/state" | grep -c '^askq-' || true)"
 run own "$SELF_ROW" "$STATUS" blocked "a manual question"; eq "own: a manual comm-status.sh blocked succeeds" "$RC" 0
 eq  "own: a manual comm-status.sh blocked writes no marker" "$(ls "$SOT_COMM_HOME/state" | grep -c '^askq-' || true)" "$nq0"
 run own "$SELF_ROW" "$STATUS" working y; run own "$SELF_ROW" "$STATUS" waiting x   # leave the row as it was
+# The daemon's entry (SOT_COMM_ROW_HANDLE) is for a caller whose parent is sotd: a row's own agent that names another
+# row is refused, rc 2, and the registry is as it was; one beneath a process named sotd is let through.
+before="$(snap "$SOT_COMM_HOME")"
+run own "$SELF_ROW" env SOT_COMM_ROW_HANDLE="$PEER" "$STATUS" dialog "claude dialog open"
+eq  "own: the daemon entry from an agent's tool shell exits 2" "$RC" 2
+has "own: the daemon entry refusal names the cause" "$OUT" "parent is not sotd"
+if [ "$(snap "$SOT_COMM_HOME")" = "$before" ]; then ok "own: the refused daemon entry changes nothing under the comm home"; else bad "own: the refused daemon entry changed the comm home"; fi
+run own "$SELF_ROW" env SOT_COMM_ROW_HANDLE="$PEER" bash "$WORK/fake.sh" sotd hold.sh "$STATUS" resumed
+eq  "own: the daemon entry under a sotd parent is honored" "$RC" 0
 # A child neither spawns nor despawns rows: every form refuses, whatever --task says,
 # and the comm home (registry, inboxes, the row's own entry) is byte for byte as it was.
 for v in "--name h $WORK" "--name h $WORK --task t" "h $WORK" "h $WORK --task t" "$WORK" "--name h $WORK --endpoint unix:/nonexistent"; do

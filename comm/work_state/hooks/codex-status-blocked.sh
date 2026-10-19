@@ -1,21 +1,13 @@
 #!/usr/bin/env bash
-# codex-status-blocked.sh — codex `PermissionRequest` hook: mark the session
-# BLOCKED (red) in the state-nav (ADR 0031), and end the turn like a Stop.
+# codex-status-blocked.sh — codex `PermissionRequest` hook: a permission dialog
+# waits on a person, so the row reads red in the state-nav (ADR 0044 amendment,
+# `dialog`).
 #
-# Codex has no AskUserQuestion tool; a permission prompt is its nearest
-# "needs the USER to act" — exactly what red means. The summary names the
-# tool asking, so the row reads "blocked · codex permission: Bash …".
-# comm-status.sh's `blocked` sets `question` and PRESERVES `waiting` (both
-# can be true; red outranks purple in the reduction). The prompt then PAUSES
-# for the user, so this hook also sends `stop` — the session is yielding to
-# the owner exactly like a real turn end (ADR 0044 amendment).
-#
-# UNLIKE Claude's AskUserQuestion, codex has no PostToolUse for the answer —
-# comm-status-heartbeat.sh's AskUserQuestion branch is Claude-tool-name-only
-# and never fires here (review finding 2026-09-19: do not claim a mechanism
-# that doesn't exist). The red clears on this session's next genuine
-# UserPromptSubmit (comm-status-working.sh's `prompt` event, origin user),
-# same as the pre-amendment hierarchy guard did.
+# It stamps the event `dialog "codex permission request: <tool>"`. The row clears
+# it when the call returns (comm-status-heartbeat.sh on Codex's PostToolUse), or
+# at the turn's end (Stop) or the next prompt; it never ends the turn itself, so
+# an approved request no longer leaves red behind for the rest of it. The summary
+# names the tool asking, so the row reads "blocked · codex permission request: Bash".
 #
 # Self-gating: comm-status.sh no-ops in any pane without a registry row, so
 # non-SoT codex sessions are untouched. Always exits 0 — a hook must never
@@ -29,6 +21,6 @@ COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
 [ -x "$STATUS" ] || exit 0
 tool="$(jq -r '.tool_name // ""' 2>/dev/null || true)"
-"$STATUS" blocked "codex permission request${tool:+: $tool}" >/dev/null 2>&1 || true
-"$STATUS" stop >/dev/null 2>&1 || true
+tool="${tool%$'\r'}"   # a native Windows jq ends its line with CR
+"$STATUS" dialog "codex permission request${tool:+: $tool}" >/dev/null 2>&1 || true
 exit 0

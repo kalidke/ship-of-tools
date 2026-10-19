@@ -260,6 +260,15 @@ sot_require_agent() {
     fi
     return 0
 }
+# sot_parent_is_sotd — 0 when this process's parent is the daemon (its argv[0] is sotd or sotd.exe), the one caller
+# that may use comm-status.sh's SOT_COMM_ROW_HANDLE entry. 1 for any other parent or an unreadable chain.
+sot_parent_is_sotd() {
+    local chain rec a0
+    chain="$(_sot_ancestor_chain)" || return 1
+    rec="$(printf '%s\n' "$chain" | sed -n 2p)"
+    a0="${rec%%$'\037'*}"; a0="${a0##*[/\\]}"
+    [ "${a0%.exe}" = sotd ]
+}
 # _sot_agent_unreadable [CHAIN_OUTPUT] — the reason; a sotd.exe failure (the output's last line) is named.
 _sot_agent_unreadable() {
     local why="" last="${1:-}"

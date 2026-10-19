@@ -7,9 +7,9 @@ charter: comm/CLAUDE.md.
 ## Files
 - `comm-status-working.sh`: Claude `UserPromptSubmit`: sends `prompt`, with `COMM_STATUS_ORIGIN` naming who started the turn
 - `comm-status-blocked.sh`: Claude `PreToolUse` on `AskUserQuestion`: stamps `blocked` with the question, then `stop`
-- `comm-status-heartbeat.sh`: Claude `PostToolUse`: an `AskUserQuestion` answer sends a user `prompt`; any other call only refreshes `status_at`, at most once a minute, and writes no fact
+- `comm-status-heartbeat.sh`: Claude and Codex `PostToolUse`: with a dialog marker for the row, sends `resumed`; an `AskUserQuestion` answer sends a user `prompt`; any other call only refreshes `status_at`, at most once a minute, and writes no fact
 - `comm-status-idle.sh`: Claude `Stop`: holds a turn with unread mail, stamps the closing marker, nudges, runs the auditor, then sends `stop`
-- `codex-status-blocked.sh`: Codex `PermissionRequest` (`comm/adapters/codex/hooks.json`): stamps `blocked`, then `stop`
+- `codex-status-blocked.sh`: Codex `PermissionRequest` (`comm/adapters/codex/hooks.json`): stamps `dialog`
 
 ## Start here
 `comm-status-idle.sh` for turn-end behaviour (its header numbers its jobs and the order they run in); the
