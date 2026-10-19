@@ -271,8 +271,8 @@ connection is the only handle.
   cannot tell the two apart without asking the live authority, which is a new design left out of 0.6.6.
 - (e) The macOS check has not run on every commit; boot identity on a Mac is unverified.
 - (f) Launchers: after the fix round the ensure logs under the install prefix; the Windows log cap (keep 5 per
-  stream, 16 MB unheld total) applies across starts, and one running daemon's own log
-  file grows within its run. `install.sh` writes the icons, the `.desktop` file and the
+  stream, 16 MB unheld total) applies across starts, and a running daemon's log
+  goes to stdout only when that is not a regular file, so a launcher's per-start file holds its stderr only. `install.sh` writes the icons, the `.desktop` file and the
   `settings.toml` `[trust]` block straight onto their installed paths (the last by
   appending), the launch wrapper's mode depends on the umask, and one protected log (the
   newest, or one found held) can exceed the cap on Windows and Unix alike.

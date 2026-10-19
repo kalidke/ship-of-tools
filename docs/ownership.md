@@ -40,7 +40,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | resource dir, `SOT_RESOURCE_ROOT` | machine fact | platform | `rust/backend/src/paths.rs` `resource_dir` |
 | `\\?\` verbatim strip | primitive | platform | `rust/backend/src/paths.rs` `simplify_verbatim` |
 | `<state>/daemon.lock` | disk, lock | server | `rust/backend/src/server/listen.rs` `take_daemon_lock`, `lock_daemon`; primitive `rust/log/src/host/lock.rs` `try_lock_daemon`|
-| `<state>/sotd.log` (Windows `<state>\state\sotd.log`) | disk | server | `rust/backend/src/main.rs` `TeeWriter` (a log over 64 MiB is, after a daemon write, copied (its last 64 MiB) to `sotd.log.1` and truncated in place, `roll_log`); path `rust/backend/src/paths.rs` `state_dir` |
+| `<state>/sotd.log` (Windows `<state>\state\sotd.log`) | disk | server | `rust/backend/src/main.rs` `TeeWriter` (stdout gets a copy only when it is not a regular file, `stdout_is_file`; a log over 64 MiB is, after a daemon write, copied (its last 64 MiB) to `sotd.log.1` and truncated in place, `roll_log`); path `rust/backend/src/paths.rs` `state_dir` |
 | umask 077, boot refusals | process rule | server | `rust/backend/src/main.rs` `apply_umask`, `parse_args` |
 | session socket/pipe path rule `<runtime>/sessions/<label>.sock`, `\\.\pipe\sot-<USER>-<label>` | disk rule | topology | `rust/protocol/src/topology/endpoint.rs` `session_socket_path` |
 | local daemon label (`sot`, `local`) | setting | topology | `rust/protocol/src/topology/endpoint.rs` `local_daemon_label`; spelled at several script sites (see two owners) |

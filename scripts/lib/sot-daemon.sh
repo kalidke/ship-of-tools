@@ -334,6 +334,7 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
         # Milliseconds where date has %N (GNU); 000 where it does not (BSD).
         stamp="$(date -u +%Y%m%d-%H%M%S-%3N)"
         case "$stamp" in *-[0-9][0-9][0-9]) ;; *) stamp="$(date -u +%Y%m%d-%H%M%S)-000" ;; esac
+        # The daemon copies its log to stdout only when stdout is not a regular file, so this file holds its stderr only.
         logfile="$logdir/sotd.${stamp}Z-$$.log"
         # Append, never truncate: the name is new, and a file another daemon
         # still writes is never cut short.

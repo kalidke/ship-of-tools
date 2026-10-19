@@ -62,19 +62,53 @@ fn apply_umask() {
 fn apply_umask() {}
 
 /// Writer for `tracing_subscriber::fmt`: mirrors every log line to BOTH
-/// stdout (unchanged — a launcher that redirects it keeps working)
-/// AND a private file under `paths::state_dir()` (security review: sotd now
-/// owns a real, `0600` copy of its own log regardless of how it's launched,
-/// rather than depending entirely on the launcher's redirect target). The
-/// file half is best-effort: `None` (couldn't create the state dir / open
-/// the file) or a write failure there never breaks the stdout path.
+/// stdout (a terminal, a pipe or a journal socket, so a launcher that
+/// redirects it there keeps working) AND a private file under
+/// `paths::state_dir()` (security review: sotd now owns a real, `0600` copy
+/// of its own log regardless of how it's launched, rather than depending
+/// entirely on the launcher's redirect target). Stdout is skipped when it
+/// is a regular file, a launcher's per-start log, which would grow without
+/// a bound beside the file that rolls. The file half is best-effort: `None`
+/// (couldn't create the state dir / open the file) or a write failure there
+/// never breaks the stdout path.
 struct TeeWriter {
     file: Option<Arc<Mutex<LogFile>>>,
+    /// Whether stdout gets a copy; decided once at start by [`stdout_is_file`].
+    stdout: bool,
+}
+
+/// Whether this process's stdout is a regular file. Unix: `fstat` says `S_ISREG`.
+#[cfg(unix)]
+fn stdout_is_file() -> bool {
+    fd_is_file(1)
+}
+
+#[cfg(unix)]
+fn fd_is_file(fd: std::os::fd::RawFd) -> bool {
+    let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `fstat` writes a `stat` into the pointer it is given and reads nothing else; a closed or invalid `fd`
+    // is an error return, which reads as not a file.
+    unsafe { libc::fstat(fd, st.as_mut_ptr()) == 0 && (st.assume_init().st_mode & libc::S_IFMT) == libc::S_IFREG }
+}
+
+/// Whether this process's stdout is a regular file. Windows: `GetFileType` says `FILE_TYPE_DISK`.
+#[cfg(windows)]
+fn stdout_is_file() -> bool {
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
+    // SAFETY: `GetStdHandle` only reads this process's standard handle table.
+    handle_is_file(unsafe { GetStdHandle(STD_OUTPUT_HANDLE) })
+}
+
+#[cfg(windows)]
+fn handle_is_file(handle: windows_sys::Win32::Foundation::HANDLE) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileType, FILE_TYPE_DISK};
+    // SAFETY: `GetFileType` takes any handle value; an invalid one returns FILE_TYPE_UNKNOWN, which is not a file.
+    unsafe { GetFileType(handle) == FILE_TYPE_DISK }
 }
 
 impl std::io::Write for TeeWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = std::io::Write::write(&mut std::io::stdout(), buf)?;
+        let n = if self.stdout { std::io::Write::write(&mut std::io::stdout(), buf)? } else { buf.len() };
         if let Some(f) = &self.file {
             if let Ok(mut f) = f.lock() {
                 let _ = f.file.write_all(buf);
@@ -86,7 +120,9 @@ impl std::io::Write for TeeWriter {
         Ok(n)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        std::io::Write::flush(&mut std::io::stdout())?;
+        if self.stdout {
+            std::io::Write::flush(&mut std::io::stdout())?;
+        }
         if let Some(f) = &self.file {
             if let Ok(mut f) = f.lock() {
                 let _ = f.file.flush();
@@ -196,10 +232,11 @@ fn open_private_log_file() -> Option<Arc<Mutex<LogFile>>> {
 /// The daemon's log: events at the level `filter` passes (`main` gives the `RUST_LOG` level, default `info`), each masked of page secrets
 /// (`sot_log::secret`) and written, without colour codes, through `TeeWriter` to stdout and the private file.
 fn log_subscriber(filter: EnvFilter, file: Option<Arc<Mutex<LogFile>>>) -> impl tracing::Subscriber + Send + Sync {
+    let stdout = !stdout_is_file();
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false)
-        .with_writer(move || RedactingWriter(TeeWriter { file: file.clone() }))
+        .with_writer(move || RedactingWriter(TeeWriter { file: file.clone(), stdout }))
         .finish()
 }
 
@@ -796,9 +833,45 @@ mod log_tests {
 
     use std::io::Write;
 
+    /// A regular file is a file; a pipe (what a launcher that captures the daemon's output through a parent hands it)
+    /// is not.
+    #[test]
+    fn a_regular_file_is_a_file_and_a_pipe_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(dir.path().join("f")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let mut fds = [0 as libc::c_int; 2];
+            // SAFETY: `pipe` fills the two-int array it is given.
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            assert!(fd_is_file(file.as_raw_fd()));
+            assert!(!fd_is_file(fds[0]));
+            assert!(!fd_is_file(fds[1]));
+            assert!(!fd_is_file(-1));
+            // SAFETY: the two descriptors were opened above and are closed once.
+            unsafe {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            let mut child = std::process::Command::new("cmd")
+                .args(["/c", "exit"])
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            assert!(handle_is_file(file.as_raw_handle() as _));
+            assert!(!handle_is_file(child.stdout.as_ref().unwrap().as_raw_handle() as _));
+            let _ = child.wait();
+        }
+    }
+
     fn tee(path: &std::path::Path, cap: u64) -> TeeWriter {
         let file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
-        TeeWriter { file: Some(Arc::new(Mutex::new(LogFile { file, path: path.to_path_buf(), cap, retry_above: 0 }))) }
+        TeeWriter { file: Some(Arc::new(Mutex::new(LogFile { file, path: path.to_path_buf(), cap, retry_above: 0 }))), stdout: false }
     }
 
     fn supervisor(path: &std::path::Path) -> std::fs::File {

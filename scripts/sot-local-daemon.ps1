@@ -118,11 +118,10 @@
 # file another process holds. A delete is an exclusive DeleteOnClose open, so
 # a file with any other handle open, even one that allows delete sharing,
 # fails the open and is skipped with one log line naming the real error.
-# Known limits: one protected file can exceed the cap, and one running
-# daemon's own file still grows within its run. The daemon's own
-# private log (rust/backend/src/main.rs::open_private_log_file, via
-# paths::state_dir()) is a SEPARATE, HOME-derived path that today has no
-# Windows branch -- a known gap, not fixed here (see the ADR amendment). If
+# Known limit: one protected file can exceed the cap. The daemon writes its
+# log to stdout only when stdout is not a regular file, so this file holds
+# only its stderr; its own log is <state>\state\sotd.log (rust/backend/src/
+# main.rs::open_private_log_file, via paths::state_dir()), which it rolls. If
 # the spawned process exits before the pipe comes up, that's logged with its
 # exit code and the wait stops early rather than spinning out the full
 # bound (unless the pipe answers: a spawn that exits counts as up iff it
