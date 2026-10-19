@@ -36,7 +36,7 @@ check "Codex off hook exits before HOME expansion" case_codex_hook_off_without_h
 check "Codex unset hook consumes input and stamps blocked then stop" case_codex_hook_input_and_stamps unset
 check "Codex on hook consumes input and stamps blocked then stop" case_codex_hook_input_and_stamps on
 
-# ---- new mail at the turn boundary (messaging ruling, 2026-09-26) ----
+# ---- new mail at the turn boundary (2026-09-26) ----
 # The inbox IS the delivery path, so a turn must not end while directed mail
 # sits unread: the hook reads this handle's own inbox and blocks with "run
 # comm-poll.sh". Three facts make that safe to do on every Stop -- it fires,

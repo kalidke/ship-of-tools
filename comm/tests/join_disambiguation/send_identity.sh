@@ -1,7 +1,7 @@
 # test-join-disambiguation.sh part: send, relay and bootstrap refusals; the legacy root row (sourced in order by the entry).
 
 case_comm_relay_send_refuses_with_no_identity() {
-    # Caller-audit follow-up (ruling 5): comm-send.sh's identity refusal is
+    # Caller-audit follow-up: comm-send.sh's identity refusal is
     # covered above, but comm-relay.sh's OWN refusal (send_frame — a
     # SEPARATE code path) was never
     # exercised. comm-relay.sh checks the identity before it resolves any

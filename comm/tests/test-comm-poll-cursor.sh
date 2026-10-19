@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-comm-poll-cursor.sh — the read cursor is a LINE OFFSET, and the three ways
-# that could otherwise go silently deaf (messaging ruling, 2026-09-26):
+# that could otherwise go silently deaf (2026-09-26):
 #
 #   1. A TORN or unparseable inbox line is skipped and counted as READ. A partial
 #      append is realistic on a shared filesystem, and it used to abort

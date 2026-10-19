@@ -74,9 +74,8 @@ shell on this host shares one derived slot (`<host>__nopane.txt`), so
 another project's session may hold it right now. Only a session holds an
 identity, a row's own session or a session outside any row; nothing started
 inside a session (a subagent, `codex exec`, `claude -p`) joins, because it
-uses no mail. (An unpinned subagent once clobbered a coordinator session's
-own identity this way, during this feature's own development — see the PR's
-implementation report.)
+uses no mail. (An unpinned subagent once clobbered a session's own
+identity this way, during this feature's own development.)
 
 **The fix is at the LAUNCHER, not here**: re-run with an explicit pin —
 

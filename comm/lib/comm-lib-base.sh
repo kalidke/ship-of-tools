@@ -152,7 +152,7 @@ sot_bounded() {
 # final \n, and mapfile/`read` split on \n only — so a handle, host,
 # workspace id or registry root read back this way never compares equal
 # to the clean string it should match (field report, 2026-09-27: a
-# handle read back as "admiral-kitt\r" made every send from that box
+# handle read back as "alpha-host\r" made every send from that box
 # report "no such handle" for a delivery that had already landed). Exit
 # status is jq's OWN, captured before the cleanup pipe runs, so this is a
 # drop-in replacement for `jq` even in a boolean `-e` test.

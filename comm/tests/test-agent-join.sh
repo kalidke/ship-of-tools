@@ -30,8 +30,8 @@ export SOTD_BIN="$(guard_bridge_stub "$WORK/bridge")"
 JOIN="$SCRIPTS_DIR/comm-join.sh"
 mkdir -p "$SOT_COMM_HOME"
 # Hermetic host: comm-context.sh reads $SOT_COMM_TEST_HOST exactly as
-# every other comm test does (manager review: no on-disk namespace or
-# self-file-key changes this sprint, ADR 0046 decision 1's S1 ruling —
+# every other comm test does (no on-disk namespace or
+# self-file-key changes this sprint, ADR 0046 decision 1 —
 # comm-context.sh's own HOST resolution, and therefore this test's pin,
 # stays untouched by the declared-identity lane).
 export SOT_COMM_TEST_HOST="test-host"

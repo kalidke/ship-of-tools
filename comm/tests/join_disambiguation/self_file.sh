@@ -1,7 +1,7 @@
 # test-join-disambiguation.sh part: legacy, v2, ancient and nopane self-files, and self-heal (sourced in order by the entry).
 
 case_legacy_matching_self_file_is_reclaimed_not_rederived() {
-    # Field regression fix (coordinator ruling, item 1). This case used to
+    # Field regression fix. This case used to
     # assert the OPPOSITE of what follows: that a legacy (pre-#148, no
     # root=) self-file whose repo= line matches this project must be
     # discarded and forced through fresh derivation. That was exactly the
@@ -253,7 +253,7 @@ case_legacy_selffile_registry_root_disagreement_refuses_heal() {
 
 case_legacy_selffile_unknown_root_registry_row_still_heals_on_repo_match() {
     # Sibling of the disagreement case above, proving the OTHER half of the
-    # ruling matrix: a registry row that EXISTS for this handle but carries
+    # decision matrix: a registry row that EXISTS for this handle but carries
     # no root of its own (a legacy registry row, predating root=) offers no
     # contrary evidence — it is treated the same as "no row at all", and
     # the repo-basename match still heals (documented residual ambiguity).
@@ -368,7 +368,7 @@ case_self_heal_write_failure_reported_loudly_file_intact() {
 }
 
 case_nopane_selffile_shared_across_repos_not_healed() {
-    # Coordinator addendum, item 6: a shell with NO workspace row collapses to
+    # Addendum: a shell with NO workspace row collapses to
     # ONE self-file slot per host ("<host>__nopane.txt", see
     # comm-context.sh) shared by every such shell on this host. The
     # repo=/root= check is what makes that sharing safe — a background
@@ -418,7 +418,7 @@ case_nopane_same_basename_different_root_discarded() {
     # sharedname") and this project's repo= matches BOTH — but the shared
     # nopane slot has no registry evidence tying it to either, so a
     # basename match alone must NOT heal it (unlike a pane-keyed file,
-    # where ruling 2's original matrix still heals on repo match alone).
+    # where the original matrix still heals on repo match alone).
     local rootA rootB self
     mkdir -p "$WORK/nopane-samebase/siteA/sharedname" "$WORK/nopane-samebase/siteB/sharedname"
     rootA="$(realpath "$WORK/nopane-samebase/siteA/sharedname")"
@@ -482,7 +482,7 @@ case_nopane_with_matching_registry_root_heals() {
 }
 
 case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses() {
-    # Tiny addendum (coordinator, field-corroborated): a background shell
+    # Addendum (field-corroborated): a background shell
     # cd'd OUTSIDE any repo entirely (REPO then reads as the cwd's own
     # basename, e.g. a scratchpad dir) trips the SAME repo-mismatch discard
     # from the other side — must not be healed either, and a send from

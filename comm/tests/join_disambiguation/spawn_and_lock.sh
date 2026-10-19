@@ -1,7 +1,7 @@
 # test-join-disambiguation.sh part: stranding warning, spawn refusals, lock gap, rollback, trap restore, hash, host alias, pinned name (sourced in order by the entry).
 
 case_join_warns_on_stranding_escalation_when_the_bare_handle_is_live() {
-    # Coordinator ruling item 2: comm-join.sh must warn LOUDLY — never
+    # comm-join.sh must warn LOUDLY — never
     # silently strand — when a derived join is about to escalate AWAY from
     # the bare tier-1 handle AND that bare handle still has a fresh
     # heartbeat (sot_handle_live): the near-certain signature of this
@@ -388,7 +388,7 @@ case_host_alias_guard_triggers_on_long_host() {
 # --- capsule-comm-identity fix (Windows capsule spawn + comm scripts) ----
 
 case_pinned_comm_name_never_adopts_selffile_identity() {
-    # Coordinator hardening (capsule-comm-identity fix, item A): "a pinned
+    # Hardening (capsule-comm-identity fix): "a pinned
     # SOT_COMM_NAME never adopts a name from any self-file." The daemon
     # now stamps SOT_COMM_SELF_FILE on a capsule producer's own dedicated
     # slot (comm-lib.sh's EXISTING pin-the-self-file seam — no new slot-

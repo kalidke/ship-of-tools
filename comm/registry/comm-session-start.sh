@@ -19,8 +19,8 @@
 # references/reclaim-handle.md. When neither is
 # given and the self-file already names a DIFFERENT, validated identity, this
 # script REFUSES to join at all rather than silently stealing that slot (this
-# is exactly how PR1's own coordinator session was clobbered by an unpinned
-# subagent during testing — see the implementation report).
+# is exactly how a session was clobbered by an unpinned subagent during
+# testing).
 #
 # See comm/adapters/claude/sot-session-start/SKILL.md for what the calling
 # skill does with each printed line.
@@ -91,7 +91,7 @@ fi
 # the ambiguity. Mutating anything here — even a "harmless" bare join — would
 # silently steal that slot. Refuse outright rather than guess (Codex review
 # findings 1+2; this is exactly how an unpinned subagent clobbered a live
-# coordinator session's identity during this PR's own testing).
+# session's identity during this PR's own testing).
 if [ "$COLD_PRODUCER" = 0 ] && [ -z "$PIN_NAME" ] && [ -z "${NAME:-}" ] \
    && [ -n "${SELF_FILE:-}" ] && [ -f "$SELF_FILE" ]; then
     echo "BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a"

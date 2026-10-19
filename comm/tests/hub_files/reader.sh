@@ -11,7 +11,7 @@ poll_peer() {
 peer_cursor() { cat "$SOT_COMM_HOME/read/$PEER.cursor" 2>/dev/null; }
 count_of() { printf '%s\n' "$1" | grep -c -F -- "$2"; }
 
-# The captain's test: a writer killed mid-line. A poll shows nothing new and
+# A writer killed mid-line. A poll shows nothing new and
 # leaves the cursor alone; the next real send cuts the tail and says so; the
 # next poll shows the new message once and skips nothing; every line parses.
 # The holder writes its partial and stops itself; the case kills it only once it
@@ -41,7 +41,7 @@ case_a_dead_writers_partial_line_is_never_counted_and_is_cut() {
     return 0
 }
 
-# Main's test: a FROZEN writer that wrote a whole line holds the lock. A poll and
+# A FROZEN writer that wrote a whole line holds the lock. A poll and
 # the end-of-turn hook both return with the try-again line, which only a read wait
 # that ran out its bound prints; the cursor is unchanged, and after SIGCONT every
 # line is delivered exactly once. No duration is bounded: on a starved CPU the
