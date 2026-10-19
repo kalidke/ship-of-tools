@@ -62,11 +62,13 @@ matrix_claimed_filed() {
 
 # matrix_refused_for_handle OUT — is this refusal ABOUT THE TARGET HANDLE?
 # A "FAILED -> @x: …" line carries the daemon's own answer about the handle.
-# The no-answer FAILED line, and every other error — an unresolved sender
-# identity — is about this END of the send and settles nothing about the other.
+# The no-answer FAILED line, an unresolved sender identity (bare or as a FAILED
+# line), and every other error are about this END of the send and settle nothing
+# about the other.
 matrix_refused_for_handle() {
     case "$1" in
         *"FAILED -> @"*": the daemon did not answer at "*) return 1 ;;
+        *"FAILED -> @"*": your sot-comm identity did not resolve"*) return 1 ;;
         *"FAILED -> @"*) return 0 ;;
     esac
     return 1
