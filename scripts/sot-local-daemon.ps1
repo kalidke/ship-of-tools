@@ -507,6 +507,13 @@ $logStamp = '{0}Z-{1}' -f [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff'), $P
 $daemonStdout = Join-Path $logDir "sotd-local.stdout.$logStamp.log"
 $daemonStderr = Join-Path $logDir "sotd-local.stderr.$logStamp.log"
 
+# The daemon's own log of record, asked of the daemon (it owns the path); a stale binary yields a plain description.
+function Get-DaemonLogPath {
+    try { $q = (& $daemonExe log-path 2>$null | Select-Object -First 1) } catch { $q = $null }
+    if ($q) { return $q.ToString().Trim() }
+    return 'sotd.log in its state folder'
+}
+
 # Single pre-quoted argument STRING, not an array: PowerShell 5.1's
 # Start-Process joins an -ArgumentList array with spaces and drops the
 # quotes it would otherwise add around an element containing a space, so a
@@ -516,12 +523,6 @@ $daemonStderr = Join-Path $logDir "sotd-local.stderr.$logStamp.log"
 # --adopt-legacy-registry: only THE canonical per-user daemon (this script)
 # may run the one-time legacy-registry adoption (rows/store/mod.rs); a
 # scratch/test daemon must never pass this (field defect).
-# The daemon's own log of record, asked of the daemon (it owns the path); a stale binary yields a plain description.
-function Get-DaemonLogPath {
-    try { $q = (& $daemonExe log-path 2>$null | Select-Object -First 1) } catch { $q = $null }
-    if ($q) { return $q.ToString().Trim() }
-    return 'sotd.log in its state folder'
-}
 $daemonArgLine = '--socket "{0}" --project-root "{1}" --label local --adopt-legacy-registry' -f $PipePath, $ProjectRoot
 Write-LocalDaemonLog "starting: $daemonExe $daemonArgLine"
 try {
