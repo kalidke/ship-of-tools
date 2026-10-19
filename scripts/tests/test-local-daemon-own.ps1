@@ -27,17 +27,26 @@ try {
 
 try {
     Write-Host "`n=== 4c. a process another OS account owns is not this daemon (ADR 0049) ===" -ForegroundColor Cyan
-    $PipePath = '\\.\pipe\sot-4c'
+    $PipeName = 'sot-4c'
     $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    # Every sotd.exe here carries this pipe in its command line; only the pid the pipe's owner reports is this daemon.
+    function Get-SotPipeOwnerPid { param([string]$Name) $script:ownerPid4c }
     function Get-CimInstance { [CmdletBinding()] param([Parameter(Position = 0)] $ClassName, $Filter)
-        @([pscustomobject]@{ ProcessId = 101; CommandLine = "sotd.exe --socket `"$PipePath`"" },
-          [pscustomobject]@{ ProcessId = 202; CommandLine = "sotd.exe --socket `"$PipePath`"" }) }
+        @(101, 202) | Where-Object { $Filter -match "ProcessId = $_\b" } | ForEach-Object {
+            [pscustomobject]@{ ProcessId = $_; CommandLine = "sotd.exe --socket `"\\.\pipe\$PipeName`"" } } }
     function Invoke-CimMethod { [CmdletBinding()] param($InputObject, $MethodName)
         [pscustomobject]@{ Sid = $(if ($InputObject.ProcessId -eq 101) { $me } else { 'S-1-5-18' }) } }
     try {
+        $script:ownerPid4c = 101
         $found4c = @(Get-LocalDaemonProcess | ForEach-Object ProcessId)
-        Check '4c: only this account''s sotd.exe is this daemon' (($found4c.Count -eq 1) -and ($found4c[0] -eq 101)) "found: $($found4c -join ', ')"
-    } finally { Remove-Item function:Get-CimInstance, function:Invoke-CimMethod }
+        Check '4c: the pipe''s owner is this daemon when this account owns it' (($found4c.Count -eq 1) -and ($found4c[0] -eq 101)) "found: $($found4c -join ', ')"
+        $script:ownerPid4c = 202
+        $found4c = @(Get-LocalDaemonProcess | ForEach-Object ProcessId)
+        Check '4c: a pipe owner another account owns is not this daemon' ($found4c.Count -eq 0) "found: $($found4c -join ', ')"
+        $script:ownerPid4c = 0
+        $found4c = @(Get-LocalDaemonProcess | ForEach-Object ProcessId)
+        Check '4c: no pipe owner, no daemon, whatever command lines name the pipe' ($found4c.Count -eq 0) "found: $($found4c -join ', ')"
+    } finally { Remove-Item function:Get-CimInstance, function:Invoke-CimMethod, function:Get-SotPipeOwnerPid }
     # These controls exercise the new helper when present; the parent's finder has no helper yet.
     if ($ownProcessFn) {
         Check '4c: this process is this account''s' (Test-SotOwnProcess (Get-CimInstance Win32_Process -Filter "ProcessId = $PID") $me) 'this process was refused'

@@ -30,7 +30,7 @@
 # Sections 9-11 and 16 live in test-launcher-leases.ps1.
 # Sections 4b, 4c and 5b2 live in test-local-daemon-own.ps1, dot-sourced after 5b in this scope.
 # Section 5c's cases (iii)-(viii), the session pipe under load, live in test-local-daemon-pipe.ps1, dot-sourced there.
-# Sections 2c and 7b, the local daemon's one binary, live in test-local-daemon-binary.ps1, dot-sourced after the fake.
+# Sections 2c and 7b, the local daemon's one binary, live in test-local-daemon-binary.ps1, dot-sourced after the fake; section 4d, in test-local-daemon-decoy.ps1, after it.
 #
 # Before touching a REAL sotd.exe, sections 3-5 redirect HOME/USERPROFILE/
 # LOCALAPPDATA/XDG_STATE_HOME/XDG_CONFIG_HOME at directories under the test
@@ -75,6 +75,7 @@ try {
             (Join-Path $repo 'scripts\tests\test-local-daemon-pipe.ps1'),
             (Join-Path $repo 'scripts\tests\test-local-daemon-own.ps1'),
             (Join-Path $repo 'scripts\tests\test-local-daemon-binary.ps1'),
+            (Join-Path $repo 'scripts\tests\test-local-daemon-decoy.ps1'),
             (Join-Path $repo 'scripts\tests\test-local-daemon.ps1')
         )) {
         $errs = $null
@@ -408,6 +409,7 @@ try {
 
     . (Join-Path $PSScriptRoot 'test-local-daemon-fake.ps1')
     . (Join-Path $PSScriptRoot 'test-local-daemon-binary.ps1')
+    . (Join-Path $PSScriptRoot 'test-local-daemon-decoy.ps1')
 
     if ($compiled) {
         try {

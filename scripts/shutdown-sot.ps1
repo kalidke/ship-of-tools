@@ -27,8 +27,9 @@
 #                                          exits by itself; -Stop waits up
 #                                          to 150 s for that and kills it
 #                                          only after. Delegated to that
-#                                          script so the pipe-name/process-
-#                                          match logic has one home, shared
+#                                          script so the pipe-owner lookup
+#                                          (never a command-line match) has
+#                                          one home, shared
 #                                          with launch-sot.ps1's start path.
 #
 # The remote `sotd` is LEFT RUNNING on purpose (persistent-backend model, ADR
@@ -72,8 +73,7 @@ $log = Join-Path $env:LOCALAPPDATA 'sot\logs\shutdown.log'
 New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
 function W([string]$m) { "$(Get-Date -Format o)  $m" | Tee-Object -FilePath $log -Append | Out-Host }
 
-# Match helpers. The supervisor is powershell running launch-{sot,devenv}.ps1
-# (devenv covers an in-memory supervisor started before the sot rename). The
+# Match helpers. The supervisor is the pid launcher.pid records (Get-Sup). The
 # tunnel match covers BOTH sot tunnel shapes - NOT unrelated ssh sessions:
 #   control: "-L <port>:127.0.0.1:<port>" (TCP mode) OR
 #            "-L <port>:/run/.../sot.sock" (socket-only mode) - both start
@@ -109,7 +109,6 @@ $tunnelPorts = @($TcpPort) + (
 ) | Sort-Object -Unique
 $portAlt = ($tunnelPorts | ForEach-Object { "-L ${_}:" }) -join '|'
 
-$supRe = '-File.*launch-(sot|devenv)\.ps1'
 $tunRe = "$portAlt|-L 1234:127\.0\.0\.1:1234"
 
 # SCOPE EVERY MATCH TO THIS INSTALL. A shared instrument box runs one sot per
@@ -137,7 +136,15 @@ function Test-OurOwner($proc) {
     try { return ((Invoke-CimMethod -InputObject $proc -MethodName GetOwner).User -eq $env:USERNAME) }
     catch { W ("skip: cannot attribute pid=" + $proc.ProcessId + " (" + $proc.Name + ") -- leaving it alone"); return $false }
 }
-function Get-Sup  { Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match $supRe -and $_.CommandLine -like "*$env:USERPROFILE*" } }
+# The supervisor is the pid launch-sot.ps1 recorded in this account's launcher.pid (ADR 0050), still a launch-sot.ps1
+# (a recycled pid is left alone); no command line selects it.
+function Get-Sup {
+    $pidv = 0
+    try { $pidv = [int](Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'sot\logs\launcher.pid') -ErrorAction Stop | Select-Object -First 1) } catch { return }
+    if ($pidv -le 0 -or $pidv -eq $PID) { return }
+    Get-CimInstance Win32_Process -Filter "ProcessId = $pidv" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*launch-sot.ps1*' }
+}
 function Get-FE   { Get-CimInstance Win32_Process -Filter "Name='sot.exe'" | Where-Object { Test-OurPath $_.ExecutablePath } }
 function Get-Tun  { Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Where-Object { $_.CommandLine -match $tunRe -and (Test-OurOwner $_) } }
 # The daemon's last 'frontend disconnected' line in its last $Lines journal lines, read over ssh under a bound on the
