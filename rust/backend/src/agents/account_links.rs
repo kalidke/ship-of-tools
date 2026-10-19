@@ -96,6 +96,25 @@ fn publish_dir(temp: &Path, link: &Path) -> io::Result<()> {
 #[cfg(any(windows, test))]
 const CLAUDE_MD_AS_IMPORT_STUB: bool = false;
 
+/// The stub's one line, in the form Claude Code's import reader takes: it reads `@` followed by characters that are neither a
+/// space nor a backslash (a `\ ` pair is a space), so a Windows path with backslashes or spaces never imports as written. The
+/// default's `CLAUDE.md` sits at `<home>/.claude/CLAUDE.md`, which `~/.claude/CLAUDE.md` spells without a path to get right;
+/// any other target is its path with forward slashes and every space escaped.
+#[cfg(any(windows, test))]
+fn import_line(target: &Path) -> String {
+    let in_dot_claude = target.parent().and_then(Path::file_name).is_some_and(|n| n == ".claude");
+    if in_dot_claude && target.file_name().is_some_and(|n| n == "CLAUDE.md") {
+        return "@~/.claude/CLAUDE.md\n".to_string();
+    }
+    format!("@{}\n", escaped(&target.to_string_lossy()))
+}
+
+/// A path as an import names it: forward slashes, and a backslash before each space.
+#[cfg(any(windows, test))]
+fn escaped(path: &str) -> String {
+    path.replace('\\', "/").replace(' ', "\\ ")
+}
+
 /// Whether `link` takes the import-stub form under `switch`: only the `CLAUDE.md`.
 #[cfg(any(windows, test))]
 fn uses_import_stub(switch: bool, link: &Path) -> bool {
@@ -122,7 +141,7 @@ fn seed_file(target: &Path, link: &Path) -> io::Result<()> {
 fn seed_contents(target: &Path, link: &Path, stub: bool) -> io::Result<()> {
     let temp = unique_beside(link);
     let (written, what) = if stub {
-        (std::fs::write(&temp, format!("@{}\n", target.display())), "write the import of")
+        (std::fs::write(&temp, import_line(target)), "write the import of")
     } else {
         (std::fs::copy(target, &temp).map(|_| ()), "copy")
     };
@@ -343,11 +362,41 @@ mod tests {
         let stub = account.join("stub").join("CLAUDE.md");
         std::fs::create_dir_all(stub.parent().unwrap()).unwrap();
         seed_contents(&target, &stub, true).unwrap();
-        assert_eq!(std::fs::read_to_string(&stub).unwrap(), format!("@{}\n", target.display()));
+        assert_eq!(std::fs::read_to_string(&stub).unwrap(), "@~/.claude/CLAUDE.md\n");
         // Either form is published without replacing, and leaves no temp.
         assert_eq!(seed_contents(&target, &stub, true).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
         let temps: Vec<_> = std::fs::read_dir(stub.parent().unwrap()).unwrap().filter(|e| e.as_ref().unwrap().file_name() != "CLAUDE.md").collect();
         assert!(temps.is_empty(), "temps left: {temps:?}");
+    }
+
+    /// Claude Code's import reader: `@` then characters that are not a space or a backslash, with `\ ` read as a space.
+    fn imported_path(line: &str) -> String {
+        let rest = line.trim_end().strip_prefix('@').unwrap();
+        let mut out = String::new();
+        let mut chars = rest.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' if chars.peek() == Some(&' ') => {
+                    out.push(' ');
+                    chars.next();
+                }
+                '\\' | ' ' => break,
+                c => out.push(c),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_stub_line_is_one_the_import_reader_takes_back_whole() {
+        // The default's file, wherever the home is: the home-relative spelling.
+        assert_eq!(import_line(Path::new("/home/a/.claude/CLAUDE.md")), "@~/.claude/CLAUDE.md\n");
+        // Any other target, a Windows path with a space included: forward slashes and escaped spaces, read back whole.
+        let win = r"C:\Users\a b\.claude-x\CLAUDE.md";
+        assert_eq!(escaped(win), "C:/Users/a\\ b/.claude-x/CLAUDE.md");
+        assert_eq!(imported_path(&format!("@{}", escaped(win))), "C:/Users/a b/.claude-x/CLAUDE.md");
+        // Written as the path itself, the first backslash ends the match at `C:`: the failure this guards.
+        assert_eq!(imported_path(&format!("@{win}")), "C:");
     }
 
     #[test]
