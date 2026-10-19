@@ -191,6 +191,8 @@ check "dialog: it leaves a declared question alone" case_the_dialog_leaves_a_dec
 check "dialog: a denied or interrupted dialog never comes back" case_a_denied_or_interrupted_dialog_never_comes_back
 check "dialog: a failed write leaves the marker as the fact is" case_a_failed_write_leaves_the_marker_as_the_fact_is
 check "dialog: the daemon's entry stamps the named row and no marker" case_the_daemon_entry_stamps_the_named_row_and_no_marker
+check "dialog: the daemon entry writes nothing on a row whose turn ended" case_the_daemon_entry_writes_nothing_on_a_row_whose_turn_ended
+check "dialog: the daemon entry is refused for any parent but sotd" case_the_daemon_entry_is_refused_for_any_other_parent
 check "dialog: a Codex permission is red until the tool returns" case_codex_permission_is_red_until_the_tool_returns
 check "a genuine user turn ends blue" case_user_turn_ends_blue
 check "a machine-started turn ends gray" case_machine_turn_ends_gray

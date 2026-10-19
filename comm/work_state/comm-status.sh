@@ -38,7 +38,10 @@
 # row's `dialog` and nothing else: only `dialog` and `resumed` take it (any
 # other verb is refused, rc 2); the agent gate still runs; no identity is
 # derived (NAME is the handle) and no marker is written or removed, so no
-# heartbeat clears a fact the daemon set.
+# heartbeat clears a fact the daemon set. Only a caller whose parent is sotd may
+# use it (any other: rc 2, nothing written), and its `dialog` lands only on a row
+# with a `floor`: a Stop that ended the turn after the daemon read the screen
+# leaves the row as it is.
 #
 # The turn mark, $COMM_HOME/state/turn-<the self slot's path>, holds the time
 # of the session's last `prompt` (epoch seconds) and its session
@@ -124,6 +127,7 @@ esac
 ROW_HANDLE="${SOT_COMM_ROW_HANDLE:-}"
 if [ -n "$ROW_HANDLE" ]; then
     case "$VERB" in dialog|resumed) ;; *) echo "comm-status.sh: SOT_COMM_ROW_HANDLE stamps dialog or resumed only" >&2; exit 2 ;; esac
+    sot_parent_is_sotd || { echo "comm-status.sh: SOT_COMM_ROW_HANDLE is the daemon's entry; this caller's parent is not sotd -- stamp discarded" >&2; exit 2; }
 fi
 
 # A second agent inside the session never stamps the row: an event is a silent
@@ -199,6 +203,12 @@ status_txn() {
         if [ "${out:0:1}" != 1 ]; then
             echo "comm-status.sh: $VERB needs its text -- stamp discarded" >&2; return 2
         fi
+    fi
+    # The daemon's dialog decision was made from an earlier read: it lands only on a row with a floor, so a Stop that came
+    # first leaves a row at rest unwritten.
+    if [ -n "$ROW_HANDLE" ] && [ "$VERB" = dialog ] \
+        && [ "$(printf '%s' "$row" | jq -r 'if .floor == null then "0" else "1" end' 2>/dev/null | head -c1)" != 1 ]; then
+        return 0
     fi
     # SUM is free text: it reaches jq on stdin, after the registry (registry_replace --text; comm-lib-base.sh, free text and jq).
     local ts
