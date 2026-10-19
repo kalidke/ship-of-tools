@@ -365,8 +365,7 @@ fn start(workspaces: &Workspaces) {
     let default = Workspace::from_label("local", PathBuf::from("/p/local"), false, "none".into(), String::new(), String::new());
     let _ = crate::rows::store::save(&default); // fails where a test made the registry folder unreadable
     let state_root = sot_log::host::state_dir::sot_state_dir().unwrap();
-    let named = crate::rows::store::named_workspace_ids();
-    sweep_with(&state_root, workspaces, &named, later());
+    sweep_state_folders_at(&state_root, workspaces, later());
 }
 
 #[test]
@@ -471,6 +470,7 @@ fn another_hosts_registry_folder_that_cannot_be_stat_ed_keeps_the_rows_folder() 
     std::os::unix::fs::symlink(&hidden, config.join("workspaces-laptop")).unwrap();
     std::fs::set_permissions(&away, std::fs::Permissions::from_mode(0o000)).unwrap();
     std::env::set_var("SOT_SELF_HOST", "laptop-2");
+    std::fs::create_dir_all(config.join("workspaces-laptop-2")).unwrap();
     start(&Workspaces::new());
     std::fs::set_permissions(&away, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(folder.is_dir(), "a registry folder that could not be stat'ed was skipped and its row's folder removed");
@@ -484,4 +484,31 @@ fn a_start_with_a_fresh_config_folder_beside_an_old_state_root_removes_no_row_fo
     std::fs::remove_dir_all(crate::rows::store::app_config_dir()).unwrap();
     start(&Workspaces::new());
     assert!(folder.is_dir(), "a first start under a new config folder removed the old state root's folders");
+}
+
+#[test]
+fn a_toml_with_a_section_above_the_id_still_names_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = pinned(tmp.path(), "laptop");
+    let (id, folder, toml) = registered_row();
+    let text = std::fs::read_to_string(&toml).unwrap();
+    std::fs::write(&toml, format!("[nav_state]\nx = \"1\"\n{text}")).unwrap();
+    std::fs::write(&toml, std::fs::read_to_string(&toml).unwrap().replace("project_root", "project_rooot")).unwrap();
+    start(&Workspaces::new());
+    assert!(folder.is_dir(), "an id below a [section] line did not keep {id}'s folder");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_changed_config_folder_removes_no_row_folder_on_this_start_or_the_next() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = pinned(tmp.path(), "laptop");
+    let (_id, folder, _toml) = registered_row();
+    start(&Workspaces::new()); // a whole start under the first config folder records it
+    assert!(folder.is_dir());
+    std::env::set_var("XDG_CONFIG_HOME", tmp.path().join("other-config"));
+    start(&Workspaces::new());
+    assert!(folder.is_dir(), "the first start under a new config folder removed a folder");
+    start(&Workspaces::new());
+    assert!(folder.is_dir(), "the second start under a new config folder removed a folder");
 }

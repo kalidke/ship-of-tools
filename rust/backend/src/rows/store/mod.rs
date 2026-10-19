@@ -77,14 +77,14 @@ pub fn scan_disk(reg: &Workspaces, adopt_legacy_registry: bool) -> Result<usize>
 /// `seed_default_row` writes the default row's toml into it: false on a first start under a new host name or config folder.
 static OWN_REGISTRY_EXISTED_AT_SCAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The id a row toml names, whether or not `load_toml` accepts the row: the `workspace_id` key, or `session_id` in
-/// `[backend]` of the older shape.
+/// The id a row toml names, whether or not `load_toml` accepts the row: the first `workspace_id` or `session_id` key on
+/// any line, in any section. A hand edit can put a `[section]` line above the keys; the id is still the row's.
 fn id_named_by(text: &str) -> Option<String> {
-    parse_kv(text)
-        .get("workspace_id")
-        .cloned()
-        .or_else(|| parse_section(text, "backend").get("session_id").cloned())
-        .filter(|id| !id.is_empty())
+    text.lines().find_map(|line| {
+        let (key, value) = line.trim().split_once('=')?;
+        let id = value.trim().trim_matches(|c| c == '"' || c == '\'');
+        (matches!(key.trim(), "workspace_id" | "session_id") && !id.is_empty()).then(|| id.to_string())
+    })
 }
 
 /// Every workspace id any row registry under the config dir names, or why that cannot be said whole. The registries are

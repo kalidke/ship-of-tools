@@ -50,7 +50,8 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
   folder stays. The start sweep removes every tombstone, and removes a folder no registry names (an older daemon's, a window close's, one a close
   kept) only on a whole load of every registry (`store::named_workspace_ids`: this host's own registry folder existed before
   the default row was seeded, every `workspaces*` and `sessions*` folder stats and reads, every toml reads and counts for
-  the id it names), when no registry names it, nothing runs in it, it holds no `row-scopes` record and
+  the id it names in any section; and the config folder is the one recorded in `workspaces/.registries-of` by the last whole
+  start, if one is recorded), when no registry names it, nothing runs in it, it holds no `row-scopes` record and
   nothing in it was written for 24 hours. A link at the `workspaces` folder, the folder or inside it is never followed
   (`state_folder.rs`).
 - The row toml is a projection of this state that `store::save` rewrites; the state changes through the daemon's

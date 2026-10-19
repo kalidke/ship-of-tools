@@ -507,8 +507,11 @@ which ADR 0041 had already discharged.
   own table: this host's registry folder must have existed before the default
   row was seeded at that start, every `workspaces*` and `sessions*` folder under
   the config folder must stat and read, and every toml must read (a toml counts
-  for the id it names whether or not it loads as a row), or the scan removes none
-  that start (one warn line).
+  for the id it names, in any section, whether or not it loads as a row), or the
+  scan removes none that start (one warn line). The state `workspaces` folder
+  also records the config folder whose registries last named its folders (a
+  small file written after a start whose registries were whole); a start under
+  a different config folder removes none and records nothing.
   Such a directory must also show nothing running (the supervisor's `supervisor.lock`
   free and no leg holding a voyage's `writer.lock`), hold no `row-scopes` record,
   and have nothing written in it for 24 hours (the floor, so it never races a row

@@ -263,10 +263,37 @@ pub(crate) fn sweep_with(
     kept
 }
 
-/// [`sweep_with`] against the registries on disk, for the daemon's start-up resume scan.
+/// The file in the `workspaces` folder naming the config folder whose registries last named its folders.
+const CONFIG_RECORD: &str = ".registries-of";
+
+/// [`sweep_with`] against the registries on disk, for the daemon's start-up resume scan. The state root outlasts a change
+/// of config folder (another `XDG_CONFIG_HOME`, a moved home) and the registries do not follow it, so the config folder
+/// each whole start read is recorded in [`CONFIG_RECORD`]; a start under a different one removes no unnamed folder (the
+/// tombstones still go) and records nothing, so the old registries still decide until a start reads them whole again.
 pub(crate) fn sweep_state_folders(state_root: &Path, workspaces: &Workspaces) {
-    let named = crate::rows::store::named_workspace_ids();
-    sweep_with(state_root, workspaces, &named, SystemTime::now());
+    sweep_state_folders_at(state_root, workspaces, SystemTime::now());
+}
+
+/// [`sweep_state_folders`] as of `now`.
+fn sweep_state_folders_at(state_root: &Path, workspaces: &Workspaces, now: SystemTime) {
+    let record = state_root.join("workspaces").join(CONFIG_RECORD);
+    let config = crate::rows::store::app_config_dir().to_string_lossy().into_owned();
+    let mut named = crate::rows::store::named_workspace_ids();
+    match std::fs::read_to_string(&record) {
+        Ok(recorded) if recorded != config => {
+            named = Err(format!("the registries that named these folders were in {recorded}, and this start reads {config}"));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => named = Err(format!("{record:?}: {e}")),
+    }
+    let whole = named.is_ok();
+    sweep_with(state_root, workspaces, &named, now);
+    if whole && real_dir(&state_root.join("workspaces")).unwrap_or(false) {
+        if let Err(e) = crate::durable::write(&record, config.as_bytes()) {
+            tracing::warn!(error = %e, "state folder sweep: could not record the config folder whose registries were read");
+        }
+    }
 }
 
 #[cfg(test)]
