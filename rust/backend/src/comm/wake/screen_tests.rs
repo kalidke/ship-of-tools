@@ -607,7 +607,8 @@ fn free_test_lines_trims_spaces_and_keeps_a_no_break_space() {
 
 // ---- dialog_of: a dialog that waits on a person, for the dialog tick (dialog.rs) ----
 
-/// The footers of real dialogs (read off live rows on 2026-10-19): a permission prompt's, and a question menu's.
+/// The footers of real dialogs: a permission prompt's (a capture, `real-permission-dialog.txt`), and a question menu's
+/// (a capture, `real-askq-menu.txt`).
 const PERM_FOOTER: &str = "Esc to cancel \u{b7} Tab to amend";
 const ASKQ_FOOTER: &str = "Enter to select \u{b7} \u{2191}/\u{2193} to navigate \u{b7} Esc to cancel";
 
@@ -615,7 +616,7 @@ fn dialog(l: &[&str], windows: bool) -> Option<String> {
     dialog_of(&lines(l), "claude", windows)
 }
 
-/// Output above, then `menu` (PERM_MENU, synthetic but for its real footer) where the input box was.
+/// Output above, then `menu` (PERM_MENU, synthetic around the captured footer) where the input box was.
 fn perm_screen(menu: &[&str]) -> Vec<String> {
     lines(&[&LINUX_TURN_A[..5], menu, &["", PERM_FOOTER]].concat())
 }
@@ -632,6 +633,17 @@ fn real(text: &str, nbsp: bool) -> Vec<String> {
 fn a_real_question_menu_reads_as_a_dialog() {
     let menu = real(include_str!("../../../tests/fixtures/comm_wake/real-askq-menu.txt"), true);
     assert_eq!(dialog_of(&menu, "claude", false), Some("claude dialog open".to_string()));
+}
+
+/// REAL (captured 2026-10-17, scrubbed the same way, the question, options, countdown and footer kept): a permission
+/// dialog for a Bash command with auto mode's deny countdown, drawn where the input box was. It has no main input box and
+/// its footer is `Esc to cancel · Tab to amend`; the summary is its "Do you want to" line.
+#[test]
+fn a_real_permission_dialog_reads_with_its_question() {
+    let text = include_str!("../../../tests/fixtures/comm_wake/real-permission-dialog.txt");
+    let ask = Some("claude dialog: Do you want to proceed?".to_string());
+    assert_eq!(dialog_of(&real(text, true), "claude", false), ask);
+    assert_eq!(dialog_of(&real(text, false), "claude", false), ask);
 }
 
 /// REAL (2026-10-19, scrubbed the same way): a reply that quotes the whole footer, wrapped so its second half starts a
@@ -659,6 +671,14 @@ fn a_permission_dialog_reads_with_its_question() {
     let mut counting = perm_screen(&PERM_MENU);
     counting.insert(counting.len() - 1, "Claude Code will automatically deny this request in 0:57".to_string());
     assert_eq!(dialog_of(&counting, "claude", false), ask);
+}
+
+/// A reply's own "Do you want to" line above the dialog is not the summary: the line nearest the footer is.
+#[test]
+fn the_summary_is_the_ask_nearest_the_footer() {
+    let mut screen = perm_screen(&PERM_MENU);
+    screen.insert(0, "  Do you want to keep the old logs? Say so and I will.".to_string());
+    assert_eq!(dialog_of(&screen, "claude", false), Some("claude dialog: Do you want to proceed?".to_string()));
 }
 
 #[test]

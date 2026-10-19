@@ -222,9 +222,9 @@ fn is_dialog_footer(line: &str) -> bool {
 /// The dialog the screen shows that waits on a person, as the row's `dialog` summary, or `None`. It is positively
 /// identified, both of: (a) no main input box is on screen ([`main_box_shown`]): a dialog replaces it; (b) one of the
 /// last [`DIALOG_ROWS`] rows is the dialog's footer ([`is_dialog_footer`]), anywhere in them, since an agents panel can
-/// sit below it. The summary is the dialog's "Do you want to" line when the last rows hold one; the line alone
-/// identifies nothing. An agent with no prompt glyphs is never read. The footers are those of real dialogs read off live
-/// rows (a permission prompt's and a question menu's), and one real question menu is a fixture.
+/// sit below it. The summary is the "Do you want to" line nearest the footer when the last rows hold one (a reply's
+/// line above the dialog is not it); the line alone identifies nothing. An agent with no prompt glyphs is never read.
+/// The footers are those of two real captures (a permission dialog's and a question menu's), each a fixture.
 pub(crate) fn dialog_of(lines: &[String], agent: &str, windows: bool) -> Option<String> {
     let glyphs = prompt_glyphs(agent, windows);
     if glyphs.is_empty() || main_box_shown(lines, glyphs, windows) {
@@ -235,7 +235,7 @@ pub(crate) fn dialog_of(lines: &[String], agent: &str, windows: bool) -> Option<
         return None;
     }
     let trimmed = |l: &String| l.trim_matches(|c: char| c.is_whitespace() || c == '\u{2502}').to_string();
-    Some(match tail.iter().map(trimmed).find(|l| l.starts_with("Do you want to")) {
+    Some(match tail.iter().map(trimmed).rfind(|l| l.starts_with("Do you want to")) {
         Some(ask) => format!("claude dialog: {ask}").chars().take(DIALOG_TEXT_MAX).collect(),
         None => "claude dialog open".to_string(),
     })
