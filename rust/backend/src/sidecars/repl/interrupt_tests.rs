@@ -126,6 +126,9 @@ async fn an_interrupt_naming_another_eval_sends_no_signal() {
 }
 
 /// Native code the signal cannot enter: one request leaves the REPL alive and serving, as the stock REPL's Ctrl-C does.
+/// The follow-up `again` must not name anything `long` defines: the interrupt can land before or after any of those
+/// definitions, and the follow-up has to be answered with a value either way. Names from `setup` are safe, as an
+/// interrupt never undoes them.
 async fn one_interrupt_leaves_the_repl_alive(name: &str, setup: &str, long: &str, after_secs: u64, again: &str) {
     if !isolated(name, BODY) {
         return;
@@ -139,6 +142,7 @@ async fn one_interrupt_leaves_the_repl_alive(name: &str, setup: &str, long: &str
     tokio::time::timeout(Duration::from_secs(120), reply).await.expect("the eval answers").ok();
     let after = eval(&fixture.repl, 3, again).await;
     assert!(!after.iter().any(|f| f["kind"] == "error"), "the REPL serves the next call: {after:?}");
+    assert!(after.iter().any(|f| f["kind"] == "value"), "the next call answers a value: {after:?}");
     fixture.finish().await;
 }
 
@@ -159,9 +163,9 @@ async fn one_interrupt_during_a_long_compile_leaves_the_repl_alive() {
     one_interrupt_leaves_the_repl_alive(
         "sidecars::repl::interrupt_tests::one_interrupt_during_a_long_compile_leaves_the_repl_alive",
         "nothing",
-        "ex = Expr(:block, [:(x = sin(x) + $i) for i in 1:20000]...); @eval function big(x); $ex; x; end; Base.invokelatest(big, 0.5)",
+        "ex = Expr(:block, [:(x = sin(x) + $i) for i in 1:20000]...); @eval function interrupted_compile(x); $ex; x; end; Base.invokelatest(interrupted_compile, 0.5)",
         0,
-        "Base.invokelatest(big, 1.5)",
+        "sin(1.5)",
     )
     .await;
 }
