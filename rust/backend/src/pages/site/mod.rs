@@ -478,7 +478,14 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
 async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMode) -> Result<bool> {
     let (method, target, keep) = (request.method.as_str(), request.target.as_str(), request.keep);
     if method != "GET" && method != "HEAD" {
-        return write_simple(stream, "405 Method Not Allowed", "only GET/HEAD", false).await;
+        return write_simple(
+            stream,
+            method,
+            "405 Method Not Allowed",
+            "only GET/HEAD",
+            false,
+        )
+        .await;
     }
 
     // Strip any query string / fragment, then resolve per serving mode
@@ -492,6 +499,7 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
             let Some((site, secret)) = pool_entry_for(port) else {
                 return write_simple(
                     stream,
+                    method,
                     "404 Not Found",
                     "no site assigned to this port (the daemon restarted or forgot the window that opened it)",
                     keep,
@@ -533,7 +541,14 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
                 None => (cookie_ok(), false),
             };
             if !ok {
-                return write_simple(stream, "403 Forbidden", "missing or invalid site secret", keep).await;
+                return write_simple(
+                    stream,
+                    method,
+                    "403 Forbidden",
+                    "missing or invalid site secret",
+                    keep,
+                )
+                .await;
             }
             let set_cookie =
                 by_query.then(|| format!("{cookie_name}={secret}; HttpOnly; SameSite=Strict; Path=/"));
@@ -552,6 +567,7 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
                 // belt-and-suspenders for that case too.
                 return write_simple(
                     stream,
+                    method,
                     "404 Not Found",
                     "no site open for this link (it was reopened, the daemon restarted or forgot the window \
                      that opened it, a `../` link on the page climbs above the top of the site, or this site \
@@ -573,7 +589,7 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
     };
     let (file, resolved) = match opened {
         Ok(f) => f,
-        Err(r) => return write_simple(stream, r.status, &r.body, keep).await,
+        Err(r) => return write_simple(stream, method, r.status, &r.body, keep).await,
     };
 
     // no-cache so a rebuilt site is picked up without a hard browser refresh.

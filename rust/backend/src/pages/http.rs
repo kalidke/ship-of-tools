@@ -50,7 +50,15 @@ pub(crate) async fn read_request<S: AsyncRead + AsyncWrite + Unpin>(
             break at + 4;
         }
         if buf.len() > 16 * 1024 {
-            write_simple(stream, "431 Request Header Fields Too Large", "headers too large", false).await?;
+            // The head is never parsed, so its method is not known; the connection closes after this reply.
+            write_simple(
+                stream,
+                "GET",
+                "431 Request Header Fields Too Large",
+                "headers too large",
+                false,
+            )
+            .await?;
             return Ok(None);
         }
         let mut tmp = [0u8; 1024];
@@ -130,19 +138,24 @@ pub(crate) fn content_type(path: &Path) -> &'static str {
     }
 }
 
-/// A plain-text reply. Returns `keep`: whether the connection carries the next request.
+/// A plain-text reply. Returns `keep`: whether the connection carries the next request. A HEAD reply is the head
+/// alone, with the Content-Length its body would have.
 pub(crate) async fn write_simple<S: AsyncWrite + Unpin>(
     stream: &mut S,
+    method: &str,
     status: &str,
     body: &str,
     keep: bool,
 ) -> Result<bool> {
     let resp = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n{}\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n{}\r\n",
         body.len(),
         connection_line(keep)
     );
     send(stream, resp.as_bytes()).await?;
+    if method != "HEAD" {
+        send(stream, body.as_bytes()).await?;
+    }
     stream.flush().await?;
     Ok(keep)
 }
@@ -211,7 +224,16 @@ pub(crate) async fn serve_file<S: AsyncWrite + Unpin>(
     let keep = request.keep;
     let total = match file.metadata().await {
         Ok(m) if m.is_file() => m.len(),
-        _ => return write_simple(stream, "404 Not Found", "no such file", keep).await,
+        _ => {
+            return write_simple(
+                stream,
+                &request.method,
+                "404 Not Found",
+                "no such file",
+                keep,
+            )
+            .await
+        }
     };
     let (start, len, partial) = match parse_range(request.range.as_deref(), total) {
         RangeReq::Full => (0, total, None),
@@ -270,6 +292,8 @@ pub(crate) async fn serve_file<S: AsyncWrite + Unpin>(
 mod range_tests {
     use super::super::video::{handle_conn, register_video};
     use super::*;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::net::tcp::OwnedReadHalf;
     use tokio::net::{TcpListener, TcpStream};
 
     #[test]
@@ -314,6 +338,64 @@ mod range_tests {
         assert!(text.starts_with("HTTP/1.1 200 OK"), "got: {text}");
         assert!(text.contains("Content-Length: 0\r\n"), "got: {text}");
         assert!(text.ends_with("\r\n\r\n"), "body must be empty, got: {text}");
+    }
+
+    /// One reply from `r`: its head, then its body. A HEAD reply has no body, though its Content-Length is the body's.
+    async fn read_reply(r: &mut BufReader<OwnedReadHalf>, head_only: bool) -> (String, Vec<u8>) {
+        let mut head = String::new();
+        loop {
+            let mut line = String::new();
+            assert!(
+                r.read_line(&mut line).await.unwrap() > 0,
+                "closed inside a head: {head}"
+            );
+            head.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        let length: usize = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Content-Length: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut body = vec![0; if head_only { 0 } else { length }];
+        r.read_exact(&mut body).await.unwrap();
+        (head, body)
+    }
+
+    /// A refused HEAD keeps its connection, so the next reply must start where the HEAD's head ends. Through the real
+    /// listener, on one kept-alive connection.
+    #[tokio::test]
+    async fn a_refused_head_sends_no_body_before_the_next_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("clip.mp4");
+        std::fs::write(&f, b"0123456789").unwrap();
+        let token = register_video(f).expect("register_video");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                let _ = handle_conn(stream).await;
+            }
+        });
+        let (r, mut w) = TcpStream::connect(addr).await.unwrap().into_split();
+        let mut r = BufReader::new(r);
+        // The token is not granted, so the HEAD is refused: 404 "no such grant", 13 bytes of body.
+        w.write_all(b"HEAD /no-such-grant HTTP/1.1\r\n\r\n")
+            .await
+            .unwrap();
+        let (head, body) = read_reply(&mut r, true).await;
+        assert!(head.starts_with("HTTP/1.1 404 Not Found"), "got: {head}");
+        assert!(head.contains("Content-Length: 13\r\n"), "got: {head}");
+        assert!(body.is_empty());
+        w.write_all(format!("GET /{token} HTTP/1.1\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let (head, body) = read_reply(&mut r, false).await;
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "got: {head}");
+        assert_eq!(body, b"0123456789");
     }
 }
 

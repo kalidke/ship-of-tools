@@ -164,7 +164,14 @@ pub(super) async fn handle_conn(mut stream: TcpStream) -> Result<()> {
 /// One request: the file its token grants, or a plain refusal. Returns whether the connection stays open.
 async fn serve_request(stream: &mut TcpStream, request: &Request) -> Result<bool> {
     if request.method != "GET" && request.method != "HEAD" {
-        return write_simple(stream, "405 Method Not Allowed", "only GET/HEAD", false).await;
+        return write_simple(
+            stream,
+            &request.method,
+            "405 Method Not Allowed",
+            "only GET/HEAD",
+            false,
+        )
+        .await;
     }
     let keep = request.keep;
 
@@ -176,15 +183,40 @@ async fn serve_request(stream: &mut TcpStream, request: &Request) -> Result<bool
     let token = raw_path.trim_start_matches('/');
     let fs_path = match path_for_token(token) {
         Some(p) => p,
-        None => return write_simple(stream, "404 Not Found", "no such grant", keep).await,
+        None => {
+            return write_simple(
+                stream,
+                &request.method,
+                "404 Not Found",
+                "no such grant",
+                keep,
+            )
+            .await
+        }
     };
 
     if !is_servable_video(&fs_path) {
-        return write_simple(stream, "403 Forbidden", "not a video file", keep).await;
+        return write_simple(
+            stream,
+            &request.method,
+            "403 Forbidden",
+            "not a video file",
+            keep,
+        )
+        .await;
     }
     let file = match tokio::fs::File::open(&fs_path).await {
         Ok(f) => f,
-        Err(_) => return write_simple(stream, "404 Not Found", "no such file", keep).await,
+        Err(_) => {
+            return write_simple(
+                stream,
+                &request.method,
+                "404 Not Found",
+                "no such file",
+                keep,
+            )
+            .await
+        }
     };
     serve_file(stream, request, file, content_type(&fs_path), "").await
 }
