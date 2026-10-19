@@ -170,6 +170,8 @@ const INTERRUPT_SIGNALS: u8 = 5;
 /// `INTERRUPT_QUIET`, it is sent the interrupt signal (`Contained::interrupt`), which Julia raises at the eval's next
 /// safepoint; after `INTERRUPT_QUIET` more, the rest, `INTERRUPT_BURST_GAP` apart, which Julia forces into code with
 /// none. Any line from the child restarts the quiet, since the shim ran to write it; the interrupt's answer ends it.
+/// It goes on only while an eval is in flight (written, its `done` not yet seen): a signal to an idle REPL could end it
+/// and lose what it defined, so none is sent to one, nor after the eval's `done`.
 struct Escalation {
     /// The interrupt's wire id: its answer ends the escalation.
     id: u64,
@@ -201,6 +203,11 @@ impl Escalation {
         self.at = tokio::time::Instant::now() + gap;
         (self.sent < INTERRUPT_SIGNALS).then_some(self)
     }
+}
+
+/// Whether an eval is in flight: a streamed one or a `repl.execute` one, written and its `done` not yet seen.
+fn in_flight(streaming: &HashMap<u64, numbers::CallerNumbers>, collectors: &HashMap<u64, ExecCollector>) -> bool {
+    !streaming.is_empty() || !collectors.is_empty()
 }
 
 /// Private test leaves in the closeout: a gate the retirement waits on before the checked termination (a join delay),
@@ -334,7 +341,7 @@ async fn supervisor_task(
                 // child death can close it out with synthetic frames.
                 if let Some(reply) = sub.reply {
                     pending.insert(id, reply);
-                    if sub.op == "repl.interrupt" && escalation.is_none() {
+                    if sub.op == "repl.interrupt" && escalation.is_none() && in_flight(&streaming, &collectors) {
                         escalation = Some(Escalation::new(id));
                     }
                 } else if let (Some(eid), Some(owner)) = (eid, sub.owner) {
@@ -368,7 +375,9 @@ async fn supervisor_task(
                             &frame_tx,
                             &workspace_id,
                         );
-                        escalation = escalation.and_then(|e| e.heard(&pending));
+                        escalation = escalation
+                            .and_then(|e| e.heard(&pending))
+                            .filter(|_| in_flight(&streaming, &collectors));
                     }
                     Ok(None) => {
                         tracing::warn!("repl child stdout closed");
@@ -382,7 +391,10 @@ async fn supervisor_task(
             }
             _ = tokio::time::sleep_until(escalation.as_ref().map_or_else(tokio::time::Instant::now, |e| e.at)),
                 if escalation.is_some() => {
-                escalation = escalation.take().and_then(|e| e.step(&contained));
+                escalation = escalation
+                    .take()
+                    .filter(|_| in_flight(&streaming, &collectors))
+                    .and_then(|e| e.step(&contained));
             }
             // The CHILD's exit ends this supervisor — not its pipes. Normally
             // the two coincide (the last stdout branch above sees EOF), but a

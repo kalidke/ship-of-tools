@@ -178,6 +178,9 @@ send_repl_interrupt() {
     err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
     if [ -n "$err" ]; then
         printf 'ERROR: %s [%s]\n' "$err" "$(printf '%s' "$resp" | jq -r '.payload.code // "?"')" >&2
+        case "$err" in
+            InterruptException*) echo "note: the daemon's interrupt signal reached the REPL as the eval ended (on Julia 1.12 about 1 interrupt in 20 of a loop that ends on its own at that moment); the REPL keeps running and its state is kept. Send the interrupt again only if an eval is still running." >&2 ;;
+        esac
         exit 2
     fi
     # NOT `.payload.interrupted // empty`: jq's // treats false as absent, so

@@ -80,8 +80,10 @@ the console programs the evaluation started. Code that catches the
 `InterruptException` and goes on still holds the REPL (`sot-fe repl interrupt` says
 so after 10 s); a restart ends it at once: `r` on a `.jl` file in Files mode, or
 `sot-fe repl run <ws> <path> --fresh`, whose run every window's drawer shows. On
-Julia 1.12, a signal that reaches the REPL in the instant after the evaluation ended
-on its own can end the REPL. `Ctrl+C` in the drawer names, by number, the
+Julia 1.12, about one interrupt in twenty, sent to a loop that ends on its own at that
+very instant, is answered with an error (`InterruptException`, code `repl_exception`)
+while the REPL keeps running and keeps its state. The daemon sends the signal only
+while an evaluation is running and its interrupt is unanswered, never to an idle REPL. `Ctrl+C` in the drawer names, by number, the
 evaluations the drawer shows as running, and stops the running evaluation only if
 its number is one of them; each window numbers its own evaluations, so two windows
 on one REPL can share a number.

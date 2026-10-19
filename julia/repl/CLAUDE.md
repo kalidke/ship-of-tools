@@ -47,9 +47,11 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
   next eval's code clears). A signal that lands in the shim's own waits, its code having ended as it came, is dropped
   there and the wait goes on: `serve`'s wait for the next request and the eval's wait for its readers
   (`past_interrupts`), and a reader's drain (`stream_pipe`). One that lands in a request's handling answers that
-  request with an error (`repl_exception`), and on Julia 1.12 one that arrives while the thread idles in a finished
-  task's end ends the REPL (Julia raises it where nothing can catch it); the daemon sends one only while the child says
-  nothing, so either needs the eval to end in the instant a signal goes.
+  request with an error (`repl_exception`; on Julia 1.12 measured at about 1 interrupt in 20 of a loop that ends on its own at that instant, the REPL
+  alive after each), and on Julia 1.12 one that arrives while the thread idles in a finished
+  task's end ends the REPL (Julia raises it where nothing can catch it; only a synthetic signal has produced this, none of 20
+  races); the daemon sends one only while an eval is in flight and the child says nothing, so either needs the eval to end
+  in the instant a signal goes.
 - A `BrowserView` is announced once per (url, open) (`announce_browserview`).
 - WGLMakie code lives only in ext/.
 - `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`WGL_SERVER` holds both). Its page is a Bonito session of its own with `NoServer` (`no_referrer_page`), so its scripts and files travel inside the page and the port answers only the page and its websocket; `/` and every other path answer 404. It needs Bonito 5.1 or a later 5.x (`wgl_bonito_supported`). `wgl_server` binds once per REPL lifetime: the first call may pin a port, later default/same-port calls reuse it, and a different live pin raises `ArgumentError` without changing the listener, secret, routes or announcement. Restart the REPL to choose another port. A figure has one live viewer (`WGL_VIEWERS`, `replace_viewer!`): a new page load of a figure closes the viewer before it. The listener stays owned until the REPL ends; generic BrowserView servers retain their own multi-port behavior.

@@ -40,7 +40,9 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
   says nothing for 1 s with an interrupt unanswered is sent the interrupt signal (`Contained::interrupt`), which Julia
   raises at the eval's next safepoint; after 1 s more, four more 50 ms apart, the count at which Julia forces it into
   code with no safepoint. Any line from the child restarts the quiet, so no signal follows the line that shows the eval
-  stopped, and the interrupt's answer ends the steps (`Escalation`). The shim answers that interrupt for the eval the
+  stopped, and the interrupt's answer ends the steps (`Escalation`). The signal is sent only while an eval is in flight
+  (written, its `done` not seen; `in_flight`): never to an idle REPL, which a signal could end with its state, and
+  never after the eval's `done`. The shim answers that interrupt for the eval the
   signal stopped (julia/repl `handle_interrupt`).
 - The REPL ops answer an error with one of these codes: `repl_busy` (the queue was full), `repl_eval_failed`,
   `repl_run_file_failed`, `repl_interrupt_failed` and `repl_restart_failed`; `repl.execute` reports a full queue as its

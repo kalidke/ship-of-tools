@@ -510,6 +510,10 @@ mod busy_tests {
     }
 
     async fn deaf_row() -> Deaf {
+        row_running(DEAF).await
+    }
+
+    async fn row_running(stub: &str) -> Deaf {
         let tmp = tempfile::Builder::new().prefix("sot-repl-busy-").tempdir().unwrap();
         let dir = tmp.path();
         let resources = dir.join("resources");
@@ -517,7 +521,7 @@ mod busy_tests {
         let root = dir.join("row");
         std::fs::create_dir_all(&root).unwrap();
         let julia = dir.join("julia");
-        sot_log::test_exec::write_executable(&julia, DEAF);
+        sot_log::test_exec::write_executable(&julia, stub);
         let pin = pin_env(&julia, &resources);
         let (frame_tx, _bus) = tokio::sync::broadcast::channel(256);
         let workspaces = Workspaces::new();
@@ -548,6 +552,59 @@ mod busy_tests {
         let bound = Duration::from_secs(10);
         assert!(waited >= bound && waited < bound + Duration::from_secs(5), "{waited:?}");
         println!("repl-busy: an unanswered interrupt -> repl_interrupt_failed after {waited:?}");
+    }
+
+    /// Stand-ins that record each interrupt signal they get in `julia.signals` and otherwise read nothing after their
+    /// first request (the eval 0 `deaf_row` sends). `ANSWERED_FIRST` ends that eval at once (an idle REPL, a marker
+    /// `julia.done` after); `ENDS_AFTER_ASK` reads the interrupt too and ends the eval 0.5 s later.
+    const ANSWERED_FIRST: &str = r#"#!/bin/sh
+trap 'echo x >> "$0.signals"' INT
+printf '{"v":1,"id":0,"kind":"evt","op":"repl.ready","payload":{}}\n'
+IFS= read -r line
+eid=$(printf '%s' "$line" | sed -n -e 's/.*"eval_id":\([0-9]*\).*/\1/p')
+printf '{"v":1,"id":1,"kind":"evt","op":"repl.frame","payload":{"eval_id":%s,"frame":{"kind":"done","eval_id":%s,"elapsed_ms":1}}}\n' "$eid" "$eid"
+: > "$0.done"
+while :; do sleep 0.1; done
+"#;
+    const ENDS_AFTER_ASK: &str = r#"#!/bin/sh
+trap 'echo x >> "$0.signals"' INT
+printf '{"v":1,"id":0,"kind":"evt","op":"repl.ready","payload":{}}\n'
+IFS= read -r line
+eid=$(printf '%s' "$line" | sed -n -e 's/.*"eval_id":\([0-9]*\).*/\1/p')
+IFS= read -r line
+sleep 0.5
+printf '{"v":1,"id":1,"kind":"evt","op":"repl.frame","payload":{"eval_id":%s,"frame":{"kind":"done","eval_id":%s,"elapsed_ms":1}}}\n' "$eid" "$eid"
+: > "$0.done"
+while :; do sleep 0.1; done
+"#;
+
+    /// An interrupt that goes unanswered for its whole bound, and the signals the child got meanwhile.
+    async fn unanswered_interrupt_signals(row: &Deaf) -> String {
+        let signals = row._tmp.path().join("julia.signals");
+        let conn = CallerNumbers::default();
+        let interrupt = handle_repl_interrupt(1, json!({ "workspace_id": row.id }), &row.session, &row.workspaces, &conn);
+        let unanswered = bounded("an interrupt", interrupt).await.expect("handler");
+        assert_eq!(code_of(&unanswered), "repl_interrupt_failed");
+        std::fs::read_to_string(signals).unwrap_or_default()
+    }
+
+    /// A REPL with no eval in flight is never sent the interrupt signal, however long its interrupt goes unanswered:
+    /// a signal that lands in an idle REPL can end it and its state with it.
+    #[tokio::test]
+    async fn an_idle_repl_is_never_signalled() {
+        let row = row_running(ANSWERED_FIRST).await;
+        let done = row._tmp.path().join("julia.done");
+        within(Duration::from_secs(10), "the eval ended", || done.exists()).await;
+        assert_eq!(unanswered_interrupt_signals(&row).await, "", "an idle REPL got a signal");
+        let live = row_or_reply(&row.workspaces, Some(&row.id), 0, op::REPL_EVAL).unwrap_or_else(|_| panic!("the row"));
+        assert_eq!(live.repl_state(), "ready", "the idle REPL is still running");
+    }
+
+    /// An eval whose `done` arrives before the interrupt's wait ends ends the escalation: no signal follows it.
+    #[tokio::test]
+    async fn no_signal_follows_the_evals_done() {
+        let row = row_running(ENDS_AFTER_ASK).await;
+        assert_eq!(unanswered_interrupt_signals(&row).await, "", "a signal followed the eval's done");
     }
 
     #[tokio::test]
