@@ -89,6 +89,7 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   `unknown_workspace` with no job run (`canonicalize_workspace_id`). Job replies come back in the order the jobs
   finish, each under its own request id. A job runs to its end when its connection closes (`Jobs`), and one whose
   handler panics is answered `handler_error` naming the panic.
+- An accept error follows `sot_log::lane::accept_policy::accept_policy`, the policy the capsule lane acceptors use too (`survive_accept_error`): a transient error accepts again, a resource error (EMFILE and kin) waits `ACCEPT_SLEEP` first, and only a dead listener ends the daemon.
 - Accepting stops at the deciding lease departure, before any row is touched (`run_local`'s accept loop, then
   `shutdown::run`).
 

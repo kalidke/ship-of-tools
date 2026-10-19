@@ -2,6 +2,7 @@
 
 use super::conn::{reader_loop, report_registration_failure, send_lifecycle_event, writer_loop};
 use super::*;
+use crate::lane::accept_policy::{accept_policy, AcceptAction, ACCEPT_SLEEP};
 
 /// The accept loop, one dedicated thread for the server's whole life:
 /// blocks in `libc::poll` over `{listener, wake_read}` (module doc: "the
@@ -99,20 +100,14 @@ pub(super) fn accept_loop(shared: Arc<ServerShared>, listener: UnixListener, wak
                 }
                 handle_new_connection(&shared, stream);
             }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::Interrupted
-                        | io::ErrorKind::ConnectionAborted
-                        | io::ErrorKind::WouldBlock
-                ) =>
-            {
-                continue; // transient: ADR 0043 decision 4's retried family
-            }
-            Err(e) => {
-                terminalize_accept_loop(&shared, format!("accept: {e}"));
-                return;
-            }
+            Err(e) => match accept_policy(&e) {
+                AcceptAction::Retry => continue,
+                AcceptAction::Sleep => thread::sleep(ACCEPT_SLEEP),
+                AcceptAction::Dead => {
+                    terminalize_accept_loop(&shared, format!("accept: {e}"));
+                    return;
+                }
+            },
         }
     }
 }

@@ -23,6 +23,7 @@ The twin of the Windows pipe transport by property, not mechanism: a server for 
 - A raw connect (`connect_voyage_socket_unchallenged`, `connect_supervisor_socket_unchallenged`) stays `pub(crate)`; `connect_voyage_socket` authenticates the server through `challenge_os::authenticate_server` before returning.
 - A connect uses a fresh socket per attempt and retries a busy listener only until `CONNECT_BOUND` has passed; the
   attempt or 20 ms sleep in progress finishes first (`connect_unix_socket_unchallenged`).
+- The accept loop's error handling is `sot_log::lane::accept_policy::accept_policy` (retry, sleep on a resource error, stop on a dead listener), shared with `pipe_win` and the daemon's session listener.
 - A change to one server's accept or teardown is made to the Windows twin, `pipe_win`, too.
 - Live and pending records share the admission bound; `Closed` follows both joins. Shutdown errno alone preserves close reason and failure state.
 - A socket read that `shutdown(2)` must end waits in `poll(2)` and reads with `MSG_DONTWAIT` (`conn::read_when_ready`), never a blocking `read`/`recv`: XNU's `soreceive` can lose a concurrent shutdown's wake, and its `sorflush` zeroes `SO_RCVTIMEO`.

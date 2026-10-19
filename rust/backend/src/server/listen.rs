@@ -3,6 +3,7 @@
 use super::conn::handle_connection;
 use super::*;
 use sot_log::identity::challenge::PeerAuthenticated;
+use sot_log::lane::accept_policy::{accept_policy, AcceptAction, ACCEPT_SLEEP};
 
 use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
 #[cfg(unix)]
@@ -273,9 +274,16 @@ pub(super) async fn run_local(
             reason = "listener: session socket or pipe: a private folder or an owner-only DACL"
         )]
         let accept = listener.accept();
-        let stream: LocalStream = tokio::select! {
-            accepted = accept => accepted.context("accept on sot socket")?,
+        let accepted = tokio::select! {
+            accepted = accept => accepted,
             () = leases.gone() => break tokio::time::Instant::now(),
+        };
+        let stream: LocalStream = match accepted {
+            Ok(stream) => stream,
+            Err(e) => {
+                survive_accept_error(e).await?;
+                continue;
+            }
         };
         dispatch_admitted(stream, admit_peer, |stream, peer| {
             let le = leases.clone();
@@ -320,6 +328,21 @@ pub(super) async fn run_local(
         _ => {}
     }
     crate::lifecycle::shutdown::run(leases, workspaces, ws_events_tx, decided).await
+}
+
+/// What the session loop does with an accept error, by the one accept policy (`sot_log::lane::accept_policy::accept_policy`): a
+/// transient error returns at once, a resource error after a short sleep, and only a dead listener is an `Err`, which
+/// ends the daemon.
+async fn survive_accept_error(e: std::io::Error) -> Result<()> {
+    match accept_policy(&e) {
+        AcceptAction::Retry => Ok(()),
+        AcceptAction::Sleep => {
+            tracing::warn!(error = %e, "accept: out of descriptors or memory; waiting");
+            tokio::time::sleep(ACCEPT_SLEEP).await;
+            Ok(())
+        }
+        AcceptAction::Dead => Err(e).context("accept on sot socket"),
+    }
 }
 
 /// One accepted-stream boundary: rejection drops the unread stream before its handler is entered; an admitted stream
@@ -416,6 +439,25 @@ fn admit_peer_observing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_session_loop_survives_every_transient_and_resource_accept_error() {
+        for code in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOBUFS,
+            libc::ENOMEM,
+            libc::ECONNABORTED,
+            libc::EINTR,
+            libc::EAGAIN,
+        ] {
+            survive_accept_error(std::io::Error::from_raw_os_error(code))
+                .await
+                .unwrap_or_else(|e| panic!("errno {code} ended the session loop: {e:#}"));
+        }
+        assert!(survive_accept_error(std::io::Error::from_raw_os_error(libc::EBADF)).await.is_err());
+    }
     #[cfg(windows)]
     use interprocess::local_socket::{GenericFilePath, ListenerOptions};
 

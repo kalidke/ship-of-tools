@@ -1,6 +1,7 @@
 //! The accept loop: obtaining instances, accepting connections, recycling and stopping.
 
 use super::*;
+use crate::lane::accept_policy::{accept_policy, AcceptAction, ACCEPT_SLEEP};
 
 /// Mark the accept loop stopped and request cancellation on its
 /// currently in-flight `ConnectNamedPipe`, if any. Cancellation-request
@@ -246,8 +247,14 @@ pub(super) fn accept_loop(shared: Arc<ServerShared>, first_id: u64, first_raw: S
                 // disconnect race -- recycle the instance and terminalize
                 // rather than misreport it as a client that connected.
                 recycle_instance(&shared, id, raw);
-                terminalize_accept_loop(&shared, format!("ConnectNamedPipe: {e}"));
-                return;
+                match accept_policy(&e) {
+                    AcceptAction::Retry => {}
+                    AcceptAction::Sleep => thread::sleep(ACCEPT_SLEEP),
+                    AcceptAction::Dead => {
+                        terminalize_accept_loop(&shared, format!("ConnectNamedPipe: {e}"));
+                        return;
+                    }
+                }
             }
         }
     }
