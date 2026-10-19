@@ -1975,7 +1975,7 @@ fi
 # One line for a managed unit, chosen by whether it is wired to start at boot now: off says how to turn it on, on says how to stop it.
 if [ "$UNIT_MANAGED" = 1 ]; then
     if sot_boot_wired "$HOME/.config/systemd/user"; then printf '%s\n' "sotd.service: stop it on this computer with systemctl --user stop sotd.service; its boot start follows hosts.toml and the unit's host pin, and enable or disable change no file"
-    else printf '%s\n' "sotd.service: boot start is off on this computer; turn it on with: mkdir -p ~/.config/systemd/user/default.target.d && printf '[Unit]\nWants=sotd.service\n' > ~/.config/systemd/user/default.target.d/sotd.conf && systemctl --user daemon-reload"
+    else sot_boot_off_line
     fi
 fi
 installer_verdict "$VER" "$SHORT" "" "$STEPS_LEFT" "$([ "$PINNED" = 0 ] || printf '%s' "$VER")"

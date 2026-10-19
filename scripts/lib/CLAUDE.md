@@ -37,7 +37,7 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
 - The boot wiring of `sotd.service` (the unit has no `[Install]`) is `default.target.d/sotd.conf`, and these are its only
   writers: `sot_boot_wants` (the drop-in first, then an old enable link, only a symlink), `sot_boot_unwants`,
   `sot_boot_wired` and `sot_boot_keep` (wired or an old link: wire; neither: write nothing, so a unit with boot start off
-  stays off). `sot_rerender_owned` goes through `sot_boot_keep`; the install and the retire through these.
+  stays off). `sot_boot_off_line` is the one text install.sh's verdict and sot-apply's log print for a managed unit left off. `sot_rerender_owned` goes through `sot_boot_keep`; the install and the retire through these.
 - `sot_rerender_owned` pins the re-rendered unit with `sotd topology pin` before its reload; a failed pin keeps the
   pin the unit had.
 - A rendered unit or wrapper is the install's own only when `sot_service_owned` or `sot_wrapper_owned` says so (the

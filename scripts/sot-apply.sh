@@ -28,7 +28,7 @@
 
 set -u
 
-log() { echo "sot-apply: $*" >&2; }
+log() { printf 'sot-apply: %s\n' "$*" >&2; }  # printf: a shell's echo turns the \n in a logged command into a newline
 
 # Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it): this script
 # runs as an installed binary, before any checkout is known.
@@ -452,6 +452,12 @@ for d in "$UPDATES"/v[0-9]*-"$TARGET"; do
 done
 
 log "APPLIED $TAG (previous: ${CUR_TAG:-unknown}; rollback state in $(basename "$LASTGOOD"))"
+# A managed unit the update left with boot start off says so, with the one-line fix (the library is the applied checkout's;
+# an older target without it says nothing).
+if command -v sot_boot_off_line >/dev/null 2>&1 && sot_service_owned "$PREFIX" \
+   && ! sot_boot_wired "$HOME/.config/systemd/user"; then
+    log "$(sot_boot_off_line)"
+fi
 
 # The agent comm scripts follow the applied commit, on every role: an applied tag can change the comm protocol. The
 # library is the applied checkout's; an older target without one refreshes nothing. Fail-open, like all of this, and
