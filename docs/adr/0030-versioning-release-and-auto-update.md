@@ -244,7 +244,7 @@ the fix:
 
 ### 7. Dev-process changes
 
-- **main stays the integration branch; releases are tags.** The fleet's day-to-day
+- **main is the integration and -dev line; releases are tags cut from main.** The fleet's day-to-day
   (push to main, pull, rebuild) is unchanged; only tagging creates a release, as a draft that no updater sees until the
   release skill publishes it.
 - **Conventional commits become load-bearing** — the public changelog is generated from
@@ -869,3 +869,12 @@ and the status reads "pinned at <version>: automatic updates stay off for this i
 `sotd update stage` (the operator) still arms. A run that names no version removes the pin; an apply keeps it (it rewrites
 the record field by field), and `install-manifest.ps1` keeps a recorded pin when it rewrites the file, and pins a record it replaces and cannot parse (rule 6). The pin is a fact
 about the run, not a setting for the person to maintain.
+
+## Amendment 2026-10-19 — every tag is cut from main
+
+Main is the -dev line, as the Julia packages' main is. Every tag, candidate and final, is cut from main, and the stamp
+after the tag moves main to the next version with `-dev` (the 2026-10-16 amendment above). The candidate branches
+`fixes/*` and `rc/*` are no longer cut from: `scripts/release.sh` refuses any branch but main. `fixes/0.6.6-comm` stays
+only as an alias until the next cut, then is retired. A defect found before a candidate has been used lands on main
+before the cut; a defect found after the tag goes into the next cut. The maintainer, 2026-10-16: "so just like our julia
+packages, once we tag we move main to next version as dev."
