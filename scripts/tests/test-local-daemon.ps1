@@ -670,7 +670,8 @@ try {
         Write-Host "`n=== 13b. LogsStayBoundedByCap: within the file count (the start's own log counted), the cap still prunes, oldest first, and keeps the newest ===" -ForegroundColor Cyan
         # $LogKeep-1 files of half the cap each: with the start's own log the
         # count is within bounds, and the unprotected total is over the cap, so
-        # only the cap prunes.
+        # only the cap prunes, and the newest stays out of the total, so one
+        # oldest file goes.
         $ld13b = Get-Content -LiteralPath $script -Raw
         $keep13b = [int]([regex]::Match($ld13b, '(?m)^\$LogKeep\s*=\s*(\d+)').Groups[1].Value)
         $cap13b = [int64]([regex]::Match($ld13b, '(?m)^\$LogCapBytes\s*=\s*(\d+)MB').Groups[1].Value) * 1MB
@@ -693,11 +694,11 @@ try {
             Check '13b: the spawn exits 0' ($exit13b -eq 0) "got $exit13b; log: $run13b"
             Check '13b: the successor answers' (Wait-Pipe $pipe13b) 'pipe never opened'
             $gone13b = @($old13b | Where-Object { -not (Test-Path -LiteralPath $_) })
-            $want13b = @($old13b | Select-Object -First ($keep13b - 3))
+            $want13b = @($old13b | Select-Object -First ($keep13b - 4))
             Check '13b: the deleted files are exactly the oldest, in order' (($gone13b -join ',') -ceq ($want13b -join ',')) "deleted: $($gone13b -join ', ')"
             Check '13b: the newest closed log is kept' (Test-Path -LiteralPath $old13b[$old13b.Count - 1]) 'the newest old log is gone'
             $unprot13b = [int64]0
-            foreach ($f13b in @($old13b | Select-Object -First ($keep13b - 1))) {
+            foreach ($f13b in @($old13b | Select-Object -First ($keep13b - 2))) {
                 if (Test-Path -LiteralPath $f13b) { $unprot13b += (Get-Item -LiteralPath $f13b).Length }
             }
             Check '13b: the unprotected total is at most the cap' ($unprot13b -le $cap13b) "total $unprot13b, cap $cap13b"
