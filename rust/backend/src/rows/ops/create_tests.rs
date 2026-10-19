@@ -528,3 +528,102 @@ mod rollback_tests {
         assert_eq!(rows, vec!["old task".to_string()], "no insert happened");
     }
 }
+
+mod startup_cleanup_tests {
+    use super::handle_workspace_create;
+    use crate::lifecycle::lease::{self, HeldRecord};
+    use crate::rows::{Workspace, Workspaces};
+    use crate::session::Session;
+    use serde_json::json;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::broadcast;
+
+    /// The startup Cleanup lists the rows registered before any listener binds and ends each by its id, once one of
+    /// `LANE_CONCURRENCY` permits is free; a same-label create keeps that id. Here as many rows as there are permits,
+    /// each with a file where its state folder goes, have their ends refused until the test removes the files, so the
+    /// Cleanup reaches the row "dup" only after a window's create of "dup". Neither a create the Cleanup refuses nor
+    /// one it lets through may end with the Cleanup removing the row the create made.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_same_label_create_during_the_startup_cleanup_is_never_the_cleanups_to_end() {
+        let env_dir = tempfile::Builder::new().prefix("sot-createcl-").tempdir().unwrap();
+        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        // The Cleanup's end prunes the comm registry.
+        let _comm = crate::paths::EnvGuard::capture("SOT_COMM_HOME");
+        std::env::set_var("SOT_COMM_HOME", env_dir.path().join("comm"));
+        let state_root = sot_log::host::state_dir::sot_state_dir().expect("the pinned state root");
+        std::fs::create_dir_all(&state_root).unwrap();
+        let reg = Workspaces::new();
+        let seed = |label: &str, task: &str| {
+            let root = env_dir.path().join(label);
+            std::fs::create_dir_all(&root).unwrap();
+            let mut w = Workspace::from_label(label, root, false, "none".into(), String::new(), task.into());
+            w.runtime = "capsule".into();
+            w
+        };
+        let row = |label: &str| {
+            let w = reg.insert(seed(label, "listed"));
+            crate::rows::store::save(&w).expect("toml");
+            w
+        };
+        let blockers: Vec<std::path::PathBuf> = (1..=crate::rows::run::resume::LANE_CONCURRENCY)
+            .map(|i| {
+                let w = row(&format!("a{i}"));
+                let dir = crate::rows::spawn::state_root::state_dir_for(&state_root.canonicalize().unwrap(), &w.workspace_id);
+                std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+                std::fs::write(&dir, b"").unwrap();
+                dir
+            })
+            .collect();
+        let listed = row("dup");
+        let record = state_root.join(sot_protocol::ops::lease::HELD_RECORD_FILE);
+        let boot = sot_log::identity::challenge::boot_identity().expect("this host's boot");
+        let closing = HeldRecord { v: 1, boot, holders: vec![], handover_until_ms: None, closing: true, not_ended: 0, forget: vec![] };
+        lease::write_or_delete(&record, &closing).unwrap();
+
+        let (ws_events, _rx) = broadcast::channel(64);
+        let _leases = crate::lifecycle::startup::begin(Some(state_root.clone()), &reg, &ws_events);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            reg.resolve(Some(&listed.workspace_id)).is_some_and(|w| Arc::ptr_eq(&w, &listed)),
+            "test setup: the Cleanup reached dup before the blockers let it go"
+        );
+
+        // A window's create of "dup"; its spawn fails here (no sot-capsule beside the test binary).
+        let payload = json!({"label": "dup", "project_root": env_dir.path().join("dup").to_string_lossy(), "agent": "none"});
+        let reply = handle_workspace_create(1, payload, &Session::new(), &reg, &ws_events).await.unwrap();
+        // A create of "dup" whose spawn succeeds, as `handle_workspace_create` makes it: the slug's claim, the insert
+        // under the kept id, the toml. The spawn and the observer it starts do not change what the Cleanup removes.
+        let created = reg.claim_create("dup").map(|_claim| {
+            let w = reg.insert(seed("dup", "created"));
+            crate::rows::store::save(&w).expect("toml");
+            w
+        });
+        for blocker in &blockers {
+            std::fs::remove_file(blocker).unwrap();
+        }
+        // The Cleanup ends by writing its record, and with nothing left not ended that deletes it.
+        for _ in 0..300 {
+            if !record.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!record.exists(), "the Cleanup did not finish in 30 s");
+
+        if let Some(created) = &created {
+            let kept = reg.resolve(Some(&created.workspace_id)).is_some_and(|w| Arc::ptr_eq(&w, created));
+            assert!(
+                kept && crate::rows::store::toml_path_for("dup").exists(),
+                "the startup Cleanup ended row {} after a same-label create registered it (the create kept the listed \
+                 row's id): registered {kept}, toml {}",
+                created.workspace_id,
+                crate::rows::store::toml_path_for("dup").exists()
+            );
+        }
+        assert_eq!(reply[0].0.payload["code"], "label_in_use", "{:?}", reply[0].0.payload);
+        assert!(reg.resolve(Some("dup")).is_none(), "the Cleanup kept the row it listed");
+        assert!(reg.claim_create("dup").is_some(), "the label is still held after the Cleanup");
+    }
+}

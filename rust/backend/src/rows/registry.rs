@@ -366,7 +366,8 @@ impl Workspaces {
         g.by_id.values().find(|ws| ws.session_name == target).cloned()
     }
 
-    /// Claims `slug` for one `workspace.create`; `None` when another create holds it. The claim ends when dropped.
+    /// Claims `slug` for one `workspace.create`, or for the startup Cleanup that ends its row; `None` when another
+    /// holds it. The claim ends when dropped.
     pub fn claim_create(&self, slug: &str) -> Option<CreateClaim> {
         let mut g = self.inner.write().expect("workspaces lock");
         g.creating
@@ -422,7 +423,7 @@ impl Workspaces {
     }
 }
 
-/// A slug held by one `workspace.create` (`Workspaces::claim_create`); released on drop.
+/// A slug held by one `workspace.create` or by the startup Cleanup (`Workspaces::claim_create`); released on drop.
 pub struct CreateClaim {
     workspaces: Workspaces,
     slug: String,

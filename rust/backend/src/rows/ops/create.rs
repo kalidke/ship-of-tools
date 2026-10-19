@@ -498,11 +498,11 @@ pub async fn handle_workspace_create(
     tracing::info!(label = %req.label, project_root = %req.project_root, boot, "workspace.create");
 
     // One create per slug at a time, from before the gates: a second one is refused, so a rollback never meets
-    // another create's in-flight row.
+    // another create's in-flight row. The startup Cleanup holds the slugs of the rows it ends the same way.
     let incoming_slug = crate::paths::slug(&req.label);
     let Some(_claim) = workspaces.claim_create(&incoming_slug) else {
         let payload = json!({
-            "error": format!("workspace '{}' (slug '{}') is being created: wait for that create to finish", req.label, incoming_slug),
+            "error": format!("workspace '{}' (slug '{}') is being created, or ended by this computer's startup cleanup: wait for that to finish", req.label, incoming_slug),
             "code": "label_in_use",
         });
         return Ok(vec![(Frame::res(req_id, op::WORKSPACE_CREATE, payload), None)]);
