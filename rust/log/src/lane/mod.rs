@@ -1,6 +1,7 @@
 //! The capsule's lanes: the transport contract (`transport`), the client
 //! seam (`client`) and the one platform bridge (`platform_transport`)
 //! that the platform's lane server rides on.
+pub mod accept_policy;
 pub mod attach_proto;
 pub mod client;
 pub(crate) mod pending;

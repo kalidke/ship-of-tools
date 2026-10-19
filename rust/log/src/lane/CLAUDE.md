@@ -5,6 +5,7 @@ byte transport chosen once per platform; this folder holds the contracts the leg
 program against. Part of capsule; charter: rust/log/CLAUDE.md.
 
 ## Files
+- `accept_policy.rs`: the one accept policy (`accept_policy`, `AcceptAction`, `ACCEPT_SLEEP`): retry a transient error, sleep on EMFILE and kin, end the loop only on a dead listener; both lane acceptors and the daemon's session listener call it
 - `attach_proto/`: the attach and mgmt lanes' connection and role state machine (decides; the leg executes)
 - `client.rs`: the dialing seam: `Client`, `PeerIdentity`, `PeerProcess`, `Endpoint`, `PlatformEndpoint`, `map_peer_auth_outcome` (the peer-authentication mapping both connects use)
 - `mod.rs`: declares the lane modules; each file gates itself by platform
