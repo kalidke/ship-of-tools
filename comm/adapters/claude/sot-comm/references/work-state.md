@@ -10,7 +10,7 @@ When a turn both needs the user (a go-ahead, a pasted file, a decision) and has
 jobs running, the row is `blocked` and the closing marker is `SITREP-QUESTION:`
 with the question first and the running jobs listed after it. `waiting` is only
 for a turn where nothing needs the user; a purple row that is really waiting on
-the owner is a question they never see (owner, 2026-09-19).
+the owner is a question they never see (decided 2026-09-19).
 
 ## The facts, and the reduction that colours them (ADR 0044 amendment, 2026-09-19)
 
@@ -83,7 +83,7 @@ not seen — and the registry does not record which writer set it. `question`,
 `waiting` and `floor` are never touched — viewing is not answering, and it
 is not finishing a job.
 
-**A 10 s dwell (owner decision 2026-09-08 evening).** A switch alone does
+**A 10 s dwell (decided 2026-09-08 evening).** A switch alone does
 not count: the frontend arms a mark when a person switches to a row and sends
 `read: true` only if that same view is still up ten seconds later. Any other
 switch drops the mark, so a blow-through while cycling never reads a row. The
@@ -123,8 +123,8 @@ every turn green and were never reminded. So a **human** turn that was an
 effort — at least 8 tool calls, or 5 minutes of wall time since the prompt,
 measured from the transcript — and ends green with no marker gets one SOFT
 nudge: close with `SITREP:` if the turn closed an effort, end normally if it
-was a step in a live back-and-forth (the owner's ruling: no formal block
-during an exchange). Short turns never trip it, whatever they did.
+was a step in a live back-and-forth (no formal block during an exchange).
+Short turns never trip it, whatever they did.
 
 **No nudge on a turn that has its block.** A plain-language lint that sent a
 block carrying identifiers back to be rewritten lasted one afternoon: a Stop

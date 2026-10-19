@@ -19,9 +19,7 @@
 #       that ends with an explicit blocked / waiting / done row and NO marker
 #       gets one nudge naming the shape it owes (a machine wake never does — a
 #       relay ack on a parked row is not a report). See sot-comm references/work-state.md.
-#       Two refinements (2026-09-10, owner: "sessions are not strictly
-#       following the sitrep rules" + "don't need that formal thing during a
-#       back and forth"): (a) a HUMAN turn that was an EFFORT — many tool
+#       Two refinements (decided 2026-09-10): (a) a HUMAN turn that was an EFFORT — many tool
 #       calls or a long wall time — and ends green with no marker gets ONE
 #       soft nudge: close with the sitrep block if the turn closed an effort,
 #       end normally if it was a step in a live exchange. Before this, only a
@@ -34,9 +32,8 @@
 #       Any nudge on a turn that already has its block is a duplicate by
 #       construction; the language rules live in the sitrep skill only.
 #
-#       ARTIFACT AUDIT EXCEPTION (2026-09-14, owner: "the hook should eval if
-#       something should be displayed in the preview" -- a session announced a
-#       design brief in a file but never showed it). A marker still stamps the
+#       ARTIFACT AUDIT EXCEPTION (decided 2026-09-14): a session announced a
+#       design brief in a file but never showed it. A marker still stamps the
 #       row and ends the flow, EXCEPT: before exiting it runs the artifact-only
 #       tier of comm-turn-auditor.sh once, and blocks with a show-result
 #       reminder if that finds an unsurfaced result -- the row stays stamped
