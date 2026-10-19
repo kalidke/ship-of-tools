@@ -41,10 +41,13 @@
 //! connection because `CancelIoEx` targets a SPECIFIC pending overlapped
 //! op. POSIX has no equivalent of targeting one blocked call from another
 //! thread — the primitive that generalizes is `shutdown(2)` on the
-//! connection's fd: it unblocks a blocked `read` (returns `0`, ordinary
-//! EOF) and a blocked `write` (returns a partial count or `EPIPE`) BOTH AT
-//! ONCE, from any thread, without needing to know which direction (if
-//! either) is currently mid-call. So the reaper's claim issues ONE
+//! connection's fd: it ends a read waiting in `poll(2)` (the read then
+//! returns `0`, ordinary EOF) and a blocked `write` (returns a partial
+//! count or `EPIPE`) BOTH AT ONCE, from any thread, without needing to
+//! know which direction (if either) is currently mid-call. A read never
+//! blocks inside `recv(2)` itself (`conn::read_when_ready`): on macOS a
+//! shutdown landing as a blocking read enters the kernel can be missed.
+//! So the reaper's claim issues ONE
 //! `shutdown(SHUT_RDWR)` regardless of which of the three triggers (an
 //! explicit [`SocketServer::close`], the reader's own EOF/error signal, or
 //! the writer's own error signal) requested it — the direct analogue of
@@ -151,7 +154,7 @@ use crate::lane::transport::{
 };
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
