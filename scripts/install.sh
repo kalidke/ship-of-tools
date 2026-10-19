@@ -852,10 +852,10 @@ julia_run() {
 }
 
 # An install passes only if the Julia the daemon will run and the one the comm refresh runs meet the kernel's compat
-# floor. The floor is `[compat] julia` of julia/kernel/Project.toml. The daemon's Julia is juliaup's default channel, read
-# from juliaup.json with jq (no Julia starts, so no startup.jl runs), else the PATH julia, as rust/backend/src/sidecars/
-# julia.rs resolves it; that read takes the channel's Version string and does not check the binary is on disk, and it
-# ignores SOT_JULIA_BIN. The refresh runs the PATH julia, asked with --startup-file=no.
+# floor, and it stops before a step runs on a PATH julia below it. The floor is `[compat] julia` of julia/kernel/
+# Project.toml. The daemon's Julia is, as rust/backend/src/sidecars/julia.rs resolves it: SOT_JULIA_BIN (asked with
+# --startup-file=no), else juliaup's default channel read from juliaup.json with jq (no Julia starts, so no startup.jl
+# runs; its Version string, the binary is not checked on disk), else the PATH julia. The refresh runs the PATH julia.
 julia_floor() { sed -n 's/^julia = "\([0-9][0-9.]*\)".*/\1/p' "$CHECKOUT/julia/kernel/Project.toml" | head -1; }
 julia_version_ok() {  # <version> <floor>: 0 when the major.minor of the first is at or above the second's
     local v="${1%%+*}" f="$2"
@@ -877,25 +877,50 @@ julia_path_version() {  # the PATH julia's version; empty when it cannot be aske
 julia_floor_say() {  # <who> <version>
     if [ -n "$2" ]; then printf '%s runs Julia %s' "$1" "$2"; else printf 'the Julia %s runs could not be asked for its version' "$1"; fi
 }
+julia_channel_installed() {  # <channel>: juliaup.json lists it, or the run selected it for its steps
+    [ ${#JULIA_SEL[@]} -eq 0 ] || return 0
+    local cfg="${JULIAUP_DEPOT_PATH:+$JULIAUP_DEPOT_PATH/juliaup}"
+    cfg="${cfg:-$HOME/.julia/juliaup}/juliaup.json"
+    [ -f "$cfg" ] && jq -e --arg c "$1" '.InstalledChannels[$c]' "$cfg" >/dev/null 2>&1
+}
+# The one line, and the Julia it is about: set the daemon's (src: bin, relative, up or path) and the refresh's version.
+# The fix keys on which Julia is below and on whether the floor's channel is installed.
 julia_floor_check() {
-    local floor daemon_v refresh_v bad="" fix="" via_up=1
+    local floor daemon_v refresh_v src bin bad="" fix="" jl
     floor="$(julia_floor)"
     [ -n "$floor" ] || { verdict_fail julia "$CHECKOUT/julia/kernel/Project.toml names no Julia compat"; return 0; }
     refresh_v="$(julia_path_version)"
-    daemon_v="$(julia_default_version)"
-    [ -n "$daemon_v" ] || { via_up=0; daemon_v="$refresh_v"; }
-    if ! julia_version_ok "$daemon_v" "$floor"; then bad="$(julia_floor_say "the daemon" "$daemon_v")"; fi
-    if ! julia_version_ok "$refresh_v" "$floor" && { [ "$via_up" = 1 ] || [ -z "$bad" ]; }; then
+    bin="${SOT_JULIA_BIN:-}"; bin="${bin#"${bin%%[![:space:]]*}"}"; bin="${bin%"${bin##*[![:space:]]}"}"
+    if [ -n "$bin" ]; then
+        case "$bin" in
+            /*) src=bin; daemon_v="$("$bin" --startup-file=no -e 'print(VERSION)' 2>/dev/null)" || daemon_v="" ;;
+            *) src=relative; daemon_v="" ;;
+        esac
+    elif daemon_v="$(julia_default_version)" && [ -n "$daemon_v" ]; then src=up
+    else src=path; daemon_v="$refresh_v"
+    fi
+    if [ "$src" = relative ]; then
+        bad="SOT_JULIA_BIN=$bin is not an absolute path, which the daemon refuses"
+    elif ! julia_version_ok "$daemon_v" "$floor"; then
+        bad="$(julia_floor_say "the daemon" "$daemon_v")"
+    fi
+    if [ "$src" != path ] && ! julia_version_ok "$refresh_v" "$floor"; then
         bad="${bad:+$bad and }$(julia_floor_say "the comm refresh" "$refresh_v")"
     fi
     [ -n "$bad" ] || return 0
-    if [ "$via_up" = 1 ] && command -v juliaup >/dev/null 2>&1; then
+    jl="$(command -v julia || true)"
+    if [ "$src" = relative ]; then fix="make SOT_JULIA_BIN an absolute path or unset it"
+    elif [ "$src" = bin ] && ! julia_version_ok "$daemon_v" "$floor"; then fix="point SOT_JULIA_BIN at Julia $floor or later, or unset it"
+    elif [ "$src" = up ] && ! julia_version_ok "$daemon_v" "$floor" && command -v juliaup >/dev/null 2>&1; then
         fix="juliaup default $floor"
-        [ "${juliaup_add_failed:-0}" != 1 ] || fix="juliaup add $floor && $fix"
-    else
-        fix="install Julia $floor or later and put it first on PATH"
+        julia_channel_installed "$floor" || fix="juliaup add $floor && $fix"
+    elif [ "$src" = path ]; then fix="install Julia $floor or later and put it first on PATH"
+    else fix="put a Julia $floor or later ahead of ${jl:-julia} on PATH"
     fi
-    verdict_step "$bad, below the $floor the kernel needs: run  $fix"
+    bad="$bad, below the $floor the kernel needs: run  $fix"
+    # With no +channel selected the steps run on the PATH julia: below the floor they cannot pass, so the run ends here.
+    if [ ${#JULIA_SEL[@]} -eq 0 ] && [ -n "$refresh_v" ] && ! julia_version_ok "$refresh_v" "$floor"; then die "$bad"; fi
+    verdict_step "$bad"
 }
 
 # Tests set this to source the functions above in isolation: the shell
@@ -1606,7 +1631,7 @@ if command -v julia >/dev/null && julia -e 'exit(VERSION >= v"1.12" ? 0 : 1)' >/
     :
 elif command -v juliaup >/dev/null 2>&1; then
     say "installing Julia channel $chan with juliaup"
-    juliaup add "$chan" >/dev/null || juliaup_add_failed=1
+    juliaup add "$chan" >/dev/null || true
     export PATH="$HOME/.juliaup/bin:$PATH"
 else
     say "installing Julia (juliaup, channel $chan)"
