@@ -597,7 +597,7 @@ try {
     if ($compiled) {
         Write-Host "`n=== 13. LogsStayBounded: a spawn prunes old logs to the cap and never touches a held one ===" -ForegroundColor Cyan
         # The bounds are read from the script. Old stamped files of one size,
-        # so the newest $LogKeep fit under the cap and all of them do not; the
+        # so the newest $LogKeep-1 fit under the cap and all of them do not; the
         # old fixed name is held the way section 12 holds it, and an unheld
         # leftover of the old rotation is the oldest of all.
         $ld13 = Get-Content -LiteralPath $script -Raw
@@ -630,10 +630,11 @@ try {
             Check '13: the spawn exits 0' ($exit13 -eq 0) "got $exit13; log: $run13"
             Check '13: the successor answers' (Wait-Pipe $pipe13) 'pipe never opened'
             Check '13: exactly one sotd is on the pipe' (@(Get-DaemonProcs (Get-PipePath $pipe13)).Count -eq 1) "found $(@(Get-DaemonProcs (Get-PipePath $pipe13)).Count)"
-            $kept13 = @($old13 | Select-Object -Last $keep13 | Where-Object { (Test-Path -LiteralPath $_) -and ((Get-Item -LiteralPath $_).Length -eq $size13) })
-            Check "13: the newest $keep13 files are kept" ($kept13.Count -eq $keep13) "kept $($kept13.Count) of $keep13"
+            # The spawn creates a log of its own, so it leaves $LogKeep-1 of the old ones.
+            $kept13 = @($old13 | Select-Object -Last ($keep13 - 1) | Where-Object { (Test-Path -LiteralPath $_) -and ((Get-Item -LiteralPath $_).Length -eq $size13) })
+            Check "13: the newest $($keep13 - 1) old files are kept" ($kept13.Count -eq ($keep13 - 1)) "kept $($kept13.Count) of $($keep13 - 1)"
             $gone13 = @(@($tmp13) + $old13 | Where-Object { -not (Test-Path -LiteralPath $_) })
-            $want13 = @(@($tmp13) + @($old13 | Select-Object -First 3))
+            $want13 = @(@($tmp13) + @($old13 | Select-Object -First 4))
             Check '13: the deleted files are exactly the oldest, in order' (($gone13 -join ',') -ceq ($want13 -join ',')) "deleted: $($gone13 -join ', ')"
             Check '13: the held log is kept with one line naming it' (($run13 | Out-String -Width 4096) -match ('kept log [^\r\n]*[\\/]' + [regex]::Escape((Split-Path -Leaf $out13)) + ': \S')) "log: $run13"
             $held13text = ''
@@ -666,9 +667,11 @@ try {
 } catch { Check '13: section ran' $false $_.Exception.Message }
 try {
     if ($compiled) {
-        Write-Host "`n=== 13b. LogsStayBoundedByCap: within the file count, the cap still prunes, oldest first, and keeps the newest ===" -ForegroundColor Cyan
-        # $LogKeep files of half the cap each: the count is within bounds and
-        # the unprotected total is over the cap, so only the cap prunes.
+        Write-Host "`n=== 13b. LogsStayBoundedByCap: within the file count (the start's own log counted), the cap still prunes, oldest first, and keeps the newest ===" -ForegroundColor Cyan
+        # $LogKeep-1 files of half the cap each: with the start's own log the
+        # count is within bounds, and the unprotected total is over the cap, so
+        # only the cap prunes, and the newest stays out of the total, so one
+        # oldest file goes.
         $ld13b = Get-Content -LiteralPath $script -Raw
         $keep13b = [int]([regex]::Match($ld13b, '(?m)^\$LogKeep\s*=\s*(\d+)').Groups[1].Value)
         $cap13b = [int64]([regex]::Match($ld13b, '(?m)^\$LogCapBytes\s*=\s*(\d+)MB').Groups[1].Value) * 1MB
@@ -679,7 +682,7 @@ try {
         New-Item -ItemType Directory -Force -Path $log13bdir | Out-Null
         $size13b = [int64][math]::Floor($cap13b / 2)
         $old13b = @()
-        for ($i13b = 0; $i13b -lt $keep13b; $i13b++) {
+        for ($i13b = 0; $i13b -lt ($keep13b - 1); $i13b++) {
             $n13b = Join-Path $log13bdir ('sotd-local.stdout.20200101-0000{0:d2}-000Z-{1}.log' -f $i13b, (1000 + $i13b))
             $fs13b = [System.IO.File]::Create($n13b)
             try { $fs13b.SetLength($size13b) } finally { $fs13b.Dispose() }
@@ -691,11 +694,11 @@ try {
             Check '13b: the spawn exits 0' ($exit13b -eq 0) "got $exit13b; log: $run13b"
             Check '13b: the successor answers' (Wait-Pipe $pipe13b) 'pipe never opened'
             $gone13b = @($old13b | Where-Object { -not (Test-Path -LiteralPath $_) })
-            $want13b = @($old13b | Select-Object -First ($keep13b - 3))
+            $want13b = @($old13b | Select-Object -First ($keep13b - 4))
             Check '13b: the deleted files are exactly the oldest, in order' (($gone13b -join ',') -ceq ($want13b -join ',')) "deleted: $($gone13b -join ', ')"
             Check '13b: the newest closed log is kept' (Test-Path -LiteralPath $old13b[$old13b.Count - 1]) 'the newest old log is gone'
             $unprot13b = [int64]0
-            foreach ($f13b in @($old13b | Select-Object -First ($keep13b - 1))) {
+            foreach ($f13b in @($old13b | Select-Object -First ($keep13b - 2))) {
                 if (Test-Path -LiteralPath $f13b) { $unprot13b += (Get-Item -LiteralPath $f13b).Length }
             }
             Check '13b: the unprotected total is at most the cap' ($unprot13b -le $cap13b) "total $unprot13b, cap $cap13b"

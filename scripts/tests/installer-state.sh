@@ -403,13 +403,11 @@ check "the rendered unit's owner path is the prefix's sotd" "/opt/sot-r/bin/sotd
 
 # ---------------------------------------------------------------------------
 case_start "rendered_unit_holds_any_path_literally"
-# A prefix or home holding `|` (the sed delimiter), `&` (the matched text) or `\` (an escape) lands byte for byte.
-ODD_PREFIX="$WORK/od|d&p\\x\\1"; ODD_HOME="$WORK/h|o&m\\e"
-RO="$WORK/rendered-odd.service"
-HOME="$ODD_HOME" render_sotd_unit "$ODD_PREFIX" "$(dirname "$0")/../../deploy/sotd.service" "$RO"
-check "ExecStart names the prefix's sotd byte for byte" "1" "$(grep -cF -- "exec \"$ODD_PREFIX/bin/sotd\" --project-root \"$ODD_HOME\" --label sot" "$RO" || true)"
-check "ExecStartPre names the prefix's sot-apply byte for byte" "1" "$(grep -cF -- "exec \"$ODD_PREFIX/bin/sot-apply\"" "$RO" || true)"
-check "no placeholder is left" "0" "$(grep -c '@SOT_[A-Z_]*@' "$RO" || true)"
+# A value holding `|` (the sed delimiter), `&` (the matched text) or a backslash lands byte for byte in an s|..|..| splice;
+# the renders themselves refuse such a prefix or home first (renders_refuse_syntax_in_a_path), so this is the splice's own proof.
+ODD_PREFIX="$WORK/od|d&p"
+check "a sed splice of a path holding | and & lands byte for byte" "$ODD_PREFIX/bin/sotd" \
+    "$(printf '@SOT_BIN@' | sed -e "s|@SOT_BIN@|$(sot_sed_literal "$ODD_PREFIX/bin/sotd")|")"
 ODD_TAG='v0.6.7-a&b|c\\d'
 check "a tag holding & | and a backslash is spliced into install.json byte for byte" "\"tag\": \"$ODD_TAG\"" \
     "$(printf '{"tag": "v0.6.6"}\n' | sed -e 's|"tag": *"[^"]*"|"tag": "'"$(sot_sed_literal "$ODD_TAG")"'"|' | sed -n 's/^{\(.*\)}$/\1/p')"
@@ -527,7 +525,7 @@ printf 'known-line-live\n' > "$live"
 for i in 1 2 3 4 5 6; do printf 'x\n' > "$d/sotd.20200101-00000$i-000Z-$((99999990 + i)).log"; done
 sot_prune_logs "$d"
 check "a log whose writer lives keeps its line" "known-line-live" "$(cat "$live" 2>/dev/null || echo deleted)"
-check "the two oldest dead logs go in its place" "3456" \
+check "the three oldest dead logs go in its place" "456" \
     "$(for i in 1 2 3 4 5 6; do [ -e "$d/sotd.20200101-00000$i-000Z-$((99999990 + i)).log" ] && printf '%s' "$i"; done; true)"
 # Pin: bash below 4.1 exits a set -u shell on "$@" with no positional
 # parameters; this host's bash cannot show that red.
@@ -718,7 +716,7 @@ check "a binary newer than an hour-old daemon is STALE, both times printed, noth
 [ "$(uname -s)" != Linux ] || check "the same with BSD's stat and date" "running daemon pid 222 is STALE — started D, binary built D|" "$bsd_out"
 starts_with "a comm that is the program's path (macOS's ps) names the same daemon" "running daemon pid 222 " "$path_line"
 starts_with "restart judges this account's daemon by its exact label" "running daemon pid 333 " "$label_line"
-
+. "$(dirname "$0")/installer-unit-limits.sh"
 # shellcheck source=installer-entry.sh
 . "$(dirname "$0")/installer-entry.sh"
 

@@ -86,6 +86,10 @@ function Invoke-Native([string]$Exe, [string[]]$ArgList) {
     return [pscustomobject]@{ Code = $code; Out = $out; Err = $err }
 }
 
+# The one way this script runs git: the stall bound goes with every call (a blobless clone's cat-file or worktree add runs a
+# lazy fetch, and the pair reaches that child). A function of this script, so nothing leaks to the daemon and rows it starts.
+function Invoke-Git([string[]]$ArgList) { Invoke-Native 'git.exe' (@('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60') + $ArgList) }
+
 # ---- the network (replaced by the suite) -----------------------------------------------------------------------------
 $script:CurlBound = @('--connect-timeout', '15', '--speed-limit', '1000', '--speed-time', '60')
 function Invoke-CurlText([string]$Url, [switch]$Head) {
@@ -170,7 +174,7 @@ function Get-BuildDirection([string]$Prefix, [string]$Installed, [string]$Tag) {
     if (-not $c.Ok -or $rel -notmatch '^[0-9a-f]{40}$') { return "unknown: $Tag has no COMMIT to read" }
     $base = Join-Path $Prefix 'repo\base'
     if (-not (Test-Path -LiteralPath (Join-Path $base '.git'))) { return "unknown: no base clone at $base" }
-    $git = { param([string[]]$A) (Invoke-Native 'git.exe' (@('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', '-C', $base) + $A)).Code }
+    $git = { param([string[]]$A) (Invoke-Git (@('-C', $base) + $A)).Code }
     if ((& $git @('cat-file', '-e', "$rel^{commit}")) -ne 0 -and (& $git @('fetch', '--quiet', 'origin', $rel)) -ne 0) { return "unknown: could not fetch the commit of $Tag" }
     if ((& $git @('rev-parse', '--verify', '--quiet', "$built^{commit}")) -ne 0) { return "unknown: this build's commit $($built.Substring(0, [Math]::Min(9, $built.Length))) is not in $base" }
     if ((& $git @('merge-base', '--is-ancestor', $built, $rel)) -eq 0) { return 'forward' }
@@ -709,29 +713,29 @@ function Initialize-Base([string]$Base, [string]$Origin, $Pack) {
     $script:Step = 'checkout'
     if (-not (Test-Path -LiteralPath (Join-Path $Base '.git'))) {
         New-Item -ItemType Directory -Force -Path (Split-Path $Base) | Out-Null
-        $r = Invoke-Native 'git.exe' @('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', 'clone', '--quiet', '--filter=blob:none', '--no-checkout', $Origin, $Base)
+        $r = Invoke-Git @('clone', '--quiet', '--filter=blob:none', '--no-checkout', $Origin, $Base)
         if ($r.Code -ne 0) { Stop-Entry 'checkout' "could not clone $Origin into ${Base}: $((@($r.Out + $r.Err) | Select-Object -First 3) -join ' / ')" }
     }
-    $has = Invoke-Native 'git.exe' @('-C', $Base, 'cat-file', '-e', "$($Pack.Commit)^{commit}")
+    $has = Invoke-Git @('-C', $Base, 'cat-file', '-e', "$($Pack.Commit)^{commit}")
     if ($has.Code -ne 0) {
-        $f = Invoke-Native 'git.exe' @('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', '-C', $Base, 'fetch', '--quiet', 'origin', $Pack.Commit)
+        $f = Invoke-Git @('-C', $Base, 'fetch', '--quiet', 'origin', $Pack.Commit)
         if ($f.Code -ne 0) { Stop-Entry 'checkout' "$($Pack.Commit) is not in $Base and could not be fetched from $Origin" }
     }
     # install-manifest.ps1 reads the release commit from the tag; a pack of the line has no tag.
-    if (-not $Pack.Version.Contains('+') -and -not ((Invoke-Native 'git.exe' @('-C', $Base, 'tag', '-l', $Pack.Tag)).Out -join '')) {
-        Invoke-Native 'git.exe' @('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', '-C', $Base, 'fetch', '--quiet', 'origin', "refs/tags/$($Pack.Tag):refs/tags/$($Pack.Tag)") | Out-Null
+    if (-not $Pack.Version.Contains('+') -and -not ((Invoke-Git @('-C', $Base, 'tag', '-l', $Pack.Tag)).Out -join '')) {
+        Invoke-Git @('-C', $Base, 'fetch', '--quiet', 'origin', "refs/tags/$($Pack.Tag):refs/tags/$($Pack.Tag)") | Out-Null
     }
 }
 function New-VersionFolder([string]$Base, [string]$VersionDir, $Pack) {
     if (Test-Path -LiteralPath $VersionDir) {
-        $h = Invoke-Native 'git.exe' @('-C', $VersionDir, 'rev-parse', 'HEAD')
+        $h = Invoke-Git @('-C', $VersionDir, 'rev-parse', 'HEAD')
         if ($h.Code -eq 0 -and $h.Out[0] -eq $Pack.Commit) { return }
         Stop-Entry 'checkout' "$VersionDir exists but is not at $($Pack.Commit.Substring(0, 9)); remove that folder and run this again"
     }
-    Invoke-Native 'git.exe' @('-C', $Base, 'worktree', 'prune') | Out-Null
-    $r = Invoke-Native 'git.exe' @('-C', $Base, 'worktree', 'add', '--detach', $VersionDir, $Pack.Commit)
+    Invoke-Git @('-C', $Base, 'worktree', 'prune') | Out-Null
+    $r = Invoke-Git @('-C', $Base, 'worktree', 'add', '--detach', $VersionDir, $Pack.Commit)
     if ($r.Code -ne 0) { Stop-Entry 'checkout' "could not add the worktree $VersionDir at $($Pack.Commit.Substring(0, 9)): $((@($r.Out + $r.Err) | Select-Object -First 3) -join ' / ')" }
-    $h = Invoke-Native 'git.exe' @('-C', $VersionDir, 'rev-parse', 'HEAD')
+    $h = Invoke-Git @('-C', $VersionDir, 'rev-parse', 'HEAD')
     if ($h.Out[0] -ne $Pack.Commit) { Stop-Entry 'checkout' "$VersionDir is not at $($Pack.Commit)" }
 }
 

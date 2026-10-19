@@ -150,6 +150,24 @@ for code in 3 0; do
         "$([ "$code" = 3 ] && echo no || echo yes)" "$([ -e "$d/reexec" ] && echo yes || echo no)"
 done
 
+case_start "a_prefix_or_home_the_renders_refuse_is_dropped_before_the_flip"
+# The rendered unit and wrapper cannot carry the path, so the apply refuses before the flip, drops the pointer and exits 0:
+# no window launch loops on a try-restart.
+for which in prefix home; do
+    if [ "$which" = prefix ]; then d="$WORK"'/pn3$x'; ch='$'; else d="$WORK/pn3h"; ch=';'; fi
+    mk_apply_fixture "$d" 1 1
+    cp "$d/prefix/bin/sotd" "$d/sotd.orig"
+    ah="$d/home"; [ "$which" = prefix ] || { mv "$d/home" "$d/h;m"; ah="$d/h;m"; }
+    rm -rf "${d:?}/prefix/updates/.lock"; AP_RC=0
+    ( HOME="$ah" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log" STUB_SOCKET="$d/sot.sock" "$d/prefix/bin/sot-apply" ) > "$d/out" 2>&1 || AP_RC=$?
+    check "a $which holding $ch: the apply exits 0" "0" "$AP_RC"
+    check "the line names the $which and $ch" "1 1" "$(grep -cF "ERROR: the $which " "$d/out" || true) $(grep -cF " holds $ch," "$d/out" || true)"
+    check "the pointer is dropped" "gone" "$(armed "$d")"
+    check "the install still names its tag, sotd is not replaced" "v9.9.8 same" \
+        "$(installed_tag "$d") $(cmp -s "$d/sotd.orig" "$d/prefix/bin/sotd" && echo same || echo differ)"
+    check "the checkout did not flip" "$d/prev-co" "$(readlink "$d/prefix/repo/current")"
+done
+
 case_start "a_sotd_that_does_not_answer_leaves_the_tag_check_in_charge"
 # 1 is an older sotd's answer to the unknown word, 2 is a sotd that has `update` and not `pointer`, 4 is anything else.
 for code in 0 1 2 4; do

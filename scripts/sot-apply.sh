@@ -45,6 +45,30 @@ sot_sed_literal() {  # <text>: the text as the replacement of an s|...|...| comm
     printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
 }
 
+# Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it); the library comes from the commit being applied, so the
+# check before the flip runs this copy.
+sot_path_refused() {  # <what: prefix|home> <path>
+    local ch= list='% \ '"'"' " $ ` & | ; space tab newline'
+    case "$2" in
+        *'%'*) ch='%' ;;
+        *'\'*) ch='\' ;;
+        *"'"*) ch="'" ;;
+        *'"'*) ch='"' ;;
+        *'$'*) ch='$' ;;
+        *'`'*) ch='`' ;;
+        *'&'*) ch='&' ;;
+        *'|'*) ch='|' ;;
+        *';'*) ch=';' ;;
+        *' '*) ch=space ;;
+        *'	'*) ch=tab ;;
+        *'
+'*) ch=newline ;;
+        *) return 1 ;;
+    esac
+    printf 'ERROR: the %s %s holds %s, which a unit, launcher or shell line would read as syntax; use a %s with none of: %s\n' "$1" "$2" "$ch" "$1" "$list" >&2
+    return 0
+}
+
 # Prefix = parent of this script's bin dir. A staged copy the installed apply re-executed (below, with
 # SOT_APPLY_REEXECED set) lies under <prefix>/updates/<tag>-<target>/<top>/, which names the prefix: the installed apply
 # builds that path itself, and every installed apply since v0.6.5 sets the same variable, so one rule serves them all.
@@ -239,6 +263,14 @@ esac
     log "pending pointer is for target '$PTR_TARGET', this host is $TARGET — dropping"; drop_pending; exit 0; }
 [ -n "$CHECKOUT" ] && [ -n "$COMMIT" ] && [ -n "$ASSET" ] && [ -n "$ASSET_SHA" ] || {
     log "pending pointer is missing fields — dropping"; drop_pending; exit 0; }
+
+# A prefix or home the rendered unit and wrapper cannot carry is no update to apply: refused before the flip, with the
+# pointer dropped, so a window launch never loops on a try-restart (the predicate's own line names the path and character).
+if sot_path_refused prefix "$PREFIX" || sot_path_refused home "${HOME:-}"; then
+    log "pending pointer will not apply (the prefix or home above) — dropping"
+    drop_pending
+    exit 0
+fi
 
 # Stage dirs are keyed <tag>-<target> (shared roots serve several platforms).
 READY="$UPDATES/$TAG-$TARGET"

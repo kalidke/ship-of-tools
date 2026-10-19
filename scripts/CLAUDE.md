@@ -103,7 +103,8 @@ and the launch path fails open: no update step can stop a window from starting.
 - Every network call a product script makes carries a bound on its whole wait: ssh runs under `sot_bounded` (bash:
   comm-lib's, of which `install.sh` carries the one copy) or `Invoke-SotWithin` (PowerShell, `sot-hosts.ps1`) with the
   tree's `SSH_OPTS`, git with `http.lowSpeedLimit=1000` and
-  `http.lowSpeedTime=60`, curl with `CURL_BOUND` (connect 15 s, under 1000 B/s for 60 s).
+  `http.lowSpeedTime=60` (install.sh's one `git` function and install.ps1's one `Invoke-Git`, never an environment variable the
+  daemon and rows would inherit), curl with `CURL_BOUND` (connect 15 s, under 1000 B/s for 60 s).
 
 - Both installer paths delegate folder-trust declaration to the agents-owned offline command; a failure is reported
   and never described as a successful declaration.
@@ -280,6 +281,8 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
 - The bounds the launcher and the daemon share (`LAUNCH_WAIT` 160 s, `DAEMON_LOCK_WAIT` 150 s, the lease reply wait and
   the handover bound, all in `rust/protocol/src/ops/lease.rs`) are pinned by `launcher_bounds_match_ops` in
   `tests/installer-state.sh`; change both sides together.
+- `sot_path_refused` (the one list of characters a prefix or home may not hold) has three byte-equal copies (`lib/sot-daemon.sh`,
+  `install.sh`, `sot-apply.sh`), pinned by `one_path_predicate` in `tests/installer-unit-limits.sh`; edit all three.
 - `sot_install_copy` has three byte-equal copies (`lib/sot-daemon.sh`, `install.sh`, `sot-apply.sh`), pinned by
   `one_copy_helper` in `tests/installer-apply.sh`; edit all three.
 - install.sh's two cleanup traps follow comm/CLAUDE.md's rule: it arms itself (`trap - HUP INT TERM`) before each

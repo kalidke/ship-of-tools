@@ -97,11 +97,14 @@ on_exit() {
 }
 
 # Every network call carries the bound its tool offers, so a stalled network ends in the tool's own error: curl gives
-# up on a connect past 15 s or a transfer under 1000 B/s for 60 s, git on an https transfer by the same rule (no
-# process timer on git: one killed mid-fetch is not worth a hang), and ssh runs the tree's one option set (the
-# rust/protocol topology's SSH_OPTS) under sot_bounded, which also ends a hang in key exchange or authentication.
+# up on a connect past 15 s or a transfer under 1000 B/s for 60 s, git on an https transfer by the same rule (the git
+# function below; no process timer on git: one killed mid-fetch is not worth a hang), and ssh runs the tree's one option
+# set (the rust/protocol topology's SSH_OPTS) under sot_bounded, which also ends a hang in key exchange or authentication.
 CURL_BOUND=(--connect-timeout 15 --speed-limit 1000 --speed-time 60)
-GIT_BOUND=(-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60)
+# One git function, scoped to this script, carries the pair: every git call below is plain `git`, and the -c pairs reach
+# the lazy fetch a blobless clone's cat-file or worktree add runs. No environment variable: nothing leaks to the daemon
+# and rows this installer starts.
+git() { command git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 "$@"; }
 SSH_OPTS=(-T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10
           -o ControlMaster=no -o ControlPath=none -o ControlPersist=no)
 
@@ -170,17 +173,29 @@ sot_install_copy() {  # <src> <dst> [mode]
     return 1
 }
 
-# Refuse characters a shell-embedded path (systemd unit ExecStart, JSON
-# manifest, sed substitution, launcher heredocs) cannot carry safely, plus
-# a newline, which turns one generated service or manifest line into two.
-# Explicit rejection over silent corruption. Shared by --prefix and the
-# project root ($HOME) — deploy/sotd.service's ExecStart now embeds both
-# inside a shell string, where a stray quote breaks the unit.
-reject_unsafe_path_chars() {  # <label> <value>
+# Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it), which names the one list of characters a path may not
+# hold. The front gate below runs it on --prefix and the project root ($HOME) before any write, because the generated unit,
+# wrappers, desktop entries and manifest splice both into text another reader parses; the library's renders run it too.
+sot_path_refused() {  # <what: prefix|home> <path>
+    local ch= list='% \ '"'"' " $ ` & | ; space tab newline'
     case "$2" in
-        *[\&\|\;\"\'\\\`]*|*' '*|*'	'*|*$'\n'*)
-            die "unsupported characters in $1 '$2' — no spaces, quotes, backslashes, newlines, or shell metacharacters" ;;
+        *'%'*) ch='%' ;;
+        *'\'*) ch='\' ;;
+        *"'"*) ch="'" ;;
+        *'"'*) ch='"' ;;
+        *'$'*) ch='$' ;;
+        *'`'*) ch='`' ;;
+        *'&'*) ch='&' ;;
+        *'|'*) ch='|' ;;
+        *';'*) ch=';' ;;
+        *' '*) ch=space ;;
+        *'	'*) ch=tab ;;
+        *'
+'*) ch=newline ;;
+        *) return 1 ;;
     esac
+    printf 'ERROR: the %s %s holds %s, which a unit, launcher or shell line would read as syntax; use a %s with none of: %s\n' "$1" "$2" "$ch" "$1" "$list" >&2
+    return 0
 }
 
 # ---- what this box knows about itself --------------------------------------------
@@ -468,13 +483,13 @@ installer_build_direction() {  # <prefix> <installed version> <tag>
     rel="$(tr -d ' \n' < "$rel"; rm -f "$rel")"
     printf '%s' "$rel" | grep -Eq '^[0-9a-f]{40}$' || { echo "unknown: $3 has no COMMIT to read"; return 0; }
     [ -e "$base/.git" ] || [ -f "$base/HEAD" ] || { echo "unknown: no base clone at $base"; return 0; }
-    git "${GIT_BOUND[@]}" -C "$base" cat-file -e "$rel^{commit}" 2>/dev/null \
-        || git "${GIT_BOUND[@]}" -C "$base" fetch --quiet origin "$rel" 2>/dev/null \
+    git -C "$base" cat-file -e "$rel^{commit}" 2>/dev/null \
+        || git -C "$base" fetch --quiet origin "$rel" 2>/dev/null \
         || { echo "unknown: could not fetch the commit of $3"; return 0; }
-    git "${GIT_BOUND[@]}" -C "$base" rev-parse --verify --quiet "$built^{commit}" >/dev/null \
+    git -C "$base" rev-parse --verify --quiet "$built^{commit}" >/dev/null \
         || { echo "unknown: this build's commit ${built:0:9} is not in $base"; return 0; }
-    if git "${GIT_BOUND[@]}" -C "$base" merge-base --is-ancestor "$built" "$rel" 2>/dev/null; then echo forward
-    elif git "${GIT_BOUND[@]}" -C "$base" merge-base --is-ancestor "$rel" "$built" 2>/dev/null; then echo older
+    if git -C "$base" merge-base --is-ancestor "$built" "$rel" 2>/dev/null; then echo forward
+    elif git -C "$base" merge-base --is-ancestor "$rel" "$built" 2>/dev/null; then echo older
     else echo "unknown: neither $3 nor this build contains the other"; fi
 }
 # What a build of the line is told about the release it would be moved to (the stop of an implicit run).
@@ -787,7 +802,7 @@ installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-decla
 installer_enable_local_service() {  # <prefix> <template> <socket>
     mkdir -p "$HOME/.config/systemd/user"
     installer_retire_tmux_unit "$HOME/.config/systemd/user"
-    render_sotd_unit "$1" "$2" "$HOME/.config/systemd/user/sotd.service"
+    render_sotd_unit "$1" "$2" "$HOME/.config/systemd/user/sotd.service" || die "could not write the sotd unit"
     # The unit and its enable link live in the home, which other hosts may
     # share: pin it to the hosts that run sotd before any manager reloads it,
     # and with no hosts.toml to this host, which installs it.
@@ -949,8 +964,8 @@ case "$PREFIX" in
     /*) ;;
     *) PREFIX="$(pwd)/$PREFIX" ;;
 esac
-reject_unsafe_path_chars "prefix" "$PREFIX"
-reject_unsafe_path_chars 'project root ($HOME)' "$HOME"
+sot_path_refused prefix "$PREFIX" && die "refusing the prefix (named above)"
+sot_path_refused home "$HOME" && die "refusing the home (named above)"
 
 # ---- 1. preflight ------------------------------------------------------------
 STEP=preflight
@@ -1401,11 +1416,11 @@ REPO_DIR="$PREFIX/repo"
 BASE="$REPO_DIR/base"
 CHECKOUT="$REPO_DIR/versions/$VERSION"
 CURRENT="$REPO_DIR/current"
-command -v git >/dev/null || die "git is required (the install includes a repo checkout)"
+type -P git >/dev/null || die "git is required (the install includes a repo checkout)"
 if [ ! -d "$BASE" ]; then
     say "creating base clone (blobless, no checkout)"
     # Public repo: plain https clone, no auth needed.
-    git "${GIT_BOUND[@]}" clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
+    git clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
         || die "base clone failed"
 fi
 # --force on the tag fetch: a release tag force-moved upstream (e.g. the
@@ -1414,7 +1429,7 @@ fi
 # The checkouts are READ-ONLY BY CONVENTION, so force-updating tags is safe.
 # An --archive install of a commit the base clone already holds needs no origin: carried to a machine with no network,
 # it installs without the fetch.
-if ! git "${GIT_BOUND[@]}" -C "$BASE" fetch --tags --force origin; then
+if ! git -C "$BASE" fetch --tags --force origin; then
     if [ -n "$ARCHIVE" ] && git -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" >/dev/null 2>&1; then
         say "note: could not fetch origin; $BASE already holds ${ARCHIVE_COMMIT:0:9}"
     else
