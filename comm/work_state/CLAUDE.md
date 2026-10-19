@@ -19,7 +19,7 @@ priority) sits above the `with_lock` call that applies it. For what the Stop hoo
   another's read and write is never overwritten.
 - A declaration (`working`, `idle`, `blocked`, `done`, `waiting`) with nowhere to land fails loudly; an event
   (`prompt`, `stop`, `join`, `dialog`, `resumed`) from a session with no registry row writes nothing to the registry (`sot_require_agent`).
-- `dialog` is a fact only the hooks write: it reads red over a running turn, never touches `question`, `waiting`, `done`, `note` or `floor`, and never outlives its turn (`prompt` and `stop` delete it; the heartbeat's `resumed` deletes it when the call returns, found by `state/dialog-<id>.marker`).
+- `dialog` is a fact only the hooks write: it reads red over a running turn, never touches `question`, `waiting`, `done`, `note` or `floor`, and never outlives its turn (`prompt` and `stop` delete it, and the heartbeat's `resumed` when the call returns). `comm-status.sh` owns `state/dialog-<id>.marker` with the fact: the `dialog` write creates it and a `resumed`, `prompt` or `stop` write removes it, each only once committed; the heartbeat only tests it.
 - `prompt` writes the session's turn mark (`state/turn-<self slot>`: the time and `$CLAUDE_CODE_SESSION_ID`) and
   `stop` removes it, row or no row; `join`, sent by `comm-join.sh`, sets `floor` to machine only from a mark of its
   own session under five minutes old. So the turn that joins reads working until its Stop; a session whose hooks are

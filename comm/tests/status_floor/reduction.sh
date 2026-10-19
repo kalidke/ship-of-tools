@@ -506,6 +506,19 @@ case_a_denied_or_interrupted_dialog_never_comes_back() (
     # An interrupt fires no Stop: the next prompt clears the red.
     DR; W "$GENUINE"; expect working/user/-/-/- interrupted
 )
+# The marker follows the fact's write: a `resumed` whose registry write fails leaves both, so the next return clears
+# them; a `dialog` whose write fails leaves neither (review S1: the marker went before the write, and red stayed).
+case_a_failed_write_leaves_the_marker_as_the_fact_is() (
+    export SOT_WORKSPACE_ID=dlg-fail
+    seed idle; W "$GENUINE"; DR
+    mkdir "$REGISTRY.tmp"; HB; rmdir "$REGISTRY.tmp"
+    expect blocked/user/-/-/- failed-resumed || exit 1
+    [ -n "$(dialog_marker)" ] || { echo "    the marker went with the failed write"; exit 1; }
+    HB; expect working/user/-/-/- next-return || exit 1
+    [ -z "$(dialog_marker)" ] || { echo "    marker left"; exit 1; }
+    mkdir "$REGISTRY.tmp"; "$ST" dialog "$DIALOG_TEXT" >/dev/null 2>&1; rmdir "$REGISTRY.tmp"
+    [ "$(dialog_fact)" = - ] && [ -z "$(dialog_marker)" ] || { echo "    a failed dialog left a fact or marker"; exit 1; }
+)
 case_codex_permission_is_red_until_the_tool_returns() (
     export SOT_WORKSPACE_ID=dlg-codex
     seed idle; W "$GENUINE"

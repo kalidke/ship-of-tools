@@ -291,7 +291,10 @@ red after the answer (Codex: `blocked` then `stop`, cleared only by a typed prom
   heartbeat finds `state/dialog-<key>.marker`, keyed by `SOT_WORKSPACE_ID` or the
   session id, with one `[ -e ]` per tool return, and sends `resumed`), the turn's
   `stop`, and every `prompt` (typed, machine, a join). So `dialog` never outlives its
-  turn.
+  turn. `comm-status.sh` owns the marker with the fact: the `dialog` write creates it,
+  and a `resumed`, `prompt` or `stop` write removes it, each only after it commits. A
+  failed write leaves the marker as the fact is, so a failed `resumed` is retried by
+  the next tool return.
 - Withheld: the Claude hook. An earlier build of this amendment wired Claude's
   `PermissionRequest` to a dialog hook and `PostToolUseFailure` to the heartbeat;
   neither ships, and an install strips both (`_remove_stale_comm_hooks!`). Claude's

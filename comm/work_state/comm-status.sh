@@ -20,12 +20,13 @@
 #   dialog "T"  the agent shows a permission dialog that waits on a person
 #            (Codex's PermissionRequest hook sends it): sets `dialog` to T, which
 #            reads red over the running turn; no text is refused (rc 2). With
-#            SOT_WORKSPACE_ID or CLAUDE_CODE_SESSION_ID set it also creates
-#            state/dialog-<id>.marker, the cheap test the heartbeat makes on
-#            every tool return.
+#            SOT_WORKSPACE_ID or CLAUDE_CODE_SESSION_ID set, its write also
+#            creates state/dialog-<id>.marker, the cheap test the heartbeat
+#            makes on every tool return.
 #   resumed  the dialog's call has returned (the heartbeat sends it when it
 #            finds that marker): clears `dialog`. `prompt` and `stop` clear it
-#            too: it never outlives its turn.
+#            too: it never outlives its turn. All three remove the marker
+#            once their write has committed.
 #   join     the session has just written its row (comm-join.sh sends it):
 #            with a turn mark of its own session under five minutes old, sets
 #            `floor` to machine as a machine `prompt` does; else writes nothing.
@@ -162,15 +163,6 @@ if [ "$VERB" = blocked ] && [ -n "${SOT_COMM_ASKQ_ID:-}" ]; then
     : > "$COMM_HOME/state/askq-$(printf '%s' "$SOT_COMM_ASKQ_ID" | tr -c 'A-Za-z0-9._-' '_').marker" 2>/dev/null || true
 fi
 
-# The dialog marker, behind the same gate and row check (the key is sanitized: it
-# becomes a filename). With no key there is no marker, and the `prompt` or `stop`
-# that ends the turn clears the fact.
-DIALOG_KEY="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
-if [ "$VERB" = dialog ] && [ -n "$DIALOG_KEY" ]; then
-    mkdir -p "$COMM_HOME/state" 2>/dev/null || true
-    : > "$COMM_HOME/state/dialog-$(printf '%s' "$DIALOG_KEY" | tr -c 'A-Za-z0-9._-' '_').marker" 2>/dev/null || true
-fi
-
 # ${2+set}: distinguish an omitted text (keep the prior note) from an
 # explicit "" (clear it).
 HAVE=0; [ "${2+set}" = set ] && HAVE=1
@@ -235,4 +227,19 @@ status_txn() {
         | .status_at = $t | .last_seen = $t)
     ' --arg n "$NAME" --arg st "$VERB" --arg o "$ORIGIN" --arg t "$ts" --arg h "$HAVE"
 }
-with_lock status_txn
+rc=0; with_lock status_txn || rc=$?
+
+# The dialog marker follows the fact, after the write that commits it: `dialog`
+# creates it, and `resumed`, `prompt` and `stop` remove it. The heartbeat only
+# tests it, so a write that failed leaves the marker as the fact is. The key is
+# sanitized (it becomes a filename); with no key there is no marker, and the
+# `prompt` or `stop` that ends the turn clears the fact.
+DIALOG_KEY="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+if [ "$rc" = 0 ] && [ -n "$DIALOG_KEY" ]; then
+    DIALOG_MARKER="$COMM_HOME/state/dialog-$(printf '%s' "$DIALOG_KEY" | tr -c 'A-Za-z0-9._-' '_').marker"
+    case "$VERB" in
+        dialog) { mkdir -p "$COMM_HOME/state" && : > "$DIALOG_MARKER"; } 2>/dev/null || true ;;
+        resumed|prompt|stop) rm -f "$DIALOG_MARKER" 2>/dev/null || true ;;
+    esac
+fi
+exit "$rc"
