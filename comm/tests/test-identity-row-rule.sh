@@ -30,6 +30,7 @@
 #   d12 no daemon: comm-leave.sh --name of a bound entry is refused, so leave then join takes nothing (SF1)
 #   d13 comm-leave.sh --name of an orphan the daemon says no row holds still removes it (SF1)
 #   s1  a stray whose self file names a held handle starts its session as its own handle, never reading the held one (SF2)
+#   d14 a registry the clearance cannot read refuses a join from outside, though the writer could read it (N4)
 #   d11 a derived join whose every tier the daemon holds takes none, empty cleared list included (bash 3.2)
 #   ds  a stray's session start steps past the held handle: its one plain line, identity ok (SF1)
 #   e   a respawned row's join takes its handle back
@@ -404,6 +405,20 @@ case_d11_a_derived_join_takes_no_tier_the_daemon_holds() {
     [ "$JOIN_RC" -ne 0 ] || { echo "  a derived join took @$(sed -n 1p "$STRAY_SELF") with every tier held: $JOIN_OUT"; return 1; }
     [ "$(cat "$REG")" = "$before" ] || { echo "  registry changed"; return 1; }
 }
+case_d14_the_clearance_alone_finds_the_registry_unreadable() {
+    # The clearance's own read says unreadable (sot_row_binding, stubbed in a copy of the scripts) while the writer
+    # reads the registry fine, so only the clearance's refusal can stop this join.
+    local copy="$WORK/scripts-unreadable" before out rc=0
+    rm -rf "${copy:?}"; cp -r "$SCRIPTS_DIR" "$copy" && chmod -R u+w "$copy" || return 1
+    printf '\nsot_row_binding() { echo unreadable; }\n' >> "$copy/comm-lib.sh"
+    cp "$WORK/registry.seed" "$REG"; before="$(cat "$REG")"
+    held_by ""; start_stub_daemon
+    out="$(cd "$WORK" && env SOT_COMM_SELF_FILE="$WORK/stray-ur.txt" SOT_SOCKET="$SOCK" "$copy/comm-join.sh" --name t-unreadable-ruling 2>&1)" || rc=$?
+    stop_stub_daemon
+    [ "$rc" -ne 0 ] || { echo "  join succeeded: $out"; return 1; }
+    case "$out" in *"FAILED"*"registry could not be read"*) ;; *) echo "  message: $out"; return 1 ;; esac
+    [ "$(cat "$REG")" = "$before" ] || { echo "  registry changed"; return 1; }
+}
 case_bind_row_binding_states() {
     bind_row "$ROW"
     local got
@@ -467,6 +482,7 @@ check "d8: a row that binds the handle in the gap keeps it" case_d8_a_row_that_b
 check "d9: an entry bound on another computer is held" case_d9_an_entry_bound_on_another_computer_is_held
 check "d10: an unreadable registry refuses a join from outside" case_d10_an_unreadable_registry_refuses_a_join_from_outside
 check "d11: a derived join with every tier held by the daemon takes none, whatever bash" case_d11_a_derived_join_takes_no_tier_the_daemon_holds
+check "d14: a registry only the clearance finds unreadable refuses a join from outside" case_d14_the_clearance_alone_finds_the_registry_unreadable
 check "bind: sot_row_binding says owner, other, unbound and unreadable" case_bind_row_binding_states
 check "s1: a stray whose self file names a held handle starts as its own handle" case_s1_a_stray_whose_self_file_names_a_held_handle
 check "s3: a displaced row's session start rejoins and says it moved" case_s3_a_displaced_row_rejoins
