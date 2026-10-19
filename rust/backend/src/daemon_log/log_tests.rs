@@ -1,4 +1,4 @@
-//! Unit tests for the daemon's log (main.rs).
+//! Unit tests for the daemon's log (daemon_log/mod.rs).
 use super::*;
 
 /// ADR 0049, User isolation: the daemon's log file never holds a page secret an event carries.

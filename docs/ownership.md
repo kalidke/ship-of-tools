@@ -40,7 +40,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | resource dir, `SOT_RESOURCE_ROOT` | machine fact | platform | `rust/backend/src/paths.rs` `resource_dir` |
 | `\\?\` verbatim strip | primitive | platform | `rust/backend/src/paths.rs` `simplify_verbatim` |
 | `<state>/daemon.lock` | disk, lock | server | `rust/backend/src/server/listen.rs` `take_daemon_lock`, `lock_daemon`; primitive `rust/log/src/host/lock.rs` `try_lock_daemon`|
-| `<state>/sotd.log` (Windows `<state>\state\sotd.log`) | disk | server | `rust/backend/src/main.rs` `TeeWriter` (stdout gets a copy only when it is not a regular file, `stdout_is_file`; a log over 64 MiB is, after a daemon write, copied (its last 64 MiB) to `sotd.log.1` and truncated in place, `roll_log`); path `rust/backend/src/paths.rs` `state_dir` |
+| `<state>/sotd.log` (Windows `<state>\state\sotd.log`) | disk | server | `rust/backend/src/daemon_log/mod.rs` `TeeWriter` (stdout gets a copy only when it is not a regular file, `stdout_is_file`; a log over 64 MiB is, after a daemon write, copied (its last 64 MiB) to `sotd.log.1` and truncated in place, `roll_log`); path `rust/backend/src/paths.rs` `state_dir` |
 | umask 077, boot refusals | process rule | server | `rust/backend/src/main.rs` `apply_umask`, `parse_args` |
 | session socket/pipe path rule `<runtime>/sessions/<label>.sock`, `\\.\pipe\sot-<USER>-<label>` | disk rule | topology | `rust/protocol/src/topology/endpoint.rs` `session_socket_path` |
 | local daemon label (`sot`, `local`) | setting | topology | `rust/protocol/src/topology/endpoint.rs` `local_daemon_label`; spelled at several script sites (see two owners) |
@@ -259,8 +259,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | rollout gate (`gate`, `RolloutEvidence`; `--assume-no-rollback-target`, which every daemon spawn passes) | rule | capsule | `rust/log/src/store/rollout.rs` `gate`; `rust/log/src/capsule/mod.rs` `RolloutEvidence`; `rust/log/src/bin/sot-capsule.rs`; `rust/backend/src/rows/spawn/detach.rs` `mode_flag` |
 | `<sd>/rollout-evidence.json` and its reader `read_rollout_evidence` (provisional; no writer, no caller) | disk | capsule | `rust/log/src/store/rollout.rs` `read_rollout_evidence` |
 | SDK helper-protocol 1 | wire | capsule | `rust/log/src/claude.rs`; `rust/log/claude-sdk-helper/src/protocol.ts` |
-| sotd subcommand `session-socket-path` | CLI | topology | `rust/backend/src/main.rs` `parse_args`; `rust/protocol/src/topology/endpoint.rs` `session_socket_path` |
-| sotd subcommand `log-path` | CLI | server | `rust/backend/src/main.rs` `parse_args`; `rust/backend/src/paths.rs` `state_dir` |
+| sotd subcommand `session-socket-path` | CLI | topology | `rust/backend/src/main.rs` `main`; `rust/protocol/src/topology/endpoint.rs` `session_socket_path` |
+| sotd subcommand `log-path` | CLI | server | `rust/backend/src/main.rs` `main`; `rust/backend/src/paths.rs` `state_dir` |
 | sotd subcommands `topology ...`, `status`, `stdio-bridge` | CLI | topology | `rust/backend/src/main.rs` `parse_args`; `rust/backend/src/topology/cli.rs` `run`; `rust/backend/src/topology/status.rs` `run`; `rust/backend/src/topology/stdio_bridge.rs` `run` |
 | sotd subcommand `ancestors` | CLI | messaging | `rust/backend/src/comm/registry/ancestors.rs` `run` |
 | sotd subcommand `trust declare` | CLI | agents | `rust/backend/src/agents/trust_declaration.rs` `declare_trust`; routing `rust/backend/src/main.rs` |

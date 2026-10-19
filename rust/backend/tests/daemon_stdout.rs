@@ -12,7 +12,9 @@ async fn a_daemon_whose_stdout_is_a_file_writes_its_log_once() {
     let env = Env::new("stdout-file");
     let out_path = env._tmp.path().join("daemon-stdout.log");
     let out = std::fs::File::create(&out_path).expect("create the stdout file");
-    env.spawn_sotd_to(Stdio::from(out));
+    let err_path = env._tmp.path().join("daemon-stderr.log");
+    let err = std::fs::File::create(&err_path).expect("create the stderr file");
+    env.spawn_sotd_to(Stdio::from(out), Stdio::from(err));
     support::poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "the daemon's socket").await;
     env.kill_daemon_bounded().await;
 
@@ -20,6 +22,24 @@ async fn a_daemon_whose_stdout_is_a_file_writes_its_log_once() {
     assert!(stdout.is_empty(), "the daemon wrote its log to a stdout that is a file: {stdout}");
     let log = std::fs::read_to_string(env.daemon_log()).expect("sotd.log");
     assert!(log.contains("sotd starting"), "sotd.log holds no start line: {log}");
+    // A launcher that captures stderr into the file it names is told where the log lines went, once.
+    let said = std::fs::read_to_string(&err_path).unwrap_or_default();
+    let notice = format!("sotd: stdout is a file; log lines go to {}", env.daemon_log().display());
+    assert_eq!(said.matches(&notice).count(), 1, "stderr does not name the log exactly once: {said}");
+}
+
+/// With stdout a pipe the log lines come through it, so stderr says nothing of a file.
+#[tokio::test]
+async fn a_daemon_whose_stdout_is_a_pipe_says_nothing_on_stderr() {
+    let env = Env::new("stdout-pipe");
+    let err_path = env._tmp.path().join("daemon-stderr.log");
+    let err = std::fs::File::create(&err_path).expect("create the stderr file");
+    env.spawn_sotd_to(Stdio::piped(), Stdio::from(err));
+    support::poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "the daemon's socket").await;
+    env.kill_daemon_bounded().await;
+
+    let said = std::fs::read_to_string(&err_path).unwrap_or_default();
+    assert!(!said.contains("stdout is a file"), "stderr names a stdout file with stdout a pipe: {said}");
 }
 
 /// `sotd log-path` prints the path the daemon writes, per platform, under the daemon's own environment: after a start

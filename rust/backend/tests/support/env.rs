@@ -245,12 +245,12 @@ impl Env {
     /// — `Env` owns it now so its own `Drop` can order the daemon kill
     /// ahead of the leg sweep and tmux teardown (F4).
     pub fn spawn_sotd(&self) {
-        self.spawn_sotd_to(Stdio::null());
+        self.spawn_sotd_to(Stdio::null(), Stdio::null());
     }
 
-    /// [`Env::spawn_sotd`] with the daemon's stdout given: a file, to test a launcher's per-start log.
-    #[allow(dead_code)] // only the stdout suite chooses it
-    pub fn spawn_sotd_to(&self, stdout: Stdio) {
+    /// [`Env::spawn_sotd`] with the daemon's stdout and stderr given: files, to test a launcher's per-start log.
+    #[allow(dead_code)] // only the stdout suite chooses them
+    pub fn spawn_sotd_to(&self, stdout: Stdio, stderr: Stdio) {
         let child = sotd_command()
             .arg("--socket")
             .arg(&self.socket_path)
@@ -266,7 +266,7 @@ impl Env {
             .env("SOT_COMM_HOME", &self.comm_root)
             .stdin(Stdio::null())
             .stdout(stdout)
-            .stderr(Stdio::null())
+            .stderr(stderr)
             .spawn()
             .expect("spawn sotd");
         let previous = self.daemon.borrow_mut().replace(child);
