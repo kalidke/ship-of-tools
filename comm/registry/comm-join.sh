@@ -128,7 +128,7 @@ fi
 # is refused here, and a derived join is cleared per tier name before the lock, so it steps past a held tier to the
 # session's own. CLEARED is what was cleared, with the workspace_id each entry bound then; the writes under the lock
 # are held to it, so a row that binds a name in between is refused, never overwritten.
-OUTSIDE=""; CLEARED=""; HELD_TIER1=0
+OUTSIDE=""; CLEARED=""
 if [ -z "$ROW_ID" ]; then
     OUTSIDE=1
     if [ "$NEED_DERIVE" != true ]; then
@@ -151,8 +151,7 @@ if [ -z "$ROW_ID" ]; then
         for _n in 1 2 3; do
             _tier="$(_sot_tier "$_n" "$PROJECT_ROOT" "$_tier_host" 2>/dev/null | sed -n 2p)" || _tier=""   # a tier 3 with no digest: derive names it
             [ -n "$_tier" ] || continue
-            if _ws="$(sot_outside_join_clearance "$_tier")"; then CLEARED="$CLEARED$_tier"$'\t'"$_ws"$'\n'
-            elif [ "$_n" = 1 ]; then HELD_TIER1=1; fi
+            if _ws="$(sot_outside_join_clearance "$_tier")"; then CLEARED="$CLEARED$_tier"$'\t'"$_ws"$'\n'; fi
         done
     fi
 fi
@@ -201,7 +200,7 @@ if [ "$NEED_DERIVE" = true ]; then
     # A tier-1 handle a row holds was stepped past on purpose (the plain line sot_derive_handle printed): not a
     # stranding.
     if [ -n "$CLAIMED_QUALIFIER" ] && [ -n "$CLAIMED_TIER1" ] && [ "$CLAIMED_TIER1" != "$NAME" ] \
-       && [ "$HELD_TIER1" = 0 ] && sot_handle_live "$CLAIMED_TIER1"; then
+       && { [ -z "$OUTSIDE" ] || _sot_outside_cleared "$CLAIMED_TIER1" "$CLEARED"; } && sot_handle_live "$CLAIMED_TIER1"; then
         # The printed recipe below uses THIS install's own SCRIPT_DIR —
         # never a hardcoded ~/.sot-comm/bin/, wrong under a non-default
         # $SOT_COMM_HOME (supported) — and %q-quotes every interpolated
