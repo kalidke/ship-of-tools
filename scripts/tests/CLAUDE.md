@@ -64,7 +64,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `installer-handoff.sh`: sourced by `installer-apply.sh`, never run: a real staged `sot-apply` (a copy made by `cp`, the
   packer's own, and an installed v0.6.5 one when the tag is in the checkout) applying onto the install that re-executed
   it, `pack-build.sh` with stand-in cargo and git listing `sot-apply` executable in its archive, and the comm refresh
-  an apply makes (bounded when julia stalls), a rollback and drop-only through a hand-off, the staged copy's second
+  an apply makes (bounded when julia stalls, julia's stderr shown), a rollback and drop-only through a hand-off, the staged copy's second
   ask of the installed `sotd` under the lock, and the unit's `ExecStartPre` reading `.bashrc`.
 - `installer-julia-step.sh`: sourced by `installer-wrapper.sh`, never run: install.sh's Julia steps (`julia_pick_chan`,
   `julia_run`) under a stand-in `julia`: the channel is chosen once, by one probe, each step runs once on that julia (the

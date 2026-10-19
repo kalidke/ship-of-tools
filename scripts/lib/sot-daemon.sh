@@ -297,7 +297,7 @@ sot_comm_refresh() {  # <checkout>
     # update_comm writes the stamp last, so a refresh that did not finish leaves none and the next launch tries again.
     local bound=""
     ! command -v timeout >/dev/null 2>&1 || bound="timeout ${SOT_COMM_REFRESH_TIMEOUT_S:-30}"
-    $bound julia --project="$1" -e 'using ShipTools; ShipTools.update_comm()' >/dev/null 2>&1
+    $bound julia --project="$1" -e 'using ShipTools; ShipTools.update_comm()' >/dev/null
     case $? in
         0) ;;
         124) echo "WARNING: ShipTools.update_comm() timed out; the next launch tries again" >&2 ;;

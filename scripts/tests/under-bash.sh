@@ -7,7 +7,7 @@
 # the scripts it tests into its own shell, so it runs on BASH itself; any other suite runs on the bash running this
 # script, which must be 4 or later, since those suites use what 3.2 lacks. With no SUITE: every hermetic suite, each
 # comm/tests/test-*.sh and agents/tests/test-*.sh but the five that need peer hosts (comm/tests/CLAUDE.md), and the
-# four scripts/tests suites. Prints `under-bash: PASS|FAIL SUITE` per suite and `under-bash: FAIL parse SCRIPT` per
+# five scripts/tests suites. Prints `under-bash: PASS|FAIL SUITE` per suite and `under-bash: FAIL parse SCRIPT` per
 # script that does not parse; exits with the count of FAIL lines, or 2 when the setup is wrong.
 set -u
 [ $# -eq 1 ] || { [ $# -ge 3 ] && [ "$2" = -- ]; } || { echo "usage: under-bash.sh BASH [-- SUITE...]" >&2; exit 2; }

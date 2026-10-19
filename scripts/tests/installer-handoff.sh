@@ -182,6 +182,18 @@ else
     printf '    SKIP the stall bound (no timeout on this OS)\n'
 fi
 
+case_start "the_comm_refresh_shows_julias_stderr"
+# update_comm's own warning (a settings file left without the hooks) and a failing run's error reach the caller's stderr
+# once each, where sot-apply logs them; stdout stays quiet.
+d="$WORK/ho-stderr"; mkdir -p "$d/bin" "$d/co" "$d/ch/bin" "$d/home"
+printf '#!/bin/sh\necho "julia-says-warning" >&2\necho "julia-stdout-noise"\nexit 1\n' > "$d/bin/julia"; chmod +x "$d/bin/julia"
+( cd "$d/co" && git init -q . && : > f && git add f && git -c user.name=t -c user.email=t@t commit -q -m c )
+printf 'abcdef123\n' > "$d/ch/VERSION"
+HOME="$d/home" SOT_COMM_HOME="$d/ch" PATH="$d/bin:$TOOLS" bash -c '. "$1"; sot_comm_refresh "$2"; echo "rc=$?"' x "$LIB" "$d/co" >"$d/so" 2>"$d/se"
+check "julia's stderr line appears once" 1 "$(grep -c 'julia-says-warning' "$d/se" || true)"
+check "the failure line is there and stdout holds only the rc" "1 0 1" \
+    "$(grep -c 'update_comm() failed' "$d/se" || true) $(grep -c 'julia-stdout-noise' "$d/so" || true) $(grep -c '^rc=0$' "$d/so" || true)"
+
 case_start "the_unit_applies_in_the_daemons_environment"
 # ExecStartPre runs sot-apply through the same bash -c form as ExecStart, so the comm refresh sees what ~/.bashrc exports
 # (the per-host depot, julia, CODEX_HOME, SOT_COMM_HOME).

@@ -336,6 +336,96 @@ end
     end
 end
 
+@testset "install: an account's unreadable settings.json is named in the summary and the install goes on" begin
+    mktempdir() do home
+        default = joinpath(home, ".claude", "settings.json")
+        mkpath(dirname(default)); write(default, "{}")
+        acct = joinpath(home, ".claude-auth", "acct", "settings.json")
+        mkpath(dirname(acct))
+        write(acct, "{}")
+        chmod(acct, 0o000)
+        try
+            restrained = try read(acct); false catch; true end
+            if !restrained
+                @test_skip false
+            else
+                in_home(home) do
+                    logger = Test.TestLogger(min_level = Base.CoreLogging.Warn)
+                    Base.CoreLogging.with_logger(logger) do
+                        @test (ShipTools.update_comm(clis = [:claude]); true)   # does not throw
+                    end
+                    summaries = filter(r -> occursin("The comm hooks are NOT in these Claude settings", string(r.message)), logger.logs)
+                    @test length(summaries) == 1
+                    @test occursin(realpath(acct), string(only(summaries).message))
+                end
+            end
+        finally
+            chmod(acct, 0o644)
+        end
+        @test read(acct, String) == "{}"
+    end
+end
+
+@testset "_add_comm_hook!: an empty or whitespace-only settings.json gets the hooks, an unreadable one is skipped" begin
+    for (name, text) in (("0-byte", ""), ("whitespace-only", " \n\t\n"))
+        mktempdir() do dir
+            f = joinpath(dir, "settings.json")
+            write(f, text)
+            logger = Test.TestLogger()
+            Base.CoreLogging.with_logger(logger) do
+                @test ShipTools._remove_stale_comm_hooks!(f)
+            end
+            @test isempty(filter(r -> occursin("Retired", string(r.message)), logger.logs))   # nothing was retired
+            @test read(f, String) == text
+            for (ev, script, m) in ShipTools._COMM_STATE_HOOKS
+                @test ShipTools._add_comm_hook!(ev, script, f; matcher = m)
+                @test count(==(ShipTools._hook_command(script)), cmds(f, ev)) == 1
+            end
+            # A re-run adds nothing.
+            before = read(f, String)
+            for (ev, script, m) in ShipTools._COMM_STATE_HOOKS
+                @test ShipTools._add_comm_hook!(ev, script, f; matcher = m)
+            end
+            @test read(f, String) == before
+        end
+    end
+    mktempdir() do dir
+        f = joinpath(dir, "settings.json")
+        write(f, "{}")
+        chmod(f, 0o000)
+        try
+            restrained = try read(f); false catch; true end
+            if !restrained
+                @test_skip false
+            else
+                ev, script, m = first(ShipTools._COMM_STATE_HOOKS)
+                @test_logs (:warn, r"could not parse settings.json") match_mode = :any begin
+                    @test !ShipTools._add_comm_hook!(ev, script, f; matcher = m)
+                end
+                @test isempty(filter(n -> n != "settings.json", readdir(dir)))   # no staging file left
+            end
+        finally
+            chmod(f, 0o644)
+        end
+        @test read(f, String) == "{}"
+    end
+end
+
+@testset "settings.json: a file holding more than one JSON value, or a non-object, is left untouched" begin
+    for (name, text) in (("two objects", "{\"a\":1}\n{\"b\":2}\n"), ("false", "false\n"))
+        mktempdir() do dir
+            f = joinpath(dir, "settings.json")
+            write(f, text)
+            ev, script, m = first(ShipTools._COMM_STATE_HOOKS)
+            @test_logs (:warn, r"could not") match_mode = :any begin
+                @test !ShipTools._add_comm_hook!(ev, script, f; matcher = m)
+            end
+            @test read(f, String) == text
+            @test isempty(filter(n -> n != "settings.json", readdir(dir)))
+        end
+    end
+end
+
 @testset "_remove_stale_comm_hooks!: retired reminder hooks go, others stay" begin
     # The post-compact and post-clear reminder scripts are deleted, so an
     # install must also drop their settings entries, or settings.json keeps
