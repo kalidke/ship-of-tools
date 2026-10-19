@@ -33,10 +33,12 @@ enum Launch {
     NewSession,
 }
 
-/// A real guarded daemon: its launched process (the guard), the daemon the control connection reported, and its log.
+/// A real guarded daemon: its launched process (the guard), the daemon the control connection reported, and its log: the
+/// file holding its stderr, and `sotd.log` from `log_from`, where it began (a stdout that is a file receives no log line).
 pub struct Run {
     pub env: Env,
     pub log: PathBuf,
+    log_from: u64,
     launched: Option<Child>,
     pub daemon: i32,
     /// The daemon was started from a copy of the binary (`boot_at`): its capsules run from the copy's folder, which the
@@ -131,11 +133,12 @@ impl Run {
 
     /// [`boot`](Self::boot) for the daemon binary at `program`, a copy of the built `sotd` in an install-shaped folder.
     pub async fn boot_at(env: Env, program: &Path, extra: &[(&str, &str)]) -> Run {
-        let (launched, daemon, log) =
+        let (launched, daemon, log, log_from) =
             Self::spawn_daemon(&env, extra, false, Launch::Defaults, Some(program)).await;
         Run {
             env,
             log,
+            log_from,
             launched: Some(launched),
             daemon,
             own_exe: true,
@@ -150,7 +153,8 @@ impl Run {
         own_group: bool,
         launch: Launch,
         program: Option<&Path>,
-    ) -> (Child, i32, PathBuf) {
+    ) -> (Child, i32, PathBuf, u64) {
+        let log_from = env.daemon_log_len();
         let log = env._tmp.path().join(format!(
             "daemon-{}.log",
             std::time::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_nanos())
@@ -202,7 +206,7 @@ impl Run {
         )
         .await;
         crate::case_record::note_daemon(daemon);
-        (launched, daemon, log)
+        (launched, daemon, log, log_from)
     }
 
     pub async fn boot(env: Env, extra: &[(&str, &str)], own_group: bool, masked: bool) -> Run {
@@ -215,11 +219,12 @@ impl Run {
     }
 
     async fn launch(env: Env, extra: &[(&str, &str)], own_group: bool, launch: Launch) -> Run {
-        let (launched, daemon, log) =
+        let (launched, daemon, log, log_from) =
             Self::spawn_daemon(&env, extra, own_group, launch, None).await;
         let run = Run {
             env,
             log,
+            log_from,
             launched: Some(launched),
             daemon,
             own_exe: false,
@@ -235,11 +240,12 @@ impl Run {
             self.status_within(Duration::from_secs(60)).await.is_some(),
             "the predecessor's launched process has not ended"
         );
-        let (launched, daemon, log) =
+        let (launched, daemon, log, log_from) =
             Self::spawn_daemon(&self.env, extra, false, Launch::Defaults, None).await;
         self.launched = Some(launched);
         self.daemon = daemon;
         self.log = log;
+        self.log_from = log_from;
     }
 
     /// End what a daemon's end leaves running by design, the capsules, through the product: a daemon that has ended is
@@ -269,8 +275,9 @@ impl Run {
         self.launched.as_ref().expect("the launched process").id() as i32
     }
 
+    /// What the daemon said: its stderr, then its log lines since it began.
     pub fn said(&self) -> String {
-        std::fs::read_to_string(&self.log).unwrap_or_default()
+        std::fs::read_to_string(&self.log).unwrap_or_default() + &self.env.daemon_log_since(self.log_from)
     }
 
     /// The launched process's wait status, once it has ended within `bound`.
@@ -350,7 +357,7 @@ fn end_capsules_blocking(env: &Env) {
 
 impl Drop for Run {
     fn drop(&mut self) {
-        crate::case_record::keep_if_failed(self.env._tmp.path());
+        crate::case_record::keep_if_failed(self.env._tmp.path(), &self.env.daemon_log());
         if let Some(mut child) = self.launched.take() {
             end_daemon(&mut child);
         }

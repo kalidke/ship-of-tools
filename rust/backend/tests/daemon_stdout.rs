@@ -18,6 +18,6 @@ async fn a_daemon_whose_stdout_is_a_file_writes_its_log_once() {
 
     let stdout = std::fs::read_to_string(&out_path).unwrap_or_default();
     assert!(stdout.is_empty(), "the daemon wrote its log to a stdout that is a file: {stdout}");
-    let log = std::fs::read_to_string(env.state_root.join("sot").join("sotd.log")).expect("sotd.log");
-    assert!(log.contains("INFO"), "sotd.log holds no start line: {log}");
+    let log = std::fs::read_to_string(env.daemon_log()).expect("sotd.log");
+    assert!(log.contains("sotd starting"), "sotd.log holds no start line: {log}");
 }

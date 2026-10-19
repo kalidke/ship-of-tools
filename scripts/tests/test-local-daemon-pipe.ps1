@@ -53,8 +53,9 @@
         # reads; three broadcasts fill its pipe until the daemon's 10 s write deadline gives up on it. A refused hello
         # after that must still be answered and closed: its close waits in interprocess's one linger thread, which the
         # given-up peer's close held for as long as that peer kept its handle.
-        # The running daemon's stdout log: the launcher stamps each start's, and the newest by name is the current one.
-        $log5c = (Get-ChildItem -LiteralPath (Join-Path $p3 'logs') -Filter 'sotd-local.stdout.*.log' | Sort-Object Name | Select-Object -Last 1).FullName
+        # The daemon's log of record: the launcher's per-start stdout file stays empty (a daemon whose stdout is a file
+        # writes its log only here), and the fixture's LOCALAPPDATA is the state root.
+        $log5c = Join-Path $fixtureLocalAppData 'sot\state\sotd.log'
         $seen5c = @(Get-Content -LiteralPath $log5c -ErrorAction SilentlyContinue).Count
         $wedged5c = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe5c, [System.IO.Pipes.PipeDirection]::InOut)
         try {

@@ -207,10 +207,12 @@ impl Window {
     }
 }
 
-/// A test-owned daemon whose stdout and stderr go to one log file.
+/// A test-owned daemon whose stderr goes to one file; its log lines are `sotd.log`'s, from where it began.
 struct Daemon {
     child: tokio::process::Child,
     log: PathBuf,
+    log_from: u64,
+    sotd_log: PathBuf,
 }
 
 impl Daemon {
@@ -222,6 +224,7 @@ impl Daemon {
     async fn start_at(env: &Env, program: &Path, extra: &[(&str, &str)]) -> Self {
         let log = env._tmp.path().join(format!("sotd-{}.log", uuid_ish()));
         let file = std::fs::File::create(&log).expect("create the daemon log");
+        let log_from = env.daemon_log_len();
         let child = sotd_on_at(env, program, extra)
             .env("RUST_LOG", "info")
             .stdout(Stdio::from(file.try_clone().expect("clone the log")))
@@ -229,7 +232,7 @@ impl Daemon {
             .spawn()
             .expect("spawn sotd");
         poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "the daemon to accept").await;
-        Daemon { child, log }
+        Daemon { child, log, log_from, sotd_log: env.daemon_log() }
     }
 
     /// Its exit code, if it exits within `within`.
@@ -244,8 +247,11 @@ impl Daemon {
         self.child.try_wait().expect("try_wait the daemon").is_none()
     }
 
+    /// Its stderr, then its log lines since it began (a stdout that is a file receives none: `sotd.log` holds them).
     fn said(&self) -> String {
-        std::fs::read_to_string(&self.log).unwrap_or_default()
+        let stderr = std::fs::read_to_string(&self.log).unwrap_or_default();
+        let bytes = std::fs::read(&self.sotd_log).unwrap_or_default();
+        stderr + &String::from_utf8_lossy(bytes.get(self.log_from as usize..).unwrap_or_default())
     }
 }
 
