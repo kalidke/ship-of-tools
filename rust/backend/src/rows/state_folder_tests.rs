@@ -307,8 +307,10 @@ fn make_link(target: &Path, link: &Path) {
 /// A junction: the Windows link that needs no privilege. A link that cannot be made is a setup failure, never a pass.
 #[cfg(windows)]
 fn make_link(target: &Path, link: &Path) {
-    let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).output().expect("run cmd");
-    assert!(out.status.success() && std::fs::symlink_metadata(link).is_ok(), "mklink /J failed: {out:?}");
+    let mut mklink = std::process::Command::new("cmd");
+    mklink.args(["/C", "mklink", "/J"]).arg(link).arg(target);
+    sot_log::test_wait::run_within(&mut mklink, Duration::from_secs(30)).ok();
+    assert!(std::fs::symlink_metadata(link).is_ok(), "mklink /J failed: no link at {link:?}");
 }
 
 // The whole-load rule against registries on disk, in a scratch config and state root.
