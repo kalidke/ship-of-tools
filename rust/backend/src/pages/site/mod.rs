@@ -583,4 +583,6 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
 }
 
 #[cfg(test)]
+mod pool_auth_tests;
+#[cfg(test)]
 mod tests;
