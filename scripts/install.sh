@@ -793,7 +793,11 @@ installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-decla
     else
         sot_boot_keep "$ud" || say "WARNING: could not move sotd.service's boot start onto its drop-in"
         systemctl --user stop sotd.service 2>/dev/null || true
-        say "Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service, so a hand disable no longer turns it off; to move it, change hosts.toml, or with none run sotd topology pin --dir ~/.config/systemd/user --claim on the host that should run it. If no other computer shares this home folder, turn boot start off with: rm -f ~/.config/systemd/user/default.target.d/sotd.conf (write that file again, with the two lines [Unit] and Wants=sotd.service, to turn it back on)"
+        if sot_boot_wired "$ud"; then
+            say "Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service, so a hand disable no longer turns it off; to move it, change hosts.toml, or with none run sotd topology pin --dir ~/.config/systemd/user --claim on the host that should run it. If no other computer shares this home folder, turn boot start off with: rm -f ~/.config/systemd/user/default.target.d/sotd.conf (write that file again, with the two lines [Unit] and Wants=sotd.service, to turn it back on)"
+        else
+            say "Stopped this computer's sotd. Its boot start is already off: sotd.service has no boot drop-in, and enable and disable change no file for it; to turn it on, write ~/.config/systemd/user/default.target.d/sotd.conf with the two lines [Unit] and Wants=sotd.service"
+        fi
     fi
 }
 
@@ -826,8 +830,6 @@ installer_enable_local_service() {  # <prefix> <template> <socket>
     # the rule sot-apply's update follows, so a person's turn-off survives a second run.
     if [ "$fresh" = 1 ]; then sot_boot_wants "$HOME/.config/systemd/user"; else sot_boot_keep "$HOME/.config/systemd/user"; fi \
         || die "could not write the sotd boot drop-in"
-    # Over an existing unit with neither, boot start stays off; the run says so at its end (BOOT_OFF).
-    sot_boot_wired "$HOME/.config/systemd/user" || BOOT_OFF=1
     systemctl --user daemon-reload
     systemctl --user start sotd.service
     loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
@@ -1887,7 +1889,11 @@ if [ -n "$FAIL_FIRST" ]; then
     installer_verdict "$VER" "$SHORT" "$FAIL_FIRST" "" "$([ "$PINNED" = 0 ] || printf '%s' "$VER")" >&2
     exit 1
 fi
-[ "${BOOT_OFF:-0}" != 1 ] || printf '%s\n' "sotd.service: boot start is off on this computer; turn it on with: mkdir -p ~/.config/systemd/user/default.target.d && printf '[Unit]\nWants=sotd.service\n' > ~/.config/systemd/user/default.target.d/sotd.conf && systemctl --user daemon-reload"
-[ "$UNIT_MANAGED" != 1 ] || printf '%s\n' "sotd.service: stop it on this computer with systemctl --user stop sotd.service; its boot start follows hosts.toml and the unit's host pin, and enable or disable change no file"
+# One line for a managed unit, chosen by whether it is wired to start at boot now: off says how to turn it on, on says how to stop it.
+if [ "$UNIT_MANAGED" = 1 ]; then
+    if sot_boot_wired "$HOME/.config/systemd/user"; then printf '%s\n' "sotd.service: stop it on this computer with systemctl --user stop sotd.service; its boot start follows hosts.toml and the unit's host pin, and enable or disable change no file"
+    else printf '%s\n' "sotd.service: boot start is off on this computer; turn it on with: mkdir -p ~/.config/systemd/user/default.target.d && printf '[Unit]\nWants=sotd.service\n' > ~/.config/systemd/user/default.target.d/sotd.conf && systemctl --user daemon-reload"
+    fi
+fi
 installer_verdict "$VER" "$SHORT" "" "$STEPS_LEFT" "$([ "$PINNED" = 0 ] || printf '%s' "$VER")"
 exit 0

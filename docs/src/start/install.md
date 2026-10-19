@@ -81,7 +81,7 @@ again (`[Unit]` and `Wants=sotd.service`) to turn it back on. One rule governs
 both ways to update, running the installer again and the background update: a
 run that finds no `sotd.service` wires boot start, and a run over a unit moves
 an old enable link onto the drop-in or keeps the drop-in, and with neither
-writes nothing, so boot start you turned off stays off; a run that leaves it off says so in a line before its verdict, with the command that turns it on. An install that runs no
+writes nothing, so boot start you turned off stays off; an install.sh run says in a line before its verdict whether boot start is on, and when off, the command that turns it on. An install that runs no
 daemon on this host only stops this host's, and moves an old link onto the
 drop-in, unless the pin names this host alone: then it also removes the
 drop-in. The relay sockets and tunnels keep their rule: never `disable` them
@@ -163,7 +163,8 @@ Roles: *all* is every install; *backend* is `--local` and `--be-only`;
 | `~/.config/sot/hosts.toml` | *all* · written only with `--hub`, as a copy fetched from the hub; otherwise only read |
 | `~/.juliaup/` | *all* · Julia 1.12, installed with the juliaup installer, only if no Julia 1.12 or newer is on `PATH` (an existing juliaup gets the 1.12 channel added instead) |
 | the first depot in `DEPOT_PATH` (usually `~/.julia`) | *backend* · packages for the kernel, REPL and Pluto environments |
-| `~/.config/systemd/user/sotd.service` | *backend, Linux, unless `--no-service`* · the backend service, enabled and started; `loginctl enable-linger` is also run so it survives logout. The service sources `~/.bashrc` before it starts `sotd`, so the backend and its sessions inherit your shell profile's exports. |
+| `~/.config/systemd/user/sotd.service` | *backend, Linux, unless `--no-service`* · the backend service, started (its boot start is the drop-in below); `loginctl enable-linger` is also run so it survives logout. The service sources `~/.bashrc` before it starts `sotd`, so the backend and its sessions inherit your shell profile's exports. |
+| `~/.config/systemd/user/default.target.d/sotd.conf` | *backend, Linux, unless `--no-service`* · the boot drop-in (`Wants=sotd.service`) that starts the backend service at boot; written on a fresh install and kept or moved from an old enable link on a later one |
 | `~/.local/bin/sot-launch` | *frontend* · the launcher wrapper |
 | `~/.local/share/applications/ship-of-tools.desktop` | *frontend, Linux* · the desktop entry |
 | `~/.local/share/icons/hicolor/` | *frontend, Linux* · the icon, `256x256/apps/ship-of-tools.png` |

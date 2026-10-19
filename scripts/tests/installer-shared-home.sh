@@ -141,6 +141,10 @@ oldlink() {  # <state: link|dropin|none>: the unit folder as an earlier install 
     esac
 }
 wiring() { printf '%s %s' "$([ -f "$u/default.target.d/sotd.conf" ] && echo dropin || echo none)" "$([ -L "$u/default.target.wants/sotd.service" ] && echo link || echo none)"; }
+oldlink none
+said unithost-a installer_retire_local_service 0 "$d/prefix" 0 > "$WORK/say-off"
+check "a retire over a unit with boot start off says it is already off, not that it follows hosts.toml, and writes nothing" "1 0 none none" \
+    "$(grep -c -F 'Its boot start is already off' "$WORK/say-off" || true) $(grep -c -F 'Boot start follows hosts.toml' "$WORK/say-off" || true) $(wiring)"
 oldlink link
 on_host unithost-a installer_retire_local_service 0 "$d/prefix" 0
 check "a pre-pin retire moves an old link onto the drop-in" "dropin none" "$(wiring)"

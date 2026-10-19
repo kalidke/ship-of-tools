@@ -660,7 +660,7 @@ check "sot-lease.ps1's hello is a handoff" "yes" "$(grep -qF "\"role\":\"$HANDOF
 printf '\n'
 # ---------------------------------------------------------------------------
 case_start "restart_backend_judges_this_accounts_daemon"
-d="$WORK/restart-own"; mkdir -p "$d/repo/scripts/lib" "$d/repo/rust/target/release" "$d/stubs"
+d="$WORK/restart-own"; mkdir -p "$d/repo/scripts/lib" "$d/repo/rust/target/release" "$d/stubs" "$d/stubs2"
 cp "$(dirname "$0")/../restart-backend.sh" "$d/repo/scripts/"
 cp "$(dirname "$0")/../lib/sot-daemon.sh" "$d/repo/scripts/lib/"
 cat > "$d/repo/rust/target/release/sotd" <<SD
@@ -704,10 +704,13 @@ bsd_out=""; [ "$(uname -s)" != Linux ] || { bsd_stat_date "$d/bsd"; bsd_out="$(s
 # No daemon on this socket: the one whose label is exactly this one, never one whose label only begins with it.
 printf '555 sotd /x/bin/sotd --project-root /x --label sot-dev\n333 sotd /x/bin/sotd --project-root /x --label sot\n' > "$d/ps-own"
 label_line="$(env -u SOT_SOCKET -u SOT_BACKEND_LABEL PATH="$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" --check)" || true
-for st in active activating reloading; do  # all systemd's, the second in its auto-restart window: restart goes through systemctl
-    printf '#!/bin/sh\ncase "$*" in *"show -p ActiveState"*) echo %s ;; esac\nexit 0\n' "$st" > "$d/stubs/systemctl"
-    systemd_out="$(env -u SOT_SOCKET -u SOT_BACKEND_LABEL PATH="$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" 2>&1 </dev/null)" || true
-    check "a unit that is $st is restarted through systemctl" "1" "$(printf '%s\n' "$systemd_out" | grep -c 'systemd-supervised' || true)"; done
+# active, activating (auto-restart window), reloading are systemd's; failed, inactive take the legacy path, with no daemon to kill or relaunch. is-enabled says 0 to all.
+printf '#!/bin/sh\nexit 0\n' > "$d/stubs2/ps"; cp "$d/stubs2/ps" "$d/stubs2/nohup"; chmod +x "$d/stubs2/ps" "$d/stubs2/nohup"
+for st in active activating reloading failed inactive; do
+    printf '#!/bin/sh\ncase "$*" in *is-enabled*) exit 0 ;; *"show -p ActiveState"*) echo %s ;; esac\nexit 0\n' "$st" > "$d/stubs/systemctl"
+    want=1; first=""; case "$st" in failed|inactive) want=0; first="$d/stubs2:" ;; esac
+    systemd_out="$(env -u SOT_SOCKET -u SOT_BACKEND_LABEL PATH="$first$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" 2>&1 </dev/null)" || true
+    check "a unit that is $st: systemctl restarts it (1) or not (0)" "$want" "$(printf '%s\n' "$systemd_out" | grep -c 'systemd-supervised' || true)"; done
 kill "$RPID"; wait "$RPID" || true
 starts_with "restart judges this account's daemon on this socket" "running daemon pid 222 " "$restart_line"
 check "a binary newer than an hour-old daemon is STALE, both times printed, nothing on stderr" \
