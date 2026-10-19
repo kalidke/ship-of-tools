@@ -217,6 +217,8 @@ t3() {
 }
 check "3: frozen -> FAILED then released; another machine -> FAILED; same machine, other boot -> reclaimed" t3
 
+# The waiters wait 60 s, past the suite's 30 s hang guard (comm/tests/CLAUDE.md): the case proves one holder at a time,
+# not the 10 s default's expiry (3 proves expiry), and a loaded runner can stall a round's reclaim past 10 s.
 t4() {
     reset; local round d outs w m ids
     for round in $(seq 100); do
@@ -225,7 +227,7 @@ t4() {
         rm -f "${WORK:?}"/id?
         outs=()
         for w in 1 2 3; do
-            lib "crit() { mkdir '$WORK/cs' || echo OVERLAP; sleep 0.01; rmdir '${WORK:?}/cs'; echo held; }; _sot_lock_self_id; echo \"\$_SOT_LOCK_ID\" > '$WORK/id$w'; with_lock crit" > "$WORK/w$w" 2>&1 &
+            lib "SOT_LOCK_WAIT_SECS=60; crit() { mkdir '$WORK/cs' || echo OVERLAP; sleep 0.01; rmdir '${WORK:?}/cs'; echo held; }; _sot_lock_self_id; echo \"\$_SOT_LOCK_ID\" > '$WORK/id$w'; with_lock crit" > "$WORK/w$w" 2>&1 &
             outs+=($!)
         done
         wait "${outs[@]}"

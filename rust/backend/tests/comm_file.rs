@@ -124,6 +124,9 @@ fn the_filer_and_the_script_name_the_same_lock_manager() {
 // T3 (mixed) — the filer and `sot_inbox_append` on one inbox at once. The
 // record comes from the daemon's own writer; a script appends locally only
 // when it computes the same identity, so this is parity on a real mount too.
+// It proves exclusion, not the wait: a loaded runner can stall one append's
+// sync past the 2 s default, so both arms wait 60 s; the frozen-holder tests
+// own the expiry.
 #[test]
 fn the_filer_and_the_script_take_the_same_lock() {
     let d = inbox_home();
@@ -142,14 +145,15 @@ fn the_filer_and_the_script_take_the_same_lock() {
                           | sot_inbox_append t3 >/dev/null || exit 1; done"#))
                     .args(["_", comm_lib().to_str().unwrap()])
                     .env_remove("SOT_SOCKET")
-                    .env("SOT_COMM_HOME", &home),
+                    .env("SOT_COMM_HOME", &home)
+                    .env("SOT_INBOX_LOCK_WAIT_SECS", "60"),
                 BOUND,
             )
             .ok();
         })
     };
     for i in 0..200 {
-        file_frame(&inbox, "rust", "t3", false, &format!("rust-{i}"), "t", inbox_lock_wait(), "local t").unwrap();
+        file_frame(&inbox, "rust", "t3", false, &format!("rust-{i}"), "t", Duration::from_secs(60), "local t").unwrap();
     }
     script.join().unwrap();
     assert_distinct(&whole_lines(&inbox.join("t3.jsonl")), 400);
@@ -244,7 +248,9 @@ fn env_dir() -> PathBuf {
 }
 
 // T3 on the shared home — two threads of ONE process: flock on a network
-// mount is emulated, so in-process exclusion there is a fact to prove.
+// mount is emulated, so in-process exclusion there is a fact to prove. The
+// wait is 60 s, as in the mixed case: exclusion, not the wait; (a3) of the
+// driver keeps the default's liveness.
 #[test]
 #[ignore = "driven by test-inbox-lock-twohost.sh"]
 fn two_threads_on_the_env_dir() {
@@ -255,7 +261,7 @@ fn two_threads_on_the_env_dir() {
             let inbox = inbox.clone();
             std::thread::spawn(move || {
                 for i in 0..200 {
-                    file_frame(&inbox, w, "t3", false, &format!("{w}-{i}"), "t", inbox_lock_wait(), &lock_identity(&inbox)).unwrap();
+                    file_frame(&inbox, w, "t3", false, &format!("{w}-{i}"), "t", Duration::from_secs(60), &lock_identity(&inbox)).unwrap();
                 }
             })
         })
