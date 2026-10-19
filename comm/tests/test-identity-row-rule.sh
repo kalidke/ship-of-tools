@@ -29,6 +29,7 @@
 #   d10 an unreadable registry refuses a join from outside (N4)
 #   d12 no daemon: comm-leave.sh --name of a bound entry is refused, so leave then join takes nothing (SF1)
 #   d13 comm-leave.sh --name of an orphan the daemon says no row holds still removes it (SF1)
+#   s1  a stray whose self file names a held handle starts its session as its own handle, never reading the held one (SF2)
 #   d11 a derived join whose every tier the daemon holds takes none, empty cleared list included (bash 3.2)
 #   ds  a stray's session start steps past the held handle: its one plain line, identity ok (SF1)
 #   e   a respawned row's join takes its handle back
@@ -413,6 +414,20 @@ case_bind_row_binding_states() {
     cp "$WORK/registry.saved" "$REG" 2>/dev/null || true
     [ "$got" = unreadable ] || { echo "  unreadable registry gave '$got'"; return 1; }
 }
+case_s1_a_stray_whose_self_file_names_a_held_handle() {
+    bind_row ""; reset_inbox
+    held_by "$NAME"; start_stub_daemon
+    local self="$WORK/stray-s1.txt" out
+    cp "$SELF" "$self"
+    out="$(cd "$WORK" && env SOT_COMM_SELF_FILE="$self" SOT_SOCKET="$SOCK" HOME="$WORK" "$SCRIPTS_DIR/comm-session-start.sh" 2>&1)"
+    stop_stub_daemon
+    case "$out" in *"BOOTSTRAP-ARM handle="*"identity=ok"*) ;; *) echo "  no identity=ok: $out"; return 1 ;; esac
+    case "$out" in *"handle=$NAME "*) echo "  kept @$NAME: $out"; return 1 ;; esac
+    [ "$(sed -n 1p "$self")" != "$NAME" ] || { echo "  the self file still names @$NAME"; return 1; }
+    poll "$self"
+    case "$POLL_OUT" in *unread-one*) echo "  the session still reads @$NAME's inbox: $POLL_OUT"; return 1 ;; esac
+    [ "$(cat "$CURSOR")" = "0" ] || { echo "  @$NAME's cursor moved to '$(cat "$CURSOR")'"; return 1; }
+}
 case_s3_a_displaced_row_rejoins() {
     local ra=row-a rb=row-b self_a self_b out
     self_a="$WORK/${HOST}__$ra.txt"; self_b="$WORK/${HOST}__$rb.txt"; rm -f "$self_a" "$self_b"
@@ -453,6 +468,7 @@ check "d9: an entry bound on another computer is held" case_d9_an_entry_bound_on
 check "d10: an unreadable registry refuses a join from outside" case_d10_an_unreadable_registry_refuses_a_join_from_outside
 check "d11: a derived join with every tier held by the daemon takes none, whatever bash" case_d11_a_derived_join_takes_no_tier_the_daemon_holds
 check "bind: sot_row_binding says owner, other, unbound and unreadable" case_bind_row_binding_states
+check "s1: a stray whose self file names a held handle starts as its own handle" case_s1_a_stray_whose_self_file_names_a_held_handle
 check "s3: a displaced row's session start rejoins and says it moved" case_s3_a_displaced_row_rejoins
 
 echo "$PASS passed, $FAIL failed"

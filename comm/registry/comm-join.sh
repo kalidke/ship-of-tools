@@ -91,10 +91,13 @@ ensure_home
 # already-joined self-file identity (from comm-context.sh's own
 # read-side matrix) survive to here — anything it discarded as
 # stale/unhealable comes back as NAME="" regardless.
+NAME_FROM_SELF=0
 if [ -n "$WANT_NAME" ]; then
     NAME="$WANT_NAME"
 elif [ -n "${SOT_COMM_NAME:-}" ]; then
     NAME="$SOT_COMM_NAME"
+elif [ -n "$NAME" ]; then
+    NAME_FROM_SELF=1
 fi
 [ -z "$EXPERTISE" ] && EXPERTISE="${SOT_COMM_EXPERTISE:-}"
 # Reached only when NAME came from none of the verbatim sources above
@@ -128,6 +131,21 @@ fi
 OUTSIDE=""; CLEARED=""; HELD_TIER1=0
 if [ -z "$ROW_ID" ]; then
     OUTSIDE=1
+    if [ "$NEED_DERIVE" != true ]; then
+        _rc=0; _ws="$(sot_outside_join_clearance "$NAME")" || _rc=$?
+        case "$_rc" in
+            0) CLEARED="$NAME"$'\t'"$_ws" ;;
+            2) echo "comm-join.sh: FAILED: $_ws" >&2; exit 1 ;;
+            # A name only the self file gave is not a pin: a session outside any row never keeps a handle a row
+            # holds, and steps past it to its own (the derived join below), so it stops reading that inbox.
+            *) if [ "$NAME_FROM_SELF" = 1 ]; then
+                   echo "comm: @$NAME (named by this session's self file) is held by a row; a session outside any row joins as its own handle" >&2
+                   NAME=""; NEED_DERIVE=true
+               else
+                   echo "comm-join.sh: REFUSING to join: $_ws" >&2; exit 1
+               fi ;;
+        esac
+    fi
     if [ "$NEED_DERIVE" = true ]; then
         _tier_host="$(_sot_handle_host "$HANDLE_HOST")" || exit 1
         for _n in 1 2 3; do
@@ -136,13 +154,6 @@ if [ -z "$ROW_ID" ]; then
             if _ws="$(sot_outside_join_clearance "$_tier")"; then CLEARED="$CLEARED$_tier"$'\t'"$_ws"$'\n'
             elif [ "$_n" = 1 ]; then HELD_TIER1=1; fi
         done
-    else
-        _rc=0; _ws="$(sot_outside_join_clearance "$NAME")" || _rc=$?
-        case "$_rc" in
-            0) CLEARED="$NAME"$'\t'"$_ws" ;;
-            2) echo "comm-join.sh: FAILED: $_ws" >&2; exit 1 ;;
-            *) echo "comm-join.sh: REFUSING to join: $_ws" >&2; exit 1 ;;
-        esac
     fi
 fi
 
