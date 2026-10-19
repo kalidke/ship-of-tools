@@ -61,6 +61,7 @@ deployment, one `~/.sot-comm` serves every host sharing that home.
       "summary":    "rebuilding backend + BE suite",// one line derived from the facts ("" when none)
       "status_at":  "2026-06-15T19:32:13Z",        // when the facts were last written; nav ages a stale "working"
       "floor":      "user",                        // present while a turn runs: who started it, user | machine
+      "dialog":     "Allow Bash?",                  // present while the agent shows a dialog that waits on a person
       "question":   "which branch?",               // present while a question to the user is open
       "waiting":    "for CI",                      // present while the session waits on something
       "done":       true,                          // present when the last user-started turn finished with nothing pending
@@ -70,13 +71,6 @@ deployment, one `~/.sot-comm` serves every host sharing that home.
   }
 }
 ```
-
-A row's `state` is `blocked`, with the dialog's text as its `summary`, while the agent shows a dialog that waits on a
-person, even while its turn runs. `comm-status.sh dialog "T"` sets that fact (`dialog`), and `comm-status.sh resumed`
-clears it, as a turn's `prompt` and `stop` also do. A Codex session's PermissionRequest hook sends `dialog` and the
-heartbeat sends `resumed`. A Claude Code session sends no event when a dialog shows, so the daemon reads the screen
-of each working Claude row every 5 seconds (not on Windows) and sends both, through `SOT_COMM_ROW_HANDLE`, which takes
-only these two verbs and only from a process whose parent is `sotd`.
 
 Registry host facts and unpinned self-slot keys use the daemon's declared host. Raw host text is a derived-handle component and validated legacy-slot input only; explicit identity pins retain their text.
 
@@ -93,27 +87,34 @@ clock, so skew between two boxes moves the ten minutes by the skew. `host` + `wo
 are the address a same-host daemon resolves.
 
 **Work-state** powers the ADE *state-nav* at-a-glance view and is distinct from the lifecycle `status` above. A
-row keeps *facts*: `floor`, `question`, `waiting`, `done` and `note`. `state` and `summary` are recomputed from
+row keeps *facts*: `floor`, `dialog`, `question`, `waiting`, `done` and `note`. `state` and `summary` are recomputed from
 them on every script write, by priority (`comm/work_state/comm-status.sh`):
 
 | Facts | `state` | `summary` |
 |-------|---------|-----------|
+| `dialog` set | `blocked` | `dialog` |
 | `question` set, no `floor` | `blocked` | `question` |
 | `floor` set | `working` | `note` |
 | `waiting` set | `waiting` | `waiting` |
 | `done` set | `done` | `note` |
 | none | `idle` | `note` |
 
-`comm-status.sh <verb> ["text"]` writes the facts, merge-only, and stamps `status_at` and `last_seen`. Three verbs
-are events the hooks send: `prompt` (a turn starts; sets `floor`, and a user prompt clears `question` and
+`comm-status.sh <verb> ["text"]` writes the facts, merge-only, and stamps `status_at` and `last_seen`. Five verbs
+are events: `prompt` (a turn starts; sets `floor`, and a user prompt clears `question` and
 `done`), `stop` (a turn ends; sets `done` when the user started the turn and nothing is pending, then clears
-`floor` and `stop_at`) and `join` (comm-join.sh sends it). Five are declarations, the session's own word:
+`floor` and `stop_at`), `dialog "T"` (the agent shows a dialog that waits on a person; sets `dialog`, which reads
+red over the running turn), `resumed` (the dialog is gone; clears `dialog`, as `prompt` and `stop` also do) and `join`
+(comm-join.sh sends it). A Codex session's PermissionRequest hook sends `dialog` and the heartbeat sends `resumed`. A
+Claude Code session sends no event when a dialog shows, so the daemon reads the screen of each working Claude row every
+5 seconds (not on Windows) and sends both, through `SOT_COMM_ROW_HANDLE`, which takes only these two verbs and only
+from a process whose parent is `sotd`. Five are declarations, the session's own word:
 `working`, `idle`, `blocked "q"`, `waiting "w"` and `done`. The hooks Claude Code runs are UserPromptSubmit
 (`prompt`), PreToolUse on AskUserQuestion (`blocked`), Stop (`stop`) and a PostToolUse heartbeat that re-stamps
 `status_at`. A client that writes `state` or `summary` directly is overwritten at the next script write. In a
 session that is not a joined comm agent, an event is a silent no-op; a declaration fails with rc 1 and
-`comm-status.sh: no registry row for ... stamp discarded`. The daemon's one work-state write is clearing `done`
-when a person views the row (`clear_comm_unread`). The daemon joins `state`, `summary` and `status_at` onto
+`comm-status.sh: no registry row for ... stamp discarded`. The daemon's one work-state write of its own is clearing
+`done` when a person views the row (`clear_comm_unread`); a Claude row's `dialog` and `resumed` it sends through
+`comm-status.sh`. The daemon joins `state`, `summary` and `status_at` onto
 `workspace.list` as `agent_state` / `agent_summary` / `agent_status_at`, keyed by the row's handle (the one its session declared, else the one in its pinned self file, else the row's
 stored `agent_name`; `comm_handle_for_workspace`),
 so the frontend, which cannot read this registry directly, renders `summary` as the per-session glance, colored
