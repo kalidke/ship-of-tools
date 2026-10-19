@@ -373,7 +373,7 @@ Foreign reports a refused boot, pid or creation-time claim and does not by itsel
 
 The Ctrl+Q prompt reads Tab and Enter by key identity; other non-repeat keys cancel and repeats do nothing. Final window teardown starts after the leave acknowledgement and any required notice presentation, or at an explicit second-close decision. Queued writes share a one-second OS-monotonic deadline, returning event loops use a one-second runtime shutdown timeout, and one independent three-second std-thread backstop bounds final process teardown. These intervals do not shorten the Close acknowledgement wait. A timed-out blocking task can continue until process termination; tests separately observe cleanup of a yielding task's owned child. The existing nonzero handover exit remains immediate.
 
-The macOS default menu remains enabled. Earlier T1 review recorded native Cmd+Q bypassing the Ctrl+Q prompt; this lane does not re-test or change that native menu route.
+The macOS default menu is off (MAC-CMDQ): the window builds its event loop without winit's app menu, whose Quit item bound Cmd+Q to `terminate:` and bypassed the prompt. Cmd+Q is now a key event for the `quit` binding, which asks in the file and preview panes and shows the hint in the agent pane and the Terminal drawer. The Dock's Quit is a separate route this change does not touch. About, Services, Hide and the other app-menu items are gone with the menu.
 
 ## Update (0.6.6): the Linux lifetime guard
 
