@@ -29,7 +29,7 @@ _sot_windows_local_pipe() {
     local daemon_exe
     daemon_exe="$(_sot_windows_sotd_exe)" || return 1
     local raw
-    raw="$("$daemon_exe" session-socket-path local 2>/dev/null | head -n1 | tr -d '\r')"
+    raw="$("$daemon_exe" session-socket-path local 2>/dev/null | sed -n 1p | tr -d '\r')"
     case "$raw" in
         '\\'*'pipe'*) : ;;
         *) return 1 ;;
@@ -159,7 +159,7 @@ _sot_planned_relay_endpoint() {
     else
         bin="$(_sot_sotd_bin)" || return 1
     fi
-    "$bin" topology relay-endpoint | head -n1 | tr -d '\r'
+    "$bin" topology relay-endpoint | sed -n 1p | tr -d '\r'
     return "${PIPESTATUS[0]}"
 }
 

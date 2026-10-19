@@ -120,7 +120,7 @@ IDENTITY_MISMATCH=0
 case "$JOIN_OUT" in
     *"still being heartbeated"*) IDENTITY_MISMATCH=1 ;;
 esac
-HANDLE="$(printf '%s\n' "$JOIN_OUT" | sed -n 's/^Joined sot-comm as @\([^ ]*\).*/\1/p' | head -n1)"
+HANDLE="$(printf '%s\n' "$JOIN_OUT" | sed -n 's/^Joined sot-comm as @\([^ ]*\).*/\1/p' | sed -n 1p)"
 if [ -z "$HANDLE" ]; then
     # comm-join.sh failed outright (derivation exhausted every tier, or the
     # self-file write failed) — its own stderr (already printed above) names

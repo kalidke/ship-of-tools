@@ -114,9 +114,9 @@ fi
 SCAN=0
 [ "$CONTINUE" = 1 ] && [ "$FRESH" = 0 ] && [ -z "$RESUME_ID" ] && SCAN=1
 if [ "$SCAN" = 1 ]; then
-    for f in $(ls -t "$CODEX_HOME_DIR"/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -300); do
-        if head -c 4096 "$f" | grep -q "\"cwd\":\"$PWD\""; then
-            RESUME_ID="$(head -c 4096 "$f" | grep -o '"id":"[0-9a-f-]\{36\}"' | head -1 | cut -d'"' -f4)"
+    for f in $(ls -t "$CODEX_HOME_DIR"/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | sed -n 1,300p); do
+        if head -c 4096 "$f" | grep "\"cwd\":\"$PWD\"" >/dev/null; then
+            RESUME_ID="$(head -c 4096 "$f" | grep -o '"id":"[0-9a-f-]\{36\}"' | sed -n 1p | cut -d'"' -f4)"
             break
         fi
     done

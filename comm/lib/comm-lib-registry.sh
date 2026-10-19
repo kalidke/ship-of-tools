@@ -17,7 +17,7 @@ _sot_comm_tighten() {
     fi
     [ -n "$(_sot_comm_own root)" ] || return 0
     _sot_comm_own fix >/dev/null 2>&1 || true
-    left="$(_sot_comm_own print | head -n 1)" || left=""
+    left="$(_sot_comm_own print | sed -n 1p)" || left=""
     [ -z "$left" ] || echo "WARNING: the comm folder $COMM_HOME could not be made private: $left is still $(ls -ld -- "$COMM_HOME/$left" 2>/dev/null | cut -c1-10)" >&2
     return 0
 }

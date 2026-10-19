@@ -324,16 +324,29 @@ fn the_pin_command_the_installer_prints_runs_as_printed() {
     std::fs::create_dir_all(&bin).unwrap();
     sot_log::test_exec::write_executable(&bin.join("systemctl"), "#!/bin/sh\nexit 0\n");
     let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
-    let ran = sot_log::test_wait::run_within(
-        Command::new("bash")
-            .env_clear()
-            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
-            .env("HOME", &home)
-            .env("SOT_INSTALL_SOURCE_ONLY", "1")
-            .args(["-c", ". \"$1\"; installer_retire_local_service 0 /nonexistent 0", "bash"])
-            .arg(scripts.join("install.sh")),
-        BOUND,
-    );
+    // The retire's last branch (no pin, topology not declared) names the pin command only when boot start is wired, so
+    // the scratch home carries the boot drop-in a wired install has.
+    let boot = dir.join("default.target.d");
+    std::fs::create_dir_all(&boot).unwrap();
+    std::fs::write(boot.join("sotd.conf"), "[Unit]\nWants=sotd.service\n").unwrap();
+    // A real run sources the library before the retire (install.sh, step 7); source-only mode does not.
+    let retire = |home: &Path| {
+        sot_log::test_wait::run_within(
+            Command::new("bash")
+                .env_clear()
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("HOME", home)
+                .env("SOT_INSTALL_SOURCE_ONLY", "1")
+                .args([
+                    "-c",
+                    ". \"$1/lib/sot-daemon.sh\"; . \"$1/install.sh\"; installer_retire_local_service 0 /nonexistent 0",
+                    "bash",
+                ])
+                .arg(&scripts),
+            BOUND,
+        )
+    };
+    let ran = retire(&home);
     assert_eq!(ran.status.code(), Some(0), "{ran}");
     let said = ran.stdout.clone();
     let from = said.find("sotd topology pin").unwrap_or_else(|| panic!("the retire names no pin command: {ran}"));
@@ -352,6 +365,15 @@ fn the_pin_command_the_installer_prints_runs_as_printed() {
     assert_eq!(ran.status.code(), Some(0), "{printed}\n{ran}");
     let pin = std::fs::read_to_string(dir.join("sotd.service.d/topology.conf")).unwrap();
     assert!(pin.contains(&format!("ConditionHost=|{}", me())), "{pin}");
+
+    // With boot start off the retire says so and names no pin command.
+    let off = t.path().join("off");
+    std::fs::create_dir_all(off.join(".config/systemd/user")).unwrap();
+    std::fs::write(off.join(".config/systemd/user/sotd.service"), "[Service]\nExecStart=/nonexistent/sotd\n").unwrap();
+    let ran = retire(&off);
+    assert_eq!(ran.status.code(), Some(0), "{ran}");
+    assert!(ran.stdout.contains("Its boot start is already off"), "{ran}");
+    assert!(!ran.stdout.contains("sotd topology pin"), "{ran}");
 
     // Every record that names the claim spells the folder.
     for text in [

@@ -278,7 +278,7 @@ probe_inbox_stamp() {
 # probe_field LINE KEY — the @handle following KEY in a PROBE line, without its
 # '@'. Empty when absent.
 probe_field() {
-    printf '%s\n' "$1" | sed -n "s/.*[[:space:]]$2[[:space:]]*@\([A-Za-z0-9._-]*\).*/\1/p" | head -n 1
+    printf '%s\n' "$1" | sed -n "s/.*[[:space:]]$2[[:space:]]*@\([A-Za-z0-9._-]*\).*/\1/p" | sed -n 1p
 }
 
 # probe_reply NONCE REPLY HOP WOKE — the whole of what a PROBE does. One send
@@ -308,7 +308,7 @@ probe_reply() {
 # type a start line into a row that is already serving.
 probe_handle_line() {
     local line="$1" woke="$2" me="$3" probe nonce reply hop
-    probe="$(printf '%s\n' "$line" | grep -o 'PROBE [0-9a-f]\{12\}.*' | head -n 1)" || return 0
+    probe="$(printf '%s\n' "$line" | grep -o 'PROBE [0-9a-f]\{12\}.*' | sed -n 1p)" || return 0
     [ -n "$probe" ] || return 0
     nonce="$(printf '%s\n' "$probe" | awk '{print $2}')"
     reply="$(probe_field "$probe" reply)"

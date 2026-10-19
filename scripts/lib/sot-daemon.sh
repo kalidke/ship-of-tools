@@ -14,7 +14,7 @@ SOT_LOG_CAP_BYTES=16777216   # 16MB: the unprotected logs' total a start prunes 
 # because its ownership gate runs before any checkout exists. A test pins
 # the two copies equal.
 sot_unit_owner_path() {
-    sed -n -E 's/^ExecStart=(.*exec ")?([^ "]+)"?.*/\2/p' | head -1
+    sed -n -E 's/^ExecStart=(.*exec ")?([^ "]+)"?.*/\2/p' | sed -n 1p
 }
 
 # The owner prefix a sot-launch wrapper's content embeds (stdin -> stdout);
@@ -24,7 +24,7 @@ sot_wrapper_owner_prefix() {
         -e 's#^PENDING="(.+)/updates/pending-.*"$#\1#p' \
         -e 's#^export SOT_FRONTEND_BIN="(.+)/bin/sot"$#\1#p' \
         -e 's#^exec "(.+)/bin/sot".*#\1#p' \
-        | head -1
+        | sed -n 1p
 }
 
 # Byte-identical to scripts/sot-apply.sh's (a test pins it): a value spliced into a sed replacement (delimiter |) with

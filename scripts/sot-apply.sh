@@ -126,7 +126,7 @@ ptr_refusal() {
 # too, so it can never reach it -- finding 1a's daemon-side sibling check
 # is what protects an upgrade already in the past.
 if [ -z "${SOT_APPLY_REEXECED:-}" ] && [ "${1:-}" != --drop-only ] && [ -f "$PENDING" ] && ! ptr_refusal; then
-    stage_field() { sed -n 's/^ *"'"$1"'": *"\([^"]*\)".*/\1/p' "$PENDING" | head -1; }
+    stage_field() { sed -n 's/^ *"'"$1"'": *"\([^"]*\)".*/\1/p' "$PENDING" | sed -n 1p; }
     STAGE_TAG="$(stage_field tag)"
     STAGE_ASSET="$(stage_field asset)"
     if [ -n "$STAGE_TAG" ] && [ -n "$STAGE_ASSET" ]; then
@@ -193,10 +193,10 @@ restore_rendered() {
 # version bad so it is never re-armed, rewrites install.json.
 if [ "${1:-}" = "--rollback" ]; then
     [ -f "$LASTGOOD" ] || { log "rollback requested but no last-good state — nothing to do"; exit 0; }
-    lgfield() { sed -n 's/^ *"'"$1"'": *"\([^"]*\)".*/\1/p' "$LASTGOOD" | head -1; }
+    lgfield() { sed -n 's/^ *"'"$1"'": *"\([^"]*\)".*/\1/p' "$LASTGOOD" | sed -n 1p; }
     LG_TAG="$(lgfield tag)"
     LG_CHECKOUT="$(lgfield checkout)"
-    BAD_TAG="$(sed -n 's/^ *"tag": *"\([^"]*\)".*/\1/p' "$PREFIX/install.json" 2>/dev/null | head -1)"
+    BAD_TAG="$(sed -n 's/^ *"tag": *"\([^"]*\)".*/\1/p' "$PREFIX/install.json" 2>/dev/null | sed -n 1p)"
     [ -n "$LG_CHECKOUT" ] && [ -d "$LG_CHECKOUT" ] || {
         log "last-good checkout '$LG_CHECKOUT' missing — cannot roll back"; exit 0; }
     if [ "$BAD_TAG" = "$LG_TAG" ]; then
@@ -232,7 +232,7 @@ fi
 [ -f "$PENDING" ] || exit 0
 
 # ---- parse the pointer (our own pretty-printed JSON: one key per line) -------
-field() { sed -n 's/^ *"'"$1"'": *"\([^"]*\)".*/\1/p' "$PENDING" | head -1; }
+field() { sed -n 's/^ *"'"$1"'": *"\([^"]*\)".*/\1/p' "$PENDING" | sed -n 1p; }
 TAG="$(field tag)"
 PTR_TARGET="$(field target)"
 CHECKOUT="$(field checkout)"
@@ -278,7 +278,7 @@ TOP="${ASSET%.tar.gz}"; TOP="${TOP%.zip}"
 STAGED="$READY/$TOP"
 
 # Already at this version? Clear the stale pointer and move on.
-CUR_TAG="$(sed -n 's/^ *"tag": *"\([^"]*\)".*/\1/p' "$PREFIX/install.json" 2>/dev/null | head -1)"
+CUR_TAG="$(sed -n 's/^ *"tag": *"\([^"]*\)".*/\1/p' "$PREFIX/install.json" 2>/dev/null | sed -n 1p)"
 if [ "$CUR_TAG" = "$TAG" ]; then
     log "install is already at $TAG — clearing stale pending pointer"
     drop_pending

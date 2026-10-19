@@ -216,7 +216,7 @@ sot_path_refused() {  # <what: prefix|home> <path>
 # runs to the next space or quote either way. Pure (stdin -> stdout), so it is
 # testable without systemctl or a real unit file (scripts/tests/installer-state.sh).
 installer_unit_owner_path() {
-    sed -n -E 's/^ExecStart=(.*exec ")?([^ "]+)"?.*/\2/p' | head -1
+    sed -n -E 's/^ExecStart=(.*exec ")?([^ "]+)"?.*/\2/p' | sed -n 1p
 }
 
 # The sotd binary path from the unit CURRENTLY RUNNING for this user on this
@@ -302,7 +302,7 @@ installer_wrapper_owner_prefix() {
         -e 's#^PENDING="(.+)/updates/pending-.*"$#\1#p' \
         -e 's#^export SOT_FRONTEND_BIN="(.+)/bin/sot"$#\1#p' \
         -e 's#^exec "(.+)/bin/sot".*#\1#p' \
-        | head -1
+        | sed -n 1p
 }
 
 # The exec target of a desktop entry's `Exec=` line or an app bundle's
@@ -310,7 +310,7 @@ installer_wrapper_owner_prefix() {
 # app's Contents/MacOS/sot-launch use to launch the real sot-launch wrapper.
 # Pure (stdin -> stdout).
 installer_integration_exec_target() {
-    sed -n -E -e 's/^Exec=(.*)$/\1/p' -e 's/^exec "(.*)"$/\1/p' | head -1
+    sed -n -E -e 's/^Exec=(.*)$/\1/p' -e 's/^exec "(.*)"$/\1/p' | sed -n 1p
 }
 
 # "allow" | "refuse:<why>" | "unresolvable:<why>" for one on-disk
@@ -402,7 +402,7 @@ installer_kernel_host() {
 # name this box — both are the same "fall back to flags" signal to the
 # caller. Pure, so the decision is testable against canned status text.
 installer_topology_role() {  # <status-table-text> <self-host>
-    printf '%s\n' "$1" | awk -v self="$2" '
+    awk -v self="$2" '
         NR == 1 { next }  # header line "HOST DECLARED"
         $1 == self && NF >= 2 {
             split($2, w, ",")
@@ -417,7 +417,7 @@ installer_topology_role() {  # <status-table-text> <self-host>
             exit
         }
         END { if (!found) print "none" }
-    '
+    ' <<<"$1"
 }
 
 # The same "daemon:0|1 frontend:0|1" shape, for the flags fallback (no
@@ -435,11 +435,11 @@ installer_role_from_flags() {  # <role: local|remote|be-only>
 # version and the gates can read the record without a JSON parser.
 installer_json_string() {  # <install.json> <key>
     [ -f "$1" ] || return 0
-    sed -n -E "s/^ *\"$2\": *\"([^\"]*)\".*/\1/p" "$1" | head -1
+    sed -n -E "s/^ *\"$2\": *\"([^\"]*)\".*/\1/p" "$1" | sed -n 1p
 }
 installer_json_bool() {  # <install.json> <key>: true, false or empty
     [ -f "$1" ] || return 0
-    sed -n -E "s/^ *\"$2\": *(true|false).*/\1/p" "$1" | head -1
+    sed -n -E "s/^ *\"$2\": *(true|false).*/\1/p" "$1" | sed -n 1p
 }
 
 # Which releases a run with no --version and no --archive follows, from the version this prefix runs: "latest" (GitHub's
@@ -452,7 +452,7 @@ installer_installed_version() {  # <prefix>
     local v
     v="$(installer_json_string "$1/install.json" version)"
     if [ -z "$v" ] && [ -x "$1/bin/sotd" ]; then
-        v="$("$1/bin/sotd" --version 2>/dev/null | head -1 | awk '{ print $2 }')" || v=""
+        v="$("$1/bin/sotd" --version 2>/dev/null | sed -n 1p | awk '{ print $2 }')" || v=""
     fi
     printf '%s' "$v"
 }
@@ -470,7 +470,7 @@ installer_newest_release() {
     local list
     list="$(curl "${CURL_BOUND[@]}" -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases?per_page=1")" \
         || return 1
-    printf '%s\n' "$list" | grep -o '"tag_name": *"[^"]*"' | head -1 | sed -E 's/.*: *"([^"]*)"/\1/'
+    printf '%s\n' "$list" | grep -o '"tag_name": *"[^"]*"' | sed -n 1p | sed -E 's/.*: *"([^"]*)"/\1/'
 }
 # Which way release TAG moves a build of the line (a version with a +), by ancestry and not by version text: the build's
 # commit (the record's, else the +<sha> of its version) against the release's COMMIT asset, in the install's own base
@@ -478,12 +478,12 @@ installer_newest_release() {
 installer_build_direction() {  # <prefix> <installed version> <tag>
     local base="$1/repo/base" built rel
     built="$(installer_json_string "$1/install.json" commit)"
-    printf '%s' "$built" | grep -Eq '^[0-9a-f]{40}$' || { built="${2#*+}"; built="${built%-dirty}"; }
+    grep -Eq '^[0-9a-f]{40}$' <<<"$built" || { built="${2#*+}"; built="${built%-dirty}"; }
     case "$built" in ''|src) echo "unknown: this build names no commit"; return 0 ;; esac
     rel="$(mktemp)"
     curl "${CURL_BOUND[@]}" -fsSL -o "$rel" "https://github.com/$REPO/releases/download/$3/COMMIT" 2>/dev/null || : > "$rel"
     rel="$(tr -d ' \n' < "$rel"; rm -f "$rel")"
-    printf '%s' "$rel" | grep -Eq '^[0-9a-f]{40}$' || { echo "unknown: $3 has no COMMIT to read"; return 0; }
+    grep -Eq '^[0-9a-f]{40}$' <<<"$rel" || { echo "unknown: $3 has no COMMIT to read"; return 0; }
     [ -e "$base/.git" ] || [ -f "$base/HEAD" ] || { echo "unknown: no base clone at $base"; return 0; }
     git -C "$base" cat-file -e "$rel^{commit}" 2>/dev/null \
         || git -C "$base" fetch --quiet origin "$rel" 2>/dev/null \
@@ -525,7 +525,7 @@ installer_recorded_role() {  # <install.json> <wrapper>
         case "$role" in local|be-only|remote) ;; *) return 0 ;; esac
     fi
     if [ "$role" = remote ]; then
-        alias="$(sed -n -E 's/^export SOT_HOST="([^"]+)"$/\1/p' "$2" 2>/dev/null | head -1)"
+        alias="$(sed -n -E 's/^export SOT_HOST="([^"]+)"$/\1/p' "$2" 2>/dev/null | sed -n 1p)"
         [ -n "$alias" ] || return 0
     fi
     printf '%s %s' "$role" "$alias"
@@ -825,7 +825,7 @@ installer_enable_local_service() {  # <prefix> <template> <socket>
         || say "WARNING: sotd topology pin failed: sotd.service is not pinned to the hosts that run sotd"
     after="$(installer_pin_hosts "$HOME/.config/systemd/user")"
     for h in $before; do
-        printf '%s\n' "$after" | grep -qx -F -- "$h" \
+        grep -qx -F -- "$h" <<<"$after" \
             || say "The daemon moved here from $h: $h's sotd will not start at its next login."
     done
     # Boot start: wired for a unit this run finds new; over an existing unit only where an old link or the drop-in is,
@@ -1495,7 +1495,7 @@ pluto server
         *)
             ROWS_UNKNOWN=1
             # The one line sotd gives for what it could not read; a sotd that gave none is named by its exit status.
-            LIVE_WHY="$(printf '%s\n' "$LIVE_OUT" | grep -v -e '^repl ' -e '^pluto server$' | head -1 || true)"
+            LIVE_WHY="$(printf '%s\n' "$LIVE_OUT" | grep -v -e '^repl ' -e '^pluto server$' | sed -n 1p || true)"
             [ -n "$LIVE_WHY" ] || LIVE_WHY="sotd update repls gave no reason (exit $repl_rc)"
             if [ "$WILL_RESTART" = 0 ]; then
                 :
@@ -1643,7 +1643,7 @@ for v in "$REPO_DIR/versions"/*; do
             [ "$PREV_VERSION" != "$VERSION" ] || continue
             old_dirty="$(git -C "$v" status --porcelain 2>&1)" || old_dirty="git status failed: $old_dirty"
             if [ -n "$old_dirty" ]; then
-                say "keeping old version dir $(basename "$v"): it has local changes ($(printf '%s\n' "$old_dirty" | head -1)); it stays until it is clean or you remove it"
+                say "keeping old version dir $(basename "$v"): it has local changes ($(printf '%s\n' "$old_dirty" | sed -n 1p)); it stays until it is clean or you remove it"
             else
                 say "pruning old version dir $(basename "$v")"
                 git -C "$BASE" worktree remove "$v" 2>/dev/null || rm -rf "${v:?}"

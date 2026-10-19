@@ -42,7 +42,7 @@ HANDLE="${BASE}-wt-${SHORT}"
 DISPLAY_PREFIX="$BASE"
 if [ -f "$TOP/.sot/worktree.toml" ]; then
     _rl="$(grep -E '^[[:space:]]*display_prefix[[:space:]]*=' "$TOP/.sot/worktree.toml" \
-        | head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//; s/[[:space:]]*$//')"
+        | sed -n 1p | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//; s/[[:space:]]*$//')"
     [ -n "$_rl" ] && DISPLAY_PREFIX="$_rl"
 fi
 LABEL="${DISPLAY_PREFIX}-wt-${SHORT}"

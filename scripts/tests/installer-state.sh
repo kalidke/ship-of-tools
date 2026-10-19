@@ -37,7 +37,7 @@ check "a host not named in the table" \
     "none" "$(installer_topology_role "$STATUS_TABLE" nowhere)"
 check "no table at all (no hosts.toml yet)" \
     "none" "$(installer_topology_role "" laptop)"
-
+. "$(dirname "${BASH_SOURCE[0]}")/installer-topology-pipe.sh"
 # ---------------------------------------------------------------------------
 case_start "the flags fallback when there is no topology entry (installer_role_from_flags)"
 
