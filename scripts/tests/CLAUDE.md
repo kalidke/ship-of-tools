@@ -124,6 +124,17 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `$VAR` and `${VAR}`); the exit status is CMD's when CMD exits, and a CMD killed by a signal gives 255; a failed start
   leaves no `/tmp/sot-job-*`.
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
+- `scratch-guard.ps1`: dot-sourced first by every Windows suite that can start or touch sot state (`test-sot-apply`,
+  `test-install-manifest`, `test-install-layout` with its entry cases, `test-sot-within`, `test-local-daemon` with its
+  parts, `test-launcher-leases`, `test-topology-plan`, `install-smoke` after it makes its own profile): it ends the
+  suite with exit 2 and one line unless USERNAME begins `sot-scratch` (the daemon pipe is `sot-<USERNAME>-local`) and
+  APPDATA and LOCALAPPDATA lie under TEMP. No switch turns it off. Out of scope, with the reason: `in-job.ps1` (a job
+  runner, starts only the command it is given), `pipe-request.ps1` (a client of the pipe its caller names), and the
+  dot-sourced parts, which run inside a guarded suite.
+- `scratch-profile.ps1`: dot-source it to make such a profile (fresh USERNAME, APPDATA and LOCALAPPDATA under TEMP); the
+  hosted Windows steps and a person's box run a suite after it.
+- `test-scratch-guard.ps1`: the guard's rule on values it is given, each part of a real profile refused, and the two scripts
+  end to end in a child.
 - `in-job.ps1`: `in-job.ps1 CMD [ARG...]` runs CMD in a Windows job object, the test job (Windows): every process CMD
   starts, at any depth, ends when the script does: when CMD exits, when the script is ended from outside, or when
   the ssh session it runs under ends (its nearest sshd ancestor exits; exit 129). A CMD with no path is looked up on PATH, as the calling shell would (CreateProcess alone finds System32's WSL `bash` first). Exit status CMD's, 2 on a usage error; 8 when CMD exits 0 with processes of the job still running: then a stderr line names up to 16 of them (image and pid, and how many more), the job ends them (`TerminateJobObject`), and the script exits 8. A CMD that exits non-zero keeps its own status. Run by hand and by the Windows box's runner; the `rust.yml` step "Parse PowerShell scripts" parses it. Limits: the job's `CREATE_BREAKAWAY_FROM_JOB` always fails (the capsule spawn takes its degraded path, as on hosted CI), so the box does not exercise the breakaway path; words such as `--` and `-x:y` pass through `powershell.exe -File` parsing first and are untested, so a runner passes one script.

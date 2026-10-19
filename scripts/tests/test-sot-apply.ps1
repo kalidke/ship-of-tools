@@ -11,6 +11,8 @@
 # ASCII ONLY (see the same note in sot-apply.ps1).
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts	ests	est-sot-apply.ps1
+# Refuses unless this runs under a scratch profile (scratch-guard.ps1).
+. (Join-Path $PSScriptRoot 'scratch-guard.ps1')
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $apply = Join-Path $repo 'scripts\sot-apply.ps1'

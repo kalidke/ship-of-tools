@@ -98,10 +98,12 @@ New-Item -ItemType Directory -Force -Path $script:Smoke | Out-Null
 $h = $(if ($env:SOT_SMOKE_HOME) { $env:SOT_SMOKE_HOME } else { Join-Path $script:Smoke 'home' })
 foreach ($d in @($h, "$h\Desktop", "$h\AppData\Roaming", "$h\AppData\Local", "$h\comm")) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
 $h = (Resolve-Path -LiteralPath $h).Path
-$env:USERNAME = 'sotsmoke'
+$env:USERNAME = 'sot-scratch-smoke'
 $env:USERPROFILE = $h; $env:HOME = $h
 $env:APPDATA = "$h\AppData\Roaming"; $env:LOCALAPPDATA = "$h\AppData\Local"
 $env:SOT_COMM_HOME = "$h\comm"
+# The profile above is this suite's own scratch one; refuse if it is not (scratch-guard.ps1), e.g. SOT_SMOKE_HOME outside TEMP.
+. (Join-Path $PSScriptRoot 'scratch-guard.ps1')
 $prefix = Join-Path $env:LOCALAPPDATA 'sot'
 $repoName = $(if ($env:SOT_SMOKE_REPO) { $env:SOT_SMOKE_REPO } elseif ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'kalidke/ship-of-tools' })
 $env:SOT_INSTALL_REPO = $repoName

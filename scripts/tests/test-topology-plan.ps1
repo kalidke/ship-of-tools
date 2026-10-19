@@ -19,6 +19,8 @@
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-topology-plan.ps1
 
+# Refuses unless this runs under a scratch profile (scratch-guard.ps1).
+. (Join-Path $PSScriptRoot 'scratch-guard.ps1')
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $script = Join-Path $repo 'scripts\sot-hosts.ps1'

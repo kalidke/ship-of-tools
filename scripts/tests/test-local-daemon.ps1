@@ -54,6 +54,8 @@
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-local-daemon.ps1
 
+# Refuses unless this runs under a scratch profile (scratch-guard.ps1).
+. (Join-Path $PSScriptRoot 'scratch-guard.ps1')
 . (Join-Path $PSScriptRoot 'test-local-daemon-support.ps1')
 
 try {

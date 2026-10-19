@@ -13,6 +13,8 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-install-manifest.ps1
 #   pwsh -NoProfile -File scripts\tests\test-install-manifest.ps1
 
+# Refuses unless this runs under a scratch profile (scratch-guard.ps1).
+. (Join-Path $PSScriptRoot 'scratch-guard.ps1')
 # Continue, not Stop: Windows PowerShell 5.1 turns a native command's stderr into a terminating error under Stop, and
 # git writes hints there. Every step that must not fail is checked below.
 $ErrorActionPreference = 'Continue'
