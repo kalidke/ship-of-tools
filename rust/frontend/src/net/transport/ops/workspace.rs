@@ -41,8 +41,8 @@ pub struct WorkspaceInfo {
     /// field's own empty-string-means-absent convention.
     pub agent_handle: String,
     /// Persisted spawn brief from the wire (mirrors the daemon's
-    /// `WorkspaceListEntry.task`). The FE no longer delivers briefs (maintainer
-    /// directive, 2026-06-16 — comm-spawn owns task delivery via a durable
+    /// `WorkspaceListEntry.task`). The FE no longer delivers briefs (decided
+    /// 2026-06-16 — comm-spawn owns task delivery via a durable
     /// post-spawn comm message), so this is retained for protocol parity but
     /// intentionally unread on the FE side.
     #[allow(dead_code)]
@@ -87,7 +87,7 @@ pub struct WorkspaceInfo {
     /// queried at all) — `Some` only for `runtime == "capsule"` rows.
     /// Folded into the Sessions row's glance line (`capsule_phase_tag`).
     pub phase: Option<String>,
-    /// Per-session accounts (owner-simplified brief, 2026-09-15): the
+    /// Per-session accounts (simplified brief, 2026-09-15): the
     /// login directory this row's agent runs under. `""` = the agent's
     /// default directory — the common case, and the only value from a
     /// daemon that predates the field.
@@ -96,7 +96,7 @@ pub struct WorkspaceInfo {
 
 impl WorkspaceInfo {
     /// The daemon's default row in its inert-anchor state: home-rooted, no
-    /// agent, not a session -- on EVERY host (owner ruling 2026-09-06: a row
+    /// agent, not a session -- on EVERY host (decided 2026-09-06: a row
     /// that looks like a session but cannot be closed, and invites an LLM
     /// pane it must not have, confuses; the SoT LLM lives in the drawer, and
     /// Ship of Tools development runs in its own workspace row like any
@@ -108,7 +108,7 @@ impl WorkspaceInfo {
     }
 }
 
-/// One row of the `accounts.list` response (owner-simplified brief,
+/// One row of the `accounts.list` response (simplified brief,
 /// 2026-09-15). Mirrors `sot_protocol::AccountEntry`. `"default"` sorts
 /// first.
 #[derive(Debug, Clone)]
@@ -470,7 +470,7 @@ pub(crate) fn on_workspace_list(
     }
 }
 
-// Per-session accounts (owner-simplified brief, 2026-09-15): a
+// Per-session accounts (simplified brief, 2026-09-15): a
 // daemon that has no `accounts.list` handler (old build) or
 // whose reply otherwise fails to parse as `AccountsListRes` is
 // treated as an empty list — default-only, no error surfaced.

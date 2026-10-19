@@ -400,8 +400,7 @@ fn initial_focus(cli: &crate::cli::Cli) -> PaneFocus {
 fn initial_monitor_aspect(event_loop: &ActiveEventLoop) -> f32 {
     // Aspect of the primary monitor (or 1.6 = 16:10 fallback
     // when no monitor handle is available — headless capture
-    // doesn't have one). Locked for the session per the user's
-    // "no in-session reflow" preference.
+    // doesn't have one). Locked for the session: no in-session reflow.
     event_loop
         .primary_monitor()
         .map(|m| {

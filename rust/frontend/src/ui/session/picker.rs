@@ -37,7 +37,7 @@ pub(in crate::ui) struct WorkspacePicker {
     /// the entry under the cursor before a hidden-folder toggle. Consumed by
     /// the listing that answers `current_path`.
     reveal: Option<String>,
-    /// Per-session accounts (owner-simplified brief, 2026-09-15): the
+    /// Per-session accounts (simplified brief, 2026-09-15): the
     /// login directories `accounts.list` reported for `host`, "default"
     /// first. Empty until the reply lands, and stays empty (the field the
     /// render/commit paths check) when the daemon only has "default" or
@@ -69,7 +69,7 @@ impl WorkspacePicker {
             .unwrap_or(kept);
     }
 
-    /// Per-session accounts (owner-simplified brief, 2026-09-15): true only
+    /// Per-session accounts (simplified brief, 2026-09-15): true only
     /// when there's a real choice — more than "default" alone. An empty
     /// list (old daemon with no `accounts.list` handler, or the reply
     /// hasn't landed yet) reads exactly like default-only: hidden, no
@@ -221,7 +221,7 @@ impl State {
         ) {
             tracing::warn!(error = %e, %host, %start, "drop initial directory.list — channel closed");
         }
-        // Per-session accounts (owner-simplified brief, 2026-09-15): ask
+        // Per-session accounts (simplified brief, 2026-09-15): ask
         // the daemon that will OWN the row, never the frontend's own disk
         // — the login must exist where the session runs. An old daemon's
         // reply parses to an empty list (see `PendingKind::AccountsList`),
@@ -354,7 +354,7 @@ impl State {
         self.window.request_redraw();
     }
 
-    /// `Tab` in the picker: cycle to the next account (owner-simplified
+    /// `Tab` in the picker: cycle to the next account (simplified
     /// brief, 2026-09-15). No-op when `accounts` has 0 or 1 entries (the
     /// choice is hidden — either only "default" exists, or the daemon
     /// never answered `accounts.list`).
@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(p.selected, 0);
     }
 
-    /// The new-session prompt's account list handling (owner-simplified
+    /// The new-session prompt's account list handling (simplified
     /// brief, 2026-09-15): default-only hides the field.
     #[test]
     fn account_choice_hidden_when_only_default() {
@@ -634,7 +634,7 @@ mod tests {
     }
 
     /// Not-logged-in entries are marked, but still selectable — a
-    /// never-logged-in folder is a NORMAL choice (owner ruling): the
+    /// never-logged-in folder is a NORMAL choice (decided): the
     /// row's own pane runs the login on first start.
     #[test]
     fn account_not_logged_in_is_marked_and_still_selectable() {

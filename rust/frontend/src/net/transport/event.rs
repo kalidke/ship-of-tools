@@ -466,7 +466,7 @@ pub enum IncomingEvt {
     Workspaces {
         workspaces: Vec<WorkspaceInfo>,
     },
-    /// `accounts.list` reply (owner-simplified brief, 2026-09-15). Empty
+    /// `accounts.list` reply (simplified brief, 2026-09-15). Empty
     /// on an old daemon (no handler for the op) or a daemon reporting only
     /// "default" — either way the new-session prompt hides the account
     /// choice entirely.

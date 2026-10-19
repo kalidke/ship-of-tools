@@ -45,7 +45,7 @@ fn chord_parses_function_key() {
 }
 
 /// ADR 0034: the scalebar toggle is Primary+S (Ctrl on Windows/Linux, Cmd
-/// on macOS; maintainer, 2026-07-20, respelled 2026-09-18). Pin it
+/// on macOS; decided 2026-07-20, respelled 2026-09-18). Pin it
 /// against the two neighbours that make it a live collision risk — bare `s`
 /// is the Sessions-mode switch and Primary+Shift+S is the selfie — so a
 /// future rebind can't silently make one of them fire the scalebar (or

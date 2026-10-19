@@ -21,7 +21,7 @@ impl State {
         let mut strip_logo_rects: Vec<ScreenRect> = Vec::new();
         if !self.workspace_slugs.is_empty() {
             let (pendings, labels, active) = self.strip_labels();
-            // The fleet (owner asks 2026-09-07 + 2026-09-24 + 2026-09-27, ADR
+            // The fleet (asks 2026-09-07 + 2026-09-24 + 2026-09-27, ADR
             // 0042 L2a): each HOST GROUP is a ship — a brand wheel at the bow,
             // inline with the session names, and a row below it a waterline
             // running from the bow's rake to the stern with that group's box
@@ -232,7 +232,7 @@ impl State {
             match &m.kind {
                 StripMarkKind::Wheel => {
                     // Centred vertically in the SESSION-NAME row: the wheel
-                    // is inline with the names (owner, 2026-09-27), which is
+                    // is inline with the names (decided 2026-09-27), which is
                     // what leaves the row below it free to be a line.
                     strip_logo_rects.push(ScreenRect {
                         x: m.left,

@@ -618,8 +618,8 @@ fn an_unreachable_boxs_ship_is_gone_but_never_the_steered_boxs() {
     );
 }
 
-/// The owner's report: the badge "makes them longer text and the last
-/// session name hangs outside the ship hull". The hull is measured from
+/// A reported problem: the badge makes them longer text and the last
+/// session name hangs outside the ship hull. The hull is measured from
 /// `labels`, so the names must be drawn from the very same text, or every
 /// badge pushes every later name a cell past the slot its hull reserved.
 /// Three badged sessions lead the first ship (badged rows sort first,

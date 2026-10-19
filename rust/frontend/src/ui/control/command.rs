@@ -182,8 +182,8 @@ pub(in crate::ui) enum FeCommand {
         #[serde(default)]
         level: Option<String>,
     },
-    /// Open an arbitrary web URL in THIS machine's OS browser (maintainer note,
-    /// 2026-07-05: "not port forward, FE opens"). http/https only —
+    /// Open an arbitrary web URL in THIS machine's OS browser, not through a port forward
+    /// (decided 2026-07-05). http/https only —
     /// enforced at route time so a hostile scheme never reaches dispatch.
     OpenUrl { url: String },
     /// Switch nav mode: "files" | "modules" | "sessions" | "hosts".

@@ -308,7 +308,7 @@ pub struct Settings {
     /// no per-host persisted zoom exists. Precedence: persisted `font_scale`
     /// (Ctrl+=/-/0, per-host state toml) > this key > the built-in
     /// monitor-width tier (wide displays default larger; see
-    /// `default_font_scale_for_width`) > 1.0. Maintainer note, 2026-07-03: default was
+    /// `default_font_scale_for_width`) > 1.0. Note, 2026-07-03: default was
     /// "a bit small" on big monitors.
     pub font_scale: Option<f32>,
     /// `[nav] spill_ms` — while the user is actively moving the nav cursor,

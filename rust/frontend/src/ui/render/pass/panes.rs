@@ -158,7 +158,7 @@ impl State {
                 )?;
             }
         }
-        // Wordmark — the nav pane's FIRST row, left-aligned (owner ruling
+        // Wordmark — the nav pane's FIRST row, left-aligned (decided
         // 2026-09-06). The tree body starts on the row below (`nav_rect` in
         // the draw closure is carved by the same `wordmark_quad.is_some()`),
         // so nothing is ever drawn under it. One row tall; width follows the

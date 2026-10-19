@@ -224,7 +224,7 @@ impl State {
         if rel.is_empty() {
             return None;
         }
-        // Full workspace-relative path (per the maintainer) — not just the basename.
+        // Full workspace-relative path — not just the basename.
         // `middle_truncate` at render time keeps the head + the filename/ext
         // when the title overflows the pane width.
         // Paginated preview (ADR 0021): surface position + the page-turn

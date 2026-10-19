@@ -56,7 +56,7 @@ fn host_tree_node(host: &HostKey, display: &str, link: Option<&str>, has_list: b
 /// expand) and `resplice_expanded_session_hosts` (re-expand after a
 /// refresh) so both splice identical rows from identical data.
 ///
-/// 2026-09-04 amendment (owner ruling): a host's DEFAULT CAPSULE row
+/// 2026-09-04 amendment: a host's DEFAULT CAPSULE row
 /// with `agent == "none"` is the daemon's inert anchor workspace, not a
 /// session — it never appears here at all, in either kind or shape.
 /// `workspace.list` still returns it (`is_default: true`, needed so the
@@ -69,7 +69,7 @@ fn host_tree_node(host: &HostKey, display: &str, link: Option<&str>, has_list: b
 /// same amendment applies there via the same
 /// `WorkspaceInfo::is_inert_anchor` predicate so the two never drift.
 ///
-/// No runtime leg (owner ruling 2026-09-06, symmetry): a tmux backend's
+/// No runtime leg (decided 2026-09-06, symmetry): a tmux backend's
 /// default row with no agent is the anchor too and is hidden the same way;
 /// Ship of Tools development runs in a `ship-of-tools` row like any other
 /// project, and the SoT LLM lives in the drawer. A
@@ -256,7 +256,7 @@ impl State {
         } else {
             format!("{} · {}", w.label, glance)
         };
-        // Per-session accounts (owner-simplified brief, 2026-09-15): a
+        // Per-session accounts (simplified brief, 2026-09-15): a
         // short suffix naming which subscription this row spends — shown
         // ONLY when it isn't the agent's default directory (`w.account`
         // empty), so the common case renders exactly as before.

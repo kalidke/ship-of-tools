@@ -207,7 +207,7 @@ fn strip_band_never_touches_the_grids_last_row() {
 
 #[test]
 fn the_air_above_the_session_names_is_one_named_length_at_every_window_height() {
-    // The distance the owner tunes is the one between the panes' bottom
+    // The distance meant to be tuned is the one between the panes' bottom
     // border — the grid's last row — and the session names, and it must be
     // the SAME distance at every window height, or a spacing picked from
     // rendered samples is only reproducible at the height they were
@@ -243,7 +243,7 @@ fn the_air_above_the_session_names_is_one_named_length_at_every_window_height() 
             air[0].2
         );
         // And it is the named length, not merely a constant one — this is
-        // the distance the owner sets, so the constant is what he moves.
+        // the distance meant to be set, so the constant is what changes.
         assert!(
             (a - cell_h * STRIP_TOP_AIR_ROWS).abs() < 1e-3,
             "h {h}: {a} px of air, but `STRIP_TOP_AIR_ROWS` asks for {}",
@@ -356,13 +356,13 @@ fn strip_lines_color_by_work_state() {
 
 #[test]
 fn strip_active_coloured_row_is_distinct_without_bold() {
-    // Maintainer report: two COLOURED (working) sessions, one active — they
+    // Reported case: two COLORED (working) sessions, one active — they
     // collapsed to identical-looking rows because active-vs-non-active
     // differed ONLY by bold, and the monospace face renders no real bold.
     // The contrast lever fixes it by giving the active coloured row a
     // BRIGHTNESS cue independent of Weight::BOLD. Earlier strip tests only
     // covered active-IDLE (which stands out via the bright default path),
-    // never active-COLOURED — this is that missing case.
+    // never active-COLORED — this is that missing case.
     let labels = vec!["aa".to_string(), "bb".to_string()];
     let cell_w = 10.0;
     let win_w = 800.0;
