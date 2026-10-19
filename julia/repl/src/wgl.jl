@@ -177,7 +177,7 @@ function wgl_figure_content(fig)
     return nothing
 end
 
-# Per maintainer directive: wglshow NEVER uses Makie's interactive HTML widgets,
+# wglshow NEVER uses Makie's interactive HTML widgets,
 # but it must not disable them *silently*. If the figure actually carries
 # interactive widgets, warn the author (on the captured stderr, so it surfaces
 # in the REPL) that they will render but not respond over the browser.
@@ -368,7 +368,7 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Union{Bool,A
     # (e.g. WGLMakie/THREE "computeBoundingBox NaN" from an under-constrained
     # scene), which only hits the browser console and leaves a blank canvas. So
     # we inject a tiny client-side error overlay that surfaces those into the
-    # page too (maintainer request: show render errors in the html render).
+    # page too (so render errors show in the html render).
     app = Base.invokelatest(Bonito.App, () ->
         Bonito.DOM.div(
             Bonito.DOM.script(WGL_ERROR_OVERLAY_JS),
