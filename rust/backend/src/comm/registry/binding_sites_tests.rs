@@ -41,7 +41,7 @@ const SITES: &[(&str, &str, &[&str], &str)] = &[
     ("rows/workspace.rs", "agent_name", &[".agent_name"], "the reader of the stored name"),
     ("rows/workspace.rs", "fmt", &[".agent_name", "agent_handle"], "Debug"),
     ("rows/workspace.rs", "meta_only", &["agent_handle"], "the constructor"),
-    ("rows/workspace.rs", "reset_agent_in_place", &[".agent_name"], "the clear of the stored name when a default row's run ends"),
+    ("rows/workspace.rs", "reset_agent_in_place", &[".agent_name", "agent_handle"], "the clear of the stored name and declared handle when a default row's run ends"),
 ];
 
 /// Where the scan looks: `(needle, needs no identifier character before, after)`.
