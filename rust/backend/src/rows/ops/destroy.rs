@@ -8,7 +8,7 @@ use sot_protocol::Frame;
 use crate::server::reply::HandlerOutput;
 use crate::rows::run::end::{CapsuleDestroyOutcome, ALREADY_REMOVED, capsule_end_not_reached_payload, default_row_end_response, destroy_capsule_workspace, remove_row_files};
 use crate::rows::anchor::end_default_row_run;
-use crate::rows::run::prune::remove_closed_row_folder;
+use crate::rows::state_folder::remove_closed_row_folder;
 use crate::comm::registry::registry::remove_comm_agents_for_workspace;
 use crate::session::Session;
 use crate::rows::WorkspaceChanged;

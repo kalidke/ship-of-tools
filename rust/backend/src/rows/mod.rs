@@ -7,6 +7,7 @@ pub(super) mod ops;
 pub(crate) mod reauth;
 pub(crate) mod run;
 pub(crate) mod spawn;
+pub(crate) mod state_folder;
 pub(crate) mod store;
 pub(crate) mod workspace;
 

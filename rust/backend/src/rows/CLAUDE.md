@@ -48,7 +48,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - Closing a non-default row removes its state folder once its run is confirmed ended; the default row's folder stays. The
   boot resume scan removes a folder no row names only when its `supervisor.lock` is free and nothing in it was written for
   24 hours; a link at the `workspaces` folder, the folder or inside it is never followed, and an unreadable lock or age
-  keeps the folder (`run/prune.rs`).
+  keeps the folder (`state_folder.rs::remove_state_folder`).
 - The row toml is a projection of this state that `store::save` rewrites; the state changes through the daemon's
   ops, not through the file.
 
@@ -80,6 +80,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mod.rs`: the `Workspace`, `Workspaces` and `Inner` structs, `row_or_reply`, the `WorkspaceChanged` event and the session name rule
 - `workspace.rs`: the row's methods, `Phase`, `Observation`, `SupervisorIdentity`, the phase cell, `now_unix`
 - `registry.rs`: `Workspaces` insert, lookup, removal, observers, buses and the per-row guard
+- `state_folder.rs`: `remove_state_folder` (the one removal and its refusals), `remove_closed_row_folder`, `sweep_unnamed_folders`, `AGE_FLOOR`
+- `state_folder_tests.rs`: tests of `state_folder.rs`: the name rule, the lock, age and link refusals, and the boot sweep
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`
 - `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `end_default_row_run`, `default_row_launch_seed`, `seed_default_row`
 - `ops/`: the row ops clients call

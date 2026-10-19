@@ -155,5 +155,5 @@ pub(crate) fn sweep_unnamed_folders(state_root: &Path, workspaces: &Workspaces, 
 }
 
 #[cfg(test)]
-#[path = "prune_tests.rs"]
+#[path = "state_folder_tests.rs"]
 mod tests;

@@ -15,8 +15,7 @@ paths, and the headless attach client. Part of the daemon's rows subsystem; char
 - `admission.rs`: the pending-authority refusal a start is told when the row's authority fence is already claimed
 - `activation.rs`: `ensure_started` (start on attach), `resume_if_absent`, `resume_locked`, `ActivationIntent`
 - `watchdog.rs`: `install_watchdog`, the exit classes (`LegOutcome`) and the restart budget (`RESTART_BACKOFFS`)
-- `resume.rs`: `resume_all`, the boot resume of every registered row whose pointer exists, then the sweep of unnamed state folders
-- `prune.rs`: `remove_state_folder` (the one removal and its refusals), `remove_closed_row_folder`, `sweep_unnamed_folders`, `AGE_FLOOR`
+- `resume.rs`: `resume_all`, the boot resume of every registered row whose pointer exists
 - `end_run.rs`: `end_run`, `EndRunOutcome` and the destroy proof (`absence_proof`, `leg_absent`)
 
 ## Start here
@@ -45,5 +44,4 @@ destroy proof. `observer.rs::ensure_running` for how a row's phase is polled; `h
   row still unsettled after `ACTIVATION_MAX_REPROBES` passes fails the activation the same way: the reason is the error
   and the row's `activation_error`, and the next attempt clears it.
 - `end_run` waits out an authority reporting `starting` for activation's bound (50 re-probes 200 ms apart); one still starting is stopped and judged by `absence_proof`, as a terminal one is (`settle_starting`, `end_still_starting`). A destroy or a window's close therefore ends a row held for storage.
-- A state folder is removed only through `prune::remove_state_folder`: a row-folder name, no link at either level, a free `supervisor.lock`, and for an unnamed folder nothing written for `AGE_FLOOR`.
 - Boot resume spawns nothing for a live authority (`resume::resume_all` through `activation::resume_locked`).

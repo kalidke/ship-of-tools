@@ -52,7 +52,7 @@ pub const LANE_CONCURRENCY: usize = 4;
 /// process; deleted, the bare-shell fallback an earlier version used
 /// here). After the resume pass, such a directory is removed when its
 /// supervisor lock is free and nothing in it was written for 24 hours
-/// (`prune::sweep_unnamed_folders`); any other is left and logged once.
+/// (`state_folder::sweep_unnamed_folders`); any other is left and logged once.
 ///
 /// Runs off the startup critical path (finding 10): `server/mod.rs`
 /// calls this via `tokio::spawn`, never awaited, and every probe/spawn
@@ -141,13 +141,13 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
     log_orphaned_state_dirs(&state_root, &workspaces);
 }
 
-/// Remove the `<state-root>/workspaces/*` folders no registry entry names that `prune::sweep_unnamed_folders` allows (a
+/// Remove the `<state-root>/workspaces/*` folders no registry entry names that `state_folder::sweep_unnamed_folders` allows (a
 /// free supervisor lock, nothing written for 24 hours), and log once the names of those it left. This is the one
 /// scan at which the registry is whole; closing a row removes its own folder at once, so what this finds is left by a
 /// crash between a close's steps or by an older daemon (ADR 0042).
 async fn sweep_registryless_state_dirs(state_root: PathBuf, workspaces: Workspaces) {
     let kept = tokio::task::spawn_blocking(move || {
-        super::prune::sweep_unnamed_folders(&state_root, &workspaces, std::time::SystemTime::now())
+        crate::rows::state_folder::sweep_unnamed_folders(&state_root, &workspaces, std::time::SystemTime::now())
     })
     .await
     .unwrap_or_default();
