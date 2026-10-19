@@ -810,6 +810,16 @@ jobs:
         working-directory: .
         run: bash scripts/tests/test-rc-gate-target.sh
 
+      - name: Test the rc gate's suite result names
+        working-directory: .
+        run: bash scripts/tests/test-rc-gate-basename.sh
+
+      # The gate's clippy and bash 3.2 jobs go red on a stand-in workspace and tree that hold what each catches.
+      - name: Test the rc gate's clippy and bash 3.2 jobs
+        working-directory: .
+        timeout-minutes: 10
+        run: bash scripts/tests/test-rc-gate-parity.sh
+
       # The bash sibling of the PowerShell topology plan test above: scripts/lib/sot-hosts.sh's sot_topology_plan
       # against the same fake sotd, pure text processing, hermetic and fast.
       - name: Test topology plan (bash)
@@ -994,16 +1004,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build bash 3.2.57
-        run: |
-          cd "$RUNNER_TEMP"
-          curl -fsSL --retry 3 -o bash-3.2.57.tar.gz https://ftp.gnu.org/gnu/bash/bash-3.2.57.tar.gz
-          echo "3fa9daf85ebf35068f090ce51283ddeeb3c75eb5bc70b1a4a7cb05868bfe06a4  bash-3.2.57.tar.gz" | sha256sum -c -
-          tar -xzf bash-3.2.57.tar.gz
-          cd bash-3.2.57
-          ./configure --without-bash-malloc --disable-nls \
-            CFLAGS='-O1 -std=gnu89 -Wno-implicit-function-declaration -Wno-implicit-int' > configure.log 2>&1 \
-            || { tail -n 40 configure.log; exit 1; }
-          make > make.log 2>&1 || { tail -n 40 make.log; exit 1; }
+        run: bash scripts/tests/bash32.sh "$RUNNER_TEMP/bash-3.2.57" > /dev/null
       - name: Scripts under bash 3.2.57
         timeout-minutes: 30
         run: bash scripts/tests/under-bash.sh "$RUNNER_TEMP/bash-3.2.57/bash"

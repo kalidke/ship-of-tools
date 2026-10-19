@@ -137,6 +137,7 @@ fn seed_with(target: &Path, link: &Path, switch: bool, home: Option<&Path>) -> i
 #[cfg(any(windows, test))]
 fn seed_contents(target: &Path, link: &Path, stub: Option<&str>) -> io::Result<()> {
     let temp = unique_beside(link);
+    #[allow(clippy::disallowed_methods, reason = "a data copy of an account's file; the link's target is never a program this process runs")]
     let (written, what) = if let Some(line) = stub {
         (std::fs::write(&temp, line), "write the import of")
     } else {

@@ -3,8 +3,9 @@
 # through sot_log::test_wait::run_within (or try_run_within, which returns the failure as a value), and waits on a
 # child it holds while it runs through test_isolated::drain(..).wait_within, or test_isolated::wait_within when it did
 # not pipe the child's streams, so the wait has a bound and a failure carries the child's account. No test carries an
-# allow for these methods; production code calls them only under rust/clippy.toml's process-spawns allows.
+# allow for the process methods; production code calls them only under rust/clippy.toml's process-spawns allows.
 disallowed-methods = [
+  { path = "std::fs::copy", reason = "copying a program in the multithreaded test process holds its descriptor open across a sibling's fork (ETXTBSY): write a program through sot_log::test_exec::write_executable; a data copy carries #[allow(clippy::disallowed_methods, reason = ...)]" },
   { path = "std::process::Command::output", reason = "run a test's child through sot_log::test_wait::run_within: bounded, with its status and both streams" },
   { path = "std::process::Command::status", reason = "run a test's child through sot_log::test_wait::run_within: bounded, with its status and both streams" },
   { path = "std::process::Child::wait_with_output", reason = "wait on a test's child through sot_log::test_isolated::drain(..).wait_within: bounded, with its status and both streams" },

@@ -422,6 +422,7 @@ mod comm_file_tests {
             let d = home();
             let (reg, tmp) = (d.path().join("registry.json"), d.path().join("registry.json.tmp"));
             let good = std::fs::read(&reg).unwrap();
+            #[allow(clippy::disallowed_methods, reason = "a data copy of a registry file, no program is run from it")]
             std::fs::copy(&reg, &tmp).unwrap();
             std::fs::write(&reg, "").unwrap();
             let (r, pauses) = read_healed(&reg, at, || std::fs::rename(&tmp, &reg).unwrap());

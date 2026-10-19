@@ -45,6 +45,7 @@ pub fn pluto_resource_root(case: &Path, julia: &str) -> PathBuf {
         .expect("write the patched session_options.jl");
     match std::env::var_os("SOT_L2_PLUTO_MANIFEST") {
         Some(manifest) => {
+            #[allow(clippy::disallowed_methods, reason = "a data copy of a manifest, no program is run from it")]
             std::fs::copy(manifest, dir.join("Manifest.toml")).expect("copy the Pluto manifest");
         }
         None => {
@@ -231,6 +232,7 @@ pub async fn hold_row(
 /// One notebook, in `folder` (a row's root), opened through the daemon's real Pluto supervisor (`pluto.open`).
 pub async fn open_notebook(folder: &Path, wire: &mut Wire) {
     let notebook = folder.join("notebook.jl");
+    #[allow(clippy::disallowed_methods, reason = "a data copy of a notebook, no program is run from it")]
     std::fs::copy(
         repo_file("rust/backend/tests/daemon_lifetime/fixtures/notebook.jl"),
         &notebook,

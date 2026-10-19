@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# rc-gate.sh <checkout> <logdir> [cap]
+# rc-gate.sh <checkout> <logdir> [cap [line]]
 #
 # The rc gate as concurrent jobs under one cap (default 10). Linux only. It
 # covers what the old full gate covered: the Rust workspace tests (the four
 # slow binaries split per test), the doc tests, the windows-gnu and darwin
-# cross checks, every Julia suite, and the shell suites; and, as rust.yml's Linux job runs it, the daemon lifetime
+# cross checks, the three clippy lines of rust.yml (lib-bins, all-targets with the test-children config, and the
+# all-targets line for x86_64-pc-windows-gnu over sot-log and sot-backend, which finds Windows-only test code from Linux),
+# every Julia suite, and the shell suites; and, when the tree differs from `line` (a commit-ish; always when none is given)
+# under scripts/, comm/ or agents/, scripts/tests/under-bash.sh under a bash 3.2.57 that scripts/tests/bash32.sh builds
+# once and keeps under /scratch/<user>, as rust.yml's bash32-linux job runs it; and, as rust.yml's Linux job runs it, the daemon lifetime
 # harness, built in CARGO_TARGET_DIR/daemon-lifetime, since its features (the capsule's phase barriers, the daemon's
 # faults) would replace the `sotd` and `sot-capsule` the other jobs run.
 #
@@ -21,7 +25,9 @@
 # <target>/rc-gate-checkout, and a run for any other checkout is refused (exit 2) before anything is built, since cargo
 # keys a workspace crate by its path inside the workspace and trusts file times, so a second tree built into one target
 # can run the first tree's binaries. Every job gets the container's private XDG_RUNTIME_DIR and no
-# DBUS_SESSION_BUS_ADDRESS, so no test scope reaches the user's systemd manager. Needs jq. Exit 2 on bad args;
+# DBUS_SESSION_BUS_ADDRESS, and a HOME of its own, <logdir>/home, with XDG_CONFIG_HOME, XDG_STATE_HOME and CLAUDE_CONFIG_DIR
+# under it and CARGO_HOME and RUSTUP_HOME named as the runner has them, so a test that reaches the runner's real home
+# fails here as it would on a hosted runner, and cannot touch the fleet's live files, so no test scope reaches the user's systemd manager. Needs jq. Exit 2 on bad args;
 # otherwise 0 (130 if interrupted) and the verdict is in <logdir>/summary.txt: it ends in ALLDONE, or ALLDONE FAILED
 # when any job's rc is nonzero, the job runner failed, a job never ran, the run was interrupted, or a test left a
 # process behind (any process left in the container). Every job's result file starts as `unrun`, so a job that never
@@ -29,6 +35,8 @@
 # end kills what is left.
 # ALLDONE means every rc line is 0; the rc lines say which job failed. A container stopped from outside SIGKILLs
 # rc-gate, so summary.txt gets no ALLDONE line; a summary without one is a failed run.
+# A shell suite's result and log are named by its path in the checkout with / as - (comm-tests-test-temp-files), so
+# two suites with one basename keep their own verdicts.
 # A selected Rust job's result is zero only when its exact body completed successfully. A missing,
 # ignored-only or mismatched body produces a failed result even if the executable exited zero.
 # Ignored names from split binaries are reported as skipped and are not ordinary jobs. The checked job
@@ -38,6 +46,8 @@
 SELF=$(readlink -f "$0")
 source "$(dirname "$SELF")/lib-test-body.sh" || exit 2
 TO=(timeout -k 10 1200)
+# The clippy lines compile every crate again as clippy sees it, and under-bash.sh runs every hermetic shell suite once more.
+LNT=(timeout -k 10 2400)
 # The lifetime harness runs every case one at a time: 963 s inside a whole gate and 1035 s alone, on a shared test
 # host. So it has an end of its own, inside the 75 min rust.yml gives its job.
 LTO=(timeout -k 10 3600)
@@ -46,19 +56,28 @@ JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/vi
 
 envs() {
   D=$RCG_D L=$RCG_L
-  CE=(env -i HOME="$HOME" PATH="$RCG_JULIA_DIR:${RCG_NODE_DIR:+$RCG_NODE_DIR:}$RCG_CARGO_DIR:/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
+  local hm=$L/home
+  # one home for every job, the runner's real one named only for the toolchains
+  HE=(HOME="$hm" XDG_CONFIG_HOME="$hm/.config" XDG_STATE_HOME="$hm/.local/state" CLAUDE_CONFIG_DIR="$hm/.claude")
+  CE=(env -i "${HE[@]}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" PATH="$RCG_JULIA_DIR:${RCG_NODE_DIR:+$RCG_NODE_DIR:}$RCG_CARGO_DIR:/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
     XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
     ${CARGO_PROFILE_DEV_DEBUG:+CARGO_PROFILE_DEV_DEBUG="$CARGO_PROFILE_DEV_DEBUG"}
     ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
   # SOT_TEST_SOTD: the sotd the workspace build just made, so installer-apply.sh's real-sotd cases run in the gate.
-  SE=(env -i HOME="$HOME" PATH="${RCG_NODE_DIR:+$RCG_NODE_DIR:}/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" SOT_TEST_SOTD="$CARGO_TARGET_DIR/debug/sotd" ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
-  JE=(env -i HOME="$HOME" PATH="$RCG_JULIA_DIR:/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
+  SE=(env -i "${HE[@]}" PATH="${RCG_NODE_DIR:+$RCG_NODE_DIR:}/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" SOT_TEST_SOTD="$CARGO_TARGET_DIR/debug/sotd" ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
+  JE=(env -i "${HE[@]}" PATH="$RCG_JULIA_DIR:/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
 }
 
 st() { echo "$1 start $(date +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg) cargo=$(pgrep -c cargo)" >> "$L/summary.txt"; }
 rc() { echo "$1 rc=$2 ${3:-}" >> "$L/summary.txt"; }
 # a step's verdict: its result file (swept at the end) and its summary line
 fin() { echo "$2" > "$L/steps/$1.rc"; rc "$1" "$2"; }
+# shell_key <path>: a shell suite's result and log name, its path in the checkout with / as -
+shell_key() {
+  local k=${1#"$D/"}
+  k=${k%.sh}
+  echo "${k//\//-}"
+}
 
 job_julia() {
   local p s
@@ -93,11 +112,41 @@ job_cargo_chain() {
   fin darwin-check $?
 }
 
+# job_lint <line>: one of rust.yml's clippy lines, run from rust/ as the workflow runs it. The all-targets lines read
+# rust/clippy-tests (CLIPPY_CONF_DIR), the test-children rule; the windows line finds cfg(windows) test code from Linux (the
+# frontend's tree-sitter needs a cross C compiler, so it is left to the hosted leg).
+job_lint() {
+  local feats=sot-frontend/test-pane-timing,sot-frontend/test-window-close,sot-backend/daemon-lifetime-faults
+  local deny=(-A clippy::all -D clippy::too_many_lines -D clippy::disallowed_methods)
+  local conf=CLIPPY_CONF_DIR=$D/rust/clippy-tests
+  st "lint-$1"
+  cd "$D/rust" || { fin "lint-$1" 2; return; }
+  case $1 in
+    lib-bins)
+      "${LNT[@]}" "${CE[@]}" cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods ;;
+    all-targets)
+      "${LNT[@]}" "${CE[@]}" "$conf" cargo clippy --workspace --exclude vt100-ctt --all-targets --features "$feats" --locked -- "${deny[@]}" ;;
+    windows-tests)
+      "${LNT[@]}" "${CE[@]}" "$conf" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
+        cargo clippy -p sot-log -p sot-backend --target x86_64-pc-windows-gnu --all-targets \
+        --features sot-backend/daemon-lifetime-faults --locked -- "${deny[@]}" ;;
+  esac > "$L/lint-$1.log" 2>&1
+  fin "lint-$1" $?
+}
+
+# job_under_bash: scripts/tests/under-bash.sh under the bash 3.2.57 the main flow names in RCG_BASH32
+job_under_bash() {
+  st under-bash
+  cd "$D" || { fin under-bash 2; return; }
+  "${LNT[@]}" "${SE[@]}" bash scripts/tests/under-bash.sh "$RCG_BASH32" > "$L/under-bash.log" 2>&1
+  fin under-bash $?
+}
+
 job_shell() {
-  local b
-  b=$(basename "$1" .sh)
-  "${TO[@]}" "${SE[@]}" bash "$@" > "$L/$b.log" 2>&1
-  fin "$b" $?
+  local k
+  k=$(shell_key "$1")
+  "${TO[@]}" "${SE[@]}" bash "$@" > "$L/$k.log" 2>&1
+  fin "$k" $?
 }
 
 # job_lifetime: the daemon lifetime harness as rust.yml's Linux job runs it: Pluto's environment prepared in the gate's
@@ -142,12 +191,17 @@ row_for() {
   IFS=$'\t' read -r _ exe pkg <<< "$r"
 }
 
-# emit <key> <line> [resultfile]: once per key; the result starts as unrun
-declare -A EMITTED
+# emit <key> <line> [resultfile]: once per key; the result starts as unrun. A result file emitted under two keys is
+# refused (exit 2) before any job runs: the second job would overwrite the first one's verdict.
+declare -A EMITTED RESULT
 emit() {
   [ -n "${EMITTED[$1]:-}" ] && return
   EMITTED[$1]=1
-  [ -n "${3:-}" ] && echo unrun > "$3"
+  if [ -n "${3:-}" ]; then
+    [ -n "${RESULT[$3]:-}" ] && { echo "rc-gate: result $3 emitted twice" >&2; exit 2; }
+    RESULT[$3]=1
+    echo unrun > "$3"
+  fi
   printf '%s\n' "$2"
 }
 emit_bin() {
@@ -160,7 +214,7 @@ emit_one() {
 }
 emit_shell() {
   local name; name=$(basename "$1" .sh)
-  emit "shell:$1" "$(printf 'shell\t%s' "$name"; printf '\t%s' "$@")" "$L/steps/$name.rc"
+  emit "shell:$1" "$(printf 'shell\t%s' "$name"; printf '\t%s' "$@")" "$L/steps/$(shell_key "$1").rc"
 }
 
 producer() {
@@ -196,6 +250,8 @@ producer() {
   echo unrun > "$L/steps/win-check.rc"
   echo unrun > "$L/steps/darwin-check.rc"
   emit cargo-chain cargo-chain
+  for s in lib-bins all-targets windows-tests; do emit "lint:$s" "$(printf 'lint\t%s' "$s")" "$L/steps/lint-$s.rc"; done
+  [ -n "${RCG_BASH32:-}" ] && emit under-bash under-bash "$L/steps/under-bash.rc"
   [ "$BUILD_RC" -eq 0 ] && st rust-workspace
 
   # list the four slow binaries; a split binary runs only per test
@@ -278,7 +334,7 @@ PYLIST
       if [ "$BUILD_RC" -eq 0 ] && row_for test_body_fixture; then
         emit_shell "$f" --all "$exe"
       else
-        fin test-test-body 101
+        fin "$(shell_key "$f")" 101
       fi
     else
       emit_shell "$f"
@@ -303,6 +359,8 @@ if [ "${1:-}" = --job ]; then
     julia) job_julia ;;
     lifetime) job_lifetime ;;
     cargo-chain) job_cargo_chain ;;
+    lint) job_lint "$a" ;;
+    under-bash) job_under_bash ;;
     shell) job_shell "$b" ${c:+"$c" "$d"} ;;
     bin) job_test "$a" "$b" "$c" ;;
     one) job_test "$a" "$b" "$c" "$d" ;;
@@ -314,14 +372,16 @@ if [ "${1:-}" = --pipeline ]; then
   envs
   BUILD_RC=$RCG_BUILD_RC
   set -o pipefail
-  producer | xargs -d '\n' -n 1 -P "$2" bash "$SELF" --job
+  # the listing is taken whole before any job starts, so a refused listing (emit's exit 2) starts no job
+  listing=$(producer) || exit $?
+  printf '%s\n' "$listing" | xargs -d '\n' -n 1 -P "$2" bash "$SELF" --job
   exit $?
 fi
 
 # ---- main flow ----
 CAP=${3:-10}
 if [ $# -lt 2 ] || [ -z "${CARGO_TARGET_DIR:-}" ] || ! [[ $CAP =~ ^[1-9][0-9]*$ ]]; then
-  echo "usage: CARGO_TARGET_DIR=... rc-gate.sh <checkout> <logdir> [cap >= 1]" >&2
+  echo "usage: CARGO_TARGET_DIR=... rc-gate.sh <checkout> <logdir> [cap >= 1 [line]]" >&2
   exit 2
 fi
 # One target per checkout, for good: the first run names its checkout in the target; a run for another is refused.
@@ -346,7 +406,7 @@ if [ -d "$2" ] && [ -n "$(ls -A "$2")" ]; then
 fi
 mkdir -p "$2" || exit 2
 L=$(cd "$2" && pwd)
-mkdir -p "$L/rust" "$L/steps"
+mkdir -p "$L/rust" "$L/steps" "$L/home" || exit 2
 CARGO_BIN=$(command -v cargo) || { echo "rc-gate: cargo not found" >&2; exit 2; }
 JULIA_BIN=$(command -v julia) || { echo "rc-gate: julia not found" >&2; exit 2; }
 # The binary it starts, asked under the runner's HOME, where a juliaup launcher finds its installation: a launcher on the
@@ -361,6 +421,18 @@ PATH=/usr/bin:/bin command -v Xvfb > /dev/null || { echo "rc-gate: Xvfb not foun
 # CLIs, and a julia in /usr/bin would put /usr/bin's node ahead of the node chosen here). Those two folders lead the Rust
 # jobs' PATH, ahead of cargo's folder: it is wherever cargo is installed, and whatever else it holds is not the gate's.
 mkdir -p "$L/bin" "$L/julia-bin" && ln -s "$NODE_BIN" "$L/bin/node" && ln -s "$JULIA_BIN" "$L/julia-bin/julia" || exit 2
+# under-bash.sh runs when scripts/, comm/ or agents/ differ from the line (or no line is given), under the cached bash 3.2.57
+RCG_BASH32=
+LINE=${4:-}
+if [ -n "$LINE" ]; then
+  (cd "$D" && git rev-parse --verify -q "$LINE^{commit}" > /dev/null) || { echo "rc-gate: $LINE is no commit in $D" >&2; exit 2; }
+fi
+if [ -n "$LINE" ] && (cd "$D" && git diff --quiet "$LINE" HEAD -- scripts comm agents); then
+  SKIPPED="under-bash skipped: scripts, comm and agents equal $LINE"
+else
+  RCG_BASH32=$(bash "$D/scripts/tests/bash32.sh") || { echo "rc-gate: no bash 3.2.57" >&2; exit 2; }
+fi
+export RCG_BASH32
 export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$L/julia-bin RCG_NODE_DIR=$L/bin
 envs
 INTR=0
@@ -369,6 +441,7 @@ trap 'INTR=1' INT TERM HUP
 echo "head $(git -C "$D" rev-parse HEAD) tree $(git -C "$D" rev-parse 'HEAD^{tree}')" > "$L/summary.txt"
 echo "cap $CAP" >> "$L/summary.txt"
 echo "julia $JULIA_BIN" >> "$L/summary.txt"
+[ -z "${SKIPPED:-}" ] || echo "$SKIPPED" >> "$L/summary.txt"
 
 # every process in this container but rc-gate itself, read again after 5 s so one that is exiting is not counted
 census() {
