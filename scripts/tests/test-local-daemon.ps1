@@ -667,9 +667,10 @@ try {
 } catch { Check '13: section ran' $false $_.Exception.Message }
 try {
     if ($compiled) {
-        Write-Host "`n=== 13b. LogsStayBoundedByCap: within the file count, the cap still prunes, oldest first, and keeps the newest ===" -ForegroundColor Cyan
-        # $LogKeep files of half the cap each: the count is within bounds and
-        # the unprotected total is over the cap, so only the cap prunes.
+        Write-Host "`n=== 13b. LogsStayBoundedByCap: within the file count (the start's own log counted), the cap still prunes, oldest first, and keeps the newest ===" -ForegroundColor Cyan
+        # $LogKeep-1 files of half the cap each: with the start's own log the
+        # count is within bounds, and the unprotected total is over the cap, so
+        # only the cap prunes.
         $ld13b = Get-Content -LiteralPath $script -Raw
         $keep13b = [int]([regex]::Match($ld13b, '(?m)^\$LogKeep\s*=\s*(\d+)').Groups[1].Value)
         $cap13b = [int64]([regex]::Match($ld13b, '(?m)^\$LogCapBytes\s*=\s*(\d+)MB').Groups[1].Value) * 1MB
@@ -680,7 +681,7 @@ try {
         New-Item -ItemType Directory -Force -Path $log13bdir | Out-Null
         $size13b = [int64][math]::Floor($cap13b / 2)
         $old13b = @()
-        for ($i13b = 0; $i13b -lt $keep13b; $i13b++) {
+        for ($i13b = 0; $i13b -lt ($keep13b - 1); $i13b++) {
             $n13b = Join-Path $log13bdir ('sotd-local.stdout.20200101-0000{0:d2}-000Z-{1}.log' -f $i13b, (1000 + $i13b))
             $fs13b = [System.IO.File]::Create($n13b)
             try { $fs13b.SetLength($size13b) } finally { $fs13b.Dispose() }

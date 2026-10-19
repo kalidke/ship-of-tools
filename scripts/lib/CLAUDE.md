@@ -19,8 +19,11 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
   `sot-apply.sh` runs it under dash and macOS ships bash 3.2.
 - `render_sotd_unit` and `render_sot_launch` write beside the destination under a name of the shell's own pid and move
   it in, so a failed write leaves the old file whole and returns 1.
-  `render_sotd_unit` first refuses, with one stderr line naming the character, a prefix or home holding `%`, `\`, `'`, `"` or `$`
-  (`sot_unit_path_refused`): systemd or the unit's `bash -c` would read it as syntax.
+  Each first refuses, with one stderr line naming what (prefix or home) and the character, a prefix or home holding any of
+  `%`, `\`, `'`, `"`, `$`, a backquote, `&`, `|`, `;`, a space, a tab or a newline: the one list, `sot_path_refused`, whose
+  byte-equal copies are in `install.sh` (the front gate, before any write) and `sot-apply.sh` (before the flip), pinned by
+  `one_path_predicate` in `tests/installer-unit-limits.sh`. Lines that name a path print with `printf`, never `echo`
+  (sot-apply runs the library under dash).
 - A value spliced into a sed replacement goes through `sot_sed_literal` (`|` is the delimiter; `&` and a backslash are escaped), so a path or
   version holding any of them lands byte for byte; `scripts/sot-apply.sh` holds the one byte-equal copy (`rendered_unit_holds_any_path_literally`
   in `scripts/tests/installer-state.sh`).
@@ -36,7 +39,7 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
 - A rendered unit or wrapper is the install's own only when `sot_service_owned` or `sot_wrapper_owned` says so (the
   prefix embedded in it matches); `sot_rerender_owned` and `sot_backup_owned` touch no other file.
 - `sot_prune_logs` keeps a log while the pid in its name is alive or while it is the newest, and a failed `rm` is
-  logged and skipped, never fatal (`SOT_LOG_KEEP`, `SOT_LOG_CAP_BYTES`).
+  logged and skipped, never fatal (the library's `SOT_LOG_KEEP` and `SOT_LOG_CAP_BYTES`, constants it assigns, not environment names).
 - The logs folder `sot_daemon_ensure` writes a started daemon's log into is made owner-only (mode 700), new or existing and
   whichever way the daemon starts, because the daemon copies every log line to it and earlier logs hold unmasked secrets.
 - `sot_daemon_ensure` keeps a daemon whose socket answers only when `sotd same-version`, run from the binary the install

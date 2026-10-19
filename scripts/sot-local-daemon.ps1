@@ -186,7 +186,7 @@ $LaunchWaitSeconds = 160        # = ops/lease.rs LAUNCH_WAIT
 $DaemonLockWaitSeconds = 150    # = DAEMON_LOCK_WAIT
 
 # Daemon stdout/stderr log bounds, per stream (see "Spawn hygiene" above).
-$LogKeep = 5                    # a start leaves at most this many files per stream, its own included
+$LogKeep = 5                    # a start leaves at most this many files per stream, its own included (for a keep of 2 or more: the newest closed log is never pruned)
 $LogCapBytes = 16MB             # unprotected files go, oldest first, down to this total
 
 $ErrorActionPreference = 'Continue'

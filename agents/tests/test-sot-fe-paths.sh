@@ -140,7 +140,7 @@ mkdir -p "$WORK/badcyg"
 printf '#!/usr/bin/env bash\necho "cygpath: no such mount" >&2\nexit 1\n' > "$WORK/badcyg/cygpath"; chmod +x "$WORK/badcyg/cygpath"
 np_err="$(PATH="$WORK/badcyg:$PATH" bash -c '. "$1"; sot_native_path "$2" 2>&1 >/dev/null; echo "rc $?"' _ "$SCRIPTS_DIR/comm-lib.sh" /x/y\ z)"
 has "native_path: a failing cygpath names the path" "$np_err" "/x/y z"
-has "native_path: and cygpath" "$np_err" "cygpath"
+has "native_path: and cygpath's own words" "$np_err" "no such mount"
 has "native_path: and still returns 1" "$np_err" "rc 1"
 check "native_path: one line of why, then the status" "2" "$(printf '%s\n' "$np_err" | wc -l | tr -d ' ')"
 check "native_path: a working stand-in prints nothing on stderr" "" \
