@@ -193,7 +193,7 @@ if ! CANON_ROOT="$(sot_canonical_path "$REPO_PATH")"; then
 fi
 [ -z "$LABEL" ] && LABEL="$(basename "$REPO_PATH")"
 
-# Sessions are named after the REPO (maintainer decision, 2026-06-12): the label drives the
+# Sessions are named after the REPO (decided 2026-06-12): the label drives the
 # workspace slug, and a
 # task-named session is unfindable next to its repo-named siblings (a spawn
 # labeled 'edge-classify' hid the MyPackage agent from the user). The
@@ -473,7 +473,7 @@ if [ -n "$NAME" ] && [ "$DERIVED_CLAIM" = false ]; then
 fi
 BIN="$COMM_HOME/bin"
 
-# NO spawn brief (maintainer decision, 2026-06-17). A spawned agent gets its context from its
+# NO spawn brief (decided 2026-06-17). A spawned agent gets its context from its
 # repo's own CLAUDE.md and joins comm via /sot-session-start (handle pinned by
 # SOT_COMM_NAME) — we do NOT inject a "you are an agent, your task is…" startup
 # paste. That brief was unwanted, redundant with the repo CLAUDE.md, and the FE
