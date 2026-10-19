@@ -472,10 +472,10 @@ installer_build_direction() {  # <prefix> <installed version> <tag>
     git "${GIT_BOUND[@]}" -C "$base" cat-file -e "$rel^{commit}" 2>/dev/null \
         || git "${GIT_BOUND[@]}" -C "$base" fetch --quiet origin "$rel" 2>/dev/null \
         || { echo "unknown: could not fetch the commit of $3"; return 0; }
-    git -C "$base" rev-parse --verify --quiet "$built^{commit}" >/dev/null \
+    git "${GIT_BOUND[@]}" -C "$base" rev-parse --verify --quiet "$built^{commit}" >/dev/null \
         || { echo "unknown: this build's commit ${built:0:9} is not in $base"; return 0; }
-    if git -C "$base" merge-base --is-ancestor "$built" "$rel" 2>/dev/null; then echo forward
-    elif git -C "$base" merge-base --is-ancestor "$rel" "$built" 2>/dev/null; then echo older
+    if git "${GIT_BOUND[@]}" -C "$base" merge-base --is-ancestor "$built" "$rel" 2>/dev/null; then echo forward
+    elif git "${GIT_BOUND[@]}" -C "$base" merge-base --is-ancestor "$rel" "$built" 2>/dev/null; then echo older
     else echo "unknown: neither $3 nor this build contains the other"; fi
 }
 # What a build of the line is told about the release it would be moved to (the stop of an implicit run).
@@ -1140,7 +1140,6 @@ if [ -f "$PREFIX/install.json" ] || [ -n "$PRE_VERSION" ]; then
             fi ;;
         *) say "this run moves the install from $PRE_VERSION to $VER ($DIRECTION)" ;;
     esac
-    case "$PRE_VERSION" in *+*) say "by ancestry, not version text: $(installer_build_direction "$PREFIX" "$PRE_VERSION" "$VERSION")" ;; esac
     if [ "$DIRECTION" = older ] && [ "${SOT_INSTALL_IMPLICIT:-}" = 1 ]; then
         fail 2 "this computer runs $PRE_VERSION, which is newer than $VER, the release this run found; it never moves back unless told: name the version you want with --version $VERSION"
     fi
