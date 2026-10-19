@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# comm-status-heartbeat.sh — Claude Code `PostToolUse` and `PostToolUseFailure` hook. Three jobs:
+# comm-status-heartbeat.sh — Claude Code (and Codex) `PostToolUse` hook. Three jobs:
 #
 #   (0) A permission dialog's end: the call's return sends `resumed` (below).
 #
@@ -93,8 +93,8 @@ _agent_gate() {
 # this completion carries: only consuming that marker earns the `prompt`.
 # No marker (no PreToolUse ever opened this exact dialog) means no answer.
 # A permission dialog's end (ADR 0044 amendment, `dialog`): the answered call's
-# PostToolUse or PostToolUseFailure. comm-status.sh left state/dialog-<key>.marker
-# when the PermissionRequest hook raised it; this tests for it with one `[ -e ]`
+# PostToolUse. comm-status.sh left state/dialog-<key>.marker when Codex's
+# PermissionRequest hook raised it; this tests for it with one `[ -e ]`
 # per tool return and, found, removes it and sends `resumed`, then goes on as it
 # does for any call. The key is comm-status.sh's.
 _dialog_key="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"

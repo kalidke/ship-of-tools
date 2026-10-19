@@ -18,7 +18,7 @@
 #            nor `waiting` is set, then clears `floor` and the Stop hook's
 #            `stop_at` mark. Row or no row, it removes the turn mark.
 #   dialog "T"  the agent shows a permission dialog that waits on a person
-#            (the PermissionRequest hooks send it): sets `dialog` to T, which
+#            (Codex's PermissionRequest hook sends it): sets `dialog` to T, which
 #            reads red over the running turn; no text is refused (rc 2). With
 #            SOT_WORKSPACE_ID or CLAUDE_CODE_SESSION_ID set it also creates
 #            state/dialog-<id>.marker, the cheap test the heartbeat makes on

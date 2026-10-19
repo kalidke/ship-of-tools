@@ -456,44 +456,26 @@ case_short_exchange_on_waiting_row_never_nudged() {
 }
 
 
-# ==== the permission dialog (`dialog`, set by PermissionRequest, cleared by the answered call's return or any turn boundary) ====
-# D: the PermissionRequest hook, with a Bash request's envelope (or the envelope in $1).
-D() { printf '%s' "${1:-{\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\"\}}" | bash "$HOOKS_DIR/comm-status-dialog.sh"; }
-# HBF: the heartbeat on the PostToolUseFailure of a Bash call.
-HBF() {
-    rm -f "${SOT_COMM_HOME:?}"/state/hb-*.tick 2>/dev/null
-    printf '{"hook_event_name":"PostToolUseFailure","tool_name":"Bash"}' | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh"
-}
-DIALOG_TEXT="Claude needs your permission to use Bash"
+# ==== the dialog fact (`dialog`: Codex's PermissionRequest hook sets it; the call's return or any turn boundary clears it) ====
+DIALOG_TEXT="codex permission request: Bash"
+# D: the `dialog` event, as its setter sends it.
+D() { "$ST" dialog "$DIALOG_TEXT" >/dev/null; }
 dialog_fact() { jq -r --arg n "$NAME" '.agents[$n].dialog // "-"' "$REGISTRY"; }
 # DR: D, then the proof that it raised the dialog (a boundary case means nothing otherwise).
-DR() { D "$@"; [ "$(dialog_fact)" != - ] || { echo "    the dialog was not raised"; exit 1; }; }
+DR() { D; [ "$(dialog_fact)" != - ] || { echo "    the dialog was not raised"; exit 1; }; }
 dialog_marker() { ls "$SOT_COMM_HOME/state/dialog-$SOT_WORKSPACE_ID.marker" 2>/dev/null; }
 # A row has SOT_WORKSPACE_ID; the marker is keyed by it.
-case_permission_request_is_red_over_a_running_turn() (
+case_a_dialog_is_red_over_a_running_turn() (
     export SOT_WORKSPACE_ID=dlg-red
     seed idle; W "$GENUINE"; D
     expect blocked/user/-/-/- red || exit 1
     [ "$(summ)" = "$DIALOG_TEXT" ] || { echo "    summary '$(summ)'"; exit 1; }
     [ -n "$(dialog_marker)" ] || { echo "    no marker"; exit 1; }
 )
-case_a_notification_permission_prompt_is_red_with_its_message() (
-    export SOT_WORKSPACE_ID=dlg-notif
-    seed idle; W "$GENUINE"
-    D '{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Edit"}'
-    expect blocked/user/-/-/- red || exit 1
-    [ "$(summ)" = "Claude needs your permission to use Edit" ] || { echo "    summary '$(summ)'"; exit 1; }
-)
 case_a_tool_return_ends_the_dialog() (
     export SOT_WORKSPACE_ID=dlg-tool
     seed idle; W "$GENUINE"; D; expect blocked/user/-/-/- red || exit 1
     HB; expect working/user/-/-/- after-return || exit 1
-    [ "$(dialog_fact)" = - ] && [ -z "$(dialog_marker)" ] || { echo "    dialog or marker left"; exit 1; }
-)
-case_a_failed_tool_return_ends_the_dialog() (
-    export SOT_WORKSPACE_ID=dlg-fail
-    seed idle; W "$GENUINE"; D; expect blocked/user/-/-/- red || exit 1
-    HBF; expect working/user/-/-/- after-failure || exit 1
     [ "$(dialog_fact)" = - ] && [ -z "$(dialog_marker)" ] || { echo "    dialog or marker left"; exit 1; }
 )
 case_every_turn_boundary_ends_the_dialog() (
@@ -515,24 +497,14 @@ case_the_dialog_leaves_a_declared_question_alone() (
     I; expect blocked/-/q/-/- stop || exit 1
     [ "$(summ)" = q ]
 )
-case_an_idle_notification_writes_nothing() (
-    export SOT_WORKSPACE_ID=dlg-idle
-    seed idle; W "$GENUINE"; local before; before="$(cksum < "$REGISTRY")"
-    D '{"hook_event_name":"Notification","notification_type":"idle_prompt","message":"Claude is waiting for your input"}'
-    [ "$(cksum < "$REGISTRY")" = "$before" ] && [ -z "$(dialog_marker)" ] || { echo "    an idle notification wrote"; exit 1; }
-)
 case_a_denied_or_interrupted_dialog_never_comes_back() (
     export SOT_WORKSPACE_ID=dlg-stale
     # A denial fires no hook: the turn goes on or ends, and its Stop clears the red.
     seed idle; W "$RELAY"; DR; I
     expect idle/-/-/-/- denied-stop || exit 1
-    # The turn boundary left a marker; the next turn's first tool call finds the dialog already gone.
     W "$GENUINE"; HB; expect working/user/-/-/- next-turn || exit 1
-    # An interrupt fires no Stop: the next prompt clears the red, and a late idle notification adds none.
-    DR; W "$GENUINE"; expect working/user/-/-/- interrupted || exit 1
-    I; local before; before="$(cksum < "$REGISTRY")"
-    D '{"hook_event_name":"Notification","notification_type":"idle_prompt"}'
-    [ "$(cksum < "$REGISTRY")" = "$before" ] || { echo "    idle notification changed the row"; exit 1; }
+    # An interrupt fires no Stop: the next prompt clears the red.
+    DR; W "$GENUINE"; expect working/user/-/-/- interrupted
 )
 case_codex_permission_is_red_until_the_tool_returns() (
     export SOT_WORKSPACE_ID=dlg-codex

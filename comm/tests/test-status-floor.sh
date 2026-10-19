@@ -184,13 +184,10 @@ check "reduction: a floor outranks question/waiting/done, summary is the note" c
 check "reduction: waiting outranks done, summary is the wait" case_reduction_waiting_outranks_done
 check "reduction: done alone, summary is the note" case_reduction_done_alone
 check "reduction: no facts is idle, summary is the note" case_reduction_nothing_is_idle
-check "dialog: a permission request is red over a running turn" case_permission_request_is_red_over_a_running_turn
-check "dialog: a permission_prompt notification is red with its message" case_a_notification_permission_prompt_is_red_with_its_message
+check "dialog: it is red over a running turn" case_a_dialog_is_red_over_a_running_turn
 check "dialog: a tool return ends it" case_a_tool_return_ends_the_dialog
-check "dialog: a failed tool return ends it" case_a_failed_tool_return_ends_the_dialog
 check "dialog: every turn boundary ends it" case_every_turn_boundary_ends_the_dialog
 check "dialog: it leaves a declared question alone" case_the_dialog_leaves_a_declared_question_alone
-check "dialog: an idle notification writes nothing" case_an_idle_notification_writes_nothing
 check "dialog: a denied or interrupted dialog never comes back" case_a_denied_or_interrupted_dialog_never_comes_back
 check "dialog: a Codex permission is red until the tool returns" case_codex_permission_is_red_until_the_tool_returns
 check "a genuine user turn ends blue" case_user_turn_ends_blue

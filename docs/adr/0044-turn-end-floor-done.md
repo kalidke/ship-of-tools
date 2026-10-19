@@ -278,26 +278,36 @@ yet; when one does it joins the badge as an overlay under the same rule.
 A row waiting on a permission dialog read green (Claude: no hook fired) or stayed
 red after the answer (Codex: `blocked` then `stop`, cleared only by a typed prompt).
 
-- `dialog` is one more event fact, written only by hooks: the new line on top of the
-  reduction, `dialog set -> blocked, summary = dialog`, reads red over a running turn.
-  The state value is the existing `blocked`, so the registry, the daemon and the
-  window do not change. It never touches `question`, `waiting`, `done`, `note` or `floor`.
-- Set by `PermissionRequest`: Claude's `comm-status-dialog.sh` and Codex's
-  `codex-status-blocked.sh` send `dialog "<text>"`. They print no decision, so the
-  dialog shows as before. PermissionRequest fires when the dialog opens, so a quick
-  approval also reads red briefly, which is true: a person is being asked. The
-  refinement is Notification `permission_prompt`, which fires after about six
-  seconds unanswered and carries `message` (the script already accepts it and writes
-  nothing for any other `notification_type`, such as `idle_prompt`); it waits on a
-  check that it fires inside the window's own terminal.
-- Cleared by every event that proves the dialog is gone: the answered call's
-  `PostToolUse` or `PostToolUseFailure` (the heartbeat finds `state/dialog-<id>.marker`,
-  keyed by `SOT_WORKSPACE_ID` or the session id, with one `[ -e ]` per tool return and
-  sends `resumed`), the turn's `stop`, and every `prompt` (typed, machine, a join).
-  So `dialog` never outlives its turn.
-- Limits. (L1) No hook fires at approval, so an approved call reads red until it
-  returns. (L2) A tool return by another agent of the same session clears the red
-  early. (L3) "No" without feedback, or Esc, interrupts the turn and fires no Stop:
-  the row stays red until the session's next prompt. A denial fires neither
-  PostToolUse nor PostToolUseFailure. (L4) Teammate permission requests and MCP
-  elicitation are other events and are not covered.
+- `dialog` is one more event fact: the new line on top of the reduction,
+  `dialog set -> blocked, summary = dialog`, reads red over a running turn. The state
+  value is the existing `blocked`, so the registry contract, the daemon and the window
+  do not change. It never touches `question`, `waiting`, `done`, `note` or `floor`.
+  `dialog "<text>"` sets it and `resumed` clears it; both are events, so a second agent
+  or a session with no row writes nothing.
+- Set on a Codex row by its `PermissionRequest` hook, `codex-status-blocked.sh`, which
+  sends `dialog "codex permission request: <tool>"` and prints no decision, so the
+  dialog shows as before.
+- Cleared by every event that proves the dialog is gone: the call's `PostToolUse` (the
+  heartbeat finds `state/dialog-<key>.marker`, keyed by `SOT_WORKSPACE_ID` or the
+  session id, with one `[ -e ]` per tool return, and sends `resumed`), the turn's
+  `stop`, and every `prompt` (typed, machine, a join). So `dialog` never outlives its
+  turn.
+- Withheld: the Claude hook. An earlier build of this amendment wired Claude's
+  `PermissionRequest` to a dialog hook and `PostToolUseFailure` to the heartbeat;
+  neither ships, and an install strips both (`_remove_stale_comm_hooks!`). Claude's
+  `PermissionRequest` fires when a request is queued, not when its dialog shows
+  (measured 2026-09-28 on Claude Code 2.1.284: two helpers' requests fired 154 ms
+  apart, and the second dialog showed 62 s after its hook fired). So queued requests,
+  and any other agent's tool return in the same session, would set and clear one
+  row-wide fact out of step with the screen. The same wiring was unregistered once
+  before for that reason (commit e820cacc3), and the payload carries no `tool_use_id`
+  to key a call's own clearing by. Keying it per agent (a helper's request carries
+  `agent_id`) and measuring it under auto mode is a 0.6.7 design.
+- Limits. (L0) A Claude row waiting on a permission dialog reads green while its turn
+  runs, then wilts (§5). (L1) Codex fires no hook at approval, so an approved call
+  reads red until it returns. (L2) The return of another call in the same Codex
+  session clears the red early. (L3) A denial fires no `PostToolUse`, and "No" or Esc
+  that interrupts the turn fires no Stop: the row stays red until the turn's Stop or
+  the next prompt. (L4) Another `PermissionRequest` hook that answers the request (a
+  user's or a managed policy's) still leaves this stamp: allowed, red until the call
+  returns; denied, as L3.

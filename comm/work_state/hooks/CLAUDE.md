@@ -7,8 +7,7 @@ charter: comm/CLAUDE.md.
 ## Files
 - `comm-status-working.sh`: Claude `UserPromptSubmit`: sends `prompt`, with `COMM_STATUS_ORIGIN` naming who started the turn
 - `comm-status-blocked.sh`: Claude `PreToolUse` on `AskUserQuestion`: stamps `blocked` with the question, then `stop`
-- `comm-status-dialog.sh`: Claude `PermissionRequest`: sends `dialog` with the request's text; a Notification of any type but `permission_prompt` writes nothing
-- `comm-status-heartbeat.sh`: Claude `PostToolUse` and `PostToolUseFailure`: a call that ends a permission dialog sends `resumed`; an `AskUserQuestion` answer sends a user `prompt`; any other call only refreshes `status_at`, at most once a minute, and writes no fact
+- `comm-status-heartbeat.sh`: Claude and Codex `PostToolUse`: with a dialog marker for the row, sends `resumed`; an `AskUserQuestion` answer sends a user `prompt`; any other call only refreshes `status_at`, at most once a minute, and writes no fact
 - `comm-status-idle.sh`: Claude `Stop`: holds a turn with unread mail, stamps the closing marker, nudges, runs the auditor, then sends `stop`
 - `codex-status-blocked.sh`: Codex `PermissionRequest` (`comm/adapters/codex/hooks.json`): stamps `dialog`
 
@@ -20,7 +19,7 @@ others are short. The events the Claude hooks are wired to are `_COMM_STATE_HOOK
 ## Rules
 - A hook never blocks a session that is not a joined comm agent and never wedges a turn: each exits 0 on every path,
   and the Stop hook holds a turn only by printing a block decision.
-- All five Claude hooks and the Codex permission hook stand down on SOT_COMM_HOOKS=off before reading input, resolving paths or stamping a row.
+- All four Claude hooks and the Codex permission hook stand down on SOT_COMM_HOOKS=off before reading input, resolving paths or stamping a row.
 - Only the row's own agent stamps: every stamp goes through `comm-status.sh`, and `comm-status-idle.sh` and
   `comm-status-heartbeat.sh` also call `sot_require_agent` themselves.
 - This folder holds hooks only. Installed, the Stop hook finds the auditor beside it in the bin; in the tree it must

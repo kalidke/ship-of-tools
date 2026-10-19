@@ -24,11 +24,12 @@ prompt; the hook no longer ends the turn.
 
 Because these are the same bin scripts the Claude adapter uses (the payloads
 share the field names that matter — notably `prompt`), a codex row is a set
-of FACTS reduced the same way (ADR 0044 amendment, 2026-09-19): `floor`
-(green, set by the `prompt` event to the origin), `question` (red),
-`waiting` (purple), `done` (blue) and `note`. The display picks the highest
-priority fact present — question-with-no-floor, then floor, then waiting,
-then done, else idle — recomputed on every write. Every script self-gates on
+of FACTS reduced the same way (ADR 0044 amendment, 2026-09-19): `dialog`
+(red, set by the `PermissionRequest` hook above), `floor` (green, set by the
+`prompt` event to the origin), `question` (red), `waiting` (purple), `done`
+(blue) and `note`. The display picks the highest priority fact present —
+dialog, then question-with-no-floor, then floor, then waiting, then done, else
+idle — recomputed on every write. Every script self-gates on
 the pane's registry row, so codex sessions **outside** Ship of Tools are
 silent no-ops.
 

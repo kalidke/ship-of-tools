@@ -217,7 +217,7 @@ for kind in child nodechild; do
     nochange "comm-bootstrap.sh ($kind)"     "$kind" run_k "$SCRIPTS_DIR/comm-bootstrap.sh" some-row
     NC_IN='{"tool_name":"Bash"}' nochange "the heartbeat ($kind)" "$kind" run_k env CLAUDE_CODE_SESSION_ID="agl-nc-$kind" bash "$FLAT/comm-status-heartbeat.sh"
     # A permission dialog is the owner's too: a child's request raises none, and its tool return does not clear one.
-    NC_IN='{"hook_event_name":"PermissionRequest","tool_name":"Bash"}' nochange "the PermissionRequest hook ($kind)" "$kind" run_k env CLAUDE_CODE_SESSION_ID="agl-nc-dlg-$kind" bash "$HOOKS_DIR/comm-status-dialog.sh"
+    NC_IN='{"tool_name":"Bash"}' nochange "the Codex PermissionRequest hook ($kind)" "$kind" run_k env SOT_WORKSPACE_ID="agl-nc-dlg-$kind" bash "$HOOKS_DIR/codex-status-blocked.sh"
     mkdir -p "$SOT_COMM_HOME/state"; DLG="$SOT_COMM_HOME/state/dialog-agl-dlg-$kind.marker"; : > "$DLG"
     NC_IN='{"tool_name":"Bash"}' nochange "the heartbeat with a dialog marker ($kind)" "$kind" run_k env CLAUDE_CODE_SESSION_ID="agl-dlg-$kind" bash "$FLAT/comm-status-heartbeat.sh"
     if [ -f "$DLG" ]; then ok "child: the dialog marker survives the heartbeat ($kind)"; else bad "child: the dialog marker survives the heartbeat ($kind)"; fi
