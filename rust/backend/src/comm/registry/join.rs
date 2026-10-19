@@ -7,7 +7,7 @@ use sot_protocol::op;
 use sot_protocol::AgentJoinReq;
 use sot_protocol::AgentJoinRes;
 use sot_protocol::Frame;
-use crate::comm::registry::liveness::held_handles;
+use crate::comm::registry::liveness::unended_handles;
 use crate::rows::WorkspaceChanged;
 use crate::rows::Workspaces;
 use tokio::sync::broadcast;
@@ -31,9 +31,9 @@ use crate::server::reply::HandlerOutput;
 /// workspace this daemon doesn't have (destroyed or never existed).
 ///
 /// An empty `workspace_id` is a join from outside any row (`outside_join`): it
-/// changes nothing and answers `ok`, or `held_by_row` while a running row holds
-/// the handle. That is how a session outside every row is told the handle is not
-/// its to take.
+/// changes nothing and answers `ok` only when no row this daemon has not seen end
+/// holds the handle, else `held_by_row`. That is how a session outside every row
+/// is told the handle is not its to take.
 ///
 /// A newer declaration MOVES the handle (ADR 0049, B5): `set_agent_handle`
 /// clears it from every other row that held it, in memory, and this handler
@@ -175,13 +175,14 @@ async fn join_row(
 }
 
 /// A join from outside any row (`workspace_id` empty): it takes nothing and writes nothing, and is refused
-/// `held_by_row` while a running row holds `handle` (`held_handles`, the same rule that stamps liveness). The
-/// answer is the daemon's, from its own rows: a registry entry bound to a row that is gone does not hold it.
+/// `held_by_row` while any row not latched ended holds `handle` (`unended_handles`). A row this daemon has not seen
+/// running (loaded from disk, Unreachable, Foreign, Ending) may still run a session, so only a destroyed or latched
+/// row frees its handle. The answer is the daemon's, from its own rows, never from the registry file's binding.
 async fn outside_join(req_id: u64, handle: &str, workspaces: &Workspaces) -> Result<Frame> {
     let rows = workspaces.list();
-    let held = tokio::task::spawn_blocking(move || held_handles(&rows)).await.context("agent.join rows")?;
+    let held = tokio::task::spawn_blocking(move || unended_handles(&rows)).await.context("agent.join rows")?;
     if held.contains(handle) {
-        tracing::info!(handle = %handle, "agent.join: refused a join from outside any row; a running row holds the handle");
+        tracing::info!(handle = %handle, "agent.join: refused a join from outside any row; a row not seen ended holds the handle");
         return Ok(Frame::res(
             req_id,
             op::AGENT_JOIN,
@@ -686,18 +687,36 @@ mod agent_join_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A row that runs (Ready) and declares `handle`.
-    fn running_row(workspaces: &Workspaces, label: &str, handle: &str) -> String {
-        use crate::rows::workspace::{Observation, Phase, SupervisorIdentity};
+    /// A capsule row declaring `handle`, with `drive` applied to its phase cell: the observations it has been
+    /// seen through.
+    fn row_seen(workspaces: &Workspaces, label: &str, handle: &str, drive: &[crate::rows::workspace::Observation]) -> String {
         let mut w = mk_ws(label);
         w.runtime = "capsule".to_string();
         w.agent_handle = std::sync::Mutex::new(handle.to_string());
-        assert!(w.apply_phase_observation(Observation::Phase {
-            phase: Phase::Ready,
+        for obs in drive {
+            assert!(w.apply_phase_observation(obs.clone()), "{label}: {obs:?}");
+        }
+        workspaces.insert(w).workspace_id.clone()
+    }
+
+    fn at(phase: crate::rows::workspace::Phase) -> crate::rows::workspace::Observation {
+        use crate::rows::workspace::{Observation, SupervisorIdentity};
+        Observation::Phase {
+            phase,
             supervisor: SupervisorIdentity { pid: 1, created: 1 },
             voyage: Some(uuid::Uuid::from_u128(1)),
-        }));
-        workspaces.insert(w).workspace_id.clone()
+        }
+    }
+
+    /// A row that runs (Ready) and declares `handle`.
+    fn running_row(workspaces: &Workspaces, label: &str, handle: &str) -> String {
+        row_seen(workspaces, label, handle, &[at(crate::rows::workspace::Phase::Ready)])
+    }
+
+    async fn outside_answer(workspaces: &Workspaces, handle: &str) -> serde_json::Value {
+        let (ws_events_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let payload = serde_json::json!({"workspace_id": "", "handle": handle});
+        handle_agent_join(1, payload, workspaces, &ws_events_tx).await.expect("handler must not error")[0].0.payload.clone()
     }
 
     // A session outside any row (an empty workspace_id) is refused a handle a running row holds, with a message
@@ -721,25 +740,38 @@ mod agent_join_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // A handle no running row holds (a stopped row, or none) may be taken from outside: the answer is ok and nothing
-    // moves, because the join itself is the registry's.
+    // The daemon says a handle is free only for a row it has seen end (Terminal, EndedNoRespawn) or no row: a row
+    // not seen running (loaded at start, Stopped, Unreachable, Foreign, Ending) may still run a session (B1).
     #[tokio::test]
-    async fn a_join_from_outside_any_row_may_take_a_handle_no_running_row_holds() {
+    async fn a_join_from_outside_any_row_is_refused_a_handle_of_every_row_not_seen_ended() {
+        use crate::rows::workspace::{Observation, Phase};
         let (_g, dir) = env_guarded();
         let workspaces = Workspaces::new();
-        let mut stopped = mk_ws("outside-stopped");
-        stopped.runtime = "capsule".to_string();
-        stopped.agent_handle = std::sync::Mutex::new("outside-stopped-box".to_string());
-        let id = workspaces.insert(stopped).workspace_id.clone();
-        let (ws_events_tx, mut ws_events_rx) = tokio::sync::broadcast::channel(4);
-
-        for handle in ["outside-stopped-box", "outside-nobody-box"] {
-            let payload = serde_json::json!({"workspace_id": "", "handle": handle});
-            let out = handle_agent_join(1, payload, &workspaces, &ws_events_tx).await.expect("handler must not error");
-            assert_eq!(out[0].0.payload.get("ok").and_then(|v| v.as_bool()), Some(true), "{handle}: {:?}", out[0].0.payload);
+        let not_ended: [(&str, Vec<Observation>); 7] = [
+            ("unobserved", vec![]),
+            ("stopped", vec![Observation::Stopped]),
+            ("starting", vec![at(Phase::Starting)]),
+            ("ready", vec![at(Phase::Ready)]),
+            ("ending", vec![at(Phase::Ending)]),
+            ("unreachable", vec![at(Phase::Ready), Observation::Failed, Observation::Failed]),
+            ("foreign", vec![Observation::Foreign]),
+        ];
+        for (label, drive) in &not_ended {
+            row_seen(&workspaces, label, &format!("outside-{label}-box"), drive);
         }
-        assert_eq!(workspaces.resolve(Some(&id)).unwrap().agent_handle(), "outside-stopped-box", "nothing moved");
-        assert!(ws_events_rx.try_recv().is_err());
+        let ended: [(&str, Vec<Observation>); 2] =
+            [("terminal", vec![at(Phase::Terminal)]), ("endednorespawn", vec![at(Phase::EndedNoRespawn)])];
+        for (label, drive) in &ended {
+            row_seen(&workspaces, label, &format!("outside-{label}-box"), drive);
+        }
+        for (label, _) in &not_ended {
+            let p = outside_answer(&workspaces, &format!("outside-{label}-box")).await;
+            assert_eq!(p.get("code").and_then(|v| v.as_str()), Some("held_by_row"), "{label}: {p:?}");
+        }
+        for label in ["terminal", "endednorespawn", "destroyed"] {
+            let p = outside_answer(&workspaces, &format!("outside-{label}-box")).await;
+            assert_eq!(p.get("ok").and_then(|v| v.as_bool()), Some(true), "{label}: {p:?}");
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

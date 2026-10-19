@@ -37,7 +37,7 @@ impl Phase {
 
     /// `Terminal` latches for its supervisor, `EndedNoRespawn` for its
     /// voyage — see [`Workspace::apply_phase_observation`].
-    fn is_latched(self) -> bool {
+    pub(crate) fn is_latched(self) -> bool {
         matches!(self, Phase::EndedNoRespawn | Phase::Terminal)
     }
 }

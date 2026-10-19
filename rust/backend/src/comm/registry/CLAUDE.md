@@ -7,7 +7,7 @@ comm/CLAUDE.md.
 - `ancestors.rs`: the process-ancestry walk printed by `sotd ancestors`
 - `binding_sites_tests.rs`: every site that reads or writes a row's handle binding, and the scan that pins the list
 - `join.rs`: `agent.join`: a session declares its handle on its row
-- `liveness.rs`: the row liveness stamp: each Starting or Ready row's handle gets a fresh `last_seen` every minute (`run`, `held`, `held_handles`)
+- `liveness.rs`: the row liveness stamp: each Starting or Ready row's handle gets a fresh `last_seen` every minute (`run`, `held`, `held_handles`); `unended_handles` names every row not seen end, for `agent.join` from outside any row
 - `lock.rs`: the daemon's arm of the registry lock, `.registry.lock`
 - `lock_tests.rs`: the lock's tests, including the shell-parity test (Linux and macOS)
 - `mod.rs`: declares the files
@@ -50,7 +50,9 @@ prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LIN
   the handle under that row's own guard, if it is still registered (`persist_moved`): the reply never waits on another
   row's guard, and no two guards are held at once. A failed save there is a warning; each move is one info line.
 - `agent.join` with an empty `workspace_id` is a join from outside any row (`outside_join`): it writes nothing and
-  answers `held_by_row` while a Starting or Ready row holds the handle (`held_handles`), else ok.
+  answers `held_by_row` while any row not latched ended (Terminal, EndedNoRespawn) holds the handle
+  (`unended_handles`): a row loaded from disk and not yet probed, Stopped, Unreachable, Foreign or Ending still may
+  run a session. It answers ok only for a handle no such row holds, a destroyed or ended row's.
 - `spawn_registry_poll`, started by the server's `run`, publishes `agent_state` on the workspace bus when
   `project_comm_registry` changes between polls; `last_seen` is not in the projection.
 - `acquire` takes `<comm home>/.registry.lock`, the lock comm-lib-registry-lock.sh's `with_lock` takes. Both write the same one-line

@@ -51,7 +51,7 @@ pub struct CommFileRes {
 /// uses; a request naming a workspace the daemon doesn't have refuses
 /// `unknown_workspace`, an invalid `handle` refuses `bad_handle`. An empty
 /// `workspace_id` is a join from outside any row: nothing is written, and it
-/// refuses `held_by_row` while a running row holds `handle`.
+/// refuses `held_by_row` while any row the daemon has not seen end holds `handle`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentJoinReq {
     pub workspace_id: String,
