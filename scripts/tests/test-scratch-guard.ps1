@@ -87,6 +87,14 @@ try {
     $r = Refusal (@{ USERNAME = 'alice'; USERPROFILE = 'C:\x'; APPDATA = 'C:\y'; LOCALAPPDATA = 'C:\z'; TEMP = 'C:\t'; TMP = 'C:\t' })
     Check 'the refusal is one line that names what is wrong' ($r -notmatch "[\r\n]" -and $r -like "*'alice'*" -and $r -like '*scratch-guard: refusing*') $r
 
+    # ---- the child's depot --------------------------------------------------------------------------------------------
+    $childHome = "$root\home"
+    Check 'a caller depot outside the real temp folder is replaced by one in the home' ((Get-SotChildDepot "$($real.Profile)\.julia" $childHome $real.Temp) -eq "$childHome\.julia") 'kept'
+    Check 'an unset depot gets one in the home' ((Get-SotChildDepot '' $childHome $real.Temp) -eq "$childHome\.julia") 'kept'
+    Check 'a caller depot inside the real temp folder is kept' ((Get-SotChildDepot "$($real.Temp)\my-depot" $childHome $real.Temp) -eq "$($real.Temp)\my-depot") 'replaced'
+    Check 'a list with one entry outside the real temp folder is replaced' ((Get-SotChildDepot "$($real.Temp)\a;$($real.Profile)\.julia" $childHome $real.Temp) -eq "$childHome\.julia") 'kept'
+    Check 'the real temp folder itself is not a scratch depot' ((Get-SotChildDepot $real.Temp $childHome $real.Temp) -eq "$childHome\.julia") 'kept'
+
     # ---- the entry, end to end, on a probe suite ----------------------------------------------------------------------
     $probe = Join-Path $F 'probe.ps1'
     $probeText = @'
@@ -96,7 +104,7 @@ $sotSuite = $PSCommandPath; $sotSuiteArgs = $PSBoundParameters
 . 'GUARDPATH'
 if ($null -ne $sotScratchExit) { exit $sotScratchExit }
 Add-Content -LiteralPath $OutFile -Value "RAN"
-foreach ($n in @('USERNAME', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'SOT_COMM_HOME', 'SOT_PROBE_VAR', 'SOT_SMOKE_X')) {
+foreach ($n in @('USERNAME', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'SOT_COMM_HOME', 'SOT_PROBE_VAR', 'SOT_SMOKE_X', 'XDG_STATE_HOME', 'XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'JULIA_DEPOT_PATH')) {
     Add-Content -LiteralPath $OutFile -Value ("$n=" + [Environment]::GetEnvironmentVariable($n))
 }
 Add-Content -LiteralPath $OutFile -Value ("RealProfile=" + (Get-SotRealProfile).Profile)
@@ -129,9 +137,11 @@ exit 7
     }
     $env:SOT_PROBE_VAR = 'from-the-caller'
     $env:SOT_SMOKE_X = 'kept'
+    $env:XDG_STATE_HOME = "$F\xdg-state"; $env:XDG_CONFIG_HOME = "$F\xdg-config"; $env:CLAUDE_CONFIG_DIR = "$F\claude"
     $before = @{}
     foreach ($n in @('USERNAME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP')) { $before[$n] = [Environment]::GetEnvironmentVariable($n) }
     $realNow = Get-SotRealProfile
+    $env:JULIA_DEPOT_PATH = Join-Path $realNow.Profile '.sot-guard-test-depot'   # outside the real temp folder, never created
     $sibling = Join-Path $realNow.Temp ('sot-scratch-sibling-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Force -Path $sibling | Out-Null
 
@@ -152,6 +162,8 @@ exit 7
     foreach ($n in @('USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'SOT_COMM_HOME')) { if (-not (Test-SotInside (Get-SotCanonicalPath $o[$n]) $c)) { $inside = $false; Write-Host "    $n=$($o[$n])" } }
     Check 'all seven variables lay inside that home' $inside "home: $homeRoot"
     Check 'the caller''s other SOT_ variables were cleared, SOT_SMOKE_ ones kept' ((-not $o.SOT_PROBE_VAR) -and $o.SOT_SMOKE_X -eq 'kept') "SOT_PROBE_VAR=$($o.SOT_PROBE_VAR) SOT_SMOKE_X=$($o.SOT_SMOKE_X)"
+    Check 'XDG_* and CLAUDE_CONFIG_DIR of the caller did not reach the child' ((-not $o.XDG_STATE_HOME) -and (-not $o.XDG_CONFIG_HOME) -and (-not $o.CLAUDE_CONFIG_DIR)) "XDG_STATE_HOME=$($o.XDG_STATE_HOME) XDG_CONFIG_HOME=$($o.XDG_CONFIG_HOME) CLAUDE_CONFIG_DIR=$($o.CLAUDE_CONFIG_DIR)"
+    Check 'a JULIA_DEPOT_PATH outside the real temp folder was replaced by a depot inside the home' ($o.JULIA_DEPOT_PATH -and (Test-SotInside (Get-SotCanonicalPath $o.JULIA_DEPOT_PATH) $c)) "JULIA_DEPOT_PATH=$($o.JULIA_DEPOT_PATH)"
     Check 'the home is gone at the end, with what the suite made in it' ($c -and -not (Test-Path -LiteralPath $c)) "still there: $homeRoot"
     Check 'a sibling folder the run did not make is still there' (Test-Path -LiteralPath $sibling) 'removed'
     $same = $true
@@ -229,7 +241,12 @@ exit 7
     $da.Proc.WaitForExit()
     $dao = Read-Probe $da.Out
     Check 'the other ended its own at its end' ($dao.Alive -eq 'False') "A alive $($dao.Alive)"
-    foreach ($d in @($dao.DaemonPid, $dbo.DaemonPid)) { if ($d) { Stop-Process -Id ([int]$d) -Force -ErrorAction SilentlyContinue } }
+
+    $env:JULIA_DEPOT_PATH = Join-Path $realNow.Temp ('sot-scratch-depot-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $dk = Start-Probe 'depot' '-Name x'
+    $dk.Proc.WaitForExit()
+    $dko = Read-Probe $dk.Out
+    Check 'a caller depot inside the real temp folder reached the child unchanged' ($dko.JULIA_DEPOT_PATH -eq $env:JULIA_DEPOT_PATH) "child: $($dko.JULIA_DEPOT_PATH); caller: $($env:JULIA_DEPOT_PATH)"
 
     # A child under a profile that is not a scratch one: the caller sets the child marker by hand at the real profile.
     $env:SOT_SCRATCH_CHILD = $F
@@ -251,6 +268,7 @@ exit 7
 } finally {
     Remove-Item Env:\SOT_PROBE_VAR -ErrorAction SilentlyContinue
     Remove-Item Env:\SOT_SMOKE_X -ErrorAction SilentlyContinue
+    foreach ($n in @('XDG_STATE_HOME', 'XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'JULIA_DEPOT_PATH')) { Remove-Item "Env:\$n" -ErrorAction SilentlyContinue }
     Remove-Item Env:\SOT_SCRATCH_CHILD -ErrorAction SilentlyContinue
     if ($sibling) { Remove-Item -LiteralPath $sibling -Recurse -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $F -Recurse -Force -ErrorAction SilentlyContinue
