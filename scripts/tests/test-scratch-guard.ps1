@@ -35,18 +35,24 @@ foreach ($c in $cases) {
 $r = Get-SotScratchRefusal 'someone' 'C:\x' 'C:\y' @($tmp)
 Check 'the refusal is one line that names the real values' ($r -notmatch "[\r\n]" -and $r -like "*'someone'*" -and $r -like "*'C:\x'*" -and $r -like '*scratch-profile.ps1*') $r
 
+# A child PowerShell running CODE (encoded, so no quote is lost on the way); its output lines, then its exit code last.
+function Invoke-Child([string]$Code) {
+    $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Code))
+    $saved = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    $out = @(& powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc 2>&1 | ForEach-Object { "$_" })
+    $rc = $LASTEXITCODE
+    $ErrorActionPreference = $saved
+    return @{ Out = $out; Exit = $rc }
+}
+
 # The two scripts end to end, in a child, so this session's environment is untouched.
-$child = '. (Join-Path $env:SOT_T "scratch-profile.ps1"); . (Join-Path $env:SOT_T "scratch-guard.ps1"); Write-Output ("ok " + $env:USERNAME + " " + $env:LOCALAPPDATA)'
 $env:SOT_T = $PSScriptRoot
-$out = @(& powershell -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1)
+$r = Invoke-Child '. (Join-Path $env:SOT_T "scratch-profile.ps1"); . (Join-Path $env:SOT_T "scratch-guard.ps1"); Write-Output ("made " + $env:USERNAME + " " + $env:LOCALAPPDATA)'
+$line = [string]($r.Out | Where-Object { $_ -like 'made sot-scratch-*' } | Select-Object -First 1)
+Check 'scratch-profile.ps1 makes a profile the guard accepts' ($r.Exit -eq 0 -and $line -ne '') "exit $($r.Exit), got: $($r.Out)"
+if ($line -match 'made (\S+) (.+)$') { $made = Split-Path (Split-Path $Matches[2] -Parent) -Parent; if ($made -like '*\sot-scratch-*') { Remove-Item -LiteralPath $made -Recurse -Force -ErrorAction SilentlyContinue } }
+$r = Invoke-Child '$env:USERNAME = "someone"; . (Join-Path $env:SOT_T "scratch-guard.ps1"); Write-Output "RAN"'
 Remove-Item Env:\SOT_T
-$line = [string]($out | Where-Object { "$_" -like 'ok sot-scratch-*' } | Select-Object -First 1)
-Check 'scratch-profile.ps1 makes a profile the guard accepts' ($line -ne '') "got: $out"
-if ($line -match 'ok (\S+) (.+)$') { $made = Split-Path (Split-Path $Matches[2]) -Parent; if ($made -like '*\sot-scratch-*') { Remove-Item -LiteralPath $made -Recurse -Force -ErrorAction SilentlyContinue } }
-$env:SOT_T = $PSScriptRoot
-$out = @(& powershell -NoProfile -ExecutionPolicy Bypass -Command '$env:USERNAME = "someone"; . (Join-Path $env:SOT_T "scratch-guard.ps1"); Write-Output "RAN"' 2>&1)
-$code = $LASTEXITCODE
-Remove-Item Env:\SOT_T
-Check 'the guard ends a script under a real USERNAME at once, exit 2, one line' ($code -eq 2 -and @($out | Where-Object { "$_" -eq 'RAN' }).Count -eq 0 -and @($out | Where-Object { "$_" -like 'scratch-guard: refusing*' }).Count -ge 1) "exit $code, got: $out"
+Check 'the guard ends the whole process under a real USERNAME at once, exit 2, one line' ($r.Exit -eq 2 -and @($r.Out | Where-Object { $_ -eq 'RAN' }).Count -eq 0 -and @($r.Out | Where-Object { $_ -like 'scratch-guard: refusing*' }).Count -eq 1) "exit $($r.Exit), got: $($r.Out)"
 Write-Host "`n$pass passed, $fail failed"
 if ($fail -gt 0) { exit 1 }
