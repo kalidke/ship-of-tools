@@ -54,9 +54,10 @@ check() {
 
 contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
-# start_stub_daemon — answers hello, workspace.list (LIST_PAYLOAD) and
-# workspace.destroy (DESTROY_PAYLOAD), both captured at start; every request
-# is logged to REQLOG.
+# start_stub_daemon — answers hello, workspace.list (LIST_PAYLOAD),
+# workspace.destroy (DESTROY_PAYLOAD), both captured at start, and agent.join
+# ok (the clearance comm-leave --name asks: no live row holds the handle); every
+# request is logged to REQLOG.
 SOCK=""; REQLOG=""; STUBN=0
 LIST_PAYLOAD='{"workspaces":[]}'
 DESTROY_PAYLOAD='{"error":"refused","code":"test_refused"}'
@@ -85,6 +86,7 @@ start_stub_daemon() {
             workspace.list) printf '%s\n' "$list_reply" >&3 ;;
             workspace.destroy) printf '%s\n' "$destroy_reply" >&3 ;;
             version.query) printf '%s\n' "$version_reply" >&3 ;;
+            agent.join) printf '%s\n' '{"v":1,"id":1,"kind":"res","op":"agent.join","payload":{"ok":true}}' >&3 ;;
         esac
       done ) &
     STUB_WATCHER_PID=$!
@@ -367,7 +369,7 @@ make_worktree() {
 run_clean() {  # [flag] — --force unless given ("" for none)
     local opt="${1---force}"
     CLEAN_OUT="$(cd "$WORK/wt/proj" && bounded 60 env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION -u SOT_SPAWN_ENDPOINT \
-        SOT_SPAWN_ENDPOINT="unix:$SOCK" XDG_CONFIG_HOME="$CH/xdg" \
+        SOT_SPAWN_ENDPOINT="unix:$SOCK" SOT_SOCKET="$SOCK" XDG_CONFIG_HOME="$CH/xdg" \
         SOT_COMM_HOME="$CH" SOT_COMM_SELF_FILE="$CH/self.txt" \
         "$SCRIPTS_DIR/comm-worktree-clean.sh" x $opt 2>&1)"
     CLEAN_RC=$?

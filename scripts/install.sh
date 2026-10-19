@@ -888,7 +888,7 @@ julia_run() {
 # Project.toml. The daemon's Julia is, as rust/backend/src/sidecars/julia.rs resolves it: SOT_JULIA_BIN (asked with
 # --startup-file=no), else juliaup's default channel read from juliaup.json with jq (no Julia starts, so no startup.jl
 # runs; its Version string, the binary is not checked on disk), else the PATH julia. The refresh runs the PATH julia.
-julia_floor() { sed -n 's/^julia[[:space:]]*=[[:space:]]*"[^0-9"]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$CHECKOUT/julia/kernel/Project.toml" | head -1; }
+julia_floor() { sed -n '/^julia[[:space:]]*=[[:space:]]*"[^0-9"]*\([0-9][0-9]*\.[0-9][0-9]*\).*/{s//\1/p;q;}' "$CHECKOUT/julia/kernel/Project.toml"; }
 julia_version_ok() {  # <version> <floor>: 0 when the major.minor of the first is at or above the second's
     local v="${1%%+*}" f="$2"
     case "$v" in [0-9]*.[0-9]*) ;; *) return 1 ;; esac
