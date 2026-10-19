@@ -62,7 +62,7 @@ end
 end
 
 @testset "_install_claude_hooks: comm hooks land in every account's real settings.json" begin
-    # Owner ruling: the comm hooks go into EVERY Claude account's
+    # The comm hooks go into EVERY Claude account's
     # settings.json, links resolved, each real file written once, the
     # user's own hooks and settings kept, a re-run byte-identical. The
     # default here is itself a link to a file outside every claude dir:
