@@ -42,7 +42,7 @@ shape everywhere: a consumer computed a fact at the point of need instead
 of the owner declaring it once, and each wrong computation was fixed with
 a resolver tier or an override env, never a declaration.
 
-**The switching requirement.** Owner: 1 s is not acceptable, 100 ms is,
+**The switching requirement.** A switch of 1 s is not acceptable, 100 ms is,
 the target is 10 ms. Measured at rc.24 over a ~70 ms link:
 
 | Case | switch → content visible |

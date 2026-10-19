@@ -384,7 +384,7 @@ impl State {
             false,
             false,
         ));
-        // Per-session accounts (simplified brief, 2026-09-15):
+        // Per-session accounts:
         // hidden entirely when the daemon reports only "default" (or
         // never answered `accounts.list` — same empty state). A
         // never-logged-in folder is a NORMAL choice, not an error —

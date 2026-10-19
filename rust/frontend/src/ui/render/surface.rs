@@ -60,7 +60,7 @@ pub(in crate::ui) fn clear_color_for_surface(visible_srgb: (f64, f64, f64), is_s
 /// band held back: `strip_reserved_rows` comes off `rows` HERE, once, because
 /// the strip floats off `config.height` while everything the chrome draws
 /// floats off this grid — including the FE/BE version stamp on the bottom
-/// border line, which the strip's names row otherwise lands on top of. The
+/// border line, which the strip's names row otherwise lands on top of.
 /// The bottom pane boundary may move up for exactly this.
 pub(in crate::ui) fn cell_grid_for(
     width: u32,

@@ -297,7 +297,7 @@ pub enum OutgoingReq {
         autostart_claude: bool,
         /// ADR 0031 agent kind: "claude" | "codex" | "none".
         agent: String,
-        /// Per-session accounts (simplified brief, 2026-09-15): the
+        /// Per-session accounts: the
         /// login directory name the picker resolved, or `None` for the
         /// agent's default directory. Sent through to
         /// `sot_protocol::WorkspaceCreateReq.account` verbatim.
@@ -308,7 +308,7 @@ pub enum OutgoingReq {
     /// truth for Sessions mode rows. Response surfaces as
     /// `IncomingEvt::Workspaces` carrying the full registry view.
     WorkspaceList,
-    /// Per-session accounts (simplified brief, 2026-09-15): ask the
+    /// Per-session accounts: ask the
     /// daemon which login directories it can see for a row it would spawn
     /// here. Fired when the new-session picker opens, targeting the
     /// picker's own host (`send_to`) — never the frontend's own disk, since

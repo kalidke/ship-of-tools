@@ -202,10 +202,10 @@ inherits the profile's access list (the user, SYSTEM and Administrators).
 ## Why the daemon and not the frontend
 
 - The daemon types, not the frontend, because several frontends can show one row and
-  each would type, and a closed window would leave the row deaf — approved.
+  each would type, and a closed window would leave the row deaf.
 - The session reads the message through `comm-poll.sh` rather than having it pasted,
   because a pasted message is never marked read, so it would show again, hold the next
-  turn open, and read as the owner's own words — approved.
+  turn open, and read as the owner's own words.
 - The check repeats every two seconds rather than once at filing time, because one try
   misses a row that is busy, compacting or restarting at that moment.
 

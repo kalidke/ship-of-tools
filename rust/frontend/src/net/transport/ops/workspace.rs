@@ -87,7 +87,7 @@ pub struct WorkspaceInfo {
     /// queried at all) — `Some` only for `runtime == "capsule"` rows.
     /// Folded into the Sessions row's glance line (`capsule_phase_tag`).
     pub phase: Option<String>,
-    /// Per-session accounts (simplified brief, 2026-09-15): the
+    /// Per-session accounts: the
     /// login directory this row's agent runs under. `""` = the agent's
     /// default directory — the common case, and the only value from a
     /// daemon that predates the field.
@@ -108,9 +108,8 @@ impl WorkspaceInfo {
     }
 }
 
-/// One row of the `accounts.list` response (simplified brief,
-/// 2026-09-15). Mirrors `sot_protocol::AccountEntry`. `"default"` sorts
-/// first.
+/// One row of the `accounts.list` response. Mirrors `sot_protocol::AccountEntry`.
+/// `"default"` sorts first.
 #[derive(Debug, Clone)]
 pub struct AccountInfo {
     pub name: String,
@@ -470,7 +469,7 @@ pub(crate) fn on_workspace_list(
     }
 }
 
-// Per-session accounts (simplified brief, 2026-09-15): a
+// Per-session accounts: a
 // daemon that has no `accounts.list` handler (old build) or
 // whose reply otherwise fails to parse as `AccountsListRes` is
 // treated as an empty list — default-only, no error surfaced.

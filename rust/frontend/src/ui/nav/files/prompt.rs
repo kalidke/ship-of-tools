@@ -44,10 +44,10 @@ pub(in crate::ui) enum NavPrompt {
     /// `preview.set_scale` (which persists the sidecar and returns the
     /// re-rendered preview), Esc cancels.
     ///
-    /// Microns because that's the standard unit for entry; the
-    /// value is converted to nm at the boundary so the wire and the on-disk
-    /// sidecar stay in nm (ADR 0034 §2). The typed number is the RAW/original
-    /// pixel size — never the served/downsampled one — so it is sent verbatim.
+    /// Nanometers, the entry unit (see `parse_nm_pixel_size`): there is no
+    /// conversion, and the wire and the on-disk sidecar stay in nm (ADR 0034 §2).
+    /// The typed number is the RAW/original pixel size — never the
+    /// served/downsampled one — so it is sent verbatim.
     ScaleEntry {
         /// `files:`-prefixed id of the previewed raster being calibrated.
         node_id: String,

@@ -93,7 +93,7 @@ fn foreign_capsule_row_takes_the_skew_style() {
     assert!(!capsule_row_is_foreign("session", None));
 }
 
-/// Per-session accounts (simplified brief, 2026-09-15):
+/// Per-session accounts:
 /// `ws_info` plus a non-default account, for the sessions-list suffix
 /// tests.
 fn ws_info_with_account(
@@ -107,7 +107,7 @@ fn ws_info_with_account(
     }
 }
 
-/// Per-session accounts (simplified brief, 2026-09-15): the
+/// Per-session accounts: the
 /// sessions-list suffix. A default (empty-account) row renders exactly
 /// as before; a non-default row gets a short `· <name>` suffix so the
 /// user can see which subscription it spends.

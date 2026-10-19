@@ -37,7 +37,7 @@ pub(in crate::ui) struct WorkspacePicker {
     /// the entry under the cursor before a hidden-folder toggle. Consumed by
     /// the listing that answers `current_path`.
     reveal: Option<String>,
-    /// Per-session accounts (simplified brief, 2026-09-15): the
+    /// Per-session accounts: the
     /// login directories `accounts.list` reported for `host`, "default"
     /// first. Empty until the reply lands, and stays empty (the field the
     /// render/commit paths check) when the daemon only has "default" or
@@ -69,7 +69,7 @@ impl WorkspacePicker {
             .unwrap_or(kept);
     }
 
-    /// Per-session accounts (simplified brief, 2026-09-15): true only
+    /// Per-session accounts: true only
     /// when there's a real choice — more than "default" alone. An empty
     /// list (old daemon with no `accounts.list` handler, or the reply
     /// hasn't landed yet) reads exactly like default-only: hidden, no
@@ -221,7 +221,7 @@ impl State {
         ) {
             tracing::warn!(error = %e, %host, %start, "drop initial directory.list — channel closed");
         }
-        // Per-session accounts (simplified brief, 2026-09-15): ask
+        // Per-session accounts: ask
         // the daemon that will OWN the row, never the frontend's own disk
         // — the login must exist where the session runs. An old daemon's
         // reply parses to an empty list (see `PendingKind::AccountsList`),
@@ -354,9 +354,8 @@ impl State {
         self.window.request_redraw();
     }
 
-    /// `Tab` in the picker: cycle to the next account (simplified
-    /// brief, 2026-09-15). No-op when `accounts` has 0 or 1 entries (the
-    /// choice is hidden — either only "default" exists, or the daemon
+    /// `Tab` in the picker: cycle to the next account. No-op when `accounts` has 0 or
+    /// 1 entries (the choice is hidden — either only "default" exists, or the daemon
     /// never answered `accounts.list`).
     pub(in crate::ui) fn picker_cycle_account(&mut self) {
         let Some(p) = self.workspace_picker.as_mut() else {
@@ -607,8 +606,7 @@ mod tests {
         assert_eq!(p.selected, 0);
     }
 
-    /// The new-session prompt's account list handling (simplified
-    /// brief, 2026-09-15): default-only hides the field.
+    /// The new-session prompt's account list handling: default-only hides the field.
     #[test]
     fn account_choice_hidden_when_only_default() {
         let p = picker_with_accounts(vec![account("default", &["claude"], &[("claude", true)])]);

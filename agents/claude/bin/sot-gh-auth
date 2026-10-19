@@ -1,6 +1,6 @@
 #!/bin/bash
 # sot-gh-auth — bare-command wrapper so a human at ANY shell can just type
-# `sot-gh-auth` (so `gh auth login` is one command from a bare shell). The real script lives in
+# `sot-gh-auth`. The real script lives in
 # ~/.sot-comm/bin (not on PATH); this lands in ~/.local/bin (on PATH) via
 # ShipTools.update_comm(). Full flow, request/poll/status subcommands — see
 # sot-gh-auth.sh --help.

@@ -55,8 +55,7 @@ pub(in crate::ui) fn picker_key(state: &mut State, key: KeyPress<'_>) -> Control
             state.picker_confirm_selected("claude");
             return Break(());
         }
-        // Per-session accounts (simplified brief,
-        // 2026-09-15): Tab cycles the account choice.
+        // Per-session accounts: Tab cycles the account choice.
         // No-op (via picker_cycle_account) when the
         // choice is hidden (0 or 1 discovered accounts).
         if !event.repeat

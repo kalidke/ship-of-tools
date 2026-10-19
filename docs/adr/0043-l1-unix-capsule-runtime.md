@@ -88,7 +88,7 @@ manager review, one Codex round, CI green, merge (the standing rule).
   through destroy (26). **LU5d — DONE (6bec1546)** — the host-aware sot-comm
   registry predicate for list and destroy; **LU5d2** — the strict form everywhere the
   daemon reads the registry (outside the runtime; the shared-home bug the trial exposed).
-- **LU6b — attach convergence (decisions 27–30).** The 10–30 s target to open a new
+- **LU6b — attach convergence (decisions 27–30).** The reported 10–30 s to open a new
   local session, measured on the reporting box as ~180 ms of create and the rest attach
   convergence: an absent endpoint fails fast at the transport, the attach client waits on
   the supervisor's word instead of the voyage pipe, process spawns leave the Tokio

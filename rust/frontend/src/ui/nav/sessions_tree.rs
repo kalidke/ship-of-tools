@@ -256,7 +256,7 @@ impl State {
         } else {
             format!("{} · {}", w.label, glance)
         };
-        // Per-session accounts (simplified brief, 2026-09-15): a
+        // Per-session accounts: a
         // short suffix naming which subscription this row spends — shown
         // ONLY when it isn't the agent's default directory (`w.account`
         // empty), so the common case renders exactly as before.
