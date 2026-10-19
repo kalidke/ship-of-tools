@@ -83,6 +83,31 @@ async fn a_loop_with_no_safepoint_needs_the_force() {
     fixture.finish().await;
 }
 
+/// A second Ctrl+C a moment after the first forces: the forced request replaces the plain one's escalation, the burst
+/// goes and the loop stops, and the forced request is answered.
+#[tokio::test]
+async fn a_forced_request_a_moment_after_a_plain_one_forces() {
+    if !isolated("sidecars::repl::interrupt_tests::a_forced_request_a_moment_after_a_plain_one_forces", BODY) {
+        return;
+    }
+    let fixture = Fixture::new();
+    eval(&fixture.repl, 1, "kept = 41").await;
+    let (reply, collector) = start(&fixture, 2, "println(\"spinning\"); while true end", "spinning").await;
+    let plain = fixture.repl.request_if_running("repl.interrupt", json!({ "eval_ids": [2] }));
+    let forced = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        fixture.repl.request_if_running("repl.interrupt", json!({ "eval_ids": [2], "force": true })).await
+    };
+    let (_plain, forced) = tokio::join!(plain, forced);
+    let forced = forced.expect("the forced interrupt must be answered").expect("the REPL is running");
+    assert_eq!(forced["interrupted"], true, "{forced}");
+    tokio::time::timeout(Duration::from_secs(30), reply).await.expect("the eval answers").ok();
+    assert!(interrupted(&collector));
+    let after = eval(&fixture.repl, 3, "kept + 1").await;
+    assert!(after.iter().any(|f| f["kind"] == "value" && f["text"] == "42"), "{after:?}");
+    fixture.finish().await;
+}
+
 /// An interrupt that names other evals signals nothing: the running eval was not named.
 #[tokio::test]
 async fn an_interrupt_naming_another_eval_sends_no_signal() {
@@ -145,8 +170,8 @@ async fn one_interrupt_during_a_long_compile_leaves_the_repl_alive() {
 async fn one_interrupt_during_a_full_collection_leaves_the_repl_alive() {
     one_interrupt_leaves_the_repl_alive(
         "sidecars::repl::interrupt_tests::one_interrupt_during_a_full_collection_leaves_the_repl_alive",
-        "heap = [Ref(i) for i in 1:250_000_000]; nothing",
-        "for _ in 1:10; GC.gc(true); end",
+        "heap = [Ref(i) for i in 1:40_000_000]; nothing",
+        "for _ in 1:40; GC.gc(true); end",
         0,
         "GC.gc(true); length(heap)",
     )

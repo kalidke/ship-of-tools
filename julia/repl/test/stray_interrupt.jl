@@ -58,3 +58,16 @@ end
     @test occursin("\"kind\":\"res\"", text) || occursin("\"kind\": \"res\"", text)
     @test DR.CURRENT_EVAL[] === nothing
 end
+
+@testset "stream_pipe: a stray interrupt while it emits a chunk does not lose the chunk" begin
+    pipe = Pipe()
+    Base.link_pipe!(pipe; reader_supports_async = true, writer_supports_async = true)
+    texts = String[]
+    thrown = Ref(false)
+    emit = f -> (!thrown[] && (thrown[] = true; throw(InterruptException())); push!(texts, f[:text]))
+    reader = @async DR.stream_pipe(pipe, emit, "stdout")
+    write(pipe.in, "ab"); close(pipe.in)
+    wait(reader)
+    @test thrown[]
+    @test join(texts) == "ab"
+end
