@@ -13,7 +13,7 @@ never because a marker file exists. Part of distribution; charter: scripts/CLAUD
 - `src/lock.rs`: the cross-process mkdir lock on `updates/.lock`, shared with sot-apply.
 - `src/manifest.rs`: `InstallManifest` (`$PREFIX/install.json`, a schema shared with scripts/install.sh and
   scripts/install-manifest.ps1) and the ready manifest of a stage.
-- `src/pending.rs`: the `pending-<target>.json` pointer that arms one release for the next launch: `arm` (the only writer), the install it was armed over (`InstalledBuild`, read from `<prefix>/install.json`) and `stale_reason`, the apply-side judgement.
+- `src/pending.rs`: the `pending-<target>.json` pointer that arms one release for the next launch: `arm` (the only writer), the install it was armed over (`InstalledBuild`, read from `<prefix>/install.json`) and `stale_reason`, the apply-side judgement; the pointer also records `prepared_for_daemon`, whether the stage's prepare instantiated the Julia environments.
 - `src/platform.rs`: which target triples ship, and the asset filename for a version and triple.
 - `src/prepare.rs`: transactional preparation of a version (checkout and Julia instantiate) and the children it runs; a
   release checks out its tag, a dev build (`semver::is_dev`) the COMMIT its stage recorded, since it has no tag.

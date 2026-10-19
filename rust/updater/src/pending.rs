@@ -62,6 +62,11 @@ pub struct PendingPointer {
     pub armed_over_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub armed_over_commit: Option<String>,
+    /// Whether the stage's prepare instantiated the Julia environments (`prepared.json`'s `julia_instantiated`) when this
+    /// was armed, so a reader of the pointer alone can tell a full prepare from a checkout-only one. Absent where the
+    /// stage records no prepare. The apply's role check reads `prepared.json` itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_for_daemon: Option<bool>,
 }
 
 /// What `<prefix>/install.json` says is installed: its version and commit.
@@ -295,6 +300,7 @@ async fn arm_locked(
             .unwrap_or(0),
         armed_over_version: installed.as_ref().map(|i| i.version.clone()),
         armed_over_commit: installed.and_then(|i| i.commit),
+        prepared_for_daemon: crate::prepare::PreparedState::read(&crate::stage_dir(updates_root, identity)).await.ok().map(|p| p.julia_instantiated),
     };
     // Unique temp name (two same-target armers are excluded by the lock, but
     // a unique name keeps even a broken-lock scenario from corrupting).
@@ -382,6 +388,34 @@ mod tests {
 
     async fn cleanup(root: &Path) {
         tokio::fs::remove_dir_all(root.parent().unwrap()).await.unwrap();
+    }
+
+    // The pointer carries what the stage's prepare did, so a reader of one file can tell a full prepare from a
+    // checkout-only one; a stage with no prepare record leaves it absent.
+    #[tokio::test]
+    async fn arm_records_whether_the_prepare_instantiated_the_environments() {
+        let co = PathBuf::from("/x/repo/versions/v0.6.6");
+        for (name, julia) in [("full", Some(true)), ("light", Some(false)), ("none", None)] {
+            let root = prefix(&format!("prepared-{name}"), None).await;
+            let id = identity("0.6.6-rc9.14");
+            if let Some(julia) = julia {
+                let stage = crate::stage_dir(&root, &id);
+                tokio::fs::create_dir_all(&stage).await.unwrap();
+                let state = crate::prepare::PreparedState {
+                    schema: 1,
+                    identity: id.clone(),
+                    checkout: co.clone(),
+                    commit: "cc".into(),
+                    julia_instantiated: julia,
+                    mathjax_deps: false,
+                    prepared_at: 1,
+                };
+                state.write(&stage).await.unwrap();
+            }
+            assert_eq!(arm(&root, &id, &co, "cc", Writer::Operator).await.unwrap(), ArmOutcome::Armed);
+            assert_eq!(read(&root, T).await.unwrap().unwrap().prepared_for_daemon, julia, "{name}");
+            cleanup(&root).await;
+        }
     }
 
     #[tokio::test]
@@ -515,6 +549,7 @@ mod tests {
             armed_at: 0,
             armed_over_version: over.map(Into::into),
             armed_over_commit: None,
+            prepared_for_daemon: None,
         };
         let cut = UnreadableInstall { path: PathBuf::from("/p/install.json"), cause: "EOF while parsing".into(), missing: false };
         let why = pointer_refusal(&ptr(Some("0.6.6-rc9.13")), Err(cut.clone())).expect("refused");
@@ -665,6 +700,7 @@ mod tests {
             armed_at: 0,
             armed_over_version: over.map(|o| o.0.into()),
             armed_over_commit: over.map(|o| o.1.into()),
+            prepared_for_daemon: None,
         };
         let at = |version: &str, commit: &str| InstalledBuild { version: version.into(), commit: Some(commit.into()), pinned: false };
         // A record: the install is still the one it was armed over.

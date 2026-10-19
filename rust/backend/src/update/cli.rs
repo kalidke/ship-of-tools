@@ -4,8 +4,8 @@
 //!   chose the folder, so it is the one writer that may arm a build at or below the install (`Writer::Operator`).
 //! - `pointer --prefix <prefix> --target <target>`: may the armed pointer apply onto this install? The apply scripts
 //!   (sot-apply.sh, sot-apply.ps1) ask the installed `sotd` before they apply anything, so the comparison of versions
-//!   and installs is Rust's `compare_versions` and not a second semver in shell. It reads two small files and writes
-//!   nothing.
+//!   and installs is Rust's `compare_versions` and not a second semver in shell. It reads the pointer, `install.json` and
+//!   the stage's `prepared.json`, and writes nothing.
 //!
 //! - `direction <version> --prefix <prefix>`: does the install at <prefix> move `newer`, `same` or `older` to <version>?
 //!   The installer (scripts/install.sh) asks the target release's own `sotd` before it changes anything, so its
@@ -25,8 +25,10 @@ use std::path::{Path, PathBuf};
 
 use sot_updater::identity::repo_from_env;
 use sot_updater::pending::{self, InstalledBuild, Writer};
+use sot_updater::prepare::PreparedState;
 use sot_updater::{Fetcher, InstallFile, InstallManifest, ReleaseIdentity, UpdaterConfig};
 
+use super::refusal::fit_refusal;
 use super::{stage_prepare_arm_with, Pipeline};
 
 pub(crate) const USAGE: &str = "\
@@ -205,17 +207,40 @@ fn parse_pointer_args(args: &[String]) -> Result<(PathBuf, String), String> {
 /// pointer that records the install it was armed over (it cannot be checked), and lets one with no record meet the
 /// script's exact-tag check. A pointer that exists and cannot be read is refused: every pointer a Rust writer wrote
 /// carries its schema, repo and version, so one that does not parse is corrupt or another program's, and the apply must
-/// not guess.
+/// not guess. A pointer that fits is last checked against this host's role (`fit_refusal`): the prepare behind it was
+/// decided by whichever host armed it.
 async fn refusal(prefix: &Path, target: &str) -> Option<String> {
+    refusal_for(prefix, target, || backend_role_here(prefix)).await
+}
+
+/// [`refusal`] with the role question asked of `wants_backend`, only once a pointer fits: the pointer's own checks come first.
+async fn refusal_for(prefix: &Path, target: &str, wants_backend: impl FnOnce() -> bool) -> Option<String> {
     let updates = prefix.join("updates");
     let installed = InstalledBuild::try_read(&updates);
     if matches!(installed, Ok(None)) {
         return None;
     }
-    match pending::read(&updates, target).await {
-        Ok(None) => None,
-        Ok(Some(ptr)) => pending::pointer_refusal(&ptr, installed),
-        Err(e) => Some(format!("unreadable pointer: {e:#}")),
+    let ptr = match pending::read(&updates, target).await {
+        Ok(None) => return None,
+        Ok(Some(ptr)) => ptr,
+        Err(e) => return Some(format!("unreadable pointer: {e:#}")),
+    };
+    if let Some(why) = pending::pointer_refusal(&ptr, installed) {
+        return Some(why);
+    }
+    let prepared = match PreparedState::read(&sot_updater::stage_dir(&updates, &ptr.identity)).await {
+        Ok(state) => Ok(state.julia_instantiated),
+        Err(e) => Err(format!("{e:#}")),
+    };
+    fit_refusal(wants_backend(), target.starts_with("windows"), prepared)
+}
+
+/// Does this host's role, read as the daemon's prepare reads it, want a backend for the install at `prefix`? The record
+/// is `install.json`'s `daemon` bit; one that cannot be read leaves the answer to the topology and the default.
+fn backend_role_here(prefix: &Path) -> bool {
+    match InstallManifest::load(&prefix.join("install.json")) {
+        InstallFile::Read(m) => super::backend_role_wanted(&m),
+        _ => super::backend_role_recorded(None),
     }
 }
 
@@ -462,8 +487,30 @@ mod tests {
                 ),
             )
             .unwrap();
+            prepare(&dir, version, Some(true));
         }
         dir
+    }
+
+    /// The stage's `prepared.json` for `version`: Julia environments instantiated or not, or no record at all.
+    fn prepare(dir: &tempfile::TempDir, version: &str, julia: Option<bool>) {
+        let stage = dir.path().join("updates").join(format!("v{version}-{T}"));
+        let path = stage.join("prepared.json");
+        let Some(julia) = julia else {
+            let _ = std::fs::remove_file(path);
+            return;
+        };
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(
+            path,
+            format!(
+                r#"{{"schema":1,"repo":"kalidke/ship-of-tools","tag":"v{version}","version":"{version}","target":"{T}",
+                "asset":"sot-{version}-{T}.tar.gz","asset_sha256":"{}","checkout":"/x","commit":"cc",
+                "julia_instantiated":{julia},"mathjax_deps":false,"prepared_at":1}}"#,
+                "ab".repeat(32)
+            ),
+        )
+        .unwrap();
     }
 
     async fn code(dir: &tempfile::TempDir) -> i32 {
@@ -507,6 +554,25 @@ mod tests {
         assert_eq!(code(&at).await, REFUSED);
         let above = prefix(("0.6.6-rc9.13", "c0"), Some(("0.6.6-rc9.14", None)));
         assert_eq!(code(&above).await, 0);
+    }
+
+    // The applier checks the fit its armer did not: a backend role over an env-less prepare, or over none, is refused, and a
+    // role without a backend is refused only for no prepare. The scripts drop any pointer this refuses.
+    #[tokio::test]
+    async fn a_pointer_whose_prepare_does_not_fit_this_hosts_role_is_refused() {
+        let dir = prefix(("0.6.6-rc9.13", "c0"), Some(("0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0")))));
+        let ask = |wants: bool| refusal_for(dir.path(), T, move || wants);
+        assert!(ask(true).await.is_none() && ask(false).await.is_none(), "a full prepare fits both roles");
+        prepare(&dir, "0.6.6-rc9.14", Some(false));
+        assert!(ask(true).await.unwrap().contains("did not instantiate"), "an env-less prepare for a backend role");
+        assert!(ask(false).await.is_none(), "an env-less prepare for a role without a backend");
+        prepare(&dir, "0.6.6-rc9.14", None);
+        for wants in [true, false] {
+            assert!(ask(wants).await.unwrap().contains("no record of a prepare"), "no prepared.json, backend {wants}");
+        }
+        // The verb a script runs: the same pointer, with the role read from this home's topology and the record.
+        std::fs::write(dir.path().join("install.json"), r#"{"schema":1,"prefix":"/p","version":"0.6.6-rc9.13","commit":"c0","daemon":false}"#).unwrap();
+        assert_eq!(code(&dir).await, REFUSED);
     }
 
     #[tokio::test]

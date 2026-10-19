@@ -44,3 +44,44 @@ pub(super) fn apply_refusal(
     let why = sot_updater::pending::pointer_refusal(pending, installed)?;
     Some(format!("the armed {} will not apply: {why}", pending.identity.tag))
 }
+
+/// Why a pointer that fits the install must still not apply on this host, or `None`: the stage records no prepare
+/// (`prepared` is the reason it could not be read), or this host's role wants a backend and the prepare did not
+/// instantiate the Julia environments, which the new checkout would meet with none. The arming host decided the prepare's
+/// depth from its own entry, so the applier checks it against its own. A Windows target is exempt from the second: its
+/// launcher instantiates a new version's environments at its first start, and a box with no Julia is a supported state.
+pub(super) fn fit_refusal(wants_backend: bool, heals_at_start: bool, prepared: Result<bool, String>) -> Option<String> {
+    match prepared {
+        Err(why) => Some(format!("no record of a prepare for this stage: {why}")),
+        Ok(false) if wants_backend && !heals_at_start => {
+            Some("this host runs a backend and the prepare did not instantiate the Julia environments".into())
+        }
+        Ok(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_refusal;
+
+    // Role x prepare: only a backend role over an env-less prepare is refused for its depth; no record is refused for any role.
+    #[test]
+    fn a_pointer_applies_only_where_its_prepare_fits_the_hosts_role() {
+        let missing = || Err("reading prepared.json: No such file or directory".to_string());
+        // (wants_backend, windows, prepared, refused)
+        let table = [
+            (true, false, Ok(true), false),
+            (true, false, Ok(false), true),
+            (true, false, missing(), true),
+            (false, false, Ok(true), false),
+            (false, false, Ok(false), false),
+            (false, false, missing(), true),
+            (true, true, Ok(false), false),
+            (true, true, missing(), true),
+        ];
+        for (wants, windows, prepared, refused) in table {
+            let said = fit_refusal(wants, windows, prepared.clone());
+            assert_eq!(said.is_some(), refused, "backend {wants} windows {windows} prepared {prepared:?}: {said:?}");
+        }
+    }
+}

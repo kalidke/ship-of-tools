@@ -414,9 +414,14 @@ fn backend_role_from_topology(
 /// box the topology has no entry for (a real shape: a frontend-only-over-ssh
 /// install with no hosts.toml at all).
 fn backend_role_wanted(install: &InstallManifest) -> bool {
+    backend_role_recorded(install.daemon)
+}
+
+/// [`backend_role_wanted`] for a caller that has read the record's `daemon` bit itself (or could not read the record).
+fn backend_role_recorded(recorded_daemon: Option<bool>) -> bool {
     let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
     let me = crate::comm::mail::filer::comm_self_host();
-    backend_role_from_topology(topo.as_ref(), &me, install.daemon)
+    backend_role_from_topology(topo.as_ref(), &me, recorded_daemon)
 }
 
 /// The julia an update's prepare runs for its envs: only a backend role runs one, and it is the resolver's answer, the
@@ -1205,6 +1210,7 @@ mod tests {
             armed_at: 0,
             armed_over_version: over.map(|o| o.0.into()),
             armed_over_commit: over.map(|o| o.1.into()),
+            prepared_for_daemon: None,
         }
     }
 

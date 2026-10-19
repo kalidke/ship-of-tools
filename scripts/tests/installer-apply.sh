@@ -195,6 +195,7 @@ run_apply "$d"
 check "an install already at the pointer's tag is still cleared by the tag check" "gone" "$(armed "$d")"
 
 # The real sotd, when the caller names it: the same pointer, now judged from its own content.
+# PREP names what the stage's prepare did: full (the default), light (no Julia environments) or none (no prepared.json).
 real_apply() {  # <name> <installed tag> <pointer version> [<over-version> <over-commit>]: sets RD
     RD="$WORK/$1"; mk_apply_fixture "$RD" 1 1
     local u="$RD/prefix/updates"
@@ -208,6 +209,11 @@ real_apply() {  # <name> <installed tag> <pointer version> [<over-version> <over
         "$3" "$3" "$TGT" "$3" "$TGT" "$sha" "$co" "$cm" > "$u/pending-$TGT.json"
     [ -z "${4:-}" ] || printf ',\n  "armed_over_version": "%s",\n  "armed_over_commit": "%s"' "$4" "$5" >> "$u/pending-$TGT.json"
     printf '\n}\n' >> "$u/pending-$TGT.json"
+    case "${PREP:-full}" in
+        none) ;;
+        *) printf '{\n  "schema": 1,\n  "repo": "kalidke/ship-of-tools",\n  "tag": "v%s",\n  "version": "%s",\n  "target": "%s",\n  "asset": "sot-%s-%s.tar.gz",\n  "asset_sha256": "%s",\n  "checkout": "%s",\n  "commit": "%s",\n  "julia_instantiated": %s,\n  "mathjax_deps": false,\n  "prepared_at": 1\n}\n' \
+            "$3" "$3" "$TGT" "$3" "$TGT" "$sha" "$co" "$cm" "$([ "${PREP:-full}" = full ] && echo true || echo false)" > "$u/v$3-$TGT/prepared.json" ;;
+    esac
     printf '{\n  "schema": 1,\n  "prefix": "%s",\n  "tag": "%s",\n  "version": "%s",\n  "commit": "aaa",\n  "service": "systemd"\n}\n' \
         "$RD/prefix" "$2" "${2#v}" > "$RD/prefix/install.json"
     cp "$SOT_TEST_SOTD" "$RD/prefix/bin/sotd"; chmod 0755 "$RD/prefix/bin/sotd"
@@ -249,6 +255,15 @@ else
     run_apply "$RD"
     check "a pointer with no record onto a dev build: refused" "v9.9.8-dev+abc gone" "$(installed_tag "$RD") $(armed "$RD")"
     check "a pointer with no record onto a dev build: the reason names the dev build" "1" "$(grep -c 'is a dev build' "$RD/out" || true)"
+    # The applier checks the fit its armer did not: this home names no topology, so the install is a backend role.
+    PREP=light real_apply pr8 v9.9.8 9.9.9
+    run_apply "$RD"
+    check "an env-less prepare onto a backend role: refused" "v9.9.8 gone" "$(installed_tag "$RD") $(armed "$RD")"
+    check "an env-less prepare onto a backend role: the reason names the environments" "1" "$(grep -c 'did not instantiate the Julia environments' "$RD/out" || true)"
+    PREP=none real_apply pr9 v9.9.8 9.9.9
+    run_apply "$RD"
+    check "a stage with no prepared.json: refused" "v9.9.8 gone" "$(installed_tag "$RD") $(armed "$RD")"
+    check "a stage with no prepared.json: the reason says so" "1" "$(grep -c 'no record of a prepare' "$RD/out" || true)"
 fi
 
 # ---------------------------------------------------------------------------
