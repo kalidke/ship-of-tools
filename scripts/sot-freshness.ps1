@@ -245,7 +245,7 @@ function Invoke-CommFreshness {
         # Invoke-CommUpdate below ran `using ShipTools` against an
         # uninstantiated checkout, and its stderr -- turned into
         # terminating errors by $ErrorActionPreference = 'Stop' + 2>&1,
-        # same footgun as the dev-checkout branch below -- killed the
+        # same footgun -- killed the
         # launcher silently right here. Initialize-InstallLayout is
         # idempotent (it returns immediately once
         # julia\kernel\Manifest.toml exists), so calling it again is the
@@ -255,7 +255,7 @@ function Invoke-CommFreshness {
         if ($Pinned) { Initialize-InstallLayout }
         # Relax 'Stop' -> 'Continue' around update_comm() itself too --
         # belt-and-suspenders with the instantiate above, and the same
-        # relaxation the dev-checkout branch below already uses. Never
+        # relaxation the rebuild below uses. Never
         # fatal: log and move on, don't let a freshness step brick the
         # launch.
         $savedEAP = $ErrorActionPreference

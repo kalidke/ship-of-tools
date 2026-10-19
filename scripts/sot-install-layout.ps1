@@ -9,7 +9,7 @@
 # have.
 # Also the first-launch install layout (Set-SotJunction, Initialize-InstallLayout), called only by launch-sot.ps1, and
 # Write-Utf8NoBomViaRename, the one writer of install.json for sot-apply.ps1 and install-manifest.ps1, and
-# Invoke-SotNative, the one way a script under 'Stop' calls a native command.
+# Invoke-SotNative, how a script under 'Stop' calls a native command (a call in a local 'Continue' scope does the same).
 #
 # See docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
 # amendment for why this predicate exists and what it replaced.
@@ -19,7 +19,7 @@
 # a non-ASCII byte inside a string literal into a phantom quote that fails
 # the whole parse.
 
-# The one way a script that runs under $ErrorActionPreference = 'Stop' calls a native command. Windows PowerShell 5.1
+# How a script that runs under $ErrorActionPreference = 'Stop' calls a native command. Windows PowerShell 5.1
 # turns every line a native command writes to stderr into a terminating NativeCommandError when the caller redirects
 # (`*>`, `2>&1`, `2>$null`, a host with redirected stderr), whatever the command's exit code; so stderr is read here
 # under 'Continue' and the exit code, not stderr, is what a caller tests. Returns Code, Out (stdout lines), Err (stderr
@@ -31,11 +31,10 @@ function Invoke-SotNative {
     $ErrorActionPreference = 'Continue'
     $out = @(); $err = @(); $all = @(); $code = 127
     try {
-        foreach ($l in @(& $Exe @ArgList 2>&1)) {
-            $isErr = $l -is [System.Management.Automation.ErrorRecord]
-            if ($isErr) { $err += "$l" } else { $out += "$l" }
-            $all += "$l"
-            if ($Echo) { Write-Host "$l" }
+        & $Exe @ArgList 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { $err += "$_" } else { $out += "$_" }
+            $all += "$_"
+            if ($Echo) { Write-Host "$_" }
         }
         $code = $LASTEXITCODE
         if ($null -eq $code) { $code = 0 }

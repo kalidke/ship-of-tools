@@ -88,6 +88,20 @@ try {
     Check 'a command that cannot start is Code 127' ($c.Out -match 'missing: code=127') $c.Out
     Check '-Echo writes the lines to the host' ($c.Out -match 'shown') $c.Out
 
+    Write-Host "`n=== 1b. -Echo writes each line as it arrives, not when the command ends ===" -ForegroundColor Cyan
+    $c = Invoke-Child 'stream' @"
+`$ErrorActionPreference = 'Stop'
+. '$layout'
+`$script:seen = @()
+function Write-Host { param(`$Object) `$script:seen += ('{0}|{1}' -f `$Object, [DateTime]::UtcNow.Ticks) }
+`$r = Invoke-SotNative 'cmd' @('/c', 'echo first& ping -n 4 127.0.0.1 >nul& echo last') -Echo
+`$end = [DateTime]::UtcNow.Ticks
+`$first = [int64](@(`$script:seen | Where-Object { `$_ -like 'first|*' })[0] -split '\|')[1]
+'lead-ms=' + [int](((`$end - `$first) / 10000))
+"@
+    $lead = if ($c.Out -match 'lead-ms=(\d+)') { [int]$Matches[1] } else { -1 }
+    Check 'the first line is written well before the command (about 3 s) ends' ($lead -ge 1500) "lead-ms=$lead; $($c.Out)"
+
     Write-Host "`n=== 2. the premise: bare, a native stderr line under Stop and a redirect ends the script ===" -ForegroundColor Cyan
     $c = Invoke-Child 'bare' @'
 $ErrorActionPreference = 'Stop'
