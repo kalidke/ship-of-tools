@@ -5,7 +5,7 @@
 # slowest step and burned the Actions allowance; a change merges on its
 # local suites, the windows-gnu cross-check and its review round. Hosted CI
 # runs when the line becomes a tag: a tag is never cut unless this workflow
-# and CI.yml, dispatched on the branch being cut, are green at its HEAD
+# and CI.yml, dispatched on main, are green at its HEAD
 # (scripts/release.sh's preflight).
 # Windows-only frontend code that cannot be cross-compiled on the backend
 # runs this workflow on its branch by hand: `gh workflow run rust.yml --ref
