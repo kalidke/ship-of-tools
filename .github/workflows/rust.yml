@@ -1,7 +1,7 @@
 # Rust CI (ADR 0030 §3): build + test on the blocking platforms.
 #
 # Runs on pushes to main and on demand -- NOT on pull requests
-# (owner ruling 2026-09-08: waiting on hosted CI per PR was the workflow's
+# (decided 2026-09-08: waiting on hosted CI per PR was the workflow's
 # slowest step and burned the Actions allowance; a change merges on its
 # local suites, the windows-gnu cross-check and its review round. Hosted CI
 # runs when the line becomes a tag: a tag is never cut unless this workflow

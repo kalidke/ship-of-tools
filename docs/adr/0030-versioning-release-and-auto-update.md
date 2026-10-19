@@ -275,7 +275,7 @@ the fix:
 - **D — Public**: `install.sh`/`install.ps1`; quickstart docs; `.claude-bus`/
   `.claude-memory` → private ops repo; gitleaks history gate; `requirements.md` scope
   amendment; flip repo visibility. **The visibility flip happens ONLY on the maintainer's explicit
-  approval, after A–C have been exercised on multiple fleet machines** (per maintainer decision,
+  approval, after A–C have been exercised on multiple fleet machines** (decided
   2026-07-01) — no session flips the repo public on its own initiative, ever.
 
 ## Consequences
