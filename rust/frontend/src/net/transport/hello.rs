@@ -194,7 +194,7 @@ pub(super) fn accept_hello<Wn: Redraw>(
         repl_running: hello_res.repl_running.clone(),
     });
     window.request_redraw();
-    // Manager review (round 2, finding 14): the declaration, not only the
+    // (round 2, finding 14): the declaration, not only the
     // dial label — this is the exact instant the declared host becomes
     // known, so it belongs in this line's own fields, not only the tree/
     // status-line projection (`host_label`) that reads it back later.

@@ -373,8 +373,8 @@ mod tests {
 
     /// LU6a: `pane_screen_choice`'s branches, checked here so this
     /// decision runs on every platform (its call site is unconditional
-    /// too, ADR 0045 decision 1). The amendment added the
-    /// `is_dead` parameter and the cases below that exercise it.
+    /// too, ADR 0045 decision 1). The
+    /// `is_dead` cases are below.
     #[test]
     fn pane_screen_choice_covers_every_branch() {
         // A checkpointed client always wins, hold or no hold, pending or

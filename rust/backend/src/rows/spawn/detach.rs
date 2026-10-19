@@ -554,8 +554,8 @@ fn spawn_detached(
 ///
 /// What this module's macOS arm does NOT claim: that a capsule row
 /// actually works on a Mac. Nothing here has ever run on one. It
-/// compiles honestly and spawns honestly; the supervisor-epoch design's §7 lists what a
-/// real Mac must settle — that a supervisor's reported `pidversion`
+/// compiles honestly and spawns honestly. What a
+/// real Mac must settle: that a supervisor's reported `pidversion`
 /// matches what this daemon's own `query_status` sees for it, that a
 /// `setsid` capsule survives its spawning `sotd` under launchd, that a
 /// row reaches `ready` with a real agent attached, and that a

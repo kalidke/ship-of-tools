@@ -400,7 +400,7 @@ Verdicts, in the order the first that applies wins:
 | a receipt carrying this send's `id` | `filed -> @h (by <filer>, relay)` | 0 |
 | no receipt before EOF or the 5 s bound | `NOT CONFIRMED: sent for @h; nobody claimed it within 5s. Attached: …` | 1 |
 
-> **Superseded in part by decision 0031, B1.** A directed send now asks
+> **Superseded in part by ADR 0049, B1.** A directed send now asks
 > the hub first with one `comm.file` request, and the hub's answer is the
 > verdict (`filed -> @h`, or `FAILED -> @h: <reason>`). This table applies only
 > to the fallback for a handle the hub's folder does not list (`not_here`),

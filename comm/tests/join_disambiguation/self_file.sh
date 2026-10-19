@@ -368,7 +368,7 @@ case_self_heal_write_failure_reported_loudly_file_intact() {
 }
 
 case_nopane_selffile_shared_across_repos_not_healed() {
-    # Addendum: a shell with NO workspace row collapses to
+    # A shell with NO workspace row collapses to
     # ONE self-file slot per host ("<host>__nopane.txt", see
     # comm-context.sh) shared by every such shell on this host. The
     # repo=/root= check is what makes that sharing safe — a background
@@ -482,11 +482,11 @@ case_nopane_with_matching_registry_root_heals() {
 }
 
 case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses() {
-    # Addendum (field-corroborated): a background shell
+    # A background shell
     # cd'd OUTSIDE any repo entirely (REPO then reads as the cwd's own
     # basename, e.g. a scratchpad dir) trips the SAME repo-mismatch discard
     # from the other side — must not be healed either, and a send from
-    # there must refuse loudly (item 5) rather than stamp a placeholder
+    # there must refuse loudly rather than stamp a placeholder
     # sender. The fix for an operator here is "run from the repo", not
     # "rejoin".
     local self scratch
@@ -502,7 +502,7 @@ case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses() {
     local lines; lines="$(wc -l < "$self")"
     [ "$lines" -eq 2 ] || { echo "  self-file was mutated by a non-repo-cwd read: $(cat "$self")"; return 1; }
 
-    # A send from here must refuse loudly (item 5), not stamp a
+    # A send from here must refuse loudly, not stamp a
     # synthesized "unknown-<host>" sender.
     local send_out send_err send_rc errfile
     errfile="$WORK/send-scratch.err"

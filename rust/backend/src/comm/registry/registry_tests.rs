@@ -4,7 +4,7 @@ use super::*;
 
 #[cfg(test)]
 mod capsule_comm_handle_tests {
-    // Manager review (S5, Codex finding B8): `capsule_comm_handle` reads
+    // (S5, Codex finding B8): `capsule_comm_handle` reads
     // back the handle `comm-join.sh`'s own derivation wrote into the
     // self-file the daemon pinned via `SOT_COMM_SELF_FILE` — restored as
     // the FALLBACK `comm_handle_for_workspace` reaches for once a row's

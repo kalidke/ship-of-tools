@@ -19,7 +19,7 @@ impl State {
             // ADR 0046 decision 1: `HostKey` is never re-homed —
             // `event_host` (the dial label) stays the key for everything
             // below, unshadowed. The declared host is recorded for
-            // display (`host_label`) — manager review, S8: closing a
+            // display (`host_label`, S8): closing a
             // duplicate dial here was rejected (no transport shutdown
             // path exists to actually enforce it); the static same-port
             // skip in `dial::resolve_connections` is what prevents a

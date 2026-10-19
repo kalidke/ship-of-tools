@@ -94,7 +94,7 @@ resolve_local_sotd_bin() {
 # read_topology_plan: (re)resolves the local sotd binary, SYNCS, then
 # (re)runs sot_topology_plan into $PLAN. Called once, early (steps 1-2b
 # below need it), and AGAIN after the freshness rebuild (step 3) --
-# ordering risk (manager review): a brand-new box has no sotd built yet at
+# ordering risk (review): a brand-new box has no sotd built yet at
 # the first call, so an early-only read would leave the frontend's --dial
 # args permanently empty on the very first launch. The second call, right
 # before the frontend actually launches, picks up a binary the rebuild

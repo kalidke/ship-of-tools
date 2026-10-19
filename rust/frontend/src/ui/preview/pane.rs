@@ -13,7 +13,7 @@ use crate::ui::*;
 /// which is what makes that class of bug structurally unreachable here
 /// rather than merely avoided.
 ///
-/// Round-2 review ruling: does NOT also check a pin. `pinned_preview_node_id`
+/// Does NOT also check a pin. `pinned_preview_node_id`
 /// is stamped straight from the CURSOR row (`toggle_pin`), not from an
 /// installed reply — pinning a row before its preview arrives (cursor
 /// moved fast, or `maybe_fire_preview`'s pinned-preview guard means it
@@ -469,14 +469,13 @@ mod tests {
     // --- Bug 2 / round 2 provenance fix: `o`/`W`/`O` must route against
     // the node the INSTALLED preview reply answered — never the most
     // recently REQUESTED one (which can outrun its own reply), and never
-    // a pin either (round-2 ruling: a pin is stamped from the cursor row,
+    // a pin either (a pin is stamped from the cursor row,
     // not from an installed reply, so it can equally outrun what's
     // shown). ---
 
     #[test]
     fn previewed_path_routes_by_installed_node_not_a_fired_one() {
-        // The function doesn't even take a "fired" id (or a "pinned" one
-        // — round-2 ruling) — its signature is the proof that neither can
+        // The function doesn't even take a "fired" id (or a "pinned" one) — its signature is the proof that neither can
         // leak into the routed path.
         assert_eq!(
             resolve_previewed_path(Some("files:a/index.html"), Some("/proj")),

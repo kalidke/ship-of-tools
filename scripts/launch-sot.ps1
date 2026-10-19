@@ -515,7 +515,7 @@ if (-not $Local) {
 # host name -- see ui/persist/resume.rs's field doc for what `last_host`
 # means today, frontend-side).
 #
-# Ordering risk (manager review): a brand-new box has no sotd(.exe) built
+# Ordering risk (review): a brand-new box has no sotd(.exe) built
 # yet at THIS point (before Invoke-FreshnessPass's backend-pair rebuild,
 # below) -- an early-only read would leave $frontendArgs built from a
 # permanently empty plan on the very first launch, needing a second one to

@@ -206,7 +206,7 @@ fn sync(hub: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// Which hub `sync` fetches from (a standing rule): the LOCAL copy's
+/// Which hub `sync` fetches from: the LOCAL copy's
 /// `hub` always wins when a copy already exists — re-pointing a box to a
 /// different hub means deleting its copy and running `sync --hub <new>`
 /// again, not overriding a live copy in place. `--hub` is read only when

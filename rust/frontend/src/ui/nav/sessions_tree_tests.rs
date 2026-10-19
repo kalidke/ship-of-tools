@@ -257,7 +257,7 @@ fn resplice_expanded_session_hosts_drops_a_row_no_longer_in_workspace_lists() {
 
 // --- ADR 0046 decision 1: the declared-host label (display only) ---
 //
-// Manager review (S8, Codex finding B1): duplicate refusal was
+// (S8, Codex finding B1): duplicate refusal was
 // rejected here — no transport shutdown path exists to actually close
 // a newcomer's connection, so `App::record_declared_host` (a plain
 // `HashMap::insert`, no branch worth a dedicated unit test) feeds

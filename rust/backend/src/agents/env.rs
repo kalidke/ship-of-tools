@@ -131,7 +131,7 @@ pub fn own_sotd_bin() -> Option<&'static str> {
 /// (`Workspace.agent_handle`, `comm::registry::join::handle_agent_join`); a declared
 /// `agent_handle` wins when present, but the daemon's OWN read-back of
 /// that same file (`comm::registry::registry::capsule_comm_handle`) stays as the
-/// FALLBACK for a row with no declaration yet (manager review, S5) —
+/// FALLBACK for a row with no declaration yet (S5) —
 /// deleted only with family H once every row has cycled onto `agent.join`.
 /// `SOTD_BIN` is this daemon's own start path ([`own_sotd_bin`]), so the session's comm shell bridges with the daemon's
 /// own binary.
@@ -369,7 +369,7 @@ mod tests {
         // unconditionally so a capsule never falls back to the shared
         // per-host __nopane slot.
         //
-        // ADR 0046 decision 1 (manager review, S2/S4): the leg ALSO
+        // ADR 0046 decision 1 (S2/S4): the leg ALSO
         // carries a bare SOT_SOCKET and SOT_WORKSPACE_ID — every
         // pane/capsule alike, so `comm-join.sh`'s `agent.join` can always
         // find its owner daemon. No SOT_SELF_HOST pin (an override on the

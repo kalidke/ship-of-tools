@@ -241,7 +241,7 @@ sot_cleanup_signals() {
 sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
 
 # sot_host — this shell's DECLARED host name for the wire only (ADR 0046
-# decision 1, manager review S1/S2): the ONE resolver matching
+# decision 1, S1/S2): the ONE resolver matching
 # sot_log::host::state_dir::host_name() on the Rust side exactly — `$SOT_SELF_HOST`
 # verbatim if set and non-empty (a NEW variable: `SOT_HOST` already means
 # the SSH target a remote frontend dials, `scripts/launch-sot.ps1`/
@@ -266,7 +266,7 @@ sot_host() {
     fi
     raw="${raw%%.*}"
     # Trim whitespace the same way Rust's host_name() does (`.trim()`
-    # after taking the first label) — manager review round 2: the two
+    # after taking the first label) — round 2: the two
     # implementations must apply the SAME rule, not two independently
     # coded near-matches.
     raw="${raw#"${raw%%[![:space:]]*}"}"

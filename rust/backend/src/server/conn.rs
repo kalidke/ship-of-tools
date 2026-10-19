@@ -273,7 +273,7 @@ where
     // it — a half-open peer's death is otherwise noticed only when the
     // OS-level TCP side gives up (15 min to 2 h).
     //
-    // Opt-in by ping (manager compatibility fix, post-review): the gate is
+    // Opt-in by ping (compatibility fix, post-review): the gate is
     // `deadline_armed`, which flips true only on this connection's FIRST
     // `ping`, whatever its role — never at hello. A peer too old to send
     // ping (a frontend box or a comm bridge that hasn't converged from main

@@ -219,7 +219,7 @@ pub(crate) fn last_joiner(handle: &str, host: &str) -> Option<String> {
 ///   the daemon is told once instead of re-deriving it.
 /// - otherwise: read its OWN pinned self-file back instead
 ///   (`capsule_comm_handle`), falling back to the stored `agent_name`
-///   only when that file is empty/absent. Manager review (S5, Codex
+///   only when that file is empty/absent. (S5, Codex
 ///   finding B8): this read-back STAYS as the fallback for a row that
 ///   has not (yet, or ever, for an older comm-join.sh) declared via
 ///   `agent.join` — deleted only with family H once every row has cycled.

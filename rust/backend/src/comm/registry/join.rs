@@ -68,7 +68,7 @@ async fn join_row(
             None,
         )], None));
     }
-    // Manager review round 2 (Codex finding B1): take the SAME per-row
+    // Round 2 (Codex finding B1): take the SAME per-row
     // lifecycle guard `destroy_capsule_workspace` takes (ADR 0043
     // decision 33) — held across the mutate+persist below, exactly the
     // way destroy holds it across its own toml-delete + registry-removal
@@ -114,7 +114,7 @@ async fn join_row(
             None,
         )], None));
     };
-    // Manager review (S7, Codex finding B9): `ok` depends on the save
+    // (S7, Codex finding B9): `ok` depends on the save
     // actually succeeding — a persisted daemon restart with no toml
     // record would otherwise lose the only authoritative handle (the
     // self-file read-back this replaces is a fallback, not a second
@@ -200,7 +200,7 @@ mod agent_join_tests {
     use crate::rows::Workspace;
 
     // `handle_agent_join` persists through `crate::rows::store::save` —
-    // isolate every var `app_config_dir` reads (manager review, S18:
+    // isolate every var `app_config_dir` reads (S18:
     // Windows persistence ignores XDG_CONFIG_HOME entirely and uses
     // LOCALAPPDATA/USERPROFILE instead — guarding only the Unix var let
     // this test module write into a real app-config root on Windows).
@@ -299,7 +299,7 @@ mod agent_join_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // Manager review round 3 (Codex): the round-2 version of this test was
+    // Round 3 (Codex): the round-2 version of this test was
     // ineffective -- it removed the row from the registry (and the toml)
     // BEFORE spawning `handle_agent_join`, so the handler's very first
     // `capsule_guard` lookup returned `None` immediately and the join
@@ -592,7 +592,7 @@ mod agent_join_tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn agent_join_reports_persist_failed_and_never_returns_ok_on_a_save_failure() {
-        // Manager review (S7, Codex finding B9): ok:true must depend on
+        // (S7, Codex finding B9): ok:true must depend on
         // the save actually succeeding. Occupy the "sot" config
         // subdirectory with a plain FILE instead of a directory --
         // `crate::rows::store::save`'s `create_dir_all` necessarily fails
@@ -636,7 +636,7 @@ mod agent_join_tests {
 
     #[tokio::test]
     async fn agent_join_after_the_workspace_is_destroyed_reports_unknown_never_resurrects() {
-        // Manager review (S6, Codex finding B5): the destroy race at the
+        // (S6, Codex finding B5): the destroy race at the
         // handler level -- a join against a workspace_id the registry no
         // longer has must refuse cleanly, never bring the row back.
         let (_g, dir) = env_guarded();

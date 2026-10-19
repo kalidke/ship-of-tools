@@ -500,7 +500,7 @@ closed window would leave the row deaf. It types a fixed notice, never the
 message itself: a pasted message is never marked read, so it would show
 again. One line per new batch of mail; one more if it is
 still unread ten minutes later at a free prompt. A line it typed that did not
-send is sent by a later tick, with Enter alone, once the agent's input box holds just
+send is sent by a later tick, with Enter alone, once main's input box holds just
 that line; within one daemon run it is never typed twice (a restart forgets it). A row whose registry entry
 carries a `stop_at` under a minute old is running its Stop hook and is not typed
 into: the hook stamps it as it starts, its `stop` deletes it when the turn ends,

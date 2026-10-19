@@ -8,7 +8,7 @@ use super::*;
 /// `has_list` (not `connected`) drives `has_children`: a host can be
 /// connected but simply not have answered `workspace.list` yet, and either
 /// way there's nothing to expand into until it has. `host` stays the
-/// routing key (id, payload) — `display` (manager review S9: resolved by
+/// routing key (id, payload) — `display` (S9: resolved by
 /// the caller via `host_label`, the ONE display projection) is what
 /// actually appears in the label text.
 ///
