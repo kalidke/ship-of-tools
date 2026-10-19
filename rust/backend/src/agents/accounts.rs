@@ -1,6 +1,6 @@
 // accounts.rs — per-session accounts, discovered rather than declared.
 //
-// The owner's ruling (superseding the earlier `[account.*]`-in-hosts.toml
+// The rule (superseding the earlier `[account.*]`-in-hosts.toml
 // plan, and later refined again): an account is nothing but a FOLDER the
 // user creates and logs into with the agent's own CLI, outside Ship of
 // Tools entirely. Nothing is declared anywhere — the daemon DISCOVERS
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn account_env_accepts_an_existing_but_never_logged_in_folder() {
-        // Owner clarification: a folder that exists but has never been
+        // Clarification: a folder that exists but has never been
         // logged into is ALLOWED -- claude runs its own login flow (then
         // the folder-trust prompt) the first time it starts against a
         // fresh CLAUDE_CONFIG_DIR. `logged_in` is display-only (the

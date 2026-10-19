@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// 2026-09-04 amendment (owner ruling): the daemon's own default/home
+/// 2026-09-04 amendment: the daemon's own default/home
 /// row is now an INERT ANCHOR when it carries no agent (`agent ==
 /// "none"`) — the workspace it falls back to and the way to browse this
 /// machine's files, never a session. This supersedes the old
