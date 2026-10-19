@@ -18,8 +18,8 @@ impl Workspaces {
         ws.agent() == "none" && self.default_id().as_deref() == Some(ws.workspace_id.as_str())
     }
 
-    /// Reset `workspace_id`'s `agent`/`agent_name` back to the inert-anchor
-    /// shape ("none" / "") — called once a default row's run is CONFIRMED
+    /// Reset `workspace_id`'s `agent`/`agent_name`/`agent_handle` back to the inert-anchor
+    /// shape ("none" / "" / "") — called once a default row's run is CONFIRMED
     /// ended (`handle_workspace_destroy`'s default-capsule-row branch), so
     /// `is_inert_default_anchor` reads true again and the row disappears
     /// from `workspace.list` instead of surviving forever with a stale
@@ -293,6 +293,7 @@ mod tests {
             "hello".into(),
         );
         row.runtime = "capsule".to_string();
+        row.agent_handle = std::sync::Mutex::new("anchor-old-box".to_string());
         let row = reg.insert(row);
         reg.set_default(&row.workspace_id);
         let original_id = row.workspace_id.clone();
@@ -307,6 +308,7 @@ mod tests {
         assert_eq!(reset.workspace_id, original_id, "reset must preserve the id");
         assert_eq!(reset.agent(), "none");
         assert_eq!(reset.agent_name(), "");
+        assert_eq!(reset.agent_handle(), "", "an inert anchor holds no handle against a join from outside any row");
         assert_eq!(reset.runtime, "capsule", "unrelated metadata must survive the reset");
         assert!(
             reg.is_inert_default_anchor(&reset),

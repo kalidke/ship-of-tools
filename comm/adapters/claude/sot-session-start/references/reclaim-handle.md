@@ -14,6 +14,14 @@ problems — read which one you actually have before picking a recipe.
   say what to do about it. See "Unblocking a REFUSED start" below — this is
   a DIFFERENT situation, not a smaller version of the same one.
 
+- **`identity=FAIL` with `REFUSING to join: @<h> is held by a row`** — a
+  session OUTSIDE any row pinned a handle (`SOT_COMM_NAME` or `--name`) that a
+  row holds, and a session outside a row never takes or reads a row's handle.
+  Work inside that row, or pin a different `SOT_COMM_NAME`. A name that only
+  the self file gave is not a pin: the session steps past it to its own handle
+  (`comm: @<h> (named by this session's self file) is held by a row`), so that
+  case is not a FAIL.
+
 This is ADR 0049's design of record: the daemon wakes the row, and there is no
 Monitor or watcher to arm, move or stop.
 

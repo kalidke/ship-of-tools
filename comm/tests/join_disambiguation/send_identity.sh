@@ -100,11 +100,15 @@ case_send_files_and_types_nothing() {
     root_sender="$(realpath "$WORK/send-live/sender31")"
     root_recipient="$(realpath "$WORK/send-live/recipient31")"
 
-    SOT_WORKSPACE_ID="ws-live-31" join_in "$root_recipient"
+    join_in "$root_recipient"
     [ "$JOIN_RC" -eq 0 ] || { echo "  recipient setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
     h_recipient="recipient31-${HOST}"
+    # A row's own identity is keyed by its id and runs beneath its capsule (in_row); this one is a private file, so the
+    # recipient's row binding is written here, the way a row's join leaves it.
+    jq --arg n "$h_recipient" '.agents[$n].workspace_id = "ws-live-31"' "$SOT_COMM_HOME/registry.json" > "$SOT_COMM_HOME/registry.json.new" \
+        && mv "$SOT_COMM_HOME/registry.json.new" "$SOT_COMM_HOME/registry.json"
     [ "$(registry_field "$h_recipient" workspace_id)" = "ws-live-31" ] \
-        || { echo "  join did not record the workspace id: $(registry_field "$h_recipient" workspace_id)"; return 1; }
+        || { echo "  the workspace id was not recorded: $(registry_field "$h_recipient" workspace_id)"; return 1; }
 
     join_in "$root_sender"
     [ "$JOIN_RC" -eq 0 ] || { echo "  sender setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }

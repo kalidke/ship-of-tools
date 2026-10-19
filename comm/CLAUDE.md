@@ -55,7 +55,11 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - Registry host facts and unpinned self-file keys agree with the daemon's declared host; the raw hostname remains a derived-handle component. A successful destroy retires only the admitted target daemon's slot.
 - Not built: ADR 0049's stage B6 (`comm-join.sh` still accepts `--name`). A newer `agent.join` moves a handle off the
   row that held it (B5, `set_agent_handle`), but nothing tells that row's session: its self-file still names the
-  handle, so its scripts still act as it, read its inbox and move its cursor.
+  handle. Its scripts no longer act as it: `comm-context.sh` discards a handle whose registry `workspace_id` is another
+  row's, so it reads, sends and stamps as nobody until it joins again, which its next `comm-session-start.sh` does.
+- A session outside any row never takes or reads a handle a row holds: `sot_outside_join_clearance` asks the
+  daemon (`agent.join` with an empty `workspace_id`) for every such join, and `sot_row_binding` is the one answer for
+  whose a handle is, used by `comm-context.sh` and `comm-poll.sh` (PROTOCOL.md, the row rule).
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides:

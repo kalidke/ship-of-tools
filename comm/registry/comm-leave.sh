@@ -30,6 +30,17 @@ if [ -n "$WHO" ] && [ "$WHO" != "$NAME" ]; then
         1) echo "@$WHO not in registry — nothing to do."; exit 0 ;;
         *) echo "FAILED: the registry could not be read; nothing was removed" >&2; exit 1 ;;
     esac
+    # An entry bound to another row is that row's handle: a session outside any row, or in another row, removes it
+    # only where the daemon says no row holds it (the clearance a join needs), so leave then join takes nothing.
+    IFS=$'\t' read -r _bind _ <<< "$(sot_row_binding "$WHO" "$ROW_ID")"
+    if [ "$_bind" = other ]; then
+        _rc=0; _why="$(sot_outside_join_clearance "$WHO")" || _rc=$?
+        case "$_rc" in
+            0) ;;
+            2) echo "comm-leave.sh: FAILED: $_why" >&2; exit 1 ;;
+            *) echo "comm-leave.sh: REFUSING to remove @$WHO: ${_why/ cannot join as it/ cannot remove it}" >&2; exit 1 ;;
+        esac
+    fi
     with_lock registry_del "$WHO"
     echo "Removed @$WHO from the registry (row only; comm-despawn.sh does full teardown)."
     exit 0

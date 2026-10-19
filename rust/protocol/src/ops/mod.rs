@@ -230,7 +230,9 @@ pub mod op {
     /// `bad_handle`, and `persist_failed` when the joining row's save
     /// failed) ride the standard error payload. The daemon's read-back of
     /// the row's self-file (`capsule_comm_handle`) stays only as the
-    /// fallback for a row that has not declared.
+    /// fallback for a row that has not declared. An empty `workspace_id` is a join
+    /// from outside any row: it changes nothing and answers `AgentJoinRes { ok }`,
+    /// or `held_by_row` while any row the daemon has not seen end holds `handle`.
     pub const AGENT_JOIN: &str = "agent.join";
     /// Client→daemon request: drive the frontend(s) with an imperative UI command
     /// (ADR 0025). Mirrors `AGENT_SEND`'s publish leg — the daemon re-emits the

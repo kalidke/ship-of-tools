@@ -17,7 +17,9 @@ comm/CLAUDE.md.
 - `filed -> @h` is printed only on the appender's word (`sot_inbox_append`, `sot_comm_file` in comm-lib-inbox.sh), and
   only for a live handle: `deliver` refuses a listed handle whose `last_seen` `sot_heartbeat_fresh` does not call fresh.
   A daemon's refusal is final, `not_here` included: no second request or route follows it.
-- Only `comm-poll.sh` moves `read/<h>.cursor`.
+- Only `comm-poll.sh` moves `read/<h>.cursor`. It reads nothing for a process `comm-context.sh` gave no handle (a handle
+  another row holds); it asks `sot_row_binding` itself and reads nothing for another row's handle or an unreadable
+  registry.
 - Readers count newline-terminated lines only.
 - A message body reaches jq on stdin, never as `--arg` and never through a temporary file.
 - Without jq a send's one line is `FAILED -> @h: sot-comm: cannot send: jq is missing (install it)` (comm-send.sh

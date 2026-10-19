@@ -37,7 +37,7 @@ impl Phase {
 
     /// `Terminal` latches for its supervisor, `EndedNoRespawn` for its
     /// voyage — see [`Workspace::apply_phase_observation`].
-    fn is_latched(self) -> bool {
+    pub(crate) fn is_latched(self) -> bool {
         matches!(self, Phase::EndedNoRespawn | Phase::Terminal)
     }
 }
@@ -183,6 +183,8 @@ impl Workspace {
     pub(super) fn reset_agent_in_place(&self) {
         *self.agent.lock().unwrap_or_else(|e| e.into_inner()) = "none".to_string();
         *self.agent_name.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
+        // Nothing runs in an inert anchor, so it holds no handle against a join from outside any row.
+        *self.agent_handle.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
     }
 
     pub fn phase(&self) -> Phase {

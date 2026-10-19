@@ -14,9 +14,9 @@
 #   comm/tests/comm-matrix.sh --boxes <a,b,c> [--expect 0.6.6-rc9.4]
 #                              [--wait SECS] [--self HOST]
 #
-# It runs as `probe2-<self>` and reads that row's inbox FILE directly. It starts
-# no processes, holds no connection and advances no read cursor — a session's
-# own poll still sees everything this saw. The responders are comm-probe.sh,
+# It runs as a session of its own, `probe-matrix-<self>`, joined from outside any
+# row and gone at exit, and reads that handle's inbox FILE directly. It reads no
+# row's inbox and advances no row's read cursor. The responders are comm-probe.sh,
 # already serving in each box's probe rows: `comm-probe.sh up` there exits 0
 # only once both rows have joined again after its start line. A box whose `up`
 # did not has a probe that may not answer, which says nothing about the route.
@@ -62,11 +62,13 @@ matrix_claimed_filed() {
 
 # matrix_refused_for_handle OUT — is this refusal ABOUT THE TARGET HANDLE?
 # A "FAILED -> @x: …" line carries the daemon's own answer about the handle.
-# The no-answer FAILED line, and every other error — an unresolved sender
-# identity — is about this END of the send and settles nothing about the other.
+# The no-answer FAILED line, an unresolved sender identity (bare or as a FAILED
+# line), and every other error are about this END of the send and settle nothing
+# about the other.
 matrix_refused_for_handle() {
     case "$1" in
         *"FAILED -> @"*": the daemon did not answer at "*) return 1 ;;
+        *"FAILED -> @"*": your sot-comm identity did not resolve"*) return 1 ;;
         *"FAILED -> @"*) return 0 ;;
     esac
     return 1
@@ -201,12 +203,14 @@ matrix_preflight() {
     echo
 }
 
-# The runner runs outside the probe row, so it pins a private copy of the row's
-# self file that names no row (PROTOCOL.md's row rule): SELF_FILE, copied to
-# DIR/matrix-self.txt; prints that path, or nothing and returns 1 when the copy fails.
-matrix_private_self() {  # SELF_FILE DIR
-    cp "$1" "$2/matrix-self.txt" 2>/dev/null || return 1
-    printf '%s\n' "$2/matrix-self.txt"
+# matrix_runner_join NAME DIR — the runner is a session of its own, outside any row (PROTOCOL.md's row rule): it
+# joins NAME through a private self file DIR/matrix-self.txt, which names no row, from DIR/root, and the entry binds no
+# row. A probe row's entry binds its row, so the runner cannot adopt that row's identity; it reads and sends as itself.
+# Pins SOT_COMM_SELF_FILE in the caller's shell, so every later call is the runner's; the caller moves into DIR/root.
+matrix_runner_join() {  # NAME DIR
+    mkdir -p "$2/root" || return 1
+    export SOT_COMM_SELF_FILE="$2/matrix-self.txt"
+    ( cd "$2/root" && "$SCRIPTS_DIR/comm-join.sh" --name "$1" )
 }
 
 # Runs only when executed, not sourced (the hermetic test sources this for the
@@ -228,47 +232,24 @@ done
 [ -n "$BOXES" ] || { echo "usage: comm-matrix.sh --boxes a,b,c [--expect VERSION]" >&2; exit 1; }
 ensure_home
 [ -n "$SELF" ] || SELF="$(sot_host)" || exit 1
-ME="probe2-$SELF"
+ME="probe-matrix-$SELF"
 INBOX="$INBOX_DIR/$ME.jsonl"
 
-# Every send goes out AS the probe row, never as whatever session ran this —
-# and BEING that row is not a matter of setting a variable. comm-relay.sh
-# refuses to send with an identity it cannot route (`sot_require_routable_identity`),
-# which means a self file naming the handle AND a cwd matching the root that
-# handle is registered to. So the runner adopts the row's own self file and
-# moves into the row's own root. It has to be this row and no other: a handle
-# with no declared row on this box has nothing to file a remote box's reply,
-# so a private runner handle would make every inbound line fail for a reason
-# that has nothing to do with the path under test. It adopts the row's identity
-# through a private copy (matrix_private_self), since the runner is not inside
-# the row's capsule.
-matrix_self_file() {  # HANDLE -> path of the self file that names it
-    local f
-    for f in "$COMM_HOME/self"/*; do
-        [ -f "$f" ] || continue
-        [ "$(sed -n '1p' "$f" 2>/dev/null)" = "$1" ] || continue
-        printf '%s\n' "$f"; return 0
-    done
-    return 1
-}
-SELF_FILE_PATH="$(matrix_self_file "$ME")" || {
-    echo "FATAL: no joined identity for @$ME on this box — run \`comm-probe.sh up\` here first" >&2
-    exit 2
-}
-MY_ROOT="$(sed -n '3p' "$SELF_FILE_PATH" 2>/dev/null)"; MY_ROOT="${MY_ROOT#root=}"
-[ -n "$MY_ROOT" ] && [ -d "$MY_ROOT" ] || {
-    echo "FATAL: @$ME's self file ($SELF_FILE_PATH) names no usable root" >&2
-    exit 2
-}
+# Every send goes out as the runner's own handle, which starts with `probe` so the responders (comm-probe.sh's
+# probe_handle_ok) reply and hop to it with no change. The runner is no row's session, so comm-relay.sh routes it
+# (`sot_require_routable_identity`) from its own root, and a remote box files its replies to it by the hub's folder
+# listing (`comm_file_verdict`): nothing here needs a row to be declared for it.
 MATRIX_PRIV_DIR="$(mktemp -d)" || { echo "FATAL: mktemp failed" >&2; exit 2; }
-trap 'rm -rf "${MATRIX_PRIV_DIR:?}"' EXIT
-SCRIPTS_DIR="$MATRIX_PRIV_DIR/bin"; bash "$SCRIPT_DIR/stage-bin.sh" "$SCRIPTS_DIR" || exit 2
-SOT_COMM_SELF_FILE="$(matrix_private_self "$SELF_FILE_PATH" "$MATRIX_PRIV_DIR")" || {
-    echo "FATAL: cannot copy @$ME's self file ($SELF_FILE_PATH)" >&2
+SCRIPTS_DIR="$MATRIX_PRIV_DIR/bin"
+# The leave is the runner's own, and only once its private self file is pinned: with no pin it would remove the
+# identity of whatever session ran this.
+trap '[ "${SOT_COMM_SELF_FILE:-}" != "$MATRIX_PRIV_DIR/matrix-self.txt" ] || "$SCRIPTS_DIR/comm-leave.sh" > /dev/null 2>&1; rm -rf "${MATRIX_PRIV_DIR:?}"' EXIT
+bash "$SCRIPT_DIR/stage-bin.sh" "$SCRIPTS_DIR" || exit 2
+matrix_runner_join "$ME" "$MATRIX_PRIV_DIR" > "$MATRIX_PRIV_DIR/join.out" 2>&1 || {
+    echo "FATAL: @$ME could not join: $(tail -n 1 "$MATRIX_PRIV_DIR/join.out")" >&2
     exit 2
 }
-export SOT_COMM_SELF_FILE
-cd "$MY_ROOT" || exit 2
+cd "$MATRIX_PRIV_DIR/root" || exit 2
 
 matrix_preflight "$EXPECT" "$BOXES" "$SELF"
 
@@ -283,6 +264,7 @@ REMOTES=()
 for b in ${BOXES//,/ }; do [ "$b" = "$SELF" ] || REMOTES+=("$b"); done
 
 add_line "$SELF->$SELF"            "probe-$SELF"  ""                 echo       ""
+add_line "$SELF->$SELF (two inbox)" "probe-$SELF" "probe2-$SELF"     echo       ""
 for b in "${REMOTES[@]}"; do
     add_line "$SELF->$b"           "probe-$b"     ""                 echo       "$b->$SELF"
     add_line "$b->$b (two inbox)"  "probe-$b"     "probe2-$b"        echo       ""

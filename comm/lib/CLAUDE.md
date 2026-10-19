@@ -13,14 +13,14 @@ messaging; charter: comm/CLAUDE.md.
 - `comm-lib-registry-lock.sh`: the registry lock: `with_lock` and the lock record's take, judge and fail steps
 - `comm-lib-registry.sh`: the registry file: `ensure_home`, the writers, the reads, a row's status and `sot_heartbeat_fresh` (is a `last_seen` live)
 - `comm-lib-inbox.sh`: the inbox append and its lock, `sot_comm_file`, the read cursor, the line counts and `sot_unread` (the unread count)
-- `comm-lib-identity.sh`: the self file and _sot_self_slot, validated raw-slot migration and the locked self writer, the routable-identity gate, slugs, derived handles (`claim_derived_handle`), the shared host piece of a handle (`_sot_handle_host`), and the session's handoff line (`sot_handoff_line`)
+- `comm-lib-identity.sh`: the self file and _sot_self_slot, validated raw-slot migration and the locked self writer, the routable-identity gate, slugs, derived handles (`claim_derived_handle`), the join clearance for a process outside any row (`sot_outside_join_clearance`, `_sot_outside_cleared`) and the tier names (`_sot_tier`), the shared host piece of a handle (`_sot_handle_host`), and the session's handoff line (`sot_handoff_line`)
 - `comm-lib-agent-layers.sh`: the agent-layer check (`sot_require_agent`): which agents lie between a script and its row
 
 `comm-lib-client.sh` is the agents subsystem's code (agents/CLAUDE.md), housed here because the library calls it
 (`sot_comm_file` reaches the daemon through `sot_oneshot_request`).
 
 ## Start here
-By concept: `sot_inbox_append` for mail, `registry_replace` and `sot_registry_read` for the registry, `with_lock` for its
+By concept: `sot_inbox_append` for mail, `registry_replace` and `sot_registry_read` and `sot_row_binding` for the registry, `with_lock` for its
 lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who may act as a handle,
 `sot_oneshot_request` for a request to the daemon.
 

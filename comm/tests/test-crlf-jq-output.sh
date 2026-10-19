@@ -201,6 +201,29 @@ case_provisional_rollback_survives_a_crlf_jq() {
     return 0
 }
 
+# A join from outside any row asks the daemon about the handle, and the daemon's reply is read with jq. A \r glued to
+# `held_by_row` reads as "no ruling", so the refusal would say "the daemon could not say that row is gone" instead of
+# "held by a row"; the binding's own fields (row id, host) carry the same \r into the message and the host
+# comparison (SF5).
+OUT_HOME="$WORK/outside-home"
+OUT_HANDLE="t-crlf-outside"
+case_outside_join_clearance_survives_a_crlf_jq() {
+    mkdir -p "$OUT_HOME" || return 1
+    "$REAL_JQ" -n --arg n "$OUT_HANDLE" '{agents: {($n): {host:"crlfbox", workspace_id:"row-crlf", root:"/x"}}}' \
+        > "$OUT_HOME/registry.json" || return 1
+    local out rc=0
+    out="$(SOT_COMM_HOME="$OUT_HOME" SOT_COMM_TEST_HOST="crlfbox" PATH="$STUBBIN:$PATH" bash -c '
+        source "$1/comm-lib.sh"
+        HOST=crlfbox
+        sot_daemon_endpoint() { echo unix:/stub; }
+        sot_oneshot_request() { printf "%s\n" "{\"v\":1,\"id\":1,\"kind\":\"res\",\"op\":\"agent.join\",\"payload\":{\"error\":\"held\",\"code\":\"held_by_row\"}}"; }
+        sot_outside_join_clearance "$2"' _ "$SCRIPTS_DIR" "$OUT_HANDLE" 2>&1)" || rc=$?
+    [ "$rc" -eq 1 ] || { echo "  clearance returned $rc, want 1: $out"; return 1; }
+    case "$out" in *"is held by a row (row row-crlf); a session"*) ;; *) echo "  message was '$out'"; return 1 ;; esac
+    case "$out" in *$'\r'*) echo "  the message carries a \\r"; return 1 ;; esac
+    return 0
+}
+
 # --- the wrapper's own defect, which is NOT a CRLF case --------------------
 # sot_jq once captured jq's output in a command substitution, which strips
 # every trailing newline, so a `while read` consumer lost its LAST record --
@@ -259,6 +282,7 @@ case_the_last_registry_row_is_not_dropped() {
 check "the timestamp cursor offset survives a CRLF jq" case_cursor_offset_survives_a_crlf_jq
 check "a provisional row's rollback survives a CRLF jq" case_provisional_rollback_survives_a_crlf_jq
 check "the registry's LAST row is listed and can be sent to" case_the_last_registry_row_is_not_dropped
+check "a join from outside any row reads the daemon's refusal through a CRLF jq" case_outside_join_clearance_survives_a_crlf_jq
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

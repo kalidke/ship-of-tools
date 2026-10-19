@@ -10,6 +10,7 @@ const SITES: &[(&str, &str, &[&str], &str)] = &[
     ("agents/env.rs", "capsule_supervisor_env", &["SOT_COMM_NAME", "SOT_COMM_SELF_FILE"], "pin: gives the session its stored name (`SOT_COMM_NAME`) and its self-file slot (`SOT_COMM_SELF_FILE`)"),
     ("comm/registry/join.rs", "join_row", &["set_agent_handle("], "move: `set_agent_handle`"),
     ("comm/registry/liveness.rs", "held_handles", &["comm_handle_for_workspace("], "rule: the liveness stamp's handles, by `comm_handle_for_workspace` with the daemon's whole row list"),
+    ("comm/registry/liveness.rs", "unended_handles", &["comm_handle_for_workspace("], "rule: the handles an outside join may not take (every row not seen end), by `comm_handle_for_workspace` with the daemon's whole row list"),
     ("comm/registry/registry.rs", "clear_comm_unread", &["comm_handle_for_workspace("], "rule: read-clears-done, by `comm_handle_for_workspace`"),
     ("comm/registry/registry.rs", "comm_handle_for_workspace", &[".agent_name", "agent_handle", "capsule_comm_handle("], "the rule: declared, else self-file, else stored name; a fallback another row declares binds nothing"),
     ("comm/wake/dialog.rs", "run", &["agent_handle"], "declared: reads each Claude capsule row's screen and stamps its dialog by its declared handle"),
@@ -42,7 +43,7 @@ const SITES: &[(&str, &str, &[&str], &str)] = &[
     ("rows/workspace.rs", "agent_name", &[".agent_name"], "the reader of the stored name"),
     ("rows/workspace.rs", "fmt", &[".agent_name", "agent_handle"], "Debug"),
     ("rows/workspace.rs", "meta_only", &["agent_handle"], "the constructor"),
-    ("rows/workspace.rs", "reset_agent_in_place", &[".agent_name"], "the clear of the stored name when a default row's run ends"),
+    ("rows/workspace.rs", "reset_agent_in_place", &[".agent_name", "agent_handle"], "the clear of the stored name and declared handle when a default row's run ends"),
 ];
 
 /// Where the scan looks: `(needle, needs no identifier character before, after)`.

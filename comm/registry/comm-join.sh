@@ -65,7 +65,7 @@ done
 # call (which can heal a self file or create the registry) and any later write.
 _why="$(sot_require_agent)" || { echo "comm-join.sh: REFUSING to bind: $_why" >&2; exit 1; }
 # A context that cannot name this session (an unusable declared host) has already said why: nothing is written.
-_ctx="$("$SCRIPT_DIR/comm-context.sh")" || exit 1
+_ctx="$("$SCRIPT_DIR/comm-context.sh" --rebind)" || exit 1
 eval "$_ctx"
 # The folder is made private, an older one tightened, before this script writes in it (ensure_home).
 ensure_home
@@ -91,10 +91,13 @@ ensure_home
 # already-joined self-file identity (from comm-context.sh's own
 # read-side matrix) survive to here — anything it discarded as
 # stale/unhealable comes back as NAME="" regardless.
+NAME_FROM_SELF=0
 if [ -n "$WANT_NAME" ]; then
     NAME="$WANT_NAME"
 elif [ -n "${SOT_COMM_NAME:-}" ]; then
     NAME="$SOT_COMM_NAME"
+elif [ -n "$NAME" ]; then
+    NAME_FROM_SELF=1
 fi
 [ -z "$EXPERTISE" ] && EXPERTISE="${SOT_COMM_EXPERTISE:-}"
 # Reached only when NAME came from none of the verbatim sources above
@@ -120,6 +123,39 @@ if [ "$REPIN" != 1 ] && sot_self_file_project_conflict "$SELF_FILE" "$REPO" "$PR
     exit 3
 fi
 
+# A session outside any row (no row id: ROW_ID, the id the walk proves) never takes a handle a row holds. The
+# daemon decides, from its own rows, whatever the registry file says (sot_outside_join_clearance): an explicit name
+# is refused here, and a derived join is cleared per tier name before the lock, so it steps past a held tier to the
+# session's own. CLEARED is what was cleared, with the workspace_id each entry bound then; the writes under the lock
+# are held to it, so a row that binds a name in between is refused, never overwritten.
+OUTSIDE=""; CLEARED=""
+if [ -z "$ROW_ID" ]; then
+    OUTSIDE=1
+    if [ "$NEED_DERIVE" != true ]; then
+        _rc=0; _ws="$(sot_outside_join_clearance "$NAME")" || _rc=$?
+        case "$_rc" in
+            0) CLEARED="$NAME"$'\t'"$_ws" ;;
+            2) echo "comm-join.sh: FAILED: $_ws" >&2; exit 1 ;;
+            # A name only the self file gave is not a pin: a session outside any row never keeps a handle a row
+            # holds, and steps past it to its own (the derived join below), so it stops reading that inbox.
+            *) if [ "$NAME_FROM_SELF" = 1 ]; then
+                   echo "comm: @$NAME (named by this session's self file) is held by a row; a session outside any row joins as its own handle" >&2
+                   NAME=""; NEED_DERIVE=true
+               else
+                   echo "comm-join.sh: REFUSING to join: $_ws" >&2; exit 1
+               fi ;;
+        esac
+    fi
+    if [ "$NEED_DERIVE" = true ]; then
+        _tier_host="$(_sot_handle_host "$HANDLE_HOST")" || exit 1
+        for _n in 1 2 3; do
+            _tier="$(_sot_tier "$_n" "$PROJECT_ROOT" "$_tier_host" 2>/dev/null | sed -n 2p)" || _tier=""   # a tier 3 with no digest: derive names it
+            [ -n "$_tier" ] || continue
+            if _ws="$(sot_outside_join_clearance "$_tier")"; then CLEARED="$CLEARED$_tier"$'\t'"$_ws"$'\n'; fi
+        done
+    fi
+fi
+
 ts="$(now_iso)"
 exp_json="$(printf '%s' "$EXPERTISE" \
     | jq -R 'split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$";"")) | map(select(length > 0))')"
@@ -131,7 +167,7 @@ exp_json="$(printf '%s' "$EXPERTISE" \
 # PROJECT_ROOT can start with "/" (the POSIX form git-bash's own `pwd` fallback produces): it reaches jq on
 # stdin (comm-lib-base.sh, free text and jq).
 obj="$(printf '%s' "$PROJECT_ROOT" | jq -Rs \
-    --arg host "$HOST" --arg ws "$WORKSPACE_ID" \
+    --arg host "$HOST" --arg ws "$ROW_ID" \
     --arg repo "$REPO" --argjson exp "$exp_json" --arg ts "$ts" \
     '{host:$host, workspace_id:$ws, repo:$repo, root:., expertise:$exp,
       status:"idle", joined:$ts, last_seen:$ts}')"
@@ -142,7 +178,7 @@ if [ "$NEED_DERIVE" = true ]; then
     # makes a derivation failure (all three tiers taken by other roots;
     # Codex review F6) abort here with sot_derive_handle's own clear
     # stderr reason, rather than continuing with an empty/invalid NAME.
-    claim_derived_handle reclaim "$PROJECT_ROOT" "$HANDLE_HOST" "$obj"
+    claim_derived_handle reclaim "$PROJECT_ROOT" "$HANDLE_HOST" "$obj" ${OUTSIDE:+"$CLEARED"}
     NAME="$CLAIMED_NAME"
 
     # Stranding guard (field regression): escalating AWAY from the bare
@@ -161,8 +197,10 @@ if [ "$NEED_DERIVE" = true ]; then
     # operator/session can no longer strand silently; still proceed with the
     # qualified join (a fresh last_seen does not prove ownership), so this NEVER
     # auto-reclaims.
+    # A tier-1 handle a row holds was stepped past on purpose (the plain line sot_derive_handle printed): not a
+    # stranding.
     if [ -n "$CLAIMED_QUALIFIER" ] && [ -n "$CLAIMED_TIER1" ] && [ "$CLAIMED_TIER1" != "$NAME" ] \
-       && sot_handle_live "$CLAIMED_TIER1"; then
+       && { [ -z "$OUTSIDE" ] || _sot_outside_cleared "$CLAIMED_TIER1" "$CLEARED"; } && sot_handle_live "$CLAIMED_TIER1"; then
         # The printed recipe below uses THIS install's own SCRIPT_DIR —
         # never a hardcoded ~/.sot-comm/bin/, wrong under a non-default
         # $SOT_COMM_HOME (supported) — and %q-quotes every interpolated
@@ -194,7 +232,7 @@ if [ "$NEED_DERIVE" = true ]; then
 WARN
     fi
 else
-    with_lock registry_put "$NAME" "$obj"
+    if [ "$OUTSIDE" = 1 ]; then with_lock _sot_put_outside "$NAME" "$obj" "$CLEARED"; else with_lock registry_put "$NAME" "$obj"; fi
 fi
 # v2 self-file: identity + the repo it was claimed for, plus the canonical
 # project root (ADR 0028 addendum — additive; a self-file without a root=

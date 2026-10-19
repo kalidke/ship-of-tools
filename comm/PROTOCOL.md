@@ -584,6 +584,44 @@ Monitor exists.
   which is how a session outside any row passes, including one under another
   account's sshd. A private identity file for a process outside any row must not
   be named `<host>__<id>.txt`.
+- A handle a row holds is read and taken only from inside that row. The row id a process carries is the one the
+  agent-layer walk proves (`sot_capsule_workspace_id`, `comm-context.sh`'s `ROW_ID`): `$SOT_WORKSPACE_ID` with no private
+  self file, or the id a row-keyed self file `<host>__<id>.txt` names; an id exported over any other private self file
+  names no row. The registry entry's `workspace_id` says which row holds the handle.
+  Reading: `sot_row_binding` is the one answer (`owner`, `other`, `unbound`, `unreadable`, by one jq over the registry's
+  bytes). `comm-context.sh` discards the handle, with `@<h> belongs to row <id>; this process carries <its id or no row
+  id>, so it is not this row's inbox`, when the entry binds another row (or any row, to a process with no row id), and
+  emits `NAME_HELD_BY=<id>`; so a stray session in the row's folder, or a process of another row, reads, sends and
+  stamps as nobody, and the Stop hook has no identity to block on. `comm-poll.sh` asks `sot_row_binding` itself and
+  reads nothing, moving no cursor, for another row's handle or an unreadable registry. An entry with no `workspace_id`
+  is unchanged.
+  Taking: a join by a process with no row id never takes a handle a daemon's row holds. Whatever the registry file
+  says, when a daemon endpoint resolves the script asks it (`agent.join` with an empty `workspace_id`,
+  `sot_outside_join_clearance`): it writes nothing and answers `held_by_row` for any row it has not seen end (a row
+  loaded from disk and not yet probed, Stopped, Unreachable, Foreign and Ending ones too; only a latched Terminal or
+  EndedNoRespawn row, or none, frees a handle), else ok. An explicit `--name` or `$SOT_COMM_NAME` is refused, `comm-join.sh:
+  REFUSING to join: @<h> is held by a row (row <id>); a session outside any row cannot join as it`. A name only
+  the self file gave is not a pin: the join steps past a held one to the session's own derived handle (`comm: @<h>
+  (named by this session's self file) is held by a row; ...`), and the self file then names that handle, so the
+  session reads the held inbox no more. A derived join asks about its three tier names before the registry lock and steps past a held tier to the session's own, with one
+  line, `comm: @<tier 1> is held by a row; a session outside any row joins as @<tier 2>`, no stranding warning and
+  no MISMATCH. The writes under the lock are held to what was cleared (`_sot_outside_cleared`): a row that binds the
+  handle between the answer and the write is refused, never overwritten. An entry bound to a row on another computer of
+  the shared home (its `host` is not this one) is held, since no local daemon can rule on it. Where the daemon gives no
+  ruling (none answering, an older one, a failed call) the registry's binding refuses: a bound entry is held, and an
+  unreadable registry refuses. `comm-leave.sh --name H` of an entry bound to another row asks the same clearance and is
+  refused where a join would be (`REFUSING to remove @H`, or FAILED for an unreadable registry): a destroyed row's
+  orphan, which the daemon does not hold, stays removable, and with no daemon answering a bound entry stays. Named
+  limit: with no daemon answering and the entry unbound or absent, a session outside any row takes the handle.
+  A join carrying a row id is unchanged: `comm-join.sh` alone passes `comm-context.sh --rebind`, honored only with a row id, so a respawned row, or a row a newer row's join displaced (M5, `agent.join`
+  moves the handle), takes it back; the displaced row's `comm-session-start.sh` says `@<h> moved to row <id>` and
+  rejoins. Two rows in one folder that derive one handle keep taking it from each other (0.6.7). A child of a row (a
+  subagent, `claude -p`, `codex exec`) is judged as before, by the agent-layer walk above. A forged id: with no private
+  self file the walk must reach that row's capsule, so a stray that exports a row's id is refused; with a private
+  self file that names no row, the exported id is no row id. Not closed: a process that writes the registry or the
+  daemon's socket by hand (one account). `comm-matrix.sh`'s runner is a session of its own, `probe-matrix-<host>`: it
+  joins from outside any row through a private self file that names no row, reads only its own inbox, sends as itself
+  and leaves at exit, so it needs no row's identity.
 - What the check does not see: for a process that names no row, an agent above
   a reparenting, or on Windows above an ancestor that has exited with no MSYS
   parent to go on from (a process of another MSYS or Cygwin installation is not
@@ -645,7 +683,7 @@ and then sleeps, and only otherwise is the file deleted.
 | send        | `comm-send.sh`   | `@name 'msg'` or `--broadcast 'msg'`; recipient is only the first positional `@arg`, so the message may itself begin with `@`. **Either verb routes**: a directed target this box's registry names is filed by route 1 of Delivery (`comm-relay.sh send` execs here), and one it cannot name goes to the hub as `comm.file` (this execs `comm-relay.sh send`). The triggers are mutually exclusive, so a session never has to know which verb reaches a peer |
 | poll        | `comm-poll.sh`   | shows the inbox lines past the read cursor, then advances it; a busy inbox exits 75 (try again) |
 | list        | `comm-list.sh`   | all agents + live/stale + (me) marker |
-| leave       | `comm-leave.sh`  | removes self from registry; `--name <handle>` removes an orphan row (registry only — `comm-despawn.sh` is full teardown) |
+| leave       | `comm-leave.sh`  | removes self from registry; `--name <handle>` removes an orphan row (registry only — `comm-despawn.sh` is full teardown), refused for a row's handle the daemon holds |
 
 ## Naming — everything derives from the repo
 

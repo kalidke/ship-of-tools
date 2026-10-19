@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # comm-context.sh — detect this session's comm identity. Output is eval-able:
 #   eval "$(.../comm-context.sh)"
-# Sets HOST WORKSPACE_ID REPO PROJECT_ROOT NAME SELF_FILE COMM_HOME REGISTRY INBOX_DIR READ_DIR.
+# Sets HOST WORKSPACE_ID ROW_ID REPO PROJECT_ROOT NAME NAME_HELD_BY SELF_FILE COMM_HOME REGISTRY INBOX_DIR READ_DIR.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
@@ -181,6 +181,25 @@ if [ -f "$SELF_FILE" ]; then
     fi
 fi
 
+# A handle a row holds is the identity of a process carrying that row's id, and of nothing else: a stray session in the
+# folder, or a process of another row, has no handle, so it reads, stamps and sends as nobody. The row id compared is the
+# one the agent-layer walk proves (sot_capsule_workspace_id, ROW_ID below), never the ambient $SOT_WORKSPACE_ID: an id
+# exported over a private self-file names no row. The entry's workspace_id says which row holds the handle; one with
+# none (a session outside any row) binds nobody, and an unreadable registry keeps NAME (comm-poll.sh, the one reader of
+# bodies, decides for itself). NAME_HELD_BY says whose it was when it is discarded here. comm-join.sh alone passes
+# --rebind, and only a process carrying a row id is let through by it: that join is how a respawned or displaced row
+# takes its handle (M5).
+ROW_ID="$(sot_capsule_workspace_id 2>/dev/null)" || ROW_ID=""
+NAME_HELD_BY=""
+if [ -n "$NAME" ] && ! { [ "${1:-}" = --rebind ] && [ -n "$ROW_ID" ]; }; then
+    IFS=$'\t' read -r _bind _bind_ws _ <<< "$(sot_row_binding "$NAME" "$ROW_ID")"
+    if [ "$_bind" = other ]; then
+        echo "comm-context: @$NAME belongs to row $_bind_ws; this process carries ${ROW_ID:-no row id}, so it is not this row's inbox" >&2
+        NAME_HELD_BY="$_bind_ws"
+        NAME=""
+    fi
+fi
+
 # %q on an EMPTY value emits a literal '' — fine for the eval contract (both
 # eval to empty), but a textual scraper (`sed -n 's/^NAME=//p'`, as session-start
 # skills have used) captures the two quote chars as a NON-empty value, defeating
@@ -190,9 +209,11 @@ emit() { if [ -n "$2" ]; then printf '%s=%q\n' "$1" "$2"; else printf '%s=\n' "$
 emit HOST        "$HOST"
 emit HANDLE_HOST "$HANDLE_HOST"
 emit WORKSPACE_ID "$WORKSPACE_ID"
+emit ROW_ID      "$ROW_ID"
 emit REPO        "$REPO"
 emit PROJECT_ROOT "$PROJECT_ROOT"
 emit NAME        "$NAME"
+emit NAME_HELD_BY "$NAME_HELD_BY"
 emit SELF_FILE   "$SELF_FILE"
 emit COMM_HOME   "$COMM_HOME"
 emit REGISTRY    "$REGISTRY"

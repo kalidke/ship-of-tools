@@ -95,7 +95,7 @@ v="$(matrix_line_verdict nodelivery 1 "$NO_SUCH" probe-nosuchrow-box "$INBOX" "$
 check "a handle no row hosts, refused, is a PASS" "PASS" "$(state_of "$v")"
 
 inbox_reset
-v="$(matrix_line_verdict nodelivery 0 "  filed -> @probe-nosuchrow-kitt" probe-nosuchrow-kitt "$INBOX" "$ME" "$NONCE")"
+v="$(matrix_line_verdict nodelivery 0 "  filed -> @probe-nosuchrow-alpha" probe-nosuchrow-alpha "$INBOX" "$ME" "$NONCE")"
 check "a handle no row hosts, claimed filed, is a FAIL" "FAIL" "$(state_of "$v")"
 
 # A send that never reached the question. The literal line is comm-lib.sh's own
@@ -103,8 +103,15 @@ check "a handle no row hosts, claimed filed, is a FAIL" "FAIL" "$(state_of "$v")
 # printed: the negative line went green while the runner could not send at all.
 IDENT_ERR="ERROR: your sot-comm identity did not resolve — refusing to send with no verifiable from-handle (a reply would silently misroute)."
 inbox_reset
-v="$(matrix_line_verdict nodelivery 1 "$IDENT_ERR" probe-nosuchrow-kitt "$INBOX" "$ME" "$NONCE")"
+v="$(matrix_line_verdict nodelivery 1 "$IDENT_ERR" probe-nosuchrow-alpha "$INBOX" "$ME" "$NONCE")"
 check "a send that failed before the handle was in question is a SKIP, not a PASS" "SKIP" "$(state_of "$v")"
+
+# The same refusal in the FAILED form comm-relay.sh gives it (`FAILED -> @<target>: <why>`): the target is named, but
+# the sentence is about the sender, so a runner that cannot send still must not pass the negative line.
+IDENT_FAILED="FAILED -> @probe-nosuchrow-alpha: your sot-comm identity did not resolve — refusing to send with no verifiable from-handle (a reply would silently misroute)."
+inbox_reset
+v="$(matrix_line_verdict nodelivery 1 "$IDENT_FAILED" probe-nosuchrow-alpha "$INBOX" "$ME" "$NONCE")"
+check "a FAILED line about the sender's own identity is a SKIP, not a PASS" "SKIP" "$(state_of "$v")"
 
 # The retired third result names no refusal about the handle: a SKIP, not a PASS.
 inbox_reset

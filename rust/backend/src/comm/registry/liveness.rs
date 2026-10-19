@@ -14,14 +14,29 @@ const STAMP_EVERY: Duration = Duration::from_secs(60);
 /// How often the task looks at the rows.
 const TICK: Duration = Duration::from_secs(2);
 
-/// The non-empty handles of Starting or Ready rows: the sessions a daemon is running now. A row's
-/// handle is resolved (a registry read) only once its phase says it runs.
-pub(crate) fn held<F: FnOnce() -> String>(rows: impl IntoIterator<Item = (Phase, F)>) -> BTreeSet<String> {
+/// The non-empty handles of the rows whose phase `keep` accepts. A row's handle is resolved (a registry read) only
+/// once its phase is kept.
+fn handles_where<F: FnOnce() -> String>(
+    rows: impl IntoIterator<Item = (Phase, F)>,
+    keep: fn(Phase) -> bool,
+) -> BTreeSet<String> {
     rows.into_iter()
-        .filter(|(phase, _)| matches!(phase, Phase::Starting | Phase::Ready))
+        .filter(|(phase, _)| keep(*phase))
         .map(|(_, resolve)| resolve())
         .filter(|handle| !handle.is_empty())
         .collect()
+}
+
+/// The non-empty handles of Starting or Ready rows: the sessions a daemon is running now.
+pub(crate) fn held<F: FnOnce() -> String>(rows: impl IntoIterator<Item = (Phase, F)>) -> BTreeSet<String> {
+    handles_where(rows, |phase| matches!(phase, Phase::Starting | Phase::Ready))
+}
+
+/// The non-empty handles of every row this daemon has not seen end: all but the latched Terminal and
+/// EndedNoRespawn. A row loaded from disk is Stopped until its first probe, and Unreachable, Foreign and Ending
+/// rows may still run a session, so none of them frees its handle.
+pub(crate) fn unended<F: FnOnce() -> String>(rows: impl IntoIterator<Item = (Phase, F)>) -> BTreeSet<String> {
+    handles_where(rows, |phase| !phase.is_latched())
 }
 
 /// The handles this daemon's running rows hold: each Starting or Ready row's handle by
@@ -29,6 +44,12 @@ pub(crate) fn held<F: FnOnce() -> String>(rows: impl IntoIterator<Item = (Phase,
 /// it reaches by a self-file or stored name that another row declares (ADR 0049, one row per handle).
 pub(crate) fn held_handles(rows: &[Arc<Workspace>]) -> BTreeSet<String> {
     held(rows.iter().map(|ws| (ws.phase(), move || comm_handle_for_workspace(ws, rows))))
+}
+
+/// The handles of every row not seen end, by the same rule as `held_handles`: what a session outside any row
+/// may not take.
+pub(crate) fn unended_handles(rows: &[Arc<Workspace>]) -> BTreeSet<String> {
+    unended(rows.iter().map(|ws| (ws.phase(), move || comm_handle_for_workspace(ws, rows))))
 }
 
 /// A pass is due when the held set changed or `STAMP_EVERY` has passed since the last one.
@@ -86,6 +107,23 @@ mod tests {
             (Phase::Ready, String::new),
         ];
         assert_eq!(held(rows), ["a".to_string(), "b".to_string()].into_iter().collect());
+    }
+
+    #[test]
+    fn unended_is_the_handles_of_every_row_not_latched_ended() {
+        let rows: [(Phase, fn() -> String); 9] = [
+            (Phase::Stopped, || "stopped".to_string()),
+            (Phase::Starting, || "starting".to_string()),
+            (Phase::Ready, || "ready".to_string()),
+            (Phase::Ending, || "ending".to_string()),
+            (Phase::Unreachable, || "unreachable".to_string()),
+            (Phase::Foreign, || "foreign".to_string()),
+            (Phase::Terminal, || "terminal".to_string()),
+            (Phase::EndedNoRespawn, || "ended".to_string()),
+            (Phase::Stopped, String::new),
+        ];
+        let want = ["stopped", "starting", "ready", "ending", "unreachable", "foreign"].map(String::from);
+        assert_eq!(unended(rows), want.into_iter().collect());
     }
 
     #[test]

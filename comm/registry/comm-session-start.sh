@@ -85,6 +85,13 @@ if [ -n "${SOT_COMM_SELF_FILE:-}" ] && [ ! -f "${SOT_COMM_SELF_FILE}" ]; then
     COLD_PRODUCER=1
 fi
 
+# Moved: comm-context.sh discarded the self-file's handle because the registry binds it to another row (NAME_HELD_BY),
+# a newer row's join having taken it (M5). That is no ownership conflict. A process carrying a row id joins again, and
+# the newer declaration moves the handle back to this row; one outside any row steps past it to its own (comm-join.sh).
+if [ -n "${NAME_HELD_BY:-}" ] && [ -n "${ROW_ID:-}" ]; then
+    echo "comm-session-start: @$(sed -n 1p "$SELF_FILE" 2>/dev/null) moved to row $NAME_HELD_BY; this row ($ROW_ID) joins it again"
+fi
+
 # Ownership conflict: something is recorded at THIS identity slot for a
 # DIFFERENT, still-apparently-valid project (comm-context.sh discarded it —
 # NAME came back empty despite the self-file existing), and no pin resolves
@@ -92,7 +99,7 @@ fi
 # silently steal that slot. Refuse outright rather than guess (Codex review
 # findings 1+2; this is exactly how an unpinned subagent clobbered a live
 # coordinator session's identity during this PR's own testing).
-if [ "$COLD_PRODUCER" = 0 ] && [ -z "$PIN_NAME" ] && [ -z "${NAME:-}" ] \
+if [ "$COLD_PRODUCER" = 0 ] && [ -z "$PIN_NAME" ] && [ -z "${NAME:-}" ] && [ -z "${NAME_HELD_BY:-}" ] \
    && [ -n "${SELF_FILE:-}" ] && [ -f "$SELF_FILE" ]; then
     echo "BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a"
     # echo joins its arguments with single spaces, so the message prints as one line.
