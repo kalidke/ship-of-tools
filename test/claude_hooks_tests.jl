@@ -44,7 +44,7 @@ end
         @test ShipTools._claude_settings_targets(home, joinpath(home, ".claude")) ==
               [realpath(default), realpath(a)]
         # An install run from inside an account folder with no settings.json
-        # never creates one there (ruling 1); the default takes the hooks.
+        # never creates one there; the default takes the hooks.
         own = joinpath(auth, "c")
         @test ShipTools._claude_settings_targets(home, own) ==
               [realpath(default), realpath(a)]
