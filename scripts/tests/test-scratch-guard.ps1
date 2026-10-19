@@ -12,9 +12,10 @@ function Check([string]$name, [bool]$ok, [string]$detail) {
     else { $script:fail++; Write-Host "  FAIL  $name -- $detail" -ForegroundColor Red }
 }
 $guard = Join-Path $PSScriptRoot 'scratch-guard.ps1'
+# Set in this scope and left set: it loads the functions only here, and the in-process case below proves a suite run from
+# this scope is still guarded.
 $sotScratchLibOnly = $true
 . $guard
-$sotScratchLibOnly = $false
 
 $F = Join-Path $env:TEMP ('sot-scratch-guard-test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $F | Out-Null
@@ -98,6 +99,10 @@ Add-Content -LiteralPath $OutFile -Value "RAN"
 foreach ($n in @('USERNAME', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'SOT_COMM_HOME', 'SOT_PROBE_VAR', 'SOT_SMOKE_X')) {
     Add-Content -LiteralPath $OutFile -Value ("$n=" + [Environment]::GetEnvironmentVariable($n))
 }
+Add-Content -LiteralPath $OutFile -Value ("RealProfile=" + (Get-SotRealProfile).Profile)
+Add-Content -LiteralPath $OutFile -Value ("FolderPathLocal=" + [Environment]::GetFolderPath('LocalApplicationData'))
+Add-Content -LiteralPath $OutFile -Value ("Cwd=" + (Get-Location -PSProvider FileSystem).ProviderPath)
+Add-Content -LiteralPath $OutFile -Value ("RelExists=" + (Test-Path -LiteralPath $Name))
 Add-Content -LiteralPath $OutFile -Value "Name=$Name"
 Add-Content -LiteralPath $OutFile -Value "Flag=$($Flag.IsPresent)"
 Set-Content -LiteralPath (Join-Path $env:TEMP 'made-by-probe.txt') -Value 'x'
@@ -111,13 +116,13 @@ exit 7
         if (Test-Path -LiteralPath $File) { foreach ($l in @(Get-Content -LiteralPath $File)) { $i = $l.IndexOf('='); if ($i -gt 0) { $h[$l.Substring(0, $i)] = $l.Substring($i + 1) } else { $h[$l] = $true } } }
         return $h
     }
-    function Start-Probe([string]$Tag, [string]$ExtraArgs) {
+    function Start-Probe([string]$Tag, [string]$ExtraArgs, [string]$Script = $probe) {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = (Get-Process -Id $PID).Path
         $psi.UseShellExecute = $false
         $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
         $out = Join-Path $F "out-$Tag.txt"
-        $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$probe`" -OutFile `"$out`" $ExtraArgs"
+        $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -OutFile `"$out`" $ExtraArgs"
         return @{ Proc = [System.Diagnostics.Process]::Start($psi); Out = $out }
     }
     $env:SOT_PROBE_VAR = 'from-the-caller'
@@ -130,9 +135,13 @@ exit 7
 
     $a = Start-Probe 'one' '-Name "a b" -Flag'
     $a.Proc.WaitForExit()
+    $errA = $a.Proc.StandardError.ReadToEnd()
     $o = Read-Probe $a.Out
     $homeRoot = $(if ($o.TEMP) { Split-Path -Parent $o.TEMP } else { '' })
-    Check 'the suite ran, and its exit code is the child''s' ($a.Proc.ExitCode -eq 7 -and $o.RAN) "exit $($a.Proc.ExitCode); $($a.Proc.StandardError.ReadToEnd())"
+    Check 'the suite ran, and its exit code is the child''s' ($a.Proc.ExitCode -eq 7 -and $o.RAN) "exit $($a.Proc.ExitCode); $errA"
+    Check 'the guard printed one line when it made the home and one when it removed it' (($errA -match "scratch-guard: probe\.ps1 runs in \S+") -and ($errA -match "scratch-guard: removed \S+")) $errA
+    Check 'the child''s anchor for the real profile is the account''s own, not the moved USERPROFILE' ($o.RealProfile -ieq $realNow.Profile -and $o.USERPROFILE -ine $o.RealProfile) "anchor $($o.RealProfile); parent's $($realNow.Profile); USERPROFILE $($o.USERPROFILE)"
+    Write-Host "    note: GetFolderPath('LocalApplicationData') in the child said $($o.FolderPathLocal) (USERPROFILE $($o.USERPROFILE))"
     Check 'its arguments reached the child' ($o.Name -eq 'a b' -and $o.Flag -eq 'True') "Name=$($o.Name) Flag=$($o.Flag)"
     Check 'its USERNAME is scratch and not the real name' ($o.USERNAME -like 'sot-scratch-*' -and $o.USERNAME -ine $realNow.UserName) $o.USERNAME
     $c = Get-SotCanonicalPath $homeRoot
@@ -162,6 +171,62 @@ exit 7
     Check 'and left the other''s home, and what that run made in it' ($longHome -and (Test-Path -LiteralPath (Join-Path $longHome 'tmp\made-by-probe.txt')) -and -not $long.Proc.HasExited) "long home $longHome"
     $long.Proc.WaitForExit()
     Check 'the other removed its own at its end' ($longHome -and $long.Proc.ExitCode -eq 7 -and -not (Test-Path -LiteralPath $longHome)) "exit $($long.Proc.ExitCode); still there: $longHome"
+
+    # A suite run in-process from a scope where $sotScratchLibOnly is $true is still guarded, and the child starts in the
+    # caller's location (Set-Location does not move the process's own folder), so a relative argument resolves there.
+    $wd = Join-Path $F 'wd'
+    New-Item -ItemType Directory -Force -Path $wd | Out-Null
+    Set-Content -LiteralPath (Join-Path $wd 'rel.txt') -Value 'x'
+    $inProc = Join-Path $F 'out-inproc.txt'
+    Push-Location -LiteralPath $wd
+    try { & $probe -OutFile $inProc -Name 'rel.txt' } finally { Pop-Location }
+    $rc = $LASTEXITCODE
+    $io = Read-Probe $inProc
+    Check 'an in-process run from a scope with the library switch set is still guarded, in its own home' ($rc -eq 7 -and $io.RAN -and $io.USERNAME -like 'sot-scratch-*' -and $sotScratchLibOnly -eq $true) "exit $rc; USERNAME $($io.USERNAME)"
+    Check 'the child started in the caller''s location, so a relative argument resolved there' ($io.RelExists -eq 'True' -and $io.Cwd -ieq (Get-SotCanonicalPath $wd)) "Cwd $($io.Cwd); RelExists $($io.RelExists)"
+    Check 'and that run changed nothing in this environment' ([Environment]::GetEnvironmentVariable('USERNAME') -eq $before.USERNAME) 'USERNAME changed'
+
+    # The daemon suite's helpers: two concurrent runs each end only the daemons they saw on their own pipes. The stand-in
+    # daemon is a copy of powershell.exe named sotd.exe whose command line carries `--socket <this run's pipe>`.
+    $dprobe = Join-Path $F 'probe-daemons.ps1'
+    $dtext = @'
+param([string]$OutFile, [int]$SleepSec = 0)
+$ErrorActionPreference = 'Stop'
+$sotSuite = $PSCommandPath; $sotSuiteArgs = $PSBoundParameters
+. 'GUARDPATH'
+if ($null -ne $sotScratchExit) { exit $sotScratchExit }
+. 'SUPPORTPATH'
+$bin = Join-Path $root 'bin'
+New-Item -ItemType Directory -Force -Path $bin | Out-Null
+$exe = Join-Path $bin 'sotd.exe'
+Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -Destination $exe
+$pipe = Get-PipePath (New-TestPipeName)
+$p = Start-Process -FilePath $exe -ArgumentList @('-NoProfile', '-Command', ('"Start-Sleep -Seconds 120 # --socket ' + $pipe + '"')) -WindowStyle Hidden -PassThru
+$deadline = (Get-Date).AddSeconds(30)
+while ((Get-Date) -lt $deadline -and @(Get-DaemonProcs $pipe).Count -ne 1) { Start-Sleep -Milliseconds 300 }
+Add-Content -LiteralPath $OutFile -Value "DaemonPid=$($p.Id)"
+if ($SleepSec -gt 0) { Start-Sleep -Seconds $SleepSec }
+Complete-LocalDaemonTest
+Start-Sleep -Milliseconds 1500
+Add-Content -LiteralPath $OutFile -Value ("Alive=" + [bool](Get-Process -Id $p.Id -ErrorAction SilentlyContinue))
+exit 7
+'@
+    [System.IO.File]::WriteAllText($dprobe, $dtext.Replace('GUARDPATH', $guard.Replace("'", "''")).Replace('SUPPORTPATH', (Join-Path $PSScriptRoot 'test-local-daemon-support.ps1').Replace("'", "''")))
+    $da = Start-Probe 'da' '-SleepSec 12' $dprobe
+    $deadline = (Get-Date).AddSeconds(90)
+    $dao = @{}
+    while ((Get-Date) -lt $deadline -and -not $dao.DaemonPid) { Start-Sleep -Milliseconds 300; $dao = Read-Probe $da.Out }
+    $db = Start-Probe 'db' '' $dprobe
+    $db.Proc.WaitForExit()
+    $dbo = Read-Probe $db.Out
+    $aliveA = $false
+    if ($dao.DaemonPid) { $aliveA = [bool](Get-Process -Id ([int]$dao.DaemonPid) -ErrorAction SilentlyContinue) }
+    Check 'the run that ended ended its own daemon' ($dbo.DaemonPid -and $dbo.Alive -eq 'False') "B: $($dbo.DaemonPid) alive $($dbo.Alive)"
+    Check 'and none of the concurrent run''s' ($dao.DaemonPid -and $aliveA -and -not $da.Proc.HasExited) "A: $($dao.DaemonPid) alive $aliveA"
+    $da.Proc.WaitForExit()
+    $dao = Read-Probe $da.Out
+    Check 'the other ended its own at its end' ($dao.Alive -eq 'False') "A alive $($dao.Alive)"
+    foreach ($d in @($dao.DaemonPid, $dbo.DaemonPid)) { if ($d) { Stop-Process -Id ([int]$d) -Force -ErrorAction SilentlyContinue } }
 
     # A child under a profile that is not a scratch one: the caller sets the child marker by hand at the real profile.
     $env:SOT_SCRATCH_CHILD = $F

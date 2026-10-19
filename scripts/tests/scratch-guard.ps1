@@ -11,14 +11,18 @@
 # environment is never changed. In the child (SOT_SCRATCH_CHILD names the home) this file checks the profile and sets
 # $sotScratchExit to 2 with one stderr line unless it is a scratch profile; a child never starts another child.
 # The check compares the environment with what an environment variable cannot move: the account's real name
-# ([Environment]::UserName) and its real folders ([Environment]::GetFolderPath):
+# ([Environment]::UserName, from the OS) and its real profile folder from the process token (GetUserProfileDirectoryW;
+# not [Environment]::GetFolderPath, which follows the USERPROFILE a process was started with, so in the child it names
+# the scratch home). The real temp folder is <profile>\AppData\Local\Temp:
 #   - USERNAME begins `sot-scratch`, is not the real name, and names the home's folder; the daemon's pipe,
 #     `\\.\pipe\sot-<USERNAME>-local`, then begins `sot-sot-scratch`;
-#   - the home is a folder directly under the real temp folder (<real LocalAppData>\Temp) and holds the marker;
+#   - the home is a folder directly under the real temp folder and holds the marker;
 #   - USERPROFILE, HOME, APPDATA, LOCALAPPDATA, TEMP and TMP (and SOT_COMM_HOME when set) each lie strictly inside the
 #     home, so none is, holds or lies inside a real folder.
 # A suite that cannot find this file ends too: the line before it sets $ErrorActionPreference to Stop.
-# `$sotScratchLibOnly = $true` before dot-sourcing loads the functions only (test-scratch-guard.ps1 does).
+# `$sotScratchLibOnly = $true` set in the dot-sourcing scope itself (not inherited from a caller) loads the functions only
+# (test-scratch-guard.ps1 does); a suite's own scope never has it, so a caller's variable cannot turn the guard off.
+# Each run prints one line when the home is made and one when it is removed.
 # Windows PowerShell 5.1, ASCII only.
 
 if (-not ('SotScratchLongPath' -as [type])) {
@@ -29,6 +33,14 @@ using System.Text;
 public static class SotScratchLongPath {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern uint GetLongPathNameW(string shortPath, StringBuilder longPath, uint size);
+    [DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool GetUserProfileDirectoryW(IntPtr token, StringBuilder path, ref uint size);
+    // The profile folder of the account the process token belongs to; the environment does not move it.
+    public static string ProfileOf(IntPtr token) {
+        StringBuilder sb = new StringBuilder(1024);
+        uint size = (uint)sb.Capacity;
+        return GetUserProfileDirectoryW(token, sb, ref size) ? sb.ToString() : null;
+    }
     public static string Expand(string path) {
         StringBuilder sb = new StringBuilder(1024);
         uint n = GetLongPathNameW(path, sb, (uint)sb.Capacity);
@@ -65,7 +77,7 @@ function Test-SotInside([string]$Inner, [string]$Outer) {
 
 # The reason this environment is not a scratch profile, or $null when it is. The caller passes the values: $Vars is the
 # process environment's USERNAME, USERPROFILE, HOME, APPDATA, LOCALAPPDATA, TEMP, TMP and SOT_COMM_HOME; $Real is what no
-# variable moves: UserName, Profile, Roaming, Local, and Temp (the account's own temp folder).
+# variable moves: UserName and Temp (the account's own temp folder, under the profile of its token).
 function Get-SotScratchRefusal([hashtable]$Vars, [hashtable]$Real) {
     $problems = @()
     $name = [string]$Vars.USERNAME
@@ -84,10 +96,6 @@ function Get-SotScratchRefusal([hashtable]$Vars, [hashtable]$Real) {
         }
         $c = Get-SotCanonicalPath $raw
         if (-not $c) { $problems += "$v '$raw' is not an absolute path"; continue }
-        foreach ($r in @('Profile', 'Roaming', 'Local', 'Temp')) {
-            $rf = Get-SotCanonicalPath $Real[$r]
-            if ($rf -and (($c -ieq $rf) -or (Test-SotInside $rf $c))) { $problems += "$v '$raw' is, or holds, the account's real $r folder '$rf'" }
-        }
         $roots += , @($v, $raw, $c)
     }
     # The scratch root: the parent of USERPROFILE, which must sit directly under the real temp folder and hold the marker.
@@ -112,12 +120,12 @@ function Get-SotScratchRefusal([hashtable]$Vars, [hashtable]$Real) {
 }
 
 function Get-SotRealProfile {
+    $prof = [SotScratchLongPath]::ProfileOf([Security.Principal.WindowsIdentity]::GetCurrent().Token)
+    if (-not $prof) { throw 'scratch-guard: could not read the account''s profile folder from its token' }
     return @{
         UserName = [Environment]::UserName
-        Profile  = [Environment]::GetFolderPath('UserProfile')
-        Roaming  = [Environment]::GetFolderPath('ApplicationData')
-        Local    = [Environment]::GetFolderPath('LocalApplicationData')
-        Temp     = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp')
+        Profile  = $prof
+        Temp     = (Join-Path $prof 'AppData\Local\Temp')
     }
 }
 
@@ -147,6 +155,7 @@ function Remove-SotScratchHome([string]$Root, [hashtable]$Real) {
     Remove-Item -LiteralPath $c -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $c) { cmd /c rmdir /s /q "`"$c`"" 2>&1 | Out-Null }
     if (Test-Path -LiteralPath $c) { [Console]::Error.WriteLine("scratch-guard: could not remove '$c'") }
+    else { [Console]::Error.WriteLine("scratch-guard: removed $c") }
 }
 
 function Format-SotArg([string]$Value) {
@@ -162,6 +171,7 @@ function Invoke-SotScratchChild([string]$Suite, $Bound, [hashtable]$Real) {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = (Get-Process -Id $PID).Path
         $psi.UseShellExecute = $false
+        $psi.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath   # Set-Location does not move the process's own folder
         $argv = '-NoProfile -ExecutionPolicy Bypass -File ' + (Format-SotArg $Suite)
         foreach ($k in $Bound.Keys) {
             $v = $Bound[$k]
@@ -181,6 +191,7 @@ function Invoke-SotScratchChild([string]$Suite, $Bound, [hashtable]$Real) {
         $ev['TEMP'] = Join-Path $root 'tmp'; $ev['TMP'] = $ev['TEMP']
         $ev['SOT_COMM_HOME'] = Join-Path $hm 'comm'
         $ev['SOT_SCRATCH_CHILD'] = $root
+        [Console]::Error.WriteLine("scratch-guard: $([System.IO.Path]::GetFileName($Suite)) runs in $root")
         $p = [System.Diagnostics.Process]::Start($psi)
         $null = $p.Handle   # Windows PowerShell 5.1 reads ExitCode as empty unless the handle was taken while the process ran
         $p.WaitForExit()
@@ -191,7 +202,7 @@ function Invoke-SotScratchChild([string]$Suite, $Bound, [hashtable]$Real) {
 }
 
 $sotScratchExit = $null
-if (-not $sotScratchLibOnly) {
+if (-not (Get-Variable -Name sotScratchLibOnly -Scope 0 -ValueOnly -ErrorAction Ignore)) {
     $sotReal = Get-SotRealProfile
     $sotChild = [Environment]::GetEnvironmentVariable('SOT_SCRATCH_CHILD')
     if (-not $sotChild) {

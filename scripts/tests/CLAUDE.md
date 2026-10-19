@@ -132,10 +132,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   APPDATA, LOCALAPPDATA, TEMP, TMP and SOT_COMM_HOME inside it, other SOT_ variables cleared, same arguments), removes
   exactly that home by its path and hands back the child's exit code. In the child it refuses (exit 2, one line) unless
   every one of those lies inside the home, the home sits directly under the real temp folder, and USERNAME differs from
-  `[Environment]::UserName`; it compares with `GetFolderPath`, which no variable moves. No switch turns it off. Out of
+  `[Environment]::UserName`; the real temp folder comes from the process token's profile (`GetUserProfileDirectoryW`; `GetFolderPath` follows a moved USERPROFILE and would name the scratch home). The library switch `$sotScratchLibOnly` counts only in the dot-sourcing scope itself. The guard prints a line when it makes the home and one when it removes it; the child starts in the caller's location. No switch turns it off. Out of
   scope, with the reason: `in-job.ps1` (a job runner, starts only the command it is given), `pipe-request.ps1` (a client
   of the pipe its caller names), and the dot-sourced parts, which run inside a guarded suite. A suite removes only
-  folders it made, by path; `test-local-daemon-support.ps1` ends only daemons whose pipe carries this run's id.
+  folders it made, by path; `test-local-daemon-support.ps1` ends only daemons it recorded (pid and creation time) on pipes this run named.
 - `test-scratch-guard.ps1`: the guard's rule on a made-up account, and the entry end to end on a probe suite (arguments,
   environment, the home gone at the end, a sibling kept, two concurrent runs, a refused child, the four lines in each
   guarded suite). Not itself guarded; it removes only its own folder.
