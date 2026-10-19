@@ -286,16 +286,6 @@ broken() {  # <description> <expected fail prefix> <hook>: a run whose comm refr
 broken "a binary that reports another version" "binaries" 'printf "#!/bin/sh\necho sotd 1.0.0\n" > "$HOME/.local/share/sot/bin/sotd"'
 broken "an update pointer armed again" "pointer" ': > "$HOME/.local/share/sot/updates/pending-'"$TGT"'.json"'
 broken "agent comm at another commit" "comm" 'echo deadbeef0 > "$SOT_COMM_HOME/VERSION"'
-d2="$WORK/vd-julia"; entry_fixture "$d2"
-cat > "$d2/stubs/julia" <<'JU'
-#!/bin/sh
-case "$*" in *update_comm*) mkdir -p "$SOT_COMM_HOME/bin"; git -C "${2#--project=}" rev-parse --short=9 HEAD > "$SOT_COMM_HOME/VERSION" ;; *print\(VERSION\)*) printf '1.12.0' ;; esac
-exit 0
-JU
-entry_archive "$d2" --be-only --no-service
-check "a Julia environment that was never instantiated: exit 1" "1" "$ENTRY_RC"
-starts_with "its FAIL names the environment" "FAIL: julia: julia/kernel has no Manifest.toml" "$ENTRY_LAST"; d2="$WORK/vd-julia-floor"; entry_fixture "$d2"; printf '1.11.7' > "$d2/ctl/julia-ver"; : > "$d2/ctl/no-channel"; entry_archive "$d2" --be-only --no-service
-starts_with "a Julia below the kernel's floor stops the install before any step, naming the version" "FAIL: julia: the daemon runs Julia 1.11.7, below the 1.12 the kernel needs: run " "$ENTRY_LAST"; check "and no step ran on it" "0" "$(count_in "$d2/ctl/julia.log" 'update_comm\|Pkg.instantiate')"
 # The daemon: a window that holds the old one is a step left, an owned unit that did not come back is a failure.
 d="$WORK/vd-held"; entry_fixture "$d"; P="$d/home/.local/share/sot"
 printf '9.9.8\n' > "$d/ctl/same-out"; printf '4\n' > "$d/ctl/same-rc"
@@ -803,3 +793,4 @@ check "it writes the pin" "1" "$(grep -c '"pinned": true' "$d/home/.local/share/
 check "it restarts nothing and asks nothing of the daemon" "0 0" "$(count_in "$d/ctl/systemctl.log" 'restart') $(sotd_log "$d" | grep -c 'update repls' || true)"
 . "$(dirname "${BASH_SOURCE[0]}")/installer-path-refusal.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/installer-boot-line.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/installer-entry-julia.sh"
