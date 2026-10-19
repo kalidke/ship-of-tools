@@ -646,12 +646,16 @@ _sot_oneshot_stop() {
 # /tmp/..., C:\... and C:/... spellings of one folder all come (the shell's /tmp can be a short 8.3 name,
 # C:/Users/RUNNER~1/..., where git prints the long one); elsewhere PATH as written. A path that does not exist has no
 # long name to find, and gets `cygpath -m`'s. The library's one cygpath conversion. Prints nothing and returns 1 when
-# cygpath fails.
+# cygpath fails, after one stderr line naming PATH and cygpath's own words.
 sot_native_path() {
-    local out
+    local out err
     command -v cygpath > /dev/null 2>&1 || { printf '%s\n' "$1"; return 0; }
     out="$(cygpath -m -l "$1" 2>/dev/null)" || out="$(cygpath -m "$1" 2>/dev/null)"
-    [ -n "$out" ] || return 1
+    if [ -z "$out" ]; then
+        err="$(cygpath -m "$1" 2>&1 >/dev/null)"
+        printf 'cygpath cannot convert %s: %s\n' "$1" "${err//$'\n'/ }" >&2
+        return 1
+    fi
     printf '%s\n' "$out"
 }
 
