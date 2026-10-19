@@ -20,6 +20,7 @@ pub fn copy_release_folder(source: &Path, destination: &Path) {
         if entry.file_type().expect("a source entry's kind").is_dir() {
             copy_release_folder(&entry.path(), &target);
         } else if !is_manifest(&entry.file_name().to_string_lossy()) {
+            #[allow(clippy::disallowed_methods, reason = "a data copy of a source file, no program is run from it")]
             std::fs::copy(entry.path(), target).expect("copy a source file");
         }
     }

@@ -295,6 +295,7 @@ mod tests {
             std::fs::create_dir_all(&dest)?;
             for entry in std::fs::read_dir(build.join(TOP))? {
                 let entry = entry?;
+                #[allow(clippy::disallowed_methods, reason = "a data copy of the fixture build, no program is run from it")]
                 std::fs::copy(entry.path(), dest.join(entry.file_name()))?;
             }
             Ok(output(0, Vec::new()))

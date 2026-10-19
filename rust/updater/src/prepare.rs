@@ -673,6 +673,7 @@ mod tests {
                         std::fs::write(project.join("Manifest.toml"), "build product")?;
                     }
                     if !instantiate {
+                        #[allow(clippy::disallowed_methods, reason = "a data copy of a manifest, no program is run from it")]
                         std::fs::copy(project.join("Project.toml"), self.root.join("witness"))?;
                     }
                     Ok(output(0, Vec::new()))

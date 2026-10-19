@@ -364,6 +364,7 @@ fn merge_secondary_legacy_windows_children(candidate: &Path, children: &[String]
                      already migrated — left in place, not merged (rename by hand to adopt it)");
                 continue;
             }
+            #[allow(clippy::disallowed_methods, reason = "a data copy of a toml, no program is run from it")]
             if let Err(e) = std::fs::copy(&path, &dst_file) {
                 tracing::warn!(error = %e, from = %path.display(), to = %dst_file.display(),
                     "could not copy a non-colliding toml from a secondary legacy Windows registry");

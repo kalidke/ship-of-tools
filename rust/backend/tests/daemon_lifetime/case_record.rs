@@ -141,6 +141,7 @@ pub fn keep_if_failed(case_dir: &Path) {
         let Some(text) = file.to_str().filter(|n| n.starts_with("daemon-") && n.ends_with(".log")) else {
             continue;
         };
+        #[allow(clippy::disallowed_methods, reason = "a data copy of a log, no program is run from it")]
         let _ = std::fs::copy(entry.path(), keep.join(text));
         let log = std::fs::read_to_string(entry.path()).unwrap_or_default();
         let lines: Vec<&str> = log.lines().collect();
