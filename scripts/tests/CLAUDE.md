@@ -127,6 +127,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-check-layout.sh`: self-test of `check-layout.sh` over throwaway repos.
 - `test-moved-check.sh`: self-test of `moved-check.sh` over throwaway repos.
 - `test-rc-gate-target.sh`: `rc-gate.sh` names its checkout in its target and refuses the target to any other checkout.
+- `test-rc-gate-basename.sh`: `rc-gate.sh` names a shell suite's result and log by its checkout path, so two suites with one basename keep their own verdicts, and `emit` refuses a result file emitted twice before any job runs.
 - `on-host.sh`: `on-host.sh HOST DIR -- CMD [ARG...]` runs CMD in DIR on a second host through `ssh HOST bash -s`, with
   the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
 - `under-bash.sh`: `under-bash.sh BASH [-- SUITE...]` checks the shell scripts under BASH, the bash 3.2 that

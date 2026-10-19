@@ -435,7 +435,7 @@ if mode=='all':
             ignored=[s[:-6] for s in raw.stdout.splitlines() if s.endswith(': test')]
             print(f'producer {listing}: emitted {emitted}; skipped {summary.count("split-skipped")}; step results {[x.read_text(encoding="utf-8", errors="strict").strip() for x in (p/"steps").glob("*.rc")]}',flush=True)
             if listing in ('missing-fixture','duplicate-fixture'):
-                check((p/'steps/test-test-body.rc').read_text(encoding='utf-8', errors='strict').strip()=='101','fixture artifact error accepted')
+                check((p/'steps/scripts-tests-test-test-body.rc').read_text(encoding='utf-8', errors='strict').strip()=='101','fixture artifact error accepted')
                 check(not any(row[0]=='shell' and row[1]=='test-test-body' for row in (line.split('\t') for line in r.stdout.splitlines())),'invalid fixture proof job emitted')
             elif listing=='real':
                 check(not set(emitted).intersection(ignored),'ignored names emitted as ordinary jobs')

@@ -810,6 +810,10 @@ jobs:
         working-directory: .
         run: bash scripts/tests/test-rc-gate-target.sh
 
+      - name: Test the rc gate's suite result names
+        working-directory: .
+        run: bash scripts/tests/test-rc-gate-basename.sh
+
       # The bash sibling of the PowerShell topology plan test above: scripts/lib/sot-hosts.sh's sot_topology_plan
       # against the same fake sotd, pure text processing, hermetic and fast.
       - name: Test topology plan (bash)

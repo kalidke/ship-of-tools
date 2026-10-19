@@ -29,6 +29,8 @@
 # end kills what is left.
 # ALLDONE means every rc line is 0; the rc lines say which job failed. A container stopped from outside SIGKILLs
 # rc-gate, so summary.txt gets no ALLDONE line; a summary without one is a failed run.
+# A shell suite's result and log are named by its path in the checkout with / as - (comm-tests-test-temp-files), so
+# two suites with one basename keep their own verdicts.
 # A selected Rust job's result is zero only when its exact body completed successfully. A missing,
 # ignored-only or mismatched body produces a failed result even if the executable exited zero.
 # Ignored names from split binaries are reported as skipped and are not ordinary jobs. The checked job
@@ -59,6 +61,12 @@ st() { echo "$1 start $(date +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg) ca
 rc() { echo "$1 rc=$2 ${3:-}" >> "$L/summary.txt"; }
 # a step's verdict: its result file (swept at the end) and its summary line
 fin() { echo "$2" > "$L/steps/$1.rc"; rc "$1" "$2"; }
+# shell_key <path>: a shell suite's result and log name, its path in the checkout with / as -
+shell_key() {
+  local k=${1#"$D/"}
+  k=${k%.sh}
+  echo "${k//\//-}"
+}
 
 job_julia() {
   local p s
@@ -94,10 +102,10 @@ job_cargo_chain() {
 }
 
 job_shell() {
-  local b
-  b=$(basename "$1" .sh)
-  "${TO[@]}" "${SE[@]}" bash "$@" > "$L/$b.log" 2>&1
-  fin "$b" $?
+  local k
+  k=$(shell_key "$1")
+  "${TO[@]}" "${SE[@]}" bash "$@" > "$L/$k.log" 2>&1
+  fin "$k" $?
 }
 
 # job_lifetime: the daemon lifetime harness as rust.yml's Linux job runs it: Pluto's environment prepared in the gate's
@@ -142,12 +150,17 @@ row_for() {
   IFS=$'\t' read -r _ exe pkg <<< "$r"
 }
 
-# emit <key> <line> [resultfile]: once per key; the result starts as unrun
-declare -A EMITTED
+# emit <key> <line> [resultfile]: once per key; the result starts as unrun. A result file emitted under two keys is
+# refused (exit 2) before any job runs: the second job would overwrite the first one's verdict.
+declare -A EMITTED RESULT
 emit() {
   [ -n "${EMITTED[$1]:-}" ] && return
   EMITTED[$1]=1
-  [ -n "${3:-}" ] && echo unrun > "$3"
+  if [ -n "${3:-}" ]; then
+    [ -n "${RESULT[$3]:-}" ] && { echo "rc-gate: result $3 emitted twice" >&2; exit 2; }
+    RESULT[$3]=1
+    echo unrun > "$3"
+  fi
   printf '%s\n' "$2"
 }
 emit_bin() {
@@ -160,7 +173,7 @@ emit_one() {
 }
 emit_shell() {
   local name; name=$(basename "$1" .sh)
-  emit "shell:$1" "$(printf 'shell\t%s' "$name"; printf '\t%s' "$@")" "$L/steps/$name.rc"
+  emit "shell:$1" "$(printf 'shell\t%s' "$name"; printf '\t%s' "$@")" "$L/steps/$(shell_key "$1").rc"
 }
 
 producer() {
@@ -278,7 +291,7 @@ PYLIST
       if [ "$BUILD_RC" -eq 0 ] && row_for test_body_fixture; then
         emit_shell "$f" --all "$exe"
       else
-        fin test-test-body 101
+        fin "$(shell_key "$f")" 101
       fi
     else
       emit_shell "$f"
@@ -314,7 +327,9 @@ if [ "${1:-}" = --pipeline ]; then
   envs
   BUILD_RC=$RCG_BUILD_RC
   set -o pipefail
-  producer | xargs -d '\n' -n 1 -P "$2" bash "$SELF" --job
+  # the listing is taken whole before any job starts, so a refused listing (emit's exit 2) starts no job
+  listing=$(producer) || exit $?
+  printf '%s\n' "$listing" | xargs -d '\n' -n 1 -P "$2" bash "$SELF" --job
   exit $?
 fi
 
