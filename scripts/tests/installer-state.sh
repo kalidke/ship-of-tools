@@ -355,8 +355,8 @@ run_ensure() {  # <dir> <prefix> <with-systemctl 1|0>
     t0="$(date +%s)"
     ENS_RC=0
     ( HOME="$d/home" PATH="$path" STUB_LOG="$d/log" STUB_SOCKET="$d/sot.sock" STUB_PIDFILE="$d/pid" \
-        STUB_DELAY="${STUB_DELAY:-0}" STUB_EXIT="${STUB_EXIT:-}" \
-        bash -c '. "$1"; sot_daemon_ensure "$2" "$3" "$4"' ensure "$LIB" "$prefix" "$d/stubs/sotd" "$d/sot.sock" \
+        STUB_DELAY="${STUB_DELAY:-0}" STUB_EXIT="${STUB_EXIT:-}" STUB_DAEMON_LOG="${STUB_DAEMON_LOG:-}" ENS_WAIT="${ENS_WAIT:-}" \
+        bash -c '. "$1"; [ -z "$ENS_WAIT" ] || SOT_LAUNCH_WAIT_S=$ENS_WAIT; sot_daemon_ensure "$2" "$3" "$4"' ensure "$LIB" "$prefix" "$d/stubs/sotd" "$d/sot.sock" \
         2> "$d/err" ) || ENS_RC=$?
     t1="$(date +%s)"
     ENS_SECS=$((t1 - t0))
@@ -454,6 +454,8 @@ log_now="$(newest_log "$d/prefix/logs")"
 check "the error names this start's own log" "yes" \
     "$([ -n "$log_now" ] && case "$ENS_ERR" in (*"see $log_now"*) echo yes ;; (*) echo no ;; esac || echo no)"
 
+# shellcheck source=installer-ensure-timeout.sh
+. "$(dirname "$0")/installer-ensure-timeout.sh"
 # ---------------------------------------------------------------------------
 case_start "ensure_keeps_old_logs"
 # A previous start's log keeps its line, and this start writes a file of its own.
@@ -466,13 +468,10 @@ check "this start logs to a new file of its own" "yes" \
     "$(n="$(newest_log "$d/prefix/logs")"; [ -n "$n" ] && [ "$n" != "$prev" ] && echo yes || echo no)"
 reap_stub "$d"
 # A legacy sotd.log still held open by a daemon that is shutting down.
-d="$WORK/logs-legacy"; mkdir -p "$d/home" "$d/prefix/logs"
-legacy="$d/prefix/logs/sotd.log"
-exec 7>>"$legacy"
-printf 'known-line-legacy\n' >&7
+d="$WORK/logs-legacy"; mkdir -p "$d/home" "$d/prefix/logs"; legacy="$d/prefix/logs/sotd.log"
+exec 7>>"$legacy"; printf 'known-line-legacy\n' >&7
 STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0
-printf 'after-legacy\n' >&7
-exec 7>&-
+printf 'after-legacy\n' >&7; exec 7>&-
 check "a held legacy sotd.log keeps its lines" "known-line-legacy after-legacy" "$(tr '\n' ' ' < "$legacy" | sed 's/ $//')"
 reap_stub "$d"
 # Eight old 6MB logs: over the count and over the cap, oldest first. Their
@@ -486,7 +485,7 @@ reap_stub "$d"
 
 # ---------------------------------------------------------------------------
 case_start "ensure_log_folder_is_owner_only"
-# The daemon copies every log line to its stdout log, and old logs hold unmasked secrets, so the folder is what keeps
+# Old logs hold unmasked secrets, so the folder is what keeps
 # other accounts out: new, and a folder an earlier install made 755 with its files (ADR 0049, User isolation).
 d="$WORK/logs-mode"; mkdir -p "$d/home"
 ( umask 022; STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0 )

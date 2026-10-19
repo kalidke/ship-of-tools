@@ -340,7 +340,7 @@ start_daemon() {
         "$BIN/sotd" --socket "$sock" --project-root "$DHOME"
     DAEMON_PID=$SPAWNED
     for _ in $(seq 1 100); do [ -S "$sock" ] && break; sleep 0.1; done
-    [ -S "$sock" ] || die "scratch sotd did not open its socket (see $WORK/sotd.log)"
+    [ -S "$sock" ] || die "scratch sotd did not open its socket (see $WORK/state/sot/sotd.log)"
 }
 # The frontend's persisted state, rewritten before every start: window
 # geometry = the Xvfb screen (see header), resumed into the live DemoProject

@@ -253,6 +253,7 @@ async fn never_run_rows_count_as_ended() {
     assert_eq!(daemon.exit_within(sot_protocol::ops::lease::CLOSE_ACK_WAIT).await, Some(0), "{}", daemon.said());
     let said = daemon.said();
     assert_eq!(ack["not_ended"], 0, "the anchor and a never-started row were counted not ended: {ack:?}: {said}");
+    assert!(said.contains("sotd starting"), "the daemon's log lines never reached the record this check reads: {said}");
     assert!(!said.contains("not ended"), "a row with no run record was warned about: {said}");
     assert!(held_record(&env).is_none(), "{:?}", held_record(&env));
     assert!(!row_toml(&env, "never-run").exists(), "the never-started row was not forgotten");
@@ -495,7 +496,7 @@ async fn shutdown_bound_is_end_to_end() {
     // into the settle.
     std::fs::write(&marker, b"").expect("mark the next start slow");
     stop_supervisor(&row_dir).await;
-    let log_path = state_dir(&env).join("sotd.log");
+    let log_path = env.daemon_log();
     let until = Instant::now() + BOUND;
     while !std::fs::read_to_string(&log_path).unwrap_or_default().contains("stub supervisor: holding the claim") {
         assert!(Instant::now() < until, "the watchdog never restarted the slow row: {}", daemon.said());

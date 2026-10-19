@@ -32,6 +32,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `sigpipe-scan.awk`: the scan `under-bash.sh` runs over every shipped non-test script for a pipeline whose reader can stop early (`head`, `grep -q`/`-m`, `awk` with `exit`, `sed q`, `read`), which fails at random under pipefail.
 - `test-sigpipe-scan.sh`: proves what `sigpipe-scan.awk` flags and what it passes.
 - `installer-build-direction.sh`: sourced by `installer-entry.sh`, never run: a build of the line with no `--version` is told by ancestry (the release's COMMIT against the build's commit in the base clone) whether the newest release moves it forward or back, or why that cannot be told; it also asks the rule directly for a named tag and for a record's full commit, and pins that an `--archive` install on a build of the line makes no curl call and prints no ancestry line. It also checks the whole of install.sh for its one `git` function (the stall bound; defined before the first git call, and no call names git another way).
+- `installer-ensure-timeout.sh`: sourced by `installer-state.sh`, never run: the daemon's own log named in `sot_daemon_ensure`'s timeout message (a stub `sotd log-path` answers).
 - `installer-entry.sh`: sourced by `installer-state.sh`, never run: install.sh run end to end in a scratch HOME from a
   fixture release (a local git origin, an archive of stand-in binaries, and stand-in `curl`, `sotd`, `systemctl`,
   `julia` and `ps` driven by files), as the entry of an update: the channel the prelude follows from `install.json`, an
@@ -219,7 +220,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-local-daemon-binary.ps1`: dot-sourced by test-local-daemon.ps1 right after the fake daemon's compilation is attempted, in its
   scope: the local daemon's one binary, shared by the daemon, `-Stop` and the launcher's query and lease (2c), the
   bytes the lease's and the probe's bridges read in a hidden console, which are only their callers' (7c), and the
-  ensure's replacement of a running daemon of another version (7d; 7c and 7d only when the fake compiled).
+  ensure's replacement of a running daemon of another version (7d), and the daemon's own log named when a daemon that never binds is left running (7e, which waits the launcher's whole 160 s; 7c to 7e only when the fake compiled).
 - `pipe-request.ps1`: the local-daemon suites' raw pipe client (5c, 5d): a hello and one request into a named pipe,
   the reply whose op matches printed. Test code; it checks no account.
 - `test-local-daemon-support.ps1`: dot-sourced by both local-daemon suites: `Check`, the fixture and pipe helpers, the

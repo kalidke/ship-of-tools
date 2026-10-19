@@ -382,12 +382,12 @@ rm -f "$SOCK"
     >"$LOG" 2>&1 &
 BE=$!; trap 'kill $BE 2>/dev/null' EXIT
 for _ in $(seq 1 100); do [ -S "$SOCK" ] && break; sleep 0.1; done   # wait for socket
-[ -S "$SOCK" ] || { echo "backend never opened $SOCK — see $LOG"; exit 1; }
+[ -S "$SOCK" ] || { echo "backend never opened $SOCK — see $LOG and the daemon's log, $("$REPO/rust/target/release/sotd" log-path)"; exit 1; }
 exec "$REPO/rust/target/release/sot" --socket "$SOCK"
 ```
 `chmod +x`. Run it; confirm Files mode renders and the REPL drawer (Ctrl+J) gets a
-live Julia. If the FE errors on the socket, check `dev/output/sotd-local.<host>.log` in the checkout (kernel
-env not built? → §6).
+live Julia. If the FE errors on the socket, check the daemon's log, the path `sotd log-path` prints (kernel
+env not built? → §6); `dev/output/sotd-local.<host>.log` in the checkout holds only its stderr.
 
 ### Linux / macOS — frontend client → remote backend (SSH)
 For connecting to a remote BE (e.g. a remote host) instead of a local one. Requires working

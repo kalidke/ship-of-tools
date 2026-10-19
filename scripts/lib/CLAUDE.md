@@ -46,7 +46,7 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
 - `sot_prune_logs` keeps a log while the pid in its name is alive or while it is the newest, and a failed `rm` is
   logged and skipped, never fatal (the library's `SOT_LOG_KEEP` and `SOT_LOG_CAP_BYTES`, constants it assigns, not environment names).
 - The logs folder `sot_daemon_ensure` writes a started daemon's log into is made owner-only (mode 700), new or existing and
-  whichever way the daemon starts, because the daemon copies every log line to it and earlier logs hold unmasked secrets.
+  whichever way the daemon starts, because earlier logs hold unmasked secrets.
 - `sot_daemon_ensure` keeps a daemon whose socket answers only when `sotd same-version`, run from the binary the install
   runs (an owned unit's own), does not say it runs another version (`sot_daemon_current`): an update that replaced
   the binary and not the process is finished there, by a restart of an owned unit or a TERM to the nohup daemon on

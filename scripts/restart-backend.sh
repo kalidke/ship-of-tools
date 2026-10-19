@@ -13,9 +13,10 @@
 #
 # It kills the running daemon by EXPLICIT pid (never `pkill -f`, which self-
 # matches this very shell) and relaunches the on-disk binary detached +
-# reparented (a session of its own), logging to dev/output/sotd-restart.<host>.log in this
+# reparented (a session of its own), capturing its stdout and stderr in dev/output/sotd-restart.<host>.log in this
 # checkout (one writer per file: the home and so the checkout are shared between
-# hosts; the daemon also keeps its own private log under its state dir). The
+# hosts). The daemon's log lines go only to its own private log, `sotd log-path`;
+# the capture file holds its stderr, which says where that log is. The
 # daemon identity is the per-user socket derived from `--label sot`, not a
 # machine-wide TCP port.
 # It also reports whether the running daemon was actually STALE vs the binary,
@@ -122,5 +123,5 @@ NEW=$(find_pid)
 if [ -n "$NEW" ] && sot_socket_open "$BIN" "$SOCKET"; then
     echo "backend restarted: pid $NEW on $SOCKET (binary built $(at "$BIN_MTIME"))"
 else
-    echo "ERROR: backend did not bind $SOCKET after restart — see $LOG" >&2; exit 1
+    echo "ERROR: backend did not bind $SOCKET after restart — see $LOG and the daemon's log, $("$BIN" log-path 2>/dev/null || echo sotd.log in its state folder)" >&2; exit 1
 fi

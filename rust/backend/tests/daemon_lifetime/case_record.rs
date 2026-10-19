@@ -115,9 +115,10 @@ fn keep_folder() -> PathBuf {
     base.join(format!("{}-{}", case_name().replace(':', "_"), std::process::id()))
 }
 
-/// A case that is panicking keeps its record: every daemon log in `case_dir` and the notes, in a folder that outlives the
-/// case; the folder's path and each log's tail are printed. A case that is not panicking keeps nothing.
-pub fn keep_if_failed(case_dir: &Path) {
+/// A case that is panicking keeps its record: every daemon log in `case_dir` (each daemon's stderr), the daemon's own log
+/// `sotd.log` and the notes, in a folder that outlives the case; the folder's path and each log's tail are printed. A case
+/// that is not panicking keeps nothing.
+pub fn keep_if_failed(case_dir: &Path, daemon_log: &Path) {
     if !std::thread::panicking() {
         return;
     }
@@ -136,13 +137,16 @@ pub fn keep_if_failed(case_dir: &Path) {
         .collect();
     let _ = std::fs::write(keep.join("notes.txt"), &notes);
     eprintln!("lifetime record kept in {}", keep.display());
+    let mut logs: Vec<(String, PathBuf)> = vec![("sotd.log".to_string(), daemon_log.to_path_buf())];
     for entry in std::fs::read_dir(case_dir).into_iter().flatten().flatten() {
         let file = entry.file_name();
-        let Some(text) = file.to_str().filter(|n| n.starts_with("daemon-") && n.ends_with(".log")) else {
-            continue;
-        };
-        let _ = std::fs::copy(entry.path(), keep.join(text));
-        let log = std::fs::read_to_string(entry.path()).unwrap_or_default();
+        if let Some(text) = file.to_str().filter(|n| n.starts_with("daemon-") && n.ends_with(".log")) {
+            logs.push((text.to_string(), entry.path()));
+        }
+    }
+    for (text, path) in &logs {
+        let _ = std::fs::copy(path, keep.join(text));
+        let log = std::fs::read_to_string(path).unwrap_or_default();
         let lines: Vec<&str> = log.lines().collect();
         eprintln!(
             "--- last {TAIL_LINES} lines of {text} ---\n{}",

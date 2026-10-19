@@ -5,7 +5,7 @@
     # this file runs under (CI step `shell: powershell`). C# 5 syntax only.
     Write-Host "`n=== 7-8 setup. compile the fake daemon ===" -ForegroundColor Cyan
     if ($null -eq $envSaved) { $envSaved = @{} }
-    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_ACCEPT_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR', 'FAKE_SOTD_SAME')) {
+    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_ACCEPT_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR', 'FAKE_SOTD_SAME', 'FAKE_SOTD_LOG_PATH')) {
         if (-not $envSaved.ContainsKey($k)) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k) }
     }
     $fakeLocalAppData = Join-Path $root 'fakelocal'
@@ -87,6 +87,12 @@ public static class FakeSotd
 
     public static int Main(string[] a)
     {
+        if (a.Length == 1 && a[0] == "log-path")
+        {
+            // FAKE_SOTD_LOG_PATH: what `sotd log-path` prints, the daemon's log of record the launcher names (7e).
+            Console.WriteLine(Environment.GetEnvironmentVariable("FAKE_SOTD_LOG_PATH"));
+            return 0;
+        }
         if (a.Length == 3 && a[0] == "same-version")
         {
             // FAKE_SOTD_SAME: the exit of `sotd same-version` (0 this version, 3 another, 4 another under a window's lease; 3 and 4 print it; section 7d).
@@ -223,7 +229,7 @@ public static class FakeSotd
     Check 'the fake daemon compiles' $compiled "Add-Type failed: $compileErr"
 
     function Clear-FakeEnv {
-        foreach ($k in @('FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_ACCEPT_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR', 'FAKE_SOTD_SAME')) {
+        foreach ($k in @('FAKE_SOTD_EXIT_ARM_FILE', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_ACCEPT_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_STDIN_LOG', 'FAKE_SOTD_HOLD_DIR', 'FAKE_SOTD_SAME', 'FAKE_SOTD_LOG_PATH')) {
             Remove-Item "Env:\$k" -ErrorAction SilentlyContinue
         }
     }

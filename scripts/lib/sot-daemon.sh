@@ -379,9 +379,10 @@ sot_comm_refresh() {  # <checkout>
 # is still shutting down. Never removes the socket: the
 # daemon unlinks a stale one itself, and an ensure-side rm can delete a
 # successor's fresh bind. Never kills a daemon it started: the daemon's own
-# lock wait is shorter than this one. A backend it starts itself logs under
-# the install to a file of its own, <prefix>/logs/sotd.<UTC start>Z-<pid>.log,
-# never to a path another user can hold; the newest by name is the current one.
+# lock wait is shorter than this one. A backend it starts itself leaves its
+# stderr under the install in a file of its own, <prefix>/logs/sotd.<UTC start>Z-<pid>.log,
+# never at a path another user can hold; the newest by name is the current one.
+# Its log lines are in the daemon's own sotd.log (`sotd log-path`), not there.
 sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     SOT_ENSURE_NOTICE=""
     local prefix="$1" sotd_bin="$2" socket="$3" mode=nohup pid="" code="" start now warned=0
@@ -401,6 +402,7 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
         # Milliseconds where date has %N (GNU); 000 where it does not (BSD).
         stamp="$(date -u +%Y%m%d-%H%M%S-%3N)"
         case "$stamp" in *-[0-9][0-9][0-9]) ;; *) stamp="$(date -u +%Y%m%d-%H%M%S)-000" ;; esac
+        # The daemon copies its log to stdout only when stdout is not a regular file, so this file holds its stderr only.
         logfile="$logdir/sotd.${stamp}Z-$$.log"
         # Append, never truncate: the name is new, and a file another daemon
         # still writes is never cut short.
@@ -436,8 +438,12 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
         sleep 0.25
     done
     printf 'ERROR: the backend did not open %s within %ss\n' "$socket" "$SOT_LAUNCH_WAIT_S" >&2
+    # The daemon is alive, and its log lines are in its own log, which the daemon names.
+    local daemon_log
+    daemon_log="$("$sotd_bin" log-path 2>/dev/null)" || daemon_log=""
+    [ -z "$daemon_log" ] || printf 'its log: %s\n' "$daemon_log" >&2
     if [ "$mode" = systemd ]; then echo "see journalctl --user -u sotd.service" >&2
-    else printf 'see %s\n' "$logfile" >&2; fi
+    else printf 'see %s (its stderr)\n' "$logfile" >&2; fi
     return 1
 }
 

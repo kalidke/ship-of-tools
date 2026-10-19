@@ -245,6 +245,12 @@ impl Env {
     /// — `Env` owns it now so its own `Drop` can order the daemon kill
     /// ahead of the leg sweep and tmux teardown (F4).
     pub fn spawn_sotd(&self) {
+        self.spawn_sotd_to(Stdio::null(), Stdio::null());
+    }
+
+    /// [`Env::spawn_sotd`] with the daemon's stdout and stderr given: files, to test a launcher's per-start log.
+    #[allow(dead_code)] // only the stdout suite chooses them
+    pub fn spawn_sotd_to(&self, stdout: Stdio, stderr: Stdio) {
         let child = sotd_command()
             .arg("--socket")
             .arg(&self.socket_path)
@@ -259,12 +265,33 @@ impl Env {
             .env("USERPROFILE", &self.home_root)
             .env("SOT_COMM_HOME", &self.comm_root)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
             .spawn()
             .expect("spawn sotd");
         let previous = self.daemon.borrow_mut().replace(child);
         debug_assert!(previous.is_none(), "spawn_sotd called while a prior daemon was still tracked");
+    }
+
+    /// The daemon's log of record for THIS env, per platform (`paths::state_dir().join("sotd.log")`): Windows joins
+    /// `sot\state` onto its state root, everywhere else `sot` is the whole state folder.
+    #[allow(dead_code)] // not every suite reads the daemon's log
+    pub fn daemon_log(&self) -> PathBuf {
+        let sot = self.state_root.join("sot");
+        if cfg!(windows) { sot.join("state").join("sotd.log") } else { sot.join("sotd.log") }
+    }
+
+    /// The daemon log's length now: where a daemon about to start will begin writing (successors share one log).
+    #[allow(dead_code)] // not every suite reads the daemon's log
+    pub fn daemon_log_len(&self) -> u64 {
+        std::fs::metadata(self.daemon_log()).map_or(0, |m| m.len())
+    }
+
+    /// What the daemon log holds past byte `from`.
+    #[allow(dead_code)] // not every suite reads the daemon's log
+    pub fn daemon_log_since(&self, from: u64) -> String {
+        let bytes = std::fs::read(self.daemon_log()).unwrap_or_default();
+        String::from_utf8_lossy(bytes.get(from as usize..).unwrap_or_default()).into_owned()
     }
 
     /// The daemon's own app-config dir for THIS env, per platform:
