@@ -21,8 +21,9 @@ to pin one).
   install either.
 - **Julia 1.12** or newer. If Julia is missing, the installer installs it with
   juliaup; an existing juliaup only gets the 1.12 channel added, so if your
-  default channel is older, run `juliaup default 1.12` yourself (or set
-  `SOT_JULIA_BIN`).
+  default channel is older, the install ends naming the command to run, usually
+  `juliaup default 1.12`. `SOT_JULIA_BIN`, if set, names the daemon's Julia and
+  must be 1.12 or newer too.
 - Optional, on the backend machine: **node/npm** (typeset math in markdown
   previews renders in a node process; without it math is not typeset),
   **poppler-utils** (`pdftoppm` and `pdfinfo`, for PDF previews) and
