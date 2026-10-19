@@ -474,18 +474,23 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
     Ok(())
 }
 
+/// The 405 for a method other than GET or HEAD.
+async fn refuse_method(stream: &mut TcpStream, method: &str) -> Result<bool> {
+    write_simple(
+        stream,
+        method,
+        "405 Method Not Allowed",
+        "only GET/HEAD",
+        false,
+    )
+    .await
+}
+
 /// One request, from its target to its reply. Returns whether the connection stays open.
 async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMode) -> Result<bool> {
     let (method, target, keep) = (request.method.as_str(), request.target.as_str(), request.keep);
     if method != "GET" && method != "HEAD" {
-        return write_simple(
-            stream,
-            method,
-            "405 Method Not Allowed",
-            "only GET/HEAD",
-            false,
-        )
-        .await;
+        return refuse_method(stream, method).await;
     }
 
     // Strip any query string / fragment, then resolve per serving mode
