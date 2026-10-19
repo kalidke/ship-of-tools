@@ -122,12 +122,11 @@ sot_bounded() {
         my $pid = fork;
         if (!defined $pid) { print STDERR "sot_bounded: fork: $!\n"; exit 125; }
         if (!$pid) {
-            if (!setpgrp(0, 0)) { print STDERR "sot_bounded: no process group for $cmd[0]: $!\n"; POSIX::_exit(125); }
+            if (!setpgrp(0, 0) && getpgrp() != $$) { print STDERR "sot_bounded: no process group for $cmd[0]: $!\n"; POSIX::_exit(125); }
             exec { $cmd[0] } @cmd;
             print STDERR "sot_bounded: $cmd[0]: $!\n";
             POSIX::_exit(127);
         }
-        setpgrp($pid, $pid);
         my ($why, $late, $st) = ("", 0, undef);
         $SIG{ALRM} = sub { $late = 1 };
         $SIG{$_} = sub { $why ||= $_[0] } for qw(TERM INT HUP);
