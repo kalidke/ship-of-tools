@@ -616,3 +616,56 @@ async fn default_row_end_prunes_the_rows_registry_row() {
     let _ = std::fs::remove_dir_all(&comm_dir);
     let _ = std::fs::remove_dir_all(&scratch_state);
 }
+
+/// A default row plus a second capsule row, and a scratch state root with the second row's provably unheld state folder.
+fn seed_closable_row() -> (Workspaces, String, std::path::PathBuf, std::path::PathBuf) {
+    let (reg, _default_id) = seed_default("capsule");
+    let mut ws = Workspace::from_label(
+        "closable",
+        std::path::PathBuf::from("/p/closable"),
+        false,
+        "none".into(),
+        String::new(),
+        String::new(),
+    );
+    ws.runtime = "capsule".to_string();
+    let id = ws.workspace_id.clone();
+    reg.insert(ws);
+    let scratch = std::env::temp_dir().join(format!(
+        "sot-ws-destroy-folder-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    let state_root = pin_local_state_root(&scratch);
+    seed_provably_unheld_state_dir(&state_root, &id);
+    let folder = crate::rows::spawn::state_root::state_dir_for(&state_root, &id);
+    (reg, id, folder, scratch)
+}
+
+// Closing a row removes its state folder once its run is confirmed ended; the registration goes with it.
+#[tokio::test]
+async fn closing_a_row_removes_its_state_folder() {
+    let _guard = env_guarded();
+    let (reg, id, folder, scratch) = seed_closable_row();
+    assert!(folder.is_dir());
+    let payload = destroy(&reg, &id).await;
+    assert_eq!(payload.get("code"), None, "{payload:?}");
+    assert!(reg.resolve(Some(&id)).is_none(), "the row is gone");
+    assert!(!folder.exists(), "the closed row's state folder is removed: {folder:?}");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+// The default row only ends its run: its folder stays.
+#[tokio::test]
+async fn ending_the_default_rows_run_keeps_its_state_folder() {
+    let _guard = env_guarded();
+    let (reg, _id, _folder, scratch) = seed_closable_row();
+    let default_id = reg.default_id().expect("a default row");
+    let state_root = sot_log::host::state_dir::sot_state_dir().unwrap();
+    seed_provably_unheld_state_dir(&state_root, &default_id);
+    let default_folder = crate::rows::spawn::state_root::state_dir_for(&state_root, &default_id);
+    let payload = destroy(&reg, &default_id).await;
+    assert_eq!(payload.get("code"), None, "{payload:?}");
+    assert!(default_folder.is_dir(), "the default row keeps its folder");
+    let _ = std::fs::remove_dir_all(&scratch);
+}

@@ -78,6 +78,12 @@ filesystem rather than risk the record. On a home directory shared across
 servers, give each host its own local state root (see
 [Troubleshooting](../guide/troubleshooting.md#A-session-will-not-start-on-a-shared-home)).
 
+Closing a session ends its capsule and removes its folder under `workspaces/`, with the terminal recording (its
+voyage). The conversation itself lives with the agent, so it stays resumable with `/resume` in the same project
+folder. The default row only ends its run and keeps its folder. When the daemon starts, it also removes a folder
+that no session names, if no supervisor holds it and nothing in it was written for 24 hours; each removal is one
+line in `sotd.log`.
+
 ## Switching and restarts
 
 Switching the active session is a frontend state change: it never restarts a

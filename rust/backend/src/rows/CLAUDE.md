@@ -45,6 +45,10 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
   (`run::observer::observe` is the caller).
 - The default row is an inert anchor when its agent is `none`, on every runtime: `is_inert_default_anchor` is the one
   predicate for that.
+- Closing a non-default row removes its state folder once its run is confirmed ended; the default row's folder stays. The
+  boot resume scan removes a folder no row names only when its `supervisor.lock` is free and nothing in it was written for
+  24 hours; a link at the `workspaces` folder, the folder or inside it is never followed, and an unreadable lock or age
+  keeps the folder (`run/prune.rs`).
 - The row toml is a projection of this state that `store::save` rewrites; the state changes through the daemon's
   ops, not through the file.
 

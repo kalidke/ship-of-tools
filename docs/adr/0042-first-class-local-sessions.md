@@ -497,6 +497,18 @@ which ADR 0041 had already discharged.
 
 - No session registry, catalog, or second source of truth: the daemon's
   workspace list is the list; the state directory is the record's home.
+  A state directory with no registry entry is never resumed. Closing a row
+  (`workspace.destroy`) removes its state directory once its run is confirmed
+  ended, and keeps it when that is not confirmed; the default row only ends its
+  run and keeps its directory. The boot resume scan removes a directory no row
+  names when its `supervisor.lock` is free and nothing in it was written for 24
+  hours (the floor, so it never races a row being created); it runs once, at the
+  one moment the registry is whole, with no timer. Only a direct child of
+  `<state-root>/workspaces/` that is a real directory with a name the registry
+  makes (`ws-` and a slug), never reached through a link at any level; a held or
+  unreadable lock or age keeps it. Each removal logs one line: the directory, that
+  its terminal recording goes, and that the conversation stays resumable with
+  `/resume` in the same project folder.
 - No second drawer and no drawer changes: U4 (drawer cutover, upgrade
   transaction) proceeds after L1–L3 as amended; once L1 exists the drawer is
   one more capsule session whose tenant is fixed.
