@@ -21,5 +21,6 @@ COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
 [ -x "$STATUS" ] || exit 0
 tool="$(jq -r '.tool_name // ""' 2>/dev/null || true)"
+tool="${tool%$'\r'}"   # a native Windows jq ends its line with CR
 "$STATUS" dialog "codex permission request${tool:+: $tool}" >/dev/null 2>&1 || true
 exit 0

@@ -439,6 +439,8 @@ case_headless_child_hooks_stand_down() {
     expect blocked/-/q/-/- parked || return 1
     SOT_COMM_HOOKS=off W "$GENUINE"; expect blocked/-/q/-/- child-prompt || return 1
     SOT_COMM_HOOKS=off HB; expect blocked/-/q/-/- child-tool || return 1
+    printf '{"tool_name":"Bash"}' | SOT_COMM_HOOKS=off bash "$HOOKS_DIR/codex-status-blocked.sh"
+    expect blocked/-/q/-/- child-permission || return 1; [ "$(dialog_fact)" = - ] || { echo "    the off permission hook raised a dialog"; return 1; }
     SOT_COMM_HOOKS=off I; expect blocked/-/q/-/- child-stop
 }
 case_pre_field_working_row_floors_gray() {

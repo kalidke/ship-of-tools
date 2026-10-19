@@ -20,7 +20,11 @@ is codex's nearest "needs the USER to act". Its payload carries a top-level
 `tool_name`, which is why `codex-status-blocked.sh` can name the asking tool in
 the summary. The red clears when the approved call's `PostToolUse` reaches the
 shared heartbeat script, and at the latest at the turn's Stop or the next
-prompt; the hook no longer ends the turn.
+prompt; the hook no longer ends the turn. The heartbeat finds an open dialog by
+`state/dialog-<SOT_WORKSPACE_ID>.marker` (codex sets no session id the scripts
+read), so a codex session with no `SOT_WORKSPACE_ID` writes no marker: a dialog
+it raised reads red until its Stop or its next prompt. Every row's session has
+one.
 
 Because these are the same bin scripts the Claude adapter uses (the payloads
 share the field names that matter — notably `prompt`), a codex row is a set

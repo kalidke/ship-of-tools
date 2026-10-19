@@ -12,6 +12,11 @@ RECORDER
     exec 7< "$d/input"
     if [ "$mode" = unset ]; then
         env -u SOT_COMM_HOOKS SOT_COMM_HOME="$d" bash "$HOOKS_DIR/codex-status-blocked.sh" <&7 > "$d/out" 2> "$d/err"
+    elif [ "$mode" = crlf ]; then
+        # A native Windows jq ends each line with CR: the stamp must not carry it.
+        mkdir -p "$d/crlf"
+        printf '#!/usr/bin/env bash\n"%s" "$@" | sed "s/$/\\r/"\n' "$(command -v jq)" > "$d/crlf/jq"; chmod +x "$d/crlf/jq"
+        PATH="$d/crlf:$PATH" SOT_COMM_HOME="$d" bash "$HOOKS_DIR/codex-status-blocked.sh" <&7 > "$d/out" 2> "$d/err"
     else
         SOT_COMM_HOOKS="$mode" SOT_COMM_HOME="$d" bash "$HOOKS_DIR/codex-status-blocked.sh" <&7 > "$d/out" 2> "$d/err"
     fi
@@ -35,6 +40,7 @@ check "Codex off hook leaves input and status untouched" case_codex_hook_input_a
 check "Codex off hook exits before HOME expansion" case_codex_hook_off_without_home
 check "Codex unset hook consumes input and stamps the dialog" case_codex_hook_input_and_stamps unset
 check "Codex on hook consumes input and stamps the dialog" case_codex_hook_input_and_stamps on
+check "Codex hook under a CRLF jq stamps no CR" case_codex_hook_input_and_stamps crlf
 
 # ---- new mail at the turn boundary (messaging ruling, 2026-09-26) ----
 # The inbox IS the delivery path, so a turn must not end while directed mail
