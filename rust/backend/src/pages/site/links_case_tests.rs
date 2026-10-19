@@ -1,7 +1,7 @@
-//! The folded comparison of the home folder and the repository top, and a folder index whose text leads out. The
-//! fixture and the request helpers are `links_tests.rs`'s.
+//! The folded comparison of the home folder and the repository top, a folder index whose text leads out, and a target
+//! through a symlinked folder that the refusal names. The fixture and the request helpers are `links_tests.rs`'s.
 
-use super::tests::{fixture, git, r3, write, Fixture};
+use super::tests::{body_text, fixture, get, git, r3, serve, widened, write, Fixture};
 use super::*;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
@@ -114,4 +114,25 @@ async fn a_folder_index_whose_text_leads_out_is_r3_though_it_resolves_inside() {
     let refusal = resolve_and_open(&site, "dir/").err().expect("a refusal");
     assert_eq!(refusal.status, "403 Forbidden");
     assert_eq!(refusal.body, r3("dir", "dir/index.html"));
+}
+
+/// A target that runs through a symlinked folder under a mount folder is refused, and the refusal names that folder
+/// rather than suggesting the share is not mounted.
+#[tokio::test]
+async fn a_target_through_a_symlinked_folder_under_a_mount_folder_names_that_folder() {
+    let f = fixture();
+    symlink(&f.share, f.base.join("mnt/alias")).unwrap();
+    symlink(f.base.join("mnt/alias/results"), f.repo.join("via")).unwrap();
+    git(&f.repo, &["add", "via"]);
+    let (addr, nonce, serial) = serve(widened(&f).await).await;
+    let (st, _, body) = get(addr, &format!("/{nonce}/via/r1/movie.mp4"), &[]).await;
+    let body = body_text(&body);
+    assert_eq!(st, 403, "{body}");
+    let named = format!(
+        "the link's target runs through the symlinked folder {}/mnt/alias:",
+        f.base.display()
+    );
+    assert!(body.contains(&named), "{body}");
+    assert!(!body.contains("is its share mounted"), "{body}");
+    remove_root(serial);
 }
