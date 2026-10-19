@@ -41,3 +41,12 @@
         $bounded = [regex]::Matches($fn.Extent.Text, "Invoke-Native 'git.exe' \(@\('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', '-C'").Count
         Check '7e3: every git call in Get-BuildDirection carries the stall bound' ($calls -ge 1 -and $calls -eq $bounded) "calls=$calls bounded=$bounded"
     }
+
+    # So does every git call of Initialize-Base that can reach the origin: the clone, the cat-file (a lazy fetch) and the fetches.
+    Invoke-Case '7e4' {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($entryScript, [ref]$null, [ref]$null)
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Initialize-Base' }, $true)
+        $lines = @($fn.Extent.Text -split "`n" | Where-Object { $_ -match "Invoke-Native 'git.exe'" -and $_ -match "'(clone|cat-file|fetch)'" })
+        $bounded = @($lines | Where-Object { $_ -match "'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60'" }).Count
+        Check '7e4: every git call in Initialize-Base that can reach the origin carries the stall bound' ($lines.Count -ge 4 -and $lines.Count -eq $bounded) "calls=$($lines.Count) bounded=$bounded"
+    }

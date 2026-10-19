@@ -47,3 +47,7 @@ check "it printed no ancestry line" "0" "$(said 'by ancestry')"
 # Every git call of installer_build_direction carries the stall bound (a blobless clone's `cat-file -e` runs a lazy fetch).
 fn_text="$(sed -n '/^installer_build_direction() {/,/^}/p' "$ENTRY_SRC/scripts/install.sh")"
 check "every git call in installer_build_direction carries GIT_BOUND" "$(printf '%s\n' "$fn_text" | grep -c 'git ')" "$(printf '%s\n' "$fn_text" | grep -c 'git "${GIT_BOUND\[@\]}"')"
+# So does every git call of the base clone's step (an --archive install's rev-parse runs a lazy fetch in a blobless clone).
+base_text="$(sed -n '/^if \[ ! -d "\$BASE" \]; then/,/^# ---- 3b/p' "$ENTRY_SRC/scripts/install.sh" | grep -v '^ *#')"
+check "the base clone's step has git calls" "yes" "$([ "$(printf '%s\n' "$base_text" | grep -cE '(^|[ !(])git ')" -ge 4 ] && echo yes || echo no)"
+check "every git call in the base clone's step carries GIT_BOUND" "$(printf '%s\n' "$base_text" | grep -cE '(^|[ !(])git ')" "$(printf '%s\n' "$base_text" | grep -cE '(^|[ !(])git "\$\{GIT_BOUND\[@\]\}"')"

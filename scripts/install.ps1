@@ -712,7 +712,7 @@ function Initialize-Base([string]$Base, [string]$Origin, $Pack) {
         $r = Invoke-Native 'git.exe' @('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', 'clone', '--quiet', '--filter=blob:none', '--no-checkout', $Origin, $Base)
         if ($r.Code -ne 0) { Stop-Entry 'checkout' "could not clone $Origin into ${Base}: $((@($r.Out + $r.Err) | Select-Object -First 3) -join ' / ')" }
     }
-    $has = Invoke-Native 'git.exe' @('-C', $Base, 'cat-file', '-e', "$($Pack.Commit)^{commit}")
+    $has = Invoke-Native 'git.exe' @('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', '-C', $Base, 'cat-file', '-e', "$($Pack.Commit)^{commit}")
     if ($has.Code -ne 0) {
         $f = Invoke-Native 'git.exe' @('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', '-C', $Base, 'fetch', '--quiet', 'origin', $Pack.Commit)
         if ($f.Code -ne 0) { Stop-Entry 'checkout' "$($Pack.Commit) is not in $Base and could not be fetched from $Origin" }

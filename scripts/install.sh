@@ -1415,17 +1415,17 @@ fi
 # An --archive install of a commit the base clone already holds needs no origin: carried to a machine with no network,
 # it installs without the fetch.
 if ! git "${GIT_BOUND[@]}" -C "$BASE" fetch --tags --force origin; then
-    if [ -n "$ARCHIVE" ] && git -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" >/dev/null 2>&1; then
+    if [ -n "$ARCHIVE" ] && git "${GIT_BOUND[@]}" -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" >/dev/null 2>&1; then
         say "note: could not fetch origin; $BASE already holds ${ARCHIVE_COMMIT:0:9}"
     else
         die "fetch failed"
     fi
 fi
 if [ -n "$ARCHIVE" ]; then
-    want="$(git -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" 2>/dev/null)" \
+    want="$(git "${GIT_BOUND[@]}" -C "$BASE" rev-parse --verify "$ARCHIVE_COMMIT^{commit}" 2>/dev/null)" \
         || die "commit $ARCHIVE_COMMIT is not in origin after fetch — push the line first"
 else
-    want="$(git -C "$BASE" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)" \
+    want="$(git "${GIT_BOUND[@]}" -C "$BASE" rev-parse "refs/tags/$VERSION^{commit}" 2>/dev/null)" \
         || die "tag $VERSION not present after fetch"
 fi
 
