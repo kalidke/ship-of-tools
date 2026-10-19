@@ -484,8 +484,8 @@ mod busy_tests {
     use crate::sidecars::contract_tests::{pin_env, within, EnvPin};
     use std::time::Duration;
 
-    /// A `julia` stand-in: it says it is ready, then never reads its input.
-    const DEAF: &str = "#!/bin/sh\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nexec sleep 60\n";
+    /// A `julia` stand-in: it says it is ready, then never reads its input, and goes on through the interrupt signal.
+    const DEAF: &str = "#!/bin/sh\ntrap '' INT\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nexec sleep 60\n";
 
     /// `fut`'s output, failing the test when it waits 15 s.
     async fn bounded<F: std::future::Future>(what: &str, fut: F) -> F::Output {

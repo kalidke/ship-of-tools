@@ -45,11 +45,13 @@ const OUT_LOCK = ReentrantLock()
 # `repl.interrupt` names; `task` runs it. `stage` is where its user code is, and
 # so where an interrupt goes (`handle_interrupt`): `:running`, raised in the code
 # at once; `:waiting`, not started, so the interrupt is `:held` and the code never
-# runs (`run_user_code`); `:done`, past interrupting.
+# runs (`run_user_code`); `:done`, past interrupting. `asked` is whether an
+# interrupt request reached it here; one that stopped its code without one was the daemon's signal (`SIGNALED`).
 mutable struct Eval
     const id::Any
     const task::Task
     stage::Symbol
+    asked::Bool
 end
 
 # The eval holding the guard (or `nothing`), from its spawn until it releases the
@@ -57,6 +59,12 @@ end
 # to reject a second concurrent eval (the stdout/stderr redirect is
 # process-global, so overlapping evals would clobber each other's capture).
 const CURRENT_EVAL = Ref{Union{Eval,Nothing}}(nothing)
+
+# The eval_id of the last eval whose code an interrupt stopped that no request had brought here: an eval that never
+# yields holds this one thread, so `serve` reads the request only after the daemon's signal has stopped the code
+# (`Base.exit_on_sigint(false)`, `run_shim`). The request, read then, is answered for it (`handle_interrupt`). The next
+# eval's code clears it (`run_user_code`).
+const SIGNALED = Ref{Any}(nothing)
 
 # Why the REPL before this child was ended (the daemon's `SOT_PREVIOUS_END`: its display ended under it) and why this
 # child has no display of its own (`SOT_NO_DISPLAY`: on Linux no Xvfb could start), read at `serve` and said once, as a
@@ -71,6 +79,8 @@ const STARTUP_FAILURE = Ref("")
 # run it (`Base.load_julia_startup`, the depot search order Julia uses), with stdout already on stderr. An error in it is
 # said once at the first eval (`STARTUP_FAILURE`), and the shim still serves.
 function run_shim(io_in::IO, io_out::IO)
+    # The daemon's interrupt signal (SIGINT; a Ctrl+Break on Windows) is an InterruptException, never an exit.
+    Base.exit_on_sigint(false)
     point_stdout_away_from_wire!(io_out)
     try
         Base.load_julia_startup()
@@ -90,7 +100,8 @@ line on `io_in`; envelopes out on `io_out`.
 ADR 0009 phase-2 (streaming): `repl.eval` / `repl.run_file` spawn the
 evaluation on a task and return immediately, so the loop reads the next request
 (a `repl.interrupt`) whenever the eval yields. The task shares the loop's one
-thread: an eval that never yields holds the loop until it ends.
+thread: an eval that never yields holds the loop until it ends, or until the
+daemon's interrupt signal stops it (`handle_interrupt`).
 Each output frame is emitted as its own `repl.frame` **evt** envelope as it is
 produced; the request's `res` envelope is a terminal **ack** (no frames) sent
 once the eval finishes.
@@ -136,7 +147,7 @@ function serve(io_in::IO, io_out::IO)
     write_envelope(io_out, "evt", 0, "repl.ready",
         Dict(:julia => string(VERSION), :protocol => PROTOCOL_VERSION))
 
-    for line in eachline(io_in)
+    while (line = past_interrupts(() -> eof(io_in) ? nothing : readline(io_in))) !== nothing
         isempty(strip(line)) && continue
         req = try
             json_read(line)
@@ -167,6 +178,18 @@ function serve(io_in::IO, io_out::IO)
             flush(stderr)
             write_envelope(io_out, "res", id, op,
                 Dict(:error => sprint(showerror, e), :code => "repl_exception"))
+        end
+    end
+end
+
+# `f()`, again whenever an InterruptException stops it: a signal the daemon sent for an eval's code that lands in the
+# shim's own waiting instead (the code ended as it came) is dropped, and the wait goes on.
+function past_interrupts(f)
+    while true
+        try
+            return f()
+        catch e
+            e isa InterruptException || rethrow()
         end
     end
 end
@@ -245,21 +268,26 @@ function spawn_eval(work, io::IO, id, eval_id, op, ack)
         emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => elapsed_ms))
         write_envelope(io, "res", id, op, merge(ack, Dict(:elapsed_ms => elapsed_ms)))
     end
-    CURRENT_EVAL[] = Eval(eval_id, task, :waiting)
+    CURRENT_EVAL[] = Eval(eval_id, task, :waiting, false)
     schedule(task)
     return
 end
 
 # Runs the calling eval's user code, the only place an interrupt reaches the eval
 # (`handle_interrupt`): an interrupt held while the eval waited stops it here,
-# before the code runs. Outside an eval (a direct call) it just runs `f`.
+# before the code runs. An interrupt that stops the code with no request having
+# reached it is the daemon's signal (`SIGNALED`). Outside an eval (a direct call) it just runs `f`.
 function run_user_code(f)
     ev = CURRENT_EVAL[]
     (ev === nothing || ev.task !== current_task()) && return f()
     try
         ev.stage === :held && throw(InterruptException())
         ev.stage = :running
+        SIGNALED[] = nothing
         return f()
+    catch e
+        e isa InterruptException && !ev.asked && (SIGNALED[] = ev.id)
+        rethrow()
     finally
         ev.stage = :done
     end
@@ -410,17 +438,31 @@ end
 
 Interrupt the eval holding the guard (ADR 0009 phase-2), only in its user code
 (`run_user_code`). While the code runs, a real `InterruptException` is
-scheduled onto the eval's task and lands at its next yield/safepoint, the same
+scheduled onto the eval's task and lands at its next yield, the same
 semantics as Ctrl-C in the stock REPL on a single thread; before the code
 starts, the interrupt is held and the code never runs. Either way the eval
 answers with an `error` frame, then `done` and its `res`. An interrupt that
 names `eval_ids` reaches only an eval among them.
+
+Code that never yields holds this one thread, so `serve` cannot read the request
+while it runs: the daemon, hearing nothing, sends the child an interrupt signal,
+which Julia raises at the code's next safepoint, and, sent five times close
+together, forces into code with none (rust/backend/src/sidecars/repl/supervisor.rs,
+`Escalation`). The request is read once the code has stopped, and answered
+`interrupted:true` for the eval the signal stopped (`SIGNALED`).
 """
 function handle_interrupt(io::IO, id, payload)
     ev = CURRENT_EVAL[]
     named = get(payload, :eval_ids, nothing)
     if ev === nothing || istaskdone(ev.task) || ev.stage === :done ||
        (named !== nothing && !(ev.id in named))
+        stopped = SIGNALED[]
+        if stopped !== nothing && (named === nothing || stopped in named)
+            SIGNALED[] = nothing
+            write_envelope(io, "res", id, "repl.interrupt", Dict(:interrupted => true,
+                :note => "the eval never yielded, so the daemon's interrupt signal stopped it"))
+            return
+        end
         note = if ev !== nothing && !istaskdone(ev.task) && ev.stage === :done &&
                   (named === nothing || ev.id in named)
             "the eval has finished and is writing its answer"
@@ -432,6 +474,8 @@ function handle_interrupt(io::IO, id, payload)
         write_envelope(io, "res", id, "repl.interrupt", Dict(:interrupted => false, :note => note))
         return
     end
+    ev.asked = true
+    SIGNALED[] = nothing
     if ev.stage === :running
         schedule(ev.task, InterruptException(); error = true)
     else

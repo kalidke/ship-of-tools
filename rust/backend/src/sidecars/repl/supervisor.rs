@@ -158,6 +158,51 @@ impl Supervisor {
     }
 }
 
+/// How long the child must say nothing, with an interrupt unanswered, before each step of an [`Escalation`].
+const INTERRUPT_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
+/// The gap between the signals after the first, close enough together that Julia counts them as a forced interrupt.
+const INTERRUPT_BURST_GAP: std::time::Duration = std::time::Duration::from_millis(50);
+/// The signals an escalation sends in all: Julia forces the exception into code with no safepoint at the fifth.
+const INTERRUPT_SIGNALS: u8 = 5;
+
+/// An unanswered `repl.interrupt` the child says nothing through. An eval that never yields holds the shim's one
+/// thread, so the shim cannot read the request (julia/repl `handle_interrupt`): once the child has said nothing for
+/// `INTERRUPT_QUIET`, it is sent the interrupt signal (`Contained::interrupt`), which Julia raises at the eval's next
+/// safepoint; after `INTERRUPT_QUIET` more, the rest, `INTERRUPT_BURST_GAP` apart, which Julia forces into code with
+/// none. Any line from the child restarts the quiet, since the shim ran to write it; the interrupt's answer ends it.
+struct Escalation {
+    /// The interrupt's wire id: its answer ends the escalation.
+    id: u64,
+    /// When the next signal goes, if the child says nothing until then.
+    at: tokio::time::Instant,
+    /// The signals sent so far.
+    sent: u8,
+}
+
+impl Escalation {
+    fn new(id: u64) -> Self {
+        Self { id, at: tokio::time::Instant::now() + INTERRUPT_QUIET, sent: 0 }
+    }
+
+    /// The child wrote a line: the escalation ends if that answered it, and otherwise waits a full quiet again.
+    fn heard(mut self, pending: &HashMap<u64, oneshot::Sender<Result<Value>>>) -> Option<Self> {
+        self.at = tokio::time::Instant::now() + INTERRUPT_QUIET;
+        pending.contains_key(&self.id).then_some(self)
+    }
+
+    /// Send the next signal; the escalation goes on while it has signals left.
+    fn step(mut self, contained: &crate::lifecycle::child_signal::Contained) -> Option<Self> {
+        if let Err(e) = contained.interrupt() {
+            tracing::warn!(error = %e, "repl interrupt signal not sent");
+            return None;
+        }
+        self.sent += 1;
+        let gap = if self.sent == 1 { INTERRUPT_QUIET } else { INTERRUPT_BURST_GAP };
+        self.at = tokio::time::Instant::now() + gap;
+        (self.sent < INTERRUPT_SIGNALS).then_some(self)
+    }
+}
+
 /// Private test leaves in the closeout: a gate the retirement waits on before the checked termination (a join delay),
 /// and a one-shot flag that turns the retirement's result into an error.
 #[cfg(test)]
@@ -198,6 +243,8 @@ async fn supervisor_task(
     let mut collector_ids: HashMap<u64, u64> = HashMap::new();
     let mut next_id: u64 = 1;
     let mut stdout_lines = ChildLines::new(stdout);
+    // An unanswered interrupt the child says nothing through.
+    let mut escalation: Option<Escalation> = None;
 
     // Why the loop ended, which the close-out below names to every unfinished eval.
     let end = loop {
@@ -287,6 +334,9 @@ async fn supervisor_task(
                 // child death can close it out with synthetic frames.
                 if let Some(reply) = sub.reply {
                     pending.insert(id, reply);
+                    if sub.op == "repl.interrupt" && escalation.is_none() {
+                        escalation = Some(Escalation::new(id));
+                    }
                 } else if let (Some(eid), Some(owner)) = (eid, sub.owner) {
                     streaming.insert(eid, owner);
                 }
@@ -317,7 +367,8 @@ async fn supervisor_task(
                             &mut collector_ids,
                             &frame_tx,
                             &workspace_id,
-                        )
+                        );
+                        escalation = escalation.and_then(|e| e.heard(&pending));
                     }
                     Ok(None) => {
                         tracing::warn!("repl child stdout closed");
@@ -328,6 +379,10 @@ async fn supervisor_task(
                         break ReplEnded::Died;
                     }
                 }
+            }
+            _ = tokio::time::sleep_until(escalation.as_ref().map_or_else(tokio::time::Instant::now, |e| e.at)),
+                if escalation.is_some() => {
+                escalation = escalation.take().and_then(|e| e.step(&contained));
             }
             // The CHILD's exit ends this supervisor — not its pipes. Normally
             // the two coincide (the last stdout branch above sees EOF), but a

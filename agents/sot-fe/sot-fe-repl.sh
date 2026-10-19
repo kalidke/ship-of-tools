@@ -166,7 +166,7 @@ send_repl_interrupt() {
         # the request is enqueued before any reply is written. Status can NOT
         # confirm delivery (the wire has no busy/idle bit) — the only positive
         # confirmation is a reply, so re-send (harmless) rather than bounce.
-        echo "ERROR: no response to repl.interrupt within ${SEND_TIMEOUT}s via $ENDPOINT. That does NOT mean the interrupt failed — it may have landed and the reply was lost. Re-sending an interrupt is harmless; bouncing the kernel (--fresh) is the escalation if repeated interrupts change nothing (a non-yielding compute-bound eval never takes one)." >&2
+        echo "ERROR: no response to repl.interrupt within ${SEND_TIMEOUT}s via $ENDPOINT. That does NOT mean the interrupt failed — it may have landed and the reply was lost. Re-sending an interrupt is harmless; bouncing the kernel (--fresh) is the escalation if repeated interrupts change nothing (an eval that goes on through the daemon's interrupt signal)." >&2
         exit 1
     fi
     # The shim answers {interrupted:true} or {interrupted:false, note} — that
@@ -186,7 +186,7 @@ send_repl_interrupt() {
     case "$interrupted" in
         true)
             echo "eval interrupted — the running eval got an InterruptException; the kernel is KEPT (compiled packages intact)."
-            echo "note: the exception lands at the eval's next yield point — a non-yielding compute-bound eval may still be running; if repeated interrupts change nothing, escalate to --fresh."
+            echo "note: $(printf '%s' "$resp" | jq -r '.payload.note // "it landed at a yield point of the eval"')."
             ;;
         false)
             echo "nothing to interrupt: $(printf '%s' "$resp" | jq -r '.payload.note // "no eval in progress"') (the kernel is fine)."

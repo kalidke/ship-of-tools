@@ -142,8 +142,8 @@ function stream_eval_frames(f, emit)
     end
     # Drain whatever the readers haven't emitted yet (the close above lets them
     # hit eof). Ordering: all stdout/stderr frames precede value/error.
-    wait(reader_out)
-    wait(reader_err)
+    past_interrupts(() -> wait(reader_out))
+    past_interrupts(() -> wait(reader_err))
 
     if threw !== nothing
         stack = [Dict(
@@ -170,20 +170,23 @@ end
 Drain `pipe` to eof, emitting `{kind, text}` frames as bytes arrive. Only a
 character that a `readavailable` chunk cut waits for its other bytes
 (`utf8_prefix`); any other invalid byte is program output and goes on at once,
-and `write_json_string` writes it as U+FFFD.
+and `write_json_string` writes it as U+FFFD. An interrupt that lands here (the
+daemon's signal, sent for the eval's code as that code ended) does not stop the drain.
 """
 function stream_pipe(pipe, emit, kind)
     leftover = UInt8[]
-    try
-        while !eof(pipe)
+    while true
+        try
+            eof(pipe) && break
             data = readavailable(pipe)
             isempty(data) && continue
             append!(leftover, data)
             s, leftover = utf8_prefix(leftover)
             isempty(s) || emit(Dict(:kind => kind, :text => s))
+        catch e
+            e isa InterruptException && continue
+            break  # pipe closed/errored mid-read — stop draining.
         end
-    catch
-        # pipe closed/errored mid-read — stop draining.
     end
     if !isempty(leftover)
         emit(Dict(:kind => kind, :text => String(leftover)))

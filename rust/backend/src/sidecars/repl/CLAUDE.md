@@ -8,6 +8,7 @@ rust/backend/src/sidecars/CLAUDE.md.
 ## Files
 - `execute.rs`: repl.execute, the whole-report run
 - `execute_tests.rs`: native `repl.execute` submit-failure and res-only drawer completion, a run that times out behind a REPL still starting (Unix), plus the existing Unix shell reply/frame table.
+- `interrupt_tests.rs`: real Julia: an interrupt stops an eval that never yields, through the daemon's signal, and the REPL keeps its state.
 - `ops.rs`: repl.eval, repl.run_file, repl.interrupt, the run announcement (`announce_run`), and their stub-child tests (interrupt reach by the daemon's numbers, a full queue, a fresh run's announcement, a waiting run's answer on a restart and on a death, and a window's run named running from its write until its end)
 - `mod.rs`: the handle (`Repl`): submit, execute, interrupt and restart, the frame bus message and `ExecAccum`.
 - `numbers.rs`: a run's number: the daemon's one counter (`next`) and a window's own numbers for its own runs and how far each has gone (`CallerNumbers`, kept per window by the server's roster), with their table tests.
@@ -15,7 +16,8 @@ rust/backend/src/sidecars/CLAUDE.md.
 - `project_tests.rs`: real Julia bare/project workspace, package-write destination and all-entry spawn controls in isolated resource/depot fixtures (a copy of the whole shim folder, `ext/` included), whose first start compiles only the shim. Real owned-child parsed-argument/environment controls, the shim's WGLMakie extension loading on every spawn route with `display(fig)` announcing its page through it, and WGL page-secret exclusion controls that read every process of the REPL's tree (on Windows the Julia root's own command line cannot be read, so there the descendants alone), with a deliberate-leak sensitivity probe that finds a needle in the root and in a descendant, a killed child's temporary files removed with it, and (Linux) the child's own display, which only its cookie opens, which ends with the child on a restart, a death, a row's end and the daemon's stop, a process the child started detached ending with it at a restart, and whose end under a live child ends that child and what it started, in its group or detached, the next eval saying why first; no source-text assertions.
 - `restart_tests.rs`: noncooperative restart, retained senders, channel close, retired-generation grants and selected-project respawn, with owned child observations.
 - `tree_argv_tests.rs`: the command-line observer the page-secret and spawn controls share: every process of a child's tree (Linux and macOS its process group; Windows a walk of one CIM process listing that follows a parent edge only to a process created after that parent, since Windows reuses process ids) and each one's command line, with the walk's table test.
-- `supervisor.rs`: spawning the child and `supervisor_task`, its life: wire, routing and close-out on death.
+- `supervisor.rs`: spawning the child and `supervisor_task`, its life: wire, routing, the interrupt signal for a child
+  that says nothing through an interrupt (`Escalation`) and close-out on death.
 
 ## Start here
 mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for its life.
@@ -34,6 +36,12 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
 - `Repl::request_if_running` never spawns (`repl.interrupt` must not pay a spawn to answer "not running").
 - No submission waits on the child: one to a full queue is refused at once (`enqueue`, `ReplBusy`), and
   `repl.interrupt` waits at most `REPL_INTERRUPT_WAIT` (10 s) for the child's answer.
+- An eval that never yields holds the shim's one thread, so the shim reads no interrupt while it runs. A child that
+  says nothing for 1 s with an interrupt unanswered is sent the interrupt signal (`Contained::interrupt`), which Julia
+  raises at the eval's next safepoint; after 1 s more, four more 50 ms apart, the count at which Julia forces it into
+  code with no safepoint. Any line from the child restarts the quiet, so no signal follows the line that shows the eval
+  stopped, and the interrupt's answer ends the steps (`Escalation`). The shim answers that interrupt for the eval the
+  signal stopped (julia/repl `handle_interrupt`).
 - The REPL ops answer an error with one of these codes: `repl_busy` (the queue was full), `repl_eval_failed`,
   `repl_run_file_failed`, `repl_interrupt_failed` and `repl_restart_failed`; `repl.execute` reports a full queue as its
   outcome `busy` (ADR 0033).

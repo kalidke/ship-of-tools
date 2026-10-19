@@ -67,13 +67,24 @@ same semantics as `Ctrl-C` in the stock REPL — which surfaces as an `error` fr
 reaches only the evaluation's own code and the display of its value (a figure
 rendering, for example): an interrupt sent before that starts stops it before it runs,
 and one sent after it has finished does nothing. An evaluation that never yields (a
-tight numeric loop, a long `ccall`) holds the REPL's one thread until it ends: the
-REPL reads nothing meanwhile, so an interrupt goes unanswered (`sot-fe repl interrupt`
-says so after 10 s). A restart ends it at once: `r` on a `.jl` file in Files mode, or
-`sot-fe repl run <ws> <path> --fresh`, whose run every window's drawer shows. `Ctrl+C` in the drawer
-names, by number, the evaluations the drawer shows as running, and stops the running
-evaluation only if its number is one of them; each window numbers its own
-evaluations, so two windows on one REPL can share a number.
+tight numeric loop, a long `ccall`) holds the REPL's one thread, so the REPL cannot
+read the interrupt; when the REPL has said nothing for a second, the daemon sends it
+an interrupt signal, as `Ctrl-C` does to the stock REPL, which Julia raises at the
+code's next safepoint, and a second later four more, which force it into code with
+none (Julia then prints `WARNING: Force throwing a SIGINT` in the evaluation's
+output). The evaluation stops within about three seconds and the REPL keeps
+everything it defined; a stop forced inside a C library's call can leave that
+library's state broken, as a repeated `Ctrl-C` can in the stock REPL, and a restart
+is then the clean way on. On Windows the signal is a Ctrl+Break, which also reaches
+the console programs the evaluation started. Code that catches the
+`InterruptException` and goes on still holds the REPL (`sot-fe repl interrupt` says
+so after 10 s); a restart ends it at once: `r` on a `.jl` file in Files mode, or
+`sot-fe repl run <ws> <path> --fresh`, whose run every window's drawer shows. On
+Julia 1.12, a signal that reaches the REPL in the instant after the evaluation ended
+on its own can end the REPL. `Ctrl+C` in the drawer names, by number, the
+evaluations the drawer shows as running, and stops the running evaluation only if
+its number is one of them; each window numbers its own evaluations, so two windows
+on one REPL can share a number.
 
 ## [How agents use the REPL](@id agents-repl)
 

@@ -131,9 +131,12 @@ enough that the owner is not locked out, and say so if one wedges. Never re-run 
 `run_id` or the drawer first, or you execute the side effects twice. Budget
 generously for the first call per workspace (precompile).
 
-**Interrupt.** Lands at the eval's next yield point. A tight numeric loop or
-a long `ccall`/BLAS may never take it; if repeated interrupts change nothing,
-`--fresh` is the honest escalation. Never kill the kernel by pid.
+**Interrupt.** Lands at the eval's next yield point; an eval that never yields
+(a tight numeric loop) is stopped by the interrupt signal the daemon sends,
+within about three seconds, and the kernel keeps its state. A stop forced inside
+a long C or BLAS call can leave that library broken, and an eval that catches
+`InterruptException` goes on: `--fresh` is the escalation for either. Never kill
+the kernel by pid.
 
 **Output.** Collected and returned at the end — nothing streams. stdout+stderr
 are capped at 256 KiB combined and the cap keeps the **head**, so a long test

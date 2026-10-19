@@ -347,9 +347,10 @@ impl Repl {
             .await
             .map_err(|_| {
                 anyhow!(
-                    "the REPL did not answer {op} within {REPL_INTERRUPT_WAIT:?}: an eval that never yields keeps it \
-                     from reading anything until the eval ends, and a restart ends it now (`sot-fe repl run <ws> \
-                     <file> --fresh`, or `r` on a .jl file in the window)"
+                    "the REPL did not answer {op} within {REPL_INTERRUPT_WAIT:?}: its eval never yields and went on \
+                     through the interrupt signal too (it catches InterruptException, or a C call holds the thread), \
+                     and a restart ends it now (`sot-fe repl run <ws> <file> --fresh`, or `r` on a .jl file in \
+                     the window)"
                 )
             })?
             .map_err(|_| anyhow!("repl supervisor dropped reply channel"))?

@@ -41,9 +41,9 @@ Stops the RUNNING eval, keeps the kernel (compiled packages intact) — the
 least destructive recovery rung. Try this before `repl run --fresh` (which
 re-pays minutes of precompile) and long before any manual `kill`.
 Workspace-wide: it interrupts whatever eval is running there, regardless of
-who started it. Lands at the eval's next yield point, so a tight
-non-yielding compute loop may never take it — then `--fresh` is the honest
-escalation. Exit 0 = interrupted; 3 = nothing to interrupt; refuses (exit 3)
+who started it. Lands at the eval's next yield point; a tight non-yielding
+compute loop is stopped by the interrupt signal the daemon sends, within about
+three seconds. If it still goes unanswered, `--fresh` is the escalation. Exit 0 = interrupted; 3 = nothing to interrupt; refuses (exit 3)
 when the REPL is `not_started`/`dead` (sending would spawn a kernel) or
 `starting` (a boot isn't a wedge).
 
