@@ -158,7 +158,9 @@ use it after editing the workflow or before a first-of-its-kind release.
   HEAD == `origin/main`, a tag that does not exist and sorts above every tag on
   its line, and green CI at HEAD on main.
 - **Never** delete/re-cut a published tag that anyone may have fetched — cut a
-  patch release instead. A broken `-rc.N` may be deleted (tag + release) since
-  rc consumers are just us.
+  patch release instead. A broken candidate may be deleted (tag and release) and
+  re-cut under the same number only while its release is still a draft that
+  nobody can update to. Once it is published it is never re-cut: the fix goes
+  into the next rc.
 - Publishing visibility and release availability are maintainer-gated. **Never
   treat a local tag or release procedure as permission to publish the repo.**
