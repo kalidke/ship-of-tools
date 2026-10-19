@@ -14,8 +14,8 @@ video 1235, docs 1236, docs pool 1237–1240, WGLMakie/Bonito 1241
 proven and recurring: a box whose launcher predates a port serves dead pages
 until a relaunch (the PR #11 forward-gap; the 2026-07-20 WGL box-B incident),
 and every NEW backend port means touching every launcher + one relaunch per
-box. The maintainer's ruling (2026-07-20): **"sot is designed to have
-transparent FE switching or multiple FE"** — reachability must be transparent
+box. The rule (decided 2026-07-20): **sot is designed to have
+transparent FE switching or multiple FE** — reachability must be transparent
 *by construction*, not per-box-checklist.
 
 ADR 0024 already named the route (`0024:159-162`): *"Proxy HTTP over the

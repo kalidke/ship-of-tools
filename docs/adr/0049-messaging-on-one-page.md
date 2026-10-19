@@ -23,7 +23,7 @@ guarantees, this ADR the design.
 Messaging was redesigned repeatedly without removing the old parts, so several delivery
 routes and wake paths ran at once, and the material a session loads at start
 contradicted itself — a ruling that reaches nothing a session loads changes nothing.
-The owner asked for the fix as "agree on the one page comm system and then cleanup".
+The fix is to agree on the one page comm system and then clean up.
 
 ## Decision
 
@@ -202,11 +202,10 @@ inherits the profile's access list (the user, SYSTEM and Administrators).
 ## Why the daemon and not the frontend
 
 - The daemon types, not the frontend, because several frontends can show one row and
-  each would type, and a closed window would leave the row deaf — put to the owner and
-  approved.
+  each would type, and a closed window would leave the row deaf — approved.
 - The session reads the message through `comm-poll.sh` rather than having it pasted,
   because a pasted message is never marked read, so it would show again, hold the next
-  turn open, and read as the owner's own words — put to the owner and approved.
+  turn open, and read as the owner's own words — approved.
 - The check repeats every two seconds rather than once at filing time, because one try
   misses a row that is busy, compacting or restarting at that moment.
 

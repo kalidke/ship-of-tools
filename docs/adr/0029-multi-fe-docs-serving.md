@@ -128,7 +128,7 @@ explicit, not a silent narrowing of ADR 0024.
   lands. Tracked as the trigger to build the port pool.
 
 
-## Update 2026-07-03 — Option B IMPLEMENTED (per the maintainer: "make proper fix now")
+## Update 2026-07-03 — Option B IMPLEMENTED
 
 The deferred per-port pool is in: root-relative entry HTML routes to a
 dedicated port from `site_port()+1..=+POOL_SIZE` (1237-1240 by default) —

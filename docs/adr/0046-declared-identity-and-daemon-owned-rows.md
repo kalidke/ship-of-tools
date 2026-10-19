@@ -1,6 +1,6 @@
 # ADR 0046: Declared identity, daemon-owned rows, and the resident attach
 
-**Status:** current — Accepted — owner-approved plan (2026-09-13); decision text through three Codex rounds (scope cut after round 2: the work-state reducer port and the launch-recipe file deferred to sprint 2); lanes in progress. Families A, B, D and the now-part of E of the merged elegance audit (ops sidecar, `audits/2026-09-13-elegance-audit-merged.md`); the switch-latency paper's option A. Families C, F, G, H and the tmux deletion are a second sprint.
+**Status:** current — Accepted — plan approved (2026-09-13); decision text through three Codex rounds (scope cut after round 2: the work-state reducer port and the launch-recipe file deferred to sprint 2); lanes in progress. Families A, B, D and the now-part of E of the merged elegance audit (ops sidecar, `audits/2026-09-13-elegance-audit-merged.md`); the switch-latency paper's option A. Families C, F, G, H and the tmux deletion are a second sprint.
 **Date:** 2026-09-13
 
 Amends ADR 0010, 0023, 0025 (§2, §4, the caption update, `fe_handle`),
@@ -505,7 +505,7 @@ on the backend host, merge; Codex on the design-bearing ones.
 
 ## The tmux runtime is deleted (v0.6.0)
 
-Owner ruling at the close of the sprint: a session is a capsule row whose
+Decided at the close of the sprint: a session is a capsule row whose
 agent is claude, codex or bash; the daemon supervises it; comm lives in the
 leg. Everything tmux is deleted — not migrated, not kept behind a flag: the
 daemon's tmux runtime arm, the per-connection LLM-pane pty, the `tmux.*`
@@ -518,7 +518,7 @@ modes. `runtime` stays on the wire as an additive field whose only value is
 
 ## Update (0.6.6): every leg starts a fresh conversation (FRESH-LEG)
 
-Decision 4's capsule default, `--continue`, is withdrawn (owner ruling, 2026-10-09): it resumed "the most recent
+Decision 4's capsule default, `--continue`, is withdrawn (decided 2026-10-09): it resumed "the most recent
 conversation" by the account's per-folder selector on every restart, a conversation nothing named. A row's agent now
 starts a fresh conversation on every leg; the claude and codex capsule recipes carry no resume token (`claude_argv`,
 `codex_argv` in `rust/backend/src/agents/argv.rs`), and the daemon no longer passes `--first-leg-without --continue`

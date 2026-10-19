@@ -1602,7 +1602,7 @@ binary.
    EndRun — the capsule survives headless and the next start ADOPTS it,
    never silently).
 
-**Build-order amendment (owner ruling, 2026-09-01).** After step 6 U3
+**Build-order amendment (decided 2026-09-01).** After step 6 U3
 (the FE attach client) lands, the ladder proceeds to FIRST-CLASS LOCAL
 SESSIONS and the P4 bridge BEFORE step 6 U4 (the drawer cutover, launcher
 stop handshake, upgrade transaction). Rationale: U3 is the client every
