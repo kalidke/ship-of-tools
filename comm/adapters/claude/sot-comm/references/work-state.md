@@ -22,12 +22,14 @@ A row is a small SET OF FACTS, not one state you set directly:
 | `question` | the question text | `blocked "<q>"` | a `prompt` event with origin `user`; `waiting`; explicit `working`/`idle`/`done` |
 | `waiting` | the wait summary | `waiting "<s>"` | explicit `working`/`idle`/`done` |
 | `done` | `true` | explicit `done`; `stop` (when `floor` was `user` and nothing else is pending) | a `prompt` event with origin `user`; explicit `working`/`idle`/`blocked`/`waiting`; viewing the row |
+| `dialog` | the dialog's text | `dialog "<t>"`: a Codex row's `PermissionRequest` hook; for a Claude row, the daemon, from the row's screen | `resumed`; `prompt` and `stop` |
 | `note` | the declaration's own line | `working`/`idle`/`done` with a summary | `working`/`idle`/`done` with `""`; `blocked` or `waiting` with text |
 
 Every write (event or declaration) re-reduces `state` and `summary` from
 whatever facts remain, in ONE place, `comm-status.sh`:
 
 ```
+dialog set                     -> blocked   summary = dialog
 question set and floor absent  -> blocked   summary = question
 floor present                  -> working   summary = note
 waiting set                    -> waiting   summary = waiting
@@ -54,11 +56,21 @@ has one; when it has none the stamp is refused: rc 2, stderr
 `comm-status.sh: <verb> needs its text -- stamp discarded`, nothing written.
 A script that stamped a bare `blocked` or `waiting` now shows that error.
 
-`AskUserQuestion` (Claude) and the permission prompt (Codex) are the
-session yielding to the owner while the harness pauses: their PreToolUse
-hooks send `blocked` then `stop` — a real turn end, not a hold. The
-answer arrives as that tool's PostToolUse, which sends `prompt` with
-origin `user`, exactly like a fresh turn start.
+`AskUserQuestion` (Claude) is the session yielding to the owner while the
+harness pauses: its PreToolUse hook sends `blocked` then `stop` — a real turn
+end, not a hold. The answer arrives as that tool's PostToolUse, which sends
+`prompt` with origin `user`, exactly like a fresh turn start.
+
+A permission dialog is the `dialog` fact, which reads red over the running turn
+and touches no other fact. On a Codex row its `PermissionRequest` hook sends
+`dialog "codex permission request: <tool>"` and no `stop`; the heartbeat finds
+`state/dialog-<key>.marker` at the call's PostToolUse and sends `resumed`, and
+the turn's `stop` and every `prompt` clear it too. On a Claude row the daemon
+reads the screen and stamps `dialog "claude dialog: <question>"` and `resumed`
+itself, through the entry only sotd may use; no hook sends it. A Claude row at
+rest shows none (a background agent's dialog after the lead's Stop reads idle),
+and a row left `working` by a turn with no Stop reads red while a person has a
+select menu open on it.
 
 ### Viewing clears the `done` fact and the badge, never `question` or `waiting`
 
@@ -166,7 +178,8 @@ One red row was seen with an empty question, and the process that wrote the
 empty text was never identified. The refusal above means a textless
 `blocked` or `waiting` can no longer paint a row, so the fix does not depend
 on finding it. If a row ever shows red with text its own session never wrote,
-re-open it.
+re-open it, unless the text is the daemon's own `claude dialog ...` (a dialog
+shows on that row's screen, which is expected).
 
 Two more limits are known. An AskUserQuestion payload with no question text
 still leaves the answer marker before the stamp is refused (real payloads

@@ -28,8 +28,9 @@ priority) sits above the `with_lock` call that applies it. For what the Stop hoo
 - The daemon stamps one fact: a Claude row's `dialog`, read from the row's screen (no Claude Code hook says when a
   permission dialog shows; `rust/backend/src/comm/wake/dialog.rs`). It stamps through this script's entry
   `SOT_COMM_ROW_HANDLE`, the one stamp made from outside the row, and the exception to "a process outside the row stamps
-  as nobody": a process that sets it can paint or clear one row's `dialog` and nothing else (`dialog` and `resumed`
-  only, any other verb exits 2; no identity derived; no marker; the reduction recomputes that row's state and summary).
+  as nobody": honored only for a caller whose parent is sotd (any other exits 2), it paints or clears one row's `dialog`
+  and nothing else (`dialog` and `resumed` only, any other verb exits 2; no identity derived; no marker; a `dialog` lands
+  only on a row with a floor; the reduction recomputes that row's state and summary).
   Otherwise the daemon clears only `done`, when a person views the row (`clear_comm_unread` in
   `rust/backend/src/comm/registry/registry.rs`).
 - The auditor fails open: any internal failure, a missing `claude`, `SOT_TURN_AUDITOR=0` or `auditor.off` in the comm

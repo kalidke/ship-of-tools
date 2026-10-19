@@ -39,7 +39,8 @@ backend; charter: comm/CLAUDE.md.
   refused as stale wrote nothing and leaves the line owed the same way (`WakeOutcome::EnterRefused`).
 - The dialog tick (`dialog.rs`, every DIALOG_EVERY, 5 s, Unix only) reads Ready capsule rows whose agent is `claude`, with
   a declared handle and an entry that reads `working` or carries a `dialog` fact (`due`), one watcher attach each (never
-  the pen, a resize or a record frame). A sweep is awaited before the next tick and missed ticks are skipped.
+  the pen, a resize or a record frame). A row left `working` by a turn with no Stop (Esc, a bare No, a reauth, an API
+  error) is read, so a select menu a person opens there reads red until it closes (ADR 0044, L0). A sweep is awaited before the next tick and missed ticks are skipped.
 - `dialog_of` says a screen shows a dialog only when no main input box (`main_box_shown`: a glyph and the NBSP between
   two borders) is on screen and one of the last DIALOG_ROWS (30) rows is a dialog footer (`is_dialog_footer`: a line that
   starts with "Enter to select" or "Esc to cancel" and a middle dot). "Do you want to" only names the summary.
