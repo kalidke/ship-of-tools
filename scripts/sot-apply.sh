@@ -264,6 +264,14 @@ esac
 [ -n "$CHECKOUT" ] && [ -n "$COMMIT" ] && [ -n "$ASSET" ] && [ -n "$ASSET_SHA" ] || {
     log "pending pointer is missing fields — dropping"; drop_pending; exit 0; }
 
+# A prefix or home the rendered unit and wrapper cannot carry is no update to apply: refused before the flip, with the
+# pointer dropped, so a window launch never loops on a try-restart (the predicate's own line names the path and character).
+if sot_path_refused prefix "$PREFIX" || sot_path_refused home "${HOME:-}"; then
+    log "pending pointer will not apply (the prefix or home above) — dropping"
+    drop_pending
+    exit 0
+fi
+
 # Stage dirs are keyed <tag>-<target> (shared roots serve several platforms).
 READY="$UPDATES/$TAG-$TARGET"
 TOP="${ASSET%.tar.gz}"; TOP="${TOP%.zip}"
