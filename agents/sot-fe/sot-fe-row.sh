@@ -7,7 +7,7 @@
 # `tr -d '\n'` strips that wrap uniformly instead of maintaining a second
 # encode path.
 sot_base64_encode() {
-    if base64 --help 2>&1 | grep -q -- ' -w'; then
+    if base64 --help 2>&1 | grep -- ' -w' >/dev/null; then
         base64 -w0
     else
         base64 | tr -d '\n'

@@ -79,7 +79,7 @@ fe_out="$(sot_bounded 5 "$SCRIPT_DIR/sot-fe" version 2>/dev/null || true)"
 # visible rather than read as "no sessions" -- pulled out of the daemon
 # row's own build column ("..., up 3h)"), never re-derived, and omitted
 # (falling back to the plain header) for a daemon predating the field.
-daemon_uptime="$(printf '%s\n' "$fe_out" | grep -oE ', up [^)]+\)' | head -1 | sed -E 's/^, up //; s/\)$//')"
+daemon_uptime="$(printf '%s\n' "$fe_out" | grep -oE ', up [^)]+\)' | sed -n 1p | sed -E 's/^, up //; s/\)$//')"
 if [ -n "$daemon_uptime" ]; then
     echo "attached frontend boxes (this daemon, up $daemon_uptime):"
 else

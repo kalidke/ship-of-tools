@@ -106,8 +106,8 @@ if checks_enabled artifact; then
     # text -- a Read of an ARTIFACT_RE path (e.g. CLAUDE.md) does not count
     # (2026-09-14: reads alone must not fire this, now that .md is in scope).
     artifact_tools="$(printf '%s' "$tools" | grep -E '^(Write|Edit|NotebookEdit|Bash)  ')"
-    if printf '%s\n%s' "$artifact_tools" "$last_text" | grep -qE "$ARTIFACT_RE"; then
-        printf '%s' "$tools" | grep -qE "$SHOWN_RE" || candidates+=("artifact")
+    if grep -qE "$ARTIFACT_RE" <<<"$artifact_tools"$'\n'"$last_text"; then
+        grep -qE "$SHOWN_RE" <<<"$tools" || candidates+=("artifact")
     fi
 fi
 
@@ -118,8 +118,8 @@ fi
 case "$row_state" in
   *waiting=[!-]*)
     if checks_enabled stale-waiting \
-        && printf '%s\n%s' "$tools" "$last_text" | grep -qiE "task-notification|completed|finished" \
-        && ! printf '%s' "$tools" | grep -qE 'RUN_IN_BACKGROUND|^Monitor '; then
+        && grep -qiE "task-notification|completed|finished" <<<"$tools"$'\n'"$last_text" \
+        && ! grep -qE 'RUN_IN_BACKGROUND|^Monitor ' <<<"$tools"; then
         candidates+=("stale-waiting")
     fi ;;
 esac
@@ -127,12 +127,12 @@ esac
 # Blind badge: an image WAS surfaced this turn, but no Read/view of an image
 # appears in the turn context — the session badged what a filename suggested,
 # not what it saw (2026-07-03 incident: three near-black renders in a row).
-if checks_enabled blind-badge && printf '%s' "$tools" | grep -E "$SHOWN_RE" | grep -qiE "$ARTIFACT_RE"; then
-    printf '%s' "$tools" | grep -E "^Read " | grep -qiE "$ARTIFACT_RE" \
+if checks_enabled blind-badge && grep -E "$SHOWN_RE" <<<"$tools" | grep -iE "$ARTIFACT_RE" >/dev/null; then
+    grep -E "^Read " <<<"$tools" | grep -iE "$ARTIFACT_RE" >/dev/null \
         || candidates+=("blind-badge")
 fi
 
-if checks_enabled background && printf '%s' "$tools" | grep -qE 'RUN_IN_BACKGROUND|^Monitor |^Agent |^Task '; then
+if checks_enabled background && grep -qE 'RUN_IN_BACKGROUND|^Monitor |^Agent |^Task ' <<<"$tools"; then
     case "$row_state" in waiting*|blocked*|*waiting=[!-]*) ;; *) candidates+=("background") ;; esac
 fi
 
