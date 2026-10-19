@@ -271,6 +271,7 @@ check "an effort turn (many tool calls) ending green with no marker gets one sof
 check "a long quiet turn is an effort by duration" case_long_quiet_user_turn_is_an_effort_by_duration
 check "a short exchange step is never nudged" case_short_exchange_turn_is_never_nudged
 check "an effort on a machine wake is not nudged" case_effort_machine_turn_is_not_nudged
+check "the turn auditor reads the row's facts, not its state" case_the_auditor_reads_the_facts_not_the_state
 check "marker variants (bold closing before the colon, a heading) still stamp" case_marker_variants_bold_after_and_heading_still_stamp
 check "a turn that already has its block is never nudged, whatever the block says" case_turn_with_a_block_is_never_nudged_twice
 check "a marker naming an unsurfaced result is blocked by the artifact audit" case_marker_artifact_audit_blocks_unsurfaced_result
