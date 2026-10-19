@@ -89,7 +89,9 @@ sot_require_tools() {
 # (setsid, as ssh's ControlPersist master does). On Windows, Git Bash emulates the group and its signals for its own
 # programs; whether the bound ends a native Windows program (sot_dial's sotd.exe, the auditor's claude) or its
 # children is not established. Not GNU timeout: it returns once its own child ends, leaving a TERM-ignoring
-# descendant holding the output, and macOS has none.
+# descendant holding the output, and macOS has none. Only CMD's own process asks for its group, and it trusts the
+# group it is then in, not the call's status: on macOS 26 a setpgid by the parent for the same child, at the same
+# moment, made either call fail with EPERM though the group was made, and CMD never ran (hosted run 39218378845).
 sot_bounded() {
     command -v perl >/dev/null 2>&1 || {
         echo "sot_bounded: no perl to bound $2 with" >&2
@@ -103,12 +105,11 @@ sot_bounded() {
         my $pid = fork;
         if (!defined $pid) { print STDERR "sot_bounded: fork: $!\n"; exit 125; }
         if (!$pid) {
-            if (!setpgrp(0, 0)) { print STDERR "sot_bounded: no process group for $cmd[0]: $!\n"; POSIX::_exit(125); }
+            if (!setpgrp(0, 0) && getpgrp() != $$) { print STDERR "sot_bounded: no process group for $cmd[0]: $!\n"; POSIX::_exit(125); }
             exec { $cmd[0] } @cmd;
             print STDERR "sot_bounded: $cmd[0]: $!\n";
             POSIX::_exit(127);
         }
-        setpgrp($pid, $pid);
         my ($why, $late, $st) = ("", 0, undef);
         $SIG{ALRM} = sub { $late = 1 };
         $SIG{$_} = sub { $why ||= $_[0] } for qw(TERM INT HUP);

@@ -346,6 +346,50 @@ kill -0 "$(cat "$HOME/catch.pid")" 2>/dev/null && echo "catch alive" || echo "ca
     }
 }
 
+/// Only the command's own process asks for its group, and it trusts the group it is then in, not setpgid's status: on
+/// macOS 26 a setpgid by the parent for the same child, at the same moment, made either call fail with EPERM though the
+/// group was made, and the command never ran (hosted run 39218378845). A module PERL5OPT loads into the bound's perl
+/// stands in for that kernel: in the forked child its setpgrp makes the group and answers EPERM, so the command runs in
+/// its own group with its own status, or answers EPERM alone, so nothing runs (125); in the bound's own perl it writes
+/// down every call, and there is none. Unix only, as the other group cases.
+#[cfg(unix)]
+#[test]
+fn the_comm_bound_trusts_the_group_not_the_status_of_its_call() {
+    for (owner, source) in owners() {
+        let (lines, _, said) = bound_case(
+            source,
+            r#"mkdir -p "$HOME/lib"
+cat > "$HOME/lib/Misreport.pm" <<'PM'
+package Misreport;
+use Errno ();
+my $bound = $$;
+*CORE::GLOBAL::setpgrp = sub {
+    if ($$ == $bound) {
+        if (open(my $log, ">>", "$ENV{HOME}/bound.calls")) { print $log "@_\n"; close $log; }
+        return CORE::setpgrp($_[0], $_[1]);
+    }
+    CORE::setpgrp(0, 0) if $ENV{MISREPORT} eq "made";
+    $! = Errno::EPERM();
+    return 0;
+};
+1;
+PM
+misreport() { (export PERL5LIB="$HOME/lib" PERL5OPT=-MMisreport MISREPORT="$1"; sot_bounded 5 sh -c 'echo "$$ $(ps -o pgid= -p $$ | tr -d " ")" > "$HOME/$MISREPORT.ran"; exit 7'); }
+t0=$(now_ms); misreport made; rc=$?; took_since "$t0"; echo "made $rc"
+read -r pid pgid < "$HOME/made.ran" && [ "$pid" = "$pgid" ] && echo "made led its group" || echo "made led no group"
+misreport none; echo "none $?"
+[ -e "$HOME/none.ran" ] && echo "none ran" || echo "none never ran"
+[ -e "$HOME/bound.calls" ] && echo "the bound asked for $(cat "$HOME/bound.calls")" || echo "the bound never asked"
+"#,
+        );
+        assert_eq!(
+            lines,
+            "made 7\nmade led its group\nnone 125\nnone never ran\nthe bound never asked\n",
+            "{owner}: {said}"
+        );
+    }
+}
+
 /// `sot_bounded`, the bound each of the four timed comm calls runs under, on this platform's bash and the perl first on
 /// its PATH, the interpreter those calls use: the first line shows it is perl 5 and loads POSIX. One perl process owns
 /// the deadline and the command's process group. The command keeps the shell's stdin and its own status; a late command
