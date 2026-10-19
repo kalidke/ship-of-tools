@@ -26,7 +26,9 @@ destroy proof. `observer.rs::ensure_running` for how a row's phase is polled; `h
 ## Rules
 - A phase's wire string is written once, in `Phase::as_wire_str`; `probe.rs`'s constants and `phase_str` read it. The one exception is `topology/cli.rs`, which compares a reply's `phase` against "starting" and "ready" itself.
 - `observer::observe` is the one call that feeds a row's phase cell, through `Workspace::apply_phase_observation`.
-- One observer task runs per row; `observer::ensure_running` starts it and `Workspaces::insert` never does.
+- One observer task runs per row id; `observer::ensure_running` starts it and `Workspaces::insert` never does. It
+  holds the id, not the row, and feeds the row registered under it when each round ends, so a same-slug
+  `workspace.create` that replaces the row is observed and the replaced row is let go.
 - The headless client never resizes the pane and takes the pen only to deliver one input (`headless::type_into`).
 - Once the text is recorded, an Enter failure is never a hard error (`headless::write_and_enter`, `enter_outcome`).
 - A watchdog exists only for a supervisor this daemon spawned (`start::spawn_and_watch` calls `watchdog::install_watchdog`).

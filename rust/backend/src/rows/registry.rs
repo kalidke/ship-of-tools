@@ -684,4 +684,57 @@ mod tests {
             "the observer task must stop ticking once its row is removed"
         );
     }
+
+    /// A same-slug `workspace.create` of a stopped capsule row replaces the row's `Arc` under its id
+    /// (`insert_replacing`), observes its settle into the new row, and calls `observer::ensure_running`, which finds
+    /// the id's observer already running. That observer's rounds must land on the row the registry holds, and the row
+    /// it replaced must be let go, with its watcher and its kernel and REPL children.
+    #[tokio::test]
+    async fn a_running_observer_feeds_the_row_a_same_slug_insert_registers() {
+        use crate::rows::run::observer::{ensure_running, observe};
+        use crate::rows::workspace::{Observation, Phase, SupervisorIdentity};
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = ["XDG_STATE_HOME", "LOCALAPPDATA"].map(crate::paths::EnvGuard::capture);
+        // No voyage pointer under this state root, so every observer round reads `Stopped`.
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_STATE_HOME", state.path());
+        std::env::set_var("LOCALAPPDATA", state.path());
+        let reg = Workspaces::new();
+        let register = || {
+            let mut ws =
+                Workspace::from_label("refresh", PathBuf::from("/p/refresh"), false, "none".into(), String::new(), String::new());
+            ws.runtime = "capsule".to_string();
+            reg.insert(ws)
+        };
+        let ready = |pid| Observation::Phase { phase: Phase::Ready, supervisor: SupervisorIdentity { pid, created: 100 }, voyage: None };
+        // Three of the observer's rounds (`observer::POLL_INTERVAL`, 2 s).
+        let stops = |ws: Arc<Workspace>| async move {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+            while ws.phase() != Phase::Stopped && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            ws.phase() == Phase::Stopped
+        };
+
+        let old = register();
+        observe(&old, ready(1));
+        ensure_running(&reg, &old);
+        assert!(stops(old.clone()).await, "test setup: the observer polls the loaded row");
+
+        let new = register();
+        let registered = reg.resolve(Some(&old.workspace_id)).expect("the row");
+        assert!(Arc::ptr_eq(&registered, &new) && !Arc::ptr_eq(&new, &old), "test setup: the insert replaced the row under its id");
+        drop(registered);
+        observe(&new, ready(2));
+        ensure_running(&reg, &new);
+        assert!(
+            stops(new.clone()).await,
+            "the refreshed row is never observed: it still reads {:?} after three rounds, the row it replaced {:?}",
+            new.phase(),
+            old.phase()
+        );
+        let replaced = Arc::downgrade(&old);
+        drop(old);
+        assert!(replaced.upgrade().is_none(), "the row the insert replaced is still held");
+    }
 }

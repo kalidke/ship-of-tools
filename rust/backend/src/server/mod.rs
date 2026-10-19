@@ -100,8 +100,8 @@ pub async fn run(opts: Opts) -> Result<()> {
     // The daemon holds the link to the hub and files for its own comm folder
     // (0031 Part 3); a box with no such link returns at once.
     tokio::spawn(crate::comm::mail::hub_link::run());
-    // Held until `run` returns: the boot-time row object keeps its watcher and children alive, as before the cut.
-    let _default_ws = seed_default_row(&opts, &files_mode, &workspaces);
+    // The registry alone holds the row: a same-slug create that replaces it frees this one's watcher and children.
+    seed_default_row(&opts, &files_mode, &workspaces);
 
 
     // Lazily-spawned MathJax sidecar. Cheap to construct (no child process

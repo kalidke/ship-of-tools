@@ -28,8 +28,9 @@ pub(super) fn observe_with_adoption(ws: &crate::rows::Workspace, observation: cr
     super::observer::observe(ws, observation);
 }
 
-/// Idempotent: ensures a lifecycle-observer task runs for `ws`, never from `Workspaces::insert`.
-pub fn ensure_running(workspaces: &Workspaces, ws: &Arc<Workspace>) {
+/// Idempotent: ensures a lifecycle-observer task runs for `ws`'s id, never from `Workspaces::insert`. The task keeps
+/// the id, not `ws`: a same-slug `workspace.create` replaces the row under its id and finds this task running.
+pub fn ensure_running(workspaces: &Workspaces, ws: &Workspace) {
     if workspaces.has_observer(&ws.workspace_id) {
         return;
     }
@@ -41,24 +42,19 @@ pub fn ensure_running(workspaces: &Workspaces, ws: &Arc<Workspace>) {
     // Obtained outside the loop so removal can interrupt a round blocked in `spawn_blocking`.
     let cancel_handle = persistent.cancel_handle();
     let cancel: Arc<dyn Fn() + Send + Sync> = Arc::new(move || cancel_handle.cancel());
-    let ws_for_task = ws.clone();
-    let workspaces_for_task = workspaces.clone();
-    let workspace_id = ws.workspace_id.clone();
-    let handle = tokio::spawn(run(ws_for_task, state_dir, persistent, workspaces_for_task));
-    workspaces.install_observer(&workspace_id, handle, cancel);
+    let handle = tokio::spawn(run(ws.workspace_id.clone(), state_dir, persistent, workspaces.clone()));
+    workspaces.install_observer(&ws.workspace_id, handle, cancel);
 }
 
-/// Immediate first round, then every `POLL_INTERVAL`; exits once its row is gone.
+/// Immediate first round, then every `POLL_INTERVAL`; exits once its row is gone. Each round feeds the row registered
+/// under `workspace_id` when the round ends, and holds it no longer.
 async fn run(
-    ws: Arc<Workspace>,
+    workspace_id: String,
     state_dir: PathBuf,
     mut persistent: sot_log::attach_client::supervisor_client::Persistent,
     workspaces: Workspaces,
 ) {
     loop {
-        if workspaces.resolve(Some(&ws.workspace_id)).is_none() {
-            return;
-        }
         let dir = state_dir.clone();
         let (returned, observation) = tokio::task::spawn_blocking(move || {
             let obs = poll_once(&dir, &mut persistent);
@@ -69,7 +65,10 @@ async fn run(
             (sot_log::attach_client::supervisor_client::Persistent::new(&state_dir), Observation::Failed)
         });
         persistent = returned;
-        observe(&ws, observation);
+        match workspaces.resolve(Some(&workspace_id)) {
+            Some(ws) => observe(&ws, observation),
+            None => return,
+        }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
