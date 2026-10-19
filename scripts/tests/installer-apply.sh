@@ -38,6 +38,11 @@ mk_apply_fixture() {  # <dir> <owned-unit 0|1> <owned-wrapper 0|1>
     chmod 0755 "$h/.local/bin/sot-launch"
     cp "$h/.config/systemd/user/sotd.service" "$d/unit.orig"; cp "$h/.local/bin/sot-launch" "$d/wrap.orig"
 }
+seed_link() {  # <dir>: the unit as an earlier install enabled it, with the old link
+    mkdir -p "$1/home/.config/systemd/user/default.target.wants"
+    ln -s ../sotd.service "$1/home/.config/systemd/user/default.target.wants/sotd.service"
+}
+wiring() { local u="$1/home/.config/systemd/user"; printf '%s %s' "$([ -f "$u/default.target.d/sotd.conf" ] && echo dropin || echo none)" "$([ -L "$u/default.target.wants/sotd.service" ] && echo link || echo none)"; }
 run_apply() {  # <dir> [args]: sets AP_RC; rmdir is not in $TOOLS, so the staging lock is cleared here
     local d="$1"; shift
     rm -rf "${d:?}/prefix/updates/.lock"
@@ -82,7 +87,7 @@ check "a foreign wrapper is byte-identical" "same" "$(cmp -s "$d/wrap.orig" "$d/
 
 # ---------------------------------------------------------------------------
 case_start "apply_failure_restores_unit_and_wrapper"
-d="$WORK/ap5"; mk_apply_fixture "$d" 1 1
+d="$WORK/ap5"; mk_apply_fixture "$d" 1 1; seed_link "$d"
 chmod 0555 "$d/home/.local/bin"
 run_apply "$d"
 chmod 0755 "$d/home/.local/bin"
@@ -92,12 +97,15 @@ check "sotd is back to its pre-apply content" "old-sotd" "$(cat "$d/prefix/bin/s
 check "repo/current points at the previous checkout" "$d/prev-co" "$(readlink "$d/prefix/repo/current")"
 check "the pending pointer is still armed" "yes" "$([ -f "$d/prefix/updates/pending-$TGT.json" ] && echo yes || echo no)"
 check "the wrapper is byte-equal to the original" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
+check "the boot drop-in stays, written before the wrapper failed" "dropin none" "$(wiring "$d")"
 
 # ---------------------------------------------------------------------------
 case_start "rollback_restores_unit_and_wrapper"
-d="$WORK/ap6"; mk_apply_fixture "$d" 1 1; run_apply "$d"
+d="$WORK/ap6"; mk_apply_fixture "$d" 1 1; seed_link "$d"; run_apply "$d"
 check "the apply re-rendered the unit" "1" "$(grep -c '^Restart=on-failure$' "$d/home/.config/systemd/user/sotd.service" || true)"
+check "the apply moved the enable link onto the boot drop-in" "dropin none" "$(wiring "$d")"
 run_apply "$d" --rollback
+check "the rollback keeps the drop-in, which starts the unit whatever its text" "dropin none" "$(wiring "$d")"
 check "the unit is byte-equal to the original" "same" "$(cmp -s "$d/unit.orig" "$d/home/.config/systemd/user/sotd.service" && echo same || echo differ)"
 check "the wrapper is byte-equal to the original" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
 check "the wrapper is executable" "yes" "$([ -x "$d/home/.local/bin/sot-launch" ] && echo yes || echo no)"

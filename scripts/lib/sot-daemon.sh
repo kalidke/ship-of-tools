@@ -72,17 +72,34 @@ render_sotd_unit() {  # <prefix> <template> <dest>
         "$2" > "$3.new.$$" && chmod 0644 "$3.new.$$" && mv -f "$3.new.$$" "$3" || { rm -f "${3:?}.new.$$"; return 1; }
 }
 
-# Start sotd.service at boot: DIR/default.target.d/sotd.conf holds `Wants=sotd.service`, since the unit has no [Install]
-# section and so `systemctl enable` and `disable` change no file of a home several hosts share. The drop-in is written
-# first (beside its name, then moved in), and only then is a link an earlier install's `enable` left, DIR's
-# default.target.wants/sotd.service, removed, and only when it is a symlink: there is never a moment with neither.
+# The boot wiring of sotd.service under DIR, the systemd user folder: DIR/default.target.d/sotd.conf holds
+# `Wants=sotd.service`, since the unit has no [Install] section and so `systemctl enable` and `disable` change no file
+# of a home several hosts share. The functions below are its only writers. An earlier install's `enable` left a link,
+# DIR/default.target.wants/sotd.service: the same wiring, removed only when it is a symlink.
+# Is the unit wired to start at boot: the drop-in is a file, or an earlier install's link is there?
+sot_boot_wired() {  # <systemd-user-dir>
+    [ -f "$1/default.target.d/sotd.conf" ] || [ -L "$1/default.target.wants/sotd.service" ]
+}
+# Wire it: the drop-in is written first (beside its name, then moved in), and only then is an old link removed: there is
+# never a moment with neither.
 sot_boot_wants() {  # <systemd-user-dir>
-    local dir="$1" conf="$1/default.target.d/sotd.conf" link="$1/default.target.wants/sotd.service"
-    mkdir -p "$dir/default.target.d" || return 1
+    local conf="$1/default.target.d/sotd.conf" link="$1/default.target.wants/sotd.service"
+    mkdir -p "$1/default.target.d" || return 1
     printf '[Unit]\nWants=sotd.service\n' > "$conf.new.$$" && chmod 0644 "$conf.new.$$" && mv -f "$conf.new.$$" "$conf" \
         || { rm -f "${conf:?}.new.$$"; return 1; }
     if [ -L "$link" ]; then rm -f "$link"; fi
     return 0
+}
+# Unwire it: the drop-in and an old link, never anything else under that name.
+sot_boot_unwants() {  # <systemd-user-dir>
+    local link="$1/default.target.wants/sotd.service"
+    rm -f "$1/default.target.d/sotd.conf"
+    if [ -L "$link" ]; then rm -f "$link"; fi
+}
+# Keep a wired unit wired, and move an old link onto the drop-in; with neither, write nothing: a person turned boot
+# start off.
+sot_boot_keep() {  # <systemd-user-dir>
+    if sot_boot_wired "$1"; then sot_boot_wants "$1"; fi
 }
 
 # Does the installed sotd refuse the pointer armed for TARGET under PREFIX? `sotd update pointer` exits 3 for one that no
@@ -471,10 +488,8 @@ sot_rerender_owned() {  # <prefix> <target> <checkout>
             || echo "sot-apply: sotd topology pin failed (sotd.service keeps its previous host pin)" >&2
         # A unit an earlier install enabled (its link) or this one wired (the drop-in) is moved to the drop-in; with neither,
         # a person turned boot start off and an update must not turn it back on. A rollback keeps the drop-in.
-        local ud="$HOME/.config/systemd/user"
-        if [ -L "$ud/default.target.wants/sotd.service" ] || [ -f "$ud/default.target.d/sotd.conf" ]; then
-            sot_boot_wants "$ud" || echo "sot-apply: could not write the sotd boot drop-in (the unit keeps its previous boot wiring)" >&2
-        fi
+        sot_boot_keep "$HOME/.config/systemd/user" \
+            || echo "sot-apply: could not write the sotd boot drop-in (the unit keeps its previous boot wiring)" >&2
         # The file on disk is right either way; the live check reads NeedDaemonReload.
         timeout 10 systemctl --user daemon-reload >/dev/null 2>&1 \
             || echo "sot-apply: systemctl --user daemon-reload failed (the unit file is current)" >&2

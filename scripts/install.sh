@@ -739,13 +739,13 @@ installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
 # installed LOCAL backend running (a wrong-topology remnant). Only
 # `--backend <host>` and a topology entry with neither flag resolve that way;
 # a box that runs a window resolves a daemon of its own
-# (installer_topology_role). The unit file and its enable link may serve
-# another host that shares this home, and `disable` removes the link for every
-# host, so this host's own run is stopped and the link stays. Under a declared
-# topology the unit's host pin (`sotd topology pin`) keeps it from starting
-# here. With no hosts.toml the pin names the host whose install claimed it
-# (`--claim`): on that host alone the link serves no other host, and it is
-# disabled.
+# (installer_topology_role). The unit file and its boot drop-in may serve
+# another host that shares this home, so this host's own run is stopped and the
+# drop-in stays. Under a declared topology the unit's host pin
+# (`sotd topology pin`) keeps it from starting here. With no hosts.toml the pin
+# names the host whose install claimed it (`--claim`): on that host alone the
+# drop-in serves no other host, and it is removed. An old enable link (an
+# install from before 0.6.6) is moved onto the drop-in wherever the drop-in stays.
 # Whether this box has a hosts.toml that `sotd topology status` cannot read: such a file is still a declared
 # topology, and a retire under it must never disable a unit that may serve another host. Only a missing file (status
 # says "no hosts.toml at") means this box is alone. Prints status's error when it is unreadable.
@@ -757,7 +757,7 @@ installer_topology_unreadable() {  # <sotd>
 }
 
 # True when sotd.service's host pin under DIR names HOST and no other host: the
-# pin `sotd topology pin --claim` writes with no hosts.toml. Reads the
+# pin the claim of `sotd topology pin` writes with no hosts.toml. Reads the
 # ConditionHost= lines sot_protocol's host pin writes, in its order; a pin
 # naming other hosts too, or no pin, is false.
 installer_pin_names_only() {  # <systemd-user-dir> <kernel-host>
@@ -777,25 +777,27 @@ installer_pin_hosts() {  # <systemd-user-dir>
 installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-declared 0|1>
     [ "$1" = 0 ] && command -v systemctl >/dev/null 2>&1 || return 0
     [ -f "$HOME/.config/systemd/user/sotd.service" ] || return 0
+    local ud="$HOME/.config/systemd/user"
     if [ "$3" = 1 ]; then
-        "$2/bin/sotd" topology pin --dir "$HOME/.config/systemd/user" \
+        "$2/bin/sotd" topology pin --dir "$ud" \
             || say "WARNING: sotd topology pin failed: sotd.service is not pinned to the hosts that run sotd"
+        sot_boot_keep "$ud" || say "WARNING: could not move sotd.service's boot start onto its drop-in"
         systemctl --user stop sotd.service 2>/dev/null || true
         systemctl --user daemon-reload 2>/dev/null || true
         say "stopped this host's sotd.service; the declared topology runs no daemon here"
-    elif installer_pin_names_only "$HOME/.config/systemd/user" "$(installer_kernel_host)"; then
+    elif installer_pin_names_only "$ud" "$(installer_kernel_host)"; then
         systemctl --user stop sotd.service 2>/dev/null || true
-        rm -f "$HOME/.config/systemd/user/default.target.d/sotd.conf"
-        [ ! -L "$HOME/.config/systemd/user/default.target.wants/sotd.service" ] || rm -f "$HOME/.config/systemd/user/default.target.wants/sotd.service"
+        sot_boot_unwants "$ud"
         systemctl --user daemon-reload 2>/dev/null || true
         say "stopped sotd.service and removed its boot start, whose host pin names this host alone"
     else
+        sot_boot_keep "$ud" || say "WARNING: could not move sotd.service's boot start onto its drop-in"
         systemctl --user stop sotd.service 2>/dev/null || true
-        say "Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service; to move it, change hosts.toml, or with none run sotd topology pin --claim on the host that should run it"
+        say "Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service, so a hand disable no longer turns it off; to move it, change hosts.toml, or with none run sotd topology pin --dir ~/.config/systemd/user --claim on the host that should run it. If no other computer shares this home folder, turn boot start off with: rm -f ~/.config/systemd/user/default.target.d/sotd.conf (write that file again, with the two lines [Unit] and Wants=sotd.service, to turn it back on)"
     fi
 }
 
-# Step 7 on Linux: render, enable and start the sotd unit for PREFIX from
+# Step 7 on Linux: render, wire and start the sotd unit for PREFIX from
 # TEMPLATE. No JULIA_DEPOT_PATH (or any other) config is written here: owner
 # ruling 2026-09-02 forbids writing/overwriting depot config anywhere. The
 # unit itself (deploy/sotd.service) sources ~/.bashrc before exec'ing sotd, so
@@ -803,10 +805,12 @@ installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-decla
 # install's forbidden drop-in is healed unconditionally near the top of this
 # script (step 0), not here.
 installer_enable_local_service() {  # <prefix> <template> <socket>
+    local fresh=0
     mkdir -p "$HOME/.config/systemd/user"
     installer_retire_tmux_unit "$HOME/.config/systemd/user"
+    [ -f "$HOME/.config/systemd/user/sotd.service" ] || fresh=1
     render_sotd_unit "$1" "$2" "$HOME/.config/systemd/user/sotd.service" || die "could not write the sotd unit"
-    # The unit and its enable link live in the home, which other hosts may
+    # The unit and its boot drop-in live in the home, which other hosts may
     # share: pin it to the hosts that run sotd before any manager reloads it,
     # and with no hosts.toml to this host, which installs it.
     local before after h
@@ -818,12 +822,14 @@ installer_enable_local_service() {  # <prefix> <template> <socket>
         printf '%s\n' "$after" | grep -qx -F -- "$h" \
             || say "The daemon moved here from $h: $h's sotd will not start at its next login."
     done
-    sot_boot_wants "$HOME/.config/systemd/user" || die "could not write the sotd boot drop-in"
+    # Boot start: wired for a unit this run finds new; over an existing unit only where an old link or the drop-in is,
+    # the rule sot-apply's update follows, so a person's turn-off survives a second run.
+    if [ "$fresh" = 1 ]; then sot_boot_wants "$HOME/.config/systemd/user"; else sot_boot_keep "$HOME/.config/systemd/user"; fi \
+        || die "could not write the sotd boot drop-in"
     systemctl --user daemon-reload
     systemctl --user start sotd.service
     loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
     say "sotd running: $(systemctl --user is-active sotd.service) (socket $3)"
-    say "To stop it on this computer: systemctl --user stop sotd.service. It starts at boot where hosts.toml and the unit's host pin say; enable and disable change no file for sotd.service."
 }
 
 # Step 8's wrapper: the all-in-one one, which ensures this box's own daemon
@@ -1832,7 +1838,7 @@ if [ "$WANT_DAEMON" = 1 ]; then
         elif [ "$RESTARTED" = 1 ]; then
             verdict_fail daemon "sotd.service is not running after the restart; see journalctl --user -u sotd.service"
         else
-            verdict_fail daemon "sotd.service is not running after this run enabled it; see journalctl --user -u sotd.service"
+            verdict_fail daemon "sotd.service is not running after this run started it; see journalctl --user -u sotd.service"
         fi
     else
         DAEMON_RUNS=0

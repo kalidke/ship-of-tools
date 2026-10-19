@@ -14,7 +14,7 @@ set -euo pipefail
 TEMPLATE="$(dirname "$0")/../../deploy/sotd.service"
 
 # A scratch home and prefix whose sotd, systemctl and loginctl append their argv to one log, in call order.
-pin_fixture() {  # <dir> <unit enabled 0|1>
+pin_fixture() {  # <dir>
     local d="$1"
     mkdir -p "$d/home/.config/systemd/user" "$d/prefix/bin" "$d/stubs"
     : > "$d/log"
@@ -22,7 +22,6 @@ pin_fixture() {  # <dir> <unit enabled 0|1>
     cat > "$d/stubs/systemctl" <<STUBEOF
 #!/bin/sh
 printf 'systemctl %s\n' "\$*" >> "$d/log"
-case "\$*" in *is-enabled*) [ "$2" = 1 ] ;; esac
 STUBEOF
     printf '#!/bin/sh\nprintf "loginctl %%s\\n" "$*" >> "%s/log"\n' "$d" > "$d/stubs/loginctl"
     chmod +x "$d/prefix/bin/sotd" "$d/stubs/systemctl" "$d/stubs/loginctl"
@@ -35,7 +34,7 @@ PIN_LINE() { printf 'sotd topology pin --dir %s/home/.config/systemd/user' "$1";
 
 # ---------------------------------------------------------------------------
 case_start "install_pins_the_unit_before_it_is_loaded"
-d="$WORK/enable"; pin_fixture "$d" 0
+d="$WORK/enable"; pin_fixture "$d"
 ( HOME="$d/home"; PATH="$d/stubs:$PATH"; installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.sock" ) >/dev/null 2>&1 || true
 pin="$(at "$d" "$(PIN_LINE "$d") --claim")"; reload="$(at "$d" 'systemctl --user daemon-reload')"; start="$(at "$d" 'systemctl --user start sotd.service')"
 check "the unit is written" "yes" "$([ -f "$d/home/.config/systemd/user/sotd.service" ] && echo yes || echo no)"
@@ -44,8 +43,30 @@ check "pin, then reload, then start" "yes" "$([ "${pin:-0}" -gt 0 ] && [ "$pin" 
 check "the boot drop-in is written, and no enable is run" "yes 0" "$([ -f "$d/home/.config/systemd/user/default.target.d/sotd.conf" ] && echo yes || echo no) $(grep -c 'enable --now\|--user enable' "$d/log" || true)"
 
 # ---------------------------------------------------------------------------
+case_start "install_wires_boot_start_by_one_rule_for_both_update_paths"
+# One rule: a run that finds no sotd.service wires boot start; a run over a unit wires it only where an old link or the
+# drop-in is, so an install.sh run over a unit a person turned off keeps it off, as an update through sot-apply does.
+wire_run() {  # <name> <state: fresh|link|dropin|none>
+    local dd="$WORK/wire-$1" uu="$WORK/wire-$1/home/.config/systemd/user"
+    pin_fixture "$dd"
+    if [ "$2" != fresh ]; then
+        printf '[Service]\nExecStart=%s/bin/sotd --x\n' "$dd/prefix" > "$uu/sotd.service"
+        case "$2" in
+            link) mkdir -p "$uu/default.target.wants"; ln -s ../sotd.service "$uu/default.target.wants/sotd.service" ;;
+            dropin) mkdir -p "$uu/default.target.d"; printf '[Unit]\nWants=sotd.service\n' > "$uu/default.target.d/sotd.conf" ;;
+        esac
+    fi
+    ( HOME="$dd/home"; PATH="$dd/stubs:$PATH"; installer_enable_local_service "$dd/prefix" "$TEMPLATE" "$dd/sot.sock" ) >/dev/null 2>&1 || true
+    printf '%s %s' "$([ -f "$uu/default.target.d/sotd.conf" ] && echo dropin || echo none)" "$([ -L "$uu/default.target.wants/sotd.service" ] && echo link || echo none)"
+}
+check "a fresh install wires boot start" "dropin none" "$(wire_run fresh fresh)"
+check "an install over an enabled unit moves its link onto the drop-in" "dropin none" "$(wire_run link link)"
+check "an install over a wired unit keeps the drop-in" "dropin none" "$(wire_run dropin dropin)"
+check "an install over a unit with neither writes nothing" "none none" "$(wire_run none none)"
+
+# ---------------------------------------------------------------------------
 case_start "retire_under_a_topology_pins_and_stops_and_never_disables"
-d="$WORK/retire-topo"; pin_fixture "$d" 1
+d="$WORK/retire-topo"; pin_fixture "$d"
 printf '[Service]\nExecStart=/x/bin/sotd\n' > "$d/home/.config/systemd/user/sotd.service"
 ( HOME="$d/home"; PATH="$d/stubs:$PATH"; installer_retire_local_service 0 "$d/prefix" 1 ) >/dev/null 2>&1 || true
 pin="$(at "$d" "$(PIN_LINE "$d")")"; stop="$(at "$d" 'systemctl --user stop sotd.service')"; reload="$(at "$d" 'systemctl --user daemon-reload')"
@@ -53,7 +74,7 @@ check "the shared unit is never disabled" "0" "$(grep -c 'disable' "$d/log" || t
 check "pin, then stop this host's run, then reload" "yes" "$([ "${pin:-0}" -gt 0 ] && [ "$pin" -lt "${stop:-0}" ] && [ "$stop" -lt "${reload:-0}" ] && echo yes || echo no)"
 check "the unit file stays" "yes" "$([ -f "$d/home/.config/systemd/user/sotd.service" ] && echo yes || echo no)"
 
-d="$WORK/retire-topo-nounit"; pin_fixture "$d" 0
+d="$WORK/retire-topo-nounit"; pin_fixture "$d"
 ( HOME="$d/home"; PATH="$d/stubs:$PATH"; installer_retire_local_service 0 "$d/prefix" 1 ) >/dev/null 2>&1 || true
 check "with no unit file nothing runs" "0" "$(wc -l < "$d/log" | tr -d ' ')"
 
@@ -62,8 +83,8 @@ case_start "a_home_two_hosts_share_with_no_hosts_toml"
 # Host A installs a daemon, then host B, which shares the home, retires one. The hostname stand-in names the host each run
 # is on; the boot start is the drop-in in the shared folder.
 # unit_pin.rs proves that the real `sotd topology pin --claim` writes the pin installer_pin_names_only reads.
-d="$WORK/two-hosts"; pin_fixture "$d" 0
-u="$d/home/.config/systemd/user"; link="$u/default.target.d/sotd.conf"
+d="$WORK/two-hosts"; pin_fixture "$d"
+u="$d/home/.config/systemd/user"; dropin="$u/default.target.d/sotd.conf"
 cat > "$d/stubs/systemctl" <<STUBEOF
 #!/bin/sh
 printf '%s systemctl %s\n' "\$STUB_HOST" "\$*" >> "$d/log"
@@ -73,7 +94,7 @@ chmod +x "$d/stubs/systemctl" "$d/stubs/hostname"
 on_host() {  # <hostname> <function> [args...]: one installer function as that host runs it
     ( HOME="$d/home"; PATH="$d/stubs:$PATH"; STUB_HOST="$1"; export STUB_HOST; shift; "$@" ) >/dev/null 2>&1 || true
 }
-linked() { [ -f "$link" ] && echo yes || echo no; }
+linked() { [ -f "$dropin" ] && echo yes || echo no; }
 on_host unithost-a.example.org installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.sock"
 check "host A's install claims the pin for itself" "1" "$(grep -c -x -F "$(PIN_LINE "$d") --claim" "$d/log" || true)"
 check "host A's install wires the unit to start at boot" "yes" "$(linked)"
@@ -81,17 +102,17 @@ mkdir -p "$u/sotd.service.d"; printf '[Unit]\nConditionHost=|unithost-a\nConditi
 on_host unithost-b installer_retire_local_service 0 "$d/prefix" 0
 check "host B's retire never disables the shared unit" "0" "$(grep -c '^unithost-b systemctl .*disable' "$d/log" || true)"
 check "host B's retire stops its own run" "1" "$(grep -c -x -F 'unithost-b systemctl --user stop sotd.service' "$d/log" || true)"
-check "host A's enable link stays" "yes" "$(linked)"
+check "host A's boot drop-in stays" "yes" "$(linked)"
 on_host unithost-a.example.org installer_retire_local_service 0 "$d/prefix" 0
-check "host A's own retire removes the link its pin serves on host A alone" "no" "$(linked)"
+check "host A's own retire removes the drop-in its pin serves on host A alone" "no" "$(linked)"
 on_host unithost-a.example.org sot_boot_wants "$u"
 printf '[Unit]\nConditionHost=|unithost-a\nConditionHost=|unithost-a.*\nConditionHost=|unithost-b\nConditionHost=|unithost-b.*\n' \
     > "$u/sotd.service.d/topology.conf"
 on_host unithost-a.example.org installer_retire_local_service 0 "$d/prefix" 0
-check "a pin that names another host too keeps the link" "yes" "$(linked)"
+check "a pin that names another host too keeps the drop-in" "yes" "$(linked)"
 rm -f "$u/sotd.service.d/topology.conf"
 on_host unithost-a.example.org installer_retire_local_service 0 "$d/prefix" 0
-check "with no pin (an install from before pins) the link stays" "yes" "$(linked)"
+check "with no pin (an install from before pins) the drop-in stays" "yes" "$(linked)"
 
 # The installer says what a pin move and a pre-pin retire did. The sotd stand-in writes the claim's pin for the host it runs on.
 printf '#!/bin/sh\nh="$(hostname)"; printf "[Unit]\\nConditionHost=|%%s\\nConditionHost=|%%s.*\\n" "$h" "$h" > "%s/sotd.service.d/topology.conf"\n' "$u" > "$d/prefix/bin/sotd"
@@ -106,11 +127,46 @@ said unithost-b installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.s
 check "a reinstall on the host that holds the pin says nothing of a move" "0" "$(grep -c 'moved here' "$WORK/say-b2" || true)"
 rm -f "$u/sotd.service.d/topology.conf"
 said unithost-a installer_retire_local_service 0 "$d/prefix" 0 > "$WORK/say-pre"
-check "a pre-pin retire says it stopped, that enable and disable change no file, and what moves boot start" "1 1" \
-    "$(grep -c -F "Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service" "$WORK/say-pre" || true) $(grep -c -F 'sotd topology pin --claim' "$WORK/say-pre" || true)"
+check "a pre-pin retire says it stopped, that enable and disable change no file, and what moves boot start" "1 1 1 1" \
+    "$(grep -c -F "Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service" "$WORK/say-pre" || true) $(grep -c -F 'sotd topology pin --dir ~/.config/systemd/user --claim' "$WORK/say-pre" || true) $(grep -c -F 'rm -f ~/.config/systemd/user/default.target.d/sotd.conf' "$WORK/say-pre" || true) $(grep -c -F 'write that file again' "$WORK/say-pre" || true)"
 check "a pre-pin retire leaves the drop-in" "yes" "$(linked)"
 
-d="$WORK/retire-daemon"; pin_fixture "$d" 1
+# An install from before 0.6.6 left the enable link. A retire that does not own the pin alone moves it to the drop-in, so a
+# hand disable cannot turn boot start off there either; one that owns the pin alone removes it; a drop-in stays.
+oldlink() {  # <state: link|dropin|none>: the unit folder as an earlier install left it
+    rm -rf "$u/default.target.wants" "$u/default.target.d"
+    case "$1" in
+        link) mkdir -p "$u/default.target.wants"; ln -s ../sotd.service "$u/default.target.wants/sotd.service" ;;
+        dropin) mkdir -p "$u/default.target.d"; printf '[Unit]\nWants=sotd.service\n' > "$u/default.target.d/sotd.conf" ;;
+    esac
+}
+wiring() { printf '%s %s' "$([ -f "$u/default.target.d/sotd.conf" ] && echo dropin || echo none)" "$([ -L "$u/default.target.wants/sotd.service" ] && echo link || echo none)"; }
+oldlink link
+on_host unithost-a installer_retire_local_service 0 "$d/prefix" 0
+check "a pre-pin retire moves an old link onto the drop-in" "dropin none" "$(wiring)"
+oldlink link
+printf '[Unit]\nConditionHost=|unithost-a\nConditionHost=|unithost-a.*\nConditionHost=|unithost-b\nConditionHost=|unithost-b.*\n' > "$u/sotd.service.d/topology.conf"
+on_host unithost-b installer_retire_local_service 0 "$d/prefix" 0
+check "a retire whose pin names other hosts too moves an old link onto the drop-in" "dropin none" "$(wiring)"
+oldlink link
+on_host unithost-b installer_retire_local_service 0 "$d/prefix" 1
+check "a retire under a declared topology moves an old link onto the drop-in" "dropin none" "$(wiring)"
+oldlink dropin
+on_host unithost-b installer_retire_local_service 0 "$d/prefix" 1
+check "a retire under a declared topology keeps the drop-in the other hosts need" "dropin none" "$(wiring)"
+oldlink none
+on_host unithost-b installer_retire_local_service 0 "$d/prefix" 1
+check "a retire under a declared topology over a unit with boot start off writes nothing" "none none" "$(wiring)"
+printf '[Unit]\nConditionHost=|unithost-a\nConditionHost=|unithost-a.*\n' > "$u/sotd.service.d/topology.conf"
+oldlink link
+on_host unithost-a installer_retire_local_service 0 "$d/prefix" 0
+check "a retire whose pin names this host alone removes an old link and writes no drop-in" "none none" "$(wiring)"
+oldlink dropin
+on_host unithost-a installer_retire_local_service 0 "$d/prefix" 0
+check "and removes the drop-in" "none none" "$(wiring)"
+rm -f "$u/sotd.service.d/topology.conf"
+
+d="$WORK/retire-daemon"; pin_fixture "$d"
 ( HOME="$d/home"; PATH="$d/stubs:$PATH"; installer_retire_local_service 1 "$d/prefix" 1 ) >/dev/null 2>&1 || true
 check "a box that runs a daemon retires nothing" "0" "$(wc -l < "$d/log" | tr -d ' ')"
 
@@ -132,7 +188,7 @@ rc=0; installer_topology_unreadable "$d/prefix/bin/sotd" >/dev/null || rc=$?; ch
 
 # ---------------------------------------------------------------------------
 case_start "update_rerender_pins_the_unit_before_the_reload"
-d="$WORK/rerender"; pin_fixture "$d" 0
+d="$WORK/rerender"; pin_fixture "$d"
 mkdir -p "$d/co/deploy"; cp "$TEMPLATE" "$d/co/deploy/sotd.service"
 printf '{\n  "service": "systemd"\n}\n' > "$d/prefix/install.json"
 printf '[Service]\nExecStart=%s/bin/sotd --x\n' "$d/prefix" > "$d/home/.config/systemd/user/sotd.service"
@@ -144,7 +200,7 @@ linux_check "pin, then reload" "yes" "$([ "${pin:-0}" -gt 0 ] && [ "$pin" -lt "$
 # ---------------------------------------------------------------------------
 case_start "update_rerender_moves_boot_start_to_the_drop_in"
 rerender() {  # <dir> <setup: link|dropin|none>: an update over a unit an earlier install left as setup says
-    local d="$1" u="$1/home/.config/systemd/user"; pin_fixture "$d" 0
+    local d="$1" u="$1/home/.config/systemd/user"; pin_fixture "$d"
     mkdir -p "$d/co/deploy"; cp "$TEMPLATE" "$d/co/deploy/sotd.service"
     printf '{\n  "service": "systemd"\n}\n' > "$d/prefix/install.json"
     printf '[Service]\nExecStart=%s/bin/sotd --x\n' "$d/prefix" > "$u/sotd.service"
@@ -157,7 +213,7 @@ rerender() {  # <dir> <setup: link|dropin|none>: an update over a unit an earlie
 has() { [ -e "$1" ] || [ -L "$1" ] && echo yes || echo no; }
 d="$WORK/migrate-link"; rerender "$d" link; u="$d/home/.config/systemd/user"
 check "an enabled unit gets the drop-in and loses its link" "yes no" "$(has "$u/default.target.d/sotd.conf") $(has "$u/default.target.wants/sotd.service")"
-d="$WORK/migrate-link-real"; pin_fixture "$d" 0; u="$d/home/.config/systemd/user"
+d="$WORK/migrate-link-real"; pin_fixture "$d"; u="$d/home/.config/systemd/user"
 mkdir -p "$u/default.target.wants" "$d/other"; : > "$d/other/keep"
 ln -s "$d/other/keep" "$u/default.target.wants/sotd.service"
 ( sot_boot_wants "$u" ) >/dev/null 2>&1
@@ -167,29 +223,36 @@ rm -f "$u/default.target.wants/sotd.service"; mkdir "$u/default.target.wants/sot
 check "a directory under that name is not removed" "yes" "$(has "$u/default.target.wants/sotd.service")"
 d="$WORK/migrate-none"; rerender "$d" none; u="$d/home/.config/systemd/user"
 check "a unit with boot start turned off gets neither" "no no" "$(has "$u/default.target.d/sotd.conf") $(has "$u/default.target.wants/sotd.service")"
-d="$WORK/migrate-rollback"; rerender "$d" dropin; u="$d/home/.config/systemd/user"
-printf '[Service]\nExecStart=%s/bin/sotd --old\n' "$d/prefix" > "$u/sotd.service"
-check "a rollback that restores the old unit text keeps the drop-in" "yes" "$(has "$u/default.target.d/sotd.conf")"
 
 # ---------------------------------------------------------------------------
 case_start "a_hand_enable_or_disable_on_another_host_changes_no_file"
 # Host A's real install writes the folder; host B, which shares the home, then types enable and disable by hand with the
 # real systemctl against a copy of it. Linux only: no other platform writes a unit.
 if [ "$(uname -s)" = Linux ] && command -v systemd >/dev/null 2>&1; then
-    d="$WORK/hand-edit"; pin_fixture "$d" 0
+    d="$WORK/hand-edit"; pin_fixture "$d"
     ( HOME="$d/home"; PATH="$d/stubs:$PATH"; installer_enable_local_service "$d/prefix" "$TEMPLATE" "$d/sot.sock" ) >/dev/null 2>&1 || true
     r="$d/root"; mkdir -p "$r/etc/systemd"; cp -R "$d/home/.config/systemd/user" "$r/etc/systemd/user"
     real_systemctl="$(type -P systemctl)"
     before="$(tree_of "$r/etc/systemd/user")"
     for verb in "enable" "disable" "disable --now" "enable --now"; do
         # shellcheck disable=SC2086
-        "$real_systemctl" --root="$r" --global $verb sotd.service >/dev/null 2>&1 || true
+        "$real_systemctl" --root="$r" --global $verb sotd.service >> "$d/verbs.out" 2>&1 || true
     done
+    check "the verbs reached systemd's install logic: it says the unit has no installation config" "yes" \
+        "$(grep -q 'no installation config' "$d/verbs.out" && echo yes || echo no)"
     check "host B's enable, disable, disable --now and enable --now change no file" "$before" "$(tree_of "$r/etc/systemd/user")"
     check "the folder holds the boot drop-in" "yes" "$([ -f "$r/etc/systemd/user/default.target.d/sotd.conf" ] && echo yes || echo no)"
-    SYSTEMD_UNIT_PATH="$r/etc/systemd/user:" "$(type -P systemd)" --test --user --no-pager --unit=default.target \
-        > "$d/test.out" 2>&1 || true
-    check "default.target still wants sotd.service" "1" "$(grep -c -E '^[[:space:]]+Wants: sotd.service' "$d/test.out" || true)"
+    # systemd reads only the scratch folder: HOME and the XDG folders are scratch too, so no unit of the developer's
+    # ~/.config/systemd/user is added by the trailing ':' that keeps systemd's own folders.
+    wants() {  # <unit folder>: the number of `Wants: sotd.service` lines default.target gets from that folder
+        local h="$d/sysd-home"; mkdir -p "$h/config" "$h/data" "$h/run"; chmod 700 "$h/run"
+        env -i PATH=/usr/bin:/bin HOME="$h" XDG_CONFIG_HOME="$h/config" XDG_DATA_HOME="$h/data" XDG_RUNTIME_DIR="$h/run" \
+            SYSTEMD_UNIT_PATH="$1:" "$(type -P systemd)" --test --user --no-pager --unit=default.target > "$d/test.out" 2>&1 || true
+        grep -c -E '^[[:space:]]+Wants: sotd.service' "$d/test.out" || true
+    }
+    check "default.target still wants sotd.service" "1" "$(wants "$r/etc/systemd/user")"
+    mkdir -p "$d/nodrop" && cp "$r/etc/systemd/user/sotd.service" "$d/nodrop/"
+    check "the control: the same folder without the drop-in gives no Wants line" "0" "$(wants "$d/nodrop")"
 else
     printf '    SKIP a hand enable or disable (Linux with systemd only)\n'
 fi

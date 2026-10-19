@@ -67,14 +67,13 @@ case_start "a frontend-only box runs its own private local daemon, as on Windows
 # the window on that box had no daemon of its own to open a session on.
 # STATUS_TABLE above is the topology stub; systemctl and loginctl are
 # logging stubs and HOME is scratch, so nothing here touches a live unit.
-fe_install() {  # <dir> <want-daemon 0|1> <unit enabled 0|1> <be-alias or "">: steps 6-8
+fe_install() {  # <dir> <want-daemon 0|1> <be-alias or "">: steps 6-8
     local d="$1"
     mkdir -p "$d/home/.local/bin" "$d/prefix" "$d/stubs"
     : > "$d/log"
     cat > "$d/stubs/systemctl" <<STUBEOF
 #!/bin/sh
 printf 'systemctl %s\n' "\$*" >> "$d/log"
-case "\$*" in *is-enabled*) [ "$3" = 1 ] ;; esac
 STUBEOF
     cat > "$d/stubs/loginctl" <<STUBEOF
 #!/bin/sh
@@ -85,14 +84,14 @@ STUBEOF
         HOME="$d/home"; PATH="$d/stubs:$PATH"
         installer_retire_local_service "$2" "$d/prefix" 0
         [ "$2" = 0 ] || installer_enable_local_service "$d/prefix" "$(dirname "$0")/../../deploy/sotd.service" "$d/sot.sock"
-        installer_render_wrapper "$d/prefix" testtarget "$4" "$d/home/.local/bin/sot-launch"
+        installer_render_wrapper "$d/prefix" testtarget "$3" "$d/home/.local/bin/sot-launch"
     ) >/dev/null 2>&1 || true
 }
 fe_role="$(installer_topology_role "$STATUS_TABLE" laptop)"
 fe_want=0
 case "$fe_role" in *"daemon:1"*) fe_want=1 ;; esac
 
-d="$WORK/fe-only"; fe_install "$d" "$fe_want" 0 ""
+d="$WORK/fe-only"; fe_install "$d" "$fe_want" ""
 check "the unit is rendered for this prefix" \
     "$d/prefix/bin/sotd" "$({ sot_unit_owner_path < "$d/home/.config/systemd/user/sotd.service"; } 2>/dev/null)"
 check "the unit is started, its boot start the drop-in" \
@@ -105,18 +104,13 @@ check "no disable is ever issued" "0" "$(grep -c 'disable' "$d/log" || true)"
 check "install.json records daemon true" \
     "1" "$(installer_manifest_json "$d/prefix" "$WORK/config" systemd 0.6.0 v0.6.0 abc123 2026-09-15T00:00:00Z "" "$fe_want" 1 | grep -c '"daemon": true' || true)"
 
-d="$WORK/fe-only-enabled"; fe_install "$d" "$fe_want" 1 ""
-check "an existing enabled sotd.service is never disabled" "0" "$(grep -c 'disable' "$d/log" || true)"
-check "and is started again" \
-    "1" "$(grep -c -- '^systemctl --user start sotd.service$' "$d/log" || true)"
-
 # The one exception: --backend <alias> names a remote backend explicitly. With no hosts.toml the unit this box's own
 # install claimed (its pin names this host alone) is stopped and loses its boot drop-in; installer-shared-home.sh has the shared cases.
 d="$WORK/fe-backend"; u="$d/home/.config/systemd/user"; mkdir -p "$u/sotd.service.d"
 printf '[Service]\nExecStart=%s/prefix/bin/sotd\n' "$d" > "$u/sotd.service"
 printf '[Unit]\nConditionHost=|%s\nConditionHost=|%s.*\n' "$(installer_kernel_host)" "$(installer_kernel_host)" > "$u/sotd.service.d/topology.conf"
 mkdir -p "$u/default.target.d"; printf '[Unit]\nWants=sotd.service\n' > "$u/default.target.d/sotd.conf"
-fe_install "$d" "$(case "$(installer_role_from_flags remote)" in (*"daemon:1"*) echo 1 ;; (*) echo 0 ;; esac)" 1 be-alias
+fe_install "$d" "$(case "$(installer_role_from_flags remote)" in (*"daemon:1"*) echo 1 ;; (*) echo 0 ;; esac)" be-alias
 check "--backend: the unit this box's install claimed is stopped, boot start removed, none started" \
     "1 0 no" "$(grep -c -- '^systemctl --user stop sotd.service' "$d/log" || true) $(grep -c 'enable --now\|start sotd' "$d/log" || true) $([ -e "$u/default.target.d/sotd.conf" ] && echo yes || echo no)"
 check "--backend: the wrapper names the remote backend and carries no ensure" \
@@ -710,6 +704,10 @@ bsd_out=""; [ "$(uname -s)" != Linux ] || { bsd_stat_date "$d/bsd"; bsd_out="$(s
 # No daemon on this socket: the one whose label is exactly this one, never one whose label only begins with it.
 printf '555 sotd /x/bin/sotd --project-root /x --label sot-dev\n333 sotd /x/bin/sotd --project-root /x --label sot\n' > "$d/ps-own"
 label_line="$(env -u SOT_SOCKET -u SOT_BACKEND_LABEL PATH="$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" --check)" || true
+for st in active activating reloading; do  # all systemd's, the second in its auto-restart window: restart goes through systemctl
+    printf '#!/bin/sh\ncase "$*" in *"show -p ActiveState"*) echo %s ;; esac\nexit 0\n' "$st" > "$d/stubs/systemctl"
+    systemd_out="$(env -u SOT_SOCKET -u SOT_BACKEND_LABEL PATH="$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" 2>&1 </dev/null)" || true
+    check "a unit that is $st is restarted through systemctl" "1" "$(printf '%s\n' "$systemd_out" | grep -c 'systemd-supervised' || true)"; done
 kill "$RPID"; wait "$RPID" || true
 starts_with "restart judges this account's daemon on this socket" "running daemon pid 222 " "$restart_line"
 check "a binary newer than an hour-old daemon is STALE, both times printed, nothing on stderr" \

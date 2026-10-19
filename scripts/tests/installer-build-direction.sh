@@ -53,7 +53,7 @@ code_text="$(grep -vE '^[[:space:]]*#' "$inst")"
 def_line="$(printf '%s\n' "$code_text" | grep -nE '^git\(\) \{' | head -1 | cut -d: -f1 || true)"
 first_call="$(printf '%s\n' "$code_text" | grep -nE '(^|[ !(;|&])git (-C|clone|fetch|rev-parse|worktree|cat-file|merge-base|status|ls-files)' | head -1 | cut -d: -f1 || true)"
 check "install.sh defines a git function carrying the stall bound" "yes" \
-    "$(printf '%s\n' "$code_text" | grep -qE '^git\(\) \{ command git -c http\.lowSpeedLimit=1000 -c http\.lowSpeedTime=60 "\$@"; \}' && echo yes || echo no)"
+    "$([ "$(printf '%s\n' "$code_text" | grep -cE '^git\(\) \{ command git -c http\.lowSpeedLimit=1000 -c http\.lowSpeedTime=60 "\$@"; \}' || true)" = 1 ] && echo yes || echo no)"
 check "the git function is defined before the first git call" "yes" \
     "$([ -n "$def_line" ] && [ -n "$first_call" ] && [ "$def_line" -lt "$first_call" ] && echo yes || echo no)"
 check "no git call bypasses the function" "0" \
