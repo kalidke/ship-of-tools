@@ -105,7 +105,7 @@ where
 fn check_rows(
     home: &Path,
     rows: &[(String, PathBuf)],
-    read: &dyn Fn(&Path) -> Option<Vec<String>>,
+    read: &dyn Fn(&Path) -> Seen,
     write: &dyn Fn(&Path, &str, &Stamp) -> Result<(), String>,
     failing: &mut HashSet<String>,
 ) {
@@ -119,10 +119,13 @@ fn check_rows(
         let Some(entry) = registry.get("agents").and_then(|a| a.get(handle)).filter(|e| due(e)) else {
             continue;
         };
-        let Some(lines) = read(state_dir) else {
-            continue;
+        // A leg the probe shows ended shows no dialog any more; one that does not answer keeps its fact.
+        let shown = match read(state_dir) {
+            Seen::Screen(lines) => dialog_of(&lines, "claude", cfg!(windows)),
+            Seen::Ended => None,
+            Seen::Unknown => continue,
         };
-        let Some(s) = stamp_for(dialog_of(&lines, "claude", cfg!(windows)), entry) else {
+        let Some(s) = stamp_for(shown, entry) else {
             continue;
         };
         match write(home, handle, &s) {
@@ -138,23 +141,38 @@ fn check_rows(
     }
 }
 
-/// The row's screen as the wake reads it, from one watcher attach; `None` unless the row is Ready and its screen
-/// arrives within [`READ_BUDGET`].
-fn read_screen(state_dir: &Path) -> Option<Vec<String>> {
-    let ready = crate::rows::run::probe::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
-    if crate::rows::run::probe::phase_of(state_dir) != ready {
-        return None;
+/// What one row's read found.
+#[derive(Debug, PartialEq, Eq)]
+enum Seen {
+    /// The row is Ready and its screen arrived within [`READ_BUDGET`].
+    Screen(Vec<String>),
+    /// The leg is over (never started, ended with no respawn, terminal): no dialog shows on it.
+    Ended,
+    /// Starting, ending, unreachable or foreign, or a screen that did not arrive: nothing is known.
+    Unknown,
+}
+
+/// The row's screen as the wake reads it, from one watcher attach, after one status probe.
+fn read_screen(state_dir: &Path) -> Seen {
+    use crate::rows::run::probe::{phase_of, phase_str};
+    use sot_log::lane::wire::SupervisorPhase as SP;
+    let phase = phase_of(state_dir);
+    if phase != phase_str(SP::Ready) {
+        let ended = [phase_str(SP::EndedNoRespawn), phase_str(SP::Terminal), crate::rows::run::probe::NEVER_STARTED_PHASE];
+        return if ended.contains(&phase) { Seen::Ended } else { Seen::Unknown };
     }
-    let mut client = checkpointed(attach(state_dir, CONTROLLER_ID).ok()?, Instant::now() + READ_BUDGET).ok()?;
+    let Some(mut client) = attach(state_dir, CONTROLLER_ID).ok().and_then(|c| checkpointed(c, Instant::now() + READ_BUDGET).ok()) else {
+        return Seen::Unknown;
+    };
     let lines = wake_lines(client.screen());
     client.shutdown(SHUTDOWN_WAIT);
-    Some(lines)
+    Seen::Screen(lines)
 }
 
 /// `bash <home>/bin/comm-status.sh dialog "<text>"` (or `resumed`) for `handle`, through the daemon's entry
-/// (`SOT_COMM_ROW_HANDLE`), contained and bounded by [`STAMP_BOUND`]. The child gets no row or session identity of its
-/// own: the entry names the row, and the variables that would name one are removed.
-fn stamp(home: &Path, handle: &str, s: &Stamp) -> Result<(), String> {
+/// (`SOT_COMM_ROW_HANDLE`, which the script honors only for a caller whose parent is sotd). The child gets no row or
+/// session identity of its own: the entry names the row, and the variables that would name one are removed.
+fn stamp_command(home: &Path, handle: &str, s: &Stamp) -> std::process::Command {
     let mut cmd = std::process::Command::new("bash");
     cmd.arg(home.join("bin").join("comm-status.sh"));
     match s {
@@ -168,6 +186,15 @@ fn stamp(home: &Path, handle: &str, s: &Stamp) -> Result<(), String> {
         .env_remove("CLAUDE_CODE_SESSION_ID")
         .env_remove("SOT_COMM_SELF_FILE")
         .env_remove("SOT_COMM_HOOKS");
+    cmd
+}
+
+/// Runs [`stamp_command`], bounded by [`STAMP_BOUND`].
+fn stamp(home: &Path, handle: &str, s: &Stamp) -> Result<(), String> {
+    run_stamp(stamp_command(home, handle, s))
+}
+
+fn run_stamp(mut cmd: std::process::Command) -> Result<(), String> {
     let out = crate::lifecycle::child_signal::process().output(&mut cmd, STAMP_BOUND).map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())

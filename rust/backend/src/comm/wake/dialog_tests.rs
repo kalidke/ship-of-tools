@@ -80,7 +80,7 @@ fn a_row_at_rest_is_never_read_and_a_left_fact_still_clears() {
     let read = |d: &Path| {
         reads.borrow_mut().push(d.to_path_buf());
         // Every screen shows a dialog, as a menu a person opened at rest would: a read of a row at rest would write.
-        Some(permission())
+        Seen::Screen(permission())
     };
     let write = |_: &Path, h: &str, s: &Stamp| {
         writes.borrow_mut().push((h.to_string(), s.clone()));
@@ -89,7 +89,7 @@ fn a_row_at_rest_is_never_read_and_a_left_fact_still_clears() {
     check_rows(dir.path(), &rows, &read, &write, &mut HashSet::new());
     assert_eq!(reads.into_inner(), vec![PathBuf::from("left")]);
     assert_eq!(writes.into_inner(), vec![], "the left fact's dialog still shows: nothing to write");
-    let free_read = |_: &Path| Some(free());
+    let free_read = |_: &Path| Seen::Screen(free());
     let writes = std::cell::RefCell::new(Vec::new());
     let write = |_: &Path, h: &str, s: &Stamp| {
         writes.borrow_mut().push((h.to_string(), s.clone()));
@@ -97,6 +97,23 @@ fn a_row_at_rest_is_never_read_and_a_left_fact_still_clears() {
     };
     check_rows(dir.path(), &rows, &free_read, &write, &mut HashSet::new());
     assert_eq!(writes.into_inner(), vec![("left".to_string(), Stamp::Resumed)]);
+}
+
+/// A leg the probe shows ended has no dialog any more, so its fact clears; a row that does not answer keeps it.
+#[test]
+fn an_ended_leg_clears_its_fact_and_an_unreachable_one_keeps_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = json!({"agents": {"gone": {"state": "blocked", "dialog": "x"}, "mute": {"state": "blocked", "dialog": "x"}}});
+    std::fs::write(dir.path().join("registry.json"), registry.to_string()).expect("registry");
+    let rows: Vec<(String, PathBuf)> = ["gone", "mute"].iter().map(|h| (h.to_string(), PathBuf::from(h))).collect();
+    let read = |d: &Path| if d == Path::new("gone") { Seen::Ended } else { Seen::Unknown };
+    let writes = std::cell::RefCell::new(Vec::new());
+    let write = |_: &Path, h: &str, s: &Stamp| {
+        writes.borrow_mut().push((h.to_string(), s.clone()));
+        Ok(())
+    };
+    check_rows(dir.path(), &rows, &read, &write, &mut HashSet::new());
+    assert_eq!(writes.into_inner(), vec![("gone".to_string(), Stamp::Resumed)]);
 }
 
 /// Pacing: a sweep that runs past the period (30 s on a 5 s tick) is never overlapped, and the ticks it missed are
@@ -153,17 +170,32 @@ fn row(home: &Path) -> serde_json::Value {
     serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")["agents"]["h"].clone()
 }
 
+/// `cmd` run beneath a process whose argv[0] is `sotd`, as the daemon's own child is: the script's entry honors no other.
+#[cfg(unix)]
+fn under_sotd(cmd: std::process::Command) -> std::process::Command {
+    let mut out = std::process::Command::new("bash");
+    out.args(["-c", r#"exec -a sotd bash -c '"$@"; exit $?' sotd "$@""#, "_"]).arg(cmd.get_program()).args(cmd.get_args());
+    for (k, v) in cmd.get_envs() {
+        match v {
+            Some(v) => out.env(k, v),
+            None => out.env_remove(k),
+        };
+    }
+    out.current_dir(cmd.get_current_dir().expect("cwd"));
+    out
+}
+
 /// One tick of [`check_rows`] over row `h` showing `screen`, writing through the real script; the writes it made.
 #[cfg(unix)]
 fn tick(home: &Path, screen: Vec<String>) -> Vec<Stamp> {
     let writes = std::cell::RefCell::new(Vec::new());
     let write = |h: &Path, handle: &str, s: &Stamp| {
         writes.borrow_mut().push(s.clone());
-        stamp(h, handle, s)
+        run_stamp(under_sotd(stamp_command(h, handle, s)))
     };
     let rows = [("h".to_string(), PathBuf::from("unused"))];
     let mut failing = HashSet::new();
-    check_rows(home, &rows, &|_: &Path| Some(screen.clone()), &write, &mut failing);
+    check_rows(home, &rows, &|_: &Path| Seen::Screen(screen.clone()), &write, &mut failing);
     assert!(failing.is_empty(), "a write failed");
     writes.into_inner()
 }
