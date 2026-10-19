@@ -21,12 +21,14 @@
 #   d2  --name of one is refused with the daemon's message, nothing written
 #   d3  --name of one the daemon says no live row holds (the row is gone) is taken
 #   d4  --name of a row-bound handle with no daemon to ask is refused
-#   d5  comm-leave.sh --name H; comm-join.sh --name H is refused, and the daemon was asked (B2)
+#   d5  comm-leave.sh --name H of a held handle is refused and the entry stays; a join of H is refused too (B2, SF1)
 #   d6  an entry bound to no row is asked about too: held, so refused (B2)
 #   d7  no daemon and an entry bound to no row: taken (the named limit, N7)
 #   d8  a row that binds the handle between the daemon's answer and the write keeps it (SF3)
 #   d9  an entry bound on another computer is held, whatever the local daemon says (SF4)
 #   d10 an unreadable registry refuses a join from outside (N4)
+#   d12 no daemon: comm-leave.sh --name of a bound entry is refused, so leave then join takes nothing (SF1)
+#   d13 comm-leave.sh --name of an orphan the daemon says no row holds still removes it (SF1)
 #   d11 a derived join whose every tier the daemon holds takes none, empty cleared list included (bash 3.2)
 #   ds  a stray's session start steps past the held handle: its one plain line, identity ok (SF1)
 #   e   a respawned row's join takes its handle back
@@ -303,15 +305,36 @@ case_d5_leave_then_join_is_refused() {
     seed_derived_bound || return 1
     held_by "$DH"; start_stub_daemon
     : > "$REQLOG"
-    ( cd "$WORK" && env SOT_COMM_SELF_FILE="$WORK/stray-leave.txt" SOT_SOCKET="$SOCK" "$SCRIPTS_DIR/comm-leave.sh" --name "$DH" ) >/dev/null 2>&1
-    jq -e --arg n "$DH" '.agents | has($n) | not' "$REG" >/dev/null || { stop_stub_daemon; echo "  setup: leave did not remove @$DH"; return 1; }
+    local out rc=0
+    out="$(cd "$WORK" && env SOT_COMM_SELF_FILE="$WORK/stray-leave.txt" SOT_SOCKET="$SOCK" "$SCRIPTS_DIR/comm-leave.sh" --name "$DH" 2>&1)" || rc=$?
+    [ "$rc" -eq 1 ] || { stop_stub_daemon; echo "  leave exit $rc: $out"; return 1; }
+    case "$out" in *"REFUSING"*"@$DH is held by a live row"*) ;; *) stop_stub_daemon; echo "  leave message: $out"; return 1 ;; esac
+    jq -e --arg n "$DH" '.agents | has($n)' "$REG" >/dev/null || { stop_stub_daemon; echo "  leave removed @$DH"; return 1; }
     SOT_SOCKET="$SOCK" stray_join --name "$DH"
     local asked; asked="$(grep -c "\"handle\":\"$DH\"" "$REQLOG")"
     stop_stub_daemon
     [ "$JOIN_RC" -eq 1 ] || { echo "  exit $JOIN_RC: $JOIN_OUT"; return 1; }
     case "$JOIN_OUT" in *"@$DH is held by a live row"*) ;; *) echo "  message: $JOIN_OUT"; return 1 ;; esac
-    [ "$asked" -ge 1 ] || { echo "  the daemon was never asked about @$DH"; return 1; }
-    jq -e --arg n "$DH" '.agents | has($n) | not' "$REG" >/dev/null || { echo "  @$DH was written"; return 1; }
+    [ "$asked" -ge 2 ] || { echo "  the daemon was asked $asked times about @$DH, want the leave's and the join's"; return 1; }
+}
+case_d12_no_daemon_leave_of_a_bound_entry_is_refused() {
+    seed_derived_bound || return 1
+    local out rc=0 before; before="$(cat "$REG")"
+    out="$(cd "$WORK" && env SOT_COMM_SELF_FILE="$WORK/stray-leave.txt" SOT_SOCKET="$WORK/no-daemon.sock" "$SCRIPTS_DIR/comm-leave.sh" --name "$DH" 2>&1)" || rc=$?
+    [ "$rc" -eq 1 ] || { echo "  leave exit $rc: $out"; return 1; }
+    case "$out" in *REFUSING*"@$DH is bound to row $ROW"*) ;; *) echo "  leave message: $out"; return 1 ;; esac
+    [ "$(cat "$REG")" = "$before" ] || { echo "  registry changed"; return 1; }
+    SOT_SOCKET="$WORK/no-daemon.sock" stray_join --name "$DH"
+    [ "$JOIN_RC" -eq 1 ] || { echo "  leave then join: exit $JOIN_RC: $JOIN_OUT"; return 1; }
+}
+case_d13_leave_of_an_orphan_the_daemon_does_not_hold_removes_it() {
+    seed_derived_bound || return 1
+    held_by ""; start_stub_daemon
+    local out rc=0
+    out="$(cd "$WORK" && env SOT_COMM_SELF_FILE="$WORK/stray-leave.txt" SOT_SOCKET="$SOCK" "$SCRIPTS_DIR/comm-leave.sh" --name "$DH" 2>&1)" || rc=$?
+    stop_stub_daemon
+    [ "$rc" -eq 0 ] || { echo "  leave exit $rc: $out"; return 1; }
+    jq -e --arg n "$DH" '.agents | has($n) | not' "$REG" >/dev/null || { echo "  @$DH was not removed"; return 1; }
 }
 case_d6_an_unbound_entry_is_asked_about_too() {
     seed_derived_bound || return 1
@@ -421,6 +444,8 @@ check "d3: a stray takes a bound handle whose row the daemon says is gone" case_
 check "d4: a stray's --name of a bound handle is refused when no daemon can be asked" case_d4_stray_name_of_a_bound_handle_with_no_daemon_is_refused
 check "ds: a stray's session start steps past the held handle, identity ok" case_ds_stray_session_start_steps_past
 check "d5: leave then join of a held handle is refused and the daemon was asked" case_d5_leave_then_join_is_refused
+check "d12: with no daemon, comm-leave.sh --name of a bound entry is refused" case_d12_no_daemon_leave_of_a_bound_entry_is_refused
+check "d13: comm-leave.sh --name of an orphan the daemon does not hold removes it" case_d13_leave_of_an_orphan_the_daemon_does_not_hold_removes_it
 check "d6: an entry bound to no row is asked about too" case_d6_an_unbound_entry_is_asked_about_too
 check "d7: no daemon and an entry bound to no row: taken (the named limit)" case_d7_no_daemon_and_an_unbound_entry_is_taken
 check "d8: a row that binds the handle in the gap keeps it" case_d8_a_row_that_binds_in_the_gap_keeps_the_handle

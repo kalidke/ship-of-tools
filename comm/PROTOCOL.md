@@ -607,18 +607,19 @@ Monitor exists.
   handle between the answer and the write is refused, never overwritten. An entry bound to a row on another computer of
   the shared home (its `host` is not this one) is held, since no local daemon can rule on it. Where the daemon gives no
   ruling (none answering, an older one, a failed call) the registry's binding refuses: a bound entry is held, and an
-  unreadable registry refuses. Named limit: with no daemon answering and the entry unbound or absent, a session outside
-  any row takes the handle. A join carrying a row id is unchanged: `comm-join.sh` alone passes `comm-context.sh
-  --rebind`, honored only with a row id, so a respawned row, or a row a newer row's join displaced (M5, `agent.join`
+  unreadable registry refuses. `comm-leave.sh --name H` of an entry bound to another row asks the same clearance and is
+  refused where a join would be (`REFUSING to remove @H`, or FAILED for an unreadable registry): a destroyed row's
+  orphan, which the daemon does not hold, stays removable, and with no daemon answering a bound entry stays. Named
+  limit: with no daemon answering and the entry unbound or absent, a session outside any row takes the handle.
+  A join carrying a row id is unchanged: `comm-join.sh` alone passes `comm-context.sh --rebind`, honored only with a row id, so a respawned row, or a row a newer row's join displaced (M5, `agent.join`
   moves the handle), takes it back; the displaced row's `comm-session-start.sh` says `@<h> moved to row <id>` and
   rejoins. Two rows in one folder that derive one handle keep taking it from each other (0.6.7). A child of a row (a
   subagent, `claude -p`, `codex exec`) is judged as before, by the agent-layer walk above. A forged id: with no private
   self file the walk must reach that row's capsule, so a stray that exports a row's id is refused; with a private
   self file that names no row, the exported id is no row id. Not closed: a process that writes the registry or the
-  daemon's socket by hand (one account); `comm-leave.sh --name H`, which still removes any entry (it no longer
-  enables a take). `comm-matrix.sh`'s runner is a session of its own, `probe-matrix-<host>`: it joins from outside any
-  row through a private self file that names no row, reads only its own inbox, sends as itself and leaves at exit, so
-  it needs no row's identity.
+  daemon's socket by hand (one account). `comm-matrix.sh`'s runner is a session of its own, `probe-matrix-<host>`: it
+  joins from outside any row through a private self file that names no row, reads only its own inbox, sends as itself
+  and leaves at exit, so it needs no row's identity.
 - What the check does not see: for a process that names no row, an agent above
   a reparenting, or on Windows above an ancestor that has exited with no MSYS
   parent to go on from (a process of another MSYS or Cygwin installation is not
@@ -680,7 +681,7 @@ and then sleeps, and only otherwise is the file deleted.
 | send        | `comm-send.sh`   | `@name 'msg'` or `--broadcast 'msg'`; recipient is only the first positional `@arg`, so the message may itself begin with `@`. **Either verb routes**: a directed target this box's registry names is filed by route 1 of Delivery (`comm-relay.sh send` execs here), and one it cannot name goes to the hub as `comm.file` (this execs `comm-relay.sh send`). The triggers are mutually exclusive, so a session never has to know which verb reaches a peer |
 | poll        | `comm-poll.sh`   | shows the inbox lines past the read cursor, then advances it; a busy inbox exits 75 (try again) |
 | list        | `comm-list.sh`   | all agents + live/stale + (me) marker |
-| leave       | `comm-leave.sh`  | removes self from registry; `--name <handle>` removes an orphan row (registry only — `comm-despawn.sh` is full teardown) |
+| leave       | `comm-leave.sh`  | removes self from registry; `--name <handle>` removes an orphan row (registry only — `comm-despawn.sh` is full teardown), refused for a row's handle the daemon holds |
 
 ## Naming — everything derives from the repo
 

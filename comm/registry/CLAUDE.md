@@ -8,7 +8,7 @@ may act as it. These scripts resolve the handle, claim it, list the rows and rec
 ## Files
 - `comm-context.sh`: resolve identity from pin, declared-host self slot or derivation, migrating only a validated raw-host legacy slot
 - `comm-join.sh`: claim and declare a handle, and send `join`, which starts the floor of the turn it runs in
-- `comm-leave.sh`: leave the registry
+- `comm-leave.sh`: leave the registry; `--name` of another row's bound entry asks the join clearance first
 - `comm-list.sh`: the registry plus the frontend boxes' declared sessions
 - `comm-self-audit.sh`: find slots naming another project
 - `comm-registry-lock-clear.sh`: clear, at once, a lock whose holder this box proves dead
