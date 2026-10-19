@@ -506,28 +506,37 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
             // response sets an HttpOnly cookie named for this pool listener
             // (`pool_cookie_name`) so every later same-page
             // asset fetch — which can't carry a query string — authenticates
-            // via the cookie instead. Neither present or valid: 403.
+            // via the cookie instead. A request that carries a `secret`
+            // parameter is decided by it alone (the first one, when repeated,
+            // and an empty one is refused): a stale entry URL must not ride
+            // the port's new cookie (#38). The cookie decides only a request
+            // with none. The limit that stays: in-site navigation from an
+            // unreloaded stale tab carries no parameter, so it rides the
+            // cookie. Neither present or valid: 403.
             let cookie_name = pool_cookie_name(pool_cookie_host(), port);
-            let cookie_ok = request
-                .cookie
-                .as_deref()
-                .and_then(|c| cookie_value(c, &cookie_name))
-                .map(|v| ct_eq(v.as_bytes(), secret.as_bytes()))
-                .unwrap_or(false);
             let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
             let query_secret = query.split('&').find_map(|kv| {
                 kv.split_once('=')
                     .filter(|(k, _)| *k == "secret")
                     .map(|(_, v)| v)
             });
-            let query_ok = query_secret
-                .map(|v| ct_eq(v.as_bytes(), secret.as_bytes()))
-                .unwrap_or(false);
-            if !cookie_ok && !query_ok {
+            let cookie_ok = || {
+                request
+                    .cookie
+                    .as_deref()
+                    .and_then(|c| cookie_value(c, &cookie_name))
+                    .map(|v| ct_eq(v.as_bytes(), secret.as_bytes()))
+                    .unwrap_or(false)
+            };
+            let (ok, by_query) = match query_secret {
+                Some(v) => (ct_eq(v.as_bytes(), secret.as_bytes()), true),
+                None => (cookie_ok(), false),
+            };
+            if !ok {
                 return write_simple(stream, "403 Forbidden", "missing or invalid site secret", keep).await;
             }
-            let set_cookie = (!cookie_ok)
-                .then(|| format!("{cookie_name}={secret}; HttpOnly; SameSite=Strict; Path=/"));
+            let set_cookie =
+                by_query.then(|| format!("{cookie_name}={secret}; HttpOnly; SameSite=Strict; Path=/"));
             (site, raw_path.trim_start_matches('/').to_string(), set_cookie)
         }
         ServeMode::Prefix => {
