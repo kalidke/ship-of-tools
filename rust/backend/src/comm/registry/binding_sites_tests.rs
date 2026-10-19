@@ -29,7 +29,7 @@ const SITES: &[(&str, &str, &[&str], &str)] = &[
     ("rows/ops/pty.rs", "start_on_attach", &[".agent_name"], "pin, at a start"),
     ("rows/reauth/restart.rs", "spawn_replacement", &[".agent_name"], "pin, at a start"),
     ("rows/registry.rs", "clear_shared_handles", &["agent_handle"], "boot: a handle on several rows stays only on the row `keep` names"),
-    ("rows/registry.rs", "insert", &[".agent_name", "agent_handle"], "carry: a same-slug re-insert takes the new row's stored name and declared handle"),
+    ("rows/registry.rs", "insert_replacing", &[".agent_name", "agent_handle"], "carry: a same-slug re-insert takes the new row's stored name and declared handle"),
     ("rows/registry.rs", "set_agent_handle", &["agent_handle"], "move"),
     ("rows/run/resume.rs", "resume_all", &[".agent_name"], "pin, at boot resume"),
     ("rows/store/codec.rs", "strip_canonical_top_and_kernel", &["agent_handle"], "persist: the toml keys the daemon owns"),
