@@ -35,13 +35,15 @@ foreach ($c in $cases) {
 $r = Get-SotScratchRefusal 'someone' 'C:\x' 'C:\y' @($tmp)
 Check 'the refusal is one line that names the real values' ($r -notmatch "[\r\n]" -and $r -like "*'someone'*" -and $r -like "*'C:\x'*" -and $r -like '*scratch-profile.ps1*') $r
 
-# A child PowerShell running CODE (encoded, so no quote is lost on the way); its output lines, then its exit code last.
+# A child PowerShell running CODE from a file of its own; its output lines (stderr too) and its exit code.
 function Invoke-Child([string]$Code) {
-    $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Code))
+    $file = Join-Path $env:TEMP ('sot-scratch-guard-child-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
+    Set-Content -LiteralPath $file -Value $Code -Encoding ASCII
     $saved = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    $out = @(& powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc 2>&1 | ForEach-Object { "$_" })
+    $out = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $file 2>&1 | ForEach-Object { "$_" })
     $rc = $LASTEXITCODE
     $ErrorActionPreference = $saved
+    Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
     return @{ Out = $out; Exit = $rc }
 }
 
