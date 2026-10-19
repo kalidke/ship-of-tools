@@ -261,8 +261,8 @@ connection is the only handle.
 
 ## Known limits (0.6.6)
 
-- (c) The create gate keeps the id, and the rollback of a failed create can remove a
-  pre-existing row. This is a limit only because the start has no held-back state.
+- (c) Fixed: a failed create restores the prior registration and toml byte for byte and removes only what
+  that create added (`Prior` in `rust/backend/src/rows/ops/create.rs`).
 - (e) The macOS check has not run on every commit; boot identity on a Mac is unverified.
 - (f) Launchers: after the fix round the ensure logs under the install prefix; the Windows log cap (keep 5 per
   stream, 16 MB unheld total) applies across starts, and one running daemon's own log

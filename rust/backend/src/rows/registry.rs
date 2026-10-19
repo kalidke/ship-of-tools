@@ -364,6 +364,14 @@ impl Workspaces {
         g.by_id.values().find(|ws| ws.session_name == target).cloned()
     }
 
+    /// Puts `prior`, a row a same-slug `insert` replaced, back under its slug and id. Its observer, guard and
+    /// watcher were never touched, so nothing else changes.
+    pub fn restore(&self, prior: Arc<Workspace>) {
+        let mut g = self.inner.write().expect("workspaces lock");
+        g.by_slug.insert(prior.slug.clone(), prior.workspace_id.clone());
+        g.by_id.insert(prior.workspace_id.clone(), prior);
+    }
+
     pub fn remove_by_id(&self, id: &str) -> Option<Arc<Workspace>> {
         let mut g = self.inner.write().expect("workspaces lock");
         let removed = g.by_id.remove(id)?;

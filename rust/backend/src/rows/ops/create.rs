@@ -323,10 +323,47 @@ fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_
     Ok((capsule_argv, capsule_state_root, account))
 }
 
-/// Starts the new row's capsule supervisor; a failure rolls the row back and refuses.
+/// What a create replaces, taken before it inserts: the same-slug row and the toml's bytes (`None`: no file).
+struct Prior {
+    row: Option<std::sync::Arc<crate::rows::Workspace>>,
+    toml: Option<Vec<u8>>,
+}
+
+impl Prior {
+    fn take(workspaces: &Workspaces, slug: &str) -> Self {
+        Prior {
+            row: workspaces.list().into_iter().find(|w| w.slug == slug),
+            toml: std::fs::read(crate::rows::store::toml_path_for(slug)).ok(),
+        }
+    }
+
+    /// Undoes the create's insert and save: the prior row and toml come back as they were, and a row or file
+    /// this create added goes.
+    fn restore(self, workspaces: &Workspaces, created: &crate::rows::Workspace) {
+        match self.row {
+            Some(row) => workspaces.restore(row),
+            None => {
+                let _ = workspaces.remove_by_id(&created.workspace_id);
+            }
+        }
+        let toml_path = crate::rows::store::toml_path_for(&created.slug);
+        let undone = match &self.toml {
+            Some(bytes) => std::fs::write(&toml_path, bytes),
+            None => match std::fs::remove_file(&toml_path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other,
+            },
+        };
+        if let Err(e) = undone {
+            tracing::warn!(error = %e, path = ?toml_path, "workspace.create rollback: toml restore failed");
+        }
+    }
+}
+
+/// Starts the new row's capsule supervisor; a failure restores what the create replaced and refuses.
 async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, workspaces: &Workspaces,
     ws_handle: &std::sync::Arc<crate::rows::Workspace>, capsule_state_root: Option<std::path::PathBuf>,
-    capsule_argv: &Vec<String>, project_root: &std::path::PathBuf) -> std::result::Result<(), HandlerOutput> {
+    capsule_argv: &Vec<String>, project_root: &std::path::PathBuf, prior: Prior) -> std::result::Result<(), HandlerOutput> {
     {
     // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn —
     // and a SYNCHRONOUS failure here
@@ -429,17 +466,7 @@ async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateR
         }
         Err(detail) => {
             tracing::warn!(workspace_id = %ws_handle.workspace_id, error = %detail, "workspace.create: capsule spawn failed; rolling back");
-            let _ = workspaces.remove_by_id(&ws_handle.workspace_id);
-            for toml_path in [
-                crate::rows::store::toml_path_for(&ws_handle.slug),
-                crate::rows::store::legacy_toml_path_for(&ws_handle.slug),
-            ] {
-                match std::fs::remove_file(&toml_path) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => tracing::warn!(error = %e, path = ?toml_path, "workspace.create rollback: toml remove failed"),
-                }
-            }
+            prior.restore(workspaces, ws_handle);
             let payload = json!({
                 "error": format!("capsule workspace could not be started: {detail}"),
                 "code": "capsule_spawn_failed",
@@ -513,6 +540,7 @@ pub async fn handle_workspace_create(
             )]);
         }
     };
+    let prior = Prior::take(workspaces, &ws_seed.slug);
     let ws_handle = workspaces.insert(ws_seed);
     if let Err(e) = crate::rows::store::save(&ws_handle) {
         tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
@@ -527,7 +555,7 @@ pub async fn handle_workspace_create(
     // so a host with neither fails to COMPILE rather than quietly
     // creating a row it can never supervise.
     if let Err(out) = start_created_capsule(req_id, &req, workspaces, &ws_handle, capsule_state_root,
-        &capsule_argv, &project_root).await
+        &capsule_argv, &project_root, prior).await
     {
         return Ok(out);
     }

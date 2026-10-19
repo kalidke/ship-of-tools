@@ -210,13 +210,13 @@ mod refusal_tests {
 
     /// Pins the three folders the config and state roots resolve under (the two XDG ones, and the Windows local-app-data
     /// one) to the test's own folder, under the crate-wide env lock; the guards restore them before the lock drops.
-    struct EnvPinned {
+    pub(super) struct EnvPinned {
         _guards: [crate::paths::EnvGuard; 3],
         _serial: std::sync::MutexGuard<'static, ()>,
     }
 
     impl EnvPinned {
-        fn new(dir: &Path) -> Self {
+        pub(super) fn new(dir: &Path) -> Self {
             let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let guards = ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "LOCALAPPDATA"].map(crate::paths::EnvGuard::capture);
             std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
@@ -370,5 +370,59 @@ mod root_tests {
     fn a_verbatim_root_is_created_plain() {
         assert_eq!(requested_root(&req(r"\\?\C:\Users\k\proj")), PathBuf::from(r"C:\Users\k\proj"));
         assert_eq!(requested_root(&req(r"\\?\UNC\srv\share\x")), PathBuf::from(r"\\srv\share\x"));
+    }
+}
+
+mod rollback_tests {
+    use super::handle_workspace_create;
+    use crate::rows::{Workspace, Workspaces};
+    use crate::session::Session;
+    use serde_json::json;
+    use tokio::sync::broadcast;
+
+    /// A same-slug create of a row the daemon reads as stopped whose spawn fails (no sot-capsule beside the test
+    /// binary) leaves the prior registration and its toml as they were, byte for byte.
+    #[tokio::test]
+    async fn failed_same_slug_create_restores_the_prior_row_and_toml() {
+        let env_dir = tempfile::Builder::new().prefix("sot-createrb-").tempdir().unwrap();
+        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        let old_root = env_dir.path().join("old");
+        let new_root = env_dir.path().join("new");
+        std::fs::create_dir_all(&old_root).unwrap();
+        std::fs::create_dir_all(&new_root).unwrap();
+        let reg = Workspaces::new();
+        let mut seed = Workspace::from_label("rb", old_root.clone(), false, "none".into(), String::new(), "old task".into());
+        seed.runtime = "capsule".into();
+        let prior = reg.insert(seed);
+        let toml = crate::rows::store::save(&prior).expect("prior toml");
+        let before = std::fs::read(&toml).unwrap();
+
+        let (ws_events, _rx) = broadcast::channel(16);
+        let payload = json!({"label": "rb", "project_root": new_root.to_string_lossy(), "agent": "none", "task": "new task"});
+        let out = handle_workspace_create(1, payload, &Session::new(), &reg, &ws_events).await.unwrap();
+        assert_eq!(out[0].0.payload["code"], "capsule_spawn_failed", "{:?}", out[0].0.payload);
+
+        let rows = reg.list();
+        assert_eq!(rows.len(), 1, "the prior row stays");
+        assert_eq!(rows[0].workspace_id, prior.workspace_id);
+        assert_eq!(rows[0].project_root, old_root);
+        assert_eq!(rows[0].task, "old task");
+        assert_eq!(std::fs::read(&toml).unwrap(), before, "the toml is the prior bytes");
+    }
+
+    /// A create that added the row removes it and its toml when the spawn fails.
+    #[tokio::test]
+    async fn failed_new_create_leaves_nothing() {
+        let env_dir = tempfile::Builder::new().prefix("sot-createrb-").tempdir().unwrap();
+        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        let root = env_dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let reg = Workspaces::new();
+        let (ws_events, _rx) = broadcast::channel(16);
+        let payload = json!({"label": "fresh", "project_root": root.to_string_lossy(), "agent": "none"});
+        let out = handle_workspace_create(1, payload, &Session::new(), &reg, &ws_events).await.unwrap();
+        assert_eq!(out[0].0.payload["code"], "capsule_spawn_failed", "{:?}", out[0].0.payload);
+        assert!(reg.list().is_empty());
+        assert!(!crate::rows::store::toml_path_for("fresh").exists());
     }
 }
