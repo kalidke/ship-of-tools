@@ -18,7 +18,7 @@
 #     `\\.\pipe\sot-<USERNAME>-local`, then begins `sot-sot-scratch`;
 #   - the home is a folder directly under the real temp folder and holds the marker;
 #   - USERPROFILE, HOME, APPDATA, LOCALAPPDATA, TEMP and TMP (and SOT_COMM_HOME when set) each lie strictly inside the
-#     home, so none is, holds or lies inside a real folder.
+#     home, so none is the real profile, AppData or temp folder itself, or a folder above one.
 # A suite that cannot find this file ends too: the line before it sets $ErrorActionPreference to Stop.
 # `$sotScratchLibOnly = $true` set in the dot-sourcing scope itself (not inherited from a caller) loads the functions only
 # (test-scratch-guard.ps1 does); a suite's own scope never has it, so a caller's variable cannot turn the guard off.
@@ -163,6 +163,17 @@ function Format-SotArg([string]$Value) {
     return '"' + ($Value -replace '(\\+)$', '$1$1') + '"'
 }
 
+# The JULIA_DEPOT_PATH the child gets: the caller's when every entry lies strictly inside the real temp folder, else a
+# depot inside the home.
+function Get-SotChildDepot([string]$Caller, [string]$ChildHome, [string]$RealTemp) {
+    $temp = Get-SotCanonicalPath $RealTemp
+    $entries = @($Caller -split ';' | Where-Object { $_ })
+    $ok = ($entries.Count -gt 0)
+    foreach ($e in $entries) { if (-not (Test-SotInside (Get-SotCanonicalPath $e) $temp)) { $ok = $false } }
+    if ($ok) { return $Caller }
+    return (Join-Path $ChildHome '.julia')
+}
+
 # Runs the suite again in a home of its own and returns the child's exit code.
 function Invoke-SotScratchChild([string]$Suite, $Bound, [hashtable]$Real) {
     $root = New-SotScratchHome $Real
@@ -190,6 +201,10 @@ function Invoke-SotScratchChild([string]$Suite, $Bound, [hashtable]$Real) {
         $ev['LOCALAPPDATA'] = Join-Path $hm 'AppData\Local'
         $ev['TEMP'] = Join-Path $root 'tmp'; $ev['TMP'] = $ev['TEMP']
         $ev['SOT_COMM_HOME'] = Join-Path $hm 'comm'
+        # Other places a tool keeps state: the caller's go away, and Julia gets a depot in the home unless the caller's
+        # already lies inside the real temp folder (a scratch depot the caller made).
+        foreach ($k in @($ev.Keys)) { if ($k -like 'XDG_*' -or $k -eq 'CLAUDE_CONFIG_DIR') { $ev.Remove($k) } }
+        $ev['JULIA_DEPOT_PATH'] = Get-SotChildDepot ([Environment]::GetEnvironmentVariable('JULIA_DEPOT_PATH')) $hm $Real.Temp
         $ev['SOT_SCRATCH_CHILD'] = $root
         [Console]::Error.WriteLine("scratch-guard: $([System.IO.Path]::GetFileName($Suite)) runs in $root")
         $p = [System.Diagnostics.Process]::Start($psi)
