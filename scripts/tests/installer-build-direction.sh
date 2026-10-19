@@ -25,7 +25,7 @@ built="0.6.6-rc9.14-dev+abc123"
 entry_record "$d" "$built" 1 0 none
 prelude --be-only
 check "a build whose commit the clone lacks is told so, in one plain line" "1" "$(stop_said "$built" 'could not tell which way the newest release, v9.9.10-rc1, moves this computer (this build'"'"'s commit abc123 is not in '"$d"'/home/.local/share/sot/repo/base)')"
-# The named release goes through the same rule (the direction step prints it for an explicit run), and a record's 40-digit
+# The rule also answers for a named tag when asked directly (no entry asks it of an explicit run), and a record's 40-digit
 # commit stands in for the version's +<sha>.
 P="$d/home/.local/share/sot"
 check "a named release the build is in is forward" "forward" "$(CTL="$d/ctl" PATH="$d/stubs:$PATH" HOME="$d/home" installer_build_direction "$P" "0.6.6-rc9.14-dev+$(sha_in v9.9.8)" v9.9.9)"
