@@ -1,5 +1,5 @@
 SOT_LAUNCH_WAIT_S=160  # = rust/protocol/src/ops/lease.rs LAUNCH_WAIT; scripts/tests/installer-state.sh compares them
-SOT_LOG_KEEP=5               # a start leaves at most this many nohup daemon logs (sot_prune_logs)
+SOT_LOG_KEEP=5               # a start leaves at most this many nohup daemon logs, its own included (sot_prune_logs)
 SOT_LOG_CAP_BYTES=16777216   # 16MB: the unprotected logs' total a start prunes down to (sot_prune_logs)
 
 # sot-daemon.sh -- the one place the sotd unit, the all-in-one sot-launch
@@ -179,8 +179,8 @@ sot_log_protected() {  # <log> <newest>
 
 # Prune DIR's nohup daemon logs before a start. Oldest first (the legacy fixed
 # sotd.log, then sotd.<UTC stamp>Z-<pid>.log by name, which is start order),
-# delete while more than SOT_LOG_KEEP remain or the unprotected total exceeds
-# SOT_LOG_CAP_BYTES. A log is protected while the <pid> in its name answers
+# delete while SOT_LOG_KEEP or more remain (the log about to be created is the last
+# of the KEEP) or the unprotected total exceeds SOT_LOG_CAP_BYTES. A log is protected while the <pid> in its name answers
 # kill -0 (its writer lives), or while it is the newest (the legacy sotd.log has
 # no pid); a protected file is never deleted and is left out of the total. A
 # failed rm is logged in one line and skipped; it leaves both bounds.
@@ -200,7 +200,7 @@ sot_prune_logs() {  # <dir>
         total=$((total + ${size:-0}))
     done
     for f in ${1+"$@"}; do
-        [ "$count" -gt "$SOT_LOG_KEEP" ] || [ "$total" -gt "$SOT_LOG_CAP_BYTES" ] || break
+        [ "$count" -ge "$SOT_LOG_KEEP" ] || [ "$total" -gt "$SOT_LOG_CAP_BYTES" ] || break
         sot_log_protected "$f" "$newest" && continue
         size="$(wc -c < "$f" 2>/dev/null)" || size=0
         err="$(rm -f -- "${f:?}" 2>&1)" || echo "kept old log $f: $err" >&2

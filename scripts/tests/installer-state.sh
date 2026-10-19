@@ -527,8 +527,14 @@ printf 'known-line-live\n' > "$live"
 for i in 1 2 3 4 5 6; do printf 'x\n' > "$d/sotd.20200101-00000$i-000Z-$((99999990 + i)).log"; done
 sot_prune_logs "$d"
 check "a log whose writer lives keeps its line" "known-line-live" "$(cat "$live" 2>/dev/null || echo deleted)"
-check "the two oldest dead logs go in its place" "3456" \
+check "the three oldest dead logs go in its place" "456" \
     "$(for i in 1 2 3 4 5 6; do [ -e "$d/sotd.20200101-00000$i-000Z-$((99999990 + i)).log" ] && printf '%s' "$i"; done; true)"
+# The start about to create a log counts toward the bound: five old logs leave four.
+d="$WORK/logs-keep"; mkdir -p "$d"
+for i in 1 2 3 4 5; do printf 'x\n' > "$d/sotd.20200101-00000$i-000Z-$((99999980 + i)).log"; done
+sot_prune_logs "$d"
+check "a prune leaves SOT_LOG_KEEP-1 old logs for the one about to be created" "4" \
+    "$(ls "$d" | wc -l | tr -d ' ')"
 # Pin: bash below 4.1 exits a set -u shell on "$@" with no positional
 # parameters; this host's bash cannot show that red.
 mkdir -p "$WORK/logs-empty"

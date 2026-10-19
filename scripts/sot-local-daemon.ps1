@@ -112,8 +112,8 @@
 # starts. Before each spawn, each stream walks its files oldest first -- the
 # old rotation's *.rotating.<pid>.tmp leftovers, then the old fixed names
 # (sotd-local.{stdout,stderr}.log.1, then .log), then stamped names -- and
-# deletes while it has more than $LogKeep files or its unprotected total
-# exceeds $LogCapBytes. Protected, never deleted and outside both bounds: the
+# deletes while it has $LogKeep or more files (the spawn's own log is the last of them)
+# or its unprotected total exceeds $LogCapBytes. Protected, never deleted and outside both bounds: the
 # newest log (the previous daemon's last words; never a leftover), and any
 # file another process holds. A delete is an exclusive DeleteOnClose open, so
 # a file with any other handle open, even one that allows delete sharing,
@@ -186,7 +186,7 @@ $LaunchWaitSeconds = 160        # = ops/lease.rs LAUNCH_WAIT
 $DaemonLockWaitSeconds = 150    # = DAEMON_LOCK_WAIT
 
 # Daemon stdout/stderr log bounds, per stream (see "Spawn hygiene" above).
-$LogKeep = 5                    # a start leaves at most this many files per stream
+$LogKeep = 5                    # a start leaves at most this many files per stream, its own included
 $LogCapBytes = 16MB             # unprotected files go, oldest first, down to this total
 
 $ErrorActionPreference = 'Continue'
@@ -231,7 +231,7 @@ function Remove-OldDaemonLogs {
     $total = [int64]0
     foreach ($f in $files) { if ($f.FullName -ne $newest) { $total += $f.Length } }
     foreach ($f in $files) {
-        if (($count -le $LogKeep) -and ($total -le $LogCapBytes)) { break }
+        if (($count -lt $LogKeep) -and ($total -le $LogCapBytes)) { break }
         if ($f.FullName -eq $newest) { break }
         try {
             $s = [System.IO.FileStream]::new($f.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite,
