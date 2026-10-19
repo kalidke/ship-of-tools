@@ -3,10 +3,10 @@
 //! number for the run (`CallerNumbers`, one per window, which the client roster keeps across the window's connections:
 //! `clients_window.rs`): each connection of the window is written the run's frames under the window's number and is
 //! never announced the run, and every other connection gets the daemon's number after the run's `started` frame. A run
-//! the daemon refused is written to its window not at all: the reply already said why. `Repl::submit` marks each
+//! the daemon refused is written to its window not at all: the reply already said why, unless a hello had named the run. `Repl::submit` marks each
 //! of a window's runs running once the REPL's queue accepts the run, and the supervisor marks it ended before it
-//! publishes the run's `done` (`accepted`, `end_then`), so each hello reply names the window's runs still running
-//! (`running`, `HelloRes::repl_running`).
+//! publishes the run's `done` (`accepted`, `end_then`), so each hello reply names the window's runs still running,
+//! those waiting for the queue included (`running`, `HelloRes::repl_running`).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -28,17 +28,20 @@ pub(crate) fn next() -> u64 {
 /// the oldest: only a window with this many runs in flight at once loses one.
 const REMEMBERED: usize = 256;
 
-/// One of a window's own runs: the number the window gave it (`None` once the daemon refused it), and how far it has
-/// gone. The run is kept past its end because each connection of the window writes its `done`, an older connection
+/// One of a window's own runs: the number the window gave it (`None` once the daemon refused it unnamed), whether a
+/// hello has named it, and how far it has gone. The run is kept past its end because each connection of the window writes its `done`, an older connection
 /// still winding down included, and each must find the run.
 #[derive(Clone, Copy)]
 struct Own {
     number: Option<u64>,
+    /// A hello named the run while it was still `Numbered`: the reply of a refusal then went to a connection that
+    /// may be gone, so the window that was named the run is written its reason and `done`.
+    named: bool,
     stage: Stage,
 }
 
-/// How far a window's run has gone, as `Repl::submit` and the REPL's supervisor mark it. A hello names only a
-/// `Running` run: its `done` is still to be published, after the hello's connection subscribed to the frame bus, so the window that reopens the
+/// How far a window's run has gone, as `Repl::submit` and the REPL's supervisor mark it. A hello names a `Numbered`
+/// or a `Running` run, never an `Ended` one: its `done` is still to be published, after the hello's connection subscribed to the frame bus, so the window that reopens the
 /// run's entry is written its end.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
@@ -64,7 +67,7 @@ impl CallerNumbers {
         if let Some(own) = own {
             let mut runs = self.runs();
             runs.retain(|_, run| run.number != Some(own));
-            runs.insert(number, Own { number: Some(own), stage: Stage::Numbered });
+            runs.insert(number, Own { number: Some(own), named: false, stage: Stage::Numbered });
             if runs.len() > REMEMBERED {
                 let ended = runs.iter().find(|(_, run)| run.stage == Stage::Ended);
                 let gone = ended.or(runs.iter().next()).map(|(n, _)| *n);
@@ -77,10 +80,14 @@ impl CallerNumbers {
     }
 
     /// The daemon refused this window's run `number` (its queue was full, or it could not start a REPL): the reply
-    /// tells the window why, so none of the run's frames is written to it.
+    /// tells the window why, so none of the run's frames is written to it, unless a hello named the run first: that
+    /// window never had the reply, and is written the run's reason and `done`.
     pub(crate) fn refused(&self, number: u64) {
         if let Some(run) = self.runs().get_mut(&number) {
-            *run = Own { number: None, stage: Stage::Ended };
+            if !run.named {
+                run.number = None;
+            }
+            run.stage = Stage::Ended;
         }
     }
 
@@ -102,10 +109,18 @@ impl CallerNumbers {
         publish();
     }
 
-    /// The window's own numbers of its runs still running, oldest first: what a hello reply names. `subscribed` is the
-    /// reader's own subscription to the frame bus, taken first, so each run named has its `done` still to come on it.
+    /// The window's own numbers of its runs still running, oldest first: what a hello reply names. A run still
+    /// waiting for the REPL's queue is named too (a window that redials during the REPL's start, up to about 15 s, would
+    /// never be told of a run accepted after its hello); it is marked named, so a refusal reaches the window. `subscribed`
+    /// is the reader's own subscription to the frame bus, taken first, so each run named has its `done` still to come on it.
     pub(crate) fn running(&self, _subscribed: &broadcast::Receiver<ReplFrameMsg>) -> Vec<u64> {
-        self.runs().values().filter(|run| run.stage == Stage::Running).filter_map(|run| run.number).collect()
+        let mut runs = self.runs();
+        let mut named = Vec::new();
+        for run in runs.values_mut().filter(|run| run.stage != Stage::Ended) {
+            run.named |= run.stage == Stage::Numbered;
+            named.extend(run.number);
+        }
+        named
     }
 
     fn mark(&self, number: u64, stage: Stage) {
@@ -233,14 +248,14 @@ mod tests {
         }
     }
 
-    /// A hello names a window's run only once the REPL's queue has accepted it: not while it is numbered (it may yet be
-    /// refused), not once refused, not once ended, and never a run the window did not number.
+    /// A hello names a window's run from its numbering to its end: not once refused (before a hello named it), not
+    /// once ended, and never a run the window did not number.
     #[test]
     fn a_window_names_its_runs_only_while_they_run() {
         let (a, bus) = (CallerNumbers::default(), bus());
         let (one, two, three) = (a.number(Some(1)), a.number(Some(2)), a.number(Some(3)));
         let theirs = a.number(None);
-        assert!(a.running(&bus).is_empty(), "numbered, not accepted");
+        assert_eq!(a.running(&bus), [1, 2, 3], "numbered, not accepted: named, for a window that redials during the start");
         for n in [one, two, theirs] {
             a.accepted(n);
         }
@@ -251,6 +266,25 @@ mod tests {
         a.accepted(one);
         assert_eq!(a.running(&bus), [2], "ended, and accepting it late does not reopen it");
         assert_eq!(kind_and_id(a.outgoing(done(one))), Some((1, "done".into())), "an ended run is still the window's");
+    }
+
+    /// A hello that reads a run while it is still waiting for the REPL's queue names it: the window redials during the
+    /// REPL's start and the run is accepted after. If the queue then refuses it, the reply went to the dropped
+    /// connection, so the run's reason and `done` are written to the window that was named it.
+    #[test]
+    fn a_run_named_while_waiting_and_then_refused_is_written_its_end() {
+        let (a, bus) = (CallerNumbers::default(), bus());
+        let named = a.number(Some(1));
+        assert_eq!(a.running(&bus), [1], "a numbered run is named");
+        let unnamed = a.number(Some(2));
+        a.refused(unnamed);
+        assert_eq!(a.running(&bus), [1], "a run refused before any hello is named by none");
+        a.refused(named);
+        assert!(a.running(&bus).is_empty());
+        let error = msg(named, json!({ "kind": "error", "message": "no REPL", "stacktrace": [] }));
+        assert_eq!(kind_and_id(a.outgoing(error)), Some((1, "error".into())));
+        assert_eq!(kind_and_id(a.outgoing(done(named))), Some((1, "done".into())));
+        assert_eq!(kind_and_id(a.outgoing(done(unnamed))), None, "never named: the reply said why");
     }
 
     /// A run is marked ended before its `done` is published: from inside `publish` a hello already names it no more.
