@@ -275,8 +275,11 @@ sot_registry_read() {
 # tab-separated: `owner<TAB>ws<TAB>host` (the entry binds ROW_ID), `other<TAB>ws<TAB>host` (it binds another row, or any row
 # to a process with no row id), `unbound` (no entry, or one with no workspace_id) or `unreadable` (the registry
 # cannot be read, or the entry is not an object). The one answer for the context's discard, poll's read and a join's check.
+# Without jq the answer is `unreadable` and nothing is piped: sot_registry_bytes would write into a pipe whose reader
+# is missing (every caller, the context's discard included, runs before its own jq check).
 sot_row_binding() {
     local out
+    sot_require_tools "read the registry" jq >/dev/null 2>&1 || { echo unreadable; return 0; }
     out="$(sot_registry_bytes | sot_jq -s -r --arg n "${1-}" --arg me "${2-}" '
         if length != 1 or (.[0].agents | type) != "object" then "unreadable"
         else (.[0].agents[$n] // {}) as $r
