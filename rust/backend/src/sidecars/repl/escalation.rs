@@ -63,6 +63,16 @@ impl Escalation {
         Some(Self { id, eval, force, at: Instant::now() + QUIET, sent: 0 })
     }
 
+    /// The escalation to keep when a request has made `new` while `old` runs: the first, except that a forced request
+    /// for the same eval replaces a plain one (a second Ctrl+C a moment after the first must force).
+    pub(super) fn prefer(old: Option<Self>, new: Option<Self>) -> Option<Self> {
+        match (old, new) {
+            (Some(old), Some(new)) if new.force && !old.force && new.eval == old.eval => Some(new),
+            (Some(old), _) => Some(old),
+            (None, new) => new,
+        }
+    }
+
     /// Whether `running`, the first eval in flight, is still the one the signals are for.
     pub(super) fn targets(&self, running: Option<&u64>) -> bool {
         running == Some(&self.eval)
@@ -107,7 +117,7 @@ fn unanswered(force: bool) -> String {
     } else {
         format!(
             "the eval did not stop at the interrupt signal: code with no safepoint, and C code, compiling and garbage \
-             collection, take it only when they return. A second Ctrl+C in the window, or `sot-fe repl interrupt \
+             collection, take it only when they return (wait for that call to return, or force it). A second Ctrl+C in the window, or `sot-fe repl interrupt \
              --force`, forces it; forcing inside C code (BLAS), while compiling or while collecting garbage can crash \
              or hang the REPL, and {RESTART}"
         )
@@ -142,6 +152,20 @@ mod tests {
         }
         let e = Escalation::for_request(1, &json!({}), Some(7)).unwrap();
         assert!(e.targets(Some(&7)) && !e.targets(Some(&8)) && !e.targets(None));
+    }
+
+    /// A forced request for the same eval replaces a plain escalation; nothing else replaces one.
+    #[test]
+    fn a_forced_request_for_the_same_eval_replaces_a_plain_escalation() {
+        let make = |id, eval, force: bool| Escalation::for_request(id, &json!({ "force": force }), Some(eval));
+        let kept = |old, new| Escalation::prefer(old, new).map(|e| e.id);
+        assert_eq!(kept(make(1, 7, false), make(2, 7, true)), Some(2));
+        assert_eq!(kept(make(1, 7, false), make(2, 7, false)), Some(1));
+        assert_eq!(kept(make(1, 7, true), make(2, 7, true)), Some(1));
+        assert_eq!(kept(make(1, 7, false), make(2, 8, true)), Some(1));
+        assert_eq!(kept(make(1, 7, false), None), Some(1));
+        assert_eq!(kept(None, make(2, 7, true)), Some(2));
+        assert_eq!(kept(None, None), None);
     }
 
     #[test]

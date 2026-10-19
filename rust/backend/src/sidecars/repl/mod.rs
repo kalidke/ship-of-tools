@@ -349,7 +349,8 @@ impl Repl {
             .map_err(|_| {
                 anyhow!(
                     "the REPL did not answer {op} within {REPL_INTERRUPT_WAIT:?}: it was not reading (no eval was running for the \
-                     daemon to signal, or the interrupt named another), and a restart ends it now (`sot-fe repl run \
+                     daemon to signal, the interrupt named another, or another interrupt's signal was already in \
+                     progress), and a restart ends it now (`sot-fe repl run \
                      <ws> <file> --fresh`, or `r` on a .jl file in the window)"
                 )
             })?

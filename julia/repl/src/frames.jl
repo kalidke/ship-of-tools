@@ -184,14 +184,21 @@ daemon's signal, sent for the eval's code as that code ended) does not stop the 
 """
 function stream_pipe(pipe, emit, kind)
     leftover = UInt8[]
+    frame = nothing  # a chunk read and not yet emitted: kept across an interrupt, so it is emitted again, never lost
     while true
         try
-            eof(pipe) && break
-            data = readavailable(pipe)
-            isempty(data) && continue
-            append!(leftover, data)
-            s, leftover = utf8_prefix(leftover)
-            isempty(s) || emit(Dict(:kind => kind, :text => s))
+            if frame === nothing
+                eof(pipe) && break
+                data = readavailable(pipe)
+                isempty(data) && continue
+                append!(leftover, data)
+                s, leftover = utf8_prefix(leftover)
+                isempty(s) || (frame = Dict(:kind => kind, :text => s))
+            end
+            if frame !== nothing
+                emit(frame)
+                frame = nothing
+            end
         catch e
             e isa InterruptException && continue
             break  # pipe closed/errored mid-read — stop draining.

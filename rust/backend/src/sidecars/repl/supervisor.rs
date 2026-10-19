@@ -293,8 +293,9 @@ async fn supervisor_task(
                 // child death can close it out with synthetic frames.
                 if let Some(reply) = sub.reply {
                     pending.insert(id, reply);
-                    if sub.op == "repl.interrupt" && escalation.is_none() {
-                        escalation = Escalation::for_request(id, &sub.payload, in_order.front().copied());
+                    if sub.op == "repl.interrupt" {
+                        let next = Escalation::for_request(id, &sub.payload, in_order.front().copied());
+                        escalation = Escalation::prefer(escalation.take(), next);
                     }
                 } else if let (Some(eid), Some(owner)) = (eid, sub.owner) {
                     streaming.insert(eid, owner);

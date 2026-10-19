@@ -132,9 +132,10 @@ enough that the owner is not locked out, and say so if one wedges. Never re-run 
 generously for the first call per workspace (precompile).
 
 **Interrupt.** Lands at the eval's next yield point; an eval that never yields
-(a tight numeric loop) is stopped by the one interrupt signal the daemon sends
-while the eval runs, within about two seconds, and the kernel keeps its state.
-Code with no safepoint (`while true end`) ignores that signal and the interrupt
+but has a safepoint (a loop that allocates or calls, such as a `sin` loop) is
+stopped by the one interrupt signal the daemon sends while the eval runs, within
+about two seconds, and the kernel keeps its state. Code with no safepoint (an
+integer loop, `while true end`) ignores that signal and the interrupt
 is answered with an error that says so; `--force` forces it, and forcing can
 crash or hang the REPL inside C code (BLAS), while compiling or collecting
 garbage, and lose its state. `--fresh` is the escalation for that and for an eval

@@ -49,7 +49,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
   waiting). A signal lands in whatever Julia code runs, so the shim's code after the eval's code ended drops it and runs
   the step again (`past_interrupts`): `serve`'s wait for the next request, the eval's wait for its readers, a reader's
   drain (`stream_pipe`), the restoring after the code, the error and value frames, and the done and res writes; a frame
-  can then be written twice, never lost. One that lands in `revise_loaded` holds the interrupt (`:held`), so the code
+  can then be written twice, never lost (a reader keeps a chunk it has read until it is emitted). One that lands in `revise_loaded` holds the interrupt (`:held`), so the code
   never runs and the eval ends as interrupted. One that lands in a request's handling answers that request with an error
   (`repl_exception`). On Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that moment was answered with
   that error, the REPL alive after each; a signal that arrives while the thread idles in a finished task's end ends the
