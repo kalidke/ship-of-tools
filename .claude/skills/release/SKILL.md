@@ -60,15 +60,15 @@ release from a fresh context.
    it** — write both down before you cut, not after. A candidate nobody has
    installed is not a milestone; it is a tag that cost CI minutes and told us
    nothing.
-   - A defect found **before the current candidate has been used** rides into
-     **that same candidate**: it lands on main before the cut, not in a new
-     tag. Once the candidate is tagged, a defect found afterward goes into the
-     next cut (see *Hard rules*).
+   - A defect found **before the candidate is tagged** rides into **that same
+     candidate**: it lands on main before the cut, so the tag carries it. A
+     defect found **after the tag** goes into the **next rc** (see *Hard
+     rules*); a published rc is never re-cut.
    - The one exception is a test that genuinely needs a **newer published
      version** — an updater/downgrade check, say — named as such when you cut.
    - This bounds the "everything we know is wrong goes in the next rc" rule in
-     *Hard rules* below; it never licenses parking a defect. Same candidate,
-     later cut — never a later line.
+     *Hard rules* below; it never licenses parking a defect. Same candidate
+     before its tag, never a later line.
 
 ## Cut it
 

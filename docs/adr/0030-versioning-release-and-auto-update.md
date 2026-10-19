@@ -875,6 +875,7 @@ about the run, not a setting for the person to maintain.
 Main is the -dev line, as the Julia packages' main is. Every tag, candidate and final, is cut from main, and the stamp
 after the tag moves main to the next version with `-dev` (the 2026-10-16 amendment above). The candidate branches
 `fixes/*` and `rc/*` are no longer cut from: `scripts/release.sh` refuses any branch but main. `fixes/0.6.6-comm` stays
-only as an alias until the next cut, then is retired. A defect found before a candidate has been used lands on main
-before the cut; a defect found after the tag goes into the next cut. The maintainer, 2026-10-16: "so just like our julia
+only as an alias until the next cut, then is retired. A defect found before the candidate is tagged lands on main
+before the cut and rides into that candidate; a defect found after the tag goes into the next rc, and a published rc is
+never re-cut. The maintainer, 2026-10-16: "so just like our julia
 packages, once we tag we move main to next version as dev."
