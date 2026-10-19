@@ -2,11 +2,19 @@
 # bash32.sh [DIR] -- print the path of a GNU bash 3.2.57 built in DIR (default /scratch/<user>/bash-3.2.57), the bash
 # that comm/CLAUDE.md and scripts/CLAUDE.md promise the scripts run under. Built from its tarball (sha256 pinned) once:
 # a DIR that already holds a built bash is reused. The build runs in a folder of its own and is moved to DIR whole, so a
-# second run racing this one never sees half a build. Needs curl, tar, make and a C compiler, and no sudo. rust.yml's
-# bash32-linux job and rc-gate.sh both call it. Exit 2 when the build fails.
+# second run racing this one never sees half a build. Needs curl, tar, make, a C compiler, one of bison, yacc or byacc
+# (the tarball's parse.y is newer than its y.tab.c, so make runs yacc) and no sudo; a DIR that already holds a built
+# bash needs none of them. rust.yml's bash32-linux job and rc-gate.sh both call it. Exit 2 when a need is missing or the
+# build fails.
 set -u
 dir=${1:-/scratch/$(id -un)/bash-3.2.57}
 if [ ! -x "$dir/bash" ]; then
+    # refuse before the download: a host without a yacc would only fail inside make, after the tarball is fetched
+    command -v bison > /dev/null || command -v yacc > /dev/null || command -v byacc > /dev/null || {
+        echo "bash32.sh: building bash 3.2.57 needs bison, yacc or byacc (its parse.y is newer than y.tab.c, so make" \
+            "runs yacc); install one, or copy a bash built elsewhere to $dir/bash" >&2
+        exit 2
+    }
     parent=$(dirname "$dir")
     mkdir -p "$parent" || exit 2
     work=$(mktemp -d "$parent/bash32-build-XXXXXX") || exit 2
