@@ -442,11 +442,11 @@ check "an unreachable origin, the commit already in the base clone: PASS" "0 PAS
 
 # ---------------------------------------------------------------------------
 case_start "entry_repeats_and_resumes_after_an_interrupted_run"
-# A run that stops after the swap (comm fails, on both of julia_run's attempts) leaves new binaries over the old checkout and the old install.json; running
+# A run that stops after the swap (comm fails, once: julia_run runs a step once) leaves new binaries over the old checkout and the old install.json; running
 # it again finishes it, and a third run on the finished install is a repair run that passes.
 d="$WORK/rep"; entry_fixture "$d"; P="$d/home/.local/share/sot"
 entry_record "$d" 9.9.8 1 0 none
-echo 2 > "$d/ctl/julia-fail"
+echo 1 > "$d/ctl/julia-fail"
 entry_archive "$d" --no-service
 check "the interrupted run fails in comm: exit 1" "1" "$ENTRY_RC"
 starts_with "its last line is the FAIL" "FAIL: comm:" "$ENTRY_LAST"

@@ -841,6 +841,16 @@ installer_declare_trust() {  # <absolute-sotd-path> <prefix>
     return 0
 }
 
+# Julia steps run once, with their stderr shown: an installer warning and a failing step's own error reach the
+# caller. The channel is chosen once, by a probe, never by running a step and rerunning it on failure.
+julia_pick_chan() {
+    JULIA_SEL=()
+    if julia "+$chan" -e 'exit(0)' >/dev/null 2>&1; then JULIA_SEL=("+$chan"); fi
+}
+julia_run() {
+    julia ${JULIA_SEL[@]+"${JULIA_SEL[@]}"} "$@"
+}
+
 # Tests set this to source the functions above in isolation: the shell
 # suites through scripts/tests/installer-support.sh, and the Rust tests
 # trust_premises.rs and unit_pin.rs. An install never sets it, `curl | bash`
@@ -1549,7 +1559,7 @@ if command -v julia >/dev/null && julia -e 'exit(VERSION >= v"1.12" ? 0 : 1)' >/
     :
 elif command -v juliaup >/dev/null 2>&1; then
     say "installing Julia channel $chan with juliaup"
-    juliaup add "$chan" >/dev/null 2>&1 || true
+    juliaup add "$chan" >/dev/null || true
     export PATH="$HOME/.juliaup/bin:$PATH"
 else
     say "installing Julia (juliaup, channel $chan)"
@@ -1557,9 +1567,7 @@ else
     export PATH="$HOME/.juliaup/bin:$PATH"
 fi
 command -v julia >/dev/null || die "Julia install failed; julia is still not on PATH"
-julia_run() {
-    julia "+$chan" "$@" 2>/dev/null || julia "$@"
-}
+julia_pick_chan
 
 STEP=comm
 say "installing agent comm resources (sot-comm, Claude/Codex skills)"

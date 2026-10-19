@@ -66,6 +66,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   it, `pack-build.sh` with stand-in cargo and git listing `sot-apply` executable in its archive, and the comm refresh
   an apply makes (bounded when julia stalls), a rollback and drop-only through a hand-off, the staged copy's second
   ask of the installed `sotd` under the lock, and the unit's `ExecStartPre` reading `.bashrc`.
+- `installer-julia-step.sh`: sourced by `installer-wrapper.sh`, never run: install.sh's Julia steps (`julia_pick_chan`,
+  `julia_run`) under a stand-in `julia`: the channel is chosen once, by one probe, each step runs once on that julia (the
+  logged argv is asserted, with and without the channel) with its stderr shown, and a failing step shows its own error
+  once and keeps its exit status.
 - `installer-support.sh`: the setup the installer suites source: install.sh and lib/sot-daemon.sh, `check`,
   `starts_with`, `case_start`, the sandboxed tool dir (`mk_tools`) and the recording stubs (`mk_stubs`).
 - `install-smoke.sh`: `install-smoke.sh SCENARIO ARTIFACTS CHECKOUT [BEFORE-TAG]` (Linux, macOS; bash 3.2): `install.sh`
@@ -346,7 +350,7 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 - A suite runs only if a step of `.github/workflows/rust.yml` or a job of `rc-gate.sh` names it; a new suite is added
   to the step list in the commit that adds it. The exception is `install-smoke.sh`, `install-smoke.ps1` and
   `release-before.sh`: they need a release run's artifacts and the published releases, so `release.yml` runs them
-  (jobs `install-*` and `release-before`), and `publish` needs those jobs. `rc-gate.sh` lists the three installer/topology shell suites and the finite selected-body proof here by name
+  (jobs `install-*` and `release-before`), and `publish` needs those jobs. `rc-gate.sh` lists the five installer/topology shell suites and the finite selected-body proof here by name
   (`SHELL_ALL` in `producer`).
 - `installer-state.sh` (and `installer-entry.sh` it sources), `installer-wrapper.sh`, `installer-apply.sh`, `installer-shared-home.sh` and `test-topology-plan.sh` run wholly under
   bash 3.2 in `under-bash.sh`'s run, since they source the scripts they test, so they hold under 3.2 themselves: inside
