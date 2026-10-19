@@ -17,7 +17,11 @@ if ! _poll_missing="$(sot_require_tools "poll for mail" $_poll_tools 2>&1)"; the
 fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 
-[ -z "$NAME" ] && { echo "Not joined — run comm-join.sh first." >&2; exit 1; }
+[ -z "$NAME" ] && { echo "No handle for this process — not this row's inbox (see any comm-context line above), or not joined: run comm-join.sh first." >&2; exit 1; }
+# Poll is the one reader of message bodies and the one cursor writer: with the registry unreadable nothing shows whose
+# row holds NAME, so it reads nothing.
+_reg_rc=0; sot_registry_read "$NAME" >/dev/null 2>&1 || _reg_rc=$?
+[ "$_reg_rc" -ne 2 ] || { echo "comm-poll: the registry could not be read; nothing was read" >&2; exit 1; }
 
 INBOX="$INBOX_DIR/$NAME.jsonl"
 CUR="$READ_DIR/$NAME.cursor"

@@ -925,6 +925,9 @@ jobs:
           # now covers let every hermetic run rewrite the handle of whichever
           # live row happened to be running the tests.
           bash test-agent-join.sh
+          # A session outside any row never takes, and never reads the mail of,
+          # a handle a live row holds: the daemon's word, and the row id.
+          bash test-identity-row-rule.sh
           # The carriage-return suite for jq. A native jq on Windows rewrites every
           # \n to \r\n and command substitution keeps the \r on the value;
           # until this ran here, the only thing standing between that and a

@@ -181,6 +181,19 @@ if [ -f "$SELF_FILE" ]; then
     fi
 fi
 
+# A handle a row holds is the identity of a process carrying that row's id, and of nothing else: a stray session in the
+# folder, or a process of another row, has no handle, so it reads, stamps and sends as nobody. The row is the registry
+# entry's workspace_id; one with none (a session outside any row) binds nobody. An unreadable registry keeps NAME:
+# comm-poll.sh, the one reader of bodies, refuses it itself. comm-join.sh alone passes --rebind, and only a process
+# carrying a row id is let through by it: that join is how a respawned row takes its handle over.
+if [ -n "$NAME" ] && ! { [ "${1:-}" = --rebind ] && [ -n "$WORKSPACE_ID" ]; } && reg_row="$(sot_registry_read "$NAME" 2>/dev/null)"; then
+    reg_ws="$(printf '%s' "$reg_row" | sot_jq -r '.workspace_id // ""' 2>/dev/null)" || reg_ws=""
+    if [ -n "$reg_ws" ] && [ "$reg_ws" != "$WORKSPACE_ID" ]; then
+        echo "comm-context: @$NAME belongs to row $reg_ws; this process carries ${WORKSPACE_ID:-no row id}, so it is not this row's inbox" >&2
+        NAME=""
+    fi
+fi
+
 # %q on an EMPTY value emits a literal '' — fine for the eval contract (both
 # eval to empty), but a textual scraper (`sed -n 's/^NAME=//p'`, as session-start
 # skills have used) captures the two quote chars as a NON-empty value, defeating

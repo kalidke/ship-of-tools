@@ -65,7 +65,7 @@ done
 # call (which can heal a self file or create the registry) and any later write.
 _why="$(sot_require_agent)" || { echo "comm-join.sh: REFUSING to bind: $_why" >&2; exit 1; }
 # A context that cannot name this session (an unusable declared host) has already said why: nothing is written.
-_ctx="$("$SCRIPT_DIR/comm-context.sh")" || exit 1
+_ctx="$("$SCRIPT_DIR/comm-context.sh" --rebind)" || exit 1
 eval "$_ctx"
 # The folder is made private, an older one tightened, before this script writes in it (ensure_home).
 ensure_home
@@ -118,6 +118,18 @@ NEED_DERIVE=false
 if [ "$REPIN" != 1 ] && sot_self_file_project_conflict "$SELF_FILE" "$REPO" "$PROJECT_ROOT"; then
     echo "comm-join.sh: REFUSING to put a '$REPO' identity in that slot — it is keyed by this shell's \$SOT_WORKSPACE_ID ('${WORKSPACE_ID:-unset}'), and a row that comes to name another project's session reads that session's mail. Either run this from inside the row it belongs to, or, if this row really is '$REPO' now, re-run with --repin." >&2
     exit 3
+fi
+
+# A session outside any row (no row id) never takes a handle a live row holds: an explicit name is refused here, a
+# derived one steps past it (_SOT_ROW_HELD, read by _sot_tier_claimable). The daemon decides which rows are live.
+_SOT_ROW_HELD=" "
+if [ -z "$WORKSPACE_ID" ]; then
+    if [ "$NEED_DERIVE" = true ]; then
+        _SOT_ROW_HELD=" $(sot_row_held_handles "$PROJECT_ROOT" | paste -sd ' ' -) "
+    elif ! _why="$(sot_outside_join_refusal "$NAME")"; then
+        echo "comm-join.sh: REFUSING to join: $_why" >&2
+        exit 1
+    fi
 fi
 
 ts="$(now_iso)"

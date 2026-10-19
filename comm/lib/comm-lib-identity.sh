@@ -425,7 +425,7 @@ _sot_handle_host() {
     printf '%s' "$host"
 }
 
-# _sot_tier_claimable MODE ROOT STATUS HELD_ROOT — true if a tier whose
+# _sot_tier_claimable MODE ROOT STATUS HELD_ROOT [NAME] — true if a tier whose
 # registry status is STATUS/HELD_ROOT (from sot_registry_entry_status) can
 # be claimed under MODE:
 #   reclaim — unclaimed, OR already held by MY OWN root (today's
@@ -437,10 +437,47 @@ _sot_handle_host() {
 #             erase a LIVE agent's workspace_id/status fields when spawning a
 #             second time against the same project root).
 _sot_tier_claimable() {
-    local mode="$1" root="$2" status="$3" held="$4"
+    local mode="$1" root="$2" status="$3" held="$4" name="${5:-}"
     [ "$status" = "absent" ] && return 0
+    # A handle a live row holds is not mine to reclaim from outside it (_SOT_ROW_HELD, set by comm-join.sh).
+    [ -z "$name" ] || case "${_SOT_ROW_HELD:- }" in *" $name "*) return 1 ;; esac
     [ "$mode" = "reclaim" ] && sot_same_root "$held" "$root" && return 0
     return 1
+}
+
+# sot_outside_join_refusal HANDLE — a join by a process that names no row (no row id) never takes a handle a live row
+# holds. 0 when it may; otherwise ONE reason on stdout, the way sot_require_agent does, and 1. A registry entry bound
+# to no row is nobody's but a session outside one, so the daemon is not asked. One bound to a row is put to the daemon,
+# which knows its live rows (agent.join with an empty workspace_id): `held_by_row` refuses, an ack means the row is gone
+# and the handle may be taken. A daemon that cannot be asked (none, an older one, a failed call) cannot rule the row
+# out, so the join is refused: the entry may belong to a row that outlived its daemon.
+sot_outside_join_refusal() {
+    local h="$1" row rc=0 bound="" frame res ENDPOINT
+    row="$(sot_registry_read "$h")" || rc=$?
+    [ "$rc" -eq 0 ] && bound="$(printf '%s' "$row" | sot_jq -r '.workspace_id // ""' 2>/dev/null)"
+    [ -n "$bound" ] || return 0
+    frame="$(jq -nc --arg h "$h" '{v:1, id:1, kind:"req", op:"agent.join", payload:{workspace_id:"", handle:$h}}')"
+    if ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" && [ -n "$ENDPOINT" ] \
+       && res="$(sot_oneshot_request "$frame" "agent.join" 2>/dev/null)" && [ -n "$res" ]; then
+        printf '%s' "$res" | jq -e '.payload.ok == true' >/dev/null 2>&1 && return 0
+        if [ "$(printf '%s' "$res" | jq -r '.payload.code // ""' 2>/dev/null)" = held_by_row ]; then
+            echo "@$h is held by a live row (row $bound); a session outside any row cannot join as it"
+            return 1
+        fi
+    fi
+    echo "@$h is bound to row $bound and the daemon could not say that row is gone; a session outside any row cannot join as it"
+    return 1
+}
+
+# sot_row_held_handles ROOT — the handles of this project (ROOT, canonical) that sot_outside_join_refusal refuses, one
+# per line: the ones a derived join from outside any row must step past.
+sot_row_held_handles() {
+    local root="$1" h held_root
+    sot_registry_read | sot_jq -r '.agents | to_entries[] | select((.value.workspace_id // "") != "") | [.key, (.value.root // "")] | @tsv' 2>/dev/null \
+    | while IFS=$'\t' read -r h held_root; do
+        sot_same_root "$held_root" "$root" || continue
+        sot_outside_join_refusal "$h" >/dev/null || printf '%s\n' "$h"
+    done || :   # an unreadable registry names none: the derivation that follows says so itself
 }
 
 # sot_derive_handle MODE ROOT HOST — the derived-name algorithm (ADR 0028
@@ -517,7 +554,7 @@ sot_derive_handle() {
     tier1="${base}-${host}"
     IFS=$'\t' read -r status1 held1 <<< "$(sot_registry_entry_status "$tier1")"
     [ "$status1" = "error" ] && { echo "$unreadable" >&2; return 1; }
-    if _sot_tier_claimable "$mode" "$root" "$status1" "$held1"; then
+    if _sot_tier_claimable "$mode" "$root" "$status1" "$held1" "$tier1"; then
         printf '%s\n%s\n%s\n' "$tier1" "" "$tier1"
         return 0
     fi
@@ -527,7 +564,7 @@ sot_derive_handle() {
     tier2="${base}-${parent}-${host}"
     IFS=$'\t' read -r status2 held2 <<< "$(sot_registry_entry_status "$tier2")"
     [ "$status2" = "error" ] && { echo "$unreadable" >&2; return 1; }
-    if _sot_tier_claimable "$mode" "$root" "$status2" "$held2"; then
+    if _sot_tier_claimable "$mode" "$root" "$status2" "$held2" "$tier2"; then
         echo "comm: '@$tier1' is already held by $shown1 — joining as '@$tier2' instead" >&2
         printf '%s\n%s\n%s\n' "$tier2" "$parent" "$tier1"
         return 0
@@ -538,7 +575,7 @@ sot_derive_handle() {
     tier3="${base}-${hash6}-${host}"
     IFS=$'\t' read -r status3 held3 <<< "$(sot_registry_entry_status "$tier3")"
     [ "$status3" = "error" ] && { echo "$unreadable" >&2; return 1; }
-    if _sot_tier_claimable "$mode" "$root" "$status3" "$held3"; then
+    if _sot_tier_claimable "$mode" "$root" "$status3" "$held3" "$tier3"; then
         echo "comm: '@$tier1' (held by $shown1) and '@$tier2' (held by $shown2) are both taken — joining as '@$tier3' instead" >&2
         printf '%s\n%s\n%s\n' "$tier3" "$hash6" "$tier1"
         return 0

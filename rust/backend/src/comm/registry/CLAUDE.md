@@ -49,6 +49,8 @@ prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LIN
   saved under its guard. Whatever that save did, a spawned task (`spawn_persist_moved`) then saves each row that lost
   the handle under that row's own guard, if it is still registered (`persist_moved`): the reply never waits on another
   row's guard, and no two guards are held at once. A failed save there is a warning; each move is one info line.
+- `agent.join` with an empty `workspace_id` is a join from outside any row (`outside_join`): it writes nothing and
+  answers `held_by_row` while a Starting or Ready row holds the handle (`held_handles`), else ok.
 - `spawn_registry_poll`, started by the server's `run`, publishes `agent_state` on the workspace bus when
   `project_comm_registry` changes between polls; `last_seen` is not in the projection.
 - `acquire` takes `<comm home>/.registry.lock`, the lock comm-lib-registry-lock.sh's `with_lock` takes. Both write the same one-line

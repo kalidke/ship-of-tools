@@ -7,6 +7,7 @@ use sot_protocol::op;
 use sot_protocol::AgentJoinReq;
 use sot_protocol::AgentJoinRes;
 use sot_protocol::Frame;
+use crate::comm::registry::liveness::held_handles;
 use crate::rows::WorkspaceChanged;
 use crate::rows::Workspaces;
 use tokio::sync::broadcast;
@@ -28,6 +29,11 @@ use crate::server::reply::HandlerOutput;
 /// restart. Publishes `workspace.changed` so the FE re-lists on success.
 /// Refuses `bad_handle` for an invalid handle, `unknown_workspace` for a
 /// workspace this daemon doesn't have (destroyed or never existed).
+///
+/// An empty `workspace_id` is a join from outside any row (`outside_join`): it
+/// changes nothing and answers `ok`, or `held_by_row` while a running row holds
+/// the handle. That is how a session outside every row is told the handle is not
+/// its to take.
 ///
 /// A newer declaration MOVES the handle (ADR 0049, B5): `set_agent_handle`
 /// clears it from every other row that held it, in memory, and this handler
@@ -67,6 +73,9 @@ async fn join_row(
             ),
             None,
         )], None));
+    }
+    if req.workspace_id.is_empty() {
+        return Ok((vec![(outside_join(req_id, &req.handle, workspaces).await?, None)], None));
     }
     // Manager review round 2 (Codex finding B1): take the SAME per-row
     // lifecycle guard `destroy_capsule_workspace` takes (ADR 0043
@@ -163,6 +172,26 @@ async fn join_row(
         ),
         None,
     )], saves))
+}
+
+/// A join from outside any row (`workspace_id` empty): it takes nothing and writes nothing, and is refused
+/// `held_by_row` while a running row holds `handle` (`held_handles`, the same rule that stamps liveness). The
+/// answer is the daemon's, from its own rows: a registry entry bound to a row that is gone does not hold it.
+async fn outside_join(req_id: u64, handle: &str, workspaces: &Workspaces) -> Result<Frame> {
+    let rows = workspaces.list();
+    let held = tokio::task::spawn_blocking(move || held_handles(&rows)).await.context("agent.join rows")?;
+    if held.contains(handle) {
+        tracing::info!(handle = %handle, "agent.join: refused a join from outside any row; a running row holds the handle");
+        return Ok(Frame::res(
+            req_id,
+            op::AGENT_JOIN,
+            json!({
+                "error": format!("@{handle} is held by a live row; a session outside any row cannot join as it"),
+                "code": "held_by_row",
+            }),
+        ));
+    }
+    Ok(Frame::res(req_id, op::AGENT_JOIN, serde_json::to_value(AgentJoinRes { ok: true })?))
 }
 
 /// Save the rows that lost `handle`, one at a time, in a task of their own.
@@ -653,6 +682,82 @@ mod agent_join_tests {
         assert_eq!(out[0].0.payload.get("code").and_then(|v| v.as_str()), Some("unknown_workspace"));
         assert!(workspaces.resolve(Some(&id)).is_none(), "the destroyed row must stay gone -- no resurrection");
         assert!(ws_events_rx.try_recv().is_err(), "no workspace.changed for a refused join");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A row that runs (Ready) and declares `handle`.
+    fn running_row(workspaces: &Workspaces, label: &str, handle: &str) -> String {
+        use crate::rows::workspace::{Observation, Phase, SupervisorIdentity};
+        let mut w = mk_ws(label);
+        w.runtime = "capsule".to_string();
+        w.agent_handle = std::sync::Mutex::new(handle.to_string());
+        assert!(w.apply_phase_observation(Observation::Phase {
+            phase: Phase::Ready,
+            supervisor: SupervisorIdentity { pid: 1, created: 1 },
+            voyage: Some(uuid::Uuid::from_u128(1)),
+        }));
+        workspaces.insert(w).workspace_id.clone()
+    }
+
+    // A session outside any row (an empty workspace_id) is refused a handle a running row holds, with a message
+    // naming the handle, and the row keeps it.
+    #[tokio::test]
+    async fn a_join_from_outside_any_row_is_refused_a_handle_a_running_row_holds() {
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let id = running_row(&workspaces, "outside-held", "outside-held-box");
+        let (ws_events_tx, mut ws_events_rx) = tokio::sync::broadcast::channel(4);
+
+        let payload = serde_json::json!({"workspace_id": "", "handle": "outside-held-box"});
+        let out = handle_agent_join(1, payload, &workspaces, &ws_events_tx).await.expect("handler must not error");
+        let p = &out[0].0.payload;
+        assert_eq!(p.get("code").and_then(|v| v.as_str()), Some("held_by_row"), "{p:?}");
+        let msg = p.get("error").and_then(|v| v.as_str()).unwrap_or_default();
+        assert!(msg.contains("@outside-held-box") && msg.contains("outside any row"), "{msg}");
+        assert_eq!(workspaces.resolve(Some(&id)).unwrap().agent_handle(), "outside-held-box");
+        assert!(ws_events_rx.try_recv().is_err(), "a refused join publishes nothing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A handle no running row holds (a stopped row, or none) may be taken from outside: the answer is ok and nothing
+    // moves, because the join itself is the registry's.
+    #[tokio::test]
+    async fn a_join_from_outside_any_row_may_take_a_handle_no_running_row_holds() {
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let mut stopped = mk_ws("outside-stopped");
+        stopped.runtime = "capsule".to_string();
+        stopped.agent_handle = std::sync::Mutex::new("outside-stopped-box".to_string());
+        let id = workspaces.insert(stopped).workspace_id.clone();
+        let (ws_events_tx, mut ws_events_rx) = tokio::sync::broadcast::channel(4);
+
+        for handle in ["outside-stopped-box", "outside-nobody-box"] {
+            let payload = serde_json::json!({"workspace_id": "", "handle": handle});
+            let out = handle_agent_join(1, payload, &workspaces, &ws_events_tx).await.expect("handler must not error");
+            assert_eq!(out[0].0.payload.get("ok").and_then(|v| v.as_bool()), Some(true), "{handle}: {:?}", out[0].0.payload);
+        }
+        assert_eq!(workspaces.resolve(Some(&id)).unwrap().agent_handle(), "outside-stopped-box", "nothing moved");
+        assert!(ws_events_rx.try_recv().is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A row's own join is the old path: a newer declaration from a row still moves the handle (B5).
+    #[tokio::test]
+    async fn a_row_taking_a_handle_from_another_row_still_moves_it() {
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let older = running_row(&workspaces, "outside-older", "outside-moved-box");
+        let newer = workspaces.insert(mk_ws("outside-newer")).workspace_id.clone();
+        let (ws_events_tx, _rx) = tokio::sync::broadcast::channel(4);
+
+        let payload = serde_json::json!({"workspace_id": newer, "handle": "outside-moved-box"});
+        let out = handle_agent_join(1, payload, &workspaces, &ws_events_tx).await.expect("handler must not error");
+        assert_eq!(out[0].0.payload.get("ok").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(workspaces.resolve(Some(&newer)).unwrap().agent_handle(), "outside-moved-box");
+        assert_eq!(workspaces.resolve(Some(&older)).unwrap().agent_handle(), "");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

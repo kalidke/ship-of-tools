@@ -18,6 +18,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `stage-bin.sh`: validates the flat bin source and publishes each completed destination by exclusive sibling temporary and rename, without preserving source permissions
 - `status_floor/`: parts of `test-status-floor.sh`: `reduction.sh`, `markers.sh`, `audit_and_races.sh`
 - `test-agent-join.sh`: `comm-join.sh` declares the row's handle to its daemon over the owner endpoint, never the relay
+- `test-identity-row-rule.sh`: a handle a live row holds is read and taken only from inside that row: a stray, another row and the nopane slot read nothing, and a join from outside any row is refused or steps past it on the daemon's word (a stub daemon)
 - `test-agent-layers.sh`: a process acts as a handle only with at most one agent between it and its row's capsule
 - `test-comm-deps.sh`: a missing jq, flock or perl is named by poll (in a FAILED line), session start and the Stop hook, never passed silently; without jq a send's and a leave's one line is FAILED naming it; a mail tool that is a perl module perl loads (Time::HiRes) is not missing
 - `test-comm-e2e-readers.sh`: real readers on a real shared home lose no line (needs a v4 peer and a v3 host)
