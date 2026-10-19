@@ -336,6 +336,21 @@ end
     end
 end
 
+@testset "_remove_stale_comm_hooks!: the dialog wiring is PermissionRequest only" begin
+    @test ("PermissionRequest", "comm-status-dialog.sh", nothing) in ShipTools._COMM_STATE_HOOKS
+    @test ("PostToolUseFailure", "comm-status-heartbeat.sh", nothing) in ShipTools._COMM_STATE_HOOKS
+    @test !any(h -> h[1] == "Notification", ShipTools._COMM_STATE_HOOKS)
+    mktempdir() do dir
+        settings = joinpath(dir, "settings.json")
+        write(settings, """{"hooks":{
+          "Notification":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-dialog.sh"}]}],
+          "PermissionRequest":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-dialog.sh"}]}]}}""")
+        ShipTools._remove_stale_comm_hooks!(settings)
+        @test isempty(jq_lines(`jq -r '.hooks.Notification // [] | .[].hooks[].command' $settings`))
+        @test jq_lines(`jq -r '.hooks.PermissionRequest[].hooks[].command' $settings`) == ["\$HOME/.sot-comm/bin/comm-status-dialog.sh"]
+    end
+end
+
 @testset "_remove_stale_comm_hooks!: retired reminder hooks go, others stay" begin
     # The post-compact and post-clear reminder scripts are deleted, so an
     # install must also drop their settings entries, or settings.json keeps

@@ -13,17 +13,14 @@ like a Claude Code session does:
 | `UserPromptSubmit`  | `comm-status-working.sh`   | working / green  |
 | `PostToolUse`       | `comm-status-heartbeat.sh` | working / green  |
 | `Stop`              | `comm-status-idle.sh`      | closing marker → done/blocked/waiting; else done (blue, human-started turn) / idle |
-| `PermissionRequest` | `codex-status-blocked.sh`  | blocked / red    |
+| `PermissionRequest` | `codex-status-blocked.sh`  | dialog / red until the call returns |
 
-`PermissionRequest` maps to blocked because codex has no `AskUserQuestion` tool;
-a permission prompt is its nearest "needs the USER to act", which is what red
-means. Its payload carries a top-level `tool_name`, which is why
-`codex-status-blocked.sh` can name the asking tool in the summary; it sends
-`blocked` followed by `stop` — the session is yielding to the owner exactly
-like a real turn end. UNLIKE Claude's `AskUserQuestion`, there is no
-PostToolUse for the answer (the shared heartbeat script's answer branch
-matches only that Claude tool name), so the red clears on this session's
-next genuine `UserPromptSubmit`, not on the approval itself.
+`PermissionRequest` maps to the `dialog` fact (red) because a permission prompt
+is codex's nearest "needs the USER to act". Its payload carries a top-level
+`tool_name`, which is why `codex-status-blocked.sh` can name the asking tool in
+the summary. The red clears when the approved call's `PostToolUse` reaches the
+shared heartbeat script, and at the latest at the turn's Stop or the next
+prompt; the hook no longer ends the turn.
 
 Because these are the same bin scripts the Claude adapter uses (the payloads
 share the field names that matter — notably `prompt`), a codex row is a set

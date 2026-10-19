@@ -5,12 +5,12 @@ the `note` line), and `comm-status.sh` reduces them to the row's `state` and `su
 messaging; charter: comm/CLAUDE.md. The design of record is docs/adr/0044 and its amendment.
 
 ## Files
-- `comm-status.sh`: writes one fact (`prompt`, `stop`, `join`, `working`, `idle`, `blocked`, `done`, `waiting`) and reduces the facts to state and summary in one jq program
+- `comm-status.sh`: writes one fact (`prompt`, `stop`, `join`, `dialog`, `resumed`, `working`, `idle`, `blocked`, `done`, `waiting`) and reduces the facts to state and summary in one jq program
 - `comm-turn-auditor.sh`: the Stop hook's auditor: cheap pre-filters on the turn's last reply, then one headless Haiku `claude -p` call that returns findings
 - `hooks/`: the Claude and Codex hooks that send the events and the closing-marker stamps (see its page)
 
 ## Start here
-`comm-status.sh`: its header lists the verbs, and the reduction table (blocked, working, waiting, done, idle, by
+`comm-status.sh`: its header lists the verbs, and the reduction table (dialog, blocked, working, waiting, done, idle, by
 priority) sits above the `with_lock` call that applies it. For what the Stop hook does with a finding, read
 `hooks/comm-status-idle.sh` and the auditor's header.
 
@@ -18,7 +18,8 @@ priority) sits above the `with_lock` call that applies it. For what the Stop hoo
 - The verb, the reduction and the stamp are one jq program run inside `with_lock`, so a writer that commits between
   another's read and write is never overwritten.
 - A declaration (`working`, `idle`, `blocked`, `done`, `waiting`) with nowhere to land fails loudly; an event
-  (`prompt`, `stop`, `join`) from a session with no registry row writes nothing to the registry (`sot_require_agent`).
+  (`prompt`, `stop`, `join`, `dialog`, `resumed`) from a session with no registry row writes nothing to the registry (`sot_require_agent`).
+- `dialog` is a fact only the hooks write: it reads red over a running turn, never touches `question`, `waiting`, `done`, `note` or `floor`, and never outlives its turn (`prompt` and `stop` delete it; the heartbeat's `resumed` deletes it when the call returns, found by `state/dialog-<id>.marker`).
 - `prompt` writes the session's turn mark (`state/turn-<self slot>`: the time and `$CLAUDE_CODE_SESSION_ID`) and
   `stop` removes it, row or no row; `join`, sent by `comm-join.sh`, sets `floor` to machine only from a mark of its
   own session under five minutes old. So the turn that joins reads working until its Stop; a session whose hooks are

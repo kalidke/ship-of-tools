@@ -225,12 +225,13 @@ needs no knowledge of the priorities because `done` is the lowest tier.
   of its own is refused). `working`, `idle` and
   `done` clear `question` and `waiting`; `done` sets `done`, the other two
   clear it.
-- `AskUserQuestion` (Claude) and the permission prompt (Codex,
-  `PermissionRequest`) are the session yielding to the owner while the
-  harness is paused: their PreToolUse hooks send `blocked` then `stop`, and
-  clear the heartbeat's throttle tick so the answer is never swallowed. The
+- `AskUserQuestion` (Claude) is the session yielding to the owner while the
+  harness is paused: its PreToolUse hook sends `blocked` then `stop`, and
+  clears the heartbeat's throttle tick so the answer is never swallowed. The
   answer arrives as the tool's PostToolUse: the heartbeat sends `prompt`
-  with origin `user` for that tool name (the owner typed it).
+  with origin `user` for that tool name (the owner typed it). *Amended
+  (2026-10-19):* a Codex permission prompt is no longer this shape (see the
+  dialog amendment below); its answer never arrived as a PostToolUse.
 - The Stop hook's marker parsing (`SITREP:` / `SITREP-QUESTION:` /
   `SITREP-WAITING:` → `done` / `blocked` / `waiting`) is unchanged; it
   reads `floor` for the turn's origin before `stop` clears it. "Parked
@@ -271,3 +272,32 @@ an unanswered question returns red without re-emitting the marker.
 `comm-status.sh` trades its hold ladder for a six-line reduction. White
 today means the frontend badge only: no "unread message" row fact exists
 yet; when one does it joins the badge as an overlay under the same rule.
+
+## Amendment 2026-10-19 — a permission dialog is the `dialog` fact
+
+A row waiting on a permission dialog read green (Claude: no hook fired) or stayed
+red after the answer (Codex: `blocked` then `stop`, cleared only by a typed prompt).
+
+- `dialog` is one more event fact, written only by hooks: the new line on top of the
+  reduction, `dialog set -> blocked, summary = dialog`, reads red over a running turn.
+  The state value is the existing `blocked`, so the registry, the daemon and the
+  window do not change. It never touches `question`, `waiting`, `done`, `note` or `floor`.
+- Set by `PermissionRequest`: Claude's `comm-status-dialog.sh` and Codex's
+  `codex-status-blocked.sh` send `dialog "<text>"`. They print no decision, so the
+  dialog shows as before. PermissionRequest fires when the dialog opens, so a quick
+  approval also reads red briefly, which is true: a person is being asked. The
+  refinement is Notification `permission_prompt`, which fires after about six
+  seconds unanswered and carries `message` (the script already accepts it and writes
+  nothing for any other `notification_type`, such as `idle_prompt`); it waits on a
+  check that it fires inside the window's own terminal.
+- Cleared by every event that proves the dialog is gone: the answered call's
+  `PostToolUse` or `PostToolUseFailure` (the heartbeat finds `state/dialog-<id>.marker`,
+  keyed by `SOT_WORKSPACE_ID` or the session id, with one `[ -e ]` per tool return and
+  sends `resumed`), the turn's `stop`, and every `prompt` (typed, machine, a join).
+  So `dialog` never outlives its turn.
+- Limits. (L1) No hook fires at approval, so an approved call reads red until it
+  returns. (L2) A tool return by another agent of the same session clears the red
+  early. (L3) "No" without feedback, or Esc, interrupts the turn and fires no Stop:
+  the row stays red until the session's next prompt. A denial fires neither
+  PostToolUse nor PostToolUseFailure. (L4) Teammate permission requests and MCP
+  elicitation are other events and are not covered.

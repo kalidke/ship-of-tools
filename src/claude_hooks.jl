@@ -165,8 +165,12 @@ end
 # with zero model help. A row is a set of FACTS reduced to one display state
 # by comm-status.sh (ADR 0044 amendment, 2026-09-19): `blocked` keys off the
 # AskUserQuestion tool (PreToolUse), NOT Notification: Notification also fires
-# on plain idle, which lit agents red while merely waiting. A question asked
-# in plain text has no automatic signal — an agent self-reports
+# on plain idle, which lit agents red while merely waiting. A permission dialog
+# is the `dialog` fact, raised by PermissionRequest (it fires when the dialog
+# opens, so a quick approval reads red briefly too; Notification
+# `permission_prompt`, six seconds in, is the refinement) and cleared by the
+# answered call's PostToolUse or PostToolUseFailure. A question asked in plain
+# text has no automatic signal — an agent self-reports
 # `comm-status.sh blocked "<q>"` for those.
 const _COMM_STATE_HOOKS = [
     ("UserPromptSubmit", "comm-status-working.sh", nothing),     # turn starts    → prompt (sets floor)
@@ -179,6 +183,8 @@ const _COMM_STATE_HOOKS = [
     # is AskUserQuestion, is instead the owner replying: sends prompt origin
     # user (a fresh turn start), not a heartbeat refresh.
     ("PostToolUse", "comm-status-heartbeat.sh", nothing),
+    ("PostToolUseFailure", "comm-status-heartbeat.sh", nothing), # a failed call also ends a dialog
+    ("PermissionRequest", "comm-status-dialog.sh", nothing),     # a dialog opens → dialog (red over the turn)
 ]
 
 # A hook command string. `\$HOME` (not the resolved path) so the entry is portable

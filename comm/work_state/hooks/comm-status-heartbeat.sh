@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# comm-status-heartbeat.sh — Claude Code `PostToolUse` hook. Two jobs:
+# comm-status-heartbeat.sh — Claude Code `PostToolUse` and `PostToolUseFailure` hook. Three jobs:
+#
+#   (0) A permission dialog's end: the call's return sends `resumed` (below).
 #
 #   (1) The AskUserQuestion ANSWER (ADR 0044 amendment): that tool's
 #       PostToolUse is the owner typing the answer — the session yielding to
@@ -90,6 +92,21 @@ _agent_gate() {
 # comm-status-blocked.sh's PreToolUse drops, keyed by the SAME `tool_use_id`
 # this completion carries: only consuming that marker earns the `prompt`.
 # No marker (no PreToolUse ever opened this exact dialog) means no answer.
+# A permission dialog's end (ADR 0044 amendment, `dialog`): the answered call's
+# PostToolUse or PostToolUseFailure. comm-status.sh left state/dialog-<key>.marker
+# when the PermissionRequest hook raised it; this tests for it with one `[ -e ]`
+# per tool return and, found, removes it and sends `resumed`, then goes on as it
+# does for any call. The key is comm-status.sh's.
+_dialog_key="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+if [ -n "$_dialog_key" ]; then
+    _dialog_marker="$COMM_HOME/state/dialog-$(printf '%s' "$_dialog_key" | tr -c 'A-Za-z0-9._-' '_').marker"
+    if [ -e "$_dialog_marker" ]; then
+        _agent_gate
+        rm -f "${_dialog_marker:?}" 2>/dev/null || true
+        "$COMM_HOME/bin/comm-status.sh" resumed >/dev/null 2>&1 || true
+    fi
+fi
+
 if [ "$tool" = AskUserQuestion ]; then
     _agent_gate
     _tool_use_id="$(printf '%s' "$_envelope" | jq -r '.tool_use_id // ""' 2>/dev/null || true)"

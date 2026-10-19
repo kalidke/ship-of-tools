@@ -6,7 +6,7 @@
 # Usage:
 #   comm-status.sh <verb> ["text"]
 #
-# Three verbs are EVENTS — sent by hooks and the join, never by the model:
+# Five verbs are EVENTS — sent by hooks and the join, never by the model:
 #   prompt   a turn is starting. COMM_STATUS_ORIGIN=user|machine (default
 #            machine) names who started it: sets `floor` to the origin; a
 #            USER prompt also clears `question` and `done` (typing into the
@@ -17,6 +17,15 @@
 #            none): sets `done` when `floor` was `user` and neither `question`
 #            nor `waiting` is set, then clears `floor` and the Stop hook's
 #            `stop_at` mark. Row or no row, it removes the turn mark.
+#   dialog "T"  the agent shows a permission dialog that waits on a person
+#            (the PermissionRequest hooks send it): sets `dialog` to T, which
+#            reads red over the running turn; no text is refused (rc 2). With
+#            SOT_WORKSPACE_ID or CLAUDE_CODE_SESSION_ID set it also creates
+#            state/dialog-<id>.marker, the cheap test the heartbeat makes on
+#            every tool return.
+#   resumed  the dialog's call has returned (the heartbeat sends it when it
+#            finds that marker): clears `dialog`. `prompt` and `stop` clear it
+#            too: it never outlives its turn.
 #   join     the session has just written its row (comm-join.sh sends it):
 #            with a turn mark of its own session under five minutes old, sets
 #            `floor` to machine as a machine `prompt` does; else writes nothing.
@@ -65,6 +74,7 @@
 # 2026-09-19: "the row is a set of facts reduced by display priority").
 # `state` and `summary` are a REDUCTION over those facts, recomputed on every
 # write, by priority:
+#   dialog set                   -> blocked   summary = dialog
 #   question set, floor absent  -> blocked   summary = question
 #   floor present                -> working   summary = note
 #   waiting set                  -> waiting   summary = waiting
@@ -72,9 +82,9 @@
 #   otherwise                    -> idle      summary = note
 # `note` holds the last working/idle/done line so the summary can return to it
 # once red or purple lifts; a blocked or waiting stamp WITH text deletes it.
-# The Codex permission hook stamps `blocked` with text, so a Codex permission
-# request deletes the note too, and after approval the summary is blank until
-# the next declaration. The daemon never touches it.
+# `dialog` is an event fact: only the hooks write it, and no declaration touches
+# `question`, `waiting`, `done`, `note` or `floor` on its account. The daemon
+# never touches it.
 #
 # READ-DECIDE-WRITE IS ONE CRITICAL SECTION (Codex review, #223): apply the
 # verb, delete legacy keys, reduce, and stamp are ONE jq program run inside
@@ -96,17 +106,20 @@ source "$SCRIPT_DIR/comm-lib.sh"
 
 VERB="${1:-}"
 case "$VERB" in
-    prompt|stop|join|working|idle|blocked|done|waiting) ;;
-    "") echo "usage: comm-status.sh <prompt|stop|join|working|idle|blocked|done|waiting> [\"text\"]" >&2; exit 2 ;;
-    *)  echo "comm-status.sh: invalid verb '$VERB' (want prompt|stop|join|working|idle|blocked|done|waiting)" >&2; exit 2 ;;
+    prompt|stop|join|dialog|resumed|working|idle|blocked|done|waiting) ;;
+    "") echo "usage: comm-status.sh <prompt|stop|join|dialog|resumed|working|idle|blocked|done|waiting> [\"text\"]" >&2; exit 2 ;;
+    *)  echo "comm-status.sh: invalid verb '$VERB' (want prompt|stop|join|dialog|resumed|working|idle|blocked|done|waiting)" >&2; exit 2 ;;
 esac
 
 # A second agent inside the session never stamps the row: an event is a silent
 # no-op, a declaration a loud failure. The gate comes before the context call, so
 # a refused child touches nothing.
 if ! _why="$(sot_require_agent)"; then
-    case "$VERB" in prompt|stop|join) exit 0 ;; esac
+    case "$VERB" in prompt|stop|join|dialog|resumed) exit 0 ;; esac
     echo "comm-status.sh: $_why" >&2; exit 1
+fi
+if [ "$VERB" = dialog ] && [ -z "${2-}" ]; then
+    echo "comm-status.sh: dialog needs its text -- stamp discarded" >&2; exit 2
 fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 
@@ -133,7 +146,7 @@ esac
 # NAME comes from comm-context (the pane-keyed self file); empty / no row →
 # no-op for an EVENT, a loud failure for a DECLARATION.
 _no_row() {
-    case "$VERB" in prompt|stop) exit 0 ;; esac
+    case "$VERB" in prompt|stop|dialog|resumed) exit 0 ;; esac
     echo "comm-status.sh: no registry row for '${NAME:-<no identity>}' from cwd $PWD -- stamp discarded; run it from the session's project root" >&2
     exit 1
 }
@@ -147,6 +160,15 @@ case "$rc" in 0) ;; 1) _no_row ;; *) echo "$UNREADABLE" >&2; exit 1 ;; esac
 if [ "$VERB" = blocked ] && [ -n "${SOT_COMM_ASKQ_ID:-}" ]; then
     mkdir -p "$COMM_HOME/state" 2>/dev/null || true
     : > "$COMM_HOME/state/askq-$(printf '%s' "$SOT_COMM_ASKQ_ID" | tr -c 'A-Za-z0-9._-' '_').marker" 2>/dev/null || true
+fi
+
+# The dialog marker, behind the same gate and row check (the key is sanitized: it
+# becomes a filename). With no key there is no marker, and the `prompt` or `stop`
+# that ends the turn clears the fact.
+DIALOG_KEY="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+if [ "$VERB" = dialog ] && [ -n "$DIALOG_KEY" ]; then
+    mkdir -p "$COMM_HOME/state" 2>/dev/null || true
+    : > "$COMM_HOME/state/dialog-$(printf '%s' "$DIALOG_KEY" | tr -c 'A-Za-z0-9._-' '_').marker" 2>/dev/null || true
 fi
 
 # ${2+set}: distinguish an omitted text (keep the prior note) from an
@@ -179,11 +201,13 @@ status_txn() {
       input as $sum
       | .agents[$n] |= (
         del(.turn_origin, .sticky, .sticky_at)
-        | if $st == "prompt" then .floor = $o
+        | if $st == "prompt" then del(.dialog) | .floor = $o
             | (if $o == "user" then del(.question, .done) else . end)
           elif $st == "stop" then
             (if .floor == "user" and .question == null and .waiting == null then .done = true else . end)
-            | del(.floor, .stop_at)
+            | del(.floor, .stop_at, .dialog)
+          elif $st == "dialog" then .dialog = $sum
+          elif $st == "resumed" then del(.dialog)
           else   # declarations — blocked/waiting set their own fact and never
                   # copy their text into .note: aliasing it to the question
                   # left that text as the summary fallback long after the
@@ -200,11 +224,13 @@ status_txn() {
               elif $st == "done" then (if $h == "1" then .note = $sum else . end) | .done = true | del(.question, .waiting)
               else (if $h == "1" then .note = $sum else . end) | del(.question, .waiting, .done) end   # working, idle
           end
-        | .state = (if .question != null and .floor == null then "blocked"
+        | .state = (if .dialog != null then "blocked"
+                    elif .question != null and .floor == null then "blocked"
                     elif .floor != null then "working"
                     elif .waiting != null then "waiting"
                     elif .done == true then "done" else "idle" end)
-        | .summary = (if .state == "blocked" then .question
+        | .summary = (if .dialog != null then .dialog
+                      elif .state == "blocked" then .question
                       elif .state == "waiting" then .waiting else (.note // "") end)
         | .status_at = $t | .last_seen = $t)
     ' --arg n "$NAME" --arg st "$VERB" --arg o "$ORIGIN" --arg t "$ts" --arg h "$HAVE"
