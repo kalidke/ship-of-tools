@@ -29,7 +29,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
 - `control_session.rs`: server; a control session's replies pinned over the wire: unknown op, `monitor.*`, `pty.open` refusals, the pooled ops and `concept.read`, the evt skip and the refused hellos; a directed `agent.send` refused, `agent.filed` no op, a UI notification with no receipt fields
 - `daemon_boot.rs`: server; a first boot seeds the default row as the inert anchor, and the registry poll relays a state change; on Linux, observes that a spawned daemon inherits no `SOT_` variable the test did not set
-- `daemon_stdout.rs`: a daemon whose stdout is a regular file writes its log only to `sotd.log`, and that file holds the start line
+- `daemon_stdout.rs`: a daemon whose stdout is a regular file writes its log only to `sotd.log`, and that file holds the start line; `sotd log-path` names that file
 - `hub_link.rs`: messaging; a hub `sotd` and a linked `sotd` joined by a stub `ssh`: the hub's `comm.file` for a handle only the linked box lists is filed there, its refusals come back, and it files again after a redial
 - `keystroke_latency.rs`: rows and topology; ignored private-daemon keystroke timing and headless request-to-checkpoint switch timing, with explicit SSH prerequisites; T3 owns proof from the frontend attach request to the pane showing it
 - `live_socket.rs`: server; a second daemon on a live daemon's socket refuses and the first keeps answering

@@ -89,27 +89,33 @@ fn handle_is_file(handle: windows_sys::Win32::Foundation::HANDLE) -> bool {
     unsafe { GetFileType(handle) == FILE_TYPE_DISK }
 }
 
+impl TeeWriter {
+    /// The file half first, then `out` when stdout gets a copy: a stdout that fails (a closed pipe) never stops the
+    /// log of record.
+    fn write_to(&mut self, out: &mut dyn std::io::Write, buf: &[u8]) -> usize {
+        if let Some(Ok(mut f)) = self.file.as_ref().map(|f| f.lock()) {
+            let _ = std::io::Write::write_all(&mut f.file, buf);
+            if let Some(failed) = f.roll_if_over() {
+                eprintln!("{failed}");
+            }
+        }
+        if self.stdout {
+            let _ = out.write_all(buf);
+        }
+        buf.len()
+    }
+}
+
 impl std::io::Write for TeeWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = if self.stdout { std::io::Write::write(&mut std::io::stdout(), buf)? } else { buf.len() };
-        if let Some(f) = &self.file {
-            if let Ok(mut f) = f.lock() {
-                let _ = f.file.write_all(buf);
-                if let Some(failed) = f.roll_if_over() {
-                    eprintln!("{failed}");
-                }
-            }
-        }
-        Ok(n)
+        Ok(self.write_to(&mut std::io::stdout(), buf))
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        if self.stdout {
-            std::io::Write::flush(&mut std::io::stdout())?;
+        if let Some(Ok(mut f)) = self.file.as_ref().map(|f| f.lock()) {
+            let _ = f.file.flush();
         }
-        if let Some(f) = &self.file {
-            if let Ok(mut f) = f.lock() {
-                let _ = f.file.flush();
-            }
+        if self.stdout {
+            let _ = std::io::Write::flush(&mut std::io::stdout());
         }
         Ok(())
     }

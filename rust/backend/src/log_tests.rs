@@ -77,6 +77,27 @@ fn tee(path: &std::path::Path, cap: u64) -> TeeWriter {
     TeeWriter { file: Some(Arc::new(Mutex::new(LogFile { file, path: path.to_path_buf(), cap, retry_above: 0 }))), stdout: false }
 }
 
+/// A stdout that fails (a closed pipe) never stops the write to the log file.
+#[test]
+fn a_failing_stdout_never_stops_the_log_file() {
+    struct Closed;
+    impl Write for Closed {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sotd.log");
+    let mut daemon = tee(&path, LOG_ROLL_BYTES);
+    daemon.stdout = true;
+    assert_eq!(daemon.write_to(&mut Closed, b"one\n"), 4);
+    assert_eq!(daemon.write_to(&mut Closed, b"two\n"), 4);
+    assert_eq!(std::fs::read(&path).unwrap(), b"one\ntwo\n");
+}
+
 fn supervisor(path: &std::path::Path) -> std::fs::File {
     std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap()
 }
