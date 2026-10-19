@@ -37,6 +37,20 @@ fn interrupted(collector: &crate::sidecars::repl::ExecCollector) -> bool {
     })
 }
 
+/// An interrupt's answer, `force` saying whether it was forced: the shim's `interrupted: true`, read once the signals
+/// stopped the eval, or the daemon's own answer (`escalation::unanswered`) when the child said nothing for `QUIET`
+/// after the last signal; on a loaded machine the child's catch and answer can take longer than that while the eval
+/// is stopping. The eval's own frames, read after it, say whether it stopped.
+fn assert_answered(answer: anyhow::Result<Option<serde_json::Value>>, force: bool) {
+    match answer {
+        Ok(answer) => {
+            let answer = answer.expect("the REPL is running");
+            assert_eq!(answer["interrupted"], true, "{answer}");
+        }
+        Err(e) => assert_eq!(e.to_string(), super::escalation::unanswered(force), "the interrupt must be answered"),
+    }
+}
+
 /// One interrupt request sends one ordinary signal, which stops code that has a safepoint (the stock REPL's Ctrl-C).
 #[tokio::test]
 async fn one_interrupt_stops_a_loop_with_a_safepoint() {
@@ -48,8 +62,7 @@ async fn one_interrupt_stops_a_loop_with_a_safepoint() {
     let code = "println(\"summing\"); let s = 0.0; for i in 1:10^12; s += sin(i); end; s; end";
     let (reply, collector) = start(&fixture, 2, code, "summing").await;
     let answer = fixture.repl.request_if_running("repl.interrupt", json!({})).await;
-    let answer = answer.expect("the interrupt must be answered").expect("the REPL is running");
-    assert_eq!(answer["interrupted"], true, "{answer}");
+    assert_answered(answer, false);
     tokio::time::timeout(Duration::from_secs(30), reply).await.expect("the eval answers").ok();
     assert!(interrupted(&collector));
     let after = eval(&fixture.repl, 3, "kept + 1").await;
@@ -74,8 +87,7 @@ async fn a_loop_with_no_safepoint_needs_the_force() {
     assert!(tokio::time::timeout(Duration::from_secs(3), &mut reply).await.is_err(), "the loop runs on");
     assert!(!interrupted(&collector));
     let forced = fixture.repl.request_if_running("repl.interrupt", json!({ "force": true })).await;
-    let forced = forced.expect("the forced interrupt must be answered").expect("the REPL is running");
-    assert_eq!(forced["interrupted"], true, "{forced}");
+    assert_answered(forced, true);
     tokio::time::timeout(Duration::from_secs(30), reply).await.expect("the eval answers").ok();
     assert!(interrupted(&collector));
     let after = eval(&fixture.repl, 3, "kept + 1").await;
@@ -99,8 +111,7 @@ async fn a_forced_request_a_moment_after_a_plain_one_forces() {
         fixture.repl.request_if_running("repl.interrupt", json!({ "eval_ids": [2], "force": true })).await
     };
     let (_plain, forced) = tokio::join!(plain, forced);
-    let forced = forced.expect("the forced interrupt must be answered").expect("the REPL is running");
-    assert_eq!(forced["interrupted"], true, "{forced}");
+    assert_answered(forced, true);
     tokio::time::timeout(Duration::from_secs(30), reply).await.expect("the eval answers").ok();
     assert!(interrupted(&collector));
     let after = eval(&fixture.repl, 3, "kept + 1").await;

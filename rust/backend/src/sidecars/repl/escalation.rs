@@ -108,7 +108,7 @@ impl Escalation {
 const RESTART: &str = "`--fresh` restarts it (`sot-fe repl run <ws> <file> --fresh`, or `r` on a .jl file in the window)";
 
 /// The answer when the signals are sent and the eval has not stopped.
-fn unanswered(force: bool) -> String {
+pub(super) fn unanswered(force: bool) -> String {
     if force {
         format!(
             "the eval went on through the forced interrupt too (it catches InterruptException, or a C call holds the \
