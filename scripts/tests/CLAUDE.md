@@ -70,6 +70,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `julia_run`) under a stand-in `julia`: the channel is chosen once, by one probe, each step runs once on that julia (the
   logged argv is asserted, with and without the channel) with its stderr shown, and a failing step shows its own error
   once and keeps its exit status.
+- `installer-julia-floor.sh`: sourced by `installer-wrapper.sh`, never run: install.sh's `julia_floor_check` under stand-in
+  `julia` and `juliaup.json` (a scratch `JULIAUP_DEPOT_PATH`): a default and a PATH julia at or above the kernel's compat floor
+  leave nothing; a default below it, a PATH julia below it with no juliaup, one that cannot be asked, and a failed
+  `juliaup add` each end ONE STEP LEFT with the version and the fixing command.
 - `installer-support.sh`: the setup the installer suites source: install.sh and lib/sot-daemon.sh, `check`,
   `starts_with`, `case_start`, the sandboxed tool dir (`mk_tools`) and the recording stubs (`mk_stubs`).
 - `install-smoke.sh`: `install-smoke.sh SCENARIO ARTIFACTS CHECKOUT [BEFORE-TAG]` (Linux, macOS; bash 3.2): `install.sh`
@@ -154,6 +158,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   a pointer the real `sotd` refuses stops no daemon). Runs in the `rust.yml` step "Test
   install layout (pinned-checkout predicate)".
 - `test-install-entry-direction.ps1`: the cases of `test-install-entry.ps1` for a build of the line run with no `-Version` (dot-sourced there, same scope): the stop says by ancestry, against a base clone with three commits and a stand-in COMMIT asset, whether the newest release moves it forward or back, or why it cannot tell; every git call of `Get-BuildDirection` carries the stall bound.
+- `test-install-entry-julia.ps1`: the Julia-floor cases of `test-install-entry.ps1` (dot-sourced there, same scope): a stand-in
+  PATH `julia` and a scratch `juliaup.json` at, above and below the kernel's compat floor, no juliaup, and a julia that cannot
+  be asked, each ending PASS or ONE STEP LEFT with its line.
 - `test-install-entry-repair.ps1`: the repair cases of `test-install-entry.ps1` (dot-sourced there, same scope): `install.ps1` over an
   `install.json` that is missing, holds a pin and no version, or is cut short, beside a running stand-in `sotd.exe`, with and without a
   version named, and the pin edit's rename with an open handle

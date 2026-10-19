@@ -562,6 +562,7 @@ function Test-EndState([string]$PrefixDir, $Pack, [string]$Sotd, [string]$Pipe, 
         if ($have -ne $Pack.Commit.Substring(0, 9)) { Stop-Entry 'comm' "agent comm is at '$have', not $($Pack.Commit.Substring(0, 9))" }
         $man = Join-Path $want 'julia\kernel\Manifest.toml'
         if (-not (Test-Path -LiteralPath $man)) { Stop-Entry 'julia' "the kernel environment was never instantiated ($man is missing)" }
+        Test-JuliaFloor $want
     } else {
         Add-Step 'install Julia (winget install --id Julialang.Juliaup -e); agent comm and local REPLs need it, then run this again'
     }
@@ -582,6 +583,53 @@ function Test-EndState([string]$PrefixDir, $Pack, [string]$Sotd, [string]$Pipe, 
     }
     if ($st -eq 'unknown') { Stop-Entry 'daemon' "a daemon runs on $Pipe and could not be told its version ($script:DaemonWhy)" }
     if ($st -eq 'other') { Stop-Entry 'daemon' "the daemon on $Pipe still runs another version than $v" }
+}
+
+# ---- the Julia the install leaves ----------------------------------------------------------------------------------------
+# An install passes only if the Julia the daemon will run and the one the comm refresh runs meet the kernel's compat floor
+# (`[compat] julia` of julia\kernel\Project.toml). The daemon's is juliaup's default channel, read from juliaup.json (no
+# Julia starts, so no startup.jl runs), else the PATH julia, as rust/backend/src/sidecars/julia.rs resolves it; this read
+# takes the channel's Version string, does not check the binary is on disk, and ignores SOT_JULIA_BIN. The refresh runs the
+# PATH julia, asked with --startup-file=no.
+function Get-JuliaFloor([string]$Checkout) {
+    try { if ([System.IO.File]::ReadAllText((Join-Path $Checkout 'julia\kernel\Project.toml')) -match '(?m)^julia\s*=\s*"(\d+\.\d+)') { return $Matches[1] } } catch { }
+    return ''
+}
+function Test-JuliaAtFloor([string]$Version, [string]$Floor) {
+    if ($Version -notmatch '^(\d+)\.(\d+)') { return $false }
+    $maj = [int]$Matches[1]; $min = [int]$Matches[2]; $f = $Floor -split '\.'
+    return ($maj -gt [int]$f[0]) -or ($maj -eq [int]$f[0] -and $min -ge [int]$f[1])
+}
+function Get-JuliaDefaultVersion {
+    $root = $(if ($env:JULIAUP_DEPOT_PATH) { Join-Path $env:JULIAUP_DEPOT_PATH 'juliaup' } else { Join-Path $env:USERPROFILE '.julia\juliaup' })
+    $cfg = Join-Path $root 'juliaup.json'
+    if (-not (Test-Path -LiteralPath $cfg)) { return '' }
+    try { $j = [System.IO.File]::ReadAllText($cfg) | ConvertFrom-Json; return ([string]$j.InstalledChannels.($j.Default).Version) -replace '\+.*', '' } catch { return '' }
+}
+function Get-JuliaPathVersion {
+    $r = Invoke-Native 'julia' @('--startup-file=no', '-e', 'print(VERSION)')
+    if ($r.Code -ne 0) { return '' }
+    return (($r.Out -join '').Trim())
+}
+function Get-JuliaFloorSay([string]$Who, [string]$Version) {
+    if ($Version) { return "$Who runs Julia $Version" }
+    return "the Julia $Who runs could not be asked for its version"
+}
+function Test-JuliaFloor([string]$Checkout) {
+    $floor = Get-JuliaFloor $Checkout
+    if (-not $floor) { Stop-Entry 'julia' "$Checkout\julia\kernel\Project.toml names no Julia compat" }
+    $refresh = Get-JuliaPathVersion
+    $daemon = Get-JuliaDefaultVersion
+    $viaUp = [bool]$daemon
+    if (-not $viaUp) { $daemon = $refresh }
+    $bad = ''
+    if (-not (Test-JuliaAtFloor $daemon $floor)) { $bad = Get-JuliaFloorSay 'the daemon' $daemon }
+    if (-not (Test-JuliaAtFloor $refresh $floor) -and ($viaUp -or -not $bad)) {
+        $bad = $(if ($bad) { "$bad and " } else { '' }) + (Get-JuliaFloorSay 'the comm refresh' $refresh)
+    }
+    if (-not $bad) { return }
+    $fix = $(if ($viaUp -and (Get-Command juliaup -ErrorAction SilentlyContinue)) { "juliaup default $floor" } else { "install Julia $floor or later and put it first on PATH" })
+    Add-Step "$bad, below the $floor the kernel needs: run  $fix"
 }
 
 # ---- the entry ---------------------------------------------------------------------------------------------------------

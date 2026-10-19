@@ -851,6 +851,53 @@ julia_run() {
     julia ${JULIA_SEL[@]+"${JULIA_SEL[@]}"} "$@"
 }
 
+# An install passes only if the Julia the daemon will run and the one the comm refresh runs meet the kernel's compat
+# floor. The floor is `[compat] julia` of julia/kernel/Project.toml. The daemon's Julia is juliaup's default channel, read
+# from juliaup.json with jq (no Julia starts, so no startup.jl runs), else the PATH julia, as rust/backend/src/sidecars/
+# julia.rs resolves it; that read takes the channel's Version string and does not check the binary is on disk, and it
+# ignores SOT_JULIA_BIN. The refresh runs the PATH julia, asked with --startup-file=no.
+julia_floor() { sed -n 's/^julia = "\([0-9][0-9.]*\)".*/\1/p' "$CHECKOUT/julia/kernel/Project.toml" | head -1; }
+julia_version_ok() {  # <version> <floor>: 0 when the major.minor of the first is at or above the second's
+    local v="${1%%+*}" f="$2"
+    case "$v" in [0-9]*.[0-9]*) ;; *) return 1 ;; esac
+    local vmaj="${v%%.*}" vmin="${v#*.}"; vmin="${vmin%%.*}"
+    local fmaj="${f%%.*}" fmin="${f#*.}"; fmin="${fmin%%.*}"
+    [ "$vmaj" -gt "$fmaj" ] || { [ "$vmaj" -eq "$fmaj" ] && [ "$vmin" -ge "$fmin" ]; }
+}
+julia_default_version() {  # the version of juliaup's default channel; empty when there is no readable default
+    local cfg="${JULIAUP_DEPOT_PATH:+$JULIAUP_DEPOT_PATH/juliaup}"
+    cfg="${cfg:-$HOME/.julia/juliaup}/juliaup.json"
+    [ -f "$cfg" ] || return 0
+    jq -r '.InstalledChannels[.Default].Version // empty' "$cfg" 2>/dev/null | sed 's/+.*//' || true
+}
+julia_path_version() {  # the PATH julia's version; empty when it cannot be asked
+    command -v julia >/dev/null || return 0
+    julia --startup-file=no -e 'print(VERSION)' 2>/dev/null || true
+}
+julia_floor_say() {  # <who> <version>
+    if [ -n "$2" ]; then printf '%s runs Julia %s' "$1" "$2"; else printf 'the Julia %s runs could not be asked for its version' "$1"; fi
+}
+julia_floor_check() {
+    local floor daemon_v refresh_v bad="" fix="" via_up=1
+    floor="$(julia_floor)"
+    [ -n "$floor" ] || { verdict_fail julia "$CHECKOUT/julia/kernel/Project.toml names no Julia compat"; return 0; }
+    refresh_v="$(julia_path_version)"
+    daemon_v="$(julia_default_version)"
+    [ -n "$daemon_v" ] || { via_up=0; daemon_v="$refresh_v"; }
+    if ! julia_version_ok "$daemon_v" "$floor"; then bad="$(julia_floor_say "the daemon" "$daemon_v")"; fi
+    if ! julia_version_ok "$refresh_v" "$floor" && { [ "$via_up" = 1 ] || [ -z "$bad" ]; }; then
+        bad="${bad:+$bad and }$(julia_floor_say "the comm refresh" "$refresh_v")"
+    fi
+    [ -n "$bad" ] || return 0
+    if [ "$via_up" = 1 ] && command -v juliaup >/dev/null 2>&1; then
+        fix="juliaup default $floor"
+        [ "${juliaup_add_failed:-0}" != 1 ] || fix="juliaup add $floor && $fix"
+    else
+        fix="install Julia $floor or later and put it first on PATH"
+    fi
+    verdict_step "$bad, below the $floor the kernel needs: run  $fix"
+}
+
 # Tests set this to source the functions above in isolation: the shell
 # suites through scripts/tests/installer-support.sh, and the Rust tests
 # trust_premises.rs and unit_pin.rs. An install never sets it, `curl | bash`
@@ -1559,7 +1606,7 @@ if command -v julia >/dev/null && julia -e 'exit(VERSION >= v"1.12" ? 0 : 1)' >/
     :
 elif command -v juliaup >/dev/null 2>&1; then
     say "installing Julia channel $chan with juliaup"
-    juliaup add "$chan" >/dev/null || true
+    juliaup add "$chan" >/dev/null || juliaup_add_failed=1
     export PATH="$HOME/.juliaup/bin:$PATH"
 else
     say "installing Julia (juliaup, channel $chan)"
@@ -1568,6 +1615,7 @@ else
 fi
 command -v julia >/dev/null || die "Julia install failed; julia is still not on PATH"
 julia_pick_chan
+julia_floor_check
 
 STEP=comm
 say "installing agent comm resources (sot-comm, Claude/Codex skills)"

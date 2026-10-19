@@ -167,6 +167,8 @@ check "an apply that leaves the pointer re-execs nothing and spawns once" \
 
 # shellcheck source=installer-julia-step.sh
 . "$(dirname "$0")/installer-julia-step.sh"
+# shellcheck source=installer-julia-floor.sh
+. "$(dirname "$0")/installer-julia-floor.sh"
 
 # ---------------------------------------------------------------------------
 printf '\n'

@@ -312,8 +312,10 @@ check, pinning a version, and rolling back are in
   machine that runs sessions. The installer does not install one.
 - **Julia 1.12** or newer. The installer installs it with juliaup when
   missing; an existing juliaup only gets the 1.12 channel added, not made the
-  default, so if your default channel is older, run `juliaup default 1.12`
-  yourself (or set `SOT_JULIA_BIN`).
+  default. The daemon runs juliaup's default channel and the comm refresh runs
+  the `julia` on `PATH`; when either is older than 1.12, or cannot be asked,
+  the install ends ONE STEP LEFT naming the version and the command, usually
+  `juliaup default 1.12`.
 - **node/npm**, optional, on the backend machine: typeset math in markdown
   previews renders in a long-lived node process, whose dependencies the
   installer fetches with `npm ci`. Without it the installer warns and
