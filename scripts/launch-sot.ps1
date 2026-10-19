@@ -187,7 +187,7 @@ if ($otherLauncher) {
 try { [System.IO.File]::WriteAllText($launcherLock, "$PID") } catch { }
 
 # ---------------------------------------------------------------------------
-# Launch progress surface (maintainer note, 2026-07-06: "say what it's doing ... or Error").
+# Launch progress surface: it says what it is doing, or the error.
 # The Windows launcher runs hidden, so the dev-freshness pull+rebuild (up to
 # ~1-3 min after a big merge) was invisible and read as a dead taskbar click.
 # scripts\launch-splash.ps1 is a SEPARATE process (own message pump -> keeps

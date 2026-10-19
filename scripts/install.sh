@@ -778,8 +778,8 @@ installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-decla
 }
 
 # Step 7 on Linux: render, enable and start the sotd unit for PREFIX from
-# TEMPLATE. No JULIA_DEPOT_PATH (or any other) config is written here: owner
-# ruling 2026-09-02 forbids writing/overwriting depot config anywhere. The
+# TEMPLATE. No JULIA_DEPOT_PATH (or any other) config is written here. Depot config is
+# never written or overwritten anywhere (decided 2026-09-02). The
 # unit itself (deploy/sotd.service) sources ~/.bashrc before exec'ing sotd, so
 # the daemon inherits whatever the owner's shell profile exports. A prior
 # install's forbidden drop-in is healed unconditionally near the top of this
@@ -893,7 +893,7 @@ if [ -z "${SOT_INSTALL_TAG:-}" ] && [ "$archived" = 0 ]; then
     exit
 fi
 
-# ---- 0. heal a forbidden depot config (owner ruling 2026-09-02: no depot
+# ---- 0. heal a forbidden depot config (decided 2026-09-02: no depot
 # path is ever set, derived, or hardcoded anywhere in this repo) -----------
 # A prior install (PR #161) wrote a systemd drop-in carrying the installing
 # shell's JULIA_DEPOT_PATH into the unit. Remove it UNCONDITIONALLY, for
