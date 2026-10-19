@@ -56,7 +56,7 @@ sot_path_refused() {  # <what: prefix|home> <path>
 '*) ch=newline ;;
         *) return 1 ;;
     esac
-    echo "ERROR: the $1 $2 holds $ch, which a unit, launcher or shell line would read as syntax; use a $1 with none of: $list" >&2
+    printf 'ERROR: the %s %s holds %s, which a unit, launcher or shell line would read as syntax; use a %s with none of: %s\n' "$1" "$2" "$ch" "$1" "$list" >&2
     return 0
 }
 
@@ -234,7 +234,7 @@ sot_prune_logs() {  # <dir>
         [ "$count" -ge "$SOT_LOG_KEEP" ] || [ "$total" -gt "$SOT_LOG_CAP_BYTES" ] || break
         sot_log_protected "$f" "$newest" && continue
         size="$(wc -c < "$f" 2>/dev/null)" || size=0
-        err="$(rm -f -- "${f:?}" 2>&1)" || echo "kept old log $f: $err" >&2
+        err="$(rm -f -- "${f:?}" 2>&1)" || printf 'kept old log %s: %s\n' "$f" "$err" >&2
         count=$((count - 1))
         total=$((total - ${size:-0}))
     done
@@ -284,28 +284,28 @@ sot_daemon_current() {  # <prefix> <sotd-bin> <socket>
     rc=$?
     if [ "$rc" -eq 4 ]; then
         SOT_ENSURE_NOTICE="daemon out of date, restart when ready"
-        echo "the backend on $3 runs $theirs, not the version of $run, and a window holds it: kept; $SOT_ENSURE_NOTICE" >&2
+        printf 'the backend on %s runs %s, not the version of %s, and a window holds it: kept; %s\n' "$3" "$theirs" "$run" "$SOT_ENSURE_NOTICE" >&2
         return 0
     fi
     [ "$rc" -eq 3 ] || return 0
     case "$pid" in ''|0|*[!0-9]*)
-        echo "WARNING: could not find the backend on $3 to end it; the window will show it out of date" >&2
+        printf 'WARNING: could not find the backend on %s to end it; the window will show it out of date\n' "$3" >&2
         return 0 ;;
     esac
     SOT_ENSURE_NOTICE="the backend ran $theirs and was replaced; its rows keep running and their REPLs restart"
-    echo "the backend on $3 runs $theirs, not the version of $run: replacing it (its rows keep running; their REPLs restart)" >&2
+    printf 'the backend on %s runs %s, not the version of %s: replacing it (its rows keep running; their REPLs restart)\n' "$3" "$theirs" "$run" >&2
     if [ "$owned" = 1 ]; then
         now="$(systemctl --user show -p MainPID --value sotd.service 2>/dev/null)"
         [ "$now" != "$pid" ] || systemctl --user restart sotd.service >/dev/null 2>&1
     else
         kill "$pid" 2>/dev/null || ! kill -0 "$pid" 2>/dev/null || {
-            echo "WARNING: could not end the backend on $3; the window will show it out of date" >&2
+            printf 'WARNING: could not end the backend on %s; the window will show it out of date\n' "$3" >&2
             return 0
         }
         t0="$(date +%s)"
         while sot_socket_open "$2" "$3" && [ "$(date +%s)" -lt $((t0 + 10)) ]; do sleep 0.25; done
         if sot_socket_open "$2" "$3"; then
-            echo "WARNING: the backend on $3 did not end; the window will show it out of date" >&2
+            printf 'WARNING: the backend on %s did not end; the window will show it out of date\n' "$3" >&2
             return 0
         fi
     fi
@@ -352,7 +352,7 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     local logdir="$1/logs" logfile="" stamp err
     # A logs folder that exists is owner-only whichever way the daemon starts: an install that ran nohup before and is
     # systemd-owned now still holds its old logs (unmasked secrets) there.
-    [ ! -d "$logdir" ] || chmod 700 "$logdir" 2>/dev/null || echo "WARNING: cannot secure $logdir" >&2
+    [ ! -d "$logdir" ] || chmod 700 "$logdir" 2>/dev/null || printf 'WARNING: cannot secure %s\n' "$logdir" >&2
     if sot_socket_open "$sotd_bin" "$socket"; then
         sot_daemon_current "$prefix" "$sotd_bin" "$socket" && return 0
     fi
@@ -360,7 +360,7 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
         mode=systemd
     else
         # The logs folder is owner-only, new or old: it keeps every log in it, past and future, from other accounts.
-        { mkdir -p "$logdir" && chmod 700 "$logdir"; } || { echo "ERROR: cannot create or secure $logdir" >&2; return 1; }
+        { mkdir -p "$logdir" && chmod 700 "$logdir"; } || { printf 'ERROR: cannot create or secure %s\n' "$logdir" >&2; return 1; }
         sot_prune_logs "$logdir"
         # Milliseconds where date has %N (GNU); 000 where it does not (BSD).
         stamp="$(date -u +%Y%m%d-%H%M%S-%3N)"
@@ -376,7 +376,7 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
         if err="$(mv -f -- "$logfile" "$logdir/sotd.${stamp}Z-$pid.log" 2>&1)"; then
             logfile="$logdir/sotd.${stamp}Z-$pid.log"
         else
-            echo "kept the log name $logfile: $err" >&2
+            printf 'kept the log name %s: %s\n' "$logfile" "$err" >&2
         fi
     fi
     start="$(date +%s)"
@@ -390,7 +390,7 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
             code=$?
             # Another daemon may have won the lock.
             sot_socket_open "$sotd_bin" "$socket" && return 0
-            echo "ERROR: the backend exited ($code) before opening $socket; see $logfile" >&2
+            printf 'ERROR: the backend exited (%s) before opening %s; see %s\n' "$code" "$socket" "$logfile" >&2
             return 1
         fi
         if [ "$warned" = 0 ] && [ "$now" -ge $((start + 3)) ]; then
@@ -399,9 +399,9 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
         fi
         sleep 0.25
     done
-    echo "ERROR: the backend did not open $socket within ${SOT_LAUNCH_WAIT_S}s" >&2
+    printf 'ERROR: the backend did not open %s within %ss\n' "$socket" "$SOT_LAUNCH_WAIT_S" >&2
     if [ "$mode" = systemd ]; then echo "see journalctl --user -u sotd.service" >&2
-    else echo "see $logfile" >&2; fi
+    else printf 'see %s\n' "$logfile" >&2; fi
     return 1
 }
 

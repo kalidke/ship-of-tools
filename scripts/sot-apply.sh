@@ -65,7 +65,7 @@ sot_path_refused() {  # <what: prefix|home> <path>
 '*) ch=newline ;;
         *) return 1 ;;
     esac
-    echo "ERROR: the $1 $2 holds $ch, which a unit, launcher or shell line would read as syntax; use a $1 with none of: $list" >&2
+    printf 'ERROR: the %s %s holds %s, which a unit, launcher or shell line would read as syntax; use a %s with none of: %s\n' "$1" "$2" "$ch" "$1" "$list" >&2
     return 0
 }
 
