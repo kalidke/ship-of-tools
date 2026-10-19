@@ -184,8 +184,9 @@ function Invoke-CommUpdate {
     # on a pinned checkout (PSScriptRoot resolves through it), so comm
     # scripts and skills follow the installed tag with no separate wiring.
     $juliaProjectArg = "--project=$($repo.Path)"
-    $commOut = julia $juliaProjectArg -e 'using ShipTools; ShipTools.update_comm()' 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $comm = Invoke-SotNative 'julia' @($juliaProjectArg, '-e', 'using ShipTools; ShipTools.update_comm()')
+    $commOut = $comm.All
+    if ($comm.Code -ne 0) {
         $commExcerpt = @(Get-FailureExcerpt -Output $commOut -Kind 'julia')
         Write-SupLog "freshness: ShipTools.update_comm() FAILED (non-fatal). message: $($commExcerpt -join ' / ')"
         $script:launchNotices.Add("comm install failed: $(Limit-NoticeText $commExcerpt[0])") | Out-Null

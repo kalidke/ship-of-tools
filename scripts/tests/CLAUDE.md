@@ -185,6 +185,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-sot-apply.ps1`: scripts/sot-apply.ps1 against a synthetic staged update: apply, damaged stage, rollback,
   already applied, wrong target, lock held, and (section 9, with a built `sotd.exe`, else SKIP) a pointer that no
   longer fits the install. Runs in the `rust.yml` step "Test sot-apply.ps1".
+- `test-native-stderr.ps1`: a script under `$ErrorActionPreference = 'Stop'` does not depend on how its caller redirects: `Invoke-SotNative` (stderr never ends the script, the exit code is the answer, a command that cannot start is 127), and `pack-build.ps1` and `relaunch-sot.ps1` run with `*>&1` and `2>&1` against a stand-in cargo that warns on stderr (a zero exit goes on, a failed build stops with the script's own message). Windows PowerShell 5.1. Runs in the `rust.yml` step "Test native stderr under Stop".
 - `test-install-manifest.ps1`: scripts/install-manifest.ps1's pointer rule and its log line for a build of the line (kept record or none): a changed version or commit drops the armed
   pointer, a same-version rewrite keeps it, no pointer breaks nothing. A stand-in sot.exe built with csc.exe and a scratch
   git repo; runs under Windows PowerShell 5.1 and pwsh. Runs in the `rust.yml` step "Test install-manifest.ps1".

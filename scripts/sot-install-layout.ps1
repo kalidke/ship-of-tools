@@ -8,7 +8,8 @@
 # dot-sourceable file, no privileged access either caller doesn't already
 # have.
 # Also the first-launch install layout (Set-SotJunction, Initialize-InstallLayout), called only by launch-sot.ps1, and
-# Write-Utf8NoBomViaRename, the one writer of install.json for sot-apply.ps1 and install-manifest.ps1.
+# Write-Utf8NoBomViaRename, the one writer of install.json for sot-apply.ps1 and install-manifest.ps1, and
+# Invoke-SotNative, the one way a script under 'Stop' calls a native command.
 #
 # See docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
 # amendment for why this predicate exists and what it replaced.
@@ -17,6 +18,34 @@
 # sot-hosts.ps1): this file has no BOM, and Windows PowerShell 5.1 decodes
 # a non-ASCII byte inside a string literal into a phantom quote that fails
 # the whole parse.
+
+# The one way a script that runs under $ErrorActionPreference = 'Stop' calls a native command. Windows PowerShell 5.1
+# turns every line a native command writes to stderr into a terminating NativeCommandError when the caller redirects
+# (`*>`, `2>&1`, `2>$null`, a host with redirected stderr), whatever the command's exit code; so stderr is read here
+# under 'Continue' and the exit code, not stderr, is what a caller tests. Returns Code, Out (stdout lines), Err (stderr
+# lines) and All (both, in order). With -Echo each line is also written to the host as it arrives (a build's progress).
+# Never throws for a command that runs; a command that cannot start is Code 127 with the reason in Err.
+function Invoke-SotNative {
+    param([Parameter(Mandatory)][string]$Exe, [string[]]$ArgList = @(), [switch]$Echo)
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $out = @(); $err = @(); $all = @(); $code = 127
+    try {
+        foreach ($l in @(& $Exe @ArgList 2>&1)) {
+            $isErr = $l -is [System.Management.Automation.ErrorRecord]
+            if ($isErr) { $err += "$l" } else { $out += "$l" }
+            $all += "$l"
+            if ($Echo) { Write-Host "$l" }
+        }
+        $code = $LASTEXITCODE
+        if ($null -eq $code) { $code = 0 }
+    } catch {
+        $err += $_.Exception.Message; $all += $_.Exception.Message
+    } finally {
+        $ErrorActionPreference = $eap
+    }
+    return [pscustomobject]@{ Code = $code; Out = $out; Err = $err; All = $all }
+}
 
 # Pinned iff this script is running FROM repo\current -- a path identity,
 # not a git-state one: it is exactly the invariant Linux's `sot-launch`

@@ -4,7 +4,8 @@
 # apply) keeps it; with no pointer nothing breaks.
 #
 # The script reads its version from `<prefix>\bin\sot.exe --version`, so the fixture builds a stand-in sot.exe with the
-# .NET Framework's csc.exe (on every Windows): it prints the first line of version.txt beside it. The commit comes from
+# .NET Framework's csc.exe (on every Windows): it prints the first line of version.txt beside it, after a line on stderr
+# when warn.txt is beside it. The commit comes from
 # a scratch git repo with two tags. No network, no hub: install-manifest.ps1 syncs topology only with -Hub, and case p8 gives it a stand-in sotd.
 #
 # Runs under Windows PowerShell 5.1 and pwsh 7. ASCII ONLY (see the same note in sot-apply.ps1). Self-ending: every
@@ -39,6 +40,7 @@ try {
 class P {
     static void Main() {
         string d = System.AppDomain.CurrentDomain.BaseDirectory;
+        if (System.IO.File.Exists(System.IO.Path.Combine(d, "warn.txt"))) System.Console.Error.WriteLine("warning: stand-in sot warns on stderr");
         System.Console.WriteLine(System.IO.File.ReadAllLines(System.IO.Path.Combine(d, "version.txt"))[0]);
     }
 }
@@ -183,6 +185,15 @@ class D { static int Main(string[] a) { System.IO.File.WriteAllText(System.IO.Pa
     Check 'the rewritten record parses, names the new version and is pinned' (($null -ne $j9) -and $j9.version -eq '0.6.0' -and $j9.pinned -eq $true) (Manifest $p9)
     Check-Whole 'a replaced cut record (p9)' $p9
     Check 'a record that reads and is unpinned stays unpinned' (-not ((Manifest $p1) -match 'pinned')) (Manifest $p1)
+
+    Write-Host "`n=== 11. a sot that warns on stderr does not end the script, whatever the caller redirects (#49) ===" -ForegroundColor Cyan
+    $p11 = New-Prefix 'p11' '0.7.0' $null $null $false
+    Set-Content -LiteralPath (Join-Path $p11 'bin\warn.txt') -Value 'x'
+    $threw11 = ''
+    try { Invoke-Manifest $p11 } catch { $threw11 = $_.Exception.Message }
+    Check 'p11: the run is not ended by the stderr line' ($threw11 -eq '') $threw11
+    Check-Exit 'p11'
+    Check 'the version is read past the stderr line and the record written' ((Test-Path -LiteralPath (Join-Path $p11 'install.json')) -and ((Manifest $p11) -match '"version":\s*"0\.7\.0"')) 'no record'
 
     Write-Host "`n=== 10. the record is replaced by a rename: a handle opened before the run still reads the old bytes ===" -ForegroundColor Cyan
     $p10 = New-Prefix 'p10' '0.6.0' '0.5.0' 'aaaa' $false

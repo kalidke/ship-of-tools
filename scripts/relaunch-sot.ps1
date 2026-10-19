@@ -43,14 +43,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Invoke-SotNative: cargo's stderr warnings must not end this script when its caller redirects.
+. (Join-Path $PSScriptRoot 'sot-install-layout.ps1')
 $repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..')
 
 if (-not $NoBuild -and -not $Converge) {
     Write-Host 'Building sot-frontend (release)...' -ForegroundColor Cyan
     Push-Location (Join-Path $repo 'rust')
     try {
-        cargo build --release -p sot-frontend
-        $buildExit = $LASTEXITCODE
+        $buildExit = (Invoke-SotNative 'cargo' @('build', '--release', '-p', 'sot-frontend') -Echo).Code
     } finally {
         Pop-Location
     }
