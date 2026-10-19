@@ -1,4 +1,4 @@
-# test-local-daemon-binary.ps1 -- sections 2c, 7c and 7d, the local daemon's one binary (ADR 0049, User isolation):
+# test-local-daemon-binary.ps1 -- sections 2c, 7c, 7d and 7e, the local daemon's one binary (ADR 0049, User isolation):
 # the resolver the daemon, -Stop and the launcher's query and lease share (2c), the bytes the lease's and the probe's
 # bridges read, which are only their callers' (7c), and a running daemon of another version, which the ensure replaces
 # (7d). Dot-sourced by test-local-daemon.ps1 right after
@@ -168,4 +168,31 @@ try {
             Clear-FakeEnv
         }
         } catch { Check '7d: section ran' $false $_.Exception.Message }
+    }
+
+    if ($compiled) {
+        try {
+        Write-Host "`n=== 7e. TimeoutNamesTheDaemonsLog: a daemon alive but never bound is left running, and the launcher names the log the daemon writes ===" -ForegroundColor Cyan
+        # The daemon's lines are in its own log, not in the per-start stderr file; the launcher asks the daemon for the path
+        # (`sotd log-path`, the fake prints FAKE_SOTD_LOG_PATH). The fake binds after 400 s, so the launcher waits its whole
+        # LaunchWaitSeconds (160 s), then leaves it running.
+        Clear-FakeEnv
+        $env:FAKE_SOTD_BIND_DELAY_MS = '400000'
+        $env:FAKE_SOTD_LOG_PATH = Join-Path $root 'p7e-state\sotd.log'
+        $p7e = New-FakePrefix 'p7e'
+        $pipe7e = New-TestPipeName
+        try {
+            $out7e = & $script -Prefix $p7e -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7e -ProjectRoot $root 6>&1 2>&1
+            $exit7e = $LASTEXITCODE
+            $text7e = ($out7e -join ' ')
+            Check '7e: the launcher gives up (exit 1)' ($exit7e -eq 1) "got $exit7e; log: $out7e"
+            Check '7e: it says the pipe did not come up' ($text7e -match 'did not come up') "log was: $out7e"
+            Check '7e: it names the log the daemon wrote' ($text7e -match ('leaving pid=\d+ running; its log lines are in ' + [regex]::Escape($env:FAKE_SOTD_LOG_PATH))) "log was: $out7e"
+            Check '7e: the spawn line names it too' ($text7e -match ('spawned pid=\d+, stderr in .*\(its log lines are in ' + [regex]::Escape($env:FAKE_SOTD_LOG_PATH))) "log was: $out7e"
+            Check '7e: the daemon is left running' (@(Get-DaemonProcs (Get-PipePath $pipe7e)).Count -eq 1) 'the fake daemon is gone'
+        } finally {
+            Stop-FakeOn $pipe7e
+            Clear-FakeEnv
+        }
+        } catch { Check '7e: section ran' $false $_.Exception.Message }
     }

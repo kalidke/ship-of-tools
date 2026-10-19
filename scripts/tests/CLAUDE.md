@@ -195,7 +195,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-local-daemon-binary.ps1`: dot-sourced by test-local-daemon.ps1 right after the fake daemon's compilation is attempted, in its
   scope: the local daemon's one binary, shared by the daemon, `-Stop` and the launcher's query and lease (2c), the
   bytes the lease's and the probe's bridges read in a hidden console, which are only their callers' (7c), and the
-  ensure's replacement of a running daemon of another version (7d; 7c and 7d only when the fake compiled).
+  ensure's replacement of a running daemon of another version (7d), and the daemon's own log named when a daemon that never binds is left running (7e, which waits the launcher's whole 160 s; 7c to 7e only when the fake compiled).
 - `pipe-request.ps1`: the local-daemon suites' raw pipe client (5c, 5d): a hello and one request into a named pipe,
   the reply whose op matches printed. Test code; it checks no account.
 - `test-local-daemon-support.ps1`: dot-sourced by both local-daemon suites: `Check`, the fixture and pipe helpers, the
