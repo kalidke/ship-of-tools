@@ -255,6 +255,50 @@ try {
         $env:SOT_COMM_HOME = $savedComm5
     }
 
+    Write-Host "`n=== 5b. a dev launch decides comm by the same stamp: a matching stamp starts no Julia, even after a pull ===" -ForegroundColor Cyan
+    $savedComm5b = $env:SOT_COMM_HOME
+    $savedRebuild5b = $env:SOT_LAUNCH_REBUILD
+    $savedEAP5b = $ErrorActionPreference
+    try {
+        . (Join-Path $repoRoot 'scripts\sot-freshness.ps1')
+        function Initialize-InstallLayout { $script:comm5 += @('layout') }
+        function Invoke-CommUpdate { $script:comm5 += @('update') }
+        function Write-SupLog([string]$Message) { $script:comm5 += @($Message) }
+        function Set-LaunchStatus([string]$Message) { }
+        # The dev branch's rebuild needs a toolchain: a box without cargo takes its "nothing to rebuild" line.
+        function Get-Command { param([string]$Name, $ErrorAction) if ($Name -eq 'cargo') { return $null }; Microsoft.PowerShell.Core\Get-Command -Name $Name -ErrorAction SilentlyContinue }
+        $co5b = Join-Path $root 'co5b'
+        New-Item -ItemType Directory -Force -Path $co5b | Out-Null
+        $ErrorActionPreference = 'Continue'
+        git -C $co5b init -q 2>&1 | Out-Null
+        git -C $co5b -c user.name=t -c user.email=t@t commit -q --allow-empty -m c 2>&1 | Out-Null
+        $sha5b = "$(git -C $co5b rev-parse --short=9 HEAD 2>$null)".Trim()
+        $ErrorActionPreference = $savedEAP5b
+        $repo = Resolve-Path $co5b
+        $env:SOT_COMM_HOME = Join-Path $root 'comm5b'
+        New-Item -ItemType Directory -Force -Path (Join-Path $env:SOT_COMM_HOME 'bin') | Out-Null
+        $script:sotPinned = $false
+        $NoUpdate = $false
+        $Local = $false
+        foreach ($rebuild in @('', '1')) {
+            foreach ($row in @(@('b9766d678', 1), @("$sha5b-dirty", 0), @($sha5b, 0))) {
+                Set-Content -LiteralPath (Join-Path $env:SOT_COMM_HOME 'VERSION') -Value $row[0] -NoNewline
+                if ($rebuild) { $env:SOT_LAUNCH_REBUILD = $rebuild } else { Remove-Item Env:\SOT_LAUNCH_REBUILD -ErrorAction SilentlyContinue }
+                $script:comm5 = @()
+                Invoke-FreshnessPass
+                $ran5b = @($script:comm5 | Where-Object { $_ -ceq 'update' }).Count
+                Check "5b: a dev launch (after a pull: '$rebuild') with a stamp of $($row[0]) at checkout $sha5b runs update_comm $($row[1]) time(s)" ($ran5b -eq $row[1]) "log: $($script:comm5 -join ' | ')"
+                Check "5b: a dev launch never instantiates the checkout's Julia environments" (@($script:comm5 | Where-Object { $_ -ceq 'layout' }).Count -eq 0) "log: $($script:comm5 -join ' | ')"
+            }
+        }
+    } catch { Check '5b: section ran' $false $_.Exception.Message }
+    finally {
+        $ErrorActionPreference = $savedEAP5b
+        $env:SOT_COMM_HOME = $savedComm5b
+        if ($null -eq $savedRebuild5b) { Remove-Item Env:\SOT_LAUNCH_REBUILD -ErrorAction SilentlyContinue } else { $env:SOT_LAUNCH_REBUILD = $savedRebuild5b }
+        Remove-Item function:Get-Command -ErrorAction SilentlyContinue
+    }
+
     Write-Host "`n=== 6. Invoke-PendingApply: a pointer the installed sotd refuses costs no daemon stop ===" -ForegroundColor Cyan
     # UPDATER-ARMS-INSTALLED: the daemon is stopped before an apply only when the apply will happen. The prefix holds the
     # real sotd (it answers `update pointer`), an install at 0.7.0 and a pointer; the local-daemon and apply scripts are
