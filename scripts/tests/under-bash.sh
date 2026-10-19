@@ -9,7 +9,8 @@
 # comm/tests/test-*.sh and agents/tests/test-*.sh but the five that need peer hosts (comm/tests/CLAUDE.md), and the
 # four scripts/tests suites. Prints `under-bash: PASS|FAIL SUITE` per suite and `under-bash: FAIL parse SCRIPT` per
 # script that does not parse or runs a utility by the `command` builtin outside a pipeline (under bash 3.2 and set -e
-# that ends the shell when the utility fails, even where an if, ! or || handles it); exits with the count of FAIL
+# that ends the shell when the utility fails, even where an if, ! or || handles it), and `under-bash: FAIL early-reader
+# SCRIPT:LINE:TEXT` per pipeline whose reader can stop early (sigpipe-scan.awk); exits with the count of FAIL
 # lines, or 2 when the setup is wrong.
 set -u
 [ $# -eq 1 ] || { [ $# -ge 3 ] && [ "$2" = -- ]; } || { echo "usage: under-bash.sh BASH [-- SUITE...]" >&2; exit 2; }
@@ -25,7 +26,7 @@ if [ $# -eq 0 ]; then
         esac
     done
     set -- "$@" scripts/tests/installer-state.sh scripts/tests/installer-wrapper.sh scripts/tests/installer-apply.sh \
-        scripts/tests/installer-shared-home.sh scripts/tests/test-topology-plan.sh
+        scripts/tests/installer-shared-home.sh scripts/tests/test-topology-plan.sh scripts/tests/test-sigpipe-scan.sh
 fi
 shadow="$(mktemp -d "${TMPDIR:-/tmp}/under-bash-XXXXXX")" || exit 2
 trap 'rm -rf "${shadow:?}"' EXIT
@@ -45,6 +46,10 @@ while IFS= read -r f; do
         echo "under-bash: FAIL command-builtin $f:$hit"; failed=$((failed + 1))
     done < <(grep -nE '(^|[;&|{!]|\$\(|then|do|else|if|while|until) *command +[^-[:space:]]' "$f" | grep -vE '^[0-9]+:[[:space:]]*#' \
                  | grep -vE 'command +[^|;&]*[|][^|]' || true)
+    # A reader that stops early (head, grep -q, awk exit) fails its pipeline at random under pipefail (sigpipe-scan.awk).
+    while IFS= read -r hit; do
+        echo "under-bash: FAIL early-reader ${hit:0:200}"; failed=$((failed + 1))
+    done < <(awk -f "$PWD/scripts/tests/sigpipe-scan.awk" "$f")
 done < <(git ls-files -- comm agents scripts)
 echo "under-bash: parsed $n scripts"
 for s in "$@"; do
