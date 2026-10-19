@@ -888,9 +888,10 @@ The depth of a prepare is decided by the process that arms it, from its own host
 where it lands. `sotd update pointer` now reads the stage's `prepared.json` last and refuses a stage with none, and a
 stage whose prepare did not instantiate the Julia environments on a host whose role wants a backend; both apply scripts
 already drop a pointer the verb refuses. A windows target is exempt from the second check, because its launcher
-instantiates a new version's environments at the first start. `arm` records the prepare's `prepared_for_daemon` in the
-pointer. One function, `sot_protocol::topology::runs_backend`, says which hosts run a backend: the declared `daemon` or
-`frontend` (a window runs a daemon of its own), else the install's recorded bit, else yes. The prepare, the window's
-stay-out of updates and the verb all read it, and `installer_topology_role` is pinned equal to it by a test, so a
-frontend-only entry prepares fully and its window stays out of updates, as "an env-less prepare can never arm on a BE
-host" requires.
+instantiates a new version's environments at the first start. `prepared.json` stays the one record of what the prepare did. One function,
+`sot_protocol::topology::runs_backend`, says which hosts run a backend: the declared `daemon`; a `frontend` entry takes
+the install's recorded bit, because only an install from rc9.12 on gives it a daemon of its own and an older one records
+`"daemon": false` and runs none, so its window is the only updater; else the install's recorded bit, else yes. The
+prepare, the window's stay-out of updates and the verb all read it, and `installer_topology_role` is pinned equal to it
+by a test that asks with no record. On a host the topology names with neither key (a guest of a shared home) the install
+is another host's, so the verb takes the record alone.

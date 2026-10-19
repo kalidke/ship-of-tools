@@ -23,7 +23,8 @@
 //     topology-plan.md §D), so this reads the same declared topology the
 //     installer and `sot-backend`'s own `update::backend_role_from_topology`
 //     do, through `sot_protocol::topology::runs_backend`: a `frontend` entry
-//     runs a daemon of its own, so the window stays out there too;
+//     stays out only where its install records a daemon (installs from
+//     rc9.12 on); an older one runs none, and the window is its only updater;
 //   - the topology names this machine with neither `daemon` nor `frontend`:
 //     on a shared home the prefix is another host's, and a checkout-only
 //     prepare armed into it would hand that host a version whose Julia
@@ -143,8 +144,8 @@ pub fn spawn_startup_selfcheck() {
 /// `sot-backend`'s `update::backend_role_from_topology` asks too
 /// (`sot_protocol::topology::runs_backend`):
 /// 1. the declared topology, when it names this host — canonical, can
-///    change without a reinstall; a `frontend` entry counts, its window
-///    runs a daemon of its own;
+///    change without a reinstall; a `frontend` entry takes `recorded_daemon`,
+///    because only an install from rc9.12 on runs a daemon of its own;
 /// 2. else `recorded_daemon` — what THIS install was actually given at
 ///    install time, for a listless box the topology can't answer for (a
 ///    real shape: a frontend-only-over-ssh install with no hosts.toml);
@@ -504,6 +505,21 @@ mod tests {
              frontend = true\n",
         );
         assert!(backend_owns_updates(Some(&t), "laptop", None));
+        assert!(backend_owns_updates(Some(&t), "laptop", Some(true)));
+    }
+
+    // An install from before the installer gave a frontend entry a daemon records `daemon: false` and runs none: its
+    // window is the only updater there.
+    #[test]
+    fn a_frontend_entry_whose_install_runs_no_daemon_self_updates() {
+        let t = topo(
+            "hub = \"hubbox\"\n\
+             [host.hubbox]\n\
+             daemon = true\n\
+             [host.laptop]\n\
+             frontend = true\n",
+        );
+        assert!(!backend_owns_updates(Some(&t), "laptop", Some(false)));
     }
 
     #[test]

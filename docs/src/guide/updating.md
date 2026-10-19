@@ -87,10 +87,12 @@ an update (otherwise it applies at the next launch or restart). That restarts RE
 is lost, which is why it is opt-in; agent sessions survive it.
 
 The daemon of a machine runs the check; a window runs it itself only where the daemon does not own updates (a host the
-topology declares `daemon = false`, or a `--backend` frontend-only install, on any OS). A pre-release install follows
+topology declares `daemon = false`, a `frontend` entry or a `--backend` frontend-only install whose install runs no
+daemon, on any OS). A pre-release install follows
 pre-releases and a plain release follows plain releases; the check never moves an install backwards or into a dev
 build, and an armed update records the install it was armed over, so `sot-apply` drops one that no longer fits (the
-installer moved on, or the version is not above the install) without stopping the daemon. A host the hub's
+installer moved on, the version is not above the install, the stage has no record of its prepare, or a host that runs a
+backend meets a prepare that did not instantiate the Julia environments) without stopping the daemon. A host the hub's
 `hosts.toml` names with neither `daemon` nor `frontend` runs no `sotd` and never arms into an install it shares.
 `sotd update stage <folder> --prefix <prefix>`, the operator's command for a packed build, is the one way to arm the
 same or an older build.

@@ -385,7 +385,8 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
 /// sidecar)? Priority order — see `backend_role_wanted`'s doc for why:
 /// 1. the declared topology, when it names this host — canonical, can
 ///    change without a reinstall (D9, dev/output/topology-plan.md §D); a
-///    `frontend` entry counts, its window runs a daemon of its own
+///    `frontend` entry takes `recorded_daemon`, because only an install
+///    from rc9.12 on gives it a daemon of its own
 ///    (`sot_protocol::topology::runs_backend`, the one rule);
 /// 2. else `recorded_daemon` — what THIS install was actually given at
 ///    install time (the list, or the flags), persisted for exactly a
@@ -1012,6 +1013,21 @@ mod tests {
              frontend = true\n",
         );
         assert!(backend_role_from_topology(Some(&t), "laptop", None));
+        assert!(backend_role_from_topology(Some(&t), "laptop", Some(true)));
+    }
+
+    // An install from before the installer gave a frontend entry a daemon records `daemon: false` and runs none, so its
+    // prepare is the light one.
+    #[test]
+    fn a_frontend_entry_whose_install_runs_no_daemon_prepares_light() {
+        let t = topo(
+            "hub = \"hubbox\"\n\
+             [host.hubbox]\n\
+             daemon = true\n\
+             [host.laptop]\n\
+             frontend = true\n",
+        );
+        assert!(!backend_role_from_topology(Some(&t), "laptop", Some(false)));
     }
 
     #[test]
@@ -1210,7 +1226,6 @@ mod tests {
             armed_at: 0,
             armed_over_version: over.map(|o| o.0.into()),
             armed_over_commit: over.map(|o| o.1.into()),
-            prepared_for_daemon: None,
         }
     }
 

@@ -235,13 +235,18 @@ async fn refusal_for(prefix: &Path, target: &str, wants_backend: impl FnOnce() -
     fit_refusal(wants_backend(), target.starts_with("windows"), prepared)
 }
 
-/// Does this host's role, read as the daemon's prepare reads it, want a backend for the install at `prefix`? The record
-/// is `install.json`'s `daemon` bit; one that cannot be read leaves the answer to the topology and the default.
+/// Does the role wanted for the install at `prefix` include a backend? The record is `install.json`'s `daemon` bit; one
+/// that cannot be read leaves the answer to the topology and the default. On a host the topology names with neither key
+/// (a guest of a shared home) the install is another host's, so the record alone decides.
 fn backend_role_here(prefix: &Path) -> bool {
-    match InstallManifest::load(&prefix.join("install.json")) {
-        InstallFile::Read(m) => super::backend_role_wanted(&m),
-        _ => super::backend_role_recorded(None),
+    let recorded = match InstallManifest::load(&prefix.join("install.json")) {
+        InstallFile::Read(m) => m.daemon,
+        _ => None,
+    };
+    if super::refusal::host_runs_no_sotd() {
+        return recorded.unwrap_or(true);
     }
+    super::backend_role_recorded(recorded)
 }
 
 /// `sotd update pointer ...`: 0, `REFUSED`, or 2 for arguments that are not `--prefix <prefix> --target <target>`.
@@ -570,9 +575,43 @@ mod tests {
         for wants in [true, false] {
             assert!(ask(wants).await.unwrap().contains("no record of a prepare"), "no prepared.json, backend {wants}");
         }
-        // The verb a script runs: the same pointer, with the role read from this home's topology and the record.
-        std::fs::write(dir.path().join("install.json"), r#"{"schema":1,"prefix":"/p","version":"0.6.6-rc9.13","commit":"c0","daemon":false}"#).unwrap();
-        assert_eq!(code(&dir).await, REFUSED);
+    }
+
+    // The verb a script runs, over the role this host and the install's record give together: the declared entry decides
+    // for a `daemon` host; a `frontend` entry and a host the topology names with neither key (a guest of the prefix's
+    // home, whose install is the record's host's) take the record.
+    #[test]
+    fn the_verb_reads_the_role_from_the_entry_and_the_installs_record() {
+        let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = (std::env::var_os("SOT_HOSTS"), std::env::var_os("SOT_SELF_HOST"));
+        let dir = prefix(("0.6.6-rc9.13", "c0"), Some(("0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0")))));
+        prepare(&dir, "0.6.6-rc9.14", Some(false));
+        let hosts = dir.path().join("hosts.toml");
+        std::fs::write(&hosts, "hub = \"mw21-hub\"\n[host.mw21-hub]\ndaemon = true\n[host.mw21-laptop]\nfrontend = true\n[host.mw21-guest]\n").unwrap();
+        std::env::set_var("SOT_HOSTS", &hosts);
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        // (this host, install.json's daemon bit, exit of the verb on a light prepare)
+        let table = [
+            ("mw21-hub", true, REFUSED),
+            ("mw21-hub", false, REFUSED),
+            ("mw21-laptop", true, REFUSED),
+            ("mw21-laptop", false, 0),
+            ("mw21-guest", true, REFUSED),
+            ("mw21-guest", false, 0),
+        ];
+        let mut got = Vec::new();
+        for (me, daemon, _) in table {
+            std::env::set_var("SOT_SELF_HOST", me);
+            std::fs::write(dir.path().join("install.json"), format!(r#"{{"schema":1,"prefix":"/p","version":"0.6.6-rc9.13","commit":"c0","daemon":{daemon}}}"#)).unwrap();
+            got.push(rt.block_on(code(&dir)));
+        }
+        for (key, value) in [("SOT_HOSTS", saved.0), ("SOT_SELF_HOST", saved.1)] {
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        assert_eq!(got, table.map(|(_, _, exit)| exit), "rows: {:?}", table.map(|(me, daemon, _)| (me, daemon)));
     }
 
     #[tokio::test]
