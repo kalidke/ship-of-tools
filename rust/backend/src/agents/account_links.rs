@@ -96,23 +96,13 @@ fn publish_dir(temp: &Path, link: &Path) -> io::Result<()> {
 #[cfg(any(windows, test))]
 const CLAUDE_MD_AS_IMPORT_STUB: bool = false;
 
-/// The stub's one line, in the form Claude Code's import reader takes: it reads `@` followed by characters that are neither a
-/// space nor a backslash (a `\ ` pair is a space), so a Windows path with backslashes or spaces never imports as written. The
-/// default's `CLAUDE.md` sits at `<home>/.claude/CLAUDE.md`, which `~/.claude/CLAUDE.md` spells without a path to get right;
-/// any other target is its path with forward slashes and every space escaped.
+/// The stub's one line, in the form Claude Code's import reader takes: `@~/.claude/CLAUDE.md` for the default's file, which sits
+/// at `<home>/.claude/CLAUDE.md` (the reader ends a match at a backslash or a space, so a Windows path never imports as
+/// written, and this spelling has no path to get right). `None` for any other target: it gets the copy.
 #[cfg(any(windows, test))]
-fn import_line(target: &Path) -> String {
+fn import_line(target: &Path) -> Option<&'static str> {
     let in_dot_claude = target.parent().and_then(Path::file_name).is_some_and(|n| n == ".claude");
-    if in_dot_claude && target.file_name().is_some_and(|n| n == "CLAUDE.md") {
-        return "@~/.claude/CLAUDE.md\n".to_string();
-    }
-    format!("@{}\n", escaped(&target.to_string_lossy()))
-}
-
-/// A path as an import names it: forward slashes, and a backslash before each space.
-#[cfg(any(windows, test))]
-fn escaped(path: &str) -> String {
-    path.replace('\\', "/").replace(' ', "\\ ")
+    (in_dot_claude && target.file_name().is_some_and(|n| n == "CLAUDE.md")).then_some("@~/.claude/CLAUDE.md\n")
 }
 
 /// Whether `link` takes the import-stub form under `switch`: only the `CLAUDE.md`.
@@ -123,10 +113,17 @@ fn uses_import_stub(switch: bool, link: &Path) -> bool {
 
 #[cfg(any(windows, test))]
 fn seed_file(target: &Path, link: &Path) -> io::Result<()> {
-    let stub = uses_import_stub(CLAUDE_MD_AS_IMPORT_STUB, link);
-    seed_contents(target, link, stub)?;
+    seed_with(target, link, CLAUDE_MD_AS_IMPORT_STUB)
+}
+
+/// Seed `link` from `target` under `switch`: the import stub when the switch is on, the entry is `CLAUDE.md` and the target is
+/// the default's (`import_line`), else a copy.
+#[cfg(any(windows, test))]
+fn seed_with(target: &Path, link: &Path, switch: bool) -> io::Result<()> {
+    let line = if uses_import_stub(switch, link) { import_line(target) } else { None };
+    seed_contents(target, link, line)?;
     let name = link.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    if stub {
+    if line.is_some() {
         tracing::warn!(entry = %name, "symlinks are unavailable here: this account's {name} imports the default's");
     } else {
         tracing::warn!(entry = %name, "symlinks are unavailable here: this account's {name} is a copy it now owns");
@@ -138,10 +135,10 @@ fn seed_file(target: &Path, link: &Path) -> io::Result<()> {
 /// `target`, or with `stub` the one-line import of it), then `hard_link` it onto the entry name (`AlreadyExists` means
 /// a sibling won), then drop the temp.
 #[cfg(any(windows, test))]
-fn seed_contents(target: &Path, link: &Path, stub: bool) -> io::Result<()> {
+fn seed_contents(target: &Path, link: &Path, stub: Option<&str>) -> io::Result<()> {
     let temp = unique_beside(link);
-    let (written, what) = if stub {
-        (std::fs::write(&temp, import_line(target)), "write the import of")
+    let (written, what) = if let Some(line) = stub {
+        (std::fs::write(&temp, line), "write the import of")
     } else {
         (std::fs::copy(target, &temp).map(|_| ()), "copy")
     };
@@ -357,14 +354,14 @@ mod tests {
         let (_tmp, account) = setup();
         let target = account.parent().unwrap().parent().unwrap().join(".claude").join("CLAUDE.md");
         let copy = account.join("CLAUDE.md");
-        seed_contents(&target, &copy, false).unwrap();
+        seed_contents(&target, &copy, None).unwrap();
         assert_eq!(std::fs::read_to_string(&copy).unwrap(), "global rules");
         let stub = account.join("stub").join("CLAUDE.md");
         std::fs::create_dir_all(stub.parent().unwrap()).unwrap();
-        seed_contents(&target, &stub, true).unwrap();
+        seed_contents(&target, &stub, import_line(&target)).unwrap();
         assert_eq!(std::fs::read_to_string(&stub).unwrap(), "@~/.claude/CLAUDE.md\n");
         // Either form is published without replacing, and leaves no temp.
-        assert_eq!(seed_contents(&target, &stub, true).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(seed_contents(&target, &stub, import_line(&target)).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
         let temps: Vec<_> = std::fs::read_dir(stub.parent().unwrap()).unwrap().filter(|e| e.as_ref().unwrap().file_name() != "CLAUDE.md").collect();
         assert!(temps.is_empty(), "temps left: {temps:?}");
     }
@@ -389,14 +386,31 @@ mod tests {
 
     #[test]
     fn the_stub_line_is_one_the_import_reader_takes_back_whole() {
-        // The default's file, wherever the home is: the home-relative spelling.
-        assert_eq!(import_line(Path::new("/home/a/.claude/CLAUDE.md")), "@~/.claude/CLAUDE.md\n");
-        // Any other target, a Windows path with a space included: forward slashes and escaped spaces, read back whole.
-        let win = r"C:\Users\a b\.claude-x\CLAUDE.md";
-        assert_eq!(escaped(win), "C:/Users/a\\ b/.claude-x/CLAUDE.md");
-        assert_eq!(imported_path(&format!("@{}", escaped(win))), "C:/Users/a b/.claude-x/CLAUDE.md");
-        // Written as the path itself, the first backslash ends the match at `C:`: the failure this guards.
-        assert_eq!(imported_path(&format!("@{win}")), "C:");
+        // The default's file, wherever the home is: the home-relative spelling, and it reads back whole.
+        let line = import_line(Path::new("/home/a/.claude/CLAUDE.md")).unwrap();
+        assert_eq!(line, "@~/.claude/CLAUDE.md\n");
+        assert_eq!(imported_path(line), "~/.claude/CLAUDE.md");
+        // A Windows path as written ends the match at `C:`: why no path is ever written.
+        assert_eq!(imported_path(r"@C:\Users\a b\.claude\CLAUDE.md"), "C:");
+    }
+
+    #[test]
+    fn a_target_that_is_not_the_defaults_gets_the_copy_even_with_the_switch_on() {
+        let (tmp, account) = setup();
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let target = elsewhere.join("CLAUDE.md");
+        std::fs::write(&target, "other rules").unwrap();
+        assert_eq!(import_line(&target), None);
+        let link = account.join("CLAUDE.md");
+        seed_with(&target, &link, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "other rules");
+        // The default's own file, switch on, is the stub; switch off, the copy.
+        let default = tmp.path().join(".claude").join("CLAUDE.md");
+        let stub = account.join("a").join("CLAUDE.md");
+        std::fs::create_dir_all(stub.parent().unwrap()).unwrap();
+        seed_with(&default, &stub, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&stub).unwrap(), "@~/.claude/CLAUDE.md\n");
     }
 
     #[test]
