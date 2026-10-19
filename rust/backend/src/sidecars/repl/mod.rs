@@ -27,6 +27,9 @@ pub(crate) mod ops;
 mod supervisor;
 
 #[cfg(test)]
+mod interrupt_tests;
+
+#[cfg(test)]
 mod project_tests;
 
 #[cfg(test)]
