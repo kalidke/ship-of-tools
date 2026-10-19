@@ -207,7 +207,7 @@ status_txn() {
     # The daemon's dialog decision was made from an earlier read: it lands only on a row with a floor, so a Stop that came
     # first leaves a row at rest unwritten.
     if [ -n "$ROW_HANDLE" ] && [ "$VERB" = dialog ] \
-        && [ "$(printf '%s' "$row" | jq -r 'if .floor == null then "0" else "1" end' 2>/dev/null | head -c1)" != 1 ]; then
+        && [ "$(printf '%s' "$row" | jq -j 'if .floor == null then "0" else "1" end' 2>/dev/null)" != 1 ]; then
         return 0
     fi
     # SUM is free text: it reaches jq on stdin, after the registry (registry_replace --text; comm-lib-base.sh, free text and jq).
