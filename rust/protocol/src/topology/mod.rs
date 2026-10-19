@@ -386,6 +386,18 @@ pub fn runs_no_sotd(topo: &Topology, name: &str) -> bool {
     topo.host(name).is_some_and(|h| !h.daemon && !h.frontend)
 }
 
+/// Does the box `me` run a backend (a daemon with its Julia environments)? The declared entry decides when it names this
+/// box: `daemon`, or `frontend`, because every box that runs a window runs its own private daemon
+/// (`installer_topology_role` in scripts/install.sh is this rule, pinned equal by a unit test). Else `recorded`, what the
+/// install was given at install time, for a listless box; else yes, the only sane answer for a record from before the
+/// field shipped. The prepare, the window's stay-out of updates and the apply's role check all ask this.
+pub fn runs_backend(topo: Option<&Topology>, me: &str, recorded: Option<bool>) -> bool {
+    match topo.and_then(|t| t.host(me)) {
+        Some(h) => h.daemon || h.frontend,
+        None => recorded.unwrap_or(true),
+    }
+}
+
 /// `(host, endpoint)` for every [`dialable_hosts`] entry, resolved for
 /// `self_host`: its own local socket for itself; on the hub, the hub's own
 /// socket for a remote host ([`relay_socket_path`] — no forward needed,
