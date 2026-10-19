@@ -10,7 +10,7 @@ use serde_json::json;
 pub(crate) enum CapsuleDestroyOutcome {
     /// The run was CONFIRMED ended (`RecordVerified`/`RecordClosed`/
     /// `AlreadyEnded` — see `rows::run::end_run::EndRunOutcome`) — the row
-    /// may be removed; the state directory never is. Human-readable
+    /// may be removed, and its state directory is renamed away and removed with it (`state_folder`). Human-readable
     /// (never the raw, Windows-only `EndRunOutcome` type) so this enum
     /// stays portable and unit-testable.
     Removable(String),

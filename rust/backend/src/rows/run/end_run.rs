@@ -408,7 +408,7 @@ fn end_still_starting(
 /// for a caller-supplied one (Codex review, 2026-09-11 — the old code
 /// replaced `leg_absent`'s own error with the outer `query_status`
 /// error, losing the actual reason absence wasn't proven).
-enum NotProven {
+pub(crate) enum NotProven {
     FenceUnavailable,
     LegCheckFailed(String),
 }
@@ -432,11 +432,26 @@ enum NotProven {
 /// absence is NOT proven either way, so the caller must keep the row
 /// rather than guess.
 fn absence_proof(state_dir: &Path) -> Result<bool, NotProven> {
+    absence_proof_then(state_dir, leg_absent, || ()).map(|acted| acted.is_some())
+}
+
+/// [`absence_proof`] with its leg check named by the caller and an act run while the supervisor fence is still held:
+/// `Ok(Some(_))` is the act's result when the fence was free and `leg` found no leg; `Ok(None)` is a leg holding the
+/// voyage (the act did not run); `Err` is absence not proven. The act runs under the fence so nothing can take it
+/// between the proof and the act (a removal's rename).
+pub(crate) fn absence_proof_then<T>(
+    state_dir: &Path,
+    leg: impl FnOnce(&Path) -> Result<bool, String>,
+    act: impl FnOnce() -> T,
+) -> Result<Option<T>, NotProven> {
     let _fence =
         sot_log::supervisor::journal::fence::lock_supervisor(state_dir).map_err(|_| NotProven::FenceUnavailable)?;
-    leg_absent(state_dir).map_err(NotProven::LegCheckFailed)
-    // `_fence` drops here, right after `leg_absent`'s own single
-    // observation -- observe only, never become the holder.
+    if leg(state_dir).map_err(NotProven::LegCheckFailed)? {
+        Ok(Some(act()))
+    } else {
+        Ok(None)
+    }
+    // `_fence` drops here -- observe (and act) only, never stay the holder.
 }
 
 /// `end_run`'s missing-state-dir proof: whether `query_status`'s own

@@ -78,11 +78,12 @@ filesystem rather than risk the record. On a home directory shared across
 servers, give each host its own local state root (see
 [Troubleshooting](../guide/troubleshooting.md#A-session-will-not-start-on-a-shared-home)).
 
-Closing a session ends its capsule and removes its folder under `workspaces/`, with the terminal recording (its
-voyage). The conversation itself lives with the agent, so it stays resumable with `/resume` in the same project
-folder. The default row only ends its run and keeps its folder. When the daemon starts, it also removes a folder
-that no session names, if no supervisor holds it and nothing in it was written for 24 hours; each removal is one
-line in `sotd.log`.
+Closing a session from the session list ends its capsule and removes its folder under `workspaces/`, with the terminal
+recording (its voyage). The conversation itself lives with the agent, so it stays resumable with `/resume` in the same
+project folder. The default row only ends its run and keeps its folder, and a session ended by closing the window keeps
+its folder for now. When the daemon starts, it removes the leftovers of closed sessions, and a folder that no
+registry names, if nothing runs in it and nothing in it was written for 24 hours; it skips that second part when it
+cannot read every registry that start. Each removal is one line in `sotd.log`.
 
 ## Switching and restarts
 

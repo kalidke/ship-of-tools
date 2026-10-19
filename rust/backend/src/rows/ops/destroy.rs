@@ -8,7 +8,7 @@ use sot_protocol::Frame;
 use crate::server::reply::HandlerOutput;
 use crate::rows::run::end::{CapsuleDestroyOutcome, ALREADY_REMOVED, capsule_end_not_reached_payload, default_row_end_response, destroy_capsule_workspace, remove_row_files};
 use crate::rows::anchor::end_default_row_run;
-use crate::rows::state_folder::remove_closed_row_folder;
+use crate::rows::state_folder::close_row_folder;
 use crate::comm::registry::registry::remove_comm_agents_for_workspace;
 use crate::session::Session;
 use crate::rows::WorkspaceChanged;
@@ -174,8 +174,8 @@ pub async fn handle_workspace_destroy(
     // killed. Other Arc holders (e.g. mid-flight handlers) will keep
     // those processes alive until they finish.
     let _ = workspaces.remove_by_id(&workspace_id);
-    // The run is confirmed ended (the `Kept` arms returned above), so the row's state folder goes too.
-    remove_closed_row_state_folder(&workspace_id).await;
+    // The run is confirmed ended (the `Kept` arms returned above), so the row's state folder is retired too.
+    retire_closed_row_state_folder(&workspace_id).await;
     // Only now may this row's guard (if any) release — see its own doc
     // above: held from whichever arm took it (capsule end/stop) through this exact removal,
     // so neither a watchdog restart nor a waiting `agent.join` can act
@@ -212,16 +212,16 @@ pub async fn handle_workspace_destroy(
     )])
 }
 
-/// Remove the closed row's state folder under the row's guard. The state root is resolved and canonicalized as
-/// `destroy_capsule_workspace` does; one that does not resolve leaves the folder for the next start's sweep.
-async fn remove_closed_row_state_folder(workspace_id: &str) {
-    let Some(state_root) = sot_log::host::state_dir::sot_state_dir().and_then(|root| root.canonicalize().ok()) else {
+/// Retire the closed row's state folder under the row's guard (`state_folder::close_row_folder`). A state root that does
+/// not resolve leaves the folder for the next start's sweep.
+async fn retire_closed_row_state_folder(workspace_id: &str) {
+    let Some(state_root) = sot_log::host::state_dir::sot_state_dir() else {
         tracing::debug!(workspace_id, "workspace.destroy: no state root to remove the row's state folder from");
         return;
     };
     let id = workspace_id.to_string();
-    if let Err(e) = tokio::task::spawn_blocking(move || remove_closed_row_folder(&state_root, &id)).await {
-        tracing::warn!(workspace_id, error = %e, "workspace.destroy: removing the row's state folder panicked");
+    if let Err(e) = tokio::task::spawn_blocking(move || close_row_folder(&state_root, &id)).await {
+        tracing::warn!(workspace_id, error = %e, "workspace.destroy: retiring the row's state folder panicked");
     }
 }
 

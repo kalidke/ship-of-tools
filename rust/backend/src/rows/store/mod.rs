@@ -72,6 +72,44 @@ pub fn scan_disk(reg: &Workspaces, adopt_legacy_registry: bool) -> Result<usize>
     Ok(count)
 }
 
+/// Every workspace id any row registry under the config dir names, or why that cannot be said whole. The registries are
+/// the `workspaces*` and `sessions*` folders (the per-host ones, the unsuffixed ones and every other host's, which share this
+/// state root); the answer is whole only when this host's own `workspaces-<host>` folder exists, every one of those
+/// folders reads without error, and every `*.toml` in them reads and parses. A caller deciding that no registration names a
+/// state folder acts on `Ok` only.
+pub fn named_workspace_ids() -> Result<std::collections::HashSet<String>, String> {
+    let config = app_config_dir();
+    let own = workspaces_dir();
+    if !own.is_dir() {
+        return Err(format!("this host's registry folder {own:?} is not readable"));
+    }
+    let mut ids = std::collections::HashSet::new();
+    let folders = std::fs::read_dir(&config).map_err(|e| format!("the config folder {config:?}: {e}"))?;
+    for folder in folders {
+        let folder = folder.map_err(|e| format!("the config folder {config:?}: {e}"))?;
+        let name = folder.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with("workspaces") || name.starts_with("sessions")) || !folder.path().is_dir() {
+            continue;
+        }
+        let legacy = name.starts_with("sessions");
+        let entries = std::fs::read_dir(folder.path()).map_err(|e| format!("{:?}: {e}", folder.path()))?;
+        for entry in entries {
+            let path = entry.map_err(|e| format!("{:?}: {e}", folder.path()))?.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("toml") {
+                continue;
+            }
+            match load_toml(&path, legacy) {
+                Ok(Some(ws)) => {
+                    ids.insert(ws.workspace_id);
+                }
+                Ok(None) => {}
+                Err(e) => return Err(format!("{path:?}: {e}")),
+            }
+        }
+    }
+    Ok(ids)
+}
+
 fn scan_dir(reg: &Workspaces, dir: &Path, legacy: bool) -> Result<usize> {
     let mut count = 0;
     let entries = match std::fs::read_dir(dir) {

@@ -15,8 +15,8 @@ paths, and the headless attach client. Part of the daemon's rows subsystem; char
 - `admission.rs`: the pending-authority refusal a start is told when the row's authority fence is already claimed
 - `activation.rs`: `ensure_started` (start on attach), `resume_if_absent`, `resume_locked`, `ActivationIntent`
 - `watchdog.rs`: `install_watchdog`, the exit classes (`LegOutcome`) and the restart budget (`RESTART_BACKOFFS`)
-- `resume.rs`: `resume_all`, the boot resume of every registered row whose pointer exists
-- `end_run.rs`: `end_run`, `EndRunOutcome` and the destroy proof (`absence_proof`, `leg_absent`)
+- `resume.rs`: `resume_all`, the boot resume of every registered row whose pointer exists, then the start sweep of state folders (`rows/state_folder.rs`)
+- `end_run.rs`: `end_run`, `EndRunOutcome` and the destroy proof (`absence_proof`, `absence_proof_then`, `leg_absent`)
 
 ## Start here
 `activation.rs::ensure_started` for how a row starts on attach, and `end_run.rs::end_run` for how a row ends with the

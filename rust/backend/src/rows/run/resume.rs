@@ -50,9 +50,9 @@ pub const LANE_CONCURRENCY: usize = 4;
 /// workspace list is the list" — an orphan is not addressable
 /// through any op, so resuming it would create a live, unaddressable
 /// process; deleted, the bare-shell fallback an earlier version used
-/// here). After the resume pass, such a directory is removed when its
-/// supervisor lock is free and nothing in it was written for 24 hours
-/// (`state_folder::sweep_unnamed_folders`); any other is left and logged once.
+/// here). After the resume pass the state folder sweep runs (`state_folder::sweep_state_folders`): it removes the
+/// tombstones closes left, and a folder no registry on disk names only when every registry read whole, its supervisor
+/// and leg are proven absent, and nothing in it was written for 24 hours; a folder it leaves is logged once.
 ///
 /// Runs off the startup critical path (finding 10): `server/mod.rs`
 /// calls this via `tokio::spawn`, never awaited, and every probe/spawn
@@ -137,30 +137,12 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
         let _ = j.await;
     }
 
-    sweep_registryless_state_dirs(state_root.clone(), workspaces.clone()).await;
+    let (sweep_root, sweep_workspaces) = (state_root.clone(), workspaces.clone());
+    let _ = tokio::task::spawn_blocking(move || crate::rows::state_folder::sweep_state_folders(&sweep_root, &sweep_workspaces)).await;
     log_orphaned_state_dirs(&state_root, &workspaces);
 }
 
-/// Remove the `<state-root>/workspaces/*` folders no registry entry names that `state_folder::sweep_unnamed_folders` allows (a
-/// free supervisor lock, nothing written for 24 hours), and log once the names of those it left. This is the one
-/// scan at which the registry is whole; closing a row removes its own folder at once, so what this finds is left by a
-/// crash between a close's steps or by an older daemon (ADR 0042).
-async fn sweep_registryless_state_dirs(state_root: PathBuf, workspaces: Workspaces) {
-    let kept = tokio::task::spawn_blocking(move || {
-        crate::rows::state_folder::sweep_unnamed_folders(&state_root, &workspaces, std::time::SystemTime::now())
-    })
-    .await
-    .unwrap_or_default();
-    if !kept.is_empty() {
-        tracing::warn!(
-            count = kept.len(), ids = ?kept,
-            "capsule workspace resume-scan: state directories with no matching registry entry kept \
-             (held lock, written within 24 hours, or not removable)"
-        );
-    }
-}
-
-/// The reverse of [`sweep_registryless_state_dirs`]: a REGISTERED
+/// The reverse of the sweep above: a REGISTERED
 /// capsule row whose `state_dir` does not exist under THIS daemon's
 /// own state root — a DIAGNOSTIC candidate list only, never a proof.
 /// A row that went through `workspace.create` and reached the

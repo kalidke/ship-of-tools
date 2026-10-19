@@ -63,6 +63,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `[monitor]` roster in hosts.toml (the grammar is topology's; the sidecars read it) | setting | topology | `rust/protocol/src/topology/mod.rs` `monitor_targets`; `rust/backend/src/sidecars/monitor.rs` `load_hosts`, `sampling_roster` |
 | the folders a page's tracked link may reach | rule | pages | `rust/backend/src/pages/site/links.rs` `MOUNT_FOLDERS`, `Bounds` |
 | a row's capsule state dir `<state>/workspaces/<id>` (name) | disk rule | rows | `rust/backend/src/rows/spawn/state_root.rs` `state_dir_for` |
+| removal of a row's state dir (close's tombstone, the start sweep) | disk rule | rows | `rust/backend/src/rows/state_folder.rs` `close_row_folder`, `sweep_state_folders`; the registries it asks `rust/backend/src/rows/store/mod.rs` `named_workspace_ids` |
 | `<sd>/supervisor.lock` | disk, lock | capsule | `rust/log/src/supervisor/journal/fence.rs` `lock_supervisor`; `rust/log/src/host/lock.rs` `lock_supervisor` |
 | `<sd>/drawer.voyage` (pointer) | disk | capsule | `rust/log/src/supervisor/journal/pointer.rs` |
 | `<sd>/supervisor-journal/` | disk | capsule | `rust/log/src/supervisor/journal/mod.rs` `begin`, `finish` |
