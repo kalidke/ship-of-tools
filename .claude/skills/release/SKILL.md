@@ -15,12 +15,10 @@ release from a fresh context.
 
 ## Preflight (do all six, report anything amiss instead of proceeding)
 
-1. **CI is green on the branch being cut**: the latest real (not skipped) `rust.yml`
-   and `CI.yml` runs on that branch (`main` for a final, `fixes/*` or `rc/*` for a candidate) succeeded and sit at
-   HEAD; `scripts/release.sh` refuses the cut otherwise. Dispatch them on the branch first, main included, since push
-   runs are path-filtered and the cut's runs are dispatched ones: `gh workflow run <wf> --ref <branch>`.
-2. **Tree clean + synced**: `git status --porcelain` empty, HEAD ==
-   `origin/<branch>` for the branch being cut. Coordinate over sot-comm if a
+1. **CI is green on main**: the latest real (not skipped) `rust.yml` and `CI.yml` runs on main succeeded and sit at
+   HEAD; `scripts/release.sh` refuses the cut otherwise. Dispatch them on main first, since push runs are
+   path-filtered and the cut's runs are dispatched ones: `gh workflow run <wf> --ref main`.
+2. **Tree clean + synced**: `git status --porcelain` empty, HEAD == `origin/main`. Coordinate over sot-comm if a
    session announced pending pushes (sync-before-push convention).
 3. **Pick the version**: semver, pre-1.0 (minor = anything may change). Between tags the line carries the next
    version with `-dev`; a release is the commit that drops it, so the version is normally HEAD's stamp minus `-dev`
@@ -63,8 +61,9 @@ release from a fresh context.
    installed is not a milestone; it is a tag that cost CI minutes and told us
    nothing.
    - A defect found **before the current candidate has been used** rides into
-     **that same candidate on the branch**, not into a new tag. Amend the
-     branch and cut once.
+     **that same candidate**: it lands on main before the cut, not in a new
+     tag. Once the candidate is tagged, a defect found afterward goes into the
+     next cut (see *Hard rules*).
    - The one exception is a test that genuinely needs a **newer published
      version** — an updater/downgrade check, say — named as such when you cut.
    - This bounds the "everything we know is wrong goes in the next rc" rule in
@@ -82,11 +81,11 @@ The script stamps `rust/Cargo.toml [workspace.package]` + every Julia
 `Project.toml`, refreshes `Cargo.lock`, regenerates `CHANGELOG.md` iff
 git-cliff is installed (optional — CI generates the release notes), runs
 `cargo test --workspace --locked`, commits `release: vX.Y.Z`, tags, then stamps the line's next dev version in a commit
-of its own (`version: <next> opens the line after vX.Y.Z [skip ci]`) and pushes the branch and the tag in one `git push --atomic`: origin takes both or neither.
+of its own (`version: <next> opens the line after vX.Y.Z [skip ci]`) and pushes main and the tag in one `git push --atomic`: origin takes both or neither.
 
 A cut that fails before or at the push leaves only its local commits and tag, and nothing on origin: `git tag -d vX.Y.Z`
-and `git reset --hard origin/<branch>` undo them, then run it again. A push alone that failed (origin moved on) is
-re-run with `git push --atomic origin <branch> vX.Y.Z` once the branch is synced, with no test run again.
+and `git reset --hard origin/main` undo them, then run it again. A push alone that failed (origin moved on) is
+re-run with `git push --atomic origin main vX.Y.Z` once main is synced, with no test run again.
 
 ## Watch + verify (required — a tag that half-published is worse than none)
 
@@ -149,13 +148,15 @@ use it after editing the workflow or before a first-of-its-kind release.
   a cheaper diagnostic ships first. "Small", "not a blocker", and "it can wait"
   are not reasons. Say the split out loud with its reason per item, and put
   features — not defects — in the later candidate.
-- **Finals come from main; candidates come from the line's candidate branch.**
-  A tag starts the next line's branch, candidates are tagged from that branch,
-  and the final is cut from main after the branch merges in. Before any final, prove main actually
-  carries what the last tested candidate carried — by content, not by ancestry.
-- `scripts/release.sh` enforces the branch (`main`, `fixes/*` or `rc/*`), a clean
-  tree, HEAD == `origin/<branch>`, a tag that does not exist and sorts above every tag on its line, and green CI
-  at HEAD on that branch.
+- **Every tag is cut from main, candidates and finals alike.** Main is the
+  -dev line, as the Julia packages' main is: work merges to main, a cut is
+  tagged from main, and the stamp after the tag moves main to the next version
+  with `-dev`. `fixes/0.6.6-comm` stays only as an alias until the next cut,
+  then is retired. Before any final, prove main actually carries what the last
+  tested candidate carried — by content, not by ancestry.
+- `scripts/release.sh` enforces the branch (`main` only), a clean tree,
+  HEAD == `origin/main`, a tag that does not exist and sorts above every tag on
+  its line, and green CI at HEAD on main.
 - **Never** delete/re-cut a published tag that anyone may have fetched — cut a
   patch release instead. A broken `-rc.N` may be deleted (tag + release) since
   rc consumers are just us.
