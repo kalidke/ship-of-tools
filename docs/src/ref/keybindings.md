@@ -89,8 +89,9 @@ All shortcuts can be reassigned for layouts or OS shortcuts that conflict.
 macOS reserves some chords at the system level regardless of what SoT binds:
 Control+Arrow switches Spaces or opens Mission Control, and F11 shows the
 desktop, which is why pane focus is `⌘Arrow` there and fullscreen also accepts
-`Ctrl+Cmd+F` (F11 still works if that system shortcut is off). `⌘Q` and `⌘H`
-are handled by the OS-level application menu, not by SoT's own key dispatch.
+`Ctrl+Cmd+F` (F11 still works if that system shortcut is off). SoT draws no
+macOS application menu, so `⌘Q` reaches SoT's own key dispatch and asks the
+`quit` question; `⌘H` (Hide) and the menu's other items are not provided.
 `⇧⌘/` is the system Help-menu shortcut, on by default, and never reaches the
 app at all — that is why `help.toggle`'s macOS default is the bare `⌘/`
 instead of the cross-platform `Primary+?` pattern. On Mac laptop keyboards
