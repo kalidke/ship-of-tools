@@ -483,8 +483,8 @@ fn replay_slow_watcher_flood_the_driver_still_answers_a_resize() {
     );
 }
 
-/// Directly answers the coordinator's "double-check the timeout
-/// arithmetic" ask: does the resize this scenario needs answered
+/// Directly answers the question "is the timeout
+/// arithmetic right": does the resize this scenario needs answered
 /// legitimately require a keepalive/progress interval to elapse first
 /// (making the integration test's 10s wait too short BY DESIGN), or is
 /// the reply available immediately regardless? Advances `now` well

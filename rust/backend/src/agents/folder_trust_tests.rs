@@ -101,7 +101,7 @@ fn a_root_under_the_declared_prefix_is_recorded_as_trusted() {
 
 #[test]
 fn a_root_outside_the_declared_prefix_leaves_the_file_byte_identical() {
-    // The 2026-09-03 ruling still standing where it applies: outside the
+    // The 2026-09-03 rule still standing where it applies: outside the
     // declared set the daemon adds no trust flag at all.
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path();

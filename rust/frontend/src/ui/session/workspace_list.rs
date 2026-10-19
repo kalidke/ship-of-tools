@@ -388,7 +388,7 @@ mod tests {
         let green = ak("h", "green");
         let purple = ak("h", "purple");
         let gray = ak("h", "gray");
-        // Daemon order is the reverse of the ruling; every stamp is newer
+        // Daemon order is the reverse of the list order; every stamp is newer
         // than the one before, so a stamp-only sort would also be reversed.
         let slugs = vec![
             gray.clone(),

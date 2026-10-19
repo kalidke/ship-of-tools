@@ -532,7 +532,7 @@ fn spawn_detached(
 }
 
 /// Every platform `sotd` ships for. The gate this module carried until
-/// the supervisor-epoch ruling was never about what macOS can do:
+/// the supervisor-epoch rule was never about what macOS can do:
 /// `sot-capsule supervise` is built and shipped in the macOS release
 /// archive, `sot_log::attach_client::supervisor_client` compiles there, the death watch
 /// is a kqueue `NOTE_EXIT` knote and the parent-death lease works. The
@@ -543,7 +543,7 @@ fn spawn_detached(
 /// a socket peer's `LOCAL_PEERTOKEN`), neither of which exists for a child
 /// this daemon has only just forked.
 ///
-/// The ruling deleted the read rather than porting it: a supervisor's
+/// The rule deleted the read rather than porting it: a supervisor's
 /// identity is authored by the supervisor and learned over the lane, on
 /// all three platforms. What this code did not read on macOS, no platform
 /// now reads here — so there is nothing left here to gate. Linux lost only earliness,
@@ -554,7 +554,7 @@ fn spawn_detached(
 ///
 /// What this module's macOS arm does NOT claim: that a capsule row
 /// actually works on a Mac. Nothing here has ever run on one. It
-/// compiles honestly and spawns honestly; the ruling's §7 lists what a
+/// compiles honestly and spawns honestly; the supervisor-epoch design's §7 lists what a
 /// real Mac must settle — that a supervisor's reported `pidversion`
 /// matches what this daemon's own `query_status` sees for it, that a
 /// `setsid` capsule survives its spawning `sotd` under launchd, that a

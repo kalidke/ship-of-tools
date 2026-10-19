@@ -100,7 +100,7 @@ mod capsule_comm_handle_tests {
 
 #[cfg(test)]
 mod with_comm_registry_lock_panic_tests {
-    // Coordinator hardening: `f` runs inside the caller's `spawn_blocking`,
+    // Hardening: `f` runs inside the caller's `spawn_blocking`,
     // which contains a panic (the awaiting task just sees a `JoinError`) —
     // but the OLD code released `.registry.lock` only on the normal return
     // path, so a panic mid-critical-section left it behind forever. Since

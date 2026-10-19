@@ -33,7 +33,7 @@ fn start_reaches_ready_promptly() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// The supervisor-epoch ruling's whole Linux safety argument, in
+/// The supervisor-epoch rule's whole Linux safety argument, in
 /// executable form: the start-time the DAEMON reads off a freshly
 /// spawned supervisor is bit-identical to the `created` that same
 /// supervisor later authors for itself on the wire. They are not merely

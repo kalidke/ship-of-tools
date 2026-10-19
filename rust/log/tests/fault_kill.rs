@@ -14,7 +14,7 @@
 //! syscall shim or dm-flakey and are named follow-ups in the ADR's gate
 //! list, not silently claimed here.
 //!
-//! Known limits (review round 2; logged by ruling, not fixed):
+//! Known limits (review round 2; logged, not fixed):
 //! - Counts, not content: the checks prove that the frames the waiter saw
 //!   survive in number, not unchanged. A recovery that rewrote a frame and
 //!   regenerated its CRCs and seal would pass here; recovery.rs's

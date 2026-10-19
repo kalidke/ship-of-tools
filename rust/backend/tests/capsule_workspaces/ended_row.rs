@@ -492,7 +492,7 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
     // voyage, never the original, never stuck `ended_no_respawn`.
     assert_ends_in_a_fresh_voyage(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_voyage).await;
 
-    // Ruling 5: prove this test actually hit the transient-settle
+    // Prove this test actually hit the transient-settle
     // window it exists to exercise, not merely that the row eventually
     // recovered some other way.
     let log_path = env.state_root.join("sot").join("sotd.log");

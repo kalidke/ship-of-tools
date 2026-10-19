@@ -330,8 +330,7 @@ impl State {
     /// and — anything else the status line moves to — a warn carrying how
     /// many such non-success moves this client has made so far — and, if
     /// that move is a TERMINAL one (`is_dead`) that arrived before this
-    /// client ever checkpointed, also clears `pane_hold` (coordinator
-    /// amendment: a dead end must not keep showing the departed row's
+    /// client ever checkpointed, also clears `pane_hold` (a dead end must not keep showing the departed row's
     /// screen — see `pane_hold`'s own doc). Design-review amendment:
     /// every line carries TWO clocks — `since_request_ms` (from
     /// `pane_attach_requested_at`, the switch or create the user actually
@@ -378,7 +377,7 @@ impl State {
                     status = %status_after,
                     "session pane: capsule attach episode failure"
                 );
-                // Coordinator amendment: a TERMINAL failure that never
+                // A TERMINAL failure that never
                 // checkpointed is a dead end, not a stall — clear
                 // `pane_hold` right here, on the same path as the warn
                 // line above, so a dead new row can never keep showing

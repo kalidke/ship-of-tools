@@ -148,7 +148,7 @@ pub fn leg_carries_run_end_marker(seg_dir: &Path, voyage_id: &str, epoch: u64) -
 /// a real producer), the key absent from an otherwise well-formed
 /// frame, or the value present but not a plain non-negative integer.
 /// `None` here is the caller's own cue to count the leg UNSTABLE (N1's
-/// own ruling) — never to fall back to a wall-clock measurement a slow
+/// own rule) — never to fall back to a wall-clock measurement a slow
 /// teardown could inflate arbitrarily, which is the exact bug this
 /// exists to close.
 ///

@@ -92,7 +92,7 @@ pub fn run(args: &[String]) -> i32 {
             report_cache_divergence(t);
             Ok(())
         }),
-        // NOT `with_topology`: main's ruling (isolation-plan.md §3 C10's
+        // NOT `with_topology`: the rule (isolation-plan.md §3 C10's
         // Rust half) is that this one subcommand answers even with no
         // `hosts.toml` at all — a box that has never declared a topology
         // has no hub and no declared peers, so its own daemon is the only
@@ -206,7 +206,7 @@ fn sync(hub: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// Which hub `sync` fetches from (orchestrator ruling): the LOCAL copy's
+/// Which hub `sync` fetches from (a standing rule): the LOCAL copy's
 /// `hub` always wins when a copy already exists — re-pointing a box to a
 /// different hub means deleting its copy and running `sync --hub <new>`
 /// again, not overriding a live copy in place. `--hub` is read only when

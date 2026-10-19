@@ -197,7 +197,7 @@ pub(crate) fn account_spawn_env(
             let extra = crate::agents::accounts::account_env(agent_kind, account, &home)
                 .map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
             // Accounts brief: link the shared entries now that account_env
-            // has proved the folder exists (sharing ruling: accounts.rs
+            // has proved the folder exists (sharing rule: accounts.rs
             // module doc). Same refusal shape as account_env's own error
             // just above; ensure_account_links itself no-ops for an empty
             // account or "default", so no guard is needed here.

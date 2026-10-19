@@ -795,7 +795,7 @@ mod commit_retry_tests {
     }
 }
 
-/// The captain's real-world case (Defect 0c), Windows only: a directory
+/// The real-world case (Defect 0c), Windows only: a directory
 /// rename is unaffected by an open file descriptor on Unix, so this test
 /// would pass on Linux/macOS without exercising anything — and the macOS CI
 /// leg runs every unguarded `cfg(unix)` test, so it cannot be left unguarded.

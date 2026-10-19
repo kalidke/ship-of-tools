@@ -304,7 +304,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
 /// forever -- the row could never actually be destroyed. On Windows this
 /// test scrubs `claude` from the daemon's PATH to force the failure
 /// deterministically (no new fixture machinery). On
-/// The supervisor-epoch ruling's addition (b), end to end: a capsule
+/// The supervisor-epoch rule's addition (b), end to end: a capsule
 /// that dies inside its OWN bootstrap -- before it ever binds its lane,
 /// so no `status` is ever served and no identity ever reaches this
 /// daemon -- still latches the row `terminal` rather than leaving it
@@ -324,7 +324,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
 /// Note what CANNOT explain a pass here: with no answered status there
 /// is no `Observation::Phase` to carry a `Terminal`, so the only path to
 /// this row's phase is `Observation::TerminalUnclaimed`. Before the
-/// ruling the mark rode the identity the daemon read off the OS at
+/// rule the mark rode the identity the daemon read off the OS at
 /// spawn; this test is the guard on the replacement.
 #[cfg(target_os = "linux")]
 #[tokio::test]

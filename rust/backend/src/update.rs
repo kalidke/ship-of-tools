@@ -1021,7 +1021,7 @@ mod tests {
         assert!(backend_role_from_topology(None, "anything", None));
     }
 
-    // The ruling this closes: a listless frontend-only-over-ssh install has
+    // The case this closes: a listless frontend-only-over-ssh install has
     // no hosts.toml at all, so nothing but install.json's own recorded
     // `daemon: false` can tell the update path to skip Julia/npm here.
     #[test]

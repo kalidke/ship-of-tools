@@ -408,7 +408,7 @@ fn direct_children_of(pid: u32) -> Vec<u32> {
 /// As [`wait_for_exit`], but on timeout makes ONE best-effort attempt to
 /// reconnect and report whatever `status` still claims, so a future CI
 /// failure NAMES the stuck lifecycle state instead of just timing out
-/// (per the coordinator's own round-4 addendum on the flap test).
+/// (round-4 addendum on the flap test).
 ///
 /// Takes `&mut Child` (Codex review round 3, N13), never an owned
 /// `Child` — an earlier version moved the child out of its own

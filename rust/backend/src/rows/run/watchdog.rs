@@ -144,7 +144,7 @@ fn watchdog_may_act(workspace_id: &str, state_dir: &Path, workspaces: &Workspace
 
 /// The identity a settle learned, if its lane answered at all — the
 /// ONE place a daemon-spawned supervisor's identity now comes from
-/// (supervisor-epoch ruling: the supervisor authors it, this daemon
+/// (supervisor-epoch rule: the supervisor authors it, this daemon
 /// only learns it over the lane, on every platform). Every caller
 /// OVERWRITES with this, never merely sets: a settle that came back
 /// anything other than `Phase` must clear the previous leg's
@@ -245,7 +245,7 @@ pub(super) fn install_watchdog(
         let Some(capsule_guard) = workspaces.capsule_guard(&workspace_id) else {
             return;
         };
-        // Ruling: the watchdog is the single writer of restarts for a
+        // Rule: the watchdog is the single writer of restarts for a
         // child this daemon spawned. This guard is the ONE place the
         // row's `watchdog_owner` fact is announced (constructor) and
         // retracted (Drop) -- a compare-and-clear against THIS

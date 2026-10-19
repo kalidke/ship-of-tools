@@ -1065,8 +1065,7 @@ struct State {
     /// and `pane_screen_choice`. Captured by `attach_session_to_bl` when
     /// dropping the departing feed; cleared the first time the new
     /// client reports checkpointed, when the attach itself fails
-    /// (`spawn_pane_attach_term` returning false), or — coordinator
-    /// amendment — when the client goes terminal (`is_dead`) before it
+    /// (`spawn_pane_attach_term` returning false), or, by amendment, when the client goes terminal (`is_dead`) before it
     /// EVER checkpointed (`pump_pane_attach_term`, alongside the episode-
     /// failure warn line): a dead end is not a stall, and must not keep
     /// showing the departed row's screen forever. Never left to outlive

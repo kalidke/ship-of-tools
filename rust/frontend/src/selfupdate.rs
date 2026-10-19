@@ -519,7 +519,7 @@ mod tests {
         assert!(backend_owns_updates(None, "anything", None));
     }
 
-    // The ruling this closes: a listless frontend-only-over-ssh install has
+    // The case this closes: a listless frontend-only-over-ssh install has
     // no hosts.toml at all, so nothing but install.json's own recorded
     // `daemon: false` can tell the FE it owns its own updates here.
     #[test]
