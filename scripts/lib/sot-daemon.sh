@@ -33,10 +33,27 @@ sot_sed_literal() {  # <text>: the text as the replacement of an s|...|...| comm
     printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
 }
 
+# The unit splices the install prefix and the home into `ExecStart=/bin/bash -c '... exec "<path>" ...'`: systemd
+# expands `%`, reads `\` as an escape, and in the bash text `'` ends the quoting, `"` the word and `$` expands, so a
+# path holding one runs another path or never starts. Returns 0 after one stderr line naming the character, else 1.
+sot_unit_path_refused() {  # <what: prefix|home> <path>
+    local ch
+    for ch in '%' '\' "'" '"' '$'; do
+        case "$2" in
+            *"$ch"*)
+                echo "ERROR: sotd.service cannot name the $1 $2: it holds $ch, which systemd or the unit's shell would read as syntax; use a $1 with none of % \\ ' \" \$" >&2
+                return 0 ;;
+        esac
+    done
+    return 1
+}
+
 # Write the sotd.service unit for PREFIX from TEMPLATE into DEST. Like every
 # rendered file it is written beside DEST, under a name of this shell's own
 # ($$), and moved in, so a failed write leaves the old file whole and returns 1.
 render_sotd_unit() {  # <prefix> <template> <dest>
+    sot_unit_path_refused prefix "$1" && return 1
+    sot_unit_path_refused home "$HOME" && return 1
     sed -e "s|@SOT_BIN@|$(sot_sed_literal "$1/bin/sotd")|" \
         -e "s|@SOT_APPLY@|$(sot_sed_literal "$1/bin/sot-apply")|" \
         -e "s|@SOT_PROJECT_ROOT@|$(sot_sed_literal "$HOME")|" \

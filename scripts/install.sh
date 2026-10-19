@@ -787,7 +787,7 @@ installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-decla
 installer_enable_local_service() {  # <prefix> <template> <socket>
     mkdir -p "$HOME/.config/systemd/user"
     installer_retire_tmux_unit "$HOME/.config/systemd/user"
-    render_sotd_unit "$1" "$2" "$HOME/.config/systemd/user/sotd.service"
+    render_sotd_unit "$1" "$2" "$HOME/.config/systemd/user/sotd.service" || die "could not write the sotd unit"
     # The unit and its enable link live in the home, which other hosts may
     # share: pin it to the hosts that run sotd before any manager reloads it,
     # and with no hosts.toml to this host, which installs it.

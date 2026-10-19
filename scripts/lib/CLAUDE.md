@@ -19,6 +19,8 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
   `sot-apply.sh` runs it under dash and macOS ships bash 3.2.
 - `render_sotd_unit` and `render_sot_launch` write beside the destination under a name of the shell's own pid and move
   it in, so a failed write leaves the old file whole and returns 1.
+  `render_sotd_unit` first refuses, with one stderr line naming the character, a prefix or home holding `%`, `\`, `'`, `"` or `$`
+  (`sot_unit_path_refused`): systemd or the unit's `bash -c` would read it as syntax.
 - A value spliced into a sed replacement goes through `sot_sed_literal` (`|` is the delimiter; `&` and a backslash are escaped), so a path or
   version holding any of them lands byte for byte; `scripts/sot-apply.sh` holds the one byte-equal copy (`rendered_unit_holds_any_path_literally`
   in `scripts/tests/installer-state.sh`).

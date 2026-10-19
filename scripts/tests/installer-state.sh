@@ -403,13 +403,28 @@ check "the rendered unit's owner path is the prefix's sotd" "/opt/sot-r/bin/sotd
 
 # ---------------------------------------------------------------------------
 case_start "rendered_unit_holds_any_path_literally"
-# A prefix or home holding `|` (the sed delimiter), `&` (the matched text) or `\` (an escape) lands byte for byte.
-ODD_PREFIX="$WORK/od|d&p\\x\\1"; ODD_HOME="$WORK/h|o&m\\e"
+# A prefix or home holding `|` (the sed delimiter) or `&` (the matched text) lands byte for byte.
+ODD_PREFIX="$WORK/od|d&p"; ODD_HOME="$WORK/h|o&m"
 RO="$WORK/rendered-odd.service"
 HOME="$ODD_HOME" render_sotd_unit "$ODD_PREFIX" "$(dirname "$0")/../../deploy/sotd.service" "$RO"
 check "ExecStart names the prefix's sotd byte for byte" "1" "$(grep -cF -- "exec \"$ODD_PREFIX/bin/sotd\" --project-root \"$ODD_HOME\" --label sot" "$RO" || true)"
 check "ExecStartPre names the prefix's sot-apply byte for byte" "1" "$(grep -cF -- "exec \"$ODD_PREFIX/bin/sot-apply\"" "$RO" || true)"
 check "no placeholder is left" "0" "$(grep -c '@SOT_[A-Z_]*@' "$RO" || true)"
+# A prefix or home holding a character systemd or the unit's bash -c quoting reads (% expanded, \ unescaped, ' ends the
+# quoting, " ends the word, $ expands) is refused before any write, naming the character.
+UNIT_TEMPLATE="$(dirname "$0")/../../deploy/sotd.service"
+for ch in '%' '\' "'" '"' '$'; do
+    for which in prefix home; do
+        RB="$WORK/rendered-refused.service"; printf 'old unit\n' > "$RB"
+        if [ "$which" = prefix ]; then rp="$WORK/p${ch}q"; rh="$WORK/home"; else rp="$WORK/prefix"; rh="$WORK/h${ch}q"; fi
+        rrc=0; rerr="$(HOME="$rh" render_sotd_unit "$rp" "$UNIT_TEMPLATE" "$RB" 2>&1 >/dev/null)" || rrc=$?
+        check "a $which holding $ch is refused" "1" "$rrc"
+        check "the refusal names $ch and the $which" "1" "$(printf '%s' "$rerr" | grep -cF -- "holds $ch" || true)"
+        check "the $which holding $ch left the old unit whole and no temp file" "old unit 1" \
+            "$(cat "$RB") $(ls "$WORK" | grep -c '^rendered-refused' || true)"
+    done
+done
+rm -f "$WORK/rendered-refused.service"
 ODD_TAG='v0.6.7-a&b|c\\d'
 check "a tag holding & | and a backslash is spliced into install.json byte for byte" "\"tag\": \"$ODD_TAG\"" \
     "$(printf '{"tag": "v0.6.6"}\n' | sed -e 's|"tag": *"[^"]*"|"tag": "'"$(sot_sed_literal "$ODD_TAG")"'"|' | sed -n 's/^{\(.*\)}$/\1/p')"
