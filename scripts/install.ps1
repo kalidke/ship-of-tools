@@ -588,6 +588,73 @@ function Test-EndState([string]$PrefixDir, $Pack, [string]$Sotd, [string]$Pipe, 
     if ($st -eq 'other') { Stop-Entry 'daemon' "the daemon on $Pipe still runs another version than $v" }
 }
 
+# ---- the Julia the install leaves ----------------------------------------------------------------------------------------
+# An install passes only if the Julia the daemon will run and the one the comm refresh runs meet the kernel's compat floor
+# (`[compat] julia` of julia\kernel\Project.toml), and it stops before the layout runs on a PATH julia below it. The
+# daemon's, as rust/backend/src/sidecars/julia.rs resolves it: SOT_JULIA_BIN (asked with --startup-file=no), else juliaup's
+# default channel read from juliaup.json (no Julia starts, so no startup.jl runs; its Version string, the binary is not
+# checked on disk), else the PATH julia. The refresh runs the PATH julia.
+function Get-JuliaFloor([string]$Checkout) {
+    try { if ([System.IO.File]::ReadAllText((Join-Path $Checkout 'julia\kernel\Project.toml')) -match '(?m)^julia\s*=\s*"(\d+\.\d+)') { return $Matches[1] } } catch { }
+    return ''
+}
+function Test-JuliaAtFloor([string]$Version, [string]$Floor) {
+    if ($Version -notmatch '^(\d+)\.(\d+)') { return $false }
+    $maj = [int]$Matches[1]; $min = [int]$Matches[2]; $f = $Floor -split '\.'
+    return ($maj -gt [int]$f[0]) -or ($maj -eq [int]$f[0] -and $min -ge [int]$f[1])
+}
+function Read-JuliaupJson {  # juliaup's state, or $null when there is none to read
+    $root = $(if ($env:JULIAUP_DEPOT_PATH) { Join-Path $env:JULIAUP_DEPOT_PATH 'juliaup' } else { Join-Path $env:USERPROFILE '.julia\juliaup' })
+    $cfg = Join-Path $root 'juliaup.json'
+    if (-not (Test-Path -LiteralPath $cfg)) { return $null }
+    try { return ([System.IO.File]::ReadAllText($cfg) | ConvertFrom-Json) } catch { return $null }
+}
+function Get-JuliaDefaultVersion($Json) {
+    try { return ([string]$Json.InstalledChannels.($Json.Default).Version) -replace '\+.*', '' } catch { return '' }
+}
+function Get-JuliaVersionOf([string]$Exe) {  # <julia>'s version; empty when it cannot be asked
+    $r = Invoke-Native $Exe @('--startup-file=no', '-e', 'print(VERSION)')
+    if ($r.Code -ne 0) { return '' }
+    return (($r.Out -join '').Trim())
+}
+function Get-JuliaFloorSay([string]$Who, [string]$Version) {
+    if ($Version) { return "$Who runs Julia $Version" }
+    return "the Julia $Who runs could not be asked for its version"
+}
+function Test-JuliaFloor([string]$Checkout) {
+    $floor = Get-JuliaFloor $Checkout
+    if (-not $floor) { Stop-Entry 'julia' "$Checkout\julia\kernel\Project.toml names no Julia compat" }
+    $refresh = Get-JuliaVersionOf 'julia'
+    $json = Read-JuliaupJson
+    $bin = "$env:SOT_JULIA_BIN".Trim()
+    $daemon = ''; $src = 'path'
+    if ($bin) {
+        if ([System.IO.Path]::IsPathRooted($bin)) { $src = 'bin'; $daemon = Get-JuliaVersionOf $bin } else { $src = 'relative' }
+    } elseif ($json -and (Get-JuliaDefaultVersion $json)) { $src = 'up'; $daemon = Get-JuliaDefaultVersion $json }
+    else { $daemon = $refresh }
+    $bad = ''
+    if ($src -eq 'relative') { $bad = "SOT_JULIA_BIN=$bin is not an absolute path, which the daemon refuses" }
+    elseif (-not (Test-JuliaAtFloor $daemon $floor)) { $bad = Get-JuliaFloorSay 'the daemon' $daemon }
+    if ($src -ne 'path' -and -not (Test-JuliaAtFloor $refresh $floor)) {
+        $bad = $(if ($bad) { "$bad and " } else { '' }) + (Get-JuliaFloorSay 'the comm refresh' $refresh)
+    }
+    if (-not $bad) { return }
+    $daemonLow = -not (Test-JuliaAtFloor $daemon $floor)
+    $jl = Get-Command julia -ErrorAction SilentlyContinue
+    if ($src -eq 'relative') { $fix = 'make SOT_JULIA_BIN an absolute path or unset it' }
+    elseif ($src -eq 'bin' -and $daemonLow) { $fix = "point SOT_JULIA_BIN at Julia $floor or later, or unset it" }
+    elseif ($src -eq 'up' -and $daemonLow -and (Get-Command juliaup -ErrorAction SilentlyContinue)) {
+        $fix = "juliaup default $floor"
+        if (-not ($json.InstalledChannels.PSObject.Properties.Name -contains $floor)) { $fix = "juliaup add $floor; $fix" }
+    }
+    elseif ($src -eq 'path' -or ($src -eq 'up' -and $daemonLow)) { $fix = "install Julia $floor or later and put it first on PATH" }
+    else { $fix = "put a Julia $floor or later ahead of $(if ($jl) { $jl.Source } else { 'julia' }) on PATH" }
+    $line = "$bad, below the $floor the kernel needs: run  $fix"
+    # The layout runs on the PATH julia: below the floor it cannot instantiate, so the run ends here.
+    if ($refresh -and -not (Test-JuliaAtFloor $refresh $floor)) { Stop-Entry 'julia' $line }
+    Add-Step $line
+}
+
 # ---- the entry ---------------------------------------------------------------------------------------------------------
 # The installed build as a pack, for a named run of the version already installed (nothing to download); $null when the
 # record, the binary or the tag do not agree.
@@ -683,6 +750,7 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
     # The layout, comm and the shortcut: the launcher's own code, run from the target checkout. The pin was written before
     # the stage; the last write follows install-manifest.ps1's rewrite of the record.
     if ($script:Pending) { return 0 }
+    if (Get-Command julia -ErrorAction SilentlyContinue) { Test-JuliaFloor $versionDir }
     Invoke-LayoutAndComm $prefix $versionDir $base
     Invoke-Shortcut $prefix $o.Hub
     Set-InstallPin $ij $script:Pinned

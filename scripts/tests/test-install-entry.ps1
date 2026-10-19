@@ -12,7 +12,7 @@
 $entryRoot = Join-Path $root 'entry'
 New-Item -ItemType Directory -Force -Path $entryRoot | Out-Null
 $savedEnv = @{}
-foreach ($n in @('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'SOT_COMM_HOME', 'SSH_CONNECTION', 'PATH', 'SOT_INSTALL_ORIGIN', 'SOT_INSTALL_TAG', 'SOT_INSTALL_IMPLICIT', 'SOT_INSTALL_CONVERGE_WAIT_S', 'SOT_INSTALL_DAEMON_WAIT_S', 'SOT_FAKE_DAEMON', 'SOT_FAKE_REPLS', 'SOT_FAKE_REPLS_RC', 'SOT_FAKE_REAL', 'SOT_FAKE_SYNC', 'SOT_FAKE_SLEEP', 'SOT_FAKE_NO_INSTALLED', 'SOT_FAKE_DAEMON_FILE', 'SOT_INSTALL_REPO', 'SOT_JULIA_BIN', 'HTTPS_PROXY', 'ALL_PROXY', 'HOME')) {
+foreach ($n in @('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'SOT_COMM_HOME', 'SSH_CONNECTION', 'PATH', 'SOT_INSTALL_ORIGIN', 'SOT_INSTALL_TAG', 'SOT_INSTALL_IMPLICIT', 'SOT_INSTALL_CONVERGE_WAIT_S', 'SOT_INSTALL_DAEMON_WAIT_S', 'SOT_FAKE_DAEMON', 'SOT_FAKE_REPLS', 'SOT_FAKE_REPLS_RC', 'SOT_FAKE_REAL', 'SOT_FAKE_SYNC', 'SOT_FAKE_SLEEP', 'SOT_FAKE_NO_INSTALLED', 'SOT_FAKE_DAEMON_FILE', 'SOT_INSTALL_REPO', 'SOT_JULIA_BIN', 'SOT_STUB_JULIA_VER', 'SOT_STUB_BIN_VER', 'JULIAUP_DEPOT_PATH', 'HTTPS_PROXY', 'ALL_PROXY', 'HOME')) {
     $savedEnv[$n] = [Environment]::GetEnvironmentVariable($n)
 }
 try {
@@ -72,6 +72,8 @@ public class P { public static int Main(string[] a) {
         New-Item -ItemType Directory -Force -Path (Join-Path $origin "julia\$envName") | Out-Null
         Set-Content -LiteralPath (Join-Path $origin "julia\$envName\Project.toml") -Value '# fixture'
     }
+    # The kernel's own compat is the floor the install checks, so the fixture carries the real file.
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'julia\kernel\Project.toml') -Destination (Join-Path $origin 'julia\kernel\Project.toml') -Force
     function New-Release([string]$Ver) {
         Set-Content -LiteralPath (Join-Path $origin 'VERSION.txt') -Value $Ver
         & $git -C $origin add -A 2>&1 | Out-Null
@@ -115,17 +117,24 @@ if (($a -join ' ') -match 'update_comm') {
     $short = (git -C $p rev-parse --short=9 HEAD).Trim()
     Set-Content -LiteralPath (Join-Path $home_ 'VERSION') -Value $short
 } elseif (($a -join ' ') -match 'instantiate') {
+    # A Julia below the kernel's 1.12 floor refuses, as a real 1.11 does.
+    $ver = $(if ($env:SOT_STUB_JULIA_VER) { $env:SOT_STUB_JULIA_VER } else { '1.12.0' })
+    if ($ver -match '^1\.(\d+)' -and [int]$Matches[1] -lt 12) { [Console]::Error.WriteLine("ERROR: julia version requirement from Project.toml's compat section not satisfied"); exit 1 }
     $p = ($a | Where-Object { $_ -like '--project=*' } | Select-Object -First 1).Substring(10)
     New-Item -ItemType Directory -Force -Path $p | Out-Null
     Set-Content -LiteralPath (Join-Path $p 'Manifest.toml') -Value ''
 }
+if (($a -join ' ') -match 'print\(VERSION\)') {
+    if ($env:SOT_STUB_JULIA_VER -eq 'none') { exit 1 }
+    Write-Output $(if ($env:SOT_STUB_JULIA_VER) { $env:SOT_STUB_JULIA_VER } else { '1.12.0' })
+}
 exit 0
 '@
-    Set-Content -LiteralPath (Join-Path $stubs 'julia.cmd') -Value "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0julia.ps1`" %*`r`nexit /b 0"
+    Set-Content -LiteralPath (Join-Path $stubs 'julia.cmd') -Value "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0julia.ps1`" %*`r`nexit /b %ERRORLEVEL%"
     Set-Content -LiteralPath (Join-Path $stubs 'jq.cmd') -Value "@echo off`r`nexit /b 0"
     # The julia the stage's prepare runs (SOT_JULIA_BIN): one that succeeds at everything, one that fails with a line.
     $juliaOk = Join-Path $stubs 'julia-standin.exe'
-    Add-Type -TypeDefinition 'public class J { public static int Main(string[] a) { return 0; } }' -OutputAssembly $juliaOk -OutputType ConsoleApplication
+    Add-Type -TypeDefinition 'public class J { public static int Main(string[] a) { if (System.String.Join(" ", a).Contains("print(VERSION)")) { var v = System.Environment.GetEnvironmentVariable("SOT_STUB_BIN_VER"); if (v == "none") return 1; System.Console.Out.Write(v == null || v == "" ? "1.12.0" : v); } return 0; } }' -OutputAssembly $juliaOk -OutputType ConsoleApplication
     $juliaBad = Join-Path $stubs 'julia-failing.exe'
     Add-Type -TypeDefinition 'public class JB { public static int Main(string[] a) { System.Console.Error.WriteLine("julia stand-in: Pkg.instantiate failed"); return 1; } }' -OutputAssembly $juliaBad -OutputType ConsoleApplication
     # A PATH with no julia of any kind, for a box that has none.
@@ -142,7 +151,7 @@ exit 0
         if ($Short) { $h = ([string](New-Object -ComObject Scripting.FileSystemObject).GetFolder($h).ShortPath).TrimEnd('\') }
         $env:USERPROFILE = $h; $env:APPDATA = Join-Path $h 'AppData\Roaming'; $env:LOCALAPPDATA = Join-Path $h 'AppData\Local'
         $env:SOT_COMM_HOME = Join-Path $h 'comm'; $env:PATH = "$stubs;$basePath"; $env:HOME = $h
-        foreach ($n in @('SSH_CONNECTION', 'SOT_INSTALL_TAG', 'SOT_INSTALL_IMPLICIT', 'SOT_INSTALL_REPO', 'SOT_FAKE_DAEMON', 'SOT_FAKE_DAEMON_FILE', 'SOT_FAKE_REPLS', 'SOT_FAKE_REPLS_RC', 'SOT_FAKE_SYNC', 'SOT_FAKE_SLEEP', 'SOT_FAKE_NO_INSTALLED', 'HTTPS_PROXY', 'ALL_PROXY')) { [Environment]::SetEnvironmentVariable($n, $null) }
+        foreach ($n in @('SSH_CONNECTION', 'SOT_INSTALL_TAG', 'SOT_INSTALL_IMPLICIT', 'SOT_INSTALL_REPO', 'SOT_FAKE_DAEMON', 'SOT_FAKE_DAEMON_FILE', 'SOT_FAKE_REPLS', 'SOT_FAKE_REPLS_RC', 'SOT_FAKE_SYNC', 'SOT_FAKE_SLEEP', 'SOT_FAKE_NO_INSTALLED', 'HTTPS_PROXY', 'ALL_PROXY', 'SOT_STUB_JULIA_VER', 'SOT_STUB_BIN_VER', 'JULIAUP_DEPOT_PATH')) { [Environment]::SetEnvironmentVariable($n, $null) }
         $env:SOT_INSTALL_ORIGIN = $origin; $env:SOT_FAKE_REAL = $SotdPath; $env:SOT_JULIA_BIN = $juliaOk
         $script:DeskSession = $true
         return [pscustomobject]@{ Home = $h; Prefix = Join-Path $h 'AppData\Local\sot' }
@@ -601,6 +610,7 @@ while (((Get-Date) - `$t0).TotalSeconds -lt 150) {
     # 19b. The repair cases (an install.json that is missing, cut or version-less), in a sibling file for the line limit.
     . (Join-Path $PSScriptRoot 'test-install-entry-repair.ps1')
     . (Join-Path $PSScriptRoot 'test-install-entry-direction.ps1')
+    . (Join-Path $PSScriptRoot 'test-install-entry-julia.ps1')
 
     # 20. A FAIL says what the run left behind: the pin once written, and an update it staged that is still armed.
     # A supervisor stand-in that logs code= and never takes the sentinel, so a converge times out.

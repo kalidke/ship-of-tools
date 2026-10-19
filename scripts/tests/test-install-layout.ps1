@@ -56,7 +56,8 @@ try {
             (Join-Path $repoRoot 'scripts\install.ps1'),
             (Join-Path $repoRoot 'scripts\tests\test-install-entry.ps1'),
             (Join-Path $repoRoot 'scripts\tests\test-install-entry-repair.ps1'),
-            (Join-Path $repoRoot 'scripts\tests\test-install-entry-direction.ps1')
+            (Join-Path $repoRoot 'scripts\tests\test-install-entry-direction.ps1'),
+            (Join-Path $repoRoot 'scripts\tests\test-install-entry-julia.ps1')
         )) {
         $errs = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errs)
@@ -305,6 +306,37 @@ try {
         $env:SOT_COMM_HOME = $savedComm5b
         if ($null -eq $savedRebuild5b) { Remove-Item Env:\SOT_LAUNCH_REBUILD -ErrorAction SilentlyContinue } else { $env:SOT_LAUNCH_REBUILD = $savedRebuild5b }
         Remove-Item function:Get-Command -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "`n=== 5c. Invoke-CommUpdate: a warning block of a successful update_comm (the closing summary) reaches the log ===" -ForegroundColor Cyan
+    # The install's output is Write-SupLog's lines, so a successful update_comm that warns (a settings file left without
+    # the hooks) must log that block; its info lines and a run with no warning add nothing. julia and its run are stand-ins.
+    $savedEAP5c = $ErrorActionPreference
+    $origNative5c = ${function:Invoke-SotNative}
+    try {
+        . (Join-Path $repoRoot 'scripts\sot-freshness.ps1')
+        function Write-SupLog([string]$Message) { $script:comm5c += @($Message) }
+        function Get-Command { param([string]$Name, $ErrorAction) if ($Name -eq 'julia') { return 'julia' }; Microsoft.PowerShell.Core\Get-Command -Name $Name -ErrorAction SilentlyContinue }
+        function Invoke-SotNative { param($Exe, $ArgList) [pscustomobject]@{ Code = 0; All = $script:out5c } }
+        $repo = [pscustomobject]@{ Path = $root }
+        $script:launchNotices = New-Object System.Collections.ArrayList
+        # A Julia warning block starts at its "Warning:" line and ends at its "@ Module file:line" line.
+        $warn5c = @('+ Warning: The comm hooks are NOT in these Claude settings:', '|   C:\acct\settings.json', '+ @ ShipTools install.jl:80')
+        foreach ($case in @(
+                @('a warning block', (@('[ Info: Installed comm scripts') + $warn5c + @('[ Info: sot-comm ready')), 2),
+                @('no warning', @('[ Info: sot-comm ready'), 0))) {
+            $script:out5c = $case[1]
+            $script:comm5c = @()
+            Invoke-CommUpdate
+            $got = @($script:comm5c | Where-Object { $_ -like '*settings.json*' -or $_ -like '*NOT in these*' }).Count
+            Check "5c: $($case[0]): the summary lines are logged" ($got -eq $case[2]) "log: $($script:comm5c -join ' | ')"
+            Check "5c: $($case[0]): info lines are not" (@($script:comm5c | Where-Object { $_ -like '*Info*' }).Count -eq 0) "log: $($script:comm5c -join ' | ')"
+        }
+    } catch { Check '5c: section ran' $false $_.Exception.Message }
+    finally {
+        $ErrorActionPreference = $savedEAP5c
+        Remove-Item function:Get-Command -ErrorAction SilentlyContinue
+        Set-Item function:Invoke-SotNative $origNative5c
     }
 
     Write-Host "`n=== 6. Invoke-PendingApply: a pointer the installed sotd refuses costs no daemon stop ===" -ForegroundColor Cyan

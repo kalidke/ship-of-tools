@@ -30,6 +30,7 @@ entry_fixture() {  # <d>
     cp "$ENTRY_SRC/scripts/launch-sot.sh" "$ENTRY_SRC/scripts/sot-apply.sh" "$d/origin/scripts/"
     cp "$ENTRY_SRC/deploy/sotd.service" "$d/origin/deploy/"
     for e in kernel repl pluto; do printf 'name = "%s"\n' "$e" > "$d/origin/julia/$e/Project.toml"; done
+    cp "$ENTRY_SRC/julia/kernel/Project.toml" "$d/origin/julia/kernel/Project.toml"
     printf 'Manifest.toml\n' > "$d/origin/.gitignore"
     printf 'logo\n' > "$d/origin/logo.png"
     (
@@ -102,6 +103,7 @@ SC
     cat > "$d/stubs/julia" <<'JU'
 #!/bin/sh
 echo "julia $*" >> "$CTL/julia.log"
+ver="$(cat "$CTL/julia-ver" 2>/dev/null || printf '1.12.0')"; case "$1" in +*) [ ! -f "$CTL/no-channel" ] || exit 1; ver="${1#+}.0"; shift ;; esac
 case "$*" in *update_comm*)
     n="$(cat "$CTL/julia-fail" 2>/dev/null || echo 0)"
     if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$CTL/julia-fail"; exit 1; fi
@@ -109,7 +111,9 @@ case "$*" in *update_comm*)
     for a in "$@"; do case "$a" in --project=*) p="${a#--project=}" ;; esac; done
     git -C "$p" rev-parse --short=9 HEAD > "$SOT_COMM_HOME/VERSION"
     [ ! -f "$CTL/hook" ] || . "$CTL/hook" ;;
-*Pkg.instantiate*) for a in "$@"; do case "$a" in --project=*) : > "${a#--project=}/Manifest.toml" ;; esac; done ;;
+*Pkg.instantiate*) case "$ver" in 1.[0-9].*|1.1[01].*) echo "ERROR: julia version requirement from Project.toml's compat section not satisfied" >&2; exit 1 ;; esac  # below 1.12 refuses, as a real 1.11 does
+    for a in "$@"; do case "$a" in --project=*) : > "${a#--project=}/Manifest.toml" ;; esac; done ;;
+*print\(VERSION\)*) printf '%s' "$ver" ;;
 esac
 exit 0
 JU
@@ -285,12 +289,13 @@ broken "agent comm at another commit" "comm" 'echo deadbeef0 > "$SOT_COMM_HOME/V
 d2="$WORK/vd-julia"; entry_fixture "$d2"
 cat > "$d2/stubs/julia" <<'JU'
 #!/bin/sh
-case "$*" in *update_comm*) mkdir -p "$SOT_COMM_HOME/bin"; git -C "${2#--project=}" rev-parse --short=9 HEAD > "$SOT_COMM_HOME/VERSION" ;; esac
+case "$*" in *update_comm*) mkdir -p "$SOT_COMM_HOME/bin"; git -C "${2#--project=}" rev-parse --short=9 HEAD > "$SOT_COMM_HOME/VERSION" ;; *print\(VERSION\)*) printf '1.12.0' ;; esac
 exit 0
 JU
 entry_archive "$d2" --be-only --no-service
 check "a Julia environment that was never instantiated: exit 1" "1" "$ENTRY_RC"
-starts_with "its FAIL names the environment" "FAIL: julia: julia/kernel has no Manifest.toml" "$ENTRY_LAST"
+starts_with "its FAIL names the environment" "FAIL: julia: julia/kernel has no Manifest.toml" "$ENTRY_LAST"; d2="$WORK/vd-julia-floor"; entry_fixture "$d2"; printf '1.11.7' > "$d2/ctl/julia-ver"; : > "$d2/ctl/no-channel"; entry_archive "$d2" --be-only --no-service
+starts_with "a Julia below the kernel's floor stops the install before any step, naming the version" "FAIL: julia: the daemon runs Julia 1.11.7, below the 1.12 the kernel needs: run " "$ENTRY_LAST"; check "and no step ran on it" "0" "$(count_in "$d2/ctl/julia.log" 'update_comm\|Pkg.instantiate')"
 # The daemon: a window that holds the old one is a step left, an owned unit that did not come back is a failure.
 d="$WORK/vd-held"; entry_fixture "$d"; P="$d/home/.local/share/sot"
 printf '9.9.8\n' > "$d/ctl/same-out"; printf '4\n' > "$d/ctl/same-rc"
@@ -445,11 +450,11 @@ check "an unreachable origin, the commit already in the base clone: PASS" "0 PAS
 
 # ---------------------------------------------------------------------------
 case_start "entry_repeats_and_resumes_after_an_interrupted_run"
-# A run that stops after the swap (comm fails, on both of julia_run's attempts) leaves new binaries over the old checkout and the old install.json; running
+# A run that stops after the swap (comm fails, once: julia_run runs a step once) leaves new binaries over the old checkout and the old install.json; running
 # it again finishes it, and a third run on the finished install is a repair run that passes.
 d="$WORK/rep"; entry_fixture "$d"; P="$d/home/.local/share/sot"
 entry_record "$d" 9.9.8 1 0 none
-echo 2 > "$d/ctl/julia-fail"
+echo 1 > "$d/ctl/julia-fail"
 entry_archive "$d" --no-service
 check "the interrupted run fails in comm: exit 1" "1" "$ENTRY_RC"
 starts_with "its last line is the FAIL" "FAIL: comm:" "$ENTRY_LAST"

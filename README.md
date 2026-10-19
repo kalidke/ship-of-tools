@@ -83,7 +83,7 @@ To update a Linux or macOS machine, tell a coding agent running there "update so
 
 Needs on every machine:
 - **git, curl and tar.**
-- **Julia 1.12 or newer**, on every role, not only the backend (installed with juliaup if missing; an existing juliaup only gets the 1.12 channel added, so run `juliaup default 1.12` yourself if your default channel is older, or set `SOT_JULIA_BIN`).
+- **Julia 1.12 or newer**, on every role, not only the backend (installed with juliaup if missing; an existing juliaup only gets the 1.12 channel added, so the install ends with the one command to run, usually `juliaup default 1.12`, if your default channel is older; `SOT_JULIA_BIN`, if set, names the daemon's Julia and must meet the floor too).
 - **Claude Code or Codex**, installed and logged in.
 - **Frontend only:** Linux with glibc 2.35 or newer and a desktop session with a Vulkan driver (a `--be-only` backend is a static binary with no glibc floor).
 - **A home directory on NFS** (or another remote filesystem) needs a systemd drop-in pointing the daemon's state root at local disk before sessions will start; see [A session will not start on a shared home](https://kalidke.github.io/ship-of-tools/dev/guide/troubleshooting#A-session-will-not-start-on-a-shared-home).

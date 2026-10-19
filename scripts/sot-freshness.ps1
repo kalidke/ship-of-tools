@@ -192,6 +192,14 @@ function Invoke-CommUpdate {
         $script:launchNotices.Add("comm install failed: $(Limit-NoticeText $commExcerpt[0])") | Out-Null
     } else {
         Write-SupLog "freshness: ShipTools.update_comm() ok"
+        # A success can still carry a warning (the closing summary naming a settings file left without the hooks): a
+        # Julia warning block runs from its "Warning:" line to its "@ Module file:line" line, and each is logged.
+        $inWarn = $false
+        foreach ($l in @($commOut)) {
+            if ($l -match '^\W{0,4}Warning:') { $inWarn = $true }
+            if ($inWarn) { Write-SupLog "  $l" }
+            if ($inWarn -and $l -match '^\W{0,4}@ ') { $inWarn = $false }
+        }
     }
 }
 

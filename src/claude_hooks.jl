@@ -223,7 +223,7 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, settings
     # single command — with a `matcher` when $m is non-empty (PreToolUse needs a
     # tool matcher), without one otherwise. Existing groups are left exactly
     # as-is. `$evt` is a dynamic object key.
-    prog = """
+    prog = _JQ_READ_SETTINGS * """
     (.hooks // {}) as \$h
     | (\$h[\$evt] // []) as \$cur
     | (any(\$cur[]?; (.hooks // [])[]?.command == \$cmd)) as \$present
@@ -235,9 +235,13 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, settings
     """
 
     tmp = ""
+    changed = false
     ok = try
         tmp = _settings_tmp(settings)
-        run(pipeline(`jq --arg cmd $cmd --arg evt $event --arg m $m $prog $settings`; stdout = tmp))
+        run(pipeline(`jq -n --arg cmd $cmd --arg evt $event --arg m $m $prog $settings`; stdout = tmp))
+        # Detect whether jq actually changed anything (already-present → no-op). Read inside the try: an
+        # unreadable settings.json is a skipped file, never an aborted install.
+        changed = read(tmp, String) != read(settings, String)
         true
     catch err
         @warn "could not parse settings.json with jq — leaving it untouched; add the comm $event hook by hand" file = settings entry = manual error = err
@@ -246,8 +250,6 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, settings
     end
     ok || return false
 
-    # Detect whether jq actually changed anything (already-present → no-op).
-    changed = read(tmp, String) != read(settings, String)
     if !changed
         rm(tmp; force = true)
         @info "comm $event hook already present in settings.json" file = settings
@@ -268,6 +270,12 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, settings
     @info "Added comm $event hook to settings.json" file = settings command = cmd
     return true
 end
+
+# The head of every jq program that edits a settings.json, run with `-n`: the file is read inside jq. No value (a 0-byte
+# or whitespace-only file) reads as {}, one value as itself, and more than one is an error, so a file with an appended
+# block is left untouched, never rewritten without the rest.
+const _JQ_READ_SETTINGS = "[inputs] | if length == 0 then {} elif length == 1 then .[0] " *
+                          "else error(\"settings.json holds \\(length) JSON values, not one\") end | "
 
 # The current comm wiring as jq data: one [event, command, matcher-or-""] per hook.
 _comm_keep_json() = "[" * join(("[\"$e\",\"$(_hook_command(s))\",\"$(something(m, ""))\"]"
@@ -307,7 +315,7 @@ function _remove_stale_comm_hooks!(settings::AbstractString)
     # by one; a group is dropped only when that leaves it empty, then any
     # event whose group list is now empty.
     keep = _comm_keep_json()
-    prog = """
+    prog = _JQ_READ_SETTINGS * """
     def comm: (.command // "") | test("(^|/)[.]sot-comm/bin/comm-(status-|post(compact|clear)-reminder)");
     def current(\$e; \$m): (.command // "") as \$c | any(\$keep[]; . == [\$e, \$c, \$m]);
     if .hooks then
@@ -324,8 +332,9 @@ function _remove_stale_comm_hooks!(settings::AbstractString)
     tmp = ""
     try
         tmp = _settings_tmp(settings)
-        run(pipeline(`jq --argjson keep $keep $prog $settings`; stdout = tmp))
-        changed = read(tmp, String) != read(settings, String)
+        run(pipeline(`jq -n --argjson keep $keep $prog $settings`; stdout = tmp))
+        # A blank file has nothing to retire; the add gives it its content.
+        changed = !all(isspace, read(settings, String)) && read(tmp, String) != read(settings, String)
         if !changed
             rm(tmp; force = true)
             return true

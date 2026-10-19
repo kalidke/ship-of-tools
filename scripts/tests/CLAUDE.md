@@ -68,8 +68,18 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `installer-handoff.sh`: sourced by `installer-apply.sh`, never run: a real staged `sot-apply` (a copy made by `cp`, the
   packer's own, and an installed v0.6.5 one when the tag is in the checkout) applying onto the install that re-executed
   it, `pack-build.sh` with stand-in cargo and git listing `sot-apply` executable in its archive, and the comm refresh
-  an apply makes (bounded when julia stalls), a rollback and drop-only through a hand-off, the staged copy's second
+  an apply makes (bounded when julia stalls, julia's stderr shown), a rollback and drop-only through a hand-off, the staged copy's second
   ask of the installed `sotd` under the lock, and the unit's `ExecStartPre` reading `.bashrc`.
+- `installer-julia-step.sh`: sourced by `installer-wrapper.sh`, never run: install.sh's Julia steps (`julia_pick_chan`,
+  `julia_run`) under a stand-in `julia`: the channel is chosen once, by one probe, each step runs once on that julia (the
+  logged argv is asserted, with and without the channel) with its stderr shown, and a failing step shows its own error
+  once and keeps its exit status.
+- `installer-julia-floor.sh`: sourced by `installer-wrapper.sh`, never run: install.sh's `julia_floor_check` under stand-in
+  `julia` and `juliaup.json` (a scratch `JULIAUP_DEPOT_PATH`): a default and a PATH julia at or above the kernel's compat floor
+  leave nothing; a default below it (the 1.12 channel installed or not), a PATH julia below it (which stops the run), the
+  refresh's Julia alone below it, a `SOT_JULIA_BIN` below, relative or removed, and a PATH julia that cannot be asked each
+  end with the version and the fixing command. Each printed command is also run against a scratch juliaup in
+  `installer-wrapper.sh`.
 - `installer-support.sh`: the setup the installer suites source: install.sh and lib/sot-daemon.sh, `check`,
   `starts_with`, `case_start`, the sandboxed tool dir (`mk_tools`) and the recording stubs (`mk_stubs`).
 - `install-smoke.sh`: `install-smoke.sh SCENARIO ARTIFACTS CHECKOUT [BEFORE-TAG]` (Linux, macOS; bash 3.2): `install.sh`
@@ -157,6 +167,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   a pointer the real `sotd` refuses stops no daemon). Runs in the `rust.yml` step "Test
   install layout (pinned-checkout predicate)".
 - `test-install-entry-direction.ps1`: the cases of `test-install-entry.ps1` for a build of the line run with no `-Version` (dot-sourced there, same scope): the stop says by ancestry, against a base clone with three commits and a stand-in COMMIT asset, whether the newest release moves it forward or back, or why it cannot tell; install.ps1's syntax tree, whole file, has no command naming git or git.exe outside its one `Invoke-Git`, which carries the stall bound.
+- `test-install-entry-julia.ps1`: the Julia-floor cases of `test-install-entry.ps1` (dot-sourced there, same scope): a stand-in
+  PATH `julia` and a scratch `juliaup.json` at, above and below the kernel's compat floor, no juliaup, a juliaup stand-in the case owns, `SOT_JULIA_BIN`, and a julia that cannot
+  be asked, each ending PASS, FAIL (the PATH julia below the floor stops the run) or ONE STEP LEFT with its line.
 - `test-install-entry-repair.ps1`: the repair cases of `test-install-entry.ps1` (dot-sourced there, same scope): `install.ps1` over an
   `install.json` that is missing, holds a pin and no version, or is cut short, beside a running stand-in `sotd.exe`, with and without a
   version named, and the pin edit's rename with an open handle
@@ -353,7 +366,7 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 - A suite runs only if a step of `.github/workflows/rust.yml` or a job of `rc-gate.sh` names it; a new suite is added
   to the step list in the commit that adds it. The exception is `install-smoke.sh`, `install-smoke.ps1` and
   `release-before.sh`: they need a release run's artifacts and the published releases, so `release.yml` runs them
-  (jobs `install-*` and `release-before`), and `publish` needs those jobs. `rc-gate.sh` lists the three installer/topology shell suites and the finite selected-body proof here by name
+  (jobs `install-*` and `release-before`), and `publish` needs those jobs. `rc-gate.sh` lists the five installer/topology shell suites and the finite selected-body proof here by name
   (`SHELL_ALL` in `producer`).
 - `installer-state.sh` (and `installer-entry.sh` it sources), `installer-wrapper.sh`, `installer-apply.sh`, `installer-shared-home.sh` and `test-topology-plan.sh` run wholly under
   bash 3.2 in `under-bash.sh`'s run, since they source the scripts they test, so they hold under 3.2 themselves: inside

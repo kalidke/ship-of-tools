@@ -24,6 +24,13 @@ and the launch path fails open: no update step can stop a window from starting.
 ## Promises
 - A tag is cut only from `main`, sorts above every tag of its line, and has green `rust.yml` and
   `CI.yml` runs at HEAD (`release.sh` preflight).
+- An install never passes with a Julia below the kernel's floor: `install.sh` (`julia_floor_check`) and `install.ps1`
+  (`Test-JuliaFloor`) ask, as `julia.rs` does, the Julia the daemon will run (`SOT_JULIA_BIN`, else juliaup's default channel read from
+  `juliaup.json` by its Version string with no Julia started, else the PATH julia) and the PATH julia the comm refresh
+  runs. Below `[compat] julia` of `julia/kernel/Project.toml` the PATH julia ends the run before any step runs on it, and
+  the daemon's alone, or either unaskable, ends it ONE STEP LEFT. The line names the version and the command: `juliaup
+  default <floor>` (after `juliaup add <floor>` when `juliaup.json` lists no such channel), a newer Julia ahead on PATH,
+  or the `SOT_JULIA_BIN` to change.
 - Install checksums verify before any write, and `install.json` is written last (`install.sh` steps 2 and 9). Every writer of it
   (`install.sh`, `install-manifest.ps1`, `install.ps1`'s pin edit, `sot-apply.sh`, `sot-apply.ps1`) writes a temp file in
   the same folder and renames it, with no BOM, so an interrupted write cannot cut it: a file that cannot be read keeps

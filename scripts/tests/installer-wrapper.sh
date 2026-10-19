@@ -165,6 +165,11 @@ run_wrapper "$d"
 check "an apply that leaves the pointer re-execs nothing and spawns once" \
     "0 0 1" "$WR_RC $(grep -c '^hop$' "$d/log" || true) $(grep -c '^spawn$' "$d/log" || true)"
 
+# shellcheck source=installer-julia-step.sh
+. "$(dirname "$0")/installer-julia-step.sh"
+# shellcheck source=installer-julia-floor.sh
+. "$(dirname "$0")/installer-julia-floor.sh"
+
 # ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
