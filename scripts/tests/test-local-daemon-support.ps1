@@ -29,7 +29,9 @@ function New-Fixture {
     }
 }
 
-function New-TestPipeName { 'test-sot-ld-' + [guid]::NewGuid().ToString('N').Substring(0, 8) }
+# One run id in every pipe name this run makes, so its cleanup ends only its own daemons, never a concurrent run's.
+$testRunId = [guid]::NewGuid().ToString('N').Substring(0, 8)
+function New-TestPipeName { "test-sot-ld-$testRunId-" + [guid]::NewGuid().ToString('N').Substring(0, 8) }
 function Get-PipePath([string]$Name) { '\\.\pipe\' + $Name }
 
 # Bounded raw connect probe (500 ms) for test-owned pipes: it establishes listener availability.
@@ -88,7 +90,7 @@ $haveRealSotd = Test-Path $realSotd
 
 $fakeSup = $null
 $envSaved = $null
-$testPipePrefix = 'test-sot-ld-'
+$testPipePrefix = "test-sot-ld-$testRunId-"
 
 # The outer finally's cleanup: restore the environment, stop the spawned processes, remove the test root.
 function Complete-LocalDaemonTest {

@@ -403,7 +403,7 @@ jobs:
         working-directory: scripts
         run: |
           $failed = $false
-          Get-ChildItem -Path '*.ps1', 'tests/in-job.ps1', 'tests/install-smoke.ps1', 'tests/scratch-guard.ps1', 'tests/scratch-profile.ps1', 'tests/test-scratch-guard.ps1' | ForEach-Object {
+          Get-ChildItem -Path '*.ps1', 'tests/in-job.ps1', 'tests/install-smoke.ps1', 'tests/scratch-guard.ps1', 'tests/test-scratch-guard.ps1' | ForEach-Object {
             $errs = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
             if ($errs.Count -gt 0) {
@@ -415,8 +415,9 @@ jobs:
             }
           }
           if ($failed) { exit 1 }
-      # The Windows suites refuse to start unless they run under a scratch profile (scripts/tests/scratch-guard.ps1);
-      # each step below makes one first (scratch-profile.ps1). This step is the guard's own rule, on values it is given.
+      # Each Windows suite below runs in a scratch profile of its own, made and removed by scripts/tests/scratch-guard.ps1
+      # (a home under the account's real temp folder, a child PowerShell there). This step tests that guard: its rule, and
+      # the whole entry on a probe suite.
       - name: Test scratch guard
         if: matrix.os == 'windows-latest'
         shell: powershell
@@ -430,9 +431,7 @@ jobs:
       - name: Test sot-apply.ps1
         if: matrix.os == 'windows-latest'
         shell: powershell
-        run: |
-          . .\scripts\tests\scratch-profile.ps1
-          .\scripts\tests\test-sot-apply.ps1
+        run: .\scripts\tests\test-sot-apply.ps1
         working-directory: .
 
       # install-manifest.ps1 drops the pointer armed over the install it replaces, and keeps it across a same-version
@@ -441,9 +440,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
-        run: |
-          . .\scripts\tests\scratch-profile.ps1
-          .\scripts\tests\test-install-manifest.ps1
+        run: .\scripts\tests\test-install-manifest.ps1
         working-directory: .
 
       # docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
@@ -455,9 +452,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
-        run: |
-          . .\scripts\tests\scratch-profile.ps1
-          .\scripts\tests\test-install-layout.ps1
+        run: .\scripts\tests\test-install-layout.ps1
         working-directory: .
 
       # The PowerShell scripts' network bounds: Invoke-SotWithin (sot-hosts.ps1), the bound every script ssh call
@@ -466,9 +461,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
-        run: |
-          . .\scripts\tests\scratch-profile.ps1
-          .\scripts\tests\test-sot-within.ps1
+        run: .\scripts\tests\test-sot-within.ps1
         working-directory: .
 
       # ADR 0042 L1c: the launcher's local-daemon start/stop (sot-local-
@@ -482,18 +475,14 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 10
-        run: |
-          . .\scripts\tests\scratch-profile.ps1
-          .\scripts\tests\test-local-daemon.ps1
+        run: .\scripts\tests\test-local-daemon.ps1
         working-directory: .
 
       - name: Test launcher leases
         if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 10
-        run: |
-          . .\scripts\tests\scratch-profile.ps1
-          .\scripts\tests\test-launcher-leases.ps1
+        run: .\scripts\tests\test-launcher-leases.ps1
         working-directory: .
 
       # scripts/sot-hosts.ps1's Get-SotTopologyPlan against a fake sotd that prints fixed plan lines -- pure text
@@ -503,9 +492,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
-        run: |
-          . .\scripts\tests\scratch-profile.ps1
-          .\scripts\tests\test-topology-plan.ps1
+        run: .\scripts\tests\test-topology-plan.ps1
         working-directory: .
 
       # The context deadline covers foreground children and the final wait.

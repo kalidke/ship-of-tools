@@ -18,11 +18,10 @@
 # sot-install-layout.ps1 (no window can start here). Delete that branch (Install-BeforeByHand) once the release before
 # carries install.ps1.
 #
-# One scratch profile (USERPROFILE, APPDATA, LOCALAPPDATA, SOT_COMM_HOME) and a USERNAME of its own hold everything.
+# The scratch profile of scratch-guard.ps1 (USERNAME, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, SOT_COMM_HOME) holds everything.
 # The verdict of each entry run is judged: PASS, or, in a session with no desk (session 0), the entry's own "start Ship
 # of Tools at the desk" step, after which this script applies the armed update as that start does.
-# Environment: SOT_SMOKE_HOME (the scratch profile folder; default a fresh one under TEMP), SOT_SMOKE_REPO (owner/name;
-# default GITHUB_REPOSITORY), SOT_SMOKE_COMMIT (default HEAD of Checkout), SOT_SMOKE_KEEP=1 (keep the scratch folders),
+# Environment: SOT_SMOKE_REPO (owner/name; default GITHUB_REPOSITORY), SOT_SMOKE_COMMIT (default HEAD of Checkout),
 # SOT_SMOKE_RAW_BASE and SOT_SMOKE_RELEASE_BASE (URL bases for a tag's files and a tag's release assets; default GitHub's).
 param(
     [Parameter(Mandatory = $true)][ValidateSet('fresh', 'update-entry', 'update-apply')][string]$Scenario,
@@ -30,7 +29,12 @@ param(
     [Parameter(Mandatory = $true)][string]$Checkout,
     [string]$Before = ''
 )
+# Runs in a scratch profile of its own and never in the caller's (scratch-guard.ps1 says how); Stop, so a missing guard
+# file ends the script rather than letting it run.
 $ErrorActionPreference = 'Stop'
+$sotSuite = $PSCommandPath; $sotSuiteArgs = $PSBoundParameters
+. (Join-Path $PSScriptRoot 'scratch-guard.ps1')
+if ($null -ne $sotScratchExit) { exit $sotScratchExit }
 $ProgressPreference = 'SilentlyContinue'
 
 function Say([string]$Text) { Write-Host "install-smoke: $Text" }
@@ -92,18 +96,12 @@ if ($Scenario -ne 'fresh' -and -not $Before) { throw "$Scenario needs -Before (s
 foreach ($e in @(Get-ChildItem env: | Where-Object { ($_.Name -like 'SOT_*' -and $_.Name -notlike 'SOT_SMOKE_*' -and $_.Name -ne 'SOT_JULIA_BIN') -or $_.Name -in @('JULIA_LOAD_PATH', 'JULIA_PROJECT') })) {
     Remove-Item ("env:" + $e.Name)
 }
-$tmpBase = $(if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() })
+$tmpBase = $env:TEMP
 $script:Smoke = Join-Path $tmpBase ('sot-smoke-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $script:Smoke | Out-Null
-$h = $(if ($env:SOT_SMOKE_HOME) { $env:SOT_SMOKE_HOME } else { Join-Path $script:Smoke 'home' })
-foreach ($d in @($h, "$h\Desktop", "$h\AppData\Roaming", "$h\AppData\Local", "$h\comm")) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
-$h = (Resolve-Path -LiteralPath $h).Path
-$env:USERNAME = 'sot-scratch-smoke'
-$env:USERPROFILE = $h; $env:HOME = $h
-$env:APPDATA = "$h\AppData\Roaming"; $env:LOCALAPPDATA = "$h\AppData\Local"
+$h = $env:USERPROFILE
+foreach ($d in @("$h\Desktop", "$h\comm")) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
 $env:SOT_COMM_HOME = "$h\comm"
-# The profile above is this suite's own scratch one; refuse if it is not (scratch-guard.ps1), e.g. SOT_SMOKE_HOME outside TEMP.
-. (Join-Path $PSScriptRoot 'scratch-guard.ps1')
 $prefix = Join-Path $env:LOCALAPPDATA 'sot'
 $repoName = $(if ($env:SOT_SMOKE_REPO) { $env:SOT_SMOKE_REPO } elseif ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'kalidke/ship-of-tools' })
 $env:SOT_INSTALL_REPO = $repoName
@@ -331,7 +329,7 @@ try {
         $script:Failed = $true
     }
 } finally {
-    if ($env:SOT_SMOKE_KEEP -ne '1') { Remove-Scratch $script:Smoke }
+    Remove-Scratch $script:Smoke
 }
 if ($script:Failed) { exit 1 }
 exit 0

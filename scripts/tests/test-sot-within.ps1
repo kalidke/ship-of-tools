@@ -9,8 +9,12 @@
 # as offline) against a stand-in git.exe.
 # Run under WINDOWS POWERSHELL 5.1: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-sot-within.ps1
 
-# Refuses unless this runs under a scratch profile (scratch-guard.ps1).
+# Runs in a scratch profile of its own and never in the caller's (scratch-guard.ps1 says how); Stop, so a missing guard
+# file ends the suite rather than letting it run.
+$ErrorActionPreference = 'Stop'
+$sotSuite = $PSCommandPath; $sotSuiteArgs = $PSBoundParameters
 . (Join-Path $PSScriptRoot 'scratch-guard.ps1')
+if ($null -ne $sotScratchExit) { exit $sotScratchExit }
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $scripts = Join-Path $repoRoot 'scripts'
