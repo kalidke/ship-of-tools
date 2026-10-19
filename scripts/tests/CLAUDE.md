@@ -36,7 +36,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   fixture release (a local git origin, an archive of stand-in binaries, and stand-in `curl`, `sotd`, `systemctl`,
   `julia` and `ps` driven by files), as the entry of an update: the channel the prelude follows from `install.json`, an
   implicit run that would move back stopping before anything changes, the role recovered from the record, the one
-  verdict line on every exit (option errors, a failed command, a TERM) and each check that fails it, the daemon a restart
+  verdict line on every exit (option errors, a failed command, a TERM, which leaves no file a Julia step made in its
+  temporary folder) and each check that fails it, the daemon a restart
   or a start of the unit must bring up (never PASS while it does not answer), the stop-and-ask before a restart that
   would end a live REPL or a running Pluto server (also when the daemon cannot be asked, each reason in its own FAIL), a running daemon that cannot be told its version (a unit or a process at the prefix; a stale socket file alone is none), the step that names the rows of a held or
   launcher-started daemon, a window still on the old version, `--archive` offline, a run interrupted and repeated, the

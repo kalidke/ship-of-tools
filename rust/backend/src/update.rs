@@ -39,7 +39,10 @@ use crate::server::reply::HandlerOutput;
 use crate::lifecycle::lease::Leases;
 use crate::sidecars::julia::JuliaError;
 
-/// Daemon policy: every updater command belongs to this signal's contained tree registry.
+/// Daemon policy: every updater command belongs to this signal's contained tree registry, and runs with a temporary
+/// folder of its own (`ChildTmp`) that goes after its reap, so what a command leaves there goes with it: Pkg's package
+/// download, which Pkg removes only at the end of the call that made it, from an instantiate that failed, was dropped
+/// past its bound or was ended with the daemon.
 pub(crate) struct UpdaterSpawner(pub(crate) &'static crate::lifecycle::child_signal::Signal);
 
 impl sot_updater::Spawner for UpdaterSpawner {
@@ -55,6 +58,10 @@ impl sot_updater::Spawner for UpdaterSpawner {
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .kill_on_drop(true);
+            // Made before the child, so a dropped call asks the child's tree to end (its `Contained`'s drop) before
+            // the folder goes.
+            let tmp = crate::sidecars::child::ChildTmp::new()?;
+            tmp.apply(command);
             let mut child = self.0.spawn(command)?;
             let mut stdout = child.stdout.take().expect("piped stdout");
             let mut stderr = child.stderr.take().expect("piped stderr");
@@ -64,6 +71,8 @@ impl sot_updater::Spawner for UpdaterSpawner {
                 stdout.read_to_end(&mut out),
                 stderr.read_to_end(&mut err)
             )?;
+            // The child is reaped, so `retire` only removes the folder.
+            let _ = tmp.retire(&mut child).await;
             Ok(std::process::Output {
                 status,
                 stdout: out,

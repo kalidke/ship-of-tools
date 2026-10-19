@@ -296,6 +296,11 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   of its two `mktemp`s, each trap's body starts `trap "" HUP INT TERM` and ends with `sot_end_by_signal`, and
   `sot_cleanup_signals` runs right after each trap is set (a copy of the comm library's two helpers, beside `die`).
   sot-apply.sh's trap does not yet: its signal handling is the 0.6.6 item SOT-APPLY-SIGNAL.
+- install.sh's Julia steps (`julia_run`: the comm refresh and the three instantiates) run with `TMPDIR` set to its
+  `WORK`, so what Julia leaves in its temporary folder when a person interrupts the run (Pkg's package download, which
+  Pkg removes only at the end of the call that made it) goes with `WORK` at the exit trap. A SIGKILL of the run leaves
+  `WORK`, as it leaves every scratch file of a killed script. Pkg's own half stays: a download it leaves in a folder
+  nothing of ours made (the Windows first launch's, a person's own Pkg call) is Pkg's to remove.
 - `sot-apply.sh` is POSIX sh plus `local` (it runs under dash and macOS's `/bin/sh`); the other `.sh` files are bash and
   run under bash 3.2, macOS's `/bin/bash` (checked by `tests/under-bash.sh`), where a utility run by the `command`
   builtin ends a `set -e` shell when it fails, even inside the `if`, `!` or `||` that handles it (install.sh's `git`

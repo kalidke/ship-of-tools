@@ -25,12 +25,14 @@ const PREFIX: &str = "sotd-julia-";
 /// the daemon's controlled end ([`remove_own`]), and held by its lock until then.
 static OWN: Mutex<Option<(HeldDir, usize)>> = Mutex::new(None);
 
-/// A folder of its own, in this process's temporary folder, for one Julia child and everything it starts. Julia
-/// removes its temporary files only at a clean exit, never when the daemon kills it, so the folder holds what a killed
-/// child leaves. An owner ends its child with [`retire`](Self::retire), which removes the folder after the reap.
-/// Dropping a `ChildTmp` removes the folder at once, so it is for an owner whose child never started (and the pipe-take
-/// returns after a spawn, unreachable while every pipe is `Stdio::piped()`): a folder dropped after a spawn may still
-/// hold a live child's files.
+/// A folder of its own, in this process's temporary folder, for one Julia child or one updater command and everything
+/// it starts. Julia removes its temporary files only at its own exit, and Pkg its package downloads only at the end of
+/// the call that made them, never when the daemon kills it, so the folder holds what a child that is killed or fails
+/// leaves. An owner ends its child with [`retire`](Self::retire), which removes the folder after the reap. Dropping a
+/// `ChildTmp` removes the folder at once, so it is for an owner whose child never started (and the pipe-take returns
+/// after a spawn, unreachable while every pipe is `Stdio::piped()`), or one that dropped its child's `Contained` first,
+/// which asks the child's tree to end (the updater's dropped call): a folder dropped after a spawn may still hold a
+/// live child's files.
 pub(crate) struct ChildTmp {
     /// The display of a child that runs user code (Linux; `for_user_code`), whose cookie is a file in `dir`. Ended
     /// after the child and before the folder; dropped, its server's group is ended with it.
