@@ -43,7 +43,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
   (`stream_eval_frames`): while that runs it is raised there, one that arrives before it starts stops it before it runs,
   and one that arrives after it has finished is answered `interrupted:false`. A wire line is one write (`write_envelope`). An interrupt that names `eval_ids` reaches only an eval among them (`handle_interrupt`).
 - Code that never yields holds the shim's one thread, so `serve` reads no request while it runs; the daemon's interrupt
-  signal (one ordinary signal; five on a forced request) stops it (`run_shim` sets `Base.exit_on_sigint(false)` after
+  signal (one ordinary signal; a burst on a forced request) stops it (`run_shim` sets `Base.exit_on_sigint(false)` after
   the startup file; rust/backend/src/sidecars/repl/CLAUDE.md), and the requests waiting then are answered
   `interrupted:true` for the eval it stopped (`SIGNALED`, cleared by the next eval's code or when no request is
   waiting). A signal lands in whatever Julia code runs, so the shim's code after the eval's code ended drops it and runs

@@ -76,8 +76,10 @@ code (BLAS), compiling and garbage collection until they return. The REPL keeps
 everything it defined. Code with no safepoint at all (`while true end`) ignores that
 one signal, and the interrupt is answered with an error that says so. A second
 `Ctrl+C` in the drawer while the same evaluations run, or `sot-fe repl interrupt
-<ws> --force`, forces it: five signals in a burst, which Julia forces into code with
+<ws> --force`, forces it: a burst of signals, which Julia forces into code with
 none (it prints `WARNING: Force throwing a SIGINT` in the evaluation's output).
+Under heavy CPU load forcing may not stop it (`sot-fe repl interrupt --force` then
+answers with an error that says so).
 **Forcing can crash or hang the REPL** when the thread is inside C code (a BLAS call
 is a measured crash), compiling or collecting garbage, and the REPL's state is then
 lost; `--fresh` restarts it. The daemon sends a signal only for an evaluation it has

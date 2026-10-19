@@ -192,9 +192,10 @@
 #                  WITHOUT --caption clears it. Capped at 300 chars by the FE
 #                  (warned here); newlines/control chars collapse to spaces.
 #   --force        (repl interrupt) force the interrupt into code with no
-#                  safepoint (op repl.interrupt, force:true): five signals in
-#                  a burst. Can crash or hang the REPL inside C code, while
-#                  compiling or collecting garbage; --fresh restarts it.
+#                  safepoint (op repl.interrupt, force:true): a burst of
+#                  signals. Can crash or hang the REPL inside C code, while
+#                  compiling or collecting garbage, and under heavy CPU load
+#                  may not stop it; --fresh restarts it.
 #   --fresh        (repl run) RESTART the workspace's persistent REPL into
 #                  <path>'s project before including it (op repl.run_file,
 #                  fresh:true) — the way to clear a STALE kernel from a backend

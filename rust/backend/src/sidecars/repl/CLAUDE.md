@@ -6,7 +6,7 @@ get frames back over the broadcast bus, or a collected reply. Part of the sideca
 rust/backend/src/sidecars/CLAUDE.md.
 
 ## Files
-- `escalation.rs`: `Escalation`, the interrupt signal for an eval that never yields: which eval, how many signals, and the answer when they did not stop it.
+- `escalation.rs`: `Escalation`, the interrupt signal for an eval that never yields: which eval, how long the signals go on, and the answer when they did not stop it.
 - `execute.rs`: repl.execute, the whole-report run
 - `execute_tests.rs`: native `repl.execute` submit-failure and res-only drawer completion, a run that times out behind a REPL still starting (Unix), plus the existing Unix shell reply/frame table.
 - `interrupt_tests.rs`: real Julia: one interrupt stops a loop with a safepoint, a forced one a loop with none, one naming another eval sends nothing, and one during BLAS, a compile or a collection leaves the REPL alive.
@@ -40,14 +40,16 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
   says nothing for 1 s with an interrupt unanswered is sent ONE interrupt signal (`Contained::interrupt`), which Julia
   raises at the eval's next safepoint and holds through C code, compiling and garbage collection (the stock REPL's
   Ctrl-C). Only a request with `force: true` (additive; absent means false: a window's second Ctrl+C, `sot-fe repl
-  interrupt --force`) sends five, 50 ms apart, which Julia forces into code with no safepoint and into C code, the
-  compiler and the collector, where it can crash or hang the REPL. The signals go only to the eval the child runs (the
-  first written and still in flight, `in_order`) and only if the request names no evals or names it, only while it is
-  in flight: never to an idle REPL, never to an eval the request did not name, never after the eval's `done`. Any line
-  from the child restarts the quiet, and the interrupt's answer ends the steps (`Escalation`). When the signals are
-  sent and a second has passed, or none could be sent, the daemon answers the request itself with an error that says
-  what is left (`--force`, `--fresh`, the send error). The shim answers a request read after the signal stopped the
-  eval `interrupted:true` for it (julia/repl `handle_interrupt`).
+  interrupt --force`) sends them 50 ms apart for 0.8 s (`FORCE_SPAN`), which Julia forces into code with no safepoint
+  and into C code, the compiler and the collector, where it can crash or hang the REPL. On Linux Julia counts a signal
+  only when the eval's thread runs between two, so under heavy CPU load forcing may not stop the eval; the span forces
+  at most once. The signals go only to the eval the child runs (the first written and still in flight, `in_order`) and
+  only if the request names no evals or names it, only while it is in flight: never to an idle REPL, never to an eval
+  the request did not name, never after the eval's `done`. Any line from the child restarts the quiet, one after a
+  signal ends the signals, and the interrupt's answer ends the steps (`Escalation`). When the signals are over and a
+  second has passed, or none could be sent, the daemon answers the request itself with an error that says what is left
+  (`--force`, `--fresh`, the send error). The shim answers a request read after the signal stopped the eval
+  `interrupted:true` for it (julia/repl `handle_interrupt`).
 - The REPL ops answer an error with one of these codes: `repl_busy` (the queue was full), `repl_eval_failed`,
   `repl_run_file_failed`, `repl_interrupt_failed` and `repl_restart_failed`; `repl.execute` reports a full queue as its
   outcome `busy` (ADR 0033).

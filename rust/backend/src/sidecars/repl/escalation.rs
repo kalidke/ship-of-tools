@@ -14,19 +14,26 @@ use crate::lifecycle::child_signal::Contained;
 /// How long the child must say nothing, with an interrupt unanswered, before the first signal, and after the last
 /// before the daemon gives the answer itself.
 const QUIET: Duration = Duration::from_secs(1);
-/// The gap between the signals of a forced interrupt, close enough together that Julia counts them as a forced one.
+/// The gap between the signals of a forced interrupt.
 const BURST_GAP: Duration = Duration::from_millis(50);
-/// The signals of a forced interrupt: Julia forces the exception into code with no safepoint at the fifth.
-const FORCED_SIGNALS: u8 = 5;
+/// How long a forced interrupt's signals go on, from the first. Julia forces the exception into code with no safepoint
+/// at the fifth signal it counts close together (each adds 0.3 to a sum that decays with a one-second time constant,
+/// and the first only starts the count). On Linux the eval's own thread counts each one in its signal handler, so the
+/// signals sent while that thread waits for a CPU merge into one count: on a loaded computer five signals count as two
+/// or three, and the signals go on so that the thread counts one each time it runs. After forcing, Julia ignores
+/// signals for half a second and must count five again, so a second force needs a signal sent 850 ms or more after the
+/// first, and signals that end before then force at most once.
+const FORCE_SPAN: Duration = Duration::from_millis(800);
 
 /// An unanswered `repl.interrupt` the child says nothing through. An eval that never yields holds the shim's one
 /// thread, so the shim cannot read the request (julia/repl `handle_interrupt`): once the child has said nothing for
 /// `QUIET`, it is sent one interrupt signal (`Contained::interrupt`), which Julia raises at the eval's next safepoint
 /// and holds through C code, compiling and garbage collection, as the stock REPL's Ctrl-C does. A forced request
-/// (`force: true`) sends `FORCED_SIGNALS` of them `BURST_GAP` apart, which Julia forces into code with no safepoint, and
+/// (`force: true`) sends them `BURST_GAP` apart for `FORCE_SPAN`, which Julia forces into code with no safepoint, and
 /// into C code, the compiler and the collector too, where it can crash or hang the REPL. Any line from the child
-/// restarts the quiet, since the shim ran to write it; the interrupt's answer ends it. When the signals are sent and
-/// `QUIET` has passed with no answer, the daemon answers the request itself, saying what is left.
+/// restarts the quiet, since the shim ran to write it, and one after a signal ends the signals; the interrupt's answer
+/// ends the escalation. When the signals are over and `QUIET` has passed with no answer, the daemon answers the request
+/// itself, saying what is left.
 ///
 /// It signals only the eval the child runs (`for_request`, `targets`), only while it is in flight: never an idle REPL,
 /// which a signal could end with what it defined, never an eval the request did not name, never after the eval's `done`.
@@ -38,13 +45,16 @@ pub(super) struct Escalation {
     force: bool,
     /// When the next step goes, if the child says nothing until then.
     at: Instant,
-    /// The signals sent so far.
-    sent: u8,
+    /// When the first signal went; unset until then.
+    first: Option<Instant>,
+    /// Whether the signals are over: a plain request's one is sent, a forced request's span has passed, or the child
+    /// said something after one.
+    over: bool,
 }
 
 /// What an escalation does at its time.
 pub(super) enum Next {
-    /// A signal went; the escalation goes on.
+    /// The escalation goes on: a signal went, or the quiet after the last one runs.
     Again(Escalation),
     /// The request is answered with this error: the signals are sent and it is still unanswered, or none could be sent.
     GiveUp(u64, anyhow::Error),
@@ -60,7 +70,7 @@ impl Escalation {
             return None;
         }
         let force = payload.get("force").and_then(Value::as_bool).unwrap_or(false);
-        Some(Self { id, eval, force, at: Instant::now() + QUIET, sent: 0 })
+        Some(Self { id, eval, force, at: Instant::now() + QUIET, first: None, over: false })
     }
 
     /// The escalation to keep when a request has made `new` while `old` runs: the first, except that a forced request
@@ -78,9 +88,11 @@ impl Escalation {
         running == Some(&self.eval)
     }
 
-    /// The child wrote a line: the escalation ends if that answered it, and otherwise waits a full quiet again.
+    /// The child wrote a line: the escalation ends if that answered it, and otherwise waits a full quiet again. A line
+    /// after a signal means the eval's thread runs Julia code again, so no signal follows it.
     pub(super) fn heard(mut self, pending: &HashMap<u64, oneshot::Sender<anyhow::Result<Value>>>) -> Option<Self> {
         self.at = Instant::now() + QUIET;
+        self.over |= self.first.is_some();
         pending.contains_key(&self.id).then_some(self)
     }
 
@@ -89,19 +101,31 @@ impl Escalation {
         self.at
     }
 
-    /// Send the next signal, or answer when they are all sent.
+    /// Send the next signal, or answer when they are over.
     pub(super) fn step(mut self, contained: &Contained) -> Next {
-        let total = if self.force { FORCED_SIGNALS } else { 1 };
-        if self.sent >= total {
+        let now = Instant::now();
+        if self.over {
             return Next::GiveUp(self.id, anyhow!(unanswered(self.force)));
+        }
+        if self.first.is_some_and(|first| now >= first + FORCE_SPAN) {
+            // The span ended while this step waited: no signal, and the quiet runs from here.
+            self.over = true;
+            self.at = now + QUIET;
+            return Next::Again(self);
         }
         if let Err(e) = contained.interrupt() {
             tracing::warn!(error = %e, "repl interrupt signal not sent");
             return Next::GiveUp(self.id, anyhow!(not_sent(&e.to_string())));
         }
-        self.sent += 1;
-        self.at = Instant::now() + if self.sent < total { BURST_GAP } else { QUIET };
+        self.signalled(now);
         Next::Again(self)
+    }
+
+    /// A signal went at `now`: whether it was the last, and when the next step goes.
+    fn signalled(&mut self, now: Instant) {
+        let first = *self.first.get_or_insert(now);
+        self.over = !self.force || now + BURST_GAP >= first + FORCE_SPAN;
+        self.at = now + if self.over { QUIET } else { BURST_GAP };
     }
 }
 
@@ -112,7 +136,7 @@ pub(super) fn unanswered(force: bool) -> String {
     if force {
         format!(
             "the eval went on through the forced interrupt too (it catches InterruptException, or a C call holds the \
-             thread); {RESTART}"
+             thread, or the computer is under heavy CPU load, where forcing may not stop it); {RESTART}"
         )
     } else {
         format!(
@@ -175,6 +199,31 @@ mod tests {
         assert!(Escalation::for_request(1, &json!({ "force": true }), Some(7)).unwrap().force);
     }
 
+    /// A forced request's signals go `BURST_GAP` apart while less than `FORCE_SPAN` has passed since the first, and end
+    /// at the child's first line after one; a plain request's one signal is its last, and a line before any signal ends
+    /// none.
+    #[test]
+    fn a_forced_burst_ends_at_its_span_or_at_the_childs_first_line() {
+        let pending = HashMap::from([(1, oneshot::channel::<anyhow::Result<Value>>().0)]);
+        let t0 = Instant::now();
+        let mut forced = Escalation::for_request(1, &json!({ "force": true }), Some(7)).unwrap();
+        let mut signals = 0;
+        while !forced.over {
+            forced.signalled(t0 + BURST_GAP * signals);
+            signals += 1;
+        }
+        assert_eq!(signals, 16, "signals at 0, 50, ..., 750 ms");
+        assert_eq!(forced.at, t0 + BURST_GAP * 15 + QUIET, "the quiet runs from the last");
+        let mut plain = Escalation::for_request(1, &json!({}), Some(7)).unwrap();
+        plain.signalled(t0);
+        assert!(plain.over && plain.at == t0 + QUIET);
+        let mut heard = Escalation::for_request(1, &json!({ "force": true }), Some(7)).unwrap().heard(&pending).unwrap();
+        assert!(!heard.over, "a line before any signal ends none");
+        heard.signalled(t0);
+        assert!(!heard.over);
+        assert!(heard.heard(&pending).unwrap().over, "a line after a signal ends the signals");
+    }
+
     #[test]
     fn each_answer_says_what_is_left() {
         let plain = unanswered(false);
@@ -182,6 +231,7 @@ mod tests {
         assert!(plain.contains("--fresh"));
         let forced = unanswered(true);
         assert!(forced.contains("forced") && forced.contains("--fresh") && !forced.contains("second Ctrl+C"), "{forced}");
+        assert!(forced.contains("heavy CPU load"), "{forced}");
         let none = not_sent("Access is denied");
         assert!(none.contains("no interrupt signal could be sent") && none.contains("Access is denied"), "{none}");
         assert!(none.contains("--fresh"));
