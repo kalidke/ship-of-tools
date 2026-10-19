@@ -142,7 +142,8 @@ $config = Join-Path $env:APPDATA 'sot'
 # clone tracks main and its HEAD is usually past the staged binaries.
 $commit = $Commit
 if (-not $commit) {
-    $commit = @((Invoke-SotNative 'git' @('-C', "$Repo", 'rev-parse', "$tag^{commit}")).Out)[0]
+    $rev = Invoke-SotNative 'git' @('-C', "$Repo", 'rev-parse', '--verify', '--quiet', "$tag^{commit}")
+    if ($rev.Code -eq 0) { $commit = @($rev.Out)[0] }
 }
 if (-not $commit) { $commit = 'unknown' }
 

@@ -195,6 +195,12 @@ class D { static int Main(string[] a) { System.IO.File.WriteAllText(System.IO.Pa
     Check-Exit 'p11'
     Check 'the version is read past the stderr line and the record written' ((Test-Path -LiteralPath (Join-Path $p11 'install.json')) -and ((Manifest $p11) -match '"version":\s*"0\.7\.0"')) 'no record'
 
+    Write-Host "`n=== 12. a tag the clone lacks records unknown, never git's echoed argument ===" -ForegroundColor Cyan
+    $p12 = New-Prefix 'p12' '0.9.9' $null $null $false
+    Invoke-Manifest $p12
+    Check-Exit 'p12'
+    Check 'the commit is unknown' ((Manifest $p12) -match '"commit":\s*"unknown"') (Manifest $p12)
+
     Write-Host "`n=== 10. the record is replaced by a rename: a handle opened before the run still reads the old bytes ===" -ForegroundColor Cyan
     $p10 = New-Prefix 'p10' '0.6.0' '0.5.0' 'aaaa' $false
     $file10 = Join-Path $p10 'install.json'
