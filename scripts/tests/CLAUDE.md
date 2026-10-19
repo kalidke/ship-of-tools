@@ -96,10 +96,12 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   (a backend-only install has none). Scenarios: `fresh-local`, `fresh-be-only` (Linux, `--no-service`: no user manager in a
   container), `update-entry` (BEFORE-TAG by its own installer through the prelude, then the entry) and `update-apply`
   (BEFORE-TAG's installed `sot-apply` run as `ExecStartPre` runs it, over a release staged by the new `sotd`: the
-  staged apply must hand off and run); each ends with a repair run. Runs in `release.yml`'s `install-linux` and `install-macos` jobs, and off
+  staged apply must hand off and run), and `update-implicit` (BEFORE-TAG installed, then the entry with no arguments
+  against the real repository: a repair run at BEFORE-TAG that clears the pin, then the new `sotd` stages the run's pack
+  and must say `newer` and arm; its unauthenticated release-list calls share the runner's rate limit); the others end with a repair run. Runs in `release.yml`'s `install-linux` and `install-macos` jobs, and off
   CI the same way (a scratch `$HOME`; the caller's `SOT_` and XDG variables are unset).
-- `install-smoke.ps1`: the same for `install.ps1` (Windows PowerShell 5.1): scenarios `fresh`, `update-entry` and
-  `update-apply`, one scratch profile and a `USERNAME` of its own. The release before is installed by its own
+- `install-smoke.ps1`: the same for `install.ps1` (Windows PowerShell 5.1): scenarios `fresh`, `update-entry`,
+  `update-apply` and `update-implicit` (it says SKIPPED and exits 0 while the release before carries no `install.ps1`), one scratch profile and a `USERNAME` of its own. The release before is installed by its own
   `install.ps1` when its tag carries one, else by that tag's section 2b (`Install-BeforeByHand`, to delete when the
   release before has `install.ps1`). In a session with no desk (session 0) an update ends in the entry's "start Ship of
   Tools at the desk" step and the script applies it with the installed `sot-apply.ps1`, as the start does. A fresh `+`

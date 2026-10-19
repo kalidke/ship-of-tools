@@ -472,7 +472,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [fresh-local, fresh-be-only, update-entry, update-apply]
+        scenario: [fresh-local, fresh-be-only, update-entry, update-apply, update-implicit]
     steps:
       - name: Install what a bare container lacks
         shell: bash
@@ -499,7 +499,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [fresh-local, update-entry, update-apply]
+        scenario: [fresh-local, update-entry, update-apply, update-implicit]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -527,7 +527,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [fresh, update-entry, update-apply]
+        scenario: [fresh, update-entry, update-apply, update-implicit]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
