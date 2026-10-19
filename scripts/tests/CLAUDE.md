@@ -113,7 +113,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
 - `under-bash.sh`: `under-bash.sh BASH [-- SUITE...]` checks the shell scripts under BASH, the bash 3.2 that
   comm/CLAUDE.md and scripts/CLAUDE.md promise. Every tracked shell script outside a tests folder under `comm/`,
-  `agents/` and `scripts/` must parse under BASH; then each SUITE runs from its own folder with a folder holding
+  `agents/` and `scripts/` must parse under BASH and run no utility by the `command` builtin outside a pipeline (it ends a `set -e` shell under 3.2 when the utility fails); then each SUITE runs from its own folder with a folder holding
   `bash -> BASH` first on PATH, so each script it starts through `env bash`, `bash x.sh` or `bash -c` gets BASH (a
   `#!/bin/bash` script only where BASH is /bin/bash). A suite here runs on BASH itself (it sources the scripts it
   tests); any other on the bash running under-bash.sh (4 or later). With no SUITE it runs every hermetic suite: each
