@@ -172,7 +172,7 @@ value; `sticky` / `sticky_at` fold into `waiting`. Deleted: the sticky
 marker, `soft_floor`, `marker_live`, `write_origin`, the hold ladder, the
 2 h sticky self-heal (purple is the session's declaration and ends when it
 says `working`/`idle`/`done`; a time-out would hide a session that failed
-to report — the same "no aging" ruling blue already has), the Stop hook's
+to report — the same "no aging" rule blue already has), the Stop hook's
 `soft_floor` grep, the heartbeat's promote/demote arithmetic, and the
 Stop hook's waiting nudge (a wait carried over from an earlier turn would
 nudge every short exchange on that row; the marker stamps stay).
