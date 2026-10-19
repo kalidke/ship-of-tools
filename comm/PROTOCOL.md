@@ -65,6 +65,13 @@ deployment, one `~/.sot-comm` serves every host sharing that home.
 }
 ```
 
+A row's `state` is `blocked`, with the dialog's text as its `summary`, while the agent shows a dialog that waits on a
+person, even while its turn runs. `comm-status.sh dialog "T"` sets that fact (`dialog`), and `comm-status.sh resumed`
+clears it, as a turn's `prompt` and `stop` also do. A Codex session's PermissionRequest hook sends `dialog` and the
+heartbeat sends `resumed`. A Claude Code session sends no event when a dialog shows, so the daemon reads the screen
+of each working Claude row every 5 seconds (not on Windows) and sends both, through `SOT_COMM_ROW_HANDLE`, which takes
+only these two verbs and only from a process whose parent is `sotd`.
+
 Registry host facts and unpinned self-slot keys use the daemon's declared host. Raw host text is a derived-handle component and validated legacy-slot input only; explicit identity pins retain their text.
 
 **Liveness** is one fact, `last_seen`: a handle is *live* when its `last_seen` is a
