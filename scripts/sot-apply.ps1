@@ -184,8 +184,10 @@ function Get-StageMismatch([string]$staged, [string]$binDir) {
 # round-trip through ConvertTo-Json would silently drop fields this script
 # doesn't know about, and reorder the rest.
 function Set-JsonField([string]$text, [string]$key, [string]$value) {
-    $esc = $value -replace '\\', '\\\\' -replace '"', '\"'
-    return [regex]::Replace($text, "(`"$key`"\s*:\s*)`"[^`"]*`"", "`${1}`"$esc`"")
+    $esc = $value -replace '\\', '\\' -replace '"', '\"'
+    # A MatchEvaluator, not a replacement string: .NET reads `$1`, `$&` and `$$` in one, and the value is any text.
+    $keep = [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Groups[1].Value + '"' + $esc + '"' }
+    return [regex]::Replace($text, "(`"$([regex]::Escape($key))`"\s*:\s*)`"[^`"]*`"", $keep)
 }
 
 # Directory junction -- no privilege required, unlike a symlink.
@@ -391,7 +393,7 @@ $lgTmp = "$LastGood.tmp"
 $lgBody = @"
 {
   "tag": "$curTag",
-  "checkout": "$($prevCheckout -replace '\\', '\\\\')"
+  "checkout": "$($prevCheckout -replace '\\', '\\')"
 }
 "@
 try { Write-Utf8NoBomViaRename $lgTmp $lgBody } catch {

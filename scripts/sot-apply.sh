@@ -40,6 +40,11 @@ sot_install_copy() {  # <src> <dst> [mode]
     return 1
 }
 
+# Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it).
+sot_sed_literal() {  # <text>: the text as the replacement of an s|...|...| command, every byte literal
+    printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
 # Prefix = parent of this script's bin dir. A staged copy the installed apply re-executed (below, with
 # SOT_APPLY_REEXECED set) lies under <prefix>/updates/<tag>-<target>/<top>/, which names the prefix: the installed apply
 # builds that path itself, and every installed apply since v0.6.5 sets the same variable, so one rule serves them all.
@@ -190,8 +195,8 @@ if [ "${1:-}" = "--rollback" ]; then
         v[0-9]*) : > "$UPDATES/bad-$BAD_TAG-$TARGET" ;;
     esac
     if [ -f "$PREFIX/install.json" ] && [ -n "$LG_TAG" ]; then
-        sed -e 's|"version": *"[^"]*"|"version": "'"${LG_TAG#v}"'"|' \
-            -e 's|"tag": *"[^"]*"|"tag": "'"$LG_TAG"'"|' \
+        sed -e 's|"version": *"[^"]*"|"version": "'"$(sot_sed_literal "${LG_TAG#v}")"'"|' \
+            -e 's|"tag": *"[^"]*"|"tag": "'"$(sot_sed_literal "$LG_TAG")"'"|' \
             "$PREFIX/install.json" > "$PREFIX/install.json.tmp" \
             && mv -f "$PREFIX/install.json.tmp" "$PREFIX/install.json"
     fi
@@ -381,9 +386,9 @@ fi
 # place.
 VERSION="${TAG#v}"
 if [ -f "$PREFIX/install.json" ]; then
-    if ! sed -e 's|"version": *"[^"]*"|"version": "'"$VERSION"'"|' \
-             -e 's|"tag": *"[^"]*"|"tag": "'"$TAG"'"|' \
-             -e 's|"commit": *"[^"]*"|"commit": "'"$COMMIT"'"|' \
+    if ! sed -e 's|"version": *"[^"]*"|"version": "'"$(sot_sed_literal "$VERSION")"'"|' \
+             -e 's|"tag": *"[^"]*"|"tag": "'"$(sot_sed_literal "$TAG")"'"|' \
+             -e 's|"commit": *"[^"]*"|"commit": "'"$(sot_sed_literal "$COMMIT")"'"|' \
              "$PREFIX/install.json" > "$PREFIX/install.json.tmp" \
        || ! mv -f "$PREFIX/install.json.tmp" "$PREFIX/install.json"; then
         restore_previous "rewriting install.json failed"

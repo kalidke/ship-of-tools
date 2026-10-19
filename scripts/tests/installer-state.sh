@@ -402,6 +402,24 @@ check "the rendered unit has no Restart=always" "0" "$(grep -c '^Restart=always$
 check "the rendered unit's owner path is the prefix's sotd" "/opt/sot-r/bin/sotd" "$(sot_unit_owner_path < "$RU")"
 
 # ---------------------------------------------------------------------------
+case_start "rendered_unit_holds_any_path_literally"
+# A prefix or home holding `|` (the sed delimiter), `&` (the matched text) or `\` (an escape) lands byte for byte.
+ODD_PREFIX="$WORK/od|d&p\\x\\1"
+ODD_HOME="$WORK/h|o&m\\e"
+RO="$WORK/rendered-odd.service"
+HOME="$ODD_HOME" render_sotd_unit "$ODD_PREFIX" "$(dirname "$0")/../../deploy/sotd.service" "$RO"
+check "the render succeeds" "yes" "$([ -s "$RO" ] && echo yes || echo no)"
+check "ExecStart names the prefix's sotd byte for byte" "1" "$(grep -cF -- "exec \"$ODD_PREFIX/bin/sotd\" --project-root \"$ODD_HOME\" --label sot" "$RO" || true)"
+check "ExecStartPre names the prefix's sot-apply byte for byte" "1" "$(grep -cF -- "exec \"$ODD_PREFIX/bin/sot-apply\"" "$RO" || true)"
+check "no placeholder is left" "0" "$(grep -c '@SOT_[A-Z_]*@' "$RO" || true)"
+APPLY_SH="$(dirname "$0")/../sot-apply.sh"
+ODD_TAG='v0.6.7-a&b|c\\d'
+check "a tag holding & | and a backslash is spliced into install.json byte for byte" "\"tag\": \"$ODD_TAG\"" \
+    "$(printf '{"tag": "v0.6.6"}\n' | sed -e 's|"tag": *"[^"]*"|"tag": "'"$(sot_sed_literal "$ODD_TAG")"'"|' | sed -n 's/^{\(.*\)}$/\1/p')"
+copy_text() { sed -n '/^sot_sed_literal() {/,/^}/p' "$1"; }
+check "sot-apply.sh's sot_sed_literal is byte-identical to the library's" "$(copy_text "$(dirname "$0")/../lib/sot-daemon.sh")" "$(copy_text "$APPLY_SH")"
+
+# ---------------------------------------------------------------------------
 case_start "ensure_choice_table"
 # <manifest> <unit-owner> <systemctl on PATH> -> how the backend was started
 choice_row() {  # <name> <manifest systemd|none> <owner this|other> <systemctl 1|0> <expected>

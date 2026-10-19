@@ -27,13 +27,19 @@ sot_wrapper_owner_prefix() {
         | head -1
 }
 
+# Byte-identical to scripts/sot-apply.sh's (a test pins it): a value spliced into a sed replacement (delimiter |) with
+# its backslash, ampersand and bar escaped, so a path or version holding any of them lands byte for byte.
+sot_sed_literal() {  # <text>: the text as the replacement of an s|...|...| command, every byte literal
+    printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
 # Write the sotd.service unit for PREFIX from TEMPLATE into DEST. Like every
 # rendered file it is written beside DEST, under a name of this shell's own
 # ($$), and moved in, so a failed write leaves the old file whole and returns 1.
 render_sotd_unit() {  # <prefix> <template> <dest>
-    sed -e "s|@SOT_BIN@|$1/bin/sotd|" \
-        -e "s|@SOT_APPLY@|$1/bin/sot-apply|" \
-        -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
+    sed -e "s|@SOT_BIN@|$(sot_sed_literal "$1/bin/sotd")|" \
+        -e "s|@SOT_APPLY@|$(sot_sed_literal "$1/bin/sot-apply")|" \
+        -e "s|@SOT_PROJECT_ROOT@|$(sot_sed_literal "$HOME")|" \
         "$2" > "$3.new.$$" && chmod 0644 "$3.new.$$" && mv -f "$3.new.$$" "$3" || { rm -f "${3:?}.new.$$"; return 1; }
 }
 
