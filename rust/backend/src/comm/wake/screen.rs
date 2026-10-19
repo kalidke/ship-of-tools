@@ -210,19 +210,21 @@ fn main_box_shown(lines: &[String], glyphs: &[char], windows: bool) -> bool {
     })
 }
 
-/// Whether `line` is a dialog's own footer: "Enter to select" or "Esc to cancel" joined to another key hint by a
-/// middle dot (`Enter to select ·`, `Esc to cancel ·`, `· Esc to cancel`). Prose that quotes the words has no such
-/// separator; a reply line holding "Do you want to" false-alarmed a screen watcher that matched the words alone.
+/// Whether `line` is a dialog's own footer: it starts, after spaces, with "Enter to select" or "Esc to cancel" and a
+/// middle dot joining the next key hint (`Enter to select · Tab/Arrow keys to navigate · Esc to cancel`, `Esc to cancel
+/// · Tab to amend`). Prose that quotes the words lacks the dot or does not start the line with them: a reply holding
+/// "Do you want to", and one quoting the whole footer mid-line, each false-alarmed a screen watcher that matched less.
 fn is_dialog_footer(line: &str) -> bool {
-    ["Enter to select \u{b7}", "Esc to cancel \u{b7}", "\u{b7} Esc to cancel"].iter().any(|f| line.contains(f))
+    let line = line.trim_start();
+    line.starts_with("Enter to select \u{b7}") || line.starts_with("Esc to cancel \u{b7}")
 }
 
 /// The dialog the screen shows that waits on a person, as the row's `dialog` summary, or `None`. It is positively
 /// identified, both of: (a) no main input box is on screen ([`main_box_shown`]): a dialog replaces it; (b) one of the
 /// last [`DIALOG_ROWS`] rows is the dialog's footer ([`is_dialog_footer`]), anywhere in them, since an agents panel can
 /// sit below it. The summary is the dialog's "Do you want to" line when the last rows hold one; the line alone
-/// identifies nothing. An agent with no prompt glyphs is never read. The footer shapes are those a screen watcher
-/// matches on live rows; no dialog screen has been captured into a fixture.
+/// identifies nothing. An agent with no prompt glyphs is never read. The footers are those of real dialogs read off live
+/// rows (a permission prompt's and a question menu's), and one real question menu is a fixture.
 pub(crate) fn dialog_of(lines: &[String], agent: &str, windows: bool) -> Option<String> {
     let glyphs = prompt_glyphs(agent, windows);
     if glyphs.is_empty() || main_box_shown(lines, glyphs, windows) {

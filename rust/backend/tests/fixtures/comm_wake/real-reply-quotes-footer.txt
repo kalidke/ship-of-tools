@@ -1,0 +1,40 @@
+
+● x0'x xxxx xxxxxx xx xx. xx xxxxxxx xxxx xxxxxx xxxx xxxxx xxx xxx
+  xxxx xx, xxxx xxx xxxxxxx xxxx xxxxx xx xx. xxx xxx xxxx xxxxxx
+  xxxxxx xxx xxxxxx xxx xxxxxx xxxxx, xxx xxx xxxxxxxxx xxxxxx xxxx.             xx xxxxxxx xxxx xxxxxxx
+
+  x xxxxxxx xxxxxx xxxxxx xx x0 xxx xxxxxxx. xx xxxxxx xxxx xxxxxxxx
+  xxxxxxx xx xxxxxx xxxxx, xxxxx xxxx-xxxxx xxxxxxx xx xxxx xx xxxxx
+  xxxx, xxx xxx xxxxxxx xxxxxxxx xxx xx xxxxxxx.
+
+  xxxxx xxxxxxx xx xxx: xxx x xxxx-xxxxxxx xxxx xx xxx 0.0.0 xxxx
+  (00x000x00)? xxx xxxxxx xxxx xxx xx xxxxxxxx.
+
+❯ [xxx-xxxx] xxx xxxx xxxx: xxx xxxx-xxxx.xx
+
+  xxxx 0 xxxx, xxx 0 xxxxx xxxxxxxx
+
+● xxxx'x xxxxxxx xxxxxxxx xxx xxxxx xxxx xxxxxx xxxxxx: x xxxxxxxx
+  xxxx. xx xxx xx xxxx xxxxx xxx, xxx xxx xxxxxx xxxxx "Enter to
+  select · Tab/Arrow keys to navigate · Esc to cancel", xxxxx xxxx'x
+  xxx-xxxxxxxxx xxxxx xxxxxxx. x xxxx xx xx xxx x0 xxxxxxx xx x xxxx
+  xxxxxx, xxxx xxx xxxxxxx xxxxxxx xxxxxxxx xx xxxxxxx xxxx.
+
+  xxxxx xxxxxxx xx xxx: xxx x xxxx-xxxxxxx xxxx xx xxx 0.0.0 xxxx      +00 xxxxx xxxxxx xxxxxx xxxx xxxxxxx (xxxx)
+  (00x000x00)? xxx xxxxxx xxxx xxx xx xxxxxxxx.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  xxxx 0.0 [00x0x0xx] xxxxxxxx ·xxxxx:xxxxx | x0.0.000 | xxxx-xx-xxxxx:
+  0 xxxxxxxxxxx
+  xxxxxxx: 000x (xx:000x xxx:0000x) | $000.00
+  ⏵⏵ xxxx xxxx xx · 0 xxxxxx
+
+  ● xxxx
+  ◯ xxxxx-x00            xxxxx xxxxxx xxxxxxx x0 x0 x0                                                        xxxx
+  ◯ xxxxx-x00            xxxxx xxxxxx xxxxxxx x0 x0 x0 x0                                                     xxxx
+  ◯ xxxx-x-xxxx          xxxx xxxxx xxxxxx xxx xxxxxxx                                                        xxxx
+  ◯ 00 xxxx xxxxxx
+  ◯ xxxxx-x0-xxxxx       x0 xxxxx xxxxx                                                  00x 00x · ↓ 000.0x xxxxxx
+  ↓ 0 xxxx

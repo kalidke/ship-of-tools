@@ -291,15 +291,22 @@ red after the answer (Codex: `blocked` then `stop`, cleared only by a typed prom
   tick, `rust/backend/src/comm/wake/dialog.rs`). Every 5 s it reads each Ready Claude
   capsule row whose entry reads `working` or carries a `dialog` fact to clear (a row at
   rest shows no permission dialog, and one red by its question, an AskUserQuestion
-  menu, keeps that summary), one watcher attach each. A watcher attach takes no pen,
-  sends no resize and writes no record frame or log line; twenty of them, one sweep at
-  twenty rows, took 1.3 to 1.9 s in a debug build on Linux. A sweep is awaited before
-  the next tick, and missed ticks are skipped, so sweeps never stack.
+  menu, keeps that summary; so a menu a person opens at rest, such as /model, is never
+  read), one watcher attach each. A watcher attach takes no pen, sends no resize, and
+  writes no record frame, no line to the daemon's stderr or tracing (its `sotd.log`) and
+  none to the capsule's stderr: a test over twenty capsules with full scrollback shows
+  it, and measured one sweep of them at 1.2 to 2.0 s, about 80 ms a read (slowest
+  0.33 s), in a debug build on Linux. A sweep is awaited before the next tick, and the
+  ticks it missed are skipped, not queued, so a sweep past 5 s never stacks another.
   - `dialog_of` (the wake's `screen.rs`) says a dialog shows only when no main input
-    box is on screen and one of the last 30 rows is the dialog's footer: "Enter to
-    select" or "Esc to cancel" joined to another key hint by a middle dot. Prose that
-    quotes the words, "Do you want to" included, has no such footer, so it never
-    reads red, with or without an input box below it.
+    box is on screen and one of the last 30 rows is the dialog's footer: a line that
+    starts with "Enter to select" or "Esc to cancel" and a middle dot joining the next
+    key hint, as real dialogs draw it (`Esc to cancel · Tab to amend`,
+    `Enter to select · Tab/Arrow keys to navigate · Esc to cancel`). Prose that quotes
+    the words never starts a line with them and the dot, "Do you want to" alone
+    identifies nothing, so a reply that quotes a dialog never reads red, with or without
+    an input box below it. The open dialog is keyed by its row, not its text: a menu's
+    tab advancing, or auto mode's deny countdown, writes nothing new.
   - The tick writes only where the screen and the registry disagree: `dialog` when a
     dialog shows and the row has no fact, `resumed` when none shows and it has one.
   - It writes through `comm-status.sh` itself, with the entry `SOT_COMM_ROW_HANDLE`,
@@ -337,10 +344,11 @@ red after the answer (Codex: `blocked` then `stop`, cleared only by a typed prom
   to Git Bash there), so a Claude row waiting on a permission dialog reads green while
   its turn runs, then wilts (§5). Elsewhere a Claude row's red lags its dialog by up to
   one tick plus a read, and a turn boundary that clears the fact while the dialog still
-  shows is written again on the next tick. Any Claude screen that replaces the input
-  box and draws such a footer reads red while it shows, a menu a person opened
-  included. The footer shapes come from a screen watcher run on live rows; no dialog
-  screen is captured as a fixture, so the tests' dialog screens are synthetic. The
+  shows is written again on the next tick. Any screen of a working Claude row that
+  replaces the input box and draws such a footer reads red while it shows. The footers
+  are those of real dialogs read off live rows; one real question menu is a test
+  fixture, and the permission dialog's screen is still synthetic around its real
+  footer. The
   silent exit (Esc or a bare "No" ends a Claude turn with no Stop, so the row keeps its
   floor and reads green) is not cleared by this tick and stays a 0.6.7 limit: telling
   a row at rest from a working one takes the wake's 1.5 s hold, which lives inside

@@ -333,30 +333,50 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// The daemon's dialog tick (sot-backend `comm::wake::dialog`) reads a Claude row's screen with exactly this watcher
-/// shape every 5 s. Twenty reads, the cost of one sweep at twenty rows, of a capsule whose scrollback is full (so each
-/// checkpoint carries its whole ring): each read is bounded, logs nothing, leaves the capsule's geometry, and leaves no
-/// frame in the sealed record (no take, no resize, no input, nothing attributed to the watcher). Unix: the tick runs
-/// only there.
+/// The rows one measured sweep reads.
+#[cfg(unix)]
+const SWEEP_ROWS: usize = 20;
+
+/// The daemon's dialog tick (sot-backend `comm::wake::dialog`) reads each due Claude row's screen with exactly this
+/// watcher shape every 5 s. Here: twenty capsules, each 200x50 with its scrollback ring full (so every checkpoint carries
+/// its whole ring), and three sweeps of one read each. Every read stays inside the tick's 3 s budget; nothing is
+/// written to this process's stderr (the daemon's own log, `sotd.log`, takes its stderr; checked only with
+/// `--nocapture`, see the sink probe) or its tracing, nor to any
+/// capsule's stderr (a supervisor's notes reach `sotd.log` too); no capsule's geometry changes; and no sealed record
+/// holds a frame from the reads (no take, no resize, no input, nothing attributed to the watcher). The per-read and
+/// per-sweep times are printed (run with `--nocapture`), not asserted: a clock bound fails on a loaded box for a
+/// reason the reads do not own. Unix: the tick runs only there.
 #[cfg(unix)]
 #[test]
-fn twenty_watcher_reads_write_nothing_and_stay_bounded() {
+fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
+    use std::os::fd::AsRawFd;
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let log = sot_log::test_log::capture();
     let dir = tempfile::tempdir().unwrap();
-    let state_dir = dir.path().join("state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    let h = state_dir_hash(&state_dir);
-
-    let fill = "i=0; while [ $i -lt 400 ]; do echo scrollback line $i; i=$((i+1)); done; exec sleep 600";
-    let mut guard = spawn_supervisor_sized(&state_dir, "--start", 200, 50, &["/bin/sh", "-c", fill]);
-    let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
     let watcher_id = "dialog-tick-watcher";
-    let read = || {
+    let fill = "i=0; while [ $i -lt 400 ]; do echo scrollback line $i; i=$((i+1)); done; exec sleep 600";
+
+    struct Row { state_dir: PathBuf, h: String, conn: Client, voyage: String, guard: CapsuleGuard, err: PathBuf }
+    let mut rows = Vec::new();
+    for n in 0..SWEEP_ROWS {
+        let state_dir = dir.path().join(format!("state-{n}"));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let err = dir.path().join(format!("capsule-{n}.err"));
+        let mut cmd = Command::new(capsule_exe());
+        cmd.arg("supervise").arg(&state_dir).arg("--start").args(["--cols", "200", "--rows", "50"])
+            .arg("--assume-no-rollback-target").arg("--").args(["/bin/sh", "-c", fill])
+            .stdout(Stdio::inherit())
+            .stderr(std::fs::File::create(&err).unwrap());
+        let guard = CapsuleGuard::spawn(&mut cmd);
+        let h = state_dir_hash(&state_dir);
+        let conn = wait_for_lane(&h, Duration::from_secs(30));
+        let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+        rows.push(Row { state_dir, h, conn, voyage, guard, err });
+    }
+    let read = |h: &str| {
         let started = Instant::now();
-        let mut w = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), watcher_id.to_string())
+        let mut w = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.to_string(), watcher_id.to_string())
             .expect("attach_headless");
         let deadline = started + Duration::from_secs(3);
         while !w.is_checkpointed() {
@@ -370,39 +390,63 @@ fn twenty_watcher_reads_write_nothing_and_stay_bounded() {
         assert!(w.shutdown(Duration::from_millis(500)), "the watcher's worker must exit within the daemon's bound");
         (started.elapsed(), size, text)
     };
-    // The scrollback is full before the measured sweep.
-    let filled = Instant::now() + Duration::from_secs(30);
-    while !read().2.contains("scrollback line 399") {
-        assert!(Instant::now() < filled, "the fill never reached the screen");
-        std::thread::sleep(Duration::from_millis(100));
+    // Every ring is full before the measured sweeps.
+    let filled = Instant::now() + Duration::from_secs(60);
+    for row in &rows {
+        while !read(&row.h).2.contains("scrollback line 399") {
+            assert!(Instant::now() < filled, "a fill never reached the screen");
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
-    let before = log.text().len();
-    let sweep = Instant::now();
-    let mut slowest = Duration::ZERO;
-    for _ in 0..20 {
-        let (took, size, _) = read();
-        assert_eq!(size, (50, 200), "a watcher read must leave the capsule's geometry");
-        slowest = slowest.max(took);
+    let err_len = |r: &Row| std::fs::metadata(&r.err).unwrap().len();
+    let capsule_err_before: Vec<u64> = rows.iter().map(err_len).collect();
+    let traced_before = log.text().len();
+    // This process's stderr goes to a file while the sweeps run (the capsules hold their own).
+    let stderr_file = dir.path().join("reader.err");
+    let sink = std::fs::File::create(&stderr_file).unwrap();
+    let saved = unsafe { libc::dup(2) };
+    assert!(saved >= 0 && unsafe { libc::dup2(sink.as_raw_fd(), 2) } == 2, "stderr redirect");
+    let (mut reads, mut sweeps) = (Vec::new(), Vec::new());
+    for _ in 0..3 {
+        let sweep = Instant::now();
+        for row in &rows {
+            let (took, size, _) = read(&row.h);
+            assert_eq!(size, (50, 200), "a watcher read must leave the capsule's geometry");
+            reads.push(took);
+        }
+        sweeps.push(sweep.elapsed());
     }
-    let total = sweep.elapsed();
-    // Reported, not asserted against the 5 s tick: a clock bound would fail on a loaded box for a reason the reads do
-    // not own. Each read is held to the tick's own 3 s budget above.
-    eprintln!("dialog-tick sweep: 20 watcher reads in {total:?}, slowest {slowest:?}");
-    assert_eq!(&log.text()[before..], "", "a watcher read logs nothing");
+    // The sink's own probe: the harness's output capture holds `eprintln!` (from this thread and those it starts) in
+    // the test's buffer, so the stderr check below is real only with `--nocapture`, where this line reaches the sink.
+    eprintln!("sink probe");
+    assert!(unsafe { libc::dup2(saved, 2) } == 2 && unsafe { libc::close(saved) } == 0, "stderr restore");
+    let mean = reads.iter().sum::<Duration>() / reads.len() as u32;
+    let slowest = reads.iter().max().unwrap();
+    eprintln!("dialog-tick sweep at {SWEEP_ROWS} rows: sweeps {sweeps:?}; per read mean {mean:?}, slowest {slowest:?}");
+    match std::fs::read_to_string(&stderr_file).unwrap().as_str() {
+        "sink probe\n" => eprintln!("stderr checked: the reads wrote nothing to it"),
+        "" => eprintln!("stderr not observable under the harness's output capture; run with --nocapture to check it"),
+        other => panic!("a watcher read wrote to stderr: {other:?}"),
+    }
+    assert_eq!(&log.text()[traced_before..], "", "a watcher read traces nothing");
+    assert_eq!(rows.iter().map(err_len).collect::<Vec<_>>(), capsule_err_before, "a watcher read adds nothing to a capsule's stderr");
 
-    end_run_and_wait_verified(&conn, &voyage);
-    let frames = sealed_frames(&state_dir, &voyage);
-    let by_watcher = frames.iter().filter(|f| f.source.actor.controller_id.as_deref() == Some(watcher_id)).count();
-    assert_eq!(by_watcher, 0, "no frame may be attributed to the watcher");
-    let touched: Vec<_> = frames.iter().filter(|f| {
-        let p = f.payload.as_ref();
-        let field = |k: &str| p.and_then(|p| p.get(k)).and_then(|v| v.as_str()).map(str::to_string);
-        f.class == sot_log::store::envelope::Class::Input
-            // The start preamble's null-holder revoke is every capsule's; a take names its holder.
-            || (field("kind").as_deref() == Some("take_state") && p.and_then(|p| p.pointer("/take/holder")).is_some_and(|h| !h.is_null()))
-            || field("kind_ns").as_deref() == Some("conpty/resize")
-    }).map(|f| (f.class, f.source.actor.controller_id.clone(), f.payload.clone())).collect();
-    assert!(touched.is_empty(), "the reads wrote an input, take or resize frame: {touched:?}");
-    let _ = command(&conn, "test-headless-sweep-stop", SupervisorOp::Stop);
-    wait_for_exit(&mut guard, Duration::from_secs(30));
+    for (n, mut row) in rows.into_iter().enumerate() {
+        // A fresh lane connection: the one held since the start may have been closed while the sweeps ran.
+        row.conn = wait_for_lane(&row.h, Duration::from_secs(30));
+        end_run_and_wait_verified(&row.conn, &row.voyage);
+        let frames = sealed_frames(&row.state_dir, &row.voyage);
+        let touched: Vec<_> = frames.iter().filter(|f| {
+            let p = f.payload.as_ref();
+            let field = |k: &str| p.and_then(|p| p.get(k)).and_then(|v| v.as_str()).map(str::to_string);
+            f.source.actor.controller_id.as_deref() == Some(watcher_id)
+                || f.class == sot_log::store::envelope::Class::Input
+                // The start preamble's null-holder revoke is every capsule's; a take names its holder.
+                || (field("kind").as_deref() == Some("take_state") && p.and_then(|p| p.pointer("/take/holder")).is_some_and(|h| !h.is_null()))
+                || field("kind_ns").as_deref() == Some("conpty/resize")
+        }).map(|f| (f.class, f.source.actor.controller_id.clone(), f.payload.clone())).collect();
+        assert!(touched.is_empty(), "capsule {n}: the reads wrote a frame: {touched:?}");
+        let _ = command(&row.conn, &format!("test-headless-sweep-stop-{n}"), SupervisorOp::Stop);
+        wait_for_exit(&mut row.guard, Duration::from_secs(30));
+    }
 }

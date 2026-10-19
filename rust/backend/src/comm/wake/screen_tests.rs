@@ -607,7 +607,7 @@ fn free_test_lines_trims_spaces_and_keeps_a_no_break_space() {
 
 // ---- dialog_of: a dialog that waits on a person, for the dialog tick (dialog.rs) ----
 
-/// The footers a screen watcher matches on live rows: key hints joined by middle dots.
+/// The footers of real dialogs (read off live rows on 2026-10-19): a permission prompt's, and a question menu's.
 const PERM_FOOTER: &str = "Esc to cancel \u{b7} Tab to amend";
 const ASKQ_FOOTER: &str = "Enter to select \u{b7} \u{2191}/\u{2193} to navigate \u{b7} Esc to cancel";
 
@@ -615,9 +615,33 @@ fn dialog(l: &[&str], windows: bool) -> Option<String> {
     dialog_of(&lines(l), "claude", windows)
 }
 
-/// Output above, then `menu` (PERM_MENU, synthetic) and its footer where the input box was.
+/// Output above, then `menu` (PERM_MENU, synthetic but for its real footer) where the input box was.
 fn perm_screen(menu: &[&str]) -> Vec<String> {
     lines(&[&LINUX_TURN_A[..5], menu, &["", PERM_FOOTER]].concat())
+}
+
+/// A real capture read as `sot-fe screen` prints it, which trims the prompt's NBSP; `nbsp` puts it back on a bare
+/// glyph line, as the daemon's own reader keeps it.
+fn real(text: &str, nbsp: bool) -> Vec<String> {
+    text.lines().map(|l| if nbsp && l == "\u{276f}" { "\u{276f}\u{a0}".to_string() } else { l.to_string() }).collect()
+}
+
+/// REAL (2026-10-19, every word replaced by x's, layout, glyphs and footer kept): a question menu with a tab bar,
+/// no main input box, its footer the last dialog line and nine blank rows below it.
+#[test]
+fn a_real_question_menu_reads_as_a_dialog() {
+    let menu = real(include_str!("../../../tests/fixtures/comm_wake/real-askq-menu.txt"), true);
+    assert_eq!(dialog_of(&menu, "claude", false), Some("claude dialog open".to_string()));
+}
+
+/// REAL (2026-10-19, scrubbed the same way): a reply that quotes the whole footer, wrapped so its second half starts a
+/// line, above a live input box. Not a dialog by the box, and not by the footer either: the quoted text starts no line
+/// with the footer's opening words (as captured, the prompt's NBSP is trimmed and the box is not seen).
+#[test]
+fn a_real_reply_quoting_the_footer_is_not_a_dialog() {
+    let text = include_str!("../../../tests/fixtures/comm_wake/real-reply-quotes-footer.txt");
+    assert_eq!(dialog_of(&real(text, true), "claude", false), None);
+    assert_eq!(dialog_of(&real(text, false), "claude", false), None);
 }
 
 #[test]
@@ -631,6 +655,10 @@ fn a_permission_dialog_reads_with_its_question() {
     assert_eq!(dialog_of(&perm_screen(&framed), "claude", false), ask);
     // Where the NBSP is not required that frame reads as an input box: no red, as before this tick (fails closed).
     assert_eq!(dialog_of(&perm_screen(&framed), "claude", true), None);
+    // Auto mode adds a countdown that changes while the dialog stays open: still the one dialog.
+    let mut counting = perm_screen(&PERM_MENU);
+    counting.insert(counting.len() - 1, "Claude Code will automatically deny this request in 0:57".to_string());
+    assert_eq!(dialog_of(&counting, "claude", false), ask);
 }
 
 #[test]
@@ -646,22 +674,25 @@ fn a_footer_with_the_agents_panel_below_it_reads() {
     assert_eq!(dialog(&screen, false), Some("claude dialog: Do you want to proceed?".to_string()));
 }
 
-/// A reply that quotes the dialog's words is never a dialog: not above a live input box, and not even with no box on
-/// screen, for neither "Do you want to" nor a footer's words without the middle-dot separator identify one.
+/// A reply that quotes the dialog's words is never a dialog: not above a live input box, and not with no box on screen
+/// either, for "Do you want to" identifies nothing, the words without the middle dot are no footer, and a footer quoted
+/// mid-line starts no line.
 #[test]
 fn a_reply_quoting_the_dialog_is_not_one() {
+    let quoted = format!("\u{25cf} The menu's footer reads \"{ASKQ_FOOTER}\", as quoted.");
     let mut idle = LINUX_IDLE;
-    idle[2] = "● It will ask: Do you want to proceed? Esc to cancel \u{b7} Tab to amend";
+    idle[2] = &quoted;
     idle[3] = "Do you want to proceed?";
-    assert_eq!(dialog(&idle, false), None);
     idle[8] = "\u{276f}\u{a0}";
-    assert_eq!(dialog(&idle, false), None);
+    assert_eq!(dialog(&idle, false), None, "above a live input box");
     let mut turn = LINUX_TURN_A;
     turn[1] = "Do you want to proceed?";
     assert_eq!(dialog(&turn, false), None);
-    // No input box at all: the words alone, as prose writes them.
-    assert_eq!(dialog(&["● Do you want to proceed with the release?", "  It asks first."], false), None);
-    assert_eq!(dialog(&["● Do you want to proceed?", "  Press Esc to cancel, or Enter to select one."], false), None);
+    // No input box at all.
+    assert_eq!(dialog(&["\u{25cf} Do you want to proceed with the release?", "  It asks first."], false), None);
+    assert_eq!(dialog(&["\u{25cf} Do you want to proceed?", "  Press Esc to cancel, or Enter to select one."], false), None);
+    assert_eq!(dialog(&["\u{25cf} Esc to cancel closes it.", "  Enter to select picks one."], false), None);
+    assert_eq!(dialog(&[quoted.as_str(), "  done."], false), None, "a whole footer quoted mid-line");
 }
 
 #[test]

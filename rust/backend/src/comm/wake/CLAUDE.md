@@ -41,8 +41,10 @@ backend; charter: comm/CLAUDE.md.
   a declared handle and an entry that reads `working` or carries a `dialog` fact (`due`), one watcher attach each (never
   the pen, a resize or a record frame). A sweep is awaited before the next tick and missed ticks are skipped.
 - `dialog_of` says a screen shows a dialog only when no main input box (`main_box_shown`: a glyph and the NBSP between
-  two borders) is on screen and one of the last DIALOG_ROWS (30) rows is a dialog footer (`is_dialog_footer`: "Enter to
-  select" or "Esc to cancel" joined to a key hint by a middle dot). "Do you want to" only names the summary.
+  two borders) is on screen and one of the last DIALOG_ROWS (30) rows is a dialog footer (`is_dialog_footer`: a line that
+  starts with "Enter to select" or "Esc to cancel" and a middle dot). "Do you want to" only names the summary.
+- The open dialog is keyed by its row, never its text (a menu's tabs and auto mode's countdown change it): a row that
+  holds the fact gets nothing new while a dialog still shows.
 - It writes only where screen and registry disagree (`stamp_for`): `dialog` when a dialog shows and the row has no fact,
   `resumed` when none shows and it has one. It keeps nothing between ticks, and writes through `comm-status.sh` with
   `SOT_COMM_ROW_HANDLE`, never with Rust's own reduction. A Codex row is never read.

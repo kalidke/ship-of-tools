@@ -11,7 +11,7 @@ fn free() -> Vec<String> {
     ["● Done.", "", RULE, "\u{276f}\u{a0}", RULE, "  ⏵⏵ auto mode on"].map(String::from).to_vec()
 }
 
-/// SYNTHETIC, after the wake's PERM_MENU (screen_tests.rs) with a footer: a permission dialog where the box was.
+/// SYNTHETIC, after the wake's PERM_MENU (screen_tests.rs) with a real permission footer, where the box was.
 fn permission() -> Vec<String> {
     [
         "● Bash(rm -rf build)",
@@ -53,6 +53,77 @@ fn only_working_rows_and_rows_with_the_fact_are_due() {
     }
     // An AskUserQuestion menu: red by the question its hook wrote before the menu drew, and it keeps that summary.
     assert!(!due(&json!({"state": "blocked", "question": "Which approach?", "summary": "Which approach?"})));
+}
+
+/// The same dialog with its text changed, as a menu's tab advances or auto mode's countdown ticks.
+fn permission_changed() -> Vec<String> {
+    let mut screen = permission();
+    screen[7] = " Do you want to make this edit to build.rs?".to_string();
+    screen.insert(12, " Claude Code will automatically deny this request in 0:41".to_string());
+    screen
+}
+
+/// A row at rest is never attached, and a fact left on a row is still read and cleared: with three rows at rest (idle,
+/// done, a question) and one holding the fact, the sweep reads only that one and writes only its `resumed`.
+#[test]
+fn a_row_at_rest_is_never_read_and_a_left_fact_still_clears() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = json!({"agents": {
+        "idle": {"state": "idle"},
+        "done": {"state": "done", "done": true},
+        "asked": {"state": "blocked", "question": "Which approach?"},
+        "left": {"state": "blocked", "dialog": "claude dialog open"},
+    }});
+    std::fs::write(dir.path().join("registry.json"), registry.to_string()).expect("registry");
+    let rows: Vec<(String, PathBuf)> = ["idle", "done", "asked", "left"].iter().map(|h| (h.to_string(), PathBuf::from(h))).collect();
+    let (reads, writes) = (std::cell::RefCell::new(Vec::new()), std::cell::RefCell::new(Vec::new()));
+    let read = |d: &Path| {
+        reads.borrow_mut().push(d.to_path_buf());
+        // Every screen shows a dialog, as a menu a person opened at rest would: a read of a row at rest would write.
+        Some(permission())
+    };
+    let write = |_: &Path, h: &str, s: &Stamp| {
+        writes.borrow_mut().push((h.to_string(), s.clone()));
+        Ok(())
+    };
+    check_rows(dir.path(), &rows, &read, &write, &mut HashSet::new());
+    assert_eq!(reads.into_inner(), vec![PathBuf::from("left")]);
+    assert_eq!(writes.into_inner(), vec![], "the left fact's dialog still shows: nothing to write");
+    let free_read = |_: &Path| Some(free());
+    let writes = std::cell::RefCell::new(Vec::new());
+    let write = |_: &Path, h: &str, s: &Stamp| {
+        writes.borrow_mut().push((h.to_string(), s.clone()));
+        Ok(())
+    };
+    check_rows(dir.path(), &rows, &free_read, &write, &mut HashSet::new());
+    assert_eq!(writes.into_inner(), vec![("left".to_string(), Stamp::Resumed)]);
+}
+
+/// Pacing: a sweep that runs past the period (30 s on a 5 s tick) is never overlapped, and the ticks it missed are
+/// not queued behind it: one more sweep starts when it ends, then the 5 s grid resumes. Fails with tokio's default
+/// `Burst`, which runs the six missed ticks back to back.
+#[tokio::test(start_paused = true)]
+async fn a_long_sweep_never_stacks_another_behind_it() {
+    let (running, starts) = (std::rc::Rc::new(std::cell::Cell::new(false)), std::rc::Rc::new(std::cell::RefCell::new(Vec::new())));
+    let t0 = tokio::time::Instant::now();
+    let sweeps = {
+        let (running, starts) = (running.clone(), starts.clone());
+        every(Duration::from_secs(5), move || {
+            let (running, starts) = (running.clone(), starts.clone());
+            async move {
+                assert!(!running.get(), "a sweep started while another ran");
+                running.set(true);
+                let first = starts.borrow().is_empty();
+                starts.borrow_mut().push((tokio::time::Instant::now() - t0).as_secs());
+                if first {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                }
+                running.set(false);
+            }
+        })
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(41), sweeps).await;
+    assert_eq!(*starts.borrow(), vec![0, 30, 35, 40]);
 }
 
 /// A comm home whose bin holds the tree's `comm-status.sh` and its library, and one row, `h`, with `entry`.
@@ -108,7 +179,8 @@ fn the_open_then_close_writes_one_dialog_and_one_resumed() {
     writes.extend(tick(h, free()));
     writes.extend(tick(h, permission()));
     assert_eq!((row(h)["state"].as_str(), row(h)["summary"].as_str()), (Some("blocked"), Some("claude dialog: Do you want to proceed?")));
-    writes.extend(tick(h, permission()));
+    // The text changes while the dialog stays open (a tab answered, a countdown): keyed by row, nothing new is written.
+    writes.extend(tick(h, permission_changed()));
     writes.extend(tick(h, free()));
     assert_eq!(row(h)["state"].as_str(), Some("working"));
     assert!(row(h).get("dialog").is_none());

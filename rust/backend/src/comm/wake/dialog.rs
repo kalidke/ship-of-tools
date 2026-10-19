@@ -5,8 +5,10 @@
 //! queued), so the daemon reads the screen. Every [`DIALOG_EVERY`] one blocking task reads the registry once, then each
 //! Ready capsule row whose agent is `claude`, whose handle is declared, and whose registry entry reads `working` or
 //! carries a `dialog` fact the tick must clear ([`due`]; a row at rest shows no permission dialog), one watcher attach
-//! each (it never takes the pen, resizes nothing and writes no record; sot-log's
-//! `twenty_watcher_reads_write_nothing_and_stay_bounded` measures twenty such reads at about 1.3-1.9 s on Linux). [`dialog_of`] reads the screen; the row is written only where screen and registry
+//! each: it never takes the pen, resizes nothing, writes no record frame and logs nothing. sot-log's
+//! `a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded` shows that over twenty capsules and measures a sweep of
+//! them at 1.2-2.0 s (about 80 ms a read) in a debug build on Linux. [`dialog_of`] reads the screen; the row is
+//! written only where screen and registry
 //! disagree ([`stamp_for`]), through `comm-status.sh`'s one reduction and its daemon entry, `SOT_COMM_ROW_HANDLE`
 //! ([`stamp`]). Nothing lives between ticks, so after a restart the first tick clears a fact whose dialog has gone.
 //! A Codex row is never read: its dialog fact is its own hook's. On a Claude row the daemon is the fact's one writer
@@ -58,33 +60,43 @@ fn stamp_for(shown: Option<String>, entry: &serde_json::Value) -> Option<Stamp> 
     }
 }
 
-/// The tick. Runs forever; started once from `server::run`, on Unix only. A sweep is awaited before the next tick, and
-/// ticks missed while it ran are skipped, so a sweep that runs past [`DIALOG_EVERY`] never has another stacked behind it.
+/// The tick. Runs forever; started once from `server::run`, on Unix only, its sweeps paced by [`every`].
 pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces, period: Duration) {
-    let mut failing: HashSet<String> = HashSet::new();
-    let mut tick = tokio::time::interval(period);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        tick.tick().await;
+    let failing = std::sync::Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
+    every(period, || {
         let rows: Vec<(String, PathBuf)> = workspaces
             .list()
             .into_iter()
             .filter(|ws| ws.runtime == "capsule" && ws.agent() == "claude" && !ws.agent_handle().is_empty())
             .map(|ws| (ws.agent_handle(), crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id)))
             .collect();
-        if rows.is_empty() {
-            continue;
+        let (home, failing) = (comm_home.clone(), failing.clone());
+        async move {
+            if rows.is_empty() {
+                return;
+            }
+            let _ = tokio::task::spawn_blocking(move || {
+                let mut held = failing.lock().unwrap_or_else(|e| e.into_inner());
+                check_rows(&home, &rows, &read_screen, &stamp, &mut held);
+            })
+            .await;
         }
-        let home = comm_home.clone();
-        let mut held = std::mem::take(&mut failing);
-        if let Ok(f) = tokio::task::spawn_blocking(move || {
-            check_rows(&home, &rows, &read_screen, &stamp, &mut held);
-            held
-        })
-        .await
-        {
-            failing = f;
-        }
+    })
+    .await
+}
+
+/// Runs `sweep` every `period`: each sweep is awaited before the next tick, and ticks missed while it ran are skipped,
+/// so a sweep that runs past `period` is followed by one more at once and never by a queue, and two never overlap.
+async fn every<F, Fut>(period: Duration, mut sweep: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let mut tick = tokio::time::interval(period);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        sweep().await;
     }
 }
 
