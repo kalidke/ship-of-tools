@@ -1,13 +1,17 @@
 # Part of test-hub-files.sh, sourced by it: the shell arm under the lock (writers, killed and frozen holders, torn and NUL tails).
-# T3 (shell arm) — two writers, 200 lines each, one inbox.
+# T3 (shell arm) — two writers, 200 lines each, one inbox. The case proves exclusion, not the wait: a loaded runner can
+# stall one append's fsync past the 2 s default, and the other writer's refusal is then correct, so its writers wait
+# 60 s, past the suite's 30 s hang guard (comm/tests/CLAUDE.md). The default's expiry is the frozen-holder cases' below.
+# A writer stops at its first refusal and keeps the reason.
 case_two_writers_give_400_whole_lines() {
     linux_only "two writers through the lock give 400 whole lines" || return 0
     local h="t-two" f="$INBOX/t-two.jsonl" w n
     rm -f "${f:?}"
     for w in a b; do
-        ( for i in $(seq 1 200); do
-              append_one "$h" "{\"from\":\"$w\",\"to\":\"$h\",\"repo\":\"r\",\"msg\":\"$w-$i $(printf 'x%.0s' $(seq 1 64))\",\"ts\":\"t\"}" \
-                  >/dev/null || echo "refused $w-$i" >> "$WORK/two.err"
+        ( export SOT_INBOX_LOCK_WAIT_SECS=60
+          for i in $(seq 1 200); do
+              out="$(append_one "$h" "{\"from\":\"$w\",\"to\":\"$h\",\"repo\":\"r\",\"msg\":\"$w-$i $(printf 'x%.0s' $(seq 1 64))\",\"ts\":\"t\"}")" \
+                  || { echo "refused $w-$i: $out" >> "$WORK/two.err"; break; }
           done ) &
     done
     wait

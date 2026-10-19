@@ -32,7 +32,8 @@ fn file_frame_writes_the_bridge_line_shape_one_per_call() {
     assert!(d.path().join("h.lock").exists(), "the sidecar is the lock");
 }
 
-// T3 — two writers in one process, 200 lines each, through the lock.
+// T3 — two writers in one process, 200 lines each, through the lock. It proves exclusion, not the wait: a loaded
+// runner can stall one append's sync past the 2 s default, so each waits 60 s; the frozen-holder tests own the expiry.
 #[test]
 fn two_threads_give_400_whole_lines() {
     let d = tempfile::tempdir().unwrap();
@@ -47,7 +48,7 @@ pub(super) fn two_writers(dir: &Path) {
             std::thread::spawn(move || {
                 for i in 0..200 {
                     let text = format!("{w}-{i} {}", "x".repeat(64));
-                    file_frame(&dir, w, "t3", false, &text, "t", inbox_lock_wait(), "local t").unwrap();
+                    file_frame(&dir, w, "t3", false, &text, "t", Duration::from_secs(60), "local t").unwrap();
                 }
             })
         })

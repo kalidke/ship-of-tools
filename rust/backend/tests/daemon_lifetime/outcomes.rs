@@ -295,7 +295,10 @@ async fn early_commands_and_boot_refusals_keep_their_statuses() {
 
     let dir = tempfile::tempdir().expect("a temporary folder");
     let alone = dir.path().join("sotd");
-    std::fs::copy(crate::support::sotd_program(), &alone).expect("copy sotd alone into a folder");
+    sot_log::test_exec::write_executable(
+        &alone,
+        std::fs::read(crate::support::sotd_program()).expect("read sotd to put alone in a folder"),
+    );
     let env = Env::new("early");
     let ran = sot_log::test_wait::run_within(
         crate::support::sotd_command_at(&alone)

@@ -105,18 +105,6 @@ impl Drop for Fixture {
     }
 }
 
-fn dead(watched: &Watched) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        if watched.dead() {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-    }
-}
-
 fn signal() -> &'static Signal {
     Box::leak(Box::new(Signal::new()))
 }
@@ -185,9 +173,9 @@ fn trash_timeout_reports_cleanup_before_fallback() {
         }
     };
     worker.join().unwrap();
-    assert!(dead(&leader), "trash direct child survived cleanup");
+    assert!(leader.dead(), "trash direct child survived cleanup");
     // This is a separate eventual-death observation, after fallback completed.
-    assert!(dead(&descendant), "trash descendant survived cleanup");
+    assert!(descendant.dead(), "trash descendant survived cleanup");
     assert!(timely, "trash wait missed fallback observation deadline");
     assert_fallback(result, &source, &root);
     assert!(log.contains("system trash timed out"), "{log}");
@@ -336,8 +324,8 @@ fn cleanup_failure(kind: &str, reason: &str) {
         },
     );
     let (leader, descendant) = ready.recv_timeout(Duration::from_secs(20)).unwrap();
-    assert!(dead(&leader));
-    assert!(dead(&descendant));
+    assert!(leader.dead());
+    assert!(descendant.dead());
     assert_fallback(result, &fixture.source(), fixture.dir.path());
     assert!(log.text().contains(reason), "{}", log.text());
     assert!(

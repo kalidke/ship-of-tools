@@ -65,8 +65,11 @@ pub fn build(root: &Path) -> Release {
     let bin = prefix.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let daemon = bin.join("sotd");
-    std::fs::copy(sotd_program(), &daemon).expect("copy the built daemon into the prefix");
-    std::fs::copy(sot_capsule_exe(), bin.join("sot-capsule")).expect("copy the capsule beside it");
+    sot_log::test_exec::write_executable(&daemon, std::fs::read(sotd_program()).expect("read the built daemon"));
+    sot_log::test_exec::write_executable(
+        &bin.join("sot-capsule"),
+        std::fs::read(sot_capsule_exe()).expect("read the capsule to put beside it"),
+    );
     std::fs::write(
         prefix.join("install.json"),
         format!(

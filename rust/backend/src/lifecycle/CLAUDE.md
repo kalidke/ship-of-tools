@@ -190,7 +190,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `start_tests.rs`: tests of child creation against the fire, checked termination requests, the descriptors a child
   keeps past its exec, and partial births (an error or an unwind between creation and registration), on real processes.
   They are in-crate because they reach `Signal` and `contain`; the daemon-lifetime harness is a separate test binary and
-  cannot.
+  cannot. Their observer of a process's end, `Watched::dead` (also used by `files/io_trash_tests.rs`), waits up to 3 s
+  on the retained identity and takes a signal that interrupts the wait as no answer.
 - `start_tests_windows.rs`: the Windows half: a suspended start cannot be outwaited, job requests are checked, a killed daemon's contained tree ends with it, and the suspended interval between creation and the job assignment is observed as ADR 0050's limit (a re-run of the test binary plays the daemon, inside a job of the case's own; `SOT_L2_NO_JOB_ASSIGNMENT` and `SOT_L2_PAUSE_ADOPT` are its two faults in `contain::assign`). That a capsule outlives a killed daemon is the capsule suite's adoption case (`capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning_a_second_one`), through the product's own capsule spawn.
 - `start_tests_macos.rs`: the macOS half: refused group requests judged by member state (a setuid zombie leader, a
   leader in its exit window, a live member of other credentials, and each ended state alone), rejected-observation error

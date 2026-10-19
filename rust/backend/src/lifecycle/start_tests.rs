@@ -22,15 +22,27 @@ pub(crate) mod unix {
             );
             Self(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
         }
+        /// Whether the process has ended, waiting up to 3 s. A signal that interrupts the wait is no answer (in a full run
+        /// any child's SIGCHLD can land on this thread): the wait goes on for what is left of the bound.
         pub(crate) fn dead(&self) -> bool {
             use std::os::fd::AsRawFd;
-            let mut fd = libc::pollfd {
-                fd: self.0.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: poll this object's retained pidfd, which cannot observe a reused PID.
-            unsafe { libc::poll(&mut fd, 1, 3000) > 0 && fd.revents & libc::POLLIN != 0 }
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                let mut fd = libc::pollfd {
+                    fd: self.0.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: poll this object's retained pidfd, which cannot observe a reused PID.
+                let rc = unsafe { libc::poll(&mut fd, 1, left.as_millis() as libc::c_int) };
+                if rc < 0
+                    && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                {
+                    continue;
+                }
+                return rc > 0 && fd.revents & libc::POLLIN != 0;
+            }
         }
 
         fn cleanup(&self) {
@@ -77,23 +89,34 @@ pub(crate) mod unix {
             Self(owned)
         }
 
+        /// As on Linux: up to 3 s, and a signal that interrupts the wait is no answer.
         pub(crate) fn dead(&self) -> bool {
             use std::os::fd::AsRawFd;
-            let mut event: libc::kevent = unsafe { std::mem::zeroed() };
-            let bound = libc::timespec {
-                tv_sec: 3,
-                tv_nsec: 0,
-            };
-            // SAFETY: receive the retained event, never probing or signaling a reusable PID.
-            unsafe {
-                libc::kevent(
-                    self.0.as_raw_fd(),
-                    std::ptr::null(),
-                    0,
-                    &mut event,
-                    1,
-                    &bound,
-                ) == 1
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+                let bound = libc::timespec {
+                    tv_sec: left.as_secs() as libc::time_t,
+                    tv_nsec: left.subsec_nanos() as libc::c_long,
+                };
+                // SAFETY: receive the retained event, never probing or signaling a reusable PID.
+                let rc = unsafe {
+                    libc::kevent(
+                        self.0.as_raw_fd(),
+                        std::ptr::null(),
+                        0,
+                        &mut event,
+                        1,
+                        &bound,
+                    )
+                };
+                if rc < 0
+                    && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                {
+                    continue;
+                }
+                return rc == 1;
             }
         }
     }
@@ -496,6 +519,39 @@ pub(crate) mod unix {
             descendant_dead,
             "the post-create unwind left a partial std descendant alive"
         );
+    }
+
+    /// A signal that interrupts `Watched::dead`'s wait is not the process's end, and not its survival either: the wait
+    /// goes on. In a full run any child's SIGCHLD can land on the waiting thread (the first contained start installs
+    /// its handler), and a wait that answered on it read a dying descendant as alive.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_signal_during_the_wait_is_no_answer() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // The handler a contained start installs; with none, SIGCHLD is ignored and interrupts nothing.
+        let _sigchld = runtime
+            .block_on(async { tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child()) })
+            .unwrap();
+        let mut child = std::process::Command::new("sleep").arg("600").spawn().unwrap();
+        let pid = child.id() as libc::pid_t;
+        let watched = Watched::open(child.id());
+        // SAFETY: this thread's own id; the thread outlives the sender, which is joined below.
+        let waiter = unsafe { libc::pthread_self() } as usize;
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            // SAFETY: SIGCHLD to this test's own thread, which handles it and is alive until this thread is joined.
+            assert_eq!(unsafe { libc::pthread_kill(waiter as libc::pthread_t, libc::SIGCHLD) }, 0);
+            std::thread::sleep(Duration::from_millis(200));
+            // SAFETY: this test's own child, unreaped until the wait below, so the number is still its own.
+            assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+        });
+        let dead = watched.dead();
+        sender.join().unwrap();
+        sot_log::test_isolated::wait_within(&mut child, Duration::from_secs(10));
+        assert!(dead, "a signal during the wait was read as a live process");
     }
 
     #[test]
