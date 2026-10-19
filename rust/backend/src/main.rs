@@ -93,6 +93,24 @@ impl std::io::Write for TeeWriter {
     }
 }
 
+/// The daemon's log is rolled at open when it is over this size.
+const LOG_ROLL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Renames the log at `path` to `<path>.1` (replacing any older one) when it is over `max` bytes, so the open that
+/// follows starts a fresh file. A capsule supervisor already running keeps appending to the file it opened, which is now
+/// the `.1`; each one the daemon starts later opens the base by name. A failed rename is a warning: the log stays one
+/// file and the daemon starts.
+fn roll_log_if_over(path: &std::path::Path, max: u64) {
+    if std::fs::metadata(path).map(|m| m.len() <= max).unwrap_or(true) {
+        return;
+    }
+    let mut rolled = path.as_os_str().to_owned();
+    rolled.push(".1");
+    if let Err(e) = std::fs::rename(path, &rolled) {
+        eprintln!("sotd: could not roll log file {}: {e}", path.display());
+    }
+}
+
 /// Open (create/append) the private log file, enforcing `0600` unconditionally
 /// (not just on creation — a file left over from before this fix, or opened
 /// under a looser umask, won't self-correct otherwise). `None` on any
@@ -109,6 +127,7 @@ fn open_private_log_file() -> Option<Arc<Mutex<std::fs::File>>> {
         return None;
     }
     let path = dir.join("sotd.log");
+    roll_log_if_over(&path, LOG_ROLL_BYTES);
     let file = match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -732,5 +751,32 @@ mod log_tests {
         assert!(!written.contains("Ab12Cd34"), "the secret reached the file: {written}");
         // No colour codes: they would split a field name from its `=`, so `secret=` would not read as one marker.
         assert!(!written.contains('\u{1b}'), "the file carries ANSI escapes: {written:?}");
+    }
+
+    /// A log over the cap is renamed to `.1` (replacing an older one) and the base starts empty; one under it stays.
+    #[test]
+    fn a_log_over_the_cap_rolls_to_dot_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sotd.log");
+        let rolled = dir.path().join("sotd.log.1");
+        std::fs::write(&rolled, b"older").unwrap();
+        let supervisor = std::fs::File::create(&path).unwrap();
+        supervisor.set_len(65 * 1024 * 1024).unwrap();
+        roll_log_if_over(&path, LOG_ROLL_BYTES);
+        assert!(!path.exists(), "the base is still the 65 MiB file");
+        assert_eq!(std::fs::metadata(&rolled).unwrap().len(), 65 * 1024 * 1024);
+        let fresh = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        assert_eq!(fresh.metadata().unwrap().len(), 0);
+        // A supervisor that held the file open keeps its handle on the `.1`; one started later opens the base.
+        use std::io::Write;
+        (&supervisor).write_all(b"old").unwrap();
+        assert_eq!(&std::fs::read(&rolled).unwrap()[..3], b"old");
+        let mut later = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        later.write_all(b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+
+        std::fs::write(&path, b"small").unwrap();
+        roll_log_if_over(&path, LOG_ROLL_BYTES);
+        assert_eq!(std::fs::read(&path).unwrap(), b"small");
     }
 }
