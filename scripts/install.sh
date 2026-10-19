@@ -1879,5 +1879,6 @@ if [ -n "$FAIL_FIRST" ]; then
     installer_verdict "$VER" "$SHORT" "$FAIL_FIRST" "" "$([ "$PINNED" = 0 ] || printf '%s' "$VER")" >&2
     exit 1
 fi
+[ "$UNIT_MANAGED" != 1 ] || printf '%s\n' "sotd.service: stop it on this computer with systemctl --user stop sotd.service; its boot start follows hosts.toml and the unit's host pin, and enable or disable change no file"
 installer_verdict "$VER" "$SHORT" "" "$STEPS_LEFT" "$([ "$PINNED" = 0 ] || printf '%s' "$VER")"
 exit 0

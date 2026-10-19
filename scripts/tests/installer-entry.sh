@@ -271,6 +271,7 @@ d="$WORK/vd"; entry_fixture "$d"; short="$(cat "$d/ctl/short")"
 entry_archive "$d" --be-only --no-service
 check "a whole install ends PASS, as its one last line (a pack names its version, so it is pinned)" "PASS: Ship of Tools 9.9.9 at $short on this computer; pinned at 9.9.9: automatic updates stay off until a run that names no version|0" "$ENTRY_LAST|$ENTRY_RC"
 check "the verdict is the only line that starts with PASS, FAIL or ONE STEP" "1" "$(printf '%s\n' "$ENTRY_OUT" | grep -c -E '^(PASS|FAIL|ONE STEP LEFT):' || true)"
+check "with --no-service no stop-and-boot line is printed" "0" "$(printf '%s\n' "$ENTRY_OUT" | grep -c '^sotd.service: stop it on this computer' || true)"
 broken() {  # <description> <expected fail prefix> <hook>: a run whose comm refresh leaves the install broken one way
     local dd="$WORK/vd-$RANDOM"; entry_fixture "$dd"; printf '%s\n' "$3" > "$dd/ctl/hook"
     entry_archive "$dd" --be-only --no-service
@@ -355,6 +356,8 @@ check "no restart was made" "0" "$(count_in "$d/ctl/systemctl.log" 'try-restart'
 entry_archive "$d" --be-only --restart-daemon
 check "--restart-daemon goes on: exit 0, the unit restarted once" "0 1" "$ENTRY_RC $(count_in "$d/ctl/systemctl.log" 'try-restart')"
 check "and the verdict is PASS once the daemon runs the target" "PASS" "$(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
+check "the systemd path prints one line, just before the verdict, on how to stop sotd here and what decides boot start" "1 yes" \
+    "$(printf '%s\n' "$ENTRY_OUT" | grep -c -F 'sotd.service: stop it on this computer with systemctl --user stop sotd.service; its boot start follows hosts.toml and the unit' || true) $([ "$(printf '%s\n' "$ENTRY_OUT" | tail -2 | head -1 | cut -c1-35)" = 'sotd.service: stop it on this compu' ] && echo yes || echo no)"
 # No live REPL: no question, a restart.
 d="$WORK/live-none"; entry_fixture "$d"
 entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; : > "$d/ctl/restart-same"
