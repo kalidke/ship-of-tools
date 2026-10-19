@@ -95,7 +95,12 @@ function revise_loaded()
             rev isa Module && rev.revise()
         end
     catch e
-        e isa InterruptException && rethrow()
+        if e isa InterruptException
+            # The daemon's signal landed before the eval's code started: the eval stops before it runs, as an interrupt.
+            ev = CURRENT_EVAL[]
+            ev !== nothing && ev.task === current_task() && ev.stage === :waiting && (ev.stage = :held)
+            return
+        end
         println(stderr, "sot: Revise.revise() failed: ", Base.invokelatest(sprint, showerror, e))
     end
 end
@@ -129,21 +134,25 @@ function stream_eval_frames(f, emit)
             end
         catch e
             threw = e
-            local_bt = stacktrace(catch_backtrace())
+            local_bt = past_interrupts(() -> stacktrace(catch_backtrace()))
         end
     finally
-        redirect_stdout(old_stdout)
-        redirect_stderr(old_stderr)
-        close(pipe_out.in)
-        close(pipe_err.in)
-        # After user code returns, later frames (value/error/done) go through
-        # the local `emit` — mid-eval announcing is over.
-        CURRENT_EMIT[] = nothing
+        # A signal that lands in this restoring (the daemon's, for code that ended as it came) must not leave the
+        # process's streams on the finished eval's pipes: every step is safe to run again.
+        past_interrupts() do
+            redirect_stdout(old_stdout)
+            redirect_stderr(old_stderr)
+            close(pipe_out.in)
+            close(pipe_err.in)
+            # After user code returns, later frames (value/error/done) go through
+            # the local `emit` — mid-eval announcing is over.
+            CURRENT_EMIT[] = nothing
+        end
     end
     # Drain whatever the readers haven't emitted yet (the close above lets them
     # hit eof). Ordering: all stdout/stderr frames precede value/error.
-    wait(reader_out)
-    wait(reader_err)
+    past_interrupts(() -> wait(reader_out))
+    past_interrupts(() -> wait(reader_err))
 
     if threw !== nothing
         stack = [Dict(
@@ -154,11 +163,11 @@ function stream_eval_frames(f, emit)
         # invokelatest: `serve`'s world is older than the startup file and every eval, which may define the `showerror`.
         msg = threw isa InterruptException ?
             "InterruptException: eval interrupted by repl.interrupt" :
-            Base.invokelatest(sprint, showerror, threw)
-        emit(Dict(:kind => "error", :message => msg, :stacktrace => stack))
+            past_interrupts(() -> Base.invokelatest(sprint, showerror, threw))
+        past_interrupts(() -> emit(Dict(:kind => "error", :message => msg, :stacktrace => stack)))
     else
         for fr in frames
-            emit(fr)
+            past_interrupts(() -> emit(fr))
         end
     end
     return nothing
@@ -170,20 +179,30 @@ end
 Drain `pipe` to eof, emitting `{kind, text}` frames as bytes arrive. Only a
 character that a `readavailable` chunk cut waits for its other bytes
 (`utf8_prefix`); any other invalid byte is program output and goes on at once,
-and `write_json_string` writes it as U+FFFD.
+and `write_json_string` writes it as U+FFFD. An interrupt that lands here (the
+daemon's signal, sent for the eval's code as that code ended) does not stop the drain.
 """
 function stream_pipe(pipe, emit, kind)
     leftover = UInt8[]
-    try
-        while !eof(pipe)
-            data = readavailable(pipe)
-            isempty(data) && continue
-            append!(leftover, data)
-            s, leftover = utf8_prefix(leftover)
-            isempty(s) || emit(Dict(:kind => kind, :text => s))
+    frame = nothing  # a chunk read and not yet emitted: kept across an interrupt, so it is emitted again, never lost
+    while true
+        try
+            if frame === nothing
+                eof(pipe) && break
+                data = readavailable(pipe)
+                isempty(data) && continue
+                append!(leftover, data)
+                s, leftover = utf8_prefix(leftover)
+                isempty(s) || (frame = Dict(:kind => kind, :text => s))
+            end
+            if frame !== nothing
+                emit(frame)
+                frame = nothing
+            end
+        catch e
+            e isa InterruptException && continue
+            break  # pipe closed/errored mid-read — stop draining.
         end
-    catch
-        # pipe closed/errored mid-read — stop draining.
     end
     if !isempty(leftover)
         emit(Dict(:kind => kind, :text => String(leftover)))

@@ -8,6 +8,7 @@ use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, Command};
 
+use super::escalation::{Escalation, Next};
 use super::*;
 use super::lifecycle::{browser_ports_key, lifecycle_begin_starting, lifecycle_transition};
 use crate::sidecars::child::StderrTail;
@@ -198,6 +199,11 @@ async fn supervisor_task(
     let mut collector_ids: HashMap<u64, u64> = HashMap::new();
     let mut next_id: u64 = 1;
     let mut stdout_lines = ChildLines::new(stdout);
+    // The evals in flight in the order they were written to the child: the first is the one it runs (the shim holds
+    // one eval at a time), so it is the only eval an interrupt signal can reach.
+    let mut in_order: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
+    // An unanswered interrupt the child says nothing through.
+    let mut escalation: Option<Escalation> = None;
 
     // Why the loop ended, which the close-out below names to every unfinished eval.
     let end = loop {
@@ -287,8 +293,15 @@ async fn supervisor_task(
                 // child death can close it out with synthetic frames.
                 if let Some(reply) = sub.reply {
                     pending.insert(id, reply);
+                    if sub.op == "repl.interrupt" {
+                        let next = Escalation::for_request(id, &sub.payload, in_order.front().copied());
+                        escalation = Escalation::prefer(escalation.take(), next);
+                    }
                 } else if let (Some(eid), Some(owner)) = (eid, sub.owner) {
                     streaming.insert(eid, owner);
+                }
+                if let Some(eid) = eid.filter(|e| streaming.contains_key(e) || collectors.contains_key(e)) {
+                    in_order.push_back(eid);
                 }
             }
             line = stdout_lines.next_line() => {
@@ -317,7 +330,9 @@ async fn supervisor_task(
                             &mut collector_ids,
                             &frame_tx,
                             &workspace_id,
-                        )
+                        );
+                        in_order.retain(|e| streaming.contains_key(e) || collectors.contains_key(e));
+                        escalation = escalation.and_then(|e| e.heard(&pending)).filter(|e| e.targets(in_order.front()));
                     }
                     Ok(None) => {
                         tracing::warn!("repl child stdout closed");
@@ -328,6 +343,19 @@ async fn supervisor_task(
                         break ReplEnded::Died;
                     }
                 }
+            }
+            _ = tokio::time::sleep_until(escalation.as_ref().map_or_else(tokio::time::Instant::now, |e| e.at())),
+                if escalation.is_some() => {
+                escalation = match escalation.take().filter(|e| e.targets(in_order.front())).map(|e| e.step(&contained)) {
+                    Some(Next::Again(e)) => Some(e),
+                    Some(Next::GiveUp(id, error)) => {
+                        if let Some(reply) = pending.remove(&id) {
+                            let _ = reply.send(Err(error));
+                        }
+                        None
+                    }
+                    None => None,
+                };
             }
             // The CHILD's exit ends this supervisor — not its pipes. Normally
             // the two coincide (the last stdout branch above sees EOF), but a

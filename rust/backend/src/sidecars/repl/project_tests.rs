@@ -28,16 +28,16 @@ const EVAL: Duration = Duration::from_secs(180);
 const SETUP: Duration = Duration::from_secs(600);
 
 /// A bare workspace (no `Project.toml`) whose path holds a space, and the real `Workspace::repl` factory over it.
-struct Fixture {
+pub(super) struct Fixture {
     workspace: PathBuf,
     shim: PathBuf,
-    repl: Repl,
+    pub(super) repl: Repl,
     _frames: broadcast::Receiver<ReplFrameMsg>,
     owned: OwnedRoot,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self::with_read_depot(None)
     }
 
@@ -94,7 +94,7 @@ impl Fixture {
     }
 
     /// Ends every child the process owns, then removes the fixture. Only the owned root is removed.
-    async fn finish(self) {
+    pub(super) async fn finish(self) {
         self.owned.end().await;
     }
 }

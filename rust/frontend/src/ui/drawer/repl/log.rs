@@ -215,9 +215,25 @@ pub(in crate::ui) fn in_flight_eval_ids(log: &[ReplEntry]) -> Vec<u64> {
         .collect()
 }
 
+/// Whether this Ctrl+C forces the interrupt: the evals in flight are the ones the last Ctrl+C interrupted, so the
+/// ordinary signal it sent did not stop them.
+pub(in crate::ui) fn repl_interrupt_forced(last: &[u64], in_flight: &[u64]) -> bool {
+    !in_flight.is_empty() && last == in_flight
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first Ctrl+C on an eval is ordinary and a second while the same evals run forces; other evals start over.
+    #[test]
+    fn a_second_ctrl_c_on_the_same_evals_forces() {
+        assert!(!repl_interrupt_forced(&[], &[3]));
+        assert!(!repl_interrupt_forced(&[3], &[4]));
+        assert!(!repl_interrupt_forced(&[3], &[]));
+        assert!(repl_interrupt_forced(&[3], &[3]));
+        assert!(repl_interrupt_forced(&[3, 1 << 40], &[3, 1 << 40]));
+    }
 
     /// A row switch never restarts the window's eval count, a first visit included: with a count per row, two rows'
     /// first evals on one host would both be 1, and the daemon would write one run's output into the other's entry.

@@ -966,6 +966,9 @@ struct State {
     /// Enter in REPL focus; cleared after send. Multi-line input is a
     /// follow-up.
     repl_input: String,
+    /// The evals the last Ctrl+C interrupted: Ctrl+C again while the same ones still run forces the interrupt
+    /// (`repl_interrupt_forced`).
+    repl_interrupted: Vec<u64>,
     /// Scroll offset (rows from the tail) of the REPL pane. 0 = live,
     /// positive = looking at older lines. Reset to 0 whenever the user
     /// types into the REPL so typing always snaps to live; otherwise

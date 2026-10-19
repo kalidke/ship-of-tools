@@ -479,6 +479,14 @@ impl Contained {
         self.held.release()?;
         self.child.wait().await
     }
+
+    /// Ask the child to interrupt what it runs (`contain::interrupt`); a child already reaped is not asked.
+    pub(crate) fn interrupt(&self) -> std::io::Result<()> {
+        match self.child.id() {
+            Some(pid) => crate::lifecycle::contain::interrupt(pid),
+            None => Ok(()),
+        }
+    }
 }
 
 /// One contained child for a blocking caller, owning its `Child` and pipes.

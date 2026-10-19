@@ -54,14 +54,20 @@ pub(crate) async fn send_repl_interrupt<W: AsyncWrite + Unpin>(
     id: u64,
     workspace_id: Option<String>,
     eval_ids: Vec<u64>,
+    force: bool,
 ) -> Result<()> {
-    tracing::info!(?workspace_id, ?eval_ids, id, "→ repl.interrupt");
+    tracing::info!(?workspace_id, ?eval_ids, force, id, "→ repl.interrupt");
+    // `force` is on the wire only when set: an older daemon never sees it, and absent means false.
+    let mut payload = serde_json::json!({ "workspace_id": workspace_id, "eval_ids": eval_ids });
+    if force {
+        payload["force"] = serde_json::json!(true);
+    }
     codec::write_frame(
         &mut tx,
         &Frame::req(
             id,
             op::REPL_INTERRUPT,
-            serde_json::json!({ "workspace_id": workspace_id, "eval_ids": eval_ids }),
+            payload,
         ),
         None,
     )

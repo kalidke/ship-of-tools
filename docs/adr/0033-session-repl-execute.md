@@ -117,9 +117,13 @@ Mechanics:
      progress"}` is a distinct outcome (exit 3) from a real cancellation
      (exit 0) — an escalation ladder keys on exactly that bit. The interrupt
      is **workspace-wide** (the shim kills its single `CURRENT_EVAL`; there is
-     no per-run scoping), and it lands at the eval's next **yield point** —
-     a non-yielding compute-bound eval may never take it, in which case
-     `--fresh` is the honest escalation. `status` cannot confirm delivery:
+     no per-run scoping), and it lands at the eval's next **yield point**; a
+     non-yielding compute-bound eval, which keeps the shim from reading it, is
+     sent one interrupt signal by the daemon when the REPL says nothing about
+     an interrupt that names the running eval (rust/backend/src/sidecars/repl/CLAUDE.md);
+     `force: true` (a second Ctrl+C, `sot-fe repl interrupt --force`) sends the
+     forcing burst, which can crash or hang the REPL, and `--fresh` is the
+     escalation for an eval that goes on through that. `status` cannot confirm delivery:
      the wire has no busy/idle bit.
    - `status` does NOT print `kernel_running`: that field is the lazily-built
      introspection Kernel handle (`kernel_built()`), unrelated to the REPL

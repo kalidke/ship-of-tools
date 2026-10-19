@@ -4,7 +4,8 @@
 //! Unix: each child runs in its own process group, killed with `killpg`, and its leader by pid as well.
 //! Windows: each child runs in its own anonymous job (no breakaway),
 //! created suspended, assigned, and only then resumed, so no instruction
-//! runs outside the job (the ADR 0041 rule `sot_log::capsule::producer::conpty` follows).
+//! runs outside the job (the ADR 0041 rule `sot_log::capsule::producer::conpty` follows),
+//! and in a console process group of its own, which an interrupt (`interrupt`) reaches alone.
 //! On Unix a group's number is its leader's pid, retained until reap, so requests
 //! run before the owner reaps that leader. On Windows wait/try_wait can obtain
 //! direct-child status before the job request; the retained job handle preserves
@@ -30,8 +31,9 @@ impl Tree {
 }
 
 /// Make `cmd`'s child start inside its own containment. On Windows this replaces the command's creation flags with
-/// `CREATE_SUSPENDED`: std has no getter to add to them, so a caller that needs a flag of its own adds it here. On Unix
-/// the child also keeps none of this process's descriptors past its exec but its stdio ([`sot_log::host::inherit_none`]).
+/// `CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP`: std has no getter to add to them, so a caller that needs a flag of its
+/// own adds it here. On Unix the child also keeps none of this process's descriptors past its exec but its stdio
+/// ([`sot_log::host::inherit_none`]).
 pub(crate) fn prepare(cmd: &mut std::process::Command) {
     #[cfg(unix)]
     {
@@ -43,8 +45,32 @@ pub(crate) fn prepare(cmd: &mut std::process::Command) {
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(
         cmd,
-        windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
+        windows_sys::Win32::System::Threading::CREATE_SUSPENDED
+            | windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP,
     );
+}
+
+/// Ask the child `pid`, which [`prepare`] started and its owner has not reaped, to interrupt what it runs: on Unix a
+/// `SIGINT` to it alone; on Windows a Ctrl+Break to its console process group (each process in it, as in a console),
+/// which reaches it because a child that asks for no console of its own shares this process's. Julia raises either as
+/// an `InterruptException` once `Base.exit_on_sigint(false)` holds.
+pub(crate) fn interrupt(pid: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    // SAFETY: a signal to the unreaped child the caller holds.
+    let sent = unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) } == 0;
+    #[cfg(windows)]
+    // SAFETY: no pointers; the child's pid names its console process group.
+    let sent = unsafe {
+        windows_sys::Win32::System::Console::GenerateConsoleCtrlEvent(
+            windows_sys::Win32::System::Console::CTRL_BREAK_EVENT,
+            pid,
+        )
+    } != 0;
+    if sent {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 /// Take hold of a child [`prepare`] started, given its pid (and, on

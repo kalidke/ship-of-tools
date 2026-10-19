@@ -520,6 +520,67 @@ Base.flush(::CountingIO) = nothing
         @test occursin("InterruptException", only(filter(f -> f[:kind] == "error", frames_of(envs, 1)))[:message])
     end
 
+    # The daemon's interrupt signal, sent for code that never yields, can land after that code ended. One that lands
+    # in the shim's own waits is dropped and the wait goes on: in `serve`'s wait for the next request, in a reader's
+    # drain and in the eval's wait for its readers. (`schedule` raises it in each wait as a signal would.)
+    @testset "serve: an interrupt in its wait for the next request is dropped" begin
+        bs_in, bs_out, srv = drive(String[])
+        for _ in 1:100
+            yield()
+        end
+        schedule(srv, InterruptException(); error = true)
+        write(bs_in, eval_line(1, "40 + 2")); flush(bs_in)
+        envs = read_until_answered(bs_out, [1])
+        close(bs_in)
+        @test [f[:text] for f in frames_of(envs, 1) if f[:kind] == "value"] == ["42"]
+    end
+
+    @testset "stream_pipe: an interrupt does not stop the drain" begin
+        pipe = Pipe()
+        Base.link_pipe!(pipe; reader_supports_async = true, writer_supports_async = true)
+        texts = String[]
+        reader = @async DR.stream_pipe(pipe, f -> push!(texts, f[:text]), "stdout")
+        write(pipe.in, "a"); flush(pipe.in)
+        while isempty(texts)
+            sleep(0.01)
+        end
+        schedule(reader, InterruptException(); error = true)
+        write(pipe.in, "b"); close(pipe.in)
+        wait(reader)
+        @test join(texts) == "ab"
+    end
+
+    @testset "stream_eval_frames: an interrupt while it drains its output leaves the answer whole" begin
+        frames = Dict[]
+        # The reader is slow on its first frame, so the eval, its code done, waits for it.
+        slow = Ref(true)
+        emit = f -> (f[:kind] == "stdout" && slow[] && (slow[] = false; sleep(1.0)); push!(frames, f))
+        t = @async DR.stream_eval_frames(emit) do
+            print("x")
+            42
+        end
+        sleep(0.5)
+        schedule(t, InterruptException(); error = true)
+        wait(t)
+        @test [f[:kind] for f in frames] == ["stdout", "value"]
+    end
+
+    @testset "revise_loaded: a stray interrupt there stops the eval before its code runs, as an interrupt, not an internal error" begin
+        bs_in, bs_out, _ = drive(String[])
+        Core.eval(Main, :(Revise = Module(:Revise)))
+        Core.eval(Main.Revise, :(revise() = throw(InterruptException())))
+        try
+            write(bs_in, eval_line(1, "ran = true")); flush(bs_in)
+            envs = read_until_answered(bs_out, [1])
+            errors = [f[:message] for f in frames_of(envs, 1) if f[:kind] == "error"]
+            @test length(errors) == 1 && occursin("InterruptException", only(errors)) && !occursin("internal", only(errors))
+            @test !isdefined(Main, :ran)
+        finally
+            Core.eval(Main, :(Revise = nothing))
+        end
+        close(bs_in)
+    end
+
     # A wire line is written in one write, so an interrupt cannot leave half of it on the wire.
     @testset "write_envelope: one write per envelope" begin
         io = CountingIO()
@@ -710,4 +771,6 @@ Base.flush(::CountingIO) = nothing
     end
 
     include("shim_child.jl")
+    include("stray_interrupt.jl")
+    include("interrupt_child.jl")
 end

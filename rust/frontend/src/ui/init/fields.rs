@@ -240,6 +240,7 @@ impl State {
             focus: initial_focus(cli),
             repl_log: Vec::new(),
             repl_input: String::new(),
+            repl_interrupted: Vec::new(),
             tree_scroll: 0,
             pty_size: None,
             repl_scroll: 0,
