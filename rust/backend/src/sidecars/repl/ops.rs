@@ -695,6 +695,18 @@ done
     /// A `julia` stand-in that says it is ready, reads two requests and exits: it dies with both in flight.
     const DIES: &str = "#!/bin/sh\nprintf '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}\\n'\nread -r a\nread -r b\nexit 3\n";
 
+    /// `ANSWERS` after a start that takes 2 s: a run submitted meanwhile waits in the queue's start.
+    const SLOW_START: &str = r#"#!/bin/sh
+sleep 2
+printf '{"v":1,"id":0,"kind":"evt","op":"repl.ready","payload":{}}\n'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -e 's/.*"id":\([0-9]*\).*/\1/')
+  eid=$(printf '%s' "$line" | sed -n -e 's/.*"eval_id":\([0-9]*\).*/\1/p')
+  printf '{"v":1,"id":%s,"kind":"evt","op":"repl.frame","payload":{"eval_id":%s,"frame":{"kind":"stdout","text":"ran\\n"}}}\n' "$id" "$eid"
+  printf '{"v":1,"id":%s,"kind":"evt","op":"repl.frame","payload":{"eval_id":%s,"frame":{"kind":"done","eval_id":%s,"elapsed_ms":1}}}\n' "$id" "$eid" "$eid"
+done
+"#;
+
     /// A row whose REPL child is `stub`, a script `fresh.jl` in it, and the frame bus every window reads. Fields drop
     /// in order: the row and its child first, then the environment pin, then the folder.
     struct Row {
@@ -863,6 +875,37 @@ done
         let (seen, _) = until_closed(&mut r.bus, 2).await;
         println!("repl-running: after the death every window got {seen:?}; a hello names {:?}", window.running(&r.bus));
         assert!(window.running(&r.bus).is_empty(), "a run whose done is out is named no more: {:?}", window.running(&r.bus));
+    }
+
+    /// A window that redials while its first eval waits for a starting REPL: the hello read then names the run, so the
+    /// redialed window opens an entry for it, and the run's output and `done` are written to that window.
+    #[tokio::test]
+    async fn a_run_accepted_after_a_redials_hello_is_named_to_the_redialed_window() {
+        let mut r = row(SLOW_START);
+        let window = CallerNumbers::default();
+        let eval = json!({ "workspace_id": r.id, "eval_id": 7, "code": "1" });
+        let submit = handle_repl_eval(1, eval, &r.session, &r.workspaces, &window);
+        // The run is announced (`started`) as soon as it is numbered, and the REPL's queue takes it only after the
+        // 2 s start: a hello read at the announcement is a redial's during the start.
+        let mut announced = r.bus.resubscribe();
+        let hello = async {
+            while next_frame(&mut announced).await.1["kind"] != "started" {}
+            window.running(&announced)
+        };
+        let (out, named) = tokio::join!(submit, hello);
+        assert_eq!(named, [7], "a hello during the REPL's start names the window's run");
+        assert_eq!(out.expect("handler")[0].0.payload["accepted"], true);
+        let mut written = Vec::new();
+        while !written.iter().any(|(_, kind): &(u64, String)| kind == "done") {
+            let (id, frame) = next_frame(&mut r.bus).await;
+            let msg = crate::sidecars::repl::ReplFrameMsg { eval_id: id, workspace_id: None, frame, opener: Default::default() };
+            if let Some(m) = window.outgoing(msg).filter(|m| m.eval_id != 0) {
+                written.push((m.eval_id, m.frame["kind"].as_str().unwrap_or("").to_string()));
+            }
+        }
+        println!("repl-redial-late: the redialed window is written {written:?}");
+        assert!(written.iter().all(|(id, _)| *id == 7), "the window's own number: {written:?}");
+        assert!(written.iter().any(|(_, kind)| kind == "stdout"), "the output reaches it: {written:?}");
     }
 
     #[tokio::test]

@@ -69,7 +69,7 @@ fn apply_umask() {}
 /// file half is best-effort: `None` (couldn't create the state dir / open
 /// the file) or a write failure there never breaks the stdout path.
 struct TeeWriter {
-    file: Option<Arc<Mutex<std::fs::File>>>,
+    file: Option<Arc<Mutex<LogFile>>>,
 }
 
 impl std::io::Write for TeeWriter {
@@ -77,7 +77,10 @@ impl std::io::Write for TeeWriter {
         let n = std::io::Write::write(&mut std::io::stdout(), buf)?;
         if let Some(f) = &self.file {
             if let Ok(mut f) = f.lock() {
-                let _ = f.write_all(buf);
+                let _ = f.file.write_all(buf);
+                if let Some(failed) = f.roll_if_over() {
+                    eprintln!("{failed}");
+                }
             }
         }
         Ok(n)
@@ -86,11 +89,68 @@ impl std::io::Write for TeeWriter {
         std::io::Write::flush(&mut std::io::stdout())?;
         if let Some(f) = &self.file {
             if let Ok(mut f) = f.lock() {
-                let _ = f.flush();
+                let _ = f.file.flush();
             }
         }
         Ok(())
     }
+}
+
+/// The daemon's log is rolled when it is over this size, after each write the daemon makes.
+const LOG_ROLL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The daemon's handle on `sotd.log`, its path and its cap. Capsule supervisors append to the same file, so the size
+/// is read from the file, which counts their appends too.
+struct LogFile {
+    file: std::fs::File,
+    path: std::path::PathBuf,
+    cap: u64,
+    /// After a failed roll, the size below which the roll is not tried again (the size at the failure plus `cap`),
+    /// so a roll that cannot succeed costs one copy per `cap` of growth, not one per write; 0 when none failed.
+    retry_above: u64,
+}
+
+impl LogFile {
+    /// Rolls the log when it is over the cap; returns the message for a roll that failed, to print once.
+    fn roll_if_over(&mut self) -> Option<String> {
+        let len = self.file.metadata().map(|m| m.len()).ok()?;
+        if len <= self.cap || len <= self.retry_above {
+            return None;
+        }
+        match roll_log(&self.path, len, self.cap) {
+            Ok(()) => {
+                self.retry_above = 0;
+                None
+            }
+            Err(e) => {
+                self.retry_above = len + self.cap;
+                Some(format!("sotd: could not roll log file {}: {e}", self.path.display()))
+            }
+        }
+    }
+}
+
+/// Copies the last `cap` bytes of the log at `path`, which holds `len`, to `<path>.1` (replacing any older one) and
+/// truncates it in place. Every writer holds a handle on the one file and appends at its end, so a supervisor that
+/// opened the log weeks ago keeps writing into the readable `sotd.log`: a line is readable in `sotd.log` or
+/// `sotd.log.1` until the second roll after it. A line appended between the copy's last read and the truncate is lost
+/// (its window is the copy's close and rename: microseconds on a local disk, longer on a network one). On error the
+/// log is left whole.
+fn roll_log(path: &std::path::Path, len: u64, cap: u64) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom};
+    let mut rolled = path.as_os_str().to_owned();
+    rolled.push(".1");
+    let mut tmp = rolled.clone();
+    tmp.push(".tmp");
+    let copied = std::fs::File::open(path)
+        .and_then(|mut from| from.seek(SeekFrom::Start(len.saturating_sub(cap))).map(|_| from))
+        .and_then(|mut from| std::fs::File::create(&tmp).and_then(|mut to| std::io::copy(&mut from, &mut to)))
+        .and_then(|_| std::fs::rename(&tmp, &rolled));
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::OpenOptions::new().write(true).truncate(true).open(path).map(|_| ())
 }
 
 /// Open (create/append) the private log file, enforcing `0600` unconditionally
@@ -99,7 +159,7 @@ impl std::io::Write for TeeWriter {
 /// failure; the caller falls back to stdout-only logging rather than
 /// treating this as fatal — a log-file problem shouldn't block the daemon
 /// from starting.
-fn open_private_log_file() -> Option<Arc<Mutex<std::fs::File>>> {
+fn open_private_log_file() -> Option<Arc<Mutex<LogFile>>> {
     let dir = paths::state_dir();
     if let Err(e) = paths::ensure_private_dir(&dir) {
         eprintln!(
@@ -130,12 +190,12 @@ fn open_private_log_file() -> Option<Arc<Mutex<std::fs::File>>> {
             eprintln!("sotd: could not chmod log file {}: {e}", path.display());
         }
     }
-    Some(Arc::new(Mutex::new(file)))
+    Some(Arc::new(Mutex::new(LogFile { file, path, cap: LOG_ROLL_BYTES, retry_above: 0 })))
 }
 
 /// The daemon's log: events at the level `filter` passes (`main` gives the `RUST_LOG` level, default `info`), each masked of page secrets
 /// (`sot_log::secret`) and written, without colour codes, through `TeeWriter` to stdout and the private file.
-fn log_subscriber(filter: EnvFilter, file: Option<Arc<Mutex<std::fs::File>>>) -> impl tracing::Subscriber + Send + Sync {
+fn log_subscriber(filter: EnvFilter, file: Option<Arc<Mutex<LogFile>>>) -> impl tracing::Subscriber + Send + Sync {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false)
@@ -722,7 +782,7 @@ mod log_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sotd.log");
         let file = std::fs::File::create(&path).unwrap();
-        let subscriber = log_subscriber(EnvFilter::new("trace"), Some(Arc::new(Mutex::new(file))));
+        let subscriber = log_subscriber(EnvFilter::new("trace"), Some(Arc::new(Mutex::new(LogFile { file, path: path.clone(), cap: LOG_ROLL_BYTES, retry_above: 0 }))));
         let token = "0123456789abcdef0123456789abcdef";
         let _log = sot_log::test_log::install(subscriber);
         tracing::error!(%token, "open http://127.0.0.1:1/x?secret=Ab12Cd34");
@@ -732,5 +792,95 @@ mod log_tests {
         assert!(!written.contains("Ab12Cd34"), "the secret reached the file: {written}");
         // No colour codes: they would split a field name from its `=`, so `secret=` would not read as one marker.
         assert!(!written.contains('\u{1b}'), "the file carries ANSI escapes: {written:?}");
+    }
+
+    use std::io::Write;
+
+    fn tee(path: &std::path::Path, cap: u64) -> TeeWriter {
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+        TeeWriter { file: Some(Arc::new(Mutex::new(LogFile { file, path: path.to_path_buf(), cap, retry_above: 0 }))) }
+    }
+
+    fn supervisor(path: &std::path::Path) -> std::fs::File {
+        std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap()
+    }
+
+    /// Sizes the file through a handle that may set its length, as a daemon that ran for weeks has grown it; the
+    /// append handles that write to it are opened after (Windows gives an append-only handle no right to set the end).
+    fn sized(path: &std::path::Path, len: u64) {
+        std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(path).unwrap().set_len(len).unwrap();
+    }
+
+    /// A log already over the cap when the daemon starts rolls at its first write: `.1` (replacing an older one)
+    /// holds only the last `cap` bytes, the base starts empty, and a writer that held the file open since before
+    /// keeps landing in the base.
+    #[test]
+    fn a_log_over_the_cap_rolls_after_the_first_write_and_a_held_writer_keeps_the_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sotd.log");
+        let rolled = dir.path().join("sotd.log.1");
+        std::fs::write(&rolled, b"older").unwrap();
+        sized(&path, 10 * 1024);
+        let mut held = supervisor(&path);
+        let mut daemon = tee(&path, 4096);
+        daemon.write_all(b"x").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "the base is still the 10 KiB file");
+        assert_eq!(std::fs::metadata(&rolled).unwrap().len(), 4096, ".1 holds the last cap bytes, not the whole log");
+        held.write_all(b"note").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"note", "the held writer lands in the base");
+
+        daemon.write_all(b"y").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"notey", "under the cap nothing rolls");
+    }
+
+    /// The daemon's own writer rolls the file after a write leaves it over the cap, and a supervisor holding the file
+    /// across two rolls still lands in the readable log.
+    #[test]
+    fn a_log_over_the_cap_rolls_within_a_run_and_every_writer_keeps_the_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sotd.log");
+        let rolled = dir.path().join("sotd.log.1");
+        let mut daemon = tee(&path, 4096);
+        let mut sup = supervisor(&path);
+        daemon.write_all(&vec![b'a'; 5 * 1024]).unwrap();
+        assert_eq!(std::fs::read(&rolled).unwrap(), vec![b'a'; 4096], ".1 holds the last 4 KiB");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "the base holds only what follows the roll");
+        sup.write_all(b"first").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"first", "the supervisor's bytes are in the base, not the .1");
+
+        sup.write_all(&vec![b'b'; 300]).unwrap();
+        daemon.write_all(&vec![b'c'; 3900]).unwrap();
+        let second = std::fs::read(&rolled).unwrap();
+        assert!(second.windows(2).any(|w| w == b"bb"), "the supervisor's lines are readable in .1");
+        sup.write_all(b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second", "after two rolls the supervisor still lands in the base");
+    }
+
+    /// A roll that fails prints one message and is not copied again until the log has grown by another cap; a
+    /// success clears that.
+    #[test]
+    fn a_failing_roll_prints_once_and_is_not_retried_before_the_log_grows_by_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sotd.log");
+        let rolled = dir.path().join("sotd.log.1");
+        std::fs::create_dir(&rolled).unwrap(); // the rename over a folder always fails
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        let mut log = LogFile { file, path: path.clone(), cap: 4096, retry_above: 0 };
+        let write = |log: &mut LogFile, n: usize| {
+            log.file.write_all(&vec![b'a'; n]).unwrap();
+            log.roll_if_over()
+        };
+        let first = write(&mut log, 5000).expect("the first failure is reported");
+        assert!(first.contains("could not roll"), "{first}");
+        assert_eq!(log.retry_above, 5000 + 4096);
+        for _ in 0..50 {
+            assert!(write(&mut log, 10).is_none(), "no second message before the growth");
+        }
+        assert_eq!(log.retry_above, 5000 + 4096, "no second roll was tried");
+        std::fs::remove_dir(&rolled).unwrap();
+        assert!(write(&mut log, 4200).is_none(), "past the growth the roll is tried, and now succeeds");
+        assert_eq!(std::fs::metadata(&rolled).unwrap().len(), 4096);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        assert_eq!(log.retry_above, 0, "a success clears the latch");
     }
 }
