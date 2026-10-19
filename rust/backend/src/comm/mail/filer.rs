@@ -689,7 +689,7 @@ mod comm_file_tests {
             opens,
             vec![
                 ("rust/backend/src/comm/mail/inbox.rs".to_string(), 2),
-                ("rust/backend/src/main.rs".to_string(), 1),
+                ("rust/backend/src/daemon_log/mod.rs".to_string(), 1),
                 ("rust/backend/src/rows/spawn/detach.rs".to_string(), 1),
             ]
         );
