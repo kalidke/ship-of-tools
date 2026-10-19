@@ -290,6 +290,8 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   `sot_cleanup_signals` runs right after each trap is set (a copy of the comm library's two helpers, beside `die`).
   sot-apply.sh's trap does not yet: its signal handling is the 0.6.6 item SOT-APPLY-SIGNAL.
 - `sot-apply.sh` is POSIX sh plus `local` (it runs under dash and macOS's `/bin/sh`); the other `.sh` files are bash and
-  run under bash 3.2, macOS's `/bin/bash` (checked by `tests/under-bash.sh`); `.ps1` files are Windows
+  run under bash 3.2, macOS's `/bin/bash` (checked by `tests/under-bash.sh`), where a utility run by the `command`
+  builtin ends a `set -e` shell when it fails, even inside the `if`, `!` or `||` that handles it (install.sh's `git`
+  function runs git through `env`); `.ps1` files are Windows
   PowerShell 5.1 with ASCII-only string literals, parsed under 5.1 by the "Parse PowerShell scripts" step of
   `.github/workflows/rust.yml`.

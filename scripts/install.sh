@@ -103,8 +103,10 @@ on_exit() {
 CURL_BOUND=(--connect-timeout 15 --speed-limit 1000 --speed-time 60)
 # One git function, scoped to this script, carries the pair: every git call below is plain `git`, and the -c pairs reach
 # the lazy fetch a blobless clone's cat-file or worktree add runs. No environment variable: nothing leaks to the daemon
-# and rows this installer starts.
-git() { command git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 "$@"; }
+# and rows this installer starts. `env` finds the git on PATH, never this function; not the `command` builtin, because
+# under bash 3.2 (macOS's /bin/bash) a utility `command` runs ends this set -e shell when it fails, even inside the if,
+# ! or || that handles the failure.
+git() { env git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 "$@"; }
 SSH_OPTS=(-T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10
           -o ControlMaster=no -o ControlPath=none -o ControlPersist=no)
 

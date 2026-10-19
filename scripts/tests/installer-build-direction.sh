@@ -47,13 +47,15 @@ check "it printed no ancestry line" "0" "$(said 'by ancestry')"
 # Every git call of install.sh goes through its one git function, which carries the stall bound (a blobless clone's
 # `cat-file -e` and `worktree add` run a lazy fetch, and the pair reaches that child). Whole file, no ranges or verb lists:
 # the function is defined before the first git call, and no call names git another way (`command git`, `\git`, `env git`,
-# a path to it) outside the function's one line.
+# a path to it) outside the function's one line. That line runs git through `env`: under bash 3.2 a git that `command`
+# runs ends the set -e installer when it fails, inside the if or || that handles it (installer-state.sh's entry cases
+# under scripts/tests/under-bash.sh show it).
 inst="$ENTRY_SRC/scripts/install.sh"
 code_text="$(grep -vE '^[[:space:]]*#' "$inst")"
 def_line="$(printf '%s\n' "$code_text" | grep -nE '^git\(\) \{' | head -1 | cut -d: -f1 || true)"
 first_call="$(printf '%s\n' "$code_text" | grep -nE '(^|[ !(;|&])git (-C|clone|fetch|rev-parse|worktree|cat-file|merge-base|status|ls-files)' | head -1 | cut -d: -f1 || true)"
-check "install.sh defines a git function carrying the stall bound" "yes" \
-    "$([ "$(printf '%s\n' "$code_text" | grep -cE '^git\(\) \{ command git -c http\.lowSpeedLimit=1000 -c http\.lowSpeedTime=60 "\$@"; \}' || true)" = 1 ] && echo yes || echo no)"
+check "install.sh defines a git function carrying the stall bound, run through env" "yes" \
+    "$([ "$(printf '%s\n' "$code_text" | grep -cE '^git\(\) \{ env git -c http\.lowSpeedLimit=1000 -c http\.lowSpeedTime=60 "\$@"; \}' || true)" = 1 ] && echo yes || echo no)"
 check "the git function is defined before the first git call" "yes" \
     "$([ -n "$def_line" ] && [ -n "$first_call" ] && [ "$def_line" -lt "$first_call" ] && echo yes || echo no)"
 check "no git call bypasses the function" "0" \
