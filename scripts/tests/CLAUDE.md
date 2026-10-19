@@ -127,6 +127,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-check-layout.sh`: self-test of `check-layout.sh` over throwaway repos.
 - `test-moved-check.sh`: self-test of `moved-check.sh` over throwaway repos.
 - `test-rc-gate-target.sh`: `rc-gate.sh` names its checkout in its target and refuses the target to any other checkout.
+- `test-rc-gate-logs.sh`: no command an `rc-gate.sh` job runs has its standard output or error in the logs folder; each
+  job kind runs through `rc-gate.sh --job` on stand-ins that name their own streams and exit 7, and the job's log gets
+  their lines and its result the 7. Linux.
 - `on-host.sh`: `on-host.sh HOST DIR -- CMD [ARG...]` runs CMD in DIR on a second host through `ssh HOST bash -s`, with
   the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
 - `under-bash.sh`: `under-bash.sh BASH [-- SUITE...]` checks the shell scripts under BASH, the bash 3.2 that
@@ -401,6 +404,12 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   process left in the container, nested groups included, at the end of a clean run as a leftover, and the container's end
   kills them. Its verdict ends `<logdir>/summary.txt` as `ALLDONE` or `ALLDONE FAILED`; a container stopped from outside
   SIGKILLs rc-gate, so a summary without `ALLDONE` is a failed run.
+- No command an `rc-gate.sh` job runs writes into `<logdir>`: `logged` gives it files in a folder of its own in the
+  container's private `XDG_RUNTIME_DIR`, on the host's own disk, and appends them to the job's log when the command ends
+  (until then the log holds only its header line). `<logdir>` is wherever the caller reads it, often a network home,
+  where each close of a written file waits for the file server to commit it, and a child closes the standard streams it
+  inherited as it sets up its own, so a test's bound on that setup (a native launch's ready, 10 s) would time the file
+  server.
 - `CARGO_TARGET_DIR` is the gate's alone while it runs: its jobs run the binaries in it (the tests.tsv paths, `sotd`,
   `sot-capsule`), and summary.txt's first line names one head and tree; a build of another checkout into it would replace
   them mid-run. A target belongs to one checkout for good: the first run names it in `<target>/rc-gate-checkout` and a run
