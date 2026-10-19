@@ -798,6 +798,40 @@ mod tests {
             command
         }
 
+        /// A command that leaves a file in its temporary folder, as Pkg leaves a package download there when the call
+        /// that made it does not reach its end, writes the file's path to `report`, then runs `then`.
+        fn leaving_command(report: &std::path::Path, then: &str) -> tokio::process::Command {
+            let mut command = tokio::process::Command::new("sh");
+            command
+                .args(["-c", &format!("f=$(mktemp) && echo \"$f\" > \"$1\" && {then}"), "sh"])
+                .arg(report);
+            command
+        }
+
+        /// The file a [`leaving_command`] named, removed when the test ends however it ends.
+        struct Left(std::path::PathBuf);
+
+        impl Left {
+            fn named_in(report: &std::path::Path) -> Self {
+                Self(std::fs::read_to_string(report).expect("the command named its file").trim().into())
+            }
+
+            /// Whether the file is gone within 10 s.
+            async fn goes(&self) -> bool {
+                let began = Instant::now();
+                while self.0.exists() && began.elapsed() < Duration::from_secs(10) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                !self.0.exists()
+            }
+        }
+
+        impl Drop for Left {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
         async fn pid_written(file: &std::path::Path) {
             let began = Instant::now();
             while std::fs::read_to_string(file).map_or(true, |t| t.trim().is_empty()) {
@@ -847,6 +881,47 @@ mod tests {
             assert!(
                 grandchild.gone(),
                 "the dropped command's grandchild outlived it"
+            );
+            assert!(signal.held_groups().is_empty());
+        }
+
+        /// What a command leaves in its temporary folder goes with it: a julia step that exits on an error Pkg rethrows
+        /// leaves its download there, and nothing else removes it.
+        #[tokio::test]
+        async fn a_finished_updater_commands_temporary_files_go_with_it() {
+            let signal = a_signal();
+            let dir = tempfile::tempdir().unwrap();
+            let report = dir.path().join("left");
+            let output = UpdaterSpawner(signal)
+                .output(&mut leaving_command(&report, "exit 1"))
+                .await
+                .expect("the command ran");
+            assert_eq!(output.status.code(), Some(1));
+            let left = Left::named_in(&report);
+            assert!(
+                left.goes().await,
+                "the finished command's temporary file is still there: {}",
+                left.0.display()
+            );
+        }
+
+        /// A command its caller drops (a step past its bound) leaves nothing in its temporary folder either.
+        #[tokio::test]
+        async fn a_dropped_updater_commands_temporary_files_go_with_it() {
+            let signal = a_signal();
+            let dir = tempfile::tempdir().unwrap();
+            let report = dir.path().join("left");
+            let mut command = leaving_command(&report, "exec sleep 3180");
+            let task =
+                tokio::spawn(async move { UpdaterSpawner(signal).output(&mut command).await });
+            pid_written(&report).await;
+            let left = Left::named_in(&report);
+            task.abort();
+            let _ = task.await;
+            assert!(
+                left.goes().await,
+                "the dropped command's temporary file is still there: {}",
+                left.0.display()
             );
             assert!(signal.held_groups().is_empty());
         }
