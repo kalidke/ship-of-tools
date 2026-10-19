@@ -36,19 +36,17 @@ done
 TAG="v$VERSION"
 
 # ---- preflight -------------------------------------------------------------
-# Two places a tag is legitimately cut from (owner ruling 2026-09-24):
-# CANDIDATES from the release line's own branch (`fixes/<version>` or
-# `rc/<version>`), which is where work accumulates from one tag until the next;
-# and the FINAL release from main, which the candidate branch merges into once
-# the line is ready. So main advances only to a final's release commit and the next
-# line's dev stamp after it, and a checkout following it is never mid-candidate. Nothing else is accepted,
-# because a tag from an arbitrary branch is a release whose history nobody can
-# find. Whichever it is, `$branch` is then the one thing the CI gate reads and
+# Every tag, candidate or final, is cut from main. The maintainer, 2026-10-16:
+# "so just like our julia packages, once we tag we move main to next version as
+# dev." So main is the -dev line: work merges to main, a cut is tagged from it,
+# and the stamp after the tag moves main to the next version (below). Nothing
+# else is accepted, because a tag from an arbitrary branch is a release whose
+# history nobody can find. `$branch` is then the one thing the CI gate reads and
 # the push pushes — below here the script never names a branch again.
 branch=$(git rev-parse --abbrev-ref HEAD)
 case "$branch" in
-    main | fixes/* | rc/*) ;;
-    *) echo "preflight: on '$branch' — a tag is cut from main (final) or from a release line's candidate branch (fixes/* or rc/*)" >&2; exit 1 ;;
+    main) ;;
+    *) echo "preflight: on '$branch' — every tag is cut from main" >&2; exit 1 ;;
 esac
 if [[ $ALLOW_DIRTY -eq 0 && -n "$(git status --porcelain)" ]]; then
     echo "preflight: working tree not clean (see git status; --allow-dirty to override)" >&2; exit 1
@@ -131,15 +129,14 @@ git fetch -q origin "refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null
 if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$branch")" ]]; then
     echo "preflight: HEAD != origin/$branch — pull/push first" >&2; exit 1
 fi
-# CI is the TAG gate, not the per-PR gate (owner ruling 2026-09-08): the
+# CI is the TAG gate, not the per-PR gate: the
 # LATEST run of each ON THE BRANCH BEING CUT must be green and must sit at
 # HEAD. Anything else (failed, cancelled, still running, a run on any other
 # commit) refuses the cut; rerun a flaky leg (`gh run rerun <id> --failed`),
 # never skip it. gh is required — a release is never cut blind. Dispatch both
-# workflows there first (`gh workflow run <wf> --ref <branch>`), on main too:
-# push runs are path-filtered, so HEAD may have none of its own, and the cut's
-# runs are dispatched ones (owner ruling). An empty list REFUSES the cut rather than waving it
-# through, which is the whole reason this reads the branch instead of main.
+# workflows there first (`gh workflow run <wf> --ref <branch>`): push runs are
+# path-filtered, so HEAD may have none of its own, and the cut's runs are
+# dispatched ones. An empty list REFUSES the cut rather than waving it through.
 command -v gh >/dev/null 2>&1 || { echo "preflight: gh not found — CI on $branch cannot be verified" >&2; exit 1; }
 for wf in rust.yml CI.yml; do
     # The version-stamp commit's run is skipped by the workflows' own `if`
