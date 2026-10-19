@@ -423,6 +423,8 @@ end
             @test read(f, String) == text
             @test isempty(filter(n -> n != "settings.json", readdir(dir)))
         end
+    end
+end
 
 @testset "_remove_stale_comm_hooks!: no hook raises a dialog on a Claude row" begin
     # PermissionRequest fires when a request is queued, not when its dialog shows (ADR 0044, dialog amendment), so
