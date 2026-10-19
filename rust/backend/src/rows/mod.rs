@@ -11,7 +11,7 @@ pub(crate) mod state_folder;
 pub(crate) mod store;
 pub(crate) mod workspace;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 
@@ -233,6 +233,8 @@ struct Inner {
     /// review round 3), so it guards every row's lifecycle, not only a
     /// capsule's.
     capsule_guards: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// Slugs a `workspace.create` is working on, from before its gates to its end (`Workspaces::claim_create`).
+    creating: HashSet<String>,
 }
 
 /// A row's session name for the given label, `sot-be-<slug>` — the

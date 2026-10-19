@@ -323,36 +323,33 @@ fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_
     Ok((capsule_argv, capsule_state_root, account))
 }
 
-/// What a create replaces, taken before it inserts: the same-slug row and the toml's bytes (`None`: no file).
+/// What a create's insert replaced: the same-slug row, and the toml's bytes taken before the insert (`None`: no file).
 struct Prior {
     row: Option<std::sync::Arc<crate::rows::Workspace>>,
     toml: Option<Vec<u8>>,
 }
 
-impl Prior {
-    fn take(workspaces: &Workspaces, slug: &str) -> Self {
-        Prior {
-            row: workspaces.list().into_iter().find(|w| w.slug == slug),
-            toml: std::fs::read(crate::rows::store::toml_path_for(slug)).ok(),
-        }
+/// The toml's bytes, `None` when there is no file; any other read error is returned.
+fn read_prior_toml(slug: &str) -> std::io::Result<Option<Vec<u8>>> {
+    match std::fs::read(crate::rows::store::toml_path_for(slug)) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
     }
+}
 
-    /// Undoes the create's insert and save: the prior row and toml come back as they were, and a row or file
-    /// this create added goes.
-    fn restore(self, workspaces: &Workspaces, created: &crate::rows::Workspace) {
-        match self.row {
-            Some(row) => workspaces.restore(row),
-            None => {
-                let _ = workspaces.remove_by_id(&created.workspace_id);
-            }
+impl Prior {
+    /// Undoes the create's insert and save, but only while the registry still holds the row this create inserted:
+    /// a destroy or another insert that got there first owns the row and its toml now. The prior row and toml come
+    /// back as they were, and a row or file this create added goes.
+    fn restore(self, workspaces: &Workspaces, created: &std::sync::Arc<crate::rows::Workspace>) {
+        if !workspaces.undo_insert(created, self.row) {
+            return;
         }
         let toml_path = crate::rows::store::toml_path_for(&created.slug);
         let undone = match &self.toml {
-            Some(bytes) => std::fs::write(&toml_path, bytes),
-            None => match std::fs::remove_file(&toml_path) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                other => other,
-            },
+            Some(bytes) => crate::durable::write(&toml_path, bytes),
+            None => crate::durable::remove(&toml_path),
         };
         if let Err(e) = undone {
             tracing::warn!(error = %e, path = ?toml_path, "workspace.create rollback: toml restore failed");
@@ -500,6 +497,16 @@ pub async fn handle_workspace_create(
         serde_json::from_value(payload_json).context("workspace.create payload")?;
     tracing::info!(label = %req.label, project_root = %req.project_root, boot, "workspace.create");
 
+    // One create per slug at a time, from before the gates: a second one is refused, so a rollback never meets
+    // another create's in-flight row.
+    let incoming_slug = crate::paths::slug(&req.label);
+    let Some(_claim) = workspaces.claim_create(&incoming_slug) else {
+        let payload = json!({
+            "error": format!("workspace '{}' (slug '{}') is being created: wait for that create to finish", req.label, incoming_slug),
+            "code": "label_in_use",
+        });
+        return Ok(vec![(Frame::res(req_id, op::WORKSPACE_CREATE, payload), None)]);
+    };
     let project_root = requested_root(&req);
     if let Err(out) = check_create_root(req_id, &req, &project_root, workspaces) {
         return Ok(out);
@@ -540,8 +547,18 @@ pub async fn handle_workspace_create(
             )]);
         }
     };
-    let prior = Prior::take(workspaces, &ws_seed.slug);
-    let ws_handle = workspaces.insert(ws_seed);
+    let prior_toml = match read_prior_toml(&ws_seed.slug) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let payload = json!({
+                "error": format!("capsule workspace could not be started: the registration of '{}' is unreadable: {e}", ws_seed.slug),
+                "code": "capsule_spawn_failed",
+            });
+            return Ok(vec![(Frame::res(req_id, op::WORKSPACE_CREATE, payload), None)]);
+        }
+    };
+    let (ws_handle, replaced) = workspaces.insert_replacing(ws_seed);
+    let prior = Prior { row: replaced, toml: prior_toml };
     if let Err(e) = crate::rows::store::save(&ws_handle) {
         tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
     }

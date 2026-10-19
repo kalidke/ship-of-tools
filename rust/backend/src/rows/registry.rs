@@ -16,12 +16,14 @@ impl Workspaces {
     /// once at startup (scan_disk) and during explicit workspace
     /// metadata edits, neither of which is on a hot path.
     pub fn insert(&self, ws: Workspace) -> Arc<Workspace> {
+        self.insert_replacing(ws).0
+    }
+
+    /// `insert`, also returning the row of the same slug it replaced.
+    pub fn insert_replacing(&self, ws: Workspace) -> (Arc<Workspace>, Option<Arc<Workspace>>) {
         let mut g = self.inner.write().expect("workspaces lock");
-        let preserved_id = g
-            .by_slug
-            .get(&ws.slug)
-            .cloned()
-            .and_then(|id| g.by_id.get(&id).map(|w| w.workspace_id.clone()));
+        let replaced = g.by_slug.get(&ws.slug).cloned().and_then(|id| g.by_id.get(&id).cloned());
+        let preserved_id = replaced.as_ref().map(|w| w.workspace_id.clone());
         let final_ws = match preserved_id {
             Some(id) => {
                 // Same slug → keep id, new metadata wins.
@@ -51,7 +53,7 @@ impl Workspaces {
         if let Some(tx) = g.watch_bus.clone() {
             Self::spawn_workspace_watcher(&arc, tx);
         }
-        arc
+        (arc, replaced)
     }
 
     /// Spawn `ws`'s file watcher onto the shared bus. Cheap inline
@@ -364,16 +366,41 @@ impl Workspaces {
         g.by_id.values().find(|ws| ws.session_name == target).cloned()
     }
 
-    /// Puts `prior`, a row a same-slug `insert` replaced, back under its slug and id. Its observer, guard and
-    /// watcher were never touched, so nothing else changes.
-    pub fn restore(&self, prior: Arc<Workspace>) {
+    /// Claims `slug` for one `workspace.create`; `None` when another create holds it. The claim ends when dropped.
+    pub fn claim_create(&self, slug: &str) -> Option<CreateClaim> {
         let mut g = self.inner.write().expect("workspaces lock");
-        g.by_slug.insert(prior.slug.clone(), prior.workspace_id.clone());
-        g.by_id.insert(prior.workspace_id.clone(), prior);
+        g.creating
+            .insert(slug.to_string())
+            .then(|| CreateClaim { workspaces: self.clone(), slug: slug.to_string() })
+    }
+
+    /// Undoes a create's insert: when the registry still holds `inserted`, puts `prior` (the row it replaced) back
+    /// under its slug and id, or removes the row if there was none. Returns whether it acted; `false` means a
+    /// destroy or another insert got there first, and the caller leaves the row and its toml alone. A restored
+    /// row's observer, guard and watcher were never touched.
+    pub fn undo_insert(&self, inserted: &Arc<Workspace>, prior: Option<Arc<Workspace>>) -> bool {
+        let mut g = self.inner.write().expect("workspaces lock");
+        if !g.by_id.get(&inserted.workspace_id).is_some_and(|w| Arc::ptr_eq(w, inserted)) {
+            return false;
+        }
+        match prior {
+            Some(prior) => {
+                g.by_slug.insert(prior.slug.clone(), prior.workspace_id.clone());
+                g.by_id.insert(prior.workspace_id.clone(), prior);
+            }
+            None => {
+                Self::remove_locked(&mut g, &inserted.workspace_id);
+            }
+        }
+        true
     }
 
     pub fn remove_by_id(&self, id: &str) -> Option<Arc<Workspace>> {
         let mut g = self.inner.write().expect("workspaces lock");
+        Self::remove_locked(&mut g, id)
+    }
+
+    fn remove_locked(g: &mut Inner, id: &str) -> Option<Arc<Workspace>> {
         let removed = g.by_id.remove(id)?;
         g.by_slug.remove(&removed.slug);
         // ADR 0043 decision 33: the guard dies with the row. A caller
@@ -392,6 +419,19 @@ impl Workspaces {
             g.default_id = None;
         }
         Some(removed)
+    }
+}
+
+/// A slug held by one `workspace.create` (`Workspaces::claim_create`); released on drop.
+pub struct CreateClaim {
+    workspaces: Workspaces,
+    slug: String,
+}
+
+impl Drop for CreateClaim {
+    fn drop(&mut self) {
+        let mut g = self.workspaces.inner.write().unwrap_or_else(|e| e.into_inner());
+        g.creating.remove(&self.slug);
     }
 }
 

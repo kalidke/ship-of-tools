@@ -425,4 +425,106 @@ mod rollback_tests {
         assert!(reg.list().is_empty());
         assert!(!crate::rows::store::toml_path_for("fresh").exists());
     }
+
+    /// Seeds the capsule row "rb" (task "old task", root `old`) with its toml; returns the row and the toml's bytes.
+    fn seed_prior(reg: &Workspaces, env_dir: &std::path::Path)
+        -> (std::sync::Arc<Workspace>, Vec<u8>, std::path::PathBuf) {
+        let old_root = env_dir.join("old");
+        std::fs::create_dir_all(&old_root).unwrap();
+        let mut seed = Workspace::from_label("rb", old_root, false, "none".into(), String::new(), "old task".into());
+        seed.runtime = "capsule".into();
+        let prior = reg.insert(seed);
+        let toml = crate::rows::store::save(&prior).expect("prior toml");
+        let before = std::fs::read(&toml).unwrap();
+        (prior, before, toml)
+    }
+
+    /// Spawns a create of "rb" with `task` and its own root; the join handle yields the reply's code.
+    fn spawn_create(reg: &Workspaces, env_dir: &std::path::Path, task: &str) -> tokio::task::JoinHandle<String> {
+        let root = env_dir.join(task);
+        std::fs::create_dir_all(&root).unwrap();
+        let reg = reg.clone();
+        let task = task.to_string();
+        tokio::spawn(async move {
+            let (ws_events, _rx) = broadcast::channel(16);
+            let payload = json!({"label": "rb", "project_root": root.to_string_lossy(), "agent": "none", "task": task});
+            let out = handle_workspace_create(1, payload, &Session::new(), &reg, &ws_events).await.unwrap();
+            out[0].0.payload["code"].as_str().unwrap_or("").to_string()
+        })
+    }
+
+    async fn until_task(reg: &Workspaces, task: &str) {
+        for _ in 0..500 {
+            if reg.list().iter().any(|w| w.task == task) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("no row with task {task}");
+    }
+
+    /// A destroy that wins the row guard while a create waits for it stays destroyed: the create's rollback
+    /// restores nothing, in the registry or on disk.
+    #[tokio::test]
+    async fn a_destroy_during_a_failing_create_stays_destroyed() {
+        let env_dir = tempfile::Builder::new().prefix("sot-createrb-").tempdir().unwrap();
+        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        let reg = Workspaces::new();
+        let (prior, _before, toml) = seed_prior(&reg, env_dir.path());
+        let guard = reg.capsule_guard(&prior.workspace_id).unwrap();
+        let held = guard.lock().await;
+        let create = spawn_create(&reg, env_dir.path(), "new task");
+        until_task(&reg, "new task").await;
+        assert!(crate::rows::run::end::remove_row_files("rb"));
+        reg.remove_by_id(&prior.workspace_id);
+        drop(held);
+        create.await.unwrap();
+        let rows: Vec<String> = reg.list().iter().map(|w| w.task.clone()).collect();
+        assert!(rows.is_empty(), "rows after: {rows:?}");
+        assert!(!toml.exists(), "the destroyed row's toml stays gone");
+    }
+
+    /// A second create of a slug being created is refused as in use, so the first one's rollback restores the
+    /// prior row and toml, never another create's metadata.
+    #[tokio::test]
+    async fn two_same_slug_creates_leave_the_prior_row_when_both_fail() {
+        let env_dir = tempfile::Builder::new().prefix("sot-createrb-").tempdir().unwrap();
+        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        let reg = Workspaces::new();
+        let (prior, before, toml) = seed_prior(&reg, env_dir.path());
+        let guard = reg.capsule_guard(&prior.workspace_id).unwrap();
+        let held = guard.lock().await;
+        let a = spawn_create(&reg, env_dir.path(), "A");
+        until_task(&reg, "A").await;
+        let b = spawn_create(&reg, env_dir.path(), "B");
+        let refused = tokio::time::timeout(std::time::Duration::from_secs(5), b).await;
+        assert_eq!(refused.expect("B waited on the row guard").unwrap(), "label_in_use",
+            "a create of a slug being created is refused");
+        drop(held);
+        assert_eq!(a.await.unwrap(), "capsule_spawn_failed");
+        let rows: Vec<String> = reg.list().iter().map(|w| w.task.clone()).collect();
+        assert_eq!(rows, vec!["old task".to_string()]);
+        assert_eq!(std::fs::read(&toml).unwrap(), before, "the toml is the prior bytes");
+    }
+
+    /// A toml the create cannot read (anything but absent) refuses it before the insert.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_toml_refuses_the_create_before_the_insert() {
+        use std::os::unix::fs::PermissionsExt;
+        let env_dir = tempfile::Builder::new().prefix("sot-createrb-").tempdir().unwrap();
+        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        let reg = Workspaces::new();
+        let (_prior, _before, toml) = seed_prior(&reg, env_dir.path());
+        std::fs::set_permissions(&toml, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&toml).is_ok() {
+            return; // running as a user the mode does not bind
+        }
+        let code = spawn_create(&reg, env_dir.path(), "new task").await.unwrap();
+        assert!(toml.exists(), "the toml the create could not read stays");
+        std::fs::set_permissions(&toml, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(code, "capsule_spawn_failed");
+        let rows: Vec<String> = reg.list().iter().map(|w| w.task.clone()).collect();
+        assert_eq!(rows, vec!["old task".to_string()], "no insert happened");
+    }
 }

@@ -262,7 +262,13 @@ connection is the only handle.
 ## Known limits (0.6.6)
 
 - (c) Fixed: a failed create restores the prior registration and toml byte for byte and removes only what
-  that create added (`Prior` in `rust/backend/src/rows/ops/create.rs`).
+  that create added (`Prior` in `rust/backend/src/rows/ops/create.rs`), only while the registry still holds the row
+  that create inserted (`Workspaces::undo_insert`); a create claims its slug first, so a second create of it is
+  refused. On Windows the same-label create of a live row that reads as stopped is not refused and succeeds: it
+  rewrites the row's root, task and account while the old run keeps its own (Unix reaches the rollback through the
+  supervisor's contended exit; Windows creates the supervisor directly and settles against the live one). A row's
+  phase reads `stopped` until its observer first polls, after a daemon start as much as for a live row, so the gate
+  cannot tell the two apart without asking the live authority, which is a new design left out of 0.6.6.
 - (e) The macOS check has not run on every commit; boot identity on a Mac is unverified.
 - (f) Launchers: after the fix round the ensure logs under the install prefix; the Windows log cap (keep 5 per
   stream, 16 MB unheld total) applies across starts, and one running daemon's own log
