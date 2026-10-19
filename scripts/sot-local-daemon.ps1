@@ -119,8 +119,8 @@
 # a file with any other handle open, even one that allows delete sharing,
 # fails the open and is skipped with one log line naming the real error.
 # Known limit: one protected file can exceed the cap. The daemon writes its
-# log to stdout only when stdout is not a regular file, so this file holds
-# only its stderr; its own log is <state>\state\sotd.log (rust/backend/src/
+# log to stdout only when stdout is not a regular file, so each start's stdout
+# file stays empty and its stderr file holds only the daemon's stderr; its own log is <state>\state\sotd.log (rust/backend/src/
 # main.rs::open_private_log_file, via paths::state_dir()), which it rolls. If
 # the spawned process exits before the pipe comes up, that's logged with its
 # exit code and the wait stops early rather than spinning out the full
@@ -516,6 +516,12 @@ $daemonStderr = Join-Path $logDir "sotd-local.stderr.$logStamp.log"
 # --adopt-legacy-registry: only THE canonical per-user daemon (this script)
 # may run the one-time legacy-registry adoption (rows/store/mod.rs); a
 # scratch/test daemon must never pass this (field defect).
+# The daemon's own log of record, asked of the daemon (it owns the path); a stale binary yields a plain description.
+function Get-DaemonLogPath {
+    try { $q = (& $daemonExe log-path 2>$null | Select-Object -First 1) } catch { $q = $null }
+    if ($q) { return $q.ToString().Trim() }
+    return 'sotd.log in its state folder'
+}
 $daemonArgLine = '--socket "{0}" --project-root "{1}" --label local --adopt-legacy-registry' -f $PipePath, $ProjectRoot
 Write-LocalDaemonLog "starting: $daemonExe $daemonArgLine"
 try {
@@ -526,7 +532,7 @@ try {
     Write-LocalDaemonLog "REFUSED: failed to start $daemonExe - $($_.Exception.Message)"
     exit 1
 }
-Write-LocalDaemonLog "spawned pid=$($proc.Id), output in $daemonStdout and $daemonStderr"
+Write-LocalDaemonLog "spawned pid=$($proc.Id), stderr in $daemonStderr (its log lines are in $(Get-DaemonLogPath))"
 
 # Wait for the pipe to come up, up to $LaunchWaitSeconds: a previous daemon
 # may still be shutting down, and the one just spawned waits on the daemon
@@ -553,6 +559,6 @@ if ($up) {
     Write-LocalDaemonLog "pipe=$PipePath"
     exit 0
 } else {
-    Write-LocalDaemonLog "did not come up on $PipePath within ${LaunchWaitSeconds}s - leaving pid=$($proc.Id) running"
+    Write-LocalDaemonLog "did not come up on $PipePath within ${LaunchWaitSeconds}s - leaving pid=$($proc.Id) running; its log lines are in $(Get-DaemonLogPath)"
     exit 1
 }

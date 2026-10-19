@@ -260,6 +260,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `<sd>/rollout-evidence.json` and its reader `read_rollout_evidence` (provisional; no writer, no caller) | disk | capsule | `rust/log/src/store/rollout.rs` `read_rollout_evidence` |
 | SDK helper-protocol 1 | wire | capsule | `rust/log/src/claude.rs`; `rust/log/claude-sdk-helper/src/protocol.ts` |
 | sotd subcommand `session-socket-path` | CLI | topology | `rust/backend/src/main.rs` `parse_args`; `rust/protocol/src/topology/endpoint.rs` `session_socket_path` |
+| sotd subcommand `log-path` | CLI | server | `rust/backend/src/main.rs` `parse_args`; `rust/backend/src/paths.rs` `state_dir` |
 | sotd subcommands `topology ...`, `status`, `stdio-bridge` | CLI | topology | `rust/backend/src/main.rs` `parse_args`; `rust/backend/src/topology/cli.rs` `run`; `rust/backend/src/topology/status.rs` `run`; `rust/backend/src/topology/stdio_bridge.rs` `run` |
 | sotd subcommand `ancestors` | CLI | messaging | `rust/backend/src/comm/registry/ancestors.rs` `run` |
 | sotd subcommand `trust declare` | CLI | agents | `rust/backend/src/agents/trust_declaration.rs` `declare_trust`; routing `rust/backend/src/main.rs` |

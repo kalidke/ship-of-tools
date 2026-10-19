@@ -312,9 +312,10 @@ sot_comm_refresh() {  # <checkout>
 # is still shutting down. Never removes the socket: the
 # daemon unlinks a stale one itself, and an ensure-side rm can delete a
 # successor's fresh bind. Never kills a daemon it started: the daemon's own
-# lock wait is shorter than this one. A backend it starts itself logs under
-# the install to a file of its own, <prefix>/logs/sotd.<UTC start>Z-<pid>.log,
-# never to a path another user can hold; the newest by name is the current one.
+# lock wait is shorter than this one. A backend it starts itself leaves its
+# stderr under the install in a file of its own, <prefix>/logs/sotd.<UTC start>Z-<pid>.log,
+# never at a path another user can hold; the newest by name is the current one.
+# Its log lines are in the daemon's own sotd.log (`sotd log-path`), not there.
 sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     SOT_ENSURE_NOTICE=""
     local prefix="$1" sotd_bin="$2" socket="$3" mode=nohup pid="" code="" start now warned=0
@@ -370,8 +371,12 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
         sleep 0.25
     done
     echo "ERROR: the backend did not open $socket within ${SOT_LAUNCH_WAIT_S}s" >&2
+    # The daemon is alive, and its log lines are in its own log, which the daemon names.
+    local daemon_log
+    daemon_log="$("$sotd_bin" log-path 2>/dev/null)" || daemon_log=""
+    [ -z "$daemon_log" ] || echo "its log: $daemon_log" >&2
     if [ "$mode" = systemd ]; then echo "see journalctl --user -u sotd.service" >&2
-    else echo "see $logfile" >&2; fi
+    else echo "see $logfile (its stderr)" >&2; fi
     return 1
 }
 

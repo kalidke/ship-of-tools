@@ -8,13 +8,14 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 - `Cargo.toml`: the crate; one `[[bin]]` named `sotd` at `src/main.rs`, and the test-only feature `daemon-lifetime-faults` (phase barriers for `tests/daemon_lifetime`; no installed build has it)
 - `sidecars/`: `mathjax/`, the MathJax renderer (`render.mjs` and its npm lock) that `src/sidecars/mathjax.rs` runs
 - `tests/`: the integration suites, each a real `sotd` over the real wire (own page)
-- `src/main.rs`: subcommand routing, offline trust declaration, then daemon boot: umask, directory checks, the tee log and `server::run`.
+- `src/main.rs`: subcommand routing (including `log-path`, the daemon's log of record), offline trust declaration, then daemon boot: umask, directory checks, the tee log and `server::run`.
 - `src/clients.rs`: the connected-frontend roster and fe.* and version.query handlers; fe.command.send logs optional forwarded workspace/path plus target and delivery count.
 - `src/clients_show.rs`: which window a command goes to: a preview to every window, anything else to the window in use
 - `src/clients_window.rs`: a window's state across its connections (the REPL runs it numbered, its presence, the owner
   of its pages), so a window that redials keeps it; a window is its hello's host and `instance`
 - `src/clients_relay_tests.rs`: the relay log of fe.command.send: forwarded workspace and path, target and delivery count
 - `src/clients_tests.rs`: unit tests of the roster
+- `src/log_tests.rs`: unit tests of the daemon's log: the masking, the roll, and where a regular-file stdout and a missing log file send the lines
 - `src/session.rs`: the revision counter and the bounded event ring a reconnecting client replays from (`Session::bump`)
 - `src/paths.rs`: the platform helpers: state and socket paths, `resource_dir`, the private-directory checks
 - `src/durable.rs`: the one fsynced write and delete for the records a later start acts on

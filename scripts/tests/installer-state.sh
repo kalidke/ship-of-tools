@@ -493,7 +493,7 @@ reap_stub "$d"
 
 # ---------------------------------------------------------------------------
 case_start "ensure_log_folder_is_owner_only"
-# The daemon copies every log line to its stdout log, and old logs hold unmasked secrets, so the folder is what keeps
+# Old logs hold unmasked secrets, so the folder is what keeps
 # other accounts out: new, and a folder an earlier install made 755 with its files (ADR 0049, User isolation).
 d="$WORK/logs-mode"; mkdir -p "$d/home"
 ( umask 022; STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0 )
