@@ -76,7 +76,7 @@ impl State {
     /// reply answered) alone — not `preview_node_id_fired` (the node the
     /// most recent REQUEST asked for: field report round 2, a request
     /// racing ahead of its own reply) and not `pinned_preview_node_id`
-    /// (round-2 ruling: a pin is stamped from the cursor row, not from an
+    /// (a pin is stamped from the cursor row, not from an
     /// installed reply, so it can equally outrun what's shown — and
     /// persistently, since `maybe_fire_preview` refuses to fetch anything
     /// while pinned). `o`/`W`/`O` act on what is VISIBLE, period; when a

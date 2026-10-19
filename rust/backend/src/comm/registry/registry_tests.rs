@@ -4,7 +4,7 @@ use super::*;
 
 #[cfg(test)]
 mod capsule_comm_handle_tests {
-    // Manager review (S5, Codex finding B8): `capsule_comm_handle` reads
+    // (S5, Codex finding B8): `capsule_comm_handle` reads
     // back the handle `comm-join.sh`'s own derivation wrote into the
     // self-file the daemon pinned via `SOT_COMM_SELF_FILE` — restored as
     // the FALLBACK `comm_handle_for_workspace` reaches for once a row's
@@ -100,7 +100,7 @@ mod capsule_comm_handle_tests {
 
 #[cfg(test)]
 mod with_comm_registry_lock_panic_tests {
-    // Coordinator hardening: `f` runs inside the caller's `spawn_blocking`,
+    // Hardening: `f` runs inside the caller's `spawn_blocking`,
     // which contains a panic (the awaiting task just sees a `JoinError`) —
     // but the OLD code released `.registry.lock` only on the normal return
     // path, so a panic mid-critical-section left it behind forever. Since

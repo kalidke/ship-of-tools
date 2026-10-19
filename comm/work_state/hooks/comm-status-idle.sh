@@ -53,8 +53,7 @@
 #   (2) NEW MAIL. A turn does not end while directed sot-comm mail sits unread:
 #       the hook reads this handle's inbox and, when a line newer than that
 #       file's read cursor is addressed to it, blocks with "run comm-poll.sh". That is how a BUSY
-#       session is reached — no watcher, no keystrokes, no human (the messaging
-#       ruling, 2026-09-26). See the branches below for the exact rules.
+#       session is reached — no watcher, no keystrokes, no human (2026-09-26). See the branches below for the exact rules.
 #
 #   (3) TURN END. Otherwise send `stop`: comm-status.sh sets `done` only when
 #       `floor` was `user` and neither `question` nor `waiting` is set, then
@@ -342,8 +341,7 @@ if [ -n "$last_text" ]; then
             END { print s }')"
     fi
 fi
-# (2) NEW MAIL — delivery to a BUSY session, at the turn boundary (messaging
-# ruling §2, 2026-09-26). The inbox is a file this session can read, so nothing
+# (2) NEW MAIL — delivery to a BUSY session, at the turn boundary (2026-09-26). The inbox is a file this session can read, so nothing
 # has to reach into it: a turn does not END while directed mail sits unread. The
 # block's reason is fed back to the model, which polls, acts, then ends the
 # turn — and polling is what advances the cursor, so this terminates by

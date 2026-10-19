@@ -243,7 +243,7 @@ async fn wait_until_absent(socket_path: &std::path::Path, client_id: &str, bound
 
 /// The defect this lane fixes: an `fe` connection that stops sending
 /// anything at all -- no `ping`, no other op -- since hello must be left
-/// alone: the reaper is OPT-IN BY PING (manager compatibility fix,
+/// alone: the reaper is OPT-IN BY PING (compatibility fix,
 /// post-review), armed on this connection's first `ping`, never at hello.
 /// An `fe`/`bridge` peer too old to send `ping` (a frontend box or comm
 /// bridge not yet converged from main) would otherwise be dropped every

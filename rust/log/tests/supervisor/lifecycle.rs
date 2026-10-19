@@ -321,7 +321,7 @@ fn resume_after_a_requested_end_serves_ended_no_respawn_then_exits_on_stop() {
 /// was observed before relying on the shell's own timed self-exit (the
 /// test's own name claims it); logs the observed phase at every poll so
 /// a future CI failure names the stuck state instead of just timing out
-/// (coordinator's round-4 addendum: the pre-rewrite version of this test
+/// (round-4 addendum: the pre-rewrite version of this test
 /// wedged past its own grace bound on real Windows CI twice).
 #[test]
 fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {

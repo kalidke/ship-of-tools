@@ -286,7 +286,7 @@ async fn capsule_pty_input_lands_despite_a_nonblank_status_line_on_screen() {
     env.kill_daemon_bounded().await;
 }
 
-/// Round-5 (Opus review) ruling 1's core: once the text lands,
+/// Core of the round-5 review: once the text lands,
 /// `write_and_enter` answers `Ok` with `enter: not_sent` when the take
 /// epoch changes before the Enter write, never an `Err` -- a stolen pen
 /// must never look like "not delivered, retype me." A SECOND, real

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// This daemon's own listener path, BARE (manager review, S4: `SOT_SOCKET`
+/// This daemon's own listener path, BARE (S4: `SOT_SOCKET`
 /// keeps its pre-existing meaning, a plain Unix socket path — no typed
 /// `unix:`/`pipe:` prefix; that would break every consumer still expecting
 /// a bare path, e.g. the frontend/daemon CLI parsers and older comm
@@ -25,7 +25,7 @@ pub(crate) fn set_own_endpoint(socket_path: &Path) {
 /// workspace's slug + project root, `SOT_SOCKET` (ADR 0046 decision 1 —
 /// so `comm-join.sh`'s `agent.join` can always find its owner daemon),
 /// `SOT_WORKSPACE_ID` when the caller has one, and the product checkout
-/// for the help persona. Manager review: no `SOT_SELF_HOST` pin here — a
+/// for the help persona. No `SOT_SELF_HOST` pin here — a
 /// caller that set that override on the DAEMON's own process already has
 /// it reach every child this spawns through ordinary env inheritance.
 pub(crate) fn awareness_env(
@@ -88,7 +88,7 @@ mod tests {
         // their vars. (SOT_MANUAL is checkout-dependent and SOT_SOCKET
         // depends on whether this process ever called set_own_endpoint --
         // no exact-value assertion on either here; see the dedicated test
-        // below. No SOT_SELF_HOST pin at all -- manager review: an
+        // below. No SOT_SELF_HOST pin at all: an
         // override set on the daemon's own process already reaches every
         // child through ordinary env inheritance.)
         let find = |env: &[(String, String)], k: &str| -> Option<String> {

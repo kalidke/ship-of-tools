@@ -273,7 +273,7 @@ impl State {
         if event_host == self.active_host {
             self.status = format!("disconnected · {reason}");
         } else {
-            // Manager review (S9, finding S14): `host_label`,
+            // (S9, finding S14): `host_label`,
             // not the bare dial key, so a log line names a
             // host the same way the tree/status line does.
             // (Named `shown`, not `display`: tracing's `%`

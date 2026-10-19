@@ -61,7 +61,7 @@ pub(in crate::ui) fn host_link_status(connected: bool, refusal: Option<&str>) ->
 }
 
 /// ONE display projection for every host-keyed UI surface (ADR 0046
-/// decision 1, manager review S9/finding S14): the daemon's own
+/// decision 1, S9/finding S14): the daemon's own
 /// declaration for `dial` if it has reported one, else `dial` itself (the
 /// `--dial` host name). Display only — routing keys (`conns`,
 /// `host_connected`, and every other host-keyed map) are never re-homed
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn hosts_mode_row_displays_whatever_the_caller_resolved_via_host_label() {
-        // ADR 0046 decision 1, manager review S9: hosts_mode_row itself
+        // ADR 0046 decision 1, S9: hosts_mode_row itself
         // has no opinion on dial-vs-declared -- it displays exactly the
         // string the caller resolved via `host_label`.
         let differs = hosts_mode_row("myserver", "realhost", None, false, false);

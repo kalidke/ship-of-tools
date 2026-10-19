@@ -63,7 +63,7 @@ capsule row keep paying the Monitor's re-arm cost, unchanged.
 
 ## Revision — 2026-09-26: the ping is a poke, not the delivery
 
-The messaging ruling moves delivery off this mechanism entirely, which changes
+The messaging redesign (ADR 0049) moves delivery off this mechanism entirely, which changes
 what a missed ping costs and therefore what this watcher is allowed to do.
 
 - **Delivery is the inbox append, and the ack is FILE.** A send to a handle

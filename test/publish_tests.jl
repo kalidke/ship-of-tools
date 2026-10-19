@@ -201,7 +201,7 @@ end
 end
 
 @testset "_install_files: continues past a locked destination, reports it, updates the rest" begin
-    # The property the coordinator's field trace demanded: ONE destination
+    # The property a field trace showed: ONE destination
     # a live process still has open (comm-relay.sh, observed) must not
     # block updating the other N-1 files in the same directory, and the
     # final report must name exactly the one that stayed stale — never

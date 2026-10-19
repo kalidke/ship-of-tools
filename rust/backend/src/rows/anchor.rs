@@ -161,7 +161,7 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
             );
         }
     }
-    // Manager review (S16, Codex finding S16): carry the existing row's
+    // (S16, Codex finding S16): carry the existing row's
     // declared `agent_handle` (ADR 0046 decision 1's `agent.join`)
     // forward — `from_label` seeds a
     // fresh row with none at all, so without this every boot silently

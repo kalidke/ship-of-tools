@@ -123,7 +123,7 @@ fn resume_locked_spawned(
         observe_with_adoption(&ws, observation);
         return Ok((phase, false));
     }
-    // Ruling: the watchdog is the single writer of restarts for a
+    // Rule: the watchdog is the single writer of restarts for a
     // child this daemon spawned. A row whose watchdog is still alive
     // reports its own (unreachable) phase as-is -- the caller waits
     // as it would for Starting -- rather than racing a second spawn
@@ -249,7 +249,7 @@ pub fn ensure_started(
                 }
                 return result.map(|()| started.then_some(()));
             }
-            // Ruling: never drop the caller's intent, and never
+            // Rule: never drop the caller's intent, and never
             // decide from a transient phase (see `is_resting_phase`).
             // Release the guard (a watchdog, or the authority's own
             // recovery, needs it free to make ANY progress) and
@@ -340,7 +340,7 @@ fn ensure_started_locked(
     let state_dir = super::state_dir_for(state_root, workspace_id);
     let (initial_phase, initial_observation) = probe(&state_dir);
     observe_with_adoption(&ws, initial_observation);
-    // Ruling: never drop the caller's intent, and never decide from
+    // Rule: never drop the caller's intent, and never decide from
     // a transient snapshot -- see `is_resting_phase`'s own doc for
     // the invariant, and `ensure_started`'s own loop for what
     // happens on `WaitForSettle` (this checks BEFORE computing
@@ -382,7 +382,7 @@ fn ensure_started_locked(
         }
         None => initial_phase,
     };
-    // Ruling (round 7 BLOCKER): the phase a spawn THIS call itself
+    // Rule (round 7 BLOCKER): the phase a spawn THIS call itself
     // just made settles at is EXACTLY as liable to be transient as
     // the initial probe was -- a watchdog now owns the fresh child
     // either way (`Start`/`Resume` both install one via
@@ -462,7 +462,7 @@ fn ensure_started_locked(
                 (_, Observation::Phase { supervisor, .. }) => Some(supervisor),
                 _ => None,
             };
-            // Ruling (round 8): the SAME rule applies to the retire
+            // Rule (round 8): the SAME rule applies to the retire
             // arm's own respawn -- a transient `retired_phase` (this
             // fresh authority still recovering) is not yet the
             // honest "it settled somewhere other than

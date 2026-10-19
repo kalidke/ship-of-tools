@@ -278,7 +278,7 @@ fi
 
 # ADR 0046 decision 1: declare this handle to the daemon that pinned this
 # session's env, through the EXISTING `sot_daemon_endpoint` resolution
-# (manager review, S4: SOT_SOCKET first on Unix, the local pipe on
+# (S4: SOT_SOCKET first on Unix, the local pipe on
 # Windows — never a second, typed-only resolver) — never
 # the relay endpoint (sot_relay_endpoint), which is cross-machine DELIVERY routing, a
 # different concern from "which local daemon owns my workspace". Only

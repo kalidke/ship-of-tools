@@ -275,7 +275,7 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
     // unpublished pointer starts nothing and answers absent. Proven over
     // a bounded window, not by waiting for the client to go terminal
     // (main's own behavior too: that needs the full client-side
-    // HEALTH_WINDOW, unrelated to this ruling): across ~10s, the bridge
+    // HEALTH_WINDOW, unrelated to this rule): across ~10s, the bridge
     // keeps answering absent (never attaches, never goes dead on its
     // own), the row's phase never moves off "stopped", and no supervise
     // process for it ever exists.

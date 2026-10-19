@@ -119,7 +119,7 @@ pub struct Workspace {
     /// DECLARED via `agent.join` (ADR 0046 decision 1) — distinct from
     /// `agent_name` above, which is only the handle the workspace was
     /// CREATED to expect. `""` (never joined) for a fresh row or an older
-    /// toml that lacks the key. Interior-mutable (manager review, S6):
+    /// toml that lacks the key. Interior-mutable (S6):
     /// `Workspaces::set_agent_handle` mutates THIS SAME cell on the
     /// SHARED `Arc<Workspace>` in place — never a replacement `insert` —
     /// so a join can never discard the resource caches living alongside

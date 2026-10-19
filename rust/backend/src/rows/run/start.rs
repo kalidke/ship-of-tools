@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 /// here needs to signal "the launch is no longer in flight" the way
 /// the old `starting` claim did.
 ///
-/// Order (supervisor-epoch ruling): spawn, SETTLE, adopt, install
+/// Order (supervisor-epoch rule): spawn, SETTLE, adopt, install
 /// the watchdog — the settle moved inward by one frame from
 /// [`start_supervisor`], where it used to sit. Same 2s bound, same
 /// caller's guard, same total latency; what changes is that the

@@ -164,7 +164,7 @@ impl Workspaces {
 
     /// This row's lifecycle guard (ADR 0043 decision 33) — despite the
     /// name, mints/returns one for ANY registered row, tmux included
-    /// (manager review round 3: `workspace.destroy`'s tmux arm and
+    /// (round 3: `workspace.destroy`'s tmux arm and
     /// `agent.join` both take it, closing the same join-vs-destroy race
     /// for every runtime, not only capsules) — created on demand under
     /// the SAME write lock the registry itself uses, so two concurrent
@@ -210,7 +210,7 @@ impl Workspaces {
     /// `workspace_id` is not registered (the `agent.join` handler reports
     /// this as `unknown_workspace`).
     ///
-    /// Manager review (S6, Codex finding B5): a GUARDED IN-PLACE update,
+    /// (S6, Codex finding B5): a GUARDED IN-PLACE update,
     /// never a replacement `insert`. The write lands on each row's OWN
     /// interior `agent_handle` cell (the SAME `Arc<Workspace>`, resource
     /// caches — kernel, repl, watcher — untouched), not on a freshly
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn set_agent_handle_mutates_the_same_arc_never_a_replacement() {
-        // Manager review (S6, Codex finding B5): the row's resource caches
+        // (S6, Codex finding B5): the row's resource caches
         // live on the SAME struct instance as agent_handle -- a guarded
         // in-place update must never discard them by reconstructing the
         // Workspace. Constructing the kernel handle BEFORE the join, then
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn set_agent_handle_after_the_row_is_destroyed_never_resurrects_it() {
-        // Manager review (S6, Codex finding B5): the old replace-based
+        // (S6, Codex finding B5): the old replace-based
         // implementation read the row, then reinserted a fresh copy --
         // a destroy landing between those two steps got resurrected by
         // the reinsert. The guarded in-place version never touches

@@ -52,7 +52,7 @@ _sot_is_plain_host_name() {
     esac
 }
 
-# _sot_emit_endpoint VALUE — main's ruling, 2026-09-29: every endpoint value
+# _sot_emit_endpoint VALUE — since 2026-09-29 every endpoint value
 # leaves this file through this ONE gate. Prints VALUE and returns 0 only
 # when its scheme is one THIS version can dial -- `unix:`, `pipe:`, `ssh:`
 # -- and, for `ssh:`, only when both halves of `ssh:<target>[/<host>]` are
@@ -137,7 +137,7 @@ _sot_sotd_bin() {
     done
     # LAST candidate (BLOCKER 3): a live sotd's own binary, for a source-built
     # box with no install. It is never the local daemon's socket, only a binary
-    # asked for the planned relay endpoint (main's ruling, pinned at
+    # asked for the planned relay endpoint (pinned at
     # join_disambiguation/pipe_endpoint.sh).
     IFS= read -r candidate < <(_sot_live_sotd_exes) || candidate=""
     [ -n "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
@@ -164,8 +164,7 @@ _sot_planned_relay_endpoint() {
 }
 
 # _sot_ssh_control — this process's own ControlPath, when the
-# connection-sharing trio is even worth trying (main's ruling,
-# isolation-plan.md §3 C10): `$XDG_RUNTIME_DIR/sot-comm-ssh-%C` and
+# connection-sharing trio is even worth trying (isolation-plan.md §3 C10): `$XDG_RUNTIME_DIR/sot-comm-ssh-%C` and
 # NOTHING else, where `%C` is ssh's own per-target hash. That directory is
 # per-uid, private, and on local disk. Prints nothing when
 # `XDG_RUNTIME_DIR` is unset -- a fallback under `$HOME` (an earlier draft
@@ -316,7 +315,7 @@ sot_relay_endpoint() {
 # eight DO test it and exit 1 with their own message, read line by line,
 # not assumed). A session holding a stale `SOT_FE_ENDPOINT`/
 # `SOT_SPAWN_ENDPOINT=tcp:...` now fails loudly where it used to succeed
-# by accident, reaching this box's own daemon nobody named -- the ruling:
+# by accident, reaching this box's own daemon nobody named -- the rule:
 # on the control plane a wrong box is worse than a stopped command.
 sot_daemon_endpoint() {
     local explicit="${1:-}"

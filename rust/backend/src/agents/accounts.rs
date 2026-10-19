@@ -30,7 +30,7 @@
 // to support it. Adding Codex accounts later is a matter of mirroring the
 // claude half of this module, not a redesign.
 //
-// The sharing ruling (2026-09-15): a named account folder shares
+// The sharing rule (2026-09-15): a named account folder shares
 // EVERYTHING the default `.claude` folder carries except the login —
 // shared in by [`ensure_account_links`] (a symlink; where the OS refuses symlinks, see
 // `account_links.rs`) the first time a row spawns against that account, so a folder made with a bare `mkdir` is fully
@@ -63,7 +63,7 @@ const CLAUDE_CREDENTIALS_FILE: &str = ".credentials.json";
 /// for the default codex account (the only one this release has).
 const CODEX_CREDENTIALS_FILE: &str = "auth.json";
 
-/// The allowlist behind the sharing ruling (see the module doc) — each
+/// The allowlist behind the sharing rule (see the module doc) — each
 /// name is linked (see [`ensure_account_links`]) only if the default
 /// folder actually has it, and every other entry stays per-account by
 /// default, never shared by accident. Grouped by the invariant each group
@@ -304,7 +304,7 @@ fn make_shared_link(target: &Path, link: &Path, target_is_dir: bool) -> std::io:
 
 /// Link `home/.claude-auth/<account>` up to the default `home/.claude`
 /// folder for every [`SHARED_ENTRIES`] name (see the module doc for the
-/// sharing ruling this implements). Called once, from the spawn path
+/// sharing rule this implements). Called once, from the spawn path
 /// ([`crate::rows::spawn::detach::spawn_detached_supervisor`]),
 /// right after [`account_env`] succeeds, so a folder made with a bare
 /// `mkdir` is fully linked on its very first session — no separate

@@ -42,7 +42,7 @@ check "Codex unset hook consumes input and stamps the dialog" case_codex_hook_in
 check "Codex on hook consumes input and stamps the dialog" case_codex_hook_input_and_stamps on
 check "Codex hook under a CRLF jq stamps no CR" case_codex_hook_input_and_stamps crlf
 
-# ---- new mail at the turn boundary (messaging ruling, 2026-09-26) ----
+# ---- new mail at the turn boundary (2026-09-26) ----
 # The inbox IS the delivery path, so a turn must not end while directed mail
 # sits unread: the hook reads this handle's own inbox and blocks with "run
 # comm-poll.sh". Three facts make that safe to do on every Stop -- it fires,

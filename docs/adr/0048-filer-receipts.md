@@ -36,7 +36,7 @@ A prior attempt had the frontend DECLARE the handle set it files for
 out before release, because the declaration only ever reached a daemon on the
 frontend's own box — which already knows those handles from their `agent.join` —
 while the remote hub that answers a directed send never saw it. It bought
-nothing. This ADR is that ruling's discharge, not its reversal.
+nothing. This ADR discharges that decision, not reverses it.
 
 ## Decision
 
@@ -400,7 +400,7 @@ Verdicts, in the order the first that applies wins:
 | a receipt carrying this send's `id` | `filed -> @h (by <filer>, relay)` | 0 |
 | no receipt before EOF or the 5 s bound | `NOT CONFIRMED: sent for @h; nobody claimed it within 5s. Attached: …` | 1 |
 
-> **Superseded in part by admiral decision 0031, B1.** A directed send now asks
+> **Superseded in part by ADR 0049, B1.** A directed send now asks
 > the hub first with one `comm.file` request, and the hub's answer is the
 > verdict (`filed -> @h`, or `FAILED -> @h: <reason>`). This table applies only
 > to the fallback for a handle the hub's folder does not list (`not_here`),

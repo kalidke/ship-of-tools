@@ -15,7 +15,7 @@ every box with its own comm folder, whose rows join there; so the hub offers wha
 list over each box's link, a request answered by that box's daemon, and the broadcast filer, its
 receipts and `NOT CONFIRMED` are deleted.
 
-2026-10-04: User isolation added (release captain's ruling); decision 0031 holds the
+2026-10-04: User isolation added; decision 0031 holds the
 guarantees, this ADR the design.
 
 ## Context

@@ -189,7 +189,7 @@ async fn the_hub_files_into_a_linked_box_and_answers_with_its_verdict() {
     let count = stubs.path().join("count");
     let hub = Env::start("hub", "hub-a", None);
     write_stub_ssh(stubs.path(), &hub.socket_path, &count);
-    let mut sender = connect_and_hello(&hub.socket_path, "kitt-sender").await;
+    let mut sender = connect_and_hello(&hub.socket_path, "alpha-sender").await;
 
     let guest = Env::start("guest", "win-b", Some(stubs.path()));
     let registry = serde_json::json!({"agents": {

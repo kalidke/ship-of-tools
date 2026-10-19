@@ -195,7 +195,7 @@ impl State {
             .get(&self.active_host)
             .and_then(|rows| rows.iter().find(|row| row.is_default))
             .map(|row| row.slug.clone());
-        // Manager review (round 2, finding 14): project the declaration
+        // (round 2, finding 14): project the declaration
         // into the status line HERE too, not only in `drain_events`'s own
         // `Connected` handling — switching to a host that is ALREADY
         // connected fires no new `Connected` event, so without this

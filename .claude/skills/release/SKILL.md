@@ -108,7 +108,7 @@ re-run with `git push --atomic origin main vX.Y.Z` once main is synced, with no 
    `julia-check` job proves the envs resolve + load at this ref.
 3. **Publish the draft — on the go, run alone.** Until this step no updater
    sees the release, so a box moves to it only after this publish. Publish only
-   on the go (the lead's lead for a candidate, the maintainer for a final).
+   on the go (the owner's for a candidate, the maintainer's for a final).
    Before the go, any box chosen to move first installs the draft's files by a
    named archive run, which pins it at this tag. A draft has no public download
    URL, so `install.ps1 -Version` cannot reach it:

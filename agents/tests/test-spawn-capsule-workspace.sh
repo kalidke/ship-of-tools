@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-spawn-capsule-workspace.sh — hermetic suite for comm-spawn.sh's
 # workspace-mode handling of capsule rows. comm-spawn never destroys a
-# workspace row itself (ruling: no signal it can observe proves sole
+# workspace row itself (no signal it can observe proves sole
 # ownership of a row workspace.create answers with — another caller can
 # win the same slug between a list and a create). Stub unix-socket daemon
 # (nc -klU + FIFO + tail -F, as test-agent-join.sh uses).

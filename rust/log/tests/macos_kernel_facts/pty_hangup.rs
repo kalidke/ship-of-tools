@@ -34,7 +34,7 @@ fn closing_the_pty_master_hangs_up_and_reaps_the_child() {
 /// openers the slave side has. A SURVIVING child here is not a flaky test:
 /// it means a dead capsule can leave an agent running forever on a user's
 /// Mac, which is exactly the failure the lease deletion promised could not
-/// happen. That is a ruling to reopen, not an assertion to relax.
+/// happen. That is a decision to reopen, not an assertion to relax.
 #[test]
 fn closing_the_pty_master_hangs_up_and_reaps_the_child_with_the_slave_held() {
     pty_hangup_reaps_the_child(SlaveHeld::AcrossTheMasterClose);

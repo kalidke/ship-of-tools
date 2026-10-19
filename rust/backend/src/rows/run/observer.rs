@@ -104,8 +104,8 @@ mod observer_tests {
         ws
     }
 
-    /// The same row with NO epoch yet -- the empty cell the ruling's
-    /// addition (a) is about: a row the daemon has spawned for but whose
+    /// The same row with NO epoch yet -- the empty cell the supervisor-epoch
+    /// rule's addition (a) is about: a row the daemon has spawned for but whose
     /// lane has not yet answered, or one only ever read as stopped.
     fn unclaimed_capsule_row() -> std::sync::Arc<Workspace> {
         let reg = Workspaces::new();

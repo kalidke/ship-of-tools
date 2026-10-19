@@ -3,8 +3,8 @@
 # in text mode and rewrites every \n it writes to \r\n. Bash's own
 # consumption idioms keep that \r glued to the value: command substitution
 # strips only the FINAL \n, and mapfile/`read` split on \n only. Field
-# report, 2026-09-27: a handle read back this way as "admiral-kitt\r" never
-# compared equal to "admiral-kitt", so `comm-relay.sh`/`comm-send.sh`
+# report, 2026-09-27: a handle read back this way as "alpha-host\r" never
+# compared equal to "alpha-host", so `comm-relay.sh`/`comm-send.sh`
 # reported "no such handle" for a send that had already landed.
 #
 # Most of this test does not assume jq is native-Windows; it makes ANY jq
@@ -236,8 +236,8 @@ case_outside_join_clearance_survives_a_crlf_jq() {
 # follows it passes at the base commit too, because the directed path reads
 # `.agents[$n].host` through a command substitution and never through a
 # stream -- it is here as the guard that membership must never MOVE onto a
-# stream read, which is the road to a false "no such handle" the captain
-# asked to close, not as proof of this fix.
+# stream read, which is the road to a false "no such handle" that
+# was closed, not as proof of this fix.
 LIST_HOME="$WORK/list-home"
 LIST_FIRST="t-crlf-first-row"
 LIST_LAST="t-crlf-last-row"

@@ -74,7 +74,7 @@ pub(in crate::ui) fn blank_pane_screen(cols: u16, rows: u16) -> vt100::Screen {
 /// blank while none does — exactly what the old unconditional
 /// `pane_attach_term.map(...).unwrap_or_else(...)` drew.
 ///
-/// Coordinator amendment: a client that reaches a TERMINAL failure
+/// A client that reaches a TERMINAL failure
 /// (`is_dead`) before it EVER checkpointed is a dead end, not a stall —
 /// neither a hold (the departed row's screen) nor the dead client's own
 /// (blank) screen is right to keep showing, so this falls all the way
@@ -373,8 +373,8 @@ mod tests {
 
     /// LU6a: `pane_screen_choice`'s branches, checked here so this
     /// decision runs on every platform (its call site is unconditional
-    /// too, ADR 0045 decision 1). Coordinator amendment added the
-    /// `is_dead` parameter and the cases below that exercise it.
+    /// too, ADR 0045 decision 1). The
+    /// `is_dead` cases are below.
     #[test]
     fn pane_screen_choice_covers_every_branch() {
         // A checkpointed client always wins, hold or no hold, pending or
@@ -408,7 +408,7 @@ mod tests {
             PaneScreen::Client
         );
 
-        // Coordinator amendment: a client that goes TERMINAL before it
+        // A client that goes TERMINAL before it
         // ever checkpointed is a dead end, not a stall — it must not keep
         // showing a hold (the departed row's screen) OR its own (blank)
         // screen. Both fall all the way through to `Empty`.

@@ -31,7 +31,7 @@ fn an_input_sent_after_the_worker_exited_is_counted() {
     assert_eq!(worker.inputs_discarded(), 1);
 }
 
-/// The manager's own ruling on top of Codex round 2: the ingress
+/// On top of Codex round 2: the ingress
 /// bound limits ACCUMULATION, never a single send. An input bigger
 /// than the bound is admitted outright when nothing else is queued
 /// (a large paste, or a long `sot-fe type --stdin`, must never

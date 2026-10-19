@@ -122,7 +122,7 @@ where
     // The ops that use the loop's own state or writer; every other op goes to `serve`, here or as a job.
     let served = match frame.op.as_str() {
         op::PING => {
-            // Opt-in arming (manager compatibility fix, post-review):
+            // Opt-in arming (compatibility fix, post-review):
             // this connection's FIRST `ping`, whatever its role, arms the
             // read-deadline reaper -- never hello itself. A peer that never
             // pings (an old frontend or comm bridge not yet converged from

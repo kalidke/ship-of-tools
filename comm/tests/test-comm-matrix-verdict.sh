@@ -38,12 +38,12 @@ trap 'rm -rf "${WORK:?}"' EXIT
 # shellcheck source=comm-matrix.sh
 source "$SCRIPT_DIR/comm-matrix.sh"
 
-ME="probe2-kitt"
+ME="probe2-alpha"
 INBOX="$SOT_COMM_HOME/inbox/$ME.jsonl"
 NONCE="a1b2c3d4e5f6"
 OTHER="0f0f0f0f0f0f"
 
-FILED="  filed -> @probe-kitt (woke)"
+FILED="  filed -> @probe-alpha (woke)"
 FILED_OTHER="filed -> @probe-other"
 NOT_LIVE="FAILED -> @probe-peer: no live session holds @probe-peer"
 # The retired relay's third result. No current sender prints it; it is here only to show it is no refusal.
@@ -60,7 +60,7 @@ check() {  # DESC EXPECTED ACTUAL
 inbox_reset() { : > "$INBOX"; }
 inbox_msg() {  # TEXT [TO]
     jq -nc --arg to "${2:-$ME}" --arg m "$1" \
-        '{from:"probe-kitt",to:$to,repo:"ship-of-tools",msg:$m,ts:"2026-09-27T22:00:00Z"}' >> "$INBOX"
+        '{from:"probe-alpha",to:$to,repo:"ship-of-tools",msg:$m,ts:"2026-09-27T22:00:00Z"}' >> "$INBOX"
 }
 # The state word only — the note is prose and must not be what a test pins.
 state_of() { printf '%s\n' "${1%%	*}"; }
@@ -68,22 +68,22 @@ note_of()  { printf '%s\n' "${1#*	}"; }
 
 # --- the two faults the instrument exists for --------------------------------
 
-inbox_reset; inbox_msg "ECHO $NONCE from @probe-kitt woke:typed"
+inbox_reset; inbox_msg "ECHO $NONCE from @probe-alpha woke:typed"
 v="$(matrix_line_verdict echo 1 "$NOT_LIVE" probe-peer "$INBOX" "$ME" "$NONCE")"
 check "FALSE FAILURE is a FAIL (the echo arrived, the sender denied it)" "FAIL" "$(state_of "$v")"
 case "$(note_of "$v")" in *"FALSE FAILURE"*) r=named ;; *) r="$(note_of "$v")" ;; esac
 check "FALSE FAILURE is named in the note" "named" "$r"
 
 inbox_reset
-v="$(matrix_line_verdict echo 0 "$FILED" probe-kitt "$INBOX" "$ME" "$NONCE")"
+v="$(matrix_line_verdict echo 0 "$FILED" probe-alpha "$INBOX" "$ME" "$NONCE")"
 check "FALSE SUCCESS is a FAIL (the sender claimed filed, nothing arrived)" "FAIL" "$(state_of "$v")"
 case "$(note_of "$v")" in *"FALSE SUCCESS"*) r=named ;; *) r="$(note_of "$v")" ;; esac
 check "FALSE SUCCESS is named in the note" "named" "$r"
 
 # --- the honest outcomes -----------------------------------------------------
 
-inbox_reset; inbox_msg "ECHO $NONCE from @probe-kitt woke:typed"
-v="$(matrix_line_verdict echo 0 "$FILED" probe-kitt "$INBOX" "$ME" "$NONCE")"
+inbox_reset; inbox_msg "ECHO $NONCE from @probe-alpha woke:typed"
+v="$(matrix_line_verdict echo 0 "$FILED" probe-alpha "$INBOX" "$ME" "$NONCE")"
 check "claimed AND echoed is a PASS" "PASS" "$(state_of "$v")"
 
 inbox_reset
@@ -125,22 +125,22 @@ check "a daemon that did not answer is a SKIP, not a PASS" "SKIP" "$(state_of "$
 
 # --- what must never be mistaken for this line's echo ------------------------
 
-inbox_reset; inbox_msg "ECHO $OTHER from @probe-kitt woke:poll"
-v="$(matrix_line_verdict echo 0 "$FILED" probe-kitt "$INBOX" "$ME" "$NONCE")"
+inbox_reset; inbox_msg "ECHO $OTHER from @probe-alpha woke:poll"
+v="$(matrix_line_verdict echo 0 "$FILED" probe-alpha "$INBOX" "$ME" "$NONCE")"
 check "another line's echo does not satisfy this nonce" "FAIL" "$(state_of "$v")"
 
-inbox_reset; inbox_msg "ECHO $NONCE from @probe-kitt woke:typed"
+inbox_reset; inbox_msg "ECHO $NONCE from @probe-alpha woke:typed"
 v="$(matrix_line_verdict echo 0 "$FILED_OTHER" probe-peer "$INBOX" "$ME" "$NONCE")"
 check "a filed line naming a DIFFERENT target is not this line's claim" "FAIL" "$(state_of "$v")"
 
 inbox_reset
-printf '{"from":"probe-kitt","to":"%s","msg":"ECHO %s par\n' "$ME" "$NONCE" >> "$INBOX"
-inbox_msg "ECHO $NONCE from @probe-kitt woke:poll"
-v="$(matrix_line_verdict echo 0 "$FILED" probe-kitt "$INBOX" "$ME" "$NONCE")"
+printf '{"from":"probe-alpha","to":"%s","msg":"ECHO %s par\n' "$ME" "$NONCE" >> "$INBOX"
+inbox_msg "ECHO $NONCE from @probe-alpha woke:poll"
+v="$(matrix_line_verdict echo 0 "$FILED" probe-alpha "$INBOX" "$ME" "$NONCE")"
 check "a torn inbox line is skipped, not fatal, and the real echo still counts" "PASS" "$(state_of "$v")"
 
-inbox_reset; inbox_msg "ECHO $NONCE from @probe-kitt woke:typed" "someone-else"
-v="$(matrix_line_verdict echo 0 "$FILED" probe-kitt "$INBOX" "$ME" "$NONCE")"
+inbox_reset; inbox_msg "ECHO $NONCE from @probe-alpha woke:typed" "someone-else"
+v="$(matrix_line_verdict echo 0 "$FILED" probe-alpha "$INBOX" "$ME" "$NONCE")"
 check "the per-handle inbox is this handle's own, whatever a line's \`to\` says" "PASS" "$(state_of "$v")"
 
 # --- the reverse direction, judged from the other box's VERDICT line ---------

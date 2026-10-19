@@ -569,7 +569,7 @@ mod tests {
         assert!(!second_flush_ran, "flushing twice with nothing new must not re-save");
     }
 
-    /// The manager's literal measurement: a synthetic burst of 50
+    /// The literal measurement: a synthetic burst of 50
     /// `workspace.list`-sized replies (each carrying a `rev`) must drain in
     /// well under a second. Drives the REAL `note_revision_with` (the same
     /// function `note_revision` — and so the read arm — calls) with a

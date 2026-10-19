@@ -402,7 +402,7 @@ pub mod op {
     /// through the same `ClientGuard::drop` path as a clean exit.
     /// Any connection that has sent one is deadline-gated, the hub link
     /// (role `link`) included. Opt-in by
-    /// ping (manager compatibility fix): the deadline arms on this
+    /// ping (compatibility fix): the deadline arms on this
     /// connection's FIRST `ping`, never at hello —
     /// a peer too old to send one (a frontend box or comm
     /// bridge that hasn't converged from main yet) is left untouched,
