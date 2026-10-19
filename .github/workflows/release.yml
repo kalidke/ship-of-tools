@@ -488,6 +488,7 @@ jobs:
         shell: bash
         env:
           SOT_SMOKE_COMMIT: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}  # read-only (contents: read): the implicit run's release listing is an API call, limited per address when anonymous
         run: bash scripts/tests/install-smoke.sh "${{ matrix.scenario }}" artifacts "$GITHUB_WORKSPACE" "${{ needs.release-before.outputs.tag }}"
 
   install-macos:
@@ -513,6 +514,7 @@ jobs:
         shell: bash
         env:
           SOT_SMOKE_COMMIT: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}  # read-only (contents: read): the implicit run's release listing is an API call, limited per address when anonymous
         run: bash scripts/tests/install-smoke.sh "${{ matrix.scenario }}" artifacts "$GITHUB_WORKSPACE" "${{ needs.release-before.outputs.tag }}"
 
   install-windows:
@@ -544,6 +546,7 @@ jobs:
         shell: powershell
         env:
           SOT_SMOKE_COMMIT: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}  # read-only (contents: read): the implicit run's release listing is an API call, limited per address when anonymous
         run: ./scripts/tests/install-smoke.ps1 -Scenario "${{ matrix.scenario }}" -Artifacts artifacts -Checkout "$env:GITHUB_WORKSPACE" -Before "${{ needs.release-before.outputs.tag }}"
 
   publish:

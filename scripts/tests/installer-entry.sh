@@ -78,12 +78,15 @@ SD
     cat > "$d/stubs/curl" <<'CU'
 #!/bin/sh
 echo "curl $*" >> "$CTL/net.log"
-out=""; url=""
-while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; http*) url="$1" ;; esac; shift; done
+out=""; url=""; w=""; hdr=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; -w) w="$2"; shift ;; -H) hdr="$hdr|$2"; shift ;; http*) url="$1" ;; esac; shift; done
 case "$url" in
     */releases/download/*) cp "$CTL/../rel/${url##*/}" "$out" ;;
     */releases/latest) printf '%s' "https://github.com/x/releases/tag/$(cat "$CTL/latest")" ;;
-    *api.github.com*releases*) cat "$CTL/api.json" ;;
+    *api.github.com*releases*)
+        code="$(cat "$CTL/api-code" 2>/dev/null || echo 200)"
+        if [ -f "$CTL/api-needs-token" ]; then case "$hdr" in *"|Authorization: Bearer "*) ;; *) code=403 ;; esac; fi
+        case "$code" in 2*) cat "$CTL/api.json" ;; esac; [ -z "$w" ] || printf '\n%s' "$code"; case "$code" in 2*) ;; *) exit 22 ;; esac ;;
     */scripts/lib/sot-daemon.sh) ;;
     */scripts/install.sh) printf '#!/bin/sh\necho "tag=$SOT_INSTALL_TAG implicit=${SOT_INSTALL_IMPLICIT:-} args=$*" >> "$CTL/prelude.log"\n' > "$out" ;;
     *) exit 7 ;;
@@ -124,12 +127,12 @@ JU
 }
 
 # entry_run <d> <install.sh args...>: the installer as an agent runs it, sets ENTRY_OUT and ENTRY_RC. TMPDIR is scratch,
-# the PATH is the stand-ins and the library's tools, and the environment is nothing else. A run with no terminal cannot
-# ask a question. Names that start ENTRY_ENV are passed through (e.g. SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1).
+# the PATH is the stand-ins and the library's tools, and the environment is nothing else; no terminal, so no question.
+# SOT_*, GITHUB_TOKEN and GH_TOKEN names pass through (e.g. SOT_INSTALL_TAG=v9.9.9 SOT_INSTALL_IMPLICIT=1).
 entry_run() {
     local d="$1"; shift
     local -a pass=()
-    while [ $# -gt 0 ] && [[ "$1" == SOT_* ]]; do pass+=("$1"); shift; done
+    while [ $# -gt 0 ] && [[ "$1" == SOT_* || "$1" == GITHUB_TOKEN=* || "$1" == GH_TOKEN=* ]]; do pass+=("$1"); shift; done
     ENTRY_RC=0
     ENTRY_OUT="$(env -i HOME="$d/home" PATH="$d/stubs:$ENTRY_TOOLS" CTL="$d/ctl" SOT_COMM_HOME="$d/comm" SOT_SELF_HOST=entrybox \
         TMPDIR="$d" ${pass[@]+"${pass[@]}"} ${NOTTY:+"$NOTTY" -w} bash "$ENTRY_SRC/scripts/install.sh" "$@" 2>&1)" || ENTRY_RC=$?
@@ -179,6 +182,7 @@ mkdir -p "$d/other"; installer_manifest_json "$d/other" "$d/c" none 0.6.6-rc9.13
 entry_record "$d" 9.9.8 1 0 none
 prelude --prefix "$d/other" --be-only
 check "--prefix says which install.json is read" "tag=v9.9.10-rc1 implicit=1 args=--prefix $d/other --be-only" "$(cat "$d/ctl/prelude.log")"
+. "$(dirname "${BASH_SOURCE[0]}")/installer-list-limit.sh"
 check "the channel of the installed version is a pure answer" "latest newest stop latest" \
     "$(installer_channel '') $(installer_channel 0.6.6-rc9.13) $(installer_channel 0.6.6-rc9.14-dev+a) $(installer_channel 0.6.5)"
 check "a record is read by key" "0.6.6-rc9.13 true false" \

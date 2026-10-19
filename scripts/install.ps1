@@ -95,10 +95,21 @@ $script:CurlBound = @('--connect-timeout', '15', '--speed-limit', '1000', '--spe
 function Invoke-CurlText([string]$Url, [switch]$Head) {
     $a = @($script:CurlBound) + @('-fsSL')
     if ($Head) { $a = @($script:CurlBound) + @('-fsSLI', '-o', 'NUL', '-w', '%{url_effective}') }
+    # The release listing is an API call: it carries GITHUB_TOKEN (or GH_TOKEN) when one is set, and nothing when none is
+    # (GitHub limits anonymous calls per network address), and reports the HTTP status as Http.
+    $api = $Url.StartsWith('https://api.github.com/')
+    if ($api) {
+        $tok = $(if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { $env:GH_TOKEN })
+        if ($tok) { $a += @('-H', "Authorization: Bearer $tok") }
+        $a += @('-w', '\n%{http_code}')
+    }
     $a += $Url
     $r = Invoke-Native 'curl.exe' $a
-    if ($r.Code -ne 0) { return [pscustomobject]@{ Ok = $false; Code = $r.Code; Text = '' } }
-    return [pscustomobject]@{ Ok = $true; Code = 0; Text = ($r.Out -join "`n") }
+    $lines = @($r.Out)
+    $http = ''
+    if ($api -and $lines.Count -gt 0) { $http = $lines[-1]; $lines = @($lines | Select-Object -First ($lines.Count - 1)) }
+    if ($r.Code -ne 0) { return [pscustomobject]@{ Ok = $false; Code = $r.Code; Text = ''; Http = $http } }
+    return [pscustomobject]@{ Ok = $true; Code = 0; Text = ($lines -join "`n"); Http = $http }
 }
 function Invoke-CurlFile([string]$Url, [string]$Path) {
     $r = Invoke-Native 'curl.exe' (@($script:CurlBound) + @('-fsSL', '-o', $Path, $Url))
@@ -158,7 +169,14 @@ function Get-InstalledVersion([string]$Prefix) {
 # it cannot be read.
 function Get-NewestRelease {
     $r = Invoke-CurlText "https://api.github.com/repos/$($script:Repo)/releases?per_page=1"
-    if (-not $r.Ok) { return $null }
+    $script:ListRefusal = ''
+    if (-not $r.Ok) {
+        if ($r.Http -eq '403' -or $r.Http -eq '429') {
+            $script:ListRefusal = $(if ($env:GITHUB_TOKEN -or $env:GH_TOKEN) { ": GitHub refused the request (HTTP $($r.Http), its rate limit) even with the token in GITHUB_TOKEN or GH_TOKEN; retry in an hour, or name the release with -Version <tag>, which needs no listing" }
+                else { ": GitHub refused the anonymous request (HTTP $($r.Http), its rate limit for this network address); retry in an hour, set GITHUB_TOKEN to send a token, or name the release with -Version <tag>, which needs no listing" })
+        }
+        return $null
+    }
     if ($r.Text -match '"tag_name"\s*:\s*"([^"]*)"') { return $Matches[1] }
     return ''
 }
@@ -197,7 +215,7 @@ function Resolve-ChannelTag([string]$Installed, [string]$Prefix) {
         }
         'newest' {
             $n = Get-NewestRelease
-            if ($null -eq $n) { Stop-Entry 'target' "could not list the releases of $($script:Repo)" }
+            if ($null -eq $n) { Stop-Entry 'target' "could not list the releases of $($script:Repo)$($script:ListRefusal)" }
             return $n
         }
         default {
