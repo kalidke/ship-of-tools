@@ -425,7 +425,7 @@ _sot_handle_host() {
     printf '%s' "$host"
 }
 
-# _sot_tier_claimable MODE ROOT STATUS HELD_ROOT [NAME CLEARED] — true if a tier whose
+# _sot_tier_claimable MODE ROOT STATUS HELD_ROOT OUTSIDE NAME CLEARED — true if a tier whose
 # registry status is STATUS/HELD_ROOT (from sot_registry_entry_status) can
 # be claimed under MODE:
 #   reclaim — unclaimed, OR already held by MY OWN root (today's
@@ -436,11 +436,13 @@ _sot_handle_host() {
 #             never be silently absorbed (Codex review F3: this used to
 #             erase a LIVE agent's workspace_id/status fields when spawning a
 #             second time against the same project root).
-# A join from outside any row passes NAME and CLEARED (what sot_outside_join_clearance cleared before the lock): the
-# tier must also still be cleared (_sot_outside_cleared), an unclaimed one included.
+# A join from outside any row passes OUTSIDE non-empty with NAME and CLEARED (what sot_outside_join_clearance cleared
+# before the lock): the tier must also still be cleared (_sot_outside_cleared), an unclaimed one included. All seven
+# words are always passed, the empty ones too: bash 3.2 drops an empty word that follows a quoted word inside a
+# `${x:+"a" "b"}`, so an optional pair would shift the arguments.
 _sot_tier_claimable() {
     local mode="$1" root="$2" status="$3" held="$4"
-    [ $# -lt 6 ] || _sot_outside_cleared "$5" "$6" || return 1
+    [ -z "$5" ] || _sot_outside_cleared "$6" "$7" || return 1
     [ "$status" = "absent" ] && return 0
     [ "$mode" = "reclaim" ] && sot_same_root "$held" "$root" && return 0
     return 1
@@ -593,7 +595,7 @@ sot_derive_handle() {
     { IFS= read -r q; IFS= read -r tier1; } <<< "$(_sot_tier 1 "$root" "$host")"
     IFS=$'\t' read -r status1 held1 <<< "$(sot_registry_entry_status "$tier1")"
     [ "$status1" = "error" ] && { echo "$unreadable" >&2; return 1; }
-    if _sot_tier_claimable "$mode" "$root" "$status1" "$held1" ${outside:+"$tier1" "$cleared"}; then
+    if _sot_tier_claimable "$mode" "$root" "$status1" "$held1" "$outside" "$tier1" "$cleared"; then
         printf '%s\n%s\n%s\n' "$tier1" "" "$tier1"
         return 0
     fi
@@ -602,7 +604,7 @@ sot_derive_handle() {
     { IFS= read -r parent; IFS= read -r tier2; } <<< "$(_sot_tier 2 "$root" "$host")"
     IFS=$'\t' read -r status2 held2 <<< "$(sot_registry_entry_status "$tier2")"
     [ "$status2" = "error" ] && { echo "$unreadable" >&2; return 1; }
-    if _sot_tier_claimable "$mode" "$root" "$status2" "$held2" ${outside:+"$tier2" "$cleared"}; then
+    if _sot_tier_claimable "$mode" "$root" "$status2" "$held2" "$outside" "$tier2" "$cleared"; then
         if [ -n "$outside" ] && ! _sot_outside_cleared "$tier1" "$cleared"; then
             echo "comm: @$tier1 is held by a live row; a session outside any row joins as @$tier2" >&2
         else
@@ -617,7 +619,7 @@ sot_derive_handle() {
     [ -n "$tier3" ] || return 1
     IFS=$'\t' read -r status3 held3 <<< "$(sot_registry_entry_status "$tier3")"
     [ "$status3" = "error" ] && { echo "$unreadable" >&2; return 1; }
-    if _sot_tier_claimable "$mode" "$root" "$status3" "$held3" ${outside:+"$tier3" "$cleared"}; then
+    if _sot_tier_claimable "$mode" "$root" "$status3" "$held3" "$outside" "$tier3" "$cleared"; then
         echo "comm: '@$tier1' (held by $shown1) and '@$tier2' (held by $shown2) are both taken — joining as '@$tier3' instead" >&2
         printf '%s\n%s\n%s\n' "$tier3" "$hash6" "$tier1"
         return 0

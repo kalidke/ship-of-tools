@@ -27,6 +27,7 @@
 #   d8  a row that binds the handle between the daemon's answer and the write keeps it (SF3)
 #   d9  an entry bound on another computer is held, whatever the local daemon says (SF4)
 #   d10 an unreadable registry refuses a join from outside (N4)
+#   d11 a derived join whose every tier the daemon holds takes none, empty cleared list included (bash 3.2)
 #   ds  a stray's session start steps past the held handle: its one plain line, identity ok (SF1)
 #   e   a respawned row's join takes its handle back
 #   s3  a displaced row's next session start rejoins and says it moved, never REFUSED (SF2)
@@ -102,7 +103,7 @@ start_stub_daemon() {
                     jq --arg n "$h" --arg host "$HOST" '.agents[$n] = {host:$host, workspace_id:"row-late", repo:"r", root:"/x", status:"idle"}' "$REG" > "$REG.stub" \
                         && mv "$REG.stub" "$REG"
                 fi
-                if grep -qxF "$h" "$WORK/held.txt"; then
+                if grep -qxF "$h" "$WORK/held.txt" || [ -e "$WORK/held-all" ]; then
                     jq -nc --arg h "$h" '{v:1,id:1,kind:"res",op:"agent.join",payload:{error:("@" + $h + " is held by a live row; a session outside any row cannot join as it"),code:"held_by_row"}}' >&3
                 else
                     printf '%s\n' '{"v":1,"id":1,"kind":"res","op":"agent.join","payload":{"ok":true}}' >&3
@@ -368,6 +369,17 @@ case_d10_an_unreadable_registry_refuses_a_join_from_outside() {
     [ "$JOIN_RC" -ne 0 ] || { echo "  join succeeded: $JOIN_OUT"; return 1; }
     case "$JOIN_OUT" in *"registry could not be read"*) ;; *) echo "  message: $JOIN_OUT"; return 1 ;; esac
 }
+case_d11_a_derived_join_takes_no_tier_the_daemon_holds() {
+    # Tier 1's entry is absent and nothing was cleared: the case where bash 3.2 dropped the empty CLEARED word and
+    # `_sot_tier_claimable` skipped the clearance check.
+    cp "$WORK/registry.seed" "$REG"
+    : > "$WORK/held.txt"; : > "$WORK/held-all"; start_stub_daemon
+    local before; before="$(cat "$REG")"
+    SOT_SOCKET="$SOCK" stray_join
+    stop_stub_daemon; rm -f "$WORK/held-all"
+    [ "$JOIN_RC" -ne 0 ] || { echo "  a derived join took @$(sed -n 1p "$STRAY_SELF") with every tier held: $JOIN_OUT"; return 1; }
+    [ "$(cat "$REG")" = "$before" ] || { echo "  registry changed"; return 1; }
+}
 case_bind_row_binding_states() {
     bind_row "$ROW"
     local got
@@ -414,6 +426,7 @@ check "d7: no daemon and an entry bound to no row: taken (the named limit)" case
 check "d8: a row that binds the handle in the gap keeps it" case_d8_a_row_that_binds_in_the_gap_keeps_the_handle
 check "d9: an entry bound on another computer is held" case_d9_an_entry_bound_on_another_computer_is_held
 check "d10: an unreadable registry refuses a join from outside" case_d10_an_unreadable_registry_refuses_a_join_from_outside
+check "d11: a derived join with every tier held by the daemon takes none, whatever bash" case_d11_a_derived_join_takes_no_tier_the_daemon_holds
 check "bind: sot_row_binding says owner, other, unbound and unreadable" case_bind_row_binding_states
 check "s3: a displaced row's session start rejoins and says it moved" case_s3_a_displaced_row_rejoins
 
