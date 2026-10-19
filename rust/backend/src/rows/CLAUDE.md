@@ -47,9 +47,10 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
   predicate for that.
 - Closing a non-default row, once its run is confirmed ended, renames its state folder to `.closed-<id>` (Unix: under the
   fence) after the destroy proof (`end_run::absence_proof_then`), and a detached thread removes it; the default row's
-  folder stays. The start sweep removes every tombstone, and removes a folder older daemons left only on a whole load
-  of every registry (`store::named_workspace_ids`: this host's own registry folder exists and every `workspaces*` and
-  `sessions*` folder and toml reads), when no registry names it, nothing runs in it, it holds no `row-scopes` record and
+  folder stays. The start sweep removes every tombstone, and removes a folder no registry names (an older daemon's, a window close's, one a close
+  kept) only on a whole load of every registry (`store::named_workspace_ids`: this host's own registry folder existed before
+  the default row was seeded, every `workspaces*` and `sessions*` folder stats and reads, every toml reads and counts for
+  the id it names), when no registry names it, nothing runs in it, it holds no `row-scopes` record and
   nothing in it was written for 24 hours. A link at the `workspaces` folder, the folder or inside it is never followed
   (`state_folder.rs`).
 - The row toml is a projection of this state that `store::save` rewrites; the state changes through the daemon's

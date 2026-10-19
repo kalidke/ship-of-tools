@@ -1,4 +1,4 @@
-//! Removing a row's state folder: a close renames it to a tombstone and removes that; the start sweep removes tombstones and the folders older daemons left.
+//! Removing a row's state folder: a close renames it to a tombstone and removes that; the start sweep removes tombstones and any folder no registry names (an older daemon's, a window close's, one a close kept).
 
 use crate::rows::run::end_run::{absence_proof_then, leg_absent, NotProven};
 use crate::rows::Workspaces;
@@ -205,7 +205,7 @@ pub(crate) fn close_row_folder(state_root: &Path, id: &str) {
 }
 
 /// Start sweep, in two parts, returning the names it left. First every tombstone is removed, with no registry consulted:
-/// a tombstone is a close's own leftover. Then, only for folders older daemons left, a row folder no registration names
+/// a tombstone is a close's own leftover. Then a row folder no registration names (one an older daemon left, a window close's, or one a close kept)
 /// is retired and removed when the same proof and the age floor allow. "No registration names it" is true only of a whole
 /// load, so `named` is every id every registry folder names (`store::named_workspace_ids`) or the reason that could not be
 /// said, and an `Err` skips the second part with one warn line. Blocking.

@@ -250,7 +250,11 @@ fn block_removal(dir: &Path) -> Box<dyn std::any::Any> {
 
 #[cfg(windows)]
 fn block_removal(dir: &Path) -> Box<dyn std::any::Any> {
-    Box::new(std::fs::File::open(dir.join("log")).expect("the file to hold open"))
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_SHARE_READ only: no delete sharing, so removing the file fails with a sharing violation.
+    const FILE_SHARE_READ: u32 = 1;
+    let held = std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(dir.join("log"));
+    Box::new(held.expect("the file to hold open"))
 }
 
 #[test]
@@ -340,7 +344,7 @@ fn pinned(tmp: &Path, host: &str) -> Env {
 }
 
 /// A row registered on disk under the pinned host, with an idle state folder.
-fn registered_row() -> (PathBuf, PathBuf) {
+fn registered_row() -> (String, PathBuf, PathBuf) {
     let mut ws = Workspace::from_label("proj", PathBuf::from("/p/proj"), false, "none".into(), String::new(), String::new());
     ws.runtime = "capsule".into();
     let id = ws.workspace_id.clone();
@@ -351,11 +355,15 @@ fn registered_row() -> (PathBuf, PathBuf) {
     std::fs::create_dir_all(&voyage).unwrap();
     std::fs::write(voyage.join(sot_log::store::voyage::WRITER_LOCK), b"").unwrap();
     std::fs::write(folder.join("drawer.voyage"), VOYAGE).unwrap();
-    (folder, toml)
+    (id, folder, toml)
 }
 
-/// The start sweep, as `resume_all` runs it, a day on.
-fn sweep_a_day_later(workspaces: &Workspaces) {
+/// A start, in the daemon's order: the registry scan, this host's default-row save (`seed_default_row`), then the sweep a
+/// day on.
+fn start(workspaces: &Workspaces) {
+    crate::rows::store::scan_disk(workspaces, false).unwrap();
+    let default = Workspace::from_label("local", PathBuf::from("/p/local"), false, "none".into(), String::new(), String::new());
+    let _ = crate::rows::store::save(&default); // fails where a test made the registry folder unreadable
     let state_root = sot_log::host::state_dir::sot_state_dir().unwrap();
     let named = crate::rows::store::named_workspace_ids();
     sweep_with(&state_root, workspaces, &named, later());
@@ -365,12 +373,12 @@ fn sweep_a_day_later(workspaces: &Workspaces) {
 fn a_start_under_another_host_name_keeps_a_row_another_registry_names() {
     let tmp = tempfile::tempdir().unwrap();
     let _env = pinned(tmp.path(), "laptop");
-    let (folder, _toml) = registered_row();
+    let (_id, folder, _toml) = registered_row();
     std::env::set_var("SOT_SELF_HOST", "laptop-2");
     std::fs::create_dir_all(crate::rows::store::app_config_dir().join("workspaces-laptop-2")).unwrap();
     let reg = Workspaces::new();
     assert_eq!(crate::rows::store::scan_disk(&reg, false).unwrap(), 0);
-    sweep_a_day_later(&reg);
+    start(&reg);
     assert!(folder.is_dir(), "a row registered under workspaces-laptop keeps its state folder");
 }
 
@@ -378,9 +386,9 @@ fn a_start_under_another_host_name_keeps_a_row_another_registry_names() {
 fn a_row_no_registry_names_loses_its_old_folder() {
     let tmp = tempfile::tempdir().unwrap();
     let _env = pinned(tmp.path(), "laptop");
-    let (folder, toml) = registered_row();
+    let (_id, folder, toml) = registered_row();
     std::fs::remove_file(toml).unwrap();
-    sweep_a_day_later(&Workspaces::new());
+    start(&Workspaces::new());
     assert!(!folder.exists());
 }
 
@@ -388,9 +396,9 @@ fn a_row_no_registry_names_loses_its_old_folder() {
 fn a_start_with_no_registry_folder_of_its_own_removes_no_unnamed_folder() {
     let tmp = tempfile::tempdir().unwrap();
     let _env = pinned(tmp.path(), "laptop");
-    let (folder, _toml) = registered_row();
+    let (_id, folder, _toml) = registered_row();
     std::env::set_var("SOT_SELF_HOST", "laptop-3");
-    sweep_a_day_later(&Workspaces::new());
+    start(&Workspaces::new());
     assert!(folder.is_dir());
 }
 
@@ -400,11 +408,11 @@ fn an_unreadable_registry_folder_removes_no_folder() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
     let _env = pinned(tmp.path(), "laptop");
-    let (folder, toml) = registered_row();
+    let (_id, folder, toml) = registered_row();
     let dir = toml.parent().unwrap().to_path_buf();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
     let log = sot_log::test_log::capture();
-    sweep_a_day_later(&Workspaces::new());
+    start(&Workspaces::new());
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(folder.is_dir(), "a registry read failure removes nothing");
     assert!(log.text().contains("could not all be read"), "{}", log.text());
@@ -416,9 +424,64 @@ fn an_unreadable_toml_removes_no_folder() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
     let _env = pinned(tmp.path(), "laptop");
-    let (folder, toml) = registered_row();
+    let (_id, folder, toml) = registered_row();
     std::fs::set_permissions(&toml, std::fs::Permissions::from_mode(0o000)).unwrap();
-    sweep_a_day_later(&Workspaces::new());
+    start(&Workspaces::new());
     std::fs::set_permissions(&toml, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert!(folder.is_dir(), "one unreadable toml removes nothing");
+}
+
+#[test]
+fn a_toml_naming_the_id_but_missing_a_key_keeps_the_rows_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = pinned(tmp.path(), "laptop");
+    let (id, folder, toml) = registered_row();
+    let text = std::fs::read_to_string(&toml).unwrap();
+    let damaged: String = text.lines().filter(|l| !l.starts_with("project_root")).map(|l| format!("{l}\n")).collect();
+    std::fs::write(&toml, damaged).unwrap();
+    start(&Workspaces::new());
+    assert!(folder.is_dir(), "a toml that still names {id} did not keep its folder");
+}
+
+#[test]
+fn a_legacy_toml_naming_the_id_keeps_the_rows_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = pinned(tmp.path(), "laptop");
+    let (id, folder, toml) = registered_row();
+    std::fs::remove_file(&toml).unwrap();
+    let legacy = crate::rows::store::app_config_dir().join("sessions-laptop");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(legacy.join("old.toml"), format!("[backend]\nsession_id = \"{id}\"\n")).unwrap();
+    start(&Workspaces::new());
+    assert!(folder.is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn another_hosts_registry_folder_that_cannot_be_stat_ed_keeps_the_rows_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = pinned(tmp.path(), "laptop");
+    let (_id, folder, toml) = registered_row();
+    let config = crate::rows::store::app_config_dir();
+    let away = tmp.path().join("away");
+    let hidden = away.join("workspaces-laptop");
+    std::fs::create_dir_all(&away).unwrap();
+    std::fs::rename(toml.parent().unwrap(), &hidden).unwrap();
+    std::os::unix::fs::symlink(&hidden, config.join("workspaces-laptop")).unwrap();
+    std::fs::set_permissions(&away, std::fs::Permissions::from_mode(0o000)).unwrap();
+    std::env::set_var("SOT_SELF_HOST", "laptop-2");
+    start(&Workspaces::new());
+    std::fs::set_permissions(&away, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(folder.is_dir(), "a registry folder that could not be stat'ed was skipped and its row's folder removed");
+}
+
+#[test]
+fn a_start_with_a_fresh_config_folder_beside_an_old_state_root_removes_no_row_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = pinned(tmp.path(), "laptop");
+    let (_id, folder, _toml) = registered_row();
+    std::fs::remove_dir_all(crate::rows::store::app_config_dir()).unwrap();
+    start(&Workspaces::new());
+    assert!(folder.is_dir(), "a first start under a new config folder removed the old state root's folders");
 }

@@ -502,10 +502,13 @@ which ADR 0041 had already discharged.
   to `.closed-<id>` and removes that on a detached thread; when the end is not
   confirmed it keeps both. The default row only ends its run and keeps its
   directory. The boot resume scan then removes every tombstone, and a directory
-  older daemons left only when no registry names it. "No registry names it" is
-  read from disk, not from the daemon's own table: this host's registry folder
-  must exist and every `workspaces*` and `sessions*` folder and toml under the
-  config folder must read, or the scan removes none that start (one warn line).
+  no registry names (one an older daemon left, one a window close left, or one a
+  close kept). "No registry names it" is read from disk, not from the daemon's
+  own table: this host's registry folder must have existed before the default
+  row was seeded at that start, every `workspaces*` and `sessions*` folder under
+  the config folder must stat and read, and every toml must read (a toml counts
+  for the id it names whether or not it loads as a row), or the scan removes none
+  that start (one warn line).
   Such a directory must also show nothing running (the supervisor's `supervisor.lock`
   free and no leg holding a voyage's `writer.lock`), hold no `row-scopes` record,
   and have nothing written in it for 24 hours (the floor, so it never races a row
