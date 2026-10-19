@@ -45,6 +45,15 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
   (`run::observer::observe` is the caller).
 - The default row is an inert anchor when its agent is `none`, on every runtime: `is_inert_default_anchor` is the one
   predicate for that.
+- Closing a non-default row, once its run is confirmed ended, renames its state folder to `.closed-<id>` (Unix: under the
+  fence) after the destroy proof (`end_run::absence_proof_then`), and a detached thread removes it; the default row's
+  folder stays. The start sweep removes every tombstone, and removes a folder no registry names (an older daemon's, a window close's, one a close
+  kept) only on a whole load of every registry (`store::named_workspace_ids`: this host's own registry folder existed before
+  the default row was seeded, every `workspaces*` and `sessions*` folder stats and reads, every toml reads and counts for
+  the id it names in any section; and the config folder is the one recorded in `workspaces/.registries-of` by the last whole
+  start, if one is recorded), when no registry names it, nothing runs in it, it holds no `row-scopes` record and
+  nothing in it was written for 24 hours. A link at the `workspaces` folder, the folder or inside it is never followed
+  (`state_folder.rs`).
 - The row toml is a projection of this state that `store::save` rewrites; the state changes through the daemon's
   ops, not through the file.
 
@@ -76,6 +85,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mod.rs`: the `Workspace`, `Workspaces` and `Inner` structs, `row_or_reply`, the `WorkspaceChanged` event and the session name rule
 - `workspace.rs`: the row's methods, `Phase`, `Observation`, `SupervisorIdentity`, the phase cell, `now_unix`
 - `registry.rs`: `Workspaces` insert, lookup, removal, observers, buses and the per-row guard
+- `state_folder.rs`: `close_row_folder` (rename to a tombstone, remove it on a thread), `sweep_with` and `sweep_state_folders` (the start sweep), `retire`, `is_row_folder_name`, `AGE_FLOOR`
+- `state_folder_tests.rs`: tests of `state_folder.rs`: the name rule, the proof and link refusals, the tombstone, and the sweep with its whole-load rule against scratch registries
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`
 - `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `end_default_row_run`, `default_row_launch_seed`, `seed_default_row`
 - `ops/`: the row ops clients call

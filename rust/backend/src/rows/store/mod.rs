@@ -43,6 +43,7 @@ pub fn scan_disk(reg: &Workspaces, adopt_legacy_registry: bool) -> Result<usize>
     // Per-host state dirs (see `declared_host`): adopt the legacy unsuffixed
     // dirs on the first post-deploy boot, before scanning.
     migrate_legacy_state_dirs();
+    OWN_REGISTRY_EXISTED_AT_SCAN.store(workspaces_dir().is_dir(), std::sync::atomic::Ordering::SeqCst);
     let mut count = 0;
     let workspaces_dir = workspaces_dir();
     if workspaces_dir.is_dir() {
@@ -70,6 +71,58 @@ pub fn scan_disk(reg: &Workspaces, adopt_legacy_registry: bool) -> Result<usize>
         }
     }
     Ok(count)
+}
+
+/// Whether this host's own `workspaces-<host>` folder existed when `scan_disk` last looked, which is before
+/// `seed_default_row` writes the default row's toml into it: false on a first start under a new host name or config folder.
+static OWN_REGISTRY_EXISTED_AT_SCAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The id a row toml names, whether or not `load_toml` accepts the row: the first `workspace_id` or `session_id` key on
+/// any line, in any section. A hand edit can put a `[section]` line above the keys; the id is still the row's.
+fn id_named_by(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let (key, value) = line.trim().split_once('=')?;
+        let id = value.trim().trim_matches(|c| c == '"' || c == '\'');
+        (matches!(key.trim(), "workspace_id" | "session_id") && !id.is_empty()).then(|| id.to_string())
+    })
+}
+
+/// Every workspace id any row registry under the config dir names, or why that cannot be said whole. The registries are
+/// the `workspaces*` and `sessions*` folders (the per-host ones, the unsuffixed ones and every other host's, which share this
+/// state root). The answer is whole only when this host's own registry folder existed before the default row was seeded
+/// (a first start under a new name or config folder has not seen the old registries), every one of those folders can be
+/// statted and read, and every `*.toml` reads; a toml counts for the id it names whether or not it loads as a row. A
+/// caller deciding that no registration names a state folder acts on `Ok` only.
+pub fn named_workspace_ids() -> Result<std::collections::HashSet<String>, String> {
+    if !OWN_REGISTRY_EXISTED_AT_SCAN.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("this host's registry folder did not exist when the daemon started (a first start here)".into());
+    }
+    let config = app_config_dir();
+    let mut ids = std::collections::HashSet::new();
+    let folders = std::fs::read_dir(&config).map_err(|e| format!("the config folder {config:?}: {e}"))?;
+    for folder in folders {
+        let folder = folder.map_err(|e| format!("the config folder {config:?}: {e}"))?;
+        let name = folder.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with("workspaces") || name.starts_with("sessions")) {
+            continue;
+        }
+        let path = folder.path();
+        // `metadata` follows a link, and a link that cannot be followed is a failure, not "not a directory".
+        let is_dir = std::fs::metadata(&path).map_err(|e| format!("{path:?}: {e}"))?.is_dir();
+        if !is_dir {
+            continue;
+        }
+        let entries = std::fs::read_dir(&path).map_err(|e| format!("{path:?}: {e}"))?;
+        for entry in entries {
+            let file = entry.map_err(|e| format!("{path:?}: {e}"))?.path();
+            if file.extension().and_then(|s| s.to_str()) != Some("toml") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).map_err(|e| format!("{file:?}: {e}"))?;
+            ids.extend(id_named_by(&text));
+        }
+    }
+    Ok(ids)
 }
 
 fn scan_dir(reg: &Workspaces, dir: &Path, legacy: bool) -> Result<usize> {

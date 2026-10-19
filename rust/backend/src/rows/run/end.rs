@@ -10,7 +10,7 @@ use serde_json::json;
 pub(crate) enum CapsuleDestroyOutcome {
     /// The run was CONFIRMED ended (`RecordVerified`/`RecordClosed`/
     /// `AlreadyEnded` — see `rows::run::end_run::EndRunOutcome`) — the row
-    /// may be removed; the state directory never is. Human-readable
+    /// may be removed. `workspace.destroy` then also renames its state directory away and removes it (`state_folder`); the window's close does not, and leaves that folder to the next start's sweep. Human-readable
     /// (never the raw, Windows-only `EndRunOutcome` type) so this enum
     /// stays portable and unit-testable.
     Removable(String),

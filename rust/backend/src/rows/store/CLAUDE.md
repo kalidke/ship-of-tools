@@ -6,7 +6,7 @@ those files, owns the hand toml codec they use and the three migrations that run
 subsystem; charter: `rust/backend/src/rows/CLAUDE.md`.
 
 ## Files
-- `mod.rs`: `scan_disk`, `scan_dir`, `load_toml`, `save`, `declared_host` and the config-dir paths (`workspaces_dir`, `toml_path_for`, `legacy_toml_path_for`, `sessions_dir`, `app_config_dir`, `check_config_dir`)
+- `mod.rs`: `scan_disk`, `named_workspace_ids` (every id every registry folder names, or why not whole), `scan_dir`, `load_toml`, `save`, `declared_host` and the config-dir paths (`workspaces_dir`, `toml_path_for`, `legacy_toml_path_for`, `sessions_dir`, `app_config_dir`, `check_config_dir`)
 - `codec.rs`: the hand toml reader and writer: `parse_kv`, `parse_section`, `strip_canonical_top_and_kernel`, `toml_quote`, `toml_unquote`
 - `migrate.rs`: `migrate_legacy_state_dirs` with its fold, and the Windows legacy config-dir move
 - `tests.rs`: load, save and scan cases, the round trips and the config-dir cases

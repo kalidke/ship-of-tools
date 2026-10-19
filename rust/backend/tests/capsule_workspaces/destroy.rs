@@ -114,10 +114,9 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
-    // The fence is freely acquirable — no lingering authority holds it.
-    let fence = sot_log::supervisor::journal::fence::lock_supervisor(&state_dir_path);
-    assert!(fence.is_ok(), "the fence must be acquirable after a clean destroy — something still holds it");
-    drop(fence);
+    // A closed row's state folder is removed once its run is confirmed ended, and that removal takes the fence
+    // (`supervisor.lock`) only after finding it free, so a folder still here means something held it or the removal failed.
+    assert!(!state_dir_path.exists(), "the destroyed row's state folder must be removed: {state_dir_path:?}");
 
     let log_path = env.state_root.join("sot").join("sotd.log");
     let log_contents = std::fs::read_to_string(&log_path)

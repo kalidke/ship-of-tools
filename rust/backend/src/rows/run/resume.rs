@@ -46,12 +46,13 @@ pub const LANE_CONCURRENCY: usize = 4;
 /// this task returns (`resume_locked` -> `start_supervisor` ->
 /// `settle_after_spawn`).
 ///
-/// A state directory with NO matching registry entry is left
-/// COMPLETELY untouched, logged once (ADR 0042: "the daemon's
+/// A state directory with NO matching registry entry is never resumed (ADR 0042: "the daemon's
 /// workspace list is the list" — an orphan is not addressable
 /// through any op, so resuming it would create a live, unaddressable
 /// process; deleted, the bare-shell fallback an earlier version used
-/// here).
+/// here). After the resume pass the state folder sweep runs (`state_folder::sweep_state_folders`): it removes the
+/// tombstones closes left, and a folder no registry on disk names only when every registry read whole, its supervisor
+/// and leg are proven absent, and nothing in it was written for 24 hours; a folder it leaves is logged once.
 ///
 /// Runs off the startup critical path (finding 10): `server/mod.rs`
 /// calls this via `tokio::spawn`, never awaited, and every probe/spawn
@@ -136,41 +137,12 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
         let _ = j.await;
     }
 
-    log_registryless_state_dirs(&state_root, &workspaces);
+    let (sweep_root, sweep_workspaces) = (state_root.clone(), workspaces.clone());
+    let _ = tokio::task::spawn_blocking(move || crate::rows::state_folder::sweep_state_folders(&sweep_root, &sweep_workspaces)).await;
     log_orphaned_state_dirs(&state_root, &workspaces);
 }
 
-/// One log line naming every `<state-root>/workspaces/*` directory
-/// with no matching registry entry — diagnostic only, never acted on
-/// (see [`resume_all`]'s own doc).
-fn log_registryless_state_dirs(state_root: &Path, workspaces: &Workspaces) {
-    let dir = state_root.join("workspaces");
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == ErrorKind::NotFound => return,
-        Err(e) => {
-            tracing::debug!(dir = ?dir, error = %e, "capsule workspace resume-scan: could not read the state root for the registryless-directory log sweep");
-            return;
-        }
-    };
-    let known: std::collections::HashSet<String> =
-        workspaces.list().into_iter().map(|ws| ws.workspace_id.clone()).collect();
-    let orphans: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .filter(|id| !known.contains(id))
-        .collect();
-    if !orphans.is_empty() {
-        tracing::warn!(
-            count = orphans.len(), ids = ?orphans,
-            "capsule workspace resume-scan: state directories with no matching registry entry -- \
-             left untouched (ADR 0042: the workspace list is the list)"
-        );
-    }
-}
-
-/// The reverse of [`log_registryless_state_dirs`]: a REGISTERED
+/// The reverse of the sweep above: a REGISTERED
 /// capsule row whose `state_dir` does not exist under THIS daemon's
 /// own state root — a DIAGNOSTIC candidate list only, never a proof.
 /// A row that went through `workspace.create` and reached the

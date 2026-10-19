@@ -497,6 +497,31 @@ which ADR 0041 had already discharged.
 
 - No session registry, catalog, or second source of truth: the daemon's
   workspace list is the list; the state directory is the record's home.
+  A state directory with no registry entry is never resumed. Closing a row
+  (`workspace.destroy`) with its run confirmed ended renames its state directory
+  to `.closed-<id>` and removes that on a detached thread; when the end is not
+  confirmed it keeps both. The default row only ends its run and keeps its
+  directory. The boot resume scan then removes every tombstone, and a directory
+  no registry names (one an older daemon left, one a window close left, or one a
+  close kept). "No registry names it" is read from disk, not from the daemon's
+  own table: this host's registry folder must have existed before the default
+  row was seeded at that start, every `workspaces*` and `sessions*` folder under
+  the config folder must stat and read, and every toml must read (a toml counts
+  for the id it names, in any section, whether or not it loads as a row), or the
+  scan removes none that start (one warn line). The state `workspaces` folder
+  also records the config folder whose registries last named its folders (a
+  small file written after a start whose registries were whole); a start under
+  a different config folder removes none and records nothing.
+  Such a directory must also show nothing running (the supervisor's `supervisor.lock`
+  free and no leg holding a voyage's `writer.lock`), hold no `row-scopes` record,
+  and have nothing written in it for 24 hours (the floor, so it never races a row
+  being created); there is no timer. Only a direct child of
+  `<state-root>/workspaces/` that is a real directory with a name the registry
+  makes (`ws-` and a slug), never reached through a link at any level; a held or
+  unreadable lock or age keeps it. Each removal logs one line: the directory, that
+  its terminal recording goes, and that the conversation stays resumable with
+  `/resume` in the same project folder. A row ended by the window's close keeps
+  its directory until a later start's scan removes it.
 - No second drawer and no drawer changes: U4 (drawer cutover, upgrade
   transaction) proceeds after L1–L3 as amended; once L1 exists the drawer is
   one more capsule session whose tenant is fixed.

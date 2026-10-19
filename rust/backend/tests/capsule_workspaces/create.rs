@@ -153,10 +153,14 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert!(
-        state_dir_path.is_dir(),
-        "the capsule's state dir must survive workspace.destroy (the record persists by design): {state_dir}"
-    );
+    // The row leaves the list just before its state folder goes, in the same handler.
+    while state_dir_path.exists() {
+        assert!(
+            Instant::now() < destroy_deadline,
+            "the capsule's state dir is removed by workspace.destroy once its run is confirmed ended: {state_dir}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     env.kill_daemon_bounded().await;
 }

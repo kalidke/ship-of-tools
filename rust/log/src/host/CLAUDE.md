@@ -58,7 +58,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   refuses locks (NFSv3 without its lock service answers ENOLCK) stops `HeldDir::create`, so no Julia child starts and
   every release check fails with "making the release check's scratch folder". A removal waiting on a live maker's lock
   never stops the maker removing its folder: on Windows a held folder's lock file is opened sharing deletion, by its
-  maker (`lock_new`) and by a removal (`lock_held`), where a fence's lock file, never removed, is not (`lock_writer`).
+  maker (`lock_new`) and by a removal (`lock_held`), where a fence's lock file is not (`lock_writer`); a fence's lock file is removed only with its folder, which the daemon's state folder removal renames away after taking the fence free.
 - Kernel file locks are taken only inside three guards: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`, whose `Drop` unlocks, and `HandoverLock` in `lock.rs`, whose drop only closes, so a copy of its descriptor in a child keeps the lock held (a birth's claim on a row's fence). rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
 - A connection or child restarted through `Redial` waits from its caller's floor, doubling to its cap, and starts over
