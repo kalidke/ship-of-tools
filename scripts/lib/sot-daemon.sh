@@ -138,12 +138,19 @@ LIB="$prefix/repo/current/scripts/lib/sot-daemon.sh"
 . "\$LIB" || { echo "ERROR: cannot read \$LIB" >&2; exit 1; }
 SOCKET="\$("$prefix/bin/sotd" session-socket-path sot)"
 # An owned service is stopped through systemd so its restart policy cannot
-# race the stop.
+# race the stop. Any other daemon is stopped by its pid, named by its socket
+# (sot_daemon_pid: this account's process called sotd, started with exactly
+# this socket), never by a pattern over command lines (ADR 0050); it is waited
+# for, at most 10 s.
 stop_daemon() {
+    local pid n=0
     if sot_service_owned "$prefix"; then
         systemctl --user stop sotd.service >/dev/null 2>&1
     else
-        pkill -u "\$(id -u)" -f "$prefix/bin/sotd" 2>/dev/null && sleep 1
+        pid="\$(sot_daemon_pid "\$SOCKET")"
+        case "\$pid" in ''|0|*[!0-9]*) return 0 ;; esac
+        kill "\$pid" 2>/dev/null || return 0
+        while [ "\$(sot_daemon_pid "\$SOCKET")" = "\$pid" ] && [ "\$n" -lt 40 ]; do sleep 0.25; n=\$((n + 1)); done
     fi
 }
 # Apply an armed update (ADR 0030 Phase C): an active owned service is

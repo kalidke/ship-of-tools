@@ -36,7 +36,7 @@ mk_tools() {  # <dir> [tool...]
     local d="$1" t p
     shift
     mkdir -p "$d"
-    for t in bash sh env cat sed grep head cut awk mkdir rm mv cp ln chmod touch readlink basename dirname date sleep nohup id uname hostname python3 git install stat cmp mktemp find wc "$@"; do
+    for t in bash sh env cat sed grep head cut awk mkdir rm mv cp ln chmod touch readlink basename dirname date sleep nohup id uname hostname python3 git install stat cmp mktemp find wc ps "$@"; do
         p="$(type -P "$t")" || { printf 'FAIL mk_tools: %s is missing\n' "$t" >&2; exit 1; }
         ln -sf "$p" "$d/$t"
     done

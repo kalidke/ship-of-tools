@@ -13,7 +13,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Wrapper fixture: the rendered sot-launch under the sandboxed PATH. Event log
 # lines: probe (the bridge), spawn (sot), rollback / apply (sot-apply), hop (a re-exec'd
-# wrapper), plus the systemctl and pkill argv.
+# wrapper), plus the systemctl argv.
 # <dir> <sot exit codes> <owned 1|0> <pending 1|0> <apply: rollback-only|consume>
 mk_wrapper() {
     local d="$1" codes="$2" owned="$3" pending="$4" apply="${5:-log}" prefix="$1/prefix" lib
@@ -25,12 +25,9 @@ mk_wrapper() {
 printf 'systemctl %s\n' "$*" >> "$STUB_LOG"
 exit 0
 SC
-    cat > "$d/stubs/pkill" <<'PK'
-#!/bin/sh
-echo pkill >> "$STUB_LOG"
-exit 0
-PK
-    chmod +x "$d/stubs/systemctl" "$d/stubs/pkill"
+    chmod +x "$d/stubs/systemctl"
+    # The real pkill, if the box has one, so a wrapper that ever pattern-kills again kills the decoy of standin_start.
+    ! command -v pkill >/dev/null 2>&1 || ln -sf "$(command -v pkill)" "$d/stubs/pkill"
     [ "$owned" = 1 ] || rm -f "${d:?}/stubs/systemctl"
     cp "$LIB" "$lib/sot-daemon.sh"
     printf '%s\n' "$codes" > "$d/codes"
@@ -79,6 +76,26 @@ SA
     : > "$prefix/updates/just-applied-testtarget"
     render_sot_launch "$prefix" testtarget "$d/home/.local/bin/sot-launch"
 }
+# A stand-in daemon for <dir>: a copy of bash named sotd, whose arguments name the socket the wrapper asks about (what
+# sot_daemon_pid finds), and a decoy that only names <prefix>/bin/sotd in its command line. Sets SA_PID and SA_DECOY.
+standin_start() {  # <dir>
+    local d="$1"
+    mkdir -p "$d/standin"; cp "$(type -P bash)" "$d/standin/sotd"
+    "$d/standin/sotd" -c 'while :; do sleep 1; done' standin --socket "$d/sot.sock" &
+    SA_PID=$!
+    ( exec -a "tail -f $d/prefix/bin/sotd" sleep 300 ) &
+    SA_DECOY=$!
+}
+# "stopped" when the stand-in daemon is gone (a zombie counts as gone), "kept" for the decoy while it lives; then both are ended.
+standin_end() {  # <dir>: prints "<daemon> <decoy>"
+    local dstate="stopped" ostate="gone" st
+    st="$(ps -o stat= -p "$SA_PID" 2>/dev/null || true)"
+    case "$st" in ''|Z*) ;; *) dstate="running" ;; esac
+    ! kill -0 "$SA_DECOY" 2>/dev/null || ostate="alive"
+    kill "$SA_PID" "$SA_DECOY" 2>/dev/null || true
+    wait "$SA_PID" "$SA_DECOY" 2>/dev/null || true
+    echo "$dstate decoy-$ostate"
+}
 run_wrapper() {  # <dir>: sets WR_RC
     local d="$1"
     WR_RC=0
@@ -95,33 +112,33 @@ check "the wrapper probes the socket before every spawn, rolls back after two fa
 # ---------------------------------------------------------------------------
 case_start "wrapper_service_ops_follow_ownership"
 d="$WORK/w-own-apply"; mk_wrapper "$d" "0" 1 1
-run_wrapper "$d"
-check "an owned unit: apply is a try-restart, no sot-apply, no pkill" \
-    "1 0 0" "$(grep -c -- '--user try-restart sotd.service' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+standin_start "$d"; run_wrapper "$d"
+check "an owned unit: apply is a try-restart, no sot-apply, no pid stop" \
+    "1 0 running decoy-alive" "$(grep -c -- '--user try-restart sotd.service' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(standin_end "$d")"
 d="$WORK/w-own-rb"; mk_wrapper "$d" "$(printf '1\n1\n0')" 1 0
-run_wrapper "$d"
-check "an owned unit: rollback stops it through systemd" \
-    "1 0" "$(grep -c -- '--user stop sotd.service' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+standin_start "$d"; run_wrapper "$d"
+check "an owned unit: rollback stops it through systemd, never by a pid" \
+    "1 running decoy-alive" "$(grep -c -- '--user stop sotd.service' "$d/log" || true) $(standin_end "$d")"
 d="$WORK/w-for-apply"; mk_wrapper "$d" "0" 0 1
 printf '#!/bin/sh\nexit 0\n' > "$d/stubs/systemctl"; chmod +x "$d/stubs/systemctl"
-run_wrapper "$d"
-check "a foreign unit: apply is pkill plus sot-apply, no try-restart" \
-    "0 1 1" "$(grep -c 'try-restart' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+standin_start "$d"; run_wrapper "$d"
+check "a foreign unit: apply stops the daemon by its pid, leaves a process that only names its path, and runs sot-apply, no try-restart" \
+    "0 1 stopped decoy-alive" "$(grep -c 'try-restart' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(standin_end "$d")"
 d="$WORK/w-for-rb"; mk_wrapper "$d" "$(printf '1\n1\n0')" 0 0
 printf '#!/bin/sh\nprintf "systemctl %%s\\n" "$*" >> "$STUB_LOG"\nexit 0\n' > "$d/stubs/systemctl"; chmod +x "$d/stubs/systemctl"
-run_wrapper "$d"
-check "a foreign unit: rollback is pkill, no systemd stop" \
-    "0 1" "$(grep -c 'sotd.service' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+standin_start "$d"; run_wrapper "$d"
+check "a foreign unit: rollback stops the daemon by its pid and leaves the decoy, no systemd stop" \
+    "0 stopped decoy-alive" "$(grep -c 'sotd.service' "$d/log" || true) $(standin_end "$d")"
 # A pointer the installed sotd refuses (exit 3) costs no restart: sot-apply runs once to drop it and nothing stops or
 # restarts the daemon, and sot-apply runs in its drop-only mode: a pointer that fits and was armed in between waits for the
 # next start, when the daemon is stopped as usual. Exit 1, an older sotd's answer to the verb, leaves the restart in charge.
-refused() {  # <name> <owned> <sotd exit>: the log's restart/stop, pkill, full-apply and drop-only counts
-    local d="$WORK/w-$1"; mk_wrapper "$d" "0" "$2" 1; echo "$3" > "$d/pointer-exit"; run_wrapper "$d"
-    echo "$(grep -c -e try-restart -e '--user stop' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(grep -c '^drop$' "$d/log" || true)"
+refused() {  # <name> <owned> <sotd exit>: the log's restart/stop, full-apply and drop-only counts, and whether the daemon was left running
+    local d="$WORK/w-$1"; mk_wrapper "$d" "0" "$2" 1; echo "$3" > "$d/pointer-exit"; standin_start "$d"; run_wrapper "$d"
+    echo "$(grep -c -e try-restart -e '--user stop' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(grep -c '^drop$' "$d/log" || true) $(standin_end "$d" | cut -d' ' -f1)"
 }
-check "an owned unit, pointer refused: no restart, one drop-only sot-apply" "0 0 0 1" "$(refused r-owned 1 3)"
-check "a foreign unit, pointer refused: no pkill, one drop-only sot-apply" "0 0 0 1" "$(refused r-foreign 0 3)"
-check "an older sotd's answer (exit 1) leaves the restart in charge" "1 0 0 0" "$(refused r-older 1 1)"
+check "an owned unit, pointer refused: no restart, one drop-only sot-apply" "0 0 1 running" "$(refused r-owned 1 3)"
+check "a foreign unit, pointer refused: daemon kept, one drop-only sot-apply" "0 0 1 running" "$(refused r-foreign 0 3)"
+check "an older sotd's answer (exit 1) leaves the restart in charge" "1 0 0 running" "$(refused r-older 1 1)"
 # A real foreign unit, as sot_service_owned defines one: systemctl is here and
 # the manifest says systemd, but the unit runs another prefix's sotd.
 foreign_unit() {  # <dir>
@@ -130,13 +147,13 @@ foreign_unit() {  # <dir>
     printf '#!/bin/sh\nprintf "systemctl %%s\\n" "$*" >> "$STUB_LOG"\nexit 0\n' > "$1/stubs/systemctl"; chmod +x "$1/stubs/systemctl"
 }
 d="$WORK/w-real-for-apply"; mk_wrapper "$d" "0" 0 1; foreign_unit "$d"
-run_wrapper "$d"
-check "a real foreign unit: apply runs no service op, only pkill plus sot-apply" \
-    "0 1 1" "$(grep -c 'sotd.service' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+standin_start "$d"; run_wrapper "$d"
+check "a real foreign unit: apply runs no service op, only the pid stop plus sot-apply" \
+    "0 1 stopped decoy-alive" "$(grep -c 'sotd.service' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(standin_end "$d")"
 d="$WORK/w-real-for-rb"; mk_wrapper "$d" "$(printf '1\n1\n0')" 0 0; foreign_unit "$d"
-run_wrapper "$d"
-check "a real foreign unit: rollback runs no service op, only pkill" \
-    "0 1" "$(grep -c 'sotd.service' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+standin_start "$d"; run_wrapper "$d"
+check "a real foreign unit: rollback runs no service op, only the pid stop" \
+    "0 stopped decoy-alive" "$(grep -c 'sotd.service' "$d/log" || true) $(standin_end "$d")"
 
 # ---------------------------------------------------------------------------
 case_start "a_converge_relaunches_the_all_in_one_window"
