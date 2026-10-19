@@ -102,6 +102,12 @@ sot_boot_keep() {  # <systemd-user-dir>
     if sot_boot_wired "$1"; then sot_boot_wants "$1"; fi
 }
 
+# The one line a managed unit with boot start off is told, by the installer's verdict and by the background update's log:
+# the command that turns it on.
+sot_boot_off_line() {
+    printf '%s\n' "sotd.service: boot start is off on this computer; turn it on with: mkdir -p ~/.config/systemd/user/default.target.d && printf '[Unit]\nWants=sotd.service\n' > ~/.config/systemd/user/default.target.d/sotd.conf && systemctl --user daemon-reload"
+}
+
 # Does the installed sotd refuse the pointer armed for TARGET under PREFIX? `sotd update pointer` exits 3 for one that no
 # longer fits the install, or cannot be read. Any other answer (an older sotd exits 1 or 2, none at all 126 or 127) is
 # no refusal here: sot-apply's own checks decide, as before. sot-apply.sh asks the same question and drops the pointer.

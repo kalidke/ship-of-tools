@@ -61,6 +61,9 @@ check "the owned unit now restarts on failure" "1" "$(grep -c '^Restart=on-failu
 linux_check "exactly one daemon-reload" "1" "$(reloads "$d")"
 check "the unit backup equals the original" "same" "$(cmp -s "$d/unit.orig" "$d/prefix/updates/sotd.service.prev-$TGT" && echo same || echo differ)"
 
+# shellcheck source=installer-apply-boot.sh
+. "$(dirname "${BASH_SOURCE[0]}")/installer-apply-boot.sh"
+
 # ---------------------------------------------------------------------------
 case_start "apply_skips_foreign_unit"
 d="$WORK/ap2"; mk_apply_fixture "$d" 0 0; run_apply "$d"
