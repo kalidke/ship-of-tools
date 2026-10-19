@@ -42,8 +42,11 @@ least destructive recovery rung. Try this before `repl run --fresh` (which
 re-pays minutes of precompile) and long before any manual `kill`.
 Workspace-wide: it interrupts whatever eval is running there, regardless of
 who started it. Lands at the eval's next yield point; a tight non-yielding
-compute loop is stopped by the interrupt signal the daemon sends, within about
-three seconds. If it still goes unanswered, `--fresh` is the escalation. Exit 0 = interrupted; 3 = nothing to interrupt; refuses (exit 3)
+loop with a safepoint is stopped by the one interrupt signal the daemon sends,
+within about two seconds. Code with no safepoint ignores that signal and the
+interrupt is answered with an error saying so: `--force` forces it, and forcing
+can crash or hang the REPL inside C code, compiling or garbage collection, so
+`--fresh` is the safer escalation. On Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that very moment was answered with an error (`InterruptException`, code `repl_exception`) while the REPL kept running and kept its state; a signal that arrives as the REPL idles between evaluations can end it on 1.12, which only a synthetic signal has produced. Exit 0 = interrupted; 3 = nothing to interrupt; refuses (exit 3)
 when the REPL is `not_started`/`dead` (sending would spawn a kernel) or
 `starting` (a boot isn't a wedge).
 

@@ -24,6 +24,7 @@ pub(crate) mod execute;
 pub(crate) mod lifecycle;
 pub(crate) mod numbers;
 pub(crate) mod ops;
+mod escalation;
 mod supervisor;
 
 #[cfg(test)]
@@ -347,10 +348,9 @@ impl Repl {
             .await
             .map_err(|_| {
                 anyhow!(
-                    "the REPL did not answer {op} within {REPL_INTERRUPT_WAIT:?}: its eval never yields and went on \
-                     through the interrupt signal too (it catches InterruptException, or a C call holds the thread), \
-                     and a restart ends it now (`sot-fe repl run <ws> <file> --fresh`, or `r` on a .jl file in \
-                     the window)"
+                    "the REPL did not answer {op} within {REPL_INTERRUPT_WAIT:?}: it was not reading (no eval was running for the \
+                     daemon to signal, or the interrupt named another), and a restart ends it now (`sot-fe repl run \
+                     <ws> <file> --fresh`, or `r` on a .jl file in the window)"
                 )
             })?
             .map_err(|_| anyhow!("repl supervisor dropped reply channel"))?

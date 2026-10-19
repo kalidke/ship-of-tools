@@ -90,7 +90,9 @@ async fn an_interrupt_naming_another_eval_sends_no_signal() {
         return;
     }
     let fixture = Fixture::new();
-    let (mut reply, collector) = start(&fixture, 2, "println(\"spinning\"); while true end", "spinning").await;
+    // A loop with a safepoint, which one signal would stop: only the request's naming keeps the signal from it.
+    let code = "println(\"spinning\"); let s = 0.0; for i in 1:10^12; s += sin(i); end; s; end";
+    let (mut reply, collector) = start(&fixture, 2, code, "spinning").await;
     let answer = fixture.repl.request_if_running("repl.interrupt", json!({ "eval_ids": [99] })).await;
     assert!(answer.is_err(), "nothing answers an interrupt for an eval that is not running");
     assert!(tokio::time::timeout(Duration::from_secs(5), &mut reply).await.is_err(), "eval 2 was not named");

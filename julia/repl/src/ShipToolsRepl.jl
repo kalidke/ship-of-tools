@@ -79,8 +79,6 @@ const STARTUP_FAILURE = Ref("")
 # run it (`Base.load_julia_startup`, the depot search order Julia uses), with stdout already on stderr. An error in it is
 # said once at the first eval (`STARTUP_FAILURE`), and the shim still serves.
 function run_shim(io_in::IO, io_out::IO)
-    # The daemon's interrupt signal (SIGINT; a Ctrl+Break on Windows) is an InterruptException, never an exit.
-    Base.exit_on_sigint(false)
     point_stdout_away_from_wire!(io_out)
     try
         Base.load_julia_startup()
@@ -88,6 +86,9 @@ function run_shim(io_in::IO, io_out::IO)
         STARTUP_FAILURE[] = "sot: the startup file failed: " *
             Base.invokelatest(sprint, showerror, e, catch_backtrace()) * "\n"
     end
+    # The daemon's interrupt signal (SIGINT; a Ctrl+Break on Windows) is an InterruptException, never an exit, whatever
+    # the startup file set.
+    Base.exit_on_sigint(false)
     serve(io_in, io_out)
 end
 
@@ -147,7 +148,11 @@ function serve(io_in::IO, io_out::IO)
     write_envelope(io_out, "evt", 0, "repl.ready",
         Dict(:julia => string(VERSION), :protocol => PROTOCOL_VERSION))
 
-    while (line = past_interrupts(() -> eof(io_in) ? nothing : readline(io_in))) !== nothing
+    while true
+        # The requests that were waiting when a signal stopped an eval are answered for it; one that comes after is not.
+        bytesavailable(io_in) == 0 && (SIGNALED[] = nothing)
+        line = past_interrupts(() -> eof(io_in) ? nothing : readline(io_in))
+        line === nothing && break
         isempty(strip(line)) && continue
         req = try
             json_read(line)
@@ -254,19 +259,23 @@ function spawn_eval(work, io::IO, id, eval_id, op, ack)
         notice = DISPLAY_NOTICE[]
         if notice !== nothing
             DISPLAY_NOTICE[] = nothing
-            emit(Dict(:kind => "stderr", :text => notice))
+            past_interrupts(() -> emit(Dict(:kind => "stderr", :text => notice)))
         end
         try
             work(emit)
         catch e
-            emit(Dict(:kind => "error",
-                      :message => "internal repl error: $(sprint(showerror, e))",
-                      :stacktrace => Dict[]))
+            past_interrupts() do
+                emit(Dict(:kind => "error",
+                          :message => "internal repl error: $(sprint(showerror, e))",
+                          :stacktrace => Dict[]))
+            end
         end
-        CURRENT_EVAL[] = nothing
+        # The eval's code is over, so a signal that lands from here is the daemon's, sent for code that ended as it came:
+        # each step runs again until it has run (`past_interrupts`).
+        past_interrupts(() -> CURRENT_EVAL[] = nothing)
         elapsed_ms = round(Int, (time() - start) * 1000)
-        emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => elapsed_ms))
-        write_envelope(io, "res", id, op, merge(ack, Dict(:elapsed_ms => elapsed_ms)))
+        past_interrupts(() -> emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => elapsed_ms)))
+        past_interrupts(() -> write_envelope(io, "res", id, op, merge(ack, Dict(:elapsed_ms => elapsed_ms))))
     end
     CURRENT_EVAL[] = Eval(eval_id, task, :waiting, false)
     schedule(task)
@@ -445,10 +454,10 @@ answers with an `error` frame, then `done` and its `res`. An interrupt that
 names `eval_ids` reaches only an eval among them.
 
 Code that never yields holds this one thread, so `serve` cannot read the request
-while it runs: the daemon, hearing nothing, sends the child an interrupt signal,
-which Julia raises at the code's next safepoint, and, sent five times close
-together, forces into code with none (rust/backend/src/sidecars/repl/supervisor.rs,
-`Escalation`). The request is read once the code has stopped, and answered
+while it runs: the daemon, hearing nothing, sends the child one interrupt signal,
+which Julia raises at the code's next safepoint (and, for a forced request, five close
+together, which it forces into code with none; rust/backend/src/sidecars/repl/escalation.rs).
+The requests waiting are read once the code has stopped, and answered
 `interrupted:true` for the eval the signal stopped (`SIGNALED`).
 """
 function handle_interrupt(io::IO, id, payload)
@@ -458,7 +467,6 @@ function handle_interrupt(io::IO, id, payload)
        (named !== nothing && !(ev.id in named))
         stopped = SIGNALED[]
         if stopped !== nothing && (named === nothing || stopped in named)
-            SIGNALED[] = nothing
             write_envelope(io, "res", id, "repl.interrupt", Dict(:interrupted => true,
                 :note => "the eval never yielded, so the daemon's interrupt signal stopped it"))
             return

@@ -15,6 +15,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 - `test/runtests.jl`: the streaming tests and the stdlib-only guard test.
 - `test/shim_child.jl`: the shim as the daemon starts it, a child process running `run_shim` with a scratch depot whose `config/startup.jl` is the user's startup file: the wire, the startup output, error rendering, the display stack, a failing startup file.
 - `test/interrupt_child.jl`: the daemon's interrupt signal (SIGINT; on Windows a Ctrl+Break to the child's own console process group) against the shim as the daemon starts it: code that never yields is stopped, with a safepoint by one signal and without one by the forcing burst, its interrupt is answered `interrupted:true`, the REPL keeps its state, and (Julia 1.13 and later) a signal between evals is dropped.
+- `test/stray_interrupt.jl`: the daemon's signal landing in the shim's own code after an eval's code ended: the answer frames and the done and res writes survive it.
 - `test/answer_then_next.jl`: an output stream that hands `serve` the next request the moment a given frame of an answer (by default its done frame) is written, the order a real pipe allows, and an eval request's line (`eval_line`).
 - `test/bonito/`: the `wglshow` page test's own environment (Bonito): the page carries its assets, its port has no asset route, and (Linux) serving it opens exactly one listener (CI's "wglshow pages" job). Actual owned-process listener, loopback HTTP/bind and selection-preservation controls, with an extra-listener rejection control, and the live-port refusal proof.
 
@@ -42,16 +43,17 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
   (`stream_eval_frames`): while that runs it is raised there, one that arrives before it starts stops it before it runs,
   and one that arrives after it has finished is answered `interrupted:false`. A wire line is one write (`write_envelope`). An interrupt that names `eval_ids` reaches only an eval among them (`handle_interrupt`).
 - Code that never yields holds the shim's one thread, so `serve` reads no request while it runs; the daemon's interrupt
-  signal stops it (`run_shim` sets `Base.exit_on_sigint(false)`; rust/backend/src/sidecars/repl/CLAUDE.md), and the
-  request, read once the code has stopped, is answered `interrupted:true` for the eval it stopped (`SIGNALED`, which the
-  next eval's code clears). A signal that lands in the shim's own waits, its code having ended as it came, is dropped
-  there and the wait goes on: `serve`'s wait for the next request and the eval's wait for its readers
-  (`past_interrupts`), and a reader's drain (`stream_pipe`). One that lands in a request's handling answers that
-  request with an error (`repl_exception`; on Julia 1.12 measured at about 1 interrupt in 20 of a loop that ends on its own at that instant, the REPL
-  alive after each), and on Julia 1.12 one that arrives while the thread idles in a finished
-  task's end ends the REPL (Julia raises it where nothing can catch it; only a synthetic signal has produced this, none of 20
-  races); the daemon sends one only while an eval is in flight and the child says nothing, so either needs the eval to end
-  in the instant a signal goes.
+  signal (one ordinary signal; five on a forced request) stops it (`run_shim` sets `Base.exit_on_sigint(false)` after
+  the startup file; rust/backend/src/sidecars/repl/CLAUDE.md), and the requests waiting then are answered
+  `interrupted:true` for the eval it stopped (`SIGNALED`, cleared by the next eval's code or when no request is
+  waiting). A signal lands in whatever Julia code runs, so the shim's code after the eval's code ended drops it and runs
+  the step again (`past_interrupts`): `serve`'s wait for the next request, the eval's wait for its readers, a reader's
+  drain (`stream_pipe`), the restoring after the code, the error and value frames, and the done and res writes; a frame
+  can then be written twice, never lost. One that lands in `revise_loaded` holds the interrupt (`:held`), so the code
+  never runs and the eval ends as interrupted. One that lands in a request's handling answers that request with an error
+  (`repl_exception`). On Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that moment was answered with
+  that error, the REPL alive after each; a signal that arrives while the thread idles in a finished task's end ends the
+  REPL on 1.12 (Julia raises it where nothing can catch it), which only a synthetic signal has produced.
 - A `BrowserView` is announced once per (url, open) (`announce_browserview`).
 - WGLMakie code lives only in ext/.
 - `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`WGL_SERVER` holds both). Its page is a Bonito session of its own with `NoServer` (`no_referrer_page`), so its scripts and files travel inside the page and the port answers only the page and its websocket; `/` and every other path answer 404. It needs Bonito 5.1 or a later 5.x (`wgl_bonito_supported`). `wgl_server` binds once per REPL lifetime: the first call may pin a port, later default/same-port calls reuse it, and a different live pin raises `ArgumentError` without changing the listener, secret, routes or announcement. Restart the REPL to choose another port. A figure has one live viewer (`WGL_VIEWERS`, `replace_viewer!`): a new page load of a figure closes the viewer before it. The listener stays owned until the REPL ends; generic BrowserView servers retain their own multi-port behavior.

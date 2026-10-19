@@ -23,7 +23,7 @@
 #   sot-fe relaunch [--fe <host>] [--converge]
 #   sot-fe repl run  <workspace> <path>            [--fresh] [--timeout <s>] [--origin <who>]
 #   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
-#   sot-fe repl interrupt <workspace>              [--timeout <s>]
+#   sot-fe repl interrupt <workspace>              [--force] [--timeout <s>]
 #   sot-fe repl status [<workspace>]               [--timeout <s>]
 #   sot-fe type   <workspace> [<text>] [--stdin] [--enter] [--origin <who>] [--timeout <s>]
 #   sot-fe screen <workspace>                      [--timeout <s>]
@@ -74,11 +74,13 @@
 #              packages, so you do NOT pay the multi-minute Makie/precompile
 #              bill that --fresh costs. Reach for this BEFORE --fresh, and
 #              before killing a pid by hand. The op stays readable while the
-#              REPL is busy — but the interrupt lands at the eval's next
-#              YIELD POINT (Ctrl-C semantics on a single thread), so a
-#              non-yielding compute-bound eval (tight numeric loop, long
-#              ccall/BLAS) may never take it; if repeated interrupts change
-#              nothing, --fresh is the honest next rung. WORKSPACE-WIDE: it
+#              REPL is busy — and an eval that never yields (a tight numeric
+#              loop) is stopped by the one ordinary interrupt signal the
+#              daemon sends, as the stock REPL's Ctrl-C does. Code with no
+#              safepoint at all ignores that one signal; --force sends the
+#              burst that forces it, and forcing inside C code (BLAS), while
+#              compiling or collecting garbage can CRASH or HANG the REPL;
+#              --fresh is the honest next rung. WORKSPACE-WIDE: it
 #              interrupts THE eval running in <workspace>, whoever started it
 #              (this CLI, the FE drawer, another session) — there is no
 #              per-run scoping. Exit: 0 an eval was interrupted; 3 nothing to
@@ -189,6 +191,10 @@
 #                  when the user arrives minutes later. Re-previewing the same file
 #                  WITHOUT --caption clears it. Capped at 300 chars by the FE
 #                  (warned here); newlines/control chars collapse to spaces.
+#   --force        (repl interrupt) force the interrupt into code with no
+#                  safepoint (op repl.interrupt, force:true): five signals in
+#                  a burst. Can crash or hang the REPL inside C code, while
+#                  compiling or collecting garbage; --fresh restarts it.
 #   --fresh        (repl run) RESTART the workspace's persistent REPL into
 #                  <path>'s project before including it (op repl.run_file,
 #                  fresh:true) — the way to clear a STALE kernel from a backend
@@ -241,6 +247,7 @@ ORIGIN=""      # repl: label shown in the user's drawer (default "session"); typ
 ROI=""         # preview: source-px rect "x,y,w,h" to frame the image at (ADR-0022 vocab)
 CAPTION=""     # preview/reveal: figure caption rendered under the image
 CAPTION_SET=false  # distinguishes "--caption ''" (explicit clear) from "no --caption"
+FORCE=false    # repl interrupt: force the interrupt into code with no safepoint
 FRESH=false    # repl run: restart the persistent REPL into the file's project
 ENTER=false    # type: append Enter after the literal text (the daemon types a CR on the capsule row)
 POS=()         # positional args for the subcommand
@@ -251,6 +258,7 @@ while [ $# -gt 0 ]; do
         --endpoint) ENDPOINT="$2"; shift 2 ;;
         --urgent)   URGENT=true; shift ;;
         --fresh)    FRESH=true; shift ;;
+        --force)    FORCE=true; shift ;;
         --level)    LEVEL="$2"; shift 2 ;;
         --ws)       NOTIFY_WS="$2"; shift 2 ;;
         # Validate here, once: TIMEOUT feeds the command bound (`sot_bounded`) and $((...)) math in
@@ -472,7 +480,7 @@ case "$CMD" in
                 ;;
             interrupt)
                 WS="${POS[1]:-}"
-                [ -n "$WS" ] || { echo "usage: sot-fe repl interrupt <workspace> [--timeout <s>]" >&2; exit 1; }
+                [ -n "$WS" ] || { echo "usage: sot-fe repl interrupt <workspace> [--force] [--timeout <s>]" >&2; exit 1; }
                 send_repl_interrupt "$WS"
                 ;;
             status)

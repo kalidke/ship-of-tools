@@ -68,25 +68,31 @@ reaches only the evaluation's own code and the display of its value (a figure
 rendering, for example): an interrupt sent before that starts stops it before it runs,
 and one sent after it has finished does nothing. An evaluation that never yields (a
 tight numeric loop, a long `ccall`) holds the REPL's one thread, so the REPL cannot
-read the interrupt; when the REPL has said nothing for a second, the daemon sends it
-an interrupt signal, as `Ctrl-C` does to the stock REPL, which Julia raises at the
-code's next safepoint, and a second later four more, which force it into code with
-none (Julia then prints `WARNING: Force throwing a SIGINT` in the evaluation's
-output). The evaluation stops within about three seconds and the REPL keeps
-everything it defined; a stop forced inside a C library's call can leave that
-library's state broken, as a repeated `Ctrl-C` can in the stock REPL, and a restart
-is then the clean way on. On Windows the signal is a Ctrl+Break, which also reaches
-the console programs the evaluation started. Code that catches the
+read the interrupt. While an evaluation is running, an interrupt that names it (or
+names none) and has gone a second unanswered makes the daemon send the REPL one
+interrupt signal, as `Ctrl-C` does to the stock REPL: Julia raises it at the code's
+next safepoint, which stops an allocating or calling loop, and holds it through C
+code (BLAS), compiling and garbage collection until they return. The REPL keeps
+everything it defined. Code with no safepoint at all (`while true end`) ignores that
+one signal, and the interrupt is answered with an error that says so. A second
+`Ctrl+C` in the drawer while the same evaluations run, or `sot-fe repl interrupt
+<ws> --force`, forces it: five signals in a burst, which Julia forces into code with
+none (it prints `WARNING: Force throwing a SIGINT` in the evaluation's output).
+**Forcing can crash or hang the REPL** when the thread is inside C code (a BLAS call
+is a measured crash), compiling or collecting garbage, and the REPL's state is then
+lost; `--fresh` restarts it. The daemon sends a signal only for an evaluation it has
+seen start and not finish, never to an idle REPL, though it cannot see an evaluation
+that has just finished and whose `done` it has not yet read. On Windows the signal is
+a Ctrl+Break to the REPL's console process group, which reaches every process in it,
+a server an earlier evaluation left running with `run(cmd; wait = false)` included,
+and a console program's default Ctrl+Break handler ends it. Code that catches the
 `InterruptException` and goes on still holds the REPL (`sot-fe repl interrupt` says
 so after 10 s); a restart ends it at once: `r` on a `.jl` file in Files mode, or
-`sot-fe repl run <ws> <path> --fresh`, whose run every window's drawer shows. On
-Julia 1.12, about one interrupt in twenty, sent to a loop that ends on its own at that
-very instant, is answered with an error (`InterruptException`, code `repl_exception`)
-while the REPL keeps running and keeps its state. The daemon sends the signal only
-while an evaluation is running and its interrupt is unanswered, never to an idle REPL. `Ctrl+C` in the drawer names, by number, the
+`sot-fe repl run <ws> <path> --fresh`, whose run every window's drawer shows. On Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that very moment was answered with an error (`InterruptException`, code `repl_exception`) while the REPL kept running and kept its state; a signal that arrives as the REPL idles between evaluations can end it on 1.12, which only a synthetic signal has produced. `Ctrl+C` in the drawer names, by number, the
 evaluations the drawer shows as running, and stops the running evaluation only if
-its number is one of them; each window numbers its own evaluations, so two windows
-on one REPL can share a number.
+its number is one of them (an interrupt that names other evaluations sends no
+signal); each window numbers its own evaluations, so two windows on one REPL can
+share a number.
 
 ## [How agents use the REPL](@id agents-repl)
 

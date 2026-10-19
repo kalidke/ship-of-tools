@@ -158,7 +158,7 @@ send_repl_interrupt() {
             exit 3 ;;
     esac
     local payload req resp
-    payload="$(jq -nc --arg w "$ws_id" '{workspace_id:$w}')"
+    payload="$(jq -nc --arg w "$ws_id" --argjson f "${FORCE:-false}" '{workspace_id:$w} + (if $f then {force:true} else {} end)')"
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.interrupt", payload:$p}')"
     resp="$(sot_send "$req" repl.interrupt || true)"
     if [ -z "$resp" ]; then
@@ -166,7 +166,7 @@ send_repl_interrupt() {
         # the request is enqueued before any reply is written. Status can NOT
         # confirm delivery (the wire has no busy/idle bit) — the only positive
         # confirmation is a reply, so re-send (harmless) rather than bounce.
-        echo "ERROR: no response to repl.interrupt within ${SEND_TIMEOUT}s via $ENDPOINT. That does NOT mean the interrupt failed — it may have landed and the reply was lost. Re-sending an interrupt is harmless; bouncing the kernel (--fresh) is the escalation if repeated interrupts change nothing (an eval that goes on through the daemon's interrupt signal)." >&2
+        echo "ERROR: no response to repl.interrupt within ${SEND_TIMEOUT}s via $ENDPOINT. That does NOT mean the interrupt failed — it may have landed and the reply was lost. Re-sending an ordinary interrupt is harmless; --force is not (it can crash or hang the REPL inside C code, while compiling or collecting garbage), and bouncing the kernel (--fresh) is the escalation if interrupts change nothing." >&2
         exit 1
     fi
     # The shim answers {interrupted:true} or {interrupted:false, note} — that
@@ -179,7 +179,7 @@ send_repl_interrupt() {
     if [ -n "$err" ]; then
         printf 'ERROR: %s [%s]\n' "$err" "$(printf '%s' "$resp" | jq -r '.payload.code // "?"')" >&2
         case "$err" in
-            InterruptException*) echo "note: the daemon's interrupt signal reached the REPL as the eval ended (on Julia 1.12 about 1 interrupt in 20 of a loop that ends on its own at that moment); the REPL keeps running and its state is kept. Send the interrupt again only if an eval is still running." >&2 ;;
+            InterruptException*) echo "note: the daemon's interrupt signal reached the REPL as the eval ended (measured on Julia 1.12: 1 of 20 interrupts of a loop that ends on its own at that moment); the REPL keeps running and its state is kept. Send the interrupt again only if an eval is still running." >&2 ;;
         esac
         exit 2
     fi

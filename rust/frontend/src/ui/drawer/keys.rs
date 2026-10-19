@@ -175,16 +175,25 @@ fn repl_scroll_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
         _ if action == Some(Action::ReplInterrupt) => {
             let eval_ids = crate::ui::drawer::repl::log::in_flight_eval_ids(&state.repl_log);
             if !eval_ids.is_empty() {
+                // A second Ctrl+C while the same evals still run forces the interrupt (stock Julia's repeated Ctrl-C).
+                let force = crate::ui::drawer::repl::log::repl_interrupt_forced(&state.repl_interrupted, &eval_ids);
                 if let Err(e) =
                     state.send(crate::net::transport::OutgoingReq::ReplInterrupt {
                         workspace_id: state.active_workspace_id.clone(),
-                        eval_ids,
+                        eval_ids: eval_ids.clone(),
+                        force,
                     })
                 {
                     tracing::warn!(error = %e, "drop repl.interrupt - channel closed");
                 } else {
-                    tracing::info!("repl.interrupt dispatched (Ctrl+C)");
-                    state.status = "interrupting...".to_string();
+                    tracing::info!(force, "repl.interrupt dispatched (Ctrl+C)");
+                    state.status = if force {
+                        "forcing the interrupt... (can crash or hang the REPL inside C code; r on a .jl file restarts it)"
+                    } else {
+                        "interrupting... (Ctrl+C again forces it if the eval does not stop)"
+                    }
+                    .to_string();
+                    state.repl_interrupted = eval_ids;
                 }
             } else {
                 state.repl_input.clear();

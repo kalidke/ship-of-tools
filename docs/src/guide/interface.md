@@ -287,9 +287,9 @@ top-level form) are **planned**, not yet built.
 A long-running evaluation runs on its own task, so you can interrupt it mid-eval
 whenever it yields (`sleep`, I/O that waits, `yield()`) — a real `InterruptException`,
 the same as `Ctrl-C` in the stock REPL. One that never yields (a tight numeric loop)
-is stopped by an interrupt signal the daemon sends, within about three seconds; one
-that goes on through that holds the REPL until it ends, and `r` on a `.jl` file
-restarts the REPL and ends it.
+is stopped by the one interrupt signal the daemon sends, as in the stock REPL; code with no
+safepoint ignores it, and a second `Ctrl+C` forces it, which can crash or hang the REPL inside C
+code, compiling or garbage collection (`r` on a `.jl` file restarts the REPL and ends it).
 
 ### Structured output
 
