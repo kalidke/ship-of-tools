@@ -133,6 +133,29 @@ hostname. Declare the host there (on the hub), then run
 `hosts.toml` the pin names the one host whose install wrote it; run the
 installer on the host that should run the daemon, or declare the hosts.
 
+## The daemon no longer starts at boot
+
+On Linux, `sotd.service` starts at boot through one file, `~/.config/systemd/user/default.target.d/sotd.conf`. An
+update over a unit with neither that file nor an old enable link writes nothing, so a computer where boot start was
+turned off by hand keeps it off after the update. To turn it on, write the file again:
+
+```bash
+mkdir -p ~/.config/systemd/user/default.target.d && printf '[Unit]\nWants=sotd.service\n' > ~/.config/systemd/user/default.target.d/sotd.conf && systemctl --user daemon-reload
+```
+
+Both ways to update say when boot start is off, and give that command. Running the installer says so in the line
+before its verdict. The background update says so after its `sot-apply: APPLIED` line: `journalctl --user -u
+sotd.service` shows it when the daemon's restart applied the update, and when a window's launch applied it the line
+goes to the launch's error output, which a window opened from the application menu does not show.
+
+On a home several computers share, two commands typed on any one of them remove a boot start from the shared folder:
+
+- `systemctl --user revert default.target` removes the daemon's boot drop-in, the file above. Do not run it; if it was
+  run, write the file again.
+- `systemctl --user disable` of a relay tunnel (`sot-relay-tunnel@<host>`) or a relay socket removes its boot link, so
+  the hub does not start that relay at its next boot. Never disable those units by hand; if one was, run
+  `sotd topology apply --yes` on the hub.
+
 ## A session will not start on a shared home
 
 The daemon keeps capsule session records under
