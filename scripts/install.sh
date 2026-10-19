@@ -826,6 +826,8 @@ installer_enable_local_service() {  # <prefix> <template> <socket>
     # the rule sot-apply's update follows, so a person's turn-off survives a second run.
     if [ "$fresh" = 1 ]; then sot_boot_wants "$HOME/.config/systemd/user"; else sot_boot_keep "$HOME/.config/systemd/user"; fi \
         || die "could not write the sotd boot drop-in"
+    # Over an existing unit with neither, boot start stays off; the run says so at its end (BOOT_OFF).
+    sot_boot_wired "$HOME/.config/systemd/user" || BOOT_OFF=1
     systemctl --user daemon-reload
     systemctl --user start sotd.service
     loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
@@ -1885,6 +1887,7 @@ if [ -n "$FAIL_FIRST" ]; then
     installer_verdict "$VER" "$SHORT" "$FAIL_FIRST" "" "$([ "$PINNED" = 0 ] || printf '%s' "$VER")" >&2
     exit 1
 fi
+[ "${BOOT_OFF:-0}" != 1 ] || printf '%s\n' "sotd.service: boot start is off on this computer; turn it on with: mkdir -p ~/.config/systemd/user/default.target.d && printf '[Unit]\nWants=sotd.service\n' > ~/.config/systemd/user/default.target.d/sotd.conf && systemctl --user daemon-reload"
 [ "$UNIT_MANAGED" != 1 ] || printf '%s\n' "sotd.service: stop it on this computer with systemctl --user stop sotd.service; its boot start follows hosts.toml and the unit's host pin, and enable or disable change no file"
 installer_verdict "$VER" "$SHORT" "" "$STEPS_LEFT" "$([ "$PINNED" = 0 ] || printf '%s' "$VER")"
 exit 0

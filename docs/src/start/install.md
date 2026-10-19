@@ -81,7 +81,7 @@ again (`[Unit]` and `Wants=sotd.service`) to turn it back on. One rule governs
 both ways to update, running the installer again and the background update: a
 run that finds no `sotd.service` wires boot start, and a run over a unit moves
 an old enable link onto the drop-in or keeps the drop-in, and with neither
-writes nothing, so boot start you turned off stays off. An install that runs no
+writes nothing, so boot start you turned off stays off; a run that leaves it off says so in a line before its verdict, with the command that turns it on. An install that runs no
 daemon on this host only stops this host's, and moves an old link onto the
 drop-in, unless the pin names this host alone: then it also removes the
 drop-in. The relay sockets and tunnels keep their rule: never `disable` them
