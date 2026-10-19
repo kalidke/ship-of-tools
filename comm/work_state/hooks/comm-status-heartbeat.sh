@@ -70,6 +70,19 @@ _agent_gate() {
     esac
 }
 
+# A permission dialog's end (ADR 0044 amendment, `dialog`): the answered call's
+# PostToolUse. comm-status.sh owns state/dialog-<key>.marker with the fact: its
+# `dialog` write creates it, and the `resumed`, `prompt` or `stop` write that
+# clears the fact removes it. This only tests for it, with one `[ -e ]` per tool
+# return, and, found, sends `resumed`, then goes on as it does for any call; a
+# `resumed` that fails leaves the marker for the next return. The key is
+# comm-status.sh's.
+_dialog_key="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+if [ -n "$_dialog_key" ] && [ -e "$COMM_HOME/state/dialog-$(printf '%s' "$_dialog_key" | tr -c 'A-Za-z0-9._-' '_').marker" ]; then
+    _agent_gate
+    "$COMM_HOME/bin/comm-status.sh" resumed >/dev/null 2>&1 || true
+fi
+
 # The AskUserQuestion ANSWER (ADR 0044 amendment): this tool's PostToolUse
 # fires once the owner has typed the answer and the harness resumes — the
 # session is no longer yielding. Sends `prompt` (origin user) exactly like a
@@ -92,19 +105,6 @@ _agent_gate() {
 # comm-status-blocked.sh's PreToolUse drops, keyed by the SAME `tool_use_id`
 # this completion carries: only consuming that marker earns the `prompt`.
 # No marker (no PreToolUse ever opened this exact dialog) means no answer.
-# A permission dialog's end (ADR 0044 amendment, `dialog`): the answered call's
-# PostToolUse. comm-status.sh owns state/dialog-<key>.marker with the fact: its
-# `dialog` write creates it, and the `resumed`, `prompt` or `stop` write that
-# clears the fact removes it. This only tests for it, with one `[ -e ]` per tool
-# return, and, found, sends `resumed`, then goes on as it does for any call; a
-# `resumed` that fails leaves the marker for the next return. The key is
-# comm-status.sh's.
-_dialog_key="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
-if [ -n "$_dialog_key" ] && [ -e "$COMM_HOME/state/dialog-$(printf '%s' "$_dialog_key" | tr -c 'A-Za-z0-9._-' '_').marker" ]; then
-    _agent_gate
-    "$COMM_HOME/bin/comm-status.sh" resumed >/dev/null 2>&1 || true
-fi
-
 if [ "$tool" = AskUserQuestion ]; then
     _agent_gate
     _tool_use_id="$(printf '%s' "$_envelope" | jq -r '.tool_use_id // ""' 2>/dev/null || true)"
