@@ -48,7 +48,8 @@ try {
             (Join-Path $repoRoot 'scripts\tests\test-install-layout.ps1'),
             (Join-Path $repoRoot 'scripts\install.ps1'),
             (Join-Path $repoRoot 'scripts\tests\test-install-entry.ps1'),
-            (Join-Path $repoRoot 'scripts\tests\test-install-entry-repair.ps1')
+            (Join-Path $repoRoot 'scripts\tests\test-install-entry-repair.ps1'),
+            (Join-Path $repoRoot 'scripts\tests\test-install-entry-direction.ps1')
         )) {
         $errs = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errs)
