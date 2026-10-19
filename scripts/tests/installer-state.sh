@@ -772,7 +772,7 @@ else
     printf '#!/bin/sh\necho "sotd 0.6.6-rc9.14-dev+abc123 (abc 2026-10-17, protocol 3)"\n' > "$P/bin/sotd"
     : > "$d/ctl/net.log"; : > "$d/ctl/prelude.log"
     entry_run "$d" --be-only --no-service
-    check "the channel reads the binary too: a build with a + stops before any asset is fetched (exit 2)" "2 0" "$ENTRY_RC $(count_in "$d/ctl/net.log" 'raw.githubusercontent\|releases/download\|api.github.com\|releases/latest')"
+    check "the channel reads the binary too: a build with a + stops before any installer is fetched (exit 2)" "2 0" "$ENTRY_RC $(count_in "$d/ctl/net.log" 'raw.githubusercontent\|releases/latest')"
 
     # A missing record beside a binary that says a newer version: the guard still holds (the install's version is readable).
     d="$WORK/dir-missing-binary"; entry_fixture "$d"

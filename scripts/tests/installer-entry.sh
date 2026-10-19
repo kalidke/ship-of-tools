@@ -166,12 +166,7 @@ prelude --be-only
 check "a pre-release: the newest published release, not the latest stable" "tag=v9.9.10-rc1 implicit=1 args=--be-only" "$(cat "$d/ctl/prelude.log")"
 check "a pre-release: it asks the release list for its first entry" "1" "$(count_in "$d/ctl/net.log" 'api.github.com/repos/kalidke/ship-of-tools/releases?per_page=1')"
 before="$(entry_prefix_tree "$d")"
-entry_record "$d" 0.6.6-rc9.14-dev+abc123 1 0 none
-prelude --be-only
-check "a build with a + stops (exit 2)" "2" "$ENTRY_RC"
-check "it says why and sends a build of the line to a pack of the line" "1" "$(said 'FAIL: target: this computer runs 0.6.6-rc9.14-dev+abc123, a build of the line, not a release: install a pack of the line with --archive <folder>; a release named with --version is usually older and moves this computer back; ask the person who runs it which they want')"
-check "it ends with that one line" "yes" "$(case "$ENTRY_LAST" in ('FAIL: '*) echo yes ;; (*) echo no ;; esac)"
-check "it fetched no installer and no asset" "0" "$(count_in "$d/ctl/net.log" 'raw.githubusercontent\|releases/download\|api.github.com\|releases/latest')"
+. "$(dirname "${BASH_SOURCE[0]}")/installer-build-direction.sh"
 entry_record "$d" 0.6.6-rc9.13 1 0 none
 prelude --version v9.9.1 --be-only
 check "--version names the tag, and the run is explicit" "tag=v9.9.1 implicit=0 args=--version v9.9.1 --be-only" "$(cat "$d/ctl/prelude.log")"

@@ -449,6 +449,47 @@ installer_channel() {  # <installed version, empty when none>
     esac
 }
 
+# The newest published release of any kind (the channel of a pre-release): its tag, else a failure.
+installer_newest_release() {
+    local list
+    list="$(curl "${CURL_BOUND[@]}" -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases?per_page=1")" \
+        || return 1
+    printf '%s\n' "$list" | grep -o '"tag_name": *"[^"]*"' | head -1 | sed -E 's/.*: *"([^"]*)"/\1/'
+}
+# Which way release TAG moves a build of the line (a version with a +), by ancestry and not by version text: the build's
+# commit (the record's, else the +<sha> of its version) against the release's COMMIT asset, in the install's own base
+# clone. Prints "forward", "older", or "unknown: <why>".
+installer_build_direction() {  # <prefix> <installed version> <tag>
+    local base="$1/repo/base" built rel
+    built="$(installer_json_string "$1/install.json" commit)"
+    printf '%s' "$built" | grep -Eq '^[0-9a-f]{40}$' || { built="${2#*+}"; built="${built%-dirty}"; }
+    case "$built" in ''|src) echo "unknown: this build names no commit"; return 0 ;; esac
+    rel="$(mktemp)"
+    curl "${CURL_BOUND[@]}" -fsSL -o "$rel" "https://github.com/$REPO/releases/download/$3/COMMIT" 2>/dev/null || : > "$rel"
+    rel="$(tr -d ' \n' < "$rel"; rm -f "$rel")"
+    printf '%s' "$rel" | grep -Eq '^[0-9a-f]{40}$' || { echo "unknown: $3 has no COMMIT to read"; return 0; }
+    [ -e "$base/.git" ] || [ -f "$base/HEAD" ] || { echo "unknown: no base clone at $base"; return 0; }
+    git "${GIT_BOUND[@]}" -C "$base" cat-file -e "$rel^{commit}" 2>/dev/null \
+        || git "${GIT_BOUND[@]}" -C "$base" fetch --quiet origin "$rel" 2>/dev/null \
+        || { echo "unknown: could not fetch the commit of $3"; return 0; }
+    git -C "$base" rev-parse --verify --quiet "$built^{commit}" >/dev/null \
+        || { echo "unknown: this build's commit ${built:0:9} is not in $base"; return 0; }
+    if git -C "$base" merge-base --is-ancestor "$built" "$rel" 2>/dev/null; then echo forward
+    elif git -C "$base" merge-base --is-ancestor "$rel" "$built" 2>/dev/null; then echo older
+    else echo "unknown: neither $3 nor this build contains the other"; fi
+}
+# What a build of the line is told about the release it would be moved to (the stop of an implicit run).
+installer_build_advice() {  # <prefix> <installed version>
+    local tag dir
+    tag="$(installer_newest_release)" && [ -n "$tag" ] || { echo "could not read the newest release to say which way it moves this computer"; return 0; }
+    dir="$(installer_build_direction "$1" "$2" "$tag")"
+    case "$dir" in
+        forward) echo "the newest release, $tag, contains this build: naming it with --version moves this computer forward" ;;
+        older) echo "the newest release, $tag, does not contain this build: naming it with --version moves this computer back" ;;
+        *) echo "could not tell which way the newest release, $tag, moves this computer (${dir#unknown: })" ;;
+    esac
+}
+
 # The role an install already here recorded, for a run that names no role flag and finds no topology entry: one line,
 # "<local|be-only|remote> <backend alias, or - >", or nothing when the record names none. The daemon and frontend bits
 # are written since v0.6.0, a `role` key by 0.5.x; a remote install's alias is the SOT_HOST line of its own wrapper.
@@ -835,11 +876,8 @@ if [ -z "${SOT_INSTALL_TAG:-}" ] && [ "$archived" = 0 ]; then
         implicit=1
         installed="$(installer_installed_version "$pfx")"
         case "$(installer_channel "$installed")" in
-            stop) fail 2 "this computer runs $installed, a build of the line, not a release: install a pack of the line with --archive <folder>; a release named with --version is usually older and moves this computer back; ask the person who runs it which they want" ;;
-            newest)
-                list="$(curl "${CURL_BOUND[@]}" -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases?per_page=1")" \
-                    || die "could not list the releases of $REPO"
-                tag="$(printf '%s\n' "$list" | grep -o '"tag_name": *"[^"]*"' | head -1 | sed -E 's/.*: *"([^"]*)"/\1/')" ;;
+            stop) fail 2 "this computer runs $installed, a build of the line, not a release: install a pack of the line with --archive <folder>; $(installer_build_advice "$pfx" "$installed"); ask the person who runs it which they want" ;;
+            newest) tag="$(installer_newest_release)" || die "could not list the releases of $REPO" ;;
             *)
                 loc="$(curl "${CURL_BOUND[@]}" -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
                     || die "could not resolve the latest release of $REPO"
@@ -1102,6 +1140,7 @@ if [ -f "$PREFIX/install.json" ] || [ -n "$PRE_VERSION" ]; then
             fi ;;
         *) say "this run moves the install from $PRE_VERSION to $VER ($DIRECTION)" ;;
     esac
+    case "$PRE_VERSION" in *+*) say "by ancestry, not version text: $(installer_build_direction "$PREFIX" "$PRE_VERSION" "$VERSION")" ;; esac
     if [ "$DIRECTION" = older ] && [ "${SOT_INSTALL_IMPLICIT:-}" = 1 ]; then
         fail 2 "this computer runs $PRE_VERSION, which is newer than $VER, the release this run found; it never moves back unless told: name the version you want with --version $VERSION"
     fi
