@@ -25,23 +25,27 @@ impl Fixture {
         Self { dir, program }
     }
 
+    /// A leader that starts a descendant and writes the descendant's pid to `ready` itself, so readiness waits on the
+    /// leader's start alone, not on the descendant's too (on Windows each is a cold PowerShell start, seconds apiece
+    /// on a loaded runner).
     fn live() -> Self {
         #[cfg(unix)]
-        let body = "#!/bin/sh\n/bin/sh -c 'echo $$ > \"$1\"; while [ ! -e \"$2\" ]; do sleep 0.02; done' sh \"$1\" \"$2\" &\nwait\n";
+        let body = "#!/bin/sh\n/bin/sh -c 'while [ ! -e \"$1\" ]; do sleep 0.02; done' sh \"$2\" &\necho $! > \"$1\"\nwait\n";
         #[cfg(windows)]
         let body = r#"param($ready, $cleanup)
 $info = New-Object System.Diagnostics.ProcessStartInfo
 $info.FileName = 'powershell'
-$info.Arguments = '-NoProfile -File "' + (Join-Path $PSScriptRoot 'descendant.ps1') + '" "' + $ready + '" "' + $cleanup + '"'
+$info.Arguments = '-NoProfile -File "' + (Join-Path $PSScriptRoot 'descendant.ps1') + '" "' + $cleanup + '"'
 $info.UseShellExecute = $false
 $info.CreateNoWindow = $true
 $p = [System.Diagnostics.Process]::Start($info)
+[IO.File]::WriteAllText($ready, [string]$p.Id)
 $p.WaitForExit()
 "#;
         let fixture = Self::new(body);
         #[cfg(windows)]
         sot_log::test_exec::write_executable(&fixture.dir.path().join("descendant.ps1"),
-            "param($ready, $cleanup)\n[IO.File]::WriteAllText($ready, [string]$PID); while (!(Test-Path -LiteralPath $cleanup)) { Start-Sleep -Milliseconds 20 }\n");
+            "param($cleanup)\nwhile (!(Test-Path -LiteralPath $cleanup)) { Start-Sleep -Milliseconds 20 }\n");
         fixture
     }
 
@@ -78,7 +82,7 @@ $p.WaitForExit()
         let ready = self.dir.path().join("ready");
         let (send, recv) = mpsc::channel();
         *signal.after_adopt.lock().unwrap() = Some(Box::new(move |leader| {
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = Instant::now() + Duration::from_secs(30);
             while std::fs::read_to_string(&ready).map_or(true, |s| s.trim().is_empty()) {
                 assert!(
                     Instant::now() < deadline,
@@ -161,7 +165,7 @@ fn trash_timeout_reports_cleanup_before_fallback() {
         );
         send.send((result, log.text())).unwrap();
     });
-    let (leader, descendant) = ready.recv_timeout(Duration::from_secs(20)).unwrap();
+    let (leader, descendant) = ready.recv_timeout(Duration::from_secs(40)).unwrap();
     let observed = recv.recv_timeout(Duration::from_secs(1));
     let timely = observed.is_ok();
     let (result, log) = match observed {
