@@ -33,9 +33,12 @@ function signal_interrupt(proc)
     end
 end
 
-# The daemon's force: five signals 50 ms apart, the count at which Julia forces the exception into code with no safepoint.
-function signal_burst(proc)
-    for _ in 1:5
+# The daemon's force (`Escalation`): signals 50 ms apart for 0.8 s, until the child says anything. Julia forces the
+# exception into code with no safepoint at the fifth signal it counts, and on Linux it counts one only when the eval's
+# thread runs between two, so on a loaded computer it counts fewer than were sent.
+function signal_burst(proc, lines)
+    first = time()
+    while time() - first < 0.8 && !isready(lines)
         signal_interrupt(proc)
         sleep(0.05)
     end
@@ -88,7 +91,7 @@ printed(lines, n, text) = any(f -> f[:kind] == "stdout" && occursin(text, f[:tex
     signal_interrupt(proc)
     envs = answered_within(lines, [4, 5], 3)
     @test !answered(envs, 4)
-    signal_burst(proc)
+    signal_burst(proc, lines)
     envs = answered_within(lines, [4, 5], 30)
     @test stopped(envs, 4)
     @test child_res(envs, 5)[:interrupted] == true

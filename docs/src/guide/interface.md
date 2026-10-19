@@ -289,7 +289,8 @@ whenever it yields (`sleep`, I/O that waits, `yield()`) — a real `InterruptExc
 the same as `Ctrl-C` in the stock REPL. One that never yields but allocates or calls (a `sin` loop)
 is stopped by the one interrupt signal the daemon sends, as in the stock REPL; code with no
 safepoint (an integer loop) ignores it, and a second `Ctrl+C` forces it, which can crash or hang the REPL inside C
-code, compiling or garbage collection (`r` on a `.jl` file restarts the REPL and ends it).
+code, compiling or garbage collection, and under heavy CPU load may not stop it (`r` on a `.jl` file restarts the REPL
+and ends it).
 
 ### Structured output
 

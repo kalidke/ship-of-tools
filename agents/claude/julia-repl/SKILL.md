@@ -136,9 +136,10 @@ but has a safepoint (a loop that allocates or calls, such as a `sin` loop) is
 stopped by the one interrupt signal the daemon sends while the eval runs, within
 about two seconds, and the kernel keeps its state. Code with no safepoint (an
 integer loop, `while true end`) ignores that signal and the interrupt
-is answered with an error that says so; `--force` forces it, and forcing can
-crash or hang the REPL inside C code (BLAS), while compiling or collecting
-garbage, and lose its state. `--fresh` is the escalation for that and for an eval
+is answered with an error that says so; `--force` forces it (under heavy CPU
+load it may not, and its answer says so), and forcing can crash or hang the
+REPL inside C code (BLAS), while compiling or collecting garbage, and lose its
+state. `--fresh` is the escalation for that and for an eval
 that catches `InterruptException`. On Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that very moment was answered with an error (`InterruptException`, code `repl_exception`) while the REPL kept running and kept its state; a signal that arrives as the REPL idles between evaluations can end it on 1.12, which only a synthetic signal has produced. Never kill the kernel by pid.
 
 **Output.** Collected and returned at the end — nothing streams. stdout+stderr
