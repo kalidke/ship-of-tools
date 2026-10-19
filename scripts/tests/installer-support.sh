@@ -99,6 +99,7 @@ SC
 #!/bin/sh
 case "$1 $2 $3" in
     "stdio-bridge --endpoint unix:"*) exit 0 ;;
+    "log-path  ") printf '%s\n' "${STUB_DAEMON_LOG:-}"; exit 0 ;;
 esac
 printf 'sotd %s\n' "$*" >> "$STUB_LOG"
 printf '%s\n' "$$" > "$STUB_PIDFILE"
