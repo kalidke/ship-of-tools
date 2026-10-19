@@ -29,7 +29,12 @@ function New-Fixture {
     }
 }
 
-function New-TestPipeName { 'test-sot-ld-' + [guid]::NewGuid().ToString('N').Substring(0, 8) }
+# Every pipe name this run makes, and every daemon (pid and creation time) it has seen on one of them: the cleanup ends
+# exactly those, so a concurrent run's daemons, and any other sotd.exe, are never touched.
+$testRunId = [guid]::NewGuid().ToString('N').Substring(0, 8)
+$runPipes = New-Object System.Collections.ArrayList
+$runPids = @{}
+function New-TestPipeName { $n = "test-sot-ld-$testRunId-" + [guid]::NewGuid().ToString('N').Substring(0, 8); [void]$runPipes.Add($n); $n }
 function Get-PipePath([string]$Name) { '\\.\pipe\' + $Name }
 
 # Bounded raw connect probe (500 ms) for test-owned pipes: it establishes listener availability.
@@ -78,8 +83,16 @@ function Get-DaemonProcs([string]$PipePath) {
     # return answers .Count with $null (adapted-object property lookup wins
     # over the scalar Count intrinsic on 5.1), which failed CI as "found ".
     $pat = '(?i)--socket\s+"?' + [regex]::Escape($PipePath) + '"?(\s|$)'
-    Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" |
-        Where-Object { $_.CommandLine -and ($_.CommandLine -match $pat) }
+    $found = @(Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" |
+        Where-Object { $_.CommandLine -and ($_.CommandLine -match $pat) })
+    foreach ($f in $found) { $runPids[[int]$f.ProcessId] = $f.CreationDate }
+    $found
+}
+
+# Ends the daemon seen as pid $ProcId if it is still the same process (same creation time), and no other.
+function Stop-RecordedDaemon([int]$ProcId, $Created) {
+    $now = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcId" -ErrorAction SilentlyContinue
+    if ($now -and $now.Name -eq 'sotd.exe' -and $now.CreationDate -eq $Created) { Stop-Process -Id $ProcId -Force -ErrorAction SilentlyContinue }
 }
 
 $realSotd = Join-Path $repo 'rust\target\debug\sotd.exe'
@@ -88,7 +101,6 @@ $haveRealSotd = Test-Path $realSotd
 
 $fakeSup = $null
 $envSaved = $null
-$testPipePrefix = 'test-sot-ld-'
 
 # The outer finally's cleanup: restore the environment, stop the spawned processes, remove the test root.
 function Complete-LocalDaemonTest {
@@ -101,9 +113,9 @@ function Complete-LocalDaemonTest {
     if ($fakeSup -and -not $fakeSup.HasExited) {
         try { Stop-Process -Id $fakeSup.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
-    Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" |
-        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($testPipePrefix) } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    # Daemons are known by the pipe this run gave them (exact path); the ones already seen are recorded in $runPids.
+    foreach ($n in @($runPipes)) { $null = @(Get-DaemonProcs (Get-PipePath $n)) }
+    foreach ($k in @($runPids.Keys)) { Stop-RecordedDaemon $k $runPids[$k] }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 

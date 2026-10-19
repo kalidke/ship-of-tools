@@ -125,6 +125,21 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `$VAR` and `${VAR}`); the exit status is CMD's when CMD exits, and a CMD killed by a signal gives 255; a failed start
   leaves no `/tmp/sot-job-*`.
 - `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
+- `scratch-guard.ps1`: the first lines of every Windows suite that can start or touch sot state (`test-sot-apply`,
+  `test-install-manifest`, `test-install-layout` with its entry cases, `test-sot-within`, `test-local-daemon` with its
+  parts, `test-launcher-leases`, `test-topology-plan`, `install-smoke`; four lines, the file's header gives them). The
+  suite never runs in the caller's profile: the guard makes its own home `<account's real temp folder>\sot-scratch-<id>`
+  with a marker, runs the suite again as a child PowerShell there (USERNAME `sot-scratch-<id>`, USERPROFILE, HOME,
+  APPDATA, LOCALAPPDATA, TEMP, TMP and SOT_COMM_HOME inside it, other SOT_ variables cleared, same arguments), removes
+  exactly that home by its path and hands back the child's exit code. In the child it refuses (exit 2, one line) unless
+  every one of those lies inside the home, the home sits directly under the real temp folder, and USERNAME differs from
+  `[Environment]::UserName`; the real temp folder comes from the process token's profile (`GetUserProfileDirectoryW`; `GetFolderPath` follows a moved USERPROFILE and would name the scratch home). The library switch `$sotScratchLibOnly` counts only in the dot-sourcing scope itself. The guard prints a line when it makes the home and one when it removes it; the child starts in the caller's location. No switch turns it off. Out of
+  scope, with the reason: `in-job.ps1` (a job runner, starts only the command it is given), `pipe-request.ps1` (a client
+  of the pipe its caller names), and the dot-sourced parts, which run inside a guarded suite. A suite removes only
+  folders it made, by path; `test-local-daemon-support.ps1` ends only daemons it recorded (pid and creation time) on pipes this run named.
+- `test-scratch-guard.ps1`: the guard's rule on a made-up account, and the entry end to end on a probe suite (arguments,
+  environment, the home gone at the end, a sibling kept, two concurrent runs, a refused child, the four lines in each
+  guarded suite). Not itself guarded; it removes only its own folder.
 - `in-job.ps1`: `in-job.ps1 CMD [ARG...]` runs CMD in a Windows job object, the test job (Windows): every process CMD
   starts, at any depth, ends when the script does: when CMD exits, when the script is ended from outside, or when
   the ssh session it runs under ends (its nearest sshd ancestor exits; exit 129). A CMD with no path is looked up on PATH, as the calling shell would (CreateProcess alone finds System32's WSL `bash` first). Exit status CMD's, 2 on a usage error; 8 when CMD exits 0 with processes of the job still running: then a stderr line names up to 16 of them (image and pid, and how many more), the job ends them (`TerminateJobObject`), and the script exits 8. A CMD that exits non-zero keeps its own status. Run by hand and by the Windows box's runner; the `rust.yml` step "Parse PowerShell scripts" parses it. Limits: the job's `CREATE_BREAKAWAY_FROM_JOB` always fails (the capsule spawn takes its degraded path, as on hosted CI), so the box does not exercise the breakaway path; words such as `--` and `-x:y` pass through `powershell.exe -File` parsing first and are untested, so a runner passes one script.

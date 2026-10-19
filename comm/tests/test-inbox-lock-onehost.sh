@@ -65,7 +65,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUST_DIR="$(cd "$SCRIPT_DIR/../../rust" && pwd)"
 
 DIR="$(mktemp -d "$HOME/.sot-inbox-lock-1h-XXXXXX")" || { echo "FATAL: mktemp under \$HOME failed" >&2; exit 1; }
-LOCAL="$(mktemp -d "${TMPDIR:-/tmp}/sot-inbox-lock-1h-XXXXXX")" || exit 1
+# macOS's TMPDIR ends in a slash: strip it, or the folder's path holds `//`.
+local_base="${TMPDIR:-/tmp}"
+LOCAL="$(mktemp -d "${local_base%/}/sot-inbox-lock-1h-XXXXXX")" || exit 1
 trap 'rhost "pkill -9 -f $(printf %q "$DIR")" 2>/dev/null; rm -rf "${DIR:?}" "${LOCAL:?}"' EXIT
 SCRIPTS_DIR="$(guard_stage_bin "$DIR")" || exit 2
 mkdir -p "$DIR/lib" "$DIR/bin" "$DIR/inbox"

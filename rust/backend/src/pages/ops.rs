@@ -147,7 +147,11 @@ pub async fn handle_video_open(
 /// `<site>/api/reference.html`, `<log>/journal/index.html`, `<log>/journal/`
 /// and `<log>/experiments/<campaign>/run.html` all resolve `../assets/x.css`
 /// against their site. With no index on the way, the file's own folder is
-/// served, and a page whose assets sit beside that folder still 404s: the
+/// served, and a page whose assets sit beside that folder is not given them. Measured on Unix, for a page on the
+/// prefix server: in a repository their request is a 403 "outside the site folder", outside one a 404 "no site open for
+/// this link" (the `../` climbs above the nonce). Not measured: Windows, where the URL root is never widened (that is
+/// `cfg(unix)`), so by reading the code the answer is the 404 in a repository too; and a root-relative (pool) page,
+/// where by reading the code `../x` normalizes under the content root and is a 404 "no such file". The
 /// handler does not parse a page's HTML for its links. A page whose folder
 /// holds the home folder is refused, never served.
 ///

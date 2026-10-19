@@ -627,7 +627,7 @@ fn a_child_forks_into_its_parents_group_unless_the_parent_has_its_own_session() 
             swept_group = ready.pgid;
         }
         children.push((label, child, parent_index));
-        std::mem::forget(entry); // the role's entry record is not this test's to check
+        entry.assert_once(parent.pid() as u32); // the role entered its body once; the record goes with the check
         std::mem::forget(parent);
         folders.push(dir);
     }

@@ -111,7 +111,12 @@ fn ordinary_startup() -> Result<()> {
         "cli parsed"
     );
 
-    let event_loop = EventLoop::new()?;
+    let mut builder = EventLoop::builder();
+    // winit's default macOS app menu binds Cmd+Q to `terminate:`, and a menu key equivalent fires before the view's
+    // key handler: the window would end without the `quit` binding's question. With no menu, Cmd+Q is a key event.
+    #[cfg(target_os = "macos")]
+    winit::platform::macos::EventLoopBuilderExtMacOS::with_default_menu(&mut builder, false);
+    let event_loop = builder.build()?;
     // Capture mode keeps redrawing until the trigger frame so the transport
     // task has time to deliver hello/tree/preview events; interactive mode
     // sleeps between events.

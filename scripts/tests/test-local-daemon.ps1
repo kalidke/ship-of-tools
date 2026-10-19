@@ -54,6 +54,12 @@
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-local-daemon.ps1
 
+# Runs in a scratch profile of its own and never in the caller's (scratch-guard.ps1 says how); Stop, so a missing guard
+# file ends the suite rather than letting it run.
+$ErrorActionPreference = 'Stop'
+$sotSuite = $PSCommandPath; $sotSuiteArgs = $PSBoundParameters
+. (Join-Path $PSScriptRoot 'scratch-guard.ps1')
+if ($null -ne $sotScratchExit) { exit $sotScratchExit }
 . (Join-Path $PSScriptRoot 'test-local-daemon-support.ps1')
 
 try {
@@ -784,3 +790,4 @@ try {
 
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 if ($fail) { exit 1 }
+exit 0   # explicit: a deliberate non-zero child left $LASTEXITCODE set, and the runner's step would end on it

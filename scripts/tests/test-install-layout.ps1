@@ -21,6 +21,13 @@
 
 param([string]$SotdPath)
 
+# Runs in a scratch profile of its own and never in the caller's (scratch-guard.ps1 says how); Stop, so a missing guard
+# file ends the suite rather than letting it run.
+$ErrorActionPreference = 'Stop'
+$sotSuite = $PSCommandPath; $sotSuiteArgs = $PSBoundParameters
+. (Join-Path $PSScriptRoot 'scratch-guard.ps1')
+if ($null -ne $sotScratchExit) { exit $sotScratchExit }
+
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if (-not $SotdPath) {

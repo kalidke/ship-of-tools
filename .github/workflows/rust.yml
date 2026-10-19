@@ -403,7 +403,7 @@ jobs:
         working-directory: scripts
         run: |
           $failed = $false
-          Get-ChildItem -Path '*.ps1', 'tests/in-job.ps1', 'tests/install-smoke.ps1' | ForEach-Object {
+          Get-ChildItem -Path '*.ps1', 'tests/in-job.ps1', 'tests/install-smoke.ps1', 'tests/scratch-guard.ps1', 'tests/test-scratch-guard.ps1' | ForEach-Object {
             $errs = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
             if ($errs.Count -gt 0) {
@@ -415,6 +415,16 @@ jobs:
             }
           }
           if ($failed) { exit 1 }
+      # Each Windows suite below runs in a scratch profile of its own, made and removed by scripts/tests/scratch-guard.ps1
+      # (a home under the account's real temp folder, a child PowerShell there). This step tests that guard: its rule, and
+      # the whole entry on a probe suite.
+      - name: Test scratch guard
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        timeout-minutes: 5
+        run: .\scripts\tests\test-scratch-guard.ps1
+        working-directory: .
+
       # Behavioural cover for the Windows update applier. Parsing proves the
       # file loads; this proves it actually applies, verifies digests, rolls
       # back, and refuses a foreign-target pointer. Same 5.1 host as above.

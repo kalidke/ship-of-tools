@@ -5,7 +5,7 @@ use super::*;
 
 /// The pool is one table for the whole test process, whose tests run in parallel: a test takes a pool port only while
 /// it holds this, and holding it starts from an empty pool (`assign_reuse_exhaust_free` counts every port as its own).
-fn own_pool() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn own_pool() -> std::sync::MutexGuard<'static, ()> {
     static HELD: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let held = HELD.lock().unwrap_or_else(|p| p.into_inner());
     POOL.write().unwrap_or_else(|p| p.into_inner()).clear();
