@@ -856,7 +856,7 @@ julia_run() {
 # Project.toml. The daemon's Julia is, as rust/backend/src/sidecars/julia.rs resolves it: SOT_JULIA_BIN (asked with
 # --startup-file=no), else juliaup's default channel read from juliaup.json with jq (no Julia starts, so no startup.jl
 # runs; its Version string, the binary is not checked on disk), else the PATH julia. The refresh runs the PATH julia.
-julia_floor() { sed -n 's/^julia = "\([0-9][0-9.]*\)".*/\1/p' "$CHECKOUT/julia/kernel/Project.toml" | head -1; }
+julia_floor() { sed -n 's/^julia[[:space:]]*=[[:space:]]*"[^0-9"]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$CHECKOUT/julia/kernel/Project.toml" | head -1; }
 julia_version_ok() {  # <version> <floor>: 0 when the major.minor of the first is at or above the second's
     local v="${1%%+*}" f="$2"
     case "$v" in [0-9]*.[0-9]*) ;; *) return 1 ;; esac
@@ -872,7 +872,7 @@ julia_default_version() {  # the version of juliaup's default channel; empty whe
 }
 julia_path_version() {  # the PATH julia's version; empty when it cannot be asked
     command -v julia >/dev/null || return 0
-    julia --startup-file=no -e 'print(VERSION)' 2>/dev/null || true
+    (cd "${CHECKOUT:-.}" && julia --startup-file=no -e 'print(VERSION)' 2>/dev/null) || true
 }
 julia_floor_say() {  # <who> <version>
     if [ -n "$2" ]; then printf '%s runs Julia %s' "$1" "$2"; else printf 'the Julia %s runs could not be asked for its version' "$1"; fi
@@ -914,7 +914,7 @@ julia_floor_check() {
     elif [ "$src" = up ] && ! julia_version_ok "$daemon_v" "$floor" && command -v juliaup >/dev/null 2>&1; then
         fix="juliaup default $floor"
         julia_channel_installed "$floor" || fix="juliaup add $floor && $fix"
-    elif [ "$src" = path ]; then fix="install Julia $floor or later and put it first on PATH"
+    elif [ "$src" = path ] || { [ "$src" = up ] && ! julia_version_ok "$daemon_v" "$floor"; }; then fix="install Julia $floor or later and put it first on PATH"
     else fix="put a Julia $floor or later ahead of ${jl:-julia} on PATH"
     fi
     bad="$bad, below the $floor the kernel needs: run  $fix"
