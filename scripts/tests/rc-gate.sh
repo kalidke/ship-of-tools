@@ -79,14 +79,36 @@ shell_key() {
   echo "${k//\//-}"
 }
 
+# logged OUT ERR CMD...: CMD with its standard output and error in a folder of its own in the container's private folder
+# (XDG_RUNTIME_DIR, on this host's own disk), appended to OUT and ERR (ERR may be OUT: one stream, in order) when CMD
+# ends; the status is CMD's. Every job runs its command so. The logs folder is wherever the caller reads it, often the
+# network home, where each close of a written file waits for the file server to commit it (NFS flushes on every close),
+# and a child closes the standard streams it inherited as it sets up its own, so a test's bound on that setup would time
+# the file server. A job's log so holds only its header line until its command ends.
+logged() {
+  local out=$1 err=$2 o r
+  shift 2
+  o=$(mktemp -d "$XDG_RUNTIME_DIR/rc-gate-job-XXXXXX") || return 2
+  if [ "$err" = "$out" ]; then
+    "$@" > "$o/out" 2>&1
+  else
+    "$@" > "$o/out" 2> "$o/err"
+  fi
+  r=$?
+  cat "$o/out" >> "$out"
+  [ "$err" = "$out" ] || cat "$o/err" >> "$err"
+  rm -rf "$o"
+  return "$r"
+}
+
 job_julia() {
   local p s
   st julia
-  "${TO[@]}" "${JE[@]}" julia --project="$D" -e 'using Pkg; Pkg.test()' > "$L/julia-root.log" 2>&1
+  logged "$L/julia-root.log" "$L/julia-root.log" "${TO[@]}" "${JE[@]}" julia --project="$D" -e 'using Pkg; Pkg.test()'
   fin julia-root $?
   for p in "${JULIA_PKGS[@]}"; do
     s=julia-${p//\//-}
-    "${TO[@]}" "${JE[@]}" julia --project="$D/$p" -e 'using Pkg; Pkg.instantiate(); Pkg.test()' > "$L/$s.log" 2>&1
+    logged "$L/$s.log" "$L/$s.log" "${TO[@]}" "${JE[@]}" julia --project="$D/$p" -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
     fin "$s" $?
   done
 }
@@ -94,21 +116,20 @@ job_julia() {
 job_cargo_chain() {
   local M="$D/rust/Cargo.toml" r
   st rust-doc
-  "${TO[@]}" "${CE[@]}" cargo test --manifest-path "$M" --workspace --locked --doc --no-fail-fast > "$L/rust/doc.log" 2>&1
+  logged "$L/rust/doc.log" "$L/rust/doc.log" \
+    "${TO[@]}" "${CE[@]}" cargo test --manifest-path "$M" --workspace --locked --doc --no-fail-fast
   r=$?
   echo "$r" > "$L/rust/doc.rc"
   rc rust-doc "$r"
   st win-check
-  "${TO[@]}" "${CE[@]}" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
-    cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-log -p sot-backend -p sot-frontend --locked \
-    > "$L/win-check.log" 2>&1 &&
-  "${TO[@]}" "${CE[@]}" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
-    cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-backend -p sot-log --all-targets --locked \
-    >> "$L/win-check.log" 2>&1
+  logged "$L/win-check.log" "$L/win-check.log" "${TO[@]}" "${CE[@]}" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
+    cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-log -p sot-backend -p sot-frontend --locked &&
+  logged "$L/win-check.log" "$L/win-check.log" "${TO[@]}" "${CE[@]}" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
+    cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-backend -p sot-log --all-targets --locked
   fin win-check $?
   st darwin-check
-  "${TO[@]}" "${CE[@]}" cargo check --manifest-path "$M" --target aarch64-apple-darwin -p sot-log -p sot-backend --all-targets --locked \
-    > "$L/darwin-check.log" 2>&1
+  logged "$L/darwin-check.log" "$L/darwin-check.log" \
+    "${TO[@]}" "${CE[@]}" cargo check --manifest-path "$M" --target aarch64-apple-darwin -p sot-log -p sot-backend --all-targets --locked
   fin darwin-check $?
 }
 
@@ -118,19 +139,21 @@ job_cargo_chain() {
 job_lint() {
   local feats=sot-frontend/test-pane-timing,sot-frontend/test-window-close,sot-backend/daemon-lifetime-faults
   local deny=(-A clippy::all -D clippy::too_many_lines -D clippy::disallowed_methods)
-  local conf=CLIPPY_CONF_DIR=$D/rust/clippy-tests
+  local conf=CLIPPY_CONF_DIR=$D/rust/clippy-tests cmd=()
   st "lint-$1"
   cd "$D/rust" || { fin "lint-$1" 2; return; }
   case $1 in
     lib-bins)
-      "${LNT[@]}" "${CE[@]}" cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods ;;
+      cmd=("${LNT[@]}" "${CE[@]}" cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods) ;;
     all-targets)
-      "${LNT[@]}" "${CE[@]}" "$conf" cargo clippy --workspace --exclude vt100-ctt --all-targets --features "$feats" --locked -- "${deny[@]}" ;;
+      cmd=("${LNT[@]}" "${CE[@]}" "$conf" cargo clippy --workspace --exclude vt100-ctt --all-targets --features "$feats" --locked -- "${deny[@]}") ;;
     windows-tests)
-      "${LNT[@]}" "${CE[@]}" "$conf" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
+      cmd=("${LNT[@]}" "${CE[@]}" "$conf" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
         cargo clippy -p sot-log -p sot-backend --target x86_64-pc-windows-gnu --all-targets \
-        --features sot-backend/daemon-lifetime-faults --locked -- "${deny[@]}" ;;
-  esac > "$L/lint-$1.log" 2>&1
+        --features sot-backend/daemon-lifetime-faults --locked -- "${deny[@]}") ;;
+    *) echo "rc-gate: no lint line $1" > "$L/lint-$1.log"; fin "lint-$1" 2; return ;;
+  esac
+  logged "$L/lint-$1.log" "$L/lint-$1.log" "${cmd[@]}"
   fin "lint-$1" $?
 }
 
@@ -138,14 +161,14 @@ job_lint() {
 job_under_bash() {
   st under-bash
   cd "$D" || { fin under-bash 2; return; }
-  "${LNT[@]}" "${SE[@]}" bash scripts/tests/under-bash.sh "$RCG_BASH32" > "$L/under-bash.log" 2>&1
+  logged "$L/under-bash.log" "$L/under-bash.log" "${LNT[@]}" "${SE[@]}" bash scripts/tests/under-bash.sh "$RCG_BASH32"
   fin under-bash $?
 }
 
 job_shell() {
   local k
   k=$(shell_key "$1")
-  "${TO[@]}" "${SE[@]}" bash "$@" > "$L/$k.log" 2>&1
+  logged "$L/$k.log" "$L/$k.log" "${TO[@]}" "${SE[@]}" bash "$@"
   fin "$k" $?
 }
 
@@ -156,14 +179,13 @@ job_lifetime() {
   local log=$L/rust/daemon_lifetime-faults.log pkg=$D/rust/backend warm=$L/lifetime-warm r
   echo "     Running ($RCG_LIFETIME) load $(cut -d' ' -f1 /proc/loadavg)" > "$log"
   mkdir -p "$warm" && cp "$pkg/tests/daemon_lifetime/fixtures/notebook.jl" "$warm/" &&
-    (cd "$D" && "${TO[@]}" "${JE[@]}" julia --startup-file=no --project=julia/pluto \
-      rust/backend/tests/daemon_lifetime/fixtures/warm_pluto.jl "$warm/notebook.jl") > "$L/lifetime-warm.log" 2>&1
+    (cd "$D" && logged "$L/lifetime-warm.log" "$L/lifetime-warm.log" "${TO[@]}" "${JE[@]}" julia --startup-file=no \
+      --project=julia/pluto rust/backend/tests/daemon_lifetime/fixtures/warm_pluto.jl "$warm/notebook.jl")
   r=$?
   if [ "$r" -eq 0 ]; then
-    (cd "$pkg" && "${LTO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" SOT_JULIA_BIN="$RCG_JULIA_DIR/julia" \
-      SOT_L2_PLUTO_MANIFEST="$D/julia/pluto/Manifest.toml" SOT_LIFETIME_KEEP_DIR="$L/lifetime-keep" \
-      "$RCG_LIFETIME" --include-ignored --test-threads=1) \
-      >> "$log" 2>> "$L/rust/daemon_lifetime-faults.stderr"
+    (cd "$pkg" && logged "$log" "$L/rust/daemon_lifetime-faults.stderr" "${LTO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" \
+      SOT_JULIA_BIN="$RCG_JULIA_DIR/julia" SOT_L2_PLUTO_MANIFEST="$D/julia/pluto/Manifest.toml" \
+      SOT_LIFETIME_KEEP_DIR="$L/lifetime-keep" "$RCG_LIFETIME" --include-ignored --test-threads=1)
     r=$?
   fi
   echo "$r" > "$L/rust/daemon_lifetime-faults.rc"
@@ -174,8 +196,8 @@ job_test() {
   local key=$1 exe=$2 pkg=$3 t=${4:-} log r
   log=$L/rust/$key.log
   echo "     Running ($exe) load $(cut -d' ' -f1 /proc/loadavg)" > "$log"
-  (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" \
-    ${t:+--exact "$t" --format pretty --color never --show-output --test-threads=1}) >> "$log" 2>> "$L/rust/$key.stderr"
+  (cd "$pkg" && logged "$log" "$L/rust/$key.stderr" "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" \
+    ${t:+--exact "$t" --format pretty --color never --show-output --test-threads=1})
   r=$?
   if [ -n "$t" ]; then
     if test_body_check "$t" "$r" "$log"; then r=0; else r=$?; fi
