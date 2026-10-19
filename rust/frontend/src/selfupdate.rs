@@ -22,8 +22,9 @@
 //     install.json no longer records a role (plan step 6, dev/output/
 //     topology-plan.md §D), so this reads the same declared topology the
 //     installer and `sot-backend`'s own `update::backend_role_from_topology`
-//     do (duplicated rather than shared: `sot-updater` is mechanism only,
-//     this is policy, and each side already carries its own guards);
+//     do, through `sot_protocol::topology::runs_backend`: a `frontend` entry
+//     stays out only where its install records a daemon (installs from
+//     rc9.12 on); an older one runs none, and the window is its only updater;
 //   - the topology names this machine with neither `daemon` nor `frontend`:
 //     on a shared home the prefix is another host's, and a checkout-only
 //     prepare armed into it would hand that host a version whose Julia
@@ -139,11 +140,12 @@ pub fn spawn_startup_selfcheck() {
 
 /// Pure: given the declared topology (if any), this box's own name, and
 /// install.json's own recorded `daemon` bit (if any), does the backend on
-/// this machine own the update pipeline? Priority order — mirrors
-/// `sot-backend`'s own `update::backend_role_from_topology` (duplicated, not
-/// shared: `sot-updater` is mechanism only, this is policy):
+/// this machine own the update pipeline? Priority order, the rule
+/// `sot-backend`'s `update::backend_role_from_topology` asks too
+/// (`sot_protocol::topology::runs_backend`):
 /// 1. the declared topology, when it names this host — canonical, can
-///    change without a reinstall;
+///    change without a reinstall; a `frontend` entry takes `recorded_daemon`,
+///    because only an install from rc9.12 on runs a daemon of its own;
 /// 2. else `recorded_daemon` — what THIS install was actually given at
 ///    install time, for a listless box the topology can't answer for (a
 ///    real shape: a frontend-only-over-ssh install with no hosts.toml);
@@ -153,10 +155,7 @@ fn backend_owns_updates(
     me: &str,
     recorded_daemon: Option<bool>,
 ) -> bool {
-    match topo.and_then(|t| t.host(me)) {
-        Some(h) => h.daemon,
-        None => recorded_daemon.unwrap_or(true),
-    }
+    sot_protocol::topology::runs_backend(topo, me, recorded_daemon)
 }
 
 /// Does the declared topology name this machine with neither `daemon` nor `frontend`? It runs no sotd and no window of
@@ -497,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn a_frontend_only_box_self_updates() {
+    fn a_frontend_entry_leaves_updates_to_its_own_daemon() {
         let t = topo(
             "hub = \"hubbox\"\n\
              [host.hubbox]\n\
@@ -505,7 +504,22 @@ mod tests {
              [host.laptop]\n\
              frontend = true\n",
         );
-        assert!(!backend_owns_updates(Some(&t), "laptop", None));
+        assert!(backend_owns_updates(Some(&t), "laptop", None));
+        assert!(backend_owns_updates(Some(&t), "laptop", Some(true)));
+    }
+
+    // An install from before the installer gave a frontend entry a daemon records `daemon: false` and runs none: its
+    // window is the only updater there.
+    #[test]
+    fn a_frontend_entry_whose_install_runs_no_daemon_self_updates() {
+        let t = topo(
+            "hub = \"hubbox\"\n\
+             [host.hubbox]\n\
+             daemon = true\n\
+             [host.laptop]\n\
+             frontend = true\n",
+        );
+        assert!(!backend_owns_updates(Some(&t), "laptop", Some(false)));
     }
 
     #[test]
@@ -541,11 +555,10 @@ mod tests {
             "hub = \"hubbox\"\n\
              [host.hubbox]\n\
              daemon = true\n\
-             [host.laptop]\n\
-             frontend = true\n",
+             [host.laptop]\n",
         );
         // install.json still says "daemon: true" from before this host was
-        // switched to frontend-only on the list.
+        // listed with neither key.
         assert!(!backend_owns_updates(Some(&t), "laptop", Some(true)));
     }
 }

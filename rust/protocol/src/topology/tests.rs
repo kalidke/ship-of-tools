@@ -309,3 +309,23 @@ fn sotd_runs_on_every_daemon_or_frontend_host() {
     let t = parse(V2).unwrap();
     assert_eq!(sotd_hosts(&t), vec!["alpha", "gamma", "delta"]);
 }
+
+/// One rule for who runs a backend: the declared entry's `daemon`; a `frontend` entry takes the install's record; else
+/// what the install recorded, else yes.
+#[test]
+fn a_frontend_entry_runs_a_backend_and_an_unnamed_host_takes_its_record() {
+    let t = parse(V2).unwrap();
+    // alpha daemon, beta neither, gamma both, delta frontend alone.
+    let answers = ["alpha", "beta", "gamma", "delta"].map(|h| runs_backend(Some(&t), h, Some(false)));
+    assert_eq!(answers, [true, false, true, false]);
+    // A frontend entry runs a daemon only where the install says so: an install from before the installer gave one has
+    // none, and its window is then the only updater.
+    assert_eq!(["alpha", "beta", "gamma", "delta"].map(|h| runs_backend(Some(&t), h, Some(true))), [true, false, true, true]);
+    assert!(runs_backend(Some(&t), "nowhere", None));
+    assert!(!runs_backend(Some(&t), "nowhere", Some(false)));
+    assert!(runs_backend(None, "anything", None));
+    assert!(!runs_backend(None, "laptop", Some(false)));
+    for h in &t.hosts {
+        assert_eq!(runs_backend(Some(&t), &h.name, None), sotd_hosts(&t).contains(&h.name.as_str()), "{}", h.name);
+    }
+}

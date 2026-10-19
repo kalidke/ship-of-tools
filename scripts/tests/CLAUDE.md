@@ -71,6 +71,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   Julia (the hosted ubuntu-24.04 image links one there) would skip the Julia installer. Runs in the
   `rust.yml` step "Test installer shared home (bash)"
   (job `checks-linux`) and in `rc-gate.sh`.
+- `installer-apply-fit.sh`: sourced by `installer-apply.sh` inside its real-sotd branch, never run: the applier checks the prepare against this host's role, so an env-less prepare is refused where a backend runs (no topology, a `daemon` entry, a `frontend` entry whose install records a daemon, a guest of the home over a daemon install) and applies for a `frontend` entry whose install records none, and a stage with no `prepared.json` is refused.
 - `installer-handoff.sh`: sourced by `installer-apply.sh`, never run: a real staged `sot-apply` (a copy made by `cp`, the
   packer's own, and an installed v0.6.5 one when the tag is in the checkout) applying onto the install that re-executed
   it, `pack-build.sh` with stand-in cargo and git listing `sot-apply` executable in its archive, and the comm refresh

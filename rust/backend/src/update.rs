@@ -384,7 +384,10 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
 /// backend prepared for the staged release (Julia envs, the MathJax
 /// sidecar)? Priority order — see `backend_role_wanted`'s doc for why:
 /// 1. the declared topology, when it names this host — canonical, can
-///    change without a reinstall (D9, dev/output/topology-plan.md §D);
+///    change without a reinstall (D9, dev/output/topology-plan.md §D); a
+///    `frontend` entry takes `recorded_daemon`, because only an install
+///    from rc9.12 on gives it a daemon of its own
+///    (`sot_protocol::topology::runs_backend`, the one rule);
 /// 2. else `recorded_daemon` — what THIS install was actually given at
 ///    install time (the list, or the flags), persisted for exactly a
 ///    listless box the topology can't answer for;
@@ -399,10 +402,7 @@ fn backend_role_from_topology(
     me: &str,
     recorded_daemon: Option<bool>,
 ) -> bool {
-    match topo.and_then(|t| t.host(me)) {
-        Some(h) => h.daemon,
-        None => recorded_daemon.unwrap_or(true),
-    }
+    sot_protocol::topology::runs_backend(topo, me, recorded_daemon)
 }
 
 /// Does THIS box want a backend prepared for the staged release? Used to be
@@ -415,9 +415,14 @@ fn backend_role_from_topology(
 /// box the topology has no entry for (a real shape: a frontend-only-over-ssh
 /// install with no hosts.toml at all).
 fn backend_role_wanted(install: &InstallManifest) -> bool {
+    backend_role_recorded(install.daemon)
+}
+
+/// [`backend_role_wanted`] for a caller that has read the record's `daemon` bit itself (or could not read the record).
+fn backend_role_recorded(recorded_daemon: Option<bool>) -> bool {
     let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
     let me = crate::comm::mail::filer::comm_self_host();
-    backend_role_from_topology(topo.as_ref(), &me, install.daemon)
+    backend_role_from_topology(topo.as_ref(), &me, recorded_daemon)
 }
 
 /// The julia an update's prepare runs for its envs: only a backend role runs one, and it is the resolver's answer, the
@@ -999,7 +1004,7 @@ mod tests {
     }
 
     #[test]
-    fn a_frontend_only_box_does_not() {
+    fn a_frontend_entry_wants_a_backend_for_its_own_daemon() {
         let t = topo(
             "hub = \"hubbox\"\n\
              [host.hubbox]\n\
@@ -1007,7 +1012,22 @@ mod tests {
              [host.laptop]\n\
              frontend = true\n",
         );
-        assert!(!backend_role_from_topology(Some(&t), "laptop", None));
+        assert!(backend_role_from_topology(Some(&t), "laptop", None));
+        assert!(backend_role_from_topology(Some(&t), "laptop", Some(true)));
+    }
+
+    // An install from before the installer gave a frontend entry a daemon records `daemon: false` and runs none, so its
+    // prepare is the light one.
+    #[test]
+    fn a_frontend_entry_whose_install_runs_no_daemon_prepares_light() {
+        let t = topo(
+            "hub = \"hubbox\"\n\
+             [host.hubbox]\n\
+             daemon = true\n\
+             [host.laptop]\n\
+             frontend = true\n",
+        );
+        assert!(!backend_role_from_topology(Some(&t), "laptop", Some(false)));
     }
 
     #[test]
@@ -1062,7 +1082,7 @@ mod tests {
         let hosts = dir.path().join("hosts.toml");
         std::fs::write(
             &hosts,
-            "hub = \"mw21-hub\"\n[host.mw21-hub]\ndaemon = true\n[host.mw21-laptop]\nfrontend = true\n",
+            "hub = \"mw21-hub\"\n[host.mw21-hub]\ndaemon = true\n[host.mw21-laptop]\nfrontend = true\n[host.mw21-guest]\n",
         )
         .unwrap();
         let install: InstallManifest =
@@ -1070,6 +1090,8 @@ mod tests {
         std::env::set_var("SOT_HOSTS", &hosts);
         std::env::set_var("SOT_SELF_HOST", "mw21-laptop");
         let laptop = backend_role_wanted(&install);
+        std::env::set_var("SOT_SELF_HOST", "mw21-guest");
+        let guest = backend_role_wanted(&install);
         std::env::set_var("SOT_SELF_HOST", "mw21-hub");
         let hub = backend_role_wanted(&install);
         for (key, value) in [("SOT_HOSTS", saved.0), ("SOT_SELF_HOST", saved.1)] {
@@ -1078,7 +1100,8 @@ mod tests {
                 None => std::env::remove_var(key),
             }
         }
-        assert!(!laptop, "a frontend-only entry wants no backend role");
+        assert!(laptop, "a frontend-only entry runs a daemon of its own, so its prepare is a full one");
+        assert!(!guest, "an entry with neither key wants no backend role");
         assert!(hub, "a daemon entry wants the backend role");
     }
 

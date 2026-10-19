@@ -307,6 +307,9 @@ fn the_installer_and_the_pin_agree_on_who_runs_sotd() {
         let role = ran.stdout.clone();
         assert!(!role.is_empty(), "{h}: {ran}");
         assert_eq!(role.contains("daemon:1"), pinned.contains(&h), "{h}: installer says {role:?}, pin names {pinned:?}");
+        if h != "absent" {
+            assert_eq!(role.contains("daemon:1"), sot_protocol::topology::runs_backend(Some(&topo), h, None), "{h}: installer says {role:?}, runs_backend differs");
+        }
     }
 }
 

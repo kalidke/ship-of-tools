@@ -881,3 +881,17 @@ be deleted and re-cut under the same number only while its release is still a dr
 run; once it is published, or any box has installed it that way, it is never re-cut.
 The maintainer, 2026-10-16: "so just like our julia
 packages, once we tag we move main to next version as dev."
+
+## Amendment 2026-10-19 — the apply checks that the prepare fits its host
+
+The depth of a prepare is decided by the process that arms it, from its own host's declared entry, and nothing checked it
+where it lands. `sotd update pointer` now reads the stage's `prepared.json` last and refuses a stage with none, and a
+stage whose prepare did not instantiate the Julia environments on a host whose role wants a backend; both apply scripts
+already drop a pointer the verb refuses. A windows target is exempt from the second check, because its launcher
+instantiates a new version's environments at the first start. `prepared.json` stays the one record of what the prepare did. One function,
+`sot_protocol::topology::runs_backend`, says which hosts run a backend: the declared `daemon`; a `frontend` entry takes
+the install's recorded bit, because only an install from rc9.12 on gives it a daemon of its own and an older one records
+`"daemon": false` and runs none, so its window is the only updater; else the install's recorded bit, else yes. The
+prepare, the window's stay-out of updates and the verb all read it, and `installer_topology_role` is pinned equal to it
+by a test that asks with no record. On a host the topology names with neither key (a guest of a shared home) the install
+is another host's, so the verb takes the record alone.

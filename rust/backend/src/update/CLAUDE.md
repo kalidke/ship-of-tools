@@ -8,10 +8,10 @@ parent folder, owns the pipeline both reach. Part of distribution; charter: scri
 
 ## Files
 - `cli.rs`: the `sotd update` dispatch and usage text, `stage` (the one writer that may arm the same or an older build,
-  `Writer::Operator`) and `pointer` (reads the pointer and `install.json`, prints `ok` or `refuse: <why>`, exits 0 or
+  `Writer::Operator`) and `pointer` (reads the pointer, `install.json` and the stage's `prepared.json`, prints `ok` or `refuse: <why>`, exits 0 or
   `REFUSED`), `direction` (prints `newer`, `same` or `older` against `install.json`) and `repls` (what a restart of a running
   daemon would end, from its own `workspace.list`: the rows whose REPL is `ready` and whether its Pluto server is running, `pluto_server_up`), with their tests
-- `refusal.rs`: what the daemon's updater refuses before it arms or applies (`arm_refusal`, `apply_refusal`) and whether
+- `refusal.rs`: what the daemon's updater refuses before it arms or applies (`arm_refusal`, `apply_refusal`), what the apply refuses for a prepare that does not fit this host's role (`fit_refusal`) and whether
   the topology makes this host a guest of the prefix (`host_runs_no_sotd`), pure over what the caller read, with the
   install.json that cannot be read answered by the one sentence `UnreadableInstall::sentence`
 
@@ -32,5 +32,6 @@ parent folder, owns the pipeline both reach. Part of distribution; charter: scri
 - `pointer` starts no daemon and writes nothing. It refuses a pointer that cannot be read as well as one that no longer fits; with no `install.json` or no pointer it answers 0, and over an `install.json` that cannot be read it refuses a pointer that records the install it was armed over (it cannot be checked) and answers 0 for one with no record. Its refusal code is 3: an older `sotd` exits 1 on the word `update` and
   a `sotd update` without the verb exits 2, so the apply scripts read only 3 as a refusal and keep the exact-tag check
   for any other answer.
+- `pointer` also checks the fit of the prepare, last: it reads `<stage>/prepared.json` and refuses a stage with none, and a stage whose prepare did not instantiate the Julia environments when this host's role wants a backend (`sot_protocol::topology::runs_backend` over the declared entry, else `install.json`'s `daemon` bit; a `frontend` entry takes the bit too, and a host the topology names with neither key takes the bit alone, the install being another host's). A windows target is exempt from the environments check: its launcher instantiates at the first start. The arming host decided the prepare's depth from its own entry; the applier is the one that knows its own role.
 - `stage` is the explicit exception to "arm only above the install": it prints the direction (`newer`, `same` or
   `older`) so a downgrade is never silent.
