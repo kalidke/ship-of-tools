@@ -213,6 +213,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-local-daemon-own.ps1`: dot-sourced by test-local-daemon.ps1 after section 5b, in its scope: the bridge's
   own-account pipe probe (4b), the daemon finder's account filter and its process controls (4c), and the real
   daemon's bridge-held lease handover (5b2).
+- `test-local-daemon-decoy.ps1`: dot-sourced by test-local-daemon.ps1 after the binary file, in its scope, when the fake
+  compiled: `-Stop` ends the daemon its pipe's owner is and leaves a `sotd.exe` decoy whose command line names that pipe,
+  and a second daemon on another pipe, running (4d).
 - `test-local-daemon-pipe.ps1`: dot-sourced by test-local-daemon.ps1 inside section 5c, in its scope: the session pipe
   under load (cases (iii)-(viii): large requests behind an accepted and a refused hello, the inbound buffer's memory, a
   peer the daemon gives up on, a session that ends on a frame the daemon will not read).

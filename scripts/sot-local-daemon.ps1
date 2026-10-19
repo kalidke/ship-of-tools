@@ -83,10 +83,10 @@
 # separate DETACHED processes (spawned with CREATE_BREAKAWAY_FROM_JOB) and
 # the one authority over a workspace's live state; the daemon re-adopts them
 # via `--resume` on its next start (ADR 0042 L1a). Matched for -Stop by an
-# EXACT process match: process name `sotd.exe` AND a `--socket` token
-# followed by exactly this pipe path at a token boundary in its command
-# line -- not a bare substring match, which could also hit an unrelated
-# sotd whose pipe name happens to contain this one.
+# pid the pipe's owner reports (Get-SotPipeOwnerPid), owned by this account --
+# never a command-line or name match, which a decoy naming this pipe, or a
+# daemon of another account, could satisfy (ADR 0050). A daemon whose pipe is
+# gone is not found.
 #
 # ADR 0042 L2b consequence, not a regression covered elsewhere: because the
 # pipe name is now DERIVED (queried from a resolved binary) rather than
@@ -369,11 +369,50 @@ function Test-SotOwnProcess($Proc, [string]$Sid) {
     try { return ((Invoke-CimMethod -InputObject $Proc -MethodName GetOwnerSid -ErrorAction Stop).Sid -eq $Sid) } catch { return $false }
 }
 
+# The pid of the process serving pipe $Name, as the operating system reports it for a connection (GetNamedPipeServerProcessId,
+# the call the daemon's own peer check makes), or 0 when nothing answers. The connection is at identification level and
+# closes at once, the same harmless connect-then-EOF as the probe. No command line or process name is read (ADR 0050).
+function Get-SotPipeOwnerPid([string]$Name) {
+    if (-not ('SotPipeOwner' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+
+public static class SotPipeOwner
+{
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint pid);
+
+    public static uint Of(string name, int timeoutMs)
+    {
+        try
+        {
+            using (NamedPipeClientStream c = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.None, TokenImpersonationLevel.Identification))
+            {
+                c.Connect(timeoutMs);
+                uint pid;
+                if (!GetNamedPipeServerProcessId(c.SafePipeHandle.DangerousGetHandle(), out pid)) { return 0; }
+                return pid;
+            }
+        }
+        catch (Exception) { return 0; }
+    }
+}
+'@
+    }
+    return [int][SotPipeOwner]::Of($Name, 500)
+}
+
+# This account's daemon: the process serving $PipeName, when this account owns it. Selected by the pipe's owner, never by
+# a command line or a name, so a decoy that names this pipe, or a daemon on another pipe, is never returned.
 function Get-LocalDaemonProcess {
-    $pat = '(?i)--socket\s+"?' + [regex]::Escape($PipePath) + '"?(\s|$)'
+    $ownerPid = Get-SotPipeOwnerPid $PipeName
+    if ($ownerPid -le 0) { return }
     $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" |
-        Where-Object { $_.CommandLine -and ($_.CommandLine -match $pat) -and (Test-SotOwnProcess $_ $sid) }
+    Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPid" |
+        Where-Object { Test-SotOwnProcess $_ $sid }
 }
 
 # How long -Stop waits for the daemon's own shutdown, in ms, from held.json:
