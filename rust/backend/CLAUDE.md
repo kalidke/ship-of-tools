@@ -47,7 +47,7 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
   is an offline settings mutation and returns before daemon initialization.
 - Daemon boot creates nothing before the umask and directory checks. Offline trust declaration applies the private umask
   before its own writes and creates no daemon log, state, row or listener.
-- The log is `<state>/sotd.log` (mirrored to stdout by `TeeWriter`); nothing bounds or rotates it.
+- The log is `<state>/sotd.log` (mirrored to stdout by `TeeWriter`). Every writer, the capsule supervisors included, holds one handle on that file; at open and after each daemon write that leaves it over 64 MiB, `roll_log_if_over` copies it to `sotd.log.1` (replacing any older) and truncates it in place, so no writer's lines go to an unlinked file. The stdout copy is not bounded.
 - An op's handler lives with the state it reads or writes; `server/dispatch.rs` (`dispatch`) only routes.
 - Integration tests need `cargo build -p sot-log --bin sot-capsule` first.
 - `sidecars/mathjax` is found at run time by `paths::resource_dir` and never moves.
