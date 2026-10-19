@@ -32,10 +32,12 @@
 #            with a turn mark of its own session under five minutes old, sets
 #            `floor` to machine as a machine `prompt` does; else writes nothing.
 #
-# The daemon's entry: SOT_COMM_ROW_HANDLE=<handle> names the row whose screen
-# the daemon read (ADR 0044, dialog amendment). Only `dialog` and `resumed` take
-# it (any other verb is refused, rc 2); the agent gate still runs; no identity
-# is derived (NAME is the handle) and no marker is written or removed, so no
+# The daemon's entry, the one stamp made from outside the row:
+# SOT_COMM_ROW_HANDLE=<handle> names the row whose screen the daemon read (ADR
+# 0044, dialog amendment). A process that sets it can paint or clear that one
+# row's `dialog` and nothing else: only `dialog` and `resumed` take it (any
+# other verb is refused, rc 2); the agent gate still runs; no identity is
+# derived (NAME is the handle) and no marker is written or removed, so no
 # heartbeat clears a fact the daemon set.
 #
 # The turn mark, $COMM_HOME/state/turn-<the self slot's path>, holds the time

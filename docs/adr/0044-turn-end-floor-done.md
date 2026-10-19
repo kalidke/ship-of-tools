@@ -289,21 +289,29 @@ red after the answer (Codex: `blocked` then `stop`, cleared only by a typed prom
   dialog shows as before.
 - Set and cleared on a Claude row by the daemon, from the row's screen (the dialog
   tick, `rust/backend/src/comm/wake/dialog.rs`). Every 5 s it reads each Ready Claude
-  capsule row with a registry entry, one watcher attach each.
+  capsule row whose entry reads `working` or carries a `dialog` fact to clear (a row at
+  rest shows no permission dialog, and one red by its question, an AskUserQuestion
+  menu, keeps that summary), one watcher attach each. A watcher attach takes no pen,
+  sends no resize and writes no record frame or log line; twenty of them, one sweep at
+  twenty rows, took 1.3 to 1.9 s in a debug build on Linux. A sweep is awaited before
+  the next tick, and missed ticks are skipped, so sweeps never stack.
   - `dialog_of` (the wake's `screen.rs`) says a dialog shows only when no main input
-    box is on screen and one of the last 30 rows holds "Do you want to",
-    "Enter to select" or "Esc to cancel". A reply that quotes them sits above a live
-    box, so it never reads red.
+    box is on screen and one of the last 30 rows is the dialog's footer: "Enter to
+    select" or "Esc to cancel" joined to another key hint by a middle dot. Prose that
+    quotes the words, "Do you want to" included, has no such footer, so it never
+    reads red, with or without an input box below it.
   - The tick writes only where the screen and the registry disagree: `dialog` when a
-    dialog shows and the row does not already read `blocked`, which leaves an
-    AskUserQuestion menu red by its question; `resumed` when none shows and the row
-    has the fact.
-  - It writes through `comm-status.sh` itself, with the entry `SOT_COMM_ROW_HANDLE`.
-    That entry takes `dialog` and `resumed` only, derives no identity and writes no
-    marker, so the reduction stays in one jq program and no Claude heartbeat clears
-    the daemon's fact. The entry exists because the daemon cannot run the script as
-    the row: the agent gate refuses a process that names a row it does not run
-    inside.
+    dialog shows and the row has no fact, `resumed` when none shows and it has one.
+  - It writes through `comm-status.sh` itself, with the entry `SOT_COMM_ROW_HANDLE`,
+    the one stamp made from outside the row. The agent gate refuses a process that
+    names a row it does not run inside, so the daemon cannot stamp as the row; this
+    entry is the exception to "a process outside the row stamps as nobody". A
+    process that sets it can paint or clear one row's `dialog` and nothing else: the
+    entry takes `dialog` and `resumed` only (any other verb exits 2), derives no
+    identity, and writes or removes no marker; the reduction then recomputes that
+    row's `state` and `summary` and refreshes its stamp times, as every write does.
+    The reduction stays in one jq program, and no Claude heartbeat clears the
+    daemon's fact.
   - It keeps nothing between ticks, so after a restart its first tick clears a fact
     whose dialog has gone.
 - Cleared by every event that proves the dialog is gone: on a Codex row, the call's
@@ -330,9 +338,14 @@ red after the answer (Codex: `blocked` then `stop`, cleared only by a typed prom
   its turn runs, then wilts (§5). Elsewhere a Claude row's red lags its dialog by up to
   one tick plus a read, and a turn boundary that clears the fact while the dialog still
   shows is written again on the next tick. Any Claude screen that replaces the input
-  box and draws those words reads red while it shows, a menu a person opened included.
-  The dialog strings come from a screen watcher run on live rows; no dialog screen is
-  captured as a fixture, so the tests' dialog screens are synthetic. (L1) Codex fires
+  box and draws such a footer reads red while it shows, a menu a person opened
+  included. The footer shapes come from a screen watcher run on live rows; no dialog
+  screen is captured as a fixture, so the tests' dialog screens are synthetic. The
+  silent exit (Esc or a bare "No" ends a Claude turn with no Stop, so the row keeps its
+  floor and reads green) is not cleared by this tick and stays a 0.6.7 limit: telling
+  a row at rest from a working one takes the wake's 1.5 s hold, which lives inside
+  its typing attempt, per row per tick, and that hold reads a working row whose
+  screen holds still as free, which here would end a running turn's floor. (L1) Codex fires
   no hook at approval, so an approved call reads red until it returns. (L2) The return
   of another call in the same Codex session clears the red early. (L3) On a Codex row
   a denial fires no `PostToolUse`, and "No" or Esc

@@ -332,3 +332,77 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
     let _ = command(&conn, "test-headless-c-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }
+
+/// The daemon's dialog tick (sot-backend `comm::wake::dialog`) reads a Claude row's screen with exactly this watcher
+/// shape every 5 s. Twenty reads, the cost of one sweep at twenty rows, of a capsule whose scrollback is full (so each
+/// checkpoint carries its whole ring): each read is bounded, logs nothing, leaves the capsule's geometry, and leaves no
+/// frame in the sealed record (no take, no resize, no input, nothing attributed to the watcher). Unix: the tick runs
+/// only there.
+#[cfg(unix)]
+#[test]
+fn twenty_watcher_reads_write_nothing_and_stay_bounded() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let log = sot_log::test_log::capture();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let fill = "i=0; while [ $i -lt 400 ]; do echo scrollback line $i; i=$((i+1)); done; exec sleep 600";
+    let mut guard = spawn_supervisor_sized(&state_dir, "--start", 200, 50, &["/bin/sh", "-c", fill]);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    let watcher_id = "dialog-tick-watcher";
+    let read = || {
+        let started = Instant::now();
+        let mut w = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), watcher_id.to_string())
+            .expect("attach_headless");
+        let deadline = started + Duration::from_secs(3);
+        while !w.is_checkpointed() {
+            w.pump();
+            assert!(!w.is_dead(), "watcher died: {}", w.status_line());
+            assert!(Instant::now() < deadline, "a read took past the tick's 3 s budget");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let size = w.screen().size();
+        let text = screen_text(w.screen());
+        assert!(w.shutdown(Duration::from_millis(500)), "the watcher's worker must exit within the daemon's bound");
+        (started.elapsed(), size, text)
+    };
+    // The scrollback is full before the measured sweep.
+    let filled = Instant::now() + Duration::from_secs(30);
+    while !read().2.contains("scrollback line 399") {
+        assert!(Instant::now() < filled, "the fill never reached the screen");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let before = log.text().len();
+    let sweep = Instant::now();
+    let mut slowest = Duration::ZERO;
+    for _ in 0..20 {
+        let (took, size, _) = read();
+        assert_eq!(size, (50, 200), "a watcher read must leave the capsule's geometry");
+        slowest = slowest.max(took);
+    }
+    let total = sweep.elapsed();
+    // Reported, not asserted against the 5 s tick: a clock bound would fail on a loaded box for a reason the reads do
+    // not own. Each read is held to the tick's own 3 s budget above.
+    eprintln!("dialog-tick sweep: 20 watcher reads in {total:?}, slowest {slowest:?}");
+    assert_eq!(&log.text()[before..], "", "a watcher read logs nothing");
+
+    end_run_and_wait_verified(&conn, &voyage);
+    let frames = sealed_frames(&state_dir, &voyage);
+    let by_watcher = frames.iter().filter(|f| f.source.actor.controller_id.as_deref() == Some(watcher_id)).count();
+    assert_eq!(by_watcher, 0, "no frame may be attributed to the watcher");
+    let touched: Vec<_> = frames.iter().filter(|f| {
+        let p = f.payload.as_ref();
+        let field = |k: &str| p.and_then(|p| p.get(k)).and_then(|v| v.as_str()).map(str::to_string);
+        f.class == sot_log::store::envelope::Class::Input
+            // The start preamble's null-holder revoke is every capsule's; a take names its holder.
+            || (field("kind").as_deref() == Some("take_state") && p.and_then(|p| p.pointer("/take/holder")).is_some_and(|h| !h.is_null()))
+            || field("kind_ns").as_deref() == Some("conpty/resize")
+    }).map(|f| (f.class, f.source.actor.controller_id.clone(), f.payload.clone())).collect();
+    assert!(touched.is_empty(), "the reads wrote an input, take or resize frame: {touched:?}");
+    let _ = command(&conn, "test-headless-sweep-stop", SupervisorOp::Stop);
+    wait_for_exit(&mut guard, Duration::from_secs(30));
+}

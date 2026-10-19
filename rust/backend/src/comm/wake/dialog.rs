@@ -3,8 +3,10 @@
 //!
 //! No Claude Code hook says when a permission dialog is on screen (its `PermissionRequest` fires when a request is
 //! queued), so the daemon reads the screen. Every [`DIALOG_EVERY`] one blocking task reads the registry once, then each
-//! Ready capsule row whose agent is `claude` and whose handle is declared and has a registry entry, one watcher attach
-//! each (it never takes the pen). [`dialog_of`] reads the screen; the row is written only where screen and registry
+//! Ready capsule row whose agent is `claude`, whose handle is declared, and whose registry entry reads `working` or
+//! carries a `dialog` fact the tick must clear ([`due`]; a row at rest shows no permission dialog), one watcher attach
+//! each (it never takes the pen, resizes nothing and writes no record; sot-log's
+//! `twenty_watcher_reads_write_nothing_and_stay_bounded` measures twenty such reads at about 1.3-1.9 s on Linux). [`dialog_of`] reads the screen; the row is written only where screen and registry
 //! disagree ([`stamp_for`]), through `comm-status.sh`'s one reduction and its daemon entry, `SOT_COMM_ROW_HANDLE`
 //! ([`stamp`]). Nothing lives between ticks, so after a restart the first tick clears a fact whose dialog has gone.
 //! A Codex row is never read: its dialog fact is its own hook's. On a Claude row the daemon is the fact's one writer
@@ -35,19 +37,29 @@ pub(crate) enum Stamp {
     Resumed,
 }
 
-/// What a row's screen (`shown`, from [`dialog_of`]) and its registry entry call for: `dialog` when a dialog shows and the
-/// entry does not already read `blocked` (a `dialog` fact reads blocked; so does an AskUserQuestion menu, red by the
-/// `question` its PreToolUse hook wrote before the menu drew, which keeps that summary); `resumed` when no dialog shows
-/// and the entry has the fact; else nothing.
+/// Whether the tick reads a row: its entry has a `dialog` fact to clear, or reads `working`. Any other row is skipped
+/// before its attach: one at rest shows no permission dialog, and one red by its `question` (an AskUserQuestion menu,
+/// whose PreToolUse hook wrote the question before the menu drew) keeps that summary.
+fn due(entry: &serde_json::Value) -> bool {
+    has_fact(entry) || entry.get("state").and_then(|s| s.as_str()) == Some("working")
+}
+
+fn has_fact(entry: &serde_json::Value) -> bool {
+    entry.get("dialog").is_some_and(|d| !d.is_null())
+}
+
+/// What a [`due`] row's screen (`shown`, from [`dialog_of`]) and its entry call for: `dialog` when a dialog shows and
+/// the entry has no fact; `resumed` when none shows and it has one; else nothing.
 fn stamp_for(shown: Option<String>, entry: &serde_json::Value) -> Option<Stamp> {
     match shown {
-        Some(text) if entry.get("state").and_then(|s| s.as_str()) != Some("blocked") => Some(Stamp::Dialog(text)),
-        None if entry.get("dialog").is_some_and(|d| !d.is_null()) => Some(Stamp::Resumed),
+        Some(text) if !has_fact(entry) => Some(Stamp::Dialog(text)),
+        None if has_fact(entry) => Some(Stamp::Resumed),
         _ => None,
     }
 }
 
-/// The tick. Runs forever; started once from `server::run`, on Unix only.
+/// The tick. Runs forever; started once from `server::run`, on Unix only. A sweep is awaited before the next tick, and
+/// ticks missed while it ran are skipped, so a sweep that runs past [`DIALOG_EVERY`] never has another stacked behind it.
 pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces, period: Duration) {
     let mut failing: HashSet<String> = HashSet::new();
     let mut tick = tokio::time::interval(period);
@@ -92,7 +104,7 @@ fn check_rows(
         return;
     };
     for (handle, state_dir) in rows {
-        let Some(entry) = registry.get("agents").and_then(|a| a.get(handle)) else {
+        let Some(entry) = registry.get("agents").and_then(|a| a.get(handle)).filter(|e| due(e)) else {
             continue;
         };
         let Some(lines) = read(state_dir) else {

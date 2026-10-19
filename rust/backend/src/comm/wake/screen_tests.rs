@@ -607,13 +607,17 @@ fn free_test_lines_trims_spaces_and_keeps_a_no_break_space() {
 
 // ---- dialog_of: a dialog that waits on a person, for the dialog tick (dialog.rs) ----
 
+/// The footers a screen watcher matches on live rows: key hints joined by middle dots.
+const PERM_FOOTER: &str = "Esc to cancel \u{b7} Tab to amend";
+const ASKQ_FOOTER: &str = "Enter to select \u{b7} \u{2191}/\u{2193} to navigate \u{b7} Esc to cancel";
+
 fn dialog(l: &[&str], windows: bool) -> Option<String> {
     dialog_of(&lines(l), "claude", windows)
 }
 
 /// Output above, then `menu` (PERM_MENU, synthetic) and its footer where the input box was.
 fn perm_screen(menu: &[&str]) -> Vec<String> {
-    lines(&[&LINUX_TURN_A[..5], menu, &["", "Esc to cancel"]].concat())
+    lines(&[&LINUX_TURN_A[..5], menu, &["", PERM_FOOTER]].concat())
 }
 
 #[test]
@@ -631,16 +635,23 @@ fn a_permission_dialog_reads_with_its_question() {
 
 #[test]
 fn a_question_menu_reads_by_its_footer() {
-    let footer = "Enter to select \u{b7} \u{2191}/\u{2193} to navigate \u{b7} Esc to cancel";
-    assert_eq!(dialog(&[&ASKQ_MENU[..], &["", footer]].concat(), false), Some("claude dialog open".to_string()));
-    assert_eq!(dialog(&ASKQ_MENU, false), None, "no footer and no question line: not positively identified");
+    assert_eq!(dialog(&[&ASKQ_MENU[..], &["", ASKQ_FOOTER]].concat(), false), Some("claude dialog open".to_string()));
+    assert_eq!(dialog(&ASKQ_MENU, false), None, "no footer: not positively identified");
 }
 
-/// A reply that quotes the dialog's words sits above a live input box: never a dialog.
+/// An agents panel can sit below the footer: the footer is read anywhere in the last rows.
+#[test]
+fn a_footer_with_the_agents_panel_below_it_reads() {
+    let screen = [&PERM_MENU[..], &["", PERM_FOOTER, "", P_MAIN, P_SUB, F_LEADER]].concat();
+    assert_eq!(dialog(&screen, false), Some("claude dialog: Do you want to proceed?".to_string()));
+}
+
+/// A reply that quotes the dialog's words is never a dialog: not above a live input box, and not even with no box on
+/// screen, for neither "Do you want to" nor a footer's words without the middle-dot separator identify one.
 #[test]
 fn a_reply_quoting_the_dialog_is_not_one() {
     let mut idle = LINUX_IDLE;
-    idle[2] = "● It will ask: Do you want to proceed? Enter to select, Esc to cancel.";
+    idle[2] = "● It will ask: Do you want to proceed? Esc to cancel \u{b7} Tab to amend";
     idle[3] = "Do you want to proceed?";
     assert_eq!(dialog(&idle, false), None);
     idle[8] = "\u{276f}\u{a0}";
@@ -648,6 +659,9 @@ fn a_reply_quoting_the_dialog_is_not_one() {
     let mut turn = LINUX_TURN_A;
     turn[1] = "Do you want to proceed?";
     assert_eq!(dialog(&turn, false), None);
+    // No input box at all: the words alone, as prose writes them.
+    assert_eq!(dialog(&["● Do you want to proceed with the release?", "  It asks first."], false), None);
+    assert_eq!(dialog(&["● Do you want to proceed?", "  Press Esc to cancel, or Enter to select one."], false), None);
 }
 
 #[test]
@@ -666,12 +680,12 @@ fn free_prompts_and_other_agents_show_no_dialog() {
     assert_eq!(dialog_of(&perm_screen(&PERM_MENU), "codex", false), None);
 }
 
-/// Only the last rows are read: a question line far above them is old output.
+/// Only the last rows are read: a footer far above them is old output.
 #[test]
 fn only_the_last_rows_hold_a_dialog() {
-    let mut screen = vec!["Do you want to proceed?"];
+    let mut screen = vec![PERM_FOOTER];
     screen.extend(std::iter::repeat("output").take(DIALOG_ROWS));
     assert_eq!(dialog(&screen, false), None);
-    screen.push("Esc to cancel");
+    screen.push(ASKQ_FOOTER);
     assert_eq!(dialog(&screen, false), Some("claude dialog open".to_string()));
 }

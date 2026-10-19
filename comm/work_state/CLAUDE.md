@@ -26,9 +26,12 @@ priority) sits above the `with_lock` call that applies it. For what the Stop hoo
   off or missing, having no mark, never gets a floor that no Stop would end; and a turn that ended, through its Stop
   or with none, is never floored by a later join.
 - The daemon stamps one fact: a Claude row's `dialog`, read from the row's screen (no Claude Code hook says when a
-  permission dialog shows), through this script's entry `SOT_COMM_ROW_HANDLE` (`dialog` and `resumed` only, no identity
-  derived, no marker), so the reduction stays this script's alone (`rust/backend/src/comm/wake/dialog.rs`). Otherwise
-  it clears only `done`, when a person views the row (`clear_comm_unread` in `rust/backend/src/comm/registry/registry.rs`).
+  permission dialog shows; `rust/backend/src/comm/wake/dialog.rs`). It stamps through this script's entry
+  `SOT_COMM_ROW_HANDLE`, the one stamp made from outside the row, and the exception to "a process outside the row stamps
+  as nobody": a process that sets it can paint or clear one row's `dialog` and nothing else (`dialog` and `resumed`
+  only, any other verb exits 2; no identity derived; no marker; the reduction recomputes that row's state and summary).
+  Otherwise the daemon clears only `done`, when a person views the row (`clear_comm_unread` in
+  `rust/backend/src/comm/registry/registry.rs`).
 - The auditor fails open: any internal failure, a missing `claude`, `SOT_TURN_AUDITOR=0` or `auditor.off` in the comm
   folder exits 3, and the Stop hook then takes its old path. It never holds a turn.
 - The auditor runs its model call with `SOT_COMM_HOOKS=off`, so the headless call's own hooks stand down.

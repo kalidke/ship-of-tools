@@ -210,24 +210,33 @@ fn main_box_shown(lines: &[String], glyphs: &[char], windows: bool) -> bool {
     })
 }
 
+/// Whether `line` is a dialog's own footer: "Enter to select" or "Esc to cancel" joined to another key hint by a
+/// middle dot (`Enter to select ·`, `Esc to cancel ·`, `· Esc to cancel`). Prose that quotes the words has no such
+/// separator; a reply line holding "Do you want to" false-alarmed a screen watcher that matched the words alone.
+fn is_dialog_footer(line: &str) -> bool {
+    ["Enter to select \u{b7}", "Esc to cancel \u{b7}", "\u{b7} Esc to cancel"].iter().any(|f| line.contains(f))
+}
+
 /// The dialog the screen shows that waits on a person, as the row's `dialog` summary, or `None`. It is positively
-/// identified, both of: (a) no main input box is on screen ([`main_box_shown`]): a dialog replaces it, so text above a
-/// live box (a reply that quotes a dialog) is output, never a dialog; (b) one of the last [`DIALOG_ROWS`] rows holds the
-/// dialog's own text: a "Do you want to" line, or the footer's "Enter to select" or "Esc to cancel". The summary is the
-/// "Do you want to" line when there is one. An agent with no prompt glyphs is never read. The strings are those a
-/// screen watcher has matched on live rows since 2026-10-15; no dialog screen has been captured into a fixture.
+/// identified, both of: (a) no main input box is on screen ([`main_box_shown`]): a dialog replaces it; (b) one of the
+/// last [`DIALOG_ROWS`] rows is the dialog's footer ([`is_dialog_footer`]), anywhere in them, since an agents panel can
+/// sit below it. The summary is the dialog's "Do you want to" line when the last rows hold one; the line alone
+/// identifies nothing. An agent with no prompt glyphs is never read. The footer shapes are those a screen watcher
+/// matches on live rows; no dialog screen has been captured into a fixture.
 pub(crate) fn dialog_of(lines: &[String], agent: &str, windows: bool) -> Option<String> {
     let glyphs = prompt_glyphs(agent, windows);
     if glyphs.is_empty() || main_box_shown(lines, glyphs, windows) {
         return None;
     }
     let tail = &lines[lines.len().saturating_sub(DIALOG_ROWS)..];
-    let trimmed = |l: &String| l.trim_matches(|c: char| c.is_whitespace() || c == '\u{2502}').to_string();
-    if let Some(ask) = tail.iter().map(trimmed).find(|l| l.starts_with("Do you want to")) {
-        return Some(format!("claude dialog: {ask}").chars().take(DIALOG_TEXT_MAX).collect());
+    if !tail.iter().any(|l| is_dialog_footer(l)) {
+        return None;
     }
-    let footer = tail.iter().any(|l| l.contains("Enter to select") || l.contains("Esc to cancel"));
-    footer.then(|| "claude dialog open".to_string())
+    let trimmed = |l: &String| l.trim_matches(|c: char| c.is_whitespace() || c == '\u{2502}').to_string();
+    Some(match tail.iter().map(trimmed).find(|l| l.starts_with("Do you want to")) {
+        Some(ask) => format!("claude dialog: {ask}").chars().take(DIALOG_TEXT_MAX).collect(),
+        None => "claude dialog open".to_string(),
+    })
 }
 
 /// The screen lines as the headless client reads them (`current_lines` in

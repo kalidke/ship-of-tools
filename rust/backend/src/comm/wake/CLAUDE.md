@@ -38,9 +38,11 @@ backend; charter: comm/CLAUDE.md.
   by a later tick that finds it alone in main's input box (`decide`'s Complete, `Woken::enter_owed`). An Enter the leg
   refused as stale wrote nothing and leaves the line owed the same way (`WakeOutcome::EnterRefused`).
 - The dialog tick (`dialog.rs`, every DIALOG_EVERY, 5 s, Unix only) reads Ready capsule rows whose agent is `claude`, with
-  a declared handle and a registry entry, one watcher attach each (never the pen). `dialog_of` says a screen shows a
-  dialog only when no main input box (`main_box_shown`: a glyph and the NBSP between two borders) is on screen and the
-  last DIALOG_ROWS (30) rows hold "Do you want to", "Enter to select" or "Esc to cancel".
-- It writes only where screen and registry disagree (`stamp_for`): `dialog` when a dialog shows and the row does not
-  already read blocked, `resumed` when none shows and the row has the fact. It keeps nothing between ticks, and writes
-  through `comm-status.sh` with `SOT_COMM_ROW_HANDLE`, never with Rust's own reduction. A Codex row is never read.
+  a declared handle and an entry that reads `working` or carries a `dialog` fact (`due`), one watcher attach each (never
+  the pen, a resize or a record frame). A sweep is awaited before the next tick and missed ticks are skipped.
+- `dialog_of` says a screen shows a dialog only when no main input box (`main_box_shown`: a glyph and the NBSP between
+  two borders) is on screen and one of the last DIALOG_ROWS (30) rows is a dialog footer (`is_dialog_footer`: "Enter to
+  select" or "Esc to cancel" joined to a key hint by a middle dot). "Do you want to" only names the summary.
+- It writes only where screen and registry disagree (`stamp_for`): `dialog` when a dialog shows and the row has no fact,
+  `resumed` when none shows and it has one. It keeps nothing between ticks, and writes through `comm-status.sh` with
+  `SOT_COMM_ROW_HANDLE`, never with Rust's own reduction. A Codex row is never read.
