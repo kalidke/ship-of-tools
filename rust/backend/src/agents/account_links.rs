@@ -90,21 +90,49 @@ fn publish_dir(temp: &Path, link: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Put the account's file in place without a reader ever seeing half of it: write a temp file beside it, then
-/// `hard_link` it onto the entry name (`AlreadyExists` means a sibling won), then drop the temp.
+/// How a named account's `CLAUDE.md` is seeded where symlinks are refused: `false` is a one-time copy the account owns
+/// (rule S); `true` is a one-line import stub, `@<the default's CLAUDE.md>`, so the account follows the default's edits.
+/// The one line to change once the import form is confirmed to work for a named account.
+#[cfg(any(windows, test))]
+const CLAUDE_MD_AS_IMPORT_STUB: bool = false;
+
+/// Whether `link` takes the import-stub form under `switch`: only the `CLAUDE.md`.
+#[cfg(any(windows, test))]
+fn uses_import_stub(switch: bool, link: &Path) -> bool {
+    switch && link.file_name().is_some_and(|n| n == "CLAUDE.md")
+}
+
 #[cfg(any(windows, test))]
 fn seed_file(target: &Path, link: &Path) -> io::Result<()> {
+    let stub = uses_import_stub(CLAUDE_MD_AS_IMPORT_STUB, link);
+    seed_contents(target, link, stub)?;
     let name = link.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if stub {
+        tracing::warn!(entry = %name, "symlinks are unavailable here: this account's {name} imports the default's");
+    } else {
+        tracing::warn!(entry = %name, "symlinks are unavailable here: this account's {name} is a copy it now owns");
+    }
+    Ok(())
+}
+
+/// Put the account's file in place without a reader ever seeing half of it: write a temp file beside it (a copy of
+/// `target`, or with `stub` the one-line import of it), then `hard_link` it onto the entry name (`AlreadyExists` means
+/// a sibling won), then drop the temp.
+#[cfg(any(windows, test))]
+fn seed_contents(target: &Path, link: &Path, stub: bool) -> io::Result<()> {
     let temp = unique_beside(link);
-    if let Err(err) = std::fs::copy(target, &temp) {
+    let (written, what) = if stub {
+        (std::fs::write(&temp, format!("@{}\n", target.display())), "write the import of")
+    } else {
+        (std::fs::copy(target, &temp).map(|_| ()), "copy")
+    };
+    if let Err(err) = written {
         let _ = std::fs::remove_file(&temp);
-        return Err(io::Error::other(format!("could not copy {} to {}: {err}", target.display(), temp.display())));
+        return Err(io::Error::other(format!("could not {what} {} to {}: {err}", target.display(), temp.display())));
     }
     let made = std::fs::hard_link(&temp, link);
     let _ = std::fs::remove_file(&temp);
-    made?;
-    tracing::warn!(entry = %name, "symlinks are unavailable here: this account's {name} is a copy it now owns");
-    Ok(())
+    made
 }
 
 /// A directory junction (no privilege needed, local NTFS only) at `link`, a name the caller owns: create the folder,
@@ -302,6 +330,31 @@ mod tests {
         assert_eq!(std::fs::read_link(account.join("CLAUDE.md")).unwrap(), default.join("CLAUDE.md"));
         assert_eq!(std::fs::read_to_string(account.join("history.jsonl")).unwrap(), "own");
         assert!(std::fs::symlink_metadata(account.join("projects")).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn a_claude_md_is_a_copy_by_default_and_an_import_stub_when_the_switch_says() {
+        assert!(!CLAUDE_MD_AS_IMPORT_STUB, "the shipped default is the copy");
+        let (_tmp, account) = setup();
+        let target = account.parent().unwrap().parent().unwrap().join(".claude").join("CLAUDE.md");
+        let copy = account.join("CLAUDE.md");
+        seed_contents(&target, &copy, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "global rules");
+        let stub = account.join("stub").join("CLAUDE.md");
+        std::fs::create_dir_all(stub.parent().unwrap()).unwrap();
+        seed_contents(&target, &stub, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&stub).unwrap(), format!("@{}\n", target.display()));
+        // Either form is published without replacing, and leaves no temp.
+        assert_eq!(seed_contents(&target, &stub, true).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        let temps: Vec<_> = std::fs::read_dir(stub.parent().unwrap()).unwrap().filter(|e| e.as_ref().unwrap().file_name() != "CLAUDE.md").collect();
+        assert!(temps.is_empty(), "temps left: {temps:?}");
+    }
+
+    #[test]
+    fn only_claude_md_takes_the_stub_form() {
+        assert!(!uses_import_stub(true, Path::new("a/settings.json")));
+        assert!(!uses_import_stub(false, Path::new("a/CLAUDE.md")));
+        assert!(uses_import_stub(true, Path::new("a/CLAUDE.md")));
     }
 
     #[test]
