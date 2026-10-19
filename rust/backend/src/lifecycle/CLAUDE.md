@@ -38,7 +38,9 @@ on a computer decides, through its lease, whether that computer's sessions end (
 - The start plan is a function of the record and this boot alone, never of a process lookup (`startup_plan`); an
   unreadable record, a closing record, another boot or an expired handover plans Cleanup.
 - Cleanup ends every row and resumes none (`startup::cleanup`); Resume and Pending resume rows at once
-  (`rows::run::resume::resume_all`).
+  (`rows::run::resume::resume_all`). Cleanup claims the slugs of the rows it lists before any listener binds and holds
+  them until it ends (`Workspaces::claim_create`, `startup::begin`), so a same-label create, which would keep a listed
+  row's id, is refused meanwhile and the Cleanup never ends a row a window created.
 - The close stops accepting before it touches a row (the accept loop in `server::run` breaks on `Leases::gone`, drops
   the listener, then calls `shutdown::run`), ends rows without resuming any (`end_rows`), counts each row not confirmed
   ended, and a backstop thread exits 1 at `bounds::SHUTDOWN_BOUND` (`shutdown::run`, step 0).

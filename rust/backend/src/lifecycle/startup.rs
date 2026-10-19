@@ -6,7 +6,8 @@
 //! holders or a handover also arm their persisted deadline, which the
 //! ticker turns into a shutdown if no lease arrives. Nothing is
 //! held back. Cleanup ends every row through the shutdown's own end and
-//! resumes none; the daemon stays up with zero sessions.
+//! resumes none, and refuses a create of those rows' labels until it
+//! ends; the daemon stays up with zero sessions.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -65,10 +66,17 @@ pub(crate) fn begin(
             }
         }
         StartPlan::Cleanup => {
-            // The rows registered now, before any listener binds: a row a
-            // window creates later is never this Cleanup's to end.
+            // The rows registered now, before any listener binds, and their
+            // slugs claimed as a create claims one, until the Cleanup ends: a
+            // same-label create would keep a listed row's id, so it is refused
+            // meanwhile, and a row a window creates is never this Cleanup's to end.
             let rows = workspaces.list();
-            tokio::spawn(cleanup(leases.clone(), rows, state_root, workspaces.clone(), ws_events.clone()));
+            let claims: Vec<_> = rows.iter().filter_map(|ws| workspaces.claim_create(&ws.slug)).collect();
+            let run = cleanup(leases.clone(), rows, state_root, workspaces.clone(), ws_events.clone());
+            tokio::spawn(async move {
+                run.await;
+                drop(claims);
+            });
         }
     }
     leases
