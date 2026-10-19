@@ -61,8 +61,7 @@ SSH alias (the one you use for `ssh myserver`):
 curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/install.sh | bash -s -- --backend myserver
 ```
 
-On Windows, extract all three binaries from the release zip and run
-`scripts\install-shortcut.ps1 -Hub myserver`, as described under
+On Windows, run the release's `scripts\install.ps1 -Hub myserver`, as described under
 [Install](install.md); `-Hub` is what fetches the first `hosts.toml`.
 
 ## 3. Launch

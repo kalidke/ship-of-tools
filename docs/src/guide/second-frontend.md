@@ -8,9 +8,9 @@ colors and the same REPLs.
 ## Add one
 
 The hub's `~/.config/sot/hosts.toml` must list the second machine (`[host.<box>]` with `frontend = true`) before its
-install, or its window opens with no host. Then install the frontend role on that machine against the same backend SSH
-alias, with `install.sh --backend <ssh-alias>`; on Windows, extract all three binaries from the release zip and run
-`scripts\install-shortcut.ps1 -Hub <hub-ssh-alias>`. The commands are in [Going remote](../start/remote.md) and
+install, or the install ends in a `FAIL: enroll:` line that names the command to run on the hub. Then install the
+frontend role on that machine against the same backend SSH alias, with `install.sh --backend <ssh-alias>`, or on Windows
+with the release's `scripts\install.ps1 -Hub <hub-ssh-alias>`. The commands are in [Going remote](../start/remote.md) and
 [Install](../start/install.md). Launch it with `sot-launch`; it spawns its own `ssh` child and connects as one more
 client of the daemon.
 

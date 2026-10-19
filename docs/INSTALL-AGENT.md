@@ -268,7 +268,7 @@ list leaves out, or lists with neither key, never starts it.
 
 ### 2.2 Quote what it touches, get explicit yes
 
-Before running the installer (§3, or §2b's `install-shortcut.ps1` on Windows),
+Before running the installer (§3, or §2b's `install.ps1` on Windows),
 quote these facts to the human and wait for an explicit yes:
 
 - Everything goes under their home directory, mostly `~/.local/share/sot`,
@@ -328,8 +328,8 @@ when one is missing, on a fresh install and on an update alike.) What it does, s
 3. **Backend**: install it on the Linux machine (`--be-only`, see the table above; you can drive that over SSH). It
    listens on that user's private socket, normally `/run/user/<uid>/sot/sessions/sot.sock`. There is no port to forward:
    the daemon has no TCP listener, and reaching it means the frontend spawning its own `ssh` child and speaking the
-   protocol over its stdio (C3, `docs/src/concepts/transport.md`); browser pages (Pluto, docs, video, WGLMakie) ride that
-   same child through the daemon proxy (ADR 0035).
+   protocol over its stdio (C3, `docs/src/concepts/transport.md`); browser pages (Pluto, docs, video, WGLMakie) reach
+   the browser through the window's page relay, one ssh login per browser connection (ADR 0035).
 4. **hosts.toml** is never hand-written on this box: `-Hub` names the hub's ssh alias once, install.ps1 records it in
    `install.json` and runs the first `sotd topology sync --hub`, and the launcher refreshes the file from the hub on every
    launch (`%LOCALAPPDATA%\sot\config\hosts.toml`, or `$SOT_HOSTS`). The `hub = "..."` / `[host.<name>]` grammar is written
