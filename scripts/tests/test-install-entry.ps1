@@ -258,7 +258,7 @@ exit 0
     New-Item -ItemType Directory -Force -Path $h5.Prefix | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $h5.Prefix 'install.json'), '{"schema":1,"prefix":"x","version":"9.9.9-dev+abc","tag":"v9.9.9-dev+abc","commit":"0"}')
     $e = Invoke-Entry @()
-    Check '7e: a build with a + stops before any download (exit 2)' ("$($e.Rc) $($e.Verdicts)" -ceq '2 1' -and $e.Last -like 'FAIL: target: this computer runs 9.9.9-dev+abc, a build of the line, not a release: install a pack of the line with -Archive <folder>; could not read the newest release to say which way it moves this computer; ask the person who runs it which they want') "rc=$($e.Rc) last='$($e.Last)'"
+    Check '7e: a build with a + stops before any install (exit 2)' ("$($e.Rc) $($e.Verdicts)" -ceq '2 1' -and $e.Last -like 'FAIL: target: this computer runs 9.9.9-dev+abc, a build of the line, not a release: install a pack of the line with -Archive <folder>; could not read the newest release to say which way it moves this computer; ask the person who runs it which they want') "rc=$($e.Rc) last='$($e.Last)'"
 
     # 6. Option errors and an interrupt end in one verdict line.
     $e = Invoke-Entry @('-Bogus')

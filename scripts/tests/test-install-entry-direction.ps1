@@ -32,3 +32,12 @@
         Check '7e2: a build whose commit the clone lacks says it could not tell, and why' (& $stop '9.9.9-dev+abc1234' "could not tell which way the newest release, v9.9.10, moves this computer (this build's commit abc1234 is not in $base)") "last=$($e.Last)"
         Check '7e2: a build that names no commit is not guessed' (& $stop '9.9.9-dev+src' 'could not tell which way the newest release, v9.9.10, moves this computer (this build names no commit)') "last=$($e.Last)"
     }
+
+    # Every git call that touches the base clone carries the stall bound (a blobless clone's `cat-file -e` runs a lazy fetch).
+    Invoke-Case '7e3' {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($entryScript, [ref]$null, [ref]$null)
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-BuildDirection' }, $true)
+        $calls = [regex]::Matches($fn.Extent.Text, "Invoke-Native 'git.exe'").Count
+        $bounded = [regex]::Matches($fn.Extent.Text, "Invoke-Native 'git.exe' \(@\('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', '-C'").Count
+        Check '7e3: every git call in Get-BuildDirection carries the stall bound' ($calls -ge 1 -and $calls -eq $bounded) "calls=$calls bounded=$bounded"
+    }

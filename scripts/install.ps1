@@ -170,7 +170,7 @@ function Get-BuildDirection([string]$Prefix, [string]$Installed, [string]$Tag) {
     if (-not $c.Ok -or $rel -notmatch '^[0-9a-f]{40}$') { return "unknown: $Tag has no COMMIT to read" }
     $base = Join-Path $Prefix 'repo\base'
     if (-not (Test-Path -LiteralPath (Join-Path $base '.git'))) { return "unknown: no base clone at $base" }
-    $git = { param([string[]]$A) (Invoke-Native 'git.exe' (@('-C', $base) + $A)).Code }
+    $git = { param([string[]]$A) (Invoke-Native 'git.exe' (@('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', '-C', $base) + $A)).Code }
     if ((& $git @('cat-file', '-e', "$rel^{commit}")) -ne 0 -and (& $git @('fetch', '--quiet', 'origin', $rel)) -ne 0) { return "unknown: could not fetch the commit of $Tag" }
     if ((& $git @('rev-parse', '--verify', '--quiet', "$built^{commit}")) -ne 0) { return "unknown: this build's commit $($built.Substring(0, [Math]::Min(9, $built.Length))) is not in $base" }
     if ((& $git @('merge-base', '--is-ancestor', $built, $rel)) -eq 0) { return 'forward' }
