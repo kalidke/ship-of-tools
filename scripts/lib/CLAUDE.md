@@ -53,6 +53,9 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
   that socket (`sot_daemon_pid`), never a pattern kill; the daemon is named (MainPID or pid) before it is asked, and a daemon
   `same-version` says another version while a window holds a lease (exit 4) is kept, with `SOT_ENSURE_NOTICE` for the wrapper
   to export as `SOT_LAUNCH_NOTICE`.
+- The wrapper's `stop_daemon` ends a daemon that is not an owned unit the same way: the pid `sot_daemon_pid` finds for the wrapper's
+  socket gets TERM and is waited for (10 s at most). No product script runs `pkill` or `killall`
+  (ADR 0050): a pattern also matches an editor or a `tail` whose command line names the path.
 - The rendered `sot-launch` runs `sot_comm_refresh` after an apply and before the ensure: `ShipTools.update_comm()` when comm's
   install is missing or its VERSION stamp names another commit than the checkout's (a commit it cannot read decides nothing),
   so an auto-apply refreshes the comm scripts the new daemon's protocol needs, as `sot-freshness.ps1` does on Windows.
