@@ -891,8 +891,10 @@ julia_pick_chan() {
     JULIA_SEL=()
     if julia "+$chan" -e 'exit(0)' >/dev/null 2>&1; then JULIA_SEL=("+$chan"); fi
 }
+# Julia's temporary folder is the run's WORK, which the exit trap removes: a download Pkg leaves there when the run is
+# interrupted (Pkg removes it only at the end of the call that made it) goes with the run.
 julia_run() {
-    julia ${JULIA_SEL[@]+"${JULIA_SEL[@]}"} "$@"
+    TMPDIR="$WORK" julia ${JULIA_SEL[@]+"${JULIA_SEL[@]}"} "$@"
 }
 
 # An install passes only if the Julia the daemon will run and the one the comm refresh runs meet the kernel's compat
