@@ -1,10 +1,10 @@
 # ADR 0042: First-class local sessions and the multi-host selector
 
-**Status:** partly superseded by ADR 0045 — the capsule-by-default ruling stands; L3's shape, in which the proxy ops ride the control connection, is retired by 0045 decision 2. Originally: Accepted (2026-09-02, maintainer: "yes. confirm"). Ratified with
-one rule sharpened at the maintainer's direction: the capsule is the DEFAULT
+**Status:** partly superseded by ADR 0045 — the capsule-by-default ruling stands; L3's shape, in which the proxy ops ride the control connection, is retired by 0045 decision 2. Originally: Accepted (2026-09-02). Ratified with
+one rule sharpened: the capsule is the DEFAULT
 runtime for every NEW session on EVERY host from L1 on; tmux exists only to
 keep already-running sessions alive until they end, and is then deleted
-(ADR 0037 P5). "Nothing will run on tmux on the new system." Implements the owner's 2026-09-01 destination for the Ship's Log
+(ADR 0037 P5). "Nothing will run on tmux on the new system." Implements the destination decided 2026-09-01 for the Ship's Log
 ladder (ADR 0037, ADR 0041 build-order amendment): sessions from several
 hosts in one selector, separated by the wheel icon, with the local machine
 being just another host and local sessions being ordinary sessions.
@@ -43,9 +43,8 @@ drawer tenants. Messaging between sessions on any hosts is sot-comm exactly
 as today: each session's agent joins the relay through the host's tunnel to
 the backend daemon, which is what the drawer's agent already does.
 
-**Amendment (owner ruling, 2026-09-04): the default local row is an inert
-anchor, not a session.** "I don't want it to be listed in our sessions on
-the sessions row — it will confuse users." A host's daemon still seeds and
+**Amendment (decided 2026-09-04): the default local row is an inert
+anchor, not a session.** It is not listed in the sessions row, because that would confuse users. A host's daemon still seeds and
 keeps a DEFAULT workspace row (project root = the home dir) as its own
 fallback and the way to browse that machine's files, but that row is no
 longer a session by default: it seeds with no agent (`agent = "none"`,
@@ -60,7 +59,7 @@ that hasn't converged past the old seed (its `local.toml` is never
 rewritten by this amendment) keeps whatever agent it already has and
 behaves exactly as before — a visible, ordinary session row.
 
-**Amendment (owner ruling, 2026-09-06): the anchor is hidden on every host.**
+**Amendment (decided 2026-09-06): the anchor is hidden on every host.**
 The first amendment kept a tmux backend's default row visible when it carried
 no agent, as the home of that backend's SoT LLM pane. "I like symmetry. I can
 always open a terminal-only session, but it's confusing when I can't close a
@@ -73,9 +72,8 @@ workspace row rooted at the checkout, exactly like every other project. The
 anchor's pane hosts nothing; the drawer stays terminal / monitor / Julia.
 
 **Amendment (2026-09-06) — the FE driver moves out of the drawer into a
-local capsule session (owner ruling 2026-09-05: "we should use the FE on a
-local session not the terminal drawer now. that was really intended for
-general purpose").** The Claude that drives a frontend box (`win-fe-<host>`)
+local capsule session (decided 2026-09-05: the FE runs on a local session, not the
+terminal drawer, which was meant for general purpose).** The Claude that drives a frontend box (`win-fe-<host>`)
 becomes a first-class local capsule workspace on that box; the drawer goes
 back to being a plain terminal. Five decisions, each chosen so that NOTHING
 new is added to the daemon, the protocol, or the workspace toml:
@@ -386,7 +384,7 @@ retiring `-Local` (it keeps its "no tunnels, no freshness" meaning).
 
 ## Amendment — a session types into and reads a sibling row (added 2026-09-07; one Codex text round folded in)
 
-The owner's rule: a session typing into, and reading, another session's pane is a
+The rule: a session typing into, and reading, another session's pane is a
 fundamental capability of the new system — not a later nicety. Today it is refused by
 construction: `pty.write` is a fire-and-forget write to the CONNECTION's own pty (the pane a
 `pty.open` attached; `server.rs` never answers it), so a headless caller has nothing to
@@ -567,7 +565,7 @@ The window resolves result commands against the producing host's workspace.list,
 
 ## Update (0.6.6): no leg resumes by recency (FRESH-LEG)
 
-Slice 1's `--continue` line is withdrawn (owner ruling, 2026-10-09; ADR 0046's FRESH-LEG update): a row's agent starts
+Slice 1's `--continue` line is withdrawn (decided 2026-10-09; ADR 0046's FRESH-LEG update): a row's agent starts
 a fresh conversation on every leg and reads its handoff through the session-start skill, and a conversation is resumed
 only when asked (a reauth's `--resume <id>`, or a person). The daemon no longer passes `--first-leg-without --continue`,
 so the 2026-09-14 amendment's strip has no caller. FRESH-LEG-2 replaces the supervisor's `--first-leg-without` with

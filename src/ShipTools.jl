@@ -3,7 +3,7 @@
 # Source of truth: comm/ in the repo. install_comm copies the CLI-agnostic core
 # scripts to ~/.sot-comm/bin and each per-CLI adapter to that CLI's dir
 # (~/.claude/skills, $CODEX_HOME/skills, ~/.local/bin, hooks/plugins).
-# Named accounts (owner ruling): a `~/.claude-auth/<name>` account folder
+# Named accounts: a `~/.claude-auth/<name>` account folder
 # gets skills and everything else the default `~/.claude` folder carries
 # except the login via a SYMLINK the daemon creates at spawn
 # (`rust/backend/src/agents/accounts.rs::ensure_account_links`). The one thing the

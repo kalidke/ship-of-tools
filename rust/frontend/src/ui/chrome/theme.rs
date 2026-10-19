@@ -102,9 +102,9 @@ pub(in crate::ui) enum AgentTone {
 }
 
 impl AgentTone {
-    /// Base row colour, pinned to the Julia brand palette so the session
-    /// tones read as one coherent logo+session palette (maintainer directive via
-    /// sot-docs) — all 4 Julia brand colours + gray, no yellow:
+    /// Base row color, pinned to the Julia brand palette so the session
+    /// tones read as one coherent logo+session palette.
+    /// All 4 Julia brand colors + gray, no yellow:
     ///   working = Julia green  #389826 (live),
     ///   waiting = Julia purple #9558B2 (delegated to a long job; idle-of-own-
     ///             work but not free),

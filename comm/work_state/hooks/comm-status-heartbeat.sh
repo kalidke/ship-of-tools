@@ -10,9 +10,8 @@
 #       activity, THROTTLED to once per 60s, so a legitimately-busy session on
 #       a long turn (heavy Julia runs) doesn't wilt white — the nav wilts a
 #       `working` row whose status_at is older than 10 min
-#       (AGENT_STALE_MINUTES), and status_at was only written at turn START
-#       (the maintainer, 2026-07-03: "why does a peer session keep reverting
-#       to white while it's working"). It never sets a floor — a subagent or
+#       (AGENT_STALE_MINUTES), and status_at was only written at turn START.
+#       It never sets a floor — a subagent or
 #       lane sharing the lead's handle would otherwise paint a stopped, red
 #       or purple lead green for hours; a hook-less machine wake therefore
 #       runs without green, and the Stop hook's origin correction + `stop`

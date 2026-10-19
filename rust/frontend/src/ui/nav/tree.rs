@@ -205,7 +205,7 @@ impl TreeView {
         // and `apply_children` both require an expanded parent), and the
         // same-root re-seed above then inherited that collapse forever —
         // the first files created in a new project never appeared until a
-        // manual expand (owner report, 2026-09-14).
+        // manual expand (reported 2026-09-14).
         let mut rows = vec![TreeRow {
             expanded: !root_collapsed,
             node: root,
@@ -277,7 +277,7 @@ impl TreeView {
         // watcher path was mostly dead (the wrong-root bug dropped its
         // events), it became a live grenade once PR #101 made events flow:
         // any root-level file event — editor temp-file churn included —
-        // reset the whole nav ("nav pane keeps resetting", owner report,
+        // reset the whole nav (a reported problem,
         // caught in the receipt log). Now: save each departing direct
         // child's (kind, expanded, descendant rows), rebuild in the NEW
         // children's order, and re-attach the saved subtree under every

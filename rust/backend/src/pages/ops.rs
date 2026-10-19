@@ -267,7 +267,7 @@ pub async fn handle_docs_open(
     }
 
     // Root-relative detection is a ROUTER, not a refusal (ADR 0029 Option B,
-    // implemented per maintainer decision, 2026-07-03 — "make proper fix now"): a site whose
+    // the proper fix, decided 2026-07-03): a site whose
     // entry HTML uses `/asset`-style links can't ride the shared `/{nonce}/`
     // prefix server (the link escapes the prefix and 404s), so it gets a
     // DEDICATED pool port — its own origin, served from its true root, both

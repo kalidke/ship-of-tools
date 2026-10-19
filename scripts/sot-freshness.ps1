@@ -90,8 +90,8 @@ function Invoke-PendingApply {
     $script:sotJustApplied = Test-Path -LiteralPath $applyMarker
 }
 
-# Dev-freshness (maintainer note, 2026-07-06: "launcher should always update to newest
-# build on startup" — the maintainer's FE booted a stale 0.2.1-dev). Pull + rebuild the
+# Dev-freshness: the launcher always updates to the newest build on startup (a stale
+# 0.2.1-dev FE was booted). Pull + rebuild the
 # FRONTEND before staging. FAIL-OPEN at every step: pull failure (offline,
 # conflict) or build failure (broken main) logs to the supervisor log and
 # launches the existing staged/dev binary — a broken update path must never

@@ -5,7 +5,7 @@ use super::*;
 /// A person switched the view to a workspace and has not switched away:
 /// when `at` arrives with the same view still up, the frontend sends
 /// `workspace.activate { read: true }` once (ADR 0044 "Viewing clears
-/// blue" — the 10 s dwell, owner decision 2026-09-08). Any other switch
+/// blue" — the 10 s dwell, decided 2026-09-08). Any other switch
 /// drops the mark, so a blow-through while cycling never counts as read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::ui) struct ReadMark {

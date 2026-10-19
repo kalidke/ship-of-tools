@@ -22,7 +22,7 @@ A sitrep is not a progress report and not a technical report. Activity
   that effort IS the sitrep. Do not report the close in any other shape first.
 - A direction changes or a previous conclusion is withdrawn. Say so in the
   sitrep, plainly, as part of the chain.
-- NOT for a step in a live back-and-forth (owner ruling 2026-09-10). When the
+- NOT for a step in a live back-and-forth (decided 2026-09-10). When the
   user is steering turn by turn — "change this", "what about that", a quick
   answer — reply in the register of the exchange and end; no closing block.
   The block belongs to an effort's close and to a parked end. The Stop hook

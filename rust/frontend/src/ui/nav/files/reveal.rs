@@ -125,7 +125,7 @@ impl State {
                 // first-visit switch path uses; the TreeRoot handler rebuilds the
                 // rows (routed by key to this view), then runs the reveal —
                 // auto-resyncing the visible tree too (the same end state as
-                // the maintainer's manual collapse-to-root workaround).
+                // the manual collapse-to-root workaround).
                 //
                 // Safe to `set_root` here: an UNLOADED tree collapses nothing,
                 // and a STALE-ws tree SHOULD be collapsed (it's the wrong
@@ -185,7 +185,7 @@ impl State {
         if restored && files_tree_usable {
             // Revisit: restore_workspace_ui put the snapshot tree
             // back and sent NO tree.root, so a tree.root-gated reveal would never fire —
-            // the original #4 gap, and exactly the maintainer's case (his was
+            // the original #4 gap, and exactly this case (it was
             // a revisit). The rows are present now, so reveal
             // immediately: `drive_reveal_step` lands a visible row or
             // expands a collapsed ancestor, overriding the stale

@@ -120,7 +120,7 @@ fn fresh_workspace_caches(
     out
 }
 
-/// Activity tier for the bottom strip's within-host ordering (owner ruling
+/// Activity tier for the bottom strip's within-host ordering (decided
 /// 2026-09-08): red, white, blue, green, purple, gray — left to right.
 /// Needs-you first: `blocked` (a question pending on the user) ahead of a
 /// BADGED row (a result the session deliberately surfaced for the user and
@@ -143,7 +143,7 @@ fn activity_rank(state: &str, badged: bool) -> u8 {
 }
 
 /// Reorder `fresh_workspace_caches`' union so each HOST BLOCK lists its
-/// rows most-active-first, LEFT to right in the strip (owner ask
+/// rows most-active-first, LEFT to right in the strip (asked
 /// 2026-09-08). Host blocks stay contiguous and in their incoming order —
 /// this only permutes rows *within* a block, so `strip_items`' dividers
 /// land exactly where they did. Pure: the result is a function of the
@@ -288,7 +288,7 @@ impl State {
             self.prev_workspace_states
                 .insert(key.clone(), state.clone());
         }
-        // Strip order = activity order within each host block (owner ruling
+        // Strip order = activity order within each host block (decided
         // 2026-09-08); the selected row is pinned to its previous slot.
         // The fallback default slug comes from `fresh`, not `self` — the
         // old one may name a row this rebuild just dropped.
@@ -741,7 +741,7 @@ mod tests {
 
     #[test]
     fn fresh_workspace_caches_hides_a_default_tmux_row_with_no_agent_from_the_strip_too() {
-        // Owner ruling (2026-09-06, symmetry): same anchor rule as the tree,
+        // Decided (2026-09-06, symmetry): same anchor rule as the tree,
         // on every runtime -- the strip never lists the default row without
         // an agent, but `default_workspace_slug` still names it (the strip's
         // own active-index fallback).

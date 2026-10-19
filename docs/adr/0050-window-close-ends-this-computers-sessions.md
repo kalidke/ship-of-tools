@@ -400,7 +400,7 @@ cgroup or to end on their own; a brokered start and an uninterruptible kernel ca
 
 macOS after an abrupt daemon end (SIGKILL, abort, a crash): nothing in 0.6.6 ends the daemon's children. macOS has no
 subreaper and no cgroup, a process group is left by `setsid` and Pluto's and Quarto's workers leave it, and macOS installs
-as experimental without service-manager wiring. This is a limit of an experimental platform, decided by the maintainer;
+as experimental without service-manager wiring. This is a limit of an experimental platform, accepted as such;
 every controlled end still kills each child's process group, and not a process that left it (residual 7).
 
 ## Amendment (2026-10-11): native window harnesses

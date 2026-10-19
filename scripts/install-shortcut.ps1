@@ -103,7 +103,7 @@ Write-Host "Created: $shortcutPath"
 # --- Keep the taskbar pin in sync -------------------------------------------
 # The taskbar pin is a SEPARATE .lnk from the desktop shortcut, so it drifts
 # whenever this script updates the launcher: a stale pin then launches a bare
-# sot.exe with no tunnel/backend — a "naive" FE (maintainer note, 2026-07-03). Windows
+# sot.exe with no tunnel/backend — a "naive" FE. Windows
 # blocks *creating* a pin programmatically, but an EXISTING pinned .lnk can be
 # rewritten — so repoint any Ship of Tools pin to the launcher + stamp the same
 # AUMID, matching the desktop shortcut. Match by name OR by a telltale target

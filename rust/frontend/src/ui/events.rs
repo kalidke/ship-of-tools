@@ -285,8 +285,7 @@ impl State {
                 crate::net::transport::IncomingEvt::Workspaces { workspaces } => {
                     self.on_workspaces(event_host, workspaces)
                 }
-                // Per-session accounts (owner-simplified brief,
-                // 2026-09-15): store into the picker ONLY if it's still
+                // Per-session accounts: store into the picker ONLY if it's still
                 // open on the host this reply answers — a slow reply
                 // after Esc/commit must not resurrect a closed picker or
                 // clobber a newer one opened on a different host.

@@ -1,5 +1,5 @@
-# launch-splash.ps1 — launch progress splash for launch-sot.ps1 (maintainer note, 2026-07-06:
-# "say what it's doing ... or Error: xxx"). The Windows launcher runs hidden, so
+# launch-splash.ps1 — launch progress splash for launch-sot.ps1. It says what it is
+# doing, or the error. The Windows launcher runs hidden, so
 # the dev-freshness pull+rebuild (up to ~1-3 min after a big merge) used to be
 # invisible and read as a dead taskbar click. This is the visible surface.
 #

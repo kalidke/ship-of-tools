@@ -1,10 +1,10 @@
 # ADR 0044: Blue / gray as unread / read — the turn-end floor writes `done`
 
-**Status:** current — accepted (owner decision 2026-09-08, no aging); implemented in the
+**Status:** current — accepted (decided 2026-09-08, no aging); implemented in the
 comm scripts (deploys via `update_comm`, no release needed).
 
-**Amended 2026-09-18 (owner: "it should be green after the prompt until
-something else takes over"):** the hierarchy guard that held a `blocked` or
+**Amended 2026-09-18 (the row stays green after the prompt until
+something else takes over):** the hierarchy guard that held a `blocked` or
 `done` row through a machine-started turn is deleted. Any prompt paints
 green; a machine turn still floors gray, and a question the turn did not
 answer comes back red through its closing `SITREP-QUESTION:` marker. The
@@ -25,7 +25,7 @@ Two of them carried no information:
   "not mid-turn" — true of every session the user is not typing into,
   whether it just produced a result or was parked three days ago.
 
-The owner asked for better use of both. The bottom session strip now orders
+Better use of both was asked for. The bottom session strip now orders
 rows by activity (PR #222), which makes a meaningful resting-state split more
 visible, not less.
 
@@ -62,7 +62,7 @@ hooks:
    Without it every peer ack would paint a parked row blue and the colour
    would be noise again.
 4. **Blue clears on the next genuine prompt** (the working hook, unchanged)
-   or any explicit report. **No time-based decay** (owner: honest, no aging).
+   or any explicit report. **No time-based decay** (honest, no aging).
    A parked blue row means "you never came back".
 
 ## Consequences
@@ -79,7 +79,7 @@ hooks:
   not exist — **shipped 2026-09-08** ("Viewing clears blue"):
   `workspace.activate` carries `read: bool`, set by the frontend only on
   the two person-driven view switches (Sessions-Enter, Shift+Left/Right
-  cycling) — and, since the owner's 2026-09-08 evening ruling, only after a
+  cycling) — and, since the decision of 2026-09-08 evening, only after a
   10 s dwell on that view (a blow-through while cycling never reads a row;
   the frontend times it, the daemon is unchanged); the daemon flips a
   `done` row's registry state to `idle` and
@@ -88,7 +88,7 @@ hooks:
   `done`. Full mechanism, lock protocol, and the deliberately-left-out
   list: `comm/adapters/claude/sot-comm/references/work-state.md`.
 - The strip ordering (PR #222) ranks the tiers red, white (badged), blue,
-  green, purple, gray (owner ruling 2026-09-08), so a blue row sits right
+  green, purple, gray (decided 2026-09-08), so a blue row sits right
   behind the rows that need the user most.
 - Codex sessions share the same scripts (ADR 0031), so they get the same
   floor with zero new logic.
@@ -143,7 +143,7 @@ skill's `references/work-state.md`.
 
 ## Amendment 2026-09-19 — the row is a set of facts; the colour is their reduction
 
-**Owner ruling.** A session row can hold several facts at once. The display
+**Rule.** A session row can hold several facts at once. The display
 shows ONE colour, by priority: white/star (a result badge or an unread
 message, cleared by viewing) > red (a question open for the owner AND the
 session stopped) > green (the session has the floor) > purple (a launched

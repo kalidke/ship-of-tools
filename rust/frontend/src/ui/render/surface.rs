@@ -60,8 +60,8 @@ pub(in crate::ui) fn clear_color_for_surface(visible_srgb: (f64, f64, f64), is_s
 /// band held back: `strip_reserved_rows` comes off `rows` HERE, once, because
 /// the strip floats off `config.height` while everything the chrome draws
 /// floats off this grid — including the FE/BE version stamp on the bottom
-/// border line, which the strip's names row otherwise lands on top of. The
-/// owner pre-authorised moving the bottom pane boundary up for exactly this.
+/// border line, which the strip's names row otherwise lands on top of.
+/// The bottom pane boundary may move up for exactly this.
 pub(in crate::ui) fn cell_grid_for(
     width: u32,
     height: u32,
@@ -78,7 +78,7 @@ pub(in crate::ui) fn cell_grid_for(
 
 /// Built-in monitor-width tier for the startup font-scale SEED — used only
 /// when no per-host persisted zoom and no `[font] scale` settings key exist.
-/// Wide displays read better a notch larger (maintainer note, 2026-07-03: 1.1 on a
+/// Wide displays read better a notch larger (note, 2026-07-03: 1.1 on a
 /// 4096×1728 @ 96 DPI ultrawide; 3440 catches the common ultrawide widths).
 /// Physical pixels, pre-DPR — DPR scaling is already applied separately.
 pub(in crate::ui) fn default_font_scale_for_width(width_px: u32) -> f32 {

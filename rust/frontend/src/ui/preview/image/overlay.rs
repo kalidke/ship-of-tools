@@ -101,7 +101,7 @@ fn fmt_scale_value(v: f64) -> String {
 }
 
 /// Render a snapped bar length as a human-readable label, auto-scaling the
-/// unit so the number stays readable (maintainer, 2026-07-20).
+/// unit so the number stays readable (decided 2026-07-20).
 ///
 /// Only `nm`-based scales are promoted: at/above 1000 nm the label switches to
 /// µm, so an SMLM render still reads `200 nm` while a 0.1 µm/px camera frame
@@ -118,7 +118,7 @@ fn fmt_scale_label(value: f64, unit: &str) -> String {
 
 /// Parse a user-typed pixel size in NANOMETRES (ADR 0034 §4 live entry).
 ///
-/// nm is both the entry unit (maintainer, 2026-07-20 — an SMLM pixel is ~10 nm,
+/// nm is both the entry unit (decided 2026-07-20 — an SMLM pixel is ~10 nm,
 /// which reads far better than `0.01` µm) and what the schema and sidecar
 /// store, so there is no conversion: the typed number IS `nm_per_px`. Rejects
 /// non-positive and non-finite input so a typo can't install a nonsense

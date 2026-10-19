@@ -7,8 +7,7 @@ use crate::ui::input::keypress::KeyPress;
 pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     let KeyPress { event, action, .. } = key;
     // Ctrl+L — clear the REPL drawer scrollback (the
-    // universal REPL-clear; maintainer note, 2026-07-03, "how do I
-    // clear the repl"). Clears the log, its decoded
+    // universal REPL-clear; decided 2026-07-03). Clears the log, its decoded
     // inline figures, and the scroll offset; the julia
     // process and its state are untouched (`r` on a .jl
     // is the process-restart gesture). Terminal drawer

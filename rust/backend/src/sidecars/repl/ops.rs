@@ -181,10 +181,10 @@ pub async fn handle_repl_run_file(
     if fresh {
         let abs_path = std::path::PathBuf::from(p);
         // The workspace REPL defaults to the WORKSPACE PACKAGE's env — the #44
-        // per-package env-fix, and the owner directive (2026-07-22): "the repl
-        // should have this repo as its default env … defaults to each package's
-        // env." A --fresh restart therefore activates SOT_WORKSPACE_ROOT's
-        // Project.toml, SAME as the default (non-fresh) REPL — NOT a project
+        // per-package env-fix (decided 2026-07-22: the repl has this repo as its
+        // default env, and defaults to each package's env). A --fresh restart
+        // therefore activates SOT_WORKSPACE_ROOT's Project.toml, SAME as the default
+        // (non-fresh) REPL — NOT a project
         // walked up/discovered from the file's path, which mis-picked a parent
         // (e.g. ~/dev when a relative path resolved there) and broke
         // `using <workspace package>`. Walk-up discovery is only the fallback

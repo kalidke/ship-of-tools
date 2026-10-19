@@ -93,7 +93,7 @@ fn foreign_capsule_row_takes_the_skew_style() {
     assert!(!capsule_row_is_foreign("session", None));
 }
 
-/// Per-session accounts (owner-simplified brief, 2026-09-15):
+/// Per-session accounts:
 /// `ws_info` plus a non-default account, for the sessions-list suffix
 /// tests.
 fn ws_info_with_account(
@@ -107,7 +107,7 @@ fn ws_info_with_account(
     }
 }
 
-/// Per-session accounts (owner-simplified brief, 2026-09-15): the
+/// Per-session accounts: the
 /// sessions-list suffix. A default (empty-account) row renders exactly
 /// as before; a non-default row gets a short `· <name>` suffix so the
 /// user can see which subscription it spends.
@@ -170,7 +170,7 @@ fn session_host_children_keeps_the_default_row_when_it_still_has_an_agent() {
 
 #[test]
 fn session_host_children_hides_a_default_tmux_row_with_no_agent_too() {
-    // Owner ruling (2026-09-06, symmetry): a tmux backend's default row
+    // Decided (2026-09-06, symmetry): a tmux backend's default row
     // with no agent is the inert anchor exactly like the Windows capsule
     // one -- a row that cannot be closed and invites an LLM pane it must
     // not have. Dev happens in a `ship-of-tools` row; the anchor is

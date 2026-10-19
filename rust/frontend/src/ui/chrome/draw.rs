@@ -24,7 +24,7 @@ impl State {
         // into. The exact source (PNG quad / SVG quad / cosmic-text
         // markdown buffer / cosmic-text concept buffer) is picked below
         // via priority cascade so the pane "switches based on context"
-        // per the user's layout intent.
+        // as the layout is meant to work.
         let mut preview_cells = ratatui::layout::Rect::default();
         // Cell-rect of the bottom drawer (REPL/Terminal/Monitor share it),
         // carried out of the closure the same way as `preview_cells` so the
@@ -60,7 +60,7 @@ impl State {
         // State-nav selected-session contrast lever, snapshotted for the draw
         // closure (it mustn't borrow `self`).
         let contrast_dim = self.contrast_dim;
-        // Owner ruling (2026-09-06): the wordmark gets the nav pane's own first
+        // Decided (2026-09-06): the wordmark gets the nav pane's own first
         // row, top-left -- right-aligned on the first tree row it collided with
         // text on every non-ultrawide. Snapshotted here: the draw closure must
         // not borrow `self`.
@@ -384,7 +384,7 @@ impl State {
             false,
             false,
         ));
-        // Per-session accounts (owner-simplified brief, 2026-09-15):
+        // Per-session accounts:
         // hidden entirely when the daemon reports only "default" (or
         // never answered `accounts.list` — same empty state). A
         // never-logged-in folder is a NORMAL choice, not an error —

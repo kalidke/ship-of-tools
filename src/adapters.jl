@@ -143,7 +143,7 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
                     file and re-run update_comm() to regenerate it.""" file = mp
             end
             if isnothing(Sys.which("codex"))
-                # Codex is OPTIONAL (maintainer, 2026-07-11): a machine
+                # Codex is OPTIONAL: a machine
                 # without the codex CLI is a normal configuration, not a
                 # problem — @info, never @warn, so launchers/installers that
                 # surface warnings don't read as complaining on every sync.

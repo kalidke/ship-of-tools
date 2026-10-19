@@ -7,7 +7,7 @@ use crate::paths;
 use crate::rows::store;
 
 impl Workspaces {
-    /// ADR 0042 amendment (owner rulings 2026-09-04 and 2026-09-06): is `ws`
+    /// ADR 0042 amendment (decided 2026-09-04 and 2026-09-06): is `ws`
     /// this daemon's default row in its INERT ANCHOR state -- the fallback
     /// row that browses the machine's files but is NOT a session, on every
     /// host and runtime alike. The ONE predicate for every daemon-side
@@ -41,7 +41,7 @@ impl Workspaces {
 /// The single decision of what LAUNCH FIELDS (`autostart_claude`, `agent`,
 /// `agent_name`, `task`) the daemon's own default/home row gets at boot.
 ///
-/// 2026-09-04 amendment (owner ruling): the default/home row is an INERT
+/// 2026-09-04 amendment: the default/home row is an INERT
 /// ANCHOR, not a session — the workspace the daemon falls back to and
 /// the way to browse this machine's files. A genuinely first-ever launch
 /// (`existing: None`) therefore seeds no agent and no autostart, on
@@ -117,7 +117,7 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
             );
         }
     }
-    // 2026-09-04 amendment (owner ruling): the daemon's own home/default
+    // 2026-09-04 amendment: the daemon's own home/default
     // row is an INERT ANCHOR — the workspace it falls back to and the
     // way to browse this machine's files, not a session — so a
     // genuinely first-ever launch seeds no agent and no autostart on

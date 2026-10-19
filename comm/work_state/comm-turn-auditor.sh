@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# comm-turn-auditor.sh — tiered turn-end auditor (v1, 2026-07-02, the maintainer:
-# "a haiku agent that parses last output of each session on a hook and checks
-# status and makes a message back if there is something missing").
+# comm-turn-auditor.sh — tiered turn-end auditor (v1, 2026-07-02): a haiku agent parses
+# the last output of each session on a hook and checks status, and sends a message back
+# if something is missing.
 #
 # Called by the Stop hook (comm-status-idle.sh) for JOINED comm agents only.
 #
@@ -172,7 +172,7 @@ Q
 - artifact: the turn produced a clearly NEW user-facing result (fresh plot,
   figure, screenshot, render, PDF, report, design brief, or plan written to a
   file for the user) and it was NOT surfaced in the user's nav/preview pane (no
-  show-result / sot-fe preview call). The rule (per the maintainer): a new
+  show-result / sot-fe preview call). The rule: a new
   result MUST be shown in the nav pane — naming the path in text is not showing
   it. A design brief, report or plan written to a file for the user IS a
   result; CLAUDE.md/README/skill files edited as part of the work are not.

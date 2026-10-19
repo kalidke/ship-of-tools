@@ -437,7 +437,7 @@ fn apply_harness_flags(state: &mut State, cli: &crate::cli::Cli) {
 }
 
 fn apply_startup_font_scale(state: &mut State, cli: &crate::cli::Cli) {
-    // Font scale at startup, highest wins (maintainer note, 2026-07-03):
+    // Font scale at startup, highest wins (note, 2026-07-03):
     //   0. `--font-scale` — the harness pin: docs captures must render
     //      at one size on ANY box, over zoom/settings/tier alike;
     //   1. persisted per-host zoom (Ctrl+=/-/0 → state-<host>.toml) —

@@ -129,12 +129,11 @@
 
 > **Update — 2026-07-10 (PM revision): badge floor RESTORED as the default;
 > "always show" means a COMPLETE show, not a stolen session.**
-> Two rulings landed the same day. Morning: "show image should always set the
-> nav to that file and show in nav pane; those should not be separate
-> possibilities" — implemented as unconditional switch+show. After living with
-> it, the maintainer clarified the intent: *"always set the nav and show means
-> the file should be selected in the nav and shown in preview, NOT to yank my
-> session over... I don't want to be yanked mid sentence."* The morning's real
+> Two decisions landed the same day. Morning: a show always sets the nav to that
+> file and shows it in the nav pane, not as separate possibilities — implemented as
+> unconditional switch+show. After living with
+> it, the intent was clarified: a show selects the file in the nav and shows it in
+> preview, and never takes the session away mid sentence. The morning's real
 > defect was **completeness** — the on-switch badge consume historically did
 > not land the nav cursor (the #4 reveal gap) — not the badge model itself.
 >

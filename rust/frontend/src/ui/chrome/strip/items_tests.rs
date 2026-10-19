@@ -44,7 +44,7 @@ fn strip_items_gives_a_lone_host_its_ship_too() {
             host: "alpha".to_string(),
             name: "alpha".to_string()
         },
-        "one host is a ship too (owner, 2026-09-27): {items:?}"
+        "one host is a ship too (decided 2026-09-27): {items:?}"
     );
     assert_eq!(items.len(), slugs.len() + 1);
     assert_eq!(ship_spans(&items), vec![(0, 3)], "and it is exactly one ship");
@@ -137,7 +137,7 @@ fn strip_items_names_every_bow_with_what_the_caller_resolved() {
 
 #[test]
 fn strip_item_widths_measures_a_bow_as_its_wheel_alone() {
-    // The bow reserves the WHEEL and nothing else (owner, 2026-09-27): its
+    // The bow reserves the WHEEL and nothing else (decided 2026-09-27): its
     // box name runs beneath the session names on the hull row, so the
     // layout never spends a column on it and the gap after a bow cannot
     // grow with the host's name length.

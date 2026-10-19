@@ -6,8 +6,8 @@ use super::*;
 /// bottom strip so it's distinguishable by POSITION, not just colour — it sits
 /// raised above its peers like a selected tab.
 ///
-/// The `2.0 / BASE_CELL_W` term is the owner's second look at the band: with the
-/// strip tightened against the panes he asked the active name alone to rise
+/// The `2.0 / BASE_CELL_W` term is a second look at the band: with the
+/// strip tightened against the panes, the active name alone is meant to rise
 /// another 2 px, its peers staying put, so the selected tab reads at a glance
 /// from the gap above it rather than from its ink. It is written in the same
 /// cell-width unit as the 0.4 it adds to — a bare `+ 2.0` here would be a length
@@ -53,8 +53,7 @@ pub(in crate::ui) const STRIP_SEA_ROWS: f32 = 2.0 / BASE_CELL_H;
 /// the drawn line carrying nothing but the version stamp, far to the left of any
 /// ship. The names sit in that dead space. Spending it is what lets the whole
 /// band fit ONE reserved row instead of two, which is where the pane row this
-/// change gives back comes from (owner: *"lets give pane one more row and get
-/// the names below correct"*).
+/// change gives back comes from.
 ///
 /// The band is placed from the GRID (`strip_row_tops`), so the distance from the
 /// panes to the names is this constant at every window height and the
@@ -72,9 +71,8 @@ pub(in crate::ui) const STRIP_TOP_AIR_ROWS: f32 = 0.0 / BASE_CELL_H;
 /// The hull's glyph top below the session names' glyph top, as a fraction of
 /// `BASE_CELL_H`: **14 px at scale 1**.
 ///
-/// A PIXEL offset, not "one text row plus a drop" — the owner's *"do the session
-/// names have to be on a row?"*. The names' glyph box is 18 px tall but their ink
-/// ends 12 px into it, so the hull rides 4 px up into the box's dead descender
+/// A PIXEL offset, not "one text row plus a drop". The names' glyph box is 18 px tall but
+/// their ink ends 12 px into it, so the hull rides 4 px up into the box's dead descender
 /// space without touching a letter, and the waterline — the part that runs under
 /// the whole strip — still lands 25 px below the names' glyph top, clear of both
 /// the deepest descender (12) and the bow wheel (17).
@@ -300,8 +298,8 @@ pub(in crate::ui) fn hull_bar_rect(left: f32, right: f32, y: f32, h: f32) -> Opt
 /// its steps are as thick as the line. The rake now rises out of the waterline
 /// into the SESSION-NAME row (`ship_vertical`'s `rake_rise`), which is inside
 /// the band's two rows, so no row reservation has to grow for it. Stepped, not
-/// rotated: the quad path is axis-aligned, and the owner chose the stepped
-/// build over a new primitive, for speed.
+/// rotated: the quad path is axis-aligned, and the stepped build was
+/// chosen over a new primitive, for speed.
 pub(in crate::ui) fn hull_bow_rects(left: f32, run: f32, y: f32, h: f32, rise: f32) -> Vec<ScreenRect> {
     let steps = rise.floor();
     if run <= 0.0 || h <= 0.0 || steps < 1.0 {
@@ -325,7 +323,7 @@ pub(in crate::ui) fn hull_bow_rects(left: f32, run: f32, y: f32, h: f32, rise: f
 ///
 /// A SHORT riser, not the bow's twin: `top` is the hull row's own glyph top
 /// (`ship_vertical` places it), so the stern spans one text row's worth of the
-/// band — exactly where the `|` sits in the owner's ASCII — while the bow rakes
+/// band — exactly where the `|` sits in the ASCII sketch — while the bow rakes
 /// a whole row higher. The two ends of a ship are not symmetric; a stern as tall
 /// as the bow read as a box around the session names.
 pub(in crate::ui) fn hull_stern_rect(right: f32, y: f32, h: f32, top: f32) -> Option<ScreenRect> {
@@ -373,9 +371,9 @@ pub(in crate::ui) fn strip_row_tops(grid_bottom: f32, cell_h: f32) -> (f32, f32)
 /// locked vertical geometry, in one place, so no draw site re-derives a second
 /// answer:
 ///
-/// * `wheel_y` — the wheel's top, centred in the NAMES row. The owner's "the
-///   wheel should be inline with the session names": it is not in the hull row
-///   at all, which is what lets the hull be a LINE rather than a mass.
+/// * `wheel_y` — the wheel's top, centered in the NAMES row. The wheel should be
+///   inline with the session names: it is not in the hull row at all, which is
+///   what lets the hull be a LINE rather than a mass.
 /// * `name_y` — the box name's glyph top, `HULL_NAME_DROP_ROWS` into the hull
 ///   row so the waterline runs along the letters' feet.
 /// * `rake_rise` — pixels from the waterline up to the rake's apex, which lands

@@ -63,7 +63,7 @@ pub(in crate::ui) fn strip_label(label: &str, pending: bool) -> String {
 /// boundary next to `local` gets no special case), and — a row below, so it
 /// costs the layout no width at all — that group's host as `host_label`
 /// renders it, `BOW_AIR_CELLS` past the wheel. The wheel and the name are ONE
-/// item because the owner's design treats them as one: they always co-occur,
+/// item because the design treats them as one: they always co-occur,
 /// and the hull's whole extent is measured from this one slot. A bow is never
 /// selectable or the active item — `cycle_workspace`
 /// (Shift+←/→) keeps walking `workspace_slugs` only, never `StripItem`.
@@ -77,7 +77,7 @@ pub(in crate::ui) enum StripItem {
 /// — ADR 0042 L2a union-of-hosts order) out as strip items: a `Bow` (name
 /// text from `tag_for`, the caller's `host_label` projection — the one place
 /// a host's display name is decided) at the head of EVERY host group, and a
-/// `Session` per slug. A lone host is a ship too (owner, 2026-09-27): its
+/// `Session` per slug. A lone host is a ship too (decided 2026-09-27): its
 /// group gets a bow like every other, so the strip has no state in which
 /// session names float with no hull under them. A bow needs no asset check: with no decoded logo
 /// its wheel simply measures 0 (`strip_item_widths`' `wheel_w`) and the NAME
@@ -170,7 +170,7 @@ pub(in crate::ui) fn strip_gap_before(item: &StripItem, cell_w: f32) -> f32 {
 /// keyed off, so the i-th `Session` in `items` IS `label_widths[i]`); a
 /// `Bow` reserves its WHEEL and nothing else.
 ///
-/// The bow reserves no box name (owner, 2026-09-27). Reserving wheel + air +
+/// The bow reserves no box name (decided 2026-09-27). Reserving wheel + air +
 /// name pushed the first session of a group right by the host's own name length
 /// — 8 cells for a 4-letter host, 11.6 for an 8-letter one — so the gap after a
 /// bow grew with a fact nobody reads it for. The name runs BENEATH the session
