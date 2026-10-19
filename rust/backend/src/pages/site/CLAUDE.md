@@ -11,6 +11,7 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
 - `links.rs`: `Site` and what a request path may open: the git link set, the bounds of a link (`Bounds`), the R-rules.
 - `links_tests.rs`: tests of the follow rule over a real git repo and a stand-in mount folder (unix).
 - `links_case_tests.rs`: the folded home and repository comparison, and a folder index whose text leads out (unix).
+- `pool_auth_tests.rs`: the pool listener's auth, one case per class of request.
 - `tests.rs`: tests of pool assignment, bind fallback, serving a prefix site and requests on a kept connection.
 
 ## Start here
@@ -23,7 +24,9 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
 - An owner holds at most one pool port and every open mints a new secret; the first request authenticates by
   `?secret=` and gets an HttpOnly, SameSite=Strict cookie named for the pool listener, daemon host and port
   (`pool_cookie_name`: one browser can hold two daemons' sites at one pool port number, and a reopen overwrites its own
-  cookie), and anything else is 403 (`serve_request`, secrets compared with `ct_eq`).
+  cookie), and anything else is 403 (`serve_request`, secrets compared with `ct_eq`). A request with a `secret`
+  parameter is decided by it alone (the first, when repeated); the cookie decides only a request with none, so a stale
+  entry URL is refused, while in-site navigation from an unreloaded stale tab (no parameter) still rides the cookie.
 - Once `spawn_pool` ran, a pool port is assigned only from the ports it bound (`assign_pool_port`); when every one is
   held, the port of the window away longest is taken with a new secret (`Clients::away_sites`), never a live owner's.
 - A request resolves by `resolve_and_open`: ordinary files only under the content root; through a link only when git
