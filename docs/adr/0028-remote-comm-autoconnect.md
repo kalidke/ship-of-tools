@@ -139,6 +139,13 @@ the unread per-instance files an older `apply` left are harmless and stay
 until removed by hand. `sotd.service` carries the same
 kind of pin, naming every host that runs sotd (`sotd topology pin`).
 
+Update (2026-10-19, 0.6.6): `sotd.service` has no `[Install]` section. Boot start is a regular file,
+`default.target.d/sotd.conf` (`Wants=sotd.service`), written by the installer and by an update over a unit that was
+enabled; the pin still picks the hosts. `systemctl --user enable` and `disable` of `sotd.service` therefore change no
+file, so a hand-typed disable on one host of a shared home no longer turns boot start off for the others. The relay
+sockets and tunnels keep the "never disable" rule; bringing them under the same mechanism needs the product to own the
+tunnel template and is left for 0.6.7.
+
 The shell profile's per-host `case` on `SOT_RELAY_ENDPOINT` is superseded
 too — see `.sot/hosts.toml.example` and the installer's post-install message
 for the one-liner that replaces it (`sotd topology relay-endpoint`, correct

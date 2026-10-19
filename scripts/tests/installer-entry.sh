@@ -94,7 +94,7 @@ echo "systemctl $*" >> "$CTL/systemctl.log"
 case "$*" in
     "--user is-active"*) [ -f "$CTL/unit-active" ]; exit $? ;;
     "--user cat sotd.service") [ -f "$CTL/unit-active" ] && printf "ExecStart=/bin/bash -c 'exec \"%s/bin/sotd\"'\n" "$HOME/.local/share/sot"; exit 0 ;;
-    *"enable --now"*) [ -f "$CTL/pin-excludes" ] || : > "$CTL/unit-active"; [ ! -f "$CTL/start-same" ] || echo 0 > "$CTL/same-rc" ;;
+    "--user start sotd.service") [ -f "$CTL/pin-excludes" ] || : > "$CTL/unit-active"; [ ! -f "$CTL/start-same" ] || echo 0 > "$CTL/same-rc" ;;
     *try-restart*) [ ! -f "$CTL/restart-same" ] || echo 0 > "$CTL/same-rc" ;;
 esac
 exit 0
@@ -583,7 +583,7 @@ entry_record "$d" 9.9.8 1 0 systemd; : > "$d/ctl/unit-active"; printf '2\n' > "$
 entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
 check "an active unit whose daemon cannot be told: not restarted, exit 2" "0 2" "$(count_in "$d/ctl/systemctl.log" 'try-restart') $ENTRY_RC"
 starts_with "and FAIL: daemon" "FAIL: daemon:" "$ENTRY_LAST"
-# A unit the run starts: the daemon must answer after enable --now.
+# A unit the run starts: the daemon must answer after start.
 d="$WORK/ver-fresh"; entry_fixture "$d"
 entry_archive "$d" SOT_INSTALL_RESTART_WAIT_S=1 --be-only
 check "a fresh unit whose daemon never answers: exit 1, FAIL: daemon" "1 FAIL: daemon" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-12)"
@@ -716,7 +716,7 @@ cat > "$d/stubs/systemctl" <<'SC'
 echo "systemctl $*" >> "$CTL/systemctl.log"
 case "$*" in
     "--user is-active"*) exit 3 ;;
-    "--user daemon-reload"|*"enable --now"*) echo "Failed to connect to bus: No medium found" >&2; exit 1 ;;
+    "--user daemon-reload"|"--user start sotd.service") echo "Failed to connect to bus: No medium found" >&2; exit 1 ;;
 esac
 exit 0
 SC

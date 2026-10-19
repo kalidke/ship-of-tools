@@ -784,11 +784,14 @@ installer_retire_local_service() {  # <want-daemon 0|1> <prefix> <topology-decla
         systemctl --user daemon-reload 2>/dev/null || true
         say "stopped this host's sotd.service; the declared topology runs no daemon here"
     elif installer_pin_names_only "$HOME/.config/systemd/user" "$(installer_kernel_host)"; then
-        systemctl --user disable --now sotd.service || true
-        say "disabled sotd.service, whose host pin names this host alone"
+        systemctl --user stop sotd.service 2>/dev/null || true
+        rm -f "$HOME/.config/systemd/user/default.target.d/sotd.conf"
+        [ ! -L "$HOME/.config/systemd/user/default.target.wants/sotd.service" ] || rm -f "$HOME/.config/systemd/user/default.target.wants/sotd.service"
+        systemctl --user daemon-reload 2>/dev/null || true
+        say "stopped sotd.service and removed its boot start, whose host pin names this host alone"
     else
         systemctl --user stop sotd.service 2>/dev/null || true
-        say "Stopped this computer's sotd and left the shared startup link. If no other computer shares this home folder, run: systemctl --user disable sotd.service"
+        say "Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service; to move it, change hosts.toml, or with none run sotd topology pin --claim on the host that should run it"
     fi
 }
 
@@ -815,10 +818,12 @@ installer_enable_local_service() {  # <prefix> <template> <socket>
         printf '%s\n' "$after" | grep -qx -F -- "$h" \
             || say "The daemon moved here from $h: $h's sotd will not start at its next login."
     done
+    sot_boot_wants "$HOME/.config/systemd/user" || die "could not write the sotd boot drop-in"
     systemctl --user daemon-reload
-    systemctl --user enable --now sotd.service
+    systemctl --user start sotd.service
     loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
     say "sotd running: $(systemctl --user is-active sotd.service) (socket $3)"
+    say "To stop it on this computer: systemctl --user stop sotd.service. It starts at boot where hosts.toml and the unit's host pin say; enable and disable change no file for sotd.service."
 }
 
 # Step 8's wrapper: the all-in-one one, which ensures this box's own daemon

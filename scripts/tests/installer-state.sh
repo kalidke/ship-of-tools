@@ -95,8 +95,8 @@ case "$fe_role" in *"daemon:1"*) fe_want=1 ;; esac
 d="$WORK/fe-only"; fe_install "$d" "$fe_want" 0 ""
 check "the unit is rendered for this prefix" \
     "$d/prefix/bin/sotd" "$({ sot_unit_owner_path < "$d/home/.config/systemd/user/sotd.service"; } 2>/dev/null)"
-check "the unit is enabled and started" \
-    "1" "$(grep -c -- '^systemctl --user enable --now sotd.service$' "$d/log" || true)"
+check "the unit is started, its boot start the drop-in" \
+    "1" "$(grep -c -- '^systemctl --user start sotd.service$' "$d/log" || true)"
 check "the wrapper ensures this box's own daemon before every window" \
     "1" "$(grep -c 'sot_daemon_ensure ' "$d/home/.local/bin/sot-launch" 2>/dev/null || true)"
 check "the window dials that daemon's own socket" \
@@ -107,17 +107,18 @@ check "install.json records daemon true" \
 
 d="$WORK/fe-only-enabled"; fe_install "$d" "$fe_want" 1 ""
 check "an existing enabled sotd.service is never disabled" "0" "$(grep -c 'disable' "$d/log" || true)"
-check "and stays enabled" \
-    "1" "$(grep -c -- '^systemctl --user enable --now sotd.service$' "$d/log" || true)"
+check "and is started again" \
+    "1" "$(grep -c -- '^systemctl --user start sotd.service$' "$d/log" || true)"
 
 # The one exception: --backend <alias> names a remote backend explicitly. With no hosts.toml the unit this box's own
-# install claimed (its pin names this host alone) is disabled; installer-shared-home.sh has the shared cases.
+# install claimed (its pin names this host alone) is stopped and loses its boot drop-in; installer-shared-home.sh has the shared cases.
 d="$WORK/fe-backend"; u="$d/home/.config/systemd/user"; mkdir -p "$u/sotd.service.d"
 printf '[Service]\nExecStart=%s/prefix/bin/sotd\n' "$d" > "$u/sotd.service"
 printf '[Unit]\nConditionHost=|%s\nConditionHost=|%s.*\n' "$(installer_kernel_host)" "$(installer_kernel_host)" > "$u/sotd.service.d/topology.conf"
+mkdir -p "$u/default.target.d"; printf '[Unit]\nWants=sotd.service\n' > "$u/default.target.d/sotd.conf"
 fe_install "$d" "$(case "$(installer_role_from_flags remote)" in (*"daemon:1"*) echo 1 ;; (*) echo 0 ;; esac)" 1 be-alias
-check "--backend: the unit this box's install claimed is disabled, none enabled" \
-    "1 0" "$(grep -c -- '--user disable --now sotd.service' "$d/log" || true) $(grep -c 'enable --now' "$d/log" || true)"
+check "--backend: the unit this box's install claimed is stopped, boot start removed, none started" \
+    "1 0 no" "$(grep -c -- '^systemctl --user stop sotd.service' "$d/log" || true) $(grep -c 'enable --now\|start sotd' "$d/log" || true) $([ -e "$u/default.target.d/sotd.conf" ] && echo yes || echo no)"
 check "--backend: the wrapper names the remote backend and carries no ensure" \
     "1 0" "$(grep -c '^export SOT_HOST="be-alias"$' "$d/home/.local/bin/sot-launch" 2>/dev/null || true) $(grep -c 'sot_daemon_ensure' "$d/home/.local/bin/sot-launch" 2>/dev/null || true)"
 

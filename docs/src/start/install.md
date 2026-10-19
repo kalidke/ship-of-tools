@@ -56,7 +56,7 @@ which parts are installed and enabled here, and a role flag on the command
 line is ignored.
 
 A home directory shared by several Linux hosts shows them all the same
-`sotd.service` and its enable link. The installer pins the unit with
+`sotd.service` and the same boot start. The installer pins the unit with
 `sotd topology pin`: a drop-in, `sotd.service.d/topology.conf`, under which
 systemd starts it only on the hosts `hosts.toml` declares `daemon` or
 `frontend`, so on a shared home that file must list every host. With no
@@ -66,11 +66,19 @@ compares the kernel hostname, so a host that `SOT_SELF_HOST` renames is not
 matched. An install or update rewrites the pin from `hosts.toml` (an update
 with no `hosts.toml` leaves it as the install wrote it), and so do the hub's daemon at
 each start and `sotd topology apply` there; a host whose entry changed reads
-it at its next boot or `systemctl --user daemon-reload`. Stop the daemon on a host that should no
-longer run one with `systemctl --user stop sotd.service`; never `disable` it
-there, since the enable link is shared too. The installer itself never
-disables it there: an install that runs no daemon on this host only stops
-this host's, unless the pin names this host alone.
+it at its next boot or `systemctl --user daemon-reload`. The unit has no `[Install]` section: a
+drop-in, `default.target.d/sotd.conf` (`Wants=sotd.service`), starts it at
+boot, and the pin above picks the hosts. So `systemctl --user enable` and
+`disable` change no file for `sotd.service`, on any host, and a hand-typed
+one on one host cannot turn boot start off for the others. Stop the daemon on
+a host now with `systemctl --user stop sotd.service`. What it does at the
+next boot is what the pin and `hosts.toml` decide: to move it, change
+`hosts.toml` (or, with none, run `sotd topology pin --claim` on the host that
+should run it). An install that runs no daemon on this host only stops this
+host's, unless the pin names this host alone: then it also removes the
+drop-in. An update moves a unit an earlier install enabled onto the drop-in
+and removes the old link; with neither, it writes nothing. The relay sockets
+and tunnels keep their rule: never `disable` them by hand.
 
 The install itself is shared the same way: one `~/.local/share/sot` and one
 `install.json` serve every host that runs `sotd`. Run the installer on one of
@@ -235,11 +243,12 @@ Ship of Tools, uses whatever flags you give it. See
 ## [Uninstall](@id install-uninstall)
 
 There is no uninstall script. To remove an install made with the default
-prefix, stop the service and delete what the installer wrote:
+prefix, stop the service and delete what the installer wrote. On a home several
+hosts share these steps delete the shared install, so they uninstall every host:
 
 ```bash
-systemctl --user disable --now sotd.service
-rm -f ~/.config/systemd/user/sotd.service
+systemctl --user stop sotd.service
+rm -f ~/.config/systemd/user/sotd.service ~/.config/systemd/user/default.target.d/sotd.conf
 systemctl --user daemon-reload
 loginctl disable-linger "$USER"   # skip if something else needs linger
 rm -rf ~/.local/share/sot ~/.config/sot ~/.sot-comm

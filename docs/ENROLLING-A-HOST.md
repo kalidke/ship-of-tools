@@ -136,4 +136,6 @@ Delete its `[host.<host>]` block on the hub, `sotd topology apply --yes`
 the hub was the only side holding a route — unless it shares the hub's home
 and runs a daemon from there: then stop it on the box with
 `systemctl --user stop sotd.service` and run `systemctl --user daemon-reload`
-(never `disable`: the enable link is shared).
+(`enable` and `disable` change no file for `sotd.service`: its boot start is the
+shared drop-in `default.target.d/sotd.conf`, and the pin and `hosts.toml` decide
+which hosts start it). The relay sockets and tunnels are not covered: never `disable` those.

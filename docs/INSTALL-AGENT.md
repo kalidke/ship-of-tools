@@ -256,7 +256,8 @@ If it fails, walk the human through `ssh-keygen` + `ssh-copy-id`, then
 recheck. The *remote* machine also needs a `--be-only` install (offer to do
 it over SSH after this one). **On a shared-home deployment** (one `$HOME` on
 several hosts), `~/.config/sot/hosts.toml` must list every host that shares
-it: the installer pins `sotd.service`, whose file and enable link every such
+it: the installer pins `sotd.service`, whose file and boot drop-in
+(`default.target.d/sotd.conf`; the unit has no `[Install]`, so `enable` and `disable` change no file) every such
 host sees, to the hosts that list declares `daemon` or `frontend`
 (`sotd.service.d/topology.conf`), and the unit starts on no other. A host the
 list leaves out, or lists with neither key, never starts it.
@@ -547,8 +548,9 @@ top line of the nav pane always shows the pane-switch keys.**
   - A source build (a `+` in its version) never self-updates on any platform;
     they update by pulling and rebuilding.
 - Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`;
-  if a unit was installed, `systemctl --user disable --now sotd` and remove
-  `~/.config/systemd/user/sotd.service`; also remove the desktop entry
+  if a unit was installed, `systemctl --user stop sotd` and remove
+  `~/.config/systemd/user/sotd.service` and `~/.config/systemd/user/default.target.d/sotd.conf` (on a shared home this
+  uninstalls every host); also remove the desktop entry
   (`~/.local/share/applications/ship-of-tools.desktop`, plus
   `~/.local/share/icons/hicolor/256x256/apps/ship-of-tools.png`) or the macOS
   app (`~/Applications/Ship of Tools.app`).
