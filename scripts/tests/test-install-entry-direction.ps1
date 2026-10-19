@@ -33,20 +33,22 @@
         Check '7e2: a build that names no commit is not guessed' (& $stop '9.9.9-dev+src' 'could not tell which way the newest release, v9.9.10, moves this computer (this build names no commit)') "last=$($e.Last)"
     }
 
-    # Every git call that touches the base clone carries the stall bound (a blobless clone's `cat-file -e` runs a lazy fetch).
+    # Every git call of install.ps1 goes through its one Invoke-Git, which carries the stall bound (a blobless clone's
+    # `cat-file -e` and `worktree add` run a lazy fetch, and the pair reaches that child). Read as a syntax tree, whole file:
+    # no command names git or git.exe outside the function, whatever its verb (Get-Command git.exe only looks the program up).
     Invoke-Case '7e3' {
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($entryScript, [ref]$null, [ref]$null)
-        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-BuildDirection' }, $true)
-        $calls = [regex]::Matches($fn.Extent.Text, "Invoke-Native 'git.exe'").Count
-        $bounded = [regex]::Matches($fn.Extent.Text, "Invoke-Native 'git.exe' \(@\('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', '-C'").Count
-        Check '7e3: every git call in Get-BuildDirection carries the stall bound' ($calls -ge 1 -and $calls -eq $bounded) "calls=$calls bounded=$bounded"
-    }
-
-    # So does every git call of Initialize-Base that can reach the origin: the clone, the cat-file (a lazy fetch) and the fetches.
-    Invoke-Case '7e4' {
-        $ast = [System.Management.Automation.Language.Parser]::ParseFile($entryScript, [ref]$null, [ref]$null)
-        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Initialize-Base' }, $true)
-        $lines = @($fn.Extent.Text -split "`n" | Where-Object { $_ -match "Invoke-Native 'git.exe'" -and $_ -match "'(clone|cat-file|fetch)'" })
-        $bounded = @($lines | Where-Object { $_ -match "'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60'" }).Count
-        Check '7e4: every git call in Initialize-Base that can reach the origin carries the stall bound' ($lines.Count -ge 4 -and $lines.Count -eq $bounded) "calls=$($lines.Count) bounded=$bounded"
+        $wrap = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Git' }, $true)
+        $wrapText = $(if ($wrap) { $wrap.Extent.Text } else { '' })
+        Check '7e3: Invoke-Git prepends the stall bound and runs git.exe through Invoke-Native' ($wrapText -match "http\.lowSpeedLimit=1000" -and $wrapText -match "http\.lowSpeedTime=60" -and $wrapText -match "Invoke-Native 'git\.exe'") "wrapper=$wrapText"
+        $outside = @($ast.FindAll({ param($n)
+            if ($n -isnot [System.Management.Automation.Language.StringConstantExpressionAst] -or $n.Value -notmatch '^git(\.exe)?$') { return $false }
+            for ($p = $n.Parent; $p; $p = $p.Parent) {
+                if ($wrap -and [object]::ReferenceEquals($p, $wrap)) { return $false }
+                if ($p -is [System.Management.Automation.Language.CommandAst] -and $p.GetCommandName() -eq 'Get-Command') { return $false }
+            }
+            return $true }, $true))
+        Check '7e3: no command in install.ps1 names git or git.exe outside Invoke-Git' ($outside.Count -eq 0) "outside=$(@($outside | ForEach-Object { $_.Extent.StartLineNumber }) -join ',')"
+        $calls = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-Git' }, $true))
+        Check '7e3: install.ps1 runs git through Invoke-Git' ($calls.Count -ge 10) "calls=$($calls.Count)"
     }

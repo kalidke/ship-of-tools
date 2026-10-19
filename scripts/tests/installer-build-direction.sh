@@ -44,10 +44,17 @@ check "an archive install on a build of the line passes" "0 PASS" "$ENTRY_RC $(p
 check "it made no curl call" "no" "$([ -s "$d2/ctl/net.log" ] && echo yes || echo no)"
 check "it printed no ancestry line" "0" "$(said 'by ancestry')"
 
-# Every git call of installer_build_direction carries the stall bound (a blobless clone's `cat-file -e` runs a lazy fetch).
-fn_text="$(sed -n '/^installer_build_direction() {/,/^}/p' "$ENTRY_SRC/scripts/install.sh")"
-check "every git call in installer_build_direction carries GIT_BOUND" "$(printf '%s\n' "$fn_text" | grep -c 'git ')" "$(printf '%s\n' "$fn_text" | grep -c 'git "${GIT_BOUND\[@\]}"')"
-# So does every git call of the base clone's step (an --archive install's rev-parse runs a lazy fetch in a blobless clone).
-base_text="$(sed -n '/^if \[ ! -d "\$BASE" \]; then/,/^# ---- 3b/p' "$ENTRY_SRC/scripts/install.sh" | grep -v '^ *#')"
-check "the base clone's step has git calls" "yes" "$([ "$(printf '%s\n' "$base_text" | grep -cE '(^|[ !(])git ')" -ge 4 ] && echo yes || echo no)"
-check "every git call in the base clone's step carries GIT_BOUND" "$(printf '%s\n' "$base_text" | grep -cE '(^|[ !(])git ')" "$(printf '%s\n' "$base_text" | grep -cE '(^|[ !(])git "\$\{GIT_BOUND\[@\]\}"')"
+# Every git call of install.sh goes through its one git function, which carries the stall bound (a blobless clone's
+# `cat-file -e` and `worktree add` run a lazy fetch, and the pair reaches that child). Whole file, no ranges or verb lists:
+# the function is defined before the first git call, and no call names git another way (`command git`, `\git`, `env git`,
+# a path to it) outside the function's one line.
+inst="$ENTRY_SRC/scripts/install.sh"
+code_text="$(grep -vE '^[[:space:]]*#' "$inst")"
+def_line="$(printf '%s\n' "$code_text" | grep -nE '^git\(\) \{' | head -1 | cut -d: -f1 || true)"
+first_call="$(printf '%s\n' "$code_text" | grep -nE '(^|[ !(;|&])git (-C|clone|fetch|rev-parse|worktree|cat-file|merge-base|status|ls-files)' | head -1 | cut -d: -f1 || true)"
+check "install.sh defines a git function carrying the stall bound" "yes" \
+    "$(printf '%s\n' "$code_text" | grep -qE '^git\(\) \{ command git -c http\.lowSpeedLimit=1000 -c http\.lowSpeedTime=60 "\$@"; \}' && echo yes || echo no)"
+check "the git function is defined before the first git call" "yes" \
+    "$([ -n "$def_line" ] && [ -n "$first_call" ] && [ "$def_line" -lt "$first_call" ] && echo yes || echo no)"
+check "no git call bypasses the function" "0" \
+    "$(printf '%s\n' "$code_text" | grep -v '^git() {' | grep -cE '(command|exec|env)[[:space:]]+git([[:space:]]|$)|\\git([[:space:]]|$)|/git[[:space:]]|GIT_BOUND' || true)"
