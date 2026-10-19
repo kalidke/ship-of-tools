@@ -184,8 +184,9 @@ function Invoke-CommUpdate {
     # on a pinned checkout (PSScriptRoot resolves through it), so comm
     # scripts and skills follow the installed tag with no separate wiring.
     $juliaProjectArg = "--project=$($repo.Path)"
-    $commOut = julia $juliaProjectArg -e 'using ShipTools; ShipTools.update_comm()' 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $comm = Invoke-SotNative 'julia' @($juliaProjectArg, '-e', 'using ShipTools; ShipTools.update_comm()')
+    $commOut = $comm.All
+    if ($comm.Code -ne 0) {
         $commExcerpt = @(Get-FailureExcerpt -Output $commOut -Kind 'julia')
         Write-SupLog "freshness: ShipTools.update_comm() FAILED (non-fatal). message: $($commExcerpt -join ' / ')"
         $script:launchNotices.Add("comm install failed: $(Limit-NoticeText $commExcerpt[0])") | Out-Null
@@ -194,85 +195,92 @@ function Invoke-CommUpdate {
     }
 }
 
-function Invoke-FreshnessPass {
-    if ($NoUpdate -or $Local) { return }
-    if ($script:sotPinned) {
-        # Nothing here to pull or rebuild. Comm still needs to follow the
-        # tag (ADR 0030's deferred "update_comm on auto-apply" item, closed
-        # by the 2026-09-17 amendment): triggered by a comm install that is
-        # missing, or whose stamp names another commit than this checkout's.
-        # The stamp is what update_comm writes last (src/install.jl
-        # `_repo_commit`: the short commit of the checkout it ran from,
-        # `-dirty` when that tree had changes), so the question is answered
-        # from disk, whoever applied the tag and whenever: a same-launch flag
-        # missed every apply this launch did not make (a Windows field box, 2026-10-16: an
-        # apply outside the launcher left comm at the previous tag's scripts,
-        # which the new daemon refused for their protocol). An exit-76
-        # converge calls this again in the same launch and finds the stamp
-        # current, so Julia does not run twice for one apply. A failed
-        # update_comm leaves no stamp, so the next launch tries again.
-        $commHome = if ($env:SOT_COMM_HOME) { $env:SOT_COMM_HOME } else { Join-Path $env:USERPROFILE '.sot-comm' }
-        $commMissing = -not (Test-Path -LiteralPath (Join-Path $commHome 'bin'))
-        $commStamp = ''
-        $checkoutCommit = ''
+# Brings the comm install to this checkout's commit when it is missing or its stamp names another commit, the one rule for
+# a pinned install and a dev checkout alike (so a dev launch starts Julia only when its commit moved). -Pinned also
+# instantiates the checkout's Julia environments first (a dev checkout's are its developer's).
+function Invoke-CommFreshness {
+    param([switch]$Pinned)
+    # Comm follows the checkout (ADR 0030's deferred "update_comm on
+    # auto-apply" item, closed by the 2026-09-17 amendment): triggered by a
+    # comm install that is missing, or whose stamp names another commit than
+    # this checkout's.
+    # The stamp is what update_comm writes last (src/install.jl
+    # `_repo_commit`: the short commit of the checkout it ran from,
+    # `-dirty` when that tree had changes), so the question is answered
+    # from disk, whoever applied the tag and whenever: a same-launch flag
+    # missed every apply this launch did not make (a Windows field box, 2026-10-16: an
+    # apply outside the launcher left comm at the previous tag's scripts,
+    # which the new daemon refused for their protocol). An exit-76
+    # converge calls this again in the same launch and finds the stamp
+    # current, so Julia does not run twice for one apply. A failed
+    # update_comm leaves no stamp, so the next launch tries again.
+    $commHome = if ($env:SOT_COMM_HOME) { $env:SOT_COMM_HOME } else { Join-Path $env:USERPROFILE '.sot-comm' }
+    $commMissing = -not (Test-Path -LiteralPath (Join-Path $commHome 'bin'))
+    $commStamp = ''
+    $checkoutCommit = ''
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $stampFile = Join-Path $commHome 'VERSION'
+        if (Test-Path -LiteralPath $stampFile) { $commStamp = "$(Get-Content -LiteralPath $stampFile -Raw)".Trim() -replace '-dirty$', '' }
+        $checkoutCommit = "$(git -C $repo.Path rev-parse --short=9 HEAD 2>$null)".Trim()
+    } catch {
+    } finally {
+        $ErrorActionPreference = $savedEAP
+    }
+    # No readable commit (no git on PATH) decides nothing: only a missing install triggers then.
+    $commStale = [bool]$checkoutCommit -and ($commStamp -ne $checkoutCommit)
+    if ($commMissing -or $commStale) {
+        if ($commStale -and -not $commMissing) {
+            Write-SupLog "freshness: comm stamp '$commStamp' is not this checkout's commit $checkoutCommit - updating comm"
+        }
+        # A converge whose apply left the launcher code unchanged does
+        # not re-invoke the launcher (the converge block in the do/while
+        # loop re-invokes only on a code id change), so a tag that just
+        # landed here via sot-apply.ps1 can still be uninstantiated: the
+        # Windows updater's prepare step never runs Pkg.instantiate()
+        # (rust/frontend/src/selfupdate.rs's PrepareSpec always sets
+        # julia_bin: None), so prepared.json carries
+        # julia_instantiated: false for every Windows tag. Without this,
+        # Invoke-CommUpdate below ran `using ShipTools` against an
+        # uninstantiated checkout, and its stderr -- turned into
+        # terminating errors by $ErrorActionPreference = 'Stop' + 2>&1,
+        # same footgun -- killed the
+        # launcher silently right here. Initialize-InstallLayout is
+        # idempotent (it returns immediately once
+        # julia\kernel\Manifest.toml exists), so calling it again is the
+        # converge-path equivalent of the fresh-path handover: free on
+        # the common already-instantiated case, and it does the missing
+        # instantiate here otherwise.
+        if ($Pinned) { Initialize-InstallLayout }
+        # Relax 'Stop' -> 'Continue' around update_comm() itself too --
+        # belt-and-suspenders with the instantiate above, and the same
+        # relaxation the rebuild below uses. Never
+        # fatal: log and move on, don't let a freshness step brick the
+        # launch.
         $savedEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            $stampFile = Join-Path $commHome 'VERSION'
-            if (Test-Path -LiteralPath $stampFile) { $commStamp = "$(Get-Content -LiteralPath $stampFile -Raw)".Trim() -replace '-dirty$', '' }
-            $checkoutCommit = "$(git -C $repo.Path rev-parse --short=9 HEAD 2>$null)".Trim()
+            Invoke-CommUpdate
         } catch {
+            Write-SupLog "freshness: ShipTools.update_comm() threw (non-fatal): $($_.Exception.Message)"
         } finally {
             $ErrorActionPreference = $savedEAP
         }
-        # No readable commit (no git on PATH) decides nothing: only a missing install triggers then.
-        $commStale = [bool]$checkoutCommit -and ($commStamp -ne $checkoutCommit)
-        if ($commMissing -or $commStale) {
-            if ($commStale -and -not $commMissing) {
-                Write-SupLog "freshness: comm stamp '$commStamp' is not this checkout's commit $checkoutCommit - updating comm"
-            }
-            # A converge whose apply left the launcher code unchanged does
-            # not re-invoke the launcher (the converge block in the do/while
-            # loop re-invokes only on a code id change), so a tag that just
-            # landed here via sot-apply.ps1 can still be uninstantiated: the
-            # Windows updater's prepare step never runs Pkg.instantiate()
-            # (rust/frontend/src/selfupdate.rs's PrepareSpec always sets
-            # julia_bin: None), so prepared.json carries
-            # julia_instantiated: false for every Windows tag. Without this,
-            # Invoke-CommUpdate below ran `using ShipTools` against an
-            # uninstantiated checkout, and its stderr -- turned into
-            # terminating errors by $ErrorActionPreference = 'Stop' + 2>&1,
-            # same footgun as the dev-checkout branch below -- killed the
-            # launcher silently right here. Initialize-InstallLayout is
-            # idempotent (it returns immediately once
-            # julia\kernel\Manifest.toml exists), so calling it again is the
-            # converge-path equivalent of the fresh-path handover: free on
-            # the common already-instantiated case, and it does the missing
-            # instantiate here otherwise.
-            Initialize-InstallLayout
-            # Relax 'Stop' -> 'Continue' around update_comm() itself too --
-            # belt-and-suspenders with the instantiate above, and the same
-            # relaxation the dev-checkout branch below already uses. Never
-            # fatal: log and move on, don't let a freshness step brick the
-            # launch.
-            $savedEAP = $ErrorActionPreference
-            $ErrorActionPreference = 'Continue'
-            try {
-                Invoke-CommUpdate
-            } catch {
-                Write-SupLog "freshness: ShipTools.update_comm() threw (non-fatal): $($_.Exception.Message)"
-            } finally {
-                $ErrorActionPreference = $savedEAP
-            }
+    } else {
+        if ($checkoutCommit) {
+            Write-SupLog "freshness: comm is at this checkout's commit ($checkoutCommit), skipping"
         } else {
-            if ($checkoutCommit) {
-                Write-SupLog "freshness: pinned checkout - comm is at this checkout's commit ($checkoutCommit), skipping"
-            } else {
-                Write-SupLog "freshness: pinned checkout - the checkout's commit could not be read (no git?), comm kept as it is"
-            }
+            Write-SupLog "freshness: the checkout's commit could not be read (no git?), comm kept as it is"
         }
-        return
     }
+}
+
+function Invoke-FreshnessPass {
+    if ($NoUpdate -or $Local) { return }
+    # A pinned install has nothing here to pull or rebuild; a dev checkout rebuilds only after a pull.
+    Invoke-CommFreshness -Pinned:$script:sotPinned
+    if ($script:sotPinned) { return }
     if ($env:SOT_LAUNCH_REBUILD -ne '1') { return }
     # The git pull moved to the self-update prelude at the top; here we only
     # REBUILD, and only when that pull succeeded (the SOT_LAUNCH_REBUILD marker)
@@ -285,13 +293,6 @@ function Invoke-FreshnessPass {
     $savedEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        # Gated the same as the rest of this pass -- "the pull succeeded"
-        # (SOT_LAUNCH_REBUILD, checked above) stands in for "the pull
-        # changed anything"; update_comm() is idempotent, so running it on
-        # a no-op pull is harmless and there is no cheaper signal available
-        # here.
-        Invoke-CommUpdate
-
         # Probe for cargo FIRST. Without this the missing-toolchain case is
         # reported as a SUCCESS: PowerShell raises CommandNotFoundException
         # (which 2>&1 captures into $buildOut) but leaves $LASTEXITCODE at 0

@@ -11,6 +11,9 @@ param([Parameter(Mandatory = $true)][string]$Out)
 
 $ErrorActionPreference = 'Stop'
 
+# Invoke-SotNative: every native call below goes through it, so the script does not depend on how its caller redirects.
+. (Join-Path $PSScriptRoot 'sot-install-layout.ps1')
+
 function Stop-Pack([string]$Why) {
     [Console]::Error.WriteLine("pack-build: $Why")
     exit 1
@@ -20,15 +23,15 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 if (-not [Environment]::Is64BitOperatingSystem) { Stop-Pack 'x86_64 Windows only' }
-if (git status --porcelain) { Stop-Pack 'the working tree is not clean; commit or stash first' }
-if (-not (git branch -r --contains HEAD)) { Stop-Pack 'HEAD is on no remote-tracking branch; push the line first' }
+if (@((Invoke-SotNative 'git' @('status', '--porcelain')).Out).Count -gt 0) { Stop-Pack 'the working tree is not clean; commit or stash first' }
+if (@((Invoke-SotNative 'git' @('branch', '-r', '--contains', 'HEAD')).Out).Count -eq 0) { Stop-Pack 'HEAD is on no remote-tracking branch; push the line first' }
 
 # A version is the release artifact iff it has no `+`: an ambient SOT_BUILD_ORIGIN=ci must not make a local pack one.
 Remove-Item Env:SOT_BUILD_ORIGIN -ErrorAction SilentlyContinue
 
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $out = (Resolve-Path -LiteralPath $Out).Path
-$commit = (git rev-parse HEAD).Trim()
+$commit = ((Invoke-SotNative 'git' @('rev-parse', 'HEAD')).Out -join '').Trim()
 $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'rust\target' }
 New-Item -ItemType Directory -Force -Path $target | Out-Null
 $target = (Resolve-Path -LiteralPath $target).Path
@@ -37,14 +40,14 @@ $target = (Resolve-Path -LiteralPath $target).Path
 Push-Location (Join-Path $root 'rust')
 try {
     $env:CARGO_TARGET_DIR = $target
-    cargo build --release --workspace --locked
-    if ($LASTEXITCODE -ne 0) { Stop-Pack "cargo build failed ($LASTEXITCODE)" }
+    $build = Invoke-SotNative 'cargo' @('build', '--release', '--workspace', '--locked') -Echo
+    if ($build.Code -ne 0) { Stop-Pack "cargo build failed ($($build.Code))" }
 } finally {
     Pop-Location
 }
 
 $bin = Join-Path $target 'release'
-$v = ((& (Join-Path $bin 'sotd.exe') --version) -split ' ')[1]
+$v = ((Invoke-SotNative (Join-Path $bin 'sotd.exe') @('--version')).Out -join '' -split ' ')[1]
 if (-not $v) { Stop-Pack 'sotd --version printed no version' }
 $stage = "sot-$v-windows-x86_64"
 $work = Join-Path ([IO.Path]::GetTempPath()) ("sot-pack-" + [Guid]::NewGuid().ToString('N'))
@@ -53,7 +56,7 @@ try {
     foreach ($exe in 'sot.exe', 'sotd.exe', 'sot-capsule.exe') {
         Copy-Item (Join-Path $bin $exe) (Join-Path $work $stage)
     }
-    $got = & (Join-Path $work "$stage\sot.exe") --version
+    $got = (Invoke-SotNative (Join-Path $work "$stage\sot.exe") @('--version')).Out -join ''
     if (-not "$got".StartsWith("sot $v (")) { Stop-Pack "VERSION MISMATCH for sot: $got (sotd says $v)" }
     $zip = Join-Path $out "$stage.zip"
     Remove-Item -LiteralPath $zip -ErrorAction SilentlyContinue

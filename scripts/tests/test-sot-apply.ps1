@@ -381,6 +381,17 @@ Check 'the guard is gone after the first hand-off' (-not $env:SOT_APPLY_REEXECED
 $got10 = if (Test-Path -LiteralPath $calls10) { (@(Get-Content -LiteralPath $calls10) -join ' ') } else { '' }
 Check 'the second apply in the same process hands off too, and the staged copy saw the guard each time' ($got10 -ceq 'guard=1 guard=1') "calls: '$got10'"
 
+# Set-JsonField splices a version, tag or commit into install.json's text: any value lands literally, whatever `$`, `\`,
+# `&` or `|` it holds (a .NET replacement string reads `$1` and `$&`).
+$parsed = [System.Management.Automation.Language.Parser]::ParseFile($apply, [ref]$null, [ref]$null)
+$fn = $parsed.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Set-JsonField' }, $true)[0]
+. ([scriptblock]::Create($fn.Extent.Text))
+$odd = 'v1.0-$1$&${1}\x|y&z"q'
+$out11 = Set-JsonField "{`n  `"tag`": `"v0.5.0`",`n  `"commit`": `"abc`"`n}" 'tag' $odd
+$tag11 = ''
+try { $tag11 = [string](ConvertFrom-Json $out11).tag } catch {}
+Check 'Set-JsonField writes a value holding $, backslash, ampersand and bar byte for byte' ($tag11 -ceq $odd) "got '$tag11' from: $out11"
+
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail) { exit 1 }

@@ -745,7 +745,9 @@ on a pinned checkout triggers on a missing comm install or a VERSION stamp
 that differs from the checkout's commit (2026-10-16: not "an update was
 applied this launch", which a launch that did not apply never repaired), not
 "a pull succeeded" — closing the auto-apply `update_comm` item above for
-Windows.
+Windows. A dev checkout is decided by the same stamp rule (`Invoke-CommFreshness`),
+before any rebuild: a dev launch whose stamp names the checkout's commit starts no
+Julia, and one whose commit moved updates comm whether or not that launch pulled.
 
 ## Amendment 2026-10-16 — the line carries the next version with -dev
 

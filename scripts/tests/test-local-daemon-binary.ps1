@@ -156,6 +156,12 @@ try {
             $racedExit7d = $LASTEXITCODE
             $racedAfter7d = @(Get-DaemonProcs (Get-PipePath $pipe7d) | ForEach-Object { $_.ProcessId })
             Check '7d: a -Stop scoped to the old pid leaves the successor alive' (($racedExit7d -eq 0) -and ("$racedAfter7d" -eq "$after7d")) "exit $racedExit7d, before $after7d, after $racedAfter7d"
+            # A -Stop that matches nothing and names no pid says so, in the output and the log, and exits 0.
+            $null = & $script -Stop -Prefix $p7d -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7d 6>&1 2>&1
+            $outNone7d = & $script -Stop -Prefix $p7d -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7d 6>&1 2>&1
+            $exitNone7d = $LASTEXITCODE
+            $logNone7d = Get-Content -LiteralPath (Join-Path $p7d 'logs\sotd-local.log') -Raw
+            Check '7d: -Stop with no daemon and no pid says "not running" and exits 0' (($exitNone7d -eq 0) -and (($outNone7d -join ' ') -match 'stop: not running') -and ($logNone7d -match 'stop: not running')) "exit $exitNone7d, log: $outNone7d"
         } finally {
             Stop-FakeOn $pipe7d
             foreach ($pid7d in @($first7d)) { if ($pid7d) { Stop-Process -Id $pid7d -Force -ErrorAction SilentlyContinue } }

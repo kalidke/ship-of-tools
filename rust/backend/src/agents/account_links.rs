@@ -90,21 +90,65 @@ fn publish_dir(temp: &Path, link: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Put the account's file in place without a reader ever seeing half of it: write a temp file beside it, then
-/// `hard_link` it onto the entry name (`AlreadyExists` means a sibling won), then drop the temp.
+/// How a named account's `CLAUDE.md` is seeded where symlinks are refused: `false` is a one-time copy the account owns
+/// (rule S); `true` is a one-line import stub, `@<the default's CLAUDE.md>`, so the account follows the default's edits.
+/// The one line to change once the import form is confirmed to work for a named account.
+#[cfg(any(windows, test))]
+const CLAUDE_MD_AS_IMPORT_STUB: bool = false;
+
+/// The stub's one line, in the form Claude Code's import reader takes: `@~/.claude/CLAUDE.md`, for the default's file only,
+/// `<home>/.claude/CLAUDE.md` as the daemon builds it from the home it resolves (the reader ends a match at a backslash or a
+/// space, so a Windows path never imports as written, and this spelling has no path to get right). `None` for any other
+/// target, even one in a folder named `.claude` elsewhere: it names another file, so it gets the copy.
+#[cfg(any(windows, test))]
+fn import_line(target: &Path, home: &Path) -> Option<&'static str> {
+    (target == super::accounts::claude_config_dir(home, "").join("CLAUDE.md")).then_some("@~/.claude/CLAUDE.md\n")
+}
+
+/// Whether `link` takes the import-stub form under `switch`: only the `CLAUDE.md`.
+#[cfg(any(windows, test))]
+fn uses_import_stub(switch: bool, link: &Path) -> bool {
+    switch && link.file_name().is_some_and(|n| n == "CLAUDE.md")
+}
+
 #[cfg(any(windows, test))]
 fn seed_file(target: &Path, link: &Path) -> io::Result<()> {
+    seed_with(target, link, CLAUDE_MD_AS_IMPORT_STUB, super::accounts::account_home().as_deref())
+}
+
+/// Seed `link` from `target` under `switch`: the import stub when the switch is on, the entry is `CLAUDE.md` and the target is
+/// the default's under `home` (`import_line`), else a copy.
+#[cfg(any(windows, test))]
+fn seed_with(target: &Path, link: &Path, switch: bool, home: Option<&Path>) -> io::Result<()> {
+    let line = home.filter(|_| uses_import_stub(switch, link)).and_then(|h| import_line(target, h));
+    seed_contents(target, link, line)?;
     let name = link.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if line.is_some() {
+        tracing::warn!(entry = %name, "symlinks are unavailable here: this account's {name} imports the default's");
+    } else {
+        tracing::warn!(entry = %name, "symlinks are unavailable here: this account's {name} is a copy it now owns");
+    }
+    Ok(())
+}
+
+/// Put the account's file in place without a reader ever seeing half of it: write a temp file beside it (a copy of
+/// `target`, or with `stub` the one-line import of it), then `hard_link` it onto the entry name (`AlreadyExists` means
+/// a sibling won), then drop the temp.
+#[cfg(any(windows, test))]
+fn seed_contents(target: &Path, link: &Path, stub: Option<&str>) -> io::Result<()> {
     let temp = unique_beside(link);
-    if let Err(err) = std::fs::copy(target, &temp) {
+    let (written, what) = if let Some(line) = stub {
+        (std::fs::write(&temp, line), "write the import of")
+    } else {
+        (std::fs::copy(target, &temp).map(|_| ()), "copy")
+    };
+    if let Err(err) = written {
         let _ = std::fs::remove_file(&temp);
-        return Err(io::Error::other(format!("could not copy {} to {}: {err}", target.display(), temp.display())));
+        return Err(io::Error::other(format!("could not {what} {} to {}: {err}", target.display(), temp.display())));
     }
     let made = std::fs::hard_link(&temp, link);
     let _ = std::fs::remove_file(&temp);
-    made?;
-    tracing::warn!(entry = %name, "symlinks are unavailable here: this account's {name} is a copy it now owns");
-    Ok(())
+    made
 }
 
 /// A directory junction (no privilege needed, local NTFS only) at `link`, a name the caller owns: create the folder,
@@ -302,6 +346,91 @@ mod tests {
         assert_eq!(std::fs::read_link(account.join("CLAUDE.md")).unwrap(), default.join("CLAUDE.md"));
         assert_eq!(std::fs::read_to_string(account.join("history.jsonl")).unwrap(), "own");
         assert!(std::fs::symlink_metadata(account.join("projects")).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn a_claude_md_is_a_copy_by_default_and_an_import_stub_when_the_switch_says() {
+        assert!(!CLAUDE_MD_AS_IMPORT_STUB, "the shipped default is the copy");
+        let (tmp, account) = setup();
+        let home = tmp.path();
+        let target = home.join(".claude").join("CLAUDE.md");
+        let copy = account.join("CLAUDE.md");
+        seed_contents(&target, &copy, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "global rules");
+        let stub = account.join("stub").join("CLAUDE.md");
+        std::fs::create_dir_all(stub.parent().unwrap()).unwrap();
+        seed_contents(&target, &stub, import_line(&target, home)).unwrap();
+        assert_eq!(std::fs::read_to_string(&stub).unwrap(), "@~/.claude/CLAUDE.md\n");
+        // Either form is published without replacing, and leaves no temp.
+        assert_eq!(seed_contents(&target, &stub, import_line(&target, home)).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        let temps: Vec<_> = std::fs::read_dir(stub.parent().unwrap()).unwrap().filter(|e| e.as_ref().unwrap().file_name() != "CLAUDE.md").collect();
+        assert!(temps.is_empty(), "temps left: {temps:?}");
+    }
+
+    /// Claude Code's import reader: `@` then characters that are not a space or a backslash, with `\ ` read as a space.
+    fn imported_path(line: &str) -> String {
+        let rest = line.trim_end().strip_prefix('@').unwrap();
+        let mut out = String::new();
+        let mut chars = rest.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' if chars.peek() == Some(&' ') => {
+                    out.push(' ');
+                    chars.next();
+                }
+                '\\' | ' ' => break,
+                c => out.push(c),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_stub_line_is_one_the_import_reader_takes_back_whole() {
+        // The default's file, wherever the home is: the home-relative spelling, and it reads back whole.
+        let line = import_line(Path::new("/home/a/.claude/CLAUDE.md"), Path::new("/home/a")).unwrap();
+        assert_eq!(line, "@~/.claude/CLAUDE.md\n");
+        assert_eq!(imported_path(line), "~/.claude/CLAUDE.md");
+        // A Windows path as written ends the match at `C:`: why no path is ever written.
+        assert_eq!(imported_path(r"@C:\Users\a b\.claude\CLAUDE.md"), "C:");
+    }
+
+    #[test]
+    fn a_target_that_is_not_the_defaults_gets_the_copy_even_with_the_switch_on() {
+        let (tmp, account) = setup();
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let target = elsewhere.join("CLAUDE.md");
+        std::fs::write(&target, "other rules").unwrap();
+        let home = tmp.path();
+        assert_eq!(import_line(&target, home), None);
+        // A folder named `.claude` elsewhere is another file, not the home's.
+        let other = tmp.path().join("x").join(".claude");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("CLAUDE.md"), "x rules").unwrap();
+        assert_eq!(import_line(&other.join("CLAUDE.md"), home), None);
+        assert_eq!(import_line(Path::new(r"D:\x\.claude\CLAUDE.md"), Path::new(r"C:\Users\a")), None);
+        let link = account.join("CLAUDE.md");
+        seed_with(&target, &link, true, Some(home)).unwrap();
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "other rules");
+        // The default's own file, switch on, is the stub; switch off, the copy.
+        let default = tmp.path().join(".claude").join("CLAUDE.md");
+        let stub = account.join("a").join("CLAUDE.md");
+        std::fs::create_dir_all(stub.parent().unwrap()).unwrap();
+        seed_with(&default, &stub, true, Some(home)).unwrap();
+        assert_eq!(std::fs::read_to_string(&stub).unwrap(), "@~/.claude/CLAUDE.md\n");
+        // No resolved home: the copy.
+        let none = account.join("b").join("CLAUDE.md");
+        std::fs::create_dir_all(none.parent().unwrap()).unwrap();
+        seed_with(&default, &none, true, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&none).unwrap(), "global rules");
+    }
+
+    #[test]
+    fn only_claude_md_takes_the_stub_form() {
+        assert!(!uses_import_stub(true, Path::new("a/settings.json")));
+        assert!(!uses_import_stub(false, Path::new("a/CLAUDE.md")));
+        assert!(uses_import_stub(true, Path::new("a/CLAUDE.md")));
     }
 
     #[test]

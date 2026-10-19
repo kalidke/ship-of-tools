@@ -23,6 +23,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
   step "Test installer state (bash)" (job `checks-linux`, after the step that builds `sotd`, with `SOT_TEST_SOTD` naming
   the binary so the real-sotd cases run there instead of skipping) and in `rc-gate.sh`.
+- `installer-build-direction.sh`: sourced by `installer-entry.sh`, never run: a build of the line with no `--version` is told by ancestry (the release's COMMIT against the build's commit in the base clone) whether the newest release moves it forward or back, or why that cannot be told; it also asks the rule directly for a named tag and for a record's full commit, and pins that an `--archive` install on a build of the line makes no curl call and prints no ancestry line.
 - `installer-entry.sh`: sourced by `installer-state.sh`, never run: install.sh run end to end in a scratch HOME from a
   fixture release (a local git origin, an archive of stand-in binaries, and stand-in `curl`, `sotd`, `systemctl`,
   `julia` and `ps` driven by files), as the entry of an update: the channel the prelude follows from `install.json`, an
@@ -133,6 +134,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   decision by the comm stamp (scripts/sot-freshness.ps1, section 5), and `Invoke-PendingApply`'s daemon stop (section 6:
   a pointer the real `sotd` refuses stops no daemon). Runs in the `rust.yml` step "Test
   install layout (pinned-checkout predicate)".
+- `test-install-entry-direction.ps1`: the cases of `test-install-entry.ps1` for a build of the line run with no `-Version` (dot-sourced there, same scope): the stop says by ancestry, against a base clone with three commits and a stand-in COMMIT asset, whether the newest release moves it forward or back, or why it cannot tell; every git call of `Get-BuildDirection` carries the stall bound.
 - `test-install-entry-repair.ps1`: the repair cases of `test-install-entry.ps1` (dot-sourced there, same scope): `install.ps1` over an
   `install.json` that is missing, holds a pin and no version, or is cut short, beside a running stand-in `sotd.exe`, with and without a
   version named, and the pin edit's rename with an open handle
@@ -185,6 +187,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-sot-apply.ps1`: scripts/sot-apply.ps1 against a synthetic staged update: apply, damaged stage, rollback,
   already applied, wrong target, lock held, and (section 9, with a built `sotd.exe`, else SKIP) a pointer that no
   longer fits the install. Runs in the `rust.yml` step "Test sot-apply.ps1".
+- `test-native-stderr.ps1`: a script under `$ErrorActionPreference = 'Stop'` does not depend on how its caller redirects: `Invoke-SotNative` (stderr never ends the script, the exit code is the answer, a command that cannot start is 127), and `pack-build.ps1` and `relaunch-sot.ps1` run with `*>&1` and `2>&1` against a stand-in cargo that warns on stderr (a zero exit goes on, a failed build stops with the script's own message). Windows PowerShell 5.1. Runs in the `rust.yml` step "Test native stderr under Stop".
 - `test-install-manifest.ps1`: scripts/install-manifest.ps1's pointer rule and its log line for a build of the line (kept record or none): a changed version or commit drops the armed
   pointer, a same-version rewrite keeps it, no pointer breaks nothing. A stand-in sot.exe built with csc.exe and a scratch
   git repo; runs under Windows PowerShell 5.1 and pwsh. Runs in the `rust.yml` step "Test install-manifest.ps1".

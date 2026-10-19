@@ -150,17 +150,51 @@ function Get-InstalledVersion([string]$Prefix) {
     if ($v) { return $v }
     return (Get-BinaryVersion (Join-Path $Prefix 'bin\sotd.exe')).Version
 }
-function Resolve-ChannelTag([string]$Installed) {
+# The newest published release of any kind (the channel of a pre-release): its tag, '' when the list names none, $null when
+# it cannot be read.
+function Get-NewestRelease {
+    $r = Invoke-CurlText "https://api.github.com/repos/$($script:Repo)/releases?per_page=1"
+    if (-not $r.Ok) { return $null }
+    if ($r.Text -match '"tag_name"\s*:\s*"([^"]*)"') { return $Matches[1] }
+    return ''
+}
+# Which way release $Tag moves a build of the line (a + in its version), by ancestry and not version text: the build's commit
+# (the record's, else the version's +<sha>) against the release's COMMIT asset, in the install's own base clone. Returns
+# 'forward', 'older', or 'unknown: <why>'.
+function Get-BuildDirection([string]$Prefix, [string]$Installed, [string]$Tag) {
+    $built = Get-JsonString (Join-Path $Prefix 'install.json') 'commit'
+    if ($built -notmatch '^[0-9a-f]{40}$') { $built = ($Installed -replace '^[^+]*\+', '') -replace '-dirty$', '' }
+    if (-not $built -or $built -eq 'src') { return 'unknown: this build names no commit' }
+    $c = Invoke-CurlText "https://github.com/$($script:Repo)/releases/download/$Tag/COMMIT"
+    $rel = "$($c.Text)".Trim()
+    if (-not $c.Ok -or $rel -notmatch '^[0-9a-f]{40}$') { return "unknown: $Tag has no COMMIT to read" }
+    $base = Join-Path $Prefix 'repo\base'
+    if (-not (Test-Path -LiteralPath (Join-Path $base '.git'))) { return "unknown: no base clone at $base" }
+    $git = { param([string[]]$A) (Invoke-Native 'git.exe' (@('-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=60', '-C', $base) + $A)).Code }
+    if ((& $git @('cat-file', '-e', "$rel^{commit}")) -ne 0 -and (& $git @('fetch', '--quiet', 'origin', $rel)) -ne 0) { return "unknown: could not fetch the commit of $Tag" }
+    if ((& $git @('rev-parse', '--verify', '--quiet', "$built^{commit}")) -ne 0) { return "unknown: this build's commit $($built.Substring(0, [Math]::Min(9, $built.Length))) is not in $base" }
+    if ((& $git @('merge-base', '--is-ancestor', $built, $rel)) -eq 0) { return 'forward' }
+    if ((& $git @('merge-base', '--is-ancestor', $rel, $built)) -eq 0) { return 'older' }
+    return "unknown: neither $Tag nor this build contains the other"
+}
+function Get-BuildAdvice([string]$Prefix, [string]$Installed) {
+    $tag = Get-NewestRelease
+    if (-not $tag) { return 'could not read the newest release to say which way it moves this computer' }
+    $d = Get-BuildDirection $Prefix $Installed $tag
+    if ($d -eq 'forward') { return "the newest release, $tag, contains this build: naming it with -Version moves this computer forward" }
+    if ($d -eq 'older') { return "the newest release, $tag, does not contain this build: naming it with -Version moves this computer back" }
+    return "could not tell which way the newest release, $tag, moves this computer ($($d -replace '^unknown: ', ''))"
+}
+function Resolve-ChannelTag([string]$Installed, [string]$Prefix) {
     # 'stop' (a build with a +), 'newest' (a pre-release) or 'latest' (none installed, or a stable release).
     switch ($(if ($Installed.Contains('+')) { 'stop' } elseif ($Installed.Contains('-')) { 'newest' } else { 'latest' })) {
         'stop' {
-            Stop-Entry 'target' "this computer runs $Installed, a build of the line, not a release: install a pack of the line with -Archive <folder>; a release named with -Version is usually older and moves this computer back; ask the person who runs it which they want" 2
+            Stop-Entry 'target' "this computer runs $Installed, a build of the line, not a release: install a pack of the line with -Archive <folder>; $(Get-BuildAdvice $Prefix $Installed); ask the person who runs it which they want" 2
         }
         'newest' {
-            $r = Invoke-CurlText "https://api.github.com/repos/$($script:Repo)/releases?per_page=1"
-            if (-not $r.Ok) { Stop-Entry 'target' "could not list the releases of $($script:Repo)" }
-            if ($r.Text -match '"tag_name"\s*:\s*"([^"]*)"') { return $Matches[1] }
-            return ''
+            $n = Get-NewestRelease
+            if ($null -eq $n) { Stop-Entry 'target' "could not list the releases of $($script:Repo)" }
+            return $n
         }
         default {
             $r = Invoke-CurlText "https://github.com/$($script:Repo)/releases/latest" -Head
@@ -576,7 +610,7 @@ function Invoke-EntryBody([string[]]$Argv, [string]$Scratch) {
         $tag = $o.Version
         if (-not $tag) {
             $implicit = $true
-            $tag = Resolve-ChannelTag (Get-InstalledVersion $prefix)
+            $tag = Resolve-ChannelTag (Get-InstalledVersion $prefix) $prefix
         }
         if ($tag -notmatch '^v[0-9]') { Stop-Entry 'target' "could not resolve a release tag (got '$tag')" }
         return (Invoke-Prelude $tag $implicit $Argv $Scratch)

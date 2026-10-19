@@ -808,7 +808,7 @@ function Get-SotLocalSotdExe {
 function Get-SotLocalPipePath {
     $exe = Get-SotLocalSotdExe
     if (-not $exe) { return $null }
-    $queried = (& $exe session-socket-path local 2>$null | Select-Object -First 1)
+    $queried = (Invoke-SotNative $exe @('session-socket-path', 'local')).Out | Select-Object -First 1
     if ($queried) { return $queried.ToString().Trim() }
     return $null
 }

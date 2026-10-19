@@ -454,6 +454,15 @@ jobs:
         run: .\scripts\tests\test-sot-within.ps1
         working-directory: .
 
+      # A script under 'Stop' must not depend on how its caller redirects: Invoke-SotNative, pack-build.ps1 and
+      # relaunch-sot.ps1 against a stand-in cargo that warns on stderr.
+      - name: Test native stderr under Stop
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        timeout-minutes: 5
+        run: .\scripts\tests\test-native-stderr.ps1
+        working-directory: .
+
       # ADR 0042 L1c: the launcher's local-daemon start/stop (sot-local-
       # daemon.ps1), driven against the sotd.exe this same job's "Build
       # workspace" step already built (target\debug, since that step has no

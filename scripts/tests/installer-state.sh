@@ -402,6 +402,21 @@ check "the rendered unit has no Restart=always" "0" "$(grep -c '^Restart=always$
 check "the rendered unit's owner path is the prefix's sotd" "/opt/sot-r/bin/sotd" "$(sot_unit_owner_path < "$RU")"
 
 # ---------------------------------------------------------------------------
+case_start "rendered_unit_holds_any_path_literally"
+# A prefix or home holding `|` (the sed delimiter), `&` (the matched text) or `\` (an escape) lands byte for byte.
+ODD_PREFIX="$WORK/od|d&p\\x\\1"; ODD_HOME="$WORK/h|o&m\\e"
+RO="$WORK/rendered-odd.service"
+HOME="$ODD_HOME" render_sotd_unit "$ODD_PREFIX" "$(dirname "$0")/../../deploy/sotd.service" "$RO"
+check "ExecStart names the prefix's sotd byte for byte" "1" "$(grep -cF -- "exec \"$ODD_PREFIX/bin/sotd\" --project-root \"$ODD_HOME\" --label sot" "$RO" || true)"
+check "ExecStartPre names the prefix's sot-apply byte for byte" "1" "$(grep -cF -- "exec \"$ODD_PREFIX/bin/sot-apply\"" "$RO" || true)"
+check "no placeholder is left" "0" "$(grep -c '@SOT_[A-Z_]*@' "$RO" || true)"
+ODD_TAG='v0.6.7-a&b|c\\d'
+check "a tag holding & | and a backslash is spliced into install.json byte for byte" "\"tag\": \"$ODD_TAG\"" \
+    "$(printf '{"tag": "v0.6.6"}\n' | sed -e 's|"tag": *"[^"]*"|"tag": "'"$(sot_sed_literal "$ODD_TAG")"'"|' | sed -n 's/^{\(.*\)}$/\1/p')"
+copy_text() { sed -n '/^sot_sed_literal() {/,/^}/p' "$1"; }
+check "sot-apply.sh's sot_sed_literal is byte-identical to the library's" "$(copy_text "$(dirname "$0")/../lib/sot-daemon.sh")" "$(copy_text "$(dirname "$0")/../sot-apply.sh")"
+
+# ---------------------------------------------------------------------------
 case_start "ensure_choice_table"
 # <manifest> <unit-owner> <systemctl on PATH> -> how the backend was started
 choice_row() {  # <name> <manifest systemd|none> <owner this|other> <systemctl 1|0> <expected>
@@ -757,7 +772,7 @@ else
     printf '#!/bin/sh\necho "sotd 0.6.6-rc9.14-dev+abc123 (abc 2026-10-17, protocol 3)"\n' > "$P/bin/sotd"
     : > "$d/ctl/net.log"; : > "$d/ctl/prelude.log"
     entry_run "$d" --be-only --no-service
-    check "the channel reads the binary too: a build with a + stops before any asset is fetched (exit 2)" "2 0" "$ENTRY_RC $(count_in "$d/ctl/net.log" 'raw.githubusercontent\|releases/download\|api.github.com\|releases/latest')"
+    check "the channel reads the binary too: a build with a + stops before any installer is fetched (exit 2)" "2 0" "$ENTRY_RC $(count_in "$d/ctl/net.log" 'raw.githubusercontent\|releases/latest')"
 
     # A missing record beside a binary that says a newer version: the guard still holds (the install's version is readable).
     d="$WORK/dir-missing-binary"; entry_fixture "$d"
