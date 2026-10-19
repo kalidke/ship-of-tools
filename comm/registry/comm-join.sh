@@ -123,7 +123,7 @@ if [ "$REPIN" != 1 ] && sot_self_file_project_conflict "$SELF_FILE" "$REPO" "$PR
     exit 3
 fi
 
-# A session outside any row (no row id: ROW_ID, the id the walk proves) never takes a handle a live row holds. The
+# A session outside any row (no row id: ROW_ID, the id the walk proves) never takes a handle a row holds. The
 # daemon decides, from its own rows, whatever the registry file says (sot_outside_join_clearance): an explicit name
 # is refused here, and a derived join is cleared per tier name before the lock, so it steps past a held tier to the
 # session's own. CLEARED is what was cleared, with the workspace_id each entry bound then; the writes under the lock
@@ -198,7 +198,7 @@ if [ "$NEED_DERIVE" = true ]; then
     # operator/session can no longer strand silently; still proceed with the
     # qualified join (a fresh last_seen does not prove ownership), so this NEVER
     # auto-reclaims.
-    # A tier-1 handle a live row holds was stepped past on purpose (the plain line sot_derive_handle printed): not a
+    # A tier-1 handle a row holds was stepped past on purpose (the plain line sot_derive_handle printed): not a
     # stranding.
     if [ -n "$CLAIMED_QUALIFIER" ] && [ -n "$CLAIMED_TIER1" ] && [ "$CLAIMED_TIER1" != "$NAME" ] \
        && [ "$HELD_TIER1" = 0 ] && sot_handle_live "$CLAIMED_TIER1"; then

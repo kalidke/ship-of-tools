@@ -57,7 +57,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
   row that held it (B5, `set_agent_handle`), but nothing tells that row's session: its self-file still names the
   handle. Its scripts no longer act as it: `comm-context.sh` discards a handle whose registry `workspace_id` is another
   row's, so it reads, sends and stamps as nobody until it joins again, which its next `comm-session-start.sh` does.
-- A session outside any row never takes or reads a handle a live row holds: `sot_outside_join_clearance` asks the
+- A session outside any row never takes or reads a handle a row holds: `sot_outside_join_clearance` asks the
   daemon (`agent.join` with an empty `workspace_id`) for every such join, and `sot_row_binding` is the one answer for
   whose a handle is, used by `comm-context.sh` and `comm-poll.sh` (PROTOCOL.md, the row rule).
 

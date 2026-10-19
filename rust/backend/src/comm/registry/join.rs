@@ -187,7 +187,7 @@ async fn outside_join(req_id: u64, handle: &str, workspaces: &Workspaces) -> Res
             req_id,
             op::AGENT_JOIN,
             json!({
-                "error": format!("@{handle} is held by a live row; a session outside any row cannot join as it"),
+                "error": format!("@{handle} is held by a row; a session outside any row cannot join as it"),
                 "code": "held_by_row",
             }),
         ));
@@ -767,6 +767,9 @@ mod agent_join_tests {
         for (label, _) in &not_ended {
             let p = outside_answer(&workspaces, &format!("outside-{label}-box")).await;
             assert_eq!(p.get("code").and_then(|v| v.as_str()), Some("held_by_row"), "{label}: {p:?}");
+            // A row held for any phase, a stopped or unreachable one included, is not called live.
+            let msg = p.get("error").and_then(|v| v.as_str()).unwrap_or_default();
+            assert!(msg.contains("is held by a row;") && !msg.contains("live"), "{label}: {msg}");
         }
         for label in ["terminal", "endednorespawn", "destroyed"] {
             let p = outside_answer(&workspaces, &format!("outside-{label}-box")).await;

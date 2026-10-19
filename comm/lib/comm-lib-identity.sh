@@ -471,7 +471,7 @@ sot_outside_join_clearance() {
         else code="$(printf '%s' "$res" | sot_jq -r '.payload.code // ""' 2>/dev/null)"; fi
     fi
     if [ "$code" = held_by_row ]; then
-        echo "@$h is held by a live row${ws:+ (row $ws)}; a session outside any row cannot join as it"
+        echo "@$h is held by a row${ws:+ (row $ws)}; a session outside any row cannot join as it"
         return 1
     fi
     if [ "$state" = other ]; then
@@ -606,7 +606,7 @@ sot_derive_handle() {
     [ "$status2" = "error" ] && { echo "$unreadable" >&2; return 1; }
     if _sot_tier_claimable "$mode" "$root" "$status2" "$held2" "$outside" "$tier2" "$cleared"; then
         if [ -n "$outside" ] && ! _sot_outside_cleared "$tier1" "$cleared"; then
-            echo "comm: @$tier1 is held by a live row; a session outside any row joins as @$tier2" >&2
+            echo "comm: @$tier1 is held by a row; a session outside any row joins as @$tier2" >&2
         else
             echo "comm: '@$tier1' is already held by $shown1 — joining as '@$tier2' instead" >&2
         fi

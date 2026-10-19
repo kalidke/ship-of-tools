@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-identity-row-rule.sh — a session outside any row never takes, and never
-# reads the mail of, a handle a live row holds (IDENTITY-FC).
+# reads the mail of, a handle a row holds (IDENTITY-FC).
 #
 # Reading: a handle a row holds is read only by a process carrying that row's
 # id; anything else in the folder gets "not this row's inbox" from comm-poll.sh
@@ -16,10 +16,10 @@
 #   g   an unreadable registry reads nothing and moves no cursor
 #   r   comm-context.sh --rebind from a process with no row id rebinds nothing
 # Taking: a join from outside any row asks the daemon (agent.join with an
-# empty workspace_id), which knows its live rows.
-#   d   a plain join steps past a handle the daemon says a live row holds
+# empty workspace_id), which knows its rows.
+#   d   a plain join steps past a handle the daemon says a row holds
 #   d2  --name of one is refused with the daemon's message, nothing written
-#   d3  --name of one the daemon says no live row holds (the row is gone) is taken
+#   d3  --name of one the daemon says no row holds (the row is gone) is taken
 #   d4  --name of a row-bound handle with no daemon to ask is refused
 #   d5  comm-leave.sh --name H of a held handle is refused and the entry stays; a join of H is refused too (B2, SF1)
 #   d6  an entry bound to no row is asked about too: held, so refused (B2)
@@ -107,7 +107,7 @@ start_stub_daemon() {
                         && mv "$REG.stub" "$REG"
                 fi
                 if grep -qxF "$h" "$WORK/held.txt" || [ -e "$WORK/held-all" ]; then
-                    jq -nc --arg h "$h" '{v:1,id:1,kind:"res",op:"agent.join",payload:{error:("@" + $h + " is held by a live row; a session outside any row cannot join as it"),code:"held_by_row"}}' >&3
+                    jq -nc --arg h "$h" '{v:1,id:1,kind:"res",op:"agent.join",payload:{error:("@" + $h + " is held by a row; a session outside any row cannot join as it"),code:"held_by_row"}}' >&3
                 else
                     printf '%s\n' '{"v":1,"id":1,"kind":"res","op":"agent.join","payload":{"ok":true}}' >&3
                 fi ;;
@@ -260,7 +260,7 @@ case_d_stray_join_steps_past_a_held_handle() {
     [ "$(jq -c --arg n "$DH" '.agents[$n]' "$REG")" = "$reg_before" ] || { echo "  registry entry for @$DH changed"; return 1; }
     [ "$(cat "$SOT_COMM_HOME/read/$DH.cursor")" = "$cur_before" ] || { echo "  cursor changed"; return 1; }
     # SF1: one plain line naming the held handle, no stranding warning.
-    case "$JOIN_OUT" in *"comm: @$DH is held by a live row; a session outside any row joins as @$own"*) ;; *) echo "  no plain line: $JOIN_OUT"; return 1 ;; esac
+    case "$JOIN_OUT" in *"comm: @$DH is held by a row; a session outside any row joins as @$own"*) ;; *) echo "  no plain line: $JOIN_OUT"; return 1 ;; esac
     case "$JOIN_OUT" in *WARNING*|*heartbeated*|*"already held by"*) echo "  stranding text: $JOIN_OUT"; return 1 ;; esac
 }
 case_ds_stray_session_start_steps_past() {
@@ -281,7 +281,7 @@ case_d2_stray_name_of_a_held_handle_is_refused() {
     SOT_SOCKET="$SOCK" stray_join --name "$DH"
     stop_stub_daemon
     [ "$JOIN_RC" -eq 1 ] || { echo "  exit $JOIN_RC: $JOIN_OUT"; return 1; }
-    case "$JOIN_OUT" in *"@$DH is held by a live row"*"a session outside any row cannot join as it"*) ;; *) echo "  message: $JOIN_OUT"; return 1 ;; esac
+    case "$JOIN_OUT" in *"@$DH is held by a row"*"a session outside any row cannot join as it"*) ;; *) echo "  message: $JOIN_OUT"; return 1 ;; esac
     [ "$(cat "$REG")" = "$reg_before" ] || { echo "  registry changed"; return 1; }
     [ "$(cat "$SOT_COMM_HOME/read/$DH.cursor")" = "$cur_before" ] || { echo "  cursor changed"; return 1; }
 }
@@ -309,13 +309,13 @@ case_d5_leave_then_join_is_refused() {
     local out rc=0
     out="$(cd "$WORK" && env SOT_COMM_SELF_FILE="$WORK/stray-leave.txt" SOT_SOCKET="$SOCK" "$SCRIPTS_DIR/comm-leave.sh" --name "$DH" 2>&1)" || rc=$?
     [ "$rc" -eq 1 ] || { stop_stub_daemon; echo "  leave exit $rc: $out"; return 1; }
-    case "$out" in *"REFUSING"*"@$DH is held by a live row"*) ;; *) stop_stub_daemon; echo "  leave message: $out"; return 1 ;; esac
+    case "$out" in *"REFUSING"*"@$DH is held by a row"*) ;; *) stop_stub_daemon; echo "  leave message: $out"; return 1 ;; esac
     jq -e --arg n "$DH" '.agents | has($n)' "$REG" >/dev/null || { stop_stub_daemon; echo "  leave removed @$DH"; return 1; }
     SOT_SOCKET="$SOCK" stray_join --name "$DH"
     local asked; asked="$(grep -c "\"handle\":\"$DH\"" "$REQLOG")"
     stop_stub_daemon
     [ "$JOIN_RC" -eq 1 ] || { echo "  exit $JOIN_RC: $JOIN_OUT"; return 1; }
-    case "$JOIN_OUT" in *"@$DH is held by a live row"*) ;; *) echo "  message: $JOIN_OUT"; return 1 ;; esac
+    case "$JOIN_OUT" in *"@$DH is held by a row"*) ;; *) echo "  message: $JOIN_OUT"; return 1 ;; esac
     [ "$asked" -ge 2 ] || { echo "  the daemon was asked $asked times about @$DH, want the leave's and the join's"; return 1; }
 }
 case_d12_no_daemon_leave_of_a_bound_entry_is_refused() {
@@ -346,7 +346,7 @@ case_d6_an_unbound_entry_is_asked_about_too() {
     local asked; asked="$(grep -c "\"handle\":\"$DH\"" "$REQLOG")"
     stop_stub_daemon
     [ "$JOIN_RC" -eq 1 ] || { echo "  exit $JOIN_RC: $JOIN_OUT"; return 1; }
-    case "$JOIN_OUT" in *"@$DH is held by a live row"*) ;; *) echo "  message: $JOIN_OUT"; return 1 ;; esac
+    case "$JOIN_OUT" in *"@$DH is held by a row"*) ;; *) echo "  message: $JOIN_OUT"; return 1 ;; esac
     [ "$asked" -ge 1 ] || { echo "  the daemon was never asked about @$DH"; return 1; }
 }
 case_d7_no_daemon_and_an_unbound_entry_is_taken() {
@@ -453,7 +453,7 @@ check "c: the nopane slot naming a row's handle is refused" case_c_nopane_slot
 check "ctl: a handle with no row polls with no row id" case_ctl_no_row_polls
 check "g: an unreadable registry reads nothing and moves no cursor" case_g_unreadable_registry_reads_nothing
 check "r: --rebind from a process with no row id rebinds nothing" case_r_rebind_needs_a_row_id
-check "d: a stray's plain join steps past a handle the daemon says a live row holds" case_d_stray_join_steps_past_a_held_handle
+check "d: a stray's plain join steps past a handle the daemon says a row holds" case_d_stray_join_steps_past_a_held_handle
 check "d2: a stray's --name of a held handle is refused with the daemon's message" case_d2_stray_name_of_a_held_handle_is_refused
 check "d3: a stray takes a bound handle whose row the daemon says is gone" case_d3_stray_takes_a_handle_whose_row_is_gone
 check "d4: a stray's --name of a bound handle is refused when no daemon can be asked" case_d4_stray_name_of_a_bound_handle_with_no_daemon_is_refused

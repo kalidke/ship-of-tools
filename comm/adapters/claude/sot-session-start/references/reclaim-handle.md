@@ -14,7 +14,7 @@ problems — read which one you actually have before picking a recipe.
   say what to do about it. See "Unblocking a REFUSED start" below — this is
   a DIFFERENT situation, not a smaller version of the same one.
 
-- **`identity=FAIL` with `REFUSING to join: @<h> is held by a live row`** — a
+- **`identity=FAIL` with `REFUSING to join: @<h> is held by a row`** — a
   session OUTSIDE any row pinned a handle (`SOT_COMM_NAME` or `--name`) that a
   row holds, and a session outside a row never takes or reads a row's handle.
   Work inside that row, or pin a different `SOT_COMM_NAME`. A name that only

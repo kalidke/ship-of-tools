@@ -203,7 +203,7 @@ case_provisional_rollback_survives_a_crlf_jq() {
 
 # A join from outside any row asks the daemon about the handle, and the daemon's reply is read with jq. A \r glued to
 # `held_by_row` reads as "no ruling", so the refusal would say "the daemon could not say that row is gone" instead of
-# "held by a live row"; the binding's own fields (row id, host) carry the same \r into the message and the host
+# "held by a row"; the binding's own fields (row id, host) carry the same \r into the message and the host
 # comparison (SF5).
 OUT_HOME="$WORK/outside-home"
 OUT_HANDLE="t-crlf-outside"
@@ -219,7 +219,7 @@ case_outside_join_clearance_survives_a_crlf_jq() {
         sot_oneshot_request() { printf "%s\n" "{\"v\":1,\"id\":1,\"kind\":\"res\",\"op\":\"agent.join\",\"payload\":{\"error\":\"held\",\"code\":\"held_by_row\"}}"; }
         sot_outside_join_clearance "$2"' _ "$SCRIPTS_DIR" "$OUT_HANDLE" 2>&1)" || rc=$?
     [ "$rc" -eq 1 ] || { echo "  clearance returned $rc, want 1: $out"; return 1; }
-    case "$out" in *"is held by a live row (row row-crlf); a session"*) ;; *) echo "  message was '$out'"; return 1 ;; esac
+    case "$out" in *"is held by a row (row row-crlf); a session"*) ;; *) echo "  message was '$out'"; return 1 ;; esac
     case "$out" in *$'\r'*) echo "  the message carries a \\r"; return 1 ;; esac
     return 0
 }

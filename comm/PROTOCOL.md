@@ -584,7 +584,7 @@ Monitor exists.
   which is how a session outside any row passes, including one under another
   account's sshd. A private identity file for a process outside any row must not
   be named `<host>__<id>.txt`.
-- A handle a live row holds is read and taken only from inside that row. The row id a process carries is the one the
+- A handle a row holds is read and taken only from inside that row. The row id a process carries is the one the
   agent-layer walk proves (`sot_capsule_workspace_id`, `comm-context.sh`'s `ROW_ID`): `$SOT_WORKSPACE_ID` with no private
   self file, or the id a row-keyed self file `<host>__<id>.txt` names; an id exported over any other private self file
   names no row. The registry entry's `workspace_id` says which row holds the handle.
@@ -600,11 +600,11 @@ Monitor exists.
   `sot_outside_join_clearance`): it writes nothing and answers `held_by_row` for any row it has not seen end (a row
   loaded from disk and not yet probed, Stopped, Unreachable, Foreign and Ending ones too; only a latched Terminal or
   EndedNoRespawn row, or none, frees a handle), else ok. An explicit `--name` or `$SOT_COMM_NAME` is refused, `comm-join.sh:
-  REFUSING to join: @<h> is held by a live row (row <id>); a session outside any row cannot join as it`. A name only
+  REFUSING to join: @<h> is held by a row (row <id>); a session outside any row cannot join as it`. A name only
   the self file gave is not a pin: the join steps past a held one to the session's own derived handle (`comm: @<h>
   (named by this session's self file) is held by a row; ...`), and the self file then names that handle, so the
   session reads the held inbox no more. A derived join asks about its three tier names before the registry lock and steps past a held tier to the session's own, with one
-  line, `comm: @<tier 1> is held by a live row; a session outside any row joins as @<tier 2>`, no stranding warning and
+  line, `comm: @<tier 1> is held by a row; a session outside any row joins as @<tier 2>`, no stranding warning and
   no MISMATCH. The writes under the lock are held to what was cleared (`_sot_outside_cleared`): a row that binds the
   handle between the answer and the write is refused, never overwritten. An entry bound to a row on another computer of
   the shared home (its `host` is not this one) is held, since no local daemon can rule on it. Where the daemon gives no
