@@ -33,27 +33,39 @@ sot_sed_literal() {  # <text>: the text as the replacement of an s|...|...| comm
     printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
 }
 
-# The unit splices the install prefix and the home into `ExecStart=/bin/bash -c '... exec "<path>" ...'`: systemd
-# expands `%`, reads `\` as an escape, and in the bash text `'` ends the quoting, `"` the word and `$` expands, so a
-# path holding one runs another path or never starts. Returns 0 after one stderr line naming the character, else 1.
-sot_unit_path_refused() {  # <what: prefix|home> <path>
-    local ch
-    for ch in '%' '\' "'" '"' '$'; do
-        case "$2" in
-            *"$ch"*)
-                echo "ERROR: sotd.service cannot name the $1 $2: it holds $ch, which systemd or the unit's shell would read as syntax; use a $1 with none of % \\ ' \" \$" >&2
-                return 0 ;;
-        esac
-    done
-    return 1
+# The one list of characters a path may not hold, because a rendered file splices it into text another reader parses: the
+# unit's `bash -c` and the launchers' double-quoted text (`'`, `"`, `$`, backquote, `\`, newline), systemd (`%`, `\`), sed,
+# JSON and shell lines (`&`, `|`, `;`, space, tab). Byte-identical to scripts/install.sh's and scripts/sot-apply.sh's (a test
+# pins both): install.sh's front gate and sot-apply's check before the flip run it, and each render runs it before its own
+# write. Returns 0 after one stderr line naming what (prefix or home), the path and the character, else 1.
+sot_path_refused() {  # <what: prefix|home> <path>
+    local ch= list='% \ '"'"' " $ ` & | ; space tab newline'
+    case "$2" in
+        *'%'*) ch='%' ;;
+        *'\'*) ch='\' ;;
+        *"'"*) ch="'" ;;
+        *'"'*) ch='"' ;;
+        *'$'*) ch='$' ;;
+        *'`'*) ch='`' ;;
+        *'&'*) ch='&' ;;
+        *'|'*) ch='|' ;;
+        *';'*) ch=';' ;;
+        *' '*) ch=space ;;
+        *'	'*) ch=tab ;;
+        *'
+'*) ch=newline ;;
+        *) return 1 ;;
+    esac
+    echo "ERROR: the $1 $2 holds $ch, which a unit, launcher or shell line would read as syntax; use a $1 with none of: $list" >&2
+    return 0
 }
 
 # Write the sotd.service unit for PREFIX from TEMPLATE into DEST. Like every
 # rendered file it is written beside DEST, under a name of this shell's own
 # ($$), and moved in, so a failed write leaves the old file whole and returns 1.
 render_sotd_unit() {  # <prefix> <template> <dest>
-    sot_unit_path_refused prefix "$1" && return 1
-    sot_unit_path_refused home "$HOME" && return 1
+    sot_path_refused prefix "$1" && return 1
+    sot_path_refused home "$HOME" && return 1
     sed -e "s|@SOT_BIN@|$(sot_sed_literal "$1/bin/sotd")|" \
         -e "s|@SOT_APPLY@|$(sot_sed_literal "$1/bin/sot-apply")|" \
         -e "s|@SOT_PROJECT_ROOT@|$(sot_sed_literal "$HOME")|" \
@@ -72,6 +84,8 @@ sot_pointer_refused() {  # <prefix> <target>
 # Write the all-in-one sot-launch wrapper for PREFIX / TARGET into DEST.
 render_sot_launch() {  # <prefix> <target> <dest>
     local prefix="$1" target="$2" dest="$3"
+    sot_path_refused prefix "$prefix" && return 1
+    sot_path_refused home "$HOME" && return 1
     cat > "$dest.new.$$" <<EOF || { rm -f "${dest:?}.new.$$"; return 1; }
 #!/usr/bin/env bash
 # sot-launch: all-in-one

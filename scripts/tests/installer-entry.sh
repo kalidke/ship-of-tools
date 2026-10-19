@@ -793,3 +793,4 @@ entry_archive "$d" --be-only
 check "an explicit run of the installed version ends in PASS" "0 PASS" "$ENTRY_RC $(printf '%s' "$ENTRY_LAST" | cut -c1-4)"
 check "it writes the pin" "1" "$(grep -c '"pinned": true' "$d/home/.local/share/sot/install.json" || true)"
 check "it restarts nothing and asks nothing of the daemon" "0 0" "$(count_in "$d/ctl/systemctl.log" 'restart') $(sotd_log "$d" | grep -c 'update repls' || true)"
+. "$(dirname "${BASH_SOURCE[0]}")/installer-path-refusal.sh"

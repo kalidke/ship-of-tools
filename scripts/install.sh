@@ -173,17 +173,29 @@ sot_install_copy() {  # <src> <dst> [mode]
     return 1
 }
 
-# Refuse characters a shell-embedded path (systemd unit ExecStart, JSON
-# manifest, sed substitution, launcher heredocs) cannot carry safely, plus
-# a newline, which turns one generated service or manifest line into two.
-# Explicit rejection over silent corruption. Shared by --prefix and the
-# project root ($HOME) — deploy/sotd.service's ExecStart now embeds both
-# inside a shell string, where a stray quote breaks the unit.
-reject_unsafe_path_chars() {  # <label> <value>
+# Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it), which names the one list of characters a path may not
+# hold. The front gate below runs it on --prefix and the project root ($HOME) before any write, because the generated unit,
+# wrappers, desktop entries and manifest splice both into text another reader parses; the library's renders run it too.
+sot_path_refused() {  # <what: prefix|home> <path>
+    local ch= list='% \ '"'"' " $ ` & | ; space tab newline'
     case "$2" in
-        *[\&\|\;\"\'\\\`]*|*' '*|*'	'*|*$'\n'*)
-            die "unsupported characters in $1 '$2' — no spaces, quotes, backslashes, newlines, or shell metacharacters" ;;
+        *'%'*) ch='%' ;;
+        *'\'*) ch='\' ;;
+        *"'"*) ch="'" ;;
+        *'"'*) ch='"' ;;
+        *'$'*) ch='$' ;;
+        *'`'*) ch='`' ;;
+        *'&'*) ch='&' ;;
+        *'|'*) ch='|' ;;
+        *';'*) ch=';' ;;
+        *' '*) ch=space ;;
+        *'	'*) ch=tab ;;
+        *'
+'*) ch=newline ;;
+        *) return 1 ;;
     esac
+    echo "ERROR: the $1 $2 holds $ch, which a unit, launcher or shell line would read as syntax; use a $1 with none of: $list" >&2
+    return 0
 }
 
 # ---- what this box knows about itself --------------------------------------------
@@ -952,8 +964,8 @@ case "$PREFIX" in
     /*) ;;
     *) PREFIX="$(pwd)/$PREFIX" ;;
 esac
-reject_unsafe_path_chars "prefix" "$PREFIX"
-reject_unsafe_path_chars 'project root ($HOME)' "$HOME"
+sot_path_refused prefix "$PREFIX" && die "refusing the prefix (named above)"
+sot_path_refused home "$HOME" && die "refusing the home (named above)"
 
 # ---- 1. preflight ------------------------------------------------------------
 STEP=preflight

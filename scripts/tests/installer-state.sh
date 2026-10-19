@@ -403,13 +403,11 @@ check "the rendered unit's owner path is the prefix's sotd" "/opt/sot-r/bin/sotd
 
 # ---------------------------------------------------------------------------
 case_start "rendered_unit_holds_any_path_literally"
-# A prefix or home holding `|` (the sed delimiter) or `&` (the matched text) lands byte for byte.
-ODD_PREFIX="$WORK/od|d&p"; ODD_HOME="$WORK/h|o&m"
-RO="$WORK/rendered-odd.service"
-HOME="$ODD_HOME" render_sotd_unit "$ODD_PREFIX" "$(dirname "$0")/../../deploy/sotd.service" "$RO"
-check "ExecStart names the prefix's sotd byte for byte" "1" "$(grep -cF -- "exec \"$ODD_PREFIX/bin/sotd\" --project-root \"$ODD_HOME\" --label sot" "$RO" || true)"
-check "ExecStartPre names the prefix's sot-apply byte for byte" "1" "$(grep -cF -- "exec \"$ODD_PREFIX/bin/sot-apply\"" "$RO" || true)"
-check "no placeholder is left" "0" "$(grep -c '@SOT_[A-Z_]*@' "$RO" || true)"
+# A value holding `|` (the sed delimiter), `&` (the matched text) or a backslash lands byte for byte in an s|..|..| splice;
+# the renders themselves refuse such a prefix or home first (renders_refuse_syntax_in_a_path), so this is the splice's own proof.
+ODD_PREFIX="$WORK/od|d&p"
+check "a sed splice of a path holding | and & lands byte for byte" "$ODD_PREFIX/bin/sotd" \
+    "$(printf '@SOT_BIN@' | sed -e "s|@SOT_BIN@|$(sot_sed_literal "$ODD_PREFIX/bin/sotd")|")"
 ODD_TAG='v0.6.7-a&b|c\\d'
 check "a tag holding & | and a backslash is spliced into install.json byte for byte" "\"tag\": \"$ODD_TAG\"" \
     "$(printf '{"tag": "v0.6.6"}\n' | sed -e 's|"tag": *"[^"]*"|"tag": "'"$(sot_sed_literal "$ODD_TAG")"'"|' | sed -n 's/^{\(.*\)}$/\1/p')"
