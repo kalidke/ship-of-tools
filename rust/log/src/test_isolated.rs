@@ -67,6 +67,12 @@ impl Entry {
             .map(|_| ())
     }
 
+    /// Removes the record without checking it, for a test that does not judge this body's entry (its role is not run
+    /// to be counted): the record is not left behind, and the drop does not panic for a body never checked.
+    pub fn discard(mut self) {
+        self.checked = true;
+    }
+
     /// Fails unless the child `pid` entered this test's body exactly once.
     pub fn assert_once(mut self, pid: u32) {
         self.checked = true;
