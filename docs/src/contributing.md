@@ -110,5 +110,6 @@ launcher. The exit-75 path only re-stages the frontend binary.
 
 Releases are tag-driven: `scripts/release.sh` stamps the versions and tags,
 and CI builds, smoke-tests and creates a draft release with the artifacts,
-which the release skill publishes
+which the release skill publishes. Every tag, candidate or final, is cut from
+main; the stamp after the tag moves main to the next version with `-dev`
 ([ADR 0030](https://github.com/kalidke/ship-of-tools/blob/main/docs/adr/0030-versioning-release-and-auto-update.md)).
