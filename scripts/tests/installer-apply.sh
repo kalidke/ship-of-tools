@@ -252,13 +252,8 @@ else
     run_apply "$RD"
     check "a pointer with no record onto a dev build: refused" "v9.9.8-dev+abc gone" "$(installed_tag "$RD") $(armed "$RD")"
     check "a pointer with no record onto a dev build: the reason names the dev build" "1" "$(grep -c 'is a dev build' "$RD/out" || true)"
-    # The applier checks the fit its armer did not: this home names no topology, so the install is a backend role.
-    PREP=light real_apply pr8 v9.9.8 9.9.9
-    run_apply "$RD"
-    check "an env-less prepare onto a backend role: refused, the reason names the environments" "v9.9.8 gone 1" "$(installed_tag "$RD") $(armed "$RD") $(grep -c 'did not instantiate the Julia environments' "$RD/out" || true)"
-    PREP=none real_apply pr9 v9.9.8 9.9.9
-    run_apply "$RD"
-    check "a stage with no prepared.json: refused, the reason says so" "v9.9.8 gone 1" "$(installed_tag "$RD") $(armed "$RD") $(grep -c 'no record of a prepare' "$RD/out" || true)"
+    # shellcheck source=installer-apply-fit.sh
+    . "$(dirname "${BASH_SOURCE[0]}")/installer-apply-fit.sh"
 fi
 
 # ---------------------------------------------------------------------------
