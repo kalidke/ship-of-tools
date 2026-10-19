@@ -8,7 +8,9 @@
 # script, which must be 4 or later, since those suites use what 3.2 lacks. With no SUITE: every hermetic suite, each
 # comm/tests/test-*.sh and agents/tests/test-*.sh but the five that need peer hosts (comm/tests/CLAUDE.md), and the
 # four scripts/tests suites. Prints `under-bash: PASS|FAIL SUITE` per suite and `under-bash: FAIL parse SCRIPT` per
-# script that does not parse; exits with the count of FAIL lines, or 2 when the setup is wrong.
+# script that does not parse or runs a utility by the `command` builtin outside a pipeline (under bash 3.2 and set -e
+# that ends the shell when the utility fails, even where an if, ! or || handles it); exits with the count of FAIL
+# lines, or 2 when the setup is wrong.
 set -u
 [ $# -eq 1 ] || { [ $# -ge 3 ] && [ "$2" = -- ]; } || { echo "usage: under-bash.sh BASH [-- SUITE...]" >&2; exit 2; }
 want="$1"; shift; [ $# -eq 0 ] || shift
@@ -38,6 +40,11 @@ while IFS= read -r f; do
     case "$f" in *.sh) ;; *) l=""; IFS= read -r l < "$f"; case "$l" in '#!'*bash*) ;; *) continue ;; esac ;; esac
     n=$((n + 1))
     "$want" -n "$f" || { echo "under-bash: FAIL parse $f"; failed=$((failed + 1)); }
+    # A pipeline stage runs in its own process and is safe (comm-lib-base.sh's sot_jq); `command -v` runs nothing.
+    while IFS= read -r hit; do
+        echo "under-bash: FAIL command-builtin $f:$hit"; failed=$((failed + 1))
+    done < <(grep -nE '(^|[;&|{!]|\$\(|then|do|else|if|while|until) *command +[^-[:space:]]' "$f" | grep -vE '^[0-9]+:[[:space:]]*#' \
+                 | grep -vE 'command +[^|;&]*[|][^|]' || true)
 done < <(git ls-files -- comm agents scripts)
 echo "under-bash: parsed $n scripts"
 for s in "$@"; do

@@ -3,8 +3,13 @@
 # Installers substitute the @TOKENS@ and place the result at
 # ~/.config/systemd/user/sotd.service, pin it to the hosts that run sotd
 # (`sotd topology pin` writes sotd.service.d/topology.conf: a home several
-# hosts share shows this unit to all of them), then:
-#   systemctl --user daemon-reload && systemctl --user enable --now sotd
+# hosts share shows this unit to all of them). The unit has no [Install] section, so `systemctl --user enable` and
+# `disable` change no file: on a home several hosts share, a hand-typed disable on one host cannot turn boot start off
+# for the others. The installer starts it at boot with default.target.d/sotd.conf (Wants=sotd.service), on the hosts
+# the pin names; a hand install writes that file too, then:
+#   mkdir -p ~/.config/systemd/user/default.target.d
+#   printf '[Unit]\nWants=sotd.service\n' > ~/.config/systemd/user/default.target.d/sotd.conf
+#   systemctl --user daemon-reload && systemctl --user start sotd
 #   loginctl enable-linger $USER    # keep it alive without an open session
 #
 # Token values:
@@ -53,6 +58,3 @@ ExecStart=/bin/bash -c '[ -r "$HOME/.bashrc" ] && . "$HOME/.bashrc"; exec "@SOT_
 # Any other exit is a failure and comes back too.
 Restart=on-failure
 RestartSec=2
-
-[Install]
-WantedBy=default.target

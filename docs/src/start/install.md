@@ -56,7 +56,7 @@ which parts are installed and enabled here, and a role flag on the command
 line is ignored.
 
 A home directory shared by several Linux hosts shows them all the same
-`sotd.service` and its enable link. The installer pins the unit with
+`sotd.service` and the same boot start. The installer pins the unit with
 `sotd topology pin`: a drop-in, `sotd.service.d/topology.conf`, under which
 systemd starts it only on the hosts `hosts.toml` declares `daemon` or
 `frontend`, so on a shared home that file must list every host. With no
@@ -66,11 +66,26 @@ compares the kernel hostname, so a host that `SOT_SELF_HOST` renames is not
 matched. An install or update rewrites the pin from `hosts.toml` (an update
 with no `hosts.toml` leaves it as the install wrote it), and so do the hub's daemon at
 each start and `sotd topology apply` there; a host whose entry changed reads
-it at its next boot or `systemctl --user daemon-reload`. Stop the daemon on a host that should no
-longer run one with `systemctl --user stop sotd.service`; never `disable` it
-there, since the enable link is shared too. The installer itself never
-disables it there: an install that runs no daemon on this host only stops
-this host's, unless the pin names this host alone.
+it at its next boot or `systemctl --user daemon-reload`. The unit has no `[Install]` section: a
+drop-in, `default.target.d/sotd.conf` (`Wants=sotd.service`), starts it at
+boot, and the pin above picks the hosts. So `systemctl --user enable` and
+`disable` change no file for `sotd.service`, on any host, and a hand-typed
+one on one host cannot turn boot start off for the others. Stop the daemon on
+a host now with `systemctl --user stop sotd.service`. What it does at the
+next boot is what the pin and `hosts.toml` decide: to move it, change
+`hosts.toml` (or, with none, run
+`sotd topology pin --dir ~/.config/systemd/user --claim` on the host that
+should run it). On a home no other host shares, turn boot start off with
+`rm -f ~/.config/systemd/user/default.target.d/sotd.conf`; write that file
+again (`[Unit]` and `Wants=sotd.service`) to turn it back on. One rule governs
+both ways to update, running the installer again and the background update: a
+run that finds no `sotd.service` wires boot start, and a run over a unit moves
+an old enable link onto the drop-in or keeps the drop-in, and with neither
+writes nothing, so boot start you turned off stays off; an install.sh run says in a line before its verdict whether boot start is on, and when off, the command that turns it on. An install that runs no
+daemon on this host only stops this host's, and moves an old link onto the
+drop-in, unless the pin names this host alone: then it also removes the
+drop-in. The relay sockets and tunnels keep their rule: never `disable` them
+by hand.
 
 The install itself is shared the same way: one `~/.local/share/sot` and one
 `install.json` serve every host that runs `sotd`. Run the installer on one of
@@ -148,7 +163,8 @@ Roles: *all* is every install; *backend* is `--local` and `--be-only`;
 | `~/.config/sot/hosts.toml` | *all* · written only with `--hub`, as a copy fetched from the hub; otherwise only read |
 | `~/.juliaup/` | *all* · Julia 1.12, installed with the juliaup installer, only if no Julia 1.12 or newer is on `PATH` (an existing juliaup gets the 1.12 channel added instead) |
 | the first depot in `DEPOT_PATH` (usually `~/.julia`) | *backend* · packages for the kernel, REPL and Pluto environments |
-| `~/.config/systemd/user/sotd.service` | *backend, Linux, unless `--no-service`* · the backend service, enabled and started; `loginctl enable-linger` is also run so it survives logout. The service sources `~/.bashrc` before it starts `sotd`, so the backend and its sessions inherit your shell profile's exports. |
+| `~/.config/systemd/user/sotd.service` | *backend, Linux, unless `--no-service`* · the backend service, started (its boot start is the drop-in below); `loginctl enable-linger` is also run so it survives logout. The service sources `~/.bashrc` before it starts `sotd`, so the backend and its sessions inherit your shell profile's exports. |
+| `~/.config/systemd/user/default.target.d/sotd.conf` | *backend, Linux, unless `--no-service`* · the boot drop-in (`Wants=sotd.service`) that starts the backend service at boot; written on a fresh install and kept or moved from an old enable link on a later one |
 | `~/.local/bin/sot-launch` | *frontend* · the launcher wrapper |
 | `~/.local/share/applications/ship-of-tools.desktop` | *frontend, Linux* · the desktop entry |
 | `~/.local/share/icons/hicolor/` | *frontend, Linux* · the icon, `256x256/apps/ship-of-tools.png` |
@@ -235,11 +251,13 @@ Ship of Tools, uses whatever flags you give it. See
 ## [Uninstall](@id install-uninstall)
 
 There is no uninstall script. To remove an install made with the default
-prefix, stop the service and delete what the installer wrote:
+prefix, stop the service and delete what the installer wrote. On a home several
+hosts share these steps delete the shared install, so they uninstall every host:
 
 ```bash
-systemctl --user disable --now sotd.service
-rm -f ~/.config/systemd/user/sotd.service
+systemctl --user stop sotd.service
+rm -rf ~/.config/systemd/user/sotd.service ~/.config/systemd/user/sotd.service.d \
+      ~/.config/systemd/user/default.target.d/sotd.conf ~/.config/systemd/user/default.target.wants/sotd.service
 systemctl --user daemon-reload
 loginctl disable-linger "$USER"   # skip if something else needs linger
 rm -rf ~/.local/share/sot ~/.config/sot ~/.sot-comm

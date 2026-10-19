@@ -188,7 +188,7 @@ elif command -v jq >/dev/null 2>&1; then
     ( . "$FE_LIB" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" >/dev/null ) || _reg_rc=$?
 else
     ( . "$FE_LIB" >/dev/null 2>&1 || exit 2; b="$(sot_registry_bytes)" || exit 2
-      printf '%s' "$b" | grep -q "\"${NAME}\"[[:space:]]*:" ) || _reg_rc=$?
+      grep -q "\"${NAME}\"[[:space:]]*:" <<<"$b" ) || _reg_rc=$?
 fi
 if [ -z "${NAME:-}" ] || [ "$_reg_rc" -eq 1 ]; then
     turn_floor; exit 0
@@ -575,7 +575,8 @@ if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
 fi
 
 # LEGACY FALLBACK (auditor disabled/unavailable): grep the last reply for `?`.
-if printf '%s' "$last_text" | grep -q '?'; then
+# A here-string, not a pipe: grep -q ends at the match, and printf on a full pipe fails under pipefail.
+if grep -q '?' <<<"$last_text"; then
     # NUDGE — block the stop with a reminder. The model gates: self-report or not.
     emit_block "$(jq -nc '{
       decision: "block",

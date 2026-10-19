@@ -102,7 +102,7 @@ and keep setting `SOT_RELAY_ENDPOINT` inline in git-bash.
   `ExitOnForwardFailure` makes the unit fail+retry until the port frees — visible
   as a restart loop in `systemctl --user status`.
 - `scripts/restart-backend.sh` now restarts the systemd `sotd` when the unit is
-  enabled; the legacy `--check` staleness report is unchanged.
+  active; the legacy `--check` staleness report is unchanged.
 
 ## Update (2026-09-15, v0.6.0 topology sprint): instance set generated, not hand-enabled
 
@@ -138,6 +138,19 @@ name followed by a domain, at every `apply` and at each start of its daemon;
 the unread per-instance files an older `apply` left are harmless and stay
 until removed by hand. `sotd.service` carries the same
 kind of pin, naming every host that runs sotd (`sotd topology pin`).
+
+Update (2026-10-19, 0.6.6): `sotd.service` has no `[Install]` section. Boot start is a regular file,
+`default.target.d/sotd.conf` (`Wants=sotd.service`), written by the installer; the pin still picks the hosts.
+`systemctl --user enable` and `disable` of `sotd.service` therefore change no file, so a hand-typed disable on one host
+of a shared home no longer turns boot start off for the others. One rule serves both ways to update (running the
+installer again, and the background update through sot-apply): a run that finds no `sotd.service` wires boot start; over
+an existing unit it moves an old enable link onto the drop-in or keeps the drop-in, and with neither writes nothing, so
+a person's turn-off survives. A retire that does not own the pin alone does the same move; one whose pin names this
+host alone removes the drop-in. `systemctl revert default.target` removes the drop-in on every host, as
+`revert sotd.service` already removed the pin. A downgrade below 0.6.6 neither writes nor removes the drop-in: the
+older installer's retire (`disable --now`) leaves boot start on, and its uninstall leaves a `Wants` on a missing unit.
+The relay sockets and tunnels keep the "never disable" rule; bringing them under the same mechanism needs the product
+to own the tunnel template and is left for 0.6.7.
 
 The shell profile's per-host `case` on `SOT_RELAY_ENDPOINT` is superseded
 too — see `.sot/hosts.toml.example` and the installer's post-install message

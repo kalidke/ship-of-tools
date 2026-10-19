@@ -60,8 +60,11 @@ Each step's check must pass before the next one is worth doing.
 
 2. **`sotd` runs as a user service on the box**, started by the OS, not by
    a launcher, surviving with nobody logged in. On the box:
-   `systemctl --user is-enabled sotd.service` (plus `loginctl enable-linger`
-   where that applies) and `sotd status` answers. An instrument box wants
+   `systemctl --user show -p WantedBy --value sotd.service` (it names
+   `default.target` where the boot drop-in is loaded; `is-enabled` prints
+   `static` on every host, so it checks nothing), `systemctl --user cat
+   sotd.service` (its pin drop-in names this host), `loginctl enable-linger`
+   where that applies, and `sotd status` answers. An instrument box wants
    this regardless of anything on this page.
 
 3. **The bridge answers.** From the hub, pipe one hello frame through
@@ -136,4 +139,6 @@ Delete its `[host.<host>]` block on the hub, `sotd topology apply --yes`
 the hub was the only side holding a route — unless it shares the hub's home
 and runs a daemon from there: then stop it on the box with
 `systemctl --user stop sotd.service` and run `systemctl --user daemon-reload`
-(never `disable`: the enable link is shared).
+(`enable` and `disable` change no file for `sotd.service`: its boot start is the
+shared drop-in `default.target.d/sotd.conf`, and the pin and `hosts.toml` decide
+which hosts start it). The relay sockets and tunnels are not covered: never `disable` those.

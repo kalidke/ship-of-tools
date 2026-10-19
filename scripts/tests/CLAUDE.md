@@ -25,6 +25,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   the binary so the real-sotd cases run there instead of skipping) and in `rc-gate.sh`.
 - `installer-unit-limits.sh`: sourced by `installer-state.sh`, never run: a start's log prune counts the log it is about to create (`SOT_LOG_KEEP-1` old ones stay), and the sotd unit and the launcher render each refuse, before their write and naming what and the character, a prefix or home holding anything in the library's one list (`sot_path_refused`), whose install.sh and sot-apply.sh copies are pinned byte-equal; the library's lines run under dash, which reads a backslash in an `echo`.
 - `installer-path-refusal.sh`: sourced by `installer-entry.sh`, never run: install.sh run end to end with a home holding `%` or `$`, on the systemd path and with `--no-service`, is refused before any write (the prefix tree is the same bytes), the line naming the prefix or home and the character.
+- `installer-boot-line.sh`: sourced by `installer-entry.sh`, never run: an install over a unit with neither the old link nor the drop-in prints one boot-off line with the command that turns it on, before the verdict; a fresh install prints none.
 - `installer-build-direction.sh`: sourced by `installer-entry.sh`, never run: a build of the line with no `--version` is told by ancestry (the release's COMMIT against the build's commit in the base clone) whether the newest release moves it forward or back, or why that cannot be told; it also asks the rule directly for a named tag and for a record's full commit, and pins that an `--archive` install on a build of the line makes no curl call and prints no ancestry line. It also checks the whole of install.sh for its one `git` function (the stall bound; defined before the first git call, and no call names git another way).
 - `installer-entry.sh`: sourced by `installer-state.sh`, never run: install.sh run end to end in a scratch HOME from a
   fixture release (a local git origin, an archive of stand-in binaries, and stand-in `curl`, `sotd`, `systemctl`,
@@ -51,7 +52,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `installer-shared-home.sh`: a home several hosts share holds one install. Every path that writes, re-renders or
   retires `sotd.service` (`installer_enable_local_service`, `installer_retire_local_service`, `sot_rerender_owned`) pins
   it with `sotd topology pin` before any reload, and none disables the shared unit under a declared topology; with no
-  hosts.toml, two hosts on one home: the install claims the pin, and only the host it names alone disables the link; a
+  hosts.toml, two hosts on one home: the install claims the pin, and only the host it names alone removes the boot drop-in (a retire that keeps it moves an old enable link onto it); a real `systemctl --root --global` enable or disable by hand changes no file, read by `systemd --test` on scratch folders with its control;
+  one rule for `install.sh` and an update: a fresh install wires boot start, an existing unit only where its old link or the drop-in is; a
   hosts.toml sotd cannot read is still a declared topology; the tables of `installer_record_decision` and
   `installer_host_decision`; and `install.sh`, run end to end from a stub release on a host listed with neither key,
   on an unlisted host asking for a daemon, and with an unpacked sotd that cannot run, refuses and leaves every entry
@@ -114,7 +116,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
 - `under-bash.sh`: `under-bash.sh BASH [-- SUITE...]` checks the shell scripts under BASH, the bash 3.2 that
   comm/CLAUDE.md and scripts/CLAUDE.md promise. Every tracked shell script outside a tests folder under `comm/`,
-  `agents/` and `scripts/` must parse under BASH; then each SUITE runs from its own folder with a folder holding
+  `agents/` and `scripts/` must parse under BASH and run no utility by the `command` builtin outside a pipeline (it ends a `set -e` shell under 3.2 when the utility fails); then each SUITE runs from its own folder with a folder holding
   `bash -> BASH` first on PATH, so each script it starts through `env bash`, `bash x.sh` or `bash -c` gets BASH (a
   `#!/bin/bash` script only where BASH is /bin/bash). A suite here runs on BASH itself (it sources the scripts it
   tests); any other on the bash running under-bash.sh (4 or later). With no SUITE it runs every hermetic suite: each

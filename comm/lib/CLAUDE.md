@@ -86,8 +86,9 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 - The one slot formatter validates native representability of the complete leaf before layout repair, publication or destroy. Failure leaves files unchanged and issues no destructive request; accepted declared-host text is never rewritten to make a filename.
 - bash 3.2 and git-bash. 3.2 has no `mapfile`, associative array, `$BASHPID`, `${v,,}` or `[[ -v ]]`; under `set -u`
   it calls an empty array unbound (write `${a[@]+"${a[@]}"}`); inside `$( )` it reads a quote in a comment as a quote
-  and a bare `case` pattern's `)` as the end; and it reports on stderr a background job a signal ended, so a job the
-  library kills is disowned first.
+  and a bare `case` pattern's `)` as the end; it reports on stderr a background job a signal ended, so a job the
+  library kills is disowned first; and under `set -e` a utility run by the `command` builtin ends the shell when it
+  fails, even inside the `if`, `!` or `||` that handles it (a pipeline stage, as in `sot_jq`, runs in its own process).
 - The bounded comm calls run under `sot_bounded` (comm-lib-base.sh), never under `timeout`: `sot_ssh_bridge`'s `ssh`,
   `sot_dial`'s bridge, comm-list.sh's `sot-fe version`, comm-turn-auditor.sh's headless claude, the PostToolUse heartbeat's comm-context.sh, and agents/sot-gh-auth.sh's gh calls; scripts/install.sh carries a copy for its ssh check (the checkout holding this library does not exist yet), and rust/backend/tests/shell_dial.rs runs every bound case against both. One perl process owns
   the deadline and the command's process group until the command has exited and no member of the group is left, so a

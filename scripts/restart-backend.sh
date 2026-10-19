@@ -83,7 +83,9 @@ fi
 # If sotd is supervised by systemd --user (sotd.service), let systemd own the
 # lifecycle: a manual kill+nohup here would race the unit's own restart policy.
 # `systemctl restart` picks up the freshly-built on-disk binary too.
-if systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
+# A unit in its auto-restart window is `activating`, not active, and is still systemd's.
+case "$(systemctl --user show -p ActiveState --value sotd.service 2>/dev/null)" in active|activating|reloading) UNIT_LIVE=1 ;; *) UNIT_LIVE=0 ;; esac
+if [ "$UNIT_LIVE" = 1 ]; then
     echo "sotd is systemd-supervised (sotd.service) — restarting via systemctl --user"
     systemctl --user restart sotd.service
     for _ in $(seq 1 30); do sot_socket_open "$BIN" "$SOCKET" && break; sleep 0.5; done
