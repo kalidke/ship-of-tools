@@ -103,9 +103,7 @@ SC
     cat > "$d/stubs/julia" <<'JU'
 #!/bin/sh
 echo "julia $*" >> "$CTL/julia.log"
-# A +channel selects that Julia, unless the box has no such channel (an offline box that never added it).
-ver="$(cat "$CTL/julia-ver" 2>/dev/null || printf '1.12.0')"
-case "$1" in +*) [ ! -f "$CTL/no-channel" ] || exit 1; ver="${1#+}.0"; shift ;; esac
+ver="$(cat "$CTL/julia-ver" 2>/dev/null || printf '1.12.0')"; case "$1" in +*) [ ! -f "$CTL/no-channel" ] || exit 1; ver="${1#+}.0"; shift ;; esac
 case "$*" in *update_comm*)
     n="$(cat "$CTL/julia-fail" 2>/dev/null || echo 0)"
     if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$CTL/julia-fail"; exit 1; fi
@@ -113,9 +111,7 @@ case "$*" in *update_comm*)
     for a in "$@"; do case "$a" in --project=*) p="${a#--project=}" ;; esac; done
     git -C "$p" rev-parse --short=9 HEAD > "$SOT_COMM_HOME/VERSION"
     [ ! -f "$CTL/hook" ] || . "$CTL/hook" ;;
-*Pkg.instantiate*)
-    # A Julia below the kernel's 1.12 floor refuses, as a real 1.11 does ("julia version requirement ... not satisfied").
-    case "$ver" in 1.[0-9].*|1.1[01].*) echo "ERROR: julia version requirement from Project.toml's compat section not satisfied" >&2; exit 1 ;; esac
+*Pkg.instantiate*) case "$ver" in 1.[0-9].*|1.1[01].*) echo "ERROR: julia version requirement from Project.toml's compat section not satisfied" >&2; exit 1 ;; esac  # below 1.12 refuses, as a real 1.11 does
     for a in "$@"; do case "$a" in --project=*) : > "${a#--project=}/Manifest.toml" ;; esac; done ;;
 *print\(VERSION\)*) printf '%s' "$ver" ;;
 esac
@@ -297,10 +293,8 @@ exit 0
 JU
 entry_archive "$d2" --be-only --no-service
 check "a Julia environment that was never instantiated: exit 1" "1" "$ENTRY_RC"
-starts_with "its FAIL names the environment" "FAIL: julia: julia/kernel has no Manifest.toml" "$ENTRY_LAST"
-d2="$WORK/vd-julia-floor"; entry_fixture "$d2"; printf '1.11.7' > "$d2/ctl/julia-ver"; : > "$d2/ctl/no-channel"; entry_archive "$d2" --be-only --no-service
-starts_with "a Julia below the kernel's floor stops the install before any step, naming the version" "FAIL: julia: the daemon runs Julia 1.11.7, below the 1.12 the kernel needs: run " "$ENTRY_LAST"
-check "and no step ran on it" "0" "$(count_in "$d2/ctl/julia.log" 'update_comm\|Pkg.instantiate')"
+starts_with "its FAIL names the environment" "FAIL: julia: julia/kernel has no Manifest.toml" "$ENTRY_LAST"; d2="$WORK/vd-julia-floor"; entry_fixture "$d2"; printf '1.11.7' > "$d2/ctl/julia-ver"; : > "$d2/ctl/no-channel"; entry_archive "$d2" --be-only --no-service
+starts_with "a Julia below the kernel's floor stops the install before any step, naming the version" "FAIL: julia: the daemon runs Julia 1.11.7, below the 1.12 the kernel needs: run " "$ENTRY_LAST"; check "and no step ran on it" "0" "$(count_in "$d2/ctl/julia.log" 'update_comm\|Pkg.instantiate')"
 # The daemon: a window that holds the old one is a step left, an owned unit that did not come back is a failure.
 d="$WORK/vd-held"; entry_fixture "$d"; P="$d/home/.local/share/sot"
 printf '9.9.8\n' > "$d/ctl/same-out"; printf '4\n' > "$d/ctl/same-rc"
