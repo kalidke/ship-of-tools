@@ -616,9 +616,9 @@ Monitor exists.
   self file the walk must reach that row's capsule, so a stray that exports a row's id is refused; with a private
   self file that names no row, the exported id is no row id. Not closed: a process that writes the registry or the
   daemon's socket by hand (one account); `comm-leave.sh --name H`, which still removes any entry (it no longer
-  enables a take); and `comm-matrix.sh`, whose runner adopts a probe row's identity through a private copy of its
-  self file that names no row, so while the probe row's entry binds its row (its join from inside the row does) the
-  runner reads and sends as nobody.
+  enables a take). `comm-matrix.sh`'s runner is a session of its own, `probe-matrix-<host>`: it joins from outside any
+  row through a private self file that names no row, reads only its own inbox, sends as itself and leaves at exit, so
+  it needs no row's identity.
 - What the check does not see: for a process that names no row, an agent above
   a reparenting, or on Windows above an ancestor that has exited with no MSYS
   parent to go on from (a process of another MSYS or Cygwin installation is not

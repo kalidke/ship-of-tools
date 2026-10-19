@@ -8,7 +8,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 
 ## Files
 - `agent_layers/`: parts of `test-agent-layers.sh`: `table.sh` (the layer table and its parsers), `end_to_end.sh` (fake processes)
-- `comm-matrix.sh`: the live acceptance matrix over real boxes (not a hermetic suite; run by hand at a release)
+- `comm-matrix.sh`: the live acceptance matrix over real boxes (not a hermetic suite; run by hand at a release); its runner is its own session, `probe-matrix-<host>`, beside the probe rows
 - `fixtures/`: the lock-identity cases (`inbox-lock-identity/`: mount tables, `cases.tsv`), read by `test-hub-files.sh` and the daemon's `inbox_tests.rs`
 - `hub_files/`: parts of `test-hub-files.sh`: `lock_shell.sh`, `routes.sh`, `wire.sh`, `reader.sh`, `lock_faults.sh`
 - `join_disambiguation/`: parts of `test-join-disambiguation.sh`: derived handles, self-files, `declared_host.sh` (the declared host, the slot formatter and legacy-slot migration), `jq_args.sh`, pipe endpoints, send identity, slot guard, spawn and lock

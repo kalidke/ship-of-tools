@@ -482,23 +482,45 @@ run own "$WORK/self/self-x.txt" bash "$SIMWIN/guard-walk.sh"
 has "windows walk: with no SOTD_BIN the guard's sotd.exe answers the walk, and the gate passes" "$OUT" "require rc=0"
 unset SIMWIN
 
-# --- the matrix runner's private copy of the probe row's self file ---------------
+# --- the matrix runner: a session of its own beside the probe row ----------------------------
+# The probe row's entry binds its row, so the runner cannot read or send as that row: a private copy of the row's
+# self file is refused. It joins its own handle from outside any row instead (comm-matrix.sh's matrix_runner_join).
 SELF_P2="$WORK/self/testhost__ws-p2.txt"; PRIVD="$WORK/matrix-priv"; mkdir -p "$PRIVD"
 ROWID=ws-p2; run rown "$SELF_P2" "$JOIN" --name probe2-testhost || true; [ "$RC" -eq 0 ] || { echo "FATAL: setup join probe2-testhost: $OUT" >&2; exit 1; }
-PRIV="$( . "$SCRIPT_DIR/comm-matrix.sh" > /dev/null 2>&1; matrix_private_self "$SELF_P2" "$PRIVD" 2> /dev/null )"
+cp "$SELF_P2" "$PRIVD/copy-self.txt"
 PINBOX="$SOT_COMM_HOME/inbox/$PEER.jsonl"; pin0="$(sum "$PINBOX")"
 ROWID=ws-dev; run rown "$SELF_P2" "$SEND" "@$PEER" "matrix-orig"
 eq  "matrix: sending from the developer's row with the probe row's own self file exits 1 (the library's rc 2)" "$RC" 1
 has "matrix: that refusal names the cause" "$OUT" "$R_ROW_TEXT"
 eq  "matrix: that send filed nothing" "$(sum "$PINBOX")" "$pin0"
-# The probe row's entry is bound to its row (its join carried the row's id): a private copy names no row, so the
-# runner reads and sends as nobody (PROTOCOL.md's row rule). comm-matrix.sh needs the entry unbound to run.
-run rown "$PRIV" "$SEND" "@$PEER" "matrix-copy"
-eq  "matrix: with the probe row's entry bound to its row, the private copy exits 1" "$RC" 1
+run rown "$PRIVD/copy-self.txt" "$SEND" "@$PEER" "matrix-copy"
+eq  "matrix: with the probe row's entry bound to its row, a private copy of its self file exits 1" "$RC" 1
 has "matrix: that refusal says it is not the row's inbox" "$OUT" "not this row's inbox"
 eq  "matrix: that send filed nothing" "$(sum "$PINBOX")" "$pin0"
-jq '.agents["probe2-testhost"].workspace_id = ""' "$REG" > "$WORK/reg.tmp" && mv "$WORK/reg.tmp" "$REG"
-run rown "$PRIV" "$SEND" "@$PEER" "matrix-copy"
-eq  "matrix: sending with the private copy exits 0" "$RC" 0
-has "matrix: the private copy's send is filed" "$OUT" "filed -> @$PEER"
-has "matrix: the peer's inbox line carries the probe row as sender" "$(tail -n 1 "$PINBOX" 2>/dev/null)" "probe2-testhost"
+
+RUNNER="probe-matrix-testhost"; RSELF="$PRIVD/matrix-self.txt"; RROOT="$PRIVD/root"; P2INBOX="$SOT_COMM_HOME/inbox/probe2-testhost.jsonl"
+rrun() {  # CMD... : CMD as the matrix runner, from its own root
+    run own "$RSELF" bash -c 'cd "$1" && shift && exec "$@"' _ "$RROOT" "$@"
+}
+p2cur0="$(sum "$SOT_COMM_HOME/read/probe2-testhost.cursor")"; p2inbox0="$(sum "$P2INBOX")"
+run own "$RSELF" bash -c 'SCRIPTS_DIR=$1; . "$2/comm-matrix.sh"; SCRIPTS_DIR=$1; matrix_runner_join "$3" "$4"' _ "$SCRIPTS_DIR" "$SCRIPT_DIR" "$RUNNER" "$PRIVD"
+eq  "matrix: the runner joins its own handle from outside any row, beside the bound probe row" "$RC" 0
+eq  "matrix: the runner's entry binds no row" "$(jq -r --arg n "$RUNNER" '.agents[$n].workspace_id' "$REG")" ""
+eq  "matrix: the probe row's entry still binds its row" "$(jq -r '.agents["probe2-testhost"].workspace_id' "$REG")" ws-p2
+ROWID=ws-p2; run rown "$SELF_P2" "$SEND" "@$RUNNER" "ECHO abc123 from @probe2-testhost"
+eq  "matrix: the probe row's echo to the runner exits 0" "$RC" 0
+has "matrix: that echo is filed" "$OUT" "filed -> @$RUNNER"
+eq  "matrix: the runner's own inbox file holds the echo" "$( . "$SCRIPT_DIR/comm-matrix.sh" > /dev/null 2>&1; matrix_find_prefix "$SOT_COMM_HOME/inbox/$RUNNER.jsonl" "$RUNNER" "ECHO abc123" )" "ECHO abc123 from @probe2-testhost"
+rrun "$POLL"
+eq  "matrix: the runner's poll exits 0" "$RC" 0
+has "matrix: the runner's poll shows the echo" "$OUT" "ECHO abc123"
+rrun "$SEND" "@probe2-testhost" "PROBE def456 reply @$RUNNER"
+eq  "matrix: the runner's send to the probe row exits 0" "$RC" 0
+has "matrix: that send is filed" "$OUT" "filed -> @probe2-testhost"
+eq  "matrix: that message's sender is the runner" "$(tail -n 1 "$P2INBOX" | jq -r .from)" "$RUNNER"
+eq  "matrix: the probe row's cursor is unchanged by all of it" "$(sum "$SOT_COMM_HOME/read/probe2-testhost.cursor")" "$p2cur0"
+rrun "$SCRIPTS_DIR/comm-leave.sh"
+eq  "matrix: the runner's leave exits 0" "$RC" 0
+eq  "matrix: after its leave the runner's entry is gone" "$(jq -r --arg n "$RUNNER" '.agents[$n]' "$REG")" null
+eq  "matrix: after its leave its self file is gone" "$(test -e "$RSELF" && echo present || echo gone)" gone
+eq  "matrix: the probe row's entry survives the runner's leave" "$(jq -r '.agents["probe2-testhost"].workspace_id' "$REG")" ws-p2
