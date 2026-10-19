@@ -134,7 +134,7 @@ fi
 # HEAD. Anything else (failed, cancelled, still running, a run on any other
 # commit) refuses the cut; rerun a flaky leg (`gh run rerun <id> --failed`),
 # never skip it. gh is required — a release is never cut blind. Dispatch both
-# workflows there first (`gh workflow run <wf> --ref <branch>`): push runs are
+# workflows there first (`gh workflow run <wf> --ref main`): push runs are
 # path-filtered, so HEAD may have none of its own, and the cut's runs are
 # dispatched ones. An empty list REFUSES the cut rather than waving it through.
 command -v gh >/dev/null 2>&1 || { echo "preflight: gh not found — CI on $branch cannot be verified" >&2; exit 1; }
