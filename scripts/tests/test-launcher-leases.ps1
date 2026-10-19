@@ -465,3 +465,4 @@ try {
 
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 if ($fail) { exit 1 }
+exit 0   # explicit: a deliberate non-zero child left $LASTEXITCODE set, and the runner's step would end on it

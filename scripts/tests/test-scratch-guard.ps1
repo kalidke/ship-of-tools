@@ -246,6 +246,7 @@ exit 7
         $text = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "$s.ps1"))
         $pre = [regex]::Escape("`$ErrorActionPreference = 'Stop'") + '\r?\n' + $lines
         Check "$s starts with the guard lines, after Stop" ([regex]::IsMatch($text, $pre)) 'the four lines are not there'
+        Check "$s ends with an explicit exit 0 after its failure exit" ([regex]::IsMatch($text, '\r?\nexit 0[^\r\n]*\s*\z')) 'no final exit 0'
     }
 } finally {
     Remove-Item Env:\SOT_PROBE_VAR -ErrorAction SilentlyContinue
@@ -256,3 +257,4 @@ exit 7
 }
 Write-Host "`n$pass passed, $fail failed"
 if ($fail -gt 0) { exit 1 }
+exit 0   # explicit: the refusal and exit-7 cases above left $LASTEXITCODE set, and the runner's step would end on it
