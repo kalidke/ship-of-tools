@@ -5,7 +5,7 @@
 # slowest step and burned the Actions allowance; a change merges on its
 # local suites, the windows-gnu cross-check and its review round. Hosted CI
 # runs when the line becomes a tag: a tag is never cut unless this workflow
-# and CI.yml, dispatched on the branch being cut, are green at its HEAD
+# and CI.yml, dispatched on main, are green at its HEAD
 # (scripts/release.sh's preflight).
 # Windows-only frontend code that cannot be cross-compiled on the backend
 # runs this workflow on its branch by hand: `gh workflow run rust.yml --ref
@@ -864,6 +864,12 @@ jobs:
         env:
           SOT_TEST_SOTD: "${{ github.workspace }}/rust/target/debug/sotd"
         run: bash scripts/tests/test-release-before.sh
+        working-directory: .
+
+      # release.sh's branch guard: a tag is cut from main only, checked in a throwaway repo with no origin.
+      - name: Test release.sh branch guard (bash)
+        timeout-minutes: 5
+        run: bash scripts/tests/test-release-branch.sh
         working-directory: .
 
       # The context deadline covers foreground children and the final wait.

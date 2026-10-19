@@ -135,7 +135,7 @@ let build = joinpath(@__DIR__, "build"), site = isdir(joinpath(build, "1")) ? jo
 end
 
 # DocumenterVitepress decides for itself whether this run may deploy (a CI
-# push to main or a tag); a local build never deploys.
+# push to main); a local build never deploys.
 DocumenterVitepress.deploydocs(;
     repo = "github.com/kalidke/ship-of-tools",
     devbranch = "main",

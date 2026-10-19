@@ -22,7 +22,7 @@ and the launch path fails open: no update step can stop a window from starting.
   `updates/`, `logs/`.
 
 ## Promises
-- A tag is cut only from `main`, `fixes/*` or `rc/*`, sorts above every tag of its line, and has green `rust.yml` and
+- A tag is cut only from `main`, sorts above every tag of its line, and has green `rust.yml` and
   `CI.yml` runs at HEAD (`release.sh` preflight).
 - Install checksums verify before any write, and `install.json` is written last (`install.sh` steps 2 and 9). Every writer of it
   (`install.sh`, `install-manifest.ps1`, `install.ps1`'s pin edit, `sot-apply.sh`, `sot-apply.ps1`) writes a temp file in
