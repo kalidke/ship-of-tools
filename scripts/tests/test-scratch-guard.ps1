@@ -102,7 +102,9 @@ foreach ($n in @('USERNAME', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', '
 Add-Content -LiteralPath $OutFile -Value ("RealProfile=" + (Get-SotRealProfile).Profile)
 Add-Content -LiteralPath $OutFile -Value ("FolderPathLocal=" + [Environment]::GetFolderPath('LocalApplicationData'))
 Add-Content -LiteralPath $OutFile -Value ("Cwd=" + (Get-Location -PSProvider FileSystem).ProviderPath)
-Add-Content -LiteralPath $OutFile -Value ("RelExists=" + (Test-Path -LiteralPath $Name))
+$rel = $false
+if ($Name) { $rel = Test-Path -LiteralPath $Name }   # Test-Path throws on an empty path, which ended the probes that name none
+Add-Content -LiteralPath $OutFile -Value ("RelExists=" + $rel)
 Add-Content -LiteralPath $OutFile -Value "Name=$Name"
 Add-Content -LiteralPath $OutFile -Value "Flag=$($Flag.IsPresent)"
 Set-Content -LiteralPath (Join-Path $env:TEMP 'made-by-probe.txt') -Value 'x'
@@ -167,8 +169,9 @@ exit 7
     $so = Read-Probe $short.Out
     $shortHome = $(if ($so.TMP) { Split-Path -Parent $so.TMP } else { '' })
     Check 'two concurrent runs have two homes' ($longHome -and $shortHome -and $longHome -ne $shortHome) "long $longHome short $shortHome"
+    Check 'the run that ended exited with the probe''s code' ($short.Proc.ExitCode -eq 7) "exit $($short.Proc.ExitCode)"
     Check 'the one that ended removed its own home' ($shortHome -and -not (Test-Path -LiteralPath $shortHome)) "still there: $shortHome"
-    Check 'and left the other''s home, and what that run made in it' ($longHome -and (Test-Path -LiteralPath (Join-Path $longHome 'tmp\made-by-probe.txt')) -and -not $long.Proc.HasExited) "long home $longHome"
+    Check 'and left the other''s home, and what that run made in it' ($longHome -and (Test-Path -LiteralPath (Join-Path $longHome 'tmp\made-by-probe.txt')) -and -not $long.Proc.HasExited) "long home $longHome; long exited: $($long.Proc.HasExited); exit $(if ($long.Proc.HasExited) { $long.Proc.ExitCode })"
     $long.Proc.WaitForExit()
     Check 'the other removed its own at its end' ($longHome -and $long.Proc.ExitCode -eq 7 -and -not (Test-Path -LiteralPath $longHome)) "exit $($long.Proc.ExitCode); still there: $longHome"
 
