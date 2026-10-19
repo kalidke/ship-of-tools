@@ -341,7 +341,7 @@ pub(super) fn reader_loop(
         shared
             .progress
             .note(Some(conn_id), "reader.io.enter", "begin");
-        let read = (&*stream).read(&mut buf);
+        let read = read_when_ready(&stream, &mut buf);
         shared
             .progress
             .note(Some(conn_id), "reader.io.result", format_args!("{read:?}"));
@@ -364,6 +364,40 @@ pub(super) fn reader_loop(
     shared
         .controls
         .exit_point(&shared.progress, conn_id, Role::Reader);
+}
+
+/// One read that never sleeps inside `recv(2)`: wait in `poll(2)` until the socket is readable, at EOF or in error, then
+/// take what is there with `MSG_DONTWAIT`, waiting again on a spurious wake. A `shutdown(2)` from another thread cannot
+/// be missed by `poll`, whose readiness check and wait registration hold the socket lock together. A blocking read can
+/// miss it on macOS: XNU's `soreceive` checks `SS_CANTRCVMORE`, then drops the socket lock in `uipc_rcvd` before
+/// sleeping and rechecks only for data, so a shutdown landing there wakes nobody and the read sleeps until the peer's
+/// next event (`sorflush` also zeroes `SO_RCVTIMEO`). Every socket read that a `shutdown(2)` must end goes through here.
+pub(super) fn read_when_ready(stream: &UnixStream, buf: &mut [u8]) -> io::Result<usize> {
+    let fd = stream.as_raw_fd();
+    loop {
+        let mut ready = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd for a socket `stream` keeps open.
+        if unsafe { libc::poll(&mut ready, 1, -1) } < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        // SAFETY: `buf` is valid for `buf.len()` writable bytes for the whole call.
+        let n = unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), libc::MSG_DONTWAIT) };
+        if n >= 0 {
+            return Ok(n as usize);
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::WouldBlock {
+            return Err(e);
+        }
+    }
 }
 
 /// `write(2)` in a partial-progress loop, checking `torn_down_requested`

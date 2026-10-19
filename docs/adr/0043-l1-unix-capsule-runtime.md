@@ -221,7 +221,9 @@ submissions.
    every lane request already map EOF/`EPIPE`/`ECONNRESET` mid-exchange to
    `Undetermined`, which the classifier retries under its own deadline. A
    deliberate, documented difference from `PIPE_BUSY`.
-5. **Cancellation is `shutdown(2)`.** A blocked `read` returns 0 or an error,
+5. **Cancellation is `shutdown(2)`.** A read waiting in `poll(2)` wakes and
+   its non-blocking `recv` returns 0 or an error (a read never blocks inside
+   `recv` itself: XNU's `soreceive` can lose a concurrent shutdown's wake),
    a blocked `write` returns a partial count or `EPIPE`; a `cancelled` flag set
    before the shutdown turns the outcome into `Cancelled`, checked on EVERY
    iteration of a partial-progress loop, not only at entry (property 12).

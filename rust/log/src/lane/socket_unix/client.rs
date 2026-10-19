@@ -201,7 +201,7 @@ impl SocketClient {
             if self.cancelled.load(Ordering::SeqCst) {
                 return Err(TransportError::Cancelled);
             }
-            match (&self.stream).read(buf) {
+            match super::conn::read_when_ready(&self.stream, buf) {
                 Ok(0) => {
                     return if self.cancelled.load(Ordering::SeqCst) {
                         Err(TransportError::Cancelled)
@@ -228,9 +228,10 @@ impl SocketClient {
     /// Abort whatever is in flight, from any thread: latch `cancelled`
     /// FIRST (SeqCst), THEN `shutdown(SHUT_RDWR)` — the direct analogue
     /// of `pipe_win::IoSlot::cancel`'s own "latch, then request" order,
-    /// simplified because POSIX's `shutdown(2)` unblocks a blocked read
-    /// AND a blocked write in one call, from any thread, without needing
-    /// to know which direction (if either) is currently mid-call.
+    /// simplified because POSIX's `shutdown(2)` ends a read waiting in
+    /// `conn::read_when_ready` AND a blocked write in one call, from any
+    /// thread, without needing to know which direction (if either) is
+    /// currently mid-call.
     /// Idempotent. A cancelled client permanently rejects later
     /// submissions (property 34) — every later `read`/`write_all` call
     /// observes `cancelled` already set before it ever reaches the OS.
