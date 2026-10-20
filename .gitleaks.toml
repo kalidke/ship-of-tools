@@ -1,0 +1,14 @@
+# gitleaks config, read from the repo root by `gitleaks git` and `gitleaks dir` (the gitleaks workflow passes no --config).
+# The default rules stay on. Two values are fixtures in Rust tests, not secrets: a 32-character token (the daemon log,
+# relay and window tests) and the page secret in the browser-open test's URL. Each is allowed by its exact value, and
+# only under the generic-api-key rule.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "test fixtures: the 32-character token and the browser-open test's page secret"
+targetRules = ["generic-api-key"]
+regexes = [
+  '''^0123456789abcdef0123456789abcdef$''',
+  '''^Ab12Cd34Ef56$''',
+]
