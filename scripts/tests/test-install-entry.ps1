@@ -475,8 +475,15 @@ exit 0
             Start-Sleep -Seconds 2
             $st = Get-DaemonState $binSotd $pipeN $binSotd
             Check '7n: a process of bin\sotd.exe that cannot be told is unknown too' ($st -ceq 'unknown') "state=$st"
+            $kidsN = Get-DaemonChildren $binSotd
+            Check '7n: the process walk finds the daemon process and no REPL or Pluto child under it' ($null -ne $kidsN -and @($kidsN).Count -eq 0) "kids='$($kidsN -join ',')'"
+            # A REPL child of that process is live, so the ask stays closed (a daemon with none is the 7x cases).
+            $snapReal = (Get-Item -LiteralPath 'Function:Get-ProcessSnapshot').ScriptBlock
+            $script:HeldPid = $held.Id; $script:HeldExe = $binSotd
+            Set-Item -LiteralPath 'Function:script:Get-ProcessSnapshot' -Value { return @([pscustomobject]@{ ProcessId = $script:HeldPid; ParentProcessId = 1; ExecutablePath = $script:HeldExe; CommandLine = $script:HeldExe }, [pscustomobject]@{ ProcessId = 1; ParentProcessId = $script:HeldPid; ExecutablePath = ''; CommandLine = 'julia.exe -e ShipToolsRepl.run_shim(stdin, stdout)' }) }
             $before = Get-Tree $hn.Prefix
             $e = Invoke-Entry @('-Archive', $r99.Pack)
+            Set-Item -LiteralPath 'Function:script:Get-ProcessSnapshot' -Value $snapReal
             Check '7n: an update beside it fails closed (exit 2) with sotd''s own line, one verdict' ($e.Rc -eq 2 -and $e.Verdicts -eq 1 -and $e.Last -like 'FAIL: daemon: *no answer within 5 s*') "rc=$($e.Rc) last='$($e.Last)'"
             Check '7n: nothing under the prefix changed and the old daemon process runs' (((Get-Tree $hn.Prefix) -ceq $before) -and -not $held.HasExited) 'the prefix changed or the process ended'
             $env:SOT_FAKE_DAEMON = '0'; $env:SOT_FAKE_REPLS = 'repl Rig PC'; $env:SOT_FAKE_REPLS_RC = '3'
