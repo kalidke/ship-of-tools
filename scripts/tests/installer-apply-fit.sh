@@ -5,7 +5,8 @@
 # a host naming neither key (a guest of the install's home) takes the record.
 recorded_apply() {  # <name> <self host> <daemon bit in install.json>: a light prepare over a fixture, applied as that host
     PREP=light real_apply "$1" v9.9.8 9.9.9
-    sed "s/\"service\": \"systemd\"/\"service\": \"systemd\",\n  \"daemon\": $3/" "$RD/prefix/install.json" > "$RD/prefix/install.json.tmp" \
+    sed 's/"service": "systemd"/"service": "systemd",\
+  "daemon": '"$3"'/' "$RD/prefix/install.json" > "$RD/prefix/install.json.tmp" \
         && mv "$RD/prefix/install.json.tmp" "$RD/prefix/install.json"
     printf 'hub = "hubbox"\n[host.hubbox]\ndaemon = true\n[host.laptop]\nfrontend = true\n[host.guest]\n' > "$RD/hosts.toml"
     SOT_HOSTS="$RD/hosts.toml" SOT_SELF_HOST="$2" run_apply "$RD"
