@@ -33,6 +33,9 @@ interval="${2:-1}"
 prev_total=0
 prev_idle=0
 n=0
+# The top-3 loop reads a pipe in this shell (lastpipe), never a here-document: bash before 5.3 leaks both ends of a
+# here-document's pipe smaller than the document (every new pipe, past fs.pipe-user-pages-soft) until `$(...)` fails.
+shopt -s lastpipe
 # Static host capacity (logical cores + total RAM in GiB), computed once.
 cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
 ramgb=$(awk '/^MemTotal:/{printf "%.0f", $2/1024/1024; exit}' /proc/meminfo)
@@ -111,7 +114,7 @@ while :; do
     }' 2>/dev/null)
   dtp=$(awk -v a="$prev_pts" -v b="$now_pts" 'BEGIN { d = b - a; if (d <= 0) d = 1; print d }')
   top="["; sep=""
-  while read -r tag pid ticks comm; do
+  printf '%s\n' "$pout" | while read -r tag pid ticks comm; do
     [ "$tag" = "P" ] || continue
     ownr=$(stat -c %U "/proc/$pid" 2>/dev/null || echo "?")
     pct=$(awk -v t="$ticks" -v hz="$hz" -v dt="$dtp" 'BEGIN { printf "%.1f", t / hz / dt * 100 }')
@@ -119,9 +122,7 @@ while :; do
     ownr=$(printf '%s' "$ownr" | sed 's/\\/\\\\/g; s/"/\\"/g')
     top="$top$sep{\"n\":\"$comm\",\"o\":\"$ownr\",\"c\":$pct}"
     sep=","
-  done <<EOF
-$pout
-EOF
+  done
   top="$top]"
   proc_prev=$(printf '%s\n' "$pout" | awk '/^S / { sub(/^S /, ""); print }')
   prev_pts=$now_pts
@@ -140,8 +141,8 @@ const CAP1: usize = 1440; // ~24 h  @ 1 min
 const CAP2: usize = 720; //  ~30 d  @ 1 h
 const BROADCAST_CAP: usize = 256;
 const RESPAWN_BACKOFF: Duration = Duration::from_secs(5);
-/// A sampler that prints nothing for this long (twenty base intervals, which also covers a remote sampler's ssh
-/// connect) is ended and started again: `nvidia-smi` or an ssh session can hang with the sampler alive.
+/// A sampler that gives no sample for this long (twenty base intervals, which also covers a remote sampler's ssh
+/// connect) is ended and started again: `nvidia-smi` or ssh can hang, and one out of descriptors prints only bad lines.
 const SAMPLER_SILENT: Duration = Duration::from_secs(20);
 
 /// A monitored host: display name plus how to run the sampler on it.
@@ -533,9 +534,10 @@ async fn supervise(
     rings: Arc<Mutex<HashMap<String, HostRing>>>,
     sig: &'static crate::lifecycle::child_signal::Signal,
 ) {
-    // The reason last logged for this host's death, so a target that stays
-    // unreachable logs it once rather than on every ~5s respawn forever.
+    // The death reason and the parse error last logged for this host: a target that stays unreachable, or a sampler
+    // that prints a bad line a second, logs each once, not on every ~5s respawn or every line forever.
     let mut last_reason: Option<String> = None;
+    let mut last_bad: Option<String> = None;
     loop {
         if sig.is_fired() {
             return;
@@ -547,7 +549,7 @@ async fn supervise(
                 // ssh's own words for why the source died, kept only until
                 // the child does — one bounded string, never a growing log.
                 let mut stderr_line: Option<String> = None;
-                // When the sampler last printed, or was started.
+                // When the sampler last gave a sample, or was started: a line that does not parse is none.
                 let mut heard = tokio::time::Instant::now();
                 loop {
                     tokio::select! {
@@ -557,7 +559,6 @@ async fn supervise(
                         line = next_or_pending(&mut stdout) => {
                             match line {
                                 Ok(Some(line)) => {
-                                    heard = tokio::time::Instant::now();
                                     let line = line.trim();
                                     if line.is_empty() {
                                         continue;
@@ -566,6 +567,7 @@ async fn supervise(
                                     // forbids a control character in a string; the script writes none elsewhere.
                                     match serde_json::from_str::<RawSample>(&line.replace(char::is_control, " ")) {
                                         Ok(raw) => {
+                                            heard = tokio::time::Instant::now();
                                             let sample = raw.into_sample();
                                             if let Ok(mut rings) = rings.lock() {
                                                 if let Some(r) = rings.get_mut(&host.name) {
@@ -578,19 +580,15 @@ async fn supervise(
                                                 sample: Some(sample),
                                             });
                                         }
-                                        Err(e) => {
+                                        Err(e) if should_log(last_bad.as_deref(), &e.to_string()) => {
                                             tracing::warn!(host = %host.name, error = %e, line, "monitor: bad sampler line");
+                                            last_bad = Some(e.to_string());
                                         }
+                                        Err(_) => {}
                                     }
                                 }
-                                Ok(None) => {
-                                    tracing::warn!(host = %host.name, "monitor: sampler stdout closed");
-                                    break stderr_line.take().unwrap_or_default();
-                                }
-                                Err(e) => {
-                                    tracing::warn!(host = %host.name, error = %e, "monitor: sampler read error");
-                                    break stderr_line.take().unwrap_or_default();
-                                }
+                                Ok(None) => break stderr_line.take().unwrap_or_else(|| "its stdout closed".into()),
+                                Err(e) => break stderr_line.take().unwrap_or_else(|| format!("its stdout: {e}")),
                             }
                         }
                         line = next_or_pending(&mut stderr) => {
@@ -601,7 +599,7 @@ async fn supervise(
                                 }
                             }
                         }
-                        // Silent past the bound: the dropped tree is killed, and the stale tick and respawn follow,
+                        // No sample past the bound: the dropped tree is killed, and the stale tick and respawn follow,
                         // with what ssh last said (a connect that never finishes says why there).
                         _ = tokio::time::sleep_until(heard + SAMPLER_SILENT) => {
                             let silent = format!("no sample in {}s", SAMPLER_SILENT.as_secs());

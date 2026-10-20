@@ -38,8 +38,8 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - A `repl.execute` whose wait ends while the REPL's child has not said it is ready answers `timeout` with an `error`
   saying how long the REPL has been starting and its last five stderr lines (`Start::still_starting`, child/), and
   logs the same at warn; a stalled start (a juliaup launcher installing a Julia, a precompile) is named by the child's
-  own words, never a bare timeout. An Xvfb that names no display within its bound, and a sampler ended for silence,
-  name the last lines they wrote in the reason they log at warn.
+  own words, never a bare timeout. An Xvfb that names no display within its bound, and a sampler ended for giving no
+  sample, name the last lines they wrote in the reason they log at warn.
 - Once the server is ready, a Pluto open answers within `PLUTO_OPEN_BOUND` (30 s, from its submission) or fails naming it, and the server that did not answer is ended, since its replies are matched oldest-first.
 - Whether the Pluto server is running (started and not ended; `Pluto::server_up`) is the one fact the daemon knows about its notebooks: Pluto's own home page opens and closes notebooks the daemon never sees. `workspace.list` carries it as `pluto_server_up`, so the update's question covers every notebook open in it with the rows' REPLs.
 - Pluto's proxy port is a supervisor-owned generation grant, published only after a loopback READY URL and released on every supervisor exit or cancellation before cleanup awaits. An old generation's release cannot erase its replacement's grant (`bound_pluto_port`).
@@ -65,11 +65,17 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - Every sidecar child starts through `Signal::spawn`. Kernel, REPL, Pluto, MathJax and monitor supervisors receive a caller-supplied `&'static Signal` for both spawn and shutdown observation; the monitor's respawn backoff ends at its fire. REPL and MathJax select the daemon's process `Signal` only where their production handles are constructed.
 - A remote host's sampler ssh is built from `SSH_OPTS`, so it turns ssh sharing off as the bridges do
   (`sampler_command`).
-- A monitor sampler silent for `SAMPLER_SILENT` (20 s) is ended, shown stale, and started again after `RESPAWN_BACKOFF`;
-  the reason it logs carries the last line it wrote to stderr.
+- A monitor sampler that gives no sample for `SAMPLER_SILENT` (20 s), silent or printing only lines that do not parse,
+  is ended, shown stale, and started again after `RESPAWN_BACKOFF`; the reason it logs carries the last line it wrote
+  to stderr. A line that does not parse is logged once per change of its error (tests `a_silent_sampler_is_restarted`,
+  `a_sampler_whose_lines_do_not_parse_is_restarted`).
+- The sampler script reads no here-document or here-string (`SAMPLER_SH`): bash before 5.3 leaks both ends of a
+  here-document's pipe smaller than the document, and every new pipe is two pages while the account's pipes are over
+  `fs.pipe-user-pages-soft`, so a sampler leaked a pair a tick until it had no descriptor left (test
+  `the_sampler_reads_no_here_document`).
 - The kernel runs only its own `julia/kernel` project (`run_one_generation`).
-- A dead monitor source shows as a `stale` tick and respawns after 5 s; its reason is logged once per change
-  (`should_log`).
+- A dead monitor source shows as a `stale` tick and respawns after 5 s; its reason, a closed stdout included, is logged
+  once per change (`should_log`).
 - A process name reaches the daemon as `/proc` gives it: the sampler's awk joins a stat line a `\n` in the name split
   (`SAMPLER_SH`), and the daemon decodes each line lossily and makes its control characters spaces before parsing it
   (`ChildLines`, `supervise`; tests `a_process_name_with_any_bytes_keeps_its_host_sampled`,
