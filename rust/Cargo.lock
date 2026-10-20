@@ -3840,7 +3840,7 @@ dependencies = [
 
 [[package]]
 name = "sot-backend"
-version = "0.6.6-rc9.15-dev"
+version = "0.6.6-rc9.15"
 dependencies = [
  "anyhow",
  "base64",
@@ -3870,7 +3870,7 @@ dependencies = [
 
 [[package]]
 name = "sot-frontend"
-version = "0.6.6-rc9.15-dev"
+version = "0.6.6-rc9.15"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3919,7 +3919,7 @@ dependencies = [
 
 [[package]]
 name = "sot-log"
-version = "0.6.6-rc9.15-dev"
+version = "0.6.6-rc9.15"
 dependencies = [
  "cc",
  "crc32c",
@@ -3942,7 +3942,7 @@ dependencies = [
 
 [[package]]
 name = "sot-protocol"
-version = "0.6.6-rc9.15-dev"
+version = "0.6.6-rc9.15"
 dependencies = [
  "anyhow",
  "interprocess",
@@ -3956,7 +3956,7 @@ dependencies = [
 
 [[package]]
 name = "sot-updater"
-version = "0.6.6-rc9.15-dev"
+version = "0.6.6-rc9.15"
 dependencies = [
  "anyhow",
  "gethostname 0.5.0",
