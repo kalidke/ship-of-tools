@@ -511,10 +511,7 @@ send is sent by a later tick, with Enter alone, once main's input box holds just
 that line, whether or not the mail has been read by then (the session then finds
 nothing new); a box that holds anything else is left as it is. Within one daemon
 run the line is never typed twice; a restart forgets it, so a line left across a
-restart is sent only while its mail is unread. Known limit: on Windows the read of
-the typed line has refused a line that sat in the box, and no Windows screen of a
-box holding typed text has been read yet, so there a line can stay until a person
-sends it. A row whose registry entry
+restart is sent only while its mail is unread. A row whose registry entry
 carries a `stop_at` under a minute old is running its Stop hook and is not typed
 into: the hook stamps it as it starts, its `stop` deletes it when the turn ends,
 and the hook reads the mail itself. A turn ended by Esc or an API error runs no

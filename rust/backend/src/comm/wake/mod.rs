@@ -69,8 +69,10 @@
 //! unread the debt lasts until [`REPEAT_AFTER`]; once it is read, until that Enter goes or main's box reads empty
 //! [`REPEAT_AFTER`] or more after the typing ([`line_gone`]; sooner, an empty box may be an echo still to come). A box
 //! that holds anything but just the line gets nothing and is looked at again every tick, as a row with unread mail is.
-//! Known gap (Windows): [`typed_refusal`] has refused a line that sat in main's box, and no Windows screen of a box
-//! holding typed text has been read, so there the line can stay until a person sends it.
+//! Known gap (Windows): the typed line has failed to read alone in main's box within [`OP_BUDGET`] of the typing, though
+//! a later read of the same row matched it; no Windows screen of a box holding typed text has been captured, so whether
+//! the echo came late or something else shared the row is not known. A later tick sends the Enter once the row rests
+//! with just the line in the box.
 //!
 //! A text write that fails after it may have landed (any phase but a stale `input` refusal) is treated as typed: the
 //! line is owed its Enter and is not typed again, so a write that was lost for good costs the row its wake until
