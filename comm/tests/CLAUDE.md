@@ -43,6 +43,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-send-file.sh`: `comm-send.sh @h --file PATH` and `--file -` deliver the body byte for byte (backquotes, `$( )`, quotes, a backslash, blank lines, a trailing newline or none); a missing, empty or doubled `--file` is refused with one line and nothing appended
 - `test-stage-bin.sh`: complete old/new staged bytes, chosen modes, visible failures and owned-temp cleanup through absolute fixture programs
 - `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks and the join's turn mark, closing markers and the turn auditor
+- `test-subagent-guard.sh`: `comm-subagent-guard.sh` denies a sot-comm script in a subagent's Bash call (input with `agent_id`) and allows silently with none, for another command, malformed input or no jq
 - `test-temp-files.sh`: no messaging script or library call leaves a file in its temporary folders, on success, on failure, killed, or ended by TERM, HUP or INT, and when the signal comes twice, during the trap's rm or back to back; a Ctrl-C during `comm-relay.sh send` stops the shell that ran it; the heartbeat leaves no context capture file in the comm home's state when a signal ends it, and the registry lock and the Stop hook's feedback record go too
 
 ## Start here

@@ -536,7 +536,11 @@ Monitor exists.
   mail before a turn ends. While idle it sees mail only at its next turn,
   and after ten idle minutes sends to it fail as "no live session".
 - A subagent that runs inside its parent's agent process uses no mail: it
-  neither sends nor reads, and it reports to its parent, which sends.
+  neither sends nor reads, and it reports to its parent, which sends. On
+  Claude Code a `PreToolUse` hook on Bash (`comm-subagent-guard.sh`) enforces
+  it: the hook input carries `agent_id` only inside a subagent, and the hook
+  denies a Bash command that names a `comm-*.sh` script there; a session's own
+  input has none, so it is never refused.
   Another agent started inside a session (`codex exec`, `claude -p`), and
   anything it starts, has no comm identity: a process acts as a handle only if
   at most one agent (claude or codex) lies between it and its row's capsule, or
@@ -657,8 +661,9 @@ Monitor exists.
   U+FFFD. On Linux a process whose whole command line is exactly `!end` ends
   the walk as if it were the top. Nor does the check see a subagent: a
   subagent's shell has its session's ancestry, so the check takes it for the
-  session, and that a subagent neither sends nor reads rests on nothing in
-  its load or its brief telling it to use mail.
+  session. That a subagent neither sends nor reads is enforced for Claude Code
+  by the hook above, which reads `agent_id` from the hook input; Codex has no
+  such hook, so there the rule is an instruction only.
 
 ## Dependencies
 

@@ -35,7 +35,7 @@ always wins; otherwise a validated prior identity; otherwise fresh
 derivation — never manufactured from a lower-priority source. Only a
 session holds an identity: a row's own session, whose self-file the daemon
 pins, or a session outside any row. Nothing started inside a session (a
-subagent, `codex exec`, `claude -p`) joins: it uses no mail.
+subagent, `codex exec`, `claude -p`) joins: it uses no mail (on Claude Code a hook refuses a subagent's sot-comm command).
 `identity=MISMATCH`, a `REFUSED` start (`identity=FAIL`) and a pin of a handle a row holds
 (`REFUSING to join`, `identity=FAIL`) are different problems with different fixes — see `references/reclaim-handle.md`.
 

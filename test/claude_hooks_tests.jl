@@ -444,6 +444,20 @@ end
     end
 end
 
+@testset "the subagent guard: wired to Bash, kept there, stripped from any other matcher" begin
+    @test ("PreToolUse", "comm-subagent-guard.sh", "Bash") in ShipTools._COMM_STATE_HOOKS
+    mktempdir() do dir
+        settings = joinpath(dir, "settings.json")
+        write(settings, """{"hooks":{"PreToolUse":[
+          {"matcher":"Bash","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-subagent-guard.sh"}]},
+          {"matcher":"Edit","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-subagent-guard.sh"}]}]}}""")
+        @test ShipTools._remove_stale_comm_hooks!(settings)
+        @test jq_lines(`jq -r '.hooks.PreToolUse[] | .matcher' $settings`) == ["Bash"]
+        @test ShipTools._add_comm_hook!("PreToolUse", "comm-subagent-guard.sh", settings; matcher = "Bash")
+        @test jq_lines(`jq -r '.hooks.PreToolUse[] | .matcher' $settings`) == ["Bash"]
+    end
+end
+
 @testset "_remove_stale_comm_hooks!: retired reminder hooks go, others stay" begin
     # The post-compact and post-clear reminder scripts are deleted, so an
     # install must also drop their settings entries, or settings.json keeps

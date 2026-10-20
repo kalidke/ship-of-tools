@@ -160,7 +160,7 @@ function _install_claude_hooks(claude_dir::AbstractString;
 end
 
 # The comm lifecycle hooks: (Claude Code event, script in ~/.sot-comm/bin, tool
-# matcher | nothing). The first four are the instant + automatic WORK-STATE
+# matcher | nothing). Four are the instant + automatic WORK-STATE
 # source that replaces pane-scraping — Claude fires these on its own lifecycle,
 # with zero model help. A row is a set of FACTS reduced to one display state
 # by comm-status.sh (ADR 0044 amendment, 2026-09-19): `blocked` keys off the
@@ -171,10 +171,13 @@ end
 # design that would key it per agent is not built, so neither it nor
 # PostToolUseFailure is wired, and an install strips both. A question asked in
 # plain text has no automatic signal — an agent self-reports
-# `comm-status.sh blocked "<q>"` for those.
+# `comm-status.sh blocked "<q>"` for those. The fifth, `comm-subagent-guard.sh`,
+# is no work-state source: it denies a subagent's Bash call that names a sot-comm
+# script (a subagent uses no mail; the hook input's `agent_id` is the only signal).
 const _COMM_STATE_HOOKS = [
     ("UserPromptSubmit", "comm-status-working.sh", nothing),     # turn starts    → prompt (sets floor)
     ("PreToolUse", "comm-status-blocked.sh", "AskUserQuestion"), # opens question → blocked, then stop (a real turn end)
+    ("PreToolUse", "comm-subagent-guard.sh", "Bash"),            # a subagent's sot-comm script → denied (it uses no mail)
     ("Stop", "comm-status-idle.sh", nothing),                    # turn ends      → stop (done iff floor=user, nothing pending)
     # Long-turn heartbeat: re-stamps a WORKING row's status_at on tool
     # activity (throttled to 60s) so the nav's 10-min wilt marks real stalls,
@@ -302,7 +305,7 @@ end
 Strip every comm command that is not part of the current wiring
 (`_COMM_STATE_HOOKS`, matched by event, command and matcher) from `settings` (a
 resolved file, see [`_add_comm_hook!`]) — retired scripts (any other
-`~/.sot-comm/bin/comm-status-*.sh`, the retired `comm-postcompact-reminder.sh` /
+`~/.sot-comm/bin/comm-status-*.sh`, a `comm-subagent-guard.sh` on another event or matcher, the retired `comm-postcompact-reminder.sh` /
 `comm-postclear-reminder.sh`) and a current script wired to an old event or
 matcher (notably the old `Notification`→blocked that lit agents red on plain
 idle). Commands are removed one at a time, a group is dropped only when left
@@ -320,7 +323,7 @@ function _remove_stale_comm_hooks!(settings::AbstractString)
     # event whose group list is now empty.
     keep = _comm_keep_json()
     prog = _JQ_READ_SETTINGS * """
-    def comm: (.command // "") | test("(^|/)[.]sot-comm/bin/comm-(status-|post(compact|clear)-reminder)");
+    def comm: (.command // "") | test("(^|/)[.]sot-comm/bin/comm-(status-|subagent-guard|post(compact|clear)-reminder)");
     def current(\$e; \$m): (.command // "") as \$c | any(\$keep[]; . == [\$e, \$c, \$m]);
     if .hooks then
       .hooks |= ( to_entries
