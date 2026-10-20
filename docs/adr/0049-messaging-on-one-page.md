@@ -62,7 +62,9 @@ The fix is to agree on the one page comm system and then clean up.
   the row and the count is a file. A session outside any row sees mail only at its own
   next turn end while idle, and after ten idle minutes a send to it fails. A subagent
   that runs inside its parent's agent process uses no mail: it neither sends nor reads,
-  and it reports to its parent, which sends. Another agent started inside a session
+  and it reports to its parent, which sends; on Claude Code a `PreToolUse` hook
+  (`comm-subagent-guard.sh`) refuses a subagent's sot-comm command by the hook input's
+  `agent_id`. Another agent started inside a session
   (`codex exec`, `claude -p`), and anything it starts, has no comm identity: a process
   acts as a handle only if at most one agent lies between it and its row's capsule, or
   the top of its process tree outside a row; an ancestry that cannot be read in full is
