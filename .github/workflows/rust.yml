@@ -810,6 +810,10 @@ jobs:
         working-directory: .
         run: bash scripts/tests/test-rc-gate-target.sh
 
+      - name: Test bash32.sh's build needs
+        working-directory: .
+        run: bash scripts/tests/test-bash32.sh
+
       - name: Test the rc gate's suite result names
         working-directory: .
         run: bash scripts/tests/test-rc-gate-basename.sh
