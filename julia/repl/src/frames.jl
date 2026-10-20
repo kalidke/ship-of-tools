@@ -115,8 +115,9 @@ function stream_eval_frames(f, emit)
 
     old_stdout = stdout
     old_stderr = stderr
-    reader_out = @async stream_pipe(pipe_out, emit, "stdout")
-    reader_err = @async stream_pipe(pipe_err, emit, "stderr")
+    drop_held_signal()
+    reader_out = @async held_task(() -> stream_pipe(pipe_out, emit, "stdout"))
+    reader_err = @async held_task(() -> stream_pipe(pipe_err, emit, "stderr"))
 
     frames = Dict[]
     threw = nothing

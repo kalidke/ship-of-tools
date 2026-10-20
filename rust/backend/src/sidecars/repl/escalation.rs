@@ -19,9 +19,9 @@ const BURST_GAP: Duration = Duration::from_millis(50);
 /// How long a forced interrupt's signals go on, from the first. Julia forces the exception into code with no safepoint
 /// at the fifth signal it counts close together (each adds 0.3 to a sum that decays with a one-second time constant,
 /// and the first only starts the count; when an earlier signal started it, the fourth forces). After forcing it ignores
-/// signals for half a second, and one after that is a new interrupt, raised in whatever the shim then runs: its answer
-/// for the forced eval, which it can turn into an error (julia/repl `serve`). On macOS and Windows Julia counts each
-/// signal on a thread of its own, so the burst forces by its fourth or fifth signal, and a burst that ends 0.4 s after
+/// signals for half a second, and one after that is a new interrupt, held by the shim outside a user's code and
+/// dropped, so its answer for the forced eval stays whole (julia/repl `held_task`). On macOS and Windows Julia counts
+/// each signal on a thread of its own, so the burst forces by its fourth or fifth signal, and a burst that ends 0.4 s after
 /// its first signal ends inside the half second after any force in it. On Linux the eval's own thread counts each one
 /// in its signal handler, so the signals sent while that thread waits for a CPU merge into one count: on a loaded
 /// computer five signals count as two or three, and the signals go on so that the thread counts one each time it runs.

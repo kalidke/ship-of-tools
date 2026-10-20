@@ -46,8 +46,8 @@ mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for 
   the shim's answer: on macOS and Windows it counts every signal on a thread of its own, so the burst ends inside that
   half second; on Linux it counts a signal only when the eval's thread runs between two, so under heavy CPU load
   forcing may not stop the eval, the span forces at most once, and a child that forced early and then wrote nothing for
-  half a second takes the last signals as new interrupts, which can turn its answers into errors and which `serve`
-  outlives (julia/repl). The signals go only to the eval the child runs (the first written and still in flight,
+  half a second takes the last signals as new interrupts, which the shim holds outside a user's code and drops, so its
+  answers stay whole (julia/repl). The signals go only to the eval the child runs (the first written and still in flight,
   `in_order`) and only if the request names no evals or names it, only while it is in flight: never to an idle REPL,
   never to an eval the request did not name, never after the eval's `done`. Any line from the child restarts the
   quiet, one after a signal ends the signals, and the interrupt's answer ends the steps (`Escalation`). When the

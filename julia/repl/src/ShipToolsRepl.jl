@@ -66,6 +66,12 @@ const CURRENT_EVAL = Ref{Union{Eval,Nothing}}(nothing)
 # eval's code clears it (`run_user_code`).
 const SIGNALED = Ref{Any}(nothing)
 
+# The tasks that hold the daemon's interrupt signal (SIGINT; a Ctrl+Break on Windows), each from `held_task` to its end.
+# Julia raises a signal at the thread's next safepoint, in whatever task runs there, so one that lands in the shim's own
+# steps could garble a frame, end `serve`, or leave an eval with no done. A task that holds it has the signal wait
+# instead, and only a user's code lifts the hold (`user_signals`). The hold belongs to its task: a new task starts with none.
+const HELD_TASKS = Base.IdSet{Task}()
+
 # Why the REPL before this child was ended (the daemon's `SOT_PREVIOUS_END`: its display ended under it) and why this
 # child has no display of its own (`SOT_NO_DISPLAY`: on Linux no Xvfb could start), read at `serve` and said once, as a
 # stderr frame at the start of the first eval (`spawn_eval`), so whoever runs code next sees it in the drawer or in
@@ -127,6 +133,10 @@ Stderr-the-stream is for free-text logging; the Rust supervisor never reads
 it as data.
 """
 function serve(io_in::IO, io_out::IO)
+    held_task(() -> serve_requests(io_in, io_out))
+end
+
+function serve_requests(io_in::IO, io_out::IO)
     println(stderr, "sot-repl ready · julia=$(VERSION)")
     flush(stderr)
 
@@ -151,15 +161,65 @@ function serve(io_in::IO, io_out::IO)
     while true
         # The requests that were waiting when a signal stopped an eval are answered for it; one that comes after is not.
         bytesavailable(io_in) == 0 && (SIGNALED[] = nothing)
+        drop_held_signal()
         line = past_interrupts(() -> eof(io_in) ? nothing : readline(io_in))
         line === nothing && break
-        # The daemon's signals land in whatever this thread runs, several close together after a forced eval: none ends
-        # `serve`, whose end is the REPL's. One that lands outside a request's handling and its answer is dropped here.
+        # The shim holds the daemon's signals outside a user's code (`held_task`), and the few that still land, several
+        # close together after a forced eval, end no `serve`, whose end is the REPL's: one that lands outside a request's
+        # handling and its answer is dropped here.
         try
             serve_request(io_out, line)
         catch e
             e isa InterruptException || rethrow()
         end
+    end
+end
+
+# Ends one signal hold, dropping a signal held under it: Julia raises the held signal as the count falls to zero. The
+# count is saved at every `try` and restored when it exits, by an exception or not, so the first end runs inside one (it
+# raises, or not, and the count is back where it was) and the end that counts is outside any.
+function end_deferral()
+    try
+        Base.sigatomic_end()
+    catch e
+        e isa InterruptException || rethrow()
+    end
+    Base.sigatomic_end()
+end
+
+# The body of each task the shim starts (`serve`, an eval, a stream reader): `f()` with the daemon's signal held in the
+# task. A signal held when the task ends is dropped first, since Julia raises a held signal as a task finishes, where
+# nothing can catch it. A signal held waits for the next eval's code (`user_signals`).
+function held_task(f)
+    task = current_task()
+    task in HELD_TASKS && return f()
+    push!(HELD_TASKS, task)
+    Base.sigatomic_begin()
+    try
+        return f()
+    finally
+        delete!(HELD_TASKS, task)
+        end_deferral()
+    end
+end
+
+# Drops the signal held in the current task, so a task started next does not begin with it: a new task starts with no
+# hold, and Julia raises a held signal in the task it starts, where it ends the task before it can hold its own.
+function drop_held_signal()
+    current_task() in HELD_TASKS || return
+    end_deferral()
+    Base.sigatomic_begin()
+end
+
+# `f()` with the daemon's signal live: the one place it is raised (the user's code, `run_user_code`). A signal held
+# until now is dropped first, since it was sent for code that has ended; the hold resumes when `f` ends.
+function user_signals(f)
+    current_task() in HELD_TASKS || return f()
+    end_deferral()
+    try
+        return f()
+    finally
+        Base.sigatomic_begin()
     end
 end
 
@@ -267,30 +327,33 @@ made while it holds the guard, so it never clears a later eval's.
 """
 function spawn_eval(work, io::IO, id, eval_id, op, ack)
     task = Task() do
-        emit = make_emit(io, id, eval_id)
-        start = time()
-        notice = DISPLAY_NOTICE[]
-        if notice !== nothing
-            DISPLAY_NOTICE[] = nothing
-            past_interrupts(() -> emit(Dict(:kind => "stderr", :text => notice)))
-        end
-        try
-            work(emit)
-        catch e
-            past_interrupts() do
-                emit(Dict(:kind => "error",
-                          :message => "internal repl error: $(sprint(showerror, e))",
-                          :stacktrace => Dict[]))
+        held_task() do
+            emit = make_emit(io, id, eval_id)
+            start = time()
+            notice = DISPLAY_NOTICE[]
+            if notice !== nothing
+                DISPLAY_NOTICE[] = nothing
+                past_interrupts(() -> emit(Dict(:kind => "stderr", :text => notice)))
             end
+            try
+                work(emit)
+            catch e
+                past_interrupts() do
+                    emit(Dict(:kind => "error",
+                              :message => "internal repl error: $(sprint(showerror, e))",
+                              :stacktrace => Dict[]))
+                end
+            end
+            # The eval's code is over, so a signal that lands from here is the daemon's, sent for code that ended as it came:
+            # each step runs again until it has run (`past_interrupts`).
+            past_interrupts(() -> CURRENT_EVAL[] = nothing)
+            elapsed_ms = round(Int, (time() - start) * 1000)
+            past_interrupts(() -> emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => elapsed_ms)))
+            past_interrupts(() -> write_envelope(io, "res", id, op, merge(ack, Dict(:elapsed_ms => elapsed_ms))))
         end
-        # The eval's code is over, so a signal that lands from here is the daemon's, sent for code that ended as it came:
-        # each step runs again until it has run (`past_interrupts`).
-        past_interrupts(() -> CURRENT_EVAL[] = nothing)
-        elapsed_ms = round(Int, (time() - start) * 1000)
-        past_interrupts(() -> emit(Dict(:kind => "done", :eval_id => eval_id, :elapsed_ms => elapsed_ms)))
-        past_interrupts(() -> write_envelope(io, "res", id, op, merge(ack, Dict(:elapsed_ms => elapsed_ms))))
     end
     CURRENT_EVAL[] = Eval(eval_id, task, :waiting, false)
+    drop_held_signal()
     schedule(task)
     return
 end
@@ -306,7 +369,7 @@ function run_user_code(f)
         ev.stage === :held && throw(InterruptException())
         ev.stage = :running
         SIGNALED[] = nothing
-        return f()
+        return user_signals(f)
     catch e
         e isa InterruptException && !ev.asked && (SIGNALED[] = ev.id)
         rethrow()

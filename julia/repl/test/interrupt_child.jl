@@ -104,10 +104,10 @@ printed(lines, n, text) = any(f -> f[:kind] == "stdout" && occursin(text, f[:tex
 end
 
 # The signal can come as the code it was for ends (`Escalation` stops at the child's first line, but one already sent
-# lands after it): the shim drops it, here while it waits for the next request. Julia 1.12 raises a signal that comes
-# while the thread idles in a finished task's end, where nothing can catch it, and the REPL ends
-# (`fatal: error thrown and no exception handler available`); 1.13 raises it in the next task that runs.
-VERSION >= v"1.13" && @testset "run_shim: an interrupt signal that comes between evals is dropped, and the REPL serves on" begin
+# lands after it): the shim holds a signal outside a user's code, so this one waits and the next eval's code start drops it.
+# Julia 1.12 raises a signal that comes while the thread idles in a finished task's end, where nothing can catch it, and
+# the REPL ends (`fatal: error thrown and no exception handler available`); held, it never reaches that raise.
+@testset "run_shim: an interrupt signal that comes between evals is dropped, and the REPL serves on" begin
     proc, lines = interrupt_child()
     @test ShipToolsRepl.json_read(take!(lines))[:op] == "repl.ready"
     send(proc, eval_line(1, "kept = 41"))
@@ -118,4 +118,44 @@ VERSION >= v"1.13" && @testset "run_shim: an interrupt signal that comes between
     @test values_of(answered_within(lines, [2], 30), 2) == ["42"]
     close(proc.in)
     wait(proc)
+end
+
+# The forced burst's last signals come after Julia's half second of ignoring signals, so each is a new interrupt, and the
+# child may be slow to answer (held still here with SIGSTOP, as a loaded computer holds it): they land while the shim
+# writes the stopped eval's answer, or after it. None garbles a frame, ends the REPL, or leaves the stopped eval or the
+# interrupt request without its answer, and the next eval runs clean.
+Sys.isunix() && @testset "run_shim: signals after a forced stop meet a child held still, and every answer is whole" begin
+    stop, cont = Sys.isapple() ? (17, 19) : (19, 18)
+    for held_from in (0.05, 0.1, 0.15, 0.2)
+        proc, lines = interrupt_child()
+        @test ShipToolsRepl.json_read(take!(lines))[:op] == "repl.ready"
+        send(proc, eval_line(1, "kept = 41"))
+        @test values_of(answered_within(lines, [1], 120), 1) == ["41"]
+        send(proc, eval_line(2, "println(\"spinning\"); while true end"))
+        @test printed(lines, 2, "spinning")
+        sleep(0.3)
+        send(proc, child_interrupt_line(3))
+        sleep(0.3)
+        for i in 1:5
+            signal_interrupt(proc)
+            i < 5 && sleep(0.05)
+        end
+        fifth = time()
+        sleep(max(0.0, fifth + held_from - time())); kill(proc, stop)
+        sleep(max(0.0, fifth + 0.6 - time())); signal_interrupt(proc)
+        sleep(0.05); kill(proc, cont)
+        for after in (0.7, 0.75)
+            sleep(max(0.0, fifth + after - time())); signal_interrupt(proc)
+        end
+        envs = answered_within(lines, [2, 3], 30)
+        errors = [f[:message] for f in child_frames(envs, 2) if f[:kind] == "error"]
+        @test length(errors) == 1 && occursin("eval interrupted", only(errors))
+        @test any(f -> f[:kind] == "done", child_frames(envs, 2))
+        @test answered(envs, 2) && answered(envs, 3)
+        @test answered(envs, 3) && get(child_res(envs, 3), :interrupted, false)
+        send(proc, eval_line(4, "kept + 1"))
+        @test values_of(answered_within(lines, [4], 30), 4) == ["42"]
+        close(proc.in)
+        wait(proc)
+    end
 end
