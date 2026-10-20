@@ -18,7 +18,8 @@ fail=0
 check() { if eval "$2"; then echo "PASS: $1"; else echo "FAIL: $1"; fail=$((fail + 1)); fi; }
 cargo=$(command -v cargo || echo "$HOME/.cargo/bin/cargo")
 [ -x "$cargo" ] || { echo "test-rc-gate-parity.sh: no cargo" >&2; exit 2; }
-bash32=$(bash "$here/bash32.sh") || exit 2
+# a hosted runner has no /scratch: its bash 3.2 is built under RUNNER_TEMP, the folder rust.yml's bash32-linux job uses
+bash32=$(bash "$here/bash32.sh" ${RUNNER_TEMP:+"$RUNNER_TEMP/bash-3.2.57"}) || exit 2
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null CARGO_TARGET_DIR=$work/target
 sysroot=$("$(dirname "$cargo")/rustc" --print sysroot 2> /dev/null)
 [ -d "$sysroot/lib/rustlib/x86_64-pc-windows-gnu" ] && haswin=1 || haswin=0
