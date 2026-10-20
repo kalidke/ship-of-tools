@@ -54,7 +54,8 @@ scripts/CLAUDE.md.
 - `workflows/CI.yml` ("CI"): push to `main` (paths `core/**`, `julia/**`, `docs/**`, `src/**`, `test/**`, `Project.toml`,
   `Manifest.toml` and the file itself) and dispatch. Jobs: `test` (the root package on Julia 1.12 and pre-release),
   `julia-packages` (core, kernel, repl, the two preview plugins and SotLog), `docs` (builds the manual with
-  `docs/make.jl`; a push to `main` deploys it).
+  `docs/make.jl`; a push to `main` deploys it). The pre-release legs of `test` and `julia-packages` are
+  `continue-on-error`: they warn and never gate a cut, since no lab box runs a pre-release Julia.
 - `workflows/release.yml` ("Release"): a `v*` tag or dispatch (`publish` runs only when the ref is a tag). Jobs: `build`
   (linux, windows and macos targets; the Linux `sotd` and `sot-capsule` are built musl static, with Ubuntu's
   `musl-tools` installed first as the C compiler for sot-log's native launcher), `julia-check`, the three smokes

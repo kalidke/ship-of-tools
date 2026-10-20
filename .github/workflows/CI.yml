@@ -30,6 +30,8 @@ jobs:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    # A pre-release Julia warns and never gates a cut: no lab box runs one, and an alpha can break what a release passes.
+    continue-on-error: ${{ matrix.version == 'pre' }}
     timeout-minutes: 60
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
@@ -126,6 +128,8 @@ jobs:
     name: Julia packages ${{ matrix.version }}
     runs-on: ubuntu-latest
     if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    # As in `test`: the pre-release leg warns and never gates a cut.
+    continue-on-error: ${{ matrix.version == 'pre' }}
     timeout-minutes: 60
     permissions:
       actions: write # julia-actions/cache proactive cleanup
