@@ -73,6 +73,35 @@ bsd_stat_date() {
         "$(command -v date)" "$(command -v date)" > "$1/date"
     chmod +x "$1/stat" "$1/date"
 }
+# bsd_ps DIR — a stand-in for macOS's ps, on Linux (it reads /proc), printing the columns the daemon finders ask for as
+# Apple's adv_cmds ps does: comm is argv[0], cut to its width of 16 in any column but the last (keyword.c's width, which
+# ps.c's dynsizevars caps and print.c cuts to); ucomm is the kernel's name for the program; args is the whole command
+# line (stdout is not a terminal). It takes -u, -w and -o, and refuses any other option.
+bsd_ps() {
+    mkdir -p "$1"
+    cat > "$1/ps" <<'PS'
+#!/usr/bin/env python3
+import os, signal, sys
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # a reader that stops early ends it quietly, as it ends ps
+uid, cols, a = None, [], sys.argv[1:]
+while a:
+    o = a.pop(0)
+    if o == "-u": uid = int(a.pop(0))
+    elif o in ("-w", "-ww"): pass
+    elif o == "-o": cols += [c.split("=")[0] for c in a.pop(0).split(",")]
+    else: sys.exit("bsd ps: %s is not modeled" % o)
+vis = lambda t: t.replace("\t", "\\^I").replace("\n", "\\^J")
+for p in sorted(int(p) for p in os.listdir("/proc") if p.isdigit()):
+    try:
+        if os.stat("/proc/%d" % p).st_uid != uid: continue
+        argv = [vis(w) for w in open("/proc/%d/cmdline" % p, "rb").read().decode(errors="replace").split("\0")[:-1]]
+        name = open("/proc/%d/comm" % p).read().rstrip("\n")
+    except OSError: continue
+    cell = {"pid": "%5d" % p, "ucomm": "%-16s" % name, "comm": argv[0] if argv else "<defunct>", "args": " ".join(argv) or "<defunct>"}
+    print(" ".join("%-16.16s" % cell[c] if c == "comm" and i < len(cols) - 1 else cell[c] for i, c in enumerate(cols)))
+PS
+    chmod +x "$1/ps"
+}
 # stale_line LINE — LINE with each printed time (YYYY-MM-DD HH:MM:SS) as D.
 stale_line() { printf '%s\n' "$1" | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/D/g'; }
 # linux_check DESC EXPECTED ACTUAL — check on Linux; elsewhere a SKIP line. A systemd unit is Linux's: install.sh and

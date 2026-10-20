@@ -268,11 +268,13 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   which `restart-backend.sh` also runs, `Test-SotPipeOpen`, `Open-SotLease`, whose lease names its bridge child), which
   connects only to an endpoint this OS account serves (ADR 0049 `## User isolation`; each path is shown by running it,
   in rust/backend/tests/shell_dial.rs and test-local-daemon-own.ps1's 4b); a script that finds this account's daemon in
-  a process list lists only this account's processes and compares the daemon's `--socket` or `--label` value whole and
-  literally (`sot_daemon_pid` in lib/sot-daemon.sh); on Windows the daemon is the pid the pipe's owner reports
-  (`Get-SotPipeOwnerPid`, `GetNamedPipeServerProcessId`) when this account owns it, and no command line or name selects
-  it (`Get-LocalDaemonProcess`; shutdown-sot.ps1's supervisor is the pid `launcher.pid` records). The frontend, tunnel
-  and capsule counts in shutdown-sot.ps1 still match by image path and command line.
+  a process list lists only this account's processes, knows a program by the kernel's name for it (`ps -o ucomm`, never
+  `comm`, which macOS fills from argv[0] and cuts to 16 characters in any column but the last), and compares the
+  daemon's `--socket` or `--label` value whole and literally (`sot_daemon_pid` in lib/sot-daemon.sh; install.sh's
+  `installer_process_at` knows a window or daemon by the same name and its argv0); on Windows the daemon is the pid the
+  pipe's owner reports (`Get-SotPipeOwnerPid`, `GetNamedPipeServerProcessId`) when this account owns it, and no command
+  line or name selects it (`Get-LocalDaemonProcess`; shutdown-sot.ps1's supervisor is the pid `launcher.pid` records).
+  The frontend, tunnel and capsule counts in shutdown-sot.ps1 still match by image path and command line.
 - A launch keeps this computer's daemon only when it runs the version of the binary the launch would start: the ensure
   (`sot_daemon_ensure`, `sot-local-daemon.ps1`) asks `sotd same-version` once the socket or pipe answers and replaces a
   daemon of another version (an apply swaps the binary, not the running process), the way a stop ends one, naming the
