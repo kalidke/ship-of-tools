@@ -236,7 +236,9 @@ the fix:
 - **History: scan, then accept — no rewrite.** Nothing secret is in history (hostnames,
   ssh alias names, candid chatter — messy, not sensitive; tokens were never committed).
   Before flipping visibility, run a secrets scanner (gitleaks) over the full history as a
-  gate. ADRs stay public; working-session handoff docs live in the private ops sidecar (amended 2026-10-03: each session's handoff is now
+  gate (amended 2026-10-19: the gate is `.github/workflows/gitleaks.yml`, which also runs on manual dispatch
+  (`workflow_dispatch`) and reads the root `.gitleaks.toml`, allowing two test fixtures by exact value under the
+  `generic-api-key` rule). ADRs stay public; working-session handoff docs live in the private ops sidecar (amended 2026-10-03: each session's handoff is now
   `dev/output/handoff-<handle>.md` in its own checkout, gitignored; the sidecar keeps the publish guard's denylist; amended 2026-10-12: the publish guard left this repository, and the
   push check now lives beside that denylist in the sidecar).
 - `requirements.md` gets a scope amendment: distribution/public use is currently explicitly

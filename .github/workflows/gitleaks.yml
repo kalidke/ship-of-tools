@@ -2,11 +2,13 @@
 # FULL history on every push/PR. Plain binary rather than gitleaks-action —
 # no license key machinery, same engine. Baseline: 1737 commits / 0 leaks
 # at 7cc3be9 (2026-07-05, the go-public eval).
+# Run by hand (workflow_dispatch) to scan a branch before it reaches main.
 name: gitleaks
 on:
   push:
     branches: ["main"]
   pull_request: {}
+  workflow_dispatch: {}
 
 jobs:
   scan:

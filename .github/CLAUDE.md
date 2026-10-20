@@ -64,7 +64,9 @@ scripts/CLAUDE.md.
   release before and an `update-implicit` run (no arguments, the real repository), each ending in its PASS line; matrix legs, steps in `scripts/tests/install-smoke.sh` and
   `.ps1`), then `publish` (`SHA256SUMS`, `COMMIT`, git-cliff notes, the GitHub Release as a draft). The notes are cut at a whole line below 120000 bytes, with a link to every change since the previous
   tag, because GitHub rejects a release body over 125000 characters.
-- `workflows/gitleaks.yml`: a full-history secret scan on push to `main` and on pull requests.
+- `workflows/gitleaks.yml`: a full-history secret scan on push to `main`, on pull requests and on manual dispatch
+  (`workflow_dispatch`); it reads the root `.gitleaks.toml`, which allows two test fixtures by exact value under the
+  `generic-api-key` rule and nothing else.
 
 ## Start here
 `workflows/rust.yml` to add a suite (its steps are named); `workflows/release.yml` for what a release holds.
