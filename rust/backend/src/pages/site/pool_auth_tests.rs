@@ -21,7 +21,9 @@ async fn get(port: u16, target: &str, cookie: Option<&str>) -> (u16, Option<Stri
 }
 
 /// One case per class of request. `old` is the secret of the entry URL the stale tab holds, `new` the port's current
-/// one; the rule for a repeated parameter is the first `secret` decides (`secret=bad&secret=good` is refused).
+/// one; the rule for a repeated parameter is the first `secret` decides (`secret=bad&secret=good` is refused). A key
+/// is matched after percent-decoding and in any case, and a key with no `=` is present and empty, so each spelling of
+/// `secret` decides alone.
 #[tokio::test]
 async fn a_secret_parameter_decides_alone_and_the_cookie_only_without_one() {
     let _pool = own_pool();
@@ -55,6 +57,14 @@ async fn a_secret_parameter_decides_alone_and_the_cookie_only_without_one() {
         ("no query, valid cookie", "/a.txt".into(), Some(&valid), 200, None),
         ("neither", "/a.txt".into(), None, 403, None),
         ("empty secret, valid cookie", "/a.txt?secret=".into(), Some(&valid), 403, None),
+        ("bare secret, valid cookie", "/a.txt?secret".into(), Some(&valid), 403, None),
+        ("bare secret, then a valid one", format!("/a.txt?secret&secret={new}"), None, 403, None),
+        ("capitalized key, valid query, no cookie", format!("/a.txt?Secret={new}"), None, 200, Some(&fresh)),
+        ("capitalized key, stale query, valid cookie", format!("/a.txt?Secret={old}"), Some(&valid), 403, None),
+        ("capitalized key, empty, valid cookie", "/a.txt?Secret=".into(), Some(&valid), 403, None),
+        ("encoded key, valid query, no cookie", format!("/a.txt?%73ecret={new}"), None, 200, Some(&fresh)),
+        ("encoded key, stale query, valid cookie", format!("/a.txt?%73ecret={old}"), Some(&valid), 403, None),
+        ("encoded key, empty, valid cookie", "/a.txt?%73ecret=".into(), Some(&valid), 403, None),
         ("bad then good", format!("/a.txt?secret={old}&secret={new}"), None, 403, None),
         ("good then bad", format!("/a.txt?secret={new}&secret={old}"), None, 200, Some(&fresh)),
     ];

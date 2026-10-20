@@ -521,17 +521,20 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
             // asset fetch — which can't carry a query string — authenticates
             // via the cookie instead. A request that carries a `secret`
             // parameter is decided by it alone (the first one, when repeated,
-            // and an empty one is refused): a stale entry URL must not ride
-            // the port's new cookie (#38). The cookie decides only a request
-            // with none. The limit that stays: in-site navigation from an
-            // unreloaded stale tab carries no parameter, so it rides the
-            // cookie. Neither present or valid: 403.
+            // and an empty one is refused; its key is matched after
+            // percent-decoding and in any case, and a key with no `=` is
+            // present and empty): a stale entry URL must not ride the port's
+            // new cookie (#38). The cookie decides only a request with none.
+            // The limit that stays: in-site navigation from an unreloaded
+            // stale tab carries no parameter, so it rides the cookie. Neither
+            // present or valid: 403.
             let cookie_name = pool_cookie_name(pool_cookie_host(), port);
             let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
             let query_secret = query.split('&').find_map(|kv| {
-                kv.split_once('=')
-                    .filter(|(k, _)| *k == "secret")
-                    .map(|(_, v)| v)
+                let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+                percent_decode(k)
+                    .eq_ignore_ascii_case("secret")
+                    .then_some(v)
             });
             let cookie_ok = || {
                 request
