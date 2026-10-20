@@ -411,6 +411,19 @@ sot_sanitize_component() {
     printf '%s' "$s"
 }
 
+# sot_valid_name NAME — true when NAME can be a handle: 1 to 64 bytes of the
+# charset sot_sanitize_component reduces to, with no ".." (a handle is an inbox
+# file name) and no leading "-". The daemon's valid_name (rust/backend/src/paths.rs)
+# takes "..", so this check is stricter than the daemon's, on purpose, and runs
+# before any registry or inbox write (COMM-SEND-FILE F8).
+sot_valid_name() {
+    local s="$1"
+    [ -n "$s" ] && [ "${#s}" -le 64 ] || return 1
+    [ "$(printf '%s' "$s" | tr -cd 'A-Za-z0-9._-')" = "$s" ] || return 1
+    case "$s" in *..*|-*) return 1 ;; esac
+    return 0
+}
+
 # _sot_handle_host RAW_HOST — the host piece of a derived handle: sanitized
 # and clamped to 12, with a -<hash6> of the raw host when that changed it, so
 # two long hosts that differ past the clamp stay distinct. The one rule for

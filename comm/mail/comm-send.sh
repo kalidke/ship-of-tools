@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # comm-send.sh — send a message to one agent or broadcast to all.
 # Usage: comm-send.sh @name 'message'
+#        comm-send.sh @name --file <path | ->
 #        comm-send.sh --broadcast 'message'
 #
 # Quote the message in single quotes: the shell still reads a double-quoted
 # message, so a backquote or `$( )` in it runs as a command and its text drops
 # out, and a message that holds a single quote closes and reopens the quote, as
-# `'it'\''s'`.
+# `'it'\''s'`. A message with any of those in it goes in a file instead: `--file
+# <path>` sends the file's bytes as they are, and `--file -` reads them from stdin.
 #
 # `filed -> @name` means the line is in the inbox of a handle a live session
 # holds, and is the whole verdict: a filed frame is read by the recipient's
@@ -21,10 +23,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 
-BROADCAST=false; TARGET=""; MSG=""
+BROADCAST=false; TARGET=""; MSG=""; FILE=""; FILE_SET=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --broadcast) BROADCAST=true; shift; continue ;;
+        --file)
+            [ "$FILE_SET" = false ] && [ $# -ge 2 ] || { echo "usage: comm-send.sh @name --file <path | -> (one file)" >&2; exit 1; }
+            FILE="$2"; FILE_SET=true; shift 2; continue ;;
     esac
     # The recipient is ONLY the first positional @arg, taken before any message
     # text. Once a target/broadcast is set or message text has started, an
@@ -40,7 +45,10 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-[ -z "$MSG" ] && { echo "usage: comm-send.sh @name 'msg' | --broadcast 'msg'" >&2; exit 1; }
+if [ "$FILE_SET" = true ] && [ -n "$MSG" ]; then
+    echo "usage: comm-send.sh @name --file <path | -> takes the whole message; give text or --file, not both" >&2; exit 1
+fi
+[ "$FILE_SET" = true ] || [ -n "$MSG" ] || { echo "usage: comm-send.sh @name 'msg' | @name --file <path | -> | --broadcast 'msg'" >&2; exit 1; }
 
 # refuse WHY — the send's one result when it stops before any recipient: FAILED with WHY, then exit 1.
 refuse() {
@@ -63,6 +71,14 @@ eval "$("$SCRIPT_DIR/comm-context.sh")"
 # NAME — see the helper's own comment. Checked BEFORE any transport work so
 # an unresolved sender always sees THIS refusal, never a daemon error.
 why="$(_sot_identity_routable)" || refuse "$why"
+
+# --file: the body is the file's bytes, read whole. The x keeps a trailing newline, which $( ) would drop; cat's own
+# stderr is silenced so the refusal is the one line.
+if [ "$FILE_SET" = true ]; then
+    body="$({ cat -- "$FILE" 2>/dev/null && printf x; })" || refuse "cannot read the message file '$FILE'"
+    MSG="${body%x}"
+    [ -n "$MSG" ] || refuse "the message file '$FILE' is empty; nothing was sent"
+fi
 
 deliver() {  # $1 = target name
     local t="$1" thost ts row reg_rc=0

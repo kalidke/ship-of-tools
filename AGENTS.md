@@ -12,6 +12,8 @@ Code sessions follow `CLAUDE.md`; **you follow this**.
   unless overridden). The CLI toolbox lives in `~/.sot-comm/bin/`:
   - `comm-send.sh @<handle> '<msg>'` — file a message in another session's
     inbox; its one result is `filed -> @<handle>` or `FAILED -> @<handle>: <why>`.
+    For a message with quotes, backquotes or `$( )` in it, write the text to a file
+    and send `comm-send.sh @<handle> --file <path>`.
   - `comm-poll.sh` — read your unread messages.
   - `comm-status.sh <state> "<summary>"` — set your row's state (below).
 - An idle row is woken by the typed line `[sot-comm] you have mail: run
