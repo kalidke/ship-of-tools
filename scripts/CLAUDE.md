@@ -83,8 +83,12 @@ and the launch path fails open: no update step can stop a window from starting.
   asked `sotd update repls` (the daemon's own `workspace.list`: the rows with a live REPL and whether its Pluto server is
   running, which ends every notebook open in it) before anything changes. When the unit would be restarted and a REPL is
   live or the Pluto server is running, or the daemon cannot be asked in full (a daemon older than the Pluto field cannot
-  say), the run stops first and asks for `--restart-daemon`, changing nothing under the install; a stop for a daemon that
-  could not be asked carries `sotd update repls`' one stderr line as its reason and names the REPL rows it could read. A
+  say), the run asks first: a daemon that could not be asked is judged by its own children (`installer_daemon_children`: the
+  REPL and Pluto sidecars among the direct children of the install's `sotd` process, by parent id, never a pattern over
+  every command line), and with none the run goes on with no flag; with one (or no `sotd` process to read) and a console
+  (`installer_ask_restart`: an open-probe of `/dev/tty`, `SOT_INSTALL_TTY` for a test) it asks "Restart the daemon? This ends
+  ... [y/N]" in place and goes on at a y; with no console it stops and asks for `--restart-daemon`, changing nothing under
+  the install; a stop for a daemon that could not be asked carries `sotd update repls`' one stderr line as its reason and names the REPL rows it could read. A
   daemon runs when its unit is active or a process of this account runs `<prefix>/bin/sotd` (never a socket file alone);
   one that runs and `sotd same-version` cannot tell is `unknown`: the run stops (exit 2) with sotd's line before anything
   changes (`--restart-daemon` answers it for the unit), and the end check beside it is a FAIL, as on Windows. A
@@ -203,7 +207,9 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   `ONE STEP LEFT` or `FAIL` line, then an explicit `exit`: the one `try`/`finally` in `Invoke-InstallEntry` prints it,
   Ctrl+C included. The channel, the never-backwards direction (`sotd update direction`, asked of the target's own sotd
   before anything under the prefix changes), the `+` stop and the live-work ask (`sotd update repls`: a live REPL or the
-  Pluto server stops the run with sotd's own reason, `-RestartDaemon` answers it) are install.sh's, in PowerShell. A
+  Pluto server stops the run with sotd's own reason, `-RestartDaemon` answers it, and a console is asked in place first;
+  a daemon that cannot answer is judged by its own children, `Get-DaemonChildren`, a `Win32_Process` parent-id walk from the
+  install's `bin\sotd.exe`) are install.sh's, in PowerShell. A
   daemon runs when its pipe exists or a process runs from `bin\sotd.exe`; one `same-version` cannot tell is `unknown`, so
   the ask fails closed and the end check is a FAIL, and a daemon of any version, the target's included, is asked before
   a path stops or restarts it. It reads `repo\current` by its target and works on `repo\versions\<tag>`, because an ssh

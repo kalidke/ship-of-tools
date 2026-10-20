@@ -31,7 +31,7 @@ longest timeout the tool allows. It ends with exactly one line; read the last li
   window and start it again, since it still runs the old version). Tell the human that step in those words.
 - `FAIL: <check>: <detail>`: stop and report the line. Three are decisions, not faults. `daemon:` names rows with a live
   REPL and says when the Pluto server is running (a restart would end the REPLs and every notebook open in it; their
-  variables are lost, the rows and their agents keep running), or says why the daemon could not be asked in full: ask the human, and re-run with `--restart-daemon` only on a yes. `target:` and
+  variables are lost, the rows and their agents keep running), or says why the daemon could not be asked in full. A daemon that cannot answer is judged from its own REPL and Pluto child processes: with none, the run goes on with no flag. When something is live and a person is at the console, the installer asks "Restart the daemon? ... [y/N]" in place; with no console (an agent's run) it stops with this line: ask the human, and re-run with `--restart-daemon` only on a yes. `target:` and
   `direction:` are the human's to answer, never a version the agent picks. `target:` says the install is a build of the
   line (a `+` in its version): a pack of the line (`scripts/pack-build.sh` in the checkout that built it) goes in with
   `--archive <folder>`, while a release named with `--version` is usually older and moves this computer back.
@@ -77,8 +77,9 @@ allows. It ends with exactly one line; read the last line of its output, and act
   quit Ship of Tools (choose Keep) and start it from the shortcut, start it at the desk, or install Julia or jq with the
   winget command the line names. Tell the human that step in those words, and run the installer again to confirm.
 - `FAIL: <check>: <detail>`: stop and report the line. `daemon:` names rows with a live REPL and says when the Pluto
-  server is running (a restart would end both; the rows and their agents keep running): ask the human, and run it again
-  with `-RestartDaemon` only on a yes. `target:` and `direction:` are the human's to answer, never a version the agent
+  server is running (a restart would end both; the rows and their agents keep running). A daemon that cannot answer is judged
+  from its own REPL and Pluto child processes, and the installer asks "Restart the daemon?" in place at a console; with no
+  console it stops with this line: ask the human, and run it again with `-RestartDaemon` only on a yes. `target:` and `direction:` are the human's to answer, never a version the agent
   picks: `target:` says the install is a build of the line (a `+` in its version), which a pack of the line
   (`scripts\pack-build.ps1` in the checkout that built it) updates with `-Archive <folder>`, while a release named with
   `-Version` is usually older and moves this computer back; `direction:` says the newest release is older than what runs

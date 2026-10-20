@@ -26,7 +26,8 @@ when it ends. Tell the human what that line says:
   start it again).
 - `FAIL: <check>: <detail>`: report the line. Do not retry blindly.
   - `daemon:` names rows with a live REPL and says when the Pluto server is running (a restart would end both), or says
-    why the daemon could not be asked in full. Ask the human; run it again with `--restart-daemon` only on a yes.
+    why the daemon could not be asked in full (the installer already judged it from the daemon's own REPL and Pluto child
+    processes, and asks a person at a console in place). Ask the human; run it again with `--restart-daemon` only on a yes.
   - `target:` and `direction:` are the human's to answer, never a version the agent picks. `target:` means the machine
     runs a build of the line (a `+` in its version): a pack of the line goes in with `--archive <folder>`, while a release
     named with `--version` is usually older and moves this computer back. `direction:` means the newest release is older
@@ -69,7 +70,8 @@ the tool allows, and read the **last line** of its output when it ends. Tell the
   winget command the line names. Give the human the step in those words, then run the installer again to confirm.
 - `FAIL: <check>: <detail>`: report the line. Do not retry blindly.
   - `daemon:` names rows with a live REPL and says when the Pluto server is running (a restart would end both), or says
-    why the daemon could not be asked in full. Ask the human; run it again with `-RestartDaemon` only on a yes.
+    why the daemon could not be asked in full (the installer already judged it from the daemon's own REPL and Pluto child
+    processes, and asks a person at a console in place). Ask the human; run it again with `-RestartDaemon` only on a yes.
   - `target:` and `direction:` are the human's to answer: the agent does not choose a version. `target:` means the machine
     runs a build of the line (a `+` in its version): a pack of the line (`scripts\pack-build.ps1` in the checkout that
     built it) goes in with `-Archive <folder>`, while a release named with `-Version vX.Y.Z` is usually older, moves

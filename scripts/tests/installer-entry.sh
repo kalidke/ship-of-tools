@@ -121,7 +121,8 @@ esac
 exit 0
 JU
     printf '#!/bin/sh\necho "ldd (stand-in) 2.35"\n' > "$d/stubs/ldd"
-    printf '#!/bin/sh\ncat "$CTL/ps" 2>/dev/null\n' > "$d/stubs/ps"
+    # ps lists the processes in $CTL/ps (pid, name, args); the ask for parent ids lists $CTL/ps-tree (pid, ppid, args).
+    printf '#!/bin/sh\ncase "$*" in *ppid*) cat "$CTL/ps-tree" 2>/dev/null ;; *) cat "$CTL/ps" 2>/dev/null ;; esac\n' > "$d/stubs/ps"
     chmod +x "$d/stubs"/*
     printf 'v9.9.9' > "$d/ctl/latest"
 }
@@ -763,3 +764,4 @@ check "it restarts nothing and asks nothing of the daemon" "0 0" "$(count_in "$d
 . "$(dirname "${BASH_SOURCE[0]}")/installer-boot-line.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/installer-entry-julia.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/installer-entry-exits.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/installer-entry-live.sh"

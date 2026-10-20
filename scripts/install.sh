@@ -623,6 +623,42 @@ installer_live_work() {  # <rows> <pluto 0|1> <lead>
     printf '%s' "$out"
 }
 
+# What this account's daemon at PREFIX/bin/sotd runs for a person, from its own process tree and not from anything it
+# says: one line per direct child of the daemon that is a REPL ("repl", the sidecar the daemon starts with ShipToolsRepl's
+# shim) or the Pluto server ("pluto", the daemon's start.jl). Empty when the daemon runs and has none; "unknown" when no
+# process of the install's sotd is found, so nothing can be ruled out. The daemon is found by its program path
+# (installer_daemon_running) and its sidecars by their parent id, the way sot-lease.ps1 walks a tree (ADR 0050).
+installer_daemon_children() {  # <prefix>
+    local pids; pids="$(installer_daemon_running "$1" | tr '\n' ' ')"
+    if [ -z "${pids// }" ]; then printf unknown; return 0; fi
+    { ps -u "$(id -u)" -ww -o pid= -o ppid= -o args= 2>/dev/null || true; } | PIDS=" $pids" awk '
+        { p = " " $2 " "; if (index(ENVIRON["PIDS"], p) == 0) next }
+        index($0, "ShipToolsRepl.run_shim") { print "repl"; next }
+        { for (i = 3; i <= NF; i++) if ($i ~ /julia[\/\\]pluto[\/\\]start\.jl$/) { print "pluto"; break } }'
+}
+
+# One person's answer to "Restart the daemon? This ends WORK [y/N]", asked in place at the console (/dev/tty, which also
+# works under `curl | bash`; SOT_INSTALL_TTY names another file for a test). Fails, asking nothing, when there is no console.
+installer_ask_restart() {  # <work: what the restart ends, in words>
+    local tty="${SOT_INSTALL_TTY:-/dev/tty}" a=""
+    if ! { (: < "$tty") 2>/dev/null && (: >> "$tty") 2>/dev/null; }; then return 1; fi
+    printf 'Restart the daemon? This ends %s [y/N] ' "$1" >> "$tty"
+    read -r a < "$tty" || a=""
+    case "$a" in y|Y|yes|Yes|YES) return 0 ;; esac
+    return 1
+}
+# What a restart ends, for that question: the rows with a live REPL, else a REPL the daemon's process tree shows, then the
+# Pluto server; UNSURE 1 adds that the daemon could not say all of it.
+installer_ask_work() {  # <rows> <repl child 0|1> <pluto 0|1> <unsure 0|1>
+    local out=""
+    if [ -n "$1" ]; then out="the REPLs of: $1"; elif [ "$2" = 1 ]; then out="a live REPL (the daemon could not name its row)"; fi
+    [ "$3" != 1 ] || out="${out:+$out; }the Pluto server and every notebook open in it"
+    if [ -z "$out" ]; then out="any REPL or Pluto notebook that is live"
+    elif [ "$4" = 1 ]; then out="$out, and any other the daemon could not list"
+    fi
+    printf '%s' "$out"
+}
+
 # What starting the daemon again would cost, for the step: the live work (installer_live_work), and that the daemon could
 # not say all of it (UNKNOWN 1: what it did list is named). Nothing when there is none.
 installer_rows_note() {  # <rows> <pluto 0|1> <unknown 0|1>
@@ -1476,8 +1512,15 @@ WINDOWS_BEFORE="$(installer_windows_running "$PREFIX")"
 # unit alone can be restarted by the run, so --restart-daemon answers it there and nowhere else.
 if [ "$DAEMON_BEFORE" = unknown ]; then
     DAEMON_WHY="$(installer_daemon_why "$BINDIR/sotd" "$DEFAULT_SOCKET")"
+    KIDS="$(installer_daemon_children "$PREFIX")"
+    KID_REPL=0; case "$KIDS" in *repl*) KID_REPL=1 ;; esac
+    KID_PLUTO=0; case "$KIDS" in *pluto*) KID_PLUTO=1 ;; esac
     if [ "$UNIT_RUNS" = 1 ] && [ "$RESTART_DAEMON" = 1 ]; then
         say "note: the daemon on $DEFAULT_SOCKET could not be told its version ($DAEMON_WHY); restarting sotd.service ends any live REPL or Pluto notebook (--restart-daemon)"
+    elif [ "$UNIT_RUNS" = 1 ] && [ -z "$KIDS" ]; then
+        say "note: the daemon on $DEFAULT_SOCKET could not be told its version ($DAEMON_WHY); it has no REPL or Pluto child, so restarting sotd.service ends nothing live"
+    elif [ "$UNIT_RUNS" = 1 ] && installer_ask_restart "$(installer_ask_work "" "$KID_REPL" "$KID_PLUTO" 1)"; then
+        say "note: the daemon on $DEFAULT_SOCKET could not be told its version ($DAEMON_WHY); restarting sotd.service as answered"
     else
         hint="Find why it does not answer, or stop it, then run this again."
         [ "$UNIT_RUNS" = 0 ] || hint="Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); ask whoever uses this computer, then re-run with --restart-daemon."
@@ -1504,6 +1547,8 @@ pluto server
                 :
             elif [ "$RESTART_DAEMON" = 1 ]; then
                 say "$(installer_live_work "$LIVE_ROWS" "$LIVE_PLUTO" 'restarting the daemon ends') (--restart-daemon)"
+            elif installer_ask_restart "$(installer_ask_work "$LIVE_ROWS" 0 "$LIVE_PLUTO" 0)"; then
+                say "$(installer_live_work "$LIVE_ROWS" "$LIVE_PLUTO" 'restarting the daemon ends') (answered yes)"
             else
                 printf '       Restarting the daemon ends those REPLs and notebooks (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.\n' >&2
                 fail 2 "the daemon on $DEFAULT_SOCKET runs another version, and $(installer_live_work "$LIVE_ROWS" "$LIVE_PLUTO" 'restarting it would end')"
@@ -1513,10 +1558,20 @@ pluto server
             # The one line sotd gives for what it could not read; a sotd that gave none is named by its exit status.
             LIVE_WHY="$(printf '%s\n' "$LIVE_OUT" | grep -v -e '^repl ' -e '^pluto server$' | sed -n 1p || true)"
             [ -n "$LIVE_WHY" ] || LIVE_WHY="sotd update repls gave no reason (exit $repl_rc)"
-            if [ "$WILL_RESTART" = 0 ]; then
+            # The daemon could not say; its own children can: with none that is a REPL or the Pluto server (and no row read
+            # above), nothing live is left to end, so nothing is unknown.
+            KIDS="$(installer_daemon_children "$PREFIX")"
+            KID_REPL=0; case "$KIDS" in *repl*) KID_REPL=1 ;; esac
+            KID_PLUTO=0; case "$KIDS" in *pluto*) KID_PLUTO=1 ;; esac
+            if [ -z "$KIDS" ] && [ -z "$LIVE_ROWS" ] && [ "$LIVE_PLUTO" = 0 ]; then
+                ROWS_UNKNOWN=0
+                [ "$WILL_RESTART" = 0 ] || say "note: could not ask the daemon on $DEFAULT_SOCKET in full ($LIVE_WHY); it has no REPL or Pluto child, so restarting it ends nothing live"
+            elif [ "$WILL_RESTART" = 0 ]; then
                 :
             elif [ "$RESTART_DAEMON" = 1 ]; then
                 say "note: could not ask the daemon on $DEFAULT_SOCKET in full ($LIVE_WHY); restarting it ends any REPL or Pluto notebook that is live (--restart-daemon)"
+            elif installer_ask_restart "$(installer_ask_work "$LIVE_ROWS" "$KID_REPL" "$((LIVE_PLUTO + KID_PLUTO > 0))" 1)"; then
+                say "note: could not ask the daemon on $DEFAULT_SOCKET in full ($LIVE_WHY); restarting it as answered"
             else
                 printf '       Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.\n' >&2
                 fail 2 "could not ask the daemon on $DEFAULT_SOCKET in full: it runs another version${LIVE_ROWS:+, and restarting it would end the REPLs of: $LIVE_ROWS}; $LIVE_WHY"
