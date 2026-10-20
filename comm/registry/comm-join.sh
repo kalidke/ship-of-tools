@@ -15,7 +15,8 @@ comm-join.sh — register this session in the sot-comm network.
 Usage:
   comm-join.sh                       just run it: joins as the canonical
                                      default handle <repo>-<host>
-  comm-join.sh --name NAME           join as an explicit handle
+  comm-join.sh --name NAME           join as an explicit handle: 1 to 64 of
+                                     A-Z a-z 0-9 . _ -, no '..', no leading '-'
   comm-join.sh --name=NAME           (equals form also accepted)
   comm-join.sh --repin               this row really is this project now:
                                      write the identity even though the slot
@@ -61,6 +62,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# An explicit --name is checked before any write: a name outside the handle charset would become an inbox file name
+# (a "/" or ".." leaves inbox/) or a registry entry the daemon's readers drop (COMM-SEND-FILE F8).
+if [ -n "$WANT_NAME" ] && ! sot_valid_name "$WANT_NAME"; then
+    echo "comm-join.sh: REFUSING --name $(printf '%q' "$WANT_NAME"): a handle is 1 to 64 of A-Z a-z 0-9 . _ - with no '..' and no leading '-'" >&2
+    exit 2
+fi
 # A second agent inside a session never binds a handle: refuse before the context
 # call (which can heal a self file or create the registry) and any later write.
 _why="$(sot_require_agent)" || { echo "comm-join.sh: REFUSING to bind: $_why" >&2; exit 1; }

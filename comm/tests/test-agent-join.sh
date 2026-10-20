@@ -273,6 +273,34 @@ case_the_identity_names_the_row_not_the_environment() {
     return 0
 }
 
+# A name outside the charset a row handle is built from is refused in one line
+# before any registry write, self file or inbox file: the comm home stays empty.
+case_a_name_outside_the_charset_is_refused_before_any_write() {
+    local name h i=0
+    for name in 'a/b' '..' 'proj g'; do
+        i=$((i + 1)); h="$WORK/refused-home-$i"
+        SOT_COMM_HOME="$h" join_in "$WORK" --name "$name"
+        [ "$JOIN_RC" -ne 0 ] || { echo "  --name '$name' joined (rc 0)"; return 1; }
+        [ "$(printf '%s\n' "$JOIN_ERR" | grep -c .)" -eq 1 ] \
+            || { echo "  --name '$name' did not refuse in one line: '$JOIN_ERR'"; return 1; }
+        [ ! -e "$WORK/self-$NEXTSELF.txt" ] || { echo "  --name '$name' wrote its self file"; return 1; }
+        if [ -e "$h" ] && [ -n "$(find "$h" -mindepth 1 -print -quit)" ]; then
+            echo "  --name '$name' wrote into the comm home"; return 1
+        fi
+    done
+    return 0
+}
+
+# The same invocation with a valid name joins: the refusal is the name's, not the join's.
+case_a_valid_name_joins_a_fresh_home() {
+    local h="$WORK/valid-home"
+    SOT_COMM_HOME="$h" join_in "$WORK" --name "t-ok_1.x"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  rc $JOIN_RC for a valid name (err: '$JOIN_ERR')"; return 1; }
+    SOT_COMM_HOME="$h" registry_has_row "t-ok_1.x" \
+        || { echo "  the valid name is not in the registry"; return 1; }
+    return 0
+}
+
 # --- run ---------------------------------------------------------------
 
 check "comm-join.sh with SOT_WORKSPACE_ID + SOT_SOCKET pinned declares its handle via agent.join" \
@@ -285,6 +313,10 @@ check "comm-join.sh with a scratch identity and an inherited SOT_WORKSPACE_ID de
     case_a_scratch_identity_never_declares_into_the_ambient_row
 check "comm-join.sh declares the row its identity names, not the one in the environment" \
     case_the_identity_names_the_row_not_the_environment
+check "comm-join.sh refuses a --name outside the handle charset in one line, before any write" \
+    case_a_name_outside_the_charset_is_refused_before_any_write
+check "comm-join.sh joins a valid --name into a fresh home" \
+    case_a_valid_name_joins_a_fresh_home
 
 echo ""
 echo "$PASS passed, $FAIL failed"
