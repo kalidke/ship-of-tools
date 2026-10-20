@@ -555,10 +555,11 @@ installer_launcher_kind() {  # <backend alias, or empty> <plan lists another dae
     if [ -n "$1" ] || [ "$2" = yes ]; then printf remote; else printf all-in-one; fi
 }
 
-# The ids of this account's running processes named NAME whose argv0 is PATH.
+# The ids of this account's running processes named NAME whose argv0 is PATH: the name is ps's `ucomm`, the kernel's
+# name for the program file, read as lib/sot-daemon.sh's sot_daemon_pid reads it (macOS's `comm` is argv[0], cut short).
 installer_process_at() {  # <path> <name>
-    { ps -u "$(id -u)" -o pid=,comm=,args= 2>/dev/null || true; } | PFX="$1" NAME="$2" awk '
-        { n = $2; sub(/.*\//, "", n) } n != ENVIRON["NAME"] { next }
+    { ps -u "$(id -u)" -ww -o pid= -o ucomm= -o args= 2>/dev/null || true; } | PFX="$1" NAME="$2" awk '
+        $2 != ENVIRON["NAME"] { next }
         { args = $0; sub(/^ *[0-9]+ +[^ ]+ +/, "", args); split(args, w, " ") }
         w[1] == ENVIRON["PFX"] { print $1 }'
 }

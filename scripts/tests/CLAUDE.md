@@ -50,7 +50,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `installer-wrapper.sh`: the rendered `sot-launch` under the sandboxed PATH: the bridge probe before every spawn, the
   crash-loop rollback, the exit-75 respawn, the service operations by unit ownership, the re-exec after an apply, and
   `apply_pending`'s refused pointer (a stand-in `sotd` answers `update pointer`: no stop, no restart, one drop-only
-  sot-apply), and the exit-76 converge respawn.
+  sot-apply), the exit-76 converge respawn, and the daemon finders (`sot_daemon_pid`, `installer_process_at`) naming the
+  daemon, never an impostor whose argv[0] is sotd, on the box's own ps (an exported COLUMNS too) and, on Linux, on
+  `bsd_ps`.
   Runs in the `rust.yml` step "Test installer wrapper (bash)" (job `checks-linux`) and in `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper, the network refusal, the dev launcher's
   git stall bound, the ensure's replacement of a daemon an update left on the old binary (`sot_daemon_current`), and the
@@ -91,7 +93,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   end with the version and the fixing command. Each printed command is also run against a scratch juliaup in
   `installer-wrapper.sh`.
 - `installer-support.sh`: the setup the installer suites source: install.sh and lib/sot-daemon.sh, `check`,
-  `starts_with`, `case_start`, the sandboxed tool dir (`mk_tools`) and the recording stubs (`mk_stubs`).
+  `starts_with`, `case_start`, the sandboxed tool dir (`mk_tools`), the recording stubs (`mk_stubs`), and BSD stand-ins
+  for Linux: `bsd_stat_date`, and `bsd_ps`, macOS's ps modeled from /proc (comm is argv[0] cut to 16 characters).
 - `install-smoke.sh`: `install-smoke.sh SCENARIO ARTIFACTS CHECKOUT [BEFORE-TAG]` (Linux, macOS; bash 3.2): `install.sh`
   against the artifacts a release run built. It makes the `--archive` folder from the run's tarball (SHA256SUMS, COMMIT,
   the tarball repacked under the binaries' own `+` version when a branch run named it `0.0.0-ci.<sha>`), refuses an
@@ -145,7 +148,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
 - `under-bash.sh`: `under-bash.sh BASH [-- SUITE...]` checks the shell scripts under BASH, the bash 3.2 that
   comm/CLAUDE.md and scripts/CLAUDE.md promise. Every tracked shell script outside a tests folder under `comm/`,
-  `agents/` and `scripts/` must parse under BASH and run no utility by the `command` builtin outside a pipeline (it ends a `set -e` shell under 3.2 when the utility fails); then each SUITE runs from its own folder with a folder holding
+  `agents/` and `scripts/` must parse under BASH and run no utility by the `command` builtin outside a pipeline (it ends a `set -e` shell under 3.2 when the utility fails), and no tracked file under those folders, tests included, may hold an in-place `sed` with no suffix (macOS's `sed` reads the expression as the suffix); then each SUITE runs from its own folder with a folder holding
   `bash -> BASH` first on PATH, so each script it starts through `env bash`, `bash x.sh` or `bash -c` gets BASH (a
   `#!/bin/bash` script only where BASH is /bin/bash). A suite here runs on BASH itself (it sources the scripts it
   tests); any other on the bash running under-bash.sh (4 or later). With no SUITE it runs every hermetic suite: each

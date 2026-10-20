@@ -286,16 +286,19 @@ sot_prune_logs() {  # <dir>
 
 # The pid of this account's daemon on SOCKET, else (LABEL given) of the first one
 # started with exactly LABEL; nothing when there is none. Among this account's
-# processes named `sotd` (the kernel's `comm`, so a program that only mentions sotd
-# in its arguments is not one; macOS's ps prints the program's path, so its last
-# part is compared), the one started with `--socket` and exactly this socket. Both
-# are literal comparisons of whole arguments: the values reach awk through its
-# environment, never as a pattern or an escape, and a socket or label that only
-# begins with this one is another daemon's (ADR 0049, User isolation).
+# processes named `sotd` (`ucomm`, the kernel's name for the program file on Linux
+# and macOS alike, so a program that only mentions sotd in its arguments or its
+# argv[0] is not one; macOS's `comm` is argv[0], cut to 16 characters in any column
+# but the last), the one started with `--socket` and exactly this socket. -ww keeps
+# the arguments whole whatever COLUMNS says; one keyword per -o, since POSIX reads
+# all after `=` as a header. Both are literal comparisons of whole arguments: the
+# values reach awk through its environment, never as a pattern or an escape, and a
+# socket or label that only begins with this one is another daemon's (ADR 0049,
+# User isolation).
 sot_daemon_pid() {  # <socket> [label]
-    ps -u "$(id -u)" -o pid=,comm=,args= | FIND_SOCKET="$1" FIND_LABEL="${2:-}" awk '
+    ps -u "$(id -u)" -ww -o pid= -o ucomm= -o args= | FIND_SOCKET="$1" FIND_LABEL="${2:-}" awk '
         BEGIN { sock = " --socket " ENVIRON["FIND_SOCKET"] " "; label = " --label " ENVIRON["FIND_LABEL"] " " }
-        { n = $2; sub(/.*\//, "", n) } n != "sotd" { next }
+        $2 != "sotd" { next }
         { args = $0; sub(/^ *[0-9]+ +[^ ]+ +/, "", args); args = " " args " " }
         index(args, sock) { print $1; found = 1; exit }
         ENVIRON["FIND_LABEL"] != "" && index(args, label) && first == "" { first = $1 }

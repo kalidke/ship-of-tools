@@ -169,7 +169,7 @@ stamp_version() {
 
     for t in "${JULIA_TOMLS[@]}"; do
         grep -q '^version = ' "$t" || continue
-        sed -i -E "s/^version = \"[^\"]*\"/version = \"$ver\"/" "$t"
+        sed -E "s/^version = \"[^\"]*\"/version = \"$ver\"/" "$t" > "$t.tmp" && mv "$t.tmp" "$t"
         STAMPED+=("$t")
     done
 

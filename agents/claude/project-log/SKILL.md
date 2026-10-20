@@ -78,8 +78,8 @@ skeleton.
 
    ```bash
    NAME="<the value given after --name>"   # when no --name was given: NAME="$(basename "$REPO")"
-   sed -i "s|^const SITE_NAME = \"project-name\";\$|const SITE_NAME = \"$NAME\";|" \
-     "$REPO/project-log/assets/site.js"
+   sed "s|^const SITE_NAME = \"project-name\";\$|const SITE_NAME = \"$NAME\";|" "$REPO/project-log/assets/site.js" \
+     > "$REPO/project-log/assets/site.js.tmp" && mv "$REPO/project-log/assets/site.js.tmp" "$REPO/project-log/assets/site.js"
    ```
 
 4. **Leave `SITE_SECTIONS` as shipped.** It already lists Start, Charter,
@@ -147,12 +147,13 @@ Fill the fields the template defines — title, kind, and the provenance date
 correct for a page that was just created):
 
 ```bash
-sed -i "s|<title>Experiment title · project record</title>|<title>$TITLE · project record</title>|" "$DEST"
-sed -i "s|data-page=\"experiments/CAMPAIGN/SLUG.html\" data-kind=\"Computational experiment\"|data-page=\"experiments/$CAMPAIGN/$SLUG.html\" data-kind=\"$DATA_KIND\"|" "$DEST"
-sed -i "s|<p class=\"eyebrow\">Campaign name · Experiment name</p>|<p class=\"eyebrow\">$CAMPAIGN_TITLE · $TITLE</p>|" "$DEST"
-sed -i "s|<h1>Experiment title</h1>|<h1>$TITLE</h1>|" "$DEST"
-sed -i "s|<span class=\"badge badge-kind\">Computational</span>|<span class=\"badge badge-kind\">$BADGE_KIND</span>|" "$DEST"
-sed -i "s|<tr><th>Date</th><td>YYYY-MM-DD</td></tr>|<tr><th>Date</th><td>$TODAY</td></tr>|" "$DEST"
+sed -e "s|<title>Experiment title · project record</title>|<title>$TITLE · project record</title>|" \
+    -e "s|data-page=\"experiments/CAMPAIGN/SLUG.html\" data-kind=\"Computational experiment\"|data-page=\"experiments/$CAMPAIGN/$SLUG.html\" data-kind=\"$DATA_KIND\"|" \
+    -e "s|<p class=\"eyebrow\">Campaign name · Experiment name</p>|<p class=\"eyebrow\">$CAMPAIGN_TITLE · $TITLE</p>|" \
+    -e "s|<h1>Experiment title</h1>|<h1>$TITLE</h1>|" \
+    -e "s|<span class=\"badge badge-kind\">Computational</span>|<span class=\"badge badge-kind\">$BADGE_KIND</span>|" \
+    -e "s|<tr><th>Date</th><td>YYYY-MM-DD</td></tr>|<tr><th>Date</th><td>$TODAY</td></tr>|" \
+    "$DEST" > "$DEST.tmp" && mv "$DEST.tmp" "$DEST"
 ```
 
 The Provenance date is the page's creation date, a stub — update it to the
@@ -203,10 +204,11 @@ DEST="$REPO/project-log/journal/$DATE-$SLUG.html"
 [ -f "$DEST" ] && { echo "$DEST already exists" >&2; exit 1; }
 cp "$REPO/project-log/templates/journal-entry.html" "$DEST"
 
-sed -i "s|<title>YYYY-MM-DD · Entry title · project record</title>|<title>$DATE · $TITLE · project record</title>|" "$DEST"
-sed -i "s|data-page=\"journal/YYYY-MM-DD-slug.html\"|data-page=\"journal/$DATE-$SLUG.html\"|" "$DEST"
-sed -i "s|<p class=\"eyebrow\">Journal · YYYY-MM-DD</p>|<p class=\"eyebrow\">Journal · $DATE</p>|" "$DEST"
-sed -i "s|<h1>Entry title</h1>|<h1>$TITLE</h1>|" "$DEST"
+sed -e "s|<title>YYYY-MM-DD · Entry title · project record</title>|<title>$DATE · $TITLE · project record</title>|" \
+    -e "s|data-page=\"journal/YYYY-MM-DD-slug.html\"|data-page=\"journal/$DATE-$SLUG.html\"|" \
+    -e "s|<p class=\"eyebrow\">Journal · YYYY-MM-DD</p>|<p class=\"eyebrow\">Journal · $DATE</p>|" \
+    -e "s|<h1>Entry title</h1>|<h1>$TITLE</h1>|" \
+    "$DEST" > "$DEST.tmp" && mv "$DEST.tmp" "$DEST"
 ```
 
 The command takes no author or campaign argument, so the `entry-meta` line

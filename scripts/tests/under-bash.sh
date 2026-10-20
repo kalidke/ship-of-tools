@@ -10,8 +10,9 @@
 # five scripts/tests suites. Prints `under-bash: PASS|FAIL SUITE` per suite and `under-bash: FAIL parse SCRIPT` per
 # script that does not parse or runs a utility by the `command` builtin outside a pipeline (under bash 3.2 and set -e
 # that ends the shell when the utility fails, even where an if, ! or || handles it), and `under-bash: FAIL early-reader
-# SCRIPT:LINE:TEXT` per pipeline whose reader can stop early (sigpipe-scan.awk); exits with the count of FAIL
-# lines, or 2 when the setup is wrong.
+# SCRIPT:LINE:TEXT` per pipeline whose reader can stop early (sigpipe-scan.awk), and `under-bash: FAIL bare-in-place-sed
+# FILE:LINE:TEXT` per in-place sed with no suffix in any tracked file under comm/, agents/ or scripts/, tests included
+# (macOS's sed takes the expression as the suffix); exits with the count of FAIL lines, or 2 when the setup is wrong.
 set -u
 [ $# -eq 1 ] || { [ $# -ge 3 ] && [ "$2" = -- ]; } || { echo "usage: under-bash.sh BASH [-- SUITE...]" >&2; exit 2; }
 want="$1"; shift; [ $# -eq 0 ] || shift
@@ -37,6 +38,11 @@ v="$("$want" -c 'echo "$BASH_VERSION"')" && [ "$(bash -c 'echo "$BASH_VERSION"')
 echo "under-bash: scripts run by bash $v; suites outside scripts/tests by bash $BASH_VERSION"
 failed=0 n=0
 while IFS= read -r f; do
+    # An in-place sed without a suffix fails on macOS: BSD sed reads the expression as the suffix. Write to a temporary
+    # file and move it over, as release.sh does.
+    while IFS= read -r hit; do
+        echo "under-bash: FAIL bare-in-place-sed $f:$hit"; failed=$((failed + 1))
+    done < <(grep -nIE '(^|[^[:alnum:]_])sed( +-[[:alpha:]]+)* +(--in-place(=[^ ]*)?|-[[:alpha:]]*i)( |$)' "$f" || true)
     case "$f" in */tests/*) continue ;; esac
     case "$f" in *.sh) ;; *) l=""; IFS= read -r l < "$f"; case "$l" in '#!'*bash*) ;; *) continue ;; esac ;; esac
     n=$((n + 1))

@@ -699,7 +699,8 @@ for run in repair again; do
 done
 # An --archive hop to another commit of the same version is not a repair run.
 d="$WORK/hop"; entry_fixture "$d"
-entry_record "$d" 9.9.9 1 0 none; sed -i 's/"commit": *"[^"]*"/"commit": "1111111111111111111111111111111111111111"/' "$d/home/.local/share/sot/install.json"
+entry_record "$d" 9.9.9 1 0 none; inst="$d/home/.local/share/sot/install.json"
+sed 's/"commit": *"[^"]*"/"commit": "1111111111111111111111111111111111111111"/' "$inst" > "$inst.tmp" && mv "$inst.tmp" "$inst"
 printf 'same\n' > "$d/ctl/direction"
 entry_archive "$d" --be-only --no-service
 check "same version, another commit: it says so, not a repair run" "1 0" "$(said 'same version, another build') $(said 'a repair run')"

@@ -156,6 +156,39 @@ check "a real foreign unit: rollback runs no service op, only the pid stop" \
     "0 stopped decoy-alive" "$(grep -c 'sotd.service' "$d/log" || true) $(standin_end "$d")"
 
 # ---------------------------------------------------------------------------
+case_start "the_finders_know_the_daemon_by_the_kernels_name"
+# The stand-in daemon, behind an impostor started first: a bash whose argv[0] is sotd and whose arguments name the same
+# socket. macOS's ps prints argv[0] as comm, cut to 16 characters in any column but the last, so the daemon's path is
+# cut away and the impostor passes as sotd; the kernel's name (ucomm) tells them apart. This box's ps, then on Linux a
+# model of macOS's (bsd_ps).
+d="$WORK/finders"
+( exec -a sotd bash -c 'while :; do sleep 1; done' impostor --socket "$d/sot.sock" ) &
+IMPOSTOR=$!
+standin_start "$d"
+for pid in "$IMPOSTOR" "$SA_PID"; do  # each has exec'd once its arguments end with the socket
+    for _ in {1..100}; do case "$(ps -o args= -p "$pid" 2>/dev/null)" in *" --socket $d/sot.sock") break ;; esac; sleep 0.05; done
+done
+# [PATH-FIRST]: the pid sot_daemon_pid finds for the socket, then whether installer_process_at lists the stand-in by its
+# path ("listed"; a child the stand-in forks may be listed beside it until it execs).
+finders() {
+    local at
+    at=" $(PATH="${1:+$1:}$TOOLS" installer_process_at "$d/standin/sotd" sotd | tr '\n' ' ')"
+    case "$at" in *" $SA_PID "*) at=listed ;; *) at=unlisted ;; esac
+    echo "$(PATH="${1:+$1:}$TOOLS" sot_daemon_pid "$d/sot.sock") $at"
+}
+check "this box's ps: both finders name the daemon, never the impostor" "$SA_PID listed" "$(finders)"
+# Linux's ps cuts its last column to an exported COLUMNS even into a pipe; -ww keeps the arguments whole.
+check "this box's ps, COLUMNS=40 exported: both finders still name the daemon" "$SA_PID listed" "$(export COLUMNS=40; finders)"
+if [ "$(uname -s)" = Linux ]; then
+    bsd_ps "$d/bsd"
+    check "macOS's ps (modeled): both finders name the daemon, never the impostor" "$SA_PID listed" "$(finders "$d/bsd")"
+else
+    printf '    SKIP the modeled macOS ps (it reads /proc: Linux only; this box ran its own ps above)\n'
+fi
+kill "$IMPOSTOR" 2>/dev/null || true; wait "$IMPOSTOR" 2>/dev/null || true
+standin_end "$d" >/dev/null
+
+# ---------------------------------------------------------------------------
 case_start "a_converge_relaunches_the_all_in_one_window"
 # Exit 76 is a converge (ADR 0017): on Unix it is apply-pending-and-respawn, as 75 is, never a close.
 for code in 75 76; do
