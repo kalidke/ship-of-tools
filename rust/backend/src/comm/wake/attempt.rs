@@ -1,19 +1,21 @@
 //! One wake attempt: attach, check the screen is a free prompt and holds still, type the line, wait for it, then Enter.
 
 use super::*;
-use super::screen::{free_test_lines, held_rows, wake_lines, Prompt};
+use super::screen::{cursor_row_trace, free_test_lines, held_rows, wake_lines, Prompt};
 use crate::rows::run::headless::{attach, checkpointed, send_enter, send_text, Client, HeadlessError, POLL_INTERVAL, SHUTDOWN_WAIT};
 
 /// What [`wake_if_free`] did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WakeOutcome {
-    /// The screen was not a free prompt; nothing was typed.
-    NotFree,
+    /// The screen was not a free prompt; nothing was typed. `row` is the cursor's row as the gate read it
+    /// ([`cursor_row_trace`]).
+    NotFree { row: String },
     /// The line was typed and Enter written.
     Woke,
     /// The line was typed but the live screen then did not show it alone in main's input box, for `reason`
-    /// (the gate's own); `border` is the line above the cursor's row at the gate. No Enter was sent.
-    TypedNoEnter { reason: &'static str, border: String },
+    /// (the gate's own); `border` is the line above the cursor's row at the gate, and `row` the cursor's row
+    /// ([`cursor_row_trace`]). No Enter was sent.
+    TypedNoEnter { reason: &'static str, border: String, row: String },
     /// The Enter write (`step` `"enter"`) failed in a phase other than `input` (`detail`, the phase and its text): its
     /// delivery is unknown, and it may still have reached the agent. For `step` `"text"` it is only the stale refusal
     /// (phase `input`), which wrote nothing.
@@ -91,7 +93,7 @@ pub fn wake_if_free(
     };
     let first_prompt = is_free(&seen, Some(cursor), agent);
     let out = if first_prompt.is_none() {
-        Ok(WakeOutcome::NotFree)
+        Ok(WakeOutcome::NotFree { row: cursor_row_trace(client.screen()) })
     } else {
         mark("hold");
         let held_from = Instant::now();
@@ -113,7 +115,7 @@ pub fn wake_if_free(
                     Ok(type_then_enter(&mut client, line, agent, op_budget))
                 }
             }
-            _ => Ok(WakeOutcome::NotFree),
+            _ => Ok(WakeOutcome::NotFree { row: cursor_row_trace(client.screen()) }),
         }
     };
     client.shutdown(SHUTDOWN_WAIT);
@@ -136,7 +138,7 @@ fn type_then_enter(client: &mut Client, line: &str, agent: &str, op_budget: Dura
             None => return wake_outcome(send_enter(client, op_budget)),
             Some(reason) if Instant::now() >= deadline => {
                 let border = cursor.and_then(|(row, _)| lines.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
-                return WakeOutcome::TypedNoEnter { reason, border };
+                return WakeOutcome::TypedNoEnter { reason, border, row: cursor_row_trace(client.screen()) };
             }
             Some(_) => std::thread::sleep(POLL_INTERVAL),
         }

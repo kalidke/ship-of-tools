@@ -740,3 +740,36 @@ fn only_the_last_rows_hold_a_dialog() {
     screen.push(ASKQ_FOOTER);
     assert_eq!(dialog(&screen, false), Some("claude dialog open".to_string()));
 }
+
+/// Each character of the cursor's row is a token: printable ASCII as itself, anything else as its code point, and the
+/// cursor's column comes first.
+#[test]
+fn the_cursor_row_trace_names_each_character() {
+    let mut p = vt100_ctt::Parser::new(2, 16, 0);
+    p.process("\u{276f}\u{a0}ok".as_bytes());
+    assert_eq!(cursor_row_trace(p.screen()), "col 4: U+276F U+00A0 o k");
+}
+
+/// A dim cell carries `dim:`, and the undimmed blanks after the text are dropped.
+#[test]
+fn the_cursor_row_trace_marks_dim_cells() {
+    let mut p = vt100_ctt::Parser::new(2, 16, 0);
+    p.process("x\x1b[2my\x1b[0m  ".as_bytes());
+    assert_eq!(cursor_row_trace(p.screen()), "col 4: x dim:y");
+}
+
+/// A dimmed blank is text to the trace, so it is kept.
+#[test]
+fn the_cursor_row_trace_keeps_a_dim_blank() {
+    let mut p = vt100_ctt::Parser::new(2, 16, 0);
+    p.process("a\x1b[2m ".as_bytes());
+    assert_eq!(cursor_row_trace(p.screen()), "col 2: a dim:U+0020");
+}
+
+/// A wide character is one code point, and its second cell is `cont`.
+#[test]
+fn the_cursor_row_trace_names_a_wide_character() {
+    let mut p = vt100_ctt::Parser::new(2, 16, 0);
+    p.process("\u{4e2d}".as_bytes());
+    assert_eq!(cursor_row_trace(p.screen()), "col 2: U+4E2D cont");
+}

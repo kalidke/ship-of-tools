@@ -10,7 +10,7 @@ backend; charter: comm/CLAUDE.md.
 - `dialog.rs`: the dialog tick: a Claude row whose screen shows a dialog that waits on a person gets `dialog`, and `resumed` once it has gone
 - `dialog_tests.rs`: the tests of the dialog tick, through the real `comm-status.sh`
 - `mod.rs`: the tick: when a row is woken, and the account of the whole wake
-- `screen.rs`: whether a captured screen is a free prompt, the rows the hold compares, and whether it shows a dialog (`dialog_of`)
+- `screen.rs`: whether a captured screen is a free prompt, the rows the hold compares, whether it shows a dialog (`dialog_of`), and the cursor's row as a refusal logs it (`cursor_row_trace`)
 - `screen_tests.rs`: the tests of the screen reading, over captured frames
 - `unread.rs`: how much mail is unread: the inbox against the cursor
 
@@ -34,6 +34,9 @@ backend; charter: comm/CLAUDE.md.
   STILL_FOR (1.5 s), and the live screen must read free again.
 - After typing, `wake_if_free` waits up to OP_BUDGET (3 s) for `typed_refusal` to see the line alone in main's input
   box (`type_then_enter`); Enter goes only then.
+- A refusal logs the cursor's row as the gate read it (`cursor_row_trace`, before `free_test_lines` blanks the dim cells):
+  the `row=` field of the refusal streak line, and of the `TypedNoEnter` warn. Each cell is one token (`U+XXXX` for
+  non-ASCII and the space, `dim:` for a dim cell). It is the record of what a Windows box held, which may not show dim.
 - A typed line counts as the wake and, within one daemon run, is never typed again for its batch (`enter_owed` lives in
   the tick's memory, so a restart can type it once more, and forgets a line whose mail is read); one left without Enter
   is sent, Enter alone, by a later tick that finds it alone in main's input box, whether or not its mail has been read

@@ -50,7 +50,7 @@
 //! agent: no agents panel below the box, or a panel with no panel cursor and its one dot on main
 //! ([`panel_refusal`]); Claude Code's footer is not read. A pane too narrow for the wake line on the prompt's one
 //! row refuses ([`fits`]). A row with unread mail that the wake refuses for [`REFUSED_FOR`] gets one log line per run of
-//! refusals, naming its handle, the reason and the line above the prompt. Known limits: a suggestion drawn by colour rather than dim reads as a draft, and so does every
+//! refusals, naming its handle, the reason, the line above the prompt and the cursor's row as the gate read it ([`cursor_row_trace`]). Known limits: a suggestion drawn by color rather than dim reads as a draft, and so does every
 //! suggestion on Windows until a screen read shows SGR 2 survives ConPTY; a statusline that draws `●` or `◯`
 //! below the box refuses the row; with no panel nothing below the box is checked, so a view of another agent
 //! or a focus off the input that drew no panel would read free (every captured view draws the panel); with agent view on, a
@@ -71,7 +71,8 @@
 //! that holds anything but just the line gets nothing and is looked at again every tick, as a row with unread mail is.
 //! Known gap (Windows): the typed line has failed to read alone in main's box within [`OP_BUDGET`] of the typing, though
 //! a later read of the same row matched it; no Windows screen of a box holding typed text has been captured, so whether
-//! the echo came late or something else shared the row is not known. A later tick sends the Enter once the row rests
+//! the echo came late or something else shared the row is not known. The warning now carries the row the gate read
+//! ([`cursor_row_trace`]), so a Windows log shows what the box held. A later tick sends the Enter once the row rests
 //! with just the line in the box.
 //!
 //! A text write that fails after it may have landed (any phase but a stale `input` refusal) is treated as typed: the
@@ -225,7 +226,8 @@ enum Step {
 }
 
 /// Why the wake did not type into a row with mail: a [`prompt_of`] reason, `stop hook running`, `moved during the
-/// hold` or `text not confirmed`, and the line above the cursor's row (the box's top border, when there is a box).
+/// hold` or `text not confirmed`, the line above the cursor's row (the box's top border, when there is a box), and the
+/// cursor's row as the gate read it ([`cursor_row_trace`]).
 #[derive(Debug)]
 struct Refusal {
     reason: &'static str,
@@ -233,6 +235,7 @@ struct Refusal {
     /// An unconfirmed text write's phase and error text. Warned at once, once per streak: a write that keeps failing
     /// is tried again every tick.
     detail: Option<String>,
+    row: String,
 }
 
 /// A row with mail that the wake keeps refusing: when the run of refusals began, and whether its one line is out.
@@ -262,7 +265,7 @@ fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Stre
             }
             if !s.logged && now.duration_since(s.since) >= REFUSED_FOR {
                 s.logged = true;
-                tracing::info!(handle = %handle, reason = ?r.reason, border = ?r.border, "comm wake: a row with unread mail or an unsent wake line keeps refusing the wake");
+                tracing::info!(handle = %handle, reason = ?r.reason, border = ?r.border, row = ?r.row, "comm wake: a row with unread mail or an unsent wake line keeps refusing the wake");
             }
         }
         Step::Skip => {}
@@ -328,9 +331,9 @@ fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, seen: (Option<
     let (reason, border) = seen;
     match out {
         Ok(WakeOutcome::Woke) => Step::Woke(Woken { line: total, at: now, enter_owed: false }),
-        Ok(WakeOutcome::NotFree) => Step::Refused(Refusal { reason: reason.unwrap_or("moved during the hold"), border, detail: None }),
-        Ok(WakeOutcome::TypedNoEnter { reason, border }) => {
-            tracing::warn!(handle, border = ?border, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
+        Ok(WakeOutcome::NotFree { row }) => Step::Refused(Refusal { reason: reason.unwrap_or("moved during the hold"), border, detail: None, row }),
+        Ok(WakeOutcome::TypedNoEnter { reason, border, row }) => {
+            tracing::warn!(handle, border = ?border, row = ?row, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
             Step::Woke(Woken { line: total, at: now, enter_owed: true })
         }
         Ok(WakeOutcome::TextUnknown { detail }) => {
@@ -345,7 +348,7 @@ fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, seen: (Option<
             tracing::warn!(handle, border = ?border, "comm wake: enter not confirmed ({detail}); the line was typed, so it is not typed again and its Enter is owed");
             Step::Woke(Woken { line: total, at: now, enter_owed: true })
         }
-        Ok(WakeOutcome::Unconfirmed { detail, .. }) => Step::Refused(Refusal { reason: "text not confirmed", border, detail: Some(detail) }),
+        Ok(WakeOutcome::Unconfirmed { detail, .. }) => Step::Refused(Refusal { reason: "text not confirmed", border, detail: Some(detail), row: String::new() }),
         Err(e) => {
             tracing::debug!(handle, phase = e.phase, detail = %e.detail, "comm wake: row not typeable this tick");
             Step::Skip
@@ -440,7 +443,7 @@ mod tests {
         let log = sot_log::test_log::capture();
         let text = || log.text();
         let count = || text().matches("keeps refusing the wake").count();
-        let refused = || Step::Refused(Refusal { reason: "input not empty", border: "──── named-session ─".to_string(), detail: None });
+        let refused = || Step::Refused(Refusal { reason: "input not empty", border: "──── named-session ─".to_string(), detail: None, row: "col 2: a".to_string() });
         let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
         let t0 = Instant::now();
         let mut at = |d: Duration, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + d);
@@ -453,7 +456,7 @@ mod tests {
         at(REFUSED_FOR * 5, refused());
         assert_eq!(count(), 1, "one line per streak");
         let t = text();
-        assert!(t.contains("handle=h ") && t.contains("reason=\"input not empty\"") && t.contains("border=\"──── named-session ─\""), "{t}");
+        assert!(t.contains("handle=h ") && t.contains("reason=\"input not empty\"") && t.contains("border=\"──── named-session ─\"") && t.contains("row=\"col 2: a\""), "{t}");
         // A wake ends the streak. Fails if it does not (the old streak is logged, so the count stays 1).
         at(REFUSED_FOR * 6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false }));
         at(REFUSED_FOR * 7, refused());
@@ -480,7 +483,7 @@ mod tests {
     fn a_typed_line_counts_as_the_wake_and_a_write_refused_as_stale_is_tried_again() {
         let now = Instant::now();
         let seen = || (None, "b".to_string());
-        let typed_no_enter = WakeOutcome::TypedNoEnter { reason: "typed text not in main's input box", border: String::new() };
+        let typed_no_enter = WakeOutcome::TypedNoEnter { reason: "typed text not in main's input box", border: String::new(), row: String::new() };
         assert!(matches!(step_of("h", Ok(typed_no_enter), seen(), 7, now), Step::Woke(Woken { line: 7, enter_owed: true, .. })));
         // An Enter of unknown delivery may have been lost, leaving the line in the box: owed, so a later tick finishes it.
         let enter = WakeOutcome::Unconfirmed { step: "enter", detail: "record: input delivery unknown".into() };
@@ -516,7 +519,7 @@ mod tests {
     fn an_unconfirmed_write_warns_once_per_streak() {
         let log = sot_log::test_log::capture();
         let count = || log.text().matches(&format!("text not confirmed ({STALE})")).count();
-        let u = || Step::Refused(Refusal { reason: "text not confirmed", border: "b".to_string(), detail: Some(STALE.to_string()) });
+        let u = || Step::Refused(Refusal { reason: "text not confirmed", border: "b".to_string(), detail: Some(STALE.to_string()), row: String::new() });
         let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
         let t0 = Instant::now();
         let mut at = |secs: u64, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + Duration::from_secs(secs));
@@ -527,5 +530,32 @@ mod tests {
         at(6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false }));
         at(8, u());
         assert_eq!(count(), 2);
+    }
+
+    #[test]
+    fn a_typed_line_refusal_logs_the_row_the_gate_read() {
+        // The box holds the wake line and the tail after it is undimmed: a dim tail reads blank to the gate, so only
+        // an undimmed one refuses on Linux (the control below). The NBSP after the glyph is the box's own mark.
+        let log = sot_log::test_log::capture();
+        let line = "[sot-comm] you have mail: run comm-poll.sh";
+        let rule = "\u{2500}".repeat(80);
+        let screen_of = |tail: &str| {
+            let mut parser = vt100_ctt::Parser::new(3, 80, 0);
+            parser.process(format!("{rule}\r\n\u{276f}\u{a0}{line}{tail}\r\n{rule}\x1b[2;{}H", 3 + line.len()).as_bytes());
+            parser
+        };
+        let gate = |parser: &vt100_ctt::Parser| {
+            let screen = parser.screen();
+            let lines = super::screen::free_test_lines(screen);
+            super::screen::typed_refusal(&lines, Some(screen.cursor_position()), "claude", false, line)
+        };
+        assert_eq!(gate(&screen_of("\x1b[2m try this\x1b[22m")), None, "the dimmed control reads blank");
+        let undimmed = screen_of(" try this");
+        let Some(reason) = gate(&undimmed) else { panic!("the undimmed tail must refuse") };
+        let outcome = WakeOutcome::TypedNoEnter { reason, border: String::new(), row: super::screen::cursor_row_trace(undimmed.screen()) };
+        assert!(matches!(step_of("h", Ok(outcome), (None, String::new()), 1, Instant::now()), Step::Woke(_)));
+        // The row as the gate read it: the glyph, the NBSP, the wake line, then the tail, with the cursor after the line.
+        let row = "col 44: U+276F U+00A0 [ s o t - c o m m ] U+0020 y o u U+0020 h a v e U+0020 m a i l : U+0020 r u n U+0020 c o m m - p o l l . s h U+0020 t r y U+0020 t h i s";
+        assert!(log.text().contains(row), "{}", log.text());
     }
 }
