@@ -13,7 +13,9 @@
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 #[cfg(target_os = "macos")]
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
+#[cfg(any(test, target_os = "macos"))]
+use std::sync::Mutex;
 
 /// Held by a constructor across create-and-flag and by a fork site across its fork. Used on macOS only.
 #[cfg(target_os = "macos")]
@@ -35,13 +37,29 @@ pub fn fork_guard() -> ForkGuard {
     }
 }
 
+/// What a constructor takes: the fork guard, and under test a record that this thread is about to ask for it.
+fn birth_guard() -> ForkGuard {
+    #[cfg(test)]
+    {
+        let (arrived, changed) = &ARRIVED;
+        arrived.lock().unwrap_or_else(|e| e.into_inner()).push(std::thread::current().id());
+        changed.notify_all();
+    }
+    fork_guard()
+}
+
+/// Test only: the threads that have reached a constructor's lock acquisition, so a test releases a held lock only
+/// once its constructor is at the lock.
+#[cfg(test)]
+static ARRIVED: (Mutex<Vec<std::thread::ThreadId>>, std::sync::Condvar) = (Mutex::new(Vec::new()), std::sync::Condvar::new());
+
 /// A socket born close-on-exec.
 pub fn socket_cloexec(
     role: &'static str,
     domain: libc::c_int,
     kind: libc::c_int,
 ) -> io::Result<OwnedFd> {
-    let _born = fork_guard();
+    let _born = birth_guard();
     #[cfg(target_os = "linux")]
     let kind = kind | libc::SOCK_CLOEXEC;
     // SAFETY: socket(2) has no pointer arguments.
@@ -56,7 +74,7 @@ pub fn socket_cloexec(
 
 /// A pipe, read end then write end, born close-on-exec and, when `nonblocking`, O_NONBLOCK.
 pub fn pipe_cloexec(roles: [&'static str; 2], nonblocking: bool) -> io::Result<(OwnedFd, OwnedFd)> {
-    let _born = fork_guard();
+    let _born = birth_guard();
     let mut fds: [RawFd; 2] = [-1, -1];
     #[cfg(target_os = "linux")]
     // SAFETY: pipe2 fills the two-element array on success.
@@ -85,7 +103,7 @@ pub fn pipe_cloexec(roles: [&'static str; 2], nonblocking: bool) -> io::Result<(
 
 /// A pty, master then slave, both born close-on-exec, the terminal sized `size`.
 pub fn openpty_cloexec(size: &libc::winsize) -> io::Result<(OwnedFd, OwnedFd)> {
-    let _born = fork_guard();
+    let _born = birth_guard();
     let (master, slave) = open_pty_pair(size)?;
     let (master, slave) = (own("master", master), own("slave", slave));
     for (role, fd) in [("master", &master), ("slave", &slave)] {
@@ -311,6 +329,14 @@ mod tests {
             (fd, seen.load(Ordering::SeqCst))
         });
         let (_fd, released_first) = if cfg!(target_os = "macos") {
+            let id = thread.thread().id();
+            crate::test_wait::within(crate::test_isolated::ISOLATION_TIMEOUT, "the constructor reaching the lock", move || {
+                let (arrived, changed) = &ARRIVED;
+                let mut seen = arrived.lock().unwrap_or_else(|e| e.into_inner());
+                while !seen.contains(&id) {
+                    seen = changed.wait(seen).unwrap_or_else(|e| e.into_inner());
+                }
+            });
             released.store(true, Ordering::SeqCst);
             drop(guard);
             crate::test_wait::within(crate::test_isolated::ISOLATION_TIMEOUT, "the constructor", move || {
