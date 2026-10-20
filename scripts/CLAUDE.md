@@ -143,7 +143,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Files
 ### Release
 - `release.sh`: stamps the version, runs the workspace tests, commits and tags the cut, stamps the line's next -dev
-  version in its own commit, and pushes both.
+  version in its own commit, and pushes both. Before the stamp it refuses, naming the fix, when the MathJax modules or a
+  reachable user manager (a test container started with `--user-manager`) are missing; a failure after the stamp
+  restores the stamped files.
 ### Install
 - `install.sh`: the Unix installer and update entry; the one-liner fetches its own tag's copy (the channel's, with no
   `--version`); `--archive <folder>` installs a packed folder in place of a release download; ends with one verdict line.

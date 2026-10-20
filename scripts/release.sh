@@ -152,6 +152,17 @@ for wf in rust.yml CI.yml; do
         || { echo "preflight: latest green $wf run is at ${run_sha:0:8}, not at HEAD — dispatch it there: gh workflow run $wf --ref $branch" >&2; exit 1; }
 done
 
+# What the test step needs, checked before the stamp: a failure after it leaves 14 files stamped. The MathJax modules
+# are what two contract tests of the workspace run need (rc-gate.sh checks the same); the test step also sets
+# SOT_TEST_REQUIRE_USER_MANAGER=1, which panics without a reachable user manager, and a test container
+# (scripts/tests/in-container.sh) strips the user bus unless it is started with --user-manager.
+if [[ $SKIP_TESTS -eq 0 ]]; then
+    [[ -d rust/backend/sidecars/mathjax/node_modules ]] \
+        || { echo "preflight: rust/backend/sidecars/mathjax/node_modules is missing — run npm ci in rust/backend/sidecars/mathjax" >&2; exit 1; }
+    systemctl --user show-environment >/dev/null 2>&1 \
+        || { echo "preflight: no systemd user manager is reachable — run the cut in a test container started with --user-manager (the release skill has the command)" >&2; exit 1; }
+fi
+
 # ---- stamp -----------------------------------------------------------------
 # One version into every file that carries it: called with the release version,
 # and again after the tag with the line's next -dev version. It appends to
@@ -177,13 +188,20 @@ stamp_version() {
 }
 
 STAMPED=()
+NEW_FILES=()
+# Until the commit, any failure puts the tree back as it was: the stamped files restored, a CHANGELOG.md it created removed.
+restore_stamp() {
+    [[ ${#STAMPED[@]} -eq 0 ]] || git restore -- "${STAMPED[@]}"
+    [[ ${#NEW_FILES[@]} -eq 0 ]] || rm -f -- "${NEW_FILES[@]:?}"
+}
+trap 'rc=$?; if [[ $rc -ne 0 ]]; then restore_stamp; echo "release: stopped after the stamp; the stamped files are restored" >&2; fi' EXIT
+trap 'exit 130' INT TERM
 shopt -s nullglob
 JULIA_TOMLS=(Project.toml core/Project.toml julia/kernel/Project.toml
              julia/repl/Project.toml julia/pluto/Project.toml
              julia/plugins/*/Project.toml examples/plugins/*/Project.toml)
 stamp_version "$VERSION"
 
-NEW_FILES=()
 if command -v git-cliff >/dev/null 2>&1; then
     git ls-files --error-unmatch CHANGELOG.md >/dev/null 2>&1 \
         && STAMPED+=(CHANGELOG.md) || NEW_FILES+=(CHANGELOG.md)
@@ -196,8 +214,7 @@ echo "== stamped $VERSION into:"
 git diff --stat -- "${STAMPED[@]}"
 
 if [[ $DRY_RUN -eq 1 ]]; then
-    git restore -- "${STAMPED[@]}"
-    [[ ${#NEW_FILES[@]} -gt 0 ]] && rm -f -- "${NEW_FILES[@]:?}"
+    restore_stamp
     echo "== after the tag the line is stamped $NEXT"
     echo "== dry run: restored, nothing committed"
     exit 0
@@ -231,8 +248,9 @@ fi
 # ---- commit, tag, push -----------------------------------------------------
 if [[ $YES -eq 0 ]]; then
     read -r -p "Push release $TAG and the $NEXT dev stamp to origin (commit + tag -> CI builds and creates the draft release)? [y/N] " ans
-    [[ "$ans" == [yY]* ]] || { git restore -- "${STAMPED[@]}"; echo "aborted, restored"; exit 1; }
+    [[ "$ans" == [yY]* ]] || { trap - EXIT; restore_stamp; echo "aborted, restored"; exit 1; }
 fi
+trap - EXIT   # from here the stamp is committed or about to be; a later failure is a half-cut to undo by the skill's steps
 
 # ${arr[@]+...} (not ${arr[@]:-}) — an empty array must expand to NOTHING;
 # the :- form yields one empty string, which git add rejects as a pathspec.
