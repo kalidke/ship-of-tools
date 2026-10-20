@@ -21,6 +21,25 @@ end
 Base.write(io::StrayIO, b::UInt8) = (push!(io.bytes, b); 1)
 Base.flush(::StrayIO) = nothing
 
+# An output stream that throws an InterruptException at each of the first `left` writes that hold `needle`, before the
+# bytes are kept: the daemon's signals, which come several close together after a forced eval.
+mutable struct StrayBurstIO <: IO
+    needle::String
+    left::Int
+    bytes::Vector{UInt8}
+end
+function Base.unsafe_write(io::StrayBurstIO, p::Ptr{UInt8}, n::UInt)
+    chunk = unsafe_wrap(Array, p, n)
+    if io.left > 0 && occursin(io.needle, String(copy(chunk)))
+        io.left -= 1
+        throw(InterruptException())
+    end
+    append!(io.bytes, chunk)
+    return n
+end
+Base.write(io::StrayBurstIO, b::UInt8) = (push!(io.bytes, b); 1)
+Base.flush(::StrayBurstIO) = nothing
+
 
 # The daemon's signal can also land in the shim's code after the eval's code ended; there it is dropped and the
 # step runs again, so the answer is whole.
@@ -70,4 +89,20 @@ end
     wait(reader)
     @test thrown[]
     @test join(texts) == "ab"
+end
+
+# Two signals: one lands in a request's answer, the next in the error answer that replaces it. `serve` goes on, and the
+# request is answered with the error.
+@testset "serve: a signal in a request's answer and one in its error answer leave serve serving" begin
+    io = StrayBurstIO("\"repl.interrupt\"", 2, UInt8[])
+    request = sprint(DR.json_write, Dict(:v => 1, :id => 5, :op => "repl.interrupt", :payload => Dict())) * "\n"
+    escaped = try
+        DR.serve(IOBuffer(request), io)
+        false
+    catch e
+        e isa InterruptException
+    end
+    @test io.left == 0
+    @test !escaped
+    @test occursin("repl_exception", String(copy(io.bytes)))
 end

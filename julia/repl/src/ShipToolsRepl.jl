@@ -153,33 +153,46 @@ function serve(io_in::IO, io_out::IO)
         bytesavailable(io_in) == 0 && (SIGNALED[] = nothing)
         line = past_interrupts(() -> eof(io_in) ? nothing : readline(io_in))
         line === nothing && break
-        isempty(strip(line)) && continue
-        req = try
-            json_read(line)
-        catch e
-            write_envelope(io_out, "res", 0, "repl.parse_error",
-                Dict(:error => "bad request: $(e)"))
-            continue
-        end
-
-        id = get(req, :id, UInt64(0))
-        op = get(req, :op, "")
-        payload = get(req, :payload, Dict{Symbol,Any}())
-
+        # The daemon's signals land in whatever this thread runs, several close together after a forced eval: none ends
+        # `serve`, whose end is the REPL's. One that lands outside a request's handling and its answer is dropped here.
         try
-            if op == "repl.eval"
-                handle_eval(io_out, id, payload)
-            elseif op == "repl.run_file"
-                handle_run_file(io_out, id, payload)
-            elseif op == "repl.interrupt"
-                handle_interrupt(io_out, id, payload)
-            else
-                write_envelope(io_out, "res", id, op,
-                    Dict(:error => "unknown op: $op", :code => "unknown_op"))
-            end
+            serve_request(io_out, line)
         catch e
-            bt = sprint(showerror, e, catch_backtrace())
-            println(stderr, "repl exception: $bt")
+            e isa InterruptException || rethrow()
+        end
+    end
+end
+
+# One request line, parsed, handled and answered. A signal that lands in its handling answers it with an error
+# (`repl_exception`), and that answer is written again until it is out (`past_interrupts`).
+function serve_request(io_out::IO, line)
+    isempty(strip(line)) && return
+    req = try
+        json_read(line)
+    catch e
+        write_envelope(io_out, "res", 0, "repl.parse_error",
+            Dict(:error => "bad request: $(e)"))
+        return
+    end
+
+    id = get(req, :id, UInt64(0))
+    op = get(req, :op, "")
+    payload = get(req, :payload, Dict{Symbol,Any}())
+
+    try
+        if op == "repl.eval"
+            handle_eval(io_out, id, payload)
+        elseif op == "repl.run_file"
+            handle_run_file(io_out, id, payload)
+        elseif op == "repl.interrupt"
+            handle_interrupt(io_out, id, payload)
+        else
+            write_envelope(io_out, "res", id, op,
+                Dict(:error => "unknown op: $op", :code => "unknown_op"))
+        end
+    catch e
+        past_interrupts() do
+            println(stderr, "repl exception: ", sprint(showerror, e, catch_backtrace()))
             flush(stderr)
             write_envelope(io_out, "res", id, op,
                 Dict(:error => sprint(showerror, e), :code => "repl_exception"))

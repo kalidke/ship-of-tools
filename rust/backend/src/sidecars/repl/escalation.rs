@@ -18,12 +18,16 @@ const QUIET: Duration = Duration::from_secs(1);
 const BURST_GAP: Duration = Duration::from_millis(50);
 /// How long a forced interrupt's signals go on, from the first. Julia forces the exception into code with no safepoint
 /// at the fifth signal it counts close together (each adds 0.3 to a sum that decays with a one-second time constant,
-/// and the first only starts the count). On Linux the eval's own thread counts each one in its signal handler, so the
-/// signals sent while that thread waits for a CPU merge into one count: on a loaded computer five signals count as two
-/// or three, and the signals go on so that the thread counts one each time it runs. After forcing, Julia ignores
-/// signals for half a second and must count five again, so a second force needs a signal sent 850 ms or more after the
-/// first, and signals that end before then force at most once.
-const FORCE_SPAN: Duration = Duration::from_millis(800);
+/// and the first only starts the count; when an earlier signal started it, the fourth forces). After forcing it ignores
+/// signals for half a second, and one after that is a new interrupt, raised in whatever the shim then runs: its answer
+/// for the forced eval, which it can turn into an error (julia/repl `serve`). On macOS and Windows Julia counts each
+/// signal on a thread of its own, so the burst forces by its fourth or fifth signal, and a burst that ends 0.4 s after
+/// its first signal ends inside the half second after any force in it. On Linux the eval's own thread counts each one
+/// in its signal handler, so the signals sent while that thread waits for a CPU merge into one count: on a loaded
+/// computer five signals count as two or three, and the signals go on so that the thread counts one each time it runs.
+/// A second force needs a signal sent 850 ms or more after the first, so they force at most once; a child that forced
+/// by 0.25 s and then wrote nothing for half a second still takes the last of them as new interrupts.
+const FORCE_SPAN: Duration = Duration::from_millis(if cfg!(any(target_os = "macos", windows)) { 400 } else { 800 });
 
 /// An unanswered `repl.interrupt` the child says nothing through. An eval that never yields holds the shim's one
 /// thread, so the shim cannot read the request (julia/repl `handle_interrupt`): once the child has said nothing for
@@ -212,8 +216,13 @@ mod tests {
             forced.signalled(t0 + BURST_GAP * signals);
             signals += 1;
         }
-        assert_eq!(signals, 16, "signals at 0, 50, ..., 750 ms");
-        assert_eq!(forced.at, t0 + BURST_GAP * 15 + QUIET, "the quiet runs from the last");
+        let (expected, what) = if cfg!(any(target_os = "macos", windows)) {
+            (8, "signals at 0, 50, ..., 350 ms")
+        } else {
+            (16, "signals at 0, 50, ..., 750 ms")
+        };
+        assert_eq!(signals, expected, "{what}");
+        assert_eq!(forced.at, t0 + BURST_GAP * (expected - 1) + QUIET, "the quiet runs from the last");
         let mut plain = Escalation::for_request(1, &json!({}), Some(7)).unwrap();
         plain.signalled(t0);
         assert!(plain.over && plain.at == t0 + QUIET);
@@ -222,6 +231,17 @@ mod tests {
         heard.signalled(t0);
         assert!(!heard.over);
         assert!(heard.heard(&pending).unwrap().over, "a line after a signal ends the signals");
+    }
+
+    /// Where Julia counts each signal on a thread of its own (macOS, Windows), any signal of the burst can be the one
+    /// it forces at, so the burst ends 0.1 s or more inside the half second Julia ignores signals after a force: no
+    /// signal of it is a new interrupt that lands in the shim's answer.
+    #[test]
+    fn where_julia_counts_every_signal_the_burst_ends_inside_its_half_second() {
+        if cfg!(any(target_os = "macos", windows)) {
+            assert!(FORCE_SPAN + Duration::from_millis(100) <= Duration::from_millis(500), "{FORCE_SPAN:?}");
+        }
+        assert!(FORCE_SPAN >= BURST_GAP * 5, "five signals at least, the count Julia forces at: {FORCE_SPAN:?}");
     }
 
     #[test]

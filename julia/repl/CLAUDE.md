@@ -15,7 +15,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 - `test/runtests.jl`: the streaming tests and the stdlib-only guard test.
 - `test/shim_child.jl`: the shim as the daemon starts it, a child process running `run_shim` with a scratch depot whose `config/startup.jl` is the user's startup file: the wire, the startup output, error rendering, the display stack, a failing startup file.
 - `test/interrupt_child.jl`: the daemon's interrupt signal (SIGINT; on Windows a Ctrl+Break to the child's own console process group) against the shim as the daemon starts it: code that never yields is stopped, with a safepoint by one signal and without one by the forcing burst, its interrupt is answered `interrupted:true`, the REPL keeps its state, and (Julia 1.13 and later) a signal between evals is dropped.
-- `test/stray_interrupt.jl`: the daemon's signal landing in the shim's own code after an eval's code ended: the answer frames and the done and res writes survive it.
+- `test/stray_interrupt.jl`: the daemon's signal landing in the shim's own code after an eval's code ended: the answer frames and the done and res writes survive it, and two in a request's answer and its error answer leave `serve` serving.
 - `test/answer_then_next.jl`: an output stream that hands `serve` the next request the moment a given frame of an answer (by default its done frame) is written, the order a real pipe allows, and an eval request's line (`eval_line`).
 - `test/bonito/`: the `wglshow` page test's own environment (Bonito): the page carries its assets, its port has no asset route, and (Linux) serving it opens exactly one listener (CI's "wglshow pages" job). Actual owned-process listener, loopback HTTP/bind and selection-preservation controls, with an extra-listener rejection control, and the live-port refusal proof.
 
@@ -37,8 +37,8 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
 - Program output is bytes, not UTF-8: only a character a read cut waits for its other bytes (`utf8_prefix`), and the
   JSON writer writes a malformed character as U+FFFD (`write_json_string`), so no byte holds back later output or
   fails a frame.
-- Every request gets a terminal `res`; `spawn_eval` answers each eval once, a failure of its streaming machinery
-  included.
+- Every request gets a terminal `res`, except one that a signal stops before its handling (`serve`); `spawn_eval`
+  answers each eval once, a failure of its streaming machinery included.
 - An interrupt reaches an eval only in its user code (`run_user_code`), which is its code and the rendering of its value
   (`stream_eval_frames`): while that runs it is raised there, one that arrives before it starts stops it before it runs,
   and one that arrives after it has finished is answered `interrupted:false`. A wire line is one write (`write_envelope`). An interrupt that names `eval_ids` reaches only an eval among them (`handle_interrupt`).
@@ -51,7 +51,9 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md.
   drain (`stream_pipe`), the restoring after the code, the error and value frames, and the done and res writes; a frame
   can then be written twice, never lost (a reader keeps a chunk it has read until it is emitted). One that lands in `revise_loaded` holds the interrupt (`:held`), so the code
   never runs and the eval ends as interrupted. One that lands in a request's handling answers that request with an error
-  (`repl_exception`). On Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that moment was answered with
+  (`repl_exception`), written again if another lands in it, and none ends `serve` (`serve_request`), whose end is the
+  REPL's: after a forced eval they can come several close together (rust/backend/src/sidecars/repl/escalation.rs). On
+  Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that moment was answered with
   that error, the REPL alive after each; a signal that arrives while the thread idles in a finished task's end ends the
   REPL on 1.12 (Julia raises it where nothing can catch it), which only a synthetic signal has produced.
 - A `BrowserView` is announced once per (url, open) (`announce_browserview`).
