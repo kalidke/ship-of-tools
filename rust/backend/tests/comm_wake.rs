@@ -585,22 +585,35 @@ async fn wait_for(what: &str, ready: impl Fn() -> bool) {
     assert!(ready(), "{what} not seen within {WAKE_WITHIN:?}");
 }
 
-/// [`wait_for`] for the stub's agents panel on the row's screen, which only an async read can see; the same
-/// bound and the same failure shape. Sent before this, the mail could be read ahead of the panel's first draw.
-async fn wait_for_panel(row: &mut Row) {
+/// [`wait_for`] for `needle` on the row's screen, which only an async read can see; the same bound and the same
+/// failure shape. For the stub's agents panel ("for agents"): sent before this, the mail could be read ahead of its
+/// first draw.
+async fn wait_for_screen(row: &mut Row, needle: &str) {
     let deadline = Instant::now() + WAKE_WITHIN;
     while Instant::now() < deadline {
-        if row.screen_has("for agents").await {
+        if row.screen_has(needle).await {
             return;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(row.screen_has("for agents").await, "the stub's panel not seen within {WAKE_WITHIN:?}");
+    assert!(row.screen_has(needle).await, "{needle:?} not seen on the row's screen within {WAKE_WITHIN:?}");
+}
+
+/// [`wait_for_screen`] for the stub's agents panel.
+async fn wait_for_panel(row: &mut Row) {
+    wait_for_screen(row, "for agents").await;
 }
 
 /// The wake attempt's marks (`SOT_TEST_WAKE_MARKS`, see [`start_with`]).
 fn marks(row: &Row) -> PathBuf {
     row.env._tmp.path().join("ctl").join("marks")
+}
+
+/// Waits for the daemon's boot look at the row (a `done` mark, see `check_row`), then clears the mark, so a test that
+/// waits for the mail's attempt by its `done` mark does not take the look's for it.
+async fn pass_boot_look(m: &Path) {
+    wait_for("the boot look's done mark", || m.join("done").exists()).await;
+    std::fs::remove_file(m.join("done")).expect("clear the done mark");
 }
 
 /// Focus moves to the agents panel during the hold while the rows through the box and the cursor stay put: the
@@ -612,8 +625,9 @@ async fn panel_focus_arriving_during_the_hold_is_refused() {
     let _serial = SERIAL.lock().await;
     let mut row = start_with("cwph", None, false, &["panel", "focus-hold"], &[]).await;
     wait_for_panel(&mut row).await;
-    append_mail(&row.env, 1);
     let m = marks(&row);
+    pass_boot_look(&m).await;
+    append_mail(&row.env, 1);
     wait_for("the attempt's done mark", || m.join("done").exists()).await;
     assert!(m.join("focus-moved").exists(), "the stub never moved focus");
     assert!(m.join("hold").exists(), "no attempt reached the hold");
@@ -630,8 +644,9 @@ async fn focus_moving_after_the_final_check_gets_no_enter() {
     let _serial = SERIAL.lock().await;
     let mut row = start_with("cwfa", None, false, &["panel", "focus-after", "echo-after=1"], &[]).await;
     wait_for_panel(&mut row).await;
-    append_mail(&row.env, 1);
     let m = marks(&row);
+    pass_boot_look(&m).await;
+    append_mail(&row.env, 1);
     wait_for("the attempt's done mark", || m.join("done").exists()).await;
     assert!(m.join("focus-moved").exists(), "the stub never moved focus");
     wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
@@ -687,5 +702,93 @@ async fn a_wake_line_left_unsent_is_completed_after_the_mail_is_read() {
     let prompt = screen.iter().rev().find(|l| l.contains('\u{276f}')).cloned().unwrap_or_default();
     assert!(sent && !prompt.contains("[sot-comm]"), "a wake line is left in the prompt {prompt:?}; the screen: {screen:#?}");
     assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// The daemon restarts after the mail was read while the wake line still sat unsent in the prompt (the echo shows 5 s
+/// after the write, 2 s after the first attempt gave up, so it draws while no daemon runs): the restarted daemon's boot look sends Enter alone, once. One
+/// ping, the line typed once, and the last prompt on screen empty.
+#[tokio::test]
+async fn a_restarted_daemon_completes_a_wake_line_left_typed() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_with("cwrl", None, false, &["echo-after=5"], &[]).await;
+    append_mail(&row.env, 1);
+    wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
+    read_mail(&row.env, 1);
+    row.env.kill_daemon_bounded().await;
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
+    let marks = marks(&row).to_string_lossy().to_string();
+    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[("SOT_TEST_WAKE_MARKS", marks.as_str())]);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the restarted daemon never sent the line's Enter");
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 1);
+    assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// The box holds other text when the daemon restarts, with no mail: the boot look leaves it alone, and no later tick
+/// attaches to the row for it (the attempt's `done` mark does not come back).
+#[tokio::test]
+async fn a_restarted_daemon_leaves_other_text_in_the_prompt_and_looks_once() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_with("cwro", None, false, &[], &[]).await;
+    let draft = serde_json::json!({ "workspace_id": row.ws, "data_b64": "ZHJhZnQ=", "enter": false });
+    let res = call(&mut row.conn, row.next_id, op::PTY_INPUT, draft).await;
+    row.next_id += 1;
+    assert_eq!(res.payload["ok"], true, "pty.input failed: {:?}", res.payload);
+    wait_for_screen(&mut row, "draft").await;
+    row.env.kill_daemon_bounded().await;
+    let done = marks(&row).join("done");
+    let _ = std::fs::remove_file(&done);
+    let marks_dir = marks(&row).to_string_lossy().to_string();
+    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[("SOT_TEST_WAKE_MARKS", marks_dir.as_str())]);
+    wait_for("the boot look", || done.exists()).await;
+    std::fs::remove_file(&done).unwrap();
+    tokio::time::sleep(THREE_TICKS).await;
+    assert!(!done.exists(), "a later tick attached to the row again");
+    assert_eq!(pings(&row.log), 0);
+    assert_eq!(others(&row.log), 0, "the draft was sent");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// Ends the row's supervisor alone, by pid (its leg and the agent live on), found by its `supervise <state_root>`
+/// command line.
+fn end_supervisor(env: &Env) {
+    let root = env.state_root.to_string_lossy().to_string();
+    let mut ended = 0;
+    for entry in std::fs::read_dir("/proc").expect("read /proc").flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else { continue };
+        let cmd = std::fs::read(entry.path().join("cmdline")).unwrap_or_default();
+        let args: Vec<String> = cmd.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).to_string()).collect();
+        if args.get(1).is_some_and(|a| a == "supervise") && args.get(2).is_some_and(|a| a.starts_with(&root)) {
+            assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0, "kill supervisor {pid}");
+            ended += 1;
+        }
+    }
+    assert_eq!(ended, 1, "expected one supervisor over {root}");
+}
+
+/// The row is not Ready for the restarted daemon's first ticks (its supervisor is gone and the new one's recovery is
+/// held open by `SOT_TEST_RECOVERY_DELAY_MS`): the boot look waits for the row, says so once, and then sends the left
+/// line its Enter once. One ping, the line typed once.
+#[tokio::test]
+async fn a_restarted_daemon_looks_when_the_row_is_ready() {
+    let _serial = SERIAL.lock().await;
+    let row = start_with("cwrr", None, false, &["echo-after=5"], &[]).await;
+    append_mail(&row.env, 1);
+    wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
+    read_mail(&row.env, 1);
+    row.env.kill_daemon_bounded().await;
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
+    end_supervisor(&row.env);
+    let marks = marks(&row).to_string_lossy().to_string();
+    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[("SOT_TEST_WAKE_MARKS", marks.as_str()), ("SOT_TEST_RECOVERY_DELAY_MS", "7000")]);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the restarted daemon never sent the line's Enter");
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 1);
+    assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
+    assert_eq!(daemon_log(&row.env).matches("boot look waits").count(), 1, "the wait should be logged once");
     row.env.kill_daemon_bounded().await;
 }

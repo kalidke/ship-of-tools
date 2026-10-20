@@ -510,8 +510,10 @@ still unread ten minutes later at a free prompt. A line it typed that did not
 send is sent by a later tick, with Enter alone, once main's input box holds just
 that line, whether or not the mail has been read by then (the session then finds
 nothing new); a box that holds anything else is left as it is. Within one daemon
-run the line is never typed twice; a restart forgets it, so a line left across a
-restart is sent only while its mail is unread. A row whose registry entry
+run the line is never typed twice; a restart forgets it, so a restarted daemon
+looks once at each row it may type into and sends Enter alone if main's input box
+holds exactly the wake line, whether or not its mail is unread; any other box is
+left as it is. A row whose registry entry
 carries a `stop_at` under a minute old is running its Stop hook and is not typed
 into: the hook stamps it as it starts, its `stop` deletes it when the turn ends,
 and the hook reads the mail itself. A turn ended by Esc or an API error runs no
