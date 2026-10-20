@@ -128,7 +128,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   nothing older, and a release missing an asset naming it instead of an older one. Runs in the `rust.yml` step "Test
   release-before (bash)" (job `checks-linux`, after the sotd build).
 - `test-release-branch.sh`: `release.sh`'s branch guard in a throwaway repo with no origin: a cut from `main` gets past the
-  guard (its first refusal is the missing origin), and a cut from `fixes/*` or `rc/*` is refused by it. Runs in the
+  guard (its first refusal is the missing origin), and a cut from `fixes/*` or `rc/*` is refused by it. A second fixture
+  (origin, stubbed cargo, gh and systemctl) pins the test step's setup refusals before the stamp (MathJax modules, user
+  manager) and that a forced test failure leaves the tree clean. Runs in the
   `rust.yml` step "Test release.sh branch guard (bash)" (job `checks-linux`).
 - `check-layout.sh`: the layout check (file and folder sizes, pages, `## Files` lists); see Tools below.
 - `check-layout.allow`: the layout exceptions CI passes to `check-layout.sh`, each with its reason.

@@ -77,6 +77,17 @@ scripts/release.sh <X.Y.Z> --dry-run   # inspect the stamp diff first
 scripts/release.sh <X.Y.Z> --yes       # stamp + test + commit + tag + push
 ```
 
+The cut runs in a test container with the user manager kept, because its test step needs a reachable `systemd --user`
+(`SOT_TEST_REQUIRE_USER_MANAGER=1`) and a bare test container strips it. Run `npm ci` in `rust/backend/sidecars/mathjax`
+once first (two contract tests need the modules), then, from the clean main checkout:
+
+```bash
+scripts/tests/in-container.sh --user-manager release-cut -- scripts/release.sh <X.Y.Z> --yes
+```
+
+`release.sh` checks both before it stamps and refuses with one line naming the fix; a failure after the stamp restores the
+stamped files. The full serial test run takes about 40 minutes.
+
 The script stamps `rust/Cargo.toml [workspace.package]` + every Julia
 `Project.toml`, refreshes `Cargo.lock`, regenerates `CHANGELOG.md` iff
 git-cliff is installed (optional — CI generates the release notes), runs
