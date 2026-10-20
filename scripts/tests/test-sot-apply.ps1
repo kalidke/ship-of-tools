@@ -1,7 +1,7 @@
 # test-sot-apply.ps1 -- regression harness for scripts/sot-apply.ps1.
 #
-# Builds a synthetic staged update (pointer + ready dir + digests + a real git
-# checkout) in a throwaway prefix and drives the applier through apply,
+# Builds a synthetic staged update (pointer + ready dir + digests + the prepare's
+# record + a real git checkout) in a throwaway prefix and drives the applier through apply,
 # damaged-stage, rollback, already-applied, wrong-target, and lock-held.
 #
 # Run under WINDOWS POWERSHELL 5.1 specifically -- that is the host the .lnk
@@ -39,7 +39,8 @@ function New-Fixture([string]$prefix, [string]$curTag, [string]$newTag, [switch]
     $ij = @"
 {
   "schema": 1,
-  "role": "remote",
+  "daemon": true,
+  "frontend": true,
   "prefix": "$($prefix -replace '\\','\\')",
   "config": "C:\\cfg",
   "service": "none",
@@ -92,6 +93,28 @@ function New-Fixture([string]$prefix, [string]$curTag, [string]$newTag, [switch]
         $lines += "$h  $rel"
     }
     Set-Content -LiteralPath (Join-Path $ready 'files.sha256') -Value $lines
+
+    # The record every Rust writer makes of its prepare before it arms (rust/updater/src/prepare.rs); the installed
+    # sotd refuses a pointer whose stage has none. A Windows box with no Julia prepares without the environments (its
+    # launcher instantiates them at the first start), so this record says so, and an install that runs a daemon still
+    # takes it.
+    $prepared = @"
+{
+  "schema": 1,
+  "repo": "kalidke/ship-of-tools",
+  "tag": "$newTag",
+  "version": "$($newTag -replace '^v','')",
+  "target": "$TARGET",
+  "asset": "$asset",
+  "asset_sha256": "$assetSha",
+  "checkout": "$($checkout -replace '\\','\\')",
+  "commit": "$commit",
+  "julia_instantiated": false,
+  "mathjax_deps": false,
+  "prepared_at": 1
+}
+"@
+    [System.IO.File]::WriteAllText((Join-Path $ready 'prepared.json'), $prepared, (New-Object System.Text.UTF8Encoding($false)))
 
     $ptr = @"
 {
@@ -343,7 +366,8 @@ if (-not (Test-Path -LiteralPath $realSotd)) {
     Check 'unreadable pointer: binary untouched' ((Get-Content (Join-Path $f9d.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
     Check 'unreadable pointer: pointer dropped' (-not (Test-Path (Join-Path $f9d.updates 'pending-windows-x86_64.json'))) 'pointer kept'
 
-    # A pointer above the install, with no record: applies.
+    # A pointer above the install, with no record of the install it was armed over, onto a stage whose prepare left out
+    # the Julia environments: applies.
     $p9c = Join-Path $root 'p9c'
     $f9c = New-Fixture $p9c 'v0.5.0' 'v0.6.0'
     Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9c.bin 'sotd.exe') -Force
@@ -351,6 +375,18 @@ if (-not (Test-Path -LiteralPath $realSotd)) {
     Check 'above the install: the installed sotd lets the pointer through (exit 0)' ((Get-SotdExit (Join-Path $f9c.bin 'sotd.exe') $p9c) -eq 0) 'the sotd did not answer 0'
     & $apply -Prefix $p9c 6>&1 2>&1 | Out-Null
     Check 'above the install: applied' ((Get-Content (Join-Path $f9c.bin 'sot.exe') -Raw) -eq 'NEW-BINARY') 'not applied'
+
+    # The same pointer over a stage with no record of a prepare: no Rust writer arms one, so the sotd refuses it.
+    $p9g = Join-Path $root 'p9g'
+    $f9g = New-Fixture $p9g 'v0.5.0' 'v0.6.0'
+    Copy-Item -LiteralPath $realSotd -Destination (Join-Path $f9g.bin 'sotd.exe') -Force
+    Add-RustFields (Join-Path $f9g.updates 'pending-windows-x86_64.json') '0.6.0' $null $null
+    Remove-Item -LiteralPath (Join-Path $f9g.ready 'prepared.json')
+    Check 'no record of a prepare: the installed sotd refuses the pointer itself (exit 3)' ((Get-SotdExit (Join-Path $f9g.bin 'sotd.exe') $p9g) -eq 3) 'the sotd did not answer 3'
+    $out9g = & $apply -Prefix $p9g 6>&1 2>&1
+    Check 'no record of a prepare: said why' (($out9g -join ' ') -match 'no record of a prepare') "log was: $out9g"
+    Check 'no record of a prepare: binary untouched' ((Get-Content (Join-Path $f9g.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'applied'
+    Check 'no record of a prepare: pointer dropped' (-not (Test-Path (Join-Path $f9g.updates 'pending-windows-x86_64.json'))) 'pointer kept'
 
     # -DropOnly: the caller's own question refused the pointer and left the daemon running, so the applier drops one that
     # still does not fit and applies nothing, and a pointer that fits (armed in between) waits for the next start.

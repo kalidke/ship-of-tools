@@ -365,6 +365,11 @@ try {
         function New-Pointer6([string]$version) {
             '{"schema":1,"repo":"kalidke/ship-of-tools","tag":"v' + $version + '","version":"' + $version + '","target":"windows-x86_64","asset":"sot-' + $version + '-windows-x86_64.zip","asset_sha256":"' + ('ab' * 32) + '","checkout":"C:\\x","commit":"cc","armed_at":1}'
         }
+        # Every Rust writer records its prepare in the stage before it arms, and the sotd refuses a pointer whose stage
+        # has no record: the pointer above the install gets one (the other two are refused before the record is read).
+        $stage6 = Join-Path $updates6 'v0.8.0-windows-x86_64'
+        New-Item -ItemType Directory -Force -Path $stage6 | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $stage6 'prepared.json'), ((New-Pointer6 '0.8.0') -replace '"armed_at":1', '"julia_instantiated":false,"mathjax_deps":false,"prepared_at":1'), $utf8)
         $cases6 = @(
             @{ name = 'a pointer above the install'; text = (New-Pointer6 '0.8.0'); want = 'stop apply' },
             @{ name = 'a pointer below the install'; text = (New-Pointer6 '0.6.0'); want = 'drop' },
