@@ -84,10 +84,11 @@
 //!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt, and forgets an owed Enter. So a row with
-//! its mail read gets one boot look on its handle's first tick of a run ([`check_row`]): a box that holds exactly the
+//! its mail read gets one boot look on its row's first Ready tick of a run ([`check_row`]): a box that holds exactly the
 //! wake line ([`Prompt::HoldsLine`]) is sent Enter alone, as a Complete tick does; any other box is left alone and the
-//! row is not attached for this reason again. The look is skipped, and says so once in the log, for a row that is not
-//! Ready, a screen that is not a free prompt (a dialog, a draft) or a `stop_at` mark under a minute old.
+//! row is not attached for this reason again. A row not yet Ready (the daemon re-adopts its rows at boot) or that cannot
+//! be read keeps the look pending, and says so once in the log; a screen that is not a free prompt (a dialog, a draft)
+//! or a `stop_at` mark under a minute old ends the look, and says so.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -188,8 +189,9 @@ fn decide(s: &Scan, woken: Option<&Woken>, now: Instant) -> Decision {
 pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces, period: Duration) {
     let mut woken: HashMap<String, Woken> = HashMap::new();
     let mut streaks: HashMap<String, Streak> = HashMap::new();
-    // Handles already given their one boot look ([`check_row`]).
+    // Handles already given their one boot look ([`check_row`]), and those whose look is waiting on the row (logged once).
     let mut looked: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut waiting: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -209,13 +211,22 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
             let home = comm_home.clone();
             let prior = woken.get(&handle).copied();
             let h = handle.clone();
-            let first = looked.insert(handle.clone());
+            let first = !looked.contains(&handle);
             // Concurrent: each wake holds the screen for STILL_FOR, so N rows
             // with mail cost one hold per tick, not N.
             checks.push((handle, tokio::task::spawn_blocking(move || check_row(&home, &h, &state_dir, &agent, prior, first))));
         }
         for (handle, check) in checks {
             if let Ok(step) = check.await {
+                match &step {
+                    Step::Looked | Step::Woke(_) => {
+                        looked.insert(handle.clone());
+                    }
+                    Step::LookPending(why) if waiting.insert(handle.clone()) => {
+                        tracing::info!(handle = %handle, "comm wake: boot look waits: {why}");
+                    }
+                    _ => {}
+                }
                 settle(&mut woken, &mut streaks, handle, step, Instant::now());
             }
         }
@@ -225,6 +236,10 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
 enum Step {
     Clear,
     Skip,
+    /// The boot look is done, however it ended: forget the row as [`Step::Clear`] does, and look no more.
+    Looked,
+    /// The boot look could not be made (the row is not Ready, or could not be read): try again next tick.
+    LookPending(&'static str),
     Woke(Woken),
     /// The screen was not a free prompt, or did not hold still.
     Refused(Refusal),
@@ -252,7 +267,7 @@ struct Streak {
 /// One row's tick result into the task's memory. A wake or a read inbox ends the row's refusal streak.
 fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Streak>, handle: String, step: Step, now: Instant) {
     match step {
-        Step::Clear => {
+        Step::Clear | Step::Looked => {
             woken.remove(&handle);
             streaks.remove(&handle);
         }
@@ -271,14 +286,15 @@ fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Stre
                 tracing::info!(handle = %handle, reason = ?r.reason, border = ?r.border, "comm wake: a row with unread mail or an unsent wake line keeps refusing the wake");
             }
         }
-        Step::Skip => {}
+        Step::Skip | Step::LookPending(_) => {}
     }
 }
 
 /// `first` is the handle's first tick in this daemon run. A row with its mail read gets one boot look then, a Complete
 /// tick that forgets the row afterwards however it ends: the daemon's memory of an owed Enter did not survive the
 /// restart, so a wake line left typed in main's box is sent its Enter alone ([`Prompt::HoldsLine`]) and any other box
-/// is left alone and not looked at again for this reason.
+/// is left alone and not looked at again for this reason. While the row is not Ready or cannot be read the look stays
+/// pending ([`Step::LookPending`]) and the next tick is `first` again; once it is made, [`Step::Looked`].
 fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Option<Woken>, first: bool) -> Step {
     let s = scan(home, handle, prior.map_or(0, |w| w.line));
     let look = first && prior.is_none() && s.unread == 0;
@@ -295,8 +311,7 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
     let ready = crate::rows::run::probe::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
     if crate::rows::run::probe::phase_of(state_dir) != ready {
         if look {
-            tracing::info!(handle, "comm wake: boot look skipped: the row is not Ready");
-            return Step::Clear;
+            return Step::LookPending("the row is not Ready");
         }
         return Step::Skip;
     }
@@ -320,11 +335,11 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
     let seen = seen.take();
     if look {
         match (&out, seen.0) {
-            (Err(e), _) => tracing::info!(handle, phase = e.phase, "comm wake: boot look skipped: the row could not be read"),
+            (Err(_), _) => return Step::LookPending("the row could not be read"),
             (Ok(_), Some(reason)) if reason != LINE_NOT_SHOWN => tracing::info!(handle, reason, "comm wake: boot look left main's box alone"),
             _ => {}
         }
-        return Step::Clear;
+        return Step::Looked;
     }
     if line_gone(&s, prior.as_ref(), seen.0, Instant::now()) {
         tracing::info!(handle, "comm wake: main's input box is empty and the mail is read; the unsent wake line is no longer owed its Enter");

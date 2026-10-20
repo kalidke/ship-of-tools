@@ -751,3 +751,44 @@ async fn a_restarted_daemon_leaves_other_text_in_the_prompt_and_looks_once() {
     assert_eq!(others(&row.log), 0, "the draft was sent");
     row.env.kill_daemon_bounded().await;
 }
+
+/// Ends the row's supervisor alone, by pid (its leg and the agent live on), found by its `supervise <state_root>`
+/// command line.
+fn end_supervisor(env: &Env) {
+    let root = env.state_root.to_string_lossy().to_string();
+    let mut ended = 0;
+    for entry in std::fs::read_dir("/proc").expect("read /proc").flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else { continue };
+        let cmd = std::fs::read(entry.path().join("cmdline")).unwrap_or_default();
+        let args: Vec<String> = cmd.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).to_string()).collect();
+        if args.get(1).is_some_and(|a| a == "supervise") && args.get(2).is_some_and(|a| a.starts_with(&root)) {
+            assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0, "kill supervisor {pid}");
+            ended += 1;
+        }
+    }
+    assert_eq!(ended, 1, "expected one supervisor over {root}");
+}
+
+/// The row is not Ready for the restarted daemon's first ticks (its supervisor is gone and the new one's recovery is
+/// held open by `SOT_TEST_RECOVERY_DELAY_MS`): the boot look waits for the row, says so once, and then sends the left
+/// line its Enter once. One ping, the line typed once.
+#[tokio::test]
+async fn a_restarted_daemon_looks_when_the_row_is_ready() {
+    let _serial = SERIAL.lock().await;
+    let row = start_with("cwrr", None, false, &["echo-after=5"], &[]).await;
+    append_mail(&row.env, 1);
+    wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
+    read_mail(&row.env, 1);
+    row.env.kill_daemon_bounded().await;
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
+    end_supervisor(&row.env);
+    let marks = marks(&row).to_string_lossy().to_string();
+    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[("SOT_TEST_WAKE_MARKS", marks.as_str()), ("SOT_TEST_RECOVERY_DELAY_MS", "7000")]);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the restarted daemon never sent the line's Enter");
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 1);
+    assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
+    assert_eq!(daemon_log(&row.env).matches("boot look waits").count(), 1, "the wait should be logged once");
+    row.env.kill_daemon_bounded().await;
+}

@@ -20,8 +20,9 @@ backend; charter: comm/CLAUDE.md.
 ## Rules
 - The wake only reads `inbox/<h>.jsonl` and `read/<h>.cursor`.
 - "Last woken" lives in the tick's memory, so after a restart each row with unread mail is woken once, and each row with
-  its mail read gets one boot look on its handle's first tick (`check_row`'s `first`): a box holding exactly the wake
-  line gets Enter alone, any other box is left alone and not attached for this reason again; a skipped look is logged once.
+  its mail read gets one boot look on its row's first Ready tick (`check_row`'s `first`; a row not yet Ready or not
+  readable keeps it pending, logged once): a box holding exactly the wake line gets Enter alone, any other box is left
+  alone and not attached for this reason again.
 - Every TICK (2 s), `run` checks each capsule row with a declared handle; a handle is declared on one row only
   (`set_agent_handle`, `scan_disk`).
 - `check_row` wakes only a Ready row with fresh mail, or mail unread past REPEAT_AFTER (600 s) (`decide`); a row owed an
