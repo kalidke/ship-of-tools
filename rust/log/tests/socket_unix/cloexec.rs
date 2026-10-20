@@ -1,6 +1,6 @@
 //! Descriptor flags of the lane factories, observed on the real listener, connector and wake pipe: close-on-exec at
 //! birth where the platform creates it atomically (Linux), at publication everywhere, and a failed flag call returned
-//! with every descriptor closed. No test claims the macOS creation-to-flagging window is closed.
+//! with every descriptor closed. The window between creation and flag on macOS is closed by `host::fd`'s birth lock, which its own tests and the hosted macOS run cover.
 
 use super::*;
 use sot_log::lane::test_progress::{observe_births, Birth};

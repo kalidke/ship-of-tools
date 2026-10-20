@@ -20,7 +20,8 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - The volume preflight (`volume.rs`: `preflight_volume`).
 - The directory pin (`pinned_dir.rs`: `PinnedDir`, `DirIdentity`, `dir_identity`).
 - Windows owner-only descriptors and SIDs (`winsec.rs`: `owner_protected_pipe_descriptor`, `token_user_sid_string`).
-- Stdio inherit hardening (`winhandle.rs`: `harden_own_stdio`; Unix `inherit.rs`: `inherit_none`, the pre-exec sweep that marks every descriptor above stdio close-on-exec, called by the daemon's children, the capsule's leg and every ssh child (topology's `ssh_bridge`, the window's and, through `LinkGate::command`, the daemon's)).
+- Descriptor birth (`fd.rs`: `socket_cloexec`, `pipe_cloexec`, `openpty_cloexec`, `fork_guard`): every lane socket, wake pipe, leg lease and pty is born close-on-exec (Linux in the creating call; macOS under a process-wide birth lock that every fork site takes around its fork).
+- Stdio inherit hardening (`winhandle.rs`: `harden_own_stdio`; Unix `fd.rs`: `inherit_none`, the pre-exec sweep that marks every descriptor above stdio close-on-exec, called by the daemon's children, the capsule's leg and every ssh child (topology's `ssh_bridge`, the window's and, through `LinkGate::command`, the daemon's)).
 - The retry deadline and error context every file here shares (`mod.rs`: `RETRY_DEADLINE_MS`, `io_ctx`,
   `duration_to_wait_ms`).
 - The peer challenge in `rust/log/src/identity/` (a sibling folder; see Folders).
@@ -59,6 +60,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   every release check fails with "making the release check's scratch folder". A removal waiting on a live maker's lock
   never stops the maker removing its folder: on Windows a held folder's lock file is opened sharing deletion, by its
   maker (`lock_new`) and by a removal (`lock_held`), where a fence's lock file is not (`lock_writer`); a fence's lock file is removed only with its folder, which the daemon's state folder removal renames away after taking the fence free.
+- A descriptor the lane or the capsule makes is never between its creation and its close-on-exec flag in any child this process forks through `Signal::spawn`, `Signal::spawn_std`, the leg probe or `Launch::begin` (`fd::fork_guard`); `inherit_none` stays as the belt for descriptors made elsewhere (std, tokio, mio).
 - Kernel file locks are taken only inside three guards: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`, whose `Drop` unlocks, and `HandoverLock` in `lock.rs`, whose drop only closes, so a copy of its descriptor in a child keeps the lock held (a birth's claim on a row's fence). rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
 - A connection or child restarted through `Redial` waits from its caller's floor, doubling to its cap, and starts over
@@ -73,7 +75,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot_state_dir`, `sot_config_dir`,
 `host_name`, `kernel_host_name`, `state_dir_hash`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
-`owner_protected_pipe_descriptor`, `harden_own_stdio`, `inherit_none`, `boot_identity`, `process_created`, `IdentityExchange`,
+`owner_protected_pipe_descriptor`, `harden_own_stdio`, `inherit_none`, `socket_cloexec`, `pipe_cloexec`, `openpty_cloexec`, `fork_guard`, `boot_identity`, `process_created`, `IdentityExchange`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `dir_identity`,
 `rust/log/src/host/pinned_dir.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
 `sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`, `storage_exhaustion`,
@@ -86,7 +88,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mod.rs`: the module list, the shared retry constants, `io_ctx`, `duration_to_wait_ms`
   and the glob re-exports of the files below.
 - `durable.rs`: durable publication, fsync, no-clobber rename, container creation.
-- `inherit.rs`: Unix-only `inherit_none`, the pre-exec sweep that leaves a child only its stdio and what its caller hands it; the daemon's and capsule's children and every ssh child (the window's, and the daemon's through `LinkGate::command`) call it.
+- `fd.rs`: Unix-only descriptor birth (`socket_cloexec`, `pipe_cloexec`, `openpty_cloexec`, `fork_guard`) and `inherit_none`, the pre-exec sweep that leaves a child only its stdio and what its caller hands it; the daemon's and capsule's children and every ssh child (the window's, and the daemon's through `LinkGate::command`) call it.
 - `held_dir.rs`: held folders, each live while the process that made it is (`HeldDir`, `remove_ended`).
 - `lock.rs`: the writer fence, the supervisor fence, the supervisor fence taken to be handed to a child, the daemon's single-instance lock and a held folder's lock, held by the kernel.
 - `pinned_dir.rs`: a directory's kernel identity and a handle that pins it.

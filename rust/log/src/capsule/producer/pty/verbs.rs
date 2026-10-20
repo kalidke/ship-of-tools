@@ -84,44 +84,17 @@ impl Producer for PtyProducer {
         if unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) } == libc::SIG_ERR {
             return Err(Error::Io(io::Error::last_os_error()));
         }
-        let mut master_fd: libc::c_int = -1;
-        let mut slave_fd: libc::c_int = -1;
         // Geometry at spawn (the loop already validated it, 2x2..512x256 —
-        // `Producer::spawn`'s own doc). `winsz` is passed as `&mut` so the
-        // SAME call site satisfies both `openpty`'s Linux signature
-        // (`winp: *const winsize`) and its non-Linux-unix one (`*mut
-        // winsize`, e.g. macOS/BSD) — a `&mut T` coerces to either.
-        let mut winsz = libc::winsize {
+        // `Producer::spawn`'s own doc). Both ends are born close-on-exec and owned; either failing closes both. Our
+        // child's pre_exec installs slave stdio and closes its inherited PTY copies; the parent keeps its slave for the
+        // run.
+        let winsz = libc::winsize {
             ws_row: rows,
             ws_col: cols,
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        let rc = unsafe {
-            libc::openpty(
-                &mut master_fd,
-                &mut slave_fd,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &mut winsz,
-            )
-        };
-        if rc != 0 {
-            return Err(Error::Io(io::Error::last_os_error()));
-        }
-        let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
-        let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
-        #[cfg(test)]
-        for (end, fd) in [("master", master_fd), ("slave", slave_fd)] {
-            super::flag_plan::born(end, fd);
-        }
-        // Both PTY ends are already owned. Check close-on-exec before publication; either flag-call failure closes both
-        // ends. The openpty-to-flagging inheritance window remains on Linux and macOS. Our child's pre_exec installs
-        // slave stdio and closes its inherited PTY copies; the parent keeps its slave for the run.
-        for (end, fd) in [("master", master.as_raw_fd()), ("slave", slave.as_raw_fd())] {
-            let flags = flag_fcntl(end, fd, libc::F_GETFD, 0).map_err(Error::Io)?;
-            flag_fcntl(end, fd, libc::F_SETFD, flags | libc::FD_CLOEXEC).map_err(Error::Io)?;
-        }
+        let (master, slave) = crate::host::fd::openpty_cloexec(&winsz).map_err(Error::Io)?;
 
         let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..]);

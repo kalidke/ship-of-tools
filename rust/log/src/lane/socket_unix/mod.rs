@@ -57,9 +57,8 @@
 //! # The accept loop wakes via `poll(2)` over a self-pipe, never a
 //! connect-to-self
 //!
-//! disconnect_listener wakes the acceptor through its nonblocking self-pipe, never by dialing the listener. Linux creates
-//! both wake ends with pipe2(O_CLOEXEC | O_NONBLOCK); macOS immediately owns and checks both ends with fcntl before
-//! publication. The macOS creation-to-flagging inheritance window remains.
+//! disconnect_listener wakes the acceptor through its nonblocking self-pipe, never by dialing the listener. Both wake
+//! ends are born close-on-exec and nonblocking by `host::fd::pipe_cloexec`.
 //!
 //! # Two distinct "stop" signals — the same split `pipe_win` makes
 //!

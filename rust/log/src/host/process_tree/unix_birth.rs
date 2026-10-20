@@ -340,7 +340,10 @@ impl Launch {
         };
         // SAFETY: `launch` and everything it points to (the C strings, the pointer arrays, the descriptor lists)
         // outlive the call; `out` is a valid out-parameter. The native function forks and returns in the parent.
-        let rc = unsafe { sot_birth_begin(&launch, &mut out) };
+        let rc = {
+            let _fork = crate::host::fd::fork_guard();
+            unsafe { sot_birth_begin(&launch, &mut out) }
+        };
         drop((cwd, stdio_keep, pause_out, pause_in));
         if rc != 0 {
             return Err(io::Error::from_raw_os_error(rc));

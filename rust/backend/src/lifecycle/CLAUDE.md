@@ -77,8 +77,9 @@ on a computer decides, through its lease, whether that computer's sessions end (
 - A Unix child started through `Signal::spawn`, `Signal::spawn_std` or `Signal::output` keeps none of the daemon's
   descriptors past its exec but its stdio, whatever flag one had when it started: `contain::prepare`'s `pre_exec` marks
   every descriptor above 2 close-on-exec through `sot_log::host::inherit_none`, which owns the sweep and is shared with the
-  capsule's leg start. On macOS a socket or a pipe gets the flag by a second call after its creation,
-  and a child started between the two kept it, the daemon's listener included.
+  capsule's leg start. That sweep is the belt: a socket, pipe or pty the lane and the capsule make is born
+  close-on-exec through `sot_log::host::fd` (on macOS under a birth lock that `Signal::spawn` and `spawn_std` take around
+  their fork, so no fork sees one between its creation and its flag).
 - A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything still in its process group
   (Unix) or job (Windows) when its owner kills, waits for or drops its `Contained` or `ContainedStd`, or the signal
   fires; a process that left its Unix group is not killed then (on Linux the guard ends it at the daemon's end; ADR
@@ -149,9 +150,6 @@ on a computer decides, through its lease, whether that computer's sessions end (
     its starter beyond its three standard handles, a handle a dependency makes (the window's graphics, clipboard and
     dialog libraries), and a socket accepted in the moment before `serve_own` clears it, if a child starts on another
     thread in that moment.
-  - On Unix std makes every descriptor close-on-exec, but sot-log's lane socket connector sets the flag in a second
-    call after making the socket (`rust/log/src/lane/socket_unix/connect.rs:73`, `:80`), so an exec on another thread
-    between the two calls inherits it.
 - A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (the frontend's `lease_exempt`).
 - No lease request is given up unanswered while its sessions are meant to stay: a Keep or a Handover still waiting
   on an unanswered request when its ack wait ends, or at a Ctrl+Q during that wait, stays open (`LeaveStep::Stay`;
