@@ -27,9 +27,11 @@ entry_run "$d" SOT_INSTALL_TAG=v9.9.9 --be-only --version
 check "--version with no value: exit 2, one verdict line" "2 1" "$ENTRY_RC $(verdicts)"
 starts_with "and it says which option" "FAIL: " "$ENTRY_LAST"
 check "naming it" "1" "$(said '--version needs a value')"
-# An interrupt mid-run, during a Julia step that leaves a file in its temporary folder (as Pkg leaves a download there
-# when it is interrupted): the signal ends the run after one verdict line, and the scratch folder is gone with that file.
-d="$WORK/vl4"; entry_fixture "$d"; printf 'f="$(mktemp)" && echo "$f" > "$CTL/left"; sleep 2\n' > "$d/ctl/hook"
+# An interrupt mid-run, during a Julia step that leaves a file in its temporary folder, found by TMPDIR as Julia finds it
+# (as Pkg leaves a download there when it is interrupted): the signal ends the run after one verdict line, and the
+# scratch folder is gone with that file.
+d="$WORK/vl4"; entry_fixture "$d"
+printf 'f="$(mktemp "${TMPDIR:-/tmp}/left.XXXXXX")" && echo "$f" > "$CTL/left"; sleep 2\n' > "$d/ctl/hook"
 env -i HOME="$d/home" PATH="$d/stubs:$ENTRY_TOOLS" CTL="$d/ctl" SOT_COMM_HOME="$d/comm" SOT_SELF_HOST=entrybox TMPDIR="$d" \
     bash "$ENTRY_SRC/scripts/install.sh" --archive "$d/rel" --be-only --no-service > "$d/sig.out" 2>&1 &
 sig_pid=$!

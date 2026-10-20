@@ -46,4 +46,7 @@ charter: rust/backend/src/sidecars/CLAUDE.md.
   another computer's start can then remove its live folder. A temporary folder on a file system that refuses locks
   (NFSv3 without its lock service) stops every kernel, REPL and Pluto start and every updater command, as `ChildTmp::new` fails. A folder a child still writes into while the terminal removes it (on Windows, one in which a
   child still ending holds a file open), or that is not removed within `FOLDERS_WAIT`, waits for the next start, and so does the held folder of a process that ended without the terminal
-  while it held child folders, or kept one whose child was not confirmed ended.
+  while it held child folders, or kept one whose child was not confirmed ended. A program that does not take its
+  temporary folder from the environment makes its files outside the child's folder, and they stay: macOS's `mktemp`
+  given no template uses the account's own (`getconf DARWIN_USER_TEMP_DIR`). Julia's `tempdir()`, and so Pkg's
+  downloads, read `TMPDIR`.
