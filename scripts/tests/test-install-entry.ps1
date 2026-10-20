@@ -617,6 +617,7 @@ while (((Get-Date) - `$t0).TotalSeconds -lt 150) {
     . (Join-Path $PSScriptRoot 'test-install-entry-repair.ps1')
     . (Join-Path $PSScriptRoot 'test-install-entry-direction.ps1')
     . (Join-Path $PSScriptRoot 'test-install-entry-julia.ps1')
+    . (Join-Path $PSScriptRoot 'test-install-entry-live.ps1')
 
     # 20. A FAIL says what the run left behind: the pin once written, and an update it staged that is still armed.
     # A supervisor stand-in that logs code= and never takes the sentinel, so a converge times out.

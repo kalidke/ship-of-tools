@@ -392,6 +392,45 @@ function Wait-DaemonCurrent([string]$Sotd, [string]$Pipe, [string]$BinExe, [int]
         Start-Sleep -Seconds 1
     }
 }
+# What this account's daemon runs for a person, from its own process tree and not from anything it says: the kinds of the
+# direct children of a daemon process (the install's bin\sotd.exe, or the image sot-apply.ps1 renamed aside) that are a REPL
+# ('repl': the sidecar the daemon starts with ShipToolsRepl's shim) or the Pluto server ('pluto': the daemon's start.jl).
+# $null when no such daemon process is found, so nothing can be ruled out; an empty list when it runs and has none. The
+# daemon is found by its program path and its sidecars by their parent id, as sot-lease.ps1 walks a tree (ADR 0050).
+function Get-ProcessSnapshot { return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue) }
+function Select-DaemonChildren($All, [string]$BinExe) {
+    $stale = Join-Path (Split-Path $BinExe) 'sotd-stale-*.exe'
+    $ids = @($All | Where-Object { $_.ExecutablePath -and (($_.ExecutablePath -ieq $BinExe) -or ($_.ExecutablePath -like $stale)) } | ForEach-Object { [int]$_.ProcessId })
+    if ($ids.Count -eq 0) { return $null }
+    $kinds = @()
+    foreach ($c in $All) {
+        if ($ids -notcontains [int]$c.ParentProcessId) { continue }
+        $cl = [string]$c.CommandLine
+        if ($cl -like '*ShipToolsRepl.run_shim*') { $kinds += 'repl' } elseif ($cl -like '*julia?pluto?start.jl*') { $kinds += 'pluto' }
+    }
+    return ,$kinds
+}
+function Get-DaemonChildren([string]$BinExe) { return ,(Select-DaemonChildren (Get-ProcessSnapshot) $BinExe) }
+
+# The person's answer, in place, to "Restart the daemon? This ends WORK [y/N]": only at a console (an interactive session
+# with a stdin that is not redirected); $false, asking nothing, otherwise.
+function Test-Console { return ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) }
+function Read-Answer([string]$Question) { return [string](Read-Host $Question) }
+function Confirm-Restart([string]$Work) {
+    if (-not (Test-Console)) { return $false }
+    return ((Read-Answer "Restart the daemon? This ends $Work [y/N]") -match '^\s*y(es)?\s*$')
+}
+# What a restart ends, for that question: the rows with a live REPL, else a REPL the process tree shows, then the Pluto
+# server; Unsure adds that the daemon could not list all of it.
+function Get-AskWork($Work, $Kids, [bool]$Unsure) {
+    $out = ''
+    if ($Work.Rows.Count -gt 0) { $out = "the REPLs of: $($Work.Rows -join ', ')" } elseif (@($Kids) -contains 'repl') { $out = 'a live REPL (the daemon could not name its row)' }
+    if ($Work.Pluto -or @($Kids) -contains 'pluto') { $out = $(if ($out) { "$out; " } else { '' }) + 'the Pluto server and every notebook open in it' }
+    if (-not $out) { return 'any REPL or Pluto notebook that is live' }
+    if ($Unsure) { return "$out, and any other the daemon could not list" }
+    return $out
+}
+
 # What a restart of the daemon would end: Rows, Pluto, Unsure (the daemon could not be asked in full; Reason says why).
 function Get-LiveWork([string]$Sotd, [string]$Pipe) {
     $r = Invoke-Native $Sotd @('update', 'repls', '--endpoint', "pipe:$Pipe")
@@ -833,10 +872,22 @@ function Update-Installed([hashtable]$O, [string]$Prefix, $Pack, [string]$Base, 
     $state = Get-DaemonState $NewSotd $Pipe $Sotd
     $liveText = ''
     if ($state -ne 'none') {
-        $liveText = Get-LiveText $state $Pipe (Get-LiveWork $NewSotd $Pipe)
+        $work = Get-LiveWork $NewSotd $Pipe
+        $unsure = ($work.Unsure -or $state -eq 'unknown')
+        # A daemon that could not say is judged by its own children: with no REPL or Pluto server among them (and no row
+        # read) nothing live is left to end.
+        $kids = $null
+        if ($unsure) { $kids = Get-DaemonChildren $Sotd }
+        if ($unsure -and $null -ne $kids -and @($kids).Count -eq 0 -and $work.Rows.Count -eq 0 -and -not $work.Pluto) {
+            Write-EntryLine "note: could not ask the daemon on $Pipe in full ($(if ($work.Reason) { $work.Reason } else { $script:DaemonWhy })); it has no REPL or Pluto child, so restarting it ends nothing live"
+        }
+        else { $liveText = Get-LiveText $state $Pipe $work }
         if ($liveText -and -not $O.RestartDaemon) {
-            Write-EntryLine '       Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then run this again with -RestartDaemon.'
-            Stop-Entry 'daemon' $liveText 2
+            if (Confirm-Restart (Get-AskWork $work $kids $unsure)) { Write-EntryLine 'note: restarting the daemon as answered' }
+            else {
+                Write-EntryLine '       Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then run this again with -RestartDaemon.'
+                Stop-Entry 'daemon' $liveText 2
+            }
         }
     }
     $script:Step = 'stage'

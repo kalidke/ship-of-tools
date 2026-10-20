@@ -47,9 +47,11 @@ Three `FAIL` lines are questions rather than faults:
 - `daemon:` names the rows whose REPL is live and says when the Pluto server is running (restarting the daemon ends every
   notebook open in it, however it was opened), or says why the daemon could not be asked in full, naming the REPL rows it
   could read (a v0.6.5 daemon refuses the question, and a daemon older than the Pluto field cannot say whether its Pluto
-  server is running, so the first update from either pays one flag). Updating restarts the backend, which ends those REPLs'
-  and notebooks' variables (the rows and their agents keep running). Nothing under the install was changed. Run it again
-  with `--restart-daemon` (Windows: `-RestartDaemon`) when that is fine. A daemon that is running but cannot be told its
+  server is running, so the installer judges it from the daemon's own REPL and Pluto child processes instead: with none, the
+  update goes on with no flag). Updating restarts the backend, which ends those REPLs' and notebooks' variables (the rows
+  and their agents keep running). When something is live and you are at the console, the installer asks "Restart the
+  daemon? This ends ... [y/N]" in place and goes on at a y. With no console (an agent's run) it stops and changes nothing
+  under the install: run it again with `--restart-daemon` (Windows: `-RestartDaemon`) when that is fine. A daemon that is running but cannot be told its
   version (it does not answer, or refuses the question) is treated the same way: the run stops with `sotd`'s own line and
   changes nothing, and the end check beside it is a `FAIL`, never a `PASS`. A daemon runs when `sotd.service` is active
   (Linux) or a process of this account runs `<prefix>/bin/sotd` (Windows: its pipe is listed or a process runs from
