@@ -223,11 +223,14 @@ pub(in crate::ui) fn navigation_chords(state: &mut State, key: KeyPress<'_>, lab
             // move_in walks only laid-out panes, so focus never
             // reaches an invisible pty.
             let preset = state.settings.resolve_preset(state.monitor_aspect);
-            let columns = if state.wide_preview {
+            let columns: Vec<_> = if state.wide_preview {
                 preset.wide_preview().columns
             } else {
                 preset.columns.clone()
-            };
+            }
+            .iter()
+            .map(|c| c.slot)
+            .collect();
             // The slot redraw lays out in the drawer; Help borrows Repl's when the preset has none.
             let drawer = match state.drawer {
                 DrawerContent::Closed => None,

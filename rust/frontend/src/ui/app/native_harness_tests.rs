@@ -8,10 +8,10 @@ fn pane_child_layout_has_agent_at_any_monitor_shape() {
     use crate::ui::persist::settings::Slot;
     let settings = super::super::native_pane_tests::pane_child_settings();
     for aspect in [4.0 / 3.0, 0.75, 1.5, 1.6] {
-        assert!(settings.resolve_preset(aspect).columns.contains(&Slot::Llm),
+        assert!(settings.resolve_preset(aspect).columns.iter().any(|c| c.slot == Slot::Llm),
             "pane child has no agent column at aspect {aspect}");
     }
-    assert!(!Settings::default().resolve_preset(0.75).columns.contains(&Slot::Llm));
+    assert!(!Settings::default().resolve_preset(0.75).columns.iter().any(|c| c.slot == Slot::Llm));
 }
 
 #[test]

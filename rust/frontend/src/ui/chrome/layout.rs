@@ -154,7 +154,7 @@ pub fn compute(
     }
 
     // Walk the columns left-to-right, slicing the area's width.
-    // `widths` is normalised at parse time so sums to ~1.0; we still
+    // Each column's `width` is normalized at parse time so they sum to ~1.0; we still
     // saturate the last column to whatever's left over after rounding
     // so the right border lands on `last_col` exactly.
     let inner_left = area.x + 1;
@@ -162,7 +162,7 @@ pub fn compute(
     let inner_total = (inner_right as i32 - inner_left as i32 + 1).max(0) as u16;
     // Column `i`'s share of the interior, from its fraction. Only read for
     // `i < n - 1`: the last column takes the remainder instead.
-    let share = |i: usize| ((inner_total as f32) * preset.widths[i]).round() as u16;
+    let share = |i: usize| ((inner_total as f32) * preset.columns[i].width).round() as u16;
 
     // Every column's span, computed once before the walk. A column before the
     // last takes its share, capped so its right border still lands inside the
@@ -191,12 +191,12 @@ pub fn compute(
     // back to the full-width drawer. The column left of Llm must be laid
     // out (span >= 2) for its divider to exist; otherwise the drawer stays
     // full width and every column is clipped alike.
-    let llm_idx = preset.columns.iter().position(|s| *s == Slot::Llm);
+    let llm_idx = preset.columns.iter().position(|c| c.slot == Slot::Llm);
     let partial_drawer = drawer_top_y.is_some()
         && llm_idx.map(|i| i > 0 && spans[i - 1] >= 2).unwrap_or(false);
 
     let mut cursor = inner_left;
-    for (i, slot) in preset.columns.iter().enumerate() {
+    for (i, column) in preset.columns.iter().enumerate() {
         let span = spans[i];
         if span < 2 {
             // Too small to render; skip but keep cursor stable so the
@@ -222,7 +222,7 @@ pub fn compute(
             width: span,
             height,
         };
-        match slot {
+        match column.slot {
             Slot::Nav => geom.nav = Some(rect),
             Slot::Preview => geom.preview = Some(rect),
             Slot::Llm => geom.llm = Some(rect),
@@ -429,7 +429,7 @@ pub(in crate::ui) fn draw_wireframe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::persist::settings::LayoutPreset;
+    use crate::ui::persist::settings::{Column, LayoutPreset};
 
     fn area(w: u16, h: u16) -> Rect {
         Rect {
@@ -598,8 +598,11 @@ mod tests {
         assert_eq!(buf[(59, y)].symbol(), "│");
         // (b) a divider right of the agent column runs full height.
         let p = LayoutPreset {
-            columns: vec![Slot::Nav, Slot::Llm, Slot::Preview],
-            widths: vec![0.2, 0.4, 0.4],
+            columns: vec![
+                Column { slot: Slot::Nav, width: 0.2 },
+                Column { slot: Slot::Llm, width: 0.4 },
+                Column { slot: Slot::Preview, width: 0.4 },
+            ],
             drawer: Some(Slot::Repl),
             drawer_height: 0.4,
         };
@@ -616,8 +619,11 @@ mod tests {
         // Preview's span rounds below 2 cells, so the divider left of Llm
         // is never laid out and the drawer must span the full width.
         let preset = LayoutPreset {
-            columns: vec![Slot::Nav, Slot::Preview, Slot::Llm],
-            widths: vec![0.18, 0.005, 0.815],
+            columns: vec![
+                Column { slot: Slot::Nav, width: 0.18 },
+                Column { slot: Slot::Preview, width: 0.005 },
+                Column { slot: Slot::Llm, width: 0.815 },
+            ],
             drawer: Some(Slot::Repl),
             drawer_height: 0.40,
         };
@@ -675,12 +681,16 @@ mod tests {
 
     #[test]
     fn every_column_and_divider_stays_inside_the_area() {
-        // `widths` renormalize on parse: 1,1,1.02,0.0001 becomes these. The
+        // The widths renormalize on parse: 1,1,1.02,0.0001 becomes these. The
         // repl share asks for more than the room left, and llm is too small
         // to lay out, so the cap decides where the divider lands.
         let squeezed = LayoutPreset {
-            columns: vec![Slot::Nav, Slot::Preview, Slot::Repl, Slot::Llm],
-            widths: vec![0.331_115, 0.331_115, 0.337_737, 0.000_033],
+            columns: vec![
+                Column { slot: Slot::Nav, width: 0.331_115 },
+                Column { slot: Slot::Preview, width: 0.331_115 },
+                Column { slot: Slot::Repl, width: 0.337_737 },
+                Column { slot: Slot::Llm, width: 0.000_033 },
+            ],
             drawer: Some(Slot::Repl),
             drawer_height: 0.40,
         };
