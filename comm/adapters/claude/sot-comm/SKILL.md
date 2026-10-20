@@ -32,6 +32,7 @@ new mail only at its own next turn.
 | Join (once per session; `/sot-session-start` does it) | `comm-join.sh --expertise "a, b"` (the handle is derived: folder name plus box name, unless the launcher pinned one) |
 | Who's online | `comm-list.sh` |
 | Direct message | `comm-send.sh @<name> 'message'` |
+| Direct message from a file | `comm-send.sh @<name> --file <path>` (`--file -` reads stdin) |
 | Broadcast | `comm-send.sh --broadcast 'message'` |
 | Check inbox | `comm-poll.sh` |
 | Leave (removes the row) | `comm-leave.sh` |
@@ -44,7 +45,9 @@ new mail only at its own next turn.
 Quote the message in single quotes: the shell still reads a double-quoted
 message, so a backquote or `$( )` in it runs as a command and its text drops
 out, and a message that holds a single quote closes and reopens the quote, as
-`'it'\''s'`.
+`'it'\''s'`. A message with a backquote, `$( )`, quotes or a newline in it goes in a
+file instead: write the text with your Write tool, then send that file with
+`comm-send.sh @<name> --file <path>`. The file's bytes arrive exactly as written.
 
 ## Work-state (mostly automatic)
 

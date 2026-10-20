@@ -6,7 +6,7 @@ and find their siblings (`comm-lib.sh`, `comm-context.sh`) through their own fol
 comm/CLAUDE.md.
 
 ## Files
-- `comm-send.sh`: directed and broadcast sends; the registry decides a local append or the wire (it execs `comm-relay.sh send` for a handle it cannot name), and a listed handle that is not live is refused before anything is appended.
+- `comm-send.sh`: directed and broadcast sends, the body from the argument or from `--file <path | ->`; the registry decides a local append or the wire (it execs `comm-relay.sh send` for a handle it cannot name), and a listed handle that is not live is refused before anything is appended.
 - `comm-relay.sh`: the send for a handle this box's registry does not list: one `comm.file` request to the relay endpoint, whose answer is the verdict; the retired `bridge` verb only sleeps.
 - `comm-poll.sh`: shows the inbox lines past the read cursor, then advances it; the only writer of the cursor.
 

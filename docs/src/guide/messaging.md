@@ -22,6 +22,7 @@ but they are plain scripts in `~/.sot-comm/bin`:
 comm-list.sh                                 # who is reachable, and their state
 comm-send.sh @other-session "message"        # one result: filed, or FAILED with the reason
 comm-send.sh --broadcast "message"           # filed to every live session, one result each
+comm-send.sh @other-session --file notes.md  # the body is the file's bytes: quotes and $( ) arrive as written
 comm-poll.sh                                 # catch up on anything that arrived while you were away
 ```
 

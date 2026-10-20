@@ -26,7 +26,9 @@ do not retry or join.
 Quote the message in single quotes: the shell still reads a double-quoted
 message, so a backquote or `$( )` in it runs as a command and its text drops
 out, and a message that holds a single quote closes and reopens the quote, as
-`'it'\''s'`.
+`'it'\''s'`. A message with a backquote, `$( )`, quotes or a newline in it goes in a
+file instead: write the text to a file, then send that file with
+`~/.sot-comm/bin/comm-send.sh @<name> --file <path>`. The file's bytes arrive exactly as written.
 
 Local text is not visible to peers. When a peer's message asks you something,
 answer with `comm-send.sh`, not only in assistant text.
