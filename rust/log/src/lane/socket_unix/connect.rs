@@ -1,8 +1,6 @@
 //! The bounded, non-blocking connect(2) attempt over a fresh socket.
 
-#[cfg(not(target_os = "linux"))]
-use super::listener::set_cloexec;
-use super::listener::{set_nonblocking, STREAM_SOCKET};
+use super::listener::set_nonblocking;
 use super::*;
 
 // ---------------------------------------------------------------------
@@ -75,18 +73,8 @@ pub(super) fn one_connect_attempt(
     addr_bytes: &[u8],
     deadline: Instant,
 ) -> Result<UnixStream, ConnectAttempt> {
-    let raw = unsafe { libc::socket(libc::AF_UNIX, STREAM_SOCKET, 0) };
-    if raw < 0 {
-        return Err(ConnectAttempt::Fatal(io::Error::last_os_error()));
-    }
-    // SAFETY: `raw` is a freshly created, valid, not-otherwise-owned fd.
-    // Wrapped immediately so every early return below closes it.
-    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-    crate::lane::test_progress::birth("connector", fd.as_raw_fd());
-    #[cfg(not(target_os = "linux"))]
-    if let Err(e) = set_cloexec(fd.as_raw_fd()) {
-        return Err(ConnectAttempt::Fatal(e));
-    }
+    let fd = crate::host::fd::socket_cloexec("connector", libc::AF_UNIX, libc::SOCK_STREAM)
+        .map_err(ConnectAttempt::Fatal)?;
     if let Err(e) = set_nonblocking(fd.as_raw_fd()) {
         return Err(ConnectAttempt::Fatal(e));
     }

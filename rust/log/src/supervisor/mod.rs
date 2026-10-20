@@ -200,7 +200,7 @@
 //!
 //! The parent-death lease (`LegLease`/[`SpawnLease`], replacing the
 //! Windows-only `lease_win` module here) is a close-on-exec pipe
-//! (pipe2(O_CLOEXEC) on Linux; pipe plus checked fcntl on macOS, whose creation-to-flagging window remains): this
+//! (born by `host::fd::pipe_cloexec`): this
 //! process holds the WRITE end for its whole life and never writes to
 //! it; the read end reaches the leg as `--parent-lease-fd 3`, installed
 //! by [`build_run_command`]'s own `pre_exec` (a `dup2` onto the fixed fd,

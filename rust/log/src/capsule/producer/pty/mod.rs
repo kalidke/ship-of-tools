@@ -66,10 +66,9 @@
 //!   and asks the child for no cooperation whatsoever; a lease would
 //!   need a monitor process wedged between this one and the agent, which
 //!   is a new process in every capsule tree. On macOS, closing the last master hangs up the controlling terminal and sends SIGHUP to its session. Our child
-//!   takes that terminal with setsid and TIOCSCTTY. Both PTY ends receive checked close-on-exec flags, but concurrent
-//!   creation-to-flagging inheritance remains possible; this producer is not unconditionally the sole master holder.
-//!   The kernel-fact tests exercise last-master close with the slave released and held; neither proves absence of
-//!   concurrent inheritance. SIGHUP is catchable, so a child ignoring it may outlive the hangup; reaping an orphaned
+//!   takes that terminal with setsid and TIOCSCTTY. Both PTY ends are born close-on-exec (`host::fd::openpty_cloexec`), so a
+//!   child forked by another thread cannot catch the master between its creation and its flag. The
+//!   kernel-fact tests exercise last-master close with the slave released and held. SIGHUP is catchable, so a child ignoring it may outlive the hangup; reaping an orphaned
 //!   group belongs to the supervisor.
 //! - **Exit is OBSERVED without reaping; the leader is reaped EXACTLY ONCE,
 //!   LAST, in `Drop`; domain emptiness is judged by LIVE members, never by
@@ -122,7 +121,7 @@ use crate::{Error, Result};
 use serde_json::json;
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::sync::Mutex;
@@ -148,27 +147,6 @@ const PR_SET_PDEATHSIG: libc::c_int = 1;
 /// reaper (`init`/a subreaper) the same way any other unreaped child
 /// would be.
 const REAP_BOUND: Duration = Duration::from_secs(2);
-
-/// One of the PTY factory's close-on-exec flag calls. A test may make it fail for real (the factory's own path then
-/// runs) and learns which descriptors the factory flagged.
-fn flag_fcntl(
-    end: &'static str,
-    fd: RawFd,
-    cmd: libc::c_int,
-    arg: libc::c_int,
-) -> io::Result<libc::c_int> {
-    #[cfg(test)]
-    if flag_plan::fails(end, fd, cmd) {
-        return Err(io::Error::from_raw_os_error(libc::EPERM));
-    }
-    #[cfg(not(test))]
-    let _ = end;
-    let rc = unsafe { libc::fcntl(fd, cmd, arg) };
-    if rc < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(rc)
-}
 
 /// `PtyProducer::spawn`'s own pre-flight check (see that call site's own
 /// doc for WHY this exists — the `close_range` in `pre_exec` closes
@@ -787,56 +765,11 @@ mod drop_and_domain_tests {
     }
 }
 
-/// The thread's plan for the PTY flag calls: which one fails, and the descriptors it saw.
-#[cfg(test)]
-mod flag_plan {
-    use std::cell::RefCell;
-    use std::os::fd::RawFd;
-
-    #[derive(Default)]
-    struct Plan {
-        fail: Option<(&'static str, libc::c_int)>,
-        seen: Vec<(&'static str, RawFd)>,
-    }
-
-    thread_local! {
-        static PLAN: RefCell<Plan> = RefCell::new(Plan::default());
-    }
-
-    pub(super) fn arm(end: &'static str, cmd: libc::c_int) {
-        PLAN.with(|plan| {
-            *plan.borrow_mut() = Plan {
-                fail: Some((end, cmd)),
-                seen: Vec::new(),
-            }
-        });
-    }
-
-    pub(super) fn take_seen() -> Vec<(&'static str, RawFd)> {
-        PLAN.with(|plan| std::mem::take(&mut *plan.borrow_mut()).seen)
-    }
-
-    /// The factory owns `fd` as `end`, before any flag call: a test sees both ends even when the first call fails.
-    pub(super) fn born(end: &'static str, fd: RawFd) {
-        PLAN.with(|plan| {
-            let mut plan = plan.borrow_mut();
-            if !plan.seen.contains(&(end, fd)) {
-                plan.seen.push((end, fd));
-            }
-        });
-    }
-
-    pub(super) fn fails(end: &'static str, fd: RawFd, cmd: libc::c_int) -> bool {
-        born(end, fd);
-        PLAN.with(|plan| plan.borrow().fail == Some((end, cmd)))
-    }
-}
-
-/// Both PTY ends get close-on-exec before publication, and either flag call failing is the factory's error with both
-/// ends closed and no child started.
+/// Both PTY ends get close-on-exec at birth, and either flag step failing is the factory's error with both ends closed
+/// and no child started.
 #[cfg(test)]
 mod flag_tests {
-    use super::{flag_plan, Producer, PtyProducer};
+    use super::{Producer, PtyProducer};
     use std::os::fd::AsRawFd;
 
     fn fd_is_closed(fd: std::os::fd::RawFd) -> bool {
@@ -844,31 +777,28 @@ mod flag_tests {
         rc < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
     }
 
-    fn flag_failure(test: &str, end: &'static str, cmd: libc::c_int) {
+    /// The `call`-th flag step (1 the master's, 2 the slave's) fails for real.
+    fn flag_failure(test: &str, call: usize) {
         if !crate::test_isolated::run_isolated(test) {
             return;
         }
-        flag_plan::arm(end, cmd);
         let argv = ["/bin/sh", "-c", "exit 0"].map(String::from);
-        let spawned = PtyProducer::spawn(&argv, 80, 24);
-        let seen = flag_plan::take_seen();
-        assert!(
-            spawned.is_err(),
-            "PTY flag failure was not returned ({end} {cmd})"
-        );
+        let (spawned, births, calls) = crate::lane::test_progress::observe_births(Some(call), || {
+            PtyProducer::spawn(&argv, 80, 24)
+        });
+        assert!(spawned.is_err(), "PTY flag failure {call} was not returned");
+        assert!(calls >= call, "the injected call {call} was never made ({calls})");
         assert_eq!(
-            seen.iter().map(|(e, _)| *e).collect::<Vec<_>>(),
+            births.iter().map(|b| b.role).collect::<Vec<_>>(),
             ["master", "slave"],
-            "the factory owned exactly its two ends: {seen:?}"
+            "the factory owned exactly its two ends: {births:?}"
         );
-        assert!(
-            seen.iter().any(|(e, _)| *e == end),
-            "the failing end was never flagged: {seen:?}"
-        );
-        for (e, fd) in seen {
+        for birth in births {
             assert!(
-                fd_is_closed(fd),
-                "the {e} end (fd {fd}) was left open after the failure"
+                fd_is_closed(birth.fd),
+                "the {} end (fd {}) was left open after the failure",
+                birth.role,
+                birth.fd
             );
         }
         let child = unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) };
@@ -877,43 +807,35 @@ mod flag_tests {
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ECHILD)
         );
-        eprintln!("flag-failure-proof test={test} end={end} cmd={cmd} bodies=1");
+        eprintln!("flag-failure-proof test={test} call={call} bodies=1");
     }
 
     #[test]
-    fn master_getfd_failure_is_returned() {
-        flag_failure(
-            "capsule::producer::pty::flag_tests::master_getfd_failure_is_returned",
-            "master",
-            libc::F_GETFD,
-        );
+    fn master_flag_failure_is_returned() {
+        flag_failure("capsule::producer::pty::flag_tests::master_flag_failure_is_returned", 1);
     }
 
     #[test]
-    fn master_setfd_failure_is_returned() {
-        flag_failure(
-            "capsule::producer::pty::flag_tests::master_setfd_failure_is_returned",
-            "master",
-            libc::F_SETFD,
-        );
+    fn slave_flag_failure_is_returned() {
+        flag_failure("capsule::producer::pty::flag_tests::slave_flag_failure_is_returned", 2);
     }
 
+    /// The pair is close-on-exec in the call that creates it, where the platform can (Linux), not flagged after.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn slave_getfd_failure_is_returned() {
-        flag_failure(
-            "capsule::producer::pty::flag_tests::slave_getfd_failure_is_returned",
-            "slave",
-            libc::F_GETFD,
-        );
-    }
-
-    #[test]
-    fn slave_setfd_failure_is_returned() {
-        flag_failure(
-            "capsule::producer::pty::flag_tests::slave_setfd_failure_is_returned",
-            "slave",
-            libc::F_SETFD,
-        );
+    fn a_pty_pair_is_born_close_on_exec() {
+        let argv = ["/bin/sh", "-c", "exit 0"].map(String::from);
+        let (_producer, births, _) = crate::lane::test_progress::observe_births(None, || {
+            PtyProducer::spawn(&argv, 80, 24).expect("spawn")
+        });
+        assert_eq!(births.len(), 2, "{births:?}");
+        for birth in births {
+            assert!(
+                birth.fd_flags >= 0 && birth.fd_flags & libc::FD_CLOEXEC != 0,
+                "the {} end was not close-on-exec at birth: {birth:?}",
+                birth.role
+            );
+        }
     }
 
     /// Publication: a successfully spawned producer's master and held slave are close-on-exec.

@@ -139,7 +139,11 @@ impl Signal {
             clippy::disallowed_methods,
             reason = "the containment's own start: reserve and contain::prepare ran before it, and adopt and fill follow (ADR 0050, Shutdown)"
         )]
-        let child = cmd.spawn()?;
+        let child = {
+            #[cfg(unix)]
+            let _fork = sot_log::host::fd::fork_guard();
+            cmd.spawn()?
+        };
         let mut provisional = Provisional::new(child);
         #[cfg(test)]
         self.after_create(
@@ -194,7 +198,11 @@ impl Signal {
             clippy::disallowed_methods,
             reason = "the containment's own start: reserve and contain::prepare ran before it, and adopt and fill follow (ADR 0050, Shutdown)"
         )]
-        let child = cmd.spawn()?;
+        let child = {
+            #[cfg(unix)]
+            let _fork = sot_log::host::fd::fork_guard();
+            cmd.spawn()?
+        };
         let mut provisional = Provisional::new(child);
         #[cfg(test)]
         self.after_create(

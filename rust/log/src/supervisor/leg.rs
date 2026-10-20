@@ -164,45 +164,12 @@ impl LegLease {
     /// scope; kept as a parameter so both platforms share one call site
     /// in `supervise_inner`.
     ///
-    /// The parent-death lease uses pipe2(O_CLOEXEC) on Linux and checked pipe plus fcntl on macOS. The macOS
-    /// creation-to-flagging window remains; lane binding already started transport threads, so placement does not
-    /// prove single-threaded creation. `O_CLOEXEC` on BOTH ends is the whole correctness of the lease: a write end
-    /// leaked past an `exec` into ANY child keeps the pipe open after this process dies, and the leg then never sees
-    /// its parent go. The `FD_CLOEXEC` pass below is written unconditionally rather than `cfg`-split: on Linux it
-    /// re-asserts what `pipe2` already did, so the invariant is checked in code on every platform.
+    /// The parent-death lease. `O_CLOEXEC` on BOTH ends is the whole correctness of the lease: a write end leaked past
+    /// an `exec` into ANY child keeps the pipe open after this process dies, and the leg then never sees its parent
+    /// go. [`crate::host::fd::pipe_cloexec`] is why neither end can be caught before its flag.
     #[cfg(unix)]
     pub(super) fn create(_h: &str) -> std::io::Result<Self> {
-        use std::os::fd::{AsRawFd, FromRawFd};
-        let mut fds = [0i32; 2];
-        #[cfg(target_os = "linux")]
-        let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
-        #[cfg(not(target_os = "linux"))]
-        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
-        if rc != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        // SAFETY: the `pipe`/`pipe2` above just returned two freshly
-        // opened, valid, uniquely-owned fds on success. Owned FIRST, so
-        // an `fcntl` failure below closes both rather than leaking them.
-        let read = unsafe { std::os::fd::OwnedFd::from_raw_fd(fds[0]) };
-        let write = unsafe { std::os::fd::OwnedFd::from_raw_fd(fds[1]) };
-        crate::lane::test_progress::birth("lease.read", read.as_raw_fd());
-        crate::lane::test_progress::birth("lease.write", write.as_raw_fd());
-        for fd in [read.as_raw_fd(), write.as_raw_fd()] {
-            if let Some(injected) = crate::lane::test_progress::flag_call() {
-                return Err(injected);
-            }
-            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-            if flags < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if let Some(injected) = crate::lane::test_progress::flag_call() {
-                return Err(injected);
-            }
-            if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-        }
+        let (read, write) = crate::host::fd::pipe_cloexec(["lease.read", "lease.write"], false)?;
         Ok(Self {
             read,
             _write: write,
@@ -433,7 +400,7 @@ mod tests {
         lease_end_is_close_on_exec("lease.write");
     }
 
-    /// Each flag call of the lease's checked pass fails for real through `create`, which then closes both ends.
+    /// Each flag step of the lease's birth fails for real through `create`, which then closes both ends.
     #[cfg(unix)]
     #[test]
     fn a_lease_flag_failure_closes_both_ends() {
@@ -443,7 +410,7 @@ mod tests {
             return;
         }
         use crate::lane::test_progress::observe_births;
-        for call in 1..=4 {
+        for call in 1..=2 {
             let (made, births, calls) = observe_births(Some(call), || LegLease::create("h"));
             assert!(made.is_err(), "lease flag failure {call} was not returned");
             assert_eq!(births.len(), 2);
@@ -461,12 +428,12 @@ mod tests {
                 );
             }
         }
-        let (made, _, calls) = observe_births(Some(5), || LegLease::create("h"));
+        let (made, _, calls) = observe_births(Some(3), || LegLease::create("h"));
         assert!(
-            made.is_ok() && calls == 4,
-            "the checked pass makes four flag calls, made {calls}"
+            made.is_ok() && calls == 2,
+            "the birth makes two flag calls, made {calls}"
         );
-        eprintln!("lease-flag-proof calls=4 failures=4 bodies=1");
+        eprintln!("lease-flag-proof calls=2 failures=2 bodies=1");
     }
 
     /// A leg's child holds the lease at `PARENT_LEASE_FD` and nothing else past its exec, whatever flag a descriptor

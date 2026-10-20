@@ -136,22 +136,12 @@ pub(super) fn create_and_bind_listener(
         }
     }
 
-    let raw = unsafe { libc::socket(libc::AF_UNIX, STREAM_SOCKET, 0) };
-    if raw < 0 {
-        return Err(TransportError::Io {
+    let fd = crate::host::fd::socket_cloexec("listener", libc::AF_UNIX, libc::SOCK_STREAM).map_err(
+        |source| TransportError::Io {
             op: "socket(AF_UNIX)",
-            source: io::Error::last_os_error(),
-        });
-    }
-    // SAFETY: `raw` is a freshly created, valid, not-otherwise-owned fd.
-    // Wrapped immediately so every early return below closes it.
-    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-    crate::lane::test_progress::birth("listener", fd.as_raw_fd());
-    #[cfg(not(target_os = "linux"))]
-    set_cloexec(fd.as_raw_fd()).map_err(|e| TransportError::Io {
-        op: "fcntl(FD_CLOEXEC socket)",
-        source: e,
-    })?;
+            source,
+        },
+    )?;
 
     #[cfg(target_os = "linux")]
     assert_domain_is_unix(fd.as_raw_fd());
@@ -280,56 +270,15 @@ pub(super) fn create_and_bind_listener(
     Ok(unsafe { UnixListener::from_raw_fd(fd.into_raw_fd()) })
 }
 
-/// Linux creates the explicit listener and connector sockets with SOCK_STREAM | SOCK_CLOEXEC. macOS uses SOCK_STREAM
-/// followed immediately by checked fcntl before publication; that creation-to-flagging window is not atomic.
-#[cfg(target_os = "linux")]
-pub(super) const STREAM_SOCKET: libc::c_int = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
-#[cfg(not(target_os = "linux"))]
-pub(super) const STREAM_SOCKET: libc::c_int = libc::SOCK_STREAM;
-
 /// The wake self-pipe: disconnect_listener wakes the acceptor through its nonblocking self-pipe, never by dialing the
-/// listener. Linux creates both ends with pipe2(O_CLOEXEC | O_NONBLOCK); macOS immediately owns and checks both ends
-/// with fcntl before publication. The macOS creation-to-flagging inheritance window remains. Both ends are owned the
-/// moment they exist, so any error drops them.
+/// listener. Both ends are owned the moment they exist, so any error drops them.
 pub(super) fn create_wake_pipe() -> Result<(OwnedFd, OwnedFd), TransportError> {
-    let mut fds: [RawFd; 2] = [-1, -1];
-    #[cfg(target_os = "linux")]
-    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
-    #[cfg(not(target_os = "linux"))]
-    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
-    if rc != 0 {
-        return Err(TransportError::Io {
+    crate::host::fd::pipe_cloexec(["wake.read", "wake.write"], true).map_err(|source| {
+        TransportError::Io {
             op: "pipe(wake)",
-            source: io::Error::last_os_error(),
-        });
-    }
-    // SAFETY: `pipe`/`pipe2` just returned these two fds; each is valid, open, and not owned by anything else yet.
-    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-    crate::lane::test_progress::birth("wake.read", read.as_raw_fd());
-    crate::lane::test_progress::birth("wake.write", write.as_raw_fd());
-    #[cfg(not(target_os = "linux"))]
-    for fd in [read.as_raw_fd(), write.as_raw_fd()] {
-        set_cloexec(fd)
-            .and_then(|()| set_nonblocking(fd))
-            .map_err(|source| TransportError::Io {
-                op: "fcntl(wake pipe)",
-                source,
-            })?;
-    }
-    Ok((read, write))
-}
-
-/// Set the descriptor flag with checked fcntl. This is a post-creation operation, not atomic descriptor creation.
-#[cfg(not(target_os = "linux"))]
-pub(super) fn set_cloexec(fd: RawFd) -> io::Result<()> {
-    if let Some(injected) = crate::lane::test_progress::flag_call() {
-        return Err(injected);
-    }
-    let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-    if rc != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+            source,
+        }
+    })
 }
 
 /// Set O_NONBLOCK with a checked read-modify-write fcntl pair.
