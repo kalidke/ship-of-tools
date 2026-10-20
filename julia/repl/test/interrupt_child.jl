@@ -33,12 +33,14 @@ function signal_interrupt(proc)
     end
 end
 
-# The daemon's force (`Escalation`): signals 50 ms apart for 0.8 s, until the child says anything. Julia forces the
-# exception into code with no safepoint at the fifth signal it counts, and on Linux it counts one only when the eval's
-# thread runs between two, so on a loaded computer it counts fewer than were sent.
+# The daemon's force (`Escalation`): signals 50 ms apart for 0.8 s on Linux and 0.4 s on macOS and Windows, until the
+# child says anything. Julia forces the exception into code with no safepoint at the fifth signal it counts, and on
+# Linux it counts one only when the eval's thread runs between two, so on a loaded computer it counts fewer than were
+# sent; elsewhere it counts each one, and every signal after a force must fall in the half second Julia then ignores.
 function signal_burst(proc, lines)
     first = time()
-    while time() - first < 0.8 && !isready(lines)
+    span = Sys.isapple() || Sys.iswindows() ? 0.4 : 0.8
+    while time() - first < span && !isready(lines)
         signal_interrupt(proc)
         sleep(0.05)
     end
