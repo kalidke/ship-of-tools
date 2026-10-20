@@ -53,7 +53,8 @@ The fix is to agree on the one page comm system and then clean up.
   start of an empty input line; a dialog, menu, draft or working session is not free
   and is never typed into. One line per batch, one more after ten minutes unread. A line
   it typed that did not send is sent by a later tick, with Enter alone, once main's input
-  box holds just that line; within one daemon run it is never typed twice (a restart forgets it). A
+  box holds just that line, whether or not the mail has been read by then; within one
+  daemon run it is never typed twice (a restart forgets it). A
   busy session needs no typing — its end-of-turn check will not let a turn finish with
   unread mail waiting. This is the only wake: no per-session watcher, listener, bridge
   or Monitor exists.
