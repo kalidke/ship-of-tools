@@ -90,7 +90,7 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   library kills is disowned first; and under `set -e` a utility run by the `command` builtin ends the shell when it
   fails, even inside the `if`, `!` or `||` that handles it (a pipeline stage, as in `sot_jq`, runs in its own process).
 - The bounded comm calls run under `sot_bounded` (comm-lib-base.sh), never under `timeout`: `sot_ssh_bridge`'s `ssh`,
-  `sot_dial`'s bridge, comm-list.sh's `sot-fe version`, comm-turn-auditor.sh's headless claude, the PostToolUse heartbeat's comm-context.sh, and agents/sot-gh-auth.sh's gh calls; scripts/install.sh carries a copy for its ssh check (the checkout holding this library does not exist yet), and rust/backend/tests/shell_dial.rs runs every bound case against both. One perl process owns
+  `sot_dial`'s bridge, comm-list.sh's `sot-fe version`, comm-turn-auditor.sh's headless claude, the PostToolUse heartbeat's comm-context.sh, and agents/sot-gh-auth.sh's gh calls; scripts/install.sh carries a copy for its ssh check (the checkout holding this library does not exist yet), and rust/backend/tests/shell_dial.rs runs every bound case against both and pins the two bodies byte-identical. One perl process owns
   the deadline and the command's process group until the command has exited and no member of the group is left, so a
   descendant still holding the output after the command exits is ended at the bound too, and the call's status is then
   the bound's, with the command's own on stderr. At the bound, or when that perl is itself sent TERM, INT or HUP, it
