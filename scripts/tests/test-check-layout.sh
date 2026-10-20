@@ -232,6 +232,19 @@ WANT="VIOLATION too-many-lines .github/workflows/rust.yml a clippy line allows";
 loosen .github/workflows/rust.yml 'run: cargo clippy -- --cap-lints warn -D clippy::too_many_lines' 0
 WANT="VIOLATION too-many-lines .github/workflows/rust.yml a clippy line caps"; check "too-many-lines workflow cap-lints" 1 --allow "$tmp/allow" rust/a
 
+# timing-bounds: literal waits in test files and #[cfg(test)] mods under rust/ (not rust/vt100, not rust/log/src/test_*.rs,
+# not comment lines or production code) equal the pin; a rise and a fall each fail and say which
+newrepo; mkdir -p rust/a/tests rust/vt100 rust/log/src
+printf 'fn p() { std::thread::sleep(d); }\n// std::thread::sleep(c)\n#[cfg(test)]\nmod t {\n    fn w() { rx.recv_timeout(Duration::from_millis(5)); }\n}\n' > rust/a/x.rs; mkpage rust/a x.rs tests/
+printf 'fn t() { Duration::from_secs(1); }\n' > rust/a/tests/m.rs
+printf 'fn v() { Duration::from_secs(1); }\n' > rust/vt100/v.rs; printf 'fn h() { Duration::from_secs(1); }\n' > rust/log/src/test_h.rs; commit
+printf 'timing-bounds rust 3 pinned\n' > "$tmp/allow"
+WANT="timing-bounds: 3 literal waits in rust test code (pinned: 3)"; NOT="VIOLATION timing-bounds"; check "timing-bounds at its pin" 0 --allow "$tmp/allow" rust/a
+printf 'timing-bounds rust 2 pinned\n' > "$tmp/allow"
+WANT="VIOLATION timing-bounds rust 3 literal waits in test code, pinned 2: the count rose"; check "timing-bounds rise" 1 --allow "$tmp/allow" rust/a
+printf 'timing-bounds rust 4 pinned\n' > "$tmp/allow"
+WANT="VIOLATION timing-bounds rust 3 literal waits in test code, pinned 4: the count fell; lower the pin to 3"; check "timing-bounds fall" 1 --allow "$tmp/allow" rust/a
+
 # report
 newrepo; mkdir d; { lines 5 'x='; } > d/small.rs; { lines 30 'x='; echo '#[cfg(test)]'; echo 'mod t {'; echo '}'; } > d/big.rs; commit
 out="$("$tool" --repo "$tmp/r" --report d)"

@@ -56,7 +56,60 @@ printf 'pkill -P 1\nx=$(command -p pgrep -P 2)\n# pkill -f no\n' > "$T/test-synt
 printf 'sleep 1 &\nSTUB_NC_PID=$!\nset -m\nSTUB_X_PID=$!\nset +m\nSTUB_Y_PID=$!\n' > "$T/test-synthetic2.sh"
 [ "$(pg_calls "$T/test-synthetic.sh" | wc -l)" -eq 2 ] && [ "$(stub_pids_outside_m "$T/test-synthetic2.sh" | wc -l)" -eq 2 ] \
     || { echo "FAIL: the pkill and set -m scans do not tell a synthetic offender from a clean suite"; exit 1; }
+# A bare `sleep N` in a test is a fixed wait: it does not end when the thing it waits for happens, and it is too short
+# on a slow host. A suite waits with lib-wait.sh's `await`. Every file under comm/tests and agents/tests (.sh, .py) but
+# lib-wait.sh has the count of its non-comment lines with a `sleep` followed by a number pinned in the table below, with
+# its reason; a file not in the table has none. The count can only fall: a fall also fails, so the table is lowered in
+# the same commit. The pattern is at its command position or in text a suite writes, as `sleep 2 |` in a stub.
+SLEEP_RX='(^|[^[:alnum:]_.$/-])sleep +[0-9]'
+# sleep_counts FILE... — "FILE COUNT" for each file with a bare sleep.
+sleep_counts() {
+    local f n
+    for f in "$@"; do
+        n="$(awk -v rx="$SLEEP_RX" '/^[[:space:]]*#/ { next } $0 ~ rx { n++ } END { print n + 0 }' "$f")"
+        [ "$n" -eq 0 ] || printf '%s %s\n' "${f#"$REPO"/}" "$n"
+    done
+}
+sleep_files=()
+while IFS= read -r f; do
+    case "$f" in comm/tests/*|agents/tests/*) case "$f" in *.sh|*.py) [ "${f##*/}" = lib-wait.sh ] || sleep_files+=("$REPO/$f") ;; esac ;; esac
+done < <(git -C "$REPO" ls-files)
+# FILE COUNT REASON
+read -r -d '' SLEEP_ALLOWED <<'ALLOW'
+agents/tests/test-sot-fe-paths.sh 1 polls for the stand-in's socket, 100 tries of 0.1 s; moves to await when the file is next changed
+comm/tests/hub_files/lock_faults.sh 1 the lock holder's body, a step that runs until the case stops it
+comm/tests/hub_files/lock_shell.sh 1 the lock holder's body, a step that runs until the case stops it
+comm/tests/lib-temp-files.sh 1 the stub jq that hangs until the signal under test ends it
+comm/tests/test-comm-deps.sh 4 the untethered case's loop and its tether, steps that run until the case stops them
+comm/tests/test-comm-e2e-readers.sh 14 peer-host suite: paces and times real readers and senders; outside the await rule (comm/tests/CLAUDE.md, timing)
+comm/tests/test-endpoint-gate.sh 4 children that run until the case ends them, and a stub pgrep's printed text
+comm/tests/test-heartbeat-ctx-wait.py 4 the generated bodies' own poll loops, which the suite's frozen observations time
+comm/tests/test-inbox-lock-onehost.sh 7 peer-host suite: paces and times lock holders on real boxes; outside the await rule
+comm/tests/test-inbox-lock-twohost.sh 9 peer-host suite: paces and times lock holders on real boxes; outside the await rule
+comm/tests/test-registry-lock-twohost.sh 2 peer-host suite: paces and times lock holders on real boxes; outside the await rule
+comm/tests/test-registry-lock.sh 5 the lock's own contenders and holders: critical sections that must overlap in time, and steps that run until stopped
+comm/tests/test-registry-twohost.sh 1 peer-host suite: waits for a start time shared with the other box; outside the await rule
+comm/tests/test-rm-guard.sh 4 this file's synthetic offender text and the pipeline members end_group is run on
+ALLOW
+# sleep_unlisted COUNTS — the lines of COUNTS ("FILE COUNT") that differ from SLEEP_ALLOWED, and each allowed file missing.
+sleep_unlisted() {
+    awk 'NR == FNR { want[$1] = $2; next }
+         { have[$1] = $2; if (!($1 in want)) print "unlisted: " $1 " has " $2 " bare sleep line(s)";
+           else if (want[$1] != $2) print "changed: " $1 " has " $2 ", listed " want[$1] }
+         END { for (f in want) if (!(f in have)) print "stale: " f " is listed with " want[f] " and has none" }' \
+        <(printf '%s\n' "$SLEEP_ALLOWED") "$1"
+}
+printf 'x\n%s 5\n' "sle""ep" > "$T/test-synthetic3.sh"
+[ "$(sleep_unlisted <(sleep_counts "$T/test-synthetic3.sh") | grep -c '^unlisted: ')" -eq 1 ] || { echo "FAIL: the bare sleep scan does not find a synthetic sleep"; exit 1; }
 rc=0
+sleep_hits="$(sleep_unlisted <(sleep_counts "${sleep_files[@]}"))"
+if [ -z "$sleep_hits" ]; then
+    echo "PASS: sleep_counts match the listed bare sleeps (${#sleep_files[@]} test files)"
+else
+    printf '%s\n' "$sleep_hits"
+    echo "FAIL: sleep_counts; wait with await (lib-wait.sh), or list the sleep with its reason in this file"
+    rc=1
+fi
 # this file holds the synthetic offenders as text
 scanned=(); for f in "${suites[@]}"; do [ "${f##*/}" = test-rm-guard.sh ] || scanned+=("$f"); done
 for scan in pg_calls stub_pids_outside_m; do
