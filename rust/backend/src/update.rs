@@ -813,11 +813,14 @@ mod tests {
         }
 
         /// A command that leaves a file in its temporary folder, as Pkg leaves a package download there when the call
-        /// that made it does not reach its end, writes the file's path to `report`, then runs `then`.
+        /// that made it does not reach its end, writes the file's path to `report`, then runs `then`. It finds the
+        /// folder as Julia's `tempdir()` does, by `TMPDIR`: a bare `mktemp` would not, since macOS's makes its file in
+        /// the account's own temporary folder (`getconf DARWIN_USER_TEMP_DIR`) whatever `TMPDIR` names.
         fn leaving_command(report: &std::path::Path, then: &str) -> tokio::process::Command {
             let mut command = tokio::process::Command::new("sh");
+            let leave = format!("f=$(mktemp \"${{TMPDIR:-/tmp}}/left.XXXXXX\") && echo \"$f\" > \"$1\" && {then}");
             command
-                .args(["-c", &format!("f=$(mktemp) && echo \"$f\" > \"$1\" && {then}"), "sh"])
+                .args(["-c", &leave, "sh"])
                 .arg(report);
             command
         }

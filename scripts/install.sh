@@ -492,7 +492,7 @@ installer_build_direction() {  # <prefix> <installed version> <tag>
     built="$(installer_json_string "$1/install.json" commit)"
     grep -Eq '^[0-9a-f]{40}$' <<<"$built" || { built="${2#*+}"; built="${built%-dirty}"; }
     case "$built" in ''|src) echo "unknown: this build names no commit"; return 0 ;; esac
-    rel="$(mktemp)"
+    rel="$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")"
     curl "${CURL_BOUND[@]}" -fsSL -o "$rel" "https://github.com/$REPO/releases/download/$3/COMMIT" 2>/dev/null || : > "$rel"
     rel="$(tr -d ' \n' < "$rel"; rm -f "$rel")"
     grep -Eq '^[0-9a-f]{40}$' <<<"$rel" || { echo "unknown: $3 has no COMMIT to read"; return 0; }
@@ -1012,7 +1012,7 @@ if [ -z "${SOT_INSTALL_TAG:-}" ] && [ "$archived" = 0 ]; then
         esac
     fi
     case "$tag" in v[0-9]*) ;; *) die "could not resolve a release tag (got '$tag')" ;; esac
-    TMP_INSTALLER="$(mktemp)"
+    TMP_INSTALLER="$(mktemp "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")"
     url="https://raw.githubusercontent.com/$REPO/$tag/scripts/install.sh"
     curl "${CURL_BOUND[@]}" -fsSL -o "$TMP_INSTALLER" "$url" || die "could not fetch $url"
     # The tag's own installer prints the verdict of what it did, a refusal or an interrupt included.

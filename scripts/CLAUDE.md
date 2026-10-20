@@ -302,6 +302,10 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   of its two `mktemp`s, each trap's body starts `trap "" HUP INT TERM` and ends with `sot_end_by_signal`, and
   `sot_cleanup_signals` runs right after each trap is set (a copy of the comm library's two helpers, beside `die`).
   sot-apply.sh's trap does not yet: its signal handling is the 0.6.6 item SOT-APPLY-SIGNAL.
+- A script makes a temporary file or folder from a template in `${TMPDIR:-/tmp}` (`mktemp "${TMPDIR:-/tmp}/x.XXXXXX"`),
+  never with a bare `mktemp`: macOS's, given no template, makes it in the account's own temporary folder (`getconf
+  DARWIN_USER_TEMP_DIR`) whatever `TMPDIR` names, where a run that gives the script a `TMPDIR` of its own (the
+  temp-files rows) does not look.
 - install.sh's Julia steps (`julia_run`: the comm refresh and the three instantiates) run with `TMPDIR` set to its
   `WORK`, so what Julia leaves in its temporary folder when a person interrupts the run (Pkg's package download, which
   Pkg removes only at the end of the call that made it) goes with `WORK` at the exit trap. A SIGKILL of the run leaves
