@@ -43,10 +43,12 @@ Usage: sotd update stage <folder> --prefix <install prefix>
 Usage: sotd update pointer --prefix <install prefix> --target <release target>
 
   May the pointer armed for <target> apply onto the install at <prefix>? The apply scripts ask before they apply it.
-  Reads the pointer and install.json; starts no daemon and writes nothing. Prints `ok` and exits 0 (no pointer, a
-  pointer that fits, or no install here to compare with), or prints `refuse: <why>` and exits 3: the pointer cannot be
-  read, was armed over an install that is no longer the one on disk (or that install.json cannot be read to check),
-  or sits at or below the installed version (a pointer with no record never applies onto a dev build).
+  Reads the pointer, install.json and the stage's prepared.json; starts no daemon and writes nothing. Prints `ok` and
+  exits 0 (no pointer, a pointer that fits, or no install here to compare with), or prints `refuse: <why>` and exits
+  3: the pointer cannot be read, was armed over an install that is no longer the one on disk (or that install.json
+  cannot be read to check), or sits at or below the installed version (a pointer with no record never applies onto a
+  dev build), or its stage records no prepare, or a prepare without the Julia environments where the install's role
+  runs a backend (never for a windows target, whose launcher instantiates them at the first start).
 
 Usage: sotd update direction <version> --prefix <install prefix> [--installed <version>]
 
