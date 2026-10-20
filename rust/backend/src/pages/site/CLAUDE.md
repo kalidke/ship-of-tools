@@ -25,7 +25,8 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
   `?secret=` and gets an HttpOnly, SameSite=Strict cookie named for the pool listener, daemon host and port
   (`pool_cookie_name`: one browser can hold two daemons' sites at one pool port number, and a reopen overwrites its own
   cookie), and anything else is 403 (`serve_request`, secrets compared with `ct_eq`). A request with a `secret`
-  parameter is decided by it alone (the first, when repeated); the cookie decides only a request with none, so a stale
+  parameter is decided by it alone (the first, when repeated; the key matches after percent-decoding and in any case, and
+  a key with no `=` is present and empty, which is refused); the cookie decides only a request with none, so a stale
   entry URL is refused, while in-site navigation from an unreloaded stale tab (no parameter) still rides the cookie.
 - Once `spawn_pool` ran, a pool port is assigned only from the ports it bound (`assign_pool_port`); when every one is
   held, the port of the window away longest is taken with a new secret (`Clients::away_sites`), never a live owner's.
