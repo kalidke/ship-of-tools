@@ -80,13 +80,14 @@
 //                                   # fullscreen (measured on one laptop).
 //
 // `columns` lists named slots in left-to-right order; `widths` is the
-// matching fractional split, one per column (a count that differs
-// warns and keeps the columns: the built-in widths when their count
-// fits, else an equal split; values renormalized on parse so they
-// sum to ~1.0). Valid slot names: nav, preview, llm, repl. The
-// drawer is a separate bottom strip; `drawer` names the slot rendered
-// there (today only "repl") and `drawer_height` is its fraction of
-// window height when open.
+// matching fractional split, one per column (a `widths` count that
+// differs from the columns warns and gives the columns an equal split;
+// values renormalized on parse so they sum to ~1.0). A preset's
+// `columns` and `widths` are applied together once the whole file is
+// read, so their order in the file does not matter. Valid slot names:
+// nav, preview, llm, repl. The drawer is a separate bottom strip;
+// `drawer` names the slot rendered there (today only "repl") and
+// `drawer_height` is its fraction of window height when open.
 //
 // Out-of-range or unparseable values warn and fall back to the
 // default; the chrome should never crash because the user wrote a
@@ -188,18 +189,21 @@ impl Slot {
     }
 }
 
-/// One aspect-bucket's layout: columns left-to-right + their widths +
-/// optional bottom drawer.
+/// One column of a layout preset: the slot it shows and its fractional width.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Column {
+    pub slot: Slot,
+    /// Fraction of the preset's width. A preset's widths sum to
+    /// (approximately) 1.0; they are renormalized at parse time so the user
+    /// can write `0.167,0.333,0.5` and not worry about a stray 0.001.
+    pub width: f32,
+}
+
+/// One aspect-bucket's layout: columns left-to-right (each with its width)
+/// + optional bottom drawer.
 #[derive(Debug, Clone)]
 pub struct LayoutPreset {
-    pub columns: Vec<Slot>,
-    /// Fractional column widths summing to (approximately) 1.0.
-    /// Same length as `columns`; a settings file that breaks this keeps the
-    /// columns and takes the built-in widths when their count fits, else an
-    /// equal split. Renormalized at parse time so the
-    /// user can write `0.167,0.333,0.5` and not worry about a stray
-    /// 0.001.
-    pub widths: Vec<f32>,
+    pub columns: Vec<Column>,
     /// Slot rendered as the bottom drawer when toggled open (e.g.
     /// `Slot::Repl`). `None` = no drawer in this preset.
     pub drawer: Option<Slot>,
@@ -217,8 +221,11 @@ impl LayoutPreset {
     /// user described, with REPL relegated to a hidden bottom drawer.
     pub fn default_ultrawide() -> Self {
         Self {
-            columns: vec![Slot::Nav, Slot::Preview, Slot::Llm],
-            widths: vec![0.167, 0.333, 0.500],
+            columns: vec![
+                Column { slot: Slot::Nav, width: 0.167 },
+                Column { slot: Slot::Preview, width: 0.333 },
+                Column { slot: Slot::Llm, width: 0.500 },
+            ],
             drawer: Some(Slot::Repl),
             drawer_height: 0.35,
         }
@@ -229,8 +236,11 @@ impl LayoutPreset {
     /// since horizontal real estate is tighter.
     pub fn default_laptop() -> Self {
         Self {
-            columns: vec![Slot::Nav, Slot::Preview, Slot::Llm],
-            widths: vec![0.18, 0.32, 0.50],
+            columns: vec![
+                Column { slot: Slot::Nav, width: 0.18 },
+                Column { slot: Slot::Preview, width: 0.32 },
+                Column { slot: Slot::Llm, width: 0.50 },
+            ],
             drawer: Some(Slot::Repl),
             drawer_height: 0.40,
         }
@@ -242,8 +252,10 @@ impl LayoutPreset {
     /// the v1 we just hide the LLM; a follow-up can wire the toggle.
     pub fn default_portrait() -> Self {
         Self {
-            columns: vec![Slot::Nav, Slot::Preview],
-            widths: vec![0.30, 0.70],
+            columns: vec![
+                Column { slot: Slot::Nav, width: 0.30 },
+                Column { slot: Slot::Preview, width: 0.70 },
+            ],
             drawer: Some(Slot::Repl),
             drawer_height: 0.40,
         }
@@ -257,13 +269,12 @@ impl LayoutPreset {
     /// so the widths still sum to ~1.0.
     pub fn wide_preview(&self) -> Self {
         let mut p = self.clone();
-        if let Some(idx) = p.columns.iter().position(|s| *s == Slot::Llm) {
-            let w = p.widths.remove(idx);
-            p.columns.remove(idx);
-            if let Some(pi) = p.columns.iter().position(|s| *s == Slot::Preview) {
-                p.widths[pi] += w;
-            } else if let Some(last) = p.widths.last_mut() {
-                *last += w;
+        if let Some(idx) = p.columns.iter().position(|c| c.slot == Slot::Llm) {
+            let w = p.columns.remove(idx).width;
+            if let Some(pc) = p.columns.iter_mut().find(|c| c.slot == Slot::Preview) {
+                pc.width += w;
+            } else if let Some(last) = p.columns.last_mut() {
+                last.width += w;
             }
         }
         p
@@ -435,6 +446,8 @@ impl Settings {
     /// Parse a settings file body on top of `self`.
     fn merge_text(&mut self, contents: &str) {
         let mut section = String::new();
+        let (mut ultrawide_keys, mut laptop_keys, mut portrait_keys) =
+            (PresetKeys::default(), PresetKeys::default(), PresetKeys::default());
         for (lineno, raw) in contents.lines().enumerate() {
             let line = strip_comment(raw).trim();
             if line.is_empty() {
@@ -458,9 +471,15 @@ impl Settings {
                             "layout.preset: expected one of auto|ultrawide|laptop|portrait");
                     }
                 }
-                ("layout.ultrawide", _) => merge_preset_kv(&mut self.ultrawide, key, &value, lineno),
-                ("layout.laptop", _) => merge_preset_kv(&mut self.laptop, key, &value, lineno),
-                ("layout.portrait", _) => merge_preset_kv(&mut self.portrait, key, &value, lineno),
+                ("layout.ultrawide", _) => {
+                    merge_preset_kv(&mut self.ultrawide, &mut ultrawide_keys, key, &value, lineno)
+                }
+                ("layout.laptop", _) => {
+                    merge_preset_kv(&mut self.laptop, &mut laptop_keys, key, &value, lineno)
+                }
+                ("layout.portrait", _) => {
+                    merge_preset_kv(&mut self.portrait, &mut portrait_keys, key, &value, lineno)
+                }
                 ("repl", "auto_open_drawer_on_run") => match parse_bool(&value) {
                     Some(b) => self.repl_auto_open_drawer_on_run = b,
                     None => tracing::warn!(line = lineno + 1, value = %value,
@@ -522,72 +541,68 @@ impl Settings {
                 }
             }
         }
-        check_widths(
-            "layout.ultrawide",
-            &mut self.ultrawide,
-            LayoutPreset::default_ultrawide(),
-        );
-        check_widths(
-            "layout.laptop",
-            &mut self.laptop,
-            LayoutPreset::default_laptop(),
-        );
-        check_widths(
-            "layout.portrait",
-            &mut self.portrait,
-            LayoutPreset::default_portrait(),
-        );
+        apply_preset_keys("layout.ultrawide", &mut self.ultrawide, ultrawide_keys);
+        apply_preset_keys("layout.laptop", &mut self.laptop, laptop_keys);
+        apply_preset_keys("layout.portrait", &mut self.portrait, portrait_keys);
     }
 }
 
-/// The widths `check_widths` put in place of a preset's own. Only widths can
-/// fall back: the user's columns always stand.
-#[derive(Debug, PartialEq, Eq)]
-enum WidthsFallback {
-    /// The built-in widths, whose count fits the columns.
-    BuiltIn,
-    /// An equal split, because the built-in count does not fit either.
-    EqualSplit,
+/// The `columns` and `widths` keys of one preset section, held until every key
+/// of the file is in. They are applied together (`apply_preset_keys`), so the
+/// file's key order does not matter.
+#[derive(Default)]
+struct PresetKeys {
+    columns: Option<Vec<Slot>>,
+    widths: Option<Vec<f32>>,
 }
 
-/// `columns` and `widths` are parsed apart, so the pair is checked once every
-/// key of the file is in: one width per column. On a mismatch the columns
-/// stand, with the built-in widths when their count fits and an equal split
-/// when it does not (the window indexes widths per column). Returns the
-/// replacement made, or `None` when the counts already matched.
-fn check_widths(
-    name: &str,
-    preset: &mut LayoutPreset,
-    built_in: LayoutPreset,
-) -> Option<WidthsFallback> {
-    if preset.widths.len() == preset.columns.len() {
-        return None;
+/// Puts a preset's staged keys in place. The columns are the file's, or the
+/// preset's own; the widths are the file's, or the preset's own by position.
+/// One width per column; a count that differs gives the columns an equal split.
+fn apply_preset_keys(name: &str, preset: &mut LayoutPreset, keys: PresetKeys) {
+    if keys.columns.is_none() && keys.widths.is_none() {
+        return;
     }
-    let n = preset.columns.len();
-    tracing::warn!(
-        preset = name,
-        columns = n,
-        widths = preset.widths.len(),
-        "widths: expected one fraction per column; keeping the columns with the built-in widths or an equal split"
-    );
-    if built_in.widths.len() == n {
-        preset.widths = built_in.widths;
-        Some(WidthsFallback::BuiltIn)
+    let slots = keys
+        .columns
+        .unwrap_or_else(|| preset.columns.iter().map(|c| c.slot).collect());
+    let widths = keys
+        .widths
+        .unwrap_or_else(|| preset.columns.iter().map(|c| c.width).collect());
+    let n = slots.len();
+    let widths = if widths.len() == n {
+        widths
     } else {
-        preset.widths = vec![1.0 / n as f32; n];
-        Some(WidthsFallback::EqualSplit)
-    }
+        tracing::warn!(
+            preset = name,
+            columns = n,
+            widths = widths.len(),
+            "widths: expected one fraction per column; giving the columns an equal split"
+        );
+        vec![1.0 / n as f32; n]
+    };
+    preset.columns = slots
+        .into_iter()
+        .zip(widths)
+        .map(|(slot, width)| Column { slot, width })
+        .collect();
 }
 
-fn merge_preset_kv(preset: &mut LayoutPreset, key: &str, value: &str, lineno: usize) {
+fn merge_preset_kv(
+    preset: &mut LayoutPreset,
+    keys: &mut PresetKeys,
+    key: &str,
+    value: &str,
+    lineno: usize,
+) {
     match key {
         "columns" => match parse_columns(value) {
-            Some(cols) => preset.columns = cols,
+            Some(cols) => keys.columns = Some(cols),
             None => tracing::warn!(line = lineno + 1, value = %value,
                 "columns: expected comma list of nav|preview|llm|repl"),
         },
         "widths" => match parse_widths(value) {
-            Some(ws) => preset.widths = ws,
+            Some(ws) => keys.widths = Some(ws),
             None => tracing::warn!(line = lineno + 1, value = %value,
                 "widths: expected comma list of positive fractions"),
         },
@@ -641,7 +656,7 @@ fn parse_widths(s: &str) -> Option<Vec<f32>> {
     if out.is_empty() {
         return None;
     }
-    // Renormalise so user can write 1/6, 1/3, 1/2 (= 0.999) without
+    // Renormalize so user can write 1/6, 1/3, 1/2 (= 0.999) without
     // the final column losing 1 pixel to rounding. Sum the inputs and
     // scale each so the total is 1.0; anything truly out of whack
     // (e.g. all zeros) was already rejected above.

@@ -1,13 +1,21 @@
     use super::*;
 
+    fn slots_of(columns: &[Column]) -> Vec<Slot> {
+        columns.iter().map(|c| c.slot).collect()
+    }
+
+    fn widths_of(columns: &[Column]) -> Vec<f32> {
+        columns.iter().map(|c| c.width).collect()
+    }
+
     #[test]
     fn wide_preview_hands_llm_width_to_preview() {
         let p = LayoutPreset::default_ultrawide().wide_preview();
-        assert_eq!(p.columns, vec![Slot::Nav, Slot::Preview]);
+        assert_eq!(slots_of(&p.columns), vec![Slot::Nav, Slot::Preview]);
         // Nav keeps its width; Preview absorbs the Llm share.
-        assert!((p.widths[0] - 0.167).abs() < 1e-3);
-        assert!((p.widths[1] - 0.833).abs() < 1e-3);
-        let sum: f32 = p.widths.iter().sum();
+        assert!((p.columns[0].width - 0.167).abs() < 1e-3);
+        assert!((p.columns[1].width - 0.833).abs() < 1e-3);
+        let sum: f32 = widths_of(&p.columns).iter().sum();
         assert!((sum - 1.0).abs() < 1e-3, "widths must still sum to ~1.0");
         // Drawer config rides along untouched.
         assert_eq!(p.drawer, Some(Slot::Repl));
@@ -16,8 +24,8 @@
     #[test]
     fn wide_preview_is_identity_without_llm_column() {
         let p = LayoutPreset::default_portrait().wide_preview();
-        assert_eq!(p.columns, vec![Slot::Nav, Slot::Preview]);
-        assert_eq!(p.widths, LayoutPreset::default_portrait().widths);
+        assert_eq!(slots_of(&p.columns), vec![Slot::Nav, Slot::Preview]);
+        assert_eq!(p.columns, LayoutPreset::default_portrait().columns);
     }
 
     #[test]
@@ -25,11 +33,11 @@
         let s = Settings::default();
         assert_eq!(s.preset, PresetMode::Auto);
         assert_eq!(
-            s.ultrawide.columns,
+            slots_of(&s.ultrawide.columns),
             vec![Slot::Nav, Slot::Preview, Slot::Llm]
         );
-        assert_eq!(s.ultrawide.widths.len(), 3);
-        let sum: f32 = s.ultrawide.widths.iter().sum();
+        assert_eq!(s.ultrawide.columns.len(), 3);
+        let sum: f32 = widths_of(&s.ultrawide.columns).iter().sum();
         assert!((sum - 1.0).abs() < 1e-3, "widths must sum to ~1.0");
     }
 
@@ -68,7 +76,7 @@
     }
 
     #[test]
-    fn parse_widths_renormalises_to_one() {
+    fn parse_widths_renormalizes_to_one() {
         let ws = parse_widths("0.167,0.333,0.5").unwrap();
         let sum: f32 = ws.iter().sum();
         assert!((sum - 1.0).abs() < 1e-4);
@@ -92,8 +100,8 @@
             "[layout]\npreset = \"laptop\"\n\n[layout.laptop]\ncolumns = \"nav,llm\"\nwidths = \"0.25,0.75\"\ndrawer = \"none\"\n",
         );
         assert_eq!(s.preset, PresetMode::Laptop);
-        assert_eq!(s.laptop.columns, vec![Slot::Nav, Slot::Llm]);
-        assert!((s.laptop.widths[0] - 0.25).abs() < 1e-3);
+        assert_eq!(slots_of(&s.laptop.columns), vec![Slot::Nav, Slot::Llm]);
+        assert!((s.laptop.columns[0].width - 0.25).abs() < 1e-3);
         assert!(s.laptop.drawer.is_none());
     }
 
@@ -149,119 +157,24 @@
     #[test]
     fn merge_keeps_defaults_on_garbage() {
         let mut s = Settings::default();
-        let before = s.ultrawide.widths.clone();
+        let before = s.ultrawide.columns.clone();
         s.merge_text("[layout.ultrawide]\nwidths = \"banana,1\"\n");
-        assert_eq!(s.ultrawide.widths, before);
-    }
-
-    /// A preset as the file's keys leave it, before `check_widths` runs.
-    fn parsed(base: LayoutPreset, columns: &str, widths: &str) -> LayoutPreset {
-        LayoutPreset {
-            columns: parse_columns(columns).unwrap(),
-            widths: parse_widths(widths).unwrap(),
-            ..base
-        }
-    }
-
-    #[test]
-    fn widths_one_per_column_mismatch_keeps_columns_with_equal_split() {
-        // The window indexes widths per column (layout::compute at startup,
-        // wide_preview on the toggle); a short list must never reach them.
-        // Four columns and two widths: the built-in list has three, which
-        // fits neither count, so the four columns split evenly.
-        let mut p = parsed(
-            LayoutPreset::default_ultrawide(),
-            "nav,preview,llm,repl",
-            "0.5,0.5",
-        );
-        let fell = check_widths("layout.ultrawide", &mut p, LayoutPreset::default_ultrawide());
-        assert_eq!(fell, Some(WidthsFallback::EqualSplit));
-        assert_eq!(p.columns, vec![Slot::Nav, Slot::Preview, Slot::Llm, Slot::Repl]);
-        assert_eq!(p.widths, vec![0.25; 4]);
-        let area = ratatui::layout::Rect::new(0, 0, 120, 40);
-        let _ = crate::ui::chrome::layout::compute(area, &p, true, None);
-        let _ = p.wide_preview();
-        // The interior is 118 cells, so a quarter is 29.5: each of the first
-        // three columns lands on 30 within a cell of rounding.
-        let geom = crate::ui::chrome::layout::compute(area, &p, false, None);
-        let widths: Vec<u16> = [geom.nav, geom.preview, geom.llm]
-            .iter()
-            .map(|r| r.map_or(0, |r| r.width))
-            .collect();
-        assert!(widths.iter().all(|w| w.abs_diff(30) <= 1), "{widths:?}");
-    }
-
-    #[test]
-    fn widths_alone_wrong_count_gives_built_in_layout() {
-        // Two widths for the default three columns: wide_preview would remove
-        // the Llm column's width, which is past the end of this list.
-        let d = LayoutPreset::default_ultrawide();
-        let mut p = parsed(d.clone(), "nav,preview,llm", "0.5,0.5");
-        let fell = check_widths("layout.ultrawide", &mut p, LayoutPreset::default_ultrawide());
-        assert_eq!(fell, Some(WidthsFallback::BuiltIn));
-        assert_eq!(p.columns, d.columns);
-        assert_eq!(p.widths, d.widths);
-        let _ = p.wide_preview();
-    }
-
-    #[test]
-    fn widths_wrong_count_takes_built_in_widths_when_they_fit() {
-        // Reordered columns with two widths: the built-in ultrawide list has
-        // one width per column, so it fits the three columns and stands.
-        let d = LayoutPreset::default_ultrawide();
-        let mut p = parsed(d.clone(), "llm,nav,preview", "0.5,0.5");
-        let fell = check_widths("layout.ultrawide", &mut p, LayoutPreset::default_ultrawide());
-        assert_eq!(fell, Some(WidthsFallback::BuiltIn));
-        assert_eq!(p.columns, vec![Slot::Llm, Slot::Nav, Slot::Preview]);
-        assert_eq!(p.widths, d.widths);
-    }
-
-    #[test]
-    fn columns_alone_keep_columns_with_equal_split() {
-        // The built-in ultrawide widths have three entries; two columns need
-        // two, so the columns keep their names and split evenly.
-        let mut p = LayoutPreset::default_ultrawide();
-        p.columns = parse_columns("nav,llm").unwrap();
-        let fell = check_widths("layout.ultrawide", &mut p, LayoutPreset::default_ultrawide());
-        assert_eq!(fell, Some(WidthsFallback::EqualSplit));
-        assert_eq!(p.columns, vec![Slot::Nav, Slot::Llm]);
-        assert_eq!(p.widths, vec![0.5, 0.5]);
-        let area = ratatui::layout::Rect::new(0, 0, 120, 40);
-        let geom = crate::ui::chrome::layout::compute(area, &p, false, None);
-        assert!(geom.nav.is_some() && geom.llm.is_some());
-        assert!(geom.preview.is_none());
-    }
-
-    #[test]
-    fn widths_longer_than_columns_keep_columns_with_equal_split() {
-        let mut p = parsed(LayoutPreset::default_laptop(), "nav,llm", "0.2,0.3,0.5");
-        let fell = check_widths("layout.laptop", &mut p, LayoutPreset::default_laptop());
-        assert_eq!(fell, Some(WidthsFallback::EqualSplit));
-        assert_eq!(p.columns, vec![Slot::Nav, Slot::Llm]);
-        assert_eq!(p.widths, vec![0.5, 0.5]);
-    }
-
-    #[test]
-    fn matching_widths_return_no_fallback() {
-        let mut p = parsed(LayoutPreset::default_ultrawide(), "nav,llm", "0.5,0.5");
-        let fell = check_widths("layout.ultrawide", &mut p, LayoutPreset::default_ultrawide());
-        assert_eq!(fell, None);
-        assert_eq!(p.widths, vec![0.5, 0.5]);
+        assert_eq!(s.ultrawide.columns, before);
     }
 
     #[test]
     fn merge_applies_the_width_rule_to_each_preset() {
-        // Each preset's widths go through check_widths in merge_text, so a
-        // short list reaches the window for none of the three.
+        // Each preset's keys go through apply_preset_keys in merge_text, so a
+        // count that does not match the columns splits them equally in all three.
         let mut s = Settings::default();
         s.merge_text(
             "[layout.ultrawide]\nwidths = \"0.5,0.5\"\n\
              [layout.laptop]\ncolumns = \"nav,llm\"\nwidths = \"0.2,0.3,0.5\"\n\
              [layout.portrait]\ncolumns = \"nav,preview,llm\"\n",
         );
-        assert_eq!(s.ultrawide.widths, LayoutPreset::default_ultrawide().widths);
-        assert_eq!(s.laptop.widths, vec![0.5, 0.5]);
-        assert_eq!(s.portrait.widths, vec![1.0 / 3.0; 3]);
+        assert_eq!(widths_of(&s.ultrawide.columns), vec![1.0 / 3.0; 3]);
+        assert_eq!(widths_of(&s.laptop.columns), vec![0.5, 0.5]);
+        assert_eq!(widths_of(&s.portrait.columns), vec![1.0 / 3.0; 3]);
     }
 
     #[test]
@@ -415,4 +328,48 @@
         assert!(s.terminal_shell.is_none());
         s.merge_text("[terminal]\nshell = # nothing\n");
         assert!(s.terminal_shell.is_none());
+    }
+
+    #[test]
+    fn widths_count_mismatch_splits_the_columns_equally() {
+        // Two widths for the three default ultrawide columns: no column keeps a built-in share, every one gets an equal third.
+        let mut s = Settings::default();
+        s.merge_text("[layout.ultrawide]\nwidths = \"0.5,0.5\"\n");
+        assert_eq!(slots_of(&s.ultrawide.columns), vec![Slot::Nav, Slot::Preview, Slot::Llm]);
+        for w in widths_of(&s.ultrawide.columns) {
+            assert!((w - 1.0 / 3.0).abs() < 1e-4, "width {w} is not an equal third");
+        }
+    }
+
+    #[test]
+    fn columns_reorder_keeps_the_widths_by_position() {
+        // A columns-only key with the same count keeps the preset's widths by position.
+        let mut s = Settings::default();
+        s.merge_text("[layout.ultrawide]\ncolumns = \"llm,nav,preview\"\n");
+        assert_eq!(slots_of(&s.ultrawide.columns), vec![Slot::Llm, Slot::Nav, Slot::Preview]);
+        for (got, want) in widths_of(&s.ultrawide.columns).iter().zip([0.167, 0.333, 0.5]) {
+            assert!((got - want).abs() < 1e-3, "width {got} is not {want}");
+        }
+    }
+
+    #[test]
+    fn file_format_on_disk_still_parses() {
+        // The format a user has on disk: two comma lists, the widths summing to one, and a drawer of none.
+        let mut s = Settings::default();
+        s.merge_text("[layout.ultrawide]\ncolumns = \"nav,preview,llm\"\nwidths = \"0.2,0.3,0.5\"\ndrawer = \"none\"\n");
+        assert_eq!(slots_of(&s.ultrawide.columns), vec![Slot::Nav, Slot::Preview, Slot::Llm]);
+        for (got, want) in widths_of(&s.ultrawide.columns).iter().zip([0.2, 0.3, 0.5]) {
+            assert!((got - want).abs() < 1e-4, "width {got} is not {want}");
+        }
+        assert_eq!(s.ultrawide.drawer, None);
+    }
+
+    #[test]
+    fn widths_apply_to_the_file_columns_whatever_the_key_order() {
+        // The file's widths go with the file's columns, even when the widths key comes first.
+        let mut s = Settings::default();
+        s.merge_text("[layout.laptop]\nwidths = \"0.5,0.5\"\ncolumns = \"nav,llm\"\n");
+        assert_eq!(slots_of(&s.laptop.columns), vec![Slot::Nav, Slot::Llm]);
+        assert!((s.laptop.columns[0].width - 0.5).abs() < 1e-4);
+        assert!((s.laptop.columns[1].width - 0.5).abs() < 1e-4);
     }

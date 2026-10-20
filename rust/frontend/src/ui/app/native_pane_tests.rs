@@ -296,7 +296,7 @@ impl PaneDriver<'_> {
     fn layout_state(&self) -> String {
         let Some(state) = self.app.state.as_ref() else { return "no State".to_string() };
         let columns = state.settings.resolve_preset(state.monitor_aspect).columns.iter()
-            .map(|slot| slot.label()).collect::<Vec<_>>().join(",");
+            .map(|column| column.slot.label()).collect::<Vec<_>>().join(",");
         format!("monitor_px={} monitor_aspect={} preset={:?} columns={columns}",
             self.monitor_px, state.monitor_aspect, state.settings.preset)
     }

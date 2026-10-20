@@ -51,7 +51,7 @@ shared bottom drawer.
 | Key | Type | Default (ultrawide) | Meaning |
 |-----|------|---------------------|---------|
 | `columns` | comma-list of slot names (`nav` · `preview` · `llm` · `repl`) | `nav,preview,llm` | Named column slots, left to right. |
-| `widths` | comma-list of fractions | `0.167,0.333,0.5` | Fractional column widths; same length as `columns`, renormalised to sum to 1.0 on parse. |
+| `widths` | comma-list of fractions | `0.167,0.333,0.5` | Fractional column widths, one per column; renormalized to sum to 1.0 on parse. A count that differs from `columns` warns and gives the columns an equal split. |
 | `drawer` | slot name or `none` | `repl` | Slot rendered in the shared bottom drawer when toggled open. |
 | `drawer_height` | fraction `[0.10, 0.80]` | `0.35` | Drawer height as a fraction of window height when open; clamped to range. |
 
