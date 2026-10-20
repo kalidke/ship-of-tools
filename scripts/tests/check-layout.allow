@@ -23,3 +23,9 @@ file-list CLAUDE.md the repo-root page is the map tier, not a module page
 # reasoned allow(clippy::too_many_lines); this pins how many rust/ holds (not rust/vt100). It can only fall: removing
 # one lowers the number in the same commit.
 too-many-lines rust 63 functions over 100 code lines that carry a reasoned allow
+
+# The literal waits in Rust test code (thread::sleep(, recv_timeout(, Duration::from_secs(, from_millis( in test files and
+# #[cfg(test)] mods under rust/, not rust/vt100 or the harness rust/log/src/test_*.rs). Fixed bounds fail on a slow
+# runner; each is a deletion target, replaced by the product's own constant or the layer's hang guard. This pins how
+# many rust/ holds. It can only fall: removing one lowers the number in the same commit.
+timing-bounds rust 2691 literal waits already in test code when the count was pinned

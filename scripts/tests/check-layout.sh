@@ -140,32 +140,37 @@ def is_test_cfg(attr):
     m = re.match(r"^#\[\s*cfg\s*\((.*)\)\s*\]\s*(//.*)?$", attr.strip(), re.S)
     return bool(m) and requires_test(m.group(1))
 
+def cfg_test_spans(lines):
+    """(first, last) line indexes of each #[cfg(test)] mod in a .rs file's lines, attributes included."""
+    spans, k = [], 0
+    while k < len(lines):
+        if not lines[k].startswith("#["):
+            k += 1
+            continue
+        j = k
+        while j < len(lines) and (not lines[j].strip() or lines[j].lstrip().startswith("#[")):
+            j += 1
+        if (j < len(lines) and re.match(r"^(pub(\([^)]*\))?\s+)?mod\s", lines[j])
+                and any(is_test_cfg(a) for a in lines[k:j] if a.startswith("#["))):
+            end = j
+            if not lines[j].rstrip().endswith(";"):
+                end = j + 1
+                while end < len(lines) and lines[end] != "}":
+                    end += 1
+            end = min(end, len(lines) - 1)
+            spans.append((k, end))
+            k = end + 1
+        else:
+            k = j
+    return spans
+
 def counts(f):
     """(code_lines, test_lines) of a source file."""
     lines = read(f).splitlines()
     if is_test_file(f):
         return 0, len(lines)
     if f.endswith(".rs"):
-        test, k = 0, 0
-        while k < len(lines):
-            if not lines[k].startswith("#["):
-                k += 1
-                continue
-            j = k
-            while j < len(lines) and (not lines[j].strip() or lines[j].lstrip().startswith("#[")):
-                j += 1
-            if (j < len(lines) and re.match(r"^(pub(\([^)]*\))?\s+)?mod\s", lines[j])
-                    and any(is_test_cfg(a) for a in lines[k:j] if a.startswith("#["))):
-                end = j
-                if not lines[j].rstrip().endswith(";"):
-                    end = j + 1
-                    while end < len(lines) and lines[end] != "}":
-                        end += 1
-                end = min(end, len(lines) - 1)
-                test += end - k + 1
-                k = end + 1
-            else:
-                k = j
+        test = sum(end - k + 1 for k, end in cfg_test_spans(lines))
         return len(lines) - test, test
     return len(lines), 0
 
@@ -339,8 +344,29 @@ WORKFLOW_LOOSENERS = [
 loosened += [(f, why) for f in tracked if f.startswith(".github/workflows/")
              for rx, why in WORKFLOW_LOOSENERS if re.search(rx, read(f))]
 
+# timing-bounds: the literal waits inside Rust test code (a test file or a #[cfg(test)] mod under rust/, not rust/vt100
+# and not rust/log/src/test_*.rs, the harness that owns the layer's hang guards) number exactly the allow file's pin,
+# `timing-bounds rust <n> <reason>`. A comment line does not count. The count can only fall.
+BOUND_RX = re.compile(r"thread::sleep\(|recv_timeout\(|Duration::from_secs\(|from_millis\(")
+def test_bounds(f):
+    lines = read(f).splitlines()
+    if is_test_file(f):
+        picked = lines
+    else:
+        picked = [ln for a, b in cfg_test_spans(lines) for ln in lines[a:b + 1]]
+    return sum(len(BOUND_RX.findall(ln)) for ln in picked if not ln.lstrip().startswith("//"))
+bounds_line = allow.get(("timing-bounds", "rust"))
+bounds_pin = 0
+if bounds_line is not None:
+    if not (bounds_line.split() or [""])[0].isdigit():
+        usage("the timing-bounds pin must start with its count: " + bounds_line)
+    bounds_pin = int(bounds_line.split()[0])
+n_bounds = sum(test_bounds(f) for f in tracked
+               if f.startswith("rust/") and f.endswith(".rs") and not f.startswith(ALLOWANCE_SKIP)
+               and not re.match(r"^rust/log/src/test_[^/]*\.rs$", f))
+
 nv = na = ne = 0
-used = {("too-many-lines", "rust")}
+used = {("too-many-lines", "rust"), ("timing-bounds", "rust")}
 for kind, path, detail in violations:
     if any(k == kind and r.match(path) for k, r, _ in exempt):
         ne += 1
@@ -364,6 +390,12 @@ if n_allowances != pin:
 for f, why in loosened:
     nv += 1
     print("VIOLATION too-many-lines %s %s" % (f, why))
+if n_bounds != bounds_pin:
+    nv += 1
+    print("VIOLATION timing-bounds rust %d literal waits in test code, pinned %d: %s" % (n_bounds, bounds_pin,
+          "the count rose; wait on the product's own constant or the layer's hang guard" if n_bounds > bounds_pin else
+          "the count fell; lower the pin to %d in the allow file in this commit" % n_bounds))
+print("timing-bounds: %d literal waits in rust test code (pinned: %d)" % (n_bounds, bounds_pin))
 print("too-many-lines: %d allowances in rust (pinned: %d)" % (n_allowances, pin))
 print("violations: %d, allowed: %d, exempt: %d, unused-allow: %d, folders checked: %d"
       % (nv, na, ne, len(unused), len(folders)))

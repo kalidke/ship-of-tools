@@ -328,6 +328,13 @@ Each violation is `VIOLATION <kind> <path> <detail>`:
   `--warn` before `clippy::too_many_lines` (spaced, with `=` or attached), and any `--cap-lints`. A form not listed here
   is not caught: removing the step's `-D clippy::too_many_lines`, or a source-level `warn` of the lint or of
   `clippy::pedantic`, which also overrides the command line's `-D`.
+- `timing-bounds`: `VIOLATION timing-bounds rust <n> literal waits in test code, pinned <p>: the count rose|fell...`. The
+  occurrences of `thread::sleep(`, `recv_timeout(`, `Duration::from_secs(` and `from_millis(` on non-comment lines of
+  Rust test code under `rust/` (a test file by the tool's file rule, or a `#[cfg(test)]` mod; not `rust/vt100`, and not
+  `rust/log/src/test_*.rs`, the harness that owns the layers' hang guards) must number exactly the pin, the allow file's
+  line `timing-bounds rust <n> <reason>` (no line pins 0). The count can only fall: a new literal bound fails the build,
+  and each existing one is a deletion target, replaced by the product's own constant or the layer's hang guard. A
+  fall says to lower the pin in the same commit. Every run checks it.
 
 Covered folders: a crate root (a tracked Cargo.toml with `[package]`) covers its `src/`; a Julia package root (a tracked
 Project.toml) covers `src/`, `test/` and `ext/`. A covered folder needs no CLAUDE.md of its own (a covered folder that
@@ -346,7 +353,7 @@ file for file-size, the CLAUDE.md for file-list, the folder otherwise. Matches p
 An allow line that matches no violation prints `UNUSED-ALLOW <line>` and makes the exit status 1.
 
 When a listed page is tracked, `named-path: n tokens checked in f files` follows the violations; then always
-`too-many-lines: n allowances in rust (pinned: p)`.
+`too-many-lines: n allowances in rust (pinned: p)` and `timing-bounds: n literal waits in rust test code (pinned: p)`.
 Last line: `violations: n, allowed: m, exempt: e, unused-allow: u, folders checked: k`. Exit 0 none, 1 any, 2 usage error.
 
 `--report`: per folder, source files as `code N test M name`, largest code first.
