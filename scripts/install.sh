@@ -112,8 +112,9 @@ SSH_OPTS=(-T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3
 
 # sot_bounded SECS CMD [ARG...]: comm/lib/comm-lib-base.sh's command bound, which documents it, copied here because
 # this installer checks ssh before the checkout that holds comm-lib exists (the release archive carries no comm-lib).
-# rust/backend/tests/shell_dial.rs runs every case of the bound against both, so the two cannot drift. CMD's own
-# status, or 124 at the bound however CMD handles TERM (137 when that took KILL), the caller naming the expiry.
+# rust/backend/tests/shell_dial.rs runs every case of the bound against both and pins the two bodies byte-identical,
+# so the two cannot drift. CMD's own status, or 124 at the bound however CMD handles TERM (137 when that took KILL), the
+# caller naming the expiry.
 sot_bounded() {
     command -v perl >/dev/null 2>&1 || {
         echo "sot_bounded: no perl to bound $2 with" >&2
