@@ -23,7 +23,8 @@ backend; charter: comm/CLAUDE.md.
 - Every TICK (2 s), `run` checks each capsule row with a declared handle; a handle is declared on one row only
   (`set_agent_handle`, `scan_disk`).
 - `check_row` wakes only a Ready row with fresh mail, or mail unread past REPEAT_AFTER (600 s) (`decide`); a row owed an
-  Enter (`Woken::enter_owed`) is instead sent Enter alone, fresh mail or not, until REPEAT_AFTER (`Decision::Complete`). It skips a row
+  Enter (`Woken::enter_owed`) is instead sent Enter alone, fresh mail or not, until REPEAT_AFTER, and with its mail read
+  until the Enter goes or main's box reads empty REPEAT_AFTER after the typing (`Decision::Complete`, `line_gone`). It skips a row
   whose registry `stop_at` mark is under STOP_HOOK_BOUND (60 s) old (`stop_hook_running`).
 - `cursor_offset` ports comm-lib-inbox.sh's `sot_cursor_offset`, which is the spec; `agrees_with_the_shell` runs both (Linux).
 - `counts` is the one unread rule: a JSON object whose `to` is a string equal to the handle and whose `from` is not it.
@@ -34,9 +35,10 @@ backend; charter: comm/CLAUDE.md.
 - After typing, `wake_if_free` waits up to OP_BUDGET (3 s) for `typed_refusal` to see the line alone in main's input
   box (`type_then_enter`); Enter goes only then.
 - A typed line counts as the wake and, within one daemon run, is never typed again for its batch (`enter_owed` lives in
-  the tick's memory, so a restart can type it once more); one left without Enter is sent, Enter alone,
-  by a later tick that finds it alone in main's input box (`decide`'s Complete, `Woken::enter_owed`). An Enter the leg
-  refused as stale wrote nothing and leaves the line owed the same way (`WakeOutcome::EnterRefused`).
+  the tick's memory, so a restart can type it once more, and forgets a line whose mail is read); one left without Enter
+  is sent, Enter alone, by a later tick that finds it alone in main's input box, whether or not its mail has been read
+  (`decide`'s Complete, `Woken::enter_owed`). An Enter the leg refused as stale wrote nothing, and one whose delivery is
+  unknown may have been lost, so each leaves the line owed the same way (`WakeOutcome::EnterRefused`, `Unconfirmed`).
 - The dialog tick (`dialog.rs`, every DIALOG_EVERY, 5 s, Unix only) reads Ready capsule rows whose agent is `claude`, with
   a declared handle and an entry that reads `working` or carries a `dialog` fact (`due`), one watcher attach each (never
   the pen, a resize or a record frame). A row left `working` by a turn with no Stop (Esc, a bare No, a reauth, an API

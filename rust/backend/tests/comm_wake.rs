@@ -126,6 +126,13 @@ fn append_mail_to(env: &Env, handle: &str, n: usize) {
     std::io::Write::write_all(&mut f, line.repeat(n).as_bytes()).expect("append inbox");
 }
 
+/// Marks `HANDLE`'s first `n` inbox lines read, as `comm-poll.sh` or the Stop hook does: the cursor's count form.
+fn read_mail(env: &Env, n: usize) {
+    let dir = env.comm_root.join("read");
+    std::fs::create_dir_all(&dir).expect("mkdir read");
+    std::fs::write(dir.join(format!("{HANDLE}.cursor")), format!("{n}\n")).expect("write cursor");
+}
+
 async fn wait_pings(log: &Path, want: usize, within: Duration) -> bool {
     let deadline = Instant::now() + within;
     while Instant::now() < deadline {
@@ -151,14 +158,19 @@ struct Row {
 
 /// A daemon with one `ready` capsule row running the stub, declaring `HANDLE`.
 impl Row {
+    /// The row's screen now, one string per line.
+    async fn screen(&mut self) -> Vec<String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let res = call(&mut self.conn, id, op::PTY_SCREEN, serde_json::json!({ "workspace_id": self.ws })).await;
+        res.payload["lines"].as_array().expect("lines").iter().map(|l| l.as_str().unwrap_or_default().to_string()).collect()
+    }
+
     /// Whether `needle` is on the row's screen now. The stub's tty echoes
     /// whatever is typed, so this sees a wake typed into a dialog even
     /// though the stub itself is not reading yet.
     async fn screen_has(&mut self, needle: &str) -> bool {
-        let id = self.next_id;
-        self.next_id += 1;
-        let res = call(&mut self.conn, id, op::PTY_SCREEN, serde_json::json!({ "workspace_id": self.ws })).await;
-        res.payload["lines"].as_array().expect("lines").iter().any(|l| l.as_str().unwrap_or_default().contains(needle))
+        self.screen().await.iter().any(|l| l.contains(needle))
     }
 }
 
@@ -657,5 +669,23 @@ async fn a_wake_line_left_unsent_is_completed_by_the_next_tick() {
     assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
     let said = daemon_log(&row.env).matches("did not show in main's input box").count();
     assert_eq!(said, 1, "the left line should be named once in the daemon log");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// The typed line shows 8 s after the write, and the mail is read (as the Stop hook or a hand-run `comm-poll.sh` reads
+/// it) once the first attempt has given up on the line: a later tick still sends Enter alone, so no wake line is left
+/// in the prompt. One ping, the line typed once, and the last prompt on screen empty.
+#[tokio::test]
+async fn a_wake_line_left_unsent_is_completed_after_the_mail_is_read() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_with("cwlr", None, false, &["echo-after=8"], &[]).await;
+    append_mail(&row.env, 1);
+    wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
+    read_mail(&row.env, 1);
+    let sent = wait_pings(&row.log, 1, WAKE_WITHIN).await;
+    let screen = row.screen().await;
+    let prompt = screen.iter().rev().find(|l| l.contains('\u{276f}')).cloned().unwrap_or_default();
+    assert!(sent && !prompt.contains("[sot-comm]"), "a wake line is left in the prompt {prompt:?}; the screen: {screen:#?}");
+    assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
     row.env.kill_daemon_bounded().await;
 }

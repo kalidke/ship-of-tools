@@ -33,10 +33,11 @@ reads it with `comm-poll.sh` when it gets to it.
 ## A message wakes the recipient
 
 An idle session does not have to be polling. When a message lands for a
-session at its prompt, it is typed into that session's row. A Codex session
-gets each message's full text. A Claude Code session gets one short wake line
-and reads the messages itself with `comm-poll.sh`, so a burst of messages costs
-one wake. The wake is refused while the row shows a
+session at its prompt, it is typed into that session's row. A Claude Code
+session gets one short wake line and reads the messages itself with
+`comm-poll.sh`, so a burst of messages costs one wake. A Codex session is not
+typed into (no Codex screen has been captured yet), so it reads its mail when it
+next runs `comm-poll.sh`. The wake is refused while the row shows a
 permission dialog or a menu, so it can never answer one by accident.
 
 ## What travels with it
