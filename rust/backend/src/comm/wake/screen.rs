@@ -268,6 +268,40 @@ pub(crate) fn free_test_lines(screen: &vt100_ctt::Screen) -> Vec<String> {
     lines
 }
 
+/// The cursor's row as the wake's gate read it, before [`free_test_lines`] blanked the dim cells, for the log of a
+/// refusal. Each character of each cell is one token: printable ASCII as itself, anything else as `U+XXXX` (hex,
+/// uppercase, at least four digits), an empty cell as `U+0020`, and a wide character's second half as `cont`. A
+/// dim cell's tokens carry a `dim:` prefix. Trailing undimmed `U+0020` tokens are dropped. The text starts with the
+/// cursor's column, 0-based.
+pub(crate) fn cursor_row_trace(screen: &vt100_ctt::Screen) -> String {
+    let (row, col) = screen.cursor_position();
+    let (_, cols) = screen.size();
+    let mut tokens: Vec<String> = Vec::new();
+    for c in 0..cols {
+        let Some(cell) = screen.cell(row, c) else { continue };
+        let dim = if cell.dim() { "dim:" } else { "" };
+        if cell.is_wide_continuation() {
+            tokens.push(format!("{dim}cont"));
+            continue;
+        }
+        let text = if cell.has_contents() { cell.contents() } else { " " };
+        tokens.extend(text.chars().map(|ch| format!("{dim}{}", char_token(ch))));
+    }
+    while tokens.last().is_some_and(|token| token == "U+0020") {
+        tokens.pop();
+    }
+    format!("col {col}: {}", tokens.join(" "))
+}
+
+/// One character in [`cursor_row_trace`]: printable ASCII as itself, anything else as its code point.
+fn char_token(ch: char) -> String {
+    if ch.is_ascii_graphic() {
+        ch.to_string()
+    } else {
+        format!("U+{:04X}", u32::from(ch))
+    }
+}
+
 /// The rows the wake's hold compares: from the top of the screen through
 /// the line under the cursor, which for claude is the input box's lower
 /// rule. Claude Code draws a background-agent footer below the box that
