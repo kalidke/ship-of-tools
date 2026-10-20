@@ -254,7 +254,7 @@ mod tests {
             .arg("n=3; while [ $n -lt 256 ]; do if test -e /dev/fd/$n; then echo $n; fi; n=$((n+1)); done");
         let ran = {
             let _fork = fork_guard();
-            crate::test_wait::run_within(&mut sh, std::time::Duration::from_secs(20)).ok()
+            crate::test_wait::run_within(&mut sh, crate::test_isolated::ISOLATION_TIMEOUT).ok()
         };
         ran.stdout.lines().filter_map(|n| n.parse().ok()).collect()
     }
@@ -298,22 +298,31 @@ mod tests {
     }
 
     /// A constructor on another thread makes nothing while a fork site holds the lock, on macOS where the flag
-    /// follows the creation; on Linux nothing waits, as the descriptor is born flagged.
+    /// follows the creation; on Linux nothing waits, as the descriptor is born flagged. The thread reports whether the
+    /// lock had been released when it finished, so no wait on a clock is needed.
     #[test]
     fn a_constructor_waits_for_a_fork_in_progress_only_where_the_flag_follows_the_birth() {
         use std::sync::atomic::{AtomicBool, Ordering};
-        let made = std::sync::Arc::new(AtomicBool::new(false));
+        let released = std::sync::Arc::new(AtomicBool::new(false));
         let guard = fork_guard();
-        let flag = made.clone();
+        let seen = released.clone();
         let thread = std::thread::spawn(move || {
             let fd = socket_cloexec("socket", libc::AF_UNIX, libc::SOCK_STREAM).unwrap();
-            flag.store(true, Ordering::SeqCst);
-            fd
+            (fd, seen.load(Ordering::SeqCst))
         });
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        assert_eq!(made.load(Ordering::SeqCst), cfg!(not(target_os = "macos")));
-        drop(guard);
-        thread.join().unwrap();
-        assert!(made.load(Ordering::SeqCst));
+        let (_fd, released_first) = if cfg!(target_os = "macos") {
+            released.store(true, Ordering::SeqCst);
+            drop(guard);
+            crate::test_wait::within(crate::test_isolated::ISOLATION_TIMEOUT, "the constructor", move || {
+                thread.join().unwrap()
+            })
+        } else {
+            let made = crate::test_wait::within(crate::test_isolated::ISOLATION_TIMEOUT, "the constructor", move || {
+                thread.join().unwrap()
+            });
+            drop(guard);
+            made
+        };
+        assert_eq!(released_first, cfg!(target_os = "macos"));
     }
 }
