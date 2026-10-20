@@ -19,7 +19,9 @@ backend; charter: comm/CLAUDE.md.
 
 ## Rules
 - The wake only reads `inbox/<h>.jsonl` and `read/<h>.cursor`.
-- "Last woken" lives in the tick's memory, so after a restart each row with unread mail is woken once.
+- "Last woken" lives in the tick's memory, so after a restart each row with unread mail is woken once, and each row with
+  its mail read gets one boot look on its handle's first tick (`check_row`'s `first`): a box holding exactly the wake
+  line gets Enter alone, any other box is left alone and not attached for this reason again; a skipped look is logged once.
 - Every TICK (2 s), `run` checks each capsule row with a declared handle; a handle is declared on one row only
   (`set_agent_handle`, `scan_disk`).
 - `check_row` wakes only a Ready row with fresh mail, or mail unread past REPEAT_AFTER (600 s) (`decide`); a row owed an
@@ -35,7 +37,7 @@ backend; charter: comm/CLAUDE.md.
 - After typing, `wake_if_free` waits up to OP_BUDGET (3 s) for `typed_refusal` to see the line alone in main's input
   box (`type_then_enter`); Enter goes only then.
 - A typed line counts as the wake and, within one daemon run, is never typed again for its batch (`enter_owed` lives in
-  the tick's memory, so a restart can type it once more, and forgets a line whose mail is read); one left without Enter
+  the tick's memory, so a restart can type it once more, and forgets the debt, which the boot look settles); one left without Enter
   is sent, Enter alone, by a later tick that finds it alone in main's input box, whether or not its mail has been read
   (`decide`'s Complete, `Woken::enter_owed`). An Enter the leg refused as stale wrote nothing, and one whose delivery is
   unknown may have been lost, so each leaves the line owed the same way (`WakeOutcome::EnterRefused`, `Unconfirmed`).
