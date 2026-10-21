@@ -557,7 +557,12 @@ impl Env {
             .arg(setenv("SOT_SELF_HOST", std::ffi::OsStr::new(TEST_STATE_HOST)))
             .arg(setenv("SOT_RUNTIME_DIR", self._runtime_tmp.path().as_os_str()))
             .arg(setenv("PATH", &path))
-            .arg(setenv("HOME", &home))
+            .arg(setenv("HOME", &home));
+        // The Julia every other test daemon is given (`sotd_command`), so this one's kernel never runs a juliaup launcher.
+        if let Some(julia) = julia_binary() {
+            command.arg(setenv("SOT_JULIA_BIN", std::ffi::OsStr::new(&julia)));
+        }
+        command
             .arg("--")
             .arg(sotd_program())
             .arg("--socket")
