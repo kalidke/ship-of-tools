@@ -95,6 +95,9 @@ Pure queries (no startup side effects, answered before any of the above):
   ancestors [--from <pid>] (Windows only)
                           print the ancestors of <pid> (default: this
                           process), parent first: pid, exe, command line
+  work-state <verb> --handle <h> [--origin user|machine] [--text]
+                          one work-state write for a session's row, the
+                          way comm-status.sh reaches it (text on stdin)
   topology <plan|status|relay-endpoint|sync|apply>
                           what this box derives from hosts.toml
                           (`sotd topology` alone prints the details)

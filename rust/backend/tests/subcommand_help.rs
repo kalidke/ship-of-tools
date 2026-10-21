@@ -67,6 +67,8 @@ fn help_never_acts() {
         &["session-socket-path", "--help"],
         &["agent-exec", "--help"],
         &["ancestors", "--help"],
+        &["work-state", "--help"],
+        &["work-state", "stop", "--handle", "h", "--help"],
         &["stdio-bridge", "--help"],
         &["status", "--help"],
         &["same-version", "--help"],
