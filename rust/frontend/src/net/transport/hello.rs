@@ -56,7 +56,7 @@ pub(crate) fn protocol_mismatch_message(payload: &serde_json::Value, err_msg: &s
         "{behind} out of date — daemon {backend_version} speaks protocol {theirs}, this frontend {} speaks {ours}\n\n\
          backend:  {}  (protocol {})\n\
          frontend: {}  (protocol {})\n\n\
-         dev: git pull + rebuild + relaunch · see docs/adr/0030\n\n\
+         dev: git pull + rebuild + relaunch · see docs/history/adr/0030\n\n\
          ({err_msg})",
         sot_protocol::app_version(),
         backend_version,

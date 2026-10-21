@@ -533,7 +533,7 @@ _sot_tier() {
 }
 
 # sot_derive_handle MODE ROOT HOST [CLEARED] — the derived-name algorithm (ADR 0028
-# addendum; see docs/adr/0028-remote-comm-autoconnect.md). MODE is
+# addendum; see docs/history/adr/0028-remote-comm-autoconnect.md). MODE is
 # "reclaim" (comm-join) or "fresh" (comm-spawn) — see _sot_tier_claimable.
 # CLEARED (even empty) makes it a join from outside any row: a tier must also be listed in it and still bound as it
 # was (_sot_tier_claimable), and a tier-1 handle left out is stepped past with the held-by-a-live-row line.

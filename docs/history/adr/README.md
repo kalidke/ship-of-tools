@@ -81,7 +81,7 @@ the directory is sound.
 
 ```sh
 # 1. every record's line 3 carries one of the three tokens
-for f in docs/adr/[0-9][0-9][0-9][0-9]-*.md; do sed -n '3p' "$f" \
+for f in docs/history/adr/[0-9][0-9][0-9][0-9]-*.md; do sed -n '3p' "$f" \
   | grep -qE '^\*\*Status:\*\* (current|(partly )?superseded by ADR [0-9]{4})' \
   || echo "NO TOKEN $f"; done
 
@@ -91,7 +91,7 @@ for f in docs/adr/[0-9][0-9][0-9][0-9]-*.md; do sed -n '3p' "$f" \
 #    that has drifted from its heading, a pointer that disagrees with the
 #    token, a duplicate, and a file under the wrong heading.
 adr_lists() {
-  for f in docs/adr/[0-9][0-9][0-9][0-9]-*.md; do
+  for f in docs/history/adr/[0-9][0-9][0-9][0-9]-*.md; do
     b=${f##*/}; s3=$(sed -n '3p' "$f")
     tok=$(printf '%s' "$s3" | grep -oE '^\*\*Status:\*\* ((partly )?superseded by ADR [0-9]{4}( and ADR [0-9]{4})?|current)' | sed 's/^\*\*Status:\*\* //')
     named=$(printf '%s' "$s3" | grep -oE 'superseded by ADR [0-9]{4} \(`[^`]+`' | grep -oE '`[^`]+`')
@@ -104,7 +104,7 @@ adr_lists() {
 }
 adr_listed() {
   awk '/^## Current ADRs/{t="C";next} /^## Superseded records/{t="S";next} \
-       /^## Maintaining/{t=""} /^- \[/&&t{print t"\t"$0}' docs/adr/README.md
+       /^## Maintaining/{t=""} /^- \[/&&t{print t"\t"$0}' docs/history/adr/README.md
 }
 diff <(adr_lists | sort) <(adr_listed | sort)
 ```

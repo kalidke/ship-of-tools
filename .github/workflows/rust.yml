@@ -443,7 +443,7 @@ jobs:
         run: .\scripts\tests\test-install-manifest.ps1
         working-directory: .
 
-      # docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
+      # docs/history/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
       # amendment: the one pinned-checkout predicate that replaced four
       # disagreeing dev-vs-release heuristics, plus the shortcut-target
       # rule that reads it. Real git state (a temp repo, a branch clone, a

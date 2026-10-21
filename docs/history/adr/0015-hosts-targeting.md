@@ -139,4 +139,4 @@ stdio-bridge` — and `sotd topology relay-endpoint` never answers a `tcp:`
 value. The two-OS-users-on-one-box collision this addendum fixed cannot
 recur, for a different reason now: there is no shared loopback port on the
 control plane at all for a second account to reach or reuse. See
-[Transport](../src/concepts/transport.md).
+[Transport](../../src/concepts/transport.md).

@@ -5,7 +5,7 @@ A session sends one line to another by handle (the folder name plus the box name
 line is appended, under the inbox lock, to `inbox/<handle>.jsonl` in the comm folder (`~/.sot-comm`, or
 `$SOT_COMM_HOME`); the sender is told `filed -> @h` or `FAILED -> @h: <reason>`, and nothing is queued. The daemon that
 runs the receiver's row types a wake line into its free prompt, and the Stop hook does not end a turn with directed mail
-unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract is `PROTOCOL.md`.
+unread. Design of record: docs/history/adr/0049-messaging-on-one-page.md. The contract is `PROTOCOL.md`.
 
 ## Owns
 - The comm folder's data: `inbox/<h>.jsonl` and `.lock`, `read/<h>.cursor`, `registry.json` and `.registry.lock`,

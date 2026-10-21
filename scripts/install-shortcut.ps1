@@ -8,7 +8,7 @@
 # Re-run any time the repo path changes or the launcher script moves. Also
 # re-run (idempotent) any time repo\current\scripts\launch-sot.ps1 changes
 # hands -- the shortcut/pin target below follows it via
-# Get-SotLauncherTarget. See docs/adr/0030-versioning-release-and-auto-
+# Get-SotLauncherTarget. See docs/history/adr/0030-versioning-release-and-auto-
 # update.md's 2026-09-17 amendment for why the target is repo\current, not
 # the clone. launch-sot.ps1's own migration handover re-runs this script
 # once a pinned launcher first appears, so an existing shortcut needs no
@@ -44,7 +44,7 @@ if (-not (Test-Path $launcher)) {
 # No hosts.toml check here: the file is never repo-local (it lives in
 # <config dir>/hosts.toml, fetched from the hub by `sotd topology sync`,
 # which the launcher now runs on every launch) -- see
-# docs/adr/0015-hosts-targeting.md.
+# docs/history/adr/0015-hosts-targeting.md.
 
 # Copy the icon to the install prefix and point shortcuts THERE, not into the
 # clone. A .lnk stores an absolute IconLocation, so a shortcut aimed at

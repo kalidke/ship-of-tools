@@ -61,7 +61,7 @@ function New-Fixture([string]$prefix, [string]$curTag, [string]$newTag, [switch]
     git init -q 2>$null | Out-Null
     git config user.email t@t 2>$null; git config user.name t 2>$null
     Set-Content -LiteralPath (Join-Path $checkout 'f.txt') -Value 'x'
-    # A launch-sot.ps1 stand-in carrying the tag in its own text -- docs/adr/
+    # A launch-sot.ps1 stand-in carrying the tag in its own text -- docs/history/adr/
     # 0030-versioning-release-and-auto-update.md's 2026-09-17 amendment:
     # repo\current\scripts\launch-sot.ps1 must be THIS tag's file after a
     # flip, not the previous one (that is the whole point of pointing the
@@ -156,7 +156,7 @@ Check 'install.json version rewritten' ($ij2 -match '"version":\s*"0\.6\.0"') 'v
 Check 'unknown field preserved' ($ij2 -match 'must-survive-the-rewrite') 'additive field lost'
 $jt = @((Get-Item (Join-Path $p2 'repo\current') -Force).Target)
 Check 'repo\current junction' ([bool]($jt.Count -gt 0 -and $jt[0])) 'junction missing'
-# The flipped launcher is the NEW tag's own file (docs/adr/0030's 2026-09-17
+# The flipped launcher is the NEW tag's own file (docs/history/adr/0030's 2026-09-17
 # amendment: a shortcut aimed at repo\current must pick up scripts on the
 # same transaction as binaries and resources, not lag a launch behind).
 Check 'repo\current\scripts\launch-sot.ps1 is the new tags file' `

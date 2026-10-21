@@ -2,7 +2,7 @@
 
 An agentic development environment for Julia. Agent programs (Claude Code, Codex) run in rows, one project directory
 each; a native window lets the developer steer, watch and review them, browse the project, preview files and run a
-Julia REPL. `requirements.md` is the scope; `docs/adr/` records why; `docs/src/` is the user manual.
+Julia REPL. `requirements.md` is the scope; `docs/history/adr/` records why; `docs/src/` is the user manual.
 
 ## How it runs
 - `sot`, the window (Rust, winit + wgpu). ratatui computes the chrome's cells only; one wgpu pass draws every pixel.

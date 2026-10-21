@@ -38,7 +38,7 @@ always used VERBATIM and never disambiguated — in that PRECEDENCE order:
 --name beats a pinned $SOT_COMM_NAME beats an already-joined self-file
 identity, and a pinned name (either of the first two) NEVER yields to
 whatever a self-file resolves, even a validated one. See the "derived vs
-explicit" section of docs/adr/0028-remote-comm-autoconnect.md.
+explicit" section of docs/history/adr/0028-remote-comm-autoconnect.md.
 
 On success prints "Joined sot-comm as @<handle>" — that line IS your
 identity confirmation.

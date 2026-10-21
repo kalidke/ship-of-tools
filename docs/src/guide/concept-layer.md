@@ -91,7 +91,7 @@ carries the `synced_against` the editor opened with, and the daemon refuses the
 write if the annotation on disk has moved on.
 
 !!! warning "NOT BUILT: the per-entity hash"
-    ADR 0005 (`docs/adr/0005-ast-hash.md`) specifies a hash of the *targeted entity's*
+    ADR 0005 (`docs/history/adr/0005-ast-hash.md`) specifies a hash of the *targeted entity's*
     parsed syntax tree, with trivia skipped, so that reformatting does not mark an
     annotation stale while a structural edit does, and so that an edit elsewhere in
     the file leaves it alone. That contract is not built. The kernel does compute a

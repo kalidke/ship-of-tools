@@ -15,6 +15,6 @@ The root `CLAUDE.md` sends every session here, in a row or outside any.
 
 ## Messaging between sessions
 - Run `/sot-session-start` once when a session starts; its skill, `comm/adapters/claude/sot-session-start/SKILL.md`,
-  says how to send, read and wait. The design of record is `docs/adr/0049-messaging-on-one-page.md`; the contract,
+  says how to send, read and wait. The design of record is `docs/history/adr/0049-messaging-on-one-page.md`; the contract,
   with its known limits, is `comm/PROTOCOL.md`.
 - A subagent you launch uses no mail: nothing in its brief tells it to use mail; it reports to you, and you send.

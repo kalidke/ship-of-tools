@@ -3,7 +3,7 @@ module ShipToolsReplWGLMakieExt
 # Package extension: loads ONLY once the consumer's own `using`/dependency
 # graph has already loaded WGLMakie (directly or transitively) — see
 # "Display-stack integration" in ShipToolsRepl.wglshow's docstring and the
-# dated amendment in docs/adr/0032-interactive-browser-figures.md. This is
+# dated amendment in docs/history/adr/0032-interactive-browser-figures.md. This is
 # the ONLY place that teaches `ShipToolsRepl.WGLDisplay` how to render a
 # figure; the base package pushes the display but defines no method on it,
 # so without this extension `display(fig)` falls through to whatever display

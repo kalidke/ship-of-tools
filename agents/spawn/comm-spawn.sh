@@ -14,7 +14,7 @@
 #                 when omitted, the handle is DERIVED from the repo-path
 #                 basename + host and auto-disambiguated against the registry
 #                 (same algorithm as a plain comm-join.sh — see
-#                 docs/adr/0028-remote-comm-autoconnect.md), in FRESH mode: an
+#                 docs/history/adr/0028-remote-comm-autoconnect.md), in FRESH mode: an
 #                 existing row for the resolved name is a REFUSAL, never a
 #                 reclaim — comm-spawn creates a NEW agent, so it must not
 #                 silently absorb an existing one even if it shares a project

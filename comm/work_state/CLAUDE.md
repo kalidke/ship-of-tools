@@ -2,7 +2,7 @@
 
 A row's colour is a reduction of facts. A session stamps one fact at a time (`floor`, `question`, `waiting`, `done`, and
 the `note` line), and `comm-status.sh` reduces them to the row's `state` and `summary` in the registry. Part of
-messaging; charter: comm/CLAUDE.md. The design of record is docs/adr/0044 and its amendment.
+messaging; charter: comm/CLAUDE.md. The design of record is docs/history/adr/0044 and its amendment.
 
 ## Files
 - `comm-status.sh`: writes one fact (`prompt`, `stop`, `join`, `dialog`, `resumed`, `working`, `idle`, `blocked`, `done`, `waiting`) and reduces the facts to state and summary in one jq program

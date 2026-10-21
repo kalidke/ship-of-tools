@@ -587,7 +587,7 @@ fn parse_args() -> Result<Opts> {
             "--tcp" | "--token" | "--insecure-no-auth" => anyhow::bail!(
                 "{a} was removed in 0.4.0 (the daemon listens only on its \
                  private local socket; SSH-forward to it for remote access — \
-                 see docs/adr/0010-transport-and-persistence.md)"
+                 see docs/history/adr/0010-transport-and-persistence.md)"
             ),
             other => anyhow::bail!("unrecognised argument: {other}"),
         }

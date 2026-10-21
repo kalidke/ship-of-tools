@@ -11,7 +11,7 @@
 # Write-Utf8NoBomViaRename, the one writer of install.json for sot-apply.ps1 and install-manifest.ps1, and
 # Invoke-SotNative, how a script under 'Stop' calls a native command (a call in a local 'Continue' scope does the same).
 #
-# See docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
+# See docs/history/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
 # amendment for why this predicate exists and what it replaced.
 #
 # ASCII ONLY in string literals (see the same note in launch-sot.ps1 /
@@ -207,7 +207,7 @@ function Set-SotJunction {
 
 # A pinned checkout never reaches the create-a-checkout branch below (Test-
 # SotPinnedCheckout is true only once repo\current already exists, by
-# construction) -- see docs/adr/0030-versioning-release-and-auto-update.md's
+# construction) -- see docs/history/adr/0030-versioning-release-and-auto-update.md's
 # 2026-09-17 amendment.
 function Initialize-InstallLayout {
     $stagedSotd = Join-Path $prefixDir 'bin\sotd.exe'

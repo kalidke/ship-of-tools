@@ -101,7 +101,7 @@ $prefixDir = Join-Path $env:LOCALAPPDATA 'sot'
 $script:launcherCodeId = Get-SotLauncherCodeId -ScriptsDir $PSScriptRoot
 
 # Computed ONCE, before any self-update/freshness/layout decision below.
-# See docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
+# See docs/history/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
 # amendment for what this predicate replaced and why.
 $script:sotPinned = Test-SotPinnedCheckout -RepoPath $repo.Path -Prefix $prefixDir
 
@@ -244,7 +244,7 @@ function Stop-Splash {
 # path) and -NoUpdate skip the whole prelude.
 #
 # $script:sotPinned (computed once near the top of this file) skips ALL of
-# the above -- see docs/adr/0030-versioning-release-and-auto-update.md's
+# the above -- see docs/history/adr/0030-versioning-release-and-auto-update.md's
 # 2026-09-17 amendment.
 #
 # Refused vs offline (2026-09-03 field report): a pull can fail two different
@@ -261,7 +261,7 @@ function Stop-Splash {
 # it at its own startup - offline still only logs, same as before.
 # ---------------------------------------------------------------------------
 # Invoke-SelfUpdatePrelude is the WHOLE prelude above as one function, so an
-# exit-76 CONVERGE respawn (docs/adr/0017-frontend-self-relaunch.md's 76
+# exit-76 CONVERGE respawn (docs/history/adr/0017-frontend-self-relaunch.md's 76
 # amendment; see the do/while loop and relaunch-sot.ps1 -Converge) can re-run
 # the identical pull + classification -- one code path, no copy. -AllowReexec
 # is passed ONLY by the very first, top-level call below, which re-invokes the
@@ -284,7 +284,7 @@ function Invoke-SelfUpdatePrelude {
     )
     $script:launchNotices.Clear()
     if ($script:sotPinned) {
-        # See docs/adr/0030-versioning-release-and-auto-update.md's
+        # See docs/history/adr/0030-versioning-release-and-auto-update.md's
         # 2026-09-17 amendment: nothing here for a git pull to refresh.
         Write-SupLog "self-update: pinned checkout ($($repo.Path)) - updates arrive via sot-apply, no pull"
         if ($env:SOT_LAUNCH_REEXEC) { Remove-Item Env:\SOT_LAUNCH_REEXEC -ErrorAction SilentlyContinue }
@@ -394,7 +394,7 @@ Initialize-InstallLayout
 Invoke-PendingApply -Handover:$script:reexecd
 
 # ---------------------------------------------------------------------------
-# Migration + post-apply handover onto the pinned launcher (docs/adr/
+# Migration + post-apply handover onto the pinned launcher (docs/history/adr/
 # 0030-versioning-release-and-auto-update.md's 2026-09-17 amendment). ONE
 # block serves two cases that both need the same in-process re-invoke:
 #   - migration: the shortcut/pin still targets the clone even though
@@ -850,7 +850,7 @@ if (-not $localDaemonReady) {
 # writes `converge` as the sentinel file's content instead of a bare
 # timestamp, and the frontend's watcher (rust/frontend/src/relaunch.rs) reads
 # that back to pick 76 over 75. Any other exit code = real quit. See
-# docs/adr/0017-frontend-self-relaunch.md's 76 amendment.
+# docs/history/adr/0017-frontend-self-relaunch.md's 76 amendment.
 # A converge that finds the launcher code on disk changed re-invokes the
 # launcher in this process instead of finishing the pass (ADR 0017, 0.6.6).
 #

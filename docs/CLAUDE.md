@@ -1,7 +1,7 @@
 # docs/: records (charter)
 
 ## Idea
-`docs/adr` records why a decision was made, at the time; `docs/src` tells a user what is true now. A page changes in
+`docs/history/adr` records why a decision was made, at the time; `docs/src` tells a user what is true now. A page changes in
 the commit that changes the code it describes, and a design that is not built is marked unbuilt where it is described.
 
 ## Owns
@@ -13,7 +13,7 @@ the commit that changes the code it describes, and a design that is not built is
 
 ## Promises
 - Line 3 of every ADR starts with one status token: `current`, `superseded by ADR NNNN` or `partly superseded by ADR
-  NNNN`. `adr/README.md` lists the records under those tokens; the two checks in its "Maintaining this invariant"
+  NNNN`. `history/adr/README.md` lists the records under those tokens; the two checks in its "Maintaining this invariant"
   section are run by hand, and no CI job runs them.
 - An ADR is changed by a dated amendment inside it or by a new ADR that supersedes it, and the status token says
   which.
@@ -22,7 +22,7 @@ the commit that changes the code it describes, and a design that is not built is
   `<kbd>` and on a link to a missing section id, and doctests run inside it with both documented modules loaded.
 - Published text names no private hostname, username or LAN detail, and the screenshots are generated from
   `fixtures/DemoProject`, never from a private workspace.
-- Nothing below `docs/` carries a page: `adr/`, `fixtures/`, `tools/` and `src/` are described here, so `src/` holds only
+- Nothing below `docs/` carries a page: `history/`, `fixtures/`, `tools/` and `src/` are described here, so `src/` holds only
   manual pages.
 
 ## Connections
@@ -32,7 +32,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Folders
 - `CLAUDE.md` (repo root): the design and conventions page every session loads.
-- `docs/adr/`: the decision records.
+- `docs/history/adr/`: the decision records.
 - `docs/fixtures/`: `DemoProject`, the fixture project for docs media.
 - `docs/tools/`: the docs media scripts: docs-media.sh, run by hand from SCREENSHOTS.md. Its cleanup trap follows
   comm/CLAUDE.md's rule; its rows are in agents/tests/test-temp-files.sh.
@@ -46,7 +46,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `SCREENSHOTS.md`: how the docs media are regenerated.
 - `SESSION.md`: what every session but a subagent reads at its start; the root `CLAUDE.md` names it.
 - `USING.md`: the entry page for a user with a local checkout.
-- `adr/`: the decision records and their `README.md` index.
+- `history/`: the decision records (`history/adr/`, with their `README.md` index) and the retired folder pages; no page loads them.
 - `fixtures/`: `DemoProject`, the demo project the media are taken from.
 - `integration.md`: how the sixteen subsystems connect: one table of every connection, then six walk-throughs with a file and a function at every hop.
 - `make.jl`: builds the manual and runs the built-site checks.
@@ -68,5 +68,5 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/start/`: quickstart, install and setup pages.
 
 ## Start here
-`make.jl` for how the manual is assembled and what its checks reject; `adr/README.md` for the status tokens and the
+`make.jl` for how the manual is assembled and what its checks reject; `history/adr/README.md` for the status tokens and the
 checks that keep the index true.
