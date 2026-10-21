@@ -496,8 +496,7 @@ sot_hello_frame() {
     #
     # The `"protocol":3` literal below is sotd's WIRE protocol
     # (`sot_protocol::PROTOCOL_VERSION`, rust/protocol/src/lib.rs) — not
-    # this file's own `$PROTOCOL_VERSION` (registry.json schema version,
-    # unrelated). It is bumped by hand with every `PROTOCOL_VERSION`
+    # the registry's schema version (unrelated). It is bumped by hand with every `PROTOCOL_VERSION`
     # change; sot-protocol's `the_shell_hello_is_this_protocols_hello`
     # test runs this function and fails until the two match.
     # Each value is escaped into a local first: a failure inside a printf

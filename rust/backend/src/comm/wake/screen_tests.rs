@@ -530,6 +530,12 @@ fn a_draft_reads_not_free_wherever_its_cursor_sits() {
         assert_eq!(prompt_of(&boxed("\u{276f}\u{a0}hello"), Some((1, 2)), "claude", windows), Err("input not empty"));
         assert_eq!(prompt_of(&probe(&rule80(), "\u{276f}\u{a0}hello", F_LEADER, [P_MAIN, P_SUB]), Some(AT), "claude", windows), Err("input not empty"));
     }
+    // On Windows, where the NBSP is not required (`NBSP_ON_WINDOWS`), a draft after a plain space, or after the ASCII
+    // glyph, is still not free: only blanks after the glyph are.
+    for line in ["\u{276f} hello", "> hello", "\u{276f} \u{a0}x"] {
+        assert_eq!(prompt_of(&boxed(line), Some((1, 2)), "claude", true), Err("input not empty"), "{line:?}");
+    }
+    assert_eq!(prompt_of(&boxed("\u{276f} "), Some((1, 2)), "claude", true), Ok(Prompt::Empty), "the empty prompt, as ConPTY may draw it");
 }
 
 #[test]

@@ -1,7 +1,7 @@
-//! The sot-comm registry lock, the daemon's arm (B1b). `comm-lib.sh`'s
-//! `with_lock` is the other arm, and its header is the full account; the two
-//! take one lock with one record, and a parity test holds the records
-//! byte-equal.
+//! The sot-comm registry lock (B1b): every registry write, the daemon's and each
+//! `sotd comm` process's, takes it; `comm/PROTOCOL.md` is the account. The 0.6.6
+//! scripts' `with_lock` wrote the same record by the same steps, so the two
+//! versions exclude each other during an install.
 //!
 //! The lock is the FILE `<comm home>/.registry.lock`, one line naming its
 //! holder, `name:machine:boot:pidns:pid:start`, made by `link(2)` of a temp
@@ -156,7 +156,7 @@ fn host_field() -> String {
     if n.is_empty() { "-".into() } else { n }
 }
 
-/// The record for `pid` on this machine, as `_sot_lock_self_id` writes it.
+/// The record for `pid` on this machine, as its own take writes it.
 fn record_for(pid: u32) -> String {
     let [machine, boot, pidns, start] = proof_fields(pid);
     format!("{}:{machine}:{boot}:{pidns}:{pid}:{start}", host_field())
@@ -170,7 +170,7 @@ fn proc_is_mine(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-/// macOS: proof needs the boot session and this process's start, as the shell's `_sot_lock_self_id` requires.
+/// macOS: proof needs the boot session and this process's start.
 #[cfg(target_os = "macos")]
 fn proc_is_mine(pid: u32) -> bool {
     sot_log::identity::challenge::boot_identity().is_ok_and(|b| !b.is_empty()) && proc_start(pid).is_ok()
@@ -427,7 +427,7 @@ impl Blocked {
             );
         }
         let who = self.who.as_deref().unwrap_or(holder);
-        // The shell's `_sot_lock_fix`: if it is dead, by hand where no box can prove it (no proof fields, or a host that
+        // The recovery: if it is dead, by hand where no box can prove it (no proof fields, or a host that
         // will not run again or whose comm command says it cannot prove a death), as no reclaimer can be pending there
         // (reviews B1, F2); every by-hand clause stands under "If it is dead", as a live holder is never proved dead
         // (review R3-B1). Else a comm command on its host.
@@ -455,7 +455,7 @@ impl Blocked {
     }
 }
 
-/// One reclaim attempt against the lock as it stands (`_sot_lock_step`):
+/// One reclaim attempt against the lock as it stands:
 /// `Ok` = this step saw the lock go, retake at once; `Err(None)` = released
 /// since the take, or its record could not be read, a try that keeps the last
 /// holder named, clears the by-hand flag and makes the text say "was held".

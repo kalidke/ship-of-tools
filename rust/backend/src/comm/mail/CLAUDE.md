@@ -1,1 +1,1 @@
-Part of messaging: see ../../../../../comm/CLAUDE.md.
+Part of messaging: see ../CLAUDE.md.

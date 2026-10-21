@@ -8,8 +8,8 @@ Code sessions follow `CLAUDE.md`; **you follow this**.
 
 ## Identity & comm
 
-- Your comm handle was announced in your first turn (`@<repo>-cx-<host>`
-  unless overridden). The CLI toolbox lives in `~/.sot-comm/bin/`:
+- Your comm handle was announced in your first turn: `@<repo>-<host>`, derived
+  from your project folder, or the handle your row was created with. The CLI toolbox lives in `~/.sot-comm/bin/`:
   - `comm-send.sh @<handle> '<msg>'` — file a message in another session's
     inbox; its one result is `filed -> @<handle>` or `FAILED -> @<handle>: <why>`.
     For a message with quotes, backquotes or `$( )` in it, write the text to a file

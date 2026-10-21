@@ -30,14 +30,15 @@ This is ADR 0049's design of record: a send's verdict is `filed -> @h` or
 runs this bootstrap first, so its handle is declared again. The call above ends with `BOOTSTRAP-ARM … WAKE: daemon`: there is
 nothing to arm, own or re-arm. Mail is read with `comm-poll.sh`.
 
-**Identity**: a pin (`SOT_COMM_NAME`, or a private `SOT_COMM_SELF_FILE`)
-always wins; otherwise a validated prior identity; otherwise fresh
-derivation — never manufactured from a lower-priority source. Only a
+**Identity**: handles are derived, never chosen: the handle the session's
+self-file already names for this project (a row's, which the daemon pins and
+which keeps the handle the row was created with), otherwise fresh derivation,
+`<repo>-<host>`. No argument or variable names a handle. Only a
 session holds an identity: a row's own session, whose self-file the daemon
 pins, or a session outside any row. Nothing started inside a session (a
 subagent, `codex exec`, `claude -p`) joins: it uses no mail (on Claude Code a hook refuses a subagent's sot-comm command).
-`identity=MISMATCH`, a `REFUSED` start (`identity=FAIL`) and a pin of a handle a row holds
-(`REFUSING to join`, `identity=FAIL`) are different problems with different fixes — see `references/reclaim-handle.md`.
+`identity=MISMATCH` and a `REFUSED` start (`identity=FAIL`) are different problems with different fixes — see
+`references/reclaim-handle.md`.
 
 **Work-state (the nav row colour) is yours to stamp** — the script prints the
 rule after every outcome. `comm-status.sh waiting "<what>"` (purple) the moment

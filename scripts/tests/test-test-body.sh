@@ -58,8 +58,6 @@ for name in ('HOME', 'USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONF
     env[name] = str(root / 'home')
 (root / 'home').mkdir()
 helper = repo / 'scripts/tests/lib-test-body.sh'
-twohost = (repo / 'comm/tests/test-inbox-lock-twohost.sh').read_text(encoding='utf-8', errors='strict')
-e2e = (repo / 'comm/tests/test-comm-e2e-readers.sh').read_text(encoding='utf-8', errors='strict')
 gate = (repo / 'scripts/tests/rc-gate.sh').read_text(encoding='utf-8', errors='strict')
 failures = []
 serial = 0
@@ -266,126 +264,15 @@ def cargo_parity():
 if 'ISO_SH_CARGO_PROOFS' in os.environ:
     case('cargo_parity',cargo_parity)
 
-def arm_setup(p):
-    a=adapter(p)
-    return f'source {q(helper)}\nLOCAL={q(p)}; RUST_DIR={q(p)}\ncargo() {{ {q(a)} "$@"; }}\n'+function(twohost,'rust_arm')+'\n'
-
-def twohost_selection():
-    errors=[]
-    p=fresh('T3 zero')
-    start=twohost.index('c="$(new_case t3)"')
-    leaf=twohost[start:twohost.index('# Wait until',start)]
-    setup=arm_setup(p)+function(twohost,'verdict')+'\nPASS=0; FAIL=0; new_case() { echo .; }\n'
-    r=shell(setup+leaf+'\nprintf "T3 FAIL=%s\\n" "$FAIL"; [ "$FAIL" -eq 1 ]',p)
-    print(r.stdout,end='',flush=True)
-    if r.returncode!=0: errors.append('T3 accepted zero-body arm')
-    for name,want in [('absent',101),('ignored_positive',101),('qualified::ignored_positive',0)]:
-        p=fresh('arm'); (p/'go').touch()
-        r=shell(arm_setup(p)+f'rust_arm {q(p)} {q(name)}',p); observe('rust_arm '+name,r,p)
-        if r.returncode!=want: errors.append(f'actual arm {name}: owner exit {r.returncode} expected {want}')
-        if want==0:
-            check((p/'witness-ignored-positive').exists() and (p/'rust.ready').exists(),'positive body/readiness absent')
-            check('filed fixture' in r.stdout and 'route local' in r.stdout,'payload lost')
-    check(not errors,'; '.join(errors))
-case('twohost_zero_selection_is_failure',twohost_selection)
-
-def async_results():
-    errors=[]
-    start=twohost.index('c="$(new_case a1)"; mkfifo'); leaf=twohost[start:twohost.index('# ---- (a2)',start)]
-    for failing,reverse in [(False,False),(True,False),(True,True)]:
-        p=fresh('async')
-        if failing: (p/'iso-sh-panic-request').touch()
-        setup=arm_setup(p)+function(twohost,'verdict')+'\n'
-        collector=re.search(r'^wait_writers\(\).*?^}',twohost,re.M|re.S)
-        if collector: setup+=collector[0]+'\n'
-        setup+=(f'PASS=0; FAIL=0; PROOF_BAD=0; PEER=fixture; APPEND=:; c={q(p)}\nnew_case() {{ echo {q(p)}; }}\n'
-            'peer_sh() { echo ready; read -r _; echo "filed peer"; }\n'
-            'check_inbox() { :; }; overlap() { :; }; interleaved() { :; }\n'
-            'mkfifo() { : > "$1"; }; jq() { printf "peer\\nrust\\npeer\\n"; }\n')
-        setup+=function(twohost,'proof_case')+'\n'
-        if reverse:
-            setup+='peer_sh() { echo ready; read -r _; while [ ! -e "$c/rust-done" ]; do :; done; echo "filed peer"; }\n'
-            setup+='eval '+q(function(twohost,'rust_arm').replace('rust_arm()','inner_arm()',1))+'\n'
-            setup+='rust_arm() { inner_arm "$@"; local r=$?; touch "$c/rust-done"; return "$r"; }\n'
-        # Bind the real Rust body's cwd to the caller's inbox readiness port.
-        setup=setup.replace('RUST_DIR='+q(p),'RUST_DIR='+q(p/'inbox'))
-        (p/'inbox/iso-sh-fixture-request').touch()
-        if failing: (p/'inbox/iso-sh-panic-request').touch()
-        r=shell(setup+leaf+'\nprintf "owner FAIL=%s\\n" "$FAIL"; [ "$FAIL" -eq '+('1' if failing else '0')+' ]',p)
-        observe(f'async failing={failing} peer-last={reverse}',r,p)
-        print(r.stdout, end='',flush=True)
-        payload=(p/'a1.rust').read_text(encoding='utf-8', errors='strict'); print('Rust writer output: '+payload.strip(),flush=True)
-        print('Rust writer witnesses: '+str(sorted(x.name for x in (p/'inbox').glob('witness-*'))),flush=True)
-        if r.returncode!=0: errors.append(f'earlier writer failure erased; peer-last={reverse}')
-        check((p/'inbox/witness-appender').exists() and (p/'inbox/rust.ready').exists() and (p/'inbox/go').exists(),'ready/go/body absent')
-    check(not errors,'; '.join(errors))
-case('twohost_each_async_result_is_required',async_results)
-
 def bind_cargo(code, command):
     # The command is inserted literally: a Windows path holds backslash sequences re.sub would read as escapes.
     return re.sub(r'\bcargo(?= test)', lambda _: q(command), code)
-
-def wake_script():
-    return re.search(r'cat > "\$E/wake.sh" <<\x27EOF\x27\n(.*?)\nEOF',e2e,re.S)[1]
-
-def report_setup(p,ping=True,result=True):
-    (p/'strict-start').write_text('250\n'); (p/'final-here').write_text('250\n')
-    if ping: (p/'ping-here.log').write_text('100 ping\n200 ping\n300 ping\n')
-    if result:
-        (p/'wake-result-here').write_text('0\n'); (p/'wake-wait-here').write_text('0\n')
-    (p/'pollout-here.log').write_text('400 m-one\n')
-    for name in ['here','peer']: (p/f'send-e2e-snd-{name}.log').write_text('50 fixture m-one filed\n')
-    start=e2e.index('skew_of()'); leaf=e2e[start:e2e.index('nwire=0',start)]
-    return (function(e2e,'verdict')+'\nPASS=0; FAIL=0; HANDLES=(fixture); QUIET=60; '
-        f'L={q(p)}; skew_peer=0; skew_v3=0; tag_of() {{ echo here; }}\n'+leaf)
-
-def wake_completion():
-    p=fresh('staged wake'); (p/'log').mkdir(); e=p/'e2e'; e.mkdir()
-    (e/'lib-test-body.sh').write_bytes(helper.read_bytes()); a=adapter(p)
-    # Bind only the external command word; preserve generated selector and verdict logic.
-    code=bind_cargo(wake_script(),a); (e/'wake.sh').write_text(code)
-    r=run([native_bash,str(e/'wake.sh'),str(p),'fixture','here'],p,{'SOT_E2E_MANIFEST':str(p/'unused-manifest')})
-    observe('generated wake',r,p)
-    check((p/'witness-wake').exists() and not (p/'witness-nested-wake').exists(),'substring ran extra wake body')
-    check(r.returncode==0,r.stdout)
-    check((p/'log/ping-here.log').stat().st_size>0,'ping absent')
-    check((p/'log/wake-result-here').read_text(encoding='utf-8', errors='strict').strip()=='0','checked terminal result absent')
-    for broken in ['panic','missing-helper']:
-        p=fresh('wake '+broken); (p/'log').mkdir(); e=p/'e2e'; e.mkdir()
-        if broken=='panic':
-            (p/'iso-sh-panic-request').touch()
-            (e/'lib-test-body.sh').write_bytes(helper.read_bytes())
-        a=adapter(p); (e/'wake.sh').write_text(bind_cargo(wake_script(),a))
-        r=run([native_bash,str(e/'wake.sh'),str(p),'fixture','here'],p,{'SOT_E2E_MANIFEST':str(p/'unused-manifest')})
-        print(f'generated wake {broken}: exit {r.returncode}',flush=True)
-        check(r.returncode!=0,'broken generated control accepted')
-        if broken=='panic': check((p/'log/wake-result-here').read_text(encoding='utf-8', errors='strict')=='101\n','failed control status lost')
-case('wake_exact_selection',wake_completion)
 
 def wake_binding_is_literal():
     for path in [r'C:\Users\x\cargo-adapter', r'D:\a\1\g\b\cargo-adapter', '/tmp/a b/\\n']:
         got = bind_cargo('cargo test --exact one\n', path)
         check(got == q(path) + ' test --exact one\n', f'path altered by binding: {got!r}')
 case('wake_binding_keeps_a_path_literal',wake_binding_is_literal)
-
-def wake_decisions():
-    for ping,result in [(False,True),(True,False),(False,False),(True,True)]:
-        p=fresh('wake decision'); body=report_setup(p,ping,result)
-        r=shell(body+'\nprintf "FAIL=%s\\n" "$FAIL"',p); want=0 if ping and result else 1
-        print(f'wake decision ping={ping} result={result}: {r.stdout.strip()}',flush=True)
-        check(f'FAIL={want}\n' in r.stdout,'absent control accepted')
-        text='exact one-shot wake control completed with ping evidence' if want==0 else 'one-shot wake control lacks successful completion or ping evidence'
-        check(text in r.stdout,'mandatory verdict absent')
-case('wake_control_requires_exact_completion',wake_decisions)
-
-def wake_report():
-    p=fresh('wake report'); body=report_setup(p); first=shell(body,p)
-    (p/'pollout-here.log').write_text('1 m-one\n'); (p/'send-e2e-snd-here.log').write_text('500 fixture m-one filed\n')
-    second=shell(body,p); print(first.stdout,end='',flush=True)
-    check('private one-shot control: 2 pings observed before strict start; shared-message wake coverage is not checked' in first.stdout,'report falsely attributes shared messages')
-    check(first.stdout==second.stdout,'shared timestamps changed private-control report')
-    check('NOTE: fixture: 1 late control pings observed after the final poll; sustained shared-inbox wake behavior is not checked.' in first.stdout,'late pings treated as wake-storm proof')
-case('wake_report_is_private_observation',wake_report)
 
 if mode=='all':
     def gate_job():

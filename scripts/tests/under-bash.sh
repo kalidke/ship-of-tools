@@ -6,8 +6,7 @@
 # BASH (a `#!/bin/bash` script gets it only where BASH is /bin/bash, as on macOS). A suite under scripts/tests sources
 # the scripts it tests into its own shell, so it runs on BASH itself; any other suite runs on the bash running this
 # script, which must be 4 or later, since those suites use what 3.2 lacks. With no SUITE: every hermetic suite, each
-# comm/tests/test-*.sh and agents/tests/test-*.sh but the five that need peer hosts (comm/tests/CLAUDE.md), and the
-# seven scripts/tests suites. Prints `under-bash: PASS|FAIL SUITE` per suite and `under-bash: FAIL parse SCRIPT` per
+# comm/tests/test-*.sh and agents/tests/test-*.sh, and the seven scripts/tests suites. Prints `under-bash: PASS|FAIL SUITE` per suite and `under-bash: FAIL parse SCRIPT` per
 # script that does not parse or runs a utility by the `command` builtin outside a pipeline (under bash 3.2 and set -e
 # that ends the shell when the utility fails, even where an if, ! or || handles it), and `under-bash: FAIL early-reader
 # SCRIPT:LINE:TEXT` per pipeline whose reader can stop early (sigpipe-scan.awk), and `under-bash: FAIL bare-in-place-sed
@@ -20,11 +19,7 @@ want="$1"; shift; [ $# -eq 0 ] || shift
 cd "$(git rev-parse --show-toplevel)" || exit 2
 if [ $# -eq 0 ]; then
     for s in comm/tests/test-*.sh agents/tests/test-*.sh; do
-        case "${s##*/}" in
-            test-comm-e2e-readers.sh|test-inbox-lock-onehost.sh|test-inbox-lock-twohost.sh|test-registry-twohost.sh) ;;
-            test-registry-lock-twohost.sh) ;;
-            *) set -- "$@" "$s" ;;
-        esac
+        set -- "$@" "$s"
     done
     set -- "$@" scripts/tests/installer-state.sh scripts/tests/installer-wrapper.sh scripts/tests/installer-apply.sh \
         scripts/tests/installer-shared-home.sh scripts/tests/test-topology-plan.sh scripts/tests/test-sigpipe-scan.sh \

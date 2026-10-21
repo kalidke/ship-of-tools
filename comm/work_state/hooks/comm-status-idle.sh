@@ -88,9 +88,8 @@ HOME_DIR="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$HOME_DIR/bin/comm-status.sh"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # comm-lib.sh, deployed layout first, then next to this file. It is only ever
-# sourced in a subshell: for the tool list, the registry reads (sot_registry_read,
-# or sot_registry_bytes without jq; both retry a failed or empty read) and the
-# mail gate below.
+# sourced in a subshell: for the tool list, the registry reads (sot_registry_read)
+# and the mail gate below, each a `sotd comm` call (messaging's).
 FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
 
 # A second agent inside the session (codex exec, claude -p) is not the row's
@@ -161,33 +160,21 @@ NAME=""
 # fallback. In the repo checkout the hooks dir holds only hooks.
 CTX="$HOME_DIR/bin/comm-context.sh"; [ -x "$CTX" ] || CTX="$SELF_DIR/comm-context.sh"
 [ -x "$CTX" ] && eval "$("$CTX" 2>/dev/null)" 2>/dev/null || true
-# The tools this hook runs. A session whose jq, flock or perl is missing never
-# sees its mail, so the hook SAYS so instead of passing: it must not need the
-# missing tool to do it, so the joined-agent test below falls back to grep and
-# the block is printed by hand. flock and perl are the inbox lock, Linux only.
-# The list, the test and the message are comm-lib.sh's (sot_mail_tools,
-# sot_require_tools), read in a subshell like the other lib reads here: an
-# entry can be a perl module (Time::HiRes, before bash 5), not a command. The
-# warning names each missing tool. A lib that cannot be read warns of nothing:
-# the mail read below needs it too.
+# The tools this hook runs besides sotd: it prints its blocks with jq. A session
+# whose jq is missing would never be told of its mail, so the hook SAYS so
+# instead of passing, and prints that block by hand. The list, the test and the
+# message are comm-lib.sh's (sot_require_tools). A lib that
+# cannot be read warns of nothing: the mail read below needs it too.
 # shellcheck disable=SC2046
 tool_warn="$( . "$FE_LIB" 2>/dev/null || exit 0
-    sot_require_tools "check mail at turn end" $(sot_mail_tools) 2>&1 | tr '\n' ' ')"
+    sot_require_tools "check mail at turn end" jq 2>&1 | tr '\n' ' ')"
 tool_warn="${tool_warn% }"
 # sot_registry_read: 0 a row, 1 no row, 2 unreadable (a lib that cannot be
 # sourced is 2 too, never "no row"). Only "no row" ends here; unreadable goes
-# on to the mail gate, which reads the inbox files, not the registry. Without
-# jq (which sot_registry_read needs), grep over sot_registry_bytes: 1 no match, 2
-# unreadable. The bytes are captured first: piped straight into grep, pipefail
-# would let grep's 1 turn "unreadable" into "no row".
+# on to the mail gate, which reads the inbox files, not the registry.
 _reg_rc=0
-if [ -z "${NAME:-}" ]; then
-    :
-elif command -v jq >/dev/null 2>&1; then
+if [ -n "${NAME:-}" ]; then
     ( . "$FE_LIB" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" >/dev/null ) || _reg_rc=$?
-else
-    ( . "$FE_LIB" >/dev/null 2>&1 || exit 2; b="$(sot_registry_bytes)" || exit 2
-      grep -q "\"${NAME}\"[[:space:]]*:" <<<"$b" ) || _reg_rc=$?
 fi
 if [ -z "${NAME:-}" ] || [ "$_reg_rc" -eq 1 ]; then
     turn_floor; exit 0
@@ -198,8 +185,7 @@ fi
 # wait bounds the lock, not the write (on Linux the mark landed about 0.13 s
 # after the hook started), so landing inside the daemon's 1.5 s hold is
 # likely, not guaranteed.
-stop_mark() { registry_replace 'if .agents[$n] then .agents[$n].stop_at = $t else . end' --arg n "$NAME" --arg t "$(now_iso)"; }
-( . "$FE_LIB" >/dev/null 2>&1 && SOT_LOCK_WAIT_SECS=1 with_lock stop_mark ) >/dev/null 2>&1 || true
+( . "$FE_LIB" >/dev/null 2>&1 && sot_comm stop-mark "$NAME" ) >/dev/null 2>&1 || true
 
 # Clear the heartbeat's own throttle stamp for this session key (same key
 # formula as comm-status-heartbeat.sh's _hb_key) so a tick left over from
@@ -352,13 +338,13 @@ fi
 # bounded to one block per pending batch by a tick file keyed like the
 # heartbeat's, so a model that refuses to poll is nudged once, not in a loop.
 #
-# What counts as mail is the daemon wake's rule, through comm-lib.sh's one copy
-# of it (sot_unread): a JSON object whose `to` is a string equal to THIS handle
+# What counts as mail is messaging's one rule, the wake's (`sotd comm unread`):
+# a JSON object whose `to` is a string equal to THIS handle
 # (a BROADCAST, to == "", a line to another handle or one with no string `to`
 # never fires this), `from` not this handle (self-echo), and the line sitting
-# PAST the read cursor. The cursor is a LINE OFFSET (comm-lib.sh's sot_cursor_offset owns
-# the format, including the one-shot conversion of a legacy ts cursor, which
-# is NEVER written back from here). Timestamps could not do this job: they are second-resolution
+# PAST the read cursor. The cursor is a LINE OFFSET (messaging owns the format,
+# including the reading of a legacy ts cursor, which is NEVER written back from
+# here). Timestamps could not do this job: they are second-resolution
 # and every comparison was strictly-greater, so a frame filed in the same second
 # as one already read would be announced to nobody while its sender was told it
 # had landed. This hook never advances the cursor — only a real comm-poll.sh
@@ -371,10 +357,9 @@ fi
 MAIL_INBOX="$HOME_DIR/inbox/$NAME.jsonl"
 # Both counters start at 0 OUTSIDE the gate.
 mail_total=0; mail_pending=0
-# The count and the read run in a SUBSHELL that sources comm-lib.sh, so this
-# hook sees exactly the offset comm-poll.sh does (sot_cursor_offset: the ts
-# migration, the past-the-end clamp, the cursor's line hash) and takes the same
-# shared read lock (sot_inbox_read_lock) — a line a writer is still fsyncing is
+# The count is `sotd comm unread`, so this hook sees exactly the offset
+# comm-poll.sh does (the cursor's forms, the past-the-end clamp, the line hash)
+# and takes the same shared read lock: a line a writer is still syncing is
 # never counted and then cut back. Only newline-terminated lines are counted.
 # A busy inbox does NOT block the turn: behind a frozen writer that would loop
 # forever. The hook says so on stderr and checks again at the next turn end.
@@ -389,11 +374,12 @@ lock_warn=""
 fault_tick="$HOME_DIR/state/lock-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
 if [ -r "$MAIL_INBOX" ] && command -v jq >/dev/null 2>&1; then
     mail_out="$( ( . "$FE_LIB" >/dev/null 2>&1 || exit 0
-        sot_inbox_read_lock "$NAME" || { echo busy; exit 0; }
-        # One line: `<total> <unread>`, or `failed <the count's last stderr line>`.
-        if mail_count="$(sot_unread "$NAME" 2>&1)"; then echo "$mail_count"
-        else echo "failed ${mail_count##*$'\n'}"; fi
-        printf '%s\n' "${SOT_INBOX_READ_WARNING:-}" ) 2>/dev/null || true )"
+        # `<total> <unread>` and the lock fault's warning line; `busy` (75); else `failed <its last stderr line>`.
+        # (An if, not a case: bash 3.2 cannot parse a case pattern's `)` inside `$( )`.)
+        mail_count="$(sot_comm unread "$NAME" 2>&1)"; mail_rc=$?
+        if [ "$mail_rc" -eq 0 ]; then printf '%s\n' "$mail_count"
+        elif [ "$mail_rc" -eq 75 ]; then echo busy
+        else echo "failed ${mail_count##*$'\n'}"; fi ) 2>/dev/null || true )"
     case "$mail_out" in
         busy) echo "comm-status-idle: the inbox for @$NAME is being written; it will be checked again at the next turn end" >&2 ;;
         failed*)

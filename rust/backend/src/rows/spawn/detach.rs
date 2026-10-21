@@ -197,9 +197,8 @@ pub(crate) fn supervisor_stderr_std() -> Stdio {
 /// always `false` on Windows (no scope concept there).
 /// `--assume-no-rollback-target` is mandatory: `sot_log::supervisor::supervise`
 /// itself refuses (exit 69) without it pre-U4. The nesting env vars
-/// are scrubbed and `SOT_COMM_NAME` exported (Codex review finding
-/// 9) — the same contract `boot_wrapper_command`'s tmux path already
-/// gives every autostart workspace.
+/// are scrubbed, and a row created with a handle has it in its pinned
+/// self file before the leg starts (`self_file::pin_row`).
 ///
 /// ADR 0043 decision 23: [`super::qualified_state_root`] runs BEFORE
 /// the build — this is the ONE mechanism every capsule launch shares
@@ -243,7 +242,12 @@ pub(crate) fn spawn_detached_supervisor(
         ));
     }
     let account_env_extra = crate::agents::env::account_spawn_env(agent_kind, account, cwd, workspace_id)?;
-    let supervisor_env = capsule_supervisor_env(workspace_id, slug, cwd, agent_name);
+    let supervisor_env = capsule_supervisor_env(workspace_id, slug, cwd, agent_kind);
+    // A row created with a handle keeps it: its pinned self file names it before the session first joins. A file that
+    // cannot be written fails the start, as the session would otherwise join under another handle.
+    if let Some((_, self_file)) = crate::agents::env::row_self_file(workspace_id) {
+        crate::comm::identity::self_file::pin_row(Path::new(&self_file), agent_name, cwd).map_err(std::io::Error::other)?;
+    }
     // The command line: the scope head when a scope is granted, then `sot-capsule supervise <state_dir> <mode> ...`.
     let line = |survival: &str, scoped: bool| -> Line {
         let mut args: Vec<std::ffi::OsString> = Vec::new();

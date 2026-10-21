@@ -70,14 +70,14 @@ for p in ok fail kill; do
         "$SCRIPTS_DIR/comm-probe.sh" up
 done
 
-# comm-bootstrap.sh: the nudge it types (sot_pty_input) carries the suggested name.
-env SOT_COMM_SELF_FILE="$WORK/self-boot" "$SCRIPTS_DIR/comm-join.sh" --name t-boot > /dev/null 2>&1 \
-    || { echo "FATAL: could not join t-boot" >&2; exit 2; }
+# comm-bootstrap.sh: the nudge it types (sot_pty_input) carries the comm folder's bin path, which holds the mark.
+env SOT_COMM_SELF_FILE="$WORK/self-boot" "$SCRIPTS_DIR/comm-join.sh" > /dev/null 2>&1 \
+    || { echo "FATAL: the bootstrap's sender could not join" >&2; exit 2; }
 tf_table '{"workspace.list":{"workspaces":[{"workspace_id":"ws-1","slug":"t1","label":"t1","agent":"claude"}]},
            "pty.input":{"ok":true,"bytes":1,"runtime":"capsule","enter":"sent"}}'
 for p in ok fail kill; do
     tf_row "A12 comm-bootstrap (the nudge)" "$p" env SOT_COMM_SELF_FILE="$WORK/self-boot" SOT_SPAWN_ENDPOINT="unix:$TF_SOCK" \
-        "$SCRIPTS_DIR/comm-bootstrap.sh" t1 "tf$TF_MARK"
+        "$SCRIPTS_DIR/comm-bootstrap.sh" t1
 done
 
 # --- a request waiting on the daemon, ended by a signal ----------------------------------------------------------------
@@ -157,7 +157,7 @@ TF_AT_ONCE=1 TF_CHECK=g3_check tf_signal "G4 sot-gh-auth poll's trap (the signal
     "${FIRST[@]}" "$GH" env TF_GH=block bash "$SCRIPTS_DIR/sot-gh-auth.sh" poll
 
 # comm-spawn.sh's rollback: a daemon on this box (its declared host is this shell's), so the provisional row is
-# written; the create request is never answered; the rollback's with_lock removes the registry lock last.
+# written; the create request is never answered; the rollback's conditional delete leaves no registry lock.
 tf_table '{"version.query":{"daemon":{"host":"testhost"}},"workspace.list":{"workspaces":[]},"workspace.create":"silent"}'
 mkdir -p "$WORK/repo3"
 a14_check() {
@@ -173,7 +173,9 @@ a14_check() {
     fi
     return "$bad"
 }
-TF_HOLD=.registry.lock TF_CHECK=a14_check tf_signal "A14 comm-spawn's rollback trap (the signal twice)" HUP \
+# The rollback's registry write is one sotd call, which holds and releases the registry lock itself: no rm of the lock
+# runs in the trap to hold, so A14 is the signal once.
+TF_CHECK=a14_check tf_signal "A14 comm-spawn's rollback trap (a hangup)" HUP \
     env SOT_SELF_HOST=testhost "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll "${EP[@]}"
 TF_AT_ONCE=1 TF_CHECK=a14_check tf_signal "A15 comm-spawn's rollback trap (the signal twice at once)" HUP \
     env SOT_SELF_HOST=testhost "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll2 "${EP[@]}"
@@ -182,7 +184,7 @@ TF_AT_ONCE=1 TF_CHECK=a14_check tf_signal "A15 comm-spawn's rollback trap (the s
 TF_CHECK=a14_check tf_signal "A16 comm-spawn ends by a Ctrl-C (its caller stops)" INT bash -c '"$@"; exit 7' _ \
     env SOT_SELF_HOST=testhost "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll3 "${EP[@]}"
 # The provisional row changes while the create waits, as a join or another claim changes it, so the rollback's
-# with_lock returns 2: the rollback must say it left the row, under a Ctrl-C (A17: the caller still stops) and on a
+# conditional delete returns 2: the rollback must say it left the row, under a Ctrl-C (A17: the caller still stops) and on a
 # failed create (A18: the request times out; exit 1, the spawn's own status). The check then clears the row.
 a17_before() {
     jq '.agents |= with_entries(if .value.status == "spawning" then .value.nonce = "someone-else" else . end)' \

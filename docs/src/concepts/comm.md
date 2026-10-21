@@ -1,7 +1,10 @@
 # The comm relay
 
 The comm relay is how sessions find and talk to each other, on one machine or
-across many. It has two halves with different jobs.
+across many. It has two halves with different jobs. One program does all of it:
+every comm command a session runs is `sotd comm` (the scripts in
+`~/.sot-comm/bin` are its wrappers), and the daemon's own mail and wake are the
+same code, so there is one writer of the inboxes and the registry.
 
 **Data at rest: the registry and the inboxes.** Under `~/.sot-comm/` each host
 keeps a `registry.json` (every session's handle, host, workspace, and its
@@ -16,8 +19,7 @@ on Linux or macOS, in the same pid namespace, on a filesystem `comm/PROTOCOL.md`
 through one marker file per dead holder,
 so exactly one waiter removes it; a holder that is alive, frozen, or on
 another machine is never forced, and the failure names it along with the
-recovery: run any comm command on its host, or, for a holder no box can prove dead (no
-proof fields, or a host that will not run again or whose comm commands say they cannot prove a death), remove the lock
+recovery: run any comm command on its host, or, for a holder no box can prove dead, remove the lock
 by hand. The rules are in `comm/PROTOCOL.md`.
 
 **Delivery is a file.** A send to a handle this host's registry names is
@@ -32,14 +34,17 @@ is reached — no process, no keystrokes, nobody to ask. If a poll finds the inb
 
 A session sitting idle at its prompt is additionally woken by the daemon, which
 types one fixed line, `[sot-comm] you have mail: run comm-poll.sh`, into its row
-when the row is free. The wake is a shortcut, never the delivery: a send types
+when the row is free. It types only into an empty prompt that holds still: never
+into a dialog, a menu, a working session, or a line you have typed and not sent.
+The wake is a shortcut, never the delivery: a send types
 nothing and its line says only that the message was filed.
 
 **The wire: the daemon.** For a handle this host cannot name — one on another
 box — the frame rides the Ship of Tools daemon, the same connection the
 frontend already uses. The hub files it itself when its own comm folder holds
-that handle; any other handle is still offered to the receiving side's
-box's own daemon (or, on Windows, the frontend itself), which files it. Because the relay reuses the backend connection, a
+that handle; any other handle is offered to the daemons linked to the hub (a
+Windows box's daemon holds its own link, so its rows receive with the window
+closed), and the one whose folder holds the handle files it. Because the relay reuses the backend connection, a
 message from a GPU server reaches a session on your laptop with no extra port
 or service. The daemon does not queue frames, so a send nothing can file is
 reported as a failure — `FAILED -> @h: …` — instead of an ack for the daemon's

@@ -23,13 +23,14 @@ comm-list.sh                                 # who is reachable, and their state
 comm-send.sh @other-session "message"        # one result: filed, or FAILED with the reason
 comm-send.sh --broadcast "message"           # filed to every live session, one result each
 comm-send.sh @other-session --file notes.md  # the body is the file's bytes: quotes and $( ) arrive as written
+comm-send.sh @other-session - < notes.md     # the body on stdin, the same way
 comm-poll.sh                                 # catch up on anything that arrived while you were away
 ```
 
-`send` goes through the Ship of Tools daemon for live delivery; a
-session that was away catches up with `comm-poll.sh`. On arrival, the filing daemon appends each message to
-the recipient's inbox (`~/.sot-comm/inbox/<handle>.jsonl`), so a session that was busy
-reads it with `comm-poll.sh` when it gets to it.
+Each script runs `sotd comm`. A send appends the message to the recipient's
+inbox (`~/.sot-comm/inbox/<handle>.jsonl`), itself or through the Ship of Tools
+daemon that owns that folder, and says `filed` only once the line is there; a
+session that was busy or away reads it with `comm-poll.sh` when it gets to it.
 
 ## A message wakes the recipient
 
@@ -39,7 +40,9 @@ session gets one short wake line and reads the messages itself with
 `comm-poll.sh`, so a burst of messages costs one wake. A Codex session is not
 typed into (no Codex screen has been captured yet), so it reads its mail when it
 next runs `comm-poll.sh`. The wake is refused while the row shows a
-permission dialog or a menu, so it can never answer one by accident.
+permission dialog or a menu, so it can never answer one by accident, and while
+the prompt holds anything you have typed and not sent, so it never touches your
+line.
 
 ## What travels with it
 

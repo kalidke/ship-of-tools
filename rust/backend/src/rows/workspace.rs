@@ -424,12 +424,10 @@ impl Workspace {
             std::process::id() as u64 ^ now_unix() as u64
         );
         // `agent_name` is stored EXACTLY as given — empty is a real,
-        // supported case (capsule-comm-identity fix, Codex round finding
-        // 2): no synthesized default is written here. A capsule with no
-        // explicit `agent_name` gets no `SOT_COMM_NAME` pin either
-        // (`agents::env::capsule_supervisor_env`); comm-join.sh's
-        // own #148 auto-disambiguating derivation decides its handle, via
-        // the `SOT_COMM_SELF_FILE` that spawn pins.
+        // supported case: no synthesized default is written here. A row
+        // with a name has it written into its pinned self file at its
+        // start (`self_file::pin_row`); one without derives its handle at
+        // its first join, through that same `SOT_COMM_SELF_FILE`.
         Workspace::meta_only(
             workspace_id,
             slug,

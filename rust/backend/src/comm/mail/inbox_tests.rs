@@ -2,9 +2,6 @@
 
 use super::*;
 
-#[cfg(target_os = "linux")]
-const BOUND: Duration = Duration::from_secs(30);
-
 fn read_lines(p: &Path) -> Vec<serde_json::Value> {
     let s = std::fs::read_to_string(p).unwrap();
     assert!(s.ends_with('\n'), "not LF-terminated: {s:?}");
@@ -115,68 +112,16 @@ fn a_tail_longer_than_a_block_is_cut_at_the_last_newline() {
     assert_eq!(read_lines(&f)[0]["a"], 1);
 }
 
-#[cfg(target_os = "linux")]
-fn scripts_lib() -> String {
-    format!("{}/../../comm/lib/comm-lib.sh", env!("CARGO_MANIFEST_DIR"))
-}
-
-#[cfg(target_os = "linux")]
-fn shell(home: &Path, path: &str, script: &str) -> sot_log::test_wait::Ran {
-    sot_log::test_wait::run_within(
-        std::process::Command::new("bash")
-            .arg("-c")
-            .arg(format!("source {}; {script}", scripts_lib()))
-            .env("SOT_COMM_HOME", home)
-            .env("PATH", path),
-        BOUND,
-    )
-}
-
-// The stubbed fsync failure, Rust arm: `sync` starts a reader, waits until
-// it is in flight (counted, or blocked behind the exclusive lock) and
-// fails, so `append_line` cuts the in-flight line back. The reader is the
-// scripts' own (comm-lib.sh), so the guards under test are the real ones.
-// A comm home whose folder record matches this disk lets the locked reader
-// take the shared lock; a PATH with no flock(1) leaves the other one
-// unlocked. The reader's 30 s wait gives the writer's release, after the poll of
-// `until_a_waiter_blocks_on` detects it, headroom under load.
-#[cfg(target_os = "linux")]
-fn failing_sync_with_reader(
-    home: &Path,
-    path: &str,
-    reader: &'static str,
-    reader_blocks: bool,
-) -> (String, String) {
-    let inbox = home.join("inbox");
-    std::fs::create_dir_all(&inbox).unwrap();
-    let id = shell(home, &std::env::var("PATH").unwrap(), r#"sot_inbox_lock_identity "$INBOX_DIR""#).ok();
-    std::fs::write(home.join("inbox-lock-manager"), &id.stdout).unwrap();
-    file_frame(&inbox, "a", "h", false, "one", "t", Duration::from_secs(5), "local t").unwrap();
-    let child = std::cell::RefCell::new(None);
+/// A filing whose sync fails after `before` ran mid-append: the in-flight line is cut back.
+fn failing_sync(inbox: &Path, before: impl FnOnce()) {
+    let mut before = Some(before);
     let sync = |_f: &File| -> std::io::Result<()> {
-        let mut c = std::process::Command::new("bash")
-            .arg("-c")
-            .arg(format!("source {}; {reader}", scripts_lib()))
-            .env("SOT_COMM_HOME", home)
-            .env("PATH", path)
-            .env("SOT_INBOX_READ_WAIT_SECS", "30")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        if reader_blocks {
-            until_a_waiter_blocks_on(&inbox.join("h.lock"));
-        } else {
-            sot_log::test_isolated::wait_within(&mut c, BOUND);
-        }
-        *child.borrow_mut() = Some(c);
+        (before.take().unwrap())();
         Err(std::io::Error::other("stubbed fsync failure"))
     };
-    let r = file_frame_with(&inbox, "a", "h", false, "inflight", "t", Duration::from_secs(5), "local t", sync);
+    let r = file_frame_with(inbox, "a", "daemon", "h", false, "inflight", "t", Duration::from_secs(5), "local t", sync);
     assert!(r.unwrap_err().contains("stubbed fsync failure"));
     assert_eq!(read_lines(&inbox.join("h.jsonl")).len(), 1, "the in-flight line was not cut back");
-    let (_, stdout, stderr) = sot_log::test_isolated::drain(child.into_inner().unwrap()).wait_within(BOUND);
-    (stdout, stderr)
 }
 
 // The kernel's word that a reader or filer is blocked behind the lock:
@@ -197,54 +142,45 @@ fn until_a_waiter_blocks_on(lock: &Path) {
     }
 }
 
-// (a) The reader that waits on the shared lock counts nothing new after the
-// cut-back.
+// (a) A reader on a box that appends itself waits on the shared lock, so it counts nothing new after a cut-back.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_locked_reader_counts_nothing_after_a_cut_back() {
     let d = tempfile::tempdir().unwrap();
-    let (out, _) = failing_sync_with_reader(
-        d.path(),
-        &std::env::var("PATH").unwrap(),
-        r#"sot_inbox_read_lock h || exit 75; sot_inbox_lines h"#,
-        true,
-    );
-    assert_eq!(out.trim(), "1", "a locked reader counted the in-flight line");
+    let inbox = d.path().join("inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    file_frame(&inbox, "a", "h", false, "one", "t", Duration::from_secs(5), "local t").unwrap();
+    let mut reader = None;
+    failing_sync(&inbox, || {
+        let dir = inbox.clone();
+        reader = Some(std::thread::spawn(move || {
+            let _held = read_lock(&dir, "h", "local t", true);
+            inbox_lines(&dir.join("h.jsonl")).len()
+        }));
+        until_a_waiter_blocks_on(&inbox.join("h.lock"));
+    });
+    assert_eq!(reader.unwrap().join().unwrap(), 1, "a locked reader counted the in-flight line");
 }
 
-// (b) The unlocked reader (no flock(1) on its PATH) counts and cursors the
-// in-flight line; after the cut-back and one real send its cursor steps
-// back one line, says so, and the real line is next — nothing is skipped.
-#[cfg(target_os = "linux")]
+// (b) A reader that took no lock can count the in-flight line; after the cut-back the next real filing takes its
+// place, a line with other bytes, so the cursor's hash of the line it read tells the reader to step back one
+// (`mail::cursor`'s step-back is tested there): nothing is skipped.
 #[test]
-fn an_unlocked_reader_steps_back_one_line_after_a_cut_back() {
+fn an_unlocked_reader_sees_the_cut_line_replaced_by_the_next_filing() {
     let d = tempfile::tempdir().unwrap();
-    let noflock = d.path().join("noflock");
-    std::fs::create_dir_all(&noflock).unwrap();
-    for dir in std::env::var("PATH").unwrap().split(':') {
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            for e in rd.flatten() {
-                let n = e.file_name();
-                if n != "flock" {
-                    let _ = std::os::unix::fs::symlink(e.path(), noflock.join(n));
-                }
-            }
-        }
-    }
-    std::fs::create_dir_all(d.path().join("read")).unwrap();
-    let np = noflock.to_str().unwrap();
-    let (out, _) = failing_sync_with_reader(
-        d.path(),
-        np,
-        r#"n="$(sot_inbox_lines h)"; sot_cursor_write h "$n" "$(sed -n "${n}p" "$COMM_HOME/inbox/h.jsonl")"; echo "$n""#,
-        false,
-    );
-    assert_eq!(out.trim(), "2", "the unlocked reader should have counted the in-flight line");
-    file_frame(&d.path().join("inbox"), "a", "h", false, "real", "t", Duration::from_secs(5), "local t").unwrap();
-    let o = shell(d.path(), np, r#"sot_cursor_offset h"#);
-    assert_eq!(o.stdout.trim(), "1", "{o}");
-    assert!(o.stderr.contains("the last line read from @h's inbox was cut back; reading from the line before it"), "{o}");
-    assert_eq!(read_lines(&d.path().join("inbox/h.jsonl"))[1]["msg"], "real");
+    let inbox = d.path().join("inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    file_frame(&inbox, "a", "h", false, "one", "t", Duration::from_secs(5), "local t").unwrap();
+    let mut seen = Vec::new();
+    failing_sync(&inbox, || {
+        let bytes = std::fs::read(inbox.join("h.jsonl")).unwrap();
+        seen = bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()).map(<[u8]>::to_vec).collect();
+    });
+    assert_eq!(seen.len(), 2, "the unlocked reader saw the in-flight line");
+    file_frame(&inbox, "a", "h", false, "real", "t", Duration::from_secs(5), "local t").unwrap();
+    let now = read_lines(&inbox.join("h.jsonl"));
+    assert_eq!((now.len(), now[1]["msg"].as_str()), (2, Some("real")));
+    assert_ne!(serde_json::to_vec(&now[1]).unwrap(), seen[1], "line 2 is not the line the reader read");
 }
 
 // The daemon's lock descriptor is read-write too: a zero-length read on a
@@ -340,10 +276,10 @@ fn a_dropped_inbox_lock_is_free_while_another_descriptor_of_it_is_open() {
     let d = tempfile::tempdir().unwrap();
     for own in ["local m", "nfs4 srv:/export"] {
         let wait = Duration::from_secs(1);
-        let first = take_lock(open_lock(d.path(), "h").unwrap(), own, wait).ok().expect("the first take");
+        let first = take_lock(open_lock(d.path(), "h").unwrap(), own, wait, false).ok().expect("the first take");
         let clone = first.0.try_clone().unwrap();
         drop(first);
-        let second = take_lock(open_lock(d.path(), "h").unwrap(), own, wait).ok();
+        let second = take_lock(open_lock(d.path(), "h").unwrap(), own, wait, false).ok();
         assert!(second.is_some(), "{own}: the dropped lock was still held by the other descriptor");
         drop(second);
         drop(clone);
@@ -593,11 +529,10 @@ fn a_host_uuid_is_its_canonical_uppercase_text() {
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../comm/tests/fixtures/inbox-lock-identity")
+        .join("tests/fixtures/inbox-lock-identity")
 }
 
-// Identity parity — the fixture set `test-hub-files.sh` reads too: nfs4,
-// nfs (v3), ext4, fuse, a stacked mount and an escaped space.
+// The lock identity over mount tables: nfs4, nfs (v3), ext4, fuse, a stacked mount and an escaped space.
 #[test]
 fn identity_from_matches_every_shared_fixture() {
     let dir = fixtures();

@@ -192,7 +192,7 @@ mod remove_comm_agents_for_workspace_host_tests {
 
     #[test]
     fn by_workspace_id_prunes_a_manually_joined_handle() {
-        // A handle joined by `comm-join.sh --name other` never sets
+        // A handle the row's session derived at its join never sets
         // `ws.agent_name`, so `by_name` alone never matches its row — but
         // its row carries the workspace's own `workspace_id`, so the
         // second match term must prune it when that workspace is destroyed.

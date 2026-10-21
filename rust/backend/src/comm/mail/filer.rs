@@ -137,8 +137,8 @@ pub(crate) async fn file_comm(req: CommFileReq) -> Result<std::result::Result<()
 }
 
 /// A guest's forward to the hub, and the hub's offer to a linked daemon, answer
-/// inside the script's read window (the lock wait plus 3 s): the other daemon's
-/// own lock wait plus this.
+/// inside the sender's 5 s at the default lock wait: the other daemon's own lock
+/// wait plus this.
 const COMM_FORWARD_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// This host's name — the one `sotd topology` uses — or empty when it has
@@ -217,6 +217,25 @@ fn comm_file_verdict(
             return Err(("file_failed".into(), text));
         }
     }
+    file_here(home, &req.from, "daemon", to, req.broadcast, &req.text, now_secs, wait, own)
+}
+
+/// The append for a handle this folder lists, once a route has chosen this process (the daemon's `comm.file`, or `sotd
+/// comm send` on a box that takes the folder's lock itself): the registry read fresh lists `to`, a session holds it
+/// (`last_seen` fresh), then the one append (`inbox::file_frame_from`). `Err` is `(code, sentence)`, the sentence what
+/// the sender prints after `FAILED -> @<to>: `; nothing was appended.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn file_here(
+    home: &std::path::Path,
+    from: &str,
+    repo: &str,
+    to: &str,
+    broadcast: bool,
+    text: &str,
+    now_secs: u64,
+    wait: std::time::Duration,
+    own: &str,
+) -> std::result::Result<(), (String, String)> {
     // A missing registry lists nobody; bytes that are not a registry are no
     // answer at all, never "not here".
     let agents = match read_registry_fresh(&home.join("registry.json")) {
@@ -238,7 +257,7 @@ fn comm_file_verdict(
         return Err(("no_live_session".into(), format!("no live session holds @{to}")));
     }
     let ts = iso8601_utc_from_secs(now_secs);
-    crate::comm::mail::inbox::file_frame(&home.join("inbox"), &req.from, to, req.broadcast, &req.text, &ts, wait, own)
+    crate::comm::mail::inbox::file_frame_from(&home.join("inbox"), from, repo, to, broadcast, text, &ts, wait, own)
         .map_err(|e| ("file_failed".into(), e))
 }
 
@@ -246,7 +265,7 @@ fn comm_file_verdict(
 /// Both writers stamp one fixed-width UTC shape (`now_iso`,
 /// `iso8601_utc_now`), so string order is time order; a stamp that is absent
 /// or not exactly that shape is no heartbeat, never a fresh one.
-fn heartbeat_fresh(last_seen: Option<&str>, now_secs: u64) -> bool {
+pub(crate) fn heartbeat_fresh(last_seen: Option<&str>, now_secs: u64) -> bool {
     let Some(s) = last_seen else {
         return false;
     };
@@ -261,9 +280,8 @@ fn heartbeat_fresh(last_seen: Option<&str>, now_secs: u64) -> bool {
     shape && s > iso8601_utc_from_secs(now_secs.saturating_sub(LIVE_SECS)).as_str()
 }
 
-/// How old a `last_seen` may be and still count: the one number, `COMM_LIVE_SECS`
-/// in `comm-lib-base.sh`, which `sot_heartbeat_fresh` applies to the same stamp.
-const LIVE_SECS: u64 = 600;
+/// How old a `last_seen` may be and still count: the one number (0031's ten minutes).
+pub(crate) const LIVE_SECS: u64 = 600;
 
 #[cfg(test)]
 #[path = "filer_comm_file_tests.rs"]

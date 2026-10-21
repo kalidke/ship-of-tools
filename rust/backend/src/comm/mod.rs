@@ -1,7 +1,12 @@
-//! The daemon's half of messaging: mail delivery and the address book.
+//! Messaging: mail delivery, the address book, the identity, the wake, and `sotd comm` (the contract is CLAUDE.md here).
 
+pub(crate) mod cli;
+pub(crate) mod home;
+pub(crate) mod identity;
 pub(crate) mod mail;
 pub(crate) mod registry;
+#[cfg(test)]
+pub(crate) mod test_home;
 pub(crate) mod wake;
 
 use std::path::PathBuf;

@@ -49,6 +49,9 @@ uuid = { workspace = true }
 # A Julia child's own temporary folder (`sidecars::child`), removed after its reap. The release `sotd` links it:
 # before this it was a dev and `test-support` dependency only, so this line adds it to the release build.
 tempfile = { workspace = true }
+# A derived handle's hash qualifier (`comm::identity::derive::hash6`): the SHA-256 the 0.6.6 scripts took, so a
+# session keeps its handle. Already in the lock for sot-log and the updater.
+sha2 = { workspace = true }
 
 # ADR 0046 decision 2 R3: the watchdog's own zero-network identity read
 # of a child it just spawned itself needs `HANDLE` to call `sot_log::identity::challenge_win::

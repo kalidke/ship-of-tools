@@ -33,13 +33,15 @@ mkdir -p "$SOT_COMM_HOME"
 ln -s "$SCRIPTS_DIR" "$SOT_COMM_HOME/bin"
 # shellcheck source=../scripts/comm-lib.sh
 source "$SCRIPTS_DIR/comm-lib.sh"
-ensure_home
+sot_comm ensure-home
 NAME="floor-test"
 # The self-file must name THIS checkout's repo/root (comm-context discards a
 # self-file whose root doesn't match the project it runs in), so let
 # comm-context derive both first, then pin the handle against them.
 eval "$("$SCRIPTS_DIR/comm-context.sh" 2>/dev/null | grep -E '^(REPO|PROJECT_ROOT)=')"
-sot_write_self_file "$SOT_COMM_SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT" || { echo "self-file write failed" >&2; exit 1; }
+# write_self FILE NAME REPO ROOT — a self file, in the three-line form messaging reads.
+write_self() { printf '%s\nrepo=%s\nroot=%s\n' "$2" "$3" "$4" > "$1"; }
+write_self "$SOT_COMM_SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT" || { echo "self-file write failed" >&2; exit 1; }
 [ "$("$SCRIPTS_DIR/comm-context.sh" | sed -n 's/^NAME=//p')" = "$NAME" ] || { echo "context did not resolve the pinned self-file" >&2; exit 1; }
 
 ST="$SCRIPTS_DIR/comm-status.sh"

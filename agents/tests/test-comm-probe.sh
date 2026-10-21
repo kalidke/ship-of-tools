@@ -89,9 +89,9 @@ check "row id: the row that declares the handle wins over one that only expects 
 rows '[{"workspace_id":"ws-3","agent_name":"other","agent_handle":"other"}]'; probe "$PATH" unix:x 'probe_row_id probe-testhost'
 check "row id: no row for the handle" "$OUT" ""
 rows "[$UNJOINED]"
-SOT_COMM_NAME= probe "$PATH" unix:x 'probe_serve'
-check "serve: with no SOT_COMM_NAME, a responder refuses to run" "$RC" 1
-has "serve: ... and says why" "$OUT" "SOT_COMM_NAME is unset"
+probe "$PATH" unix:x 'probe_serve'
+check "serve: outside a probe row (no self file names its handle), a responder refuses to run" "$RC" 1
+has "serve: ... and says why" "$OUT" "its self file names none"
 
 # 2. `up` starts a responder in each row and returns 0 only once each has joined.
 rows '[]'; probe "$PATH" unix:x 'probe_up'

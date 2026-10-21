@@ -1,13 +1,9 @@
 // ancestors.rs — `sotd ancestors [--from <pid>]`: the ancestors of process
 // <pid> (default: this one), parent first, one line each:
-// `<pid>\t<exe file name>\t<full command line>`. Windows only. comm-lib.sh's
-// `_sot_ancestor_chain` reads it to count how many agents lie between a comm
-// script and its row's capsule. It reads Cygwin's /proc up to the first MSYS
-// process whose parent is native and passes that process's Windows pid as
-// --from: an MSYS program that execs another is a new Windows process whose
-// Windows parent has exited, so a walk from sotd's own parent would stop at
-// the script's own shell. Each line's pid is what lets the script go on
-// through Cygwin's /proc where this walk stops. The command line is what tells
+// `<pid>\t<exe file name>\t<full command line>`. Windows only. The agent-layer
+// check (`comm::identity::layers`) walks the same snapshot in process, joined to
+// the Git Bash process table its wrapper passes; this subcommand shows the
+// native walk alone, from a process a person or a test names. The command line is what tells
 // `node <agent script>` from any other node; one that cannot be read is
 // printed empty. A TAB inside a command line is printed raw (the pid and the
 // exe end at the first two TABs); a newline and a return are printed as \x1c
@@ -115,6 +111,10 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
+/// The native snapshot and one process's creation time and command line, for the agent-layer walk.
+#[cfg(windows)]
+pub(crate) use win::{info, snapshot};
+
 #[cfg(windows)]
 mod win {
     use super::{encode_command_line, line, step, Step};
@@ -128,7 +128,7 @@ mod win {
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
     /// pid -> (parent pid, executable file name), one snapshot.
-    fn snapshot() -> Option<HashMap<u32, (u32, String)>> {
+    pub(crate) fn snapshot() -> Option<HashMap<u32, (u32, String)>> {
         // SAFETY: plain Win32 calls; `entry` is a stack-local out-param whose
         // `dwSize` is set before the first call, and the snapshot handle is
         // closed on every path out.
@@ -156,7 +156,7 @@ mod win {
     /// `None` when its record cannot be opened or its creation time read (the
     /// caller then treats it as the top). The command line is `None` when it
     /// cannot be read.
-    fn info(pid: u32) -> Option<(u64, Option<String>)> {
+    pub(crate) fn info(pid: u32) -> Option<(u64, Option<String>)> {
         // SAFETY: `OpenProcess` returns null on failure; a non-null handle is
         // closed before returning. The buffer is `u64` words, so the
         // `UNICODE_STRING` header at its start is aligned, and the query writes

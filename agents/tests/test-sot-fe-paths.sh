@@ -167,22 +167,8 @@ windows|C:/R/Proj|/c/r/projx|rc 1
 linux|/r/Proj|/r/proj|rc 1
 TABLE
 
-# 2c. comm-context.sh, the self-file root compare (A3's site): a self file whose root is the shell's spelling of this
-# repo (as comm-spawn records a root given as /tmp/...) is this project's, though comm-context spells its root as git
-# does (C:/..., kept by realpath).
-mkdir -p "$WORK/ctx" && (cd "$WORK/ctx" && "$REAL_GIT" init -q) || exit 2
-printf 'ctx-handle\nrepo=ctx\nroot=%s\n' "$(cd "$WORK/ctx" && pwd -P)" > "$WORK/self-ctx.txt"
-ctx="$(cd "$WORK/ctx" && PATH="$WIN_PATH" SOT_COMM_SELF_FILE="$WORK/self-ctx.txt" SOT_COMM_TEST_HOST=testhost \
-    bash "$SCRIPTS_DIR/comm-context.sh" 2>"$WORK/ctx.err")"
-check "context (windows): the self file's /tmp root is this repo's C:/ root" \
-    "$(printf '%s\n' "$ctx" | sed -n 's/^NAME=//p') $(grep -c stale "$WORK/ctx.err")" "ctx-handle 0"
-# The same, the self file's root in another case than the folder's (a session that reached it by a lower-case cd).
-mkdir -p "$WORK/CtxCase" && (cd "$WORK/CtxCase" && "$REAL_GIT" init -q) || exit 2
-printf 'ctx-handle\nrepo=CtxCase\nroot=%s/ctxcase\n' "$WORK" > "$WORK/self-case.txt"
-ctx="$(cd "$WORK/CtxCase" && PATH="$WIN_PATH" SOT_COMM_SELF_FILE="$WORK/self-case.txt" SOT_COMM_TEST_HOST=testhost \
-    bash "$SCRIPTS_DIR/comm-context.sh" 2>"$WORK/ctx.err")"
-check "context (windows): a self file's root in another case is this repo's root" \
-    "$(printf '%s\n' "$ctx" | sed -n 's/^NAME=//p') $(grep -c stale "$WORK/ctx.err")" "ctx-handle 0"
+# The identity's own root compare (a self file's root in the shell's spelling, or in another case) is messaging's, in
+# sotd, which no stand-in cygpath reaches: rust/backend/src/comm/identity/paths_tests.rs holds every Windows spelling.
 
 # 3. sot-nav.sh preview: the envelope's path, against a root in the shell's or the daemon's spelling.
 nav() {  # PATH ROOT ARG — the envelope's path, or "rc N: <stderr>"

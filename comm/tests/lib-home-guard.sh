@@ -27,14 +27,11 @@
 # stubs and guard_bridge_stub's) and each one a suite writes, carries GUARD_EMPTY_WALK right
 # after its #! (a suite's own stand-in for the walk itself, SIMWIN's or a faked Windows
 # box's, answers with that walk): it answers one question, `ancestors --from <pid>`, with
-# an empty walk and exit 0, and hands one command, `work-state`, to the built sotd
+# an empty walk and exit 0, and hands two commands, `work-state` and `comm`, to the built sotd
 # (GUARD_SOTD: SOT_TEST_SOTD, else $CARGO_TARGET_DIR/debug/sotd, else the tree's
-# rust/target/debug/sotd), rows' one work-state write, which reads and writes only the
-# suite's own comm home and dials nothing. On Windows a gated comm script
-# reads its native ancestors through that binary (comm-lib-agent-layers.sh), so a suite's
-# walk ends at the top of its own MSYS processes, as a Linux run's ends at init. The real
-# walk is pinned by rust/backend/tests/ancestors.rs, the shell's by test-agent-layers.sh
-# (SIMWIN).
+# rust/target/debug/sotd): rows' one work-state write and messaging's commands, which read and
+# write only the suite's own comm home and find no daemon (the routes below are closed). The
+# agent-layer walk is the built sotd's own (rust/backend/src/comm/identity/layers.rs).
 # `ssh` is not stubbed: it only dials an endpoint
 # discovery produced, and suites run them against sockets and hosts of their own.
 # A self-test sources the tree's comm-lib.sh and calls sot_daemon_endpoint,
@@ -83,7 +80,7 @@ if command -v cygpath > /dev/null 2>&1; then
     fi
 fi
 [ -z "${SOT_COMM_HOME:-}" ] || _GUARD_LIVE+=("$SOT_COMM_HOME")
-unset SOT_COMM_HOME SOT_COMM_NAME SOT_COMM_SELF_FILE SOT_WORKSPACE_ID SOT_SOCKET CLAUDE_CODE_SESSION_ID
+unset SOT_COMM_HOME SOT_COMM_NAME SOT_COMM_SELF_FILE SOT_WORKSPACE_ID SOT_SOCKET CLAUDE_CODE_SESSION_ID SOT_HOSTS SOT_BACKEND_LABEL XDG_CONFIG_HOME
 for _guard_v in $(compgen -e); do
     case "$_guard_v" in *_ENDPOINT) unset "$_guard_v" ;; esac
 done
@@ -103,7 +100,7 @@ export GUARD_SOTD
 
 # GUARD_EMPTY_WALK — the lines every stub sotd carries right after its #! (see above).
 GUARD_EMPTY_WALK='[ "${1:-} ${2:-}" != "ancestors --from" ] || exit 0
-[ "${1:-}" != work-state ] || exec "${GUARD_SOTD:?no built sotd for work-state: build it or set SOT_TEST_SOTD}" "$@"'
+case "${1:-}" in work-state|comm) exec "${GUARD_SOTD:?no built sotd for $1: build it or set SOT_TEST_SOTD}" "$@" ;; esac'
 
 # guard_bridge_stub DIR — writes DIR/sotd and DIR/sotd.exe, a suite's stand-in for `sotd stdio-bridge --endpoint` (the
 # library opens every local endpoint through that bridge, ADR 0049 User isolation), and prints DIR/sotd. With

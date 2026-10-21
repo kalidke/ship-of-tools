@@ -1,12 +1,9 @@
-//! Tests of the registry lock: the take, the reclaim, the proofs, and the parity of the Rust and shell records.
+//! Tests of the registry lock: the take, the reclaim and the proofs, against holders in other processes.
 
 use super::*;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
-
-const BOUND: Duration = Duration::from_secs(30);
 
 /// Set, the next post-settle re-read fails once (the review's EMFILE/EIO).
 pub(super) static FAIL_REREAD: AtomicBool = AtomicBool::new(false);
@@ -24,10 +21,7 @@ pub(super) static GONE_IN_SETTLE: AtomicBool = AtomicBool::new(false);
 /// Set, the lock is removed after the next failed retake, before its fresh read.
 pub(super) static GONE_AFTER_RETAKE: AtomicBool = AtomicBool::new(false);
 
-const LIB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/lib/comm-lib.sh");
-
-/// Held by every test here: the records read `SOT_SELF_HOST`, which other
-/// tests in this binary set, and the shell children inherit the env.
+/// Held by every test here: the records read `SOT_SELF_HOST`, which other tests in this binary set.
 fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -47,16 +41,11 @@ fn scratch(tag: &str) -> PathBuf {
     d
 }
 
-/// A shell child leading its own process group. `end`, or a drop on any
-/// path (a failed assertion's unwind included), kills the whole group, a
-/// `sleep` grandchild too, and reaps the child.
+/// A child leading its own process group. `end`, or a drop on any path (a failed assertion's unwind included),
+/// kills the whole group and reaps the child.
 struct Group(Option<Child>);
 
 impl Group {
-    fn id(&self) -> u32 {
-        self.0.as_ref().map_or(0, Child::id)
-    }
-
     fn end(&mut self) {
         if let Some(mut c) = self.0.take() {
             unsafe { libc::kill(-(c.id() as libc::pid_t), libc::SIGKILL) };
@@ -71,80 +60,41 @@ impl Drop for Group {
     }
 }
 
-/// `bash -c` with comm-lib.sh sourced on `home`; the body's first line of
-/// stdout is returned once printed, and the child is left running.
-fn shell(home: &Path, body: &str) -> (Group, String) {
-    let mut c = Group(Some(
-        Command::new("bash")
-            .arg("-c")
-            .arg(format!(". '{LIB}'; {body}"))
-            .env("SOT_COMM_HOME", home)
-            .env("SOT_COMM_TEST_LOCK_SETTLE", "0.05")
-            .stdout(Stdio::piped())
-            .process_group(0)
-            .spawn()
-            .unwrap(),
-    ));
-    let mut stdout = c.0.as_mut().unwrap().stdout.take().unwrap();
-    // The reader goes to a thread of its own and comes back with the line, so the child's stdout stays open.
-    let (stdout, line) = sot_log::test_wait::within(BOUND, "the shell holder's first line", move || {
-        let mut line = String::new();
-        BufReader::new(&mut stdout).read_line(&mut line).unwrap();
-        (stdout, line)
-    });
-    c.0.as_mut().unwrap().stdout = Some(stdout);
-    (c, line.trim().to_string())
+/// Another process of this machine holding the lock in `home`: a `sleep` whose record, as its own take writes it,
+/// is the lock's one line.
+fn live_holder(home: &Path) -> Group {
+    let c = Command::new("sleep").arg("30").stdout(Stdio::null()).process_group(0).spawn().unwrap();
+    let record = record_for(c.id());
+    fs::write(home.join(".registry.lock"), format!("{record}\n")).unwrap();
+    Group(Some(c))
 }
 
-fn run(home: &Path, body: &str) -> sot_log::test_wait::Ran {
-    sot_log::test_wait::run_within(
-        Command::new("bash")
-            .arg("-c")
-            .arg(format!(". '{LIB}'; {body}"))
-            .env("SOT_COMM_HOME", home)
-            .env("SOT_COMM_TEST_LOCK_SETTLE", "0.05"),
-        BOUND,
-    )
+/// A holder that died inside its critical section: its record, written while it ran, is the lock's.
+fn dead_holder(home: &Path) {
+    let mut g = live_holder(home);
+    g.end();
+    assert!(home.join(".registry.lock").is_file(), "the dead holder left its lock");
 }
 
-/// A shell holder SIGKILLed inside its critical section.
-fn dead_shell_holder(home: &Path) {
-    use std::os::unix::process::ExitStatusExt;
-    let ran = sot_log::test_wait::run_within(
-        Command::new("bash")
-            .arg("-c")
-            .arg(format!(". '{LIB}'; with_lock kill -9 $$"))
-            .env("SOT_COMM_HOME", home),
-        BOUND,
-    );
-    assert_eq!(ran.status.signal(), Some(9), "the holder was meant to die by SIGKILL: {ran}");
-    assert!(home.join(".registry.lock").is_file(), "the killed holder left its lock");
-}
-
+/// A record names its process for the judge: alive while it runs, dead once it has gone.
 #[test]
-fn the_shell_and_rust_records_are_byte_equal_and_judged_alike() {
+fn a_record_is_judged_alive_then_dead_with_its_process() {
     let _env = env_lock();
-    let home = scratch("parity");
-    let (mut child, shell_id) = shell(&home, "_sot_lock_self_id; echo \"$_SOT_LOCK_ID\"; exec sleep 30");
-    let pid = child.id();
-    assert_eq!(record_for(pid), shell_id, "Rust's record for the shell's pid");
+    let home = scratch("judge");
+    let mut child = live_holder(&home);
+    let id = fs::read_to_string(home.join(".registry.lock")).unwrap().trim().to_string();
     let me = now_me();
-    assert!(matches!(judge(&shell_id, &me).0, Verdict::Alive));
-    let q = format!("_sot_lock_self_id; _sot_lock_judge '{shell_id}'; echo $_SOT_LOCK_VERDICT");
-    let ran = run(&home, &q);
-    assert_eq!(ran.stdout.trim(), "ALIVE", "{ran}");
+    assert!(matches!(judge(&id, &me).0, Verdict::Alive));
     child.end();
-    assert!(matches!(judge(&shell_id, &me).0, Verdict::Dead));
-    let ran = run(&home, &q);
-    assert_eq!(ran.stdout.trim(), "DEAD", "{ran}");
+    assert!(matches!(judge(&id, &me).0, Verdict::Dead));
     let _ = fs::remove_dir_all(&home);
 }
 
 #[test]
-fn rust_reclaims_a_lock_whose_shell_holder_was_killed() {
+fn a_lock_whose_holder_was_killed_is_reclaimed() {
     let _env = env_lock();
     let home = scratch("reclaim");
-    dead_shell_holder(&home);
+    dead_holder(&home);
     let dead = fs::read_to_string(home.join(".registry.lock")).unwrap();
     let lock = home.join(".registry.lock");
     let held = acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50)).expect("reclaimed");
@@ -157,10 +107,10 @@ fn rust_reclaims_a_lock_whose_shell_holder_was_killed() {
 }
 
 #[test]
-fn a_live_shell_holder_is_named_and_never_reclaimed() {
+fn a_live_holder_is_named_and_never_reclaimed() {
     let _env = env_lock();
     let home = scratch("live");
-    let (mut child, _) = shell(&home, "with_lock bash -c 'echo held; exec sleep 30'");
+    let mut child = live_holder(&home);
     let lock = home.join(".registry.lock");
     let before = fs::read(&lock).unwrap();
     let err = acquire_with(&lock, Duration::from_millis(200), Duration::from_millis(50)).err().expect("FAILED");
@@ -216,7 +166,7 @@ fn waiting_for_another_threads_turn_counts_inside_the_bound() {
 fn a_marker_this_process_abandoned_is_adopted_by_its_next_writer() {
     let _env = env_lock();
     let home = scratch("adopt");
-    dead_shell_holder(&home);
+    dead_holder(&home);
     let lock = home.join(".registry.lock");
     let dead = fs::read_to_string(&lock).unwrap();
     let marker = PathBuf::from(format!("{}.reclaim.{}", lock.display(), dead.trim().replace(':', ".")));
@@ -234,9 +184,7 @@ fn a_marker_this_process_abandoned_is_adopted_by_its_next_writer() {
         .unwrap();
     assert!(second.is_ok(), "the next writer adopted the marker: {second:?}");
     assert!(!lock.exists(), "released");
-    let ran = run(&home, "with_lock true && echo held");
-    assert_eq!(ran.stdout.trim(), "held", "a shell writer is not wedged: {ran}");
-    assert!(acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50)).is_ok(), "nor a later sotd writer");
+    assert!(acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50)).is_ok(), "a later writer is not wedged");
     let markers = fs::read_dir(&home).unwrap().filter(|e| {
         e.as_ref().unwrap().file_name().to_string_lossy().starts_with(".registry.lock.reclaim.")
     });
@@ -290,7 +238,7 @@ fn a_lock_free_at_the_deadline_is_never_to_be_removed_by_hand() {
     let _env = env_lock();
     let home = scratch("free");
     let lock = home.join(".registry.lock");
-    dead_shell_holder(&home);
+    dead_holder(&home);
     *AFTER_STEP.lock().unwrap() = Some("elsewhere:-:-:-:4242:-\n".into());
     GONE_AFTER_RETAKE.store(true, Ordering::SeqCst);
     let err = acquire_with(&lock, Duration::ZERO, Duration::from_millis(50)).err().expect("FAILED");
@@ -378,7 +326,7 @@ fn an_unreadable_live_record_is_released_not_by_hand() {
     use std::os::unix::fs::PermissionsExt;
     let _env = env_lock();
     let home = scratch("unread");
-    let (mut child, _) = shell(&home, "with_lock bash -c 'echo held; exec sleep 30'");
+    let mut child = live_holder(&home);
     let lock = home.join(".registry.lock");
     let before = fs::read(&lock).unwrap();
     fs::set_permissions(&lock, fs::Permissions::from_mode(0o000)).unwrap();
@@ -400,7 +348,7 @@ fn an_unreadable_live_record_is_released_not_by_hand() {
 fn a_failed_first_read_with_a_live_writer_in_the_lock_is_released() {
     let _env = env_lock();
     let home = scratch("first");
-    let (mut child, _) = shell(&home, "with_lock bash -c 'echo held; exec sleep 30'");
+    let mut child = live_holder(&home);
     let lock = home.join(".registry.lock");
     let before = fs::read(&lock).unwrap();
     FAIL_FIRST_READ.store(true, Ordering::SeqCst);
@@ -451,7 +399,7 @@ fn an_id_without_proof_is_never_mine() {
 fn a_marker_naming_its_own_dead_holder_stops_every_walk() {
     let _env = env_lock();
     let home = scratch("cycle");
-    dead_shell_holder(&home);
+    dead_holder(&home);
     let lock = home.join(".registry.lock");
     let dead = fs::read_to_string(&lock).unwrap();
     let marker = marker_for(&lock, dead.trim());
@@ -471,10 +419,10 @@ fn a_zero_wait_whose_retake_fails_makes_one_step() {
     let _env = env_lock();
     let home = scratch("retake");
     let lock = home.join(".registry.lock");
-    dead_shell_holder(&home);
+    dead_holder(&home);
     let d2 = fs::read_to_string(&lock).unwrap();
     fs::remove_file(&lock).unwrap();
-    dead_shell_holder(&home);
+    dead_holder(&home);
     let d1 = fs::read_to_string(&lock).unwrap();
     *AFTER_STEP.lock().unwrap() = Some(d2.clone());
     let err = acquire_with(&lock, Duration::ZERO, Duration::from_millis(200)).err().expect("FAILED");
@@ -482,59 +430,6 @@ fn a_zero_wait_whose_retake_fails_makes_one_step() {
     assert!(err.contains(&format!("is held by {} pid {} start {} (", f[0], f[4], f[5])) && err.contains(RETAKEN), "{err}");
     assert_eq!(fs::read_to_string(&lock).unwrap(), d2, "D2's lock is untouched");
     assert!(marker_for(&lock, d1.trim()).exists() && !marker_for(&lock, d2.trim()).exists(), "exactly one step");
-    let _ = fs::remove_dir_all(&home);
-}
-
-#[test]
-fn one_rust_thread_and_two_shell_waiters_hold_one_at_a_time() {
-    let _env = env_lock();
-    let home = scratch("race");
-    let lock = home.join(".registry.lock");
-    let cs = home.join("cs");
-    let crit = format!("crit() {{ mkdir '{0}' || echo OVERLAP; sleep 0.01; rmdir '{0}'; echo held; }}", cs.display());
-    let mut seen = std::collections::BTreeSet::new();
-    for round in 0..100 {
-        dead_shell_holder(&home);
-        let dead = fs::read_to_string(&lock).unwrap();
-        let waiters: Vec<Child> = (0..2)
-            .map(|_| {
-                Command::new("bash")
-                    .arg("-c")
-                    .arg(format!(". '{LIB}'; {crit}; with_lock crit"))
-                    .env("SOT_COMM_HOME", &home)
-                    .env("SOT_COMM_TEST_LOCK_SETTLE", "0.05")
-                    .stdout(Stdio::piped())
-                    .spawn()
-                    .unwrap()
-            })
-            .collect();
-        let held = acquire_with(&lock, Duration::from_secs(10), Duration::from_millis(50)).expect("rust took it");
-        assert!(fs::create_dir(&cs).is_ok(), "round {round}: overlap with the Rust holder");
-        std::thread::sleep(Duration::from_millis(10));
-        fs::remove_dir(&cs).unwrap();
-        drop(held);
-        let pids: Vec<u32> = waiters.iter().map(|w| w.id()).collect();
-        for w in waiters {
-            let (status, stdout, stderr) = sot_log::test_isolated::drain(w).wait_within(BOUND);
-            assert_eq!(stdout.trim(), "held", "round {round}: {status}, stderr: {stderr}");
-        }
-        assert!(!lock.exists(), "round {round}: released");
-        // A shell waiter that reads another waiter's record, which then releases, exits and is reaped
-        // by this test before the judge, proves it dead (a zombie still reads as alive): its marker is
-        // the protocol's own leftover, so it is allowed.
-        let new: Vec<String> = fs::read_dir(&home)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|n| n.starts_with(".registry.lock.reclaim.") && seen.insert(n.clone()))
-            .collect();
-        let owed = marker_for(&lock, dead.trim());
-        assert!(owed.exists(), "round {round}: no marker for the dead holder {}", owed.display());
-        for name in &new {
-            let pid = name.rsplit('.').nth(1).and_then(|p| p.parse::<u32>().ok());
-            let owned = owed.file_name().is_some_and(|n| n.to_string_lossy() == *name);
-            assert!(owned || pid.is_some_and(|p| pids.contains(&p)), "round {round}: marker {name} is neither the dead holder's nor a waiter's; new {new:?}, waiters {pids:?}");
-        }
-    }
     let _ = fs::remove_dir_all(&home);
 }
 

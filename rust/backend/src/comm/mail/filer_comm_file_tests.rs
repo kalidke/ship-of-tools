@@ -2,9 +2,6 @@ use super::*;
 use crate::comm::registry::registry::read_registry_fresh_with;
 use std::time::Duration;
 
-#[cfg(unix)]
-const BOUND: Duration = Duration::from_secs(30);
-
 const NOW: u64 = 1_790_000_000;
 
 type Verdict = std::result::Result<(), (String, String)>;
@@ -332,94 +329,31 @@ fn the_heartbeat_cutoff_is_a_string_compare_on_one_shape() {
     assert_eq!(at(NOW).len(), 20);
 }
 
-// The shell's `sot_heartbeat_fresh` and `heartbeat_fresh` are one rule on
-// one stamp. Unix only: it runs bash, and the hosted macOS leg runs it
-// with BSD `date`.
-#[cfg(unix)]
+// The one append behind every route: a handle the folder lists, held by a live session, is filed whole; anything
+// else appends nothing (the daemon's `comm.file` and `sotd comm send` both reach the inbox only through it).
 #[test]
-fn heartbeat_agrees_with_the_shell() {
-    let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm/lib/comm-lib.sh");
-    let now = unix_now_secs();
-    let at = |s: u64| iso8601_utc_from_secs(s);
-    // Each stamp with the env its shell run gets.
-    let cases: Vec<(String, Option<(&str, &str)>)> = vec![
-        (at(now - 590), None),
-        (at(now - 610), None),
-        (at(now + 3600), None),
-        (String::new(), None),
-        ("2026-9-29T01:02:03Z".into(), None),
-        ("9999-99-99 99:99:99Z".into(), None),
-        ("2099-01-01 00:00:00Z".into(), None),
-        ("2099-01-01T00:00:00+00:00".into(), None),
-        ("2099-01-01T00:00:00z".into(), None),
-        (at(now - 100), Some(("SOT_COMM_STALE_SECS", "30"))),
-    ];
-    for (stamp, extra) in cases {
-        let mut cmd = std::process::Command::new("/bin/bash");
-        cmd.arg("-c")
-            .arg(r#"source "$1"; sot_heartbeat_fresh "$2"; echo $?; echo "$BASH_VERSION""#)
-            .arg("bash")
-            .arg(&lib)
-            .arg(&stamp);
-        if let Some((k, v)) = extra {
-            cmd.env(k, v);
-        }
-        let ran = sot_log::test_wait::run_within(&mut cmd, BOUND);
-        let shell = ran.stdout.lines().next() == Some("0");
-        let rust = heartbeat_fresh(if stamp.is_empty() { None } else { Some(&stamp) }, now);
-        assert_eq!(rust, shell, "bash {}, stamp {stamp:?}: {ran}", ran.stdout.lines().nth(1).unwrap_or_default());
+fn an_append_is_made_only_for_a_listed_live_handle() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path();
+    std::fs::create_dir_all(home.join("inbox")).unwrap();
+    let live = iso8601_utc_from_secs(NOW - 10);
+    let reg = serde_json::json!({"agents": {
+        "a": {"host": "h", "last_seen": live},
+        "stale": {"host": "h", "last_seen": iso8601_utc_from_secs(NOW - 601)},
+        "nohost": {"last_seen": live},
+    }});
+    std::fs::write(home.join("registry.json"), reg.to_string()).unwrap();
+    let w = std::time::Duration::from_secs(1);
+    file_here(home, "me", "proj", "a", false, "hi", NOW, w, "local t").unwrap();
+    let line: serde_json::Value = serde_json::from_str(std::fs::read_to_string(home.join("inbox/a.jsonl")).unwrap().trim()).unwrap();
+    assert_eq!((line["from"].as_str(), line["repo"].as_str(), line["msg"].as_str()), (Some("me"), Some("proj"), Some("hi")));
+    assert_eq!(file_here(home, "me", "p", "stale", false, "x", NOW, w, "local t").unwrap_err().0, "no_live_session");
+    assert_eq!(file_here(home, "me", "p", "nohost", false, "x", NOW, w, "local t").unwrap_err().0, "not_here");
+    assert_eq!(file_here(home, "me", "p", "absent", false, "x", NOW, w, "local t").unwrap_err().0, "not_here");
+    std::fs::write(home.join("registry.json"), "not json").unwrap();
+    assert_eq!(file_here(home, "me", "p", "a", false, "x", NOW, w, "local t").unwrap_err().0, "file_failed");
+    for h in ["stale", "nohost", "absent"] {
+        assert!(!home.join(format!("inbox/{h}.jsonl")).exists(), "{h}");
     }
-}
-
-// Every daemon route ends in `comm_file_verdict`; the one appender chain is `file_frame` -> `file_frame_with` ->
-// `append_line`; every open for append is in the listed files in every crate; a new member fails here. Who stamps
-// `last_seen` is proven by behavior: the heartbeat's cutoff here, the liveness stamp's write in registry_write_tests.rs,
-// and a session's work-state write in rows/work_state/tests.rs.
-#[test]
-fn every_inbox_append_is_the_verdicts_or_the_move() {
-    use sot_log::test_scan::{enclosing, is_ident, production_sources};
-    let files = production_sources();
-    // The non-definition calls of `name(` in `text`: their positions.
-    let calls = |text: &str, name: &str| -> Vec<usize> {
-        text.match_indices(name)
-            .filter(|(i, _)| !is_ident(text[..*i].chars().next_back()) && !text[..*i].trim_end().ends_with("fn"))
-            .map(|(i, _)| i)
-            .collect()
-    };
-    let (mut appenders, mut opens) = (Vec::new(), Vec::new());
-    let mut inbox_text = String::new();
-    for (path, text) in &files {
-        let n = calls(text, "file_frame(").len();
-        if n > 0 {
-            appenders.push((path.clone(), n));
-        }
-        let n = text.matches(".append(true)").count();
-        if n > 0 {
-            opens.push((path.clone(), n));
-        }
-        if path == "rust/backend/src/comm/mail/inbox.rs" {
-            inbox_text = text.clone();
-        }
-    }
-    appenders.sort();
-    opens.sort();
-    assert_eq!(
-        appenders,
-        vec![("rust/backend/src/comm/mail/filer.rs".to_string(), 1), ("rust/backend/src/comm/mail/hub_link.rs".to_string(), 1)]
-    );
-    assert_eq!(
-        opens,
-        vec![
-            ("rust/backend/src/comm/mail/inbox.rs".to_string(), 2),
-            ("rust/backend/src/daemon_log/mod.rs".to_string(), 1),
-            ("rust/backend/src/rows/spawn/detach.rs".to_string(), 1),
-        ]
-    );
-    // The chain in inbox.rs: one caller of each link, in the previous one.
-    let with = calls(&inbox_text, "file_frame_with(");
-    assert_eq!(with.len(), 1, "file_frame_with has a new caller");
-    assert_eq!(enclosing(&inbox_text, with[0]), "file_frame");
-    let append = calls(&inbox_text, "append_line(");
-    assert_eq!(append.len(), 1, "append_line has a new caller");
-    assert_eq!(enclosing(&inbox_text, append[0]), "file_frame_with");
+    assert_eq!(std::fs::read_to_string(home.join("inbox/a.jsonl")).unwrap().lines().count(), 1);
 }

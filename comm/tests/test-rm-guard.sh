@@ -11,7 +11,7 @@ suites=()
 while IFS= read -r f; do
     case "$f" in comm/*|agents/*) case "${f##*/}" in test-*.sh) suites+=("$REPO/$f") ;; esac ;; esac
 done < <(git -C "$REPO" ls-files)
-[ "${#suites[@]}" -ge 29 ] || { echo "FATAL: found ${#suites[@]} comm suites, expected at least 29"; exit 1; }
+[ "${#suites[@]}" -ge 20 ] || { echo "FATAL: found ${#suites[@]} comm suites, expected at least 20"; exit 1; }
 # unguarded SUITE... — each suite whose first command other than `set` is not
 # the guard's source line.
 unguarded() {
@@ -24,22 +24,16 @@ unguarded() {
     done
 }
 printf 'set -u\necho x\n' > "$T/test-synthetic.sh"
-[ "$(unguarded "$T/test-synthetic.sh")" = "$T/test-synthetic.sh" ] && [ -z "$(unguarded "$SCRIPT_DIR/test-hub-files.sh")" ] \
-    || { echo "FAIL: the home-guard check does not tell test-hub-files.sh from a synthetic suite with no guard"; exit 1; }
+[ "$(unguarded "$T/test-synthetic.sh")" = "$T/test-synthetic.sh" ] && [ -z "$(unguarded "$SCRIPT_DIR/test-status-floor.sh")" ] \
+    || { echo "FAIL: the home-guard check does not tell test-status-floor.sh from a synthetic suite with no guard"; exit 1; }
 bad="$(unguarded "${suites[@]}")"
 
 # Two policies of the process-group rule (CLAUDE.md, timing): a hermetic suite runs no pkill or pgrep (Git Bash has
-# neither), and a stub's pid (STUB_*_PID=$!) is taken between `set -m` and `set +m`, so end_group can end its group. The
-# five peer-host suites are outside both, and test-comm-deps.sh's untethered case names its loop's child with pgrep, a
-# known failure on Git Bash.
-peer=(test-comm-e2e-readers test-inbox-lock-onehost test-inbox-lock-twohost test-registry-twohost test-registry-lock-twohost)
+# neither), and a stub's pid (STUB_*_PID=$!) is taken between `set -m` and `set +m`, so end_group can end its group.
 # pg_calls SUITE... — the lines that run pkill or pgrep as a command, in each suite that is hermetic.
 pg_calls() {
     local f b
     for f in "$@"; do
-        b="${f##*/}"; b="${b%.sh}"
-        case " ${peer[*]} " in *" $b "*) continue ;; esac
-        [ "$b" != test-comm-deps ] || continue
         grep -nE '^[^#]*(^|[;&|(`]|\$\(|command -p )[[:space:]]*(pkill|pgrep)[[:space:]]+-' "$f" | sed "s#^#$f:#"
     done
 }
@@ -77,18 +71,9 @@ done < <(git -C "$REPO" ls-files)
 # FILE COUNT REASON
 read -r -d '' SLEEP_ALLOWED <<'ALLOW'
 agents/tests/test-sot-fe-paths.sh 1 polls for the stand-in's socket, 100 tries of 0.1 s; moves to await when the file is next changed
-comm/tests/hub_files/lock_faults.sh 1 the lock holder's body, a step that runs until the case stops it
-comm/tests/hub_files/lock_shell.sh 1 the lock holder's body, a step that runs until the case stops it
 comm/tests/lib-temp-files.sh 1 the stub jq that hangs until the signal under test ends it
-comm/tests/test-comm-deps.sh 4 the untethered case's loop and its tether, steps that run until the case stops them
-comm/tests/test-comm-e2e-readers.sh 14 peer-host suite: paces and times real readers and senders; outside the await rule (comm/tests/CLAUDE.md, timing)
 comm/tests/test-endpoint-gate.sh 4 children that run until the case ends them, and a stub pgrep's printed text
 comm/tests/test-heartbeat-ctx-wait.py 4 the generated bodies' own poll loops, which the suite's frozen observations time
-comm/tests/test-inbox-lock-onehost.sh 7 peer-host suite: paces and times lock holders on real boxes; outside the await rule
-comm/tests/test-inbox-lock-twohost.sh 9 peer-host suite: paces and times lock holders on real boxes; outside the await rule
-comm/tests/test-registry-lock-twohost.sh 2 peer-host suite: paces and times lock holders on real boxes; outside the await rule
-comm/tests/test-registry-lock.sh 5 the lock's own contenders and holders: critical sections that must overlap in time, and steps that run until stopped
-comm/tests/test-registry-twohost.sh 1 peer-host suite: waits for a start time shared with the other box; outside the await rule
 comm/tests/test-rm-guard.sh 4 this file's synthetic offender text and the pipeline members end_group is run on
 ALLOW
 # sleep_unlisted COUNTS — the lines of COUNTS ("FILE COUNT") that differ from SLEEP_ALLOWED, and each allowed file missing.
