@@ -230,38 +230,23 @@ printf 'dial\n' | sot_dial ssh:box/far1 5
     );
 }
 
-/// The owners of the command bound, each named with the line that defines `sot_bounded` for a case: comm-lib's, and on
-/// Unix the copy scripts/install.sh carries, since the installer checks ssh before the checkout that holds comm-lib
-/// exists (sourcing it sets errexit, nounset and pipefail, which the cases' status reads undo). Every bound case runs
-/// against each; [`the_comm_bound_copies_are_byte_identical`] pins the bodies equal, since no case sees an edit that
-/// changes no behavior.
+/// The owners of the command bound, each named with the line that defines `sot_bounded` for a case: comm-lib's, its one
+/// copy (the installer bounds its one ssh probe in `sotd install`).
 fn owners() -> Vec<(&'static str, &'static str)> {
-    let mut owners = vec![("comm-lib", r#". "$1" || exit 1"#)];
-    if cfg!(unix) {
-        owners.push(("install.sh", r#"SOT_INSTALL_SOURCE_ONLY=1 . "${1%/comm/lib/comm-lib.sh}/scripts/install.sh" || exit 1; set +euo pipefail"#));
-    }
-    owners
+    vec![("comm-lib", r#". "$1" || exit 1"#)]
 }
 
-/// The body of `sot_bounded` in the repo file `path`: from its `sot_bounded() {` line through the `}` that closes it,
-/// byte for byte. The comment block above the line is not part of it, so the two copies may document themselves apart.
-fn bound_body(path: &str) -> String {
-    let file = format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR"));
-    let text = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("read {file}: {e}"));
-    let start = text.find("\nsot_bounded() {").unwrap_or_else(|| panic!("{path} defines no sot_bounded")) + 1;
-    let close = text[start..].find("\n}").unwrap_or_else(|| panic!("{path}: sot_bounded has no closing brace"));
-    text[start..start + close + 2].to_owned()
-}
-
-/// The two copies of `sot_bounded` are one text: an edit to either copy alone fails here, even one no case observes.
-/// Every platform, since it reads two files and runs no bash.
+/// The bound has one copy: no installer or launch script beside comm-lib defines `sot_bounded`. Every platform, since it
+/// reads files and runs no bash.
 #[test]
-fn the_comm_bound_copies_are_byte_identical() {
-    assert_eq!(
-        bound_body("comm/lib/comm-lib-base.sh"),
-        bound_body("scripts/install.sh"),
-        "comm-lib's and scripts/install.sh's sot_bounded differ: edit both copies, or neither"
-    );
+fn the_comm_bound_has_one_copy() {
+    let root = format!("{}/../..", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(format!("{root}/comm/lib/comm-lib-base.sh")).expect("comm-lib-base.sh");
+    assert!(text.contains("\nsot_bounded() {"), "comm-lib-base.sh defines sot_bounded");
+    for script in ["scripts/install.sh", "scripts/lib/sot-daemon.sh", "scripts/sot-apply.sh", "scripts/launch-sot.sh"] {
+        let text = std::fs::read_to_string(format!("{root}/{script}")).unwrap_or_else(|e| panic!("{script}: {e}"));
+        assert!(!text.contains("\nsot_bounded() {"), "{script} defines a second sot_bounded");
+    }
 }
 
 /// How long a bound case's bash may run before the test calls it hung. Bash's start, the owner's sourcing and every

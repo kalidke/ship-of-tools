@@ -173,8 +173,8 @@ done
 STEP=unpack
 tar -xzf "$WORK/$names" -C "$WORK" || die "cannot unpack $names"
 SOTD="$WORK/sot-$ver-$TARGET/sotd"
-if ! "$SOTD" --version >/dev/null 2>"$WORK/sotd.err"; then
-    cat "$WORK/sotd.err"
+if ! err="$("$SOTD" --version 2>&1 >/dev/null)"; then
+    printf '%s\n' "$err"
     die "the unpacked sotd cannot run on this host (its error is above)"
 fi
 help="$("$SOTD" install --help 2>/dev/null)" || help=""

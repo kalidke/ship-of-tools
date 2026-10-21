@@ -178,43 +178,6 @@ fn a_claim_under_a_hosts_toml_writes_the_declared_pin() {
     assert_eq!(conditions, ["ConditionHost=|unithost-hub", "ConditionHost=|unithost-hub.*"], "{ran}");
 }
 
-/// The installer's retire (`installer_pin_names_only`, shell) and the claimed pin are twins: the retire may remove the
-/// shared boot drop-in only where the pin names this host alone, and it reads the pin the claim writes that way.
-#[test]
-fn the_installer_reads_a_claimed_pin_as_this_hosts_alone() {
-    let t = home();
-    let dir = units(&t).display().to_string();
-    let install = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install.sh");
-    let names_only = |host: &str| {
-        let ran = sot_log::test_wait::run_within(
-            Command::new("bash")
-                .env_clear()
-                .env("PATH", "/usr/bin:/bin")
-                .env("HOME", t.path())
-                .env("SOT_INSTALL_SOURCE_ONLY", "1")
-                .args(["-c", ". \"$1\"; installer_pin_names_only \"$2\" \"$3\"", "bash"])
-                .arg(&install)
-                .arg(&dir)
-                .arg(host),
-            BOUND,
-        );
-        match ran.status.code() {
-            Some(0) => true,
-            Some(1) => false,
-            other => panic!("installer_pin_names_only {host}: {other:?}\n{ran}"),
-        }
-    };
-    let me = me();
-    assert!(!names_only(&me), "no pin names no host");
-    let ran = claim(&t, None, &me);
-    assert_eq!(ran.status.code(), Some(0), "{ran}");
-    assert!(names_only(&me));
-    assert!(!names_only("unithost-other"));
-    let ran = pin(&t, Some(&format!("hub = \"{me}\"\n[host.{me}]\ndaemon = true\n[host.unithost-other]\ndaemon = true\n")));
-    assert_eq!(ran.status.code(), Some(0), "{ran}");
-    assert!(!names_only(&me), "a pin that names another host too serves it");
-}
-
 /// An invalid hosts.toml declares nothing new: the pin stays as it was and the verb fails.
 #[test]
 fn an_invalid_hosts_toml_leaves_the_pin_alone() {
@@ -227,8 +190,8 @@ fn an_invalid_hosts_toml_leaves_the_pin_alone() {
     assert_eq!(std::fs::read(units(&t).join("sotd.service.d/topology.conf")).unwrap(), before);
 }
 
-/// The installer tells a lone box (no hosts.toml) from an unreadable one by this error text
-/// (`installer_topology_unreadable` in `scripts/install.sh` matches it), so the text is pinned here.
+/// The installer tells a lone box (no hosts.toml) from an unreadable one by this error text (`sotd install` matches it,
+/// rust/backend/src/install/unix.rs), so the text is pinned here.
 #[test]
 fn status_without_a_hosts_toml_says_so_in_the_words_the_installer_matches() {
     let t = home();
@@ -278,82 +241,20 @@ fn the_hub_pins_every_reverse_tunnel_where_systemd_reads_it() {
     assert!(!conditions.is_empty() && !starts_here(&t, &conditions), "{conditions:?}");
 }
 
-/// The installer's role rule (`installer_topology_role`, shell) and `sotd_hosts` are twins: for every host of one
-/// hosts.toml, the installer installs a daemon exactly where the pin lets the unit start.
-#[test]
-fn the_installer_and_the_pin_agree_on_who_runs_sotd() {
-    let t = home();
-    let hosts = "hub = \"h\"\n[host.h]\ndaemon = true\n[host.d]\ndaemon = true\n[host.f]\nfrontend = true\n[host.df]\ndaemon = true\nfrontend = true\n[host.s]\n";
-    let status = topology(&t, Some(hosts), "h", &["status"]);
-    assert_eq!(status.status.code(), Some(0), "{status}");
-    let table = said(&status);
-    let install = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install.sh");
-    let topo = sot_protocol::topology::parse(hosts).unwrap();
-    let pinned = sot_protocol::topology::sotd_hosts(&topo);
-    for h in ["h", "d", "f", "df", "s", "absent"] {
-        let ran = sot_log::test_wait::run_within(
-            Command::new("bash")
-                .env_clear()
-                .env("PATH", "/usr/bin:/bin")
-                .env("HOME", t.path())
-                .env("SOT_INSTALL_SOURCE_ONLY", "1")
-                .args(["-c", ". \"$1\"; installer_topology_role \"$2\" \"$3\"", "bash"])
-                .arg(&install)
-                .arg(&table)
-                .arg(h),
-            BOUND,
-        )
-        .ok();
-        let role = ran.stdout.clone();
-        assert!(!role.is_empty(), "{h}: {ran}");
-        assert_eq!(role.contains("daemon:1"), pinned.contains(&h), "{h}: installer says {role:?}, pin names {pinned:?}");
-        if h != "absent" {
-            assert_eq!(role.contains("daemon:1"), sot_protocol::topology::runs_backend(Some(&topo), h, None), "{h}: installer says {role:?}, runs_backend differs");
-        }
-    }
-}
-
-/// The retire tells a person how to move boot start with a `sotd topology pin` command. It runs as printed: the
-/// installer's words are taken from a real retire, `sotd` is the built binary, `~` is the scratch home, and the pin it
-/// writes names this host. No record that names the command may leave out `--dir`, which the verb requires.
+/// The retire tells a person how to move boot start with a `sotd topology pin` command. It runs as printed: the command
+/// is taken from the words `sotd install` says (rust/backend/src/install/unix.rs), `sotd` is the built binary, `~` is the
+/// scratch home, and the pin it writes names this host. No record that names the claim may leave out `--dir`, which the
+/// verb requires.
 #[test]
 fn the_pin_command_the_installer_prints_runs_as_printed() {
+    let installer = include_str!("../src/install/unix.rs");
+    let from = installer.find("run sotd topology pin").expect("the retire names the pin command") + "run ".len();
+    let printed = installer[from..].split(" on the host").next().unwrap();
+    assert!(printed.starts_with("sotd topology pin --dir ~/.config/systemd/user --claim"), "{printed}");
     let t = tempfile::tempdir().unwrap();
     let home = t.path().join("h");
     let dir = home.join(".config/systemd/user");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("sotd.service"), "[Service]\nExecStart=/nonexistent/sotd\n").unwrap();
-    let bin = t.path().join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    sot_log::test_exec::write_executable(&bin.join("systemctl"), "#!/bin/sh\nexit 0\n");
-    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
-    // The retire's last branch (no pin, topology not declared) names the pin command only when boot start is wired, so
-    // the scratch home carries the boot drop-in a wired install has.
-    let boot = dir.join("default.target.d");
-    std::fs::create_dir_all(&boot).unwrap();
-    std::fs::write(boot.join("sotd.conf"), "[Unit]\nWants=sotd.service\n").unwrap();
-    // A real run sources the library before the retire (install.sh, step 7); source-only mode does not.
-    let retire = |home: &Path| {
-        sot_log::test_wait::run_within(
-            Command::new("bash")
-                .env_clear()
-                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
-                .env("HOME", home)
-                .env("SOT_INSTALL_SOURCE_ONLY", "1")
-                .args([
-                    "-c",
-                    ". \"$1/lib/sot-daemon.sh\"; . \"$1/install.sh\"; installer_retire_local_service 0 /nonexistent 0",
-                    "bash",
-                ])
-                .arg(&scripts),
-            BOUND,
-        )
-    };
-    let ran = retire(&home);
-    assert_eq!(ran.status.code(), Some(0), "{ran}");
-    let said = ran.stdout.clone();
-    let from = said.find("sotd topology pin").unwrap_or_else(|| panic!("the retire names no pin command: {ran}"));
-    let printed = said[from..].split(" on the host").next().unwrap();
     let program = sotd::sotd_program();
     let cmd = printed.replacen("sotd", &format!("'{}'", program.display()), 1);
     let ran = sot_log::test_wait::run_within(
@@ -369,25 +270,16 @@ fn the_pin_command_the_installer_prints_runs_as_printed() {
     let pin = std::fs::read_to_string(dir.join("sotd.service.d/topology.conf")).unwrap();
     assert!(pin.contains(&format!("ConditionHost=|{}", me())), "{pin}");
 
-    // With boot start off the retire says so and names no pin command.
-    let off = t.path().join("off");
-    std::fs::create_dir_all(off.join(".config/systemd/user")).unwrap();
-    std::fs::write(off.join(".config/systemd/user/sotd.service"), "[Service]\nExecStart=/nonexistent/sotd\n").unwrap();
-    let ran = retire(&off);
-    assert_eq!(ran.status.code(), Some(0), "{ran}");
-    assert!(ran.stdout.contains("Its boot start is already off"), "{ran}");
-    assert!(!ran.stdout.contains("sotd topology pin"), "{ran}");
-
     // Every record that names the claim spells the folder.
     for text in [
-        include_str!("../../../scripts/install.sh"),
+        installer,
         include_str!("../../../docs/src/start/install.md"),
         include_str!("../../../docs/ENROLLING-A-HOST.md"),
         include_str!("../../../docs/INSTALL-AGENT.md"),
         include_str!("../../../docs/src/guide/troubleshooting.md"),
     ] {
         for line in text.lines().filter(|l| l.contains("topology pin") && l.contains("--claim")) {
-            assert!(line.contains("--dir ~/.config/systemd/user") || line.contains("--dir \"$"), "no --dir: {line}");
+            assert!(line.contains("--dir ~/.config/systemd/user") || line.contains("--dir \"$") || line.contains("\"--dir\""), "no --dir: {line}");
         }
     }
 }

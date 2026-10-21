@@ -8,7 +8,7 @@ boot_off_count() { grep -cF "sot-apply: $BOOT_OFF_LINE" "$1/out" || true; }
 d="$WORK/ap-bo1"; mk_apply_fixture "$d" 1 1; run_apply "$d"
 check "an owned unit with neither link nor drop-in: the line once" "1" "$(boot_off_count "$d")"
 check "it follows the APPLIED line" "APPLIED" "$(grep -A1 'sot-apply: APPLIED' "$d/out" | sed -n 2p | grep -q 'boot start is off' && echo APPLIED)"
-check "it equals install.sh's line, one library function" "same" \
+check "it equals the installer's line, one library function" "same" \
     "$( (. "$SRC/scripts/lib/sot-daemon.sh"; sot_boot_off_line) > "$d/want"; sed -n 's/^sot-apply: \(sotd.service: boot start is off.*\)$/\1/p' "$d/out" | cmp -s - "$d/want" && [ -s "$d/want" ] && echo same || echo differ)"
 d="$WORK/ap-bo2"; mk_apply_fixture "$d" 1 1; mkdir -p "$d/home/.config/systemd/user/default.target.d"
 printf '[Unit]\nWants=sotd.service\n' > "$d/home/.config/systemd/user/default.target.d/sotd.conf"; run_apply "$d"

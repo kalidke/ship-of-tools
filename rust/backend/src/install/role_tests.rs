@@ -83,16 +83,20 @@ fn the_shared_install_is_written_only_by_its_hosts() {
     assert_eq!((service_record(true, true, false), service_record(true, true, true), service_record(false, true, false)), ("systemd", "none", "none"));
 }
 
-/// The retire reads the pin a claim writes as this host's alone; the move notice reads the hosts a pin names.
+/// The retire and the claimed pin are twins: the retire reads the pin `sotd topology pin --claim` writes (topology's
+/// `install_pin`) as this host's alone, and a declared pin that names another host too as not; the move notice reads the
+/// hosts a pin names.
 #[test]
 fn a_claimed_pin_names_this_host_alone() {
+    use sot_protocol::topology::relay_units::{host_pin, install_pin};
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join("sotd.service.d")).unwrap();
-    let pin = dir.path().join("sotd.service.d/topology.conf");
-    std::fs::write(&pin, "[Unit]\nConditionHost=|me\nConditionHost=|me.*\n").unwrap();
+    let (rel, text) = install_pin("me");
+    let pin = dir.path().join(rel);
+    std::fs::create_dir_all(pin.parent().unwrap()).unwrap();
+    std::fs::write(&pin, text).unwrap();
     assert!(pin_names_only(dir.path(), "me") && !pin_names_only(dir.path(), "other") && !pin_names_only(dir.path(), ""));
     assert_eq!(pin_hosts(dir.path()), ["me"]);
-    std::fs::write(&pin, "[Unit]\nConditionHost=|me\nConditionHost=|me.*\nConditionHost=|you\nConditionHost=|you.*\n").unwrap();
+    std::fs::write(&pin, host_pin(&["me", "you"])).unwrap();
     assert!(!pin_names_only(dir.path(), "me"));
     assert_eq!(pin_hosts(dir.path()), ["me", "you"]);
 }

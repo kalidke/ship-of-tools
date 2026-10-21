@@ -86,7 +86,7 @@ CG
 fi
 
 case_start "an_apply_brings_comm_to_the_applied_commit"
-# The apply is the one place every Unix box passes through, so it refreshes comm like install.sh and the rendered
+# The apply is the one place every Unix box passes through, so it refreshes comm like sotd install and the rendered
 # wrapper do: update_comm runs when comm's stamp names another commit than the applied checkout's. Every role: the apply
 # reads none.
 for role in both be-only; do

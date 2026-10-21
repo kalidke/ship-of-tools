@@ -168,20 +168,14 @@ standin_start "$d"
 for pid in "$IMPOSTOR" "$SA_PID"; do  # each has exec'd once its arguments end with the socket
     for _ in {1..100}; do case "$(ps -o args= -p "$pid" 2>/dev/null)" in *" --socket $d/sot.sock") break ;; esac; sleep 0.05; done
 done
-# [PATH-FIRST]: the pid sot_daemon_pid finds for the socket, then whether installer_process_at lists the stand-in by its
-# path ("listed"; a child the stand-in forks may be listed beside it until it execs).
-finders() {
-    local at
-    at=" $(PATH="${1:+$1:}$TOOLS" installer_process_at "$d/standin/sotd" sotd | tr '\n' ' ')"
-    case "$at" in *" $SA_PID "*) at=listed ;; *) at=unlisted ;; esac
-    echo "$(PATH="${1:+$1:}$TOOLS" sot_daemon_pid "$d/sot.sock") $at"
-}
-check "this box's ps: both finders name the daemon, never the impostor" "$SA_PID listed" "$(finders)"
+# [PATH-FIRST]: the pid sot_daemon_pid finds for the socket.
+finders() { PATH="${1:+$1:}$TOOLS" sot_daemon_pid "$d/sot.sock"; }
+check "this box's ps: the finder names the daemon, never the impostor" "$SA_PID" "$(finders)"
 # Linux's ps cuts its last column to an exported COLUMNS even into a pipe; -ww keeps the arguments whole.
-check "this box's ps, COLUMNS=40 exported: both finders still name the daemon" "$SA_PID listed" "$(export COLUMNS=40; finders)"
+check "this box's ps, COLUMNS=40 exported: the finder still names the daemon" "$SA_PID" "$(export COLUMNS=40; finders)"
 if [ "$(uname -s)" = Linux ]; then
     bsd_ps "$d/bsd"
-    check "macOS's ps (modeled): both finders name the daemon, never the impostor" "$SA_PID listed" "$(finders "$d/bsd")"
+    check "macOS's ps (modeled): the finder names the daemon, never the impostor" "$SA_PID" "$(finders "$d/bsd")"
 else
     printf '    SKIP the modeled macOS ps (it reads /proc: Linux only; this box ran its own ps above)\n'
 fi
@@ -214,11 +208,6 @@ d="$WORK/w-nohop"; mk_wrapper "$d" "0" 0 1
 run_wrapper "$d"
 check "an apply that leaves the pointer re-execs nothing and spawns once" \
     "0 0 1" "$WR_RC $(grep -c '^hop$' "$d/log" || true) $(grep -c '^spawn$' "$d/log" || true)"
-
-# shellcheck source=installer-julia-step.sh
-. "$(dirname "$0")/installer-julia-step.sh"
-# shellcheck source=installer-julia-floor.sh
-. "$(dirname "$0")/installer-julia-floor.sh"
 
 # ---------------------------------------------------------------------------
 printf '\n'

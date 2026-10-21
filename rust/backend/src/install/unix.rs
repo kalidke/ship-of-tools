@@ -35,6 +35,8 @@ struct Plan {
     target: &'static str,
     macos: bool,
     pack: Pack,
+    /// `repo/versions/<tag>`, the checkout of the target.
+    checkout: PathBuf,
     scratch: PathBuf,
     named: bool,
     role: Role,
@@ -59,14 +61,14 @@ impl Plan {
     fn sotd(&self) -> PathBuf {
         self.prefix.join("bin/sotd")
     }
-    fn checkout(&self) -> PathBuf {
-        self.prefix.join("repo/versions").join(self.pack.tag())
-    }
     fn units(&self) -> PathBuf {
         self.home.join(".config/systemd/user")
     }
     fn unit_managed(&self) -> bool {
         !self.macos && self.role.daemon && !self.no_service
+    }
+    fn units_ctx(&self) -> Units<'_> {
+        Units { home: &self.home, prefix: &self.prefix, checkout: &self.checkout, systemctl: "systemctl", loginctl: "loginctl" }
     }
 }
 
@@ -90,11 +92,11 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     check(&plan, restarted, &mut found);
     let pin = if plan.named { verdict::pin_tail(&plan.pack.version) } else { String::new() };
     if found.fail.is_none() && plan.unit_managed() {
-        let wired = lib(&plan.checkout(), "sot_boot_wired", &[&plan.units().to_string_lossy()]).ok();
+        let wired = lib(&plan.checkout, "sot_boot_wired", &[&plan.units().to_string_lossy()]).ok();
         if wired {
             println!("sotd.service: stop it on this computer with systemctl --user stop sotd.service; its boot start follows hosts.toml and the unit's host pin, and enable or disable change no file");
         } else {
-            print!("{}", lib(&plan.checkout(), "sot_boot_off_line", &[]).out);
+            print!("{}", lib(&plan.checkout, "sot_boot_off_line", &[]).out);
         }
     }
     Ok((found, pin))
@@ -278,6 +280,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     };
     let windows_before = procs::window_runs(&all, &prefix);
     let mut plan = Plan {
+        checkout: prefix.join("repo/versions").join(pack.tag()),
         opts,
         prefix,
         home,
@@ -397,24 +400,42 @@ fn ask_role(me: &str) -> Result<RoleFlag, Stop> {
     }
 }
 
+/// What the daemon question reads: the daemon's state before the run, whether its unit runs (this run restarts only
+/// that), the person's `--restart-daemon`, the socket, and sotd's line when it could not tell the version.
+pub(super) struct Question<'a> {
+    pub before: State,
+    pub unit_runs: bool,
+    pub restart_flag: bool,
+    pub socket: &'a str,
+    pub why: &'a str,
+}
+
+/// How the question asks: the daemon's live work, its child processes, the person at the console, and a note.
+pub(super) struct Asks<'a> {
+    pub live: &'a dyn Fn() -> daemon::Work,
+    pub kids: &'a dyn Fn() -> Option<Vec<&'static str>>,
+    pub ask: &'a dyn Fn(&str) -> bool,
+    pub note: &'a dyn Fn(&str),
+}
+
 /// The daemon question (scripts/CLAUDE.md, Installers: "A live daemon is asked before it ends"): an active unit on
-/// another version is restarted by this run, so its live work is asked first; a daemon the run cannot tell stops the run
-/// unless the unit can be restarted and the answer is yes. Changes nothing.
-fn ask_daemon(plan: &mut Plan, new_sotd: &Path, why: &str) -> Result<(), Stop> {
-    let socket = plan.socket.clone();
-    let endpoint = format!("unix:{socket}");
-    let restart_daemon = plan.opts.restart_daemon;
-    if plan.before == State::Unknown {
-        let kids = daemon::children(&plan.prefix);
+/// another version is restarted by this run, so its live work is asked first, yes at a console or `--restart-daemon`;
+/// a daemon the run cannot tell stops the run unless the unit can be restarted and the answer is yes; a daemon that
+/// cannot say is judged by its own children. Changes nothing. The live work, and whether part of it is unknown.
+pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), Stop> {
+    let (socket, why) = (q.socket, q.why);
+    let refuse_hint = "Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.";
+    if q.before == State::Unknown {
+        let kids = (a.kids)();
         let (repl, pluto) = kids.as_ref().map_or((false, false), |k| (k.contains(&"repl"), k.contains(&"pluto")));
-        if plan.unit_runs && restart_daemon {
-            say(&format!("note: the daemon on {socket} could not be told its version ({why}); restarting sotd.service ends any live REPL or Pluto notebook (--restart-daemon)"));
-        } else if plan.unit_runs && kids.as_ref().is_some_and(Vec::is_empty) {
-            say(&format!("note: the daemon on {socket} could not be told its version ({why}); it has no REPL or Pluto child, so restarting sotd.service ends nothing live"));
-        } else if plan.unit_runs && daemon::ask_restart(&daemon::ask_words(&[], repl, pluto, true)) {
-            say(&format!("note: the daemon on {socket} could not be told its version ({why}); restarting sotd.service as answered"));
+        if q.unit_runs && q.restart_flag {
+            (a.note)(&format!("note: the daemon on {socket} could not be told its version ({why}); restarting sotd.service ends any live REPL or Pluto notebook (--restart-daemon)"));
+        } else if q.unit_runs && kids.as_ref().is_some_and(Vec::is_empty) {
+            (a.note)(&format!("note: the daemon on {socket} could not be told its version ({why}); it has no REPL or Pluto child, so restarting sotd.service ends nothing live"));
+        } else if q.unit_runs && (a.ask)(&daemon::ask_words(&[], repl, pluto, true)) {
+            (a.note)(&format!("note: the daemon on {socket} could not be told its version ({why}); restarting sotd.service as answered"));
         } else {
-            let hint = if plan.unit_runs {
+            let hint = if q.unit_runs {
                 "Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); ask whoever uses this computer, then re-run with --restart-daemon."
             } else {
                 "Find why it does not answer, or stop it, then run this again."
@@ -423,47 +444,64 @@ fn ask_daemon(plan: &mut Plan, new_sotd: &Path, why: &str) -> Result<(), Stop> {
             return Err(Stop::new(2, format!("a daemon runs on {socket} and could not be told its version ({why})")));
         }
     }
-    if !matches!(plan.before, State::Other | State::Held) {
-        return Ok(());
+    if !matches!(q.before, State::Other | State::Held) {
+        return Ok((daemon::Work::default(), false));
     }
-    let will_restart = plan.unit_runs && plan.before == State::Other;
-    let live = daemon::work(new_sotd, &endpoint);
+    let will_restart = q.unit_runs && q.before == State::Other;
+    let live = (a.live)();
     let ended = |lead: &str| daemon::work_words(&live.rows, live.pluto, lead);
+    let mut unknown = false;
     match &live.unsure {
         None if live.rows.is_empty() && !live.pluto => {}
         None if !will_restart => {}
-        None if restart_daemon => say(&format!("{} (--restart-daemon)", ended("restarting the daemon ends"))),
-        None if daemon::ask_restart(&daemon::ask_words(&live.rows, false, live.pluto, false)) => {
-            say(&format!("{} (answered yes)", ended("restarting the daemon ends")));
+        None if q.restart_flag => (a.note)(&format!("{} (--restart-daemon)", ended("restarting the daemon ends"))),
+        None if (a.ask)(&daemon::ask_words(&live.rows, false, live.pluto, false)) => {
+            (a.note)(&format!("{} (answered yes)", ended("restarting the daemon ends")));
         }
         None => {
             println!("       Restarting the daemon ends those REPLs and notebooks (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.");
             return Err(Stop::new(2, format!("the daemon on {socket} runs another version, and {}", ended("restarting it would end"))));
         }
         Some(reason) => {
-            plan.rows_unknown = true;
             // The daemon could not say; its own children can: with none that is a REPL or the Pluto server, nothing live
             // is left to end.
-            let kids = daemon::children(&plan.prefix);
+            let kids = (a.kids)();
             let (repl, pluto) = kids.as_ref().map_or((false, false), |k| (k.contains(&"repl"), k.contains(&"pluto")));
             if kids.as_ref().is_some_and(Vec::is_empty) && live.rows.is_empty() && !live.pluto {
-                plan.rows_unknown = false;
                 if will_restart {
-                    say(&format!("note: could not ask the daemon on {socket} in full ({reason}); it has no REPL or Pluto child, so restarting it ends nothing live"));
+                    (a.note)(&format!("note: could not ask the daemon on {socket} in full ({reason}); it has no REPL or Pluto child, so restarting it ends nothing live"));
                 }
             } else if !will_restart {
-            } else if restart_daemon {
-                say(&format!("note: could not ask the daemon on {socket} in full ({reason}); restarting it ends any REPL or Pluto notebook that is live (--restart-daemon)"));
-            } else if daemon::ask_restart(&daemon::ask_words(&live.rows, repl, live.pluto || pluto, true)) {
-                say(&format!("note: could not ask the daemon on {socket} in full ({reason}); restarting it as answered"));
+                unknown = true;
+            } else if q.restart_flag {
+                unknown = true;
+                (a.note)(&format!("note: could not ask the daemon on {socket} in full ({reason}); restarting it ends any REPL or Pluto notebook that is live (--restart-daemon)"));
+            } else if (a.ask)(&daemon::ask_words(&live.rows, repl, live.pluto || pluto, true)) {
+                unknown = true;
+                (a.note)(&format!("note: could not ask the daemon on {socket} in full ({reason}); restarting it as answered"));
             } else {
-                println!("       Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.");
+                println!("       {refuse_hint}");
                 let rows = if live.rows.is_empty() { String::new() } else { format!(", and restarting it would end the REPLs of: {}", live.rows.join(", ")) };
                 return Err(Stop::new(2, format!("could not ask the daemon on {socket} in full: it runs another version{rows}; {reason}")));
             }
         }
     }
+    Ok((live, unknown))
+}
+
+fn ask_daemon(plan: &mut Plan, new_sotd: &Path, why: &str) -> Result<(), Stop> {
+    let endpoint = format!("unix:{}", plan.socket);
+    let prefix = plan.prefix.clone();
+    let q = Question { before: plan.before, unit_runs: plan.unit_runs, restart_flag: plan.opts.restart_daemon, socket: &plan.socket, why };
+    let asks = Asks {
+        live: &|| daemon::work(new_sotd, &endpoint),
+        kids: &|| daemon::children(&prefix),
+        ask: &daemon::ask_restart,
+        note: &|t| say(t),
+    };
+    let (live, unknown) = question(&q, &asks)?;
     plan.live = live;
+    plan.rows_unknown = unknown;
     Ok(())
 }
 
@@ -473,7 +511,7 @@ fn lay_out(plan: &Plan) -> Result<(), Stop> {
     step("layout");
     let repo = plan.prefix.join("repo");
     let base = repo.join("base");
-    let checkout = plan.checkout();
+    let checkout = plan.checkout.clone();
     let current = repo.join("current");
     let tag = plan.pack.tag();
     let archive = plan.opts.archive.is_some();
@@ -679,7 +717,7 @@ fn julia_and_comm(plan: &Plan, found: &mut Found) -> Result<(), Stop> {
     }
     // The channel is chosen once, by a probe, never by running a step and rerunning it on failure.
     let selected = cmd::output(Command::new("julia").args([&format!("+{}", julia::CHANNEL), "-e", "exit(0)"])).ok().then(|| julia::CHANNEL.to_string());
-    let checkout = plan.checkout();
+    let checkout = plan.checkout.clone();
     let facts = julia::facts(&checkout, selected.as_deref()).map_err(|why| Stop::new(1, why))?;
     match julia::judge(&facts) {
         julia::Judged::Ok => {}
@@ -719,54 +757,98 @@ fn configure(plan: &Plan) -> Result<(), Stop> {
     if depot.is_file() && std::fs::remove_file(&depot).is_ok() && cmd::on_path("systemctl") {
         let _ = systemctl(&["daemon-reload"]);
     }
-    retire_local_service(plan);
-    let ran = sotd_at(&plan.sotd(), &["trust", "declare", &plan.home.to_string_lossy()]);
-    match (ran.code, ran.out.trim()) {
-        (Some(0), "Declared") => say("folder trust declared"),
-        (Some(0), "Kept") => say("folder trust kept"),
-        (Some(0), _) => say("WARN: folder trust not declared - unexpected command outcome"),
-        (code, _) => {
-            say(&format!("WARN: folder trust not declared (exit {})", code.map_or("none".into(), |c| c.to_string())));
-            let said = format!("{}{}", ran.out, ran.err);
-            if !said.trim().is_empty() {
-                println!("{}", said.trim_end());
-            }
-        }
+    if !plan.role.daemon {
+        let kernel_host = sot_log::host::state_dir::kernel_host_name().unwrap_or_default();
+        retire_local_service(&plan.units_ctx(), plan.topo_declared, &kernel_host);
+    }
+    for line in declare_trust(&plan.sotd(), &plan.home) {
+        say(&line);
     }
     Ok(())
 }
 
+/// Folder trust, declared by the agents' own offline command (`sotd trust declare <home>`): the lines that say what came
+/// of it. A failure is said, with what the command said, and never described as a declaration.
+pub(super) fn declare_trust(sotd: &Path, home: &Path) -> Vec<String> {
+    let ran = cmd::output(Command::new(sotd).args(["trust", "declare"]).arg(home));
+    match (ran.code, ran.out.trim()) {
+        (Some(0), "Declared") => vec!["folder trust declared".into()],
+        (Some(0), "Kept") => vec!["folder trust kept".into()],
+        (Some(0), _) => vec!["WARN: folder trust not declared - unexpected command outcome".into()],
+        (code, _) => {
+            let mut lines = vec![format!("WARN: folder trust not declared (exit {})", code.map_or("none".into(), |c| c.to_string()))];
+            let said = format!("{}{}", ran.out, ran.err);
+            lines.extend(said.lines().filter(|l| !l.trim().is_empty()).map(String::from));
+            lines
+        }
+    }
+}
+
+/// The programs and folders the unit's wiring touches: the systemd user folder under `home`, the prefix whose `sotd`
+/// pins it, the checkout whose library renders it, and `systemctl` and `loginctl` (stand-ins in a test).
+pub(super) struct Units<'a> {
+    pub home: &'a Path,
+    pub prefix: &'a Path,
+    pub checkout: &'a Path,
+    pub systemctl: &'a str,
+    pub loginctl: &'a str,
+}
+
+impl Units<'_> {
+    fn dir(&self) -> PathBuf {
+        self.home.join(".config/systemd/user")
+    }
+    fn systemctl(&self, args: &[&str]) -> cmd::Ran {
+        cmd::output(Command::new(self.systemctl).arg("--user").args(args).env("HOME", self.home))
+    }
+    fn has_systemctl(&self) -> bool {
+        Path::new(self.systemctl).is_file() || cmd::on_path(self.systemctl)
+    }
+    /// One function of the checkout's library, with this home.
+    fn lib(&self, func: &str, args: &[&str]) -> cmd::Ran {
+        let library = self.checkout.join("scripts/lib/sot-daemon.sh");
+        cmd::output(Command::new("bash").arg("-c").arg(". \"$1\" || exit 1; shift; \"$@\"").arg("bash").arg(&library).arg(func).args(args).env("HOME", self.home))
+    }
+    fn pin(&self, claim: bool) -> bool {
+        let dir = self.dir().to_string_lossy().into_owned();
+        let mut args = vec!["topology", "pin", "--dir", dir.as_str()];
+        if claim {
+            args.push("--claim");
+        }
+        cmd::output(Command::new(self.prefix.join("bin/sotd")).args(&args).env("HOME", self.home)).ok()
+    }
+}
+
 /// A role with no daemon here must not leave an earlier local daemon running. The unit and its boot drop-in may serve
-/// another host of a shared home, so only this host's run is stopped; under a declared topology the unit's host pin
-/// keeps it from starting here, and with no hosts.toml a pin that names this host alone lets the drop-in go.
-fn retire_local_service(plan: &Plan) {
-    let units = plan.units();
-    if plan.role.daemon || !cmd::on_path("systemctl") || !units.join("sotd.service").is_file() {
+/// another host of a shared home, so only this host's run is stopped and the shared unit is never disabled; under a
+/// declared topology the unit's host pin keeps it from starting here, and with no hosts.toml a pin that names this host
+/// alone lets the drop-in go. `kernel_host` is the kernel's name for this host, which the pin names.
+pub(super) fn retire_local_service(u: &Units, declared: bool, kernel_host: &str) {
+    let ud = u.dir().to_string_lossy().into_owned();
+    if !u.has_systemctl() || !u.dir().join("sotd.service").is_file() {
         return;
     }
-    let ud = units.to_string_lossy().into_owned();
-    let kernel_host = sot_log::host::state_dir::kernel_host_name().unwrap_or_default();
-    if plan.topo_declared {
-        if !sotd_at(&plan.sotd(), &["topology", "pin", "--dir", &ud]).ok() {
+    if declared {
+        if !u.pin(false) {
             say("WARNING: sotd topology pin failed: sotd.service is not pinned to the hosts that run sotd");
         }
-        if !lib(&plan.checkout(), "sot_boot_keep", &[&ud]).ok() {
+        if !u.lib("sot_boot_keep", &[&ud]).ok() {
             say("WARNING: could not move sotd.service's boot start onto its drop-in");
         }
-        let _ = systemctl(&["stop", "sotd.service"]);
-        let _ = systemctl(&["daemon-reload"]);
+        let _ = u.systemctl(&["stop", "sotd.service"]);
+        let _ = u.systemctl(&["daemon-reload"]);
         say("stopped this host's sotd.service; the declared topology runs no daemon here");
-    } else if role::pin_names_only(&units, &kernel_host) {
-        let _ = systemctl(&["stop", "sotd.service"]);
-        let _ = lib(&plan.checkout(), "sot_boot_unwants", &[&ud]);
-        let _ = systemctl(&["daemon-reload"]);
+    } else if role::pin_names_only(&u.dir(), kernel_host) {
+        let _ = u.systemctl(&["stop", "sotd.service"]);
+        let _ = u.lib("sot_boot_unwants", &[&ud]);
+        let _ = u.systemctl(&["daemon-reload"]);
         say("stopped sotd.service and removed its boot start, whose host pin names this host alone");
     } else {
-        if !lib(&plan.checkout(), "sot_boot_keep", &[&ud]).ok() {
+        if !u.lib("sot_boot_keep", &[&ud]).ok() {
             say("WARNING: could not move sotd.service's boot start onto its drop-in");
         }
-        let _ = systemctl(&["stop", "sotd.service"]);
-        if lib(&plan.checkout(), "sot_boot_wired", &[&ud]).ok() {
+        let _ = u.systemctl(&["stop", "sotd.service"]);
+        if u.lib("sot_boot_wired", &[&ud]).ok() {
             say("Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service, so a hand disable no longer turns it off; to move it, change hosts.toml, or with none run sotd topology pin --dir ~/.config/systemd/user --claim on the host that should run it. If no other computer shares this home folder, turn boot start off with: rm -f ~/.config/systemd/user/default.target.d/sotd.conf (write that file again, with the two lines [Unit] and Wants=sotd.service, to turn it back on)");
         } else {
             say("Stopped this computer's sotd. Its boot start is already off: sotd.service has no boot drop-in, and enable and disable change no file for it; to turn it on, write ~/.config/systemd/user/default.target.d/sotd.conf with the two lines [Unit] and Wants=sotd.service");
@@ -788,7 +870,7 @@ fn wire(plan: &Plan) -> Result<bool, Stop> {
         }
     }
     if plan.unit_managed() {
-        enable_local_service(plan)?;
+        enable_local_service(&plan.units_ctx(), &plan.pack.bin.join("sotd.service"), &plan.socket)?;
     }
     step("launcher");
     if plan.role.frontend {
@@ -804,43 +886,43 @@ fn wire(plan: &Plan) -> Result<bool, Stop> {
 }
 
 /// Render, pin, wire and start the unit: pinned to the hosts that run sotd (with no hosts.toml, to this one) before any
-/// manager reloads it; boot start wired for a unit this run finds new, and over an existing one only where it was.
-fn enable_local_service(plan: &Plan) -> Result<(), Stop> {
-    let units = plan.units();
+/// manager reloads it; boot start wired for a unit this run finds new, and over an existing one only where it was; no
+/// `enable`, which on a shared home would link the unit for every host.
+pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str) -> Result<(), Stop> {
+    let units = u.dir();
     let ud = units.to_string_lossy().into_owned();
     std::fs::create_dir_all(&units).map_err(|e| Stop::new(1, format!("creating {ud}: {e}")))?;
+    // v0.6.0 deleted the tmux runtime: the keeper unit earlier installs enabled goes.
     let tmux = units.join("sot-tmux.service");
     if tmux.is_file() {
-        let _ = systemctl(&["disable", "--now", "sot-tmux.service"]);
+        let _ = u.systemctl(&["disable", "--now", "sot-tmux.service"]);
         let _ = std::fs::remove_file(&tmux);
     }
     let unit = units.join("sotd.service");
     let fresh = !unit.is_file();
-    let template = plan.pack.bin.join("sotd.service");
-    if !lib(&plan.checkout(), "render_sotd_unit", &[&plan.prefix.to_string_lossy(), &template.to_string_lossy(), &unit.to_string_lossy()]).ok() {
+    if !u.lib("render_sotd_unit", &[&u.prefix.to_string_lossy(), &template.to_string_lossy(), &unit.to_string_lossy()]).ok() {
         return Err(Stop::new(1, "could not write the sotd unit"));
     }
     let before = role::pin_hosts(&units);
-    if !sotd_at(&plan.sotd(), &["topology", "pin", "--dir", &ud, "--claim"]).ok() {
+    if !u.pin(true) {
         say("WARNING: sotd topology pin failed: sotd.service is not pinned to the hosts that run sotd");
     }
     let after = role::pin_hosts(&units);
     for h in before.iter().filter(|h| !after.contains(h)) {
         say(&format!("The daemon moved here from {h}: {h}'s sotd will not start at its next login."));
     }
-    if !lib(&plan.checkout(), if fresh { "sot_boot_wants" } else { "sot_boot_keep" }, &[&ud]).ok() {
+    if !u.lib(if fresh { "sot_boot_wants" } else { "sot_boot_keep" }, &[&ud]).ok() {
         return Err(Stop::new(1, "could not write the sotd boot drop-in"));
     }
-    for args in [["daemon-reload", ""], ["start", "sotd.service"]] {
-        let args: Vec<&str> = args.iter().copied().filter(|a| !a.is_empty()).collect();
-        let ran = systemctl(&args);
+    for args in [&["daemon-reload"][..], &["start", "sotd.service"][..]] {
+        let ran = u.systemctl(args);
         if !ran.ok() {
             return Err(Stop::new(1, format!("systemctl --user {} failed: {}", args.join(" "), ran.last_said())));
         }
     }
     let user = std::env::var("USER").unwrap_or_else(|_| cmd::output(Command::new("id").arg("-un")).first_line());
-    let _ = cmd::output(Command::new("loginctl").args(["enable-linger", &user]));
-    say(&format!("sotd running: {} (socket {})", systemctl(&["is-active", "sotd.service"]).first_line(), plan.socket));
+    let _ = cmd::output(Command::new(u.loginctl).args(["enable-linger", &user]));
+    say(&format!("sotd running: {} (socket {socket})", u.systemctl(&["is-active", "sotd.service"]).first_line()));
     Ok(())
 }
 
@@ -859,9 +941,9 @@ fn wire_launcher(plan: &Plan) -> Result<(), Stop> {
     let wrapper = local_bin.join("sot-launch");
     let (prefix, dest) = (plan.prefix.to_string_lossy().into_owned(), wrapper.to_string_lossy().into_owned());
     let rendered = if plan.be_alias.is_some() || others {
-        lib(&plan.checkout(), "render_remote_launch", &[&prefix, plan.be_alias.as_deref().unwrap_or(""), &dest])
+        lib(&plan.checkout, "render_remote_launch", &[&prefix, plan.be_alias.as_deref().unwrap_or(""), &dest])
     } else {
-        lib(&plan.checkout(), "render_sot_launch", &[&prefix, plan.target, &dest])
+        lib(&plan.checkout, "render_sot_launch", &[&prefix, plan.target, &dest])
     };
     if !rendered.ok() {
         print!("{}", rendered.err);
@@ -884,7 +966,7 @@ fn app_bundle(plan: &Plan, wrapper: &str) -> Result<(), Stop> {
     };
     write("Info.plist", plist, 0o644)?;
     write("MacOS/sot-launch", &format!("#!/usr/bin/env bash\nexec \"{wrapper}\"\n"), 0o755)?;
-    let logo = plan.checkout().join("logo.png");
+    let logo = plan.checkout.clone().join("logo.png");
     if logo.is_file() && cmd::on_path("sips") && cmd::on_path("iconutil") {
         let iconset = plan.scratch.join("sot.iconset");
         let _ = std::fs::create_dir_all(&iconset);
@@ -906,7 +988,7 @@ fn app_bundle(plan: &Plan, wrapper: &str) -> Result<(), Stop> {
 fn desktop_entry(plan: &Plan, wrapper: &str) -> Result<(), Stop> {
     let apps = plan.home.join(".local/share/applications");
     let _ = std::fs::create_dir_all(&apps);
-    let logo = plan.checkout().join("logo.png");
+    let logo = plan.checkout.clone().join("logo.png");
     let fallback = plan.prefix.join("logo.png").to_string_lossy().into_owned();
     let mut icon = fallback.clone();
     if logo.is_file() {
@@ -932,7 +1014,7 @@ fn desktop_entry(plan: &Plan, wrapper: &str) -> Result<(), Stop> {
 /// install.json, last, whole.
 fn write_record(plan: &Plan) -> Result<(), Stop> {
     step("record");
-    let commit = cmd::output(cmd::git_in(&plan.checkout()).args(["rev-parse", "HEAD"])).first_line();
+    let commit = cmd::output(cmd::git_in(&plan.checkout).args(["rev-parse", "HEAD"])).first_line();
     let r = record::Record {
         prefix: plan.prefix.to_string_lossy().into_owned(),
         config: plan.config.to_string_lossy().into_owned(),
@@ -964,7 +1046,7 @@ fn write_record(plan: &Plan) -> Result<(), Stop> {
 fn check(plan: &Plan, restarted: bool, found: &mut Found) {
     step("check");
     let (version, prefix) = (&plan.pack.version, &plan.prefix);
-    let checkout = plan.checkout();
+    let checkout = plan.checkout.clone();
     let commit = cmd::output(cmd::git_in(&checkout).args(["rev-parse", "HEAD"])).first_line();
     let short = commit.get(..9).unwrap_or("").to_string();
     found.pass = format!("Ship of Tools {version} at {short} on this computer");
@@ -1098,3 +1180,7 @@ fn daemon_after(plan: &Plan, restarted: bool, found: &mut Found) -> State {
         State::None
     }
 }
+
+#[cfg(test)]
+#[path = "unix_tests.rs"]
+mod tests;

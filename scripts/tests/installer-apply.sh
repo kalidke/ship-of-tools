@@ -360,10 +360,9 @@ check "no rollback-complete line" "0" "$(grep -c 'rollback complete' "$d/out" ||
 case_start "one_copy_helper"
 helper_text() { sed -n '/^sot_install_copy() {/,/^}/p' "$1"; }
 check "the library defines sot_install_copy" "yes" "$([ -n "$(helper_text "$LIB")" ] && echo yes || echo no)"
-for f in "$SRC/scripts/sot-apply.sh" "$SRC/scripts/install.sh"; do
-    check "$(basename "$f")'s sot_install_copy is byte-identical to the library's" "$(helper_text "$LIB")" "$(helper_text "$f")"
-done
-check "no other script defines it" "3" "$(grep -rl '^sot_install_copy() {' "$SRC/scripts" | wc -l | tr -d ' ')"
+# sot-apply.sh carries the one byte-identical copy: it copies before it reads the library of the commit it applies.
+check "sot-apply.sh's sot_install_copy is byte-identical to the library's" "$(helper_text "$LIB")" "$(helper_text "$SRC/scripts/sot-apply.sh")"
+check "no other script defines it" "2" "$(grep -rl '^sot_install_copy() {' "$SRC/scripts" | wc -l | tr -d ' ')"
 # A stale <dst>.new another writer left (or still writes) is never reused.
 d="$WORK/copy-stale"; mkdir -p "$d"
 printf 'source\n' > "$d/src"; printf 'old\n' > "$d/dst"; printf 'junk\n' > "$d/dst.new"
@@ -374,47 +373,17 @@ check "no temp file of this copy is left" "0" "$(find "$d" -name 'dst.new.*' | w
 
 # ---------------------------------------------------------------------------
 case_start "remote_wrapper_failed_write_keeps_the_old"
-# The --backend wrapper: a cat that fails before writing a byte.
+# The launcher that dials the plan (render_remote_launch): a cat that fails before writing a byte.
 d="$WORK/remote-wrap"; mkdir -p "$d/stubs"
 printf '#!/bin/sh\necho old-wrapper\n' > "$d/sot-launch"; cp "$d/sot-launch" "$d/wrap.orig"
 printf '#!/bin/sh\nexit 1\n' > "$d/stubs/cat"; chmod +x "$d/stubs/cat"
-rc=0; ( PATH="$d/stubs:$PATH"; installer_render_remote_launch /opt/sot be-alias "$d/sot-launch" ) 2>/dev/null || rc=$?
+rc=0; ( PATH="$d/stubs:$PATH"; render_remote_launch /opt/sot be-alias "$d/sot-launch" ) 2>/dev/null || rc=$?
 check "the failed write returns 1" "1" "$rc"
 check "the old remote wrapper is byte-identical" "same" "$(cmp -s "$d/wrap.orig" "$d/sot-launch" && echo same || echo differ)"
 check "no temp file is left beside it" "0" "$(find "$d" -name 'sot-launch.new*' | wc -l | tr -d ' ')"
-installer_render_remote_launch /opt/sot be-alias "$d/sot-launch"
+render_remote_launch /opt/sot be-alias "$d/sot-launch"
 check "a good write names the alias and is executable" "1 yes" \
     "$(grep -c '^export SOT_HOST="be-alias"$' "$d/sot-launch" || true) $([ -x "$d/sot-launch" ] && echo yes || echo no)"
-
-# ---------------------------------------------------------------------------
-case_start "a pinned run against a release older than scripts/lib/sot-daemon.sh refuses first"
-# curl is stubbed: the library URL is a 404 (an old tree), anything else is
-# logged and fails. Nothing may be created under the prefix.
-d="$WORK/old-tree"; mkdir -p "$d/stubs" "$d/home"
-cat > "$d/stubs/curl" <<'STUBEOF'
-#!/bin/sh
-echo "$*" >> "$CURL_LOG"
-case "$*" in *scripts/lib/sot-daemon.sh*) exit 22 ;; esac
-exit 22
-STUBEOF
-chmod +x "$d/stubs/curl"
-rc=0
-out="$(env -i HOME="$d/home" PATH="$d/stubs:/usr/bin:/bin" CURL_LOG="$d/curl.log" SOT_INSTALL_TAG=v0.0.1 \
-    bash "$(dirname "$0")/../install.sh" --local --no-service --prefix "$d/prefix" 2>&1)" || rc=$?
-check "the install exits non-zero" "yes" "$([ "$rc" -ne 0 ] && echo yes || echo no)"
-check "it says the release predates this installer" "1" \
-    "$(printf '%s\n' "$out" | grep -c 'release v0.0.1 predates this installer (no scripts/lib/sot-daemon.sh)' || true)"
-check "the prefix was never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
-check "no release asset was requested" "0" "$(grep -c 'releases/download' "$d/curl.log" || true)"
-# A network failure (curl exit 6) is said as one, never as an old release.
-sed -i.bak 's/exit 22 ;; esac/exit 6 ;; esac/' "$d/stubs/curl"
-rc=0
-out="$(env -i HOME="$d/home" PATH="$d/stubs:/usr/bin:/bin" CURL_LOG="$d/curl.log" SOT_INSTALL_TAG=v0.0.1 \
-    bash "$(dirname "$0")/../install.sh" --local --no-service --prefix "$d/prefix" 2>&1)" || rc=$?
-check "an unreachable network exits non-zero" "yes" "$([ "$rc" -ne 0 ] && echo yes || echo no)"
-check "it names the network, not the release" "1 0" \
-    "$(printf '%s\n' "$out" | grep -c 'cannot reach raw.githubusercontent.com to check release v0.0.1 (curl exit 6)' || true) $(printf '%s\n' "$out" | grep -c 'predates' || true)"
-check "the prefix was still never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
 
 # ---------------------------------------------------------------------------
 case_start "the dev launcher's git pull carries the stall bound"
@@ -430,97 +399,6 @@ chmod +x "$d/stubs/git" "$d/fe"
 check "the launcher pulled, then started the frontend" "1 1" "$(grep -c ' pull ' "$d/git.log" || true) $(grep -c '^fe$' "$d/git.log" || true)"
 check "the pull carries the stall bound" "0" \
     "$(grep ' pull ' "$d/git.log" | grep -vc -e '-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60' || true)"
-
-# ---------------------------------------------------------------------------
-# --archive installs a folder pack-build.sh packed. HOME, the prefix and the folder are temp; SOT_INSTALL_TAG=x keeps
-# the prelude from reaching the network.
-mk_archive() {  # <dir> <digest-of-the-tarball 0|1> <with-COMMIT 0|1>: <dir>/arch holds sot-1.2.3-dev-$TGT.tar.gz
-    local d="$1" a="$1/arch"
-    mkdir -p "$a" "$d/home"
-    printf 'not a real tarball\n' > "$a/sot-1.2.3-dev-$TGT.tar.gz"
-    if [ "$2" = 1 ]; then
-        ( cd "$a" && sha256_of "sot-1.2.3-dev-$TGT.tar.gz" > SHA256SUMS )
-    else
-        printf '%064d  sot-1.2.3-dev-%s.tar.gz\n' 0 "$TGT" > "$a/SHA256SUMS"
-    fi
-    [ "$3" = 0 ] || printf '%s\n' 0123456789abcdef0123456789abcdef01234567 > "$a/COMMIT"
-    [ "$3" = 0 ] || ( cd "$a" && sha256_of COMMIT >> SHA256SUMS )
-}
-run_archive() {  # <dir>: sets AR_RC and AR_OUT
-    local d="$1"
-    AR_RC=0
-    AR_OUT="$(env -i HOME="$d/home" PATH=/usr/bin:/bin SOT_INSTALL_TAG=x \
-        bash "$(dirname "$0")/../install.sh" --be-only --no-service --prefix "$d/prefix" --archive "$d/arch" 2>&1)" || AR_RC=$?
-}
-
-# ---------------------------------------------------------------------------
-case_start "archive_install_verifies_before_writing"
-d="$WORK/ar-sum"; mk_archive "$d" 0 1; run_archive "$d"
-check "the install exits non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
-check "it says the checksum failed" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'checksum verification FAILED' || true)"
-check "the prefix was never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
-
-# ---------------------------------------------------------------------------
-case_start "archive_install_needs_its_commit"
-d="$WORK/ar-commit"; mk_archive "$d" 1 0; run_archive "$d"
-check "the install exits non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
-check "it names COMMIT" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'COMMIT' || true)"
-check "the prefix was never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
-
-# ---------------------------------------------------------------------------
-# A real tarball: sot and sotd are stubs that print <sotd-line> / <sot-line> for --version and answer nothing else.
-# <dir>/prefix holds an old sotd to prove it survives a refusal (--force-role-change lets the gates pass over it).
-# <dir>/origin is an empty bare repository the installer's base clone reaches through insteadOf (no network).
-mk_packed() {  # <dir> <sotd-version> <sotd-sha> <sot-version> [<folder-version>]: <dir>/arch is sot-<folder-version> (1.2.3-dev), COMMIT 0123456789abcdef...
-    local d="$1" a="$1/arch" top="sot-${5:-1.2.3-dev}-$TGT"
-    mkdir -p "$a" "$d/home" "$d/pack/$top" "$d/prefix/bin"
-    printf '#!/bin/sh\n[ "$1" = --version ] && echo "sotd %s (%s 2026-10-16, protocol 1)"\nexit 0\n' "$2" "$3" > "$d/pack/$top/sotd"
-    printf '#!/bin/sh\n[ "$1" = --version ] && echo "sot %s (%s 2026-10-16, protocol 1)"\nexit 0\n' "$4" "$3" > "$d/pack/$top/sot"
-    chmod 0755 "$d/pack/$top/sotd" "$d/pack/$top/sot"
-    printf 'old\n' > "$d/prefix/bin/sotd"
-    tar -czf "$a/$top.tar.gz" -C "$d/pack" "$top"
-    printf '%s\n' 0123456789abcdef0123456789abcdef01234567 > "$a/COMMIT"
-    ( cd "$a" && sha256_of "$top.tar.gz" COMMIT > SHA256SUMS )
-    git init -q --bare "$d/origin"
-    printf '[url "%s/"]\n\tinsteadOf = https://github.com/kalidke/ship-of-tools\n' "$d/origin" > "$d/gitconfig"
-}
-run_packed() {  # <dir>: like run_archive, with the git redirect and a PATH that reaches jq and git
-    local d="$1"
-    AR_RC=0
-    AR_OUT="$(env -i HOME="$d/home" PATH=/usr/bin:/bin SOT_INSTALL_TAG=x GIT_CONFIG_GLOBAL="$d/gitconfig" \
-        bash "$(dirname "$0")/../install.sh" --be-only --no-service --force-role-change --prefix "$d/prefix" --archive "$d/arch" 2>&1)" || AR_RC=$?
-}
-
-# ---------------------------------------------------------------------------
-case_start "archive_install_binds_its_binaries_to_the_folder"
-d="$WORK/ar-ver"; mk_packed "$d" 0.9.9 012345678 1.2.3-dev; run_packed "$d"
-check "a sotd of another version is refused" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
-check "it names the mismatch" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'does not match' || true)"
-check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
-d="$WORK/ar-sha"; mk_packed "$d" 1.2.3-dev fffffffff 1.2.3-dev; run_packed "$d"
-check "a sotd built at another commit is refused" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'does not match' || true)"
-check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
-d="$WORK/ar-sot"; mk_packed "$d" 1.2.3-dev 012345678 0.9.9; run_packed "$d"
-check "a sot of another version is refused" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'does not match' || true)"
-d="$WORK/ar-commit-sum"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
-printf '%s\n' ffffffffffffffffffffffffffffffffffffffff > "$d/arch/COMMIT"; run_packed "$d"
-check "a COMMIT its SHA256SUMS does not cover is refused" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'checksum verification FAILED' || true)"
-
-# ---------------------------------------------------------------------------
-case_start "archive_install_refuses_an_absent_commit_before_swapping"
-d="$WORK/ar-absent"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev; run_packed "$d"
-check "the install exits non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
-check "it says the commit is not in origin" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not in origin' || true)"
-check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
-check "no .prev copy was written" "gone" "$([ -e "$d/prefix/bin/sotd.prev" ] && echo exists || echo gone)"
-
-# ---------------------------------------------------------------------------
-# A dev version's + is a regex quantifier to grep -E: the listing check must match the folder's name as text.
-case_start "a dev version with a plus sign passes the listing check"
-v=0.6.6-rc9.14-dev+7a64a6060
-d="$WORK/ar-plus"; mk_packed "$d" "$v" 012345678 "$v" "$v"; run_packed "$d"
-check "it is not refused as unlisted" "0" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not listed in' || true)"
-check "it gets to the commit check, which refuses the empty origin" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not in origin' || true)"
 
 # ---------------------------------------------------------------------------
 case_start "the ensure replaces a daemon an update left on the old binary (sot_daemon_current)"
@@ -745,44 +623,6 @@ case_start "pack_build_takes_the_musl_branch_when_a_musl_compiler_is_present"
 d="$WORK/pk-musl"; mk_pack_fixture "$d" 2.39; printf '#!/bin/sh\nexit 0\n' > "$d/bin/musl-gcc"; chmod 0755 "$d/bin/musl-gcc"; run_pack "$d"
 pack_check "with a musl compiler the glibc gate does not refuse 2.39" "0" "$(printf '%s\n' "$PK_OUT" | grep -c 'newer than the fleet' || true)"
 pack_check "it goes on to the tree checks, which this git-less PATH stops" "yes" "$(printf '%s\n' "$PK_OUT" | grep -q 'git' && echo yes || echo no)"
-
-# ---------------------------------------------------------------------------
-case_start "archive_install_prints_the_libc"
-d="$WORK/ar-libc"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
-printf 'gnu (glibc 2.31, runs on glibc >= 2.31)\n' > "$d/arch/LIBC"
-( cd "$d/arch" && sha256_of "sot-1.2.3-dev-$TGT.tar.gz" COMMIT LIBC > SHA256SUMS ); run_packed "$d"
-check "the install prints the libc line" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'archive sotd libc: gnu (glibc 2.31' || true)"
-
-# ---------------------------------------------------------------------------
-# A sotd that cannot run here: the install prints its loader's error and the libc its pack names, and blames nothing.
-case_start "archive_install_names_the_libc_when_its_sotd_cannot_run"
-d="$WORK/ar-norun"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
-printf 'gnu (glibc 2.31, runs on glibc >= 2.31)\n' > "$d/arch/LIBC"
-printf '#!/bin/sh\necho "loader: GLIBC_2.34 not found (required by sotd)" >&2\nexit 1\n' > "$d/pack/sot-1.2.3-dev-$TGT/sotd"
-chmod 0755 "$d/pack/sot-1.2.3-dev-$TGT/sotd"
-tar -czf "$d/arch/sot-1.2.3-dev-$TGT.tar.gz" -C "$d/pack" "sot-1.2.3-dev-$TGT"
-( cd "$d/arch" && sha256_of "sot-1.2.3-dev-$TGT.tar.gz" COMMIT LIBC > SHA256SUMS ); run_packed "$d"
-check "an unrunnable sotd makes the install exit non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
-check "it prints the loader's error" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'GLIBC_2.34 not found' || true)"
-check "it names the pack's libc" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'archive sotd libc: gnu (glibc 2.31' || true)"
-check "it does not blame TMPDIR" "0" "$(printf '%s\n' "$AR_OUT" | grep -c 'noexec' || true)"
-check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
-
-# ---------------------------------------------------------------------------
-# --ignore-missing checks only the names SHA256SUMS lists, so a copied COMMIT or LIBC it does not list is refused, not trusted.
-case_start "archive_install_refuses_a_copied_asset_its_sha256sums_does_not_list"
-d="$WORK/ar-unlisted-libc"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
-printf 'gnu (glibc 2.31, runs on glibc >= 2.31)\n' > "$d/arch/LIBC"; run_packed "$d"
-check "an unlisted LIBC makes the install exit non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
-check "it names LIBC as unlisted" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'LIBC is not listed in' || true)"
-check "it refuses before the commit is fetched" "0" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not in origin' || true)"
-check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
-d="$WORK/ar-unlisted-commit"; mk_packed "$d" 1.2.3-dev 012345678 1.2.3-dev
-( cd "$d/arch" && sha256_of "sot-1.2.3-dev-$TGT.tar.gz" > SHA256SUMS ); run_packed "$d"
-check "an unlisted COMMIT makes the install exit non-zero" "yes" "$([ "$AR_RC" -ne 0 ] && echo yes || echo no)"
-check "it names COMMIT as unlisted" "1" "$(printf '%s\n' "$AR_OUT" | grep -c 'COMMIT is not listed in' || true)"
-check "it refuses before the commit is fetched" "0" "$(printf '%s\n' "$AR_OUT" | grep -c 'is not in origin' || true)"
-check "the installed sotd is the old one" "old" "$(cat "$d/prefix/bin/sotd")"
 
 # shellcheck source=installer-handoff.sh
 . "$(dirname "$0")/installer-handoff.sh"

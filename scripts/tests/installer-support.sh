@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# installer-support.sh -- shared setup for installer-state.sh, installer-wrapper.sh and installer-apply.sh: sources install.sh and
-# lib/sot-daemon.sh, the check helpers, and the sandboxed tool dir and recording stubs. Sourced, never run.
+# installer-support.sh -- shared setup for installer-state.sh, installer-wrapper.sh, installer-apply.sh and
+# installer-shared-home.sh: sources lib/sot-daemon.sh, the check helpers, and the sandboxed tool dir and recording stubs.
+# Sourced, never run.
 
-SOT_INSTALL_SOURCE_ONLY=1
-export SOT_INSTALL_SOURCE_ONLY
-# shellcheck source=../install.sh
-. "$(dirname "$0")/../install.sh"
 # shellcheck source=../lib/sot-daemon.sh
 . "$(dirname "$0")/../lib/sot-daemon.sh"
 
@@ -40,7 +37,7 @@ mk_tools() {  # <dir> [tool...]
         p="$(type -P "$t")" || { printf 'FAIL mk_tools: %s is missing\n' "$t" >&2; exit 1; }
         ln -sf "$p" "$d/$t"
     done
-    # install.sh takes sha256sum or shasum, and calls timeout only beside systemctl (macOS has shasum, not sha256sum, and no timeout).
+    # The scripts take sha256sum or shasum, and call timeout only beside systemctl (macOS has shasum, not sha256sum, and no timeout).
     for t in sha256sum shasum timeout; do
         p="$(command -v "$t")" && ln -sf "$p" "$d/$t"
     done
@@ -48,7 +45,7 @@ mk_tools() {  # <dir> [tool...]
 }
 TOOLS="$WORK/tools"; mk_tools "$TOOLS"
 
-# host_target — the release target install.sh and sot-apply.sh name this box by.
+# host_target — the release target sotd install and sot-apply.sh name this box by.
 host_target() { case "$(uname -s)-$(uname -m)" in Darwin-arm64) echo macos-aarch64 ;; *) echo linux-x86_64 ;; esac; }
 TGT="$(host_target)"
 # sha256_of FILE... — `<hash>  <file>` lines, by sha256sum or macOS's shasum.
@@ -104,7 +101,7 @@ PS
 }
 # stale_line LINE — LINE with each printed time (YYYY-MM-DD HH:MM:SS) as D.
 stale_line() { printf '%s\n' "$1" | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/D/g'; }
-# linux_check DESC EXPECTED ACTUAL — check on Linux; elsewhere a SKIP line. A systemd unit is Linux's: install.sh and
+# linux_check DESC EXPECTED ACTUAL — check on Linux; elsewhere a SKIP line. A systemd unit is Linux's: sotd install and
 # sot-apply.sh run systemctl, bounded by GNU timeout, only for a unit they own, which a Mac never has.
 linux_check() {
     if [ "$(uname -s)" = Linux ]; then check "$@"; else printf '    SKIP %s (a systemd unit: Linux only)\n' "$1"; fi

@@ -40,13 +40,20 @@ rm -f "$WORK/rendered-refused.out"
 
 # ---------------------------------------------------------------------------
 case_start "one_path_predicate"
-# The library's refusal has two byte-identical copies, install.sh's front gate and sot-apply's check before the flip.
+# The one list of characters a path may not hold. The library's refusal has one byte-identical copy, sot-apply's check
+# before the flip (it runs before the library of the commit it applies is read); sotd install's front gate names the
+# same list, which the sotd the gate built (SOT_TEST_SOTD) is asked here.
 refused_text() { sed -n '/^sot_path_refused() {/,/^}/p' "$1"; }
 check "the library defines sot_path_refused" "yes" "$([ -n "$(refused_text "$(dirname "$0")/../lib/sot-daemon.sh")" ] && echo yes || echo no)"
-for f in install.sh sot-apply.sh; do
-    check "$f's sot_path_refused is byte-identical to the library's" "$(refused_text "$(dirname "$0")/../lib/sot-daemon.sh")" "$(refused_text "$(dirname "$0")/../$f")"
-done
-check "no other script defines it" "3" "$(grep -rl '^sot_path_refused() {' "$(dirname "$0")/.." | wc -l | tr -d ' ')"
+check "sot-apply.sh's sot_path_refused is byte-identical to the library's" "$(refused_text "$(dirname "$0")/../lib/sot-daemon.sh")" "$(refused_text "$(dirname "$0")/../sot-apply.sh")"
+check "no other script defines it" "2" "$(grep -rl '^sot_path_refused() {' "$(dirname "$0")/.." | wc -l | tr -d ' ')"
+lib_list="$(sot_path_refused prefix '/a%b' 2>&1 >/dev/null | sed -n 's/.* none of: //p')" || true
+if [ -x "${SOT_TEST_SOTD:-}" ]; then
+    gate_list="$(HOME="$WORK" "$SOT_TEST_SOTD" install --pack "$WORK/no-pack" --prefix '/a%b' 2>&1 | sed -n 's/^ERROR: .* none of: //p')" || true
+    check "sotd install's front gate names the library's list" "$lib_list" "$gate_list"
+else
+    printf '    SKIP sotd install names the same list (no SOT_TEST_SOTD)\n'
+fi
 
 # ---------------------------------------------------------------------------
 case_start "path_refusal_under_dash"
