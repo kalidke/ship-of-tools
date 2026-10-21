@@ -64,8 +64,8 @@ unread. Design of record: docs/history/adr/0049-messaging-on-one-page.md. The co
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides:
-`remove_comm_agents_for_workspace`, `handle_agent_join`, `handle_comm_file`, `handle_agent_send`, `Links`, `comm_handle_for_workspace`, `clear_comm_unread`,
-`read_comm_agents`, `host_matches`, `last_joiner`, `spawn_registry_poll`, `workspace.changed`, `workspace.list`,
+`remove_comm_agents_for_workspace`, `handle_comm_file`, `handle_agent_send`, `Links`, `edit_entry`, `stamp_last_seen`,
+`read_comm_agents`, `host_matches`, `last_joiner`, `dialog_of`,
 `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`, `agents/spawn/comm-probe.sh`,
 `agents/spawn/comm-bootstrap.sh`, `sot_sanitize_component`, `_sot_handle_host`. Provides also: HOST (the declared host), HANDLE_HOST (the raw handle component), and _sot_self_slot for the agents shell edge. Uses: `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `ping`, `LINK_ROLE`, `SshRecipe`, `recipe_for`, `dial_and_call`, `dispatch`, `LinkGate`, `Redial`, `STABLE`, `Signal::spawn`,
 `Contained`, `Signal`, `child_signal::process`, `Workspace::agent_handle`, `set_agent_handle`, `attach`,
@@ -75,7 +75,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `sot_host`, `comm/lib/comm-lib-base.sh`,
 `install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`, `ChildLines`.
 
-`handle_agent_join` is provided to server dispatch; rows consume the registry binding/read/prune functions.
+Rows consume the registry's read, edit, prune and liveness functions; the binding of a handle to a row is rows'.
 
 ## Folders
 - `adapters/`: what is installed into Claude Code and Codex: hooks, the messaging skills, the Codex skills and plugin.
@@ -87,8 +87,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `rust/backend/src/comm/mail/`: the daemon's delivery: `comm.file` (`file_comm`), its offers to linked daemons
   (`links.rs`) and the hub link that answers them (`run`), the append (`file_frame`), and the `agent.send` UI
   notification and its `agent.message` bus (`relay.rs`).
-- `rust/backend/src/comm/registry/`: the daemon's address book: `agent.join` (`handle_agent_join`), the registry lock
-  (`acquire`), reads, the destroy prune and `clear_comm_unread`.
+- `rust/backend/src/comm/registry/`: the daemon's address book: the registry lock (`acquire`), reads, one entry's edit
+  (`edit_entry`), the destroy prune and the liveness stamp's write (`stamp_last_seen`); `agent.join` is rows'.
 - `rust/backend/src/comm/wake/`: the wake tick (`check_row`), the screen reading and the one attach.
 
 ## Files

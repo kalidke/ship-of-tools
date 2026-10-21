@@ -246,15 +246,15 @@ nq0="$(ls "$SOT_COMM_HOME/state" | grep -c '^askq-' || true)"
 run own "$SELF_ROW" "$STATUS" blocked "a manual question"; eq "own: a manual comm-status.sh blocked succeeds" "$RC" 0
 eq  "own: a manual comm-status.sh blocked writes no marker" "$(ls "$SOT_COMM_HOME/state" | grep -c '^askq-' || true)" "$nq0"
 run own "$SELF_ROW" "$STATUS" working y; run own "$SELF_ROW" "$STATUS" waiting x   # leave the row as it was
-# The daemon's entry (SOT_COMM_ROW_HANDLE) is for a caller whose parent is sotd: a row's own agent that names another
-# row is refused, rc 2, and the registry is as it was; one beneath a process named sotd is let through.
+# The daemon's old entry (SOT_COMM_ROW_HANDLE) names another row: refused, rc 2, from any caller, and the registry is as
+# it was. The daemon writes a row's dialog in its own process now.
 before="$(snap "$SOT_COMM_HOME")"
 run own "$SELF_ROW" env SOT_COMM_ROW_HANDLE="$PEER" "$STATUS" dialog "claude dialog open"
-eq  "own: the daemon entry from an agent's tool shell exits 2" "$RC" 2
-has "own: the daemon entry refusal names the cause" "$OUT" "parent is not sotd"
-if [ "$(snap "$SOT_COMM_HOME")" = "$before" ]; then ok "own: the refused daemon entry changes nothing under the comm home"; else bad "own: the refused daemon entry changed the comm home"; fi
+eq  "own: the old daemon entry from an agent's tool shell exits 2" "$RC" 2
+has "own: the old daemon entry refusal names the cause" "$OUT" "the daemon writes a row's dialog itself"
 run own "$SELF_ROW" env SOT_COMM_ROW_HANDLE="$PEER" bash "$WORK/fake.sh" sotd hold.sh "$STATUS" resumed
-eq  "own: the daemon entry under a sotd parent is honored" "$RC" 0
+eq  "own: the old daemon entry under a sotd parent is refused too" "$RC" 2
+if [ "$(snap "$SOT_COMM_HOME")" = "$before" ]; then ok "own: the refused daemon entry changes nothing under the comm home"; else bad "own: the refused daemon entry changed the comm home"; fi
 # A child neither spawns nor despawns rows: every form refuses, whatever --task says,
 # and the comm home (registry, inboxes, the row's own entry) is byte for byte as it was.
 for v in "--name h $WORK" "--name h $WORK --task t" "h $WORK" "h $WORK --task t" "$WORK" "--name h $WORK --endpoint unix:/nonexistent"; do

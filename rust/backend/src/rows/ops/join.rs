@@ -7,7 +7,7 @@ use sot_protocol::op;
 use sot_protocol::AgentJoinReq;
 use sot_protocol::AgentJoinRes;
 use sot_protocol::Frame;
-use crate::comm::registry::liveness::unended_handles;
+use crate::rows::handle::unended_handles;
 use crate::rows::WorkspaceChanged;
 use crate::rows::Workspaces;
 use tokio::sync::broadcast;
@@ -15,9 +15,8 @@ use crate::paths::valid_name;
 use crate::server::reply::HandlerOutput;
 
 /// `agent.join` (ADR 0046 decision 1): a session inside `req.workspace_id`
-/// declares its sot-comm handle to this daemon — read by every later
-/// `workspace.list`/`clear_comm_unread` call ahead of the self-file
-/// read-back fallback (`capsule_comm_handle`, S5: stays until family H).
+/// declares its sot-comm handle to this daemon — the row's bound handle from
+/// then on (`rows::handle::bound_handle`).
 /// `handle` is validated against the same charset `workspace.create`'s own
 /// `valid_name` already enforces (comm-lib.sh's derived handles are built
 /// to satisfy exactly this). `set_agent_handle` (S6) is a guarded
@@ -224,5 +223,5 @@ async fn persist_moved(workspaces: &Workspaces, workspace_id: &str, handle: &str
 }
 
 #[cfg(test)]
-#[path = "join_agent_join_tests.rs"]
+#[path = "join_tests.rs"]
 mod agent_join_tests;

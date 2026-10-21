@@ -1,5 +1,5 @@
 use super::*;
-use crate::comm::registry::registry::comm_handle_for_workspace;
+use crate::rows::handle::bound_handle;
 use crate::rows::Workspace;
 
 // `handle_agent_join` persists through `crate::rows::store::save` —
@@ -92,7 +92,7 @@ async fn agent_join_persists_and_list_merges_by_the_declared_handle() {
 
     // `workspace.list`'s own row-binding rule merges by the declared
     // handle — this is what makes the join visible there.
-    let merged = comm_handle_for_workspace(&resolved, &workspaces.list());
+    let merged = bound_handle(&resolved, &workspaces.list());
     assert_eq!(merged, "agentjoin-testhost");
 
     // workspace.changed published so the FE re-lists.

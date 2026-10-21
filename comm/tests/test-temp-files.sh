@@ -79,13 +79,9 @@ c4_check() {
     jq -e --arg q "$TF_SENT" '.agents["t-sender"].question == $q' "$SOT_COMM_HOME/registry.json" > /dev/null \
         || { echo "    the row's question is not the value, byte for byte"; return 1; }
 }
-for p in ok fail kill; do
-    cp "$SOT_COMM_HOME/registry.json" "$WORK/registry.before"
-    TF_CHECK=c4_check tf_row "C4 comm-status (the summary)" "$p" "${SENDER[@]}" "$SCRIPTS_DIR/comm-status.sh" blocked "$TF_SENT"
-    if [ "$p" = fail ] && ! cmp -s "$WORK/registry.before" "$SOT_COMM_HOME/registry.json"; then
-        echo "FAIL: C4 comm-status (the summary) fail changed the registry"; TF_FAILED=$((TF_FAILED + 1))
-    fi
-done
+# The summary reaches rows' `sotd work-state` on its stdin and no jq call: the ok path alone, which checks it arrived
+# byte for byte and left nothing behind.
+TF_CHECK=c4_check tf_row "C4 comm-status (the summary)" ok "${SENDER[@]}" "$SCRIPTS_DIR/comm-status.sh" blocked "$TF_SENT"
 
 # The Stop hook's two findings blocks: the auditor's words are free text. The hook runs from a folder of its own
 # whose comm-turn-auditor.sh stand-in prints a finding that carries the mark; each path has its own joined row, which
@@ -164,13 +160,8 @@ done
 TF_HOLD='sot-oneshot-*' tf_signal "C10 sot_oneshot_request's trap (the signal twice)" HUP env SOT_SOCKET="$TF_SOCK" \
     "${SENDER2[@]}" "$SCRIPTS_DIR/comm-send.sh" @t-peer x
 
-# with_lock's trap: comm-status.sh holds the registry lock while the write's jq call, which carries the mark, hangs.
-c11_check() {
-    [ ! -e "$SOT_COMM_HOME/.registry.lock" ] && return 0
-    echo "    left: .registry.lock in the comm home"; rm -f -- "${SOT_COMM_HOME:?}/.registry.lock"; return 1
-}
-TF_SIGNAL_PATH=kill TF_HOLD=.registry.lock TF_CHECK=c11_check tf_signal "C11 with_lock's trap (the signal twice)" HUP \
-    "${SENDER[@]}" "$SCRIPTS_DIR/comm-status.sh" blocked "$TF_SENT"
+# with_lock's trap had one holder whose jq call carried free text under the lock, comm-status.sh's write; that write is
+# rows' `sotd work-state` now, so no comm script holds the lock while a call that can carry the mark runs.
 
 TF_HOLD='.hb-ctx-*' TF_CHECK=c8_check tf_signal "C13 the heartbeat context's trap (the signal twice)" HUP \
     sh -c 'f="$1"; shift; exec "$@" < "$f"' _ "$WORK/hb/envelope.json" env CLAUDE_CODE_SESSION_ID=tf-hold \
@@ -205,8 +196,6 @@ for s in HUP INT TERM; do
     TF_AT_ONCE=1 tf_signal "C20 sot_comm_file's and sot_oneshot_request's traps (the signal twice at once)" "$s" \
         env SOT_SOCKET="$TF_SOCK" "${SENDER2[@]}" "$SCRIPTS_DIR/comm-send.sh" @t-peer x
 done
-TF_SIGNAL_PATH=kill TF_AT_ONCE=1 TF_CHECK=c11_check tf_signal "C21 with_lock's trap (the signal twice at once)" HUP \
-    "${SENDER[@]}" "$SCRIPTS_DIR/comm-status.sh" blocked "$TF_SENT"
 # A Ctrl-C stops the callers too: a bash that waits on a command and gets INT goes on when the command exits normally,
 # and stops when it ends by INT. comm-relay.sh waits on sot_comm_file's subshell, and a shell waits on comm-relay.sh.
 tf_table '{"comm.file":"silent"}'

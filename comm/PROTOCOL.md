@@ -69,15 +69,16 @@ A row's `state` is `blocked`, with the dialog's text as its `summary`, while the
 person, even while its turn runs. `comm-status.sh dialog "T"` sets that fact (`dialog`), and `comm-status.sh resumed`
 clears it, as a turn's `prompt` and `stop` also do. A Codex session's PermissionRequest hook sends `dialog` and the
 heartbeat sends `resumed`. A Claude Code session sends no event when a dialog shows, so the daemon reads the screen
-of each working Claude row every 5 seconds (not on Windows) and sends both, through `SOT_COMM_ROW_HANDLE`, which takes
-only these two verbs and only from a process whose parent is `sotd`.
+of each Ready Claude row every 5 seconds and writes both itself. Every write of these fields is rows' one work-state
+write (`sotd work-state`, which `comm-status.sh` runs; the daemon's in its own process), whose contract is rows'
+(rust/backend/src/rows/CLAUDE.md, work-state).
 
 Registry host facts and unpinned self-slot keys use the daemon's declared host. Raw host text is a derived-handle component and validated legacy-slot input only; explicit identity pins retain their text.
 
 **Liveness** is one fact, `last_seen`: a handle is *live* when its `last_seen` is a
 `YYYY-MM-DDTHH:MM:SSZ` stamp under 600 seconds old (`COMM_LIVE_SECS`, `LIVE_SECS`). The
 session stamps it (join, send, poll, status, and each turn's heartbeat), and the daemon that
-runs a Starting or Ready row stamps that row's handle every minute (`liveness.rs`), so an
+runs a Starting or Ready row stamps that row's handle every minute (rows' `handle.rs`), so an
 idle row stays live while it runs, through a daemon restart, and until ten minutes after its
 last stamp. A daemon that cannot take the registry lock, or read or write the registry,
 stamps nothing. Its warning says so each minute, and ten minutes after a row's last stamp a

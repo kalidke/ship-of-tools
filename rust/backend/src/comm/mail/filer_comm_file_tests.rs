@@ -415,7 +415,11 @@ fn every_inbox_append_is_the_verdicts_or_the_move() {
         appenders,
         vec![("rust/backend/src/comm/mail/filer.rs".to_string(), 1), ("rust/backend/src/comm/mail/hub_link.rs".to_string(), 1)]
     );
-    assert_eq!(last_seen, ["rust/backend/src/comm/mail/filer.rs", "rust/backend/src/comm/registry/registry.rs"]);
+    // The heartbeat's readers and the daemon's stamp, and the session's own stamp through work-state's one write.
+    assert_eq!(
+        last_seen,
+        ["rust/backend/src/comm/mail/filer.rs", "rust/backend/src/comm/registry/registry.rs", "rust/backend/src/rows/work_state/mod.rs"]
+    );
     assert_eq!(
         opens,
         vec![

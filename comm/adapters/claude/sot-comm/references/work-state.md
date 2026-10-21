@@ -2,7 +2,8 @@
 
 Read this when the one-paragraph summary in `SKILL.md` isn't enough — e.g.
 you're testing the state machinery itself, or a `waiting` row isn't clearing
-the way you expect.
+the way you expect. The contract is rows' (`rust/backend/src/rows/CLAUDE.md`,
+work-state); this page is how a session meets it.
 
 ## Precedence: the user first
 
@@ -22,11 +23,12 @@ A row is a small SET OF FACTS, not one state you set directly:
 | `question` | the question text | `blocked "<q>"` | a `prompt` event with origin `user`; `waiting`; explicit `working`/`idle`/`done` |
 | `waiting` | the wait summary | `waiting "<s>"` | explicit `working`/`idle`/`done` |
 | `done` | `true` | explicit `done`; `stop` (when `floor` was `user` and nothing else is pending) | a `prompt` event with origin `user`; explicit `working`/`idle`/`blocked`/`waiting`; viewing the row |
-| `dialog` | the dialog's text | `dialog "<t>"`: a Codex row's `PermissionRequest` hook; for a Claude row, the daemon, from the row's screen | `resumed`; `prompt` and `stop` |
+| `dialog` | the dialog's text | `dialog "<t>"`: a Codex row's `PermissionRequest` hook; for a Claude row, the daemon, from the row's screen, in its own process | `resumed`; `prompt` and `stop` |
 | `note` | the declaration's own line | `working`/`idle`/`done` with a summary | `working`/`idle`/`done` with `""`; `blocked` or `waiting` with text |
 
 Every write (event or declaration) re-reduces `state` and `summary` from
-whatever facts remain, in ONE place, `comm-status.sh`:
+whatever facts remain, in ONE place, rows' `sotd work-state` (`work_state::reduce`),
+which `comm-status.sh` runs:
 
 ```
 dialog set                     -> blocked   summary = dialog
@@ -66,11 +68,11 @@ and touches no other fact. On a Codex row its `PermissionRequest` hook sends
 `dialog "codex permission request: <tool>"` and no `stop`; the heartbeat finds
 `state/dialog-<key>.marker` at the call's PostToolUse and sends `resumed`, and
 the turn's `stop` and every `prompt` clear it too. On a Claude row the daemon
-reads the screen and stamps `dialog "claude dialog: <question>"` and `resumed`
-itself, through the entry only sotd may use; no hook sends it. A Claude row at
-rest shows none (a background agent's dialog after the lead's Stop reads idle),
-and a row left `working` by a turn with no Stop reads red while a person has a
-select menu open on it.
+reads the screen every 5 seconds, on every OS, and writes `dialog "claude dialog:
+<question>"` and `resumed` itself, in its own process; no hook sends it. It reads
+every Ready Claude row but one red by its question, a row at rest included, so a
+background agent's dialog after the lead's Stop reads red too, and so does a
+select menu a person opens (/model, /resume) until it closes.
 
 ### Viewing clears the `done` fact and the badge, never `question` or `waiting`
 
@@ -179,7 +181,8 @@ empty text was never identified. The refusal above means a textless
 `blocked` or `waiting` can no longer paint a row, so the fix does not depend
 on finding it. If a row ever shows red with text its own session never wrote,
 re-open it, unless the text is the daemon's own `claude dialog ...` (a dialog
-shows on that row's screen, which is expected).
+shows on that row's screen, which is expected; one that closed between the
+daemon's read and its write stays red for one more 5-second tick).
 
 Two more limits are known. An AskUserQuestion payload with no question text
 still leaves the answer marker before the stamp is refused (real payloads

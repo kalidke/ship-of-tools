@@ -228,9 +228,8 @@ pub mod op {
     /// `AgentJoinRes { ok }` once that row is saved; the rows that lost the
     /// handle are saved after the reply. Refusals (`unknown_workspace`,
     /// `bad_handle`, and `persist_failed` when the joining row's save
-    /// failed) ride the standard error payload. The daemon's read-back of
-    /// the row's self-file (`capsule_comm_handle`) stays only as the
-    /// fallback for a row that has not declared. An empty `workspace_id` is a join
+    /// failed) ride the standard error payload. A row that has not declared
+    /// answers to the name it was created with. An empty `workspace_id` is a join
     /// from outside any row: it changes nothing and answers `AgentJoinRes { ok }`,
     /// or `held_by_row` while any row the daemon has not seen end holds `handle`.
     pub const AGENT_JOIN: &str = "agent.join";

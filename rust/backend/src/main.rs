@@ -125,6 +125,7 @@ fn help_for(args: &[String]) -> Option<&'static str> {
         "stdio-bridge" => topology::stdio_bridge::USAGE,
         "same-version" => topology::same_version::USAGE,
         "ancestors" => comm::registry::ancestors::USAGE,
+        "work-state" => rows::work_state::cli::USAGE,
         "update" => update::USAGE,
         "install" => install::USAGE,
         _ => SOTD_HELP,
@@ -199,6 +200,12 @@ fn main() -> Result<()> {
             // the agents above a comm script. A pure query like the arms around it.
             "ancestors" => lifecycle::shutdown::exit(comm::registry::ancestors::run(&std::env::args().skip(2).collect::<Vec<_>>())),
             "agent-exec" => agents::ops::agent_exec(),
+            // `sotd work-state <verb> --handle <h> ...`: one work-state write for a session (rows/CLAUDE.md, work-state),
+            // the way the hooks' and declarations' script reaches it. The comm folder is private: the umask first.
+            "work-state" => {
+                apply_umask();
+                std::process::exit(rows::work_state::cli::run(&args[1..]));
+            }
             // The capsule-only birth parent (`rows::spawn::durable`): the daemon starts it over a private channel it
             // holds as standard input. Not a user command, so it is in no usage text.
             #[cfg(unix)]

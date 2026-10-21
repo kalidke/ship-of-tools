@@ -322,9 +322,10 @@ case_every_append_and_last_seen_file_is_pinned() {
     pin -w _sot_append_whole -- comm/lib/comm-lib-inbox.sh comm/lib/comm-lib-registry.sh || return 1
     # a redirection into an inbox file: both are `: >>` touches, which add no line
     pin -E '>>?[[:space:]]*"?[^[:space:]]*(INBOX|inbox)[^[:space:]]*\.jsonl' -- agents/spawn/comm-spawn.sh comm/registry/comm-join.sh || return 1
+    # A session's work-state stamp (comm-status.sh and the heartbeat) writes last_seen through rows' `sotd work-state`,
+    # which filer_comm_file_tests.rs pins with the Rust writers.
     pin -w last_seen -- agents/spawn/comm-spawn.sh comm/lib/comm-lib-registry-lock.sh comm/lib/comm-lib-registry.sh \
-        comm/mail/comm-send.sh comm/registry/comm-join.sh comm/registry/comm-list.sh comm/work_state/comm-status.sh \
-        comm/work_state/hooks/comm-status-heartbeat.sh || return 1
+        comm/mail/comm-send.sh comm/registry/comm-join.sh comm/registry/comm-list.sh || return 1
     return 0
 }
 

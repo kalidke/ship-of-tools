@@ -3,6 +3,7 @@
 mod registry;
 pub(crate) mod anchor;
 pub(crate) mod end;
+pub(crate) mod handle;
 pub(crate) mod gate;
 pub(super) mod ops;
 pub(crate) mod reauth;
@@ -10,6 +11,7 @@ pub(crate) mod run;
 pub(crate) mod spawn;
 pub(crate) mod state_folder;
 pub(crate) mod store;
+pub(crate) mod work_state;
 pub(crate) mod workspace;
 
 use std::collections::{HashMap, HashSet};

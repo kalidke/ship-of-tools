@@ -91,8 +91,8 @@ mod prune_write_tests {
     }
 }
 
-mod clear_write_tests {
-    use super::{clear_comm_unread, Workspace};
+mod edit_write_tests {
+    use super::edit_entry;
 
     struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
@@ -124,8 +124,15 @@ mod clear_write_tests {
         }
     }
 
-    // A capsule row bound by its declared handle, seeded `done` on host-4.
-    fn seed(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>, Workspace) {
+    /// The edit a person's read makes: `done` removed, the state it showed made idle.
+    fn clear(entry: &mut serde_json::Map<String, serde_json::Value>) -> ((), bool) {
+        entry.remove("done");
+        entry.insert("state".into(), "idle".into());
+        ((), true)
+    }
+
+    // An entry `h`, seeded `done` on host-4.
+    fn seed(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
         let dir = std::env::temp_dir().join(format!(
             "sot-registry-write-clear-{tag}-{}-{}",
             std::process::id(),
@@ -143,25 +150,15 @@ mod clear_write_tests {
         }))
         .unwrap();
         std::fs::write(&registry_path, &seeded).unwrap();
-        let mut ws = Workspace::from_label(
-            "writeprobe",
-            std::path::PathBuf::from("/p"),
-            false,
-            "none".into(),
-            String::new(),
-            String::new(),
-        );
-        ws.runtime = "capsule".to_string();
-        ws.agent_handle = std::sync::Mutex::new("h".to_string());
-        (dir, registry_path, seeded, ws)
+        (dir, registry_path, seeded)
     }
 
     #[test]
-    fn a_clear_writes_pretty_json_and_a_newline_and_no_temp() {
+    fn an_edit_writes_pretty_json_and_a_newline_and_no_temp() {
         let _guard = guarded();
-        let (dir, registry_path, _, ws) = seed("bytes");
+        let (dir, registry_path, _) = seed("bytes");
 
-        clear_comm_unread(&ws, &[], "host-4");
+        assert_eq!(edit_entry("h", std::time::Duration::from_secs(1), clear), Ok(Some(())));
 
         let mut expected = serde_json::to_vec_pretty(&serde_json::json!({
             "agents": {"h": {"host": "host-4", "state": "idle", "summary": "s"}}
@@ -175,9 +172,9 @@ mod clear_write_tests {
     }
 
     #[test]
-    fn a_failed_temp_write_clears_nothing() {
+    fn a_failed_temp_write_writes_nothing() {
         let _guard = guarded();
-        let (dir, registry_path, seeded, ws) = seed("tmpfail");
+        let (dir, registry_path, seeded) = seed("tmpfail");
         // On Unix a dangling symlink makes only the create fail (ENOENT): a
         // write that went on to rename would leave the link at the registry.
         #[cfg(unix)]
@@ -185,7 +182,7 @@ mod clear_write_tests {
         #[cfg(not(unix))]
         std::fs::create_dir(dir.join("registry.json.tmp")).unwrap();
 
-        clear_comm_unread(&ws, &[], "host-4");
+        assert_eq!(edit_entry("h", std::time::Duration::from_secs(1), clear), Err(super::EditError::Unwritten));
         assert_eq!(std::fs::read(&registry_path).unwrap(), seeded);
 
         let _ = std::fs::remove_dir_all(&dir);

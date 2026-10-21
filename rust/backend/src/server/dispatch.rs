@@ -279,7 +279,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::AGENT_SEND => crate::comm::mail::relay::handle_agent_send(req_id, payload, &shared.agent_events_tx).await,
         op::COMM_FILE => crate::comm::mail::filer::handle_comm_file(req_id, payload, &shared.links).await,
         op::AGENT_JOIN => {
-            crate::comm::registry::join::handle_agent_join(req_id, payload, workspaces, ws_events_tx).await
+            crate::rows::ops::join::handle_agent_join(req_id, payload, workspaces, ws_events_tx).await
         }
         op::FE_COMMAND_SEND => {
             crate::clients::handle_fe_command_send(req_id, payload, &shared.fe_command_tx, clients).await

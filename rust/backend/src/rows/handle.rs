@@ -1,12 +1,31 @@
-//! The row liveness stamp: while a row runs, its handle's `last_seen` stays fresh, so an idle row is live.
+//! A row's comm handle: [`bound_handle`], the one answer to which handle is a row's, and the liveness stamp, which keeps
+//! the handles of the rows that run fresh in the comm registry, so an idle row is live.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::comm::registry::registry::{comm_handle_for_workspace, iso8601_utc_now, stamp_last_seen};
+use crate::comm::registry::registry::{iso8601_utc_now, stamp_last_seen};
 use crate::rows::workspace::Phase;
 use crate::rows::{Workspace, Workspaces};
+
+/// Which comm handle is row `ws`'s: the handle its session declared (`agent.join`), else the name the row was created
+/// with, unless another row of `rows` (the daemon's rows) declares that name, since a handle binds one row. `""` when
+/// none. Every reader of a row's handle asks this: the list, the work-state, the liveness stamp, the wake and a join
+/// from outside any row.
+pub(crate) fn bound_handle(ws: &Workspace, rows: &[Arc<Workspace>]) -> String {
+    let declared = ws.agent_handle();
+    if !declared.is_empty() {
+        return declared;
+    }
+    let name = ws.agent_name();
+    let held_elsewhere = rows.iter().any(|r| r.workspace_id != ws.workspace_id && r.agent_handle() == name);
+    if name.is_empty() || held_elsewhere {
+        String::new()
+    } else {
+        name
+    }
+}
 
 /// How often the held handles are stamped when nothing changed.
 const STAMP_EVERY: Duration = Duration::from_secs(60);
@@ -40,16 +59,16 @@ pub(crate) fn unended<F: FnOnce() -> String>(rows: impl IntoIterator<Item = (Pha
 }
 
 /// The handles this daemon's running rows hold: each Starting or Ready row's handle by
-/// `comm_handle_for_workspace`, given the daemon's whole row list, so a row never answers to a handle
-/// it reaches by a self-file or stored name that another row declares (ADR 0049, one row per handle).
+/// [`bound_handle`], given the daemon's whole row list, so a row never answers to a stored name
+/// that another row declares (ADR 0049, one row per handle).
 pub(crate) fn held_handles(rows: &[Arc<Workspace>]) -> BTreeSet<String> {
-    held(rows.iter().map(|ws| (ws.phase(), move || comm_handle_for_workspace(ws, rows))))
+    held(rows.iter().map(|ws| (ws.phase(), move || bound_handle(ws, rows))))
 }
 
 /// The handles of every row not seen end, by the same rule as `held_handles`: what a session outside any row
 /// may not take.
 pub(crate) fn unended_handles(rows: &[Arc<Workspace>]) -> BTreeSet<String> {
-    unended(rows.iter().map(|ws| (ws.phase(), move || comm_handle_for_workspace(ws, rows))))
+    unended(rows.iter().map(|ws| (ws.phase(), move || bound_handle(ws, rows))))
 }
 
 /// A pass is due when the held set changed or `STAMP_EVERY` has passed since the last one.
@@ -59,7 +78,7 @@ fn due(held: &BTreeSet<String>, last_held: &BTreeSet<String>, since_last_pass: D
 
 /// Every `TICK`, stamp `last_seen` for the handles of the rows this daemon runs, when a pass is
 /// due. A failed pass is one warning and is retried at the next due pass.
-pub(crate) async fn run(workspaces: Workspaces) {
+pub(crate) async fn liveness(workspaces: Workspaces) {
     let mut last_held = BTreeSet::new();
     let mut last_pass: Option<Instant> = None;
     let mut tick = tokio::time::interval(TICK);
@@ -94,5 +113,9 @@ pub(crate) async fn run(workspaces: Workspaces) {
 }
 
 #[cfg(test)]
-#[path = "liveness_tests.rs"]
+#[path = "handle_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "handle_sites_tests.rs"]
+mod sites_tests;

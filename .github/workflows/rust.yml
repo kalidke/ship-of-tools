@@ -1000,6 +1000,15 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build bash 3.2.57
         run: bash scripts/tests/bash32.sh "$RUNNER_TEMP/bash-3.2.57" > /dev/null
+      # A session's work-state write is rows' `sotd work-state`: the suites' stub sotd hands it to this build
+      # (comm/tests/lib-home-guard.sh, GUARD_SOTD).
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build sotd for the work-state write
+        working-directory: rust
+        run: cargo build -p sot-backend --bin sotd --locked
       - name: Scripts under bash 3.2.57
         timeout-minutes: 30
         run: bash scripts/tests/under-bash.sh "$RUNNER_TEMP/bash-3.2.57/bash"

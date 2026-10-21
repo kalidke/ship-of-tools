@@ -128,11 +128,9 @@ pub fn own_sotd_bin() -> Option<&'static str> {
 /// slot: `comm-join.sh`'s #148 auto-disambiguating derivation decides the
 /// handle and writes it there. The session inside the capsule now also
 /// DECLARES it via `agent.join` over this same pinned `SOT_SOCKET`
-/// (`Workspace.agent_handle`, `comm::registry::join::handle_agent_join`); a declared
-/// `agent_handle` wins when present, but the daemon's OWN read-back of
-/// that same file (`comm::registry::registry::capsule_comm_handle`) stays as the
-/// FALLBACK for a row with no declaration yet (S5) —
-/// deleted only with family H once every row has cycled onto `agent.join`.
+/// (`Workspace.agent_handle`, `rows::ops::join::handle_agent_join`), and the
+/// declared handle is the row's (`rows::handle::bound_handle`); the daemon never
+/// reads the self-file back.
 /// `SOTD_BIN` is this daemon's own start path ([`own_sotd_bin`]), so the session's comm shell bridges with the daemon's
 /// own binary.
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {

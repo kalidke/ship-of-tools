@@ -1,5 +1,5 @@
 //! Tests of the dialog tick: what a screen and a registry entry call for, and the writes a dialog's open and close make
-//! through the real `comm-status.sh`.
+//! through work-state's one write.
 
 use super::*;
 use serde_json::json;
@@ -43,13 +43,13 @@ fn a_write_only_where_screen_and_registry_disagree() {
     assert_eq!(stamp_for(None, &working), None, "nothing to clear");
 }
 
-/// Only a working row, or one whose fact the tick must clear, is read at all.
+/// Every row is read but one red by its question with no dialog fact, which keeps its question as its summary.
 #[test]
-fn only_working_rows_and_rows_with_the_fact_are_due() {
+fn every_row_but_one_red_by_its_question_is_due() {
     assert!(due(&json!({"floor": "user", "state": "working"})));
     assert!(due(&json!({"state": "blocked", "dialog": "claude dialog open"})));
     for at_rest in ["idle", "done", "waiting"] {
-        assert!(!due(&json!({"state": at_rest})), "{at_rest}");
+        assert!(due(&json!({"state": at_rest})), "{at_rest}");
     }
     // An AskUserQuestion menu: red by the question its hook wrote before the menu drew, and it keeps that summary.
     assert!(!due(&json!({"state": "blocked", "question": "Which approach?", "summary": "Which approach?"})));
@@ -63,35 +63,37 @@ fn permission_changed() -> Vec<String> {
     screen
 }
 
-/// A row at rest is never attached, and a fact left on a row is still read and cleared: with three rows at rest (idle,
-/// done, a question) and one holding the fact, the sweep reads only that one and writes only its `resumed`.
+/// A row at rest is read like a working one (a background agent's dialog after its lead's Stop waits on the person), a
+/// row red by its question is not, and a fact left on a row is read and cleared: with rows idle, done, asked and left
+/// all showing a dialog, the sweep reads all but the asked row and writes the dialog on the two at rest; with every
+/// screen free it writes only the left row's `resumed`.
 #[test]
-fn a_row_at_rest_is_never_read_and_a_left_fact_still_clears() {
+fn a_row_at_rest_is_read_a_question_row_is_not_and_a_left_fact_clears() {
     let dir = tempfile::tempdir().expect("tempdir");
     let registry = json!({"agents": {
         "idle": {"state": "idle"},
         "done": {"state": "done", "done": true},
         "asked": {"state": "blocked", "question": "Which approach?"},
-        "left": {"state": "blocked", "dialog": "claude dialog open"},
+        "left": {"state": "blocked", "dialog": "claude dialog: Do you want to proceed?"},
     }});
     std::fs::write(dir.path().join("registry.json"), registry.to_string()).expect("registry");
     let rows: Vec<(String, PathBuf)> = ["idle", "done", "asked", "left"].iter().map(|h| (h.to_string(), PathBuf::from(h))).collect();
     let (reads, writes) = (std::cell::RefCell::new(Vec::new()), std::cell::RefCell::new(Vec::new()));
     let read = |d: &Path| {
         reads.borrow_mut().push(d.to_path_buf());
-        // Every screen shows a dialog, as a menu a person opened at rest would: a read of a row at rest would write.
         Seen::Screen(permission())
     };
-    let write = |_: &Path, h: &str, s: &Stamp| {
+    let write = |h: &str, s: &Stamp| {
         writes.borrow_mut().push((h.to_string(), s.clone()));
         Ok(())
     };
     check_rows(dir.path(), &rows, &read, &write, &mut HashSet::new());
-    assert_eq!(reads.into_inner(), vec![PathBuf::from("left")]);
-    assert_eq!(writes.into_inner(), vec![], "the left fact's dialog still shows: nothing to write");
+    assert_eq!(reads.into_inner(), ["idle", "done", "left"].map(PathBuf::from).to_vec());
+    let open = Stamp::Dialog("claude dialog: Do you want to proceed?".into());
+    assert_eq!(writes.into_inner(), vec![("idle".to_string(), open.clone()), ("done".to_string(), open)]);
     let free_read = |_: &Path| Seen::Screen(free());
     let writes = std::cell::RefCell::new(Vec::new());
-    let write = |_: &Path, h: &str, s: &Stamp| {
+    let write = |h: &str, s: &Stamp| {
         writes.borrow_mut().push((h.to_string(), s.clone()));
         Ok(())
     };
@@ -108,7 +110,7 @@ fn an_ended_leg_clears_its_fact_and_an_unreachable_one_keeps_it() {
     let rows: Vec<(String, PathBuf)> = ["gone", "mute"].iter().map(|h| (h.to_string(), PathBuf::from(h))).collect();
     let read = |d: &Path| if d == Path::new("gone") { Seen::Ended } else { Seen::Unknown };
     let writes = std::cell::RefCell::new(Vec::new());
-    let write = |_: &Path, h: &str, s: &Stamp| {
+    let write = |h: &str, s: &Stamp| {
         writes.borrow_mut().push((h.to_string(), s.clone()));
         Ok(())
     };
@@ -143,69 +145,40 @@ async fn a_long_sweep_never_stacks_another_behind_it() {
     assert_eq!(*starts.borrow(), vec![0, 30, 35, 40]);
 }
 
-/// A comm home whose bin holds the tree's `comm-status.sh` and its library, and one row, `h`, with `entry`.
-#[cfg(unix)]
-fn home_with(entry: serde_json::Value) -> tempfile::TempDir {
+/// A comm home whose registry holds one row, `h`, with `entry`, named by `SOT_COMM_HOME` while the guard lives.
+fn home_with(entry: serde_json::Value) -> (std::sync::MutexGuard<'static, ()>, crate::paths::EnvGuard, tempfile::TempDir) {
+    let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env = crate::paths::EnvGuard::capture("SOT_COMM_HOME");
     let dir = tempfile::tempdir().expect("tempdir");
-    let comm = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm");
-    let bin = dir.path().join("bin");
-    std::fs::create_dir_all(&bin).expect("bin");
-    let mut sources = vec![comm.join("work_state/comm-status.sh")];
-    for f in std::fs::read_dir(comm.join("lib")).expect("lib") {
-        let p = f.expect("entry").path();
-        if p.extension().is_some_and(|e| e == "sh") {
-            sources.push(p);
-        }
-    }
-    for src in sources {
-        std::os::unix::fs::symlink(&src, bin.join(src.file_name().expect("name"))).expect("symlink");
-    }
+    std::env::set_var("SOT_COMM_HOME", dir.path());
     std::fs::write(dir.path().join("registry.json"), json!({"agents": {"h": entry}}).to_string()).expect("registry");
-    dir
+    (serial, env, dir)
 }
 
-#[cfg(unix)]
 fn row(home: &Path) -> serde_json::Value {
     let bytes = std::fs::read(home.join("registry.json")).expect("registry");
     serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")["agents"]["h"].clone()
 }
 
-/// `cmd` run beneath a process whose argv[0] is `sotd`, as the daemon's own child is: the script's entry honors no other.
-#[cfg(unix)]
-fn under_sotd(cmd: std::process::Command) -> std::process::Command {
-    let mut out = std::process::Command::new("bash");
-    out.args(["-c", r#"exec -a sotd bash -c '"$@"; exit $?' sotd "$@""#, "_"]).arg(cmd.get_program()).args(cmd.get_args());
-    for (k, v) in cmd.get_envs() {
-        match v {
-            Some(v) => out.env(k, v),
-            None => out.env_remove(k),
-        };
-    }
-    out.current_dir(cmd.get_current_dir().expect("cwd"));
-    out
-}
-
-/// One tick of [`check_rows`] over row `h` showing `screen`, writing through the real script; the writes it made.
-#[cfg(unix)]
+/// One tick of [`check_rows`] over row `h` showing `screen`, writing through the tick's own write; the writes it made.
 fn tick(home: &Path, screen: Vec<String>) -> Vec<Stamp> {
     let writes = std::cell::RefCell::new(Vec::new());
-    let write = |h: &Path, handle: &str, s: &Stamp| {
+    let record = |handle: &str, s: &Stamp| {
         writes.borrow_mut().push(s.clone());
-        run_stamp(under_sotd(stamp_command(h, handle, s)))
+        write(handle, s)
     };
     let rows = [("h".to_string(), PathBuf::from("unused"))];
     let mut failing = HashSet::new();
-    check_rows(home, &rows, &|_: &Path| Seen::Screen(screen.clone()), &write, &mut failing);
+    check_rows(home, &rows, &|_: &Path| Seen::Screen(screen.clone()), &record, &mut failing);
     assert!(failing.is_empty(), "a write failed");
     writes.into_inner()
 }
 
-/// The dialog opens, stays and closes: exactly one `dialog` and one `resumed`, each reduced by the script. Fails if
-/// the tick writes on every tick, misses either edge, or the script's entry does not stamp the named row.
-#[cfg(unix)]
+/// The dialog opens, stays and closes: exactly one `dialog` and one `resumed`, each reduced by work-state's write.
+/// Fails if the tick writes on every tick, misses either edge, or the write does not stamp the named row.
 #[test]
 fn the_open_then_close_writes_one_dialog_and_one_resumed() {
-    let home = home_with(json!({"floor": "user", "state": "working", "summary": ""}));
+    let (_serial, _env, home) = home_with(json!({"floor": "user", "state": "working", "summary": ""}));
     let h = home.path();
     let mut writes = Vec::new();
     writes.extend(tick(h, free()));
@@ -218,16 +191,26 @@ fn the_open_then_close_writes_one_dialog_and_one_resumed() {
     assert!(row(h).get("dialog").is_none());
     writes.extend(tick(h, free()));
     assert_eq!(writes, vec![Stamp::Dialog("claude dialog: Do you want to proceed?".into()), Stamp::Resumed]);
-    assert!(!h.join("state").exists() || std::fs::read_dir(h.join("state")).expect("state").all(|f| {
-        !f.expect("entry").file_name().to_string_lossy().starts_with("dialog-")
-    }), "the daemon's entry writes no marker");
+    assert!(!h.join("state").exists(), "the daemon's write leaves no marker");
+}
+
+/// A row at rest whose screen shows a dialog (a background agent's permission prompt after its lead's Stop) reads red,
+/// and reads idle again when it closes.
+#[test]
+fn a_dialog_on_a_row_at_rest_reads_red_then_idle() {
+    let (_serial, _env, home) = home_with(json!({"state": "idle", "summary": "ready", "note": "ready"}));
+    let h = home.path();
+    assert_eq!(tick(h, permission()), vec![Stamp::Dialog("claude dialog: Do you want to proceed?".into())]);
+    assert_eq!((row(h)["state"].as_str(), row(h)["summary"].as_str()), (Some("blocked"), Some("claude dialog: Do you want to proceed?")));
+    assert_eq!(tick(h, free()), vec![Stamp::Resumed]);
+    assert_eq!((row(h)["state"].as_str(), row(h)["summary"].as_str()), (Some("idle"), Some("ready")));
 }
 
 /// After a restart the first tick clears a fact whose dialog has gone; nothing is kept between ticks.
-#[cfg(unix)]
 #[test]
 fn a_fact_left_by_a_former_run_clears_on_the_first_tick() {
-    let home = home_with(json!({"floor": "user", "state": "blocked", "dialog": "claude dialog open", "summary": "claude dialog open"}));
+    let (_serial, _env, home) =
+        home_with(json!({"floor": "user", "state": "blocked", "dialog": "claude dialog open", "summary": "claude dialog open"}));
     assert_eq!(tick(home.path(), free()), vec![Stamp::Resumed]);
     assert_eq!(row(home.path())["state"].as_str(), Some("working"));
 }

@@ -202,7 +202,7 @@ impl Workspaces {
     /// Record the sot-comm handle a session inside `workspace_id` DECLARED
     /// via `agent.join` (ADR 0046 decision 1) — the daemon is told once
     /// instead of re-deriving it from a self-file read-back on every
-    /// `workspace.list`/`clear_comm_unread` call — and MOVE it: ADR 0049
+    /// row-handle read (`rows::handle::bound_handle`) — and MOVE it: ADR 0049
     /// gives a handle to one row only, so every OTHER row whose declared
     /// handle equals `handle` loses it (cell cleared) in the same step.
     /// Returns the row and the ids of the rows that lost the handle, for

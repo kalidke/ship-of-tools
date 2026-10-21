@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # comm-status.sh — write one fact about this session's turn into the sot-comm
-# registry. Backbone of the ADE "state-nav" at-a-glance view: the nav renders
-# .agents[<handle>].{state, summary} per session, aged by status_at.
+# registry. Backbone of the window's row colors: the window shows each row's
+# .agents[<handle>].{state, summary}, aged by status_at. The contract is rows'
+# (rust/backend/src/rows/CLAUDE.md, work-state); the write itself is rows' one
+# work-state write, `sotd work-state`, which this script runs (below).
 #
 # Usage:
 #   comm-status.sh <verb> ["text"]
@@ -18,30 +20,23 @@
 #            nor `waiting` is set, then clears `floor` and the Stop hook's
 #            `stop_at` mark. Row or no row, it removes the turn mark.
 #   dialog "T"  the agent shows a dialog that waits on a person (Codex's
-#            PermissionRequest hook sends it; for a Claude row, the daemon,
-#            below): sets `dialog` to T, which reads red over the running turn;
+#            PermissionRequest hook sends it; for a Claude row the daemon sets
+#            it in its own process): sets `dialog` to T, which reads red;
 #            no text is refused (rc 2). With SOT_WORKSPACE_ID or
 #            CLAUDE_CODE_SESSION_ID set, its write also creates
 #            state/dialog-<id>.marker, the cheap test the heartbeat makes on
 #            every tool return.
 #   resumed  the dialog is gone (the heartbeat sends it when it finds that
-#            marker; for a Claude row, the daemon): clears `dialog`. `prompt`
+#            marker): clears `dialog`. `prompt`
 #            and `stop` clear it too: it never outlives its turn. All three
 #            remove the marker once their write has committed.
 #   join     the session has just written its row (comm-join.sh sends it):
 #            with a turn mark of its own session under five minutes old, sets
 #            `floor` to machine as a machine `prompt` does; else writes nothing.
 #
-# The daemon's entry, the one stamp made from outside the row:
-# SOT_COMM_ROW_HANDLE=<handle> names the row whose screen the daemon read (ADR
-# 0044, dialog amendment). A process that sets it can paint or clear that one
-# row's `dialog` and nothing else: only `dialog` and `resumed` take it (any
-# other verb is refused, rc 2); the agent gate still runs; no identity is
-# derived (NAME is the handle) and no marker is written or removed, so no
-# heartbeat clears a fact the daemon set. Only a caller whose parent is sotd may
-# use it (any other: rc 2, nothing written), and its `dialog` lands only on a row
-# with a `floor`: a Stop that ended the turn after the daemon read the screen
-# leaves the row as it is.
+# SOT_COMM_ROW_HANDLE, the entry an older daemon used to stamp a Claude row's
+# dialog through this script, is refused (rc 2): the daemon writes in its own
+# process now.
 #
 # The turn mark, $COMM_HOME/state/turn-<the self slot's path>, holds the time
 # of the session's last `prompt` (epoch seconds) and its session
@@ -86,7 +81,7 @@
 # The registry row is a set of FACTS, not one state (ADR 0044 amendment,
 # 2026-09-19: "the row is a set of facts reduced by display priority").
 # `state` and `summary` are a REDUCTION over those facts, recomputed on every
-# write, by priority:
+# write by `sotd work-state` (rows' `work_state::reduce`), by priority:
 #   dialog set                   -> blocked   summary = dialog
 #   question set, floor absent  -> blocked   summary = question
 #   floor present                -> working   summary = note
@@ -99,11 +94,11 @@
 # Claude row) write it, and it touches no `question`, `waiting`, `done`, `note`
 # or `floor`.
 #
-# READ-DECIDE-WRITE IS ONE CRITICAL SECTION (Codex review, #223): apply the
-# verb, delete legacy keys, reduce, and stamp are ONE jq program run inside
-# `with_lock`, so a writer that commits between another reader's read and
-# write cannot be overwritten by a decision made against a stale row. The
-# registry mutation's exit status is this script's exit status.
+# READ-DECIDE-WRITE IS ONE CRITICAL SECTION (Codex review, #223): `sotd
+# work-state` applies the verb, deletes legacy keys, reduces and stamps under
+# the registry lock on a fresh read, so a writer that commits between another
+# reader's read and write cannot be overwritten by a decision made against a
+# stale row. Its exit status is this script's exit status.
 #
 # Self-gating: a session with no registry row (not a joined comm agent — e.g.
 # a plain human session where a global hook also fires) is a silent no-op for
@@ -124,10 +119,8 @@ case "$VERB" in
     *)  echo "comm-status.sh: invalid verb '$VERB' (want prompt|stop|join|dialog|resumed|working|idle|blocked|done|waiting)" >&2; exit 2 ;;
 esac
 
-ROW_HANDLE="${SOT_COMM_ROW_HANDLE:-}"
-if [ -n "$ROW_HANDLE" ]; then
-    case "$VERB" in dialog|resumed) ;; *) echo "comm-status.sh: SOT_COMM_ROW_HANDLE stamps dialog or resumed only" >&2; exit 2 ;; esac
-    sot_parent_is_sotd || { echo "comm-status.sh: SOT_COMM_ROW_HANDLE is the daemon's entry; this caller's parent is not sotd -- stamp discarded" >&2; exit 2; }
+if [ -n "${SOT_COMM_ROW_HANDLE:-}" ]; then
+    echo "comm-status.sh: SOT_COMM_ROW_HANDLE is no entry any more; the daemon writes a row's dialog itself -- stamp discarded" >&2; exit 2
 fi
 
 # A second agent inside the session never stamps the row: an event is a silent
@@ -140,7 +133,7 @@ fi
 if [ "$VERB" = dialog ] && [ -z "${2-}" ]; then
     echo "comm-status.sh: dialog needs its text -- stamp discarded" >&2; exit 2
 fi
-if [ -n "$ROW_HANDLE" ]; then NAME="$ROW_HANDLE"; else eval "$("$SCRIPT_DIR/comm-context.sh")"; fi
+eval "$("$SCRIPT_DIR/comm-context.sh")"
 
 # The turn mark (header), kept before the row check: the turn that joins has no
 # row when it starts. `join` ends here or goes on as a machine `prompt`.
@@ -187,78 +180,23 @@ HAVE=0; [ "${2+set}" = set ] && HAVE=1
 SUM="${2-}"
 ORIGIN="${COMM_STATUS_ORIGIN:-machine}"
 
-# The whole read-decide-write, run under the registry lock.
-status_txn() {
-    local row_rc=0 row
-    row="$(sot_registry_read "$NAME")" || row_rc=$?
-    case "$row_rc" in 0) ;; 1) return 0 ;; *) echo "$UNREADABLE" >&2; return 1 ;; esac   # row gone: no-op
-    # A question or wait always carries readable text: with none given and none
-    # of its own on the row, the stamp is refused (inside the lock, with no
-    # write).
-    if [ -z "$SUM" ] && { [ "$VERB" = blocked ] || [ "$VERB" = waiting ]; }; then
-        local fld=waiting out; [ "$VERB" = blocked ] && fld=question
-        # One read, one character: does the verb's own text have any? Only the
-        # first character is tested, so a CR a native jq adds after it is harmless.
-        out="$(printf '%s' "$row" | jq -r --arg f "$fld" 'if ((.[$f] // "") | explode | all(. == 10)) then "0" else "1" end' 2>/dev/null)"
-        if [ "${out:0:1}" != 1 ]; then
-            echo "comm-status.sh: $VERB needs its text -- stamp discarded" >&2; return 2
-        fi
-    fi
-    # The daemon's dialog decision was made from an earlier read: it lands only on a row with a floor, so a Stop that came
-    # first leaves a row at rest unwritten.
-    if [ -n "$ROW_HANDLE" ] && [ "$VERB" = dialog ] \
-        && [ "$(printf '%s' "$row" | jq -j 'if .floor == null then "0" else "1" end' 2>/dev/null)" != 1 ]; then
-        return 0
-    fi
-    # SUM is free text: it reaches jq on stdin, after the registry (registry_replace --text; comm-lib-base.sh, free text and jq).
-    local ts
-    ts="$(now_iso)"
-    registry_replace --text "$SUM" '
-      input as $sum
-      | .agents[$n] |= (
-        del(.turn_origin, .sticky, .sticky_at)
-        | if $st == "prompt" then del(.dialog) | .floor = $o
-            | (if $o == "user" then del(.question, .done) else . end)
-          elif $st == "stop" then
-            (if .floor == "user" and .question == null and .waiting == null then .done = true else . end)
-            | del(.floor, .stop_at, .dialog)
-          elif $st == "dialog" then .dialog = $sum
-          elif $st == "resumed" then del(.dialog)
-          else   # declarations — blocked/waiting set their own fact and never
-                  # copy their text into .note: aliasing it to the question
-                  # left that text as the summary fallback long after the
-                  # question was answered and gone (field report, 2026-09-27).
-                  # Text they carry does supersede the older note, which goes,
-                  # so a woken or answered row never shows a line written
-                  # before its latest declaration (a row read working with a
-                  # days-old note — field report, 2026-10-01).
-            if $st == "blocked" then (.question = (if $sum != "" then $sum else .question end))
-                | (if $sum != "" then del(.note) else . end)
-              elif $st == "waiting" then (.waiting = (if $sum != "" then $sum else .waiting end))
-                | del(.question)
-                | (if $sum != "" then del(.note) else . end)
-              elif $st == "done" then (if $h == "1" then .note = $sum else . end) | .done = true | del(.question, .waiting)
-              else (if $h == "1" then .note = $sum else . end) | del(.question, .waiting, .done) end   # working, idle
-          end
-        | .state = (if .dialog != null then "blocked"
-                    elif .question != null and .floor == null then "blocked"
-                    elif .floor != null then "working"
-                    elif .waiting != null then "waiting"
-                    elif .done == true then "done" else "idle" end)
-        | .summary = (if .dialog != null then .dialog
-                      elif .state == "blocked" then .question
-                      elif .state == "waiting" then .waiting else (.note // "") end)
-        | .status_at = $t | .last_seen = $t)
-    ' --arg n "$NAME" --arg st "$VERB" --arg o "$ORIGIN" --arg t "$ts" --arg h "$HAVE"
-}
-rc=0; with_lock status_txn || rc=$?
+# The write: rows' one work-state write, `sotd work-state`. Free text reaches it
+# on stdin, never as an argument (Git Bash rewrites an argument that starts with
+# `/` for a native program). Its rc 2 is a question or a wait with no text.
+SOTD="$(sot_sotd)" || { echo "comm-status.sh: no sotd found (SOTD_BIN, PATH, the install paths) -- stamp discarded" >&2; exit 1; }
+set -- work-state "$VERB" --handle "$NAME" --origin "$ORIGIN" --lock-wait "$SOT_LOCK_WAIT_SECS"
+rc=0
+if [ "$HAVE" = 1 ]; then printf '%s' "$SUM" | "$SOTD" "$@" --text || rc=$?; else "$SOTD" "$@" </dev/null || rc=$?; fi
+if [ "$rc" = 2 ]; then
+    case "$VERB" in blocked|waiting) echo "comm-status.sh: $VERB needs its text -- stamp discarded" >&2 ;; esac
+fi
 
 # The dialog marker follows the fact, after the write that commits it: `dialog`
 # creates it, and `resumed`, `prompt` and `stop` remove it. The heartbeat only
 # tests it, so a write that failed leaves the marker as the fact is. The key is
 # sanitized (it becomes a filename); with no key there is no marker, and the
 # `prompt` or `stop` that ends the turn clears the fact.
-DIALOG_KEY=""; [ -n "$ROW_HANDLE" ] || DIALOG_KEY="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+DIALOG_KEY="${SOT_WORKSPACE_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
 if [ "$rc" = 0 ] && [ -n "$DIALOG_KEY" ]; then
     DIALOG_MARKER="$COMM_HOME/state/dialog-$(printf '%s' "$DIALOG_KEY" | tr -c 'A-Za-z0-9._-' '_').marker"
     case "$VERB" in

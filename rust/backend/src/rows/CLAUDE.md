@@ -15,12 +15,13 @@ Identity:
   `workspace.create` of a slug (`Workspace::from_label`), written in the row's toml (`store::save`), loaded at boot
   (`store::scan_disk`), and `Workspaces::insert` keeps the id of a slug already registered. The toml is a projection of
   the registry: only `store::save` writes it, and a row changes through an op, never through its file.
-- A row's comm handle has one answer, and no two rows hold one handle. The answer is `Workspaces::bound_handle`: the
+- A row's comm handle has one answer, and no two rows hold one handle. The answer is `bound_handle`: the
   handle the row's session declared (`agent.join`), else the name the row was created with, unless another row declares
   that name. A join moves a handle: `set_agent_handle` clears it from every other row under the registry's write lock;
   at boot `store::scan_disk` keeps a handle several tomls declare only on the row the comm registry names as its last
-  joiner (`clear_shared_handles`). Every reader of a row's handle asks `bound_handle`: the list, the work-state, the
-  liveness stamp, the wake and a join from outside any row.
+  joiner (`clear_shared_handles`). Every reader of a row's handle asks `bound_handle` (`handle.rs`): the list, the
+  work-state, the liveness stamp and a join from outside any row; the wake reads the declared handle alone, since a
+  session that never joined has no mail to wake for.
 - The default row is an inert anchor when its agent is `none`, on every runtime (`anchor::is_inert_default_anchor`, the
   one predicate); its declared handle survives the boot re-seed (`seed_default_row`).
 
@@ -111,7 +112,7 @@ which the wake uses too; the liveness stamp's choice of handles (the rows that r
 Calls in: the window and the row CLIs (`agents/spawn/`, `sot-fe`) through the ops above; lifecycle (`end_every`,
 `forget`, `resume_all`, `close_gate_and_settle`, `claim_create`, `list`); the server (`row_or_reply`, `resolve`,
 `capsule_guard`, `seed_default_row`, the bus setters); files and sidecars (a row's lazy handles); messaging's wake
-(`bound_handle`, the headless client, `state_dir_for`, the probe); every session's hooks and declarations
+(the declared handle, the headless client, `state_dir_for`, the probe); every session's hooks and declarations
 (`comm-status.sh`, which runs `sotd work-state`). The interfaces kept: every op's payload, `comm-status.sh`'s verbs and
 exit codes, and the registry entry's fields. Gone: `SOT_COMM_ROW_HANDLE`, the daemon's own entry into `comm-status.sh`,
 which a newer script refuses (exit 2): the daemon writes in its own process, and an older daemon running beside newer

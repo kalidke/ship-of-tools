@@ -1,4 +1,4 @@
-//! workspace.list (the rows the window shows, with their comm state) and workspace.activate (viewing clears done).
+//! workspace.list (the rows the window shows, with their work-state) and workspace.activate (viewing clears done).
 
 use anyhow::Context;
 use anyhow::Result;
@@ -7,7 +7,9 @@ use serde_json::json;
 use sot_protocol::op;
 use sot_protocol::Frame;
 use crate::server::reply::HandlerOutput;
-use crate::comm::registry::registry::{clear_comm_unread, comm_handle_for_workspace, host_matches, read_comm_agents};
+use crate::comm::registry::registry::read_comm_agents;
+use crate::rows::handle::bound_handle;
+use crate::rows::work_state::{read_clear, shown};
 use crate::rows::Workspaces;
 #[cfg(test)]
 use crate::rows::Workspace;
@@ -26,48 +28,19 @@ pub async fn handle_workspace_list(
 ) -> Result<HandlerOutput> {
     use sot_protocol::{WorkspaceListEntry, WorkspaceListRes};
     let default_id = workspaces.default_id();
-    // Read the sot-comm registry once per list call (fresh — picks up the
-    // owning agents' latest `comm-status.sh` writes). `None` when the file is
-    // absent/malformed; every lookup below then falls back to empty strings.
-    // On a blocking thread: the read's retry sleeps after a failed read.
+    // The registry read once per list, fresh, on a blocking thread (its retry sleeps after a failed read); `None` when
+    // it is absent or malformed, and every row then shows no work-state.
     let comm_agents = tokio::task::spawn_blocking(read_comm_agents).await.ok().flatten();
     let host = crate::rows::store::declared_host();
-    // Pull `.agents[agent_name].<field>` as an owned String, "" if anything is
-    // missing or not a string. LU5d2: `agent_name` here is a handle the caller
-    // (below) already bound to THIS workspace — by the
-    // stored `agent_name` fallback — never proof it's this host's row, so
-    // filter the entry through `host_matches` too: a same-named handle
-    // stamped by another host on the shared registry must read as empty, not
-    // leak its summary/status_at/state into this host's list.
-    let agent_str = |agent_name: &str, field: &str| -> String {
-        if agent_name.is_empty() {
-            return String::new();
-        }
-        comm_agents
-            .as_ref()
-            .and_then(|a| a.get(agent_name))
-            .filter(|entry| host_matches(entry, &host))
-            .and_then(|entry| entry.get(field))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
-    };
     let ws_list = workspaces.list();
     // Pure memory: kept current by the row's lifecycle observer, no lane query.
     let mut entries: Vec<WorkspaceListEntry> = ws_list
         .iter()
         .map(|ws| {
-            // Which registry row is this workspace's — one rule, shared with
-            // `clear_comm_unread` (`comm_handle_for_workspace`).
-            let handle = comm_handle_for_workspace(ws, &ws_list);
-            // The registry `state` IS the badge — no pane scrape, no merge, no
-            // precedence to arbitrate. A prior version of this comment described
-            // a registry-vs-pane precedence merge that no longer exists here; it
-            // was the only thing in the tree suggesting a pane-based idle
-            // detector could overrule a stamped fact, which it never can (only
-            // an act that could BE the answer clears a question — ADR 0044
-            // amendment, field report 2026-09-27).
-            let agent_state = agent_str(&handle, "state");
+            // The row's handle and what it shows: work-state's one read (`work_state::shown`), through the one answer
+            // to a row's handle (`bound_handle`), and only from an entry of this host.
+            let handle = bound_handle(ws, &ws_list);
+            let work = shown(ws, &ws_list, comm_agents.as_ref(), &host);
             // `phase` is read straight off the row's own cell — every row
             // is a capsule on this build (`ws.runtime` is always
             // `"capsule"`), so there is no other case left to branch on.
@@ -107,9 +80,9 @@ pub async fn handle_workspace_list(
                 },
                 agent_handle: ws.agent_handle(),
                 task: ws.task.clone(),
-                agent_state,
-                agent_summary: agent_str(&handle, "summary"),
-                agent_status_at: agent_str(&handle, "status_at"),
+                agent_state: work.state,
+                agent_summary: work.summary,
+                agent_status_at: work.status_at,
                 repl_state: ws.repl_state().to_string(),
                 runtime: ws.runtime.clone(),
                 state_dir,
@@ -158,7 +131,7 @@ pub async fn handle_workspace_activate(
         if let Some(ws) = resolved_ws.clone() {
             let host = crate::rows::store::declared_host();
             let rows = workspaces.list();
-            let _ = tokio::task::spawn_blocking(move || clear_comm_unread(&ws, &rows, &host)).await;
+            let _ = tokio::task::spawn_blocking(move || read_clear(&ws, &rows, &host)).await;
         }
     }
     tracing::info!(

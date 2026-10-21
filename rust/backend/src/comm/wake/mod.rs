@@ -99,8 +99,7 @@ use crate::rows::run::headless::HeadlessError;
 use crate::rows::Workspaces;
 
 mod attempt;
-pub mod dialog;
-mod screen;
+pub(crate) mod screen;
 mod unread;
 
 use attempt::{wake_if_free, WakeOutcome};

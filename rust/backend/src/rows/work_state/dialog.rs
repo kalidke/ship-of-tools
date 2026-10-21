@@ -1,39 +1,39 @@
 //! The dialog tick (ADR 0044, dialog amendment): a Claude row whose screen shows a dialog that waits on a person
-//! reads red.
+//! reads red, whatever its turn state.
 //!
 //! No Claude Code hook says when a permission dialog is on screen (its `PermissionRequest` fires when a request is
 //! queued), so the daemon reads the screen. Every [`DIALOG_EVERY`] one blocking task reads the registry once, then each
-//! Ready capsule row whose agent is `claude`, whose handle is declared, and whose registry entry reads `working` or
-//! carries a `dialog` fact the tick must clear ([`due`]; a row at rest is assumed to show no permission dialog), one
+//! Ready capsule row whose agent is `claude` and whose bound handle has an entry, but one red by its question ([`due`]:
+//! an AskUserQuestion menu, whose PreToolUse hook wrote the question before the menu drew, keeps that summary), one
 //! watcher attach each: it never takes the pen, resizes nothing, writes no record frame and logs nothing. sot-log's
 //! `a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded` shows that over twenty capsules and measures a sweep of
 //! them at 1.2-2.0 s (about 80 ms a read) in a debug build on Linux. [`dialog_of`] reads the screen; the row is
-//! written only where screen and registry
-//! disagree ([`stamp_for`]), through `comm-status.sh`'s one reduction and its daemon entry, `SOT_COMM_ROW_HANDLE`
-//! ([`stamp`]). Nothing lives between ticks, so after a restart the first tick clears a fact whose dialog has gone.
-//! A Codex row is never read: its dialog fact is its own hook's. On a Claude row the daemon is the fact's one writer
-//! (no Claude hook sends it, and the entry writes no marker for a heartbeat to find); a `prompt` still deletes it in
-//! the reduction and the next tick writes it again while the dialog shows, but a `stop` leaves a row at rest, which is
-//! not read. Limits: a turn that ends with no Stop (Esc, a bare No, a reauth, an API error) leaves the row `working`,
-//! so a select menu a person opens there (/model, /resume) reads red until it closes; and a background agent's dialog
-//! after the lead's Stop reads idle. Unix only: the daemon has no route
-//! to Git Bash on Windows, so there a Claude row on a dialog still reads green (`server::run` starts the tick).
+//! written only where screen and registry disagree ([`stamp_for`]), through work-state's one write, in this process
+//! (`work_state::stamp`). Nothing lives between ticks, so after a restart the first tick clears a fact whose dialog
+//! has gone. A Codex row is never read: its dialog fact is its own hook's. On a Claude row the daemon is the fact's one
+//! writer (no Claude hook sends it, and this write leaves no marker for a heartbeat to find); a `prompt` or a `stop`
+//! still deletes it in the reduction, and the next tick writes it again while the dialog shows. Limits: a dialog that
+//! closes between a tick's read and its write reads red until the next tick; a turn that ends with no Stop (Esc, a
+//! bare No, a reauth, an API error) leaves the row `working`, so a select menu a person opens there (/model, /resume)
+//! reads red until it closes, as it does on a row at rest.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::comm::wake::screen::{dialog_of, wake_lines};
+use crate::rows::handle::bound_handle;
 use crate::rows::run::headless::{attach, checkpointed, SHUTDOWN_WAIT};
 use crate::rows::Workspaces;
 
-use super::screen::{dialog_of, wake_lines};
+use super::{stamp, Event, StampError};
 
 pub const DIALOG_EVERY: Duration = Duration::from_secs(5);
 const CONTROLLER_ID: &str = "sot-comm-dialog";
 /// The attach and its checkpoint, per row.
 const READ_BUDGET: Duration = Duration::from_secs(3);
-/// One `comm-status.sh` run: its registry lock waits up to 10 s.
-const STAMP_BOUND: Duration = Duration::from_secs(15);
+/// One stamp's wait for the registry lock.
+const STAMP_BOUND: Duration = Duration::from_secs(10);
 
 /// The write a row needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,11 +42,11 @@ pub(crate) enum Stamp {
     Resumed,
 }
 
-/// Whether the tick reads a row: its entry has a `dialog` fact to clear, or reads `working`. Any other row is skipped
-/// before its attach: one at rest shows no permission dialog, and one red by its `question` (an AskUserQuestion menu,
-/// whose PreToolUse hook wrote the question before the menu drew) keeps that summary.
+/// Whether the tick reads a row: every row but one red by its `question` and holding no `dialog` fact (an
+/// AskUserQuestion menu, whose PreToolUse hook wrote the question before the menu drew, keeps that summary). A row at
+/// rest is read too: a background agent's dialog after its lead's Stop waits on the person as much as one in a turn.
 fn due(entry: &serde_json::Value) -> bool {
-    has_fact(entry) || entry.get("state").and_then(|s| s.as_str()) == Some("working")
+    has_fact(entry) || entry.get("state").and_then(|s| s.as_str()) != Some("blocked")
 }
 
 fn has_fact(entry: &serde_json::Value) -> bool {
@@ -63,15 +63,16 @@ fn stamp_for(shown: Option<String>, entry: &serde_json::Value) -> Option<Stamp> 
     }
 }
 
-/// The tick. Runs forever; started once from `server::run`, on Unix only, its sweeps paced by [`every`].
-pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces, period: Duration) {
+/// The tick. Runs forever; started once from `server::run`, its sweeps paced by [`every`].
+pub(crate) async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces, period: Duration) {
     let failing = std::sync::Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
     every(period, || {
-        let rows: Vec<(String, PathBuf)> = workspaces
-            .list()
-            .into_iter()
-            .filter(|ws| ws.runtime == "capsule" && ws.agent() == "claude" && !ws.agent_handle().is_empty())
-            .map(|ws| (ws.agent_handle(), crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id)))
+        let all = workspaces.list();
+        let rows: Vec<(String, PathBuf)> = all
+            .iter()
+            .filter(|ws| ws.runtime == "capsule" && ws.agent() == "claude")
+            .map(|ws| (bound_handle(ws, &all), crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id)))
+            .filter(|(handle, _)| !handle.is_empty())
             .collect();
         let (home, failing) = (comm_home.clone(), failing.clone());
         async move {
@@ -80,7 +81,7 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
             }
             let _ = tokio::task::spawn_blocking(move || {
                 let mut held = failing.lock().unwrap_or_else(|e| e.into_inner());
-                check_rows(&home, &rows, &read_screen, &stamp, &mut held);
+                check_rows(&home, &rows, &read_screen, &write, &mut held);
             })
             .await;
         }
@@ -109,7 +110,7 @@ fn check_rows(
     home: &Path,
     rows: &[(String, PathBuf)],
     read: &dyn Fn(&Path) -> Seen,
-    write: &dyn Fn(&Path, &str, &Stamp) -> Result<(), String>,
+    write: &dyn Fn(&str, &Stamp) -> Result<(), String>,
     failing: &mut HashSet<String>,
 ) {
     let Ok(bytes) = crate::comm::registry::registry::read_registry_fresh(&home.join("registry.json")) else {
@@ -131,7 +132,7 @@ fn check_rows(
         let Some(s) = stamp_for(shown, entry) else {
             continue;
         };
-        match write(home, handle, &s) {
+        match write(handle, &s) {
             Ok(()) => {
                 failing.remove(handle);
             }
@@ -172,37 +173,16 @@ fn read_screen(state_dir: &Path) -> Seen {
     Seen::Screen(lines)
 }
 
-/// `bash <home>/bin/comm-status.sh dialog "<text>"` (or `resumed`) for `handle`, through the daemon's entry
-/// (`SOT_COMM_ROW_HANDLE`, which the script honors only for a caller whose parent is sotd). The child gets no row or
-/// session identity of its own: the entry names the row, and the variables that would name one are removed.
-fn stamp_command(home: &Path, handle: &str, s: &Stamp) -> std::process::Command {
-    let mut cmd = std::process::Command::new("bash");
-    cmd.arg(home.join("bin").join("comm-status.sh"));
-    match s {
-        Stamp::Dialog(text) => cmd.arg("dialog").arg(text),
-        Stamp::Resumed => cmd.arg("resumed"),
+/// The stamp `s` on `handle`'s entry: work-state's one write, in this process.
+fn write(handle: &str, s: &Stamp) -> Result<(), String> {
+    let event = match s {
+        Stamp::Dialog(text) => Event::Dialog(text.clone()),
+        Stamp::Resumed => Event::Resumed,
     };
-    cmd.current_dir(home)
-        .env("SOT_COMM_HOME", home)
-        .env("SOT_COMM_ROW_HANDLE", handle)
-        .env_remove("SOT_WORKSPACE_ID")
-        .env_remove("CLAUDE_CODE_SESSION_ID")
-        .env_remove("SOT_COMM_SELF_FILE")
-        .env_remove("SOT_COMM_HOOKS");
-    cmd
-}
-
-/// Runs [`stamp_command`], bounded by [`STAMP_BOUND`].
-fn stamp(home: &Path, handle: &str, s: &Stamp) -> Result<(), String> {
-    run_stamp(stamp_command(home, handle, s))
-}
-
-fn run_stamp(mut cmd: std::process::Command) -> Result<(), String> {
-    let out = crate::lifecycle::child_signal::process().output(&mut cmd, STAMP_BOUND).map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!("{}: {}", out.status, String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or_default()))
+    match stamp(handle, &event, STAMP_BOUND) {
+        Ok(_) => Ok(()),
+        Err(StampError::Refused) => Err("refused: a dialog with no text".to_string()),
+        Err(StampError::Registry(e)) => Err(format!("{e:?}")),
     }
 }
 

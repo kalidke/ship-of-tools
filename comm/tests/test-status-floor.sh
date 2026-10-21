@@ -190,9 +190,7 @@ check "dialog: every turn boundary ends it" case_every_turn_boundary_ends_the_di
 check "dialog: it leaves a declared question alone" case_the_dialog_leaves_a_declared_question_alone
 check "dialog: a denied or interrupted dialog never comes back" case_a_denied_or_interrupted_dialog_never_comes_back
 check "dialog: a failed write leaves the marker as the fact is" case_a_failed_write_leaves_the_marker_as_the_fact_is
-check "dialog: the daemon's entry stamps the named row and no marker" case_the_daemon_entry_stamps_the_named_row_and_no_marker
-check "dialog: the daemon entry writes nothing on a row whose turn ended" case_the_daemon_entry_writes_nothing_on_a_row_whose_turn_ended
-check "dialog: the daemon entry is refused for any parent but sotd" case_the_daemon_entry_is_refused_for_any_other_parent
+check "dialog: the old daemon entry is refused, nothing written" case_the_old_daemon_entry_is_refused
 check "dialog: a Codex permission is red until the tool returns" case_codex_permission_is_red_until_the_tool_returns
 check "a genuine user turn ends blue" case_user_turn_ends_blue
 check "a machine-started turn ends gray" case_machine_turn_ends_gray
@@ -289,8 +287,6 @@ check "a marker turn's audit block keeps the turn and its stop mark until the St
 check "stop deletes the Stop hook's stop_at mark" case_stop_deletes_the_stop_mark
 check "a marker turn with its mail read prints nothing and stamps as before" case_marker_turn_with_read_mail_is_unchanged
 check "a marker turn's artifact-audit block is byte-identical with its mail read" case_marker_audit_block_with_read_mail_is_byte_identical
-check "race: a done committed while stop waits for the lock is kept" case_race_done_committed_while_stop_waits_is_kept
-check "race: a machine start committed while stop waits ends gray, not blue" case_race_machine_start_while_stop_waits_ends_gray
 check "a failed declaration write exits non-zero and leaves the row untouched" case_failed_declaration_write_exits_nonzero
 check "a failed prompt-event write exits non-zero and leaves the row untouched" case_failed_prompt_write_exits_nonzero
 

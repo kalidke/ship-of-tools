@@ -27,7 +27,10 @@
 # stubs and guard_bridge_stub's) and each one a suite writes, carries GUARD_EMPTY_WALK right
 # after its #! (a suite's own stand-in for the walk itself, SIMWIN's or a faked Windows
 # box's, answers with that walk): it answers one question, `ancestors --from <pid>`, with
-# an empty walk and exit 0. On Windows a gated comm script
+# an empty walk and exit 0, and hands one command, `work-state`, to the built sotd
+# (GUARD_SOTD: SOT_TEST_SOTD, else $CARGO_TARGET_DIR/debug/sotd, else the tree's
+# rust/target/debug/sotd), rows' one work-state write, which reads and writes only the
+# suite's own comm home and dials nothing. On Windows a gated comm script
 # reads its native ancestors through that binary (comm-lib-agent-layers.sh), so a suite's
 # walk ends at the top of its own MSYS processes, as a Linux run's ends at init. The real
 # walk is pinned by rust/backend/tests/ancestors.rs, the shell's by test-agent-layers.sh
@@ -86,8 +89,21 @@ for _guard_v in $(compgen -e); do
 done
 unset _guard_v
 
-# GUARD_EMPTY_WALK — the line every stub sotd carries right after its #! (see above).
-GUARD_EMPTY_WALK='[ "${1:-} ${2:-}" != "ancestors --from" ] || exit 0'
+# GUARD_SOTD — the built sotd a stub hands `work-state` to (see above); empty when none is built, and a stub then
+# fails that command saying so.
+GUARD_SOTD=""
+for _guard_c in "${SOT_TEST_SOTD:-}" "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/debug/sotd}" \
+                "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/rust/target/debug/sotd"; do
+    for _guard_x in "$_guard_c" "$_guard_c.exe"; do
+        if [ -n "$_guard_c" ] && [ -f "$_guard_x" ] && [ -x "$_guard_x" ]; then GUARD_SOTD="$_guard_x"; break 2; fi
+    done
+done
+unset _guard_c _guard_x
+export GUARD_SOTD
+
+# GUARD_EMPTY_WALK — the lines every stub sotd carries right after its #! (see above).
+GUARD_EMPTY_WALK='[ "${1:-} ${2:-}" != "ancestors --from" ] || exit 0
+[ "${1:-}" != work-state ] || exec "${GUARD_SOTD:?no built sotd for work-state: build it or set SOT_TEST_SOTD}" "$@"'
 
 # guard_bridge_stub DIR — writes DIR/sotd and DIR/sotd.exe, a suite's stand-in for `sotd stdio-bridge --endpoint` (the
 # library opens every local endpoint through that bridge, ADR 0049 User isolation), and prints DIR/sotd. With
