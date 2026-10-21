@@ -74,7 +74,7 @@ pub(crate) fn capsule_destroy_outcome_of(o: crate::rows::run::end_run::EndRunOut
 /// own fence/leg proof. A resume failure is logged and never fails the
 /// call — `end_run`'s own arms decide the outcome regardless.
 /// `resume_first` false skips that resume: a window's close ends rows
-/// without resuming any (`shutdown::end_rows`).
+/// without resuming any (`rows::end::end_every`).
 ///
 /// Every mutation runs under the row's own guard, from the first probe
 /// through the outcome this returns — a terminal `Phase` mark alone

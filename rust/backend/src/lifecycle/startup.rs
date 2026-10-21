@@ -5,7 +5,7 @@
 //! daemon's [`Leases`] and acts on the plan. Every plan but Cleanup resumes the rows at once; recorded
 //! holders or a handover also arm their persisted deadline, which the
 //! ticker turns into a shutdown if no lease arrives. Nothing is
-//! held back. Cleanup ends every row through the shutdown's own end and
+//! held back. Cleanup ends every row through rows' end API, as the shutdown does, and
 //! resumes none, and refuses a create of those rows' labels until it
 //! ends; the daemon stays up with zero sessions.
 
@@ -36,7 +36,7 @@ pub(crate) fn begin(
         tracing::warn!(
             "capsule workspace resume-scan skipped: could not resolve this machine's state root \
              ({} unset)",
-            crate::rows::spawn::state_root::STATE_ROOT_HINT
+            crate::rows::STATE_ROOT_HINT
         );
         return Arc::new(Leases::new(own_boot.ok(), None, None, false));
     };
@@ -46,7 +46,7 @@ pub(crate) fn begin(
         tracing::warn!("held record unreadable: {e}");
     }
     let unremoved = match &read {
-        Ok(Some(rec)) => forget_rows(workspaces, &rec.forget),
+        Ok(Some(rec)) => crate::rows::end::forget(workspaces, &rec.forget),
         _ => Vec::new(),
     };
     let plan = lease::startup_plan(&read, own_boot.as_deref().map_err(|_| ()), now_ms);
@@ -57,10 +57,10 @@ pub(crate) fn begin(
     tracing::info!(?plan, "start plan from the held record");
     match plan {
         StartPlan::Resume => {
-            tokio::spawn(crate::rows::run::resume::resume_all(state_root, workspaces.clone()));
+            tokio::spawn(crate::rows::resume_all(state_root, workspaces.clone()));
         }
         StartPlan::Pending { until_ms } => {
-            tokio::spawn(crate::rows::run::resume::resume_all(state_root, workspaces.clone()));
+            tokio::spawn(crate::rows::resume_all(state_root, workspaces.clone()));
             if let Err(e) = leases.install_pending(until_ms) {
                 tracing::error!("the pending start's deadline was not written: {e}");
             }
@@ -82,21 +82,6 @@ pub(crate) fn begin(
     leases
 }
 
-/// The record's `forget`: rows a past end ended whose registration would
-/// not go (#26). Unregistered before any plan, so no start resumes one.
-/// Returns the ids whose registration still would not go.
-fn forget_rows(workspaces: &Workspaces, ids: &[String]) -> Vec<String> {
-    let mut unremoved = Vec::new();
-    for ws in workspaces.list().into_iter().filter(|ws| ids.contains(&ws.workspace_id)) {
-        if !crate::rows::run::end::remove_row_files(&ws.slug) {
-            tracing::error!(workspace_id = %ws.workspace_id, "a forgotten row's registration would not go; the next start drops it again");
-            unremoved.push(ws.workspace_id.clone());
-        }
-        let _ = workspaces.remove_by_id(&ws.workspace_id);
-    }
-    unremoved
-}
-
 /// A startup Cleanup: `rows` ended without a resume, by the shutdown's
 /// bound, then its report written as the record. Ended rows are forgotten
 /// by the end itself.
@@ -108,7 +93,7 @@ async fn cleanup(
     ws_events: broadcast::Sender<WorkspaceChanged>,
 ) {
     let deadline = tokio::time::Instant::now() + crate::lifecycle::shutdown::shutdown_bound();
-    let report = crate::lifecycle::shutdown::end_rows(rows, &workspaces, &ws_events, &state_root, deadline).await;
+    let report = crate::rows::end::end_every(rows, &workspaces, &ws_events, &state_root, crate::lifecycle::shutdown::REASON, deadline).await;
     tracing::info!(
         ended = report.ended.len(),
         not_ended = report.not_ended,

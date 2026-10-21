@@ -15,6 +15,8 @@ fn help_for_table() {
         ("agent-exec --help", SOTD_HELP),
         ("ancestors --help", comm::registry::ancestors::USAGE),
         ("ancestors --from 1 --help", comm::registry::ancestors::USAGE),
+        ("work-state --help", rows::work_state::cli::USAGE),
+        ("work-state stop --handle h --help", rows::work_state::cli::USAGE),
         ("stdio-bridge --help", topology::stdio_bridge::USAGE),
         ("stdio-bridge --host a --help", topology::stdio_bridge::USAGE),
         ("stdio-bridge --endpoint unix:/x --help", topology::stdio_bridge::USAGE),

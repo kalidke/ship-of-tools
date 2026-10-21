@@ -99,8 +99,7 @@ use crate::rows::run::headless::HeadlessError;
 use crate::rows::Workspaces;
 
 mod attempt;
-pub mod dialog;
-mod screen;
+pub(crate) mod screen;
 mod unread;
 
 use attempt::{wake_if_free, WakeOutcome};
@@ -200,7 +199,7 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
         let rows = workspaces.list();
         let mut checks = Vec::new();
         for ws in rows {
-            let handle = ws.agent_handle();
+            let handle = crate::rows::handle::declared_handle(&ws);
             if handle.is_empty() || ws.runtime != "capsule" {
                 continue;
             }

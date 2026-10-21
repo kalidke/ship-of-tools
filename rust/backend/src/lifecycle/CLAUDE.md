@@ -13,7 +13,7 @@ on a computer decides, through its lease, whether that computer's sessions end (
   `lease.rs` here).
 - The lease ops `fe.lease`, `fe.leaving`, `fe.notice_seen` (`lease::hold`) and the 1 s `lease::ticker`.
 - The start plan Resume, Pending or Cleanup: `startup::begin`, `lease::startup_plan`.
-- The close and its backstop `exit(1)`: `shutdown::run`, `shutdown::end_rows`.
+- The close and its backstop `exit(1)`: `shutdown::run`; the rows' ends are rows' (`rows::end::end_every`).
 - The serving daemon's controlled ends and what each does first: `shutdown::exit` (the one raw exit),
   `shutdown::exit_by_signal` (INT and TERM: the same fire and folders, then the signal), `shutdown::terminal`; INT and TERM:
   `signal_exit::install`.
@@ -38,11 +38,11 @@ on a computer decides, through its lease, whether that computer's sessions end (
 - The start plan is a function of the record and this boot alone, never of a process lookup (`startup_plan`); an
   unreadable record, a closing record, another boot or an expired handover plans Cleanup.
 - Cleanup ends every row and resumes none (`startup::cleanup`); Resume and Pending resume rows at once
-  (`rows::run::resume::resume_all`). Cleanup claims the slugs of the rows it lists before any listener binds and holds
+  (`rows::resume_all`). Cleanup claims the slugs of the rows it lists before any listener binds and holds
   them until it ends (`Workspaces::claim_create`, `startup::begin`), so a same-label create, which would keep a listed
   row's id, is refused meanwhile and the Cleanup never ends a row a window created.
 - The close stops accepting before it touches a row (the accept loop in `server::run` breaks on `Leases::gone`, drops
-  the listener, then calls `shutdown::run`), ends rows without resuming any (`end_rows`), counts each row not confirmed
+  the listener, then calls `shutdown::run`), asks rows to end every row without resuming any (`rows::end::end_every`), counts each row not confirmed
   ended, and a backstop thread exits 1 at `bounds::SHUTDOWN_BOUND` (`shutdown::run`, step 0).
 - A close that finishes exits 0 (`bounds::EXIT_REQUESTED_SHUTDOWN`); the update restart exits 75 and only while no
   shutdown has begun: update.rs commits it with `Leases::commit_update`, which moves the phase to `Updating` under the
@@ -162,8 +162,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
 `Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::commit_update`, `shutdown::exit`, `signal_exit::install`, `Signal::spawn`, `Signal::spawn_std`,
 `Signal::output`, `daemon_children::guard`, `guard_pid`, `Contained`, `Contained::wait_until_exited`, `Contained::interrupt`, `ContainedStd`, `ContainedStd::wait_within`, `Signal`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
-`reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
-`close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
+`reject`, `write_frame_within`, `write_frame_to`, `end_every`, `forget`, `resume_all`,
+`close_gate_and_settle`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `inherit_none`, `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`, Dial,
 `child::remove_own`.
 

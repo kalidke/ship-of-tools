@@ -1,8 +1,5 @@
-//! The daemon's side of the comm registry (registry.json): fresh reads, the lock, pruning and unread clears,
-//! which entry is a row's, and the UTC stamps comm writes.
-
-use crate::rows::Workspace;
-use std::sync::Arc;
+//! The daemon's side of the comm registry (registry.json): fresh reads, the lock, one entry's edit, pruning, and the
+//! UTC stamps comm writes.
 
 /// ISO-8601 UTC instant (e.g. `2026-05-29T14:30:05Z`) without pulling in
 /// chrono — the backend has no time crate, so format the civil date from
@@ -61,29 +58,6 @@ pub(crate) fn comm_registry_path() -> Option<std::path::PathBuf> {
     let mut p = crate::comm::sot_comm_home()?;
     p.push("registry.json");
     Some(p)
-}
-
-/// Read a capsule row's own pinned self-file back to learn its sot-comm
-/// handle — `comm-join.sh`'s auto-disambiguating derivation writes it
-/// there (`agents::env::capsule_supervisor_env`'s doc: `SOT_COMM_
-/// SELF_FILE`, `<comm_home>/self/<host>__<workspace_id>.txt`). Manager
-/// review (S5, Codex finding B8): this is the FALLBACK `comm_handle_for_
-/// workspace` reaches for once a row's declared `agent_handle` (ADR 0046
-/// decision 1's `agent.join`) is empty — an older `comm-join.sh` that
-/// never sends `agent.join`, or a session mid-startup that has written
-/// its self-file but not yet declared, both still resolve correctly.
-/// Empty (never "unknown") on any read failure — an absent/unreadable
-/// file is the ordinary case for a workspace nothing has joined yet.
-fn capsule_comm_handle(workspace_id: &str) -> String {
-    let Some(comm_home) = crate::comm::sot_comm_home() else {
-        return String::new();
-    };
-    let host = crate::rows::store::declared_host();
-    let self_file = comm_home.join("self").join(format!("{host}__{workspace_id}.txt"));
-    std::fs::read_to_string(&self_file)
-        .ok()
-        .and_then(|s| s.lines().next().map(str::to_string))
-        .unwrap_or_default()
 }
 
 /// Read + parse the sot-comm registry, returning the `.agents` object as a
@@ -207,49 +181,11 @@ pub(crate) fn last_joiner(handle: &str, host: &str) -> Option<String> {
     entry_row(entry).map(str::to_string)
 }
 
-/// Which sot-comm registry row is workspace `ws`'s? THE ONE place that
-/// answers this — `handle_workspace_list` (the FE's `state`/`summary`
-/// merge), `clear_comm_unread` (ADR 0044's read-clears-blue) and the liveness
-/// stamp (`held_handles` in liveness.rs) all call this rather than each
-/// encoding their own copy of the rule, so they can never disagree about
-/// which row a workspace owns.
-///
-/// - `agent_handle` set (ADR 0046 decision 1: the session inside `ws`
-///   DECLARED this via `agent.join`) wins outright, on every runtime —
-///   the daemon is told once instead of re-deriving it.
-/// - otherwise: read its OWN pinned self-file back instead
-///   (`capsule_comm_handle`), falling back to the stored `agent_name`
-///   only when that file is empty/absent. (S5, Codex
-///   finding B8): this read-back STAYS as the fallback for a row that
-///   has not (yet, or ever, for an older comm-join.sh) declared via
-///   `agent.join` — deleted only with family H once every row has cycled.
-/// - a fallback handle that some OTHER row in `rows` declares binds
-///   nothing (`""`): ADR 0049's one row per handle, so a row that lost a
-///   handle to a newer `agent.join` never answers to it by a stale
-///   self-file or stored name. `rows` is the daemon's rows; a caller
-///   checking one row alone passes `&[]`.
-pub(crate) fn comm_handle_for_workspace(ws: &Workspace, rows: &[Arc<Workspace>]) -> String {
-    let declared = ws.agent_handle();
-    if !declared.is_empty() {
-        return declared;
-    }
-    let h = capsule_comm_handle(&ws.workspace_id);
-    let h = if h.is_empty() { ws.agent_name() } else { h };
-    let held_elsewhere = rows
-        .iter()
-        .any(|r| r.workspace_id != ws.workspace_id && r.agent_handle() == h);
-    if h.is_empty() || held_elsewhere {
-        String::new()
-    } else {
-        h
-    }
-}
-
 /// Take the sot-comm registry lock (`<comm_home>/.registry.lock`, a file
 /// naming its holder: `comm::registry::lock`, the same lock as `comm-lib.sh`'s
 /// `with_lock`), run `f` with the registry and tmp-file paths, and release
 /// the lock on every exit path. THE ONE lock helper —
-/// `remove_comm_agents_for_workspace` and `clear_comm_unread` both call this,
+/// `remove_comm_agents_for_workspace`, `edit_entry` and `stamp_last_seen` call this,
 /// so there is one lock protocol, not two with quietly different rules.
 ///
 /// Bounded at `bound` (polled every 50ms) and FAILS CLOSED: a holder proved
@@ -289,16 +225,11 @@ fn with_comm_registry_lock<T>(
 /// `remove_comm_agents_for_workspace`'s lock bound: a `workspace.destroy`
 /// is a one-shot, user-triggered action off the hot per-connection reply
 /// path, so it can afford to sit
-/// out a much longer contention window than `clear_comm_unread` below
+/// out a much longer contention window than a work-state write
 /// before giving up — matches the OLD force-break threshold (200×50ms), so
 /// the fail-closed change doesn't also make destroys flaky on an
 /// ordinarily-brief contention.
 const COMM_PRUNE_LOCK_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// `clear_comm_unread`'s lock bound: `server/conn.rs`'s `handle_connection`
-/// awaits every handler inline, so a long spin here would stall the whole
-/// `workspace.activate` reply — bounded much tighter than the prune above.
-const CLEAR_COMM_UNREAD_LOCK_BOUND: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Remove the sot-comm registry rows owned by a workspace that is being
 /// destroyed, returning the handles removed (for logging). A killed agent can't
@@ -327,7 +258,7 @@ pub(crate) fn remove_comm_agents_for_workspace(agent_name: &str, workspace_id: &
 
 /// `remove_comm_agents_for_workspace` with an explicit lock bound — split out
 /// so a test can exercise the real prune body under a SHORT contended-lock
-/// bound (proving it fails closed, same as `clear_comm_unread`'s own test)
+/// bound (proving it fails closed, as a work-state write does)
 /// without waiting out the real `COMM_PRUNE_LOCK_BOUND`. Production code
 /// only ever calls the wrapper above.
 fn remove_comm_agents_for_workspace_bounded(
@@ -380,99 +311,47 @@ fn remove_comm_agents_for_workspace_bounded(
     .unwrap_or_default()
 }
 
-/// Clear a row's `done` fact after a PERSON switched the view onto it
-/// (`workspace.activate { read: true }` — ADR 0044 "Viewing clears blue").
-/// Removes `.agents[<handle>].done` and writes NOTHING else, EXCEPT: when
-/// `state` was `"done"` (the fact was the display), it flips to `"idle"` too
-/// — a `done` fact hidden under a running `floor` or a `waiting` is still
-/// unviewed, and removing it leaves the reduction consistent because
-/// nothing below blue exists (ADR 0044 amendment, 2026-09-19: the row is a
-/// set of facts, `clear_comm_unread` only ever removes this one). The
-/// summary survives (the row reads `idle · last: …`) and `status_at` is
-/// untouched, so reading a parked row doesn't make it look recently active.
-/// `question`, `waiting`, `floor`, and a row with no `done` fact at all are
-/// never touched — viewing is not answering, and it is not finishing a job.
-///
-/// Two phases, both filtered through `comm_handle_for_workspace` — THE SAME
-/// row-binding rule `handle_workspace_list` uses (declared `agent_handle`
-/// first, else the self-file, else stored `agent_name`; a fallback another
-/// row declares binds nothing), with `rows` the daemon's rows:
-///
-/// 1. **Unlocked pre-check** — read the registry once, resolve the handle,
-///    require the row to pass `host_matches` and carry a `done` key (any
-///    value). Anything else returns with no lock taken and no write — the
-///    common activate (nothing to clear, or no registry at all) costs one
-///    file read, same as the `workspace.list` call that follows every
-///    activate on the wire.
-/// 2. **Lock, then re-read and re-decide inside it.** ADR 0044 round 2:
-///    read-decide-write is one critical section; the pre-check is only a
-///    filter and can never itself cause a write.
-///
-/// Lock protocol is `with_comm_registry_lock` (same helper
-/// `remove_comm_agents_for_workspace` uses), bounded at
-/// `CLEAR_COMM_UNREAD_LOCK_BOUND` (much tighter — see its doc comment).
-///
-/// Best-effort throughout: a missing registry, malformed JSON, or any I/O
-/// failure is a silent no-op — the activate's ack is unaffected either
-/// way (the caller sends it regardless of what this does).
-pub(crate) fn clear_comm_unread(ws: &Workspace, rows: &[Arc<Workspace>], host: &str) {
-    // --- Unlocked pre-check ---
-    let pre_agents = read_comm_agents();
-    let handle = comm_handle_for_workspace(ws, rows);
-    if handle.is_empty() {
-        return;
-    }
-    let is_done = pre_agents
-        .as_ref()
-        .and_then(|a| a.get(&handle))
-        .filter(|entry| host_matches(entry, host))
-        .map(|entry| entry.get("done").is_some())
-        .unwrap_or(false);
-    if !is_done {
-        return;
-    }
+/// Why [`edit_entry`] wrote nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EditError {
+    /// No comm home to find the registry in.
+    NoHome,
+    /// The lock was not taken within its bound: the FAILED line naming its holder.
+    Locked(String),
+    /// The registry could not be read or parsed.
+    Unreadable(String),
+    /// The new registry could not be written.
+    Unwritten,
+}
 
-    with_comm_registry_lock(CLEAR_COMM_UNREAD_LOCK_BOUND, |reg_path, tmp_path| {
-        let bytes = match read_registry_fresh(reg_path) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let mut root: serde_json::Value = match serde_json::from_slice(&bytes) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        // Re-resolve and re-decide against the freshly-read registry — it
-        // may have changed since the pre-check above.
-        let handle = comm_handle_for_workspace(ws, rows);
-        if handle.is_empty() {
-            return;
-        }
-        let Some(agents) = root.get_mut("agents").and_then(|a| a.as_object_mut()) else {
-            return;
-        };
-        let Some(entry) = agents.get_mut(&handle) else {
-            return;
-        };
-        let still_done = host_matches(entry, host) && entry.get("done").is_some();
-        if !still_done {
-            return;
-        }
-        let Some(entry_obj) = entry.as_object_mut() else {
-            return;
-        };
-        // ONLY the `done` fact and, when it was the display, `state`. Not
-        // `status_at`, `last_seen`, `summary`, `note`, `question`,
-        // `waiting` or `floor`.
-        entry_obj.remove("done");
-        if entry_obj.get("state").and_then(|v| v.as_str()) == Some("done") {
-            entry_obj.insert(
-                "state".to_string(),
-                serde_json::Value::String("idle".to_string()),
-            );
-        }
-
-        replace_registry(reg_path, tmp_path, &root);
-    });
+/// Edit `.agents[handle]` under the registry lock, on a fresh read: `edit` gets the entry and returns its answer and
+/// whether to write, and the registry is replaced only then. `Ok(None)` when there is no registry file or no such
+/// entry (nothing to edit, nothing written); every other failure writes nothing and says why. The one way another
+/// subsystem changes an entry's fields (rows' work-state); the entry's address-book fields stay this subsystem's.
+pub(crate) fn edit_entry<T>(
+    handle: &str,
+    bound: std::time::Duration,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> (T, bool),
+) -> Result<Option<T>, EditError> {
+    let reg_path = comm_registry_path().ok_or(EditError::NoHome)?;
+    let dir = reg_path.parent().ok_or(EditError::NoHome)?.to_path_buf();
+    let tmp_path = dir.join("registry.json.tmp");
+    let _held = crate::comm::registry::lock::acquire(&dir.join(".registry.lock"), bound).map_err(EditError::Locked)?;
+    let bytes = match read_registry_fresh(&reg_path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(EditError::Unreadable(e.to_string())),
+    };
+    let mut root: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| EditError::Unreadable(e.to_string()))?;
+    let Some(entry) = root.get_mut("agents").and_then(|a| a.get_mut(handle)).and_then(|e| e.as_object_mut()) else {
+        return Ok(None);
+    };
+    let (answer, write) = edit(entry);
+    if write && !replace_registry(&reg_path, &tmp_path, &root) {
+        return Err(EditError::Unwritten);
+    }
+    Ok(Some(answer))
 }
 
 /// `stamp_last_seen`'s lock bound: the liveness task retries at its next due pass, so a long wait buys nothing.
@@ -517,7 +396,3 @@ mod tests;
 #[cfg(test)]
 #[path = "registry_write_tests.rs"]
 mod write_tests;
-
-#[cfg(test)]
-#[path = "binding_sites_tests.rs"]
-mod binding_sites_tests;

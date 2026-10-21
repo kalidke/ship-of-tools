@@ -92,6 +92,8 @@ mod pty;
 mod resume;
 mod session_env;
 mod spawn;
+#[cfg(target_os = "linux")]
+mod work_state;
 
 #[cfg(target_os = "linux")]
 #[cfg(test)]

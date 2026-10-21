@@ -144,9 +144,15 @@ _sot_sotd_bin() {
     return 1
 }
 
-# _sot_planned_relay_endpoint — `<sotd> topology relay-endpoint` on BOTH
-# platforms, naming its binary the way the rest of this file does:
+# sot_sotd — this box's sotd for a caller that runs it as a program:
 # `_sot_windows_sotd_exe` on Windows, `_sot_sotd_bin`'s ladder elsewhere.
+# Prints the path; 1 when there is none.
+sot_sotd() {
+    if _sot_is_windows; then _sot_windows_sotd_exe; else _sot_sotd_bin; fi
+}
+
+# _sot_planned_relay_endpoint — `<sotd> topology relay-endpoint` on BOTH
+# platforms, naming its binary through `sot_sotd`.
 # Drops the old `2>/dev/null`: `sotd`'s own failure line already names the
 # fix ("no hosts.toml at ... run `sotd topology sync --hub <alias>`"), so
 # the honest thing is to let it through rather than re-explain it. Exit
@@ -154,11 +160,7 @@ _sot_sotd_bin() {
 # not `tr`'s, so a caller can tell "no answer" from "answered empty".
 _sot_planned_relay_endpoint() {
     local bin
-    if _sot_is_windows; then
-        bin="$(_sot_windows_sotd_exe)" || return 1
-    else
-        bin="$(_sot_sotd_bin)" || return 1
-    fi
+    bin="$(sot_sotd)" || return 1
     "$bin" topology relay-endpoint | sed -n 1p | tr -d '\r'
     return "${PIPESTATUS[0]}"
 }

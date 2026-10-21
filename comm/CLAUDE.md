@@ -15,8 +15,9 @@ unread. Design of record: docs/history/adr/0049-messaging-on-one-page.md. The co
 - Address book scripts: `comm-context.sh`, `comm-join.sh`, `comm-leave.sh`, `comm-list.sh`, `comm-self-audit.sh`,
   `comm-registry-lock-clear.sh`, `comm-session-start.sh`, and the registry half of the library (`registry_replace`, `sot_registry_read` in `lib/comm-lib-registry.sh`, `with_lock` in `lib/comm-lib-registry-lock.sh`,
   `sot_require_agent` in `lib/comm-lib-agent-layers.sh`).
-- Work-state: `comm-status.sh`, `comm-turn-auditor.sh`, the four Claude status hooks and the Codex blocked hook (the row
-  colour is a reduction of the facts they stamp).
+- Housed here, rows': work-state (`work_state/`: `comm-status.sh`, `comm-turn-auditor.sh`, the status hooks), whose
+  contract is rows' (rust/backend/src/rows/CLAUDE.md, work-state); the Stop hook's mail gate and
+  `comm-subagent-guard.sh` in `work_state/hooks/` are messaging's.
 - Housed here, not messaging: the shell daemon client in `lib/comm-lib-client.sh` (`sot_oneshot_request`) and the agent adapters under
   `adapters/`. The CLIs that start, end, probe and bootstrap rows moved to `agents/spawn/`, the `/worktree` scripts to
   `agents/worktree/`, and `sot-fe` and `sot-nav.sh` to `agents/sot-fe/`, installed into the same bin. The launchers, the
@@ -63,18 +64,18 @@ unread. Design of record: docs/history/adr/0049-messaging-on-one-page.md. The co
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides:
-`remove_comm_agents_for_workspace`, `handle_agent_join`, `handle_comm_file`, `handle_agent_send`, `Links`, `comm_handle_for_workspace`, `clear_comm_unread`,
-`read_comm_agents`, `host_matches`, `last_joiner`, `spawn_registry_poll`, `workspace.changed`, `workspace.list`,
+`remove_comm_agents_for_workspace`, `handle_comm_file`, `handle_agent_send`, `Links`, `edit_entry`, `stamp_last_seen`,
+`read_comm_agents`, `host_matches`, `last_joiner`, `dialog_of`,
 `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`, `agents/spawn/comm-probe.sh`,
 `agents/spawn/comm-bootstrap.sh`, `sot_sanitize_component`, `_sot_handle_host`. Provides also: HOST (the declared host), HANDLE_HOST (the raw handle component), and _sot_self_slot for the agents shell edge. Uses: `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `ping`, `LINK_ROLE`, `SshRecipe`, `recipe_for`, `dial_and_call`, `dispatch`, `LinkGate`, `Redial`, `STABLE`, `Signal::spawn`,
-`Contained`, `Signal`, `child_signal::process`, `Workspace::agent_handle`, `set_agent_handle`, `attach`,
+`Contained`, `Signal`, `child_signal::process`, `declared_handle`, `set_agent_handle`, `attach`,
 `send_text`, `send_enter`, `rust/backend/src/rows/run/headless.rs`, `Workspaces::resolve`, `row_or_reply`,
 `capsule_guard`, `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`,
 `sot_pty_input`, `sot_dial`, `capsule_supervisor_env`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `sot_host`, `comm/lib/comm-lib-base.sh`,
 `install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`, `ChildLines`.
 
-`handle_agent_join` is provided to server dispatch; rows consume the registry binding/read/prune functions.
+Rows consume the registry's read, edit, prune and liveness functions; the binding of a handle to a row is rows'.
 
 ## Folders
 - `adapters/`: what is installed into Claude Code and Codex: hooks, the messaging skills, the Codex skills and plugin.
@@ -82,12 +83,12 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mail/`: `comm-send.sh`, `comm-relay.sh` and `comm-poll.sh`, installed flat beside the library.
 - `registry/`: the address book scripts: identity, join, leave, list, self-audit, lock recovery, session start.
 - `tests/`: the hermetic suites that prove the scripts, run from a staged flat bin (see its page).
-- `work_state/`: `comm-status.sh`, `comm-turn-auditor.sh` and the status hooks (`work_state/hooks/`), the row colour's reduction.
+- `work_state/`: rows' work-state scripts and hooks (`work_state/hooks/`), installed with these; their contract is rows'.
 - `rust/backend/src/comm/mail/`: the daemon's delivery: `comm.file` (`file_comm`), its offers to linked daemons
   (`links.rs`) and the hub link that answers them (`run`), the append (`file_frame`), and the `agent.send` UI
   notification and its `agent.message` bus (`relay.rs`).
-- `rust/backend/src/comm/registry/`: the daemon's address book: `agent.join` (`handle_agent_join`), the registry lock
-  (`acquire`), reads, the destroy prune and `clear_comm_unread`.
+- `rust/backend/src/comm/registry/`: the daemon's address book: the registry lock (`acquire`), reads, one entry's edit
+  (`edit_entry`), the destroy prune and the liveness stamp's write (`stamp_last_seen`); `agent.join` is rows'.
 - `rust/backend/src/comm/wake/`: the wake tick (`check_row`), the screen reading and the one attach.
 
 ## Files
@@ -98,7 +99,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mail/`: the send, relay and poll scripts (see Folders).
 - `registry/`: the address book scripts (see Folders).
 - `tests/`: the suites and their stage (see Folders).
-- `work_state/`: the work-state scripts and hooks (see Folders).
+- `work_state/`: rows' work-state scripts and hooks (see Folders).
 
 ## Start here
 For mail, `mail/comm-send.sh` then `sot_inbox_append` in `lib/comm-lib-inbox.sh`, and `rust/backend/src/comm/mail/inbox.rs`

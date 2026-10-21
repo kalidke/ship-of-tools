@@ -47,7 +47,6 @@ pub(super) mod reply;
 
 use reply::write_frame_to;
 use listen::{run_local, take_daemon_lock};
-use crate::comm::registry::poll::spawn_registry_poll;
 use crate::rows::anchor::seed_default_row;
 
 pub async fn run(opts: Opts) -> Result<()> {
@@ -165,14 +164,10 @@ pub async fn run(opts: Opts) -> Result<()> {
     ));
     let (topo_changed_tx, _topo_changed_rx) = broadcast::channel::<crate::topology::store::TopologyChanged>(16);
 
-    // ADE state-nav live refresh: poll the sot-comm registry and publish a
-    // `workspace.changed` whenever an agent's work-state actually changes, so the
-    // Sessions strip re-lists LIVE (the FE re-issues workspace.list on the evt).
-    // POLL, not notify — the registry is on NFS where inotify is unreliable; the
-    // 1.5s tick also coalesces a working agent's periodic status_at re-stamps. The
-    // diff excludes `last_seen` so frequent send/poll heartbeats never spam re-lists.
-    spawn_registry_poll(&ws_events_tx);
-    tokio::spawn(crate::comm::registry::liveness::run(workspaces.clone()));
+    // Rows' work-state poll: a `workspace.changed` whenever what a row shows changes, so the window re-lists; and the
+    // liveness stamp of the handles of the rows that run.
+    tokio::spawn(crate::rows::work_state::poll::run(workspaces.clone(), ws_events_tx.clone()));
+    tokio::spawn(crate::rows::handle::liveness(workspaces.clone()));
 
 
     // Comm wake (0031 B3): types the unread-mail line into rows at a free
@@ -180,11 +175,9 @@ pub async fn run(opts: Opts) -> Result<()> {
     if let (Some(comm_home), Some(state_root)) =
         (crate::comm::sot_comm_home(), sot_log::host::state_dir::sot_state_dir())
     {
-        // The dialog tick reads Claude rows' screens and runs comm-status.sh with bash: Unix only (its module page).
-        if !cfg!(windows) {
-            let (home, root) = (comm_home.clone(), state_root.clone());
-            tokio::spawn(crate::comm::wake::dialog::run(home, root, workspaces.clone(), crate::comm::wake::dialog::DIALOG_EVERY));
-        }
+        // Rows' dialog tick: a Claude row whose screen shows a dialog that waits on a person reads red.
+        let (home, root) = (comm_home.clone(), state_root.clone());
+        tokio::spawn(crate::rows::work_state::dialog::run(home, root, workspaces.clone(), crate::rows::work_state::dialog::DIALOG_EVERY));
         tokio::spawn(crate::comm::wake::run(comm_home, state_root, workspaces.clone(), crate::comm::wake::TICK));
     }
 

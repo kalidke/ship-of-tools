@@ -244,7 +244,7 @@ pub(crate) fn dialog_of(lines: &[String], agent: &str, windows: bool) -> Option<
 /// The screen lines as the headless client reads them (`current_lines` in
 /// rows/run/headless.rs), trimming ASCII spaces only: the no-break space after the
 /// glyph is the main input prompt's own mark, and `trim_end` would strip it.
-pub(super) fn wake_lines(screen: &vt100_ctt::Screen) -> Vec<String> {
+pub(crate) fn wake_lines(screen: &vt100_ctt::Screen) -> Vec<String> {
     let (_, cols) = screen.size();
     screen.rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect()
 }

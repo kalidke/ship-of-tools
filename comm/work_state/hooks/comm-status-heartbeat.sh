@@ -224,8 +224,8 @@ _hb_context() {
 _hb_context
 [ -n "${NAME:-}" ] || exit 0
 
-# The row and the write below are comm-lib.sh's sot_registry_read and
-# registry_replace, sourced in a subshell (hb_lib, above).
+# The row below is comm-lib.sh's sot_registry_read, sourced in a subshell
+# (hb_lib, above); the write is rows' `sotd work-state tick`.
 # sot_registry_read: 0 my row on stdout, 1 no row, 2 unreadable (a lib that
 # cannot be sourced is 2 too, never "no row"); only a row prints anything.
 row="$( ( . "$hb_lib" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" ) | jq -r '(.floor // "") + "|" + (.status_at // "")' 2>/dev/null || true)"
@@ -243,20 +243,11 @@ now_s=$(date -u +%s)
 at_s=$( . "$hb_lib" >/dev/null 2>&1 && sot_epoch "$at" ) || at_s=0
 [ $((now_s - at_s)) -ge 60 ] || exit 0
 
-ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-# Best-effort merge under the registry lock (comm-lib.sh's with_lock, a file
-# naming its holder). One try: a held lock is skipped — the next tool call
-# retries within a minute anyway — but a dead holder on this machine is still
-# reclaimed, because the reclaim runs on the first failed take. hb_merge is
-# comm-lib.sh's registry_replace, the one registry write: on any failure
-# nothing is written. Silent: the subshell's output is dropped, and no readable
-# comm-lib.sh means skip.
-hb_merge() {
-    registry_replace \
-        'if .agents[$n] and .agents[$n].floor
-         then .agents[$n] += {status_at:$t, last_seen:$t} else . end' \
-        --arg n "$NAME" --arg t "$ts"
-}
+# The restamp is rows' one work-state write (`sotd work-state tick`): it restamps
+# a running turn's time and sets no fact. One try at the registry lock: a held
+# lock is skipped — the next tool call retries within a minute anyway — but a
+# dead holder on this machine is still reclaimed, because the reclaim runs on
+# the first failed take. Silent, and no readable comm-lib.sh or sotd means skip.
 [ -r "$hb_lib" ] || exit 0
-( . "$hb_lib" >/dev/null 2>&1 && SOT_LOCK_WAIT_SECS=0 with_lock hb_merge ) >/dev/null 2>&1
+( . "$hb_lib" >/dev/null 2>&1 && SOTD="$(sot_sotd)" && "$SOTD" work-state tick --handle "$NAME" --lock-wait 0 </dev/null ) >/dev/null 2>&1
 exit 0

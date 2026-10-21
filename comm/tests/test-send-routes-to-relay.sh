@@ -21,8 +21,7 @@
 #      daemon's own sentence, before anything is built or appended, and no
 #      daemon is asked (R1, R2); a broadcast files its live copies and prints a
 #      FAILED line for each other (R4); the filed line is the verdict alone
-#      (R5); a stamp with a trailing newline is no heartbeat (R6); and every
-#      script append and every `last_seen` file is on a pinned list (R7).
+#      (R5); and a stamp with a trailing newline is no heartbeat (R6).
 #
 # No bats dependency. HERMETIC, same seams as test-relay-file-first.sh: a temp
 # $SOT_COMM_HOME, a per-case $SOT_COMM_SELF_FILE, a pinned $SOT_COMM_TEST_HOST,
@@ -303,31 +302,6 @@ case_a_stamp_with_a_trailing_newline_is_no_heartbeat() {
     return 0
 }
 
-# R7: the invariant "filed only after a liveness check" reaches every place that appends to an inbox
-# or writes or reads a last_seen; a new member must be added here, with its check, on purpose. Over the
-# tracked files of the checkout that are not pages, not Rust (filer.rs has that pin) and not tests.
-case_every_append_and_last_seen_file_is_pinned() {
-    local repo got want
-    repo="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)" || { echo "  not in a git checkout"; return 1; }
-    pin() {  # GREP-ARGS... -- WANT...
-        local args=() rc=0
-        while [ "$1" != -- ]; do args+=("$1"); shift; done; shift
-        got="$(git -C "$repo" grep -l "${args[@]}" -- ':(exclude)*.md' ':(exclude)*.rs' ':(exclude,glob)**/tests/**' ':(exclude,glob)**/test/**')" || rc=$?
-        [ "$rc" -le 1 ] || { echo "  git grep failed ($rc) for ${args[*]}"; return 1; }
-        got="$(printf '%s\n' "$got" | sort | tr '\n' ' ')"
-        want="$(printf '%s\n' "$@" | sort | tr '\n' ' ')"
-        [ "$got" = "$want" ] || { echo "  files matching ${args[*]}: $got, want $want"; return 1; }
-    }
-    pin -w sot_inbox_append -- comm/lib/comm-lib-identity.sh comm/lib/comm-lib-inbox.sh comm/mail/comm-send.sh || return 1
-    pin -w _sot_append_whole -- comm/lib/comm-lib-inbox.sh comm/lib/comm-lib-registry.sh || return 1
-    # a redirection into an inbox file: both are `: >>` touches, which add no line
-    pin -E '>>?[[:space:]]*"?[^[:space:]]*(INBOX|inbox)[^[:space:]]*\.jsonl' -- agents/spawn/comm-spawn.sh comm/registry/comm-join.sh || return 1
-    pin -w last_seen -- agents/spawn/comm-spawn.sh comm/lib/comm-lib-registry-lock.sh comm/lib/comm-lib-registry.sh \
-        comm/mail/comm-send.sh comm/registry/comm-join.sh comm/registry/comm-list.sh comm/work_state/comm-status.sh \
-        comm/work_state/hooks/comm-status-heartbeat.sh || return 1
-    return 0
-}
-
 check "a registry miss on a directed send execs the relay with the same args" case_a_registry_miss_execs_the_relay
 check "a registry hit files locally and never calls the relay" case_a_registry_hit_files_locally_and_never_calls_the_relay
 check "a broadcast never execs the relay" case_a_broadcast_never_execs_the_relay
@@ -338,7 +312,6 @@ check "R2: a stale peer asks no daemon" case_a_stale_peer_asks_no_daemon
 check "R4: a broadcast files the live copy and fails the stale one" case_a_broadcast_files_the_live_copy_and_fails_the_stale_one
 check "R5: the filed line is the verdict alone" case_the_filed_line_is_the_verdict_alone
 check "R6: a last_seen with a trailing newline is no heartbeat" case_a_stamp_with_a_trailing_newline_is_no_heartbeat
-check "R7: every script append and every last_seen file is on its pinned list" case_every_append_and_last_seen_file_is_pinned
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

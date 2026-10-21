@@ -521,40 +521,14 @@ case_a_failed_write_leaves_the_marker_as_the_fact_is() (
     mkdir "$REGISTRY.tmp"; "$ST" dialog "$DIALOG_TEXT" >/dev/null 2>&1; rmdir "$REGISTRY.tmp"
     [ "$(dialog_fact)" = - ] && [ -z "$(dialog_marker)" ] || { echo "    a failed dialog left a fact or marker"; exit 1; }
 )
-# The daemon's entry (a Claude row's dialog, read from its screen): SOT_COMM_ROW_HANDLE stamps the named row with no
-# identity of its own (the self file here resolves none) and no marker, so the row's heartbeat leaves the fact alone.
-# It is honored only for a caller whose parent is sotd: DAEMON runs its command beneath a stand-in named so.
-DAEMON() { ( exec -a sotd bash -c '"$@"; exit $?' sotd env SOT_COMM_SELF_FILE=/nonexistent SOT_COMM_ROW_HANDLE="$NAME" "$@" ); }
-case_the_daemon_entry_stamps_the_named_row_and_no_marker() (
-    export SOT_WORKSPACE_ID=dlg-daemon
-    seed idle; W "$GENUINE"
-    DAEMON "$ST" dialog "claude dialog: Do you want to proceed?" || exit 1
-    expect blocked/user/-/-/- red || exit 1
-    [ "$(summ)" = "claude dialog: Do you want to proceed?" ] && [ -z "$(dialog_marker)" ] || { echo "    summary '$(summ)', or a marker"; exit 1; }
-    HB; expect blocked/user/-/-/- heartbeat-leaves-it || exit 1
-    DAEMON "$ST" resumed || exit 1
-    expect working/user/-/-/- resumed || exit 1
-    local rc=0; DAEMON "$ST" working x 2>/dev/null || rc=$?
-    [ "$rc" = 2 ] || { echo "    a declaration through the entry was not refused (rc $rc)"; exit 1; }
-)
-# A decision made before the row's Stop must not paint the row at rest: the entry's dialog lands only on a row with a floor.
-case_the_daemon_entry_writes_nothing_on_a_row_whose_turn_ended() (
-    export SOT_WORKSPACE_ID=dlg-daemon-late
-    seed idle; W "$GENUINE"; I
-    expect done/-/-/-/d stopped || exit 1
-    local before; before="$(jq -c --arg n "$NAME" '.agents[$n]' "$REGISTRY")"
-    DAEMON "$ST" dialog "claude dialog open" || exit 1
-    [ "$(jq -c --arg n "$NAME" '.agents[$n]' "$REGISTRY")" = "$before" ] || { echo "    the entry wrote to a row at rest"; exit 1; }
-    expect done/-/-/-/d still-done
-)
-# Any caller but sotd's own child is refused, with nothing written.
-case_the_daemon_entry_is_refused_for_any_other_parent() (
-    export SOT_WORKSPACE_ID=dlg-daemon-other
+# The daemon's old entry (SOT_COMM_ROW_HANDLE, an older daemon's way to stamp a Claude row's dialog) is refused with
+# nothing written: the daemon writes a row's dialog in its own process now (rows' work_state::dialog).
+case_the_old_daemon_entry_is_refused() (
+    export SOT_WORKSPACE_ID=dlg-daemon-old
     seed idle; W "$GENUINE"
     local before rc=0; before="$(jq -c --arg n "$NAME" '.agents[$n]' "$REGISTRY")"
     SOT_COMM_SELF_FILE=/nonexistent SOT_COMM_ROW_HANDLE="$NAME" "$ST" dialog "claude dialog open" 2>/dev/null || rc=$?
-    [ "$rc" = 2 ] || { echo "    a caller with no sotd parent got rc $rc"; exit 1; }
-    ( exec -a notsotd bash -c '"$@"; exit $?' x env SOT_COMM_SELF_FILE=/nonexistent SOT_COMM_ROW_HANDLE="$NAME" "$ST" resumed 2>/dev/null ) && { echo "    a parent not named sotd was honored"; exit 1; }
+    [ "$rc" = 2 ] || { echo "    the old entry got rc $rc"; exit 1; }
     [ "$(jq -c --arg n "$NAME" '.agents[$n]' "$REGISTRY")" = "$before" ] || { echo "    a refused caller wrote"; exit 1; }
 )
 case_codex_permission_is_red_until_the_tool_returns() (

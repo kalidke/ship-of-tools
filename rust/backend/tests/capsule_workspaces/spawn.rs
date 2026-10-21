@@ -252,6 +252,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
     let fake_lock = sot_log::supervisor::journal::fence::lock_supervisor(&state_dir_path)
         .expect("pre-hold the fence from the test process");
 
+    let log_from = env.daemon_log_len();
     let pty_req = serde_json::json!({
         "cols": 80, "rows": 24, "user_switch": true, "target": target,
     });
@@ -263,25 +264,38 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
         pty_res.payload
     );
 
-    // Poll workspace.list across a window comfortably longer than the
-    // daemon's own contention-retry bound (private to
-    // `rows/run/`, ~25s) — the row must NEVER read "terminal"
-    // (this test's own regression proof) throughout.
-    let observe_deadline = Instant::now() + Duration::from_secs(45);
-    while Instant::now() < observe_deadline {
+    // The contended start ends in one observed fact: on Unix the durable parent forks nothing, and the attach, after
+    // waiting on the claimed fence (25 passes of 200 ms, `ADMISSION_PENDING_PASSES`), reports the row's authority
+    // pending; on Windows the supervisor is created directly and exits contended (70), which its watchdog logs. The row
+    // must NEVER read "terminal" (this test's own regression proof) until then, nor for three observer rounds (2 s
+    // each) after it, by when every path that could latch it has run.
+    let pending_deadline = Instant::now() + BOUND;
+    let mut pending_at: Option<Instant> = None;
+    loop {
         let id = next_id;
         next_id += 1;
         let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({}))
             .await
             .payload;
-        if let Some(row) = find_row(&payload, &workspace_id) {
-            assert_ne!(
-                row["phase"].as_str(),
-                Some("terminal"),
-                "a spawn that lost a contended fence must never be marked terminal -- row: {row:?}"
-            );
+        let row = find_row(&payload, &workspace_id).expect("the contended row stays listed");
+        assert_ne!(
+            row["phase"].as_str(),
+            Some("terminal"),
+            "a spawn that lost a contended fence must never be marked terminal -- row: {row:?}"
+        );
+        let pending = row["activation_error"].as_str().is_some_and(|e| e.contains("authority is pending"))
+            || env.daemon_log_since(log_from).contains("exited contended (70)");
+        if pending && pending_at.is_none() {
+            pending_at = Some(Instant::now());
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        if pending_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(6)) {
+            break;
+        }
+        assert!(
+            Instant::now() < pending_deadline,
+            "the contended start never ended (no pending authority, no contended exit) -- row: {row:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
     drop(fake_lock);

@@ -420,7 +420,7 @@ fn dup_handle_setup(registry: Option<serde_json::Value>) -> std::path::PathBuf {
 }
 
 fn handles(reg: &Workspaces) -> [String; 3] {
-    ["a", "b", "c"].map(|slug| reg.resolve(Some(slug)).unwrap().agent_handle())
+    ["a", "b", "c"].map(|slug| crate::rows::handle::declared_handle(&reg.resolve(Some(slug)).unwrap()))
 }
 
 /// ADR 0049, one row per handle at boot: a crash between a join's two saves, a moved row's failed save, or a daemon
@@ -474,7 +474,7 @@ fn boot_keeps_the_default_rows_declared_handle() {
     std::env::set_var("SOT_SELF_HOST", "host-4");
     std::env::set_var("SOT_COMM_HOME", dir.join("comm"));
     let mut row = Workspace::from_label("m5-home", root.clone(), false, "none".into(), String::new(), String::new());
-    row.agent_handle = Mutex::new("m5-anchor".to_string());
+    row.agent_handle = crate::rows::handle::Declared::new("m5-anchor".to_string());
     let id = row.workspace_id.clone();
     save(&row).unwrap();
 
@@ -484,11 +484,11 @@ fn boot_keeps_the_default_rows_declared_handle() {
     let files_mode = crate::files::tree::FilesMode::new(root.clone()).unwrap();
     let seeded = crate::rows::anchor::seed_default_row(&opts, &files_mode, &reg);
     assert_eq!(seeded.workspace_id, id, "the re-seed must keep the default row's id");
-    assert_eq!(seeded.agent_handle(), "m5-anchor", "the boot re-seed dropped the default row's handle");
+    assert_eq!(crate::rows::handle::declared_handle(&seeded), "m5-anchor", "the boot re-seed dropped the default row's handle");
 
     let fresh = Workspaces::new();
     scan_disk(&fresh, false).unwrap();
-    assert_eq!(fresh.resolve(Some("m5-home")).unwrap().agent_handle(), "m5-anchor", "the default row's toml lost its handle");
+    assert_eq!(crate::rows::handle::declared_handle(&fresh.resolve(Some("m5-home")).unwrap()), "m5-anchor", "the default row's toml lost its handle");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -617,10 +617,10 @@ fn save_load_round_trips_agent_handle() {
         String::new(),
         String::new(),
     );
-    ws.agent_handle = Mutex::new("rt-agent-handle-testhost".to_string());
+    ws.agent_handle = crate::rows::handle::Declared::new("rt-agent-handle-testhost".to_string());
     let toml_path = save(&ws).unwrap();
     let loaded = load_toml(&toml_path, false).unwrap().unwrap();
-    assert_eq!(loaded.agent_handle(), "rt-agent-handle-testhost");
+    assert_eq!(crate::rows::handle::declared_handle(&loaded), "rt-agent-handle-testhost");
 
     // An older toml predating the key: strip the line, reload, expect "".
     let text = std::fs::read_to_string(&toml_path).unwrap();
@@ -631,7 +631,7 @@ fn save_load_round_trips_agent_handle() {
         .collect();
     std::fs::write(&toml_path, stripped).unwrap();
     let reloaded = load_toml(&toml_path, false).unwrap().unwrap();
-    assert_eq!(reloaded.agent_handle(), "", "an older toml with no key defaults to never-joined");
+    assert_eq!(crate::rows::handle::declared_handle(&reloaded), "", "an older toml with no key defaults to never-joined");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

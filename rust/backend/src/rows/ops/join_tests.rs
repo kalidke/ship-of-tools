@@ -1,5 +1,5 @@
 use super::*;
-use crate::comm::registry::registry::comm_handle_for_workspace;
+use crate::rows::handle::bound_handle;
 use crate::rows::Workspace;
 
 // `handle_agent_join` persists through `crate::rows::store::save` —
@@ -88,11 +88,11 @@ async fn agent_join_persists_and_list_merges_by_the_declared_handle() {
 
     // Persisted in the in-memory registry, readable back via resolve().
     let resolved = workspaces.resolve(Some(&id)).expect("workspace still registered");
-    assert_eq!(resolved.agent_handle(), "agentjoin-testhost");
+    assert_eq!(crate::rows::handle::declared_handle(&resolved), "agentjoin-testhost");
 
     // `workspace.list`'s own row-binding rule merges by the declared
     // handle — this is what makes the join visible there.
-    let merged = comm_handle_for_workspace(&resolved, &workspaces.list());
+    let merged = bound_handle(&resolved, &workspaces.list());
     assert_eq!(merged, "agentjoin-testhost");
 
     // workspace.changed published so the FE re-lists.
@@ -211,7 +211,7 @@ async fn join(workspaces: &Workspaces, id: &str, handle: &str) -> serde_json::Va
 }
 
 fn handles_by_slug(workspaces: &Workspaces) -> Vec<(String, String)> {
-    let mut v: Vec<_> = workspaces.list().iter().map(|w| (w.slug.clone(), w.agent_handle())).collect();
+    let mut v: Vec<_> = workspaces.list().iter().map(|w| (w.slug.clone(), crate::rows::handle::declared_handle(&w))).collect();
     v.sort();
     v
 }
@@ -291,7 +291,7 @@ async fn a_join_never_recreates_the_toml_of_a_destroyed_row_it_took_the_handle_f
     saves.await.expect("the moved-row saves must not panic");
     assert!(!toml_path.exists(), "the destroyed row's toml must never be recreated");
     assert!(workspaces.resolve(Some(&older)).is_none(), "the destroyed row must stay gone");
-    assert_eq!(workspaces.resolve(Some(&newer)).unwrap().agent_handle(), "m5-race");
+    assert_eq!(crate::rows::handle::declared_handle(&workspaces.resolve(Some(&newer)).unwrap()), "m5-race");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -339,7 +339,7 @@ async fn crossing_joins_of_one_handle_never_deadlock() {
     let (wb, b2) = (workspaces.clone(), b.clone());
     let join_b = tokio::spawn(async move { join(&wb, &b2, "m5-cross").await });
     tokio::task::yield_now().await;
-    assert_eq!(workspaces.resolve(Some(&b)).unwrap().agent_handle(), "m5-cross", "B's join must have taken the handle");
+    assert_eq!(crate::rows::handle::declared_handle(&workspaces.resolve(Some(&b)).unwrap()), "m5-cross", "B's join must have taken the handle");
     drop(held);
 
     for task in [join_a, join_b] {
@@ -387,7 +387,7 @@ async fn agent_join_refuses_bad_handle_and_persists_nothing() {
     assert_eq!(out[0].0.payload.get("code").and_then(|v| v.as_str()), Some("bad_handle"));
 
     let resolved = workspaces.resolve(Some(&id)).expect("workspace still registered");
-    assert_eq!(resolved.agent_handle(), "", "a refused join must persist nothing");
+    assert_eq!(crate::rows::handle::declared_handle(&resolved), "", "a refused join must persist nothing");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -425,7 +425,7 @@ async fn agent_join_reports_persist_failed_and_never_returns_ok_on_a_save_failur
     // runs before the save attempt) -- only the DURABILITY claim is
     // refused.
     let resolved = workspaces.resolve(Some(&id)).expect("workspace still registered");
-    assert_eq!(resolved.agent_handle(), "agentjoin-persist-fail-testhost");
+    assert_eq!(crate::rows::handle::declared_handle(&resolved), "agentjoin-persist-fail-testhost");
 
     // No workspace.changed on a failed persist -- the FE would
     // re-list to a handle that isn't actually durable yet.
@@ -465,7 +465,7 @@ async fn agent_join_after_the_workspace_is_destroyed_reports_unknown_never_resur
 fn row_seen(workspaces: &Workspaces, label: &str, handle: &str, drive: &[crate::rows::workspace::Observation]) -> String {
     let mut w = mk_ws(label);
     w.runtime = "capsule".to_string();
-    w.agent_handle = std::sync::Mutex::new(handle.to_string());
+    w.agent_handle = crate::rows::handle::Declared::new(handle.to_string());
     for obs in drive {
         assert!(w.apply_phase_observation(obs.clone()), "{label}: {obs:?}");
     }
@@ -507,7 +507,7 @@ async fn a_join_from_outside_any_row_is_refused_a_handle_a_running_row_holds() {
     assert_eq!(p.get("code").and_then(|v| v.as_str()), Some("held_by_row"), "{p:?}");
     let msg = p.get("error").and_then(|v| v.as_str()).unwrap_or_default();
     assert!(msg.contains("@outside-held-box") && msg.contains("outside any row"), "{msg}");
-    assert_eq!(workspaces.resolve(Some(&id)).unwrap().agent_handle(), "outside-held-box");
+    assert_eq!(crate::rows::handle::declared_handle(&workspaces.resolve(Some(&id)).unwrap()), "outside-held-box");
     assert!(ws_events_rx.try_recv().is_err(), "a refused join publishes nothing");
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -564,8 +564,8 @@ async fn a_row_taking_a_handle_from_another_row_still_moves_it() {
     let payload = serde_json::json!({"workspace_id": newer, "handle": "outside-moved-box"});
     let out = handle_agent_join(1, payload, &workspaces, &ws_events_tx).await.expect("handler must not error");
     assert_eq!(out[0].0.payload.get("ok").and_then(|v| v.as_bool()), Some(true));
-    assert_eq!(workspaces.resolve(Some(&newer)).unwrap().agent_handle(), "outside-moved-box");
-    assert_eq!(workspaces.resolve(Some(&older)).unwrap().agent_handle(), "");
+    assert_eq!(crate::rows::handle::declared_handle(&workspaces.resolve(Some(&newer)).unwrap()), "outside-moved-box");
+    assert_eq!(crate::rows::handle::declared_handle(&workspaces.resolve(Some(&older)).unwrap()), "");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

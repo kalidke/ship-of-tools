@@ -337,7 +337,7 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
 #[cfg(unix)]
 const SWEEP_ROWS: usize = 20;
 
-/// The daemon's dialog tick (sot-backend `comm::wake::dialog`) reads each due Claude row's screen with exactly this
+/// The daemon's dialog tick (sot-backend `rows::work_state::dialog`) reads each due Claude row's screen with exactly this
 /// watcher shape every 5 s. Here: twenty capsules, each 200x50 with its scrollback ring full (so every checkpoint carries
 /// its whole ring), and three sweeps of one read each. Every read stays inside the tick's 3 s budget; nothing is
 /// written to this process's stderr (the daemon's own log, `sotd.log`, takes its stderr; checked only with

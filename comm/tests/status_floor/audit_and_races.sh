@@ -245,29 +245,9 @@ case_marker_audit_block_with_read_mail_is_byte_identical() {
     expect working/user/-/-/d state && [ "$(summ)" = "wrote the second brief" ] || { echo "    summary '$(summ)'"; return 1; }
 }
 
-# ---- races: the read-decide-write decides against the row as it is UNDER the lock ----
-# Hold the registry lock, start the writer under test (it blocks on the lock;
-# the barrier seam tells us it got there), commit a competing write, release,
-# and assert the writer honoured the committed row rather than its pre-lock
-# idea of it.
-race() {  # SEED_FACTS_JSON COMPETING_JQ WANT
-    seed_facts "$1"
-    local barrier="$WORK/barrier.$$"; rm -f "${barrier:?}"
-    mkdir "${_SOT_REG_LOCK:?}" || return 1
-    ( SOT_COMM_TEST_LOCK_BARRIER="$barrier" "$ST" stop ) &
-    local pid=$!
-    await test -e "$barrier" || { rmdir "${_SOT_REG_LOCK:?}"; kill "$pid" 2>/dev/null; echo "    stop never reached the lock"; return 1; }
-    jq --arg n "$NAME" "$2" "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
-    rmdir "${_SOT_REG_LOCK:?}"
-    wait "$pid"
-    expect "$3" after-race
-}
-case_race_done_committed_while_stop_waits_is_kept() {
-    race '{}' '.agents[$n].done = true' done/-/-/-/d
-}
-case_race_machine_start_while_stop_waits_ends_gray() {
-    race '{"floor":"user"}' '.agents[$n].floor = "machine"' idle/-/-/-/-
-}
+# ---- races: the read-decide-write decides against the row as it is under the lock ----
+# The write is rows' `sotd work-state`, whose read-under-the-lock is its own unit test
+# (rust/backend/src/rows/work_state/tests.rs, a_stamp_decides_against_the_row_under_the_lock).
 
 # ---- a failed mutation is a failed script ----
 # A directory squatting on the tmp path makes the jq redirect fail; the row

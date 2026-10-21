@@ -55,8 +55,9 @@ is **red**; otherwise a running turn is **green**; otherwise a wait is
 always wins, and typing into a session (which starts a turn you own) clears both
 red and blue. A Codex session's permission request raises the dialog. For a
 Claude Code session, which sends no event when a dialog shows, the backend reads
-the session's screen every few seconds; on Windows it does not, and such a
-session still reads green.
+the session's screen every five seconds, on every system, whether a turn runs or
+not: a background agent's permission prompt after the session's turn has ended
+reads red too, and so does a menu you open (`/model`, `/resume`) until it closes.
 
 These facts live in the comm registry, next to each session's handle, which is
 why another agent — and every frontend attached to the backend — sees the same

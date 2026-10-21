@@ -372,17 +372,13 @@ fn heartbeat_agrees_with_the_shell() {
 }
 
 // Every daemon route ends in `comm_file_verdict`; the one appender chain is `file_frame` -> `file_frame_with` ->
-// `append_line`; the `last_seen` users and every open for append are the listed files in every crate; a new
-// member fails here.
+// `append_line`; every open for append is in the listed files in every crate; a new member fails here. Who stamps
+// `last_seen` is proven by behavior: the heartbeat's cutoff here, the liveness stamp's write in registry_write_tests.rs,
+// and a session's work-state write in rows/work_state/tests.rs.
 #[test]
 fn every_inbox_append_is_the_verdicts_or_the_move() {
     use sot_log::test_scan::{enclosing, is_ident, production_sources};
     let files = production_sources();
-    let word = |text: &str, w: &str| {
-        text.match_indices(w).any(|(i, _)| {
-            !is_ident(text[..i].chars().next_back()) && !is_ident(text[i + w.len()..].chars().next())
-        })
-    };
     // The non-definition calls of `name(` in `text`: their positions.
     let calls = |text: &str, name: &str| -> Vec<usize> {
         text.match_indices(name)
@@ -390,15 +386,12 @@ fn every_inbox_append_is_the_verdicts_or_the_move() {
             .map(|(i, _)| i)
             .collect()
     };
-    let (mut appenders, mut last_seen, mut opens) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut appenders, mut opens) = (Vec::new(), Vec::new());
     let mut inbox_text = String::new();
     for (path, text) in &files {
         let n = calls(text, "file_frame(").len();
         if n > 0 {
             appenders.push((path.clone(), n));
-        }
-        if word(text, "last_seen") {
-            last_seen.push(path.clone());
         }
         let n = text.matches(".append(true)").count();
         if n > 0 {
@@ -409,13 +402,11 @@ fn every_inbox_append_is_the_verdicts_or_the_move() {
         }
     }
     appenders.sort();
-    last_seen.sort();
     opens.sort();
     assert_eq!(
         appenders,
         vec![("rust/backend/src/comm/mail/filer.rs".to_string(), 1), ("rust/backend/src/comm/mail/hub_link.rs".to_string(), 1)]
     );
-    assert_eq!(last_seen, ["rust/backend/src/comm/mail/filer.rs", "rust/backend/src/comm/registry/registry.rs"]);
     assert_eq!(
         opens,
         vec![
