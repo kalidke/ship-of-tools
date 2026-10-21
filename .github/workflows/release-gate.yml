@@ -46,13 +46,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        shard: ${{ fromJSON(needs.plan.outputs.gate) }}
+        include: ${{ fromJSON(needs.plan.outputs.gate) }}
     defaults:
       run:
         working-directory: rust
     steps:
       - uses: actions/checkout@v7
+      # MSVC links the full debug information of every test executable; line tables keep the backtraces and cost far less.
+      - name: Line tables only (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -61,22 +65,21 @@ jobs:
           workspaces: rust
           shared-key: ${{ matrix.os == 'ubuntu-latest' && 'test-linux' || '' }}
           cache-on-failure: true
-          save-if: ${{ matrix.shard == 'rest-0' }}
+          save-if: ${{ contains(matrix.shard, 'rest-0') }}
       # The sotd unit tests render through the real MathJax node script, which needs its npm modules.
       - uses: actions/setup-node@v7
-        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
+        if: contains(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: rust/backend/sidecars/mathjax/package-lock.json
       - name: Install the MathJax helper's modules
-        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
+        if: contains(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
         working-directory: rust/backend/sidecars/mathjax
         run: npm ci
-      # The shards whose tests start Julia (the sidecar tests in sotd, the daemon suites in wake and rest that send kernel,
-      # preview or REPL ops) have the 1.13 every system runs.
+      # The tests that start Julia (the sidecar tests in sotd, the daemon suites in wake and rest that send kernel, preview or
+      # REPL ops) run the 1.13 every system has.
       - uses: julia-actions/setup-julia@v3
-        if: true
         with:
           version: '1.13'
       # The WGL page test adds WGLMakie offline from the depot JULIA_DEPOT_PATH names; .github/wgl-depot.sh builds it and
@@ -343,6 +346,10 @@ jobs:
       # The storage run below builds offline: its crates come from this fetch.
       - name: Fetch the crates the offline run reads
         run: cargo fetch --locked
+      # A session's work-state write is rows' `sotd work-state`: the comm suites' stub sotd hands it to this build
+      # (comm/tests/lib-home-guard.sh, GUARD_SOTD); the registry-stamp cases of the heartbeat suite fail without it.
+      - name: Build sotd for the work-state write
+        run: cargo build -p sot-backend --bin sotd --locked
       - name: Test L3 storage exhaustion
         shell: bash
         timeout-minutes: 15

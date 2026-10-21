@@ -6,8 +6,8 @@
 # exactly once: the check in rust.yml fails, naming the test, on one that runs nowhere or twice. A shard runs its rows
 # one after the other; rc-gate.sh runs each row that has filters as a job of its own.
 # A shard named gate-* runs in release-gate.yml, once per release; every other shard runs in rust.yml at each landing.
-# `rest-0` and `rest-1` are never named: together they run every test executable this table does not name (alternate ones
-# in each), and rest-0 the doc tests.
+# `rest-0` to `rest-2` are never named: together they run every test executable this table does not name (every third
+# one each), and rest-0 the doc tests.
 #
 # The wall-clock tests (they sleep on the clock, 60 to 180 s each) and the page test that needs a prepared Julia depot
 # are in gate-* shards; the rest are cut so a landing shard runs under about four minutes of tests (seconds measured in
@@ -31,3 +31,9 @@ gate-sleep test window_start
 gate-sleep test window_lease
 gate-sleep test fe_client unresponsive_supervisor_expires_the_health_window
 gate-wgl   bin  sotd repl_page_secret_never_reaches_command_line
+
+# The jobs of each system (seconds from run 39646399759; a job's tests run about four minutes at most). Linux and Windows
+# share 20 concurrent jobs with the checks, macOS has 5. rest-0 to rest-2 split the targets named nowhere above.
+fold linux   ws2+rest-2 sotd-a+sotd-b rest-0+rest-1
+fold windows sup+wake sotd-a+ws2 lane+ws rest-0 rest-1 sotd-b+rest-2
+fold macos   sotd-a sotd-b rest-0+rest-2+ws2 rest-1+lane+wake sup+ws
