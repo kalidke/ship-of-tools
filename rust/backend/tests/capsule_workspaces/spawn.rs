@@ -263,25 +263,32 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
         pty_res.payload
     );
 
-    // Poll workspace.list across a window comfortably longer than the
-    // daemon's own contention-retry bound (private to
-    // `rows/run/`, ~25s) — the row must NEVER read "terminal"
-    // (this test's own regression proof) throughout.
-    let observe_deadline = Instant::now() + Duration::from_secs(45);
-    while Instant::now() < observe_deadline {
+    // The attach waits on the claimed fence (25 passes of 200 ms, `ADMISSION_PENDING_PASSES`) and then reports the
+    // row's authority pending; the row must NEVER read "terminal" (this test's own regression proof) until then, nor
+    // for three observer rounds (2 s each) after it, by when every path that could latch it has run.
+    let pending_deadline = Instant::now() + BOUND;
+    let mut pending_at: Option<Instant> = None;
+    loop {
         let id = next_id;
         next_id += 1;
         let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({}))
             .await
             .payload;
-        if let Some(row) = find_row(&payload, &workspace_id) {
-            assert_ne!(
-                row["phase"].as_str(),
-                Some("terminal"),
-                "a spawn that lost a contended fence must never be marked terminal -- row: {row:?}"
-            );
+        let row = find_row(&payload, &workspace_id).expect("the contended row stays listed");
+        assert_ne!(
+            row["phase"].as_str(),
+            Some("terminal"),
+            "a spawn that lost a contended fence must never be marked terminal -- row: {row:?}"
+        );
+        let pending = row["activation_error"].as_str().is_some_and(|e| e.contains("authority is pending"));
+        if pending && pending_at.is_none() {
+            pending_at = Some(Instant::now());
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        if pending_at.is_some_and(|t| t.elapsed() >= Duration::from_secs(6)) {
+            break;
+        }
+        assert!(Instant::now() < pending_deadline, "the contended attach never reported its authority pending -- row: {row:?}");
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
     drop(fake_lock);
