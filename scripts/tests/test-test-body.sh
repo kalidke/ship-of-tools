@@ -447,7 +447,7 @@ if mode=='all':
             if listing not in ('missing-fixture','duplicate-fixture'):
                 proof_jobs=[line.split('\t') for line in r.stdout.splitlines() if line.startswith('shell\ttest-test-body\t')]
                 check(len(proof_jobs)==1 and proof_jobs[0][-2:]==['--all',fixture],'proof fixture argv/discovery lost')
-            check((p/'steps/missing-fe_client_supervisor_word__unresponsive_supervisor_expires_the_health_window.rc').read_text(encoding='utf-8', errors='strict').strip()=='101','missing slow-first request not a result failure')
+            check((p/'steps/missing-capsule_workspaces_spawn__capsule_supervisor_spawn_survives_fence_contention_without_marking_terminal.rc').read_text(encoding='utf-8', errors='strict').strip()=='101','missing slow-first request not a result failure')
     case('split_producer_does_not_schedule_ignored_as_ordinary',producer_controls)
 if failures:
     print('FAIL: selected Rust body proofs ('+mode+'): '+', '.join(failures),flush=True); sys.exit(1)
