@@ -94,6 +94,7 @@ fi
 [ $# -ge 3 ] && [ $# -le 4 ] || { echo "usage: interop-066.sh WORK NEW_SOTD OLD_SOTD [OLD_TAG]" >&2; exit 2; }
 W="$1" NEW_SOTD="$2" OLD_SOTD="$3" TAG="${4:-v0.6.6-rc9.15}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || exit 2
+. "$ROOT/comm/tests/lib-wait.sh" || exit 2
 for b in "$NEW_SOTD" "$OLD_SOTD"; do [ -x "$b" ] || fail "not an executable: $b"; done
 for t in jq flock perl findmnt; do command -v "$t" >/dev/null || fail "needs $t"; done
 if [ -e "$W" ]; then [ -z "$(ls -A "$W")" ] || fail "WORK is not empty: $W"; fi
@@ -171,7 +172,7 @@ pass "0.6.6 send after sotd comm leave is refused"
 # ---- Part 2: a hub and a linked box on different versions -----------------------------------------------------------
 # daemon BOX VERSION — starts BOX's daemon on VERSION's binary and waits for its socket.
 daemon() {
-    local b="$1" bin i
+    local b="$1" bin
     case "$2" in old) bin="$OLD_SOTD" ;; new) bin="$NEW_SOTD" ;; esac
     env -i PATH="$W/$b/stub:/usr/local/bin:/usr/bin:/bin" HOME="$W/$b/home" USERPROFILE="$W/$b/home" \
         LOCALAPPDATA="$W/$b/state" XDG_STATE_HOME="$W/$b/state" XDG_CONFIG_HOME="$W/$b/config" \
@@ -179,13 +180,19 @@ daemon() {
         SOT_HOSTS="$W/$b/hosts.toml" \
         "$bin" --socket "$W/$b/run/sotd.sock" --project-root "$W/$b/project" < /dev/null > "$W/$b/sotd.log" 2>&1 &
     DAEMONS="$DAEMONS $!"
-    for i in $(seq 100); do [ -S "$W/$b/run/sotd.sock" ] && return 0; sleep 0.2; done
+    await test -S "$W/$b/run/sotd.sock" && return 0
     fail "$b's daemon ($2) made no socket; its log: $(tail -5 "$W/$b/sotd.log")"
+}
+
+# mailed VERSION BOX TEXT — 0 when BOX's session @hubs files TEXT for @guests-box-b; the send's words in BOX/mailed.
+mailed() {
+    sess "$1" "$2" hubs comm-send.sh @guests-box-b "$3" > "$W/$2/mailed" 2>&1
+    grep -q 'filed -> @guests-box-b' "$W/$2/mailed"
 }
 
 # pair HUBV GUESTV — a hub on HUBV and a linked box on GUESTV; one mail each way.
 pair() {
-    local hv="$1" gv="$2" k="$1-$2" hub guest i out hubsotd
+    local hv="$1" gv="$2" k="$1-$2" hub guest out hubsotd
     hub="hub-$k" guest="guest-$k"
     case "$hv" in old) hubsotd="$OLD_SOTD" ;; new) hubsotd="$NEW_SOTD" ;; esac
     box "$hub" hub-a
@@ -202,11 +209,8 @@ pair() {
     out="$(sess "$hv" "$hub" hubs comm-join.sh 2>&1)"; expect "$k: hub session joins ($hv)" "Joined sot-comm as @hubs-hub-a" "$out"
     out="$(sess "$gv" "$guest" guests comm-join.sh 2>&1)"; expect "$k: linked session joins ($gv)" "Joined sot-comm as @guests-box-b" "$out"
     # The link comes up on the daemon's pace; the hub's answer is not_here until it does.
-    for i in $(seq 60); do
-        out="$(sess "$hv" "$hub" hubs comm-send.sh @guests-box-b "hub to box $k" 2>&1)"
-        case "$out" in *"filed -> @guests-box-b"*) break ;; esac
-        sleep 0.5
-    done
+    await mailed "$hv" "$hub" "hub to box $k"
+    out="$(cat "$W/$hub/mailed")"
     expect "$k: hub ($hv) mails the linked box ($gv)" "filed -> @guests-box-b" "$out"
     out="$(sess "$gv" "$guest" guests comm-poll.sh 2>&1)"; expect "$k: the linked box reads it" "hub to box $k" "$out"
     out="$(sess "$gv" "$guest" guests comm-send.sh @hubs-hub-a "box to hub $k" 2>&1)"

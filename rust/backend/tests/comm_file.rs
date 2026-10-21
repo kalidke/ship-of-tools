@@ -118,7 +118,7 @@ fn sending_home(home: &Path, project: &Path, from: &str, to: &str) {
         from: {"host": "box1", "workspace_id": "", "root": root, "last_seen": now},
         to: {"host": "box1", "workspace_id": "", "root": "/elsewhere", "last_seen": now},
     }});
-    std::fs::write(comm.join("registry.json"), reg.to_string()).unwrap();
+    support::write_registry(&comm, |doc| *doc = reg);
     std::fs::write(home.join(format!("self-{from}.txt")), format!("{from}\nrepo=r\nroot={root}\n")).unwrap();
 }
 

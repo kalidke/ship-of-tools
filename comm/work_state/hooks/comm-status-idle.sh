@@ -375,12 +375,11 @@ fault_tick="$HOME_DIR/state/lock-fault-$(printf '%s' "$NAME.$mail_key" | tr -c '
 if [ -r "$MAIL_INBOX" ] && command -v jq >/dev/null 2>&1; then
     mail_out="$( ( . "$FE_LIB" >/dev/null 2>&1 || exit 0
         # `<total> <unread>` and the lock fault's warning line; `busy` (75); else `failed <its last stderr line>`.
+        # (An if, not a case: bash 3.2 cannot parse a case pattern's `)` inside `$( )`.)
         mail_count="$(sot_comm unread "$NAME" 2>&1)"; mail_rc=$?
-        case "$mail_rc" in
-            0) printf '%s\n' "$mail_count" ;;
-            75) echo busy ;;
-            *) echo "failed ${mail_count##*$'\n'}" ;;
-        esac ) 2>/dev/null || true )"
+        if [ "$mail_rc" -eq 0 ]; then printf '%s\n' "$mail_count"
+        elif [ "$mail_rc" -eq 75 ]; then echo busy
+        else echo "failed ${mail_count##*$'\n'}"; fi ) 2>/dev/null || true )"
     case "$mail_out" in
         busy) echo "comm-status-idle: the inbox for @$NAME is being written; it will be checked again at the next turn end" >&2 ;;
         failed*)
