@@ -109,19 +109,20 @@ LOCAL_PEERPID, pidversion, the fork birth lock, renamex_np), Windows (SDDL and S
 LockFileEx, GetExtendedTcpTable, impersonation-level probe). No fourth OS builds.
 
 ## Tests
-One per guarantee. Macros of the form `crate::...` are unit tests in `rust/platform/src/`; `log/...` are integration
-tests that need sot-log's test support and stay in `rust/log/tests/` until that support is its own crate.
+One per guarantee. Paths are under `rust/platform/src/` unless they start `log/`: those are integration tests that need
+sot-log's test support (a subprocess listener, a foreign account's socket) and stay in `rust/log/tests/` until that
+support is its own crate. A test of a Windows or macOS arm runs on the hosted runner for its OS.
 
 | # | guarantee | test |
 |---|---|---|
-| 1 | one answer, host_name errs | `state_dir_tests.rs` (the four `host_name_*`, `sot_state_dir_is_the_one_rule`, `the_unusable_kernel_name_is_an_error`); `state_dir_hash_tests.rs`; `state_dir_runtime_dir_tests.rs` |
-| 2 | durable, no clobber | `durable_tests.rs` (`publish_noreplace_refuses_an_existing_target`, `write_durable_replaces_and_leaves_no_tmp`, `remove_durable_is_idempotent`, `ensure_container_*`) |
-| 3 | kernel lock | `lock_tests.rs` (`a_dropped_*_lock_is_free_while_a_forked_child_waits_to_exec`, `try_lock_daemon_excludes_a_second_holder`, `lock_supervisor_refuses_a_second_concurrent_holder`) |
-| 4 | held folder | `held_dir_tests.rs` |
-| 5 | cloexec births | `fd_tests.rs`; `log/tests/winhandle_windows.rs` |
-| 6 | challenge | `identity/*_tests.rs`, `log/tests/challenge_unix.rs`, `challenge_macos.rs`, `connect_own.rs`, `other_account.rs`, `macos_kernel_facts` |
-| 7 | storage codes | `storage_tests.rs` |
-| 8 | volume preflight | `volume_tests.rs` |
-| 9 | redial | `redial_tests.rs` |
-| 10 | dir pin | `pinned_dir_tests.rs` |
-| 11 | private dir | `state_dir_is_private_dir_tests.rs`; `private_dir_tests.rs` |
+| 1 | one answer, `host_name` errs | `host/state_dir_tests.rs`: `the_state_folder_has_one_rule_and_the_config_folder_is_its_sibling_rule`, `the_daemons_state_folder_is_the_state_folder_and_falls_back_to_tmp_without_a_home` (and its Windows pair), `host_name_prefers_sot_self_host_when_set` and the three `host_name_falls_back_*`/`_takes_*` cases, `a_raw_host_name_gives_its_first_lowercase_label_or_an_error`; `host/state_dir_hash_tests.rs`; `host/state_dir_runtime_dir_tests.rs`; `identity/os_account_tests.rs` |
+| 2 | durable, no clobber | `host/durable_tests.rs`: `publish_noreplace_refuses_an_existing_target_and_leaves_both_files`, `write_durable_replaces_a_record_and_leaves_no_temporary_file`, `remove_durable_is_idempotent_and_accepts_a_missing_folder`, `ensure_container_*` |
+| 3 | kernel lock | `host/lock_tests.rs`: `a_dropped_writer_lock_is_free_while_a_forked_child_waits_to_exec`, `a_dropped_daemon_lock_is_free_while_a_forked_child_waits_to_exec`, `a_child_spawned_while_the_daemon_lock_is_held_never_holds_it`, `try_lock_daemon_excludes_a_second_holder`, `lock_supervisor_refuses_a_second_concurrent_holder` |
+| 4 | held folder | `host/held_dir_tests.rs`: `a_held_folder_goes_once_its_maker_has_ended_and_only_then`, `a_held_folder_goes_while_a_removal_holds_its_lock_file_open` |
+| 5 | cloexec births | `host/fd_tests.rs` (socket, pipe, pty, the fork birth lock); `log/tests/winhandle_windows.rs` |
+| 6 | challenge | `identity/challenge_unix_tests.rs`, `identity/challenge_identity_tests.rs`, `identity/deadline_tests.rs`, `identity/peer_owner/tests.rs`, `identity/exit_watch_macos_tests.rs`; `log/tests/challenge_unix.rs`, `challenge_macos.rs`, `connect_own.rs`, `other_account.rs`, `macos_kernel_facts/` |
+| 7 | storage codes | `host/storage_tests.rs`: `storage_codes_are_recognized_by_native_code_only`; `log/src/storage_tests.rs`: `a_transport_error_is_never_storage_exhaustion` |
+| 8 | volume preflight | `host/volume_tests.rs` |
+| 9 | redial | `host/redial_tests.rs`: `a_short_connection_keeps_the_doubling`, `a_connection_that_lasted_stable_starts_over`, `a_reset_starts_over` |
+| 10 | dir pin | `host/pinned_dir_tests.rs`: `a_fifo_fails_at_once_and_never_waits_for_a_writer` |
+| 11 | private dir | `host/state_dir_is_private_dir_tests.rs`; `host/paths_secure_private_dir_tests.rs`: `a_missing_parent_is_created_and_the_leaf_is_private`, `ensure_private_dir_makes_an_owner_only_folder_that_is_private` |

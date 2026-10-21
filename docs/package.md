@@ -173,10 +173,11 @@ move to a history folder.
 
 ## Depends on
 
-Today (crates): log <- protocol <- {backend, frontend}; log <- updater <- {backend, frontend}. Inside `sot-backend`
+Today (crates): platform <- log <- protocol <- {backend, frontend}; platform <- log <- updater <- {backend, frontend} (protocol and the updater
+also depend on platform directly; protocol's edge to log is topology's lane client, which leaves with pass 5b). Inside `sot-backend`
 (one binary, no library target) the modules form one cycle: {agents clients comm files lifecycle pages rows server
-sidecars topology update}; inside the frontend, {lease net pages ui}; inside sot-log, {attach_client capsule host
-identity lane store supervisor}.
+sidecars topology update}; inside the frontend, {lease net pages ui}; inside sot-log, {attach_client capsule lane store
+supervisor}.
 
 Target (one crate per subsystem, acyclic; a call the contract does not name does not build):
 - platform -> (none)
