@@ -158,3 +158,7 @@ pub fn parent_only_of(accepted: &Accepted) -> Vec<RawFd> {
     }
     fds
 }
+
+#[cfg(test)]
+#[path = "accept_tests.rs"]
+mod tests;

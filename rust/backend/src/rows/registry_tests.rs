@@ -298,3 +298,17 @@ async fn a_running_observer_feeds_the_row_a_same_slug_insert_registers() {
     drop(old);
     assert!(replaced.upgrade().is_none(), "the row the insert replaced is still held");
 }
+
+/// One guard per row: minted only for a registered row, the same one to every caller, and gone with the row, so a
+/// later row under a reused id starts with a fresh one.
+#[test]
+fn one_guard_per_row_minted_only_for_a_registered_row_and_dropped_with_it() {
+    let reg = Workspaces::new();
+    assert!(reg.capsule_guard("ws-none").is_none(), "a guard for a row that is not registered");
+    let ws = reg.insert(Workspace::from_label("g", PathBuf::from("/p/g"), false, "none".into(), String::new(), String::new()));
+    let a = reg.capsule_guard(&ws.workspace_id).expect("a registered row's guard");
+    let b = reg.capsule_guard(&ws.workspace_id).expect("a registered row's guard");
+    assert!(Arc::ptr_eq(&a, &b), "two callers got two guards for one row");
+    reg.remove_by_id(&ws.workspace_id);
+    assert!(reg.capsule_guard(&ws.workspace_id).is_none(), "the guard outlived its row");
+}
