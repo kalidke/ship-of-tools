@@ -144,6 +144,7 @@ fn armed_tail(ctx: &Ctx) -> String {
 }
 
 /// Copy the binaries, clone the base and add the version folder.
+#[allow(clippy::disallowed_methods, reason = "sotd install copies the pack's binaries in the foreground and starts no program while a copy is open")]
 fn fresh(ctx: &Ctx) -> Result<(), Stop> {
     step("binaries");
     let bin = ctx.prefix.join("bin");

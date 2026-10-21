@@ -35,6 +35,7 @@ fn start(cmd: &mut Command) -> std::io::Result<std::process::Child> {
 }
 
 /// Run `cmd` to its end with its output read; a program that cannot start is a result (no code, the reason in `err`).
+#[allow(clippy::disallowed_methods, reason = "the one waiter of sotd install's own steps (the test rule is for a test's own children)")]
 pub(super) fn output(cmd: &mut Command) -> Ran {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     match start(cmd).and_then(std::process::Child::wait_with_output) {
@@ -61,6 +62,7 @@ pub(super) fn shown(cmd: &mut Command) -> Option<i32> {
 }
 
 /// [`output`] within `bound` by the clock: at the bound the program is killed and the result has no code and says so.
+#[allow(clippy::disallowed_methods, reason = "the one waiter of sotd install's own steps (the test rule is for a test's own children)")]
 #[cfg_attr(windows, allow(dead_code, reason = "the Unix role question's ssh probe"))]
 pub(super) fn output_within(cmd: &mut Command, bound: Duration) -> Ran {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());

@@ -613,6 +613,7 @@ fn lay_out(plan: &Plan) -> Result<(), Stop> {
 }
 
 /// Copy `src` to `dst` whole: to a name of this process's own beside it, its mode set, then renamed over it.
+#[allow(clippy::disallowed_methods, reason = "sotd install copies the pack's files in the foreground and starts no program while a copy is open; no test copies a program through it")]
 fn copy_whole(src: &Path, dst: &Path, mode: Option<u32>) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let tmp = dst.with_file_name(format!("{}.new.{}", dst.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), std::process::id()));
@@ -992,10 +993,10 @@ fn desktop_entry(plan: &Plan, wrapper: &str) -> Result<(), Stop> {
     let fallback = plan.prefix.join("logo.png").to_string_lossy().into_owned();
     let mut icon = fallback.clone();
     if logo.is_file() {
-        let _ = std::fs::copy(&logo, plan.prefix.join("logo.png"));
+        let _ = copy_whole(&logo, &plan.prefix.join("logo.png"), None);
         let theme = plan.home.join(".local/share/icons/hicolor");
         let dir = theme.join("256x256/apps");
-        if std::fs::create_dir_all(&dir).is_ok() && std::fs::copy(&logo, dir.join("ship-of-tools.png")).is_ok() {
+        if std::fs::create_dir_all(&dir).is_ok() && copy_whole(&logo, &dir.join("ship-of-tools.png"), None).is_ok() {
             icon = "ship-of-tools".into();
             if cmd::on_path("gtk-update-icon-cache") {
                 let _ = cmd::output(Command::new("gtk-update-icon-cache").args(["-q", "-t", "-f"]).arg(&theme));

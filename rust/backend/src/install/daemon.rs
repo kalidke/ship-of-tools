@@ -183,6 +183,7 @@ pub(super) fn ask_restart(work: &str) -> bool {
 }
 
 #[cfg(unix)]
+#[allow(clippy::disallowed_methods, reason = "a person's answer at the console, not a child's output")]
 pub(super) fn read_answer(question: &str) -> Option<String> {
     use std::io::{BufRead as _, Write as _};
     let tty = std::env::var_os("SOT_INSTALL_TTY").unwrap_or_else(|| "/dev/tty".into());
@@ -195,6 +196,7 @@ pub(super) fn read_answer(question: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
+#[allow(clippy::disallowed_methods, reason = "a person's answer at the console, not a child's output")]
 pub(super) fn read_answer(question: &str) -> Option<String> {
     use std::io::{IsTerminal as _, Write as _};
     if !std::io::stdin().is_terminal() {
