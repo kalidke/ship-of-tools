@@ -1,107 +1,12 @@
-# comm/: messaging between sessions (charter)
+# comm/: messaging's shell side (pointer)
 
-## Idea
-A session sends one line to another by handle (the folder name plus the box name). The message is delivered when that
-line is appended, under the inbox lock, to `inbox/<handle>.jsonl` in the comm folder (`~/.sot-comm`, or
-`$SOT_COMM_HOME`); the sender is told `filed -> @h` or `FAILED -> @h: <reason>`, and nothing is queued. The daemon that
-runs the receiver's row types a wake line into its free prompt, and the Stop hook does not end a turn with directed mail
-unread. Design of record: docs/history/adr/0049-messaging-on-one-page.md. The contract is `PROTOCOL.md`.
-
-## Owns
-- The comm folder's data: `inbox/<h>.jsonl` and `.lock`, `read/<h>.cursor`, `registry.json` and `.registry.lock`,
-  `self/`, `state/`, and `inbox-lock-manager` (written only by the folder's hub, at its start).
-- Mail scripts: `comm-send.sh`, `comm-relay.sh`, `comm-poll.sh` (the only cursor writer), and the inbox half of
-  `lib/comm-lib-inbox.sh` (`sot_inbox_append`, `sot_comm_file`).
-- Address book scripts: `comm-context.sh`, `comm-join.sh`, `comm-leave.sh`, `comm-list.sh`, `comm-self-audit.sh`,
-  `comm-registry-lock-clear.sh`, `comm-session-start.sh`, and the registry half of the library (`registry_replace`, `sot_registry_read` in `lib/comm-lib-registry.sh`, `with_lock` in `lib/comm-lib-registry-lock.sh`,
-  `sot_require_agent` in `lib/comm-lib-agent-layers.sh`).
-- Housed here, rows': work-state (`work_state/`: `comm-status.sh`, `comm-turn-auditor.sh`, the status hooks), whose
-  contract is rows' (rust/backend/src/rows/CLAUDE.md, work-state); the Stop hook's mail gate and
-  `comm-subagent-guard.sh` in `work_state/hooks/` are messaging's.
-- Housed here, not messaging: the shell daemon client in `lib/comm-lib-client.sh` (`sot_oneshot_request`) and the agent adapters under
-  `adapters/`. The CLIs that start, end, probe and bootstrap rows moved to `agents/spawn/`, the `/worktree` scripts to
-  `agents/worktree/`, and `sot-fe` and `sot-nav.sh` to `agents/sot-fe/`, installed into the same bin. The launchers, the
-  non-messaging skills, `sot-gh-auth.sh` moved to `agents/`.
-
-## Promises
-- `filed` is printed only on the appender's word: a local append that synced, or a daemon's `comm.file` answer `ok`
-  (the hub's own, or the one a linked daemon gave the hub), and only for a live handle: one whose registry `last_seen` is under 600 s
-  old (`sot_heartbeat_fresh`, `heartbeat_fresh`), stamped by the session and, every minute, by the daemon running its
-  row. `FAILED` appended nothing.
-- Every appender takes flock on `inbox/<h>.lock` and appends locally only when its own lock manager equals line 1 of
-  `inbox-lock-manager`; otherwise the frame goes to a daemon as `comm.file`.
-- Readers count newline-terminated lines only; only `comm-poll.sh` moves a cursor.
-- Every registry write is `registry_replace` under `with_lock` (scripts) or `with_comm_registry_lock` (daemon).
-- A process acts as a handle only if at most one agent lies between it and its row's capsule (`sot_require_agent`).
-- A rule written in both shell and Rust changes in both in one commit; parity tests cover the cursor, the lock record,
-  the lock identity, the unread count (`unread_agrees_with_the_shell`) and the heartbeat
-  (`heartbeat_agrees_with_the_shell`).
-- Scripts run under bash 3.2 and git-bash. Free text, and any value that may start with `/`, reaches jq on stdin
-  (comm/lib/comm-lib-base.sh, free text and jq), never as a `jq --arg` value and never through a temporary file.
-- A cleanup trap (an EXIT trap that removes or undoes what its shell holds) starts `trap "" HUP INT TERM` and ends
-  with `sot_end_by_signal`. Right after setting it, its shell, a subshell too, runs `sot_cleanup_signals`, so HUP,
-  INT and TERM each end the shell through the trap and then by that signal, even when a command in the trap's body
-  fails under `set -e` (the handler turns errexit off); the names the trap reads are not `local`; and the shell is
-  armed with `trap - HUP INT TERM` before it holds anything (the comm library arms every
-  shell that loads it). A second signal often follows the first within a millisecond, and a trap left to bash is
-  then lost: bash 5.2.14 and later end the shell before the trap's first command, and bash 3.2 never runs a
-  subshell's EXIT trap on HUP or TERM once its parent has set one (comm/lib/comm-lib-base.sh, cleanup traps). The
-  product scripts of agents/, scripts/ and docs/tools/ follow the same rule, with a copy of the two helpers where
-  they do not load the library, except scripts/sot-apply.sh, whose signal handling is its own 0.6.6 item
-  (SOT-APPLY-SIGNAL); a test suite's own traps are the suite's.
-- CI keeps the bash 3.2 promise: the job `bash32-linux` runs every hermetic comm and agents suite with every script
-  under GNU bash 3.2.57, and macOS's `test` leg the ones that pass there under `/bin/bash` (`scripts/tests/under-bash.sh`).
-- A change to locking states its writer set and is proven by concurrent appends from two hosts to one inbox; there is
-  no lease-lock fallback. A script change is tested through `tests/` from the staged bin, never against the live home.
-- Registry host facts and unpinned self-file keys agree with the daemon's declared host; the raw hostname remains a derived-handle component. A successful destroy retires only the admitted target daemon's slot.
-- Not built: ADR 0049's stage B6 (`comm-join.sh` still accepts `--name`). A newer `agent.join` moves a handle off the
-  row that held it (B5, `set_agent_handle`), but nothing tells that row's session: its self-file still names the
-  handle. Its scripts no longer act as it: `comm-context.sh` discards a handle whose registry `workspace_id` is another
-  row's, so it reads, sends and stamps as nobody until it joins again, which its next `comm-session-start.sh` does.
-- A session outside any row never takes or reads a handle a row holds: `sot_outside_join_clearance` asks the
-  daemon (`agent.join` with an empty `workspace_id`) for every such join, and `sot_row_binding` is the one answer for
-  whose a handle is, used by `comm-context.sh` and `comm-poll.sh` (PROTOCOL.md, the row rule).
-
-## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides:
-`remove_comm_agents_for_workspace`, `handle_comm_file`, `handle_agent_send`, `Links`, `edit_entry`, `stamp_last_seen`,
-`read_comm_agents`, `host_matches`, `last_joiner`, `dialog_of`,
-`comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`, `agents/spawn/comm-probe.sh`,
-`agents/spawn/comm-bootstrap.sh`, `sot_sanitize_component`, `_sot_handle_host`. Provides also: HOST (the declared host), HANDLE_HOST (the raw handle component), and _sot_self_slot for the agents shell edge. Uses: `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `ping`, `LINK_ROLE`, `SshRecipe`, `recipe_for`, `dial_and_call`, `dispatch`, `LinkGate`, `Redial`, `STABLE`, `Signal::spawn`,
-`Contained`, `Signal`, `child_signal::process`, `Workspace::agent_handle`, `set_agent_handle`, `attach`,
-`send_text`, `send_enter`, `rust/backend/src/rows/run/headless.rs`, `Workspaces::resolve`, `row_or_reply`,
-`capsule_guard`, `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`,
-`sot_pty_input`, `sot_dial`, `capsule_supervisor_env`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`,
-`sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `sot_host`, `comm/lib/comm-lib-base.sh`,
-`install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`, `ChildLines`.
-
-Rows consume the registry's read, edit, prune and liveness functions; the binding of a handle to a row is rows'.
+Messaging's contract is `rust/backend/src/comm/CLAUDE.md`; the on-disk formats and the wire are `PROTOCOL.md` here.
 
 ## Folders
-- `adapters/`: what is installed into Claude Code and Codex: hooks, the messaging skills, the Codex skills and plugin.
-- `lib/`: the shared shell library: the loader `comm-lib.sh`, which every script sources from its own folder, and its seven parts.
-- `mail/`: `comm-send.sh`, `comm-relay.sh` and `comm-poll.sh`, installed flat beside the library.
-- `registry/`: the address book scripts: identity, join, leave, list, self-audit, lock recovery, session start.
-- `tests/`: the hermetic suites that prove the scripts, run from a staged flat bin (see its page).
-- `work_state/`: rows' work-state scripts and hooks (`work_state/hooks/`), installed with these; their contract is rows'.
-- `rust/backend/src/comm/mail/`: the daemon's delivery: `comm.file` (`file_comm`), its offers to linked daemons
-  (`links.rs`) and the hub link that answers them (`run`), the append (`file_frame`), and the `agent.send` UI
-  notification and its `agent.message` bus (`relay.rs`).
-- `rust/backend/src/comm/registry/`: the daemon's address book: the registry lock (`acquire`), reads, one entry's edit
-  (`edit_entry`), the destroy prune and the liveness stamp's write (`stamp_last_seen`); `agent.join` is rows'.
-- `rust/backend/src/comm/wake/`: the wake tick (`check_row`), the screen reading and the one attach.
-
-## Files
-- `PROTOCOL.md`: the contract every client implements: layout, registry, inbox, cursor, locks, the one result.
-- `adapters/`: Claude and Codex adapters (see Folders).
-- `bin-folders.txt`: the folders whose files install flat into `~/.sot-comm/bin`, one repo path per line, in publish order: `lib` first, so no new script starts before the new library.
-- `lib/`: the shell library (see Folders).
-- `mail/`: the send, relay and poll scripts (see Folders).
-- `registry/`: the address book scripts (see Folders).
-- `tests/`: the suites and their stage (see Folders).
-- `work_state/`: rows' work-state scripts and hooks (see Folders).
-
-## Start here
-For mail, `mail/comm-send.sh` then `sot_inbox_append` in `lib/comm-lib-inbox.sh`, and `rust/backend/src/comm/mail/inbox.rs`
-`file_frame` for the daemon's twin. For the address book, `comm-join.sh` and `registry_replace`. For work-state,
-`comm-status.sh`. For a change to where a script lives, `bin-folders.txt` and `tests/stage-bin.sh`.
+- `adapters/`: what is installed into Claude Code and Codex: the messaging skills, the Codex hooks and plugin.
+- `lib/`: the shell library every installed script sources (`comm-lib.sh`), with messaging's shell door to `sotd comm`.
+- `mail/`, `registry/`: the commands sessions type, thin wrappers over `sotd comm`.
+- `tests/`: the shell-side checks.
+- `work_state/`: rows' work-state scripts and hooks (rust/backend/src/rows/CLAUDE.md); its subagent guard is
+  messaging's.
+- `bin-folders.txt`: the folders whose files install flat into `~/.sot-comm/bin`, in publish order (`lib` first).
