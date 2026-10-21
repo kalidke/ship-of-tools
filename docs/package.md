@@ -47,7 +47,7 @@ page, every contract and one subsystem whole; that leaves room for about 200 tho
 | total | | 1,959 | 2,087 | 305 | 404 | |
 
 Outside the table: the vt100 fork (47 + 39, vendored, never loaded in a pass) and the shared test support (26).
-The design records (52 ADRs) and the old folder pages live in `docs/history/` and load nowhere.
+The design records (51 ADRs and their index) and the old folder pages live in `docs/history/` and load nowhere.
 
 ## Draft contracts, one paragraph each
 
@@ -217,7 +217,13 @@ Windows).
 - **D4 the frontend splits into five crates** along the existing event router (`drain_events`, one arm per event):
   app and render; chrome, input, help and persistence; navigation and session; agent pane and drawer (terminal, REPL,
   monitor); preview (image, markdown, editor, concept) with the control surface. Held to the cross-crate call count
-  (the fourth number). The first frontend pass is the split itself.
+  (the fourth number). Revised 2026-10-21, from an outside audit: no crate cut is possible while the window's `State`
+  stands, one struct of 238 fields extended by `impl State` blocks in about 72 files, since Rust allows an inherent
+  impl only in the crate that defines the type. So the frontend runs first as short passes, one per cluster of State
+  fields, each moving its cluster into a type with private fields and its own operations inside the current crate
+  (and replacing any scan over it), loading only the State declaration and the files that touch the cluster: the row
+  record (the window's half of how a row's state is shown), focus and prompt, preview requests, the REPL and agent
+  pane. The five crate cuts follow as moves.
 - **D5 the installer's logic moves into Rust.** The rules written twice today (3.8k lines of sh, 5.6k of PowerShell,
   three byte-equal copies of two helpers) move into `sotd install`, which the pack already carries; `install.sh` and
   `install.ps1` shrink to fetch, verify and exec it. Distribution goes in two passes: 1a the release path first, with
@@ -236,7 +242,7 @@ at its end and one round for its findings; a class of breaks stops it, and the s
 
 | # | pass | hours | dollars | measured |
 |---:|---|---:|---:|---|
-| 0 | Mechanical preparation: tests out of product files into sibling files; the 117 folder pages (164k tokens) to one-line pointers, their full text kept in `docs/history/`; the 52 ADRs (215k tokens) to `docs/history/adr/`, loaded by nobody; the root CLAUDE.md to this page; the size-limit and page checks retired; memory pruned to operating state; the four-number script | 3-6 | 60-120 | 0.7 h, about 30-35 dollars; product 1,959 -> 1,962k, tests 2,087 -> 2,034k |
+| 0 | Mechanical preparation: tests out of product files into sibling files; the 117 folder pages (164k tokens) to one-line pointers, their full text kept in `docs/history/`; the 51 ADRs and their index (215k tokens) to `docs/history/adr/`, loaded by nobody; the root CLAUDE.md to this page; the size-limit and page checks retired; memory pruned to operating state; the four-number script | 3-6 | 60-120 | 0.7 h, about 30-35 dollars; product 1,959 -> 1,962k, tests 2,087 -> 2,034k |
 | 1a | Distribution, the release path: `release.sh` without its test re-run or green-at-HEAD rule, one hosted run, the pack; done test: thirty minutes from fixes in hand to a candidate installed on the maintainer's workstation; the outside review | 2-4 | 40-80 | 1.6 h (pass 1.1, gate and landing 0.5); done test 22.4 min by segments; about $23 all-in; distribution 215/295 -> 213/298k |
 | 1b | Distribution, install, update and launch (D5) | 6-12 | 120-240 | 10.4 h wall in six runs (the pass 2.9 h; five fix rounds after two outside reviews 7.2 h); about $157 for the pass's agent; distribution 214/298 -> 221/252k, twice 30 -> 56 (one function per system); `install.sh` 2,053 -> 216 lines, `install.ps1` 975 -> 215 |
 | 3 | Rows, with work-state and how a row's state is shown | 4-8 | 80-160 | 4.2 h wall in two runs (the pass 3.7 h, its scan follow-up 0.5 h); about $78 for the pass's agent; rows 150/163 -> 162/182k (work-state moved in), messaging 117/285 -> 109/267k |
@@ -245,13 +251,13 @@ at its end and one round for its findings; a class of breaks stops it, and the s
 | 5b | Containment carved out of lifecycle; the lifecycle and topology contracts; topology out of `rust/protocol` | 4-6 | 80-120 | |
 | 5c | Server: its contract; the op table into the binary, every service a handler with an explicit context | 4-6 | 80-120 | |
 | 6 | Capsule (D2) | 10-20 | 200-400 | |
-| 7 | Frontend: the split (D4), then app and render, chrome and input, navigation and session, agent pane and drawer, preview and control | 20-48 | 400-960 | |
+| 7 | Frontend: State apart first, one short pass per cluster (the row record, focus and prompt, preview requests, the REPL and agent pane), each moving its fields into a type with private fields; then the five crate cuts (D4) as moves: app and render, chrome and input, navigation and session, agent pane and drawer, preview and control | 22-52 | 440-1,040 | |
 | 8 | Sidecars (D3) | 4-8 | 80-160 | |
 | 9 | Pages and files | 3-5 | 60-100 | |
 | 10 | Agents: the launch recipe, launchers and skills | 2-4 | 40-80 | |
 | 11 | Release gate: the full hosted matrix once, install on every box, the maintainer's use, the tag (0.7.0) | 3-6 | 60-120 | |
 
-Total: about 76 to 153 session hours, 1,520 to 3,060 dollars, most of the range in the frontend and the capsule.
+Total: about 78 to 157 session hours, 1,560 to 3,140 dollars, most of the range in the frontend and the capsule.
 Wall time is longer by the hosted runs and the maintainer's iterations; a second pass in parallel on a disjoint subsystem (in a
 worktree, merged when its contract settles) shortens the calendar, not the work.
 
