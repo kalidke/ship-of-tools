@@ -154,7 +154,7 @@ fn checkpoint_line_names_transport_caller_result_and_errno() {
     let second = fields(&snapshot.records[1]);
     assert_eq!(second[2], "conn=4");
     assert!(
-        second[5].starts_with("caller=rust/log/src/lane/test_progress.rs:"),
+        second[5].starts_with(&format!("caller={}:", repo_relative(file!()))),
         "an unnamed caller is the site that noted: {}",
         second[5]
     );
