@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(scripts/tests/on-host.sh:*)",
+      "Bash(bash scripts/tests/rc-gate.sh:*)",
+      "Bash(bash scripts/tests/in-container.sh:*)",
+      "Bash(bash scripts/tests/test-:*)",
+      "Bash(julia --startup-file=no scripts/four-numbers.jl:*)",
+      "Bash(scripts/pack-build.sh:*)",
+      "Bash(gh release view:*)",
+      "Bash(gh release download:*)",
+      "Bash(gh workflow run:*)",
+      "Bash(gh run:*)",
+      "Bash(scripts/install.sh:*)",
+      "Bash(bash scripts/install.sh:*)"
+    ]
+  }
+}
