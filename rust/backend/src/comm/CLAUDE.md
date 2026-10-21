@@ -152,7 +152,8 @@ no-break-space test is off on Windows until a Windows screen shows it survives C
 Tests: one unit test per guarantee, `cargo test -p sot-backend comm::` (each named in the pass's result); the
 integration suites `comm_wake` (a real daemon and capsule row: a free prompt is woken, a draft, a dialog and a working
 row are not), `comm_file`, `comm_send`, `hub_link` and `comm_cli` (the wrappers and `sotd comm` on a scratch home);
-`comm/tests/interop-066.sh`, run by hand on a build host, for the 0.6.6 scripts and a 0.6.6 daemon beside this build.
+`comm/tests/interop-066.sh`, run by hand on a build host, for the 0.6.6 scripts and a 0.6.6 daemon beside this build,
+and on two hosts at once for concurrent sends into one network folder.
 
 Unbuilt: a sender's notice when a row keeps refusing the wake (queue item 55); compaction support (item 56, a feature).
 
