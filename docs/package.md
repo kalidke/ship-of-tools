@@ -86,11 +86,17 @@ an op runs off the loop unless named inline, so a ping is answered at once; a pe
 Rests on: platform (peer identity, locks), wire. Owns: the listener, the roster, the op table. Does not: implement any
 op beyond hello, ping and the handoffs.
 
-**rows.** Guarantees: a slug keeps its id across restarts; one lifecycle guard per row; a launch takes the row's fence
-before it forks, so no second supervisor is born over a live one; no two rows hold one declared handle; the phase cell
-changes only through observation of the current supervisor epoch. Rests on: capsule (supervisor, attach), agents
-(recipe), containment, platform (fence). Owns: the registry, row tomls, state folders. Does not: run the agent's
-terminal (capsule) or read its screen for mail (messaging's wake).
+**rows.** The contract is settled (pass 3): `rust/backend/src/rows/CLAUDE.md`. Guarantees: a row's id survives every
+daemon restart and every refresh of its label; a row's comm handle has one answer, `bound_handle`, by construction (the
+declared handle is a cell private to `rows::handle`), and no two rows hold one; one guard per row; no second supervisor
+over a live one (every start path reaches one launch, which takes the row's fence before it forks); no start begins
+once the close has begun; a row's phase follows its current supervisor; a row is reported ended only after the destroy
+proof, and lifecycle ends rows only through the end API (`rows::end`). Work-state is rows': one writer path (`sotd
+work-state`, each write one step under the registry lock), one reader path (`workspace.list`), and a row waiting on
+its person reads red on every system. Rests on: capsule (supervisor, attach), agents (recipe), containment, platform
+(fence). Owns: the registry, row tomls, state folders, work-state. Does not: run the agent's terminal (capsule), decide
+when rows end (lifecycle asks), or read a screen for mail (messaging's wake). Its crate waits for agents, sidecars,
+files, messaging and containment to be crates.
 
 **capsule.** To the rest: a row's terminal survives the window and the daemon; one supervisor per state dir, so rows
 never start a second; a viewer (window, headless client, wake) attaches through one client and sees the screen as it
@@ -102,7 +108,7 @@ not: know about rows, mail or windows. Decision D2 decides how much of the insid
 **messaging.** Guarantees: `filed -> @h` only on the appender's word for a live handle, `FAILED` appended nothing;
 every append under the inbox lock; only poll moves a cursor; every registry write under its lock; a wake line is typed
 only into a free prompt of the receiver's row. Rests on: platform locks, rows (the row's terminal), topology (the hub
-link). Owns: `~/.sot-comm` data. Does not: work-state (no 0031 guarantee; leaves for rows' display). Decision D1.
+link). Owns: `~/.sot-comm` data. Does not: work-state (rows' since pass 3). Decision D1.
 
 **agents.** To the rest: rows get one argv and environment for an agent kind and account, with folder trust
 prepared before the start; the shell tools (launchers, row CLIs, `sot-fe`) reach the daemon only through the wire.
@@ -223,16 +229,21 @@ Windows).
 
 Work runs continuously, paced by milestones: each pass starts when the previous one lands; the maintainer's iteration on a
 contract gates its landing on main, not its start. Rate assumed: about 20 dollars a session hour at high effort (the
-package page: 15 minutes, 5 dollars). Each estimate is replaced by the measured figure when its pass lands.
+package page: 15 minutes, 5 dollars). Each estimate is replaced by the measured figure when its pass lands. A pass
+launches only on what loads within 250 thousand tokens; a larger subsystem is split by concept or shrunk by deletion
+first, in a short pass of its own. Each guarantee gets one test, red before the change; a pass gets one outside review
+at its end and one round for its findings; a class of breaks stops it, and the subsystem is split and run again.
 
 | # | pass | hours | dollars | measured |
 |---:|---|---:|---:|---|
 | 0 | Mechanical preparation: tests out of product files into sibling files; the 117 folder pages (164k tokens) to one-line pointers, their full text kept in `docs/history/`; the 52 ADRs (215k tokens) to `docs/history/adr/`, loaded by nobody; the root CLAUDE.md to this page; the size-limit and page checks retired; memory pruned to operating state; the four-number script | 3-6 | 60-120 | 0.7 h, about 30-35 dollars; product 1,959 -> 1,962k, tests 2,087 -> 2,034k |
 | 1a | Distribution, the release path: `release.sh` without its test re-run or green-at-HEAD rule, one hosted run, the pack; done test: thirty minutes from fixes in hand to a candidate installed on the maintainer's workstation; the outside review | 2-4 | 40-80 | 1.6 h (pass 1.1, gate and landing 0.5); done test 22.4 min by segments; about $23 all-in; distribution 215/295 -> 213/298k |
 | 1b | Distribution, install, update and launch (D5) | 6-12 | 120-240 | 10.4 h wall in six runs (the pass 2.9 h; five fix rounds after two outside reviews 7.2 h); about $157 for the pass's agent; distribution 214/298 -> 221/252k, twice 30 -> 56 (one function per system); `install.sh` 2,053 -> 216 lines, `install.ps1` 975 -> 215 |
-| 3 | Rows, with work-state and how a row's state is shown | 4-8 | 80-160 | |
+| 3 | Rows, with work-state and how a row's state is shown | 4-8 | 80-160 | 4.2 h wall in two runs (the pass 3.7 h, its scan follow-up 0.5 h); about $78 for the pass's agent; rows 150/163 -> 162/182k (work-state moved in), messaging 117/285 -> 109/267k |
 | 4 | Messaging (D1) | 6-12 | 120-240 | |
-| 5 | Daemon core: server, lifecycle and containment carved; wire, topology and platform contracts | 6-10 | 120-200 | |
+| 5a | Platform and wire: their contracts; platform its own crate out of `sot-log`, its copies folded | 4-6 | 80-120 | |
+| 5b | Containment carved out of lifecycle; the lifecycle and topology contracts; topology out of `rust/protocol` | 4-6 | 80-120 | |
+| 5c | Server: its contract; the op table into the binary, every service a handler with an explicit context | 4-6 | 80-120 | |
 | 6 | Capsule (D2) | 10-20 | 200-400 | |
 | 7 | Frontend: the split (D4), then app and render, chrome and input, navigation and session, agent pane and drawer, preview and control | 20-48 | 400-960 | |
 | 8 | Sidecars (D3) | 4-8 | 80-160 | |
@@ -240,7 +251,7 @@ package page: 15 minutes, 5 dollars). Each estimate is replaced by the measured 
 | 10 | Agents: the launch recipe, launchers and skills | 2-4 | 40-80 | |
 | 11 | Release gate: the full hosted matrix once, install on every box, the maintainer's use, the tag (0.7.0) | 3-6 | 60-120 | |
 
-Total: about 70 to 145 session hours, 1,400 to 2,900 dollars, most of the range in the frontend and the capsule.
+Total: about 76 to 153 session hours, 1,520 to 3,060 dollars, most of the range in the frontend and the capsule.
 Wall time is longer by the hosted runs and the maintainer's iterations; a second pass in parallel on a disjoint subsystem (in a
 worktree, merged when its contract settles) shortens the calendar, not the work.
 
@@ -273,5 +284,6 @@ and `rust/log/tests` (27 thousand lines) are assigned by file:
 - D1 to D5 are settled (above).
 - Step 0 landed 2026-10-20. Pass 1a landed 2026-10-21: the release path's contract is the first settled. Pass 1b
   landed 2026-10-21: the installers' contract is settled, and `sotd install` is the installers' body on every system.
-  Pass 3 (rows) lands next; pass 4 (messaging, D1) is being built. Nothing is half-done on main.
+  Pass 3 landed 2026-10-21: rows' contract is settled, with work-state. Pass 4 (messaging, D1) is in its review round;
+  pass 5a (platform and wire) is next. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
