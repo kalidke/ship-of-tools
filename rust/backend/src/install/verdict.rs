@@ -105,6 +105,11 @@ fn print_once(text: &str) -> bool {
 
 /// The run's last act: print its verdict and give its exit code.
 pub(super) fn finish(outcome: Result<(Found, String), Stop>) -> i32 {
+    // A stop is under way, so the step this run ended in failed by it: the watcher's verdict, printed once the step
+    // and what it started have ended, is the run's, and the watcher ends the process.
+    while super::cmd::STEPS.is_stopping() {
+        std::thread::park();
+    }
     let (text, code) = match outcome {
         Ok((found, pin)) => line(&found, &pin),
         Err(stop) => stop_line(&stop, &tail()),

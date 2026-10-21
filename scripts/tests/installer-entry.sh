@@ -32,7 +32,7 @@ STUB
 }
 # A pack in $d/rel/<tag>/ whose sotd stand-in answers --version and `install --help`, records an install's arguments and
 # the pack folder's names, and ends it as STUB_LINE and STUB_RC say. <kind>: good, norun (a sotd that cannot start), old
-# (a sotd with no install).
+# (a sotd with no install), slow (an install that runs until a TERM, then says so and prints its verdict).
 entry_pack() {  # <d> <tag> [kind]
     local d="$1" tag="$2" v="${2#v}" kind="${3:-good}" top r
     top="sot-$v-$TGT"; r="$d/rel/$tag"
@@ -40,6 +40,18 @@ entry_pack() {  # <d> <tag> [kind]
     case "$kind" in
         norun) printf '#!/bin/sh\necho "loader: GLIBC_2.99 not found (required by sotd)" >&2\nexit 1\n' > "$r/x/$top/sotd" ;;
         old) printf '#!/bin/sh\ncase "$1" in --version) echo "sotd %s (abc 2026-01-01, protocol 2)" ;; *) echo "Usage: sotd [OPTIONS]" ;; esac\n' "$v" > "$r/x/$top/sotd" ;;
+        slow) cat > "$r/x/$top/sotd" <<SD
+#!/bin/sh
+case "\$1 \$2" in
+    "--version "*) echo "sotd $v (abc 2026-01-01, protocol 3)"; exit 0 ;;
+    "install --help") echo "Usage: sotd install --pack <folder> [options]"; exit 0 ;;
+esac
+trap 'kill "\$sp" 2>/dev/null; echo "sotd got TERM" >> "$d/net.log"; echo "FAIL: comm: stopped"; exit 143' TERM
+sleep 30 & sp=\$!
+echo "sotd \$*" >> "$d/net.log"
+wait "\$sp"
+SD
+        ;;
         *) cat > "$r/x/$top/sotd" <<SD
 #!/bin/sh
 case "\$1 \$2" in
@@ -131,6 +143,20 @@ printf '#!/bin/sh\nexit 6\n' > "$d/stubs/curl"; chmod +x "$d/stubs/curl"
 entry_run "$d"
 check "an unreachable network: one FAIL naming the target step" "1 1" "$ENTRY_RC $(verdicts)"
 check "the line says what it could not do" "FAIL: target: could not resolve the latest release of o/r" "$(last)"
+# A TERM sent to the bootstrap alone, while sotd install runs: it is passed on, so the install stops and prints the one
+# verdict, and the run ends by the signal with its scratch gone.
+d="$WORK/e-signal"; entry_fixture "$d"; entry_pack "$d" v3.0.3 slow
+env -i HOME="$d/home" PATH="$d/stubs:$ENTRY_TOOLS" TMPDIR="$d" SOT_INSTALL_REPO=o/r SOT_INSTALL_TAG=v3.0.3 \
+    bash "$ENTRY_SRC/scripts/install.sh" --be-only > "$d/sig.out" 2>&1 &
+sig_pid=$!; t0=$SECONDS
+n=0; while [ "$n" -lt 150 ] && ! grep -q '^sotd install' "$d/net.log"; do sleep 0.1; n=$((n + 1)); done
+kill -TERM "$sig_pid"
+sig_rc=0; wait "$sig_pid" || sig_rc=$?
+check "a TERM to the bootstrap mid-install ends the run by the signal (143), well before the install would end" "143 yes" \
+    "$sig_rc $([ $((SECONDS - t0)) -lt 20 ] && echo yes || echo no)"
+check "sotd install got it, and its verdict is the one line, the last" "1 1 FAIL: comm: stopped" \
+    "$(logged "$d" 'sotd got TERM') $(grep -c -E '^(PASS|FAIL|ONE STEP LEFT): ' "$d/sig.out" || true) $(tail -1 "$d/sig.out")"
+check "its scratch is gone" "0" "$(find "$d" -maxdepth 1 -name 'sot-install.*' | wc -l | tr -d ' ')"
 
 # ---------------------------------------------------------------------------
 # The real sotd as the pack's: a refused install changes nothing under the home (the prefix, ~/.local, the comm home).
@@ -188,5 +214,27 @@ else
         check "an unknown option: one FAIL, exit 2" "2 1 FAIL: options: unknown flag: --frob" "$ENTRY_RC $(verdicts) $(last)"
         sotd_install "$d" "$JQ_TOOLS" --prefix "$d/a b"
         check "a prefix with a space is refused before anything is written" "1 no" "$ENTRY_RC $([ -e "$d/a b" ] && echo yes || echo no)"
+        # A TERM to sotd install while a step runs (here the checkout's clone, which starts a child of its own): the step
+        # and what it started end before the verdict, which is the one line and the last, and nothing writes after it.
+        d="$WORK/e-term"; mkdir -p "$d/stubs" "$d/ctl" "$d/run"; chmod 700 "$d/run"; real_pack "$d"
+        cat > "$d/stubs/git" <<GIT
+#!/bin/sh
+case " \$* " in
+    *" clone "*) sh -c 'sleep 3; echo late >> "$d/ctl/late"' & echo \$! > "$d/ctl/late.pid"; echo cloning >> "$d/ctl/log"; sleep 30 ;;
+esac
+exec "$(type -P git)" "\$@"
+GIT
+        chmod +x "$d/stubs/git"
+        env -i HOME="$d/home" PATH="$d/stubs:$JQ_TOOLS" XDG_RUNTIME_DIR="$d/run" SOT_SELF_HOST=laptop SOT_INSTALL_ORIGIN="$ENTRY_SRC" \
+            "$d/pack/sot-$rv-$TGT/sotd" install --pack "$d/pack" --be-only --no-service > "$d/term.out" 2>&1 &
+        term_pid=$!
+        n=0; while [ "$n" -lt 300 ] && [ ! -s "$d/ctl/log" ]; do sleep 0.1; n=$((n + 1)); done
+        kill -TERM "$term_pid"
+        term_rc=0; wait "$term_pid" || term_rc=$?
+        late_pid="$(cat "$d/ctl/late.pid" 2>/dev/null)"; sleep 4
+        check "a TERM to sotd install mid-step ends it by the signal (143), with one verdict, the last" "143 1 FAIL: layout: stopped" \
+            "$term_rc $(grep -c -E '^(PASS|FAIL|ONE STEP LEFT): ' "$d/term.out" || true) $(tail -1 "$d/term.out")"
+        check "and what the step started ended with it: nothing wrote after the verdict" "no gone" \
+            "$([ -e "$d/ctl/late" ] && echo wrote || echo no) $([ -n "$late_pid" ] && kill -0 "$late_pid" 2>/dev/null && echo alive || echo gone)"
     fi
 fi

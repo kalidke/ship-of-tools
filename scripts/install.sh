@@ -47,6 +47,25 @@ on_exit() {
     [ "$VERDICT_PRINTED" = 1 ] || printf 'FAIL: %s: stopped (exit %s)\n' "$STEP" "$rc"
     sot_end_by_signal
 }
+# The handoff: run <command> to its end, its exit code in RC. A signal this script gets is passed on to it as TERM, and
+# its end is this run's (a foreground child gets no signal sent to this script alone, and bash runs a trap only after
+# that child ends); a child started in the background ignores INT, so TERM is what it is sent.
+handoff() {  # <command...>
+    local pid s
+    "$@" &
+    pid=$!
+    for s in HUP INT TERM; do trap "_SOT_SIG=$s; kill -s TERM $pid 2>/dev/null || true" "$s"; done
+    RC=0
+    while :; do
+        wait "$pid" && RC=0 || RC=$?
+        kill -0 "$pid" 2>/dev/null || break
+    done
+    if [ -n "${_SOT_SIG:-}" ]; then
+        trap '' HUP INT TERM
+        set +e
+        case "$_SOT_SIG" in HUP) exit 129 ;; INT) exit 130 ;; *) exit 143 ;; esac
+    fi
+}
 # curl gives up on a connect past 15 s or a transfer under 1000 B/s for 60 s.
 CURL_BOUND=(--connect-timeout 15 --speed-limit 1000 --speed-time 60)
 
@@ -116,8 +135,9 @@ if [ -z "${SOT_INSTALL_TAG:-}" ] && [ -z "$ARCHIVE" ]; then
     curl "${CURL_BOUND[@]}" -fsSL -o "$TMP_INSTALLER" "$url" || die "could not fetch $url"
     # The tag's own installer prints the verdict of what it did, a refusal or an interrupt included.
     VERDICT_PRINTED=1
-    SOT_INSTALL_TAG="$tag" SOT_INSTALL_IMPLICIT="$implicit" bash "$TMP_INSTALLER" "$@"
-    exit
+    export SOT_INSTALL_TAG="$tag" SOT_INSTALL_IMPLICIT="$implicit"
+    handoff bash "$TMP_INSTALLER" "$@"
+    exit "$RC"
 fi
 
 # ---- the body: the pack, checked, then its own sotd install ----------------------------------------------------------
@@ -187,8 +207,8 @@ esac
 # without exit 0, 1 or 2 is named here.
 STEP=install
 VERDICT_PRINTED=1
-rc=0
-"$SOTD" install --pack "$WORK" "$@" || rc=$?
+handoff "$SOTD" install --pack "$WORK" "$@"
+rc=$RC
 case "$rc" in
     0|1|2|129|130|143) ;;
     *) printf 'FAIL: install: sotd install ended with exit %s and no verdict\n' "$rc"; rc=1 ;;

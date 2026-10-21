@@ -82,8 +82,10 @@ where every rule of install lives once for all three systems.
 Guarantees, each with the mechanism it rests on. Install:
 - One verdict. Every run ends in exactly one line, `PASS: Ship of Tools <v> at <short> on this computer`, `ONE STEP
   LEFT: <steps>` (exit 0: the install is whole) or `FAIL: <check>: <detail>` (exit 1; 2 for a refusal), on standard
-  output after every other line. `sotd install` prints it from one place (`verdict.rs`), on a signal too (then it exits
-  128 plus the signal); the bootstrap prints one only before `sotd install` runs or when it ended without one.
+  output after every other line. `sotd install` prints it from one place (`verdict.rs`), on a signal too: the running
+  step and every process it started end first, then the line names the step, and it exits 128 plus the signal. The
+  bootstrap passes a signal it gets on to `sotd install` (as TERM), and prints a verdict only before `sotd install`
+  runs or when it ended without one.
 - Verified before it runs. The bootstrap runs nothing from a pack until every file it downloaded or copied matches
   `SHA256SUMS` (a file the list does not name is refused) and the unpacked `sotd` runs here. `sotd install` then reads
   the pack's identity (the one archive `SHA256SUMS` names for this system, `COMMIT`, each binary's `--version`) and
