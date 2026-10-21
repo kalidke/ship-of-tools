@@ -226,7 +226,7 @@ pub(super) fn git_in(dir: &Path) -> Command {
 #[cfg_attr(windows, allow(dead_code, reason = "the Unix juliaup install"))]
 pub(super) const CURL_BOUND: [&str; 6] = ["--connect-timeout", "15", "--speed-limit", "1000", "--speed-time", "60"];
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "cmd_tests.rs"]
 mod tests;
 

@@ -775,7 +775,9 @@ fn configure(plan: &Plan) -> Result<(), Stop> {
     }
     if !plan.role.daemon {
         let kernel_host = sot_log::host::state_dir::kernel_host_name().unwrap_or_default();
-        retire_local_service(&plan.units_ctx(), plan.topo_declared, &kernel_host);
+        for note in retire_local_service(&plan.units_ctx(), plan.topo_declared, &kernel_host) {
+            say(&note);
+        }
     }
     for line in trust_report(&plan.sotd(), &plan.home) {
         say(&line);
@@ -841,38 +843,41 @@ impl Units<'_> {
 /// A role with no daemon here must not leave an earlier local daemon running. The unit and its boot drop-in may serve
 /// another host of a shared home, so only this host's run is stopped and the shared unit is never disabled; under a
 /// declared topology the unit's host pin keeps it from starting here, and with no hosts.toml a pin that names this host
-/// alone lets the drop-in go. `kernel_host` is the kernel's name for this host, which the pin names.
-pub(super) fn retire_local_service(u: &Units, declared: bool, kernel_host: &str) {
+/// alone lets the drop-in go. `kernel_host` is the kernel's name for this host, which the pin names. What it did, in
+/// the lines a person reads.
+pub(super) fn retire_local_service(u: &Units, declared: bool, kernel_host: &str) -> Vec<String> {
+    let mut notes = Vec::new();
     let ud = u.dir().to_string_lossy().into_owned();
     if !u.has_systemctl() || !u.dir().join("sotd.service").is_file() {
-        return;
+        return notes;
     }
     if declared {
         if let Err(why) = u.pin(false) {
-            say(&format!("WARNING: sotd topology pin failed ({why}): sotd.service is not pinned to the hosts that run sotd"));
+            notes.push(format!("WARNING: sotd topology pin failed ({why}): sotd.service is not pinned to the hosts that run sotd"));
         }
         if !u.lib("sot_boot_keep", &[&ud]).ok() {
-            say("WARNING: could not move sotd.service's boot start onto its drop-in");
+            notes.push("WARNING: could not move sotd.service's boot start onto its drop-in".into());
         }
         let _ = u.systemctl(&["stop", "sotd.service"]);
         let _ = u.systemctl(&["daemon-reload"]);
-        say("stopped this host's sotd.service; the declared topology runs no daemon here");
+        notes.push("stopped this host's sotd.service; the declared topology runs no daemon here".into());
     } else if role::pin_names_only(&u.dir(), kernel_host) {
         let _ = u.systemctl(&["stop", "sotd.service"]);
         let _ = u.lib("sot_boot_unwants", &[&ud]);
         let _ = u.systemctl(&["daemon-reload"]);
-        say("stopped sotd.service and removed its boot start, whose host pin names this host alone");
+        notes.push("stopped sotd.service and removed its boot start, whose host pin names this host alone".into());
     } else {
         if !u.lib("sot_boot_keep", &[&ud]).ok() {
-            say("WARNING: could not move sotd.service's boot start onto its drop-in");
+            notes.push("WARNING: could not move sotd.service's boot start onto its drop-in".into());
         }
         let _ = u.systemctl(&["stop", "sotd.service"]);
         if u.lib("sot_boot_wired", &[&ud]).ok() {
-            say("Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service, so a hand disable no longer turns it off; to move it, change hosts.toml, or with none run sotd topology pin --dir ~/.config/systemd/user --claim on the host that should run it. If no other computer shares this home folder, turn boot start off with: rm -f ~/.config/systemd/user/default.target.d/sotd.conf (write that file again, with the two lines [Unit] and Wants=sotd.service, to turn it back on)");
+            notes.push("Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service, so a hand disable no longer turns it off; to move it, change hosts.toml, or with none run sotd topology pin --dir ~/.config/systemd/user --claim on the host that should run it. If no other computer shares this home folder, turn boot start off with: rm -f ~/.config/systemd/user/default.target.d/sotd.conf (write that file again, with the two lines [Unit] and Wants=sotd.service, to turn it back on)".into());
         } else {
-            say("Stopped this computer's sotd. Its boot start is already off: sotd.service has no boot drop-in, and enable and disable change no file for it; to turn it on, write ~/.config/systemd/user/default.target.d/sotd.conf with the two lines [Unit] and Wants=sotd.service");
+            notes.push("Stopped this computer's sotd. Its boot start is already off: sotd.service has no boot drop-in, and enable and disable change no file for it; to turn it on, write ~/.config/systemd/user/default.target.d/sotd.conf with the two lines [Unit] and Wants=sotd.service".into());
         }
     }
+    notes
 }
 
 /// The unit, the launcher and the restart; whether the run restarted the daemon.

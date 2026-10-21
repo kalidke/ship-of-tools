@@ -147,6 +147,34 @@ fn a_home_two_hosts_share_with_no_hosts_toml() {
     assert_eq!(role::pin_hosts(&g.units()), ["unithost-b"], "the claim moved the daemon to host B");
 }
 
+/// The pin command a retire tells a person to run, run as printed in this home, passes the claim's own arguments; with
+/// boot start off the retire says so and names no pin command.
+#[test]
+fn the_pin_command_a_retire_prints_is_the_claim() {
+    let f = Fixture::new("me");
+    let u = f.units();
+    std::fs::write(u.join("sotd.service"), "[Service]\nExecStart=/x/bin/sotd\n").unwrap();
+    std::fs::create_dir_all(u.join("default.target.d")).unwrap();
+    std::fs::write(u.join("default.target.d/sotd.conf"), "[Unit]\nWants=sotd.service\n").unwrap();
+    let notes = with_units(&f, |u| retire_local_service(u, false, "me"));
+    let note = notes.iter().find(|n| n.contains("sotd topology pin")).unwrap_or_else(|| panic!("no pin command: {notes:?}"));
+    let printed = note[note.find("sotd topology pin").unwrap()..].split(" on the host").next().unwrap();
+    assert_eq!(printed, "sotd topology pin --dir ~/.config/systemd/user --claim", "the words unit_pin.rs runs");
+    let sotd = f.path("prefix/bin/sotd");
+    let cmd = printed.replacen("sotd", &format!("'{}'", sotd.display()), 1);
+    let ran = cmd::output(Command::new("bash").arg("-c").arg(&cmd).env("HOME", f.path("home")));
+    assert!(ran.ok(), "{cmd}");
+    let as_printed = f.log().last().cloned().unwrap();
+    with_units(&f, |u| u.pin(true)).unwrap();
+    assert_eq!(f.log().last(), Some(&as_printed), "{printed}");
+
+    let g = Fixture::new("me");
+    std::fs::write(g.units().join("sotd.service"), "[Service]\nExecStart=/x/bin/sotd\n").unwrap();
+    let notes = with_units(&g, |u| retire_local_service(u, false, "me"));
+    assert!(notes.iter().any(|n| n.contains("Its boot start is already off")), "{notes:?}");
+    assert!(!notes.iter().any(|n| n.contains("sotd topology pin")), "{notes:?}");
+}
+
 fn work(rows: &[&str], pluto: bool, unsure: Option<&str>) -> daemon::Work {
     daemon::Work { rows: rows.iter().map(|r| (*r).to_string()).collect(), pluto, unsure: unsure.map(String::from) }
 }

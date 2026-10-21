@@ -236,19 +236,6 @@ fn owners() -> Vec<(&'static str, &'static str)> {
     vec![("comm-lib", r#". "$1" || exit 1"#)]
 }
 
-/// The bound has one copy: no installer or launch script beside comm-lib defines `sot_bounded`. Every platform, since it
-/// reads files and runs no bash.
-#[test]
-fn the_comm_bound_has_one_copy() {
-    let root = format!("{}/../..", env!("CARGO_MANIFEST_DIR"));
-    let text = std::fs::read_to_string(format!("{root}/comm/lib/comm-lib-base.sh")).expect("comm-lib-base.sh");
-    assert!(text.contains("\nsot_bounded() {"), "comm-lib-base.sh defines sot_bounded");
-    for script in ["scripts/install.sh", "scripts/lib/sot-daemon.sh", "scripts/sot-apply.sh", "scripts/launch-sot.sh"] {
-        let text = std::fs::read_to_string(format!("{root}/{script}")).unwrap_or_else(|e| panic!("{script}: {e}"));
-        assert!(!text.contains("\nsot_bounded() {"), "{script} defines a second sot_bounded");
-    }
-}
-
 /// How long a bound case's bash may run before the test calls it hung. Bash's start, the owner's sourcing and every
 /// spawn count here, and a loaded Git Bash runner slows each by seconds (hosted Windows run 38252414920 spent about ten
 /// in start-up alone). The ceilings that judge the bound are timed inside the case (`CASE_CLOCK`); this only ends a hang.

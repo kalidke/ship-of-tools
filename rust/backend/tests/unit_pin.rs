@@ -241,16 +241,13 @@ fn the_hub_pins_every_reverse_tunnel_where_systemd_reads_it() {
     assert!(!conditions.is_empty() && !starts_here(&t, &conditions), "{conditions:?}");
 }
 
-/// The retire tells a person how to move boot start with a `sotd topology pin` command. It runs as printed: the command
-/// is taken from the words `sotd install` says (rust/backend/src/install/unix.rs), `sotd` is the built binary, `~` is the
-/// scratch home, and the pin it writes names this host. No record that names the claim may leave out `--dir`, which the
-/// verb requires.
+/// The retire tells a person how to move boot start with `sotd topology pin --dir ~/.config/systemd/user --claim` (that
+/// those are its words and the claim's arguments is `install::unix`'s unit test). It runs: `sotd` is the built binary,
+/// `~` is the scratch home, and the pin it writes names this host. No record that names the claim may leave out `--dir`,
+/// which the verb requires.
 #[test]
 fn the_pin_command_the_installer_prints_runs_as_printed() {
-    let installer = include_str!("../src/install/unix.rs");
-    let from = installer.find("run sotd topology pin").expect("the retire names the pin command") + "run ".len();
-    let printed = installer[from..].split(" on the host").next().unwrap();
-    assert!(printed.starts_with("sotd topology pin --dir ~/.config/systemd/user --claim"), "{printed}");
+    let printed = "sotd topology pin --dir ~/.config/systemd/user --claim";
     let t = tempfile::tempdir().unwrap();
     let home = t.path().join("h");
     let dir = home.join(".config/systemd/user");
@@ -272,14 +269,13 @@ fn the_pin_command_the_installer_prints_runs_as_printed() {
 
     // Every record that names the claim spells the folder.
     for text in [
-        installer,
         include_str!("../../../docs/src/start/install.md"),
         include_str!("../../../docs/ENROLLING-A-HOST.md"),
         include_str!("../../../docs/INSTALL-AGENT.md"),
         include_str!("../../../docs/src/guide/troubleshooting.md"),
     ] {
         for line in text.lines().filter(|l| l.contains("topology pin") && l.contains("--claim")) {
-            assert!(line.contains("--dir ~/.config/systemd/user") || line.contains("--dir \"$") || line.contains("\"--dir\""), "no --dir: {line}");
+            assert!(line.contains("--dir ~/.config/systemd/user") || line.contains("--dir \"$"), "no --dir: {line}");
         }
     }
 }
