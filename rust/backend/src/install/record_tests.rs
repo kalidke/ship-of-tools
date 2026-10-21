@@ -96,5 +96,32 @@ fn a_repair_run_moves_nothing() {
     std::fs::write(dir.path().join("julia/kernel/Manifest.toml"), "resolved\n").unwrap();
     assert_eq!(super::super::julia::stale_manifests(dir.path(), false).len(), 1);
     assert!(super::super::julia::stale_manifests(dir.path(), true).is_empty());
+
+    // The Windows caller hands its Julia step the repair it classified.
+    #[cfg(windows)]
+    {
+        use super::super::{pack::Pack, verdict::Found, windows};
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let pack = Pack { dir: d.join("pack"), version: "0.6.7".into(), commit: "0".repeat(40), bin: d.join("bin"), libc: None };
+        let ctx = windows::Ctx {
+            opts: Default::default(),
+            prefix: d.join("prefix"),
+            pack,
+            named: true,
+            pipe: String::new(),
+            log_dir: d.join("logs"),
+            base: d.join("prefix\\repo\\base"),
+            version_dir: d.join("prefix\\repo\\versions\\v0.6.7"),
+            expect_daemon: false,
+            repair: true,
+        };
+        let seen = std::cell::Cell::new(None);
+        windows::environments(&ctx, &mut Found::default(), &|_, _, repair| {
+            seen.set(Some(repair));
+            Vec::new()
+        });
+        assert_eq!(seen.get(), Some(true), "a Windows repair's Julia step was told it is no repair");
+    }
 }
 

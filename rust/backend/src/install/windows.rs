@@ -19,19 +19,19 @@ use super::{cmd, julia, procs, record};
 const TARGET: &str = "windows-x86_64";
 
 /// What the run works with.
-struct Ctx {
-    opts: Options,
-    prefix: PathBuf,
-    pack: Pack,
-    named: bool,
-    pipe: String,
-    log_dir: PathBuf,
-    base: PathBuf,
-    version_dir: PathBuf,
+pub(super) struct Ctx {
+    pub(super) opts: Options,
+    pub(super) prefix: PathBuf,
+    pub(super) pack: Pack,
+    pub(super) named: bool,
+    pub(super) pipe: String,
+    pub(super) log_dir: PathBuf,
+    pub(super) base: PathBuf,
+    pub(super) version_dir: PathBuf,
     /// A converge restarted the daemon: it must answer as the target.
-    expect_daemon: bool,
+    pub(super) expect_daemon: bool,
     /// A repair run: it moves nothing, and the record gets its pin alone.
-    repair: bool,
+    pub(super) repair: bool,
 }
 
 impl Ctx {
@@ -400,13 +400,7 @@ fn layout_and_comm(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
     if julia::which("julia").is_none() {
         return Ok(());
     }
-    if !ctx.version_dir.join("julia\\kernel\\Manifest.toml").is_file() {
-        let scratch = ctx.pack.dir.join("tmp");
-        let _ = std::fs::create_dir_all(&scratch);
-        for failed in julia::instantiate(&ctx.version_dir, None, &scratch, ctx.repair, &|t| println!("  {t}")) {
-            found.fail("julia", failed);
-        }
-    }
+    environments(ctx, found, &|checkout, scratch, repair| julia::instantiate(checkout, None, scratch, repair, &|t| println!("  {t}")));
     step("comm");
     let scratch = ctx.pack.dir.join("tmp");
     let _ = std::fs::create_dir_all(&scratch);
@@ -414,6 +408,19 @@ fn layout_and_comm(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
         return Err(Stop::new(1, "ShipTools.update_comm() failed"));
     }
     Ok(())
+}
+
+/// The Julia environments of a checkout whose kernel was never instantiated, by `instantiate(checkout, scratch, repair)`;
+/// a repair keeps the environments' own manifests.
+pub(super) fn environments(ctx: &Ctx, found: &mut Found, instantiate: &dyn Fn(&Path, &Path, bool) -> Vec<String>) {
+    if ctx.version_dir.join("julia\\kernel\\Manifest.toml").is_file() {
+        return;
+    }
+    let scratch = ctx.pack.dir.join("tmp");
+    let _ = std::fs::create_dir_all(&scratch);
+    for failed in instantiate(&ctx.version_dir, &scratch, false) {
+        found.fail("julia", failed);
+    }
 }
 
 /// The Desktop shortcut and the taskbar pin, by the checkout's `install-shortcut.ps1` through `repo\current` where this
