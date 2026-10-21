@@ -222,6 +222,8 @@ fn a_live_daemon_is_asked_before_it_ends() {
         assert!(procs::parse_cim("not json").is_empty());
     }
 
+    // Unix paths: a Windows program path is never one.
+    #[cfg(unix)]
     {
         let all = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n11 1 sotd /q/bin/sotd\n12 1 bash bash -c /p/bin/sotd\n13 1 sot /p/bin/sot --socket s\n");
         assert_eq!(procs::daemon_pids(&all, Path::new("/p")), [10]);
