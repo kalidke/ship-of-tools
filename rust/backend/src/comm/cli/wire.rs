@@ -33,18 +33,15 @@ pub(crate) fn relay_endpoint() -> Result<String, String> {
     }
 }
 
-/// How long a sender waits for a filing's answer: the inbox lock's wait plus 3 s (decision 0031's 5 s at the default),
-/// as an appender that waited out the lock and then filed is not a silent one.
-pub(crate) fn file_window() -> Duration {
-    crate::comm::mail::inbox::inbox_lock_wait() + Duration::from_secs(3)
-}
+/// How long a sender waits for a filing's answer: decision 0031's 5 s, whatever the inbox lock's wait.
+pub(crate) const FILE_WINDOW: Duration = Duration::from_secs(5);
 
 /// One `comm.file` for `to` at `endpoint`. `Ok` only on the daemon's `ok`; `Err` is the sentence after `FAILED ->
 /// @to: `: the daemon's own refusal, a refused hello, or that nothing answered.
 pub(crate) fn comm_file(endpoint: &str, from: &str, to: &str, text: &str, broadcast: bool) -> Result<(), String> {
     let req = sot_protocol::CommFileReq { from: from.into(), to: to.into(), text: text.into(), broadcast, forwarded: false };
     let payload = serde_json::to_value(req).map_err(|e| e.to_string())?;
-    let answer = call(endpoint, sot_protocol::op::COMM_FILE, payload, file_window())?;
+    let answer = call(endpoint, sot_protocol::op::COMM_FILE, payload, FILE_WINDOW)?;
     if answer.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
         return Ok(());
     }

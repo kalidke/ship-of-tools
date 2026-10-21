@@ -175,7 +175,7 @@ Every request opens with the `hello` every client sends, and a refused hello is 
 
 **The one result** of a send is `filed -> @h` (exit 0; indented, `  filed -> @h`, when this box's folder took it) or
 `FAILED -> @h: <reason>` (exit 1), the reason the daemon's own words where it gave any. The answer decides, never the
-transport's exit status; no answer within the lock wait plus 3 s (5 s) is `FAILED`. Nothing is queued, and no second
+transport's exit status; no answer within 5 s is `FAILED`. Nothing is queued, and no second
 route is tried.
 
 ## Waking

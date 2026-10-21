@@ -44,8 +44,8 @@ Sending:
   (`comm.file` to this box's daemon, else the hub), and a handle its folder does not list goes to the hub, which files
   it or offers it to the daemons linked to it (`mail::links`, `mail::hub_link`). The answer decides, never a transport's
   exit status.
-- Silence is failure: a send waits at most the inbox lock's wait plus 3 s (5 s at the default 2 s) for an answer, and a
-  daemon gives a forward or an offer the lock wait plus 1 s. A daemon too old for the op answers `unknown op: comm.file`,
+- Silence is failure: a send waits 5 s for an answer (`cli::wire::FILE_WINDOW`), and a daemon gives a forward or an
+  offer the inbox lock's wait plus 1 s (3 s at the default 2 s), inside the sender's 5 s. A daemon too old for the op answers `unknown op: comm.file`,
   a false failure, never a false success.
 - Nothing is queued and no second route is tried. A sender never types into another session.
 - A message reaches the send as an argument, from a file (`--file <path>`) or from standard input (`--file -`, or `-`

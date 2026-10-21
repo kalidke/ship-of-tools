@@ -137,8 +137,8 @@ pub(crate) async fn file_comm(req: CommFileReq) -> Result<std::result::Result<()
 }
 
 /// A guest's forward to the hub, and the hub's offer to a linked daemon, answer
-/// inside the script's read window (the lock wait plus 3 s): the other daemon's
-/// own lock wait plus this.
+/// inside the sender's 5 s at the default lock wait: the other daemon's own lock
+/// wait plus this.
 const COMM_FORWARD_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// This host's name — the one `sotd topology` uses — or empty when it has

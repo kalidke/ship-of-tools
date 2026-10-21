@@ -35,8 +35,8 @@ use std::time::{Duration, Instant};
 
 /// The one knob, read under the same name as the script arm's.
 pub const INBOX_LOCK_WAIT_ENV: &str = "SOT_INBOX_LOCK_WAIT_SECS";
-/// The one number: `comm-lib.sh` defaults the same variable to 2. A sender's read window is this plus 3 s (decision
-/// 0031's 5 s at the default).
+/// The one number: the 0.6.6 scripts defaulted the same variable to 2. A sender waits 5 s for an answer whatever this
+/// is (decision 0031), so a wait set past 4 s can make a send that was filed report `FAILED`, never the reverse.
 pub const INBOX_LOCK_WAIT_DEFAULT_SECS: u64 = 2;
 
 /// The wait a writer spends on a held lock before it gives up.
