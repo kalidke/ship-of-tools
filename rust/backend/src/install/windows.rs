@@ -491,15 +491,12 @@ fn write_record(ctx: &Ctx) -> Result<(), Stop> {
     Ok(())
 }
 
-/// The launcher code id of a scripts folder, as `Get-SotLauncherCodeId` computes it: the SHA-256 of `launch-sot.ps1` and
-/// of each file it sources, upper-case hex joined with `-`; empty when one cannot be read.
+/// The launcher code id of a scripts folder, asked of that folder's own `Get-SotLauncherCodeId` (`sot-install-layout.ps1`),
+/// the one definition the launcher logs at its start; empty when it cannot be read.
 fn launcher_code_id(scripts: &Path) -> String {
-    let mut ids = Vec::new();
-    for f in ["launch-sot.ps1", "sot-hosts.ps1", "sot-install-layout.ps1", "sot-freshness.ps1", "sot-lease.ps1"] {
-        let Ok(bytes) = std::fs::read(scripts.join(f)) else { return String::new() };
-        ids.push(sot_updater::fetch::hash::sha256_bytes(&bytes).to_ascii_uppercase());
-    }
-    ids.join("-")
+    let mut c = powershell(&["-Command", ". (Join-Path $env:SOT_SCRIPTS 'sot-install-layout.ps1'); Get-SotLauncherCodeId -ScriptsDir $env:SOT_SCRIPTS"]);
+    c.env("SOT_SCRIPTS", scripts);
+    cmd::output(&mut c).first_line()
 }
 
 /// What the run left: the binaries, the record, the junction, no armed pointer, comm and the kernel environment, the

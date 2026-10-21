@@ -296,7 +296,8 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     let retire_stops = !resolved.daemon && unit_active && home.join(".config/systemd/user/sotd.service").is_file();
     let (before, why) = discover(&new_sotd, &endpoint, resolved.daemon, retire_stops, unit_runs, !procs::daemon_pids(&all, &prefix).is_empty());
     let windows_before = procs::window_runs(&all, &prefix);
-    let repair = dir == "same" && pre_commit == pack.commit && matches!(before, State::None | State::Current);
+    // A repair ends no daemon: the predicate the restart step and the retire act on says so.
+    let repair = dir == "same" && pre_commit == pack.commit && matches!(before, State::None | State::Current) && !ends_daemon(unit_runs, retire_stops, before);
     let mut plan = Plan {
         repair,
         checkout: prefix.join("repo/versions").join(pack.tag()),
@@ -511,6 +512,17 @@ pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), S
         }
     }
     Ok((live, unknown))
+}
+
+/// Whether the run restarts this host's unit: it runs (`unit_runs`) another version, or one that cannot be told.
+fn restarts(unit_runs: bool, before: State) -> bool {
+    unit_runs && matches!(before, State::Other | State::Unknown)
+}
+
+/// Whether the run ends a daemon here: the restart, or the retire of an active unit. A repair is a run for which this
+/// is false, so it stops and restarts nothing by construction.
+fn ends_daemon(unit_runs: bool, retire_stops: bool, before: State) -> bool {
+    restarts(unit_runs, before) || retire_stops
 }
 
 /// The daemon a run finds, asked of the target's sotd when the run may end one: its role runs a daemon here, or the
@@ -850,13 +862,19 @@ impl Units<'_> {
     /// not, when it could not.
     fn pin(&self, claim: bool) -> Result<(), String> {
         let dir = self.dir().to_string_lossy().into_owned();
-        let mut args = vec!["topology", "pin", "--dir", dir.as_str()];
-        if claim {
-            args.push("--claim");
-        }
-        let ran = cmd::output(Command::new(self.prefix.join("bin/sotd")).args(&args).env("HOME", self.home));
+        let ran = cmd::output(Command::new(self.prefix.join("bin/sotd")).args(pin_args(&dir, claim)).env("HOME", self.home));
         if ran.ok() { Ok(()) } else { Err(Some(ran.last_said()).filter(|s| !s.is_empty()).unwrap_or_else(|| "sotd topology pin failed".into())) }
     }
+}
+
+/// `sotd`'s arguments that pin the unit in `dir` (`--claim`: to this host, with no hosts.toml): the install's pin and the
+/// command the retire tells a person to run are this one list.
+fn pin_args(dir: &str, claim: bool) -> Vec<&str> {
+    let mut args = vec!["topology", "pin", "--dir", dir];
+    if claim {
+        args.push("--claim");
+    }
+    args
 }
 
 /// A role with no daemon here must not leave an earlier local daemon running. The unit and its boot drop-in may serve
@@ -888,7 +906,8 @@ pub(super) fn retire_local_service(u: &Units, declared: bool, kernel_host: &str)
         }
         let _ = u.systemctl(&["stop", "sotd.service"]);
         if u.lib("sot_boot_wired", &[&ud]).ok() {
-            say("Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service, so a hand disable no longer turns it off; to move it, change hosts.toml, or with none run sotd topology pin --dir ~/.config/systemd/user --claim on the host that should run it. If no other computer shares this home folder, turn boot start off with: rm -f ~/.config/systemd/user/default.target.d/sotd.conf (write that file again, with the two lines [Unit] and Wants=sotd.service, to turn it back on)");
+            let claim = pin_args("~/.config/systemd/user", true).join(" ");
+            say(&format!("Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service, so a hand disable no longer turns it off; to move it, change hosts.toml, or with none run sotd {claim} on the host that should run it. If no other computer shares this home folder, turn boot start off with: rm -f ~/.config/systemd/user/default.target.d/sotd.conf (write that file again, with the two lines [Unit] and Wants=sotd.service, to turn it back on)"));
         } else {
             say("Stopped this computer's sotd. Its boot start is already off: sotd.service has no boot drop-in, and enable and disable change no file for it; to turn it on, write ~/.config/systemd/user/default.target.d/sotd.conf with the two lines [Unit] and Wants=sotd.service");
         }
@@ -917,7 +936,7 @@ fn wire(plan: &Plan) -> Result<bool, Stop> {
         wire_launcher(plan)?;
     }
     step("restart");
-    let restart = plan.unit_runs && matches!(plan.before, State::Other | State::Unknown);
+    let restart = restarts(plan.unit_runs, plan.before);
     if restart {
         say("restarting sotd to pick up the new version");
         let _ = systemctl(&["try-restart", "sotd.service"]);
