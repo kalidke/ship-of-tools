@@ -113,7 +113,9 @@ Guarantees, each with the mechanism it rests on. Install:
   pin, drops any pointer armed over the install, and stops, restarts, stages and applies nothing; its other steps lay
   again what is there (the same binaries and checkout, the environments' own manifests kept), so a repeat finishes a
   half-done install, and the record gets its pin and no other change. A run of the same build that changes the role
-  or the hub is an install over it, and writes the record whole.
+  or the hub is an install over it, and writes the record whole. It stops and restarts nothing by construction: on
+  Unix a repair is a run for which `ends_daemon`, the predicate the restart step and the retire act on, is false; on
+  Windows the repair returns before the stage.
 - The record last, whole, in its old shape. `install.json` is written last, beside itself and renamed in (no BOM), one
   key per line with schema 1's keys, the shape every earlier release's readers take (line readers in the scripts,
   `InstallManifest`). A repeat keeps the rollback: a `.prev` copy is made only of a binary that differs, and a prune
@@ -136,6 +138,7 @@ Guarantees, each with the mechanism it rests on. Install:
   written, and a retire's pin that fails stops it with nothing stopped or reloaded. Boot start is the drop-in, never `enable` (on a shared home an enable links the unit for every host): wired
   for a unit the run finds new, kept over an existing one only where a link or the drop-in was. A retire never
   disables the shared unit or removes its file, and drops the boot start only where the pin names this host alone.
+  The pin command the retire tells a person to run is the install's own arguments (`pin_args`), by construction.
 - The Julia the daemon will run meets the kernel's floor (`[compat] julia` of `julia/kernel/Project.toml`): the
   daemon's (`SOT_JULIA_BIN`, else juliaup's default read from `juliaup.json`, else PATH) and the comm refresh's (PATH).
   Below it the run ends ONE STEP LEFT naming the fix; a PATH julia below it ends the run before a Julia step. Julia
@@ -217,7 +220,8 @@ every other `.sh` runs under bash 3.2 (`tests/under-bash.sh`), makes temporary f
 `${TMPDIR:-/tmp}`, and runs a utility under `set -e` through `env`, never the `command` builtin; `.ps1` files are
 Windows PowerShell 5.1 with ASCII-only string literals and call native commands in a `Continue` scope
 (`Invoke-SotNative`), parsed by rust.yml's "Parse PowerShell scripts" step. The launcher code id
-(`Get-SotLauncherCodeId`) hashes every file `launch-sot.ps1` sources; the bounds the launcher and the daemon share live
+(`Get-SotLauncherCodeId`) hashes every file `launch-sot.ps1` sources, and `sotd install` runs that function of the
+checkout rather than keeping a copy; the bounds the launcher and the daemon share live
 in `rust/protocol/src/ops/lease.rs` (`launcher_bounds_match_ops`).
 
 Tests: one test per guarantee: a Rust unit test in `rust/backend/src/install/*_tests.rs` (`cargo test -p sot-backend
