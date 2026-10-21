@@ -825,13 +825,16 @@ impl Units<'_> {
         let library = self.checkout.join("scripts/lib/sot-daemon.sh");
         cmd::output(Command::new("bash").arg("-c").arg(". \"$1\" || exit 1; shift; \"$@\"").arg("bash").arg(&library).arg(func).args(args).env("HOME", self.home))
     }
-    fn pin(&self, claim: bool) -> bool {
+    /// Pin the unit to the hosts that run sotd (`sotd topology pin`, `--claim` for this host with no hosts.toml); why
+    /// not, when it could not.
+    fn pin(&self, claim: bool) -> Result<(), String> {
         let dir = self.dir().to_string_lossy().into_owned();
         let mut args = vec!["topology", "pin", "--dir", dir.as_str()];
         if claim {
             args.push("--claim");
         }
-        cmd::output(Command::new(self.prefix.join("bin/sotd")).args(&args).env("HOME", self.home)).ok()
+        let ran = cmd::output(Command::new(self.prefix.join("bin/sotd")).args(&args).env("HOME", self.home));
+        if ran.ok() { Ok(()) } else { Err(Some(ran.last_said()).filter(|s| !s.is_empty()).unwrap_or_else(|| "sotd topology pin failed".into())) }
     }
 }
 
@@ -845,8 +848,8 @@ pub(super) fn retire_local_service(u: &Units, declared: bool, kernel_host: &str)
         return;
     }
     if declared {
-        if !u.pin(false) {
-            say("WARNING: sotd topology pin failed: sotd.service is not pinned to the hosts that run sotd");
+        if let Err(why) = u.pin(false) {
+            say(&format!("WARNING: sotd topology pin failed ({why}): sotd.service is not pinned to the hosts that run sotd"));
         }
         if !u.lib("sot_boot_keep", &[&ud]).ok() {
             say("WARNING: could not move sotd.service's boot start onto its drop-in");
@@ -920,9 +923,8 @@ pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str) -> 
         return Err(Stop::new(1, "could not write the sotd unit"));
     }
     let before = role::pin_hosts(&units);
-    if !u.pin(true) {
-        say("WARNING: sotd topology pin failed: sotd.service is not pinned to the hosts that run sotd");
-    }
+    // Unpinned, every host of a shared home would start it: no reload and no start then.
+    u.pin(true).map_err(|why| Stop::new(1, format!("could not pin sotd.service to the hosts that run sotd ({why}); nothing was reloaded or started: fix hosts.toml (sotd topology status names the line) and run this again")))?;
     let after = role::pin_hosts(&units);
     for h in before.iter().filter(|h| !after.contains(h)) {
         say(&format!("The daemon moved here from {h}: {h}'s sotd will not start at its next login."));

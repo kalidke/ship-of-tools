@@ -264,3 +264,13 @@ fn folder_trust_is_said_as_the_command_reports_it() {
     assert_eq!(said("echo 'unknown subcommand trust' >&2; exit 64"), ["WARN: folder trust not declared (exit 64)", "unknown subcommand trust"]);
     assert_eq!(trust_report(&dir.path().join("missing"), dir.path())[0], "WARN: folder trust not declared (exit none)");
 }
+
+/// A unit that cannot be pinned to its hosts is never loaded or started: on a shared home every host would start it.
+#[test]
+fn a_unit_that_cannot_be_pinned_is_never_loaded() {
+    let f = Fixture::new("me");
+    sot_log::test_exec::write_executable(&f.path("prefix/bin/sotd"), format!("#!/bin/sh\nprintf 'sotd %s\\n' \"$*\" >> '{}'\necho 'sotd topology: hosts.toml line 2: expected key = value' >&2\nexit 2\n", f.path("log").display()));
+    let stop = with_units(&f, |u| enable_local_service(u, &template(), "/s.sock")).unwrap_err();
+    assert!(stop.detail.contains("could not pin sotd.service") && stop.detail.contains("hosts.toml line 2"), "{stop:?}");
+    assert!(!f.log().iter().any(|l| l.starts_with("systemctl --user daemon-reload") || l.starts_with("systemctl --user start")), "{:?}", f.log());
+}
