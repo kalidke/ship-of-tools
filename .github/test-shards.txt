@@ -23,17 +23,21 @@ ws         test comm_wake a_restarted_daemon a_dead_row
 wake       test comm_wake a_wake_line_left_unsent an_unfinished_stop two_tomls a_newer_join a_row_whose_stop_hook
 wake       test comm_wake --skip a_restarted_daemon --skip a_dead_row --skip a_wake_line_left_unsent --skip an_unfinished_stop --skip two_tomls --skip a_newer_join --skip a_row_whose_stop_hook
 ws2        test capsule_workspaces --skip destroy:: --skip spawn:: --skip create:: --skip session_env:: --skip ended_row:: --skip resume:: --skip attach::
-sotd-a     bin  sotd sidecars:: --skip repl_page_secret_never_reaches_command_line
-sotd-b     bin  sotd --skip sidecars:: --skip repl_page_secret_never_reaches_command_line
+sup        test fault_storage --skip native_volume_fill_free_sync
+sotd-a     bin  sotd sidecars::repl:: --skip repl_page_secret_never_reaches_command_line
+sotd-b     bin  sotd sidecars:: --skip sidecars::repl:: --skip repl_page_secret_never_reaches_command_line
+sotd-c     bin  sotd --skip sidecars:: --skip repl_page_secret_never_reaches_command_line
 
 gate-sleep test lane_bridge outage::
 gate-sleep test window_start
 gate-sleep test window_lease
 gate-sleep test fe_client unresponsive_supervisor_expires_the_health_window
 gate-wgl   bin  sotd repl_page_secret_never_reaches_command_line
+# the native disk fill: it fills a volume, so it runs alone, on each system
+gate-storage test fault_storage native_volume_fill_free_sync
 
 # The jobs of each system (seconds from run 39646399759; a job's tests run about four minutes at most). Linux and Windows
 # share 20 concurrent jobs with the checks, macOS has 5. rest-0 to rest-2 split the targets named nowhere above.
-fold linux   ws2+rest-2 sotd-a+sotd-b rest-0+rest-1
-fold windows sup+wake sotd-a+ws2 lane+ws rest-0 rest-1 sotd-b+rest-2
-fold macos   sotd-a sotd-b rest-0+rest-2+ws2 rest-1+lane+wake sup+ws
+fold linux   ws2+rest-2 sotd-a+sotd-b+sotd-c rest-0+rest-1
+fold windows sup+wake sotd-a+sotd-b+ws2 lane+ws rest-0 rest-1 sotd-c+rest-2
+fold macos   sotd-c sotd-b+lane+wake sotd-a+rest-0 rest-1+rest-2 sup+ws+ws2
