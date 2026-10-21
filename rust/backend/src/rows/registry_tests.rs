@@ -39,20 +39,20 @@ fn set_agent_handle_persists_in_the_registry_and_preserves_other_fields() {
     row.runtime = "capsule".to_string();
     let row = reg.insert(row);
     let original_id = row.workspace_id.clone();
-    assert_eq!(row.agent_handle(), "", "a fresh row has never joined");
+    assert_eq!(crate::rows::handle::declared_handle(&row), "", "a fresh row has never joined");
 
     let joined = reg
         .set_agent_handle(&row.workspace_id, "capsuleprobe-testhost")
         .expect("the row is registered")
         .0;
     assert_eq!(joined.workspace_id, original_id, "set_agent_handle must preserve the id");
-    assert_eq!(joined.agent_handle(), "capsuleprobe-testhost");
+    assert_eq!(crate::rows::handle::declared_handle(&joined), "capsuleprobe-testhost");
     assert_eq!(joined.runtime, "capsule", "unrelated metadata must survive the update");
 
     // The registry's own row (not just the returned handle) reflects
     // the join -- resolve() must see it too.
     let resolved = reg.resolve(Some(&original_id)).unwrap();
-    assert_eq!(resolved.agent_handle(), "capsuleprobe-testhost");
+    assert_eq!(crate::rows::handle::declared_handle(&resolved), "capsuleprobe-testhost");
 }
 
 #[test]
@@ -171,15 +171,15 @@ fn a_same_slug_reinsert_takes_the_new_rows_declared_handle() {
     reg.set_agent_handle(&original_id, "m5-carried").expect("registered");
 
     let mut carried = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());
-    carried.agent_handle = Mutex::new("m5-carried".to_string());
+    carried.agent_handle = crate::rows::handle::Declared::new("m5-carried".to_string());
     reg.insert(carried);
     let resolved = reg.resolve(Some("alpha")).unwrap();
     assert_eq!(resolved.workspace_id, original_id);
-    assert_eq!(resolved.agent_handle(), "m5-carried");
+    assert_eq!(crate::rows::handle::declared_handle(&resolved), "m5-carried");
 
     let fresh = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());
     reg.insert(fresh);
-    assert_eq!(reg.resolve(Some("alpha")).unwrap().agent_handle(), "");
+    assert_eq!(crate::rows::handle::declared_handle(&reg.resolve(Some("alpha")).unwrap()), "");
 }
 
 /// ADR 0042 slice L1a: `insert`'s own doc says the id-preserving

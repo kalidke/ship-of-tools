@@ -78,7 +78,7 @@ pub async fn handle_workspace_list(
                 } else {
                     handle.clone()
                 },
-                agent_handle: ws.agent_handle(),
+                agent_handle: crate::rows::handle::declared_handle(ws),
                 task: ws.task.clone(),
                 agent_state: work.state,
                 agent_summary: work.summary,

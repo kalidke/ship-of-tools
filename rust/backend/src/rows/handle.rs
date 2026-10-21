@@ -1,25 +1,75 @@
-//! A row's comm handle: [`bound_handle`], the one answer to which handle is a row's, and the liveness stamp, which keeps
+//! A row's comm handle: the declared cell, private to this module; [`bound_handle`], the one answer to which handle is
+//! a row's; the two moves of a handle (`set_agent_handle`, `clear_shared_handles`); and the liveness stamp, which keeps
 //! the handles of the rows that run fresh in the comm registry, so an idle row is live.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::comm::registry::registry::{iso8601_utc_now, stamp_last_seen};
 use crate::rows::workspace::Phase;
 use crate::rows::{Workspace, Workspaces};
 
+/// The handle a row's session declared (`agent.join`), `""` until one does. Its value is private to this module: the
+/// binding is read through [`bound_handle`], the declared value through [`declared_handle`], and it changes only
+/// through `Workspaces::set_agent_handle`, `Workspaces::clear_shared_handles` and [`clear_declared`], so no reader
+/// of a row's handle can bypass the rule.
+#[derive(Default)]
+pub(crate) struct Declared(Mutex<String>);
+
+impl Declared {
+    /// A cell holding `handle`: a row built from its toml, or a test's row.
+    pub(crate) fn new(handle: impl Into<String>) -> Self {
+        Declared(Mutex::new(handle.into()))
+    }
+
+    /// A cell holding this one's value, for a row that replaces another under its slug (`insert`, the boot re-seed).
+    pub(crate) fn copy(&self) -> Self {
+        Declared::new(self.get())
+    }
+
+    fn get(&self) -> String {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn set(&self, handle: &str) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = handle.to_string();
+    }
+
+    /// Clears the cell if it holds `handle`; whether it did.
+    fn clear_if(&self, handle: &str) -> bool {
+        let mut cell = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let held = *cell == handle;
+        if held {
+            cell.clear();
+        }
+        held
+    }
+}
+
+/// The handle row `ws`'s session declared, as recorded: what its toml and the list's `agent_handle` field carry, and
+/// what the wake wakes, since a session that never joined has no mail to wake for. Every other reader of a row's
+/// handle asks [`bound_handle`].
+pub(crate) fn declared_handle(ws: &Workspace) -> String {
+    ws.agent_handle.get()
+}
+
+/// Clears row `ws`'s declared handle: a default row reset to the inert anchor, in which nothing runs.
+pub(crate) fn clear_declared(ws: &Workspace) {
+    ws.agent_handle.set("");
+}
+
 /// Which comm handle is row `ws`'s: the handle its session declared (`agent.join`), else the name the row was created
 /// with, unless another row of `rows` (the daemon's rows) declares that name, since a handle binds one row. `""` when
 /// none. Every reader of a row's handle asks this: the list, the work-state, the liveness stamp, the wake and a join
 /// from outside any row.
 pub(crate) fn bound_handle(ws: &Workspace, rows: &[Arc<Workspace>]) -> String {
-    let declared = ws.agent_handle();
+    let declared = ws.agent_handle.get();
     if !declared.is_empty() {
         return declared;
     }
     let name = ws.agent_name();
-    let held_elsewhere = rows.iter().any(|r| r.workspace_id != ws.workspace_id && r.agent_handle() == name);
+    let held_elsewhere = rows.iter().any(|r| r.workspace_id != ws.workspace_id && r.agent_handle.get() == name);
     if name.is_empty() || held_elsewhere {
         String::new()
     } else {
@@ -32,6 +82,96 @@ const STAMP_EVERY: Duration = Duration::from_secs(60);
 
 /// How often the task looks at the rows.
 const TICK: Duration = Duration::from_secs(2);
+
+impl Workspaces {
+    /// Record the sot-comm handle a session inside `workspace_id` DECLARED
+    /// via `agent.join` (ADR 0046 decision 1) — the daemon is told once
+    /// instead of re-deriving it from a self-file read-back on every
+    /// row-handle read (`rows::handle::bound_handle`) — and MOVE it: ADR 0049
+    /// gives a handle to one row only, so every OTHER row whose declared
+    /// handle equals `handle` loses it (cell cleared) in the same step.
+    /// Returns the row and the ids of the rows that lost the handle, for
+    /// the caller to persist; an empty `handle` moves nothing. `None` if
+    /// `workspace_id` is not registered (the `agent.join` handler reports
+    /// this as `unknown_workspace`).
+    ///
+    /// (S6, Codex finding B5): a GUARDED IN-PLACE update,
+    /// never a replacement `insert`. The write lands on each row's OWN
+    /// interior `agent_handle` cell (the SAME `Arc<Workspace>`, resource
+    /// caches — kernel, repl, watcher — untouched), not on a freshly
+    /// reconstructed `Workspace` that would start every cache cold. This
+    /// also closes the destroy race the old replace-based version had:
+    /// since this method never touches `by_id`/`by_slug`, a `destroy` that
+    /// removes the row between the lookup and this write leaves the row
+    /// destroyed — the write lands on an orphaned `Arc` nobody can
+    /// `resolve()` to anymore, never a resurrection.
+    ///
+    /// The registry's WRITE lock is held across the whole move, so two
+    /// concurrent declarations of one handle serialise and the later one
+    /// wins; a cell is locked only for one clone or one write, so taking
+    /// cells under the registry lock cannot deadlock.
+    pub fn set_agent_handle(&self, workspace_id: &str, handle: &str) -> Option<(Arc<Workspace>, Vec<String>)> {
+        let g = self.inner.write().expect("workspaces lock");
+        let ws = g.by_id.get(workspace_id)?.clone();
+        let mut moved = Vec::new();
+        if !handle.is_empty() {
+            for (id, other) in g.by_id.iter() {
+                if id == workspace_id {
+                    continue;
+                }
+                if other.agent_handle.clear_if(handle) {
+                    moved.push(id.clone());
+                }
+            }
+        }
+        ws.agent_handle.set(handle);
+        Some((ws, moved))
+    }
+
+    /// Boot's side of one row per handle (ADR 0049): every non-empty
+    /// declared handle that two or more rows hold stays only on the row
+    /// `keep(handle)` names (a workspace id) and is cleared on the rest; a
+    /// `keep` that names none of them clears it on all. `keep` runs with
+    /// no lock held; the clears run under the registry's write lock, like
+    /// [`set_agent_handle`](Self::set_agent_handle)'s. Returns each such
+    /// handle with the rows it was cleared on, for the caller to save.
+    pub(crate) fn clear_shared_handles(
+        &self,
+        keep: impl Fn(&str) -> Option<String>,
+    ) -> Vec<(String, Vec<Arc<Workspace>>)> {
+        let mut by_handle: std::collections::BTreeMap<String, Vec<Arc<Workspace>>> = Default::default();
+        for ws in self.list() {
+            let h = ws.agent_handle.get();
+            if !h.is_empty() {
+                by_handle.entry(h).or_default().push(ws);
+            }
+        }
+        let shared: Vec<(String, Vec<Arc<Workspace>>, Option<String>)> = by_handle
+            .into_iter()
+            .filter(|(_, rows)| rows.len() > 1)
+            .map(|(h, rows)| {
+                let kept = keep(&h);
+                (h, rows, kept)
+            })
+            .collect();
+        let _g = self.inner.write().expect("workspaces lock");
+        let mut out = Vec::new();
+        for (handle, rows, kept) in shared {
+            let mut cleared = Vec::new();
+            for ws in rows {
+                if kept.as_deref() == Some(ws.workspace_id.as_str()) {
+                    continue;
+                }
+                if ws.agent_handle.clear_if(&handle) {
+                    cleared.push(ws.clone());
+                }
+            }
+            out.push((handle, cleared));
+        }
+        out
+    }
+
+}
 
 /// The non-empty handles of the rows whose phase `keep` accepts. A row's handle is resolved (a registry read) only
 /// once its phase is kept.
@@ -115,7 +255,3 @@ pub(crate) async fn liveness(workspaces: Workspaces) {
 #[cfg(test)]
 #[path = "handle_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "handle_sites_tests.rs"]
-mod sites_tests;

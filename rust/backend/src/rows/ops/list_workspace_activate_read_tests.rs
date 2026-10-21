@@ -51,7 +51,7 @@ fn seed_capsule_workspace(label: &str, agent_handle: &str) -> (Workspaces, Strin
         String::new(),
     );
     ws.runtime = "capsule".to_string();
-    ws.agent_handle = std::sync::Mutex::new(agent_handle.to_string());
+    ws.agent_handle = crate::rows::handle::Declared::new(agent_handle.to_string());
     let id = ws.workspace_id.clone();
     reg.insert(ws);
     (reg, id)
@@ -162,7 +162,7 @@ async fn a_row_whose_self_file_names_a_declared_handle_neither_shows_nor_clears_
         String::new(),
     );
     newer.runtime = "capsule".to_string();
-    newer.agent_handle = std::sync::Mutex::new("m5-shared".to_string());
+    newer.agent_handle = crate::rows::handle::Declared::new("m5-shared".to_string());
     let newer_id = reg.insert(newer).workspace_id.clone();
     std::fs::write(
         dir.join("self").join(format!("host-4__{older_id}.txt")),

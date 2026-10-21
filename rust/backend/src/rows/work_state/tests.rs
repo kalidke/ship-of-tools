@@ -126,17 +126,19 @@ fn a_tick_restamps_only_a_running_turn() {
     let (e, write) = after(json!({"floor": "user", "state": "working", "status_at": "old"}), Event::Tick);
     assert!(write);
     assert_eq!((e["status_at"].as_str(), e["state"].as_str()), (Some(NOW), Some("working")));
-    let (e, write) = after(json!({"state": "idle", "status_at": "old"}), Event::Tick);
+    assert_eq!(e["last_seen"].as_str(), Some(NOW), "a running turn's tick keeps its handle live");
+    let (e, write) = after(json!({"state": "idle", "status_at": "old", "last_seen": "old"}), Event::Tick);
     assert!(!write);
-    assert_eq!(e["status_at"].as_str(), Some("old"));
+    assert_eq!((e["status_at"].as_str(), e["last_seen"].as_str()), (Some("old"), Some("old")));
 }
 
 /// A person's read clears `done`, shows what the other facts say, and restamps nothing; with no `done`, nothing.
 #[test]
 fn a_read_clears_done_and_restamps_nothing() {
-    let (e, write) = after(json!({"state": "done", "done": true, "summary": "s", "status_at": "old"}), Event::Read);
+    let (e, write) = after(json!({"state": "done", "done": true, "summary": "s", "status_at": "old", "last_seen": "old"}), Event::Read);
     assert!(write);
     assert_eq!((e["state"].as_str(), e["summary"].as_str(), e["status_at"].as_str()), (Some("idle"), Some("s"), Some("old")));
+    assert_eq!(e["last_seen"].as_str(), Some("old"), "a person's look is not the session's liveness");
     let (e, _) = after(json!({"state": "waiting", "waiting": "job", "done": true}), Event::Read);
     assert_eq!((e["state"].as_str(), e.get("done")), (Some("waiting"), None), "a wait still outranks");
     let (_, write) = after(json!({"state": "idle"}), Event::Read);
@@ -193,8 +195,8 @@ fn a_held_lock_writes_nothing() {
 }
 
 fn row(label: &str, name: &str, declared: &str) -> Arc<Workspace> {
-    let ws = Workspace::from_label(label, PathBuf::from("/p"), false, "claude".into(), name.into(), String::new());
-    *ws.agent_handle.lock().unwrap() = declared.to_string();
+    let mut ws = Workspace::from_label(label, PathBuf::from("/p"), false, "claude".into(), name.into(), String::new());
+    ws.agent_handle = crate::rows::handle::Declared::new(declared);
     Arc::new(ws)
 }
 

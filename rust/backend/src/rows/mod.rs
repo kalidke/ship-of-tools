@@ -129,12 +129,12 @@ pub struct Workspace {
     /// `Workspaces::set_agent_handle` mutates THIS SAME cell on the
     /// SHARED `Arc<Workspace>` in place — never a replacement `insert` —
     /// so a join can never discard the resource caches living alongside
-    /// it on the same struct instance. Read through the `agent_handle()`
-    /// method outside this module — the field itself stays `pub(crate)`
-    /// only for same-crate construction of a freshly built, not-yet-shared
-    /// `Workspace` (`from_toml`, test fixtures), never for reading the
-    /// live value, which needs the getter's poison-recovery.
-    pub(crate) agent_handle: Mutex<String>,
+    /// it on the same struct instance. Its value is private to
+    /// `rows::handle` (`Declared`): read through `bound_handle` (the
+    /// binding) or `declared_handle` (the record and the wake), changed
+    /// only by that module's moves; the field is `pub(crate)` only so a
+    /// freshly built row can be given a cell (`Declared::new`).
+    pub(crate) agent_handle: handle::Declared,
     /// Never persisted; written only through [`Workspace::apply_phase_observation`].
     phase_cell: Mutex<PhaseCell>,
     /// `Some(token)` for exactly as long as a watchdog task owns
