@@ -29,7 +29,6 @@ jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     # A pre-release Julia warns and never gates a cut: no lab box runs one, and an alpha can break what a release passes.
     continue-on-error: ${{ matrix.version == 'pre' }}
     timeout-minutes: 60
@@ -70,7 +69,6 @@ jobs:
   pluto-workers:
     name: Pluto workers - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     timeout-minutes: 60
     permissions:
       actions: write
@@ -97,7 +95,6 @@ jobs:
   wglshow-pages:
     name: wglshow pages - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     timeout-minutes: 60
     permissions:
       actions: write
@@ -127,7 +124,6 @@ jobs:
   julia-packages:
     name: Julia packages ${{ matrix.version }}
     runs-on: ubuntu-latest
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     # As in `test`: the pre-release leg warns and never gates a cut.
     continue-on-error: ${{ matrix.version == 'pre' }}
     timeout-minutes: 60
@@ -183,7 +179,6 @@ jobs:
     runs-on: ubuntu-latest
     # Usually 2 to 10 minutes; makedocs runs the doctests.
     timeout-minutes: 30
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     concurrency:
       # Serialize only the DEPLOYING build (main -> gh-pages). A PR/branch
       # docs build deploys nothing, and one repo-wide group made GitHub

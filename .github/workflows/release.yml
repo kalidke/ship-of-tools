@@ -1,17 +1,19 @@
-# Tag-driven release (ADR 0030 §3 + clone addendum): build platform
-# artifacts, smoke-test them, create a GitHub Release draft with git-cliff notes.
+# Tag-driven release (ADR 0030 §3 + clone addendum; the contract is scripts/CLAUDE.md, "Release path"): build platform
+# artifacts, smoke-test them, install them, and create a GitHub Release draft with git-cliff notes.
 # The julia bundle is RETIRED — installs clone the repo at the release tag
 # (the checkout is the resource tree + the manual), so there is no curated
 # subset to get wrong.
 #
 # Trigger paths:
-#   - tag push v*        → full pipeline incl. publish (use scripts/release.sh); publish creates the
-#                          release as a DRAFT, which no updater lists until the release skill publishes it
-#                          (`gh release edit vX.Y.Z --draft=false`, run alone, on the go)
+#   - tag push v*        → full pipeline incl. the draft (the tag comes from scripts/release.sh); the draft job
+#                          creates the release as a DRAFT, which no updater lists until the maintainer publishes it
+#                          (`gh release edit vX.Y.Z --draft=false`, run alone, on the maintainer's word)
 #   - workflow_dispatch  → builds + checks ONLY (pipeline validation without
 #                          tagging; artifacts land as workflow artifacts)
 #
-# Gates of publish: the three artifact smokes (boot + version), julia-check, and the three install smokes
+# This workflow never publishes, edits or deletes a release, and creates one only as a draft on a tag ref.
+#
+# Gates of the draft: the three artifact smokes (boot + version), julia-check, and the three install smokes
 # (install-linux, install-macos, install-windows): scripts/install.sh and scripts/install.ps1 install the artifacts THIS
 # run built, fresh and as an update from the newest published release older than this run's version, and each must end
 # in its PASS line. A dispatch on a branch runs all of them too (its artifacts carry the binaries' + version).
@@ -29,7 +31,7 @@ on:
 
 # Least-privilege (Phase C4): the release pipeline is the auto-updater's
 # code-execution trust root, so build/smoke jobs run with a read-only token
-# and only the publish job gets contents:write. All third-party actions are
+# and only the draft job gets contents:write. All third-party actions are
 # pinned to commit SHAs for the same reason.
 permissions:
   contents: read
@@ -53,11 +55,11 @@ jobs:
       # missed it would ship a release that refuses to self-update.
       #
       # Gated on the ref being a TAG — deliberately the SAME condition the
-      # `publish` job below uses, so the bare version is stamped on exactly
+      # `draft` job below uses, so the bare version is stamped on exactly
       # the runs that can create a release and on no others. (Note this is
       # a ref test, not an event test: a workflow_dispatch aimed at a tag
       # both creates the draft and gets stamped, which is consistent. A dispatch on
-      # a branch does neither.) Keep the two conditions in step; if publish
+      # a branch does neither.) Keep the two conditions in step; if the draft
       # ever narrows, this must narrow with it, or we would stamp artifacts
       # that never ship.
       SOT_BUILD_ORIGIN: ${{ startsWith(github.ref, 'refs/tags/v') && 'ci' || '' }}
@@ -103,12 +105,10 @@ jobs:
           else
             echo "version=0.0.0-ci.${GITHUB_SHA::9}" >> "$GITHUB_OUTPUT"
           fi
-      # No test step here (2026-09-18): the tag tree is the commit
-      # rust.yml and CI.yml passed at the cut (release.sh requires both green
-      # at HEAD) plus version lines, and release.sh
-      # ran the workspace suite on the stamped tree before pushing. What
+      # No test step here: the tag tree is the commit the local gate passed
+      # plus the version lines (release.sh commits only its stamp). What
       # this workflow proves is the ARTIFACT: it builds, boots on the oldest
-      # fleet host, and self-identifies -- the smokes below.
+      # fleet host, self-identifies and installs -- the smokes below.
       - name: Build release binaries
         shell: bash
         # linux ships only the frontend from this glibc build (sotd and
@@ -549,8 +549,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}  # read-only (contents: read): the implicit run's release listing is an API call, limited per address when anonymous
         run: ./scripts/tests/install-smoke.ps1 -Scenario "${{ matrix.scenario }}" -Artifacts artifacts -Checkout "$env:GITHUB_WORKSPACE" -Before "${{ needs.release-before.outputs.tag }}"
 
-  publish:
-    name: publish release
+  draft:
+    name: draft the release
     if: startsWith(github.ref, 'refs/tags/')
     needs: [build, smoke, smoke-windows, smoke-macos, julia-check, install-linux, install-macos, install-windows]
     runs-on: ubuntu-latest
