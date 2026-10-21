@@ -16,17 +16,12 @@
 #                 `newer` and arm. The run's artifacts reach only that stage. The Windows converge stays a lab-box proof.
 # The pack -Archive takes is made here from the artifacts: SHA256SUMS, COMMIT and the zip, which keeps its name when that
 # carries the binaries' own version and is repacked under it otherwise (a branch run names its artifacts 0.0.0-ci.<sha>).
-# -Before is installed by its own installer when its tag carries scripts\install.ps1 (the entry's prelude fetches it);
-# until a published release does, by that tag's docs\INSTALL-AGENT.md section 2b: the zip's three binaries into
-# bin\, a clone at the tag with its install-shortcut.ps1, and the launcher's first-start layout run by the tag's own
-# sot-install-layout.ps1 (no window can start here). Delete that branch (Install-BeforeByHand) once the release before
-# carries install.ps1.
+# -Before is installed by its own installer (the entry's prelude fetches the tag's scripts\install.ps1).
 #
 # The scratch profile of scratch-guard.ps1 (USERNAME, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, SOT_COMM_HOME) holds everything.
 # The verdict of each entry run is judged: PASS, or, in a session with no desk (session 0), the entry's own "start Ship
 # of Tools at the desk" step, after which this script applies the armed update as that start does.
-# Environment: SOT_SMOKE_REPO (owner/name; default GITHUB_REPOSITORY), SOT_SMOKE_COMMIT (default HEAD of Checkout),
-# SOT_SMOKE_RAW_BASE and SOT_SMOKE_RELEASE_BASE (URL bases for a tag's files and a tag's release assets; default GitHub's).
+# Environment: SOT_SMOKE_REPO (owner/name; default GITHUB_REPOSITORY), SOT_SMOKE_COMMIT (default HEAD of Checkout).
 param(
     [Parameter(Mandatory = $true)][ValidateSet('fresh', 'update-entry', 'update-apply', 'update-implicit')][string]$Scenario,
     [Parameter(Mandatory = $true)][string]$Artifacts,
@@ -109,8 +104,6 @@ $env:SOT_COMM_HOME = "$h\comm"
 $prefix = Join-Path $env:LOCALAPPDATA 'sot'
 $repoName = $(if ($env:SOT_SMOKE_REPO) { $env:SOT_SMOKE_REPO } elseif ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'kalidke/ship-of-tools' })
 $env:SOT_INSTALL_REPO = $repoName
-$rawBase = $(if ($env:SOT_SMOKE_RAW_BASE) { $env:SOT_SMOKE_RAW_BASE } else { "https://raw.githubusercontent.com/$repoName" })
-$releaseBase = $(if ($env:SOT_SMOKE_RELEASE_BASE) { $env:SOT_SMOKE_RELEASE_BASE } else { "https://github.com/$repoName/releases/download" })
 
 function Invoke-Entry([string]$Label, [string[]]$ArgList) {
     Invoke-Logged $Label 'powershell.exe' (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script:Entry) + $ArgList)
@@ -181,78 +174,12 @@ function Test-Verdict([string]$Label, $Pack, [string]$Ver = '', [string]$Short =
 }
 
 # ---- the release before, laid by its own installer ---------------------------------------------------------------------
-# 5.1 turns a native command's stderr into a terminating error under 'Stop': curl says why it failed there.
-function Test-RemoteFile([string]$Url) {
-    $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { & curl.exe --connect-timeout 15 -fsSI -o NUL $Url 2>&1 | Out-Null; $rc = $LASTEXITCODE } finally { $ErrorActionPreference = $eap }
-    # 22 is an HTTP error (the file is absent) and 37 a file:// base that lacks it; any other failure is the network.
-    if ($rc -ne 0 -and $rc -ne 22 -and $rc -ne 37) { Stop-Smoke "could not ask whether $Url exists (curl exit $rc)" }
-    return ($rc -eq 0)
-}
-function Get-ByUrl([string]$Url, [string]$Path) {
-    $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { & curl.exe --connect-timeout 15 --speed-limit 1000 --speed-time 60 -fsSL -o $Path $Url 2>&1 | ForEach-Object { Write-Host "$_" }; $rc = $LASTEXITCODE } finally { $ErrorActionPreference = $eap }
-    if ($rc -ne 0) { Stop-Smoke "could not download $Url (curl exit $rc)" }
-}
-function Install-BeforeByHand([string]$Tag) {
-    $vb = $Tag.TrimStart('v')
-    $dl = Join-Path $script:Smoke 'before'
-    New-Item -ItemType Directory -Force -Path $dl | Out-Null
-    # Section 2b step 1: download, verify, the three binaries into bin\.
-    foreach ($f in @('SHA256SUMS', "sot-$vb-windows-x86_64.zip")) { Get-ByUrl "$releaseBase/$Tag/$f" (Join-Path $dl $f) }
-    $sums = @{}
-    foreach ($l in [System.IO.File]::ReadAllLines((Join-Path $dl 'SHA256SUMS'))) { if ($l -match '^([0-9a-fA-F]{64}) [ *](.+)$') { $sums[$Matches[2]] = $Matches[1].ToLowerInvariant() } }
-    $zipName = "sot-$vb-windows-x86_64.zip"
-    if ($sums[$zipName] -ne (Get-Sha (Join-Path $dl $zipName))) { Stop-Smoke "$zipName does not match its SHA256SUMS entry" }
-    Expand-Archive -LiteralPath (Join-Path $dl $zipName) -DestinationPath (Join-Path $dl 'x') -Force
-    New-Item -ItemType Directory -Force -Path (Join-Path $prefix 'bin') | Out-Null
-    foreach ($e in @('sot.exe', 'sotd.exe', 'sot-capsule.exe')) { Copy-Item -LiteralPath (Join-Path $dl "x\sot-$vb-windows-x86_64\$e") -Destination (Join-Path $prefix "bin\$e") -Force }
-    # Step 5: a clone at the tag, and that tag's own install-shortcut.ps1 (it writes the shortcut and install.json).
-    $clone = Join-Path $h 'ship-of-tools'
-    $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    & git clone --quiet --filter=blob:none --branch $Tag "https://github.com/$repoName" $clone 2>&1 | ForEach-Object { Write-Host "$_" }
-    $cloneRc = $LASTEXITCODE
-    $ErrorActionPreference = $eap
-    if ($cloneRc -ne 0) { Stop-Smoke "git clone of $repoName at $Tag ended with exit $cloneRc" }
-    Push-Location $clone
-    try { Invoke-Logged 'before-shortcut' 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts\install-shortcut.ps1') } finally { Pop-Location }
-    if ($script:Rc -ne 0) { Stop-Smoke "$Tag's install-shortcut.ps1 ended with exit $($script:Rc)" }
-    # The launcher's first start finishes the layout (repo\versions, the repo\current junction, the Julia environments,
-    # comm). No window can start here, so the tag's own functions run in its place, as its launcher calls them.
-    $layout = {
-        param($prefixDir, $repo)
-        $ErrorActionPreference = 'Stop'
-        $script:launchNotices = New-Object System.Collections.ArrayList
-        $logDir = Join-Path $env:LOCALAPPDATA 'sot\logs'; New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-        function Write-SupLog { param([string]$Message) Write-Host "  $Message"; "$(Get-Date -Format o)  pid=$PID  install-smoke: $Message" | Out-File -FilePath (Join-Path $logDir 'supervisor.log') -Append -Encoding utf8 }
-        function Set-LaunchStatus { param([string]$Message) Write-Host "  $Message" }
-        function Limit-NoticeText { param($t) $t }
-        $repoCurrent = Join-Path $prefixDir 'repo\current'
-        $backendExe = $null; $NoUpdate = $false; $Local = $false
-        $sd = Join-Path $repo 'scripts'
-        . (Join-Path $sd 'sot-install-layout.ps1')
-        . (Join-Path $sd 'sot-freshness.ps1')
-        # The launcher relaxes 'Stop' around native tools: Julia writes to stderr.
-        $ErrorActionPreference = 'Continue'
-        Initialize-InstallLayout
-        $repo = [pscustomobject]@{ Path = $repoCurrent }
-        if (Get-Command Invoke-FreshnessPass -ErrorAction SilentlyContinue) { Invoke-FreshnessPass } else { Invoke-CommUpdate }
-        foreach ($n in @($script:launchNotices)) { Write-Host "  note: $n" }
-    }
-    & $layout $prefix $clone
-    Expect-Eq 'before: install.json version' (Get-JsonString (Join-Path $prefix 'install.json') 'version') $vb
-}
+# The release before by its own installer: the entry's prelude fetches the tag's install.ps1 and runs it.
 function Install-Before([string]$Tag) {
     $vb = $Tag.TrimStart('v')
-    if (Test-RemoteFile "$rawBase/$Tag/scripts/install.ps1") {
-        Say "before: $Tag carries scripts\install.ps1; the entry's prelude fetches it"
-        Invoke-Entry 'before' @('-Version', $Tag)
-        if ($script:Rc -ne 0) { Stop-Smoke "before: $Tag's installer ended with exit $($script:Rc); its last line: $($script:Last)" }
-        Expect-Eq 'before: install.json version' (Get-JsonString (Join-Path $prefix 'install.json') 'version') $vb
-    } else {
-        Say "before: $Tag carries no scripts\install.ps1; laid by its docs\INSTALL-AGENT.md section 2b"
-        Install-BeforeByHand $Tag
-    }
+    Invoke-Entry 'before' @('-Version', $Tag)
+    if ($script:Rc -ne 0) { Stop-Smoke "before: $Tag's installer ended with exit $($script:Rc); its last line: $($script:Last)" }
+    Expect-Eq 'before: install.json version' (Get-JsonString (Join-Path $prefix 'install.json') 'version') $vb
     Say "before: $Tag is installed"
 }
 
@@ -300,7 +227,7 @@ try {
         'fresh' {
             Invoke-Entry 'fresh' @('-Archive', $pack.Dir)
             [void](Test-Verdict 'fresh' $pack)
-            # The shortcut step's install-manifest.ps1 call finds the record install.ps1 wrote for a pack of the line and keeps it.
+            # sotd install writes the record itself and runs the shortcut step with -NoManifest: no hand-install manifest line.
             if ($pack.Version.Contains('+') -and (Test-OutHas 'no manifest written')) { Stop-Smoke 'fresh: the run printed "no manifest written" for a pack of the line, whose record install.ps1 had written' }
             Test-StateNew 'fresh' $pack -Comm
             Invoke-RepairRun $pack
@@ -317,12 +244,6 @@ try {
             Invoke-RepairRun $pack
         }
         'update-implicit' {
-            # The implicit run is the release before's own installer through the prelude: a tag laid by hand (it carries no
-            # install.ps1) has none to run, so the leg says it did not run rather than pass. Delete with Install-BeforeByHand.
-            if (-not (Test-RemoteFile "$rawBase/$Before/scripts/install.ps1")) {
-                Say "SKIPPED update-implicit: $Before carries no scripts\install.ps1, so no implicit run of it exists to prove"
-                exit 0
-            }
             Install-Before $Before
             $vb = $Before.TrimStart('v')
             $ij = Join-Path $prefix 'install.json'

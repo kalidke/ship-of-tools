@@ -25,3 +25,22 @@ fn the_installed_version_is_the_records_first() {
     std::fs::write(dir.path().join("install.json"), "{\"version\": \"0.6.6\", \"commit\": \"x\"}").unwrap();
     assert_eq!(installed_version(dir.path()), "0.6.6");
 }
+
+/// The words the Windows install reads (the converge's wait, the window's launcher check) are the words the launcher and
+/// the apply write, and its launcher code id hashes the files `Get-SotLauncherCodeId` hashes: a change on either side
+/// fails here, on every platform, since it reads files.
+#[test]
+fn the_windows_install_reads_the_words_the_launcher_writes() {
+    let launch = include_str!("../../../../scripts/launch-sot.ps1");
+    let apply = include_str!("../../../../scripts/sot-apply.ps1");
+    let layout = include_str!("../../../../scripts/sot-install-layout.ps1");
+    let install = include_str!("windows.rs");
+    assert!(launch.contains("Write-SupLog \"supervisor start (relaunched=$Relaunched) depth=") && launch.contains(" code=$(if ($script:launcherCodeId)"));
+    assert!(install.contains("\"supervisor start\"") && install.contains("strip_prefix(\"code=\")"));
+    assert!(launch.contains("Set-LaunchStatus 'DONE'") && launch.contains("Write-SupLog \"status: $Message\"") && install.contains("\"status: DONE\""));
+    assert!(apply.contains("Write-ApplyLog \"APPLIED $tag") && install.contains("\"sot-apply: APPLIED {}\""));
+    assert!(launch.contains("Join-Path $logDir 'launcher.pid'") && install.contains("join(\"launcher.pid\")"));
+    let files = "'launch-sot.ps1', 'sot-hosts.ps1', 'sot-install-layout.ps1', 'sot-freshness.ps1', 'sot-lease.ps1'";
+    assert!(layout.contains(&format!("foreach ($f in @({files}))")));
+    assert!(install.contains(&format!("[{}]", files.replace('\'', "\""))));
+}

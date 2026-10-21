@@ -21,10 +21,12 @@ $script:Repo = $(if ($env:SOT_INSTALL_REPO) { $env:SOT_INSTALL_REPO } else { 'ka
 $script:CurlBound = @('--connect-timeout', '15', '--speed-limit', '1000', '--speed-time', '60')
 $script:Done = $false
 
+# Every line the bootstrap prints goes through here (the suite replaces it to read a run's lines in order).
+function Write-EntryLine([string]$Text) { Write-Host $Text }
 function Write-Verdict([string]$Line) {
     if ($script:Done) { return }
     $script:Done = $true
-    Write-Host $Line
+    Write-EntryLine $Line
 }
 function Stop-Entry([string]$Check, [string]$Detail, [int]$Code = 1) {
     $script:Rc = $Code
@@ -40,7 +42,7 @@ function Invoke-Native([string]$Exe, [string[]]$ArgList, [switch]$Show) {
     $lines = New-Object System.Collections.ArrayList
     $code = 127
     try {
-        & $Exe @ArgList 2>&1 | ForEach-Object { $l = "$_"; if ($Show) { Write-Host $l }; [void]$lines.Add($l) }
+        & $Exe @ArgList 2>&1 | ForEach-Object { $l = "$_"; if ($Show) { Write-EntryLine $l }; [void]$lines.Add($l) }
         $code = $LASTEXITCODE
         if ($null -eq $code) { $code = 0 }
     } catch {
@@ -50,8 +52,12 @@ function Invoke-Native([string]$Exe, [string[]]$ArgList, [switch]$Show) {
     }
     return [pscustomobject]@{ Code = $code; Lines = @($lines) }
 }
+# The network, in two calls the suite replaces (test-install-entry.ps1): a file to a path, and a text with curl's exit code.
 function Get-Url([string]$Url, [string]$Path) {
     return (Invoke-Native 'curl.exe' (@($script:CurlBound) + @('-fsSL', '-o', $Path, $Url))).Code
+}
+function Get-UrlText([string[]]$CurlArgs) {
+    return (Invoke-Native 'curl.exe' (@($script:CurlBound) + $CurlArgs))
 }
 
 # The version the install runs, for the channel: its install.json's, else its sotd.exe's own.
@@ -68,9 +74,9 @@ function Get-InstalledVersion([string]$Prefix) {
 # set, since GitHub limits anonymous calls per network address.
 function Get-NewestRelease {
     $tok = $(if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { $env:GH_TOKEN })
-    $a = @($script:CurlBound) + @('-fsSL', '-w', '\n%{http_code}', '-H', 'Accept: application/vnd.github+json')
+    $a = @('-fsSL', '-w', '\n%{http_code}', '-H', 'Accept: application/vnd.github+json')
     if ($tok) { $a += @('-H', "Authorization: Bearer $tok") }
-    $r = Invoke-Native 'curl.exe' ($a + "https://api.github.com/repos/$($script:Repo)/releases?per_page=1")
+    $r = Get-UrlText ($a + "https://api.github.com/repos/$($script:Repo)/releases?per_page=1")
     $http = "$(@($r.Lines)[-1])".Trim()
     if ($r.Code -ne 0) {
         $why = ''
@@ -164,7 +170,7 @@ function Invoke-Entry([string[]]$Argv, [string]$Scratch) {
             $installed = Get-InstalledVersion $prefix
             if ($installed.Contains('+') -or $installed.Contains('-')) { $tag = Get-NewestRelease }
             else {
-                $r = Invoke-Native 'curl.exe' (@($script:CurlBound) + @('-fsSLI', '-o', 'NUL', '-w', '%{url_effective}', "https://github.com/$($script:Repo)/releases/latest"))
+                $r = Get-UrlText @('-fsSLI', '-o', 'NUL', '-w', '%{url_effective}', "https://github.com/$($script:Repo)/releases/latest")
                 if ($r.Code -ne 0) { Stop-Entry 'target' "could not resolve the latest release of $($script:Repo)" }
                 $tag = ((($r.Lines -join '') -split '/')[-1]).Trim()
             }
@@ -183,18 +189,27 @@ function Invoke-Entry([string[]]$Argv, [string]$Scratch) {
     return [int]$r.Code
 }
 
-$script:Rc = 1
-$scratch = Join-Path $env:TEMP ('sot-install-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-$entryCode = 1
-try {
-    New-Item -ItemType Directory -Force -Path $scratch | Out-Null
-    $entryCode = [int](@(Invoke-Entry $args $scratch)[-1])
-} catch {
-    if ($_.Exception.Message -ne 'sot-install-stop') { $script:Rc = 1; Write-Verdict "FAIL: install: $($_.Exception.Message)" }
-    $entryCode = $script:Rc
-} finally {
-    if (-not $script:Done) { Write-Verdict 'FAIL: install: stopped' }
-    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+# One run: the entry in a scratch folder of its own, removed at the end, and the one verdict whatever ends it.
+function Invoke-InstallEntry([string[]]$Argv) {
+    $script:Rc = 1; $script:Done = $false
+    $scratch = Join-Path $env:TEMP ('sot-install-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $code = 1
+    try {
+        New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+        $code = [int](@(Invoke-Entry $Argv $scratch)[-1])
+    } catch {
+        if ($_.Exception.Message -ne 'sot-install-stop') { $script:Rc = 1; Write-Verdict "FAIL: install: $($_.Exception.Message)" }
+        $code = $script:Rc
+    } finally {
+        if (-not $script:Done) { Write-Verdict 'FAIL: install: stopped' }
+        Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    return $code
 }
-# Explicit, never whatever the last native command left in $LASTEXITCODE.
-exit $entryCode
+
+# The suite dot-sources this file to replace the network; a run is any other invocation.
+if ($MyInvocation.InvocationName -ne '.') {
+    $entryCode = Invoke-InstallEntry $args
+    # Explicit, never whatever the last native command left in $LASTEXITCODE.
+    exit $entryCode
+}

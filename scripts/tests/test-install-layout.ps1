@@ -15,7 +15,7 @@
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-install-layout.ps1
 #
-# Section 7 (test-install-entry.ps1) runs scripts\install.ps1 against stand-ins in a scratch profile.
+# Section 7 (test-install-entry.ps1) runs scripts\install.ps1, the bootstrap, with its network replaced, in a scratch profile.
 # Section 5 runs sot-freshness.ps1's Invoke-FreshnessPass for its comm decision
 # (a git fixture there: the stamp is compared with the checkout's commit).
 
@@ -54,11 +54,7 @@ try {
             (Join-Path $repoRoot 'scripts\sot-freshness.ps1'),
             (Join-Path $repoRoot 'scripts\tests\test-install-layout.ps1'),
             (Join-Path $repoRoot 'scripts\install.ps1'),
-            (Join-Path $repoRoot 'scripts\tests\test-install-entry.ps1'),
-            (Join-Path $repoRoot 'scripts\tests\test-install-entry-repair.ps1'),
-            (Join-Path $repoRoot 'scripts\tests\test-install-entry-direction.ps1'),
-            (Join-Path $repoRoot 'scripts\tests\test-install-entry-julia.ps1'),
-            (Join-Path $repoRoot 'scripts\tests\test-install-entry-live.ps1')
+            (Join-Path $repoRoot 'scripts\tests\test-install-entry.ps1')
         )) {
         $errs = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errs)
@@ -386,7 +382,7 @@ try {
     } catch { Check '6: section ran' $false $_.Exception.Message }
     finally { $ErrorActionPreference = $savedEAP6 }
 
-    # Section 7, install.ps1 (the Windows entry), lives in test-install-entry.ps1, dot-sourced here in this scope.
+    # Section 7, install.ps1 (the Windows bootstrap), lives in test-install-entry.ps1, dot-sourced here in this scope.
     . (Join-Path $PSScriptRoot 'test-install-entry.ps1')
 
 } finally {
