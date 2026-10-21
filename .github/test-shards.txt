@@ -1,0 +1,44 @@
+# The workspace's test shards: one row per target selection, `shard kind target [libtest filters]`, read by
+# scripts/tests/shards.py (the run, the job matrix, the coverage check and rc-gate.sh) and by nothing else.
+#
+# A target is a test executable (kind bin, test, example or bench). A row with no filters runs it whole; positional
+# filters are alternatives and `--skip X` removes, as in libtest. A target's rows together select each of its tests
+# exactly once: the check in rust.yml fails, naming the test, on one that runs nowhere or twice. A shard runs its rows
+# one after the other; rc-gate.sh runs each row that has filters as a job of its own.
+# A shard named gate-* runs in release-gate.yml, once per release; every other shard runs in rust.yml at each landing.
+# `rest-0` to `rest-2` are never named: together they run every test executable this table does not name (every third
+# one each), and rest-0 the doc tests.
+#
+# The wall-clock tests (they sleep on the clock, 60 to 180 s each) and the page test that needs a prepared Julia depot
+# are in gate-* shards; the rest are cut so a landing shard runs under about four minutes of tests (seconds measured in
+# hosted run 39644482546 and the local gate: supervisor 141, lane_bridge 104, fe_client 59, capsule_workspaces 423 in
+# three groups, comm_wake 377 in three groups, the sotd unit binary 120).
+
+sup        test supervisor
+fe         test fe_client --skip unresponsive_supervisor_expires_the_health_window
+lane       test lane_bridge --skip outage::
+lane       test capsule_workspaces destroy:: spawn:: create:: session_env::
+ws         test capsule_workspaces ended_row:: resume:: attach::
+ws         test comm_wake a_restarted_daemon a_dead_row
+wake       test comm_wake a_wake_line_left_unsent an_unfinished_stop two_tomls a_newer_join a_row_whose_stop_hook
+wake       test comm_wake --skip a_restarted_daemon --skip a_dead_row --skip a_wake_line_left_unsent --skip an_unfinished_stop --skip two_tomls --skip a_newer_join --skip a_row_whose_stop_hook
+ws2        test capsule_workspaces --skip destroy:: --skip spawn:: --skip create:: --skip session_env:: --skip ended_row:: --skip resume:: --skip attach::
+fe         test fault_storage --skip native_volume_fill_free_sync
+sotd-a     bin  sotd sidecars::repl:: --skip repl_page_secret_never_reaches_command_line
+sotd-b     bin  sotd sidecars:: --skip sidecars::repl:: --skip sidecars::kernel::deadline_tests:: --skip repl_page_secret_never_reaches_command_line
+sotd-c     bin  sotd --skip sidecars:: --skip repl_page_secret_never_reaches_command_line
+
+gate-sleep test lane_bridge outage::
+gate-sleep test window_start
+gate-sleep test window_lease
+gate-sleep test fe_client unresponsive_supervisor_expires_the_health_window
+gate-sleep bin  sotd sidecars::kernel::deadline_tests::
+gate-wgl   bin  sotd repl_page_secret_never_reaches_command_line
+# the native disk fill: it fills a volume, so it runs alone, on each system
+gate-storage test fault_storage native_volume_fill_free_sync
+
+# The jobs of each system (seconds from run 39646399759; a job's tests run about four minutes at most). Linux and Windows
+# share 20 concurrent jobs with the checks, macOS has 5. rest-0 to rest-2 split the targets named nowhere above.
+fold linux   ws2+rest-2 sotd-a+sotd-b+sotd-c rest-0+rest-1 sup+fe
+fold windows sotd-a+sotd-b+ws2 lane+ws rest-0 rest-1 sotd-c+rest-2
+fold macos   sotd-c sotd-b+lane+wake sotd-a+rest-0 rest-1+rest-2 sup+fe+ws+ws2

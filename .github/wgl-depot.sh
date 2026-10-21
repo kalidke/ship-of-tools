@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wgl-depot.sh: builds the Julia depot the WGL page test reads, in the runner's temporary folder, and names it in
-# JULIA_DEPOT_PATH for the rest of the job. rust.yml's `test` job and its `test-linux` shard sotd run it.
+# JULIA_DEPOT_PATH for the rest of the job. release-gate.yml's `gate-wgl` shard runs it.
 #
 # The depot is built over Julia's bundled depots (the empty last entry: `;` on Windows, `:` elsewhere), and the job
 # reads it on that same list. So it holds no stdlib builds of its own, its caches are compiled against the stdlib
