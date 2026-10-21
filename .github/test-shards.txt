@@ -25,13 +25,14 @@ wake       test comm_wake --skip a_restarted_daemon --skip a_dead_row --skip a_w
 ws2        test capsule_workspaces --skip destroy:: --skip spawn:: --skip create:: --skip session_env:: --skip ended_row:: --skip resume:: --skip attach::
 fe         test fault_storage --skip native_volume_fill_free_sync
 sotd-a     bin  sotd sidecars::repl:: --skip repl_page_secret_never_reaches_command_line
-sotd-b     bin  sotd sidecars:: --skip sidecars::repl:: --skip repl_page_secret_never_reaches_command_line
+sotd-b     bin  sotd sidecars:: --skip sidecars::repl:: --skip sidecars::kernel::deadline_tests:: --skip repl_page_secret_never_reaches_command_line
 sotd-c     bin  sotd --skip sidecars:: --skip repl_page_secret_never_reaches_command_line
 
 gate-sleep test lane_bridge outage::
 gate-sleep test window_start
 gate-sleep test window_lease
 gate-sleep test fe_client unresponsive_supervisor_expires_the_health_window
+gate-sleep bin  sotd sidecars::kernel::deadline_tests::
 gate-wgl   bin  sotd repl_page_secret_never_reaches_command_line
 # the native disk fill: it fills a volume, so it runs alone, on each system
 gate-storage test fault_storage native_volume_fill_free_sync
