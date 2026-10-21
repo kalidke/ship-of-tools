@@ -6,10 +6,11 @@
 # slow binaries split per test), the doc tests, the windows-gnu and darwin
 # cross checks, the three clippy lines of rust.yml (lib-bins, all-targets with the test-children config, and the
 # all-targets line for x86_64-pc-windows-gnu over sot-log and sot-backend, which finds Windows-only test code from Linux),
-# every Julia suite, and the shell suites; and, when the tree differs from `line` (a commit-ish; always when none is given)
+# every Julia suite, and the shell suites; not the tests release-gate.yml runs (the gate-* rows of .github/test-shards.txt:
+# the ones that sleep on the clock and the page test that needs a prepared depot), unless RCG_FULL is set; and, when the tree differs from `line` (a commit-ish; always when none is given)
 # under scripts/, comm/ or agents/, scripts/tests/under-bash.sh under a bash 3.2.57 that scripts/tests/bash32.sh builds
-# once and keeps under /scratch/<user>, as rust.yml's bash32-linux job runs it; and, as rust.yml's Linux job runs it, the daemon lifetime
-# harness, built in CARGO_TARGET_DIR/daemon-lifetime, since its features (the capsule's phase barriers, the daemon's
+# once and keeps under /scratch/<user>, as release-gate.yml's bash32-linux job runs it; and, with RCG_FULL set, the daemon lifetime
+# harness as release-gate.yml's Linux job runs it, built in CARGO_TARGET_DIR/daemon-lifetime, since its features (the capsule's phase barriers, the daemon's
 # faults) would replace the `sotd` and `sot-capsule` the other jobs run.
 #
 # Runs as the main process of its own test container: scripts/tests/in-container.sh UNIT -- bash rc-gate.sh ...
@@ -205,6 +206,18 @@ job_test() {
   echo "$r" > "$L/rust/$key.rc"
 }
 
+# job_part <key> <exe> <pkg> <args>: one cut of a binary by libtest filters, a row of .github/test-shards.txt as the hosted shards run it
+job_part() {
+  local key=$1 exe=$2 pkg=$3 log r
+  local -a args
+  read -ra args <<< "$4"
+  log=$L/rust/$key.log
+  echo "     Running ($exe) load $(cut -d' ' -f1 /proc/loadavg)" > "$log"
+  (cd "$pkg" && logged "$log" "$L/rust/$key.stderr" "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" "${args[@]}")
+  r=$?
+  echo "$r" > "$L/rust/$key.rc"
+}
+
 # one exactly-one-row lookup in tests.tsv; sets exe and pkg
 row_for() {
   local r
@@ -234,6 +247,10 @@ emit_one() {
   local key; key=$(basename "$1")__${3//:/_}
   emit "one:$1:$3" "$(printf 'one\t%s\t%s\t%s\t%s' "$key" "$1" "$2" "$3")" "$L/rust/$key.rc"
 }
+emit_part() {
+  local key=$1__$2
+  emit "part:$key" "$(printf 'part\t%s\t%s\t%s\t%s' "$key" "$3" "$4" "$5")" "$L/rust/$key.rc"
+}
 emit_shell() {
   local name; name=$(basename "$1" .sh)
   emit "shell:$1" "$(printf 'shell\t%s' "$name"; printf '\t%s' "$@")" "$L/steps/$(shell_key "$1").rc"
@@ -244,10 +261,6 @@ producer() {
   local -A LISTED SPLIT_EXE SPLIT_PKG
   local SHELL_ALL=()
   local SLOW_FIRST=(
-    lane_bridge/outage::a_blackhole_is_unreachable_and_retried
-    lane_bridge/outage::a_daemon_outage_past_the_window_keeps_retrying
-    lane_bridge/outage::a_terminal_row_is_terminal_after_the_window
-    fe_client/supervisor_word::unresponsive_supervisor_expires_the_health_window
     test-spawn-capsule-workspace
     capsule_workspaces/spawn::capsule_supervisor_spawn_survives_fence_contention_without_marking_terminal
     test-hub-files
@@ -256,6 +269,13 @@ producer() {
     test-relay-file-first
     test-registry-lock
   )
+  # the tests release-gate.yml runs are slow first here only when RCG_FULL runs them
+  [ -n "${RCG_FULL:-}" ] && SLOW_FIRST=(
+    lane_bridge/outage::a_blackhole_is_unreachable_and_retried
+    lane_bridge/outage::a_daemon_outage_past_the_window_keeps_retrying
+    lane_bridge/outage::a_terminal_row_is_terminal_after_the_window
+    fe_client/supervisor_word::unresponsive_supervisor_expires_the_health_window
+    "${SLOW_FIRST[@]}")
   # shell suites: the SLOW_FIRST ones are emitted early, the rest at step 5
   for f in "$D"/comm/tests/test-*.sh "$D"/agents/tests/test-*.sh; do
     case $(basename "$f" .sh) in
@@ -319,9 +339,23 @@ PYLIST
         [[ $ignored = *': test' ]] || continue
         echo "split-skipped $n/${ignored%: test}" >> "$L/summary.txt"
       done < "$L/$n.ignored.list"
+      [ -n "${RCG_FULL:-}" ] || out=$(python3 "$D/scripts/tests/shards.py" gated "$n" <<< "$out")
       LISTED[$n]=$out
       SPLIT_EXE[$n]=$exe SPLIT_PKG[$n]=$pkg
     done
+  fi
+
+  # a binary the table cuts by filters (the hosted shards' cuts; a SPLIT binary is cut per test) runs as those cuts
+  if [ "$BUILD_RC" -eq 0 ]; then
+    while IFS=$'\t' read -r s _ tgt f; do
+      [[ " ${SPLIT[*]} " == *" $tgt "* ]] && continue
+      if row_for "$tgt"; then
+        EMITTED["bin:$exe"]=1
+        emit_part "$tgt" "$s" "$exe" "$pkg" "$f"
+      else
+        echo "part-missing $tgt" >> "$L/summary.txt"; fin "part-$tgt" 101
+      fi
+    done < <(python3 "$D/scripts/tests/shards.py" parts ${RCG_FULL:+all})
   fi
 
   for k in "${SLOW_FIRST[@]}"; do
@@ -369,7 +403,8 @@ PYLIST
       emit_one "${SPLIT_EXE[$n]}" "${SPLIT_PKG[$n]}" "$t"
     done <<< "${LISTED[$n]}"
   done
-  while IFS=$'\t' read -r _ exe pkg; do
+  while IFS=$'\t' read -r n exe pkg; do
+    [ -n "${RCG_FULL:-}" ] || ! python3 "$D/scripts/tests/shards.py" gate-whole "$n" || continue
     emit_bin "$exe" "$pkg"
   done < "$L/tests.tsv"
 }
@@ -386,6 +421,7 @@ if [ "${1:-}" = --job ]; then
     shell) job_shell "$b" ${c:+"$c" "$d"} ;;
     bin) job_test "$a" "$b" "$c" ;;
     one) job_test "$a" "$b" "$c" "$d" ;;
+    part) job_part "$a" "$b" "$c" "$d" ;;
   esac
   exit 0
 fi
@@ -496,10 +532,11 @@ if [ "$BUILD_RC" -eq 0 ] && [ "$INTR" -eq 0 ]; then
   fi
 fi
 export RCG_BUILD_RC=$BUILD_RC
-# The daemon lifetime harness's own build; its result stays unrun, a failure, unless its job runs.
-echo unrun > "$L/rust/daemon_lifetime-faults.rc"
+# The daemon lifetime harness's own build, with RCG_FULL only (release-gate.yml runs it otherwise); its result stays unrun,
+# a failure, unless its job runs.
 RCG_LIFETIME=
-if [ "$INTR" -eq 0 ]; then
+if [ "$INTR" -eq 0 ] && [ -n "${RCG_FULL:-}" ]; then
+  echo unrun > "$L/rust/daemon_lifetime-faults.rc"
   st build-lifetime
   "${CE[@]}" CARGO_TARGET_DIR="$CARGO_TARGET_DIR/daemon-lifetime" cargo build --manifest-path "$M" -p sot-log \
     --features native-barrier --bin sot-capsule --locked > "$L/build-lifetime.log" 2>&1 &&

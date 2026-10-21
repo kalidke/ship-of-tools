@@ -4,6 +4,11 @@
   shards.py plan landing|gate   the shard names of one workflow, as a JSON list (a job matrix reads it)
   shards.py run SHARD           run one shard from the workspace folder (rust/)
   shards.py check               fail, naming it, a test that runs in no shard or in two
+  shards.py gated TARGET        read test names on stdin, print those no gate-* shard runs (rc-gate.sh, which leaves the
+                                release gate's tests to release-gate.yml)
+  shards.py gate-whole TARGET   exit 0 when a gate-* shard runs the whole target
+  shards.py parts [all]         the landing shards' rows (with `all`, the gate's too) that cut a target by filters, as
+                                shard, kind, target, filters separated by tabs
 
 A table row is `shard kind target [libtest filters]`: a target is a test executable (kind bin, test, example or bench).
 A row with no filters runs the target whole; a row with filters runs the tests they select. Positional filters are
@@ -114,6 +119,23 @@ def check():
           f'named targets runs in exactly one shard')
 
 
+def gated(target):
+    gate = [filters for shard, _, name, filters in rows() if shard.startswith('gate-') and name == target]
+    for line in sys.stdin.read().splitlines():
+        if not any(selects(filters, line) for filters in gate):
+            print(line)
+
+
+def gate_whole(target):
+    sys.exit(0 if any(shard.startswith('gate-') and name == target and not filters for shard, _, name, filters in rows()) else 1)
+
+
+def parts(everything):
+    for shard, kind, target, filters in rows():
+        if filters and (everything or not shard.startswith('gate-')):
+            print('\t'.join([shard, kind, target, ' '.join(filters)]))
+
+
 def main():
     command, *args = sys.argv[1:] or ['']
     if command == 'plan' and args in (['landing'], ['gate']):
@@ -124,6 +146,12 @@ def main():
         run(args[0])
     elif command == 'check' and not args:
         check()
+    elif command == 'gated' and len(args) == 1:
+        gated(args[0])
+    elif command == 'gate-whole' and len(args) == 1:
+        gate_whole(args[0])
+    elif command == 'parts' and args in ([], ['all']):
+        parts(bool(args))
     else:
         sys.exit(__doc__)
 
