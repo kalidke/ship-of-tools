@@ -5,8 +5,76 @@ A box runs exactly one tagged release. CI turns a tag into verified artifacts; i
 swap and start that release as whole files under `$PREFIX` (`~/.local/share/sot`, or `%LOCALAPPDATA%\sot` on Windows),
 and the launch path fails open: no update step can stop a window from starting.
 
+## Release path (contract; pass 1a)
+The maintainer's word starts and ends every release. The cut tags a commit that already passed the local gate; CI turns
+the tag into verified artifacts and a draft; the maintainer installs the draft on a box and publishes it. Nothing in the
+repository tags, drafts, publishes, edits or deletes a release on its own.
+
+Guarantees, each with the mechanism it rests on:
+- Nothing tags or releases on its own. A tag reaches origin only from `release.sh`, after its prompt or a `--yes` the
+  maintainer gave. A release is created only as a draft, only by release.yml's `draft` job, which runs only on a tag ref
+  and is the only job of release.yml with `contents: write`. Publishing, editing and deleting a release are the
+  maintainer's own `gh release` commands. `tests/test-release-cut.sh` scans the workflows: their one release write is that
+  draft, and none pushes a tag.
+- A tag sorts strictly above every tag of its line, local and origin's, and above the line's stamp, and the stamp after
+  it sorts above the tag: `release.sh` asks the updater's own `compare_versions` (through `rust/updater/examples/vercmp.rs`),
+  the comparison every installed box makes, before it stamps anything.
+- A tag is cut from main, at origin's main, from a clean tree, so the tagged commit's parent is a commit origin already
+  holds; the release commit changes only the stamped version files (the workspace version and its members in
+  `Cargo.lock`, the version of every Julia `Project.toml`).
+- The tag and the line's next `-dev` stamp (`version: <next> opens the line after vX.Y.Z [skip ci]`, decision 0033) reach
+  origin in one `git push --atomic`, or neither does. Until the commit a failure restores the stamped files; `--dry-run`
+  stamps, shows the diff and restores.
+- The cut refuses nothing that only repeats the local gate: it runs no tests and reads no hosted run. Each of its checks
+  prints what it found (HEAD and origin's main, the highest tag compared, the stamp, the stamp after the tag).
+- The local gate is `tests/rc-gate.sh` (every suite, in a test container that reaches no user manager) and
+  `tests/user-manager-tests.sh` (the five tests that need a user manager, each by name with
+  `SOT_TEST_REQUIRE_USER_MANAGER=1`, in a test container that keeps it). Each writes a `summary.txt` naming the head and
+  tree it ran and ending `ALLDONE` or `ALLDONE FAILED`. The maintainer's word is given on a commit both passed.
+- A release's artifacts are CI's build of its tag. release.yml sets `SOT_BUILD_ORIGIN=ci` exactly when the ref is a tag,
+  so only a tag run's binaries carry the bare version (`is_release_build`); a branch dispatch's and a local pack's carry
+  a `+`. The smokes check that each updater-bearing binary says the run's version, that the Linux `sotd` and `sot-capsule`
+  (musl static) boot on glibc 2.31, and that `sotd` answers a hello.
+- A draft exists only after every artifact smoke, `julia-check` and every install smoke of its run passed (`draft` needs
+  them all): a release is installed before it is published. It carries the three archives, `COMMIT` (the tag's commit)
+  and `SHA256SUMS` over all of them, the names the updater and the installers read.
+- A draft becomes public only by the maintainer's `gh release edit vX.Y.Z --draft=false`, run alone. Before that a box
+  takes the candidate only by an archive run of the draft's own files (`install.sh --archive`, `install.ps1 -Archive`),
+  which pins it.
+- A dispatch of release.yml on a branch runs the same build and smokes, names its artifacts `0.0.0-ci.<sha>` and drafts
+  nothing.
+- A local pack (`pack-build.sh`, `pack-build.ps1`) is never a release artifact: it unsets `SOT_BUILD_ORIGIN`, so its
+  version carries `+`, and it packs only a clean HEAD that a remote branch holds.
+
+Owns: `release.sh`; `rust/updater/examples/vercmp.rs`; `.github/` (release.yml; rust.yml and CI.yml, the hosted gate,
+dispatched at the end of a pass and at the release gate; gitleaks.yml; dependabot); the local gate (`tests/rc-gate.sh`,
+`tests/user-manager-tests.sh`); `tests/release-before.sh`; `pack-build.sh`, `pack-build.ps1`; `cliff.toml`; the release
+skill (`.claude/skills/release/SKILL.md`). On GitHub: the `v*` tags and the releases with their assets.
+
+Calls in: an installed box's updater lists published releases only, compares versions with `compare_versions`, and reads
+`sot-<version>-<target>.tar.gz` (`.zip` on Windows), `SHA256SUMS` and `COMMIT`; `install.sh` and `install.ps1` fetch
+their own copy at their tag, so every tag holds them; every build of main carries the line's stamp, which the cut
+moves to the next `-dev` version.
+
+Calls out: `compare_versions` (through `vercmp`); git and origin; `cargo update --workspace` for the lock. release.yml
+runs the install smokes (`tests/install-smoke.sh`, `tests/install-smoke.ps1`, the installers' half below) on the run's
+artifacts, `release-before.sh` (which asks the run's `sotd update direction`), git-cliff for the notes, and GitHub's
+API for the draft.
+
+Does not: run tests or read hosted runs at the cut; publish, edit or delete a release; build a release's artifacts
+outside CI; decide what a box installs or how (install, update, apply and launch, below, are the installers' half).
+
+Platforms: `release.sh`, the local gate and `pack-build.sh` run on Linux (the gate's two containers are systemd user
+services, `tests/in-container.sh`); `pack-build.ps1` on Windows PowerShell 5.1. release.yml builds on ubuntu-22.04,
+windows-latest and macos-14 and smokes and installs on all three.
+
+Tests: `tests/test-release-cut.sh` (the cut in throwaway repos with a scratch origin, and the workflows' release
+writes), `tests/test-release-before.sh`, `tests/test-rc-gate-*.sh`, the order in `rust/updater/src/semver_tests.rs`, and
+a dispatch of release.yml for the pipeline. rust.yml's checks job runs the shell suites.
+
+The sections below are the installers' half (install, update, apply, launch), the charter until pass 1b rewrites it.
+
 ## Owns
-- The release cut and CI: `release.sh`, `tests/rc-gate.sh`, `.github/`.
 - `four-numbers.jl`: per subsystem, the product and test tokens, names implemented twice and cross-subsystem module
   references of a commit, read from git (`julia --startup-file=no scripts/four-numbers.jl [--names] [--unmapped] [<rev>]`;
   its subsystem map is the table at its top; `tests/test-four-numbers.sh` checks it).
@@ -25,8 +93,6 @@ and the launch path fails open: no update step can stop a window from starting.
   `updates/`, `logs/`.
 
 ## Promises
-- A tag is cut only from `main`, sorts above every tag of its line, and has green `rust.yml` and
-  `CI.yml` runs at HEAD (`release.sh` preflight).
 - An install never passes with a Julia below the kernel's floor: `install.sh` (`julia_floor_check`) and `install.ps1`
   (`Test-JuliaFloor`) ask, as `julia.rs` does, the Julia the daemon will run (`SOT_JULIA_BIN`, else juliaup's default channel read from
   `juliaup.json` by its Version string with no Julia started, else the PATH julia) and the PATH julia the comm refresh
@@ -139,9 +205,10 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Folders
 - `scripts/lib/`: the shared Unix launch library.
-- `scripts/tests/`: the suites, the local candidate gate, and the install smokes release.yml runs on a release's artifacts.
+- `scripts/tests/`: the suites, the local gate (`rc-gate.sh`, `user-manager-tests.sh`), and the install smokes release.yml
+  runs on a release's artifacts.
 - `deploy/`: `sotd.service`, the unit template (no page; its header is its page).
-- `.github/`: workflows and the tag gate.
+- `.github/`: the workflows (the release path, above).
 - `src/`, `test/`: the comm installer package.
 - `rust/updater/`: update discovery, staging and the pending pointer.
 - `rust/backend/src/update.rs`: the daemon's update ops.
@@ -149,19 +216,17 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 ### Release
-- `release.sh`: stamps the version, runs the workspace tests, commits and tags the cut, stamps the line's next -dev
-  version in its own commit, and pushes both. Before the stamp it refuses, naming the fix, when the MathJax modules or a
-  reachable user manager (a test container started with `--user-manager`) are missing; a failure after the stamp
-  restores the stamped files.
-### Install
-- `install.sh`: the Unix installer and update entry; the one-liner fetches its own tag's copy (the channel's, with no
-  `--version`); `--archive <folder>` installs a packed folder in place of a release download; ends with one verdict line.
+- `release.sh`: the cut (the release path, above): checks, stamps, commits and tags, stamps the line's next -dev version
+  in its own commit, and pushes both atomically.
 - `pack-build.sh`: builds this checkout's Linux release archive, COMMIT, LIBC and SHA256SUMS into a folder, as
   release.yml's Linux job does. sotd and sot-capsule are musl static when a musl compiler is present; with none it
   builds them for the gnu target and only on a host whose glibc is at most `FLEET_GLIBC_FLOOR` (the fleet's oldest
   glibc host, so the binaries run everywhere), else it refuses. `install.sh --archive` prints the LIBC line.
 - `pack-build.ps1`: the same for Windows, as release.yml's Windows job does; `sotd update stage <folder> --prefix <prefix>`
   arms the folder for the supervisor's converge.
+### Install
+- `install.sh`: the Unix installer and update entry; the one-liner fetches its own tag's copy (the channel's, with no
+  `--version`); `--archive <folder>` installs a packed folder in place of a release download; ends with one verdict line.
 - `sot.svg`: the desktop-entry icon the sot-setup skill names.
 - `install.ps1`: the Windows installer and update entry (Windows PowerShell 5.1); the prelude fetches its own tag's copy;
   `-Archive <folder>` installs a packed folder; ends with one verdict line (see the rule below).
@@ -248,8 +313,9 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   them. `install.sh` fetches `scripts/install.sh` of its own tag and `install.ps1` its tag's `scripts/install.ps1` (the preludes), shortcuts run `repo\current\scripts\launch-sot.ps1`, and `Get-SotLauncherCodeId` hashes
   `launch-sot.ps1`, `sot-hosts.ps1`, `sot-install-layout.ps1`, `sot-freshness.ps1` and `sot-lease.ps1`
   (`tests/test-install-layout.ps1` section 3). A new launcher file joins that list.
-- A release is installed before it is published. `release.yml`'s `publish` needs the install smokes (`install-linux`,
-  `install-macos`, `install-windows`), which run the entry of the run's own checkout against the artifacts the run built:
+- The install smokes are the installers' half of the release path's draft gate (above): `release.yml`'s `draft` needs
+  them (`install-linux`, `install-macos`, `install-windows`), and they run the entry of the run's own checkout against
+  the artifacts the run built:
   a fresh install and an update from the newest published release older than the run's version (`release-before`, by
   version order, never GitHub's "latest"), each ending in the entry's PASS line, then a repair run
   (`tests/install-smoke.sh`, `tests/install-smoke.ps1`). The `update-apply` legs (on Windows the `update-entry` leg too,
@@ -260,8 +326,8 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   release must say `newer` and arm. Every other leg ends in one state check: `install.json`, the checkout, the binaries,
   the installed `sot-apply`, the launcher (the wrapper `render_sot_launch` writes; `Get-SotLauncherCodeId` on Windows)
   and comm are the new release's, so a release that changes nothing in the launcher still passes. The archive's `sot-apply` must be executable (a mode lost in packing ends the hand-off), the Linux legs take
-  `--no-service` (a container has no user manager), and a dispatch on a branch runs them too (its artifacts are named
-  `0.0.0-ci.<sha>` and carry the binaries' `+` version; the smokes repack under it).
+  `--no-service` (a container has no user manager), and on a branch dispatch they repack the `0.0.0-ci.<sha>` artifacts
+  under the binaries' `+` version.
 - Every file `launch-sot.ps1` dot-sources is in `Get-SotLauncherCodeId`'s list and in the converge parse loop of
   `launch-sot.ps1`.
 - A dev clone's prelude re-execs only when `launch-sot.ps1` itself changed (`Invoke-SelfUpdatePrelude`), so a pull that
