@@ -14,9 +14,10 @@ name: Release gate
 on:
   workflow_dispatch: {}
   # TEMPORARY (pass/ci-fast): a workflow absent from the default branch cannot be dispatched, so a push to this branch
-  # runs it. Dropped before the merge.
+  # that creates or changes .github/gate-run runs it, and no other push does. Dropped before the merge.
   push:
     branches: [pass/ci-fast]
+    paths: [.github/gate-run]
 
 concurrency:
   group: release-gate-${{ github.ref }}
@@ -63,7 +64,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-          shared-key: ${{ matrix.os == 'ubuntu-latest' && 'test-linux' || '' }}
+          shared-key: ${{ matrix.os == 'ubuntu-latest' && 'test-linux' || format('test-{0}', matrix.os) }}
           cache-on-failure: true
           save-if: ${{ contains(matrix.shard, 'rest-0') }}
       # The sotd unit tests render through the real MathJax node script, which needs its npm modules.
