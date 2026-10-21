@@ -273,4 +273,5 @@ fn a_unit_that_cannot_be_pinned_is_never_loaded() {
     let stop = with_units(&f, |u| enable_local_service(u, &template(), "/s.sock")).unwrap_err();
     assert!(stop.detail.contains("could not pin sotd.service") && stop.detail.contains("hosts.toml line 2"), "{stop:?}");
     assert!(!f.log().iter().any(|l| l.starts_with("systemctl --user daemon-reload") || l.starts_with("systemctl --user start")), "{:?}", f.log());
+    assert!(!f.units().join("sotd.service").exists(), "no unpinned unit is written");
 }

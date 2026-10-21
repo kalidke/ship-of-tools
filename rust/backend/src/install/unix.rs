@@ -919,13 +919,14 @@ pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str) -> 
     }
     let unit = units.join("sotd.service");
     let fresh = !unit.is_file();
+    // The pin first: unpinned, every host of a shared home would start the unit, so a pin that fails writes no unit,
+    // and nothing is reloaded or started.
+    let before = role::pin_hosts(&units);
+    u.pin(true).map_err(|why| Stop::new(1, format!("could not pin sotd.service to the hosts that run sotd ({why}); the unit was not written, reloaded or started: fix hosts.toml (sotd topology status names the line) and run this again")))?;
+    let after = role::pin_hosts(&units);
     if !u.lib("render_sotd_unit", &[&u.prefix.to_string_lossy(), &template.to_string_lossy(), &unit.to_string_lossy()]).ok() {
         return Err(Stop::new(1, "could not write the sotd unit"));
     }
-    let before = role::pin_hosts(&units);
-    // Unpinned, every host of a shared home would start it: no reload and no start then.
-    u.pin(true).map_err(|why| Stop::new(1, format!("could not pin sotd.service to the hosts that run sotd ({why}); nothing was reloaded or started: fix hosts.toml (sotd topology status names the line) and run this again")))?;
-    let after = role::pin_hosts(&units);
     for h in before.iter().filter(|h| !after.contains(h)) {
         say(&format!("The daemon moved here from {h}: {h}'s sotd will not start at its next login."));
     }
