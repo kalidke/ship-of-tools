@@ -209,7 +209,10 @@ Windows).
   project's earlier conversations (the terminal carries its picker); a row survives a window close and a daemon
   restart; attach shows the screen at once. The resumes started from a command line (a reauth's `--resume <id>`,
   `ccb --continue`, `ccx --continue`) are argv to the agent, do not depend on the capsule, and are tested in the
-  agents pass. Live rows end once at the 0.7.0 install.
+  agents pass. Live rows end once at the 0.7.0 install. Existing voyage records are retired then, nothing converted,
+  unless the capsule contract finds a reader: in the maintainer's use a row's terminal is not read after its session
+  ends, and closing a row already removes its state folder with its voyage. Retired with them: the promise that a
+  voyage is read forever, the codec seams and torn-tail recovery.
 - **D3 sidecars.** The kernel, the REPL, Pluto and the monitor sampler stay; the Linux per-child X display stays (a
   security boundary). The dormant Claude SDK producer (`rust/log/src/claude.rs`, `claude-sdk-helper/`, 47k tokens,
   no product path runs it) is deleted in the sidecars pass. MathJax's node child is decided in that pass on one fact:
@@ -220,10 +223,13 @@ Windows).
   (the fourth number). Revised 2026-10-21, from an outside audit: no crate cut is possible while the window's `State`
   stands, one struct of 238 fields extended by `impl State` blocks in about 72 files, since Rust allows an inherent
   impl only in the crate that defines the type. So the frontend runs first as short passes, one per cluster of State
-  fields, each moving its cluster into a type with private fields and its own operations inside the current crate
-  (and replacing any scan over it), loading only the State declaration and the files that touch the cluster: the row
-  record (the window's half of how a row's state is shown), focus and prompt, preview requests, the REPL and agent
-  pane. The five crate cuts follow as moves.
+  fields, in the current crate: the row record (the window's half of how a row's state is shown), focus and prompt,
+  preview requests, the REPL and agent pane. Each moves its cluster into a type that owns its operations and its
+  invariants, with private fields and no open mutation (a row's identity, lifecycle and cleanup under one owner; a
+  preview request's completion and cancellation under one), and replaces any scan over it. A cluster pass loads the
+  State declaration, the files that touch the cluster, the invariants across clusters it takes part in and their
+  tests; a cluster that does not fit with those is cut smaller first. Each is judged by whether the next change to the
+  window needs less surrounding knowledge. The five crate cuts follow as moves.
 - **D5 the installer's logic moves into Rust.** The rules written twice today (3.8k lines of sh, 5.6k of PowerShell,
   three byte-equal copies of two helpers) move into `sotd install`, which the pack already carries; `install.sh` and
   `install.ps1` shrink to fetch, verify and exec it. Distribution goes in two passes: 1a the release path first, with
@@ -255,7 +261,7 @@ at its end and one round for its findings; a class of breaks stops it, and the s
 | 8 | Sidecars (D3) | 4-8 | 80-160 | |
 | 9 | Pages and files | 3-5 | 60-100 | |
 | 10 | Agents: the launch recipe, launchers and skills | 2-4 | 40-80 | |
-| 11 | Release gate: the full hosted matrix once, install on every box, the maintainer's use, the tag (0.7.0) | 3-6 | 60-120 | |
+| 11 | Release gate: the full hosted matrix once, install on every box, the maintainer's use, the tag (0.7.0); the installers' remaining proof is here: an rc9.15 box's old prelude handing off to the first candidate on a backend-only host with glibc 2.31, and the maintainer's use on the maintainer's own boxes | 3-6 | 60-120 | |
 
 Total: about 78 to 157 session hours, 1,560 to 3,140 dollars, most of the range in the frontend and the capsule.
 Wall time is longer by the hosted runs and the maintainer's iterations; a second pass in parallel on a disjoint subsystem (in a
