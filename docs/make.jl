@@ -49,10 +49,12 @@ makedocs(;
     repo = Documenter.Remotes.GitHub("kalidke", "ship-of-tools"),
     authors = "kalidke",
     sitename = "Ship of Tools",
+    # This branch's build is the stable manual: a CI push to release/0.6.6 deploys it to /stable/, which the site's
+    # root then redirects to; main's build deploys to /dev/.
     format = DocumenterVitepress.MarkdownVitepress(;
         repo = "github.com/kalidke/ship-of-tools",
-        devbranch = "main",
-        devurl = "dev",
+        devbranch = "release/0.6.6",
+        devurl = "stable",
         deploy_url = "https://kalidke.github.io/ship-of-tools",
         description = "An agentic development environment for Julia: drive many Claude Code and Codex sessions from the keyboard, with a live Julia REPL and rich previews, local or on your GPU server.",
     ),
@@ -149,9 +151,12 @@ let build = joinpath(@__DIR__, "build"), site = isdir(joinpath(build, "1")) ? jo
 end
 
 # DocumenterVitepress decides for itself whether this run may deploy (a CI
-# push to main); a local build never deploys.
+# push to release/0.6.6); a local build never deploys. The folder is the one
+# MarkdownVitepress built for above; devurl here only names main's folder in
+# the site's version list, beside stable.
 DocumenterVitepress.deploydocs(;
     repo = "github.com/kalidke/ship-of-tools",
-    devbranch = "main",
+    devbranch = "release/0.6.6",
+    devurl = "dev",
     push_preview = false,
 )

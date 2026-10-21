@@ -106,7 +106,7 @@ relying on them.
 
 The **source path** is for contributors or when release assets don't match the
 target platform: clone the repo to a working directory of the human's choice
-and follow https://kalidke.github.io/ship-of-tools/dev/start/setup/ (rustup +
+and follow https://kalidke.github.io/ship-of-tools/stable/start/setup/ (rustup +
 juliaup, `cargo build --release --manifest-path rust/Cargo.toml`, Julia env
 instantiation; a source build has a `+` in its version and never self-updates). Ask if their
 intent is ambiguous.

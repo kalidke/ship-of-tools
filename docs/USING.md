@@ -44,18 +44,18 @@ site doesn't have the depth you need, the agent does.
 
 ## Getting started
 
-If you haven't already, walk the [Quickstart](https://kalidke.github.io/ship-of-tools/dev/start/quickstart)
+If you haven't already, walk the [Quickstart](https://kalidke.github.io/ship-of-tools/stable/start/quickstart)
 in the published docs: first launch, starting a session, and the keys that get you moving. (Locally, that's
 `docs/src/start/quickstart.md`.)
 
 ## State, survival and Windows launches
 
 Where the daemon keeps its state, what a session survives and the Windows rule about launching from an agent's shell
-are in the manual (published at <https://kalidke.github.io/ship-of-tools/dev/>; locally under `docs/src/`):
+are in the manual (published at <https://kalidke.github.io/ship-of-tools/stable/>; locally under `docs/src/`):
 
-- [Sessions and persistence](https://kalidke.github.io/ship-of-tools/dev/concepts/sessions/) — "Capsules: what a
+- [Sessions and persistence](https://kalidke.github.io/ship-of-tools/stable/concepts/sessions/) — "Capsules: what a
   session survives" and "Where the state lives" (`docs/src/concepts/sessions.md`).
-- [Troubleshooting](https://kalidke.github.io/ship-of-tools/dev/guide/troubleshooting/) — "A session will not start on
+- [Troubleshooting](https://kalidke.github.io/ship-of-tools/stable/guide/troubleshooting/) — "A session will not start on
   a shared home" (the `state_root_unqualified` refusal and the per-host `XDG_STATE_HOME` drop-in) and "Windows: never
   launch the daemon from an agent's shell" (`docs/src/guide/troubleshooting.md`).
 
