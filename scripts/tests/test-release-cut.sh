@@ -136,6 +136,15 @@ check "  the order's among them" \
 check "  and the stamp after the tag" "== after the tag the line is stamped 0.6.7-dev" "$(first "$out" "== after")"
 check "  and restores the stamp" "" "$(tree_state)"
 check "  and tags nothing" "" "$(git -C "$CUT" tag --list)"
+# A release commit the repository refuses (a hook here; a signing error alike) is a failure before the commit: the
+# stamp is restored, nothing is tagged, and a second cut finds a clean tree.
+printf '#!/bin/sh\nexit 1\n' > "$CUT/.git/hooks/pre-commit"; chmod +x "$CUT/.git/hooks/pre-commit"
+out=$(cut_out STUB_VERCMP_HIGHEST=v0.6.6-rc9 -- 0.6.6 --yes)
+rm -f "$CUT/.git/hooks/pre-commit"
+check "a refused release commit ends the cut with a failing status" "exit 1" "$(printf '%s\n' "$out" | tail -n1)"
+check "  and says the restore ran" "release: stopped after the stamp; the stamped files are restored" "$(first "$out" release:)"
+check "  and left the tree clean" "" "$(tree_state)"
+check "  and tags nothing" "" "$(git -C "$CUT" tag --list)"
 
 echo "  release.sh cut into a scratch origin"
 before=$(git -C "$CUT" rev-parse HEAD)

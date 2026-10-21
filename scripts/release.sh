@@ -155,7 +155,7 @@ stamp_version() {
 STAMPED=()
 # Until the commit, any failure puts the stamped files back as they were.
 restore_stamp() {
-    [[ ${#STAMPED[@]} -eq 0 ]] || git restore -- "${STAMPED[@]}"
+    [[ ${#STAMPED[@]} -eq 0 ]] || git restore --staged --worktree -- "${STAMPED[@]}"
 }
 trap 'rc=$?; if [[ $rc -ne 0 ]]; then restore_stamp; echo "release: stopped after the stamp; the stamped files are restored" >&2; fi' EXIT
 trap 'exit 130' INT TERM
@@ -180,10 +180,9 @@ if [[ $YES -eq 0 ]]; then
     read -r -p "Push release $TAG and the $NEXT dev stamp to origin (the tag starts the release workflow, which drafts the release)? [y/N] " ans
     [[ "$ans" == [yY]* ]] || { trap - EXIT; restore_stamp; echo "aborted, restored"; exit 1; }
 fi
-trap - EXIT   # from here the stamp is committed or about to be; a later failure is a half-cut to undo by the skill's steps
-
 git add -- "${STAMPED[@]}"
 git commit -m "release: $TAG"
+trap - EXIT   # the stamp is committed: a later failure is a half-cut to undo by the skill's steps
 git tag -a "$TAG" -m "Ship of Tools $TAG"
 STAMPED=()
 stamp_version "$NEXT"
