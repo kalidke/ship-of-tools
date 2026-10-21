@@ -105,10 +105,20 @@ append-only voyage read forever, codec seams, torn-tail recovery, fsync before p
 lanes, exit codes 0, 69, 70, 71. Rests on: platform (locks, durable publish, process birth), the OS pty/ConPTY. Does
 not: know about rows, mail or windows. Decision D2 decides how much of the inside stays.
 
-**messaging.** Guarantees: `filed -> @h` only on the appender's word for a live handle, `FAILED` appended nothing;
-every append under the inbox lock; only poll moves a cursor; every registry write under its lock; a wake line is typed
-only into a free prompt of the receiver's row. Rests on: platform locks, rows (the row's terminal), topology (the hub
-link). Owns: `~/.sot-comm` data. Does not: work-state (rows' since pass 3). Decision D1.
+**messaging.** The contract is settled (pass 4, decision D1): `rust/backend/src/comm/CLAUDE.md`, written from decision
+0031, which wins where they differ. Comm is one implementation, in `sotd`: the daemon runs it in process and every
+session runs `sotd comm`, on any computer that shares a home with a daemon host; the commands sessions type
+(`comm-send.sh`, `comm-poll.sh` and the rest) are thin wrappers that keep their words and exit codes. Guarantees: a
+handle is derived, never chosen (the folder, the agent kind and the box; a row keeps its handle through the self file
+the daemon pins), and has one inbox; a send ends in `filed` or `FAILED` and nothing else, `filed` only by the
+appender after the line is on disk for a live handle, within 5 s or it fails, with no queue and no second route; only
+poll moves a cursor; an idle row with mail is woken by its own daemon, which types one fixed line into a free prompt
+and never into a dialog, a menu, a working session or a person's unsent text; a busy session's Stop hook holds its
+turn until it reads; users on one computer never see each other; a subagent, or an agent started inside a session,
+has no mail identity; every registry write is one locked read-decide-write; comm reads its environment as a value it
+is given, never the process's. The on-disk formats are 0.6.6's, so both versions share one comm folder. Rests on:
+platform (locks), rows (the row's terminal and declared handle, for the wake), topology (the hub link). Owns:
+`~/.sot-comm`, `sotd comm`, the wake. Does not: work-state (rows').
 
 **agents.** To the rest: rows get one argv and environment for an agent kind and account, with folder trust
 prepared before the start; the shell tools (launchers, row CLIs, `sot-fe`) reach the daemon only through the wire.
@@ -252,7 +262,7 @@ at its end and one round for its findings; a class of breaks stops it, and the s
 | 1a | Distribution, the release path: `release.sh` without its test re-run or green-at-HEAD rule, one hosted run, the pack; done test: thirty minutes from fixes in hand to a candidate installed on the maintainer's workstation; the outside review | 2-4 | 40-80 | 1.6 h (pass 1.1, gate and landing 0.5); done test 22.4 min by segments; about $23 all-in; distribution 215/295 -> 213/298k |
 | 1b | Distribution, install, update and launch (D5) | 6-12 | 120-240 | 10.4 h wall in six runs (the pass 2.9 h; five fix rounds after two outside reviews 7.2 h); about $157 for the pass's agent; distribution 214/298 -> 221/252k, twice 30 -> 56 (one function per system); `install.sh` 2,053 -> 216 lines, `install.ps1` 975 -> 215 |
 | 3 | Rows, with work-state and how a row's state is shown | 4-8 | 80-160 | 4.2 h wall in two runs (the pass 3.7 h, its scan follow-up 0.5 h); about $78 for the pass's agent; rows 150/163 -> 162/182k (work-state moved in), messaging 117/285 -> 109/267k |
-| 4 | Messaging (D1) | 6-12 | 120-240 | |
+| 4 | Messaging (D1) | 6-12 | 120-240 | seven agent rounds: the pass 4.8 h (stopped at its boundary), then six short fixes of 1 to 45 min; about $93 for the agents; messaging 109/267 -> 94/124k, twice 20 -> 45 (the shell door's wrappers and generic names, two real pairs queued); comm shell 6,072 -> 2,571 lines, its shell tests 14,272 -> 3,850; about 160k tokens deleted, not D1's 300k (the PowerShell copies were already gone); the local gate 12 -> 6.6 min |
 | CI | Distribution's CI: the hosted run at each landing about seven minutes and the local gate near five; the slow proofs to a release-gate run made once per release | 0.5-1 | 10-20 | eight short agent rounds, about 30 agent minutes in all; the rest was hosted runs (nine per-landing, five release-gate) and waits; about $13 for the agents; the per-landing run 48 -> 7.2 min wall measured alone (longest job 6.9 min), the release-gate run 21.5 min; the local gate 12 min, of which the bash 3.2 suites, which messaging deletes, are the wall |
 | 5a | Platform and wire: their contracts; platform its own crate out of `sot-log`, its copies folded | 4-6 | 80-120 | |
 | 5b | Containment carved out of lifecycle; the lifecycle and topology contracts; topology out of `rust/protocol` | 4-6 | 80-120 | |
@@ -275,7 +285,7 @@ integration scenario that sleeps on the clock goes with the fix it pinned. `rust
 and `rust/log/tests` (27 thousand lines) are assigned by file:
 - Distribution 1b: `shell_dial`, `unit_pin`, `same_version`, `window_start`.
 - Rows: `capsule_workspaces` (5.7k lines, the row half; the capsule half goes with pass 6).
-- Messaging: `comm_wake`, `comm_file`, `comm_send`, `hub_link`.
+- Messaging: `comm_wake`, `comm_file`, `comm_send`, `hub_link`, `comm_cli`.
 - Daemon core: `daemon_lifetime` (5.6k lines), `window_lease`, `contained_job`, `ancestors`, `admission`,
   `control_session`, `ping_reaper`, `live_socket`, `daemon_boot`, `daemon_stdout`, `subcommand_help`,
   `support_checks`, `active_frontend`, `stdio_bridge`, `topology_set`, `topology_sync`, `relay_refresh`,
@@ -299,5 +309,6 @@ and `rust/log/tests` (27 thousand lines) are assigned by file:
   landed 2026-10-21: the installers' contract is settled, and `sotd install` is the installers' body on every system.
   Pass 3 landed 2026-10-21: rows' contract is settled, with work-state. The CI pass landed 2026-10-21: a landing's
   hosted run takes about seven minutes, and the slow proofs run once per release (`release-gate.yml`, by hand). Pass 4
-  (messaging, D1) lands next; then 5a (platform and wire). Nothing is half-done on main.
+  landed 2026-10-21: messaging's contract is settled and comm is one implementation, in `sotd` (D1); live sessions keep
+  the installed scripts until the 0.7.0 install. Pass 5a (platform and wire) is next. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
