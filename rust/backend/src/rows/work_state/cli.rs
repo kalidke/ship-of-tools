@@ -1,5 +1,5 @@
 //! `sotd work-state <verb> --handle <h> [--origin user|machine] [--text] [--lock-wait <secs>]`: one work-state write
-//! for a session, the way `comm-status.sh` reaches [`super::stamp`]. The text, when `--text` is given, is read from
+//! for a session, the way `comm-status.sh` reaches [`super::write_event`]. The text, when `--text` is given, is read from
 //! standard input, never from an argument: free text may start with `/`, which Git Bash rewrites in a native program's
 //! argv. Exit 0 when written or when there is nothing to write (no entry, a tick with no turn); 1 when the registry
 //! could not be locked, read or written, with one FAILED line on stderr; 2 for a refused stamp (a question or a wait
@@ -8,7 +8,7 @@
 use std::io::Read;
 use std::time::Duration;
 
-use super::{stamp, Declaration, Event, Origin, StampError};
+use super::{write_event, Declaration, Event, Origin, StampError};
 use crate::comm::registry::registry::EditError;
 
 pub(crate) const USAGE: &str = "usage: sotd work-state <prompt|stop|dialog|resumed|tick|working|idle|blocked|waiting|done> \
@@ -76,7 +76,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
             return 2;
         }
     };
-    match stamp(&handle, &event, lock_wait) {
+    match write_event(&handle, &event, lock_wait) {
         Ok(_) => 0,
         Err(StampError::Refused) => 2,
         Err(StampError::Registry(e)) => {

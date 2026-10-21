@@ -14,7 +14,7 @@ fn entry(v: Value) -> Map<String, Value> {
 /// `event` applied to `facts`; the entry after it, and whether it was to be written.
 fn after(facts: Value, event: Event) -> (Map<String, Value>, bool) {
     let mut e = entry(facts);
-    let write = apply(&mut e, &event, NOW).expect("not refused");
+    let write = apply_event(&mut e, &event, NOW).expect("not refused");
     (e, write)
 }
 
@@ -79,11 +79,11 @@ fn a_textless_question_wait_or_dialog_is_refused() {
                 e.insert("waiting".into(), json!(""));
             }
             let before = e.clone();
-            assert_eq!(apply(&mut e, &Event::Declare(d, text), NOW), Err(Refused), "{d:?}");
+            assert_eq!(apply_event(&mut e, &Event::Declare(d, text), NOW), Err(Refused), "{d:?}");
             assert_eq!(e, before, "a refusal changes nothing");
         }
     }
-    assert_eq!(apply(&mut entry(json!({})), &Event::Dialog(String::new()), NOW), Err(Refused));
+    assert_eq!(apply_event(&mut entry(json!({})), &Event::Dialog(String::new()), NOW), Err(Refused));
     let (e, _) = after(json!({"question": "still open"}), Event::Declare(Declaration::Blocked, None));
     assert_eq!(shows(&e), ("blocked", "still open"));
 }
@@ -174,11 +174,11 @@ impl Home {
 #[test]
 fn a_stamp_writes_one_entry_under_the_lock() {
     let home = Home::with(json!({"h": {"host": "host-4", "state": "idle"}}));
-    assert_eq!(stamp("absent", &Event::Stop, Duration::from_secs(1)), Ok(Stamped::NoEntry));
-    assert_eq!(stamp("h", &Event::Prompt(Origin::User), Duration::from_secs(1)), Ok(Stamped::Written));
+    assert_eq!(write_event("absent", &Event::Stop, Duration::from_secs(1)), Ok(Stamped::NoEntry));
+    assert_eq!(write_event("h", &Event::Prompt(Origin::User), Duration::from_secs(1)), Ok(Stamped::Written));
     assert_eq!(home.agent("h")["state"], "working");
     let before = home.bytes();
-    assert_eq!(stamp("h", &Event::Declare(Declaration::Waiting, None), Duration::from_secs(1)), Err(StampError::Refused));
+    assert_eq!(write_event("h", &Event::Declare(Declaration::Waiting, None), Duration::from_secs(1)), Err(StampError::Refused));
     assert_eq!(home.bytes(), before);
 }
 
@@ -188,7 +188,7 @@ fn a_held_lock_writes_nothing() {
     let home = Home::with(json!({"h": {"host": "host-4", "state": "idle"}}));
     std::fs::write(home.dir.path().join(".registry.lock"), "someone:-:-:-:1:-\n").expect("lock");
     let before = home.bytes();
-    assert!(matches!(stamp("h", &Event::Stop, Duration::from_millis(100)), Err(StampError::Registry(EditError::Locked(_)))));
+    assert!(matches!(write_event("h", &Event::Stop, Duration::from_millis(100)), Err(StampError::Registry(EditError::Locked(_)))));
     assert_eq!(home.bytes(), before);
 }
 
@@ -225,12 +225,12 @@ fn shown_reads_the_bound_handle_on_this_host() {
         "theirs": {"host": "hostB", "state": "blocked"},
     });
     let mine = row("a", "mine", "");
-    let shown_mine = shown(&mine, &[mine.clone()], Some(&agents), "host-4");
+    let shown_mine = shown_of(&mine, &[mine.clone()], Some(&agents), "host-4");
     assert_eq!(shown_mine, Shown { state: "working".into(), summary: "s".into(), status_at: "t".into() });
     let theirs = row("b", "theirs", "");
-    assert_eq!(shown(&theirs, &[theirs.clone()], Some(&agents), "host-4"), Shown::default());
+    assert_eq!(shown_of(&theirs, &[theirs.clone()], Some(&agents), "host-4"), Shown::default());
     let other = row("c", "", "mine");
-    assert_eq!(shown(&mine, &[mine.clone(), other], Some(&agents), "host-4"), Shown::default(), "another row declares it");
+    assert_eq!(shown_of(&mine, &[mine.clone(), other], Some(&agents), "host-4"), Shown::default(), "another row declares it");
 }
 
 /// The read-decide-write is one critical section: a stamp waiting on the lock decides against the row as it is once it
@@ -246,7 +246,7 @@ fn a_stamp_decides_against_the_row_under_the_lock() {
         let home = Home::with(json!({ "h": seed }));
         let lock = home.dir.path().join(".registry.lock");
         let held = crate::comm::registry::lock::acquire(&lock, Duration::from_secs(1)).expect("the holder takes the lock");
-        let stop = std::thread::spawn(|| stamp("h", &Event::Stop, Duration::from_secs(10)));
+        let stop = std::thread::spawn(|| write_event("h", &Event::Stop, Duration::from_secs(10)));
         std::thread::sleep(Duration::from_millis(200));
         let path = home.dir.path().join("registry.json");
         let mut root: Value = serde_json::from_slice(&std::fs::read(&path).expect("registry")).expect("json");

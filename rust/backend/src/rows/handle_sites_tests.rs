@@ -38,7 +38,7 @@ const SITES: &[(&str, &str, &[&str], &str)] = &[
     ("rows/store/mod.rs", "scan_disk", &["last_joiner("], "boot: `clear_shared_handles` with `last_joiner`"),
     ("rows/work_state/dialog.rs", "run", &["bound_handle("], "rule: reads each Claude capsule row's screen and stamps its dialog on its bound handle"),
     ("rows/work_state/mod.rs", "read_clear", &["bound_handle("], "rule: read-clears-done on the bound handle's entry"),
-    ("rows/work_state/mod.rs", "shown", &["bound_handle("], "rule: what a row shows, from its bound handle's entry"),
+    ("rows/work_state/mod.rs", "shown_of", &["bound_handle("], "rule: what a row shows, from its bound handle's entry"),
     ("rows/workspace.rs", "agent_handle", &["agent_handle"], "the reader of the declared handle"),
     ("rows/workspace.rs", "agent_name", &[".agent_name"], "the reader of the stored name"),
     ("rows/workspace.rs", "fmt", &[".agent_name", "agent_handle"], "Debug"),

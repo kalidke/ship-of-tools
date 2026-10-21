@@ -166,7 +166,7 @@ pub async fn run(opts: Opts) -> Result<()> {
 
     // Rows' work-state poll: a `workspace.changed` whenever what a row shows changes, so the window re-lists; and the
     // liveness stamp of the handles of the rows that run.
-    crate::rows::work_state::poll::spawn(workspaces.clone(), &ws_events_tx);
+    tokio::spawn(crate::rows::work_state::poll::run(workspaces.clone(), ws_events_tx.clone()));
     tokio::spawn(crate::rows::handle::liveness(workspaces.clone()));
 
 

@@ -9,7 +9,7 @@ use sot_protocol::Frame;
 use crate::server::reply::HandlerOutput;
 use crate::comm::registry::registry::read_comm_agents;
 use crate::rows::handle::bound_handle;
-use crate::rows::work_state::{read_clear, shown};
+use crate::rows::work_state::{read_clear, shown_of};
 use crate::rows::Workspaces;
 #[cfg(test)]
 use crate::rows::Workspace;
@@ -37,10 +37,10 @@ pub async fn handle_workspace_list(
     let mut entries: Vec<WorkspaceListEntry> = ws_list
         .iter()
         .map(|ws| {
-            // The row's handle and what it shows: work-state's one read (`work_state::shown`), through the one answer
+            // The row's handle and what it shows: work-state's one read (`work_state::shown_of`), through the one answer
             // to a row's handle (`bound_handle`), and only from an entry of this host.
             let handle = bound_handle(ws, &ws_list);
-            let work = shown(ws, &ws_list, comm_agents.as_ref(), &host);
+            let work = shown_of(ws, &ws_list, comm_agents.as_ref(), &host);
             // `phase` is read straight off the row's own cell — every row
             // is a capsule on this build (`ws.runtime` is always
             // `"capsule"`), so there is no other case left to branch on.

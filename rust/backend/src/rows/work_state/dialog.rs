@@ -9,7 +9,7 @@
 //! `a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded` shows that over twenty capsules and measures a sweep of
 //! them at 1.2-2.0 s (about 80 ms a read) in a debug build on Linux. [`dialog_of`] reads the screen; the row is
 //! written only where screen and registry disagree ([`stamp_for`]), through work-state's one write, in this process
-//! (`work_state::stamp`). Nothing lives between ticks, so after a restart the first tick clears a fact whose dialog
+//! (`work_state::write_event`). Nothing lives between ticks, so after a restart the first tick clears a fact whose dialog
 //! has gone. A Codex row is never read: its dialog fact is its own hook's. On a Claude row the daemon is the fact's one
 //! writer (no Claude hook sends it, and this write leaves no marker for a heartbeat to find); a `prompt` or a `stop`
 //! still deletes it in the reduction, and the next tick writes it again while the dialog shows. Limits: a dialog that
@@ -26,7 +26,7 @@ use crate::rows::handle::bound_handle;
 use crate::rows::run::headless::{attach, checkpointed, SHUTDOWN_WAIT};
 use crate::rows::Workspaces;
 
-use super::{stamp, Event, StampError};
+use super::{write_event, Event, StampError};
 
 pub const DIALOG_EVERY: Duration = Duration::from_secs(5);
 const CONTROLLER_ID: &str = "sot-comm-dialog";
@@ -81,7 +81,7 @@ pub(crate) async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Wor
             }
             let _ = tokio::task::spawn_blocking(move || {
                 let mut held = failing.lock().unwrap_or_else(|e| e.into_inner());
-                check_rows(&home, &rows, &read_screen, &write, &mut held);
+                check_rows(&home, &rows, &read_screen, &stamp_dialog, &mut held);
             })
             .await;
         }
@@ -174,12 +174,12 @@ fn read_screen(state_dir: &Path) -> Seen {
 }
 
 /// The stamp `s` on `handle`'s entry: work-state's one write, in this process.
-fn write(handle: &str, s: &Stamp) -> Result<(), String> {
+fn stamp_dialog(handle: &str, s: &Stamp) -> Result<(), String> {
     let event = match s {
         Stamp::Dialog(text) => Event::Dialog(text.clone()),
         Stamp::Resumed => Event::Resumed,
     };
-    match stamp(handle, &event, STAMP_BOUND) {
+    match write_event(handle, &event, STAMP_BOUND) {
         Ok(_) => Ok(()),
         Err(StampError::Refused) => Err("refused: a dialog with no text".to_string()),
         Err(StampError::Registry(e)) => Err(format!("{e:?}")),

@@ -71,7 +71,7 @@ Work-state. A row with a joined agent has one work-state, which the window shows
   `question`, `waiting`, `done`, `dialog` and `note`. Precedence: a dialog, then a question while no turn runs, then a
   floor, a wait, done, idle. `blocked` keeps a wait; `waiting` clears a question; `working`, `idle` and `done` clear
   both; a question or a wait without text of its own is refused (exit 2), so no red or purple row is ever textless.
-- One writer path. Every write of a work-state fact is `work_state::apply`, one read-decide-write under the registry lock
+- One writer path. Every write of a work-state fact is `work_state::apply_event` (through `write_event`), one read-decide-write under the registry lock
   on a fresh read (messaging's `edit_entry`). A session reaches it through `sotd work-state`, which `comm-status.sh`
   runs; the daemon calls it in its own process.
 - Who may set it. The row's own session: its hooks' events (`prompt` with its origin, `stop`, `join`, a Codex `dialog`,
@@ -81,7 +81,7 @@ Work-state. A row with a joined agent has one work-state, which the window shows
   the dialog it reads on a Claude row's screen, and a person's read (`workspace.activate` with `read: true`, which the
   window sends after ten seconds on the row), which clears `done` without restamping the row's time.
 - One reader path. `workspace.list` carries each row's `agent_state`, `agent_summary` and `agent_status_at`, read fresh
-  from the registry through the row's bound handle and only from an entry of this host (`work_state::shown`); the
+  from the registry through the row's bound handle and only from an entry of this host (`work_state::shown_of`); the
   work-state poll compares the same answer every 1.5 s and publishes `workspace.changed` (action `agent_state`) when what
   any row shows changed (`work_state::poll`).
 - How the window shows it: the row's name in the Sessions tree and the strip takes the state's color (Julia red, green,
@@ -173,4 +173,4 @@ restarts a live one in place.
 
 ## Start here
 `mod.rs` for the structs, then `registry.rs::insert` for how a row enters. A phase change:
-`workspace.rs::apply_phase_observation`. A row's handle: `handle.rs`. A work-state write: `work_state/mod.rs::apply`.
+`workspace.rs::apply_phase_observation`. A row's handle: `handle.rs`. A work-state write: `work_state/mod.rs::apply_event`.

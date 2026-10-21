@@ -165,7 +165,7 @@ fn tick(home: &Path, screen: Vec<String>) -> Vec<Stamp> {
     let writes = std::cell::RefCell::new(Vec::new());
     let record = |handle: &str, s: &Stamp| {
         writes.borrow_mut().push(s.clone());
-        write(handle, s)
+        stamp_dialog(handle, s)
     };
     let rows = [("h".to_string(), PathBuf::from("unused"))];
     let mut failing = HashSet::new();

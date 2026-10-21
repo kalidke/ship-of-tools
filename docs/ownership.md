@@ -152,7 +152,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | lease ticker (1 s) | thread | lifecycle | `rust/backend/src/lifecycle/lease.rs` `ticker`, `tick` |
 | shutdown backstop thread | thread | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `run`, `shutdown_bound` |
 | hub link task | thread | messaging | `rust/backend/src/comm/mail/hub_link.rs` `spawn_link` |
-| work-state poll task (workspace.list refresh) | thread | rows | `rust/backend/src/rows/work_state/poll.rs` `spawn` |
+| work-state poll task (workspace.list refresh) | thread | rows | `rust/backend/src/rows/work_state/poll.rs` `run` |
 | row liveness stamp task (each running row's `last_seen`, every minute) | thread | messaging | `rust/backend/src/comm/registry/liveness.rs` `run` |
 | comm wake tick (2 s) | thread | messaging | `rust/backend/src/comm/wake/mod.rs` `run`, `TICK` |
 | comm dialog tick (5 s, Unix) | thread | messaging | `rust/backend/src/comm/wake/dialog.rs` `run`, `DIALOG_EVERY` |
@@ -248,8 +248,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `comm.file` | op | messaging | `rust/backend/src/comm/mail/filer.rs` `handle_comm_file`, `comm_file_verdict` |
 | `agent.join`; a row's `agent_handle` (stored in the row toml) and its bound handle | op, state | rows | `rust/backend/src/rows/ops/join.rs` `handle_agent_join`; `rust/backend/src/rows/workspace.rs` `agent_handle`; `rust/backend/src/rows/handle.rs` `bound_handle` |
 | work-state fields (`floor, question, waiting, dialog, done, note, state, summary, status_at, stop_at`) | state | messaging | `comm/work_state/comm-status.sh`; `comm/work_state/hooks/comm-status-idle.sh` |
-| a Claude row's `dialog`, read from its screen (`dialog_of`), and its write | rule | rows (the tick), messaging (the screen reader) | `rust/backend/src/comm/wake/screen.rs` `dialog_of`, `main_box_shown`, `is_dialog_footer`; `rust/backend/src/rows/work_state/dialog.rs` `due`, `stamp_for`, `write` |
-| `read_clear` (clears `done` on view) and every work-state write | state | rows | `rust/backend/src/rows/work_state/mod.rs` `apply`, `stamp`, `read_clear`; `sotd work-state` (`cli.rs`) |
+| a Claude row's `dialog`, read from its screen (`dialog_of`), and its write | rule | rows (the tick), messaging (the screen reader) | `rust/backend/src/comm/wake/screen.rs` `dialog_of`, `main_box_shown`, `is_dialog_footer`; `rust/backend/src/rows/work_state/dialog.rs` `due`, `stamp_for`, `stamp_dialog` |
+| `read_clear` (clears `done` on view) and every work-state write | state | rows | `rust/backend/src/rows/work_state/mod.rs` `apply_event`, `write_event`, `read_clear`; `sotd work-state` (`cli.rs`) |
 | `update.check`, `update.apply` | op | distribution | `rust/backend/src/update.rs` `handle_update_check`, `handle_update_apply` |
 | `sotd update stage <folder> --prefix <prefix>`, `sotd update pointer --prefix <prefix> --target <target>`, `sotd update direction <version> --prefix <prefix>`, `sotd update repls --endpoint <endpoint>` | command | distribution | `rust/backend/src/update/cli.rs` `stage_cli`, `pointer_cli`, `direction_cli`, `repls_cli`; `rust/backend/src/update.rs` `stage_prepare_arm_with` |
 | The Windows update entry's decisions: the target channel (`scripts/install.ps1`'s prelude), the direction, the `+` stop, the live-work ask, the path by what runs (converge sentinel, armed with a step, applied here), the one verdict line on every exit, the pin | rule | distribution | `scripts/install.ps1` `Invoke-Entry`, `Get-Pack`; `rust/backend/src/install/windows.rs` `update_or_repair`, `update`, `supervisor`, `end_state`; `rust/backend/src/install/verdict.rs`; `rust/updater/src/pending.rs` `InstalledBuild::admits`, `pin_note` |

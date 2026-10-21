@@ -1,6 +1,6 @@
 //! Work-state: the facts a row's session and the daemon set on the row's comm registry entry, the one reduction that
-//! turns them into the state the window shows, the one write every setter takes ([`stamp`]) and the one read every
-//! reader takes ([`shown`]). The contract is rows' (rows/CLAUDE.md, work-state).
+//! turns them into the state the window shows, the one write every setter takes ([`write_event`]) and the one read every
+//! reader takes ([`shown_of`]). The contract is rows' (rows/CLAUDE.md, work-state).
 
 pub(crate) mod cli;
 pub(crate) mod dialog;
@@ -23,7 +23,7 @@ pub(crate) enum Origin {
 }
 
 impl Origin {
-    fn word(self) -> &'static str {
+    fn floor_value(self) -> &'static str {
         match self {
             Origin::User => "user",
             Origin::Machine => "machine",
@@ -117,7 +117,7 @@ fn drop_keys(entry: &mut Map<String, Value>, keys: &[&str]) {
 /// Apply `event` to one registry entry at `now`, re-reducing its state; whether the entry changed and must be written.
 /// A `blocked` or `waiting` with no text, on an entry whose question or wait has none of its own, is [`Refused`], as is
 /// a dialog with no text.
-pub(crate) fn apply(entry: &mut Map<String, Value>, event: &Event, now: &str) -> Result<bool, Refused> {
+pub(crate) fn apply_event(entry: &mut Map<String, Value>, event: &Event, now: &str) -> Result<bool, Refused> {
     match event {
         Event::Tick => {
             if !is_set(entry, "floor") {
@@ -149,7 +149,7 @@ pub(crate) fn apply(entry: &mut Map<String, Value>, event: &Event, now: &str) ->
     match event {
         Event::Prompt(origin) => {
             entry.remove("dialog");
-            set(entry, "floor", origin.word());
+            set(entry, "floor", origin.floor_value());
             if *origin == Origin::User {
                 drop_keys(entry, &["question", "done"]);
             }
@@ -199,7 +199,7 @@ pub(crate) fn apply(entry: &mut Map<String, Value>, event: &Event, now: &str) ->
     Ok(true)
 }
 
-/// What [`stamp`] did.
+/// What [`write_event`] did.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Stamped {
     Written,
@@ -209,7 +209,7 @@ pub(crate) enum Stamped {
     NoEntry,
 }
 
-/// Why [`stamp`] wrote nothing.
+/// Why [`write_event`] wrote nothing.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum StampError {
     Refused,
@@ -217,9 +217,9 @@ pub(crate) enum StampError {
 }
 
 /// The one write: `event` applied to `.agents[handle]` under the registry lock, waiting at most `lock_wait` for it.
-pub(crate) fn stamp(handle: &str, event: &Event, lock_wait: Duration) -> Result<Stamped, StampError> {
+pub(crate) fn write_event(handle: &str, event: &Event, lock_wait: Duration) -> Result<Stamped, StampError> {
     let now = iso8601_utc_now();
-    match edit_entry(handle, lock_wait, |entry| match apply(entry, event, &now) {
+    match edit_entry(handle, lock_wait, |entry| match apply_event(entry, event, &now) {
         Ok(write) => (Ok(write), write),
         Err(refused) => (Err(refused), false),
     }) {
@@ -234,7 +234,7 @@ pub(crate) fn stamp(handle: &str, event: &Event, lock_wait: Duration) -> Result<
 /// The read-clear's lock bound: `workspace.activate` waits for it inline, so it is short; a person's next look retries.
 const READ_LOCK_WAIT: Duration = Duration::from_secs(1);
 
-/// A person looked at row `ws` (`workspace.activate` with `read: true`): its `done` fact cleared through [`stamp`], on
+/// A person looked at row `ws` (`workspace.activate` with `read: true`): its `done` fact cleared through [`write_event`], on
 /// its bound handle's entry and only an entry of `host`. Best-effort: a held lock or an unreadable registry is a no-op
 /// the next look retries. Blocks: run it on a blocking thread.
 pub(crate) fn read_clear(ws: &Workspace, rows: &[Arc<Workspace>], host: &str) {
@@ -254,7 +254,7 @@ pub(crate) fn read_clear(ws: &Workspace, rows: &[Arc<Workspace>], host: &str) {
         if !host_matches(&Value::Object(entry.clone()), &host) {
             return ((), false);
         }
-        let write = apply(entry, &Event::Read, "").unwrap_or(false);
+        let write = apply_event(entry, &Event::Read, "").unwrap_or(false);
         ((), write)
     });
 }
@@ -269,7 +269,7 @@ pub(crate) struct Shown {
 
 /// The one read: what row `ws` shows, from `agents` (the registry's `.agents`, read once per caller) through the row's
 /// bound handle, and only from an entry of `host`, so another host's same-named entry never colors this host's row.
-pub(crate) fn shown(ws: &Workspace, rows: &[Arc<Workspace>], agents: Option<&Value>, host: &str) -> Shown {
+pub(crate) fn shown_of(ws: &Workspace, rows: &[Arc<Workspace>], agents: Option<&Value>, host: &str) -> Shown {
     let handle = bound_handle(ws, rows);
     if handle.is_empty() {
         return Shown::default();
