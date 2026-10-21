@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use super::daemon::{self, State};
 use super::options::Options;
 use super::pack::Pack;
+use super::supervisor::Converge;
 use super::verdict::{self, step, Found, Stop};
 use super::{cmd, julia, procs, record};
 
@@ -365,15 +366,7 @@ fn supervisor(log_dir: &Path, all: &[procs::Proc]) -> Option<(u32, String)> {
     let pid: u32 = std::fs::read_to_string(log_dir.join("launcher.pid")).ok()?.lines().next()?.trim().parse().ok()?;
     all.iter().find(|p| p.pid == pid && p.args.to_ascii_lowercase().contains("launch-sot.ps1"))?;
     let log = std::fs::read_to_string(log_dir.join("supervisor.log")).unwrap_or_default();
-    let code = log
-        .lines()
-        .filter(|l| l.split_once(&format!("pid={pid}")).is_some_and(|(_, rest)| rest.starts_with(char::is_whitespace) && rest.trim_start().starts_with("supervisor start")))
-        .last()
-        .and_then(|l| l.split_whitespace().find_map(|w| w.strip_prefix("code=")))
-        .filter(|c| *c != "unknown")
-        .unwrap_or("")
-        .to_string();
-    Some((pid, code))
+    Some((pid, super::supervisor::start_code(&log, pid)))
 }
 
 /// The installed checkout's `relaunch-sot.ps1`, the converge sentinel's one writer: the installed version's, else the
@@ -399,20 +392,16 @@ fn converge(ctx: &Ctx, bound: Duration, relaunch: &Path) -> Result<(), Stop> {
     println!("converge requested: waiting for the window's supervisor to apply {} (up to {} s)", ctx.pack.tag(), bound.as_secs());
     let t0 = Instant::now();
     let mut last_note = t0;
-    let applied_line = format!("sot-apply: APPLIED {}", ctx.pack.tag());
     let outcome = loop {
         if t0.elapsed() >= bound {
             break Err(Stop::new(1, format!("the supervisor did not report {} applied within {} s: see {}", ctx.pack.tag(), bound.as_secs(), log.display())));
         }
         std::thread::sleep(Duration::from_secs(1));
         let text = std::fs::read(&log).map(|b| String::from_utf8_lossy(&b[usize::try_from(start).unwrap_or(0).min(b.len())..]).into_owned()).unwrap_or_default();
-        if let (Some(applied), Some(done)) = (text.rfind(&applied_line), text.rfind("status: DONE")) {
-            if done > applied {
-                break Ok(());
-            }
-        }
-        if text.contains("restoring previous binaries") {
-            break Err(Stop::new(1, format!("the supervisor's apply did not complete: see {}", log.display())));
+        match super::supervisor::converge_state(&text, &ctx.pack.tag()) {
+            Converge::Done => break Ok(()),
+            Converge::Restored => break Err(Stop::new(1, format!("the supervisor's apply did not complete: see {}", log.display()))),
+            Converge::Waiting => {}
         }
         if last_note.elapsed() >= Duration::from_secs(30) {
             last_note = Instant::now();

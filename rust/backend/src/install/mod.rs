@@ -14,6 +14,7 @@ mod procs;
 mod record;
 #[cfg(unix)]
 mod role;
+mod supervisor;
 #[cfg(unix)]
 mod unix;
 mod verdict;

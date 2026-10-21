@@ -35,10 +35,11 @@ fn the_windows_install_reads_the_words_the_launcher_writes() {
     let apply = include_str!("../../../../scripts/sot-apply.ps1");
     let layout = include_str!("../../../../scripts/sot-install-layout.ps1");
     let install = include_str!("windows.rs");
+    let reader = include_str!("supervisor.rs");
     assert!(launch.contains("Write-SupLog \"supervisor start (relaunched=$Relaunched) depth=") && launch.contains(" code=$(if ($script:launcherCodeId)"));
-    assert!(install.contains("\"supervisor start\"") && install.contains("strip_prefix(\"code=\")"));
-    assert!(launch.contains("Set-LaunchStatus 'DONE'") && launch.contains("Write-SupLog \"status: $Message\"") && install.contains("\"status: DONE\""));
-    assert!(apply.contains("Write-ApplyLog \"APPLIED $tag") && install.contains("\"sot-apply: APPLIED {}\""));
+    assert!(reader.contains("\"supervisor start\"") && reader.contains("strip_prefix(\"code=\")"));
+    assert!(launch.contains("Set-LaunchStatus 'DONE'") && launch.contains("Write-SupLog \"status: $Message\"") && reader.contains("\"status: DONE\""));
+    assert!(apply.contains("Write-ApplyLog \"APPLIED $tag") && reader.contains("\"sot-apply: APPLIED {tag}\""));
     assert!(launch.contains("Join-Path $logDir 'launcher.pid'") && install.contains("join(\"launcher.pid\")"));
     let files = "'launch-sot.ps1', 'sot-hosts.ps1', 'sot-install-layout.ps1', 'sot-freshness.ps1', 'sot-lease.ps1'";
     assert!(layout.contains(&format!("foreach ($f in @({files}))")));
