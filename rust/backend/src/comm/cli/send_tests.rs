@@ -73,13 +73,14 @@ fn a_sender_with_no_routable_identity_sends_nothing() {
 #[test]
 fn silence_is_failure_and_there_is_no_second_route() {
     let t = sender();
+    let at = if cfg!(windows) { "pipe:" } else { "unix:" };
     let o = deliver_all(parse_send(&args(&["@nobody", "x"])).unwrap(), |_| unreachable!());
     assert_eq!(o.code, 1);
-    assert!(o.stderr.starts_with("FAILED -> @nobody: the daemon did not answer at unix:"), "{}", o.stderr);
+    assert!(o.stderr.starts_with(&format!("FAILED -> @nobody: the daemon did not answer at {at}")), "{}", o.stderr);
     std::fs::remove_file(t.home.join(crate::comm::mail::inbox::LOCK_RECORD)).unwrap();
     t.live("you-box1", "/x");
     let o = deliver_all(parse_send(&args(&["@you-box1", "x"])).unwrap(), |_| unreachable!());
-    assert!(o.stderr.starts_with("FAILED -> @you-box1: the daemon did not answer at unix:"), "{}", o.stderr);
+    assert!(o.stderr.starts_with(&format!("FAILED -> @you-box1: the daemon did not answer at {at}")), "{}", o.stderr);
     assert!(t.inbox("you-box1").is_empty(), "no lock record of its own: this box never appends itself");
 }
 

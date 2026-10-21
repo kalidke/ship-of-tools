@@ -56,7 +56,17 @@ jobs:
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
+      # The installed comm wrappers run `sotd comm`: a host with the binary and no running daemon.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build the daemon the comm wrappers run
+        run: cargo build -p sot-backend --bin sotd --locked
+        working-directory: rust
       - uses: julia-actions/julia-runtest@v1
+        env:
+          SOTD_BIN: ${{ github.workspace }}/rust/target/debug/sotd
       - uses: julia-actions/julia-processcoverage@v1
       - uses: codecov/codecov-action@v7
         with:

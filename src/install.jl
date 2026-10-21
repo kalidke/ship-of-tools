@@ -95,7 +95,7 @@ function install_comm(; clis = [:claude, :codex])
     # send-deaf Windows bridge incident had no way to state.
     write(version_file, _repo_commit())
     @info "sot-comm ready" protocol = COMM_PROTOCOL_VERSION home = comm_home()
-    @info "Next: in your session run  ~/.sot-comm/bin/comm-join.sh --name <handle>  (or use the /sot-comm skill)"
+    @info "Next: in your session run  /sot-session-start  (the session-start step; it names the session)"
     return nothing
 end
 

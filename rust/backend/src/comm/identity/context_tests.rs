@@ -68,7 +68,8 @@ fn the_eval_lines_are_what_comm_context_printed_and_bash_reads_them_back() {
     };
     let text = c.eval_lines();
     assert!(text.starts_with("HOST=box1\nHANDLE_HOST=\n"), "{text}");
-    assert!(text.contains("\nNAME=\n") && text.contains("\nREGISTRY=/c/registry.json\n"), "{text}");
+    let registry = if cfg!(windows) { "C:/registry.json" } else { "/c/registry.json" };
+    assert!(text.contains("\nNAME=\n") && text.contains(&format!("\nREGISTRY={registry}\n")), "{text}");
     if cfg!(unix) {
         let mut bash = std::process::Command::new("bash");
         bash.arg("-c").arg(r#"eval "$1"; printf '%s|%s|%s' "$REPO" "$PROJECT_ROOT" "$INBOX_DIR""#).arg("bash").arg(&text);

@@ -20,7 +20,9 @@ fn bash() -> Command {
 
 /// `p` with `/` for its separators, as a Git Bash script reads a path.
 fn fwd(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "/")
+    // Git Bash refuses a verbatim `//?/C:/...` path; the plain drive path is the same folder.
+    let s = p.to_string_lossy().replace('\\', "/");
+    s.strip_prefix("//?/").map(str::to_string).unwrap_or(s)
 }
 
 /// A scratch box: its home, its comm folder, the staged scripts, a project folder for each session.
