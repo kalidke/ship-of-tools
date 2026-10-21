@@ -1,6 +1,6 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! The daemon's start-up, end to end: a first boot seeds the default row as the inert anchor,
-//! and the comm-registry poll started at boot relays a change of an agent's state as a
+//! and rows' work-state poll started at boot relays a change of what a row shows as a
 //! `workspace.changed` evt. Every folder is the harness's own; the live comm home is never read.
 
 mod support;
@@ -9,7 +9,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use sot_protocol::{codec, op, Kind};
-use support::{call, connect_and_hello, Env, BOUND};
+use support::{call, connect_and_hello, Env, BOUND, TEST_STATE_HOST};
 
 /// `Env::new` sets the process's `SOT_RUNTIME_DIR`, so the tests that make one run one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -18,11 +18,12 @@ fn serial() -> MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Sets the one agent's `state` in the harness's registry, under the registry lock.
+/// Sets the one agent's `state` in the harness's registry, under the registry lock: the entry of the row created as
+/// `boot-probe`, on this daemon's host, so what that row shows changes with it.
 fn write_registry(env: &Env, state: &str) {
     support::write_registry(&env.comm_root, |doc| {
         *doc = serde_json::json!({ "agents": { "boot-probe": {
-            "state": state, "summary": "", "status_at": "", "host": "h",
+            "state": state, "summary": "", "status_at": "", "host": TEST_STATE_HOST,
         } } });
     });
 }
@@ -33,9 +34,10 @@ async fn boot_seeds_the_anchor_and_relays_registry_changes() {
     let env = Env::new("boot");
     write_registry(&env, "idle");
     env.spawn_sotd();
-    let (mut conn, next_id) = connect_and_hello(&env.socket_path).await;
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
     let defaults: Vec<&serde_json::Value> = list["workspaces"]
         .as_array()
         .expect("workspaces array")
@@ -45,6 +47,16 @@ async fn boot_seeds_the_anchor_and_relays_registry_changes() {
     assert_eq!(defaults.len(), 1, "exactly one default row: {list}");
     assert_eq!(defaults[0]["agent"], "none", "the default row is the inert anchor: {list}");
     assert_eq!(defaults[0]["runtime"], "capsule", "the default row runs as a capsule: {list}");
+
+    // A row whose handle is the probe's: the poll publishes only when what a row shows changes.
+    let create = serde_json::json!({
+        "label": "boot-probe-row",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+        "agent_name": "boot-probe",
+    });
+    let res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create).await;
+    assert!(res.payload.get("error").is_none(), "workspace.create failed: {:?}", res.payload);
 
     // A reader task owns the connection: `read_frame` is not cancel-safe, so the loop below
     // waits on a channel, never on the read itself.

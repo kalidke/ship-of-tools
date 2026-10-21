@@ -76,9 +76,8 @@ async fn a_row_at_its_agents_permission_prompt_reads_waiting_on_its_person() {
     next_id += 1;
     assert_eq!(join.payload["ok"], true, "agent.join failed: {:?}", join.payload);
     // The session's own entry, as its join and its prompt hook leave it: a turn running.
-    std::fs::create_dir_all(&env.comm_root).expect("comm home");
     let entry = serde_json::json!({"host": TEST_STATE_HOST, "state": "working", "floor": "user", "summary": "", "status_at": "2026-10-21T00:00:00Z"});
-    std::fs::write(env.comm_root.join("registry.json"), serde_json::json!({"agents": {"cwsd-h": entry}}).to_string()).expect("registry");
+    support::write_registry(&env.comm_root, |doc| *doc = serde_json::json!({"agents": {"cwsd-h": entry}}));
     poll_for_phase(&mut conn, &mut next_id, &ws, "ready", BOUND.max(Duration::from_secs(60))).await;
     let got = poll_work_state(&mut conn, &mut next_id, &ws, Duration::from_secs(10), |s, _| s == "working").await;
     assert_eq!(got.0, "working", "setup: the row reads its turn");
