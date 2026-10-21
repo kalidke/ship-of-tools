@@ -4,7 +4,7 @@
 set -u
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo" || exit 2
-subsystems="topology wire server lifecycle rows agents platform capsule vt100 messaging files sidecars pages fe-ui fe-net distribution records"
+subsystems="topology wire server lifecycle rows agents platform capsule vt100 messaging files sidecars pages fe-ui fe-net distribution records test-support"
 fail=0
 for rev in a25f3c39f a25f3c39f^; do
     out=$(julia --startup-file=no scripts/four-numbers.jl --names "$rev" 2>&1) || { echo "FAIL $rev: exit $?"; echo "$out" | tail -5; fail=1; continue; }

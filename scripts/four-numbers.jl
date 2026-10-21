@@ -6,10 +6,13 @@ const VERSION = "four-numbers 1"
 
 # Path prefix -> subsystem; the longest prefix wins. Tests of the two integration folders are assigned by file below.
 const SUBSYSTEMS = ["topology", "wire", "server", "lifecycle", "rows", "agents", "platform", "capsule", "vt100",
-                    "messaging", "files", "sidecars", "pages", "fe-ui", "fe-net", "distribution", "records"]
+                    "messaging", "files", "sidecars", "pages", "fe-ui", "fe-net", "distribution", "records", "test-support"]
 const PREFIXES = [
     "rust/protocol/src/topology/" => "topology", "rust/backend/src/topology" => "topology",
     "rust/protocol/" => "wire",
+    "rust/backend/src/daemon_log" => "server", "rust/backend/src/durable.rs" => "platform",
+    "rust/backend/src/paths.rs" => "platform", "rust/frontend/build.rs" => "fe-ui",
+    "rust/frontend/src/browser_open.rs" => "fe-ui", "rust/frontend/src/relaunch.rs" => "distribution",
     "rust/backend/src/server/" => "server", "rust/backend/src/main.rs" => "server",
     "rust/backend/src/clients" => "server", "rust/backend/src/session.rs" => "server",
     "rust/backend/src/lifecycle/" => "lifecycle", "rust/frontend/src/lease" => "lifecycle",
@@ -65,6 +68,7 @@ git(args...) = read(`git $args`)
 function subsystem(path)
     if (d = findfirst(t -> startswith(path, t), TEST_DIRS)) !== nothing
         rest = path[length(TEST_DIRS[d])+1:end]
+        startswith(rest, "support/") && return "test-support"
         return get(STEM_SUBSYSTEM, replace(first(split(rest, '/')), r"\.rs$" => ""), nothing)
     end
     best, len = nothing, 0
