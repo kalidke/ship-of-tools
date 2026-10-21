@@ -13,11 +13,6 @@ name: Release gate
 
 on:
   workflow_dispatch: {}
-  # TEMPORARY (pass/ci-fast): a workflow absent from the default branch cannot be dispatched, so a push to this branch
-  # that creates or changes .github/gate-run runs it, and no other push does. Dropped before the merge.
-  push:
-    branches: [pass/ci-fast]
-    paths: [.github/gate-run]
 
 concurrency:
   group: release-gate-${{ github.ref }}
