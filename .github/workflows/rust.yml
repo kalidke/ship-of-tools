@@ -37,7 +37,7 @@ on:
     # comm/** added alongside the "Test sot-comm disambiguation" step below
     # (PR #148 Codex review F10) — without it, a comm-only change (like the
     # one that added that step) would never trigger this workflow at all.
-    paths: ["rust/**", "scripts/**", "docs/tools/**", "comm/**", "agents/**", ".github/workflows/rust.yml", ".github/test-shards.txt", ".github/wgl-depot.sh"]
+    paths: ["rust/**", "scripts/**", "docs/tools/**", "comm/**", "agents/**", ".github/workflows/rust.yml", ".github/actions/**", ".github/test-shards.txt", ".github/wgl-depot.sh"]
   workflow_dispatch: {}
 
 concurrency:
@@ -108,8 +108,8 @@ jobs:
       - name: Build workspace
         run: cargo build --workspace --locked
       # macOS runs, in the sup shard, the clippy gate and the portable selected-body proofs that `checks` runs on Linux:
-      # cfg(macos) code is checked only where it compiles. Windows runs them in release-gate.yml (checks-windows): they
-      # cost it about two minutes before its tests, and the disallowed-methods gate below still runs on both.
+      # cfg(macos) code is checked only where it compiles. Windows runs them, and both systems the disallowed-methods
+      # gate, in release-gate.yml: Linux's run of that gate stays at each landing.
       # The vendored vt100 crate is excluded: it denies clippy::all in its own source, which beats -A on the command
       # line. CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
       - name: Test children
@@ -117,55 +117,11 @@ jobs:
         env:
           CLIPPY_CONF_DIR: "${{ github.workspace }}/rust/clippy-tests"
         run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::disallowed_methods
-      # rust/clippy.toml holds the rules this step enforces, one labelled group each, every group opening with its
-      # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
-      # that does not exist on a leg draws a warning there.
-      - name: Disallowed methods
-        if: matrix.os != 'ubuntu-latest' && contains(matrix.shard, 'sup')
-        run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
-      - name: Build selected-body fixture
+      - name: Selected Rust bodies (portable proofs)
         if: matrix.os == 'macos-latest' && contains(matrix.shard, 'sup')
-        shell: bash
-        run: |
-          mkdir -p ../dev/output
-          cargo test -p sot-log --test test_body_fixture --locked --no-run --message-format=json > ../dev/output/iso-sh-ci-artifacts.json
-          python3 - <<'PYFIXTURE'
-          import json, os
-          rows = [json.loads(line) for line in open('../dev/output/iso-sh-ci-artifacts.json') if line.startswith('{')]
-          paths = [row['executable'] for row in rows if row.get('target', {}).get('name') == 'test_body_fixture' and row.get('executable')]
-          if len(paths) != 1:
-              raise SystemExit('expected exactly one compiled selected-body fixture')
-          path = os.path.abspath(paths[0]).replace('\\', '/')
-          with open('../dev/output/iso-sh-ci-path', 'w') as output:
-              output.write(path + '\n')
-          PYFIXTURE
-      - name: Test selected Rust bodies
-        if: matrix.os == 'macos-latest' && contains(matrix.shard, 'sup')
-        shell: bash
-        run: |
-          python3 - <<'PYCARGO'
-          import json, os, pathlib, subprocess
-          manifest = pathlib.Path('Cargo.toml').resolve()
-          root = pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve()
-          root.mkdir()
-          environment = {k: v for k, v in os.environ.items() if not k.startswith('SOT_')}
-          runner = root / 'runner.py'
-          runner.write_text('import os, subprocess, sys\nos.chdir(sys.argv[1])\nsys.exit(subprocess.run(sys.argv[2:]).returncode)\n')
-          environment.setdefault('CARGO_HOME', str(pathlib.Path.home() / '.cargo'))
-          environment.setdefault('RUSTUP_HOME', str(pathlib.Path.home() / '.rustup'))
-          home = root / 'home'
-          home.mkdir()
-          for name in ('HOME', 'USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME'):
-              environment[name] = str(home)
-          for key, name, flags in [('normal', 'ordinary', ['--exact']), ('ignored', 'qualified::ignored_positive', ['--ignored', '--exact']), ('absent', 'absent', ['--exact']), ('substring', 'near', [])]:
-              directory = root / key
-              directory.mkdir()
-              (directory / 'iso-sh-fixture-request').touch()
-              (directory / 'go').touch()
-              with (directory / 'cargo.log').open('w') as output:
-                  subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-log', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
-          PYCARGO
-          ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh --portable "$(cat ../dev/output/iso-sh-ci-path)"
+        uses: ./.github/actions/selected-body
+        with:
+          proofs: --portable
 
       # The rest shards link every test executable they run; that is build, not test, so it is outside the bound.
       - name: Build the test executables
@@ -189,14 +145,6 @@ jobs:
         shell: bash
         timeout-minutes: 3
         run: python3 ../scripts/tests/shards.py check
-      # No comm or agents script leaves a file in its temporary folders (the two temp-file suites; Linux runs them in
-      # `checks-slow`, Windows on the native box).
-      - name: Test comm temp files (hermetic)
-        if: matrix.os == 'macos-latest' && contains(matrix.shard, 'rest-0')
-        shell: bash
-        timeout-minutes: 3
-        working-directory: .
-        run: bash comm/tests/test-temp-files.sh && bash agents/tests/test-temp-files.sh
 
   # The PowerShell scripts' suites, each in a scratch profile of its own (scripts/tests/scratch-guard.ps1); the launcher's
   # (the local daemon, the leases) and the heartbeat suite run in release-gate.yml.
@@ -339,48 +287,13 @@ jobs:
       # that does not exist on a leg draws a warning there.
       - name: Disallowed methods
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
-      - name: Build selected-body fixture
+      - name: Selected Rust bodies
+        uses: ./.github/actions/selected-body
+        with:
+          proofs: --all
+      - name: Test the filtered-tests runner
         shell: bash
-        run: |
-          mkdir -p ../dev/output
-          cargo test -p sot-log --test test_body_fixture --locked --no-run --message-format=json > ../dev/output/iso-sh-ci-artifacts.json
-          python3 - <<'PYFIXTURE'
-          import json, os
-          rows = [json.loads(line) for line in open('../dev/output/iso-sh-ci-artifacts.json') if line.startswith('{')]
-          paths = [row['executable'] for row in rows if row.get('target', {}).get('name') == 'test_body_fixture' and row.get('executable')]
-          if len(paths) != 1:
-              raise SystemExit('expected exactly one compiled selected-body fixture')
-          path = os.path.abspath(paths[0]).replace('\\', '/')
-          with open('../dev/output/iso-sh-ci-path', 'w') as output:
-              output.write(path + '\n')
-          PYFIXTURE
-      - name: Test selected Rust bodies
-        shell: bash
-        run: |
-          python3 - <<'PYCARGO'
-          import json, os, pathlib, subprocess
-          manifest = pathlib.Path('Cargo.toml').resolve()
-          root = pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve()
-          root.mkdir()
-          environment = {k: v for k, v in os.environ.items() if not k.startswith('SOT_')}
-          runner = root / 'runner.py'
-          runner.write_text('import os, subprocess, sys\nos.chdir(sys.argv[1])\nsys.exit(subprocess.run(sys.argv[2:]).returncode)\n')
-          environment.setdefault('CARGO_HOME', str(pathlib.Path.home() / '.cargo'))
-          environment.setdefault('RUSTUP_HOME', str(pathlib.Path.home() / '.rustup'))
-          home = root / 'home'
-          home.mkdir()
-          for name in ('HOME', 'USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME'):
-              environment[name] = str(home)
-          for key, name, flags in [('normal', 'ordinary', ['--exact']), ('ignored', 'qualified::ignored_positive', ['--ignored', '--exact']), ('absent', 'absent', ['--exact']), ('substring', 'near', [])]:
-              directory = root / key
-              directory.mkdir()
-              (directory / 'iso-sh-fixture-request').touch()
-              (directory / 'go').touch()
-              with (directory / 'cargo.log').open('w') as output:
-                  subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-log', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
-          PYCARGO
-          ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh --all "$(cat ../dev/output/iso-sh-ci-path)"
-          bash ../scripts/tests/test-filtered-tests.sh "$(cat ../dev/output/iso-sh-ci-path)"
+        run: bash ../scripts/tests/test-filtered-tests.sh "$(cat ../dev/output/iso-sh-ci-path)"
 
       - name: Parse shell scripts
         working-directory: .
