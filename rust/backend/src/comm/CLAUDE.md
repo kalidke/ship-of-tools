@@ -21,7 +21,9 @@ Address:
   its `root=` line is this project's root; else it is derived when it joins: the project folder's name and the box's
   name, `<folder>-<host>`, qualified by the parent folder's name and then by a hash of the root only when another project
   holds the shorter one (`identity::derive`). The derivation and the registry write are one step under the registry
-  lock, so two joins never claim one handle. `--name` and `SOT_COMM_NAME` name a handle verbatim.
+  lock, so two joins never claim one handle. `--name` and `SOT_COMM_NAME` name a handle verbatim. This differs from
+  0031 ("explicit `--name` handles are gone"): the agents' launchers and probe rows pass them (`ccx`, `comm-probe.sh`,
+  `comm-worktree-clean.sh`), so they stay until the agents pass removes those callers.
 - A handle belongs to one row at a time and survives restarts, compactions and clears: the row's self file and rows'
   declaration keep it, and a newer join moves it (rows' `set_agent_handle`). A process acts as a row's handle only from
   inside that row: the identity (`identity::context`) discards a handle whose registry entry binds another row, and a
