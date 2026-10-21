@@ -81,7 +81,7 @@ Echo the collected answers back as a short plan before proceeding.
   - macOS → Xcode Command Line Tools: `xcode-select --install` (user-prompted)
   - Linux → `cc`/`gcc` (usually present; else system pkg)
 - **`jq`** on every OS: the comm scripts read and write JSON with it, and every
-  comm install (`scripts/install.sh`, `ShipTools.update_comm()`) stops without
+  comm install (`sotd install`, `ShipTools.update_comm()`) stops without
   it. Windows `winget install jqlang.jq`; macOS `brew install jq`; Linux
   `sudo apt-get install jq`.
 - **`awk`** for the Linux/mac statusline (§8) — usually present.

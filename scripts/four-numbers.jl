@@ -29,6 +29,7 @@ const PREFIXES = [
     "rust/frontend/src/ui/" => "fe-ui", "rust/frontend/src/main.rs" => "fe-ui", "rust/frontend/src/cli.rs" => "fe-ui",
     "rust/frontend/src/net/" => "fe-net",
     "scripts/" => "distribution", "rust/updater/" => "distribution", "rust/backend/src/update" => "distribution",
+    "rust/backend/src/install/" => "distribution",
     "rust/frontend/src/selfupdate" => "distribution", "src/" => "distribution", "test/" => "distribution",
     ".github/" => "distribution", "deploy/" => "distribution",
     "docs/" => "records",

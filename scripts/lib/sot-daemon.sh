@@ -2,23 +2,23 @@ SOT_LAUNCH_WAIT_S=160  # = rust/protocol/src/ops/lease.rs LAUNCH_WAIT; scripts/t
 SOT_LOG_KEEP=5               # a start leaves at most this many nohup daemon logs, its own included, for a keep of 2 or more (sot_prune_logs)
 SOT_LOG_CAP_BYTES=16777216   # 16MB: the unprotected logs' total a start prunes down to (sot_prune_logs)
 
-# sot-daemon.sh -- the one place the sotd unit, the all-in-one sot-launch
-# wrapper and the backend ensure are written down. Sourced by install.sh,
-# sot-apply.sh, launch-sot.sh, restart-backend.sh and, through the text
-# render_sot_launch writes, by the rendered wrapper itself. sot-apply.sh runs
+# sot-daemon.sh -- the one place the sotd unit, the sot-launch wrappers, the
+# boot drop-in and the backend ensure are written down. Run function by function
+# by sotd install (from the checkout it installs), and sourced by sot-apply.sh,
+# launch-sot.sh, restart-backend.sh and, through the text render_sot_launch
+# writes, by the rendered wrapper itself. sot-apply.sh runs
 # under /bin/sh (dash) and macOS ships bash 3.2, so this file is POSIX shell
 # plus `local`: no arrays, `[[`, `declare`, `$'...'`, `function`, or `==` in `[`.
 
-# ExecStart's binary path from a unit's text (stdin -> stdout); the same
-# two shapes as install.sh's installer_unit_owner_path, which stays there
-# because its ownership gate runs before any checkout exists. A test pins
-# the two copies equal.
+# ExecStart's binary path from a unit's text (stdin -> stdout), in the same
+# two shapes sotd install's ownership gate reads (rust/backend/src/install/
+# role.rs `unit_owner_path`, which runs before any checkout exists).
 sot_unit_owner_path() {
     sed -n -E 's/^ExecStart=(.*exec ")?([^ "]+)"?.*/\2/p' | sed -n 1p
 }
 
-# The owner prefix a sot-launch wrapper's content embeds (stdin -> stdout);
-# copy of install.sh's installer_wrapper_owner_prefix, pinned equal by test.
+# The owner prefix a sot-launch wrapper's content embeds (stdin -> stdout), in
+# the three shapes sotd install's gate reads (role.rs `wrapper_owner_prefix`).
 sot_wrapper_owner_prefix() {
     sed -n -E \
         -e 's#^PENDING="(.+)/updates/pending-.*"$#\1#p' \
@@ -35,8 +35,8 @@ sot_sed_literal() {  # <text>: the text as the replacement of an s|...|...| comm
 
 # The one list of characters a path may not hold, because a rendered file splices it into text another reader parses: the
 # unit's `bash -c` and the launchers' double-quoted text (`'`, `"`, `$`, backquote, `\`, newline), systemd (`%`, `\`), sed,
-# JSON and shell lines (`&`, `|`, `;`, space, tab). Byte-identical to scripts/install.sh's and scripts/sot-apply.sh's (a test
-# pins both): install.sh's front gate and sot-apply's check before the flip run it, and each render runs it before its own
+# JSON and shell lines (`&`, `|`, `;`, space, tab). Byte-identical to scripts/sot-apply.sh's, whose check before the flip runs
+# it (a test pins the copy, and that sotd install's front gate names the same list), and each render runs it before its own
 # write. Returns 0 after one stderr line naming what (prefix or home), the path and the character, else 1.
 sot_path_refused() {  # <what: prefix|home> <path>
     local ch= list='% \ '"'"' " $ ` & | ; space tab newline'
@@ -260,7 +260,7 @@ sot_socket_open() {  # <sotd-bin> <socket>
 }
 
 # True when this install owns a systemd user unit for the backend: systemctl
-# is here, the manifest says systemd, and the unit file install.sh wrote
+# is here, the manifest says systemd, and the unit file sotd install wrote
 # points at this prefix's sotd. Reads the FILE, not `systemctl cat`, so apply,
 # ensure and rollback ask one question the same way.
 sot_service_owned() {  # <prefix>
@@ -486,8 +486,8 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
 
 # The one copy helper: copy SRC to DST.new.<pid> (this shell's own, so two
 # writers never share it), set MODE when one is given, and move it over DST, so
-# DST only ever exists whole. Any failure removes the temp file and returns 1. sot-apply.sh and install.sh carry byte-identical copies
-# (they copy before any checkout is known); a test pins all three equal.
+# DST only ever exists whole. Any failure removes the temp file and returns 1. sot-apply.sh carries a byte-identical copy
+# (it copies before it reads the library of the commit it applies); a test pins the two equal.
 sot_install_copy() {  # <src> <dst> [mode]
     if cp -p "$1" "$2.new.$$" && { [ -z "${3:-}" ] || chmod "$3" "$2.new.$$"; } && mv -f "$2.new.$$" "$2"; then
         return 0

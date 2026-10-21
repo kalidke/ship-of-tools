@@ -5,7 +5,8 @@ asked to install **Ship of Tools** — an agentic development system for Julia
 (https://github.com/kalidke/ship-of-tools). This document is written for
 *you*: follow it top to bottom, adapt where your judgment says so, and keep
 the human informed at each step. For the release-artifact path, the
-deterministic engine underneath is `scripts/install.sh`; your job is the
+deterministic engine underneath is `scripts/install.sh` (on Windows `scripts\install.ps1`), which checks a release and
+runs its own `sotd install`; your job is the
 judgment around it — choosing the right topology, verifying prerequisites, and
 proving the result works.
 

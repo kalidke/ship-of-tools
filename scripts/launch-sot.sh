@@ -166,7 +166,7 @@ read_topology_plan
 # hosts.toml always did.
 #
 # SOT_FRONTEND_BIN (item 2 follow-up): the dev-checkout path is the
-# default, unchanged; install.sh's generated launcher sets this to its own
+# default, unchanged; the installed launcher (render_remote_launch) sets this to its own
 # staged $PREFIX/bin/sot when it delegates here, since repo/current (a
 # pinned release checkout, not necessarily built) has no
 # rust/target/release of its own.

@@ -122,7 +122,7 @@ and the resource tree, and changes in it are not carried to the next version.
   until a run that names no version", and the `PASS` or `ONE STEP LEFT` line ends with it. A run that names no version removes the pin, and an `install.json` with no pin field (every install made before the
   field existed) is unpinned and follows its channel. Running the version a machine already runs, by name, is how a machine
   is pinned in place: when its daemon already answers as that version the run writes the pin, drops any update pointer
-  armed over the install, and restarts nothing (on Windows a named run of the installed version fetches no release asset; the prelude still fetches the tag's `install.ps1` unless `SOT_INSTALL_TAG` is set).
+  armed over the install, and stops, restarts, stages and applies nothing (it still downloads and checks the release, whose own `sotd install` makes that decision).
   A build with a `+` never updates automatically, so a pin changes nothing there.
 - **An `install.json` that cannot be read.** A record cut short (an interrupted write, a bad hand edit) may hold a pin,
   so automatic updates stay off for that install, and the update status says so in one sentence: "install.json cannot be

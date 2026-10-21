@@ -185,7 +185,8 @@ never renamed), the verdict words, `$PREFIX`'s layout, `install.json`, the unit 
 
 Calls out: `sotd update direction|repls|stage|pointer`, `sotd same-version`, `sotd topology status|plan|sync|pin`,
 `sotd trust declare`, `sotd session-socket-path`, `sotd stdio-bridge`, run as programs (the command line is the seam:
-`sotd install` names no other subsystem's module); git, curl, tar, julia and juliaup, npm, systemctl and loginctl,
+`sotd install` names no other subsystem's module but platform's `host_name` and `kernel_host_name` and topology's
+`SSH_OPTS`); git, curl, tar, julia and juliaup, npm, systemctl and loginctl,
 ps; on Windows powershell.exe for the shortcut, the converge (`relaunch-sot.ps1 -Converge`), the stop of a daemon
 (`sot-local-daemon.ps1 -Stop`) and the apply.
 

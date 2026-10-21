@@ -10,7 +10,7 @@
 # command's plain-line stdout, nothing else -- no TOML, no `.sot/hosts.toml`
 # path knowledge here at all. Plain POSIX awk only (no gawk 3-arg match(),
 # no bash4 associative arrays) so this runs under macOS's stock /bin/bash
-# and awk, matching install.sh's own awk helpers.
+# and awk.
 #
 # sot_topology_plan is PURE apart from the one `sotd` invocation it shells
 # out to (no ssh, no other side effects) -- easy to fake in a test by

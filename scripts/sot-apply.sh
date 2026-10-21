@@ -23,7 +23,7 @@
 #
 # No network, no npm; Julia only for the comm refresh after an apply, which is fail-open. The rest happened at prepare
 # time.
-# Installed to <prefix>/bin/ by install.sh and shipped inside release
+# Installed to <prefix>/bin/ by sotd install and shipped inside release
 # archives; keep POSIX sh (macOS dash/bash).
 
 set -u
@@ -31,7 +31,7 @@ set -u
 log() { printf 'sot-apply: %s\n' "$*" >&2; }  # printf: a shell's echo turns the \n in a logged command into a newline
 
 # Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it): this script
-# runs as an installed binary, before any checkout is known.
+# runs as an installed binary, and copies before it reads the library of the commit it applies.
 sot_install_copy() {  # <src> <dst> [mode]
     if cp -p "$1" "$2.new.$$" && { [ -z "${3:-}" ] || chmod "$3" "$2.new.$$"; } && mv -f "$2.new.$$" "$2"; then
         return 0

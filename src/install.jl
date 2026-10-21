@@ -45,7 +45,7 @@ changes anything, with one line naming the command that installs jq
 """
 function install_comm(; clis = [:claude, :codex])
     # jq is the comm scripts' JSON reader and writer: without it no send or poll works. The install stops here, so an
-    # earlier install and its stamp stay as they were (scripts/install.sh's preflight stops the same way).
+    # earlier install and its stamp stay as they were (sotd install's preflight stops the same way).
     Sys.which("jq") === nothing && error("sot-comm needs jq, which is not on PATH: install it with " *
                                          "`$(_jq_install_command())`, then run ShipTools.update_comm() again")
     bin = joinpath(comm_home(), "bin")

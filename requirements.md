@@ -124,7 +124,8 @@ one load-bearing. The following are now **in scope**, governed by ADR 0030
 - **Installation**: a scripted installer (interactive or flag-driven) laying
   down binaries plus a repo checkout pinned at the release tag — the checkout
   doubles as the product's resource tree and its in-app manual.
-  *Status: built for Linux and macOS (scripts/install.sh); Windows installs by hand (docs/INSTALL-AGENT.md).*
+  *Status: built for Linux, macOS (scripts/install.sh) and Windows (scripts/install.ps1); both run the release's own
+  `sotd install`.*
 - **Self-update**: installed instances detect, download, verify, and stage
   new releases; apply is staged-next-launch with rollback.
 
