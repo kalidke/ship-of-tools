@@ -83,33 +83,33 @@ jobs:
           workspaces: rust
           shared-key: ${{ matrix.os == 'ubuntu-latest' && 'test-linux' || '' }}
           cache-on-failure: true
-          save-if: ${{ matrix.shard == 'rest' }}
+          save-if: ${{ matrix.shard == 'rest-0' }}
       # The sotd unit tests render through the real MathJax node script, which needs its npm modules.
       - uses: actions/setup-node@v7
-        if: matrix.shard == 'sotd' || matrix.shard == 'gate-wgl'
+        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: rust/backend/sidecars/mathjax/package-lock.json
       - name: Install the MathJax helper's modules
-        if: matrix.shard == 'sotd' || matrix.shard == 'gate-wgl'
+        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
         working-directory: rust/backend/sidecars/mathjax
         run: npm ci
       # The shards whose tests start Julia (the sidecar tests in sotd, the daemon suites in wake and rest that send kernel,
       # preview or REPL ops) have the 1.13 every system runs.
       - uses: julia-actions/setup-julia@v3
-        if: contains(fromJSON('["sotd", "wake", "rest"]'), matrix.shard)
+        if: contains(fromJSON('["sotd-a", "sotd-b", "wake", "ws", "rest-0", "rest-1"]'), matrix.shard)
         with:
           version: '1.13'
       # sotd and sot-capsule sit in the target dir the backend tests spawn them from.
       - name: Build workspace
         run: cargo build --workspace --locked
-      # Windows and macOS run, in the supervisor shard, the clippy gates and the portable selected-body
+      # Windows and macOS run, in the sup shard, the clippy gates and the portable selected-body
       # proofs that `checks` runs on Linux: cfg(windows) and cfg(macos) code is checked only where it compiles.
       # The vendored vt100 crate is excluded: it denies clippy::all in its own source, which beats -A on the command
       # line. CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
       - name: Test children
-        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'supervisor'
+        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'sup'
         env:
           CLIPPY_CONF_DIR: "${{ github.workspace }}/rust/clippy-tests"
         run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::disallowed_methods
@@ -117,10 +117,10 @@ jobs:
       # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
       # that does not exist on a leg draws a warning there.
       - name: Disallowed methods
-        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'supervisor'
+        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'sup'
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
       - name: Build selected-body fixture
-        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'supervisor'
+        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'sup'
         shell: bash
         run: |
           mkdir -p ../dev/output
@@ -136,7 +136,7 @@ jobs:
               output.write(path + '\n')
           PYFIXTURE
       - name: Test selected Rust bodies
-        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'supervisor'
+        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'sup'
         shell: bash
         run: |
           python3 - <<'PYCARGO'
@@ -163,6 +163,10 @@ jobs:
           PYCARGO
           ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh --portable "$(cat ../dev/output/iso-sh-ci-path)"
 
+      # The rest shards link every test executable they run; that is build, not test, so it is outside the bound.
+      - name: Build the test executables
+        if: startsWith(matrix.shard, 'rest')
+        run: cargo test --workspace --locked --no-run
       # --nocapture: tests that report on stdout (the fault sweeps' hit counts, the PASS lines other lanes read) print
       # here. --no-fail-fast: one failing test binary must not hide the others.
       - name: Test shard ${{ matrix.shard }}
@@ -176,14 +180,14 @@ jobs:
       # Every test of a named target runs in exactly one shard of .github/test-shards.txt; a test unassigned or assigned twice
       # fails the run here, named.
       - name: Check that every test runs in exactly one shard
-        if: matrix.shard == 'rest'
+        if: matrix.shard == 'rest-0'
         shell: bash
         timeout-minutes: 3
         run: python3 ../scripts/tests/shards.py check
       # No comm or agents script leaves a file in its temporary folders (the two temp-file suites; Linux runs them in
       # `checks-slow`, Windows on the native box).
       - name: Test comm temp files (hermetic)
-        if: matrix.os == 'macos-latest' && matrix.shard == 'rest'
+        if: matrix.os == 'macos-latest' && matrix.shard == 'rest-0'
         shell: bash
         timeout-minutes: 3
         working-directory: .

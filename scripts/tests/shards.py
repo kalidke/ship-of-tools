@@ -13,8 +13,8 @@
 A table row is `shard kind target [libtest filters]`: a target is a test executable (kind bin, test, example or bench).
 A row with no filters runs the target whole; a row with filters runs the tests they select. Positional filters are
 alternatives, as in libtest; `--skip X` removes. A target's rows together must select each of its tests exactly once.
-A shard named gate-* runs in release-gate.yml, every other in rust.yml, and `rest` (never named) in rust.yml runs every
-test executable the table does not name, then the doc tests.
+A shard named gate-* runs in release-gate.yml, every other in rust.yml, and `rest-0` and `rest-1` (never named) in
+rust.yml run every test executable the table does not name, alternate ones each, rest-0 then the doc tests.
 """
 import json
 import os
@@ -24,6 +24,7 @@ import sys
 
 TABLE = pathlib.Path(__file__).resolve().parents[2] / '.github' / 'test-shards.txt'
 KINDS = ('bin', 'test', 'example', 'bench')
+REST = ('rest-0', 'rest-1')
 
 
 def rows():
@@ -71,16 +72,17 @@ def cargo_test(shard, selection, libtest=()):
 
 def run(shard):
     table = rows()
-    if shard == 'rest':
+    if shard in REST:
         built = built_tests()
         named = {(kind, target) for _, kind, target, _ in table}
         if named - built.keys():
             sys.exit('the table names targets that build no test executable: ' + repr(sorted(named - built.keys())))
-        rest = sorted(built.keys() - named)
-        selection = ['--lib'] if any(kind not in KINDS for kind, _ in rest) else []
-        selection += [arg for kind, name in rest if kind in KINDS for arg in ('--' + kind, name)]
+        everything = sorted(built.keys() - named)
+        rest = [t for t in everything if t[0] in KINDS][REST.index(shard)::len(REST)]
+        libs = shard == REST[0] and any(kind not in KINDS for kind, _ in everything)
+        selection = (['--lib'] if libs else []) + [arg for kind, name in rest for arg in ('--' + kind, name)]
         print(f'shard coverage: {len(built)} test executables, {len(named)} named, {len(rest)} in rest', flush=True)
-        results = [cargo_test(shard, selection), cargo_test(shard, ['--doc'])]
+        results = [cargo_test(shard, selection)] + ([cargo_test(shard, ['--doc'])] if shard == REST[0] else [])
     else:
         mine = [row for row in table if row[0] == shard]
         if not mine:
@@ -99,8 +101,8 @@ def listed(message, extra):
 
 def check():
     table = rows()
-    if 'rest' in shard_names(table):
-        sys.exit('the table names the shard rest; rest runs only what the table does not name')
+    if set(REST) & set(shard_names(table)):
+        sys.exit('the table names a rest shard; rest runs only what the table does not name')
     built = built_tests()
     problems = []
     for target in sorted({(kind, target) for _, kind, target, _ in table}):
@@ -143,7 +145,7 @@ def main():
     if command == 'plan' and args in (['landing'], ['gate']):
         names = shard_names(rows())
         gate = [n for n in names if n.startswith('gate-')]
-        print(json.dumps(gate if args == ['gate'] else [n for n in names if n not in gate] + ['rest']))
+        print(json.dumps(gate if args == ['gate'] else [n for n in names if n not in gate] + list(REST)))
     elif command == 'run' and len(args) == 1:
         run(args[0])
     elif command == 'check' and not args:

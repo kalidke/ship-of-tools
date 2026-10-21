@@ -61,16 +61,16 @@ jobs:
           workspaces: rust
           shared-key: ${{ matrix.os == 'ubuntu-latest' && 'test-linux' || '' }}
           cache-on-failure: true
-          save-if: ${{ matrix.shard == 'rest' }}
+          save-if: ${{ matrix.shard == 'rest-0' }}
       # The sotd unit tests render through the real MathJax node script, which needs its npm modules.
       - uses: actions/setup-node@v7
-        if: matrix.shard == 'sotd' || matrix.shard == 'gate-wgl'
+        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: rust/backend/sidecars/mathjax/package-lock.json
       - name: Install the MathJax helper's modules
-        if: matrix.shard == 'sotd' || matrix.shard == 'gate-wgl'
+        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
         working-directory: rust/backend/sidecars/mathjax
         run: npm ci
       # The shards whose tests start Julia (the sidecar tests in sotd, the daemon suites in wake and rest that send kernel,

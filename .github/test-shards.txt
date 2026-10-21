@@ -6,18 +6,25 @@
 # exactly once: the check in rust.yml fails, naming the test, on one that runs nowhere or twice. A shard runs its rows
 # one after the other; rc-gate.sh runs each row that has filters as a job of its own.
 # A shard named gate-* runs in release-gate.yml, once per release; every other shard runs in rust.yml at each landing.
-# `rest` is never named: it runs every test executable this table does not name, then the doc tests.
+# `rest-0` and `rest-1` are never named: together they run every test executable this table does not name (alternate ones
+# in each), and rest-0 the doc tests.
 #
 # The wall-clock tests (they sleep on the clock, 60 to 180 s each) and the page test that needs a prepared Julia depot
-# are in gate-* shards; the rest are cut so a landing shard runs about three minutes of tests.
+# are in gate-* shards; the rest are cut so a landing shard runs under about four minutes of tests (seconds measured in
+# hosted run 39644482546 and the local gate: supervisor 141, lane_bridge 104, fe_client 59, capsule_workspaces 423 in
+# three groups, comm_wake 377 in three groups, the sotd unit binary 120).
 
-supervisor test supervisor
+sup        test supervisor
+sup        test fe_client --skip unresponsive_supervisor_expires_the_health_window
 lane       test lane_bridge --skip outage::
-lane       test fe_client --skip unresponsive_supervisor_expires_the_health_window
-workspaces test capsule_workspaces
-wake       test comm_wake
-sotd       bin  sotd sidecars:: --skip repl_page_secret_never_reaches_command_line
-sotd       bin  sotd --skip sidecars:: --skip repl_page_secret_never_reaches_command_line
+lane       test capsule_workspaces destroy:: spawn:: create:: session_env::
+ws         test capsule_workspaces ended_row:: resume:: attach::
+ws         test comm_wake a_restarted_daemon a_dead_row
+wake       test comm_wake a_wake_line_left_unsent an_unfinished_stop two_tomls a_newer_join a_row_whose_stop_hook
+wake       test comm_wake --skip a_restarted_daemon --skip a_dead_row --skip a_wake_line_left_unsent --skip an_unfinished_stop --skip two_tomls --skip a_newer_join --skip a_row_whose_stop_hook
+ws2        test capsule_workspaces --skip destroy:: --skip spawn:: --skip create:: --skip session_env:: --skip ended_row:: --skip resume:: --skip attach::
+sotd-a     bin  sotd sidecars:: --skip repl_page_secret_never_reaches_command_line
+sotd-b     bin  sotd --skip sidecars:: --skip repl_page_secret_never_reaches_command_line
 
 gate-sleep test lane_bridge outage::
 gate-sleep test window_start
