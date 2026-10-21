@@ -127,7 +127,9 @@ The install (0.7.0):
 Owns: the comm folder (`~/.sot-comm`, or `$SOT_COMM_HOME`): `inbox/`, `read/`, `self/`, `registry.json` with its lock
 and markers, `inbox-lock-manager`, and in `state/` the end-of-turn check's tick files; the address-book fields of a
 registry entry (`host`, `workspace_id`, `repo`, `root`, `expertise`, `status`, `joined`, `last_seen`, `stop_at`); the
-ops `comm.file` and `agent.send` (UI notifications, never mail); the wake; `sotd comm` and the wrappers in `comm/mail/`
+op `comm.file`; `agent.send` until the frontend pass (the window's notification op, kept beside `comm.file` only
+so a frame that names a handle is refused as mail, `mail_requires_comm_file`; it is the window's concept, and that pass
+takes it); the wake; `sotd comm` and the wrappers in `comm/mail/`
 and `comm/registry/`, the shell door `comm/lib/comm-lib-sotd.sh`, and `comm-subagent-guard.sh`; the messaging skills
 in `comm/adapters/`.
 
@@ -145,8 +147,10 @@ sotd, stays beside them for the spawn; rows (`edit_entry`, `read_comm_agents`,
 `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, `dialog_of`); the server (`handle_comm_file`,
 `handle_agent_send`, `Links`, `record_at_boot`, the wake's `run`, the hub link's `run`).
 
-Calls out: rows (`bound_handle` and the headless attach client, for the wake; `agent.join` over the wire; `comm-status.sh
-join` after a join, the work-state script's own verb); topology (the relay endpoint, `dial_and_call`, the ssh recipe);
+Calls out: rows, from the wake alone (`bound_handle` and the headless attach client); the package page's target puts the
+wake in the `sotd` binary beside the op table, so messaging's own crate calls no rows code, and until the crates exist
+the wake lives in `wake/` here. From the rest: rows over the wire and through its script (`agent.join`, and
+`comm-status.sh join` after a join); topology (the relay endpoint, `dial_and_call`, the ssh recipe);
 platform (the declared host, the machine id, the kernel locks, `connect_own`); containment (`Signal` for every child).
 
 Does not: decide a row's work-state (rows'); type anything but the wake line and its Enter; carry anything but mail on
@@ -156,7 +160,12 @@ Platforms: one implementation on all three. Linux reads the mount table for the 
 `local_lock=none`, `local <machine-id>` on a local disk) and `/proc` for the walk; macOS and Windows are always
 `none@<machine id>`, one machine's own lock, and macOS walks with `ps`; Windows' wrappers run under Git Bash and pass the
 MSYS table, and paths compare with `/c/...`, `C:/...` and `C:\...` as one spelling and without case. The wake's
-no-break-space test is off on Windows until a Windows screen shows it survives ConPTY.
+no-break-space test is off on Windows until a Windows screen shows it survives ConPTY. Without it, what keeps a person's
+unsent text untouched on Windows is the rest of the free test: anything but blanks after the glyph, after a plain space
+or after the ASCII `>` reads not free (`screen::tests::a_draft_reads_not_free_wherever_its_cursor_sits`, which runs the
+Windows reading on every system). What it costs there is the dialog side: a dialog input drawn as a glyph and a space
+can read as the main box, so on Windows "never a dialog" rests on the dialog reader and the box's rules alone, unproven
+on a Windows screen until one is captured (queue item 65).
 
 Tests: one unit test per guarantee, `cargo test -p sot-backend comm::` (each named in the pass's result); the
 integration suites `comm_wake` (a real daemon and capsule row: a free prompt is woken, a draft, a dialog and a working
