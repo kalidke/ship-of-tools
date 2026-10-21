@@ -52,6 +52,8 @@ struct Plan {
     socket: String,
     unit_runs: bool,
     retire_stops: bool,
+    /// A named run of the installed version and commit with no daemon on another version: it moves nothing.
+    repair: bool,
     before: State,
     windows_before: bool,
     live: daemon::Work,
@@ -158,8 +160,9 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
         let way = super::build_direction(&prefix, &pre_version, &pack.commit);
         return Err(Stop::at("target", 2, super::build_stop(&pre_version, &pack.tag(), &way, "--archive", "--version")));
     }
+    let mut dir = String::new();
     if record_path.is_file() || !pre_version.is_empty() {
-        let dir = super::direction(&new_sotd, &pack.version, &prefix, &pre_version);
+        dir = super::direction(&new_sotd, &pack.version, &prefix, &pre_version);
         match dir.as_str() {
             "unknown" => say(&format!("note: could not tell which way {} moves the install at {} (it records {pre_version})", pack.tag(), prefix.display())),
             "same" if pre_commit != pack.commit && super::is_commit(&pre_commit) => {
@@ -281,7 +284,9 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
         (State::None, String::new())
     };
     let windows_before = procs::window_runs(&all, &prefix);
+    let repair = dir == "same" && pre_commit == pack.commit && matches!(before, State::None | State::Current);
     let mut plan = Plan {
+        repair,
         checkout: prefix.join("repo/versions").join(pack.tag()),
         opts,
         prefix,
@@ -741,7 +746,7 @@ fn julia_and_comm(plan: &Plan, found: &mut Found) -> Result<(), Stop> {
         return Err(Stop::new(1, "ShipTools.update_comm() failed"));
     }
     if plan.role.daemon {
-        for failed in julia::instantiate(&checkout, selected.as_deref(), &plan.scratch, &|t| say(t)) {
+        for failed in julia::instantiate(&checkout, selected.as_deref(), &plan.scratch, plan.repair, &|t| say(t)) {
             found.fail("julia", failed);
         }
         let mathjax = checkout.join("rust/backend/sidecars/mathjax");
@@ -1038,7 +1043,7 @@ fn write_record(plan: &Plan) -> Result<(), Stop> {
         pinned: plan.named,
     };
     let path = plan.prefix.join("install.json");
-    record::write_whole(&path, &record::text(&r)).map_err(|e| Stop::new(1, format!("writing {}: {e}", path.display())))?;
+    record::write_whole(&path, &record::text_for(&record::read(&path), &r, plan.repair)).map_err(|e| Stop::new(1, format!("writing {}: {e}", path.display())))?;
     if plan.named {
         verdict::set_tail(verdict::pin_tail(&plan.pack.version));
     }

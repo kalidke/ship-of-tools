@@ -219,15 +219,11 @@ pub(super) const ENVS: [(&str, &str); 3] = [
 /// Instantiate the checkout's Julia environments, a stale untracked `Manifest.toml` dropped first (one that predates a
 /// dependency the tag added fails instantiate; a manifest the tag tracks is never touched, which would dirty the
 /// read-only checkout). The failures, one line each.
-pub(super) fn instantiate(checkout: &Path, selected: Option<&str>, scratch: &Path, say: &dyn Fn(&str)) -> Vec<String> {
+pub(super) fn instantiate(checkout: &Path, selected: Option<&str>, scratch: &Path, repair: bool, say: &dyn Fn(&str)) -> Vec<String> {
     let mut failed = Vec::new();
-    for (env, _) in ENVS {
-        let manifest = checkout.join("julia").join(env).join("Manifest.toml");
-        let tracked = cmd::output(cmd::git_in(checkout).args(["ls-files", "--error-unmatch", &format!("julia/{env}/Manifest.toml")])).ok();
-        if manifest.is_file() && !tracked {
-            say(&format!("dropping stale julia/{env}/Manifest.toml (fresh resolve at this tag)"));
-            let _ = std::fs::remove_file(&manifest);
-        }
+    for (env, manifest) in stale_manifests(checkout, repair) {
+        say(&format!("dropping stale julia/{env}/Manifest.toml (fresh resolve at this tag)"));
+        let _ = std::fs::remove_file(&manifest);
     }
     say("instantiating julia envs (first run takes a few minutes)");
     for (env, code) in ENVS {
@@ -237,6 +233,18 @@ pub(super) fn instantiate(checkout: &Path, selected: Option<&str>, scratch: &Pat
         }
     }
     failed
+}
+
+/// The untracked manifests a run drops before it instantiates, so a manifest that predates a dependency the tag added
+/// cannot fail it. A repair run keeps them: they are this checkout's own resolution, and a repair moves nothing.
+pub(super) fn stale_manifests(checkout: &Path, repair: bool) -> Vec<(&'static str, PathBuf)> {
+    if repair {
+        return Vec::new();
+    }
+    ENVS.iter()
+        .map(|(env, _)| (*env, checkout.join("julia").join(env).join("Manifest.toml")))
+        .filter(|(env, m)| m.is_file() && !cmd::output(cmd::git_in(checkout).args(["ls-files", "--error-unmatch", &format!("julia/{env}/Manifest.toml")])).ok())
+        .collect()
 }
 
 /// Bring the comm install to the checkout: `ShipTools.update_comm()` from the checkout's project.

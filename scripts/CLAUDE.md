@@ -104,8 +104,10 @@ Guarantees, each with the mechanism it rests on. Install:
 - The pin. A run that names its target pins the install (`"pinned": true`); one that names none removes the pin; the
   automatic writers never arm over a pin or over a record that cannot be read (`InstalledBuild::admits`). Every
   verdict line of a pinning run says so once the pin is written.
-- A repair run changes only the pin. A named run of the installed version and commit, with no daemon on another
-  version, writes the pin, drops any pointer armed over the install, and stops, restarts, stages and applies nothing.
+- A repair run moves nothing. A named run of the installed version and commit, with no daemon on another version,
+  writes the pin, drops any pointer armed over the install, and stops, restarts, stages and applies nothing; its other
+  steps lay again what is there (the same binaries and checkout, the environments' own manifests kept), so a repeat
+  finishes a half-done install, and a readable record of that build gets its pin and no other change.
 - The record last, whole, in its old shape. `install.json` is written last, beside itself and renamed in (no BOM), one
   key per line with schema 1's keys, the shape every earlier release's readers take (line readers in the scripts,
   `InstallManifest`). A repeat keeps the rollback: a `.prev` copy is made only of a binary that differs, and a prune

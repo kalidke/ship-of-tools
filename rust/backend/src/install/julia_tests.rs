@@ -39,3 +39,16 @@ fn a_julia_below_the_floor_is_named_with_its_fix() {
     let Judged::Step(line) = judge(&facts(Source::Bin(Some("1.12.0".into())), None)) else { panic!() };
     assert!(line.starts_with("the Julia the comm refresh runs could not be asked") && line.ends_with("ahead of /usr/bin/julia on PATH"), "{line}");
 }
+
+/// A repair run keeps the environments' untracked manifests, this checkout's own resolution; any other run drops them.
+#[test]
+fn a_repair_keeps_the_julia_manifests() {
+    let dir = tempfile::tempdir().unwrap();
+    let ran = sot_log::test_wait::run_within(std::process::Command::new("git").arg("init").arg("-q").arg(dir.path()), std::time::Duration::from_secs(20));
+    assert_eq!(ran.status.code(), Some(0), "{ran}");
+    std::fs::create_dir_all(dir.path().join("julia/kernel")).unwrap();
+    std::fs::write(dir.path().join("julia/kernel/Manifest.toml"), "resolved\n").unwrap();
+    assert_eq!(stale_manifests(dir.path(), false).len(), 1);
+    assert!(stale_manifests(dir.path(), true).is_empty());
+}
+

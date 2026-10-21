@@ -136,6 +136,15 @@ pub(super) fn set_pin(path: &Path, prefix: &Path, pinned: bool) -> std::io::Resu
     Ok(pinned)
 }
 
+/// The record a run leaves: written whole, except by a repair run over a readable record of the same version and
+/// commit, which edits only its pin and keeps every other byte (a repair moves nothing).
+pub(super) fn text_for(before: &str, r: &Record, repair: bool) -> String {
+    let same = string(before, "version").as_deref() == Some(r.version.as_str())
+        && string(before, "commit").as_deref() == Some(r.commit.as_str())
+        && serde_json::from_str::<serde_json::Value>(before.trim_start_matches('\u{feff}')).is_ok();
+    if repair && same { with_pin(before, r.pinned) } else { text(r) }
+}
+
 /// The time now, as the record writes it: `YYYY-MM-DDTHH:MM:SSZ`, UTC.
 pub(super) fn now_utc() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);

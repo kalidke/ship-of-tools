@@ -71,3 +71,18 @@ fn the_record_time_is_utc_in_its_shape() {
     let now = now_utc();
     assert_eq!((now.len(), &now[10..11], &now[19..]), (20, "T", "Z"), "{now}");
 }
+
+/// A repair run over a readable record of the same version and commit changes only the pin; any other run, or a cut
+/// record, gets the record whole.
+#[test]
+fn a_repair_changes_only_the_pin_of_the_record() {
+    let before = text(&sample(false));
+    let mut r = sample(true);
+    r.installed_at = "2026-10-21T09:00:00Z".into();
+    assert_eq!(text_for(&before, &r, true), with_pin(&before, true));
+    assert_eq!(text_for(&before, &r, false), text(&r));
+    assert_eq!(text_for("{ \"version\": \"0.6.7\", \"comm", &r, true), text(&r), "a cut record is written whole");
+    let other = text(&Record { commit: "f".repeat(40), ..sample(false) });
+    assert_eq!(text_for(&other, &r, true), text(&r), "another build is written whole");
+}
+

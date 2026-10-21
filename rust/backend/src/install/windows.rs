@@ -30,6 +30,8 @@ struct Ctx {
     version_dir: PathBuf,
     /// A converge restarted the daemon: it must answer as the target.
     expect_daemon: bool,
+    /// A repair run: it moves nothing, and the record gets its pin alone.
+    repair: bool,
 }
 
 impl Ctx {
@@ -103,6 +105,7 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
         named,
         pipe,
         expect_daemon: false,
+        repair: false,
     };
     let pin = if named { verdict::pin_tail(&ctx.pack.version) } else { String::new() };
     let installed = super::installed_version(&ctx.prefix);
@@ -219,6 +222,7 @@ fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: &str) 
     let (state, _) = daemon_state(ctx, new_sotd);
     if dir == "same" && same_commit && matches!(state, State::None | State::Current) {
         println!("this computer already runs {installed} at {}: a repair run", ctx.pack.short());
+        ctx.repair = true;
         // The pin first, then the pointer armed over the install: no arm lands between.
         write_pin(ctx, ctx.named)?;
         let _ = std::fs::remove_file(ctx.pointer());
@@ -444,7 +448,7 @@ fn layout_and_comm(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
     if !ctx.version_dir.join("julia\\kernel\\Manifest.toml").is_file() {
         let scratch = ctx.pack.dir.join("tmp");
         let _ = std::fs::create_dir_all(&scratch);
-        for failed in julia::instantiate(&ctx.version_dir, None, &scratch, &|t| println!("  {t}")) {
+        for failed in julia::instantiate(&ctx.version_dir, None, &scratch, false, &|t| println!("  {t}")) {
             found.fail("julia", failed);
         }
     }
@@ -522,7 +526,7 @@ fn write_record(ctx: &Ctx) -> Result<(), Stop> {
     if record::string(&before, "version").as_deref() != Some(&ctx.pack.version) || record::string(&before, "commit").as_deref() != Some(&ctx.pack.commit) {
         let _ = std::fs::remove_file(ctx.pointer());
     }
-    record::write_whole(&path, &record::text(&r)).map_err(|e| Stop::new(1, format!("writing {}: {e}", path.display())))?;
+    record::write_whole(&path, &record::text_for(&before, &r, ctx.repair)).map_err(|e| Stop::new(1, format!("writing {}: {e}", path.display())))?;
     verdict::set_tail(if ctx.named { verdict::pin_tail(&ctx.pack.version) } else { String::new() });
     Ok(())
 }
