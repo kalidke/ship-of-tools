@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Ship of Tools">
+  <title>Ship of Tools</title>
+  <!-- ship's helm: drive agents -->
+  <g stroke="#3b4252" stroke-width="7" fill="none" stroke-linecap="round">
+    <circle cx="64" cy="64" r="36"/>
+    <line x1="64" y1="16" x2="64" y2="112"/>
+    <line x1="16" y1="64" x2="112" y2="64"/>
+    <line x1="29" y1="29" x2="99" y2="99"/>
+    <line x1="99" y1="29" x2="29" y2="99"/>
+  </g>
+  <!-- neutral rim knobs -->
+  <g fill="#3b4252">
+    <circle cx="64" cy="116" r="7"/>
+    <circle cx="12" cy="64" r="7"/>
+    <circle cx="116" cy="64" r="7"/>
+    <circle cx="101" cy="27" r="7"/>
+    <circle cx="27" cy="27" r="7"/>
+  </g>
+  <!-- the three Julia dots in canonical Julia-logo orientation (green top,
+       red bottom-left, purple bottom-right), on rim knobs at the triangle
+       angles — echoes the circular session-switching motif -->
+  <circle cx="64" cy="12" r="7.5" fill="#389826"/>
+  <circle cx="27" cy="101" r="7.5" fill="#cb3c33"/>
+  <circle cx="101" cy="101" r="7.5" fill="#9558b2"/>
+  <!-- plain center hub -->
+  <circle cx="64" cy="64" r="9" fill="#3b4252"/>
+</svg>
