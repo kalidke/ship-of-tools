@@ -40,10 +40,10 @@ use std::path::PathBuf;
 // `current_uid()` call site in this module (and every downstream
 // `sot_protocol::{runtime_sot_dir, current_uid}` re-export in
 // `rust/backend/src/paths.rs`) keeps compiling unchanged. See
-// `sot_log::host::state_dir` for the doc comments, the tests, and the
+// `sot_platform::host::state_dir` for the doc comments, the tests, and the
 // `SOT_RUNTIME_DIR` override (`state_dir::runtime_dir`; nothing in
 // production sets it).
-pub use sot_log::host::state_dir::{current_uid, is_private_dir, runtime_sot_dir};
+pub use sot_platform::host::state_dir::{current_uid, is_private_dir, runtime_sot_dir};
 
 /// Conventional per-user session endpoint for a backend with the given
 /// label: a Unix socket path, or (Windows) a named pipe path. `sotd
@@ -53,11 +53,11 @@ pub use sot_log::host::state_dir::{current_uid, is_private_dir, runtime_sot_dir}
 /// the two processes can never derive two different paths for the same
 /// machine.
 pub fn session_socket_path(label: &str) -> PathBuf {
-    session_socket_path_in(label, &sot_log::host::env::Env::process())
+    session_socket_path_in(label, &sot_platform::host::env::Env::process())
 }
 
 /// [`session_socket_path`] reading the variables from `env`.
-pub fn session_socket_path_in(label: &str, env: &sot_log::host::env::Env) -> PathBuf {
+pub fn session_socket_path_in(label: &str, env: &sot_platform::host::env::Env) -> PathBuf {
     #[cfg(windows)]
     {
         let user = env.get("USERNAME").and_then(|u| u.to_str()).unwrap_or("user").to_string();
@@ -65,7 +65,7 @@ pub fn session_socket_path_in(label: &str, env: &sot_log::host::env::Env) -> Pat
     }
     #[cfg(not(windows))]
     {
-        let mut p = sot_log::host::state_dir::runtime_sot_dir_in(env);
+        let mut p = sot_platform::host::state_dir::runtime_sot_dir_in(env);
         p.push("sessions");
         p.push(format!("{}.sock", slug(label)));
         p
@@ -153,11 +153,11 @@ pub fn is_plain_host_name(s: &str) -> bool {
 /// `sot` as a default — on Windows the daemon's label is `local`, and
 /// `sot` derives a pipe nothing listens on.
 pub fn local_endpoint() -> String {
-    local_endpoint_in(&sot_log::host::env::Env::process())
+    local_endpoint_in(&sot_platform::host::env::Env::process())
 }
 
 /// [`local_endpoint`] reading the variables from `env`.
-pub fn local_endpoint_in(env: &sot_log::host::env::Env) -> String {
+pub fn local_endpoint_in(env: &sot_platform::host::env::Env) -> String {
     let p = env
         .get_nonempty("SOT_SOCKET")
         .map(PathBuf::from)

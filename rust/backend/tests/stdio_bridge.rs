@@ -125,12 +125,12 @@ fn spawn_bridge(args: &[&str]) -> Child {
 }
 
 /// Runs the bridge with `args` and its input closed at once (as `wait_with_output` did), and waits for it within
-/// `BOUND`: `sot_log::test_isolated`'s drain reads its output as it comes, and a bridge that never exits, or output a
+/// `BOUND`: `sot_platform::test_isolated`'s drain reads its output as it comes, and a bridge that never exits, or output a
 /// descendant still holds, fails the test at the bound instead of hanging the suite.
 fn run_bridge(args: &[&str]) -> (std::process::ExitStatus, String, String) {
     let mut child = spawn_bridge(args);
     drop(child.stdin.take());
-    sot_log::test_isolated::drain(child).wait_within(BOUND)
+    sot_platform::test_isolated::drain(child).wait_within(BOUND)
 }
 
 /// Drains the bridge's stdout on its own thread and reports it in two
@@ -203,7 +203,7 @@ fn round_trip(socket: &Path, args: &[&str]) {
     let tail = next(&rx, "stdout after the payload");
     assert!(tail.is_empty(), "the bridge wrote {} byte(s) of its own to stdout: {tail:?}", tail.len());
 
-    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let (status, _, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     let said = format!("{status}; stderr {stderr:?}");
     assert_eq!(status.code(), Some(0), "a caller hanging up is a clean exit, not a failure: {said}");
     assert!(stderr.is_empty(), "a clean run says nothing on stderr: {said}");
@@ -240,7 +240,7 @@ fn dash_dash_endpoint_reaches_a_socket_in_a_private_folder() {
 /// that has closed.
 #[test]
 fn dash_dash_endpoint_refuses_a_socket_another_account_listens_on() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "dash_dash_endpoint_refuses_a_socket_another_account_listens_on",
     ) {
         return;
@@ -255,7 +255,7 @@ fn dash_dash_endpoint_refuses_a_socket_another_account_listens_on() {
     // A bridge that has already exited refuses the write; its stderr says why.
     let _ = stdin.write_all(b"ping\n").and_then(|()| stdin.flush());
     drop(stdin);
-    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let (status, stdout, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
     assert_eq!(
         foreign.finish(),
@@ -277,7 +277,7 @@ fn dash_dash_endpoint_refuses_a_socket_another_account_listens_on() {
 /// another OS account has filled, and its error is not the account refusal, so the backlog was full.
 #[test]
 fn a_full_foreign_backlog_ends_the_bridge_within_its_bound() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "a_full_foreign_backlog_ends_the_bridge_within_its_bound",
     ) {
         return;
@@ -289,7 +289,7 @@ fn a_full_foreign_backlog_ends_the_bridge_within_its_bound() {
     let endpoint = format!("unix:{}", foreign.path.display());
     let mut child = spawn_bridge(&["--endpoint", &endpoint]);
     drop(child.stdin.take());
-    let (status, stdout, stderr) = sot_log::test_isolated::drain(child)
+    let (status, stdout, stderr) = sot_platform::test_isolated::drain(child)
         .wait_within(sot_log::lane::transport::CONNECT_BOUND + Duration::from_secs(5));
     let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
     assert!(
@@ -457,7 +457,7 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
     assert!(parsed.payload.get("error").is_none(), "hello refused: {:?}", parsed.payload);
 
     drop(stdin);
-    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let (status, _, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     assert_eq!(status.code(), Some(0), "the bridge exits cleanly when its caller hangs up: {stderr:?}");
 }
 
@@ -509,7 +509,7 @@ fn lease_through_stdio_bridge_refused() {
 
     // The claim is this test process's own identity; the peer the daemon
     // reads is the bridge.
-    let who = sot_log::identity::challenge::self_identity().expect("this process's identity");
+    let who = sot_platform::identity::challenge::self_identity().expect("this process's identity");
     let req = sot_protocol::ops::FeLeaseReq { boot: who.boot, pid: who.pid, created: who.created, token: None };
     let frame = sot_protocol::Frame::req(1, sot_protocol::op::FE_LEASE, serde_json::to_value(&req).expect("fe.lease serializes"));
     // A handoff hello and the lease in one write, as the window writes them through the bridge; the hello's
@@ -540,7 +540,7 @@ fn lease_through_stdio_bridge_refused() {
     assert_eq!(parsed.payload["outcome"], "foreign", "a bridged lease must be foreign: {:?}", parsed.payload);
 
     drop(stdin);
-    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let (status, _, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     assert_eq!(status.code(), Some(0), "the bridge exits cleanly after a bridged lease: {stderr:?}");
     std::thread::sleep(Duration::from_secs(2));
     let exited = env.daemon.borrow_mut().as_mut().expect("the daemon is tracked").try_wait().expect("try_wait the daemon");

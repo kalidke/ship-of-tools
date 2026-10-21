@@ -1,6 +1,6 @@
 //! Tests: Health probe, absence clock, first attach, link-down pause, dial backoff and attach refusal.
 
-use crate::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
+use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
 use crate::lane::client::{Client, Endpoint};
 use crate::attach_client::rules::{self, OutstandingSlot, QuitDispatcher, ReconnectDecision, ReconnectState};
 use crate::lane::wire::{self, AttachServer, SupervisorPhase, SupervisorReply};
@@ -69,7 +69,7 @@ impl Endpoint for ScriptedEndpoint {
     fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         unreachable!("uncertainty_clears_the_absence_clock never drives the supervisor lane")
     }
-    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
         unreachable!("uncertainty_clears_the_absence_clock never challenges")
     }
     fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
@@ -187,7 +187,7 @@ impl Endpoint for ScriptedVoyageEndpoint {
     fn challenge(
         &self,
         _conn: &Self::Client,
-        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
+        _exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
         _deadline: Instant,
     ) -> ChallengeOutcome<Self::Process> {
         unreachable!("converge_on_ready never challenges")
@@ -270,7 +270,7 @@ impl Endpoint for CountingUnreachableEndpoint {
     fn challenge(
         &self,
         _conn: &Self::Client,
-        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
+        _exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
         _deadline: Instant,
     ) -> ChallengeOutcome<Self::Process> {
         unreachable!("converge_on_ready never challenges")
@@ -300,7 +300,7 @@ impl Endpoint for LinkDownEndpoint {
     fn challenge(
         &self,
         _conn: &Self::Client,
-        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
+        _exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
         _deadline: Instant,
     ) -> ChallengeOutcome<Self::Process> {
         unreachable!("converge_on_ready never challenges")
@@ -443,7 +443,7 @@ impl Endpoint for RefusingEndpoint {
     fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         unreachable!("an_attach_refusal_carries_its_reason_to_the_caller never dials")
     }
-    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
         unreachable!("an_attach_refusal_carries_its_reason_to_the_caller never challenges")
     }
     fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
@@ -509,7 +509,7 @@ impl Endpoint for AbandonedEndpoint {
     type Process = TestProcess;
     fn connect_supervisor_unchallenged(&self, _: &str) -> Result<DeadClient, crate::lane::transport::TransportError> { Ok(DeadClient) }
     fn connect_voyage_unchallenged(&self, _: &str, _: &str) -> Result<DeadClient, crate::lane::transport::TransportError> { panic!("an abandoned attempt never dials voyage") }
-    fn challenge(&self, _: &DeadClient, _: &mut dyn crate::identity::exchange::IdentityExchange, _: Instant) -> ChallengeOutcome<TestProcess> {
+    fn challenge(&self, _: &DeadClient, _: &mut dyn sot_platform::identity::exchange::IdentityExchange, _: Instant) -> ChallengeOutcome<TestProcess> {
         if self.foreign { ChallengeOutcome::Foreign } else { ChallengeOutcome::Undetermined }
     }
     fn authenticate_server(&self, _: &DeadClient) -> PeerAuthOutcome { unreachable!() }

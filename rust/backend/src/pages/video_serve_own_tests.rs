@@ -5,7 +5,7 @@ use tokio::io::AsyncWriteExt;
 async fn this_accounts_connection_is_served_through_the_real_check() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "test", serve_conn));
+    tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "test", serve_conn));
     let mut c = TcpStream::connect(addr).await.unwrap();
     c.write_all(b"GET /nosuchtoken HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
     let mut buf = [0u8; 128];

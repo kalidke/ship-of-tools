@@ -73,7 +73,7 @@ pub(super) fn one_connect_attempt(
     addr_bytes: &[u8],
     deadline: Instant,
 ) -> Result<UnixStream, ConnectAttempt> {
-    let fd = crate::host::fd::socket_cloexec("connector", libc::AF_UNIX, libc::SOCK_STREAM)
+    let fd = sot_platform::host::fd::socket_cloexec("connector", libc::AF_UNIX, libc::SOCK_STREAM)
         .map_err(ConnectAttempt::Fatal)?;
     if let Err(e) = set_nonblocking(fd.as_raw_fd()) {
         return Err(ConnectAttempt::Fatal(e));
@@ -196,7 +196,7 @@ pub(super) fn capture_connect_anchor_boot_ticks() -> u64 {
     // less-than check, which a `0` timestamp can only ever fail (no
     // process has a negative start time), so this never needs to fail
     // the connect outright over it.
-    crate::identity::challenge_unix::boot_ticks_now().unwrap_or(0)
+    sot_platform::identity::challenge_unix::boot_ticks_now().unwrap_or(0)
 }
 #[cfg(not(target_os = "linux"))]
 pub(super) fn capture_connect_anchor_boot_ticks() -> u64 {

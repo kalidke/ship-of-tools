@@ -192,7 +192,7 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
                     let (pid, created) = self_pid_and_created().unwrap_or((0, 0));
                     let reply = wire::encode_supervisor_reply(&SupervisorReply::HelloOk {
                         proto: wire::SUPERVISOR_PROTO_V1,
-                        build: crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
+                        build: crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
                         pid,
                         created,
                     })

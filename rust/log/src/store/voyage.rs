@@ -3,7 +3,7 @@
 //! Windows arms (ADR 0041 §store port); the codec itself is portable.
 
 use crate::store::envelope::{Digest, Seq};
-use crate::host::{self, DirIdentity, PinnedDir, WriterLock};
+use sot_platform::host::{self, DirIdentity, PinnedDir, WriterLock};
 use crate::store::recovery::{self, Reconciled};
 use crate::store::segment::{
     HeaderBody, RetentionClass, SegmentIdentity, SegmentReader, SegmentState, SegmentWriter,
@@ -609,7 +609,7 @@ impl VoyageStore {
         }
         match host::rename_noreplace_raw(&tmp, &dest) {
             Ok(()) => {}
-            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(sot_platform::Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Raced an identical publish: verify + clean the temp. Same
                 // reasoning as the `dest.exists()` branch above applies to
                 // the flush below — this process didn't do the winning
@@ -624,7 +624,7 @@ impl VoyageStore {
                     });
                 }
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         }
         host::finish_publication(&dest)?;
         Ok(digest)

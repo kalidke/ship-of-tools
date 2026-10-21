@@ -376,7 +376,7 @@ async fn an_idle_row_with_a_ticking_footer_is_woken() {
 /// UTC `%Y-%m-%dT%H:%M:%SZ` for now plus `off` seconds.
 fn iso_at(off: i64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_secs() as i64;
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         std::process::Command::new("date").args(["-u", "-d", &format!("@{}", now + off), "+%Y-%m-%dT%H:%M:%SZ"]),
         BOUND,
     )

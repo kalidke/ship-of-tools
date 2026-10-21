@@ -68,10 +68,10 @@
 
 #![cfg(target_os = "macos")]
 
-use crate::identity::challenge::ChallengeOutcome;
+use sot_platform::identity::challenge::ChallengeOutcome;
 use crate::capsule::producer::ExitStatus;
-use crate::identity::challenge_macos;
-use crate::identity::exit_watch_macos::{drain_exit, watch_exit};
+use sot_platform::identity::challenge_macos;
+use sot_platform::identity::exit_watch_macos::{drain_exit, watch_exit};
 use crate::supervisor::probe::leg_process::LegProcess;
 use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
 use crate::store::voyage::WRITER_LOCK;
@@ -303,7 +303,7 @@ impl ProbeOps for RealProbeOps {
     fn spawn(&self, command: &mut std::process::Command) -> SpawnOutcome<Self::SpawnedChild> {
         #[allow(clippy::disallowed_methods, reason = "the supervisor starts its leg (ADR 0043)")]
         let spawned = {
-            let _fork = crate::host::fd::fork_guard();
+            let _fork = sot_platform::host::fd::fork_guard();
             command.spawn()
         };
         match spawned {
@@ -352,7 +352,7 @@ impl ProbeOps for RealProbeOps {
     }
 
     fn challenge(&self, conn: &Self::Conn, deadline: Instant) -> ChallengeOutcome<Self::Process> {
-        let mut exchange = crate::identity::exchange::VoyageMgmtExchange::default();
+        let mut exchange = crate::lane::exchange::VoyageMgmtExchange::default();
         match challenge_macos::challenge(conn, &mut exchange, deadline) {
             ChallengeOutcome::Proven(process) => ChallengeOutcome::Proven(LegProcess::Adopted(process)),
             ChallengeOutcome::Foreign => ChallengeOutcome::Foreign,
@@ -362,7 +362,7 @@ impl ProbeOps for RealProbeOps {
 
     fn writer_fence_probe(&self, voyage_root: &Path) -> FenceProbe {
         let lock_path = voyage_root.join(WRITER_LOCK);
-        match crate::host::lock_writer(&lock_path) {
+        match sot_platform::host::lock_writer(&lock_path) {
             // The guard drops here, releasing the fence immediately --
             // this is a PROBE, never a hold.
             Ok(_guard) => FenceProbe::Free,

@@ -285,7 +285,7 @@ sot_dial() {
 # cross-host send from a row failed while the daemon's own SOT_SOCKET was
 # right). On the hub topology's answer is the daemon's own endpoint, SOT_SOCKET
 # first: a copy the daemon pins into each row at spawn, true while the runtime
-# base does not change (rust/log/src/host/CLAUDE.md, Promises). `sotd` always
+# base does not change (rust/platform/CLAUDE.md, Promises). `sotd` always
 # has an answer once it exists: on the hub its own endpoint (SOT_SOCKET first),
 # on a frontend box `ssh:<hub>`, on any other listed box the reverse-tunnel
 # socket, on a box that never declared a topology its own endpoint, and its own
@@ -446,7 +446,7 @@ _sot_windows_sid() {
 }
 
 # _sot_os_user — this shell's OS account as the operating system issued it, for the hello's `os_user` (ADR 0049
-# `## User isolation`; the same value `sot_log::identity::os_account::own_account_id()` gives the Rust builders):
+# `## User isolation`; the same value `sot_platform::identity::os_account::own_account_id()` gives the Rust builders):
 # `uid:<euid>` on Unix, the process token's user SID on Windows (`_sot_windows_sid`). Cached in
 # `_SOT_OS_USER`. Empty means unreadable: it fails, and no hello is sent. Never a name from the environment, and no
 # sotd call (an older installed sotd would break every send).

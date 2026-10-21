@@ -56,7 +56,7 @@ fn server_close_yields_client_eof_and_client_drop_yields_server_closed() {
     let client_a = connect_voyage_pipe(&id).unwrap();
     let conn_a = expect_accepted(&server, TIMEOUT);
     server.close(conn_a);
-    let n = sot_log::test_wait::within(TIMEOUT, "the client's EOF read", move || {
+    let n = sot_platform::test_wait::within(TIMEOUT, "the client's EOF read", move || {
         let mut buf = [0u8; 16];
         client_a.read(&mut buf).unwrap()
     });
@@ -192,7 +192,7 @@ fn client_read_cancel_unblocks_from_another_thread() {
     std::thread::sleep(Duration::from_millis(300)); // let the read actually become Pending
     client.cancel();
 
-    let result = sot_log::test_wait::within(TIMEOUT, "the cancelled reader", move || reader.join()).unwrap();
+    let result = sot_platform::test_wait::within(TIMEOUT, "the cancelled reader", move || reader.join()).unwrap();
     assert!(
         matches!(result, Err(TransportError::Cancelled)),
         "expected Cancelled, got {result:?}"
@@ -232,7 +232,7 @@ fn client_write_cancel_unblocks_from_another_thread() {
     std::thread::sleep(Duration::from_secs(2)); // let the flood saturate the events channel + pipe buffer
     client.cancel();
 
-    let result = sot_log::test_wait::within(TIMEOUT, "the cancelled writer", move || writer.join()).unwrap();
+    let result = sot_platform::test_wait::within(TIMEOUT, "the cancelled writer", move || writer.join()).unwrap();
     assert!(
         matches!(result, TransportError::Cancelled),
         "expected Cancelled, got {result:?}"
@@ -313,7 +313,7 @@ fn concurrent_same_direction_client_read_returns_distinct_error() {
     std::thread::sleep(Duration::from_millis(300)); // let A's read actually become Pending
 
     let b = Arc::clone(&client);
-    let result_b = sot_log::test_wait::within(TIMEOUT, "the refused second read", move || {
+    let result_b = sot_platform::test_wait::within(TIMEOUT, "the refused second read", move || {
         let mut buf_b = [0u8; 16];
         b.read(&mut buf_b)
     });
@@ -323,7 +323,7 @@ fn concurrent_same_direction_client_read_returns_distinct_error() {
     );
 
     client.cancel();
-    let result_a = sot_log::test_wait::within(TIMEOUT, "the cancelled first reader", move || reader_a.join()).unwrap();
+    let result_a = sot_platform::test_wait::within(TIMEOUT, "the cancelled first reader", move || reader_a.join()).unwrap();
     assert!(
         matches!(result_a, Err(TransportError::Cancelled)),
         "expected Cancelled, got {result_a:?}"

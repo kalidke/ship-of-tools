@@ -18,7 +18,7 @@ const PREFIXES = [
     "rust/backend/src/lifecycle/" => "lifecycle", "rust/frontend/src/lease" => "lifecycle",
     "rust/backend/src/rows/" => "rows",
     "agents/" => "agents", "rust/backend/src/agents/" => "agents",
-    "rust/log/src/host/" => "platform", "rust/log/src/identity/" => "platform",
+    "rust/platform/src/host/" => "platform", "rust/platform/src/identity/" => "platform",
     "rust/log/" => "capsule", "julia/sotlog/" => "capsule",
     "rust/vt100/" => "vt100",
     "comm/" => "messaging", "rust/backend/src/comm/" => "messaging",

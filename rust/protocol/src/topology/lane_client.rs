@@ -15,7 +15,7 @@
 //! LaneConnectRes`]. [`DaemonLaneEndpoint::authenticate_server`] simply
 //! hands that report back — no OS-level check of its own is possible
 //! from here, reaching the peer only through a bridged pipe.
-//! [`DaemonLaneEndpoint::challenge`] then runs `sot_log::identity::challenge::
+//! [`DaemonLaneEndpoint::challenge`] then runs `sot_platform::identity::challenge::
 //! exchange_identity` (steps 4-5, the SAME wire round trip every
 //! platform endpoint's own `challenge()` runs) over that pipe and
 //! accepts the result ONLY when it equals the daemon's own report.
@@ -53,7 +53,7 @@
 //!
 //! # No process-control authority; no independent trust
 //!
-//! [`BridgedPeer`] implements ONLY `sot_log::lane::client::PeerIdentity` (bare
+//! [`BridgedPeer`] implements ONLY `sot_platform::identity::peer::PeerIdentity` (bare
 //! `pid`/`created`) — never `PeerProcess`: this endpoint cannot wait on
 //! or terminate a process it only ever reaches through the daemon's own
 //! pipe. And [`DaemonLaneEndpoint`] itself holds no kernel handle on
@@ -66,9 +66,10 @@ mod lane_child;
 use lane_child::BridgedClient;
 use std::time::Instant;
 
-use sot_log::identity::challenge::{ChallengeOutcome, PeerAuthOutcome, PeerAuthenticated, StatusFailure};
-use sot_log::lane::client::{Client, Endpoint, PeerIdentity};
-use sot_log::identity::exchange::IdentityExchange;
+use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome, PeerAuthenticated, StatusFailure};
+use sot_log::lane::client::{Client, Endpoint};
+use sot_platform::identity::peer::PeerIdentity;
+use sot_platform::identity::exchange::IdentityExchange;
 use sot_log::lane::transport::{TransportError, CONNECT_BOUND};
 
 use crate::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
@@ -143,7 +144,7 @@ enum VoyageSpare {
 type TestSshSpawner = std::sync::Arc<dyn Fn(std::process::Command) -> std::io::Result<std::process::Child> + Send + Sync>;
 
 /// The lane peer's identity, exactly as the DAEMON'S OWN dial observed
-/// it — deliberately the same two fields as `sot_log::identity::challenge::
+/// it — deliberately the same two fields as `sot_platform::identity::challenge::
 /// PeerAuthenticated`, but a separate type: nothing here is ever spelled
 /// `ChallengedProcess` or `PeerAuthenticated`, so no consumer can mistake
 /// a peer proven through a THIRD PARTY'S own OS-level check for one this
@@ -176,6 +177,8 @@ enum LaneStream {
     Pipe(sot_log::lane::pipe_win::PipeClient),
     Bridged(BridgedClient),
 }
+
+sot_log::challengeable_client!(LaneStream);
 
 impl Client for LaneStream {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
@@ -215,6 +218,8 @@ pub struct DaemonLaneClient {
     peer: PeerAuthenticated,
 }
 
+sot_log::challengeable_client!(DaemonLaneClient);
+
 impl Client for DaemonLaneClient {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
         self.stream.write_all(bytes)
@@ -249,7 +254,7 @@ impl Endpoint for DaemonLaneEndpoint {
     /// rather than a fresh OS-level check this endpoint has no way to
     /// run.
     fn challenge(&self, conn: &Self::Client, exchange: &mut dyn IdentityExchange, reply_deadline: Instant) -> ChallengeOutcome<Self::Process> {
-        match sot_log::identity::challenge::exchange_identity(conn, exchange, reply_deadline) {
+        match sot_platform::identity::challenge::exchange_identity(conn, exchange, reply_deadline) {
             Some(Ok((pid, created))) if pid == conn.peer.pid && created == conn.peer.created => {
                 ChallengeOutcome::Proven(BridgedPeer { pid, created })
             }
@@ -416,7 +421,7 @@ fn classify_hello_reply(frame: Frame) -> Result<(), TransportError> {
 /// already uses for the POST-handshake attach hello, so the handshake and
 /// the hello that immediately follows it are bounded identically.
 fn run_handshake(stream: &LaneStream, hello: &Frame, req: &Frame, deadline: Instant) -> Result<(u32, u64), TransportError> {
-    let outcome = sot_log::identity::deadline::run_with_deadline(deadline, || stream.cancel(), || -> Result<Frame, TransportError> {
+    let outcome = sot_platform::identity::deadline::run_with_deadline(deadline, || stream.cancel(), || -> Result<Frame, TransportError> {
         use std::io::Write as _;
         let unreachable = |e: &dyn std::fmt::Display| TransportError::Unreachable(std::io::Error::other(e.to_string()));
         let mut both = Vec::new();
@@ -564,7 +569,7 @@ impl DaemonLaneEndpoint {
             voyage_id,
             token: self.token.clone(),
         };
-        let hello = crate::HelloReq::this_process("sot-lane-dial", crate::HANDOFF_ROLE, sot_log::host::state_dir::host_name().ok())
+        let hello = crate::HelloReq::this_process("sot-lane-dial", crate::HANDOFF_ROLE, sot_platform::host::state_dir::host_name().ok())
             .map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))?;
         let hello = Frame::req(1, op::HELLO, serde_json::to_value(&hello).expect("HelloReq always serializes"));
         let frame = Frame::req(2, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
@@ -593,7 +598,7 @@ impl DaemonLaneEndpoint {
                 // User isolation). An attempt or wait in progress finishes
                 // first, including a 20 ms retry sleep; this is not an
                 // exact elapsed-time limit.
-                let client = sot_log::identity::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
+                let client = sot_log::lane::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
                 LaneStream::Unix(client)
             }
             #[cfg(windows)]
@@ -601,7 +606,7 @@ impl DaemonLaneEndpoint {
                 // `connect_own`: `sot_log::lane::pipe_win`'s bounded pipe
                 // connector, then the check that this OS account serves the
                 // pipe (ADR 0049, User isolation), before the first byte.
-                let client = sot_log::identity::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
+                let client = sot_log::lane::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
                 LaneStream::Pipe(client)
             }
             LaneDial::Ssh(recipe, gate) => {

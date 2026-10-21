@@ -118,7 +118,7 @@ fn a_held_voyage_writer_lock_or_a_scopes_record_keeps_the_folder() {
     let voyage = sot_log::supervisor::voyage_root_path(&folder, VOYAGE);
     let writer = voyage.join(sot_log::store::voyage::WRITER_LOCK);
     std::fs::write(&writer, b"").unwrap();
-    let leg = sot_log::lock_writer(&writer).unwrap();
+    let leg = sot_platform::host::lock_writer(&writer).unwrap();
     assert_eq!(
         remove_now(&workspaces_of(&root), ID, Some(AGE_FLOOR)),
         Removal::Kept("a leg holds the voyage's writer.lock")
@@ -309,7 +309,7 @@ fn make_link(target: &Path, link: &Path) {
 fn make_link(target: &Path, link: &Path) {
     let mut mklink = std::process::Command::new("cmd");
     mklink.args(["/C", "mklink", "/J"]).arg(link).arg(target);
-    sot_log::test_wait::run_within(&mut mklink, Duration::from_secs(30)).ok();
+    sot_platform::test_wait::run_within(&mut mklink, Duration::from_secs(30)).ok();
     assert!(std::fs::symlink_metadata(link).is_ok(), "mklink /J failed: no link at {link:?}");
 }
 
@@ -351,7 +351,7 @@ fn registered_row() -> (String, PathBuf, PathBuf) {
     ws.runtime = "capsule".into();
     let id = ws.workspace_id.clone();
     let toml = crate::rows::store::save(&ws).unwrap();
-    let state_root = sot_log::host::state_dir::sot_state_dir().unwrap();
+    let state_root = sot_platform::host::state_dir::sot_state_dir().unwrap();
     let folder = state_dir_for(&state_root, &id);
     let voyage = sot_log::supervisor::voyage_root_path(&folder, VOYAGE);
     std::fs::create_dir_all(&voyage).unwrap();
@@ -366,7 +366,7 @@ fn start(workspaces: &Workspaces) {
     crate::rows::store::scan_disk(workspaces, false).unwrap();
     let default = Workspace::from_label("local", PathBuf::from("/p/local"), false, "none".into(), String::new(), String::new());
     let _ = crate::rows::store::save(&default); // fails where a test made the registry folder unreadable
-    let state_root = sot_log::host::state_dir::sot_state_dir().unwrap();
+    let state_root = sot_platform::host::state_dir::sot_state_dir().unwrap();
     sweep_state_folders_at(&state_root, workspaces, later());
 }
 

@@ -4,6 +4,8 @@
 pub mod accept_policy;
 pub mod attach_proto;
 pub mod client;
+pub mod connect_own;
+pub mod exchange;
 pub(crate) mod pending;
 pub mod pipe_win;
 pub mod platform_transport;

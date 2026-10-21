@@ -51,7 +51,7 @@ fn await_status_request(server: &PipeServer, conn_id: ConnId, timeout: Duration)
 /// Real challenge, real pipe, SAME process on both ends — a genuine
 /// same-user server, proven. Also this test's own shared "give me a real
 /// proven process" helper for the two tests below it.
-fn self_proven_challenge() -> ChallengeOutcome<sot_log::identity::challenge_win::ChallengedProcess> {
+fn self_proven_challenge() -> ChallengeOutcome<sot_platform::identity::challenge_win::ChallengedProcess> {
     let voyage_id = fresh_voyage_id();
     let server = PipeServer::bind(&voyage_id, 1).expect("bind");
     let client = connect_voyage_pipe(&voyage_id).expect("connect");
@@ -210,7 +210,7 @@ fn cross_process_challenge_server_role() {
     let Ok(voyage_id) = std::env::var("PIPE_WIN_XPROC_VOYAGE_ID") else {
         return;
     };
-    sot_log::test_isolated::enter("challenge::cross_process_challenge_server_role");
+    sot_platform::test_isolated::enter("challenge::cross_process_challenge_server_role");
     let server = PipeServer::bind(&voyage_id, 1).expect("server role: bind");
     let conn_id = expect_accepted(&server, Duration::from_secs(30));
     await_status_request(&server, conn_id, Duration::from_secs(30));
@@ -251,7 +251,7 @@ fn cross_process_challenge_proves_a_real_child_server() {
     }
     let voyage_id = fresh_voyage_id();
     let (mut role, role_entry) =
-        sot_log::test_isolated::test_command("challenge::cross_process_challenge_server_role");
+        sot_platform::test_isolated::test_command("challenge::cross_process_challenge_server_role");
     let child = role
         .env("PIPE_WIN_XPROC_VOYAGE_ID", &voyage_id)
         .spawn()
@@ -293,7 +293,7 @@ fn cross_process_challenge_proves_a_real_child_server() {
     // early-return paths above).
     drop(client);
     // The role exits once it sees this client's close; its exit, within a bound, must be a success.
-    let status = sot_log::test_isolated::wait_within(guard.0.as_mut().expect("the server role"), Duration::from_secs(10));
+    let status = sot_platform::test_isolated::wait_within(guard.0.as_mut().expect("the server role"), Duration::from_secs(10));
     guard.0 = None;
     assert!(status.success(), "the server role failed: {status}");
 }
@@ -342,7 +342,7 @@ fn connect_voyage_pipe_peer_authentication_enforced_pass_against_a_genuine_serve
 
     let reply = wire::encode_mgmt_reply(&MgmtReply::ProbeOk).unwrap();
     server.send(conn_id, reply.clone(), None).expect("send probe_ok");
-    let (buf, n) = sot_log::test_wait::within(TIMEOUT, "the probe_ok read", move || {
+    let (buf, n) = sot_platform::test_wait::within(TIMEOUT, "the probe_ok read", move || {
         let mut buf = [0u8; 512];
         let n = client.read(&mut buf).expect("read probe_ok");
         (buf, n)
@@ -368,7 +368,7 @@ fn connect_voyage_pipe_peer_authentication_enforced_pass_against_a_genuine_serve
 /// here; this test instead proves the OTHER typed failure — `Undetermined`
 /// — that steps 1-3 alone can already produce.
 struct InvalidHandleConn;
-impl sot_log::identity::challenge::ChallengeableConnection for InvalidHandleConn {
+impl sot_platform::identity::challenge::ChallengeableConnection for InvalidHandleConn {
     fn write_all(&self, _bytes: &[u8]) -> std::io::Result<()> {
         unreachable!("authenticate_server never sends a request")
     }
@@ -382,7 +382,7 @@ impl sot_log::identity::challenge::ChallengeableConnection for InvalidHandleConn
 /// L1-unix LU1a: raw-handle access moved off `ChallengeableConnection`
 /// onto this separate, Windows-only extension trait — see
 /// `challenge_win.rs`'s own doc for why.
-impl sot_log::identity::challenge_win::PipeChallengeable for InvalidHandleConn {
+impl sot_platform::identity::challenge_win::PipeChallengeable for InvalidHandleConn {
     fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
         windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
     }
@@ -390,8 +390,8 @@ impl sot_log::identity::challenge_win::PipeChallengeable for InvalidHandleConn {
 
 #[test]
 fn authenticate_server_is_undetermined_when_step_one_itself_fails() {
-    use sot_log::identity::challenge::PeerAuthOutcome;
-    use sot_log::identity::challenge_win::authenticate_server;
+    use sot_platform::identity::challenge::PeerAuthOutcome;
+    use sot_platform::identity::challenge_win::authenticate_server;
     let outcome = authenticate_server(&InvalidHandleConn);
     assert!(matches!(outcome, PeerAuthOutcome::Undetermined), "{outcome:?}");
 }

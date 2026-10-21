@@ -39,7 +39,7 @@ impl Staged {
             std::thread::sleep(Duration::from_millis(100));
         }
         let bin = env._tmp.path().join("bin");
-        sot_log::test_wait::run_within(
+        sot_platform::test_wait::run_within(
             Command::new("bash")
                 .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/tests/stage-bin.sh"))
                 .arg(&bin),
@@ -52,10 +52,10 @@ impl Staged {
     }
 
     /// One staged script, run as a session of this box would run it.
-    fn script(&self, name: &str, args: &[&str]) -> sot_log::test_wait::Ran {
+    fn script(&self, name: &str, args: &[&str]) -> sot_platform::test_wait::Ran {
         let cwd = self.env._tmp.path().join("m4");
         std::fs::create_dir_all(&cwd).expect("mkdir cwd");
-        sot_log::test_wait::run_within(
+        sot_platform::test_wait::run_within(
             Command::new("bash")
                 .arg(self.bin.join(name))
                 .args(args)
@@ -93,7 +93,7 @@ impl Staged {
 /// `YYYY-MM-DDTHH:MM:SSZ` for `now - ago` seconds, from the box's own `date`.
 fn stamp(ago: u64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         Command::new("date").args(["-u", "-d", &format!("@{}", now - ago), "+%Y-%m-%dT%H:%M:%SZ"]),
         BOUND,
     )

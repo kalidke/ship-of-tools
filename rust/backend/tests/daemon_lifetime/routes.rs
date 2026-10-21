@@ -53,7 +53,7 @@ fn the_julia_a_daemon_gets_needs_nothing_from_a_cases_own_home() {
         .spawn()
         .expect("start julia");
     let (status, version, stderr) =
-        sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(60));
+        sot_platform::test_isolated::drain(child).wait_within(Duration::from_secs(60));
     assert!(
         status.success(),
         "{julia} under a case's own HOME: {status}\n{stderr}"

@@ -257,7 +257,7 @@ fn transcript_refusal(
             ),
         ));
     };
-    let root_identity = match sot_log::host::dir_identity(root) {
+    let root_identity = match sot_platform::host::dir_identity(root) {
         Ok(identity) => identity,
         Err(e) => {
             let error = format!("this row's root {root:?} cannot be opened: {e}");
@@ -275,7 +275,7 @@ fn transcript_refusal(
     // Absolute only: a relative directory would be read against this daemon's
     // own working directory, which says nothing about where the session ran.
     let same = started.is_absolute()
-        && sot_log::host::dir_identity(&started).is_ok_and(|identity| identity == root_identity);
+        && sot_platform::host::dir_identity(&started).is_ok_and(|identity| identity == root_identity);
     if same {
         return None;
     }
@@ -478,7 +478,7 @@ pub async fn handle_workspace_reauth(
 
     // Everything that can still fail has to fail BEFORE the record moves
     // and before the ack: after the ack there is no reader left to tell.
-    let Some(state_root) = sot_log::host::state_dir::sot_state_dir() else {
+    let Some(state_root) = sot_platform::host::state_dir::sot_state_dir() else {
         return refuse(
             "no_state_root",
             format!(

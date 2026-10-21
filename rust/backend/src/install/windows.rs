@@ -148,7 +148,7 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     write_record(&ctx)?;
     end_state(&ctx, &mut found);
     if let Some(hub) = refusal {
-        let me = sot_log::host::state_dir::host_name().unwrap_or_else(|_| std::env::var("COMPUTERNAME").unwrap_or_default().to_lowercase());
+        let me = sot_platform::host::state_dir::host_name().unwrap_or_else(|_| std::env::var("COMPUTERNAME").unwrap_or_default().to_lowercase());
         found.fail("enroll", format!("the hosts.toml on '{hub}' does not list this computer ('{me}'), so the window would open with no hosts: on '{hub}' run  sotd topology set add {me} --frontend  (the sotd of its install), then run this installer again"));
     }
     Ok((found, pin))

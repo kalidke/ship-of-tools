@@ -67,7 +67,7 @@ type Bridged = sot_log::lane::socket_unix::SocketClient;
 type Bridged = sot_log::lane::pipe_win::PipeClient;
 
 fn connect(path: &Path) -> Result<Bridged, TransportError> {
-    sot_log::identity::connect_own::connect_own(path)
+    sot_log::lane::connect_own::connect_own(path)
 }
 
 /// The one local scheme on this platform: a Unix socket here, a named pipe on Windows.

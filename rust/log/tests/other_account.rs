@@ -5,7 +5,7 @@
 
 #![cfg(unix)]
 
-use sot_log::test_wait::{try_run_within, Ran};
+use sot_platform::test_wait::{try_run_within, Ran};
 use std::process::Command;
 use std::time::Duration;
 
@@ -55,7 +55,7 @@ async fn a_client_of_another_account_gets_no_byte() {
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(sot_log::identity::peer_owner::serve_own(
+    let server = tokio::spawn(sot_platform::identity::peer_owner::serve_own(
         listener,
         "test",
         |mut s| async move {

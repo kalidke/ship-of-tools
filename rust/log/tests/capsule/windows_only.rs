@@ -521,7 +521,7 @@ fn release_and_read_reply(helper: &mut std::process::Child) -> String {
     writeln!(stdin, "go").expect("write go signal");
     drop(stdin);
     let stdout = helper.stdout.take().expect("helper stdout");
-    sot_log::test_wait::within(std::time::Duration::from_secs(30), "the helper's reply line", move || {
+    sot_platform::test_wait::within(std::time::Duration::from_secs(30), "the helper's reply line", move || {
         let mut line = String::new();
         std::io::BufReader::new(stdout).read_line(&mut line).expect("read helper reply");
         line.trim().to_string()
@@ -549,7 +549,7 @@ fn the_leg_job_refuses_a_breakaway() {
 
     let reply = release_and_read_reply(&mut helper);
     if let Some(pid) = reply.strip_prefix("pid=") {
-        let _ = sot_log::test_wait::try_run_within(
+        let _ = sot_platform::test_wait::try_run_within(
             std::process::Command::new("taskkill").args(["/F", "/PID", pid]),
             std::time::Duration::from_secs(30),
         );

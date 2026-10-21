@@ -61,7 +61,7 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
     // `spawned_identity` performed it: this pid, this function, from the
     // parent, the instant after spawn.
     let spawn_side_ticks =
-        sot_log::identity::challenge_unix::process_start_ticks(spawned_pid).expect("read the child's own /proc start ticks");
+        sot_platform::identity::challenge_unix::process_start_ticks(spawned_pid).expect("read the child's own /proc start ticks");
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (reported_pid, reported_created) =

@@ -29,7 +29,7 @@ pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
 /// `challenge_unix` already exposes for reading a PEER's start time.
 #[cfg(target_os = "linux")]
 pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
-    Ok((std::process::id(), crate::identity::challenge_unix::self_start_ticks()?))
+    Ok((std::process::id(), sot_platform::identity::challenge_unix::self_start_ticks()?))
 }
 
 /// ADR 0043 decision 21, the macOS arm — the exact twin of what
@@ -50,7 +50,7 @@ pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
 /// INSTANCE, so a recycled pid carries a different one.
 #[cfg(target_os = "macos")]
 pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
-    Ok((std::process::id(), u64::from(crate::identity::challenge_macos::self_pidversion()?)))
+    Ok((std::process::id(), u64::from(sot_platform::identity::challenge_macos::self_pidversion()?)))
 }
 
 // ---------------------------------------------------------------------

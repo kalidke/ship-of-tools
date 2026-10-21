@@ -17,25 +17,20 @@ license.workspace = true
 # test installs a subscriber, the one way it copies a release folder, the one way it writes a program it runs, the
 # walker the source scans share, the one way it re-runs its binary, the bounded form of its wait, and a socket another
 # account listens on.
-test-support = ["dep:tracing-subscriber", "dep:tempfile"]
+test-support = ["dep:tracing-subscriber", "dep:tempfile", "sot-platform/test-support"]
 # Test-only phase barriers (the native launcher's child branch, the supervisor's fence claim). Never in an installed
 # build: the backend's `daemon-lifetime-faults` feature forwards it, and nothing else enables it.
-native-barrier = []
+native-barrier = ["sot-platform/native-barrier"]
 
 [dependencies]
+sot-platform = { path = "../platform" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 crc32c = { workspace = true }
 uuid = { workspace = true }
 thiserror = "2"
-# ADR 0046 decision 1: `host_name()` is the one declared-identity resolver
-# (hello, logs, display -- never a routing key or an on-disk address this
-# sprint) -- moved here from `sot-backend`, which called this crate
-# directly for the same fact.
-gethostname = "0.5"
 getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From impl
-# `identity::peer_owner::serve_own`, the one TCP accept loop (ADR 0049, User isolation).
 tokio = { workspace = true }
 # ADR 0030 §8 "Where it is shown": mirror an FE attach client's terminal
 # reason to `tracing` (`attach_client/client.rs`), not only the pane's own status
@@ -90,10 +85,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Registry",
     "Win32_NetworkManagement_IpHelper",
 ] }
-
-[build-dependencies]
-# The native launcher (src/host/process_tree/native_birth.c); already in the lock as a transitive build dependency.
-cc = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

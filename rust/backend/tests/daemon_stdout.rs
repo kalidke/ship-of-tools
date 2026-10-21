@@ -49,7 +49,7 @@ async fn log_path_names_the_file_the_daemon_writes() {
     let env = Env::new("log-path");
     env.spawn_sotd();
     support::poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "the daemon's socket").await;
-    let out = sot_log::test_wait::run_within(
+    let out = sot_platform::test_wait::run_within(
         sotd_command()
             .arg("log-path")
             .env("LOCALAPPDATA", &env.state_root)

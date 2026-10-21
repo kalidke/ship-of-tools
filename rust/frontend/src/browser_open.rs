@@ -3,7 +3,7 @@
 //! arguments are readable by other accounts (`/proc/<pid>/cmdline`), so neither the opener nor the browser it starts
 //! may be handed one. [`open_page`] binds a loopback listener of its own on a port the OS assigns, hands the browser
 //! only `http://127.0.0.1:<port>/`, and answers the first `GET` from this OS account
-//! ([`sot_log::identity::peer_owner::serve_own`]) with a `302` to the page, then closes. Another account's connection
+//! ([`sot_platform::identity::peer_owner::serve_own`]) with a `302` to the page, then closes. Another account's connection
 //! is closed before a byte is read, and anything but a `GET` is closed unanswered and does not spend the redirect; with
 //! no browser after [`REDIRECT_TTL`] the listener closes. A remote frontend's page proxy (`pages.rs`) already holds the
 //! page's port when this runs, and the address it is handed is the one its caller opens: the daemon's on a local
@@ -68,7 +68,7 @@ fn redirect_once(listener: std::net::TcpListener, page: String, ttl: Duration) {
             }
         };
         tokio::select! {
-            () = sot_log::identity::peer_owner::serve_own(listener, "page-open", handle) => {}
+            () = sot_platform::identity::peer_owner::serve_own(listener, "page-open", handle) => {}
             () = spent.notified() => {}
             () = tokio::time::sleep(ttl) => {
                 tracing::info!(port, "page-open: no browser came for the page; its redirect closed");

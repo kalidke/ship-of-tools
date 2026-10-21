@@ -50,7 +50,7 @@ pub fn pluto_resource_root(case: &Path, julia: &str) -> PathBuf {
         }
         None => {
             // Pkg.instantiate fetches over the network: a bound of its own, well past a cold registry.
-            sot_log::test_wait::run_within(
+            sot_platform::test_wait::run_within(
                 std::process::Command::new(julia)
                     .arg(format!("--project={}", dir.display()))
                     .args(["-e", "using Pkg; Pkg.instantiate()"])
@@ -82,7 +82,7 @@ pub fn have_quarto() -> Option<PathBuf> {
         .map(|d| d.join("quarto"))
         .find(|p| p.is_file())?;
     // A Quarto that is there and fails `--version` names itself; an absent one is `None` above.
-    sot_log::test_wait::run_within(std::process::Command::new(&quarto).arg("--version"), BOUND).ok();
+    sot_platform::test_wait::run_within(std::process::Command::new(&quarto).arg("--version"), BOUND).ok();
     Some(quarto)
 }
 

@@ -51,7 +51,7 @@ impl Fixture {
             reason = "test-only offline command; retained child is drained and bounded"
         )]
         let child = cmd.spawn().unwrap();
-        sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(20))
+        sot_platform::test_isolated::drain(child).wait_within(Duration::from_secs(20))
     }
     fn declare(&self) -> (ExitStatus, String, String) {
         self.run(&[

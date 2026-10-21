@@ -2,7 +2,7 @@
 //! only when this OS account serves it. Unix tests pin the listener's account and the connect's retry budget; Windows
 //! tests pin the serving-process check and the connect's retry budget.
 
-use sot_log::identity::connect_own::connect_own;
+use sot_log::lane::connect_own::connect_own;
 use sot_log::lane::transport::TransportError;
 
 #[cfg(unix)]
@@ -10,7 +10,7 @@ mod unix {
     use super::*;
     use sot_log::lane::transport::CONNECT_BOUND;
     use sot_log::test_foreign::ForeignListener;
-    use sot_log::test_isolated::run_isolated;
+    use sot_platform::test_isolated::run_isolated;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
@@ -122,9 +122,9 @@ mod unix {
     #[test]
     fn a_listener_seen_from_an_unmapped_user_namespace_is_refused() {
         use std::process::{Command, Stdio};
-        let unshare = sot_log::test_wait::try_run_within(
+        let unshare = sot_platform::test_wait::try_run_within(
             Command::new("unshare").args(["-U", "true"]),
-            sot_log::test_isolated::ISOLATION_TIMEOUT,
+            sot_platform::test_isolated::ISOLATION_TIMEOUT,
         );
         if !matches!(&unshare, Ok(ran) if ran.status.success()) {
             let why = unshare.map_or_else(|why| why, |ran| ran.to_string());
@@ -146,7 +146,7 @@ mod unix {
             .spawn()
             .unwrap();
         let status =
-            sot_log::test_isolated::wait_within(&mut child, CONNECT_BOUND + Duration::from_secs(5));
+            sot_platform::test_isolated::wait_within(&mut child, CONNECT_BOUND + Duration::from_secs(5));
         // `connect_own` connects before it refuses, so a child whose body ran left a connection queued here; a name
         // that matches no test runs nothing, exits 0 and leaves none.
         listener.set_nonblocking(true).unwrap();
@@ -211,9 +211,9 @@ mod unix {
 #[cfg(windows)]
 mod windows {
     use super::*;
-    use sot_log::host::wide_null;
+    use sot_platform::host::wide_null;
     use sot_log::lane::transport::CONNECT_BOUND;
-    use sot_log::test_isolated::run_isolated;
+    use sot_platform::test_isolated::run_isolated;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{Duration, Instant};
@@ -250,7 +250,7 @@ mod windows {
     #[test]
     fn the_pipe_is_opened_at_identification_level() {
         use windows_sys::Win32::Security::SecurityIdentification;
-        let level = sot_log::identity::impersonation_probe::level_seen_by_server(|name| {
+        let level = sot_platform::identity::impersonation_probe::level_seen_by_server(|name| {
             let client = connect_own(std::path::Path::new(name)).unwrap_or_else(|e| panic!("refused {name}: {e}"));
             client.write_all(b"x").expect("write one byte");
             client

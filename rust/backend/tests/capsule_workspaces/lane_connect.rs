@@ -100,7 +100,7 @@ async fn lane_connect_supervisor_pipes_hello_and_status() {
     // reply would never exercise that).
     let mut payload = sot_log::lane::wire::encode_supervisor_request(&sot_log::lane::wire::SupervisorRequest::Hello {
         proto: sot_log::lane::wire::SUPERVISOR_PROTO_V1,
-        build: sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
+        build: sot_log::lane::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
     })
     .expect("encode hello");
     payload.extend(

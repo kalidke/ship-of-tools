@@ -25,7 +25,7 @@ fn the_shell_hello_is_this_protocols_hello() {
     let lib =
         format!("{}/../../comm/lib/comm-lib.sh", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
     let home = tempfile::tempdir().expect("scratch home");
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         Command::new(bash)
             .args(["-c", &format!(". '{lib}' && sot_hello_frame")])
             .env("HOME", home.path())
@@ -59,7 +59,7 @@ fn the_shell_hello_is_this_protocols_hello() {
         Some("hello-test-host"),
         "the shell client's hello host"
     );
-    let own = sot_log::identity::os_account::own_account_id()
+    let own = sot_platform::identity::os_account::own_account_id()
         .expect("the OS issues this process's account");
     assert_eq!(
         hello.os_user.as_deref(),
@@ -74,12 +74,12 @@ fn the_shell_hello_is_this_protocols_hello() {
 /// user SID. This runs the other two and holds each to the first, on whichever OS runs the test.
 #[test]
 fn every_client_declares_the_same_account() {
-    let own = sot_log::identity::os_account::own_account_id().expect("the OS issues this process's account");
+    let own = sot_platform::identity::os_account::own_account_id().expect("the OS issues this process's account");
     if let Some(bash) = bash() {
         let lib = format!("{}/../../comm/lib/comm-lib.sh", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
         let scratch = std::env::temp_dir().join(format!("sot-protocol-os-user-{}", std::process::id()));
         std::fs::create_dir_all(&scratch).expect("scratch home");
-        let ran = sot_log::test_wait::run_within(
+        let ran = sot_platform::test_wait::run_within(
             Command::new(bash)
                 .args(["-c", &format!(". '{lib}' && _sot_os_user")])
                 .env("HOME", &scratch)
@@ -92,7 +92,7 @@ fn every_client_declares_the_same_account() {
     }
     #[cfg(windows)]
     {
-        let ran = sot_log::test_wait::run_within(
+        let ran = sot_platform::test_wait::run_within(
             Command::new("powershell").args([
                 "-NoProfile",
                 "-Command",

@@ -450,7 +450,7 @@ fn self_status(survival: Survival) -> Result<MgmtStatus> {
 #[cfg(target_os = "linux")]
 fn self_status(survival: Survival) -> Result<MgmtStatus> {
     let pid = std::process::id();
-    let created = crate::identity::challenge_unix::self_start_ticks()
+    let created = sot_platform::identity::challenge_unix::self_start_ticks()
         .map_err(|e| Error::State(format!("capsule: self_start_ticks failed: {e}")))?;
     Ok(MgmtStatus { pid, created, survival })
 }
@@ -470,7 +470,7 @@ fn self_status(survival: Survival) -> Result<MgmtStatus> {
 #[cfg(target_os = "macos")]
 fn self_status(survival: Survival) -> Result<MgmtStatus> {
     let pid = std::process::id();
-    let created = crate::identity::challenge_macos::self_pidversion()
+    let created = sot_platform::identity::challenge_macos::self_pidversion()
         .map_err(|e| Error::State(format!("capsule: self_pidversion failed: {e}")))?;
     Ok(MgmtStatus { pid, created: u64::from(created), survival })
 }

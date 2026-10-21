@@ -6,7 +6,7 @@
 //! (`tests/challenge_unix.rs`) is the shape this copies -- including its
 //! `SOT_RUNTIME_DIR`-per-test device verbatim, for one source of truth rather
 //! than two silently diverging ones; both isolate a test through
-//! `sot_log::test_isolated::run_isolated`.
+//! `sot_platform::test_isolated::run_isolated`.
 //!
 //! Deliberately ABSENT, because macOS needs neither: the Linux file's
 //! `ensure_established_gap()` (its pin compares the peer's start time
@@ -22,11 +22,11 @@
 //! that cannot run they say so and pass, except on CI (`GITHUB_ACTIONS`), where
 //! that fails.
 
-use sot_log::test_isolated::{run_isolated, ISOLATION_TIMEOUT};
-use sot_log::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
-use sot_log::identity::challenge_macos::{authenticate_server, challenge, self_pidversion};
-use sot_log::identity::challenge_macos::peer_euid_pid_created;
-use sot_log::identity::exchange::VoyageMgmtExchange;
+use sot_platform::test_isolated::{run_isolated, ISOLATION_TIMEOUT};
+use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
+use sot_platform::identity::challenge_macos::{authenticate_server, challenge, self_pidversion};
+use sot_platform::identity::challenge_macos::peer_euid_pid_created;
+use sot_log::lane::exchange::VoyageMgmtExchange;
 use sot_log::lane::attach_proto::ConnId;
 use sot_log::lane::socket_unix::{connect_voyage_socket, SocketServer};
 use sot_log::lane::socket_unix::SocketClient;
@@ -35,7 +35,7 @@ use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
-/// A per-event bound used throughout (well inside `sot_log::test_isolated::ISOLATION_TIMEOUT`, so
+/// A per-event bound used throughout (well inside `sot_platform::test_isolated::ISOLATION_TIMEOUT`, so
 /// a stalled event always trips before the parent's own kill fires).
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -115,7 +115,7 @@ fn await_status_request(server: &SocketServer, conn_id: ConnId, timeout: Duratio
 /// wire.
 fn challenge_with_reply(
     reply: MgmtReply,
-) -> ChallengeOutcome<sot_log::identity::challenge_macos::ChallengedProcess> {
+) -> ChallengeOutcome<sot_platform::identity::challenge_macos::ChallengedProcess> {
     let voyage_id = fresh_voyage_id();
     let server = SocketServer::bind(&voyage_id, 1).expect("bind");
     let client = connect_voyage_socket(&voyage_id).expect("connect");
@@ -353,7 +353,7 @@ fn a_client_that_takes_this_accounts_euid_after_connecting_is_still_another_acco
     let path = dir.path().join("s.sock");
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
     let Some((mut helper, helper_pid)) = start_transition_helper(NAME, "connect", &path) else { return };
-    let (conn, _) = sot_log::test_wait::within(TIMEOUT, "the helper's connection", move || listener.accept())
+    let (conn, _) = sot_platform::test_wait::within(TIMEOUT, "the helper's connection", move || listener.accept())
         .expect("accept the helper's connection");
     let read = peer_euid_pid_created(conn.as_raw_fd());
     drop(helper.stdin.take());

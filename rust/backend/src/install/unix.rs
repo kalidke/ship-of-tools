@@ -206,7 +206,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
             say(&format!("note: could not refresh hosts.toml from the recorded hub '{hub}'; the copy here stands"));
         }
     }
-    let me = sot_log::host::state_dir::host_name().map_err(|e| Stop::new(1, e))?;
+    let me = sot_platform::host::state_dir::host_name().map_err(|e| Stop::new(1, e))?;
     let status = sotd_at(&new_sotd, &["topology", "status"]);
     let (mut topo_declared, topo_readable, topo_role) = if status.ok() {
         (true, true, role::from_status(&status.out, &me))
@@ -351,7 +351,7 @@ fn role_words(r: Role) -> String {
 }
 
 /// The warning for a folder on a remote filesystem, where the daemon will not keep capsule records (Linux; the names are
-/// GNU `stat -f -c %T`'s for `REMOTE_FS_TYPES` in `rust/log/src/host/volume.rs`).
+/// GNU `stat -f -c %T`'s for `REMOTE_FS_TYPES` in `rust/platform/src/host/volume.rs`).
 fn warn_remote_fs(label: &str, dir: &Path) {
     let ran = cmd::output(Command::new("stat").args(["-f", "-c", "%T"]).arg(dir));
     let fstype = ran.first_line();
@@ -807,7 +807,7 @@ fn configure(plan: &Plan) -> Result<(), Stop> {
         let _ = systemctl(&["daemon-reload"]);
     }
     if !plan.role.daemon {
-        let kernel_host = sot_log::host::state_dir::kernel_host_name().unwrap_or_default();
+        let kernel_host = sot_platform::host::state_dir::kernel_host_name().unwrap_or_default();
         retire_local_service(&plan.units_ctx(), plan.topo_declared, &kernel_host)?;
     }
     for line in trust_report(&plan.sotd(), &plan.home) {

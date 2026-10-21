@@ -55,7 +55,7 @@ fn write_closing_record(env: &Env) {
 fn write_record(env: &Env, closing: bool, forget: &[&str], not_ended: u32) {
     let rec = serde_json::json!({
         "v": 1,
-        "boot": sot_log::identity::challenge::boot_identity().unwrap_or_default(),
+        "boot": sot_platform::identity::challenge::boot_identity().unwrap_or_default(),
         "holders": [],
         "handover_until_ms": null,
         "closing": closing,
@@ -172,7 +172,7 @@ async fn assert_adopted(env: &Env, row: &Row, why: &str) {
 fn kill_row_capsule(row: &Row) {
     let legs = row_legs(row);
     assert!(support::any_process_matches(&legs), "no leg of row {} matches {legs}", row.id);
-    let _ = sot_log::test_wait::try_run_within(std::process::Command::new("pkill").args(["-9", "-f", &legs]), BOUND);
+    let _ = sot_platform::test_wait::try_run_within(std::process::Command::new("pkill").args(["-9", "-f", &legs]), BOUND);
     assert!(support::poll_until_no_process_matches(&legs, BOUND), "row {}'s legs survived the kill", row.id);
 }
 
@@ -219,7 +219,7 @@ fn wait_exit(env: &Env, within: Duration) -> Option<std::process::ExitStatus> {
 
 /// A lease held by this test process, as a window holds one.
 async fn lease(env: &Env) -> (Conn, FeLeaseRes) {
-    let me = sot_log::identity::challenge::self_identity().expect("self identity");
+    let me = sot_platform::identity::challenge::self_identity().expect("self identity");
     let req = FeLeaseReq { boot: me.boot, pid: me.pid, created: me.created, token: None };
     let mut conn = handoff(&env.socket_path, &Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap())).await;
     let (res, _blob) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
@@ -461,7 +461,7 @@ async fn restart_with_holders_no_lease_shuts_down() {
     let conn = granted_lease(&env).await;
     env.kill_daemon_bounded().await;
     drop(conn);
-    let me = sot_log::identity::challenge::self_identity().expect("self identity");
+    let me = sot_platform::identity::challenge::self_identity().expect("self identity");
     let rec = read_record(&env).expect("the holder is recorded");
     assert_eq!(rec["holders"][0]["pid"], me.pid, "the recorded holder is not this live process: {rec}");
     assert_eq!(rec["holders"][0]["created"], me.created, "the recorded holder is not this live process: {rec}");
@@ -568,7 +568,7 @@ async fn handover_passed_while_down_cleans_up() {
     env.kill_daemon_bounded().await;
     let rec = serde_json::json!({
         "v": 1,
-        "boot": sot_log::identity::challenge::boot_identity().unwrap_or_default(),
+        "boot": sot_platform::identity::challenge::boot_identity().unwrap_or_default(),
         "holders": [],
         "handover_until_ms": now_ms().saturating_sub(1000),
         "closing": false,

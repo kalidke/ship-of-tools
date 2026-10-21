@@ -625,7 +625,7 @@ fn windows_junction_escape_records_nothing() {
     )]
     let child = command.spawn().unwrap();
     let (status, out, err) =
-        sot_log::test_isolated::drain(child).wait_within(std::time::Duration::from_secs(20));
+        sot_platform::test_isolated::drain(child).wait_within(std::time::Duration::from_secs(20));
     if !status.success() {
         not_checked(&format!(
             "W1 P4 junction NOT CHECKED: runner cannot create the fixture junction: mklink {status}; stdout {out:?}; stderr {err:?}"

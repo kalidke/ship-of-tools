@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::Spawner;
-use sot_log::host::HeldDir;
+use sot_platform::host::HeldDir;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -339,7 +339,7 @@ async fn run_cmd(
 const SCRATCH: &str = "sot-updater-";
 
 /// A scratch folder of its own for one check's download, in the system's temporary folder (fetch-internal only: real
-/// staging folders live under the updates root, see `stage`). It is a held folder (`sot_log::host::HeldDir`): this
+/// staging folders live under the updates root, see `stage`). It is a held folder (`sot_platform::host::HeldDir`): this
 /// process holds it until its check removes it, so two checks in one process (the daemon's periodic check and an
 /// `update.check` op can overlap) each have their own, and neither the other nor another process removes it. One left
 /// by a check whose process ended first (a crash, a kill mid-download) goes at a later check ([`remove_ended_scratch`]).
@@ -352,7 +352,7 @@ async fn scratch_dir() -> Result<HeldDir> {
 /// runs it (the daemon's or the window's); never one whose process still runs, whatever computer or pid namespace it
 /// runs in, since each folder's lock is held until its process ends.
 async fn remove_ended_scratch() {
-    let removed = tokio::task::spawn_blocking(|| sot_log::host::remove_ended(&std::env::temp_dir(), SCRATCH))
+    let removed = tokio::task::spawn_blocking(|| sot_platform::host::remove_ended(&std::env::temp_dir(), SCRATCH))
         .await
         .unwrap_or(0);
     if removed > 0 {

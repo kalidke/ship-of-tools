@@ -69,7 +69,7 @@ fn a_different_build_id_with_the_same_proto_is_proven() {
         "the supervisor lane to accept a connection",
     );
     assert!(
-        matches!(outcome, sot_log::identity::challenge::ChallengeOutcome::Proven(_)),
+        matches!(outcome, sot_platform::identity::challenge::ChallengeOutcome::Proven(_)),
         "a different build id (same proto) must be Proven -- ADR 0045 decision 7: the gate is proto alone, got {outcome:?}"
     );
     let conn = Lane::new(&h, conn);
@@ -108,7 +108,7 @@ fn a_mismatched_lane_proto_is_refused_and_the_connection_closes() {
         "the supervisor lane to accept a connection",
     );
     assert!(
-        matches!(outcome, sot_log::identity::challenge::ChallengeOutcome::Foreign),
+        matches!(outcome, sot_platform::identity::challenge::ChallengeOutcome::Foreign),
         "a wrong lane proto must be classified Foreign (refused{{version_skew}}), got {outcome:?}"
     );
     expect_connection_closes(&conn, Duration::from_secs(5));
@@ -189,7 +189,7 @@ fn a_second_hello_closes_the_connection_but_the_authority_survives() {
 
     let second_hello = sot_log::lane::wire::encode_supervisor_request(&SupervisorRequest::Hello {
         proto: sot_log::lane::wire::SUPERVISOR_PROTO_V1,
-        build: sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
+        build: sot_log::lane::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
     })
     .unwrap();
     conn.client().write_all(&second_hello).unwrap();

@@ -117,7 +117,7 @@ pub(crate) fn row_id(env: &crate::comm::Env, host: &str) -> String {
 /// join's: a process with a row id keeps a handle another row's entry binds, since its join moves the handle back.
 /// Lines for the session go to `notes`; `Err` is the line that ends the command.
 pub(crate) fn resolve(env: &crate::comm::Env, rebind: bool, cwd: &Path, may_write: impl FnOnce() -> bool, notes: &mut Vec<String>) -> Result<Context, String> {
-    let host = sot_log::host::state_dir::host_name_in(env).map_err(|e| {
+    let host = sot_platform::host::state_dir::host_name_in(env).map_err(|e| {
         format!("comm-context: could not establish this box's declared host ({e}); aborting rather than proceeding with an unknown identity")
     })?;
     let comm_home = crate::comm::home::comm_home(env).ok_or("comm-context: no comm folder: none of SOT_COMM_HOME, HOME or USERPROFILE is set")?;

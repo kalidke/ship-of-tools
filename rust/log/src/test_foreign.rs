@@ -76,7 +76,7 @@ fn elevation() -> Result<(), String> {
     if unsafe { libc::geteuid() } == 0 {
         return Ok(());
     }
-    let ran = crate::test_wait::try_run_within(Command::new("sudo").args(["-n", "true"]), BOUND)?;
+    let ran = sot_platform::test_wait::try_run_within(Command::new("sudo").args(["-n", "true"]), BOUND)?;
     if ran.status.success() {
         Ok(())
     } else {

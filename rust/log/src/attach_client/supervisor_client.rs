@@ -112,8 +112,8 @@ fn connect(
     state_dir: &Path,
     deadline: Instant,
 ) -> crate::Result<(<PlatformEndpoint as Endpoint>::Client, ChallengedProcess)> {
-    let h = crate::host::state_dir::state_dir_hash(state_dir);
-    connect_and_challenge::<PlatformEndpoint>(&PlatformEndpoint::default(), &h, crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
+    let h = sot_platform::host::state_dir::state_dir_hash(state_dir);
+    connect_and_challenge::<PlatformEndpoint>(&PlatformEndpoint::default(), &h, crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
 }
 
 /// Connect, challenge, and run one `status` request — everything a
@@ -214,7 +214,7 @@ pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<En
     let hello_deadline = Instant::now() + HELLO_BUDGET;
     let (mut conn, _process) = connect(state_dir, hello_deadline)?;
     let mut reader = FrameReader::new();
-    let h = crate::host::state_dir::state_dir_hash(state_dir);
+    let h = sot_platform::host::state_dir::state_dir_hash(state_dir);
     let mut quit = QuitDispatcher::new();
     let operation_id = format!("sot-backend-end-run-{}", uuid::Uuid::now_v7());
     // Recovers the `record_closed`-but-not-yet-`record_verified` case
@@ -230,7 +230,7 @@ pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<En
             if let Ok((new_conn, _process)) = connect_and_challenge::<PlatformEndpoint>(
                 &PlatformEndpoint::default(),
                 &h,
-                crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID,
+                crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID,
                 Instant::now() + HELLO_BUDGET,
             ) {
                 *c = new_conn;
@@ -530,19 +530,19 @@ pub(crate) fn connect_and_challenge<E: Endpoint>(
     deadline: Instant,
 ) -> crate::Result<(E::Client, E::Process)> {
     let conn = endpoint.connect_supervisor_unchallenged(h)?;
-    let mut exchange = crate::identity::exchange::SupervisorLaneExchange::new(build.to_string());
+    let mut exchange = crate::lane::exchange::SupervisorLaneExchange::new(build.to_string());
     match endpoint.challenge(&conn, &mut exchange, deadline) {
-        crate::identity::challenge::ChallengeOutcome::Proven(process) => Ok((conn, process)),
+        sot_platform::identity::challenge::ChallengeOutcome::Proven(process) => Ok((conn, process)),
         // ADR 0030 §8 decision 31c: the ONE `Foreign` cause that is
         // typed, not text — `exchange.is_version_skew()` is read AFTER
         // the challenge, off the SAME concrete exchange this call
         // constructed (never a trait object here), so it reflects
         // exactly what the terminal reply was.
-        crate::identity::challenge::ChallengeOutcome::Foreign if exchange.is_version_skew() => {
+        sot_platform::identity::challenge::ChallengeOutcome::Foreign if exchange.is_version_skew() => {
             Err(crate::Error::VersionSkew)
         }
-        crate::identity::challenge::ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
-        crate::identity::challenge::ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
+        sot_platform::identity::challenge::ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
+        sot_platform::identity::challenge::ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
     }
 }
 
@@ -583,7 +583,7 @@ pub(crate) fn send_and_read<C: Client>(
     deadline: Instant,
 ) -> crate::Result<SupervisorReply> {
     let bytes = wire::encode_supervisor_request(request).map_err(|e| err_state(format!("{e}")))?;
-    let result = crate::identity::deadline::run_with_deadline(
+    let result = sot_platform::identity::deadline::run_with_deadline(
         deadline,
         || conn.cancel(),
         move || -> crate::Result<SupervisorReply> {
@@ -602,7 +602,7 @@ pub(crate) fn send_and_read<C: Client>(
 /// reads the mgmt-lane shutdown ack with this SAME primitive, so it
 /// needs crate visibility, not merely module-private.
 pub(crate) fn read_one_frame<C: Client>(conn: &C, deadline: Instant) -> crate::Result<DecodedFrame> {
-    let result = crate::identity::deadline::run_with_deadline(deadline, || conn.cancel(), move || read_next_frame(conn));
+    let result = sot_platform::identity::deadline::run_with_deadline(deadline, || conn.cancel(), move || read_next_frame(conn));
     result.unwrap_or_else(|| Err(err_state("timed out waiting for a reply")))
 }
 

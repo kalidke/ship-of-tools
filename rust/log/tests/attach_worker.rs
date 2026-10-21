@@ -28,7 +28,7 @@
 
 use sot_log::attach_client::worker::{AttachWorker, WorkerEvent};
 use sot_log::lane::client::{Endpoint, PlatformEndpoint};
-use sot_log::host::state_dir::state_dir_hash;
+use sot_platform::host::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
 use sot_log::lane::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::{Path, PathBuf};

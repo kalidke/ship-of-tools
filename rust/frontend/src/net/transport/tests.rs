@@ -598,7 +598,7 @@ async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_full_foreign_backlog_ends_connect_pipe_within_its_bound() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "net::transport::tests::a_full_foreign_backlog_ends_connect_pipe_within_its_bound",
     ) {
         return;
@@ -630,7 +630,7 @@ async fn a_full_foreign_backlog_ends_connect_pipe_within_its_bound() {
 #[cfg(unix)]
 #[tokio::test]
 async fn connect_pipe_refuses_a_socket_another_account_listens_on() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "net::transport::tests::connect_pipe_refuses_a_socket_another_account_listens_on",
     ) {
         return;

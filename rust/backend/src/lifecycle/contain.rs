@@ -33,14 +33,14 @@ impl Tree {
 /// Make `cmd`'s child start inside its own containment. On Windows this replaces the command's creation flags with
 /// `CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP`: std has no getter to add to them, so a caller that needs a flag of its
 /// own adds it here. On Unix the child also keeps none of this process's descriptors past its exec but its stdio
-/// ([`sot_log::host::inherit_none`]).
+/// ([`sot_platform::host::inherit_none`]).
 pub(crate) fn prepare(cmd: &mut std::process::Command) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
         // SAFETY: the hook runs in the child between fork and exec and makes only async-signal-safe calls.
-        unsafe { cmd.pre_exec(sot_log::host::inherit_none) };
+        unsafe { cmd.pre_exec(sot_platform::host::inherit_none) };
     }
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(

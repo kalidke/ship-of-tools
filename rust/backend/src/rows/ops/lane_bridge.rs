@@ -24,9 +24,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use sot_log::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
+use sot_platform::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
 use sot_log::lane::client::{Endpoint, PlatformEndpoint};
-use sot_log::host::state_dir::state_dir_hash;
+use sot_platform::host::state_dir::state_dir_hash;
 use sot_log::lane::transport::TransportError;
 use sot_protocol::{codec, op, Frame, LaneConnectReq};
 use tokio::io::{AsyncBufRead, AsyncWrite};
@@ -225,7 +225,7 @@ where
         return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "unknown_workspace", &format!("no workspace targets {:?}", req.target)).await;
     };
 
-    let Some(root) = sot_log::host::state_dir::sot_state_dir() else {
+    let Some(root) = sot_platform::host::state_dir::sot_state_dir() else {
         return crate::server::pipe::reject(
             &mut tx,
             id,

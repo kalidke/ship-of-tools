@@ -162,13 +162,13 @@ pub fn outgoing_channel() -> (UnboundedSender<OutgoingReq>, UnboundedReceiver<Ou
 /// after a session that lasted `STABLE`. A local socket costs nothing to probe, so it keeps 5 s. Each ssh probe is a
 /// login on the hub plus one on the far host, so the cap is 30 s: once the wait reaches it, a down remote host costs
 /// the hub at most two ssh logins a minute per frontend (about nine in the first minute, while the wait doubles).
-fn redial_for(dial: &Dial) -> sot_log::host::redial::Redial {
+fn redial_for(dial: &Dial) -> sot_platform::host::redial::Redial {
     let cap = match dial {
         Dial::Pipe(_) => std::time::Duration::from_secs(5),
         // Connecting to a relay socket always succeeds; the hub then opens an ssh login to the far host.
         Dial::Relay(_) | Dial::Ssh(_) => std::time::Duration::from_secs(30),
     };
-    sot_log::host::redial::Redial::new(std::time::Duration::from_millis(200), cap)
+    sot_platform::host::redial::Redial::new(std::time::Duration::from_millis(200), cap)
 }
 
 /// Spawn the transport task on `rt`. Returns once spawned; the task runs
@@ -375,7 +375,7 @@ pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> 
 
     let owned = path.to_path_buf();
     let client =
-        tokio::task::spawn_blocking(move || sot_log::identity::connect_own::connect_own(&owned))
+        tokio::task::spawn_blocking(move || sot_log::lane::connect_own::connect_own(&owned))
             .await
             .context("socket connect task")?
             .with_context(|| format!("connect {path:?}"))?;
@@ -398,7 +398,7 @@ pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> 
     use interprocess::os::windows::named_pipe::local_socket::tokio::Stream as PipeStream;
 
     let owned = path.to_path_buf();
-    let client = tokio::task::spawn_blocking(move || sot_log::identity::connect_own::connect_own(&owned))
+    let client = tokio::task::spawn_blocking(move || sot_log::lane::connect_own::connect_own(&owned))
         .await
         .context("pipe connect task")?
         .with_context(|| format!("connect {path:?}"))?;

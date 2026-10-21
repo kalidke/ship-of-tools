@@ -163,7 +163,7 @@ fn backend_owns_updates(
 /// for one.
 fn runs_no_sotd_here() -> bool {
     let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
-    let me = sot_log::host::state_dir::host_name().unwrap_or_default();
+    let me = sot_platform::host::state_dir::host_name().unwrap_or_default();
     topo.is_some_and(|t| sot_protocol::topology::runs_no_sotd(&t, &me))
 }
 
@@ -172,7 +172,7 @@ fn runs_no_sotd_here() -> bool {
 /// `spawn_startup_selfcheck`'s doc comment for the guard order this sits in.
 fn backend_owns_updates_here(install: &InstallManifest) -> bool {
     let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
-    let me = sot_log::host::state_dir::host_name().unwrap_or_default();
+    let me = sot_platform::host::state_dir::host_name().unwrap_or_default();
     backend_owns_updates(topo.as_ref(), &me, install.daemon)
 }
 

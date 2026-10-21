@@ -352,9 +352,9 @@ async fn non_lease_fe_never_decides() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("nonlease");
     let mut daemon = Daemon::start(&env, &[]).await;
-    let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
+    let me = sot_platform::identity::challenge::self_identity().expect("this process's identity");
 
-    async fn refused(env: &Env, me: &sot_log::identity::challenge::ProcessIdentity) {
+    async fn refused(env: &Env, me: &sot_platform::identity::challenge::ProcessIdentity) {
         let req = FeLeaseReq { boot: me.boot.clone(), pid: me.pid + 1, created: me.created, token: None };
         let f = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap());
         let mut c = handoff(&env.socket_path, &f).await;
@@ -395,7 +395,7 @@ async fn fast_reopen_never_reaches_dying_daemon() {
     // The slow row holds the shutdown in step 3.
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(try_connect(&env.socket_path).await.is_none(), "the dying daemon still accepted a connection");
-    let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
+    let me = sot_platform::identity::challenge::self_identity().expect("this process's identity");
     let req = FeLeaseReq { boot: me.boot, pid: me.pid, created: me.created, token: None };
     let f = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap());
     handoff_on(&mut c, &f, &[]).await;

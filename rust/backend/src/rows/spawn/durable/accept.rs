@@ -3,7 +3,7 @@
 //! nothing alive.
 
 use super::wire::LaunchSpec;
-use sot_log::host::process_tree::{Birth, Launch, Ready};
+use sot_platform::host::process_tree::{Birth, Launch, Ready};
 use sot_log::supervisor::birth_claim::BirthClaim;
 use std::ffi::{OsStr, OsString};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};

@@ -192,7 +192,7 @@
                 .write_all(SAMPLER_SH.as_bytes())
                 .expect("feed sampler script");
         }
-        let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        let (status, stdout, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
         let _ = std::fs::remove_dir_all(&dir);
 
         let line = stdout
@@ -228,7 +228,7 @@
         let vanished = dir.join("8.stat"); // never created: a pid that exited between glob and open
         let prog = "{ n++ } END { print n+0 }";
 
-        let old = sot_log::test_wait::run_within(
+        let old = sot_platform::test_wait::run_within(
             std::process::Command::new("awk").arg(prog).arg(&vanished).arg(&survivor),
             BOUND,
         );
@@ -238,7 +238,7 @@
             "END never runs on the fatal path, so the survivor's record is lost too: {old}"
         );
 
-        let piped = sot_log::test_wait::run_within(
+        let piped = sot_platform::test_wait::run_within(
             std::process::Command::new("sh")
                 .arg("-c")
                 .arg(format!("cat {} {} 2>/dev/null | awk '{}'", vanished.display(), survivor.display(), prog)),

@@ -8,7 +8,7 @@
 use crate::fixture_owner::Fixture;
 use crate::kill_probe::{assert_kill_end, kill_control, with_usr1, Usr1, KILL_PROBE};
 use crate::observations::wait_for;
-use sot_log::host::process_tree::{Birth, BirthError, Group, Launch, Stage};
+use sot_platform::host::process_tree::{Birth, BirthError, Group, Launch, Stage};
 use sot_log::supervisor::birth_claim::BirthClaim;
 #[cfg(feature = "daemon-lifetime-faults")]
 use std::io::Write as _;
@@ -438,7 +438,7 @@ fn claim_parent_role() {
     let Some(dir) = std::env::var_os("SOT_L2_ROLE_DIR").map(PathBuf::from) else {
         return;
     };
-    sot_log::test_isolated::enter("native_premises::claim_parent_role");
+    sot_platform::test_isolated::enter("native_premises::claim_parent_role");
     let claim = BirthClaim::take(&dir.join("state")).expect("the role takes the claim");
     // The child ends when the case writes `stop` or its folder is gone (the case never signals a pid it did not spawn); it
     // ends by itself after ten minutes otherwise.
@@ -464,7 +464,7 @@ fn the_claim_outlives_its_parents_death() {
     let state = state_with_fence(dir.path());
     let mut fx = Fixture::new("claim_outlives_parent");
     let (mut command, entry) =
-        sot_log::test_isolated::test_command("native_premises::claim_parent_role");
+        sot_platform::test_isolated::test_command("native_premises::claim_parent_role");
     let parent = command
         .env("SOT_L2_ROLE_DIR", dir.path())
         .stdin(std::process::Stdio::null())
@@ -474,7 +474,7 @@ fn the_claim_outlives_its_parents_death() {
         .expect("start the role");
     let parent_pid = parent.id();
     let (parent_status, out, err) =
-        sot_log::test_isolated::drain(parent).wait_within(sot_log::test_isolated::ISOLATION_TIMEOUT);
+        sot_platform::test_isolated::drain(parent).wait_within(sot_platform::test_isolated::ISOLATION_TIMEOUT);
     assert_eq!(
         parent_status.signal(),
         Some(libc::SIGKILL),
@@ -554,7 +554,7 @@ fn source_group_role() {
     let Some(dir) = std::env::var_os("SOT_L2_ROLE_DIR").map(PathBuf::from) else {
         return;
     };
-    sot_log::test_isolated::enter("native_premises::source_group_role");
+    sot_platform::test_isolated::enter("native_premises::source_group_role");
     // The child ends when the case writes `stop` in the role's folder or the folder is gone, and by itself after ten minutes.
     let mut birth = sh(&format!(
         "n=0; while [ -d '{0}' ] && [ ! -e '{0}/stop' ] && [ $n -lt 6000 ]; do sleep 0.1; n=$((n+1)); done",
@@ -587,7 +587,7 @@ fn a_child_forks_into_its_parents_group_unless_the_parent_has_its_own_session() 
     ] {
         let dir = tempfile::tempdir().unwrap();
         let (command, entry) =
-            sot_log::test_isolated::test_command("native_premises::source_group_role");
+            sot_platform::test_isolated::test_command("native_premises::source_group_role");
         let mut launch = Launch::new(command.get_program());
         launch.args(command.get_args());
         for (k, v) in command.get_envs() {
@@ -654,7 +654,7 @@ fn a_child_forks_into_its_parents_group_unless_the_parent_has_its_own_session() 
 #[cfg(feature = "daemon-lifetime-faults")]
 #[test]
 fn a_pause_holds_the_child_at_its_stage_until_the_harness_opens_it() {
-    use sot_log::host::process_tree::{
+    use sot_platform::host::process_tree::{
         Pause, PAUSE_BEFORE_CLOSE, PAUSE_BEFORE_READY, PAUSE_BEFORE_SESSION,
     };
     let mut fx = Fixture::new("native_pause_stages");
@@ -722,7 +722,7 @@ fn a_pause_holds_the_child_at_its_stage_until_the_harness_opens_it() {
 #[cfg(feature = "daemon-lifetime-faults")]
 #[test]
 fn a_pause_whose_go_end_closes_ends_the_child_before_its_target() {
-    use sot_log::host::process_tree::{Pause, PAUSE_BEFORE_SESSION};
+    use sot_platform::host::process_tree::{Pause, PAUSE_BEFORE_SESSION};
     let dir = tempfile::tempdir().unwrap();
     let mark = dir.path().join("mark");
     let mut fx = Fixture::new("native_pause_closed");

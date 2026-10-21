@@ -1,6 +1,6 @@
 //! Supervisors on a full volume: real `sot-capsule supervise` processes hold their rows and resume them.
 use super::*;
-use sot_log::host::state_dir::state_dir_hash;
+use sot_platform::host::state_dir::state_dir_hash;
 use sot_log::lane::wire::{SupervisorPhase, SupervisorReply, SupervisorRequest};
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test, voyage_root_path};
 use std::process::{Command, Stdio};
@@ -140,7 +140,7 @@ impl Row {
 fn await_writer_free(state_dir: &Path, voyage: &str, within: Duration) {
     let lock = voyage_root_path(state_dir, voyage).join("writer.lock");
     let deadline = Instant::now() + within;
-    while sot_log::lock_writer(&lock).is_err() {
+    while sot_platform::host::lock_writer(&lock).is_err() {
         assert!(
             Instant::now() < deadline,
             "L3 the leg still holds its voyage after {within:?}"
@@ -160,7 +160,7 @@ impl Drop for Row {
         };
         let lock = voyage_root_path(&self.state_dir, &voyage).join("writer.lock");
         let deadline = Instant::now() + Duration::from_secs(60);
-        while sot_log::lock_writer(&lock).is_err() {
+        while sot_platform::host::lock_writer(&lock).is_err() {
             if Instant::now() > deadline {
                 eprintln!("L3 HARNESS FAILURE: a row's leg still holds its voyage after 60 s");
                 return;
@@ -243,9 +243,9 @@ fn three_rows_hold_and_resume_on_a_full_volume() {
         let (_, stopped_voyage) = before.last().expect("three rows");
         sot_log::attach_client::supervisor_client::stop(&stopped.state_dir)
             .expect("L3 a held row must accept a Stop while storage is full");
-        let status = sot_log::test_isolated::wait_within(
+        let status = sot_platform::test_isolated::wait_within(
             stopped.guard.as_mut().unwrap().child_mut(),
-            sot_log::test_isolated::ISOLATION_TIMEOUT,
+            sot_platform::test_isolated::ISOLATION_TIMEOUT,
         );
         assert_eq!(
             status.code(),

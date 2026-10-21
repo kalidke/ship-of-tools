@@ -72,7 +72,7 @@ pub(crate) async fn run(
         tracing::warn!("shutdown: a run start was still in flight at the rows deadline");
     }
 
-    let report = match sot_log::host::state_dir::sot_state_dir() {
+    let report = match sot_platform::host::state_dir::sot_state_dir() {
         Some(state_root) => {
             crate::rows::end::end_every(workspaces.list(), &workspaces, &ws_events, &state_root, REASON, rows_deadline).await
         }

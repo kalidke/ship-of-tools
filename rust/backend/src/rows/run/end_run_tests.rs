@@ -78,7 +78,7 @@ fn end_run_is_unheld_only_when_both_the_fence_and_the_leg_are_proven_absent() {
 
     // A leg holds the voyage's own `writer.lock` -- reported
     // instead of silently orphaned.
-    let leg = sot_log::lock_writer(&voyage_root.join("writer.lock")).expect("take the writer lock");
+    let leg = sot_platform::host::lock_writer(&voyage_root.join("writer.lock")).expect("take the writer lock");
     match end_run(state_dir, "test reason", true) {
         Err(_) => {}
         Ok(outcome) => panic!("expected Err while a leg holds the row with no authority: {outcome:?}"),

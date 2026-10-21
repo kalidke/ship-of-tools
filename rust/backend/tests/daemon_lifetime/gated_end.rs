@@ -181,7 +181,7 @@ impl Held {
 
 /// A lease from this process on the daemon at `socket`, then the window's close: its answer (`not_ended`, among others).
 async fn close(socket: std::path::PathBuf) -> serde_json::Value {
-    let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
+    let me = sot_platform::identity::challenge::self_identity().expect("this process's identity");
     let lease = FeLeaseReq {
         boot: me.boot,
         pid: me.pid,

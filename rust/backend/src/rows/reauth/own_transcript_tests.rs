@@ -203,8 +203,8 @@ async fn a_relative_start_directory_is_refused() {
     let up = "../".repeat(here.components().count() - 1);
     let relative = PathBuf::from(format!("{up}{}", root.strip_prefix("/").unwrap().display()));
     assert_eq!(
-        sot_log::host::dir_identity(&relative).ok(),
-        sot_log::host::dir_identity(&root).ok(),
+        sot_platform::host::dir_identity(&relative).ok(),
+        sot_platform::host::dir_identity(&root).ok(),
         "read from here, the relative spelling reaches the row's root"
     );
     seed_transcript(

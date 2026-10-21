@@ -699,5 +699,5 @@ pub fn free_and_sync(root: &Path) {
     file.sync_all().unwrap();
     drop(file);
     std::fs::remove_file(path).unwrap();
-    sot_log::host::preflight_volume(root).expect("preflight after freeing the native volume");
+    sot_platform::host::preflight_volume(root).expect("preflight after freeing the native volume");
 }

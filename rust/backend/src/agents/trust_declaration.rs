@@ -130,9 +130,9 @@ fn create_declaration(
         file.sync_all().map_err(|e| at(path, e))?;
         drop(file);
         before_publish();
-        match sot_log::host::publish_noreplace(&temporary, path) {
+        match sot_platform::host::publish_noreplace(&temporary, path) {
             Ok(()) => Ok(DeclarationOutcome::Declared),
-            Err(sot_log::Error::Io(e)) if e.kind() == ErrorKind::AlreadyExists => {
+            Err(sot_platform::Error::Io(e)) if e.kind() == ErrorKind::AlreadyExists => {
                 Ok(DeclarationOutcome::Kept)
             }
             Err(e) => Err(at(path, e)),

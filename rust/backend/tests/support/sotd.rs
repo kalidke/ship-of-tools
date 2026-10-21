@@ -74,7 +74,7 @@ fn probe_julia() -> Option<String> {
             return None;
         }
     };
-    let (status, bin, stderr) = sot_log::test_isolated::drain(probe).wait_within(Duration::from_secs(60));
+    let (status, bin, stderr) = sot_platform::test_isolated::drain(probe).wait_within(Duration::from_secs(60));
     if status.success() && Path::new(&bin).is_absolute() && Path::new(&bin).is_file() {
         return Some(bin);
     }

@@ -35,7 +35,7 @@ fn units(t: &TempDir) -> std::path::PathBuf {
 
 /// `sotd topology <args>` against `hosts` (written to the scratch home; `None` means no hosts.toml), with every path
 /// inside the scratch home and a PATH holding only the scratch bin, so no route reaches the real `systemctl`.
-fn topology(t: &TempDir, hosts: Option<&str>, self_host: &str, args: &[&str]) -> sot_log::test_wait::Ran {
+fn topology(t: &TempDir, hosts: Option<&str>, self_host: &str, args: &[&str]) -> sot_platform::test_wait::Ran {
     let file = t.path().join("hosts.toml");
     match hosts {
         Some(text) => std::fs::write(&file, text).unwrap(),
@@ -46,7 +46,7 @@ fn topology(t: &TempDir, hosts: Option<&str>, self_host: &str, args: &[&str]) ->
     let bin = t.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     sot_log::test_exec::write_executable(&bin.join("systemctl"), "#!/bin/sh\necho \"$*\" >> \"${0%/*}/calls\"\nexit 0\n");
-    sot_log::test_wait::run_within(
+    sot_platform::test_wait::run_within(
         sotd::sotd_command()
             .env_clear()
             .arg("topology")
@@ -61,11 +61,11 @@ fn topology(t: &TempDir, hosts: Option<&str>, self_host: &str, args: &[&str]) ->
 }
 
 /// What a run printed, both streams: the words the tests look for are on either.
-fn said(ran: &sot_log::test_wait::Ran) -> String {
+fn said(ran: &sot_platform::test_wait::Ran) -> String {
     format!("{}{}", ran.stdout, ran.stderr)
 }
 
-fn pin(t: &TempDir, hosts: Option<&str>) -> sot_log::test_wait::Ran {
+fn pin(t: &TempDir, hosts: Option<&str>) -> sot_platform::test_wait::Ran {
     let dir = units(t).display().to_string();
     topology(t, hosts, &me(), &["pin", "--dir", &dir])
 }
@@ -85,7 +85,7 @@ fn loaded(t: &TempDir, unit: &str) -> (Vec<String>, Vec<String>) {
     let systemd = ["/usr/lib/systemd/systemd", "/lib/systemd/systemd"].into_iter().find(|p| Path::new(p).exists()).expect("the systemd binary");
     let mut cmd = Command::new(systemd);
     systemd_env(&mut cmd, t);
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         cmd.env("SYSTEMD_UNIT_PATH", format!("{}:", units(t).display())) // the trailing ':' keeps systemd's own folders
             .args(["--test", "--user", "--no-pager", "--log-target=console", &format!("--unit={unit}")]),
         BOUND,
@@ -105,7 +105,7 @@ fn loaded(t: &TempDir, unit: &str) -> (Vec<String>, Vec<String>) {
 fn starts_here(t: &TempDir, conditions: &[String]) -> bool {
     let mut cmd = Command::new("systemd-analyze");
     systemd_env(&mut cmd, t);
-    let ran = sot_log::test_wait::run_within(cmd.args(["--user", "condition"]).args(conditions), BOUND);
+    let ran = sot_platform::test_wait::run_within(cmd.args(["--user", "condition"]).args(conditions), BOUND);
     match ran.status.code() {
         Some(0) => true,
         Some(1) => false,
@@ -136,7 +136,7 @@ fn sotd_unit_is_skipped_on_a_host_the_topology_does_not_run_it_on() {
 }
 
 /// `sotd topology pin --claim`, the installer's run on a box that runs a daemon.
-fn claim(t: &TempDir, hosts: Option<&str>, self_host: &str) -> sot_log::test_wait::Ran {
+fn claim(t: &TempDir, hosts: Option<&str>, self_host: &str) -> sot_platform::test_wait::Ran {
     let dir = units(t).display().to_string();
     topology(t, hosts, self_host, &["pin", "--dir", &dir, "--claim"])
 }
@@ -254,7 +254,7 @@ fn the_pin_command_the_installer_prints_runs_as_printed() {
     std::fs::create_dir_all(&dir).unwrap();
     let program = sotd::sotd_program();
     let cmd = printed.replacen("sotd", &format!("'{}'", program.display()), 1);
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         Command::new("bash")
             .env_clear()
             .env("PATH", "/usr/bin:/bin")

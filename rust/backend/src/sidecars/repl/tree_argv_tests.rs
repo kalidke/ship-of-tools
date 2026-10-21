@@ -100,7 +100,7 @@ fn os_argv(pid: u32) -> Option<Vec<String>> {
             "Get-CimInstance Win32_Process -Filter 'ProcessId={pid}' | ForEach-Object {{ if ($null -eq $_.CommandLine) {{ 'NULL ' + $_.Name + ' parent ' + $_.ParentProcessId + ' created ' + $_.CreationDate }} else {{ 'CMD ' + $_.CommandLine }} }}"
         ),
     ]);
-    let ran = sot_log::test_wait::run_within(&mut command, BOUND).ok();
+    let ran = sot_platform::test_wait::run_within(&mut command, BOUND).ok();
     let row = ran.stdout.trim();
     if row.is_empty() {
         return None;
@@ -134,7 +134,7 @@ fn read_tree(root: u32) -> Vec<u32> {
 fn read_tree(root: u32) -> Vec<u32> {
     let mut command = std::process::Command::new("ps");
     command.args(["-A", "-o", "pid=,pgid="]);
-    let ran = sot_log::test_wait::run_within(&mut command, BOUND).ok();
+    let ran = sot_platform::test_wait::run_within(&mut command, BOUND).ok();
     ran.stdout
         .lines()
         .filter_map(|l| {
@@ -153,7 +153,7 @@ fn read_tree(root: u32) -> Vec<u32> {
         "-Command",
         "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId) $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 })\" }",
     ]);
-    let ran = sot_log::test_wait::run_within(&mut command, BOUND).ok();
+    let ran = sot_platform::test_wait::run_within(&mut command, BOUND).ok();
     let rows: Vec<(u32, u32, u64)> = ran
         .stdout
         .lines()

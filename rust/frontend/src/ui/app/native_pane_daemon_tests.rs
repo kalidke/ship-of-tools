@@ -85,7 +85,7 @@ impl Control {
     /// Drops stdin and waits for the bridge's own exit; `wait_until` kills it only at the bound.
     pub(super) fn close(mut self) {
         drop(self.stdin.take());
-        let _ = sot_log::test_isolated::wait_until(&mut self.child, Instant::now() + Duration::from_secs(10));
+        let _ = sot_platform::test_isolated::wait_until(&mut self.child, Instant::now() + Duration::from_secs(10));
     }
 }
 
@@ -441,7 +441,7 @@ impl Daemon {
     /// Waits for the daemon's own exit within `bound`; it must be code 0. Nothing is signalled before the bound.
     fn await_daemon_exit(&mut self, bound: Duration) -> Vec<String> {
         let Some(mut child) = self.child.take() else { return Vec::new() };
-        match sot_log::test_isolated::wait_until(&mut child, Instant::now() + bound) {
+        match sot_platform::test_isolated::wait_until(&mut child, Instant::now() + bound) {
             Ok(status) if status.code() == Some(0) => Vec::new(),
             Ok(status) => vec![format!("the private daemon exited {status}, wanted 0")],
             Err(e) => vec![format!("the private daemon did not exit by itself: {e}")],

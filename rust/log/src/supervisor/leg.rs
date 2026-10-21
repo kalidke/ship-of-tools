@@ -166,10 +166,10 @@ impl LegLease {
     ///
     /// The parent-death lease. `O_CLOEXEC` on BOTH ends is the whole correctness of the lease: a write end leaked past
     /// an `exec` into ANY child keeps the pipe open after this process dies, and the leg then never sees its parent
-    /// go. [`crate::host::fd::pipe_cloexec`] is why neither end can be caught before its flag.
+    /// go. [`sot_platform::host::fd::pipe_cloexec`] is why neither end can be caught before its flag.
     #[cfg(unix)]
     pub(super) fn create(_h: &str) -> std::io::Result<Self> {
-        let (read, write) = crate::host::fd::pipe_cloexec(["lease.read", "lease.write"], false)?;
+        let (read, write) = sot_platform::host::fd::pipe_cloexec(["lease.read", "lease.write"], false)?;
         Ok(Self {
             read,
             _write: write,
@@ -197,7 +197,7 @@ impl LegLease {
 /// read end at `PARENT_LEASE_FD` with its flag clear. Async-signal-safe only.
 #[cfg(unix)]
 fn install_lease(read_fd: std::os::fd::RawFd) -> std::io::Result<()> {
-    crate::host::inherit_none()?;
+    sot_platform::host::inherit_none()?;
     if read_fd == PARENT_LEASE_FD {
         // `dup2(fd, fd)` is specified as a no-op that leaves
         // `FD_CLOEXEC` untouched -- exactly the one case

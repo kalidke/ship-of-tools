@@ -19,7 +19,7 @@ fn glyphs(group: &resvg::usvg::Group) -> usize {
 #[test]
 fn separator_references_are_read_in_one_pass() {
     let long = format!("{};", "&#".repeat(512 * 1024));
-    let unchanged = sot_log::test_wait::within(std::time::Duration::from_secs(10), "a 1 MiB reference scan", move || {
+    let unchanged = sot_platform::test_wait::within(std::time::Duration::from_secs(10), "a 1 MiB reference scan", move || {
         *separator_references_as_spaces(&long) == *long
     });
     assert!(unchanged, "a run of `&#` with no separator in it changed");

@@ -154,7 +154,7 @@ fn a_locked_reader_counts_nothing_after_a_cut_back() {
     failing_sync(&inbox, || {
         let dir = inbox.clone();
         reader = Some(std::thread::spawn(move || {
-            let _held = read_lock(&dir, "h", "local t", true, &sot_log::host::env::Env::empty());
+            let _held = read_lock(&dir, "h", "local t", true, &sot_platform::host::env::Env::empty());
             inbox_lines(&dir.join("h.jsonl")).len()
         }));
         until_a_waiter_blocks_on(&inbox.join("h.lock"));

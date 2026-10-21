@@ -29,7 +29,7 @@
 //!
 //! **Search order** (the only one): `$SOT_HOSTS` when set (tests, scratch
 //! daemons), else `<config dir>/hosts.toml` where the config dir is
-//! `sot_log::host::state_dir::sot_config_dir` (`$XDG_CONFIG_HOME/sot` when set, else
+//! `sot_platform::host::state_dir::sot_config_dir` (`$XDG_CONFIG_HOME/sot` when set, else
 //! `~/.config/sot`; `%LOCALAPPDATA%\sot\config` on Windows). No repo-local layer: the hub's own copy is
 //! canonical and every other box's copy is a `topology sync` fetch of it.
 //!
@@ -89,26 +89,26 @@ impl Topology {
 /// Where the file is looked for: `$SOT_HOSTS`, else the config dir. The one
 /// search order — documented in the module doc, implemented here only.
 pub fn locate() -> Option<PathBuf> {
-    locate_in(&sot_log::host::env::Env::process())
+    locate_in(&sot_platform::host::env::Env::process())
 }
 
 /// [`locate`] reading the variables from `env`.
-pub fn locate_in(env: &sot_log::host::env::Env) -> Option<PathBuf> {
+pub fn locate_in(env: &sot_platform::host::env::Env) -> Option<PathBuf> {
     if let Some(p) = env.get_nonempty("SOT_HOSTS") {
         return Some(PathBuf::from(p));
     }
-    sot_log::host::state_dir::sot_config_dir_in(env).map(|d| d.join("hosts.toml"))
+    sot_platform::host::state_dir::sot_config_dir_in(env).map(|d| d.join("hosts.toml"))
 }
 
 /// Read and parse the located file. `Ok(None)` when there is no file (the
 /// ordinary state on a box that never declared a topology); `Err` names the
 /// path and the offender for an unreadable or invalid one.
 pub fn load() -> Result<Option<(PathBuf, Topology)>, String> {
-    load_in(&sot_log::host::env::Env::process())
+    load_in(&sot_platform::host::env::Env::process())
 }
 
 /// [`load`] locating the file through `env`.
-pub fn load_in(env: &sot_log::host::env::Env) -> Result<Option<(PathBuf, Topology)>, String> {
+pub fn load_in(env: &sot_platform::host::env::Env) -> Result<Option<(PathBuf, Topology)>, String> {
     let Some(path) = locate_in(env) else { return Ok(None) };
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,

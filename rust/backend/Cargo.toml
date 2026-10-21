@@ -13,6 +13,7 @@ daemon-lifetime-faults = ["sot-log/native-barrier"]
 [dependencies]
 sot-protocol = { path = "../protocol" }
 sot-updater = { path = "../updater" }
+sot-platform = { path = "../platform" }
 sot-log = { path = "../log" }
 # The comm wake reads a cell's dim attribute off the capsule screen (`comm::wake::screen::free_test_lines`).
 vt100-ctt = "0.17"
@@ -54,7 +55,7 @@ tempfile = { workspace = true }
 sha2 = { workspace = true }
 
 # ADR 0046 decision 2 R3: the watchdog's own zero-network identity read
-# of a child it just spawned itself needs `HANDLE` to call `sot_log::identity::challenge_win::
+# of a child it just spawned itself needs `HANDLE` to call `sot_platform::identity::challenge_win::
 # creation_filetime_bits` directly -- the same version already pinned
 # under `[target.'cfg(windows)'.dev-dependencies]` below, promoted to a
 # real (non-dev) dependency since production code now names the type too.
@@ -75,6 +76,7 @@ path = "src/main.rs"
 sot-protocol = { path = "../protocol", features = ["test-handshake-bound"] }
 # `topology/dial.rs`'s Windows test reads the impersonation level a pipe server gets (`identity::impersonation_probe`).
 # `test_log`, `test_exec::write_executable` and `test_scan::rust_sources()` (dev-only: resolver 2 keeps the feature out of builds).
+sot-platform = { path = "../platform", features = ["test-support"] }
 sot-log = { path = "../log", features = ["test-support"] }
 # `start_paused` test runtime (pages::site's bind-fallback test collapses the
 # 10x300ms preferred-port retry loop instead of really sleeping through it).

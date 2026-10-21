@@ -1,7 +1,7 @@
 use super::*;
 use std::ffi::OsString;
 
-use sot_log::identity::challenge::PeerAuthenticated;
+use sot_platform::identity::challenge::PeerAuthenticated;
 use sot_protocol::ops::{FeLeaseReq, LeaseOutcome};
 
 use crate::lifecycle::lease::HeldRecord;
@@ -38,7 +38,7 @@ async fn failed_forget_removal_is_kept_for_the_next_start() {
     // A directory where the registration file goes: it will not go.
     std::fs::create_dir_all(crate::rows::store::toml_path_for(&stuck.slug)).unwrap();
 
-    let own = sot_log::identity::challenge::boot_identity().expect("this host's boot");
+    let own = sot_platform::identity::challenge::boot_identity().expect("this host's boot");
     let state = tempfile::tempdir().unwrap();
     let path = state.path().join(bounds::HELD_RECORD_FILE);
     let rec = HeldRecord {

@@ -141,7 +141,7 @@ impl Signal {
         )]
         let child = {
             #[cfg(unix)]
-            let _fork = sot_log::host::fd::fork_guard();
+            let _fork = sot_platform::host::fd::fork_guard();
             cmd.spawn()?
         };
         let mut provisional = Provisional::new(child);
@@ -200,7 +200,7 @@ impl Signal {
         )]
         let child = {
             #[cfg(unix)]
-            let _fork = sot_log::host::fd::fork_guard();
+            let _fork = sot_platform::host::fd::fork_guard();
             cmd.spawn()?
         };
         let mut provisional = Provisional::new(child);

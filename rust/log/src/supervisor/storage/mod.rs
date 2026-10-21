@@ -1,7 +1,7 @@
 //! The storage wait: a full state-root volume holds the authority; it never charges the crash counter or goes terminal.
 
 use super::*;
-use crate::host::storage_exhaustion;
+use crate::storage_exhaustion;
 
 /// A probe still running this long after it started ends the wait Terminal.
 const PROBE_WATCHDOG: Duration = Duration::from_secs(60);
@@ -254,8 +254,8 @@ pub(super) fn probe(state_dir: &Path) -> Probed {
     let mut written = file.write_all(&[0u8; 4096]).and_then(|()| file.sync_all());
     drop(file);
     if written.is_ok() {
-        written = crate::host::fsync_dir(state_dir).map_err(|e| match e {
-            crate::Error::Io(e) => e,
+        written = sot_platform::host::fsync_dir(state_dir).map_err(|e| match e {
+            sot_platform::Error::Io(e) => e,
             other => std::io::Error::other(other),
         });
     }

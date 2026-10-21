@@ -96,7 +96,7 @@ async fn a_row_at_its_agents_permission_prompt_reads_waiting_on_its_person() {
 
     // The turn ends through the session's one write (`sotd work-state stop`, as its Stop hook runs it): the row rests,
     // blue. A dialog that opens now (a background agent's, after the lead's Stop) still reads red, and the rest returns.
-    let stop = sot_log::test_wait::run_within(
+    let stop = sot_platform::test_wait::run_within(
         std::process::Command::new(sotd_program()).args(["work-state", "stop", "--handle", "cwsd-h"]).env("SOT_COMM_HOME", &env.comm_root),
         BOUND,
     );

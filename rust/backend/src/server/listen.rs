@@ -2,7 +2,7 @@
 
 use super::conn::handle_connection;
 use super::*;
-use sot_log::identity::challenge::PeerAuthenticated;
+use sot_platform::identity::challenge::PeerAuthenticated;
 use sot_log::lane::accept_policy::{accept_policy, AcceptAction, ACCEPT_SLEEP};
 
 use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
@@ -39,12 +39,12 @@ fn daemon_lock_wait() -> std::time::Duration {
 pub(super) async fn lock_daemon(
     state_root: &std::path::Path,
     socket: Option<&std::path::Path>,
-) -> Result<sot_log::host::DaemonLock> {
-    let lock_path = sot_log::host::daemon_lock_path(state_root);
+) -> Result<sot_platform::host::DaemonLock> {
+    let lock_path = sot_platform::host::daemon_lock_path(state_root);
     let deadline = tokio::time::Instant::now() + daemon_lock_wait();
     let mut logged = false;
     loop {
-        if let Some(lock) = sot_log::host::try_lock_daemon(state_root)
+        if let Some(lock) = sot_platform::host::try_lock_daemon(state_root)
             .with_context(|| format!("open the daemon lock {}", lock_path.display()))?
         {
             return Ok(lock);
@@ -77,8 +77,8 @@ pub(super) async fn lock_daemon(
 /// Takes the daemon lock for `opts`, or runs unfenced when this machine has no state root.
 pub(super) async fn take_daemon_lock(
     opts: &crate::Opts,
-) -> Result<Option<sot_log::host::DaemonLock>> {
-    Ok(match sot_log::host::state_dir::sot_state_dir() {
+) -> Result<Option<sot_platform::host::DaemonLock>> {
+    Ok(match sot_platform::host::state_dir::sot_state_dir() {
         Some(state_root) => Some(lock_daemon(&state_root, opts.socket.as_deref()).await?),
         None => {
             tracing::warn!(
@@ -115,7 +115,7 @@ fn nobody_listens(
 /// succeeds. The Unix probe is `connect_own`, bounded by `CONNECT_BOUND` and writing nothing.
 fn socket_answers(path: &std::path::Path) -> bool {
     #[cfg(unix)]
-    return !nobody_listens(&sot_log::identity::connect_own::connect_own(path));
+    return !nobody_listens(&sot_log::lane::connect_own::connect_own(path));
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -137,7 +137,7 @@ fn socket_answers(path: &std::path::Path) -> bool {
 /// because it cannot tell.
 #[cfg(unix)]
 pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
-    let attempt = sot_log::identity::connect_own::connect_own(path);
+    let attempt = sot_log::lane::connect_own::connect_own(path);
     if nobody_listens(&attempt) {
         return Ok(());
     }
@@ -166,7 +166,7 @@ pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
 #[cfg(windows)]
 fn session_pipe_security_descriptor(
 ) -> Result<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
-    let descriptor = sot_log::owner_protected_pipe_descriptor()
+    let descriptor = sot_platform::host::owner_protected_pipe_descriptor()
         .context("build session pipe security descriptor")?;
     // SAFETY: `descriptor` was built by `ConvertStringSecurityDescriptorToSecurityDescriptorW`
     // (self-relative, valid, unaliased — see that function's own doc) and
@@ -402,7 +402,7 @@ fn admit_peer_observing(
         use std::os::fd::AsRawFd;
         let interprocess::local_socket::tokio::Stream::UdSocket(s) = stream;
         let (euid, pid, created) =
-            sot_log::identity::challenge_macos::peer_euid_pid_created(s.inner().as_raw_fd())
+            sot_platform::identity::challenge_macos::peer_euid_pid_created(s.inner().as_raw_fd())
                 .ok()?;
         // SAFETY: geteuid has no preconditions and cannot fail.
         same_account(observed_account(Some(euid)), unsafe { libc::geteuid() })
@@ -424,7 +424,7 @@ fn admit_peer_observing(
         let _ = observed_account;
         let pid = creds.and_then(|c| c.pid()).and_then(|pid| u32::try_from(pid).ok());
         let process = pid.and_then(|pid| {
-            let created = sot_log::identity::challenge::process_created(pid).ok()?;
+            let created = sot_platform::identity::challenge::process_created(pid).ok()?;
             Some(PeerAuthenticated { pid, created })
         });
         Some(Admitted { process })

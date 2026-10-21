@@ -3,7 +3,7 @@
 
 use super::*;
 use sot_log::lane::test_progress::{Checkpoint, Pause, Role};
-use sot_log::test_isolated::{enter, ISOLATION_TIMEOUT};
+use sot_platform::test_isolated::{enter, ISOLATION_TIMEOUT};
 
 /// The short per-connection teardown budget a test gives a server it expects to expire.
 pub(super) const SHORT: Duration = Duration::from_millis(200);

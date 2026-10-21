@@ -36,7 +36,7 @@ pub(in crate::supervisor) fn end_run_over_mgmt_lane(h: &str, voyage_id: &str, re
         }
         Err(e) => return Err(e.into()),
     };
-    let mut exchange = crate::identity::exchange::VoyageMgmtExchange::default();
+    let mut exchange = crate::lane::exchange::VoyageMgmtExchange::default();
     match PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + END_RUN_CHALLENGE_BOUND) {
         ChallengeOutcome::Foreign => Ok(EndRunOutcome::Foreign),
         ChallengeOutcome::Undetermined => Ok(EndRunOutcome::Pending),
@@ -49,7 +49,7 @@ pub(in crate::supervisor) fn end_run_over_mgmt_lane(h: &str, voyage_id: &str, re
             // here rather than a second one, on the SAME "request write
             // 2s" per-op budget every other op already uses.
             let write_deadline = Instant::now() + END_RUN_WRITE_BOUND;
-            let write_ok = crate::identity::deadline::run_with_deadline(write_deadline, || conn.cancel(), || conn.write_all(&request))
+            let write_ok = sot_platform::identity::deadline::run_with_deadline(write_deadline, || conn.cancel(), || conn.write_all(&request))
                 .is_some_and(|r| r.is_ok());
             if !write_ok {
                 return Ok(EndRunOutcome::Ended(process));
@@ -95,7 +95,7 @@ fn probe_writer_liveness(state_dir: &Path, voyage_id: &str) -> WriterLiveness {
     // The caller has no `h` of its own to pass -- derived here from the
     // `state_dir` this function already receives, rather than fanning the
     // parameter out through every caller above it.
-    let h = crate::host::state_dir::state_dir_hash(state_dir);
+    let h = sot_platform::host::state_dir::state_dir_hash(state_dir);
     let conn = match PlatformEndpoint::default().connect_voyage_unchallenged(&h, voyage_id) {
         Ok(c) => c,
         // ADR 0043 decision 21: the ONE absence predicate, shared with
@@ -112,7 +112,7 @@ fn probe_writer_liveness(state_dir: &Path, voyage_id: &str) -> WriterLiveness {
         }
         Err(_) => return WriterLiveness::Ambiguous,
     };
-    let mut exchange = crate::identity::exchange::VoyageMgmtExchange::default();
+    let mut exchange = crate::lane::exchange::VoyageMgmtExchange::default();
     match PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + LIVENESS_PROBE_BUDGET) {
         ChallengeOutcome::Proven(_) => WriterLiveness::Alive,
         ChallengeOutcome::Foreign | ChallengeOutcome::Undetermined => WriterLiveness::Ambiguous,

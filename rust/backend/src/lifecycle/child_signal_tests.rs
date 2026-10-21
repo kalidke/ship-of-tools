@@ -412,11 +412,11 @@ fn a_one_shot_takes_its_tree_after_it_exits() {
 #[test]
 fn an_ignored_sigchld_is_reset_at_startup() {
     let name = "lifecycle::child_signal::tests::ignored_sigchld_scenario";
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         std::process::Command::new(std::env::current_exe().expect("current_exe"))
             .args(["--exact", name, "--test-threads=1", "--nocapture"])
             .env("SOT_TEST_SIGCHLD_CHILD", "1"),
-        sot_log::test_isolated::ISOLATION_TIMEOUT,
+        sot_platform::test_isolated::ISOLATION_TIMEOUT,
     );
     let text = format!("{}{}", ran.stdout, ran.stderr);
     assert!(ran.status.success(), "the child run failed:\n{ran}");
@@ -463,7 +463,7 @@ fn a_blocked_sigchld_is_unblocked_at_startup() {
             Ok(())
         });
     }
-    let ran = sot_log::test_wait::run_within(&mut cmd, sot_log::test_isolated::ISOLATION_TIMEOUT);
+    let ran = sot_platform::test_wait::run_within(&mut cmd, sot_platform::test_isolated::ISOLATION_TIMEOUT);
     let text = format!("{}{}", ran.stdout, ran.stderr);
     assert!(ran.status.success(), "the child run failed:\n{ran}");
     assert!(

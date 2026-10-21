@@ -137,7 +137,7 @@ fn the_filer_and_sotd_comm_send_take_the_same_lock() {
         let (home, project) = (d.path().to_path_buf(), project.clone());
         std::thread::spawn(move || {
             for i in 0..200 {
-                let ran = sot_log::test_wait::run_within(&mut sotd_send(&home, &project, "sh", "t3", &format!("sh-{i}")), BOUND);
+                let ran = sot_platform::test_wait::run_within(&mut sotd_send(&home, &project, "sh", "t3", &format!("sh-{i}")), BOUND);
                 assert!(ran.status.success() && ran.stdout.contains("filed -> @t3"), "{ran}");
             }
         })
@@ -189,8 +189,8 @@ fn a_frozen_holder_makes_the_filer_wait_then_fail() {
     let e = file_frame(&inbox, "rust", "f", false, "frozen", "t", Duration::from_secs(1), "local t").unwrap_err();
     assert!(t0.elapsed() >= Duration::from_secs(1));
     assert_eq!(e, "the inbox lock for @f was held for 1s — nothing was appended");
-    sot_log::test_wait::run_within(Command::new("kill").args(["-CONT", &h.id().to_string()]), BOUND).ok();
-    sot_log::test_isolated::wait_within(&mut h, BOUND);
+    sot_platform::test_wait::run_within(Command::new("kill").args(["-CONT", &h.id().to_string()]), BOUND).ok();
+    sot_platform::test_isolated::wait_within(&mut h, BOUND);
     assert_eq!(whole_lines(&inbox.join("f.jsonl")), ["resumed"]);
     file_frame(&inbox, "rust", "f", false, "after", "t", Duration::from_secs(1), "local t").unwrap();
     assert_eq!(whole_lines(&inbox.join("f.jsonl")), ["resumed", "after"]);
@@ -219,7 +219,7 @@ fn a_write_cut_short_by_the_file_size_limit_leaves_the_file_byte_identical() {
         .unwrap();
     // Drained while it runs and waited on within a bound; its stderr reaches this test's own output.
     let (status, stdout, _) =
-        sot_log::test_isolated::drain(child).wait_within(sot_log::test_isolated::ISOLATION_TIMEOUT);
+        sot_platform::test_isolated::drain(child).wait_within(sot_platform::test_isolated::ISOLATION_TIMEOUT);
     assert!(stdout.contains("FAILED the append failed: "), "{status}: {stdout}");
     assert_eq!(std::fs::read_to_string(inbox.join("z.jsonl")).unwrap(), before);
 }
@@ -239,7 +239,7 @@ fn fsize_child_files_one() {
 /// self file.
 fn join_in_row(env: &Env, ws: &str, raw: &str, declared: &str) {
     let bin = env._tmp.path().join("bin");
-    sot_log::test_wait::run_within(
+    sot_platform::test_wait::run_within(
         Command::new("bash")
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -250,7 +250,7 @@ fn join_in_row(env: &Env, ws: &str, raw: &str, declared: &str) {
     )
     .ok();
     // Beneath a stand-in for the row's capsule (the process walk reads only the command line), as the session is.
-    sot_log::test_wait::run_within(
+    sot_platform::test_wait::run_within(
         Command::new("bash")
             .args(["-c", "exec -a sot-capsule bash -c 'shift; \"$@\"; exit $?' _ \"/in-row/state/workspaces/$0/voyages/v0\" timeout 60 bash \"$1\""])
             .arg(ws)

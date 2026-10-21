@@ -1,5 +1,5 @@
 use super::*;
-use crate::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
+use sot_platform::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
 
 #[test]
 fn map_peer_auth_outcome_authenticated_is_ok() {

@@ -47,7 +47,7 @@ use crate::identity::challenge::{
     exchange_identity, ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome, PeerAuthenticated,
     StatusFailure,
 };
-use crate::lane::client::{PeerIdentity, PeerProcess};
+use crate::identity::peer::{PeerIdentity, PeerProcess};
 use crate::identity::exchange::IdentityExchange;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -193,7 +193,7 @@ const SO_PEERPIDFD: libc::c_int = 77;
 /// own `SpawnedChild` reuses this SAME helper for the freshly spawned,
 /// not-yet-challenged child, rather than duplicating the syscall
 /// encoding a second time.
-pub(crate) fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {
+pub fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {
     let rc = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0 as libc::c_uint) };
     if rc < 0 {
         return Err(io::Error::last_os_error());
@@ -208,7 +208,7 @@ pub(crate) fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {
 /// never infinite. `pub(crate)` (ADR 0043 decision 21): shared by
 /// [`ChallengedProcess::wait`] above and `supervisor/probe/unix.rs`'s own
 /// `SpawnedChild::wait` — one poll loop, not two copies.
-pub(crate) fn poll_pidfd_readable(fd: RawFd, timeout: Duration) -> io::Result<bool> {
+pub fn poll_pidfd_readable(fd: RawFd, timeout: Duration) -> io::Result<bool> {
     let mut pfd = libc::pollfd {
         fd,
         events: libc::POLLIN,

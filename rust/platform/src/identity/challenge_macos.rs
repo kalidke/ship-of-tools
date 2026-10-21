@@ -74,7 +74,7 @@
 //! specific `proc`, so -- exactly like a pidfd, and unlike a pid number
 //! -- it names the process INSTANCE. [`ChallengedProcess`] retains one,
 //! one `kqueue` fd per handle, closed by drop; that handle is what lets
-//! this type implement [`crate::lane::client::PeerProcess`] with the SAME
+//! this type implement [`crate::identity::peer::PeerProcess`] with the SAME
 //! contract as its two siblings rather than a weaker macOS spelling of
 //! it.
 //!
@@ -103,7 +103,7 @@ use crate::identity::challenge::{
     exchange_identity, ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome, PeerAuthenticated,
     StatusFailure,
 };
-use crate::lane::client::{PeerIdentity, PeerProcess};
+use crate::identity::peer::{PeerIdentity, PeerProcess};
 use crate::identity::exchange::IdentityExchange;
 use super::exit_watch_macos::{drain_exit, watch_exit};
 use std::io;

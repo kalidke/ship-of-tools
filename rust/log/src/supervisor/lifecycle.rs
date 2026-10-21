@@ -402,7 +402,7 @@ pub(super) fn reissue_and_reconcile_end_run(
 ) -> crate::Result<EndRunReconciliation> {
     // Computed once, outside the reissue loop: the row does not change
     // hash between retries.
-    let h = crate::host::state_dir::state_dir_hash(state_dir);
+    let h = sot_platform::host::state_dir::state_dir_hash(state_dir);
     loop {
         match end_run_over_mgmt_lane(&h, voyage_id, reason) {
             Ok(EndRunOutcome::Ended(process)) => {

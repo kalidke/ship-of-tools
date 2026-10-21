@@ -66,7 +66,7 @@ async fn kill_the_guard(env: &Env) -> u32 {
     let daemon: Vec<u32> = children.split_whitespace().map(|pid| pid.parse().expect("a pid")).collect();
     assert_eq!(daemon.len(), 1, "the guard's one child is its daemon: {children:?}");
     guard.kill().expect("SIGKILL to the guard");
-    sot_log::test_isolated::wait_within(&mut guard, BOUND);
+    sot_platform::test_isolated::wait_within(&mut guard, BOUND);
     let proc_dir = format!("/proc/{}", daemon[0]);
     poll_until(|| async { (!Path::new(&proc_dir).exists()).then_some(()) }, BOUND, "the killed guard's daemon to be gone").await;
     assert!(try_connect(&env.socket_path).await.is_none(), "the killed guard's daemon answers no more");
@@ -91,7 +91,7 @@ async fn a_close_removes_its_childrens_folders() {
     let tmp = tempfile::tempdir().expect("the daemons' temporary folder");
     let env = Env::new("childclose");
     let made = daemon_with_a_child(&env, tmp.path(), true).await;
-    let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
+    let me = sot_platform::identity::challenge::self_identity().expect("this process's identity");
     let req = sot_protocol::ops::FeLeaseReq { boot: me.boot, pid: me.pid, created: me.created, token: None };
     let lease = sot_protocol::Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).expect("the lease request"));
     let mut conn = support::handoff(&env.socket_path, &lease).await;
@@ -99,7 +99,7 @@ async fn a_close_removes_its_childrens_folders() {
     let leaving = sot_protocol::Frame::req(2, op::FE_LEAVING, json!({ "intent": "close" }));
     let _ = sot_protocol::codec::write_frame(&mut conn, &leaving, None).await;
     let mut guard = env.daemon.borrow_mut().take().expect("the launched guard");
-    let status = sot_log::test_isolated::wait_within(&mut guard, BOUND);
+    let status = sot_platform::test_isolated::wait_within(&mut guard, BOUND);
     println!("child-folders: the closed daemon's guard ended: {status:?}; folders left: {:?}", present(tmp.path(), &made));
     assert_eq!(present(tmp.path(), &made), Vec::<String>::new(), "a closed daemon's child folders are gone");
 }
@@ -132,7 +132,7 @@ async fn a_killed_guards_folders_go_at_the_next_start_and_a_running_daemons_stay
 
 /// Whether this account can make a pid namespace here (`unshare` with a user namespace of its own); says why not.
 fn pid_namespaces_here() -> bool {
-    let probe = sot_log::test_wait::try_run_within(
+    let probe = sot_platform::test_wait::try_run_within(
         std::process::Command::new("unshare").args(["-Upf", "--map-root-user", "--mount-proc", "true"]),
         BOUND,
     );
@@ -209,7 +209,7 @@ async fn a_start_in_another_pid_namespace_removes_a_crashed_daemons_folders_and_
     let after = (present(tmp.path(), &kept), present(tmp.path(), &left));
     println!("child-folders: the running daemon's {kept:?} and the crashed daemon's {left:?} (pid {taken}); after a start in a pid namespace holding pids {pids:?}, present: {after:?}");
     launched.kill().expect("SIGKILL to the launched unshare");
-    sot_log::test_isolated::wait_within(&mut launched, BOUND);
+    sot_platform::test_isolated::wait_within(&mut launched, BOUND);
     assert!(pids.contains(&taken), "premise: pid {taken} runs in the sweeping daemon's pid namespace: {pids:?}");
     assert_eq!(after, (kept.clone(), Vec::new()), "a running daemon's child folders stay and a crashed one's go");
     running.kill_daemon_bounded().await;

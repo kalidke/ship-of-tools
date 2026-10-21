@@ -43,8 +43,8 @@ fn make_env(tmp: &Path) {
     }
 }
 
-fn sotd_help<S: AsRef<std::ffi::OsStr>>(tmp: &Path, args: &[S]) -> sot_log::test_wait::Ran {
-    sot_log::test_wait::run_within(
+fn sotd_help<S: AsRef<std::ffi::OsStr>>(tmp: &Path, args: &[S]) -> sot_platform::test_wait::Ran {
+    sot_platform::test_wait::run_within(
         sotd::sotd_command()
             .args(args)
             .env_clear()

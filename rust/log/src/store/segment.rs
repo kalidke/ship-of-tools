@@ -3,7 +3,7 @@
 //! by RENAME_NOREPLACE; the seal digest chains segments (ADR 0039).
 
 use crate::store::envelope::{Digest, Envelope, Seq, U53_MAX};
-use crate::host;
+use sot_platform::host;
 use crate::store::record::{self, RecordKind};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};

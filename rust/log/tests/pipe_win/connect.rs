@@ -24,7 +24,7 @@ fn server_and_client_exchange_bytes_and_sent_carries_marker() {
     server.send(conn_id, inbound.to_vec(), Some(42)).unwrap();
     let reader = std::sync::Arc::clone(&client);
     let want = inbound.len();
-    let buf = sot_log::test_wait::within(TIMEOUT, "the server's bytes", move || {
+    let buf = sot_platform::test_wait::within(TIMEOUT, "the server's bytes", move || {
         let mut buf = vec![0u8; want];
         let mut got = 0;
         while got < buf.len() {
@@ -475,7 +475,7 @@ fn pipe_denies_a_token_without_the_owner_grant() {
                 matches!(next_event(&server, TIMEOUT), LaneEvent::Bytes(_, ref bytes) if bytes == b"a")
             );
             server.send(conn, b"m".to_vec(), Some(9)).unwrap();
-            let (owner, marker) = sot_log::test_wait::within(TIMEOUT, "the owner's marker", move || {
+            let (owner, marker) = sot_platform::test_wait::within(TIMEOUT, "the owner's marker", move || {
                 let mut marker = [0];
                 owner.read_exact(&mut marker).unwrap();
                 (owner, marker)

@@ -27,7 +27,7 @@ fn run(mut cmd: Command) -> (ExitStatus, String, String) {
         reason = "test-only offline subcommand; retained child is drained within its bound"
     )]
     let child = cmd.spawn().expect("spawn sotd agent-exec");
-    sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(20))
+    sot_platform::test_isolated::drain(child).wait_within(Duration::from_secs(20))
 }
 
 /// A `claude` stub at `<home>/.local/bin/claude` — found ONLY via

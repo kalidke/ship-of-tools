@@ -130,7 +130,7 @@ fn run_child(role: &str, scenario: &std::path::Path) -> Result<ChildRun> {
         .spawn()?;
     println!("pane-timing child {role} started pid={}", child.id());
     let _stdin = child.stdin.take();
-    let (waited, out, mut err) = sot_log::test_isolated::drain(child).wait_and_read(Instant::now() + CHILD_BOUND);
+    let (waited, out, mut err) = sot_platform::test_isolated::drain(child).wait_and_read(Instant::now() + CHILD_BOUND);
     let ok = match waited {
         Ok(status) => {
             println!("pane-timing child {role} status={status}");

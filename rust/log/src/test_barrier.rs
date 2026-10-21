@@ -88,12 +88,12 @@ fn identity_text() -> String {
 
 #[cfg(target_os = "linux")]
 fn created() -> u64 {
-    crate::identity::challenge_unix::self_start_ticks().unwrap_or(0)
+    sot_platform::identity::challenge_unix::self_start_ticks().unwrap_or(0)
 }
 
 #[cfg(target_os = "macos")]
 fn created() -> u64 {
-    crate::identity::challenge_macos::self_pidversion()
+    sot_platform::identity::challenge_macos::self_pidversion()
         .map(u64::from)
         .unwrap_or(0)
 }

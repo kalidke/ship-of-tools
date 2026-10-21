@@ -1,11 +1,11 @@
 //! Shared test doubles: a do-nothing client, peer identity and endpoint.
 
-use crate::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
+use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
 use crate::lane::client::{Client, Endpoint};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::lane::client::PeerIdentity;
+use sot_platform::identity::peer::PeerIdentity;
 
 // -----------------------------------------------------------------
 // ADR 0045 decision 6: the health probe uses the voyage id the
@@ -75,7 +75,7 @@ impl Endpoint for TestEndpoint {
     fn challenge(
         &self,
         _conn: &Self::Client,
-        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
+        _exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
         _deadline: Instant,
     ) -> ChallengeOutcome<Self::Process> {
         unreachable!("health_probe_uses_the_last_reported_voyage_id never challenges")

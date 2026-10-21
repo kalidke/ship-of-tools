@@ -393,7 +393,7 @@ fn repls_cli(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let asked = sot_log::host::state_dir::host_name().and_then(|me| {
+    let asked = sot_platform::host::state_dir::host_name().and_then(|me| {
         crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({}), LIST_BOUND)
     });
     let reply = match asked {

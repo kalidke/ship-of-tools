@@ -4,7 +4,7 @@ use super::*;
 use std::sync::atomic::Ordering;
 use interprocess::local_socket::{prelude::*, GenericFilePath, Listener, ListenerOptions, Stream};
 use std::io::{Read, Write};
-use sot_log::test_wait::within;
+use sot_platform::test_wait::within;
 use std::time::Duration;
 
 const BOUND: Duration = Duration::from_secs(30);
@@ -137,7 +137,7 @@ fn the_dial_says_a_handoff_hello_first_in_the_same_write() {
     let hello: crate::HelloReq = serde_json::from_value(hello.payload).expect("a HelloReq");
     assert_eq!(hello.role, crate::HANDOFF_ROLE);
     assert_eq!(hello.protocol, crate::PROTOCOL_VERSION);
-    assert_eq!(hello.os_user, sot_log::identity::os_account::own_account_id());
+    assert_eq!(hello.os_user, sot_platform::identity::os_account::own_account_id());
     assert_eq!(request.op, op::LANE_CONNECT);
 }
 
@@ -383,8 +383,8 @@ fn a_wire_identity_that_differs_from_the_reported_peer_is_foreign() {
         fn encode_request(&self) -> Vec<u8> {
             b"status".to_vec()
         }
-        fn feed(&mut self, _bytes: &[u8]) -> sot_log::identity::exchange::ExchangeDecode {
-            sot_log::identity::exchange::ExchangeDecode::Identity { pid: 222, created: 1 }
+        fn feed(&mut self, _bytes: &[u8]) -> sot_platform::identity::exchange::ExchangeDecode {
+            sot_platform::identity::exchange::ExchangeDecode::Identity { pid: 222, created: 1 }
         }
     }
     let mut exchange = FixedExchange;
@@ -414,7 +414,7 @@ fn a_local_dial_starts_no_ssh_child() {
 #[cfg(unix)]
 #[test]
 fn a_socket_another_account_listens_on_is_refused_by_the_lane_dial() {
-    if !sot_log::test_isolated::run_isolated("topology::lane_client::tests::a_socket_another_account_listens_on_is_refused_by_the_lane_dial") {
+    if !sot_platform::test_isolated::run_isolated("topology::lane_client::tests::a_socket_another_account_listens_on_is_refused_by_the_lane_dial") {
         return;
     }
     let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
@@ -441,7 +441,7 @@ fn a_socket_another_account_listens_on_is_refused_by_the_lane_dial() {
 #[cfg(unix)]
 #[test]
 fn a_full_foreign_backlog_ends_the_lane_dial_within_its_bound() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "topology::lane_client::tests::a_full_foreign_backlog_ends_the_lane_dial_within_its_bound",
     ) {
         return;

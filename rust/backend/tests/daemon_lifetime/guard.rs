@@ -396,7 +396,7 @@ pub async fn lease(env: &Env) -> crate::support::Conn {
 
 /// [`lease`] on the daemon that listens on `socket`.
 pub async fn lease_on(socket: &Path) -> crate::support::Conn {
-    let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
+    let me = sot_platform::identity::challenge::self_identity().expect("this process's identity");
     let lease = FeLeaseReq {
         boot: me.boot,
         pid: me.pid,

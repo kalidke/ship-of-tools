@@ -28,7 +28,7 @@ pub(super) fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: Str
             return Ok(EXIT_TERMINAL);
         }
     };
-    let outcome = end_run_over_mgmt_lane(&crate::host::state_dir::state_dir_hash(state_dir), &voyage_id, &reason)?;
+    let outcome = end_run_over_mgmt_lane(&sot_platform::host::state_dir::state_dir_hash(state_dir), &voyage_id, &reason)?;
     match outcome {
         EndRunOutcome::Absent => {
             // raw pipe-NotFound alone is NOT

@@ -163,7 +163,7 @@ mod unix {
         #[test]
         fn an_installation_failure_is_a_concrete_failure_exit() {
             let name = "lifecycle::signal_exit::unix::tests::an_installation_failure_is_a_concrete_failure_exit";
-            if !sot_log::test_isolated::run_isolated(name) {
+            if !sot_platform::test_isolated::run_isolated(name) {
                 return;
             }
             let signal: &'static Signal = Box::leak(Box::new(Signal::new()));

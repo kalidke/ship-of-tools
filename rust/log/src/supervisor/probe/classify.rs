@@ -31,7 +31,7 @@
 //! not a policy choice a caller could reasonably vary.
 
 use crate::capsule::producer::ExitStatus;
-use crate::identity::challenge::ChallengeOutcome;
+use sot_platform::identity::challenge::ChallengeOutcome;
 use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
 use std::path::Path;
 use std::time::{Duration, Instant};

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use interprocess::local_socket::tokio::prelude::*;
-use sot_log::identity::challenge::self_identity;
+use sot_platform::identity::challenge::self_identity;
 use sot_protocol::ops::{lease, op, FeLeaseReq, FeLeaseRes, FeLeavingReq, FeNoticeSeenReq, LeaveIntent, LeaseOutcome};
 use sot_protocol::{codec, Frame, HelloReq, HANDOFF_ROLE};
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt as _};

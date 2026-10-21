@@ -122,7 +122,7 @@ pub fn run(args: &[String]) -> i32 {
 }
 
 pub(super) fn self_host() -> Result<String, String> {
-    sot_log::host::state_dir::host_name()
+    sot_platform::host::state_dir::host_name()
 }
 
 fn with_topology(f: impl FnOnce(&Topology) -> Result<(), String>) -> i32 {

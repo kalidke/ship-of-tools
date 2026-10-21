@@ -1,7 +1,7 @@
 //! A row's own systemd scope: capture, remembered list, and the aimed kill at destroy.
 
 use crate::rows::spawn::row_scope_aim::{aim, prefix, v2_root};
-use sot_log::host::state_dir::state_dir_hash;
+use sot_platform::host::state_dir::state_dir_hash;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

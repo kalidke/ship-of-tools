@@ -118,7 +118,7 @@ jobs:
         if: matrix.target == 'linux-x86_64'
         shell: bash
         # sot-log's build script compiles the native launcher that sotd forks
-        # every capsule supervisor through (rust/log/src/host/process_tree/).
+        # every capsule supervisor through (rust/platform/src/host/process_tree/).
         # For the musl target the cc crate looks on PATH for
         # x86_64-linux-musl-gcc, then musl-gcc: a compiler with musl's own
         # headers. musl-tools ships both; the runner image has neither.

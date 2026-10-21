@@ -41,8 +41,8 @@ const PART: &str = "SOT_UPDATER_SCRATCH_PART";
 const BOUND: Duration = Duration::from_secs(30);
 
 /// A re-run of this binary that runs the check `part`, with `tmp` as its temporary folder.
-fn check_command(tmp: &Path, part: &str) -> (std::process::Command, sot_log::test_isolated::Entry) {
-    let (mut command, entry) = sot_log::test_isolated::test_command(SCRATCH_TEST);
+fn check_command(tmp: &Path, part: &str) -> (std::process::Command, sot_platform::test_isolated::Entry) {
+    let (mut command, entry) = sot_platform::test_isolated::test_command(SCRATCH_TEST);
     for key in ["TMPDIR", "TMP", "TEMP"] {
         command.env(key, tmp);
     }
@@ -51,7 +51,7 @@ fn check_command(tmp: &Path, part: &str) -> (std::process::Command, sot_log::tes
 }
 
 /// A check that hangs in its download, killed and waited for when dropped, so a failing test leaves none running.
-struct Hanging(std::process::Child, Option<sot_log::test_isolated::Entry>);
+struct Hanging(std::process::Child, Option<sot_platform::test_isolated::Entry>);
 
 impl Hanging {
     fn start(tmp: &Path) -> Self {
@@ -62,7 +62,7 @@ impl Hanging {
     /// SIGKILLs the check (TerminateProcess on Windows), so it runs no code, and waits for its end.
     fn kill(mut self) {
         self.0.kill().expect("kill the check");
-        sot_log::test_isolated::wait_within(&mut self.0, BOUND);
+        sot_platform::test_isolated::wait_within(&mut self.0, BOUND);
         self.1.take().expect("the check's entry record").assert_once(self.0.id());
     }
 }
@@ -70,7 +70,7 @@ impl Hanging {
 impl Drop for Hanging {
     fn drop(&mut self) {
         let _ = self.0.kill();
-        let _ = sot_log::test_isolated::wait_until(&mut self.0, std::time::Instant::now() + BOUND);
+        let _ = sot_platform::test_isolated::wait_until(&mut self.0, std::time::Instant::now() + BOUND);
     }
 }
 
@@ -80,7 +80,7 @@ fn finish_check(tmp: &Path) {
     command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let child = command.spawn().expect("a check in a process of its own");
     let pid = child.id();
-    let (status, out, err) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let (status, out, err) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     entry.assert_once(pid);
     assert!(status.success(), "a check run to its end failed: {status}\n{out}{err}");
 }
@@ -138,7 +138,7 @@ fn check_in_this_process(hang: bool) {
 #[test]
 fn a_killed_checks_scratch_folder_goes_at_a_later_check_and_a_running_ones_stays() {
     if let Ok(part) = std::env::var(PART) {
-        sot_log::test_isolated::enter(SCRATCH_TEST);
+        sot_platform::test_isolated::enter(SCRATCH_TEST);
         return check_in_this_process(part == "hang");
     }
     let root = std::env::temp_dir().join(format!("sot-updater-scratch-test-{}", crate::unique::suffix()));

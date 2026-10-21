@@ -51,7 +51,7 @@ fn a_terminal_with_no_thread_to_fire_on_exits_without_the_fire() {
     use crate::lifecycle::child_signal::Signal;
     use std::sync::{mpsc, Barrier};
     let name = "lifecycle::shutdown::tests::a_terminal_with_no_thread_to_fire_on_exits_without_the_fire";
-    if !sot_log::test_isolated::run_isolated(name) {
+    if !sot_platform::test_isolated::run_isolated(name) {
         return;
     }
     let signal: &'static Signal = Box::leak(Box::new(Signal::new()));

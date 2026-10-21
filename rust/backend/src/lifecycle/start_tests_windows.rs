@@ -270,7 +270,7 @@ fn contained_tree_role() {
     let Some(dir) = std::env::var_os("SOT_L2_ROLE_DIR").map(std::path::PathBuf::from) else {
         return;
     };
-    sot_log::test_isolated::enter("lifecycle::start_tests::windows::contained_tree_role");
+    sot_platform::test_isolated::enter("lifecycle::start_tests::windows::contained_tree_role");
     let began = Instant::now();
     while !dir.join("go").exists() {
         assert!(began.elapsed() < Duration::from_secs(60), "no go");
@@ -298,14 +298,14 @@ fn contained_tree_role() {
 struct DaemonRole {
     dir: tempfile::TempDir,
     role: std::process::Child,
-    entry: sot_log::test_isolated::Entry,
+    entry: sot_platform::test_isolated::Entry,
     _job: sot_log::capsule::producer::conpty::AnonymousJob,
 }
 
 impl DaemonRole {
     fn start(env: &[(&str, &std::ffi::OsStr)]) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let (mut command, entry) = sot_log::test_isolated::test_command(
+        let (mut command, entry) = sot_platform::test_isolated::test_command(
             "lifecycle::start_tests::windows::contained_tree_role",
         );
         command

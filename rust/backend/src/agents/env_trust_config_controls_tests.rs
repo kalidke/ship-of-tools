@@ -91,7 +91,7 @@ fn config_case(kind: &str) {
 
 #[test]
 fn inherited_absolute_config_receives_the_record() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "agents::env::trust_config_controls::inherited_absolute_config_receives_the_record",
     ) {
         return;
@@ -100,7 +100,7 @@ fn inherited_absolute_config_receives_the_record() {
 }
 #[test]
 fn unset_config_uses_the_home_level_file() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "agents::env::trust_config_controls::unset_config_uses_the_home_level_file",
     ) {
         return;
@@ -109,7 +109,7 @@ fn unset_config_uses_the_home_level_file() {
 }
 #[test]
 fn named_addition_overrides_inherited_config() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "agents::env::trust_config_controls::named_addition_overrides_inherited_config",
     ) {
         return;
@@ -118,7 +118,7 @@ fn named_addition_overrides_inherited_config() {
 }
 #[test]
 fn config_guard_restores_config_directories_on_unwind() {
-    if !sot_log::test_isolated::run_isolated("agents::env::trust_config_controls::config_guard_restores_config_directories_on_unwind") { return; }
+    if !sot_platform::test_isolated::run_isolated("agents::env::trust_config_controls::config_guard_restores_config_directories_on_unwind") { return; }
     let before = ["XDG_CONFIG_HOME", "LOCALAPPDATA", "CLAUDE_CONFIG_DIR"].map(std::env::var_os);
     let temp = tempfile::tempdir().unwrap();
     let result = std::panic::catch_unwind(|| {

@@ -7,7 +7,7 @@ use std::os::fd::IntoRawFd;
 /// after the drop below: the body runs in a process of its own.
 #[test]
 fn a_takeover_nobody_reads_keeps_the_claim() {
-    if !crate::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "supervisor::main_loop::tests::a_takeover_nobody_reads_keeps_the_claim",
     ) {
         return;

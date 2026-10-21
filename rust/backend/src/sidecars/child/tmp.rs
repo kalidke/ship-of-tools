@@ -1,11 +1,11 @@
 //! A Julia child's own temporary folder, and for a child that runs user code its own display: made before its spawn,
 //! named in its environment, ended after its reap; a display that ends first ends the child. Every child folder is made in
-//! this process's own folder of them, a held folder (`sot_log::host::HeldDir`), which goes with the last of them, at the
+//! this process's own folder of them, a held folder (`sot_platform::host::HeldDir`), which goes with the last of them, at the
 //! daemon's controlled end ([`remove_own`]), or, for a process that ended without either, at a later start
 //! ([`sweep_gone`]).
 
 use crate::lifecycle::child_signal::{Contained, Signal};
-use sot_log::host::HeldDir;
+use sot_platform::host::HeldDir;
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -191,7 +191,7 @@ pub(crate) fn remove_own(bound: Duration) {
 /// computer or pid namespace it runs in, and so does a folder named as before held folders (`sot-julia-*`).
 pub(crate) fn sweep_gone() {
     drop(tokio::task::spawn_blocking(|| {
-        let removed = sot_log::host::remove_ended(&std::env::temp_dir(), PREFIX);
+        let removed = sot_platform::host::remove_ended(&std::env::temp_dir(), PREFIX);
         if removed > 0 {
             tracing::info!(removed, "sot-julia temporary folders of ended daemons removed");
         }

@@ -173,7 +173,7 @@ pub(in crate::ui) fn window_progress_parent() -> Result<()> {
             .args(["child", role])
             .stdin(std::process::Stdio::null())
             .spawn()?;
-        match sot_log::test_isolated::wait_until(&mut child, Instant::now() + bound) {
+        match sot_platform::test_isolated::wait_until(&mut child, Instant::now() + bound) {
             Ok(status) if status.success() => println!("window-progress child={role} ok=true"),
             Ok(status) => failed.push(format!("window-progress child {role} failed: {status}")),
             Err(e) => failed.push(format!("window-progress child {role} did not finish within {bound:?}: {e}")),

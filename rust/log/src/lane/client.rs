@@ -12,13 +12,14 @@
 //! (`PipeClient`/`PipeEndpoint` on Windows, `SocketClient`/
 //! `SocketEndpoint` on Linux) live in `lane/pipe_win/`/`lane/socket_unix/`
 //! themselves, next to the concrete types they delegate to — the same
-//! placement `impl crate::identity::challenge::ChallengeableConnection for
-//! PipeClient` used to have, before the blanket impl below replaced it.
+//! placement `impl sot_platform::identity::challenge::ChallengeableConnection for
+//! PipeClient` used to have; `challengeable_client!` below writes that impl once.
 
-use crate::identity::challenge::{ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome};
-use crate::identity::exchange::IdentityExchange;
+use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
+use sot_platform::identity::exchange::IdentityExchange;
 use crate::lane::transport::TransportError;
-use std::time::{Duration, Instant};
+use sot_platform::identity::peer::PeerIdentity;
+use std::time::Instant;
 
 /// Maps [`PeerAuthOutcome`] to a `Result` — the exact logic both platforms'
 /// voyage connects run, pulled out so it is directly unit-testable (U1a
@@ -69,7 +70,7 @@ pub trait Client: Send + Sync {
 /// which way" — so a cancelled challenge behaves identically to any
 /// other read/write failure mid-exchange, matching both platforms'
 /// pre-existing behavior.
-pub(crate) fn transport_error_to_io(e: TransportError) -> std::io::Error {
+pub fn transport_error_to_io(e: TransportError) -> std::io::Error {
     match e {
         // Both variants that CARRY an `io::Error` hand it back unwrapped, so
         // its `ErrorKind` survives for callers that classify on it (the
@@ -83,57 +84,28 @@ pub(crate) fn transport_error_to_io(e: TransportError) -> std::io::Error {
     }
 }
 
-/// Every [`Client`] is challengeable, via the ONE mapping above — this
-/// blanket impl is what makes `PipeClient`/`SocketClient` satisfy
-/// [`ChallengeableConnection`] now; neither type writes its own façade
-/// anymore.
-impl<C: Client> ChallengeableConnection for C {
-    fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
-        Client::write_all(self, bytes).map_err(transport_error_to_io)
-    }
+/// Makes a [`Client`] challengeable (platform's `ChallengeableConnection`), via the ONE mapping above. A trait platform
+/// owns cannot be implemented for every `Client` at once, so each concrete client names itself here: `SocketClient`,
+/// `PipeClient` and the topology's three.
+#[macro_export]
+macro_rules! challengeable_client {
+    ($client:ty) => {
+        impl sot_platform::identity::challenge::ChallengeableConnection for $client {
+            fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
+                <$client as $crate::lane::client::Client>::write_all(self, bytes)
+                    .map_err($crate::lane::client::transport_error_to_io)
+            }
 
-    fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
-        Client::read(self, buf).map_err(transport_error_to_io)
-    }
+            fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+                <$client as $crate::lane::client::Client>::read(self, buf)
+                    .map_err($crate::lane::client::transport_error_to_io)
+            }
 
-    fn cancel(&self) {
-        Client::cancel(self)
-    }
-}
-
-/// The methods both platforms' `ChallengedProcess` share — everything the
-/// full five-step [`crate::identity::challenge::ChallengeOutcome::Proven`] proof
-/// earns a caller. ADR 0043 decision 33: the per-platform
-/// challenged-process exit-status accessor (`GetExitCodeProcess` on
-/// Windows, `PIDFD_GET_INFO` on Linux) is deleted outright — readerless
-/// once the daemon's watchdog exists only for a `Child` it spawned
-/// itself (`wait_and_classify` reads a real `tokio::process::Child`'s
-/// own `ExitStatus`, never an adopted `ChallengedProcess`'s).
-pub trait PeerIdentity: Send {
-    /// The pid this process was proven to be, at proof time.
-    fn pid(&self) -> u32;
-    /// The creation/start time this process was proven against, in
-    /// whatever units the platform's own wire `status_ok.created` field
-    /// carries (compared for equality only, never interpreted as a
-    /// calendar time).
-    fn created(&self) -> u64;
-}
-
-/// The rest of what a step-6 supervisor (and, now, `attach_client::client`'s health
-/// path) needs beyond bare identity — split from [`PeerIdentity`] so a
-/// consumer that only reads pid/created (the bridge's `BridgedPeer`, B4a)
-/// is not forced to implement re-verification or termination it has no
-/// authority to perform.
-pub trait PeerProcess: PeerIdentity {
-    /// Re-read this process's own identity and compare it against what it
-    /// was proven with — the ADR's "pre-terminate re-verification".
-    fn reverify(&self) -> std::io::Result<bool>;
-    /// The death signal a supervisor waits on rather than sampling
-    /// process absence. Bounded, never infinite.
-    fn wait(&self, timeout: Duration) -> std::io::Result<bool>;
-    /// The KILL half of the probe's own KILL+WAIT row, and the
-    /// invalid-mgmt fallback's hard stop.
-    fn terminate(&self) -> std::io::Result<()>;
+            fn cancel(&self) {
+                <$client as $crate::lane::client::Client>::cancel(self)
+            }
+        }
+    };
 }
 
 /// What a step-6 supervisor needs from one platform's own connect/

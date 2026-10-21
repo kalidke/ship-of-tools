@@ -193,6 +193,8 @@ impl BridgedClient {
     }
 }
 
+sot_log::challengeable_client!(BridgedClient);
+
 impl Client for BridgedClient {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
         if self.cancelled.load(Ordering::SeqCst) {

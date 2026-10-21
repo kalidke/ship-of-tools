@@ -39,7 +39,7 @@ fn a_child_keeps_no_descriptor_its_start_caught_before_close_on_exec() {
     assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0, "clearing close-on-exec failed");
     let script = format!("if test -e /dev/fd/{fd}; then echo held; else echo none; fi");
     let recipe = SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", script.as_str()]);
-    let ran = sot_log::test_wait::run_within(&mut command(&recipe), std::time::Duration::from_secs(10)).ok();
+    let ran = sot_platform::test_wait::run_within(&mut command(&recipe), std::time::Duration::from_secs(10)).ok();
     assert_eq!(ran.stdout.trim(), "none", "the child kept a descriptor its start caught before close-on-exec");
 }
 

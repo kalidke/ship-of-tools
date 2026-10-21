@@ -34,7 +34,7 @@ pub fn ensure_running(workspaces: &Workspaces, ws: &Workspace) {
     if workspaces.has_observer(&ws.workspace_id) {
         return;
     }
-    let Some(state_root) = sot_log::host::state_dir::sot_state_dir() else {
+    let Some(state_root) = sot_platform::host::state_dir::sot_state_dir() else {
         return;
     };
     let state_dir = state_dir_for(&state_root, &ws.workspace_id);

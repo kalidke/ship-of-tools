@@ -205,9 +205,9 @@ fn lock_supervisor_cross_process_race_grants_exactly_one_holder_at_a_time() {
 
     // Drain every child's output on threads before waiting on any: a long panic report then cannot fill a pipe (a
     // Windows pipe holds about 4 KiB) and stall a racer the others wait for. Each wait is bounded.
-    let racers: Vec<_> = children.drain(..).map(crate::test_isolated::drain).collect();
+    let racers: Vec<_> = children.drain(..).map(sot_platform::test_isolated::drain).collect();
     for (i, racer) in racers.into_iter().enumerate() {
-        let (status, stdout, stderr) = racer.wait_within(crate::test_isolated::ISOLATION_TIMEOUT);
+        let (status, stdout, stderr) = racer.wait_within(sot_platform::test_isolated::ISOLATION_TIMEOUT);
         assert!(
             status.success(),
             "child {i} failed: status={status:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"

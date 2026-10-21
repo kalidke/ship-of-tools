@@ -11,7 +11,7 @@ pub(crate) mod wake;
 
 use std::path::PathBuf;
 
-pub(crate) use sot_log::host::env::Env;
+pub(crate) use sot_platform::host::env::Env;
 
 /// The sot-comm home directory (`~/.sot-comm` by default) — ONE resolver
 /// (Codex round finding 8), shared by the daemon's own registry reads

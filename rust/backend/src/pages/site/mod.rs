@@ -341,7 +341,7 @@ pub async fn spawn(preferred: u16) -> Result<()> {
     let port = listener.local_addr().context("static-site server local_addr")?.port();
     BOUND_SITE_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(port, "static-site server listening");
-    tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "docs", |stream| async move {
+    tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "docs", |stream| async move {
         if let Err(e) = handle_conn(stream, ServeMode::Prefix).await {
             tracing::debug!(error = %e, "static-site conn ended");
         }
@@ -400,7 +400,7 @@ pub async fn spawn_pool() {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .insert(port);
-        tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "docs-pool", move |stream| async move {
+        tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "docs-pool", move |stream| async move {
             if let Err(e) = handle_conn(stream, ServeMode::Pool(port)).await {
                 tracing::debug!(error = %e, port, "pool-site conn ended");
             }
@@ -447,7 +447,7 @@ fn pool_cookie_name(host: &str, port: u16) -> String {
 /// port's alone, as before PAGE-PORT).
 fn pool_cookie_host() -> &'static str {
     static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    HOST.get_or_init(|| sot_log::host::state_dir::host_name().unwrap_or_default())
+    HOST.get_or_init(|| sot_platform::host::state_dir::host_name().unwrap_or_default())
 }
 
 /// Look up `name`'s value in a `Cookie:` header value (`name1=val1; name2=val2`).

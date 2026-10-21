@@ -312,7 +312,7 @@ async fn state_dir_from_list(conn: &mut Conn, next_id: &mut u64, workspace_id: &
 #[cfg(target_os = "linux")]
 fn kill_leg_only(state_root: &Path) {
     let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "run", state_root);
-    let _ = sot_log::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&pattern), BOUND);
+    let _ = sot_platform::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&pattern), BOUND);
     assert!(
         poll_until_no_process_matches(&pattern, BOUND),
         "a leg process still matches {pattern:?} after SIGKILL"

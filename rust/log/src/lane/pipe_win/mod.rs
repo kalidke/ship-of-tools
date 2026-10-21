@@ -201,7 +201,7 @@
 
 #![cfg(windows)]
 
-use crate::host::wide_null;
+use sot_platform::host::wide_null;
 use crate::lane::attach_proto::ConnId;
 use crate::lane::client::{Client, Endpoint};
 use crate::lane::pending::{

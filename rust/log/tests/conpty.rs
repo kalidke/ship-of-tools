@@ -124,7 +124,7 @@ fn e2e_spawn_echoes_marker_and_job_reaches_zero_active() {
 
     wait_for_zero_active(&spawn.job, Duration::from_secs(15));
     spawn.pty.close_pty();
-    sot_log::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
+    sot_platform::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
     while let Ok(chunk) = rx.recv() {
         eprintln!("e2e post-close chunk: {:?}", String::from_utf8_lossy(&chunk));
         all.extend(chunk);
@@ -247,7 +247,7 @@ fn unwind_repeated_failed_spawns_then_one_real_spawn_succeeds() {
     let (_rx, reader_thread) = spawn_reader_thread(spawn.reader);
     wait_for_zero_active(&spawn.job, Duration::from_secs(10));
     spawn.pty.close_pty();
-    sot_log::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
+    sot_platform::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
 }
 
 /// Test 4: the contract test (replaces a dead spike, per the step-4 spec
@@ -301,7 +301,7 @@ fn contract_first_output_bytes_and_da1_presence() {
 
     wait_for_zero_active(&spawn.job, Duration::from_secs(10));
     spawn.pty.close_pty();
-    sot_log::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
+    sot_platform::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
     while let Ok(chunk) = rx.recv() {
         all.extend(chunk);
     }
@@ -345,7 +345,7 @@ fn pinned_termination_sequence_terminate_drain_close() {
     );
 
     spawn.pty.close_pty();
-    sot_log::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
+    sot_platform::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
     while rx.recv().is_ok() {} // drain to EOF; content is incidental to a kill-based end
 }
 
@@ -380,7 +380,7 @@ fn exit_code_259_is_reported_raw_not_lost_to_still_active() {
     );
     assert_eq!(spawn.process.exit_code_after_confirmed_exit().unwrap(), 259);
     spawn.pty.close_pty();
-    sot_log::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
+    sot_platform::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
 }
 
 /// Test: a high-bit (NTSTATUS-shaped) exit code round-trips as the exact
@@ -405,7 +405,7 @@ fn exit_code_high_bit_status_round_trips_unsigned() {
     );
     assert_eq!(spawn.process.exit_code_after_confirmed_exit().unwrap(), 0xC000_0005);
     spawn.pty.close_pty();
-    sot_log::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
+    sot_platform::test_wait::within(BOUND, "the pty reader", move || reader_thread.join()).unwrap();
 }
 
 /// Test: MSYS asks to break away on every spawn whose job allows it, so a

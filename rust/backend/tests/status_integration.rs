@@ -67,7 +67,7 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     // Before anything dials: in `sotd status`'s own environment,
     // `local_endpoint()` derives this test's endpoint. `sotd topology
     // relay-endpoint` prints it (this box is the hub) and dials nothing.
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         client(&env, &hosts_toml, &label, &["topology", "relay-endpoint"]).as_std_mut(),
         BOUND,
     );
@@ -131,7 +131,7 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     // `sotd status --json` — a SEPARATE, real one-shot process (the same
     // binary, the same env), not a library call into `topology::status` — this
     // is the actual CLI a launcher or the `sot-status` skill would run.
-    let ran = sot_log::test_wait::run_within(client(&env, &hosts_toml, &label, &["status", "--json"]).as_std_mut(), BOUND).ok();
+    let ran = sot_platform::test_wait::run_within(client(&env, &hosts_toml, &label, &["status", "--json"]).as_std_mut(), BOUND).ok();
 
     let v: serde_json::Value = serde_json::from_str(&ran.stdout)
         .unwrap_or_else(|e| panic!("sotd status --json did not print valid json: {e}\n{ran}"));

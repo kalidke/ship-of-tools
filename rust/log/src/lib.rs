@@ -10,10 +10,9 @@
 pub mod attach_client;
 pub mod capsule;
 pub mod claude;
-pub mod host;
-pub mod identity;
 pub mod lane;
 pub mod secret;
+pub mod storage;
 pub mod store;
 pub mod supervisor;
 #[cfg(all(unix, feature = "native-barrier"))]
@@ -28,15 +27,8 @@ pub mod test_copy;
 pub mod test_exec;
 #[cfg(all(unix, feature = "test-support"))]
 pub mod test_foreign;
-#[cfg(feature = "test-support")]
-pub mod test_isolated;
-#[cfg(feature = "test-support")]
-pub mod test_wait;
 
-pub use host::lock_writer;
-#[cfg(windows)]
-pub use host::owner_protected_pipe_descriptor;
-
+pub use storage::storage_exhaustion;
 pub use store::envelope::*;
 pub use store::record::{RecordKind, TailClass, CODEC_JSON, MAGIC, PRELUDE_LEN, RECORD_MAX_BODY};
 pub use store::segment::{SegmentIdentity, SegmentReader, SegmentState, SegmentWriter};
@@ -119,6 +111,15 @@ pub enum Error {
     /// somewhere a `Result` could propagate to.
     #[error("transport: {0}")]
     Transport(#[from] lane::transport::TransportError),
+}
+
+impl From<sot_platform::Error> for Error {
+    fn from(e: sot_platform::Error) -> Self {
+        match e {
+            sot_platform::Error::Io(e) => Error::Io(e),
+            sot_platform::Error::State(s) => Error::State(s),
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

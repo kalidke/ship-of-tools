@@ -18,7 +18,7 @@ pub(crate) fn own_daemon(env: &crate::comm::Env) -> Option<String> {
     #[cfg(windows)]
     {
         let path = ep.strip_prefix("pipe:")?;
-        sot_log::identity::connect_own::connect_own(std::path::Path::new(path)).ok()?;
+        sot_log::lane::connect_own::connect_own(std::path::Path::new(path)).ok()?;
         Some(ep)
     }
 }
@@ -26,7 +26,7 @@ pub(crate) fn own_daemon(env: &crate::comm::Env) -> Option<String> {
 /// The relay endpoint for this box, `sotd topology relay-endpoint`'s answer: the hub, or on the hub its own daemon;
 /// this box's own endpoint where no topology was ever declared. `Err` is the topology's own words.
 pub(crate) fn relay_endpoint(env: &crate::comm::Env) -> Result<String, String> {
-    let me = sot_log::host::state_dir::host_name_in(env)?;
+    let me = sot_platform::host::state_dir::host_name_in(env)?;
     match sot_protocol::topology::load_in(env)? {
         Some((_, t)) => sot_protocol::topology::relay_endpoint(&t, &me),
         None => Ok(sot_protocol::topology::endpoint::local_endpoint_in(env)),
@@ -60,7 +60,7 @@ pub(crate) fn agent_join(env: &crate::comm::Env, endpoint: &str, workspace_id: &
 
 /// One request and its answer; `Err` names a refused hello in its own words, else that nothing answered.
 fn call(env: &crate::comm::Env, endpoint: &str, op: &str, payload: serde_json::Value, within: Duration) -> Result<serde_json::Value, String> {
-    let me = sot_log::host::state_dir::host_name_in(env).unwrap_or_default();
+    let me = sot_platform::host::state_dir::host_name_in(env).unwrap_or_default();
     crate::topology::dial::dial_and_call(endpoint, &me, op, payload, within).map_err(|e| said(endpoint, &e))
 }
 

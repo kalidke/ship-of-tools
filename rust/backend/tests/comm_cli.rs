@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use sot_log::test_wait::run_within;
+use sot_platform::test_wait::run_within;
 #[cfg(target_os = "linux")]
-use sot_log::test_wait::Ran;
+use sot_platform::test_wait::Ran;
 
 const BOUND: Duration = Duration::from_secs(60);
 
@@ -140,7 +140,7 @@ fn a_join_a_send_and_a_poll_through_the_wrappers() {
     let mut child = stdin_send.stdout(std::process::Stdio::piped()).spawn().expect("spawn");
     std::io::Write::write_all(child.stdin.as_mut().expect("stdin"), body.as_bytes()).expect("write body");
     drop(child.stdin.take());
-    let (status, out, err) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let (status, out, err) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     assert!(status.success() && out.contains("filed -> @alpha-box1"), "{status} {out} {err}");
     let polled = b.run("alpha", "comm-poll.sh", &[]).ok();
     let lines: Vec<&str> = polled.stdout.lines().collect();
@@ -195,7 +195,7 @@ fn the_subagent_guard_wrapper_denies_a_subagent_and_never_a_session() {
         let mut child = c.spawn().expect("spawn");
         std::io::Write::write_all(child.stdin.as_mut().expect("stdin"), input.as_bytes()).expect("write");
         drop(child.stdin.take());
-        let (status, out, _) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        let (status, out, _) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
         assert!(status.success());
         out
     };
@@ -228,7 +228,7 @@ fn concurrent_writers_in_other_processes_lose_no_update() {
         })
         .collect();
     for w in writers {
-        let (status, _, err) = sot_log::test_isolated::drain(w).wait_within(BOUND);
+        let (status, _, err) = sot_platform::test_isolated::drain(w).wait_within(BOUND);
         assert!(status.success(), "{err}");
     }
     let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(b.comm().join("registry.json")).unwrap()).unwrap();

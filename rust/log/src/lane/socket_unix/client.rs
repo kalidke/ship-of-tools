@@ -311,14 +311,16 @@ impl SocketClient {
     }
 }
 
-/// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
-/// client implements — `write_all`/`read`/`cancel` already have this
-/// exact signature (modulo the error type, unified by decision 17), so
-/// this is pure delegation. The blanket `impl<C: Client>
-/// ChallengeableConnection for C` in `crate::lane::client` is what makes
-/// `SocketClient` challengeable now — the hand-written façade this impl
-/// used to be (`socket_error_to_io`, its own `TransportError -> io::Error`
-/// mapping) is gone; `crate::lane::client`'s ONE mapping replaces it.
+// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
+// client implements — `write_all`/`read`/`cancel` already have this
+// exact signature (modulo the error type, unified by decision 17), so
+// this is pure delegation. The blanket `impl<C: Client>
+// ChallengeableConnection for C` in `crate::lane::client` is what makes
+// `SocketClient` challengeable now — the hand-written façade this impl
+// used to be (`socket_error_to_io`, its own `TransportError -> io::Error`
+// mapping) is gone; `crate::lane::client`'s ONE mapping replaces it.
+crate::challengeable_client!(SocketClient);
+
 impl Client for SocketClient {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
         SocketClient::write_all(self, bytes)
@@ -338,7 +340,7 @@ impl Client for SocketClient {
 /// `challenge_unix.rs`'s own doc for why this is the Linux twin of
 /// `challenge_win::PipeChallengeable`.
 #[cfg(target_os = "linux")]
-impl crate::identity::challenge_unix::SocketChallengeable for SocketClient {
+impl sot_platform::identity::challenge_unix::SocketChallengeable for SocketClient {
     fn raw_fd(&self) -> RawFd {
         self.stream.as_raw_fd()
     }
@@ -355,7 +357,7 @@ impl crate::identity::challenge_unix::SocketChallengeable for SocketClient {
 /// need"). The `connect_anchor_boot_ticks` field this `SocketClient`
 /// still carries is therefore never read on this target.
 #[cfg(target_os = "macos")]
-impl crate::identity::challenge_macos::SocketChallengeable for SocketClient {
+impl sot_platform::identity::challenge_macos::SocketChallengeable for SocketClient {
     fn raw_fd(&self) -> RawFd {
         self.stream.as_raw_fd()
     }
@@ -394,16 +396,16 @@ impl Endpoint for SocketEndpoint {
     fn challenge(
         &self,
         conn: &Self::Client,
-        exchange: &mut dyn crate::identity::exchange::IdentityExchange,
+        exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
         reply_deadline: Instant,
-    ) -> crate::identity::challenge::ChallengeOutcome<Self::Process> {
+    ) -> sot_platform::identity::challenge::ChallengeOutcome<Self::Process> {
         challenge_os::challenge(conn, exchange, reply_deadline)
     }
 
     fn authenticate_server(
         &self,
         conn: &Self::Client,
-    ) -> crate::identity::challenge::PeerAuthOutcome {
+    ) -> sot_platform::identity::challenge::PeerAuthOutcome {
         challenge_os::authenticate_server(conn)
     }
 }

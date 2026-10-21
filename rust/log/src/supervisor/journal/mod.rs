@@ -44,7 +44,7 @@
 //! `Err` (this module has no fallback interpretation for a version it
 //! does not recognize), never a silent best-effort parse.
 //!
-//! Portable (no OS-specific code): reuses [`crate::host::publish_noreplace`],
+//! Portable (no OS-specific code): reuses [`sot_platform::host::publish_noreplace`],
 //! which already has both platform arms, like `pointer.rs`/`rollout.rs`.
 //!
 //! Single-writer by construction: every write here happens only while the
@@ -264,15 +264,15 @@ pub enum TerminalRecord {
 pub fn ensure_dir(state_dir: &Path) -> Result<()> {
     let dir = journal_dir(state_dir);
     std::fs::create_dir_all(&dir)?;
-    crate::host::fsync_dir(&dir)?;
-    crate::host::fsync_dir(state_dir)?;
+    sot_platform::host::fsync_dir(&dir)?;
+    sot_platform::host::fsync_dir(state_dir)?;
     Ok(())
 }
 
 /// Durably publish `operation_id`'s `.active` record BEFORE the first
 /// irreversible act (ADR 0041: "publishes a journal record ... before
 /// the first irreversible act"). Crash-durable: temp file, write, fsync,
-/// no-clobber rename, directory fsync — [`crate::host::publish_noreplace`]'s
+/// no-clobber rename, directory fsync — [`sot_platform::host::publish_noreplace`]'s
 /// own pinned order, not a second implementation of it.
 ///
 /// `Err` wrapping [`std::io::ErrorKind::AlreadyExists`] means this id
@@ -411,11 +411,11 @@ fn publish_json<T: Serialize>(dir: &Path, target: &Path, value: &T) -> Result<()
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }
-    let result = crate::host::publish_noreplace(&tmp, target);
+    let result = sot_platform::host::publish_noreplace(&tmp, target);
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    result
+    result.map_err(crate::Error::from)
 }
 
 /// Every journal file is wrapped in this envelope — see the module doc's

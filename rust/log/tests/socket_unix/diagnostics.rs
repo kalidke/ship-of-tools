@@ -1,7 +1,7 @@
 //! Socket diagnostic proofs validate flushed child output, observed role/pid start and exact failure causes.
 
 use super::*;
-use sot_log::test_isolated::{
+use sot_platform::test_isolated::{
     enter, fixture_start_matches, fixture_start_record, readiness_failure, readiness_scenarios,
     verify_readiness, verify_readiness_controls, FixtureOutcome, ReadinessCase, ISOLATION_TIMEOUT,
 };

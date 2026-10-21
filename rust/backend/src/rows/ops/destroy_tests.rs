@@ -28,7 +28,7 @@ struct EnvGuard {
     // Added alongside `seed_provably_unheld_state_dir` below (ADR
     // 0043 decision 33, Codex review, 2026-09-11): the tests that used
     // to lean on `mark_capsule_terminal`'s now-deleted unguarded fast
-    // path instead point `sot_log::host::state_dir::sot_state_dir()` at a
+    // path instead point `sot_platform::host::state_dir::sot_state_dir()` at a
     // scratch root so `destroy_capsule_workspace`'s real guarded path
     // finds a hermetic, provably-absent state dir there. Both vars are
     // saved/restored on every platform even though `sot_state_dir()`
@@ -82,7 +82,7 @@ fn env_guarded() -> EnvGuard {
     }
 }
 
-/// Points wherever `sot_log::host::state_dir::sot_state_dir()` ACTUALLY reads
+/// Points wherever `sot_platform::host::state_dir::sot_state_dir()` ACTUALLY reads
 /// on this platform (`LOCALAPPDATA` on Windows, `XDG_STATE_HOME`
 /// elsewhere — that function's own doc has the precedence) at `dir`,
 /// then returns the root by calling that SAME resolver rather than
@@ -126,7 +126,7 @@ fn pin_local_state_root(dir: &std::path::Path) -> std::path::PathBuf {
         std::env::set_var("XDG_STATE_HOME", dir);
         std::env::set_var("XDG_CONFIG_HOME", dir);
     }
-    sot_log::host::state_dir::sot_state_dir()
+    sot_platform::host::state_dir::sot_state_dir()
         .expect("state root must resolve once pinned to a scratch dir")
 }
 
@@ -138,7 +138,7 @@ fn pin_local_state_root(dir: &std::path::Path) -> std::path::PathBuf {
 /// `end_run`'s `Unheld` arm reports `Removable` with no live process
 /// anywhere. Caller must first call `pin_local_state_root` (under
 /// `env_guarded`) and pass ITS return value as `state_root` — the
-/// resolved root `sot_log::host::state_dir::sot_state_dir()` itself reports,
+/// resolved root `sot_platform::host::state_dir::sot_state_dir()` itself reports,
 /// never a hand-built path, so this fixture lands exactly where
 /// `destroy_capsule_workspace` (via `state_dir_for`) actually looks.
 /// Replaces this module's old reliance on `mark_capsule_terminal`'s
@@ -231,7 +231,7 @@ async fn destroy(workspaces: &Workspaces, workspace_id: &str) -> serde_json::Val
 // since the macOS wiring lane: there is no platform-shaped fallback
 // arm left for this to mean something different on.
 // Pinned hermetic (Codex review, 2026-09-11): this test used to read
-// `sot_log::host::state_dir::sot_state_dir()`'s REAL, unpinned environment —
+// `sot_platform::host::state_dir::sot_state_dir()`'s REAL, unpinned environment —
 // fine on a dev box whose shell always exports a stable, qualified
 // `XDG_STATE_HOME`, but on CI (nothing exported) it read whatever the
 // ambient state root happened to resolve to, unguarded against every
@@ -346,7 +346,7 @@ async fn a_reachable_listener_with_no_state_dir_still_refuses() {
     // canonical-root-then-join this fix's own destroy site uses, fed
     // to the SAME hash the production lane address is built from.
     let state_dir = crate::rows::spawn::state_root::state_dir_for(&canonical_root, &id);
-    let h = sot_log::host::state_dir::state_dir_hash(&state_dir);
+    let h = sot_platform::host::state_dir::state_dir_hash(&state_dir);
     let sock_path =
         sot_log::lane::socket_unix::supervisor_socket_path(&h).expect("runtime dir was just pinned");
     let _listener = std::os::unix::net::UnixListener::bind(&sock_path)
@@ -661,7 +661,7 @@ async fn ending_the_default_rows_run_keeps_its_state_folder() {
     let _guard = env_guarded();
     let (reg, _id, _folder, scratch) = seed_closable_row();
     let default_id = reg.default_id().expect("a default row");
-    let state_root = sot_log::host::state_dir::sot_state_dir().unwrap();
+    let state_root = sot_platform::host::state_dir::sot_state_dir().unwrap();
     seed_provably_unheld_state_dir(&state_root, &default_id);
     let default_folder = crate::rows::spawn::state_root::state_dir_for(&state_root, &default_id);
     let payload = destroy(&reg, &default_id).await;

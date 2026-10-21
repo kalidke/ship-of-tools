@@ -78,7 +78,7 @@ fn finish_bounded(
     bound: Duration,
     owned: &[(&str, &str)],
 ) -> NativeObservation {
-    let (status, out, err) = sot_log::test_isolated::drain(child)
+    let (status, out, err) = sot_platform::test_isolated::drain(child)
         .try_wait_within(bound)
         .unwrap_or_else(|error| {
             panic!(
@@ -163,7 +163,7 @@ fn native_volume_fill_free_sync() {
     #[cfg(windows)]
     volume::windows_unwind_control();
     volume::on_volume(|root| {
-        sot_log::host::preflight_volume(root).expect("a native volume must pass capsule preflight");
+        sot_platform::host::preflight_volume(root).expect("a native volume must pass capsule preflight");
         let code = volume::fill(root);
         volume::free_and_sync(root);
         println!("L3 native-volume full-code={code} free-write-sync=ok preflight=ok");

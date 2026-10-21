@@ -26,7 +26,8 @@
 //! reserves for actual operational failures (permission denial, a
 //! transient read error).
 
-use crate::{host, Result};
+use crate::Result;
+use sot_platform::host;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
@@ -154,7 +155,7 @@ pub fn publish(state_dir: &Path, voyage_id: &str) -> Result<()> {
         // attempt's temp file behind as residue.
         let _ = std::fs::remove_file(&tmp);
     }
-    result
+    result.map_err(crate::Error::from)
 }
 
 #[cfg(test)]

@@ -27,7 +27,7 @@ pub(crate) fn begin(
     workspaces: &Workspaces,
     ws_events: &broadcast::Sender<WorkspaceChanged>,
 ) -> Arc<Leases> {
-    let own_boot = sot_log::identity::challenge::boot_identity();
+    let own_boot = sot_platform::identity::challenge::boot_identity();
     let now_ms = lease::now_ms();
     if let Err(e) = &own_boot {
         tracing::warn!("boot identity unknown, so no lease can be granted: {e}");

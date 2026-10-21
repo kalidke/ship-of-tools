@@ -448,7 +448,7 @@ async fn staged_release(dir: &std::path::Path) -> (UpdaterConfig, ReleaseIdentit
     }
     let release = dir.join("release");
     std::fs::create_dir_all(&release).unwrap();
-    sot_log::test_wait::run_within(
+    sot_platform::test_wait::run_within(
         std::process::Command::new("tar")
             .arg("-czf")
             .arg(release.join(&asset))
@@ -608,7 +608,7 @@ fn a_check_at_a_non_default_prefix_over_a_cut_record_says_so() {
             Some(record) => std::fs::write(prefix.join("install.json"), record).unwrap(),
             None => drop(std::fs::remove_file(prefix.join("install.json"))),
         }
-        let ran = sot_log::test_wait::run_within(
+        let ran = sot_platform::test_wait::run_within(
             std::process::Command::new(&exe)
                 .args(["--exact", "update::tests::probe_check_basis_from_a_prefix", "--nocapture", "--test-threads=1"])
                 .env("SOT_TEST_PROBE_CHECK_BASIS", "1")

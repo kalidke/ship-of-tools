@@ -40,7 +40,7 @@ impl State {
     /// exists is not (see `pump_attach_term`'s own doc).
     #[cfg(windows)]
     pub(in crate::ui) fn spawn_attach_term(&mut self) {
-        let Some(state_dir) = sot_log::host::state_dir::sot_state_dir() else {
+        let Some(state_dir) = sot_platform::host::state_dir::sot_state_dir() else {
             tracing::warn!("attach-only: no per-machine state dir resolved");
             self.status = "attach-only terminal failed: no per-machine state dir".to_string();
             self.drawer = DrawerContent::Closed;
@@ -51,7 +51,7 @@ impl State {
         let wake = self.wake.clone();
         match sot_log::attach_client::client::FeAttachClient::attach(
             sot_log::lane::client::PlatformEndpoint::default(),
-            sot_log::host::state_dir::state_dir_hash(&state_dir),
+            sot_platform::host::state_dir::state_dir_hash(&state_dir),
             80,
             24,
             controller_id,

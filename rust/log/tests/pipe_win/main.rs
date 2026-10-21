@@ -14,7 +14,7 @@
 //! assertion earlier in the same test panics, unwinding drops `server`
 //! right there on the test thread — invoking a potentially wedged
 //! `PipeServer::drop` completely outside any watchdog. A real PROCESS
-//! boundary bounds both: `sot_log::test_isolated::run_isolated` re-invokes THIS test binary
+//! boundary bounds both: `sot_platform::test_isolated::run_isolated` re-invokes THIS test binary
 //! as a child process running only the one named test (`--exact
 //! <module>::<name>`, the exact libtest name), requires that test's body to
 //! enter, and kills the child if it outlives a hard deadline — regardless of WHERE inside the child a hang occurs. Every
@@ -34,27 +34,27 @@
 //! rather than assuming one write equals one `Bytes` event.
 //!
 //! L1-unix LU1a: `challenge`/`ChallengedProcess`/`authenticate_server`
-//! moved to `sot_log::identity::challenge_win` (the Windows steps 1-3 half); the
+//! moved to `sot_platform::identity::challenge_win` (the Windows steps 1-3 half); the
 //! `ChallengeableConnection` trait itself (`write_all`/`read`/`cancel`)
-//! stays in `sot_log::identity::challenge`, and its raw-handle counterpart is now
-//! the separate `sot_log::identity::challenge_win::PipeChallengeable` extension
+//! stays in `sot_platform::identity::challenge`, and its raw-handle counterpart is now
+//! the separate `sot_platform::identity::challenge_win::PipeChallengeable` extension
 //! trait — see `InvalidHandleConn`'s own two `impl` blocks below.
 
-use sot_log::host::wide_null;
-use sot_log::identity::challenge::ChallengeOutcome;
-use sot_log::identity::challenge_win::challenge;
-use sot_log::identity::exchange::VoyageMgmtExchange;
+use sot_platform::host::wide_null;
+use sot_platform::identity::challenge::ChallengeOutcome;
+use sot_platform::identity::challenge_win::challenge;
+use sot_log::lane::exchange::VoyageMgmtExchange;
 use sot_log::lane::attach_proto::ConnId;
 use sot_log::lane::pipe_win::{connect_voyage_pipe, PipeServer};
 use sot_log::lane::transport::{
     ClosedReason, LaneEvent, TransportError, CONNECT_BOUND, TEARDOWN_AGGREGATE_DEADLINE,
 };
 use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
-use sot_log::test_isolated::run_isolated;
+use sot_platform::test_isolated::run_isolated;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// A per-event bound used throughout (well inside `sot_log::test_isolated::ISOLATION_TIMEOUT`, so
+/// A per-event bound used throughout (well inside `sot_platform::test_isolated::ISOLATION_TIMEOUT`, so
 /// a stalled event always trips before the parent's own kill fires).
 const TIMEOUT: Duration = Duration::from_secs(10);
 

@@ -20,7 +20,7 @@ use super::*;
 /// trip in this file ([`call`]'s own `BOUND`) — the blocking body runs
 /// on its own thread via `spawn_blocking`, abandoned (not cancelled) on
 /// timeout: it leaks a blocked thread rather than hang, the trade
-/// `sot_log::test_wait::within` makes.
+/// `sot_platform::test_wait::within` makes.
 #[cfg(target_os = "linux")]
 async fn leg_survival(voyage_id: &str) -> sot_log::lane::wire::Survival {
     let voyage_id_owned = voyage_id.to_string();
@@ -515,7 +515,7 @@ async fn destroy_ends_a_child_that_left_the_agents_process_group() {
 #[cfg(target_os = "linux")]
 fn scope_guard_refuses_everything_the_aim_rule_refuses() {
     let state = tempfile::tempdir().expect("tempdir");
-    let h = sot_log::host::state_dir::state_dir_hash(state.path());
+    let h = sot_platform::host::state_dir::state_dir_hash(state.path());
     for (target, own, accepted) in row_scope_aim::aim_table(&h) {
         assert_eq!(row_scope_aim::aim(&target, &own, &h).is_ok(), accepted, "aim on {target:?} with own {own:?}");
         let armed = std::panic::catch_unwind(|| aim_scope_guard(&target, &own, state.path()));

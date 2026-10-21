@@ -1,6 +1,6 @@
-//! The one rule for a local endpoint reached by name: this box's daemon socket or pipe, or a hub relay socket, is spoken
-//! to only when this OS account serves it (ADR 0049, User isolation). Unix checks the account that listens on the
-//! socket, Windows the serving process.
+//! The account check behind `connect_own` (the lane connects, then asks this): a local endpoint reached by name, this
+//! box's daemon socket or pipe or a hub relay socket, is spoken to only when this OS account serves it (ADR 0049, User
+//! isolation). Unix checks the account that listens on the socket, Windows the serving process.
 
 use std::path::Path;
 
@@ -11,7 +11,6 @@ use std::os::fd::{AsRawFd, BorrowedFd};
 use crate::identity::challenge::ChallengeOutcome;
 #[cfg(windows)]
 use crate::identity::challenge_win::{authenticate_steps_1_to_3, PipeChallengeable, QUERY_ACCESS};
-use crate::lane::transport::TransportError;
 
 /// Unix: refuse the connected client end `sock` unless the account the kernel recorded when the socket's listener
 /// called
@@ -20,7 +19,7 @@ use crate::lane::transport::TransportError;
 /// account's record, so that process, whatever account it runs as, is trusted as this account's and receives what the
 /// client sends. Runs after the connect and before the first byte is written; a refused socket is closed unread.
 #[cfg(unix)]
-fn own_socket(sock: BorrowedFd<'_>, path: &Path) -> std::io::Result<()> {
+pub fn own_socket(sock: BorrowedFd<'_>, path: &Path) -> std::io::Result<()> {
     // SAFETY: geteuid has no preconditions and cannot fail.
     let me = unsafe { libc::geteuid() };
     let why = match listener_euid(sock) {
@@ -87,7 +86,7 @@ fn listener_euid(sock: BorrowedFd<'_>) -> std::io::Result<u32> {
 /// Windows: refuse the connected client end `pipe` unless the process serving it runs as this OS account
 /// (steps 1-3 of the challenge, `authenticate_steps_1_to_3`). Runs before the first byte is written.
 #[cfg(windows)]
-fn own_pipe(pipe: std::os::windows::io::BorrowedHandle<'_>, path: &Path) -> std::io::Result<()> {
+pub fn own_pipe(pipe: std::os::windows::io::BorrowedHandle<'_>, path: &Path) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     // Steps 1-3 only: no wire I/O, and the process handle they open is dropped at once.
     let why = match authenticate_steps_1_to_3(pipe.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE, QUERY_ACCESS) {
@@ -100,44 +99,4 @@ fn own_pipe(pipe: std::os::windows::io::BorrowedHandle<'_>, path: &Path) -> std:
         std::io::ErrorKind::PermissionDenied,
         format!("{}: not connecting: {why}", path.display()),
     ))
-}
-
-/// The blocking connect for a local endpoint: the platform connector's fixed `CONNECT_BOUND` retry budget, then the
-/// account check before the caller writes. An attempt or wait in progress finishes first (Unix's 20 ms sleep, Windows's
-/// 200 ms wait); this is not an exact elapsed-time limit.
-#[cfg(unix)]
-pub fn connect_own(path: &Path) -> Result<crate::lane::socket_unix::SocketClient, TransportError> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "the rule runs right after the connect, before the caller writes"
-    )]
-    let client = crate::lane::socket_unix::connect_unix_socket_unchallenged(path)?;
-    own_socket(client.socket_fd(), path).map_err(|source| TransportError::Io {
-        op: "connect_own",
-        source,
-    })?;
-    Ok(client)
-}
-
-/// The blocking connect for a local endpoint: the platform connector's fixed `CONNECT_BOUND` retry budget, then the
-/// account check before the caller writes. An attempt or wait in progress finishes first (Unix's 20 ms sleep, Windows's
-/// 200 ms wait); this is not an exact elapsed-time limit.
-#[cfg(windows)]
-pub fn connect_own(path: &Path) -> Result<crate::lane::pipe_win::PipeClient, TransportError> {
-    use std::os::windows::io::{BorrowedHandle, RawHandle};
-    let text = path.to_str().ok_or_else(|| TransportError::Io {
-        op: "connect_own",
-        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "pipe path is not valid Unicode"),
-    })?;
-    // The connector's mid-dial cancel hook. Nothing sets it: the dial is the caller's first act on this endpoint.
-    let dial_cancel = std::sync::atomic::AtomicBool::new(false);
-    #[allow(clippy::disallowed_methods, reason = "the rule runs right after the connect, before the caller writes")]
-    let client = crate::lane::pipe_win::connect_pipe_path_unchallenged(text, &dial_cancel)?;
-    // SAFETY: the handle is owned by `client`, which outlives this borrow.
-    let handle = unsafe { BorrowedHandle::borrow_raw(client.raw_handle() as RawHandle) };
-    own_pipe(handle, path).map_err(|source| TransportError::Io {
-        op: "connect_own",
-        source,
-    })?;
-    Ok(client)
 }

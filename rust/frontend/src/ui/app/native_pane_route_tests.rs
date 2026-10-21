@@ -178,7 +178,7 @@ mod unix {
         let hub = std::path::PathBuf::from(format!("/tmp/sot-t3hub-{}-{}", std::process::id(), nanos()));
         std::fs::create_dir(&hub)?;
         std::fs::set_permissions(&hub, std::fs::Permissions::from_mode(0o700))?;
-        ensure!(sot_log::host::state_dir::is_private_dir(&hub), "the hub runtime dir is not private");
+        ensure!(sot_platform::host::state_dir::is_private_dir(&hub), "the hub runtime dir is not private");
         println!("pane-timing roots hub={}", hub.display());
         let socket = hub.join(format!("sot-host-{host}.sock"));
         let listener = UnixListener::bind(&socket).context("bind the relay socket")?;

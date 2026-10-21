@@ -2,7 +2,7 @@
 use super::*;
 use sot_log::capsule::producer::{ExitStatus, Producer};
 use sot_log::capsule::{self, CapsuleConfig, ExitSummary};
-use sot_log::host::storage_exhaustion;
+use sot_log::storage_exhaustion;
 use sot_log::lane::wire::Survival;
 use sot_log::store::segment::RetentionClass;
 use sot_log::Result;

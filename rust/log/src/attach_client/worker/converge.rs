@@ -1,8 +1,8 @@
 //! Supervisor-lane connect, probe and converge-on-Ready, then the attach lane hello and checkpoint collection.
 
-use crate::identity::challenge::ChallengeOutcome;
+use sot_platform::identity::challenge::ChallengeOutcome;
 use crate::lane::client::Endpoint;
-use crate::identity::exchange::{SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
+use crate::lane::exchange::{SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
 use crate::attach_client::rules::{self, OutstandingSlot, QuitDispatcher, ReconnectDecision, ReconnectState};
 use crate::lane::transport::TEARDOWN_AGGREGATE_DEADLINE;
 use crate::lane::wire::{

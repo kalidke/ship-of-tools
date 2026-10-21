@@ -1,6 +1,6 @@
 //! Entered commands exercise the native finish owner, including the default panic hook's output.
 use super::*;
-use sot_log::test_isolated::{drain, enter, test_command, ISOLATION_TIMEOUT};
+use sot_platform::test_isolated::{drain, enter, test_command, ISOLATION_TIMEOUT};
 use std::io::Write;
 
 const RUNNER: &str = "command_tests::native_command_runner_role";
@@ -353,7 +353,7 @@ fn native_command_child_role() {
 
 fn owned_command() -> (
     std::process::Child,
-    sot_log::test_isolated::Entry,
+    sot_platform::test_isolated::Entry,
     tempfile::TempDir,
     String,
     String,
@@ -450,7 +450,7 @@ fn a_signal_native_command_keeps_its_status() {
     println!("L3 command-proof signal=retained code=none streams=separate entry=once");
 }
 
-fn assert_entry(entry: sot_log::test_isolated::Entry, pid: u32, observation: &NativeObservation) {
+fn assert_entry(entry: sot_platform::test_isolated::Entry, pid: u32, observation: &NativeObservation) {
     if let Err(payload) =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry.assert_once(pid)))
     {

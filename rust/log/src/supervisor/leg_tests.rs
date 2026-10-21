@@ -47,7 +47,7 @@ fn should_spawn_after_absent_resume_with_no_leg_spawns() {
 /// A lease end is close-on-exec at publication on every Unix and born so where `pipe2` exists.
 #[cfg(unix)]
 fn lease_end_is_close_on_exec(role: &str) {
-    use crate::lane::test_progress::observe_births;
+    use sot_platform::host::fd::observe_births;
     let (lease, births, _) = observe_births(None, || LegLease::create("h").expect("the lease"));
     let birth = births
         .iter()
@@ -82,12 +82,12 @@ fn lease_write_is_close_on_exec_at_birth_and_publication() {
 #[cfg(unix)]
 #[test]
 fn a_lease_flag_failure_closes_both_ends() {
-    if !crate::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "supervisor::leg::tests::a_lease_flag_failure_closes_both_ends",
     ) {
         return;
     }
-    use crate::lane::test_progress::observe_births;
+    use sot_platform::host::fd::observe_births;
     for call in 1..=2 {
         let (made, births, calls) = observe_births(Some(call), || LegLease::create("h"));
         assert!(made.is_err(), "lease flag failure {call} was not returned");
@@ -138,7 +138,7 @@ fn a_leg_keeps_only_its_stdio_and_the_lease_past_its_exec() {
              if test -e /dev/fd/{PARENT_LEASE_FD}; then echo lease; fi"
     ));
     unsafe { cmd.pre_exec(move || install_lease(read_fd)) };
-    let ran = crate::test_wait::run_within(&mut cmd, std::time::Duration::from_secs(10)).ok();
+    let ran = sot_platform::test_wait::run_within(&mut cmd, std::time::Duration::from_secs(10)).ok();
     unsafe {
         libc::close(held);
         libc::close(other);

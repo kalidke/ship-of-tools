@@ -1,7 +1,7 @@
 //! Ruling (d): reconnect backoff and the terminal decision (`ReconnectState`).
 
 use crate::lane::wire::SupervisorPhase;
-use crate::host::redial::Redial;
+use sot_platform::host::redial::Redial;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------

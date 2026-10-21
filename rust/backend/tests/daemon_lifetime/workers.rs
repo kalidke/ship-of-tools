@@ -43,7 +43,7 @@ fn a_distributed_worker_starts_in_a_session_of_its_own() {
     // Authority over the master first; the worker is learned from what the master reports and only watched.
     fx.own(master.id() as i32, "julia master")
         .expect("an identity for the master");
-    let (status, text, stderr) = sot_log::test_isolated::drain(master).wait_within(BOUND);
+    let (status, text, stderr) = sot_platform::test_isolated::drain(master).wait_within(BOUND);
     assert!(status.success(), "the script failed: {status}\n{stderr}");
     let row = |who: &str| -> Vec<i32> {
         text.lines()

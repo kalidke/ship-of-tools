@@ -17,6 +17,7 @@ sot-protocol = { path = "../protocol" }
 sot-updater = { path = "../updater" }
 # ADR 0041 step 6, unit U0: the per-machine state-dir resolution rule now
 # lives in sot-log (`state_dir::sot_state_dir`); this crate calls it directly.
+sot-platform = { path = "../platform" }
 sot-log = { path = "../log" }
 
 # Async + plumbing
@@ -97,6 +98,7 @@ portable-pty = "0.9"
 
 [dev-dependencies]
 # `test_log`, through which every subscriber a test installs goes, and `test_scan`, through which this crate's source scans read the source (dev-only: resolver 2 keeps the feature out of builds).
+sot-platform = { path = "../platform", features = ["test-support"] }
 sot-log = { path = "../log", features = ["test-support"] }
 # `start_paused` test runtimes: the connect-reply bound is tested at its real 30 s on a paused clock.
 tokio = { workspace = true, features = ["test-util"] }

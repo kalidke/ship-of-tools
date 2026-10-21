@@ -223,7 +223,7 @@ async fn a_guests_forward_files_at_the_hub_over_the_real_wire() {
     let hub = Env::spawn("fwd", "hub-a", GUEST_TOML);
     drop(connect_and_hello(&hub.socket_path, "probe", "hub-a").await);
     lock_record(&hub).await;
-    let now = sot_log::test_wait::run_within(Command::new("date").args(["-u", "+%Y-%m-%dT%H:%M:%SZ"]), BOUND).ok().stdout;
+    let now = sot_platform::test_wait::run_within(Command::new("date").args(["-u", "+%Y-%m-%dT%H:%M:%SZ"]), BOUND).ok().stdout;
     let now = now.trim().to_string();
     let registry = serde_json::json!({"agents": {"peer": {"host": "hub-a", "last_seen": now}}});
     support::write_registry(&hub.comm_root, |doc| *doc = registry);

@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn the_pipe_arm_opens_at_identification_level() {
     use std::io::Write;
-    let level = sot_log::identity::impersonation_probe::level_seen_by_server(|name| {
+    let level = sot_platform::identity::impersonation_probe::level_seen_by_server(|name| {
         let (mut writer, reader, guard) = connect(&format!("pipe:{name}"), crate::lifecycle::child_signal::process()).expect("connect").split().expect("split");
         writer.write_all(b"x").expect("write one byte");
         (writer, reader, guard)
@@ -310,7 +310,7 @@ fn a_refused_hello_is_named() {
     let endpoint = format!("unix:{}", path.display());
     let err = dial_and_call(&endpoint, "host-a", "topology.set", serde_json::json!({}), std::time::Duration::from_secs(60))
         .expect_err("a refused hello is an error");
-    sot_log::test_wait::within(BOUND, "the fake daemon", move || daemon.join()).unwrap();
+    sot_platform::test_wait::within(BOUND, "the fake daemon", move || daemon.join()).unwrap();
     assert_eq!(err, format!("{endpoint}: hello refused: no thanks"));
 }
 
@@ -327,7 +327,7 @@ fn unrecognised_scheme_names_the_dialable_spellings() {
 #[cfg(unix)]
 #[test]
 fn a_socket_another_account_listens_on_is_refused() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "topology::dial::tests::a_socket_another_account_listens_on_is_refused",
     ) {
         return;
@@ -372,7 +372,7 @@ fn a_pipe_another_account_serves_is_refused() {
 #[cfg(unix)]
 #[test]
 fn a_full_foreign_backlog_ends_the_dial_within_its_bound() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "topology::dial::tests::a_full_foreign_backlog_ends_the_dial_within_its_bound",
     ) {
         return;

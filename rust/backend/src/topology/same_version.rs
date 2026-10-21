@@ -24,7 +24,7 @@ const OTHER: i32 = 3;
 const OTHER_LEASED: i32 = 4;
 
 pub fn run(args: &[String]) -> i32 {
-    run_in(args, sot_log::host::state_dir::sot_state_dir().as_deref())
+    run_in(args, sot_platform::host::state_dir::sot_state_dir().as_deref())
 }
 
 /// `run` against the daemon whose state root is `state_root`, where its lease record lives.
@@ -36,7 +36,7 @@ fn run_in(args: &[String], state_root: Option<&std::path::Path>) -> i32 {
             return UNKNOWN;
         }
     };
-    let me = match sot_log::host::state_dir::host_name() {
+    let me = match sot_platform::host::state_dir::host_name() {
         Ok(h) => h,
         Err(e) => {
             eprintln!("sotd same-version: {e}");

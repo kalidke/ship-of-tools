@@ -10,7 +10,7 @@
 //! accidentally mint different-named authority fences for the same
 //! drawer.
 
-use crate::host;
+use sot_platform::host;
 use crate::Result;
 use std::path::{Path, PathBuf};
 
@@ -38,7 +38,7 @@ pub struct SupervisorLock(#[allow(dead_code)] host::WriterLock); // held for its
 /// `sot-capsule supervise` instances), and that is exactly what the
 /// kernel arbitrates.
 pub fn lock_supervisor(state_dir: &Path) -> Result<SupervisorLock> {
-    host::lock_supervisor(&supervisor_lock_path(state_dir)).map(SupervisorLock)
+    Ok(SupervisorLock(host::lock_supervisor(&supervisor_lock_path(state_dir))?))
 }
 
 #[cfg(test)]

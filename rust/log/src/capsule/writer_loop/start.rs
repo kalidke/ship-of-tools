@@ -210,7 +210,7 @@ fn open_store(config: &CapsuleConfig) -> Result<VoyageStore> {
     // Resolve ONCE — the fresh `capsule::producer::pty` and `platform_transport` pair on
     // Linux and `producer_conpty` and `platform_transport` on Windows share this
     // exact ordering (voyage root, then the lease, then the writer fence).
-    let voyage_root = crate::host::ensure_container(&config.voyage_root)?;
+    let voyage_root = sot_platform::host::ensure_container(&config.voyage_root)?;
     if !voyage_root.exists() {
         VoyageStore::bootstrap(&voyage_root, &config.voyage_id, config.retention)?;
     }

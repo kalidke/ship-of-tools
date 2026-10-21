@@ -424,7 +424,7 @@ mod real_alias {
         let junction = dir.path().join("j1");
         let mut mklink = std::process::Command::new("cmd");
         mklink.args(["/C", "mklink", "/J"]).arg(&junction).arg(alias.parent().unwrap());
-        sot_log::test_wait::run_within(&mut mklink, std::time::Duration::from_secs(30)).ok();
+        sot_platform::test_wait::run_within(&mut mklink, std::time::Duration::from_secs(30)).ok();
         let link_dir = dir.path().join("links");
         std::fs::create_dir_all(&link_dir).unwrap();
         let via_link = link_dir.join(JULIA_EXE);

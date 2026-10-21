@@ -137,7 +137,7 @@ fn relay_ssh_turns_multiplexing_off_over_an_ssh_config_that_turns_it_on() {
     let cfg = dir.join("config");
     std::fs::write(&cfg, OLD_ADVICE).unwrap();
     // The OpenSSH client `ssh` must be on PATH for this test: a missing one fails the run, naming it.
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         std::process::Command::new("ssh").arg("-F").arg(&cfg).arg("-G").args(&opts).arg("remote-a"),
         std::time::Duration::from_secs(30),
     );

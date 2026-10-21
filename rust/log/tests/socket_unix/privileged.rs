@@ -1,7 +1,7 @@
 //! Native-account fixtures share one explicit command recipe, ISO finalization and failure verifier.
 
 use super::*;
-use sot_log::test_isolated::{
+use sot_platform::test_isolated::{
     enter, supervise_wrapped_fixture_until, FixtureOutcome, WrappedSpawnFailure,
 };
 use std::ffi::OsString;
@@ -31,7 +31,7 @@ fn recipe(
     role: &str,
     launcher: Launcher,
     assignments: &[(&str, OsString)],
-) -> Result<(Command, sot_log::test_isolated::Entry), WrappedSpawnFailure> {
+) -> Result<(Command, sot_platform::test_isolated::Entry), WrappedSpawnFailure> {
     let (mut direct, mut entry) = test_command(role);
     if let Err(error) = entry.prepare_wrapped_record() {
         let entry = std::panic::catch_unwind(|| entry.assert_once(0)).map_err(panic_message);
@@ -105,7 +105,7 @@ fn run_fixture(
     observed
 }
 
-fn stream_text(stream: &Result<String, sot_log::test_isolated::OutputFailure>) -> String {
+fn stream_text(stream: &Result<String, sot_platform::test_isolated::OutputFailure>) -> String {
     match stream {
         Ok(text) if text.is_empty() => "<empty>".into(),
         Ok(text) => text.clone(),
@@ -272,7 +272,7 @@ fn control_fixture(control: &str, launcher: Launcher) -> (NativeOutcome, WaitCon
 }
 
 fn isolated(test: &str) -> bool {
-    sot_log::test_isolated::run_isolated(test)
+    sot_platform::test_isolated::run_isolated(test)
 }
 
 #[test]

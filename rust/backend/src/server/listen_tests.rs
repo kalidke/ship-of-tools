@@ -228,10 +228,10 @@ async fn admit_peer_admits_this_process_with_its_pid_and_creation_time() {
     assert_eq!(peer.pid, std::process::id());
     #[cfg(target_os = "macos")]
     let created = u64::from(
-        sot_log::identity::challenge_macos::self_pidversion().expect("own pidversion"),
+        sot_platform::identity::challenge_macos::self_pidversion().expect("own pidversion"),
     );
     #[cfg(not(target_os = "macos"))]
-    let created = sot_log::identity::challenge::process_created(std::process::id())
+    let created = sot_platform::identity::challenge::process_created(std::process::id())
         .expect("own creation time");
     assert_eq!(peer.created, created);
 }
@@ -258,13 +258,13 @@ async fn a_connection_of_this_account_whose_process_has_ended_is_admitted_withou
     const NAME: &str =
         "server::listen::tests::a_connection_of_this_account_whose_process_has_ended_is_admitted_without_it";
     if let Some(path) = std::env::var_os(ADMISSION_PEER) {
-        sot_log::test_isolated::enter(NAME);
+        sot_platform::test_isolated::enter(NAME);
         std::os::unix::net::UnixStream::connect(path).expect("connect to the parent's socket");
         return;
     }
     let (_dir, path) = probe_socket_path();
     let listener = bind_session(path.to_str().unwrap()).unwrap();
-    let (mut command, entry) = sot_log::test_isolated::test_command(NAME);
+    let (mut command, entry) = sot_platform::test_isolated::test_command(NAME);
     let mut child = command
         .env(ADMISSION_PEER, &path)
         .stdout(std::process::Stdio::null())
@@ -272,11 +272,11 @@ async fn a_connection_of_this_account_whose_process_has_ended_is_admitted_withou
         .expect("start the connecting child");
     let pid = child.id();
     let status =
-        sot_log::test_isolated::wait_within(&mut child, sot_log::test_isolated::ISOLATION_TIMEOUT);
+        sot_platform::test_isolated::wait_within(&mut child, sot_platform::test_isolated::ISOLATION_TIMEOUT);
     entry.assert_once(pid);
     assert!(status.success(), "the connecting child: {status}");
     assert!(
-        sot_log::identity::challenge::process_created(pid).is_err(),
+        sot_platform::identity::challenge::process_created(pid).is_err(),
         "premise: the connecting child's process is gone"
     );
     let stream = tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
@@ -300,12 +300,12 @@ async fn a_process_of_this_account_this_daemon_may_not_open_is_admitted_without_
     const NAME: &str =
         "server::listen::tests::a_process_of_this_account_this_daemon_may_not_open_is_admitted_without_it";
     if let Some(pipe) = std::env::var_os(ADMISSION_PEER) {
-        sot_log::test_isolated::enter(NAME);
+        sot_platform::test_isolated::enter(NAME);
         return closed_peer(&pipe);
     }
     let name = format!(r"\\.\pipe\sot-closed-peer-test-{}", std::process::id());
     let listener = bind_session(&name).unwrap();
-    let (mut command, entry) = sot_log::test_isolated::test_command(NAME);
+    let (mut command, entry) = sot_platform::test_isolated::test_command(NAME);
     let mut child = command
         .env(ADMISSION_PEER, &name)
         .stdout(std::process::Stdio::null())
@@ -314,7 +314,7 @@ async fn a_process_of_this_account_this_daemon_may_not_open_is_admitted_without_
     let pid = child.id();
     let accepted = tokio::time::timeout(std::time::Duration::from_secs(20), listener.accept()).await;
     // Both reads run as the daemon's token would: no privilege, so none of the runner's reaches the child.
-    let denied = without_privileges(|| sot_log::identity::challenge::process_created(pid));
+    let denied = without_privileges(|| sot_platform::identity::challenge::process_created(pid));
     let mut held = None;
     let process = match accepted {
         Ok(Ok(stream)) => without_privileges(|| {
@@ -335,7 +335,7 @@ async fn a_process_of_this_account_this_daemon_may_not_open_is_admitted_without_
         stream.write_all(&[0]).await.expect("release the peer child");
     }
     let status =
-        sot_log::test_isolated::wait_within(&mut child, sot_log::test_isolated::ISOLATION_TIMEOUT);
+        sot_platform::test_isolated::wait_within(&mut child, sot_platform::test_isolated::ISOLATION_TIMEOUT);
     entry.assert_once(pid);
     assert!(status.success(), "the peer child: {status}");
     let denied = denied.expect_err("premise: this account may not open the peer child's process");
@@ -362,7 +362,7 @@ fn closed_peer(pipe: &std::ffi::OsStr) {
         PSECURITY_DESCRIPTOR,
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
-    let sddl = sot_log::host::wide_null("D:P(A;;GA;;;SY)");
+    let sddl = sot_platform::host::wide_null("D:P(A;;GA;;;SY)");
     // SAFETY: the descriptor is built, read and freed here; the process handle is this process's pseudo-handle.
     unsafe {
         let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
@@ -506,7 +506,7 @@ async fn a_refused_os_peer_reaches_no_connection_handler() {
     reason = "one test scenario: the session pipe's security descriptor, checked flag by flag"
 )]
 async fn session_pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags() {
-    use sot_log::host::wide_null;
+    use sot_platform::host::wide_null;
     use windows_sys::Win32::Foundation::{
         CloseHandle, LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
     };

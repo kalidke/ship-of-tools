@@ -130,7 +130,7 @@ pub async fn spawn(preferred: u16) -> Result<()> {
         .port();
     BOUND_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(port, "video http server listening");
-    tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "video", serve_conn));
+    tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "video", serve_conn));
     Ok(())
 }
 

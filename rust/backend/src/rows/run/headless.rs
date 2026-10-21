@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use sot_log::lane::client::PlatformEndpoint;
 use sot_log::attach_client::rules::TAKE_QUEUE_CAP;
 use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
-use sot_log::host::state_dir::state_dir_hash;
+use sot_platform::host::state_dir::state_dir_hash;
 
 /// This daemon build's own concrete attach client — always the real
 /// platform endpoint (pipes on Windows, a Unix socket on Linux). No

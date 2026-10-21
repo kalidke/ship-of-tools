@@ -31,7 +31,7 @@ fn preparation_declaration_spelling_survives_the_real_cli() {
     )]
     let child = command.spawn().unwrap();
     let (status, out, err) =
-        sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(20));
+        sot_platform::test_isolated::drain(child).wait_within(Duration::from_secs(20));
     assert!(
         status.success() && out.trim() == "Declared",
         "W1 declaration preparation: {status}; stdout {out:?}; stderr {err:?}"

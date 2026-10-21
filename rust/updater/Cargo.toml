@@ -14,6 +14,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 # `host::HeldDir` and `host::remove_ended`: the release check's scratch folder (`fetch::latest`). Every binary that
 # embeds this crate already links sot-log.
+sot-platform = { path = "../platform" }
 sot-log = { path = "../log" }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -26,4 +27,5 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 
 [dev-dependencies]
 # `test_exec::write_executable`, the one way a test writes a program it runs.
+sot-platform = { path = "../platform", features = ["test-support"] }
 sot-log = { path = "../log", features = ["test-support"] }

@@ -53,7 +53,7 @@ fn preparation_case(invalid: bool) {
 
 #[test]
 fn toml_declaration_handles_comments_and_literals() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "agents::env::trust_declaration_controls::toml_declaration_handles_comments_and_literals") { return; }
     preparation_case(false);
     println!("W1 C1 commented declaration PASS");
@@ -61,7 +61,7 @@ fn toml_declaration_handles_comments_and_literals() {
 
 #[test]
 fn invalid_declaration_is_diagnostic_and_writes_nothing() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "agents::env::trust_declaration_controls::invalid_declaration_is_diagnostic_and_writes_nothing") { return; }
     preparation_case(true);
     println!("W1 C1 invalid declaration diagnostic PASS");

@@ -19,15 +19,15 @@ fn backoff_doubles_from_a_fresh_state_and_only_a_stable_session_restarts_it() {
             Duration::from_secs(4),
         ]
     );
-    let short = crate::host::redial::STABLE - Duration::from_secs(1);
+    let short = sot_platform::host::redial::STABLE - Duration::from_secs(1);
     assert_eq!(r.retry_after(short), Duration::from_secs(4), "an attach that drops sooner keeps the doubling");
-    assert_eq!(r.retry_after(crate::host::redial::STABLE), Duration::from_millis(250));
+    assert_eq!(r.retry_after(sot_platform::host::redial::STABLE), Duration::from_millis(250));
 }
 
 #[test]
 fn post_attach_backoff_doubles_and_caps_at_4s() {
     let mut r = ReconnectState::new();
-    let mut waits = vec![r.retry_after(crate::host::redial::STABLE)];
+    let mut waits = vec![r.retry_after(sot_platform::host::redial::STABLE)];
     for _ in 0..5 {
         waits.push(r.retry_after(Duration::ZERO));
     }

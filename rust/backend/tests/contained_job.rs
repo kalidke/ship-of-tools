@@ -26,7 +26,7 @@ const CHILD: &str = "SOT_TEST_CONTAINED_CHILD";
 fn state_locks(state_dir: &Path, voyage: &str) -> (bool, bool) {
     let fence = sot_log::supervisor::journal::fence::lock_supervisor(state_dir).is_ok();
     let writer =
-        sot_log::lock_writer(&state_dir.join("voyages").join(voyage).join("writer.lock")).is_ok();
+        sot_platform::host::lock_writer(&state_dir.join("voyages").join(voyage).join("writer.lock")).is_ok();
     (fence, writer)
 }
 
@@ -84,7 +84,7 @@ async fn ready_row(env: &Env) -> (PathBuf, String, u32) {
 }
 
 async fn child(dir: PathBuf) {
-    sot_log::test_isolated::enter(NAME);
+    sot_platform::test_isolated::enter(NAME);
     let env = Env::new("cj");
     env.spawn_sotd();
     let (state_dir, voyage, peer_pid) = ready_row(&env).await;
@@ -114,7 +114,7 @@ async fn child(dir: PathBuf) {
 
 /// A lease from this process, then the window's close: the daemon ends its rows and exits.
 async fn close_by_lease(socket: &Path) {
-    let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
+    let me = sot_platform::identity::challenge::self_identity().expect("this process's identity");
     let req = FeLeaseReq {
         boot: me.boot,
         pid: me.pid,
@@ -171,7 +171,7 @@ fn spawn_client(
     dir: &Path,
     unit: &str,
     cmd: &std::process::Command,
-    entry: &sot_log::test_isolated::Entry,
+    entry: &sot_platform::test_isolated::Entry,
 ) -> std::process::Child {
     let (entered_name, entered_path) = entry.environment_assignment();
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/tests/in-container.sh");
@@ -326,7 +326,7 @@ async fn a_killed_test_job_leaves_no_row() {
         .tempdir_in("/tmp")
         .expect("a scratch folder");
     let unit = format!("sot-test-cj-{}", uuid::Uuid::now_v7().simple());
-    let (cmd, entry) = sot_log::test_isolated::test_command(NAME);
+    let (cmd, entry) = sot_platform::test_isolated::test_command(NAME);
     let mut client = spawn_client(dir.path(), &unit, &cmd, &entry);
 
     let (ready, exited) = wait_ready_or_exit(dir.path(), &mut client).await;
@@ -342,7 +342,7 @@ async fn a_killed_test_job_leaves_no_row() {
         (Some(r), false) => end_leftover_row(r).await,
         _ => true,
     };
-    let _ = sot_log::test_wait::try_run_within(
+    let _ = sot_platform::test_wait::try_run_within(
         std::process::Command::new("systemctl").args([
             "--user",
             "stop",

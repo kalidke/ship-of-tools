@@ -229,7 +229,7 @@ async fn no_automatic_arm_passes_a_pin_while_the_record_is_replaced() {
         record.display()
     );
     let writer = std::thread::spawn(move || {
-        sot_log::test_wait::run_within(
+        sot_platform::test_wait::run_within(
             std::process::Command::new("powershell.exe").args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script]),
             Duration::from_secs(600),
         )

@@ -156,7 +156,7 @@ fn keep_no_descriptor(cmd: &mut std::process::Command) {
     {
         use std::os::unix::process::CommandExt;
         // SAFETY: the hook runs in the child between fork and exec and makes only async-signal-safe calls.
-        unsafe { cmd.pre_exec(sot_log::host::inherit_none) };
+        unsafe { cmd.pre_exec(sot_platform::host::inherit_none) };
     }
     #[cfg(not(unix))]
     let _ = cmd;

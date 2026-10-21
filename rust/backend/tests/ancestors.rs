@@ -17,7 +17,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use sot_log::test_wait::{run_within, Ran};
+use sot_platform::test_wait::{run_within, Ran};
 
 #[path = "support/sotd.rs"]
 mod sotd;

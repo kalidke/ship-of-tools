@@ -214,7 +214,7 @@ type OwedClient = <PlatformEndpoint as Endpoint>::Client;
 
 /// Binds the supervisor lane and accepts the two silent clients of [`SilentClients`].
 fn silent_clients(f: &mut Fixture, t0: Instant) -> SilentClients {
-    let h = crate::host::state_dir::state_dir_hash(&f.config.state_dir);
+    let h = sot_platform::host::state_dir::state_dir_hash(&f.config.state_dir);
     let lane = Lane::bind_supervisor(&h, MAX_LANE_INSTANCES).expect("bind the supervisor lane");
     let endpoint = PlatformEndpoint::default();
     let mut conns = HashMap::new();
@@ -298,7 +298,7 @@ fn deliver_record_closed(
 fn the_connection_owed_the_end_run_reply_is_not_idle_until_its_reply_and_then_gets_the_whole_deadline(
 ) {
     let test = "supervisor::transitions::tests::the_connection_owed_the_end_run_reply_is_not_idle_until_its_reply_and_then_gets_the_whole_deadline";
-    if !crate::test_isolated::run_isolated(test) {
+    if !sot_platform::test_isolated::run_isolated(test) {
         return;
     }
     #[cfg(unix)]

@@ -21,7 +21,7 @@ pub struct Release {
 }
 
 fn run(program: &str, dir: &Path, args: &[&str]) -> String {
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         Command::new(program)
             .args(args)
             .current_dir(dir)

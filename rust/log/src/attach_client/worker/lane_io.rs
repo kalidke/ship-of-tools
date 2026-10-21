@@ -11,7 +11,7 @@ use std::time::Instant;
 // -----------------------------------------------------------------------
 // Small bounded I/O helpers over any `Endpoint::Client`, shared by every
 // lane this module speaks (mirrors the pattern each platform's own
-// `challenge()` itself uses: `crate::identity::deadline::run_with_deadline` racing
+// `challenge()` itself uses: `sot_platform::identity::deadline::run_with_deadline` racing
 // the blocking call against a `cancel()`-issuing watchdog).
 // -----------------------------------------------------------------------
 
@@ -123,7 +123,7 @@ pub(super) fn is_access_denied(e: &std::io::Error) -> bool {
 }
 
 pub(crate) fn write_bounded<E: Endpoint>(conn: &E::Client, bytes: &[u8], deadline: Instant) -> Result<(), LaneError> {
-    match crate::identity::deadline::run_with_deadline(deadline, || conn.cancel(), || conn.write_all(bytes)) {
+    match sot_platform::identity::deadline::run_with_deadline(deadline, || conn.cancel(), || conn.write_all(bytes)) {
         Some(Ok(())) => Ok(()),
         Some(Err(e)) => Err(LaneError::Io(transport_error_to_io(e))),
         None => Err(LaneError::Timeout),
@@ -156,7 +156,7 @@ impl FrameReader {
         }
         loop {
             let mut buf = [0u8; 8192];
-            let n = match crate::identity::deadline::run_with_deadline(deadline, || conn.cancel(), || conn.read(&mut buf)) {
+            let n = match sot_platform::identity::deadline::run_with_deadline(deadline, || conn.cancel(), || conn.read(&mut buf)) {
                 Some(Ok(n)) => n,
                 Some(Err(e)) => return Err(LaneError::Io(transport_error_to_io(e))),
                 None => return Err(LaneError::Timeout),

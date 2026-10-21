@@ -40,7 +40,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
   wait in progress finishes first (Unix's 20 ms sleep, Windows's 200 ms wait). Its handshake has a separate bound and
   can be cancelled; refusals remain typed. Its child owner bounds teardown to 2 s, confirms reaping on success and
   reports termination, reap or deadline failures (`lane_child.rs`).
-- A lane dial to a local socket or pipe goes through `sot_log::identity::connect_own::connect_own`, so it speaks only to an endpoint this OS account serves.
+- A lane dial to a local socket or pipe goes through `sot_log::lane::connect_own::connect_own`, so it speaks only to an endpoint this OS account serves.
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
 - A unit sotd writes into the user's systemd folder starts only where hosts.toml gives it: `sotd.service` on the hosts
   declared `daemon` or `frontend` (`sotd_hosts`), the reverse tunnels and relay sockets on the hub, each by a host pin

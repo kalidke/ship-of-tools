@@ -7,7 +7,7 @@ use super::*;
 /// non-`_all` `create` + `DirBuilderExt::mode` maps to one `mkdir(2)` —
 /// atomic, no window for a racing attacker to land a symlink in); a
 /// present one gets a by-PATH PRE-check via
-/// [`crate::host::state_dir::is_private_dir`] (lstat-based: real directory,
+/// [`sot_platform::host::state_dir::is_private_dir`] (lstat-based: real directory,
 /// owned by this uid, owner-only) — NOT the authoritative check (module
 /// doc "Security"): [`open_verified_dir_fd`], called immediately
 /// afterward, re-verifies the SAME properties against the actually-opened
@@ -30,7 +30,7 @@ pub(super) fn ensure_private_runtime_dir(dir: &Path) -> Result<(), TransportErro
             op: "stat(runtime dir)",
             source: e,
         }),
-        Ok(_) if crate::host::state_dir::is_private_dir(dir) => Ok(()),
+        Ok(_) if sot_platform::host::state_dir::is_private_dir(dir) => Ok(()),
         Ok(_) => Err(TransportError::Io {
             op: "verify runtime dir",
             source: io::Error::new(
@@ -86,7 +86,7 @@ pub(super) fn open_verified_dir_fd(dir: &Path) -> Result<OwnedFd, TransportError
         });
     }
     if st.st_mode & libc::S_IFMT != libc::S_IFDIR
-        || st.st_uid != crate::host::state_dir::current_uid()
+        || st.st_uid != sot_platform::host::state_dir::current_uid()
         || st.st_mode & 0o077 != 0
     {
         return Err(TransportError::Io {
@@ -136,7 +136,7 @@ pub(super) fn create_and_bind_listener(
         }
     }
 
-    let fd = crate::host::fd::socket_cloexec("listener", libc::AF_UNIX, libc::SOCK_STREAM).map_err(
+    let fd = sot_platform::host::fd::socket_cloexec("listener", libc::AF_UNIX, libc::SOCK_STREAM).map_err(
         |source| TransportError::Io {
             op: "socket(AF_UNIX)",
             source,
@@ -245,7 +245,7 @@ pub(super) fn create_and_bind_listener(
         });
     }
     if st.st_mode & libc::S_IFMT != libc::S_IFSOCK
-        || st.st_uid != crate::host::state_dir::current_uid()
+        || st.st_uid != sot_platform::host::state_dir::current_uid()
         || st.st_mode & 0o777 != 0o600
     {
         return Err(TransportError::Io {
@@ -273,7 +273,7 @@ pub(super) fn create_and_bind_listener(
 /// The wake self-pipe: disconnect_listener wakes the acceptor through its nonblocking self-pipe, never by dialing the
 /// listener. Both ends are owned the moment they exist, so any error drops them.
 pub(super) fn create_wake_pipe() -> Result<(OwnedFd, OwnedFd), TransportError> {
-    crate::host::fd::pipe_cloexec(["wake.read", "wake.write"], true).map_err(|source| {
+    sot_platform::host::fd::pipe_cloexec(["wake.read", "wake.write"], true).map_err(|source| {
         TransportError::Io {
             op: "pipe(wake)",
             source,
@@ -283,7 +283,7 @@ pub(super) fn create_wake_pipe() -> Result<(OwnedFd, OwnedFd), TransportError> {
 
 /// Set O_NONBLOCK with a checked read-modify-write fcntl pair.
 pub(super) fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    if let Some(injected) = crate::lane::test_progress::flag_call() {
+    if let Some(injected) = sot_platform::host::fd::flag_call() {
         return Err(injected);
     }
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };

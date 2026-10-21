@@ -73,7 +73,7 @@ fn the_eval_lines_are_what_comm_context_printed_and_bash_reads_them_back() {
     if cfg!(unix) {
         let mut bash = std::process::Command::new("bash");
         bash.arg("-c").arg(r#"eval "$1"; printf '%s|%s|%s' "$REPO" "$PROJECT_ROOT" "$INBOX_DIR""#).arg("bash").arg(&text);
-        let ran = sot_log::test_wait::run_within(&mut bash, std::time::Duration::from_secs(30)).ok();
+        let ran = sot_platform::test_wait::run_within(&mut bash, std::time::Duration::from_secs(30)).ok();
         assert_eq!(ran.stdout, "my repo|/a b/it's \"here\"|/c/inbox");
     }
     assert_eq!(shell_quote("a\nb"), "$'a\\nb'");

@@ -3857,6 +3857,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sot-log",
+ "sot-platform",
  "sot-protocol",
  "sot-updater",
  "tempfile",
@@ -3895,6 +3896,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sot-log",
+ "sot-platform",
  "sot-protocol",
  "sot-updater",
  "tiny-skia",
@@ -3922,15 +3924,14 @@ dependencies = [
 name = "sot-log"
 version = "0.7.0-dev"
 dependencies = [
- "cc",
  "crc32c",
- "gethostname 0.5.0",
  "getrandom 0.3.4",
  "libc",
  "serde",
  "serde_json",
  "sha2",
  "sot-log",
+ "sot-platform",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3938,6 +3939,24 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "vt100-ctt",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "sot-platform"
+version = "0.7.0-dev"
+dependencies = [
+ "cc",
+ "gethostname 0.5.0",
+ "getrandom 0.3.4",
+ "libc",
+ "serde",
+ "sha2",
+ "sot-platform",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "windows-sys 0.59.0",
 ]
 
@@ -3951,6 +3970,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sot-log",
+ "sot-platform",
  "tempfile",
  "tokio",
 ]
@@ -3966,6 +3986,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sot-log",
+ "sot-platform",
  "tokio",
  "tracing",
  "windows-sys 0.59.0",

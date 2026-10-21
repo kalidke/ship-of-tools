@@ -1,7 +1,7 @@
 //! The steps of one attach episode, in the order run_worker calls them: reach the supervisor, attach, announce, resume input, start and stop the episode reader.
 
 use super::*;
-use crate::identity::challenge::PeerAuthOutcome;
+use sot_platform::identity::challenge::PeerAuthOutcome;
 use crate::lane::client::Client;
 use crate::attach_client::rules::{self, FeDownBaseline, OutstandingSlot, QuitDispatcher, ReconnectDecision, ReconnectState, Role, TakeTransaction};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

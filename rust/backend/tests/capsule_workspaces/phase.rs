@@ -19,7 +19,7 @@ use super::*;
 /// "unreachable" stays unreachable.
 #[cfg(target_os = "linux")]
 fn spawn_lane_refusal_fixture(state_dir: &Path, reply_bytes: Vec<u8>) -> std::thread::JoinHandle<()> {
-    let h = sot_log::host::state_dir::state_dir_hash(state_dir);
+    let h = sot_platform::host::state_dir::state_dir_hash(state_dir);
     let path = sot_log::lane::socket_unix::supervisor_socket_path(&h).expect("supervisor socket path");
     let _ = std::fs::remove_file(&path);
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture supervisor socket");

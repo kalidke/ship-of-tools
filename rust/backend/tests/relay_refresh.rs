@@ -36,7 +36,7 @@ fn hub() -> TempDir {
 }
 
 /// The whole account of `sotd topology refresh` with every path inside `t`.
-fn refresh(t: &TempDir) -> sot_log::test_wait::Ran {
+fn refresh(t: &TempDir) -> sot_platform::test_wait::Ran {
     let mut cmd = sotd::sotd_command();
     // A cleared environment and a PATH of the scratch bin alone: no route reaches the real systemctl or the
     // user's service manager, even where the scratch stub cannot run (a noexec temp mount fails the test instead).
@@ -48,7 +48,7 @@ fn refresh(t: &TempDir) -> sot_log::test_wait::Ran {
         .env("SOT_HOSTS", t.path().join("hosts.toml"))
         .env("SOT_SELF_HOST", "hub-box")
         .env("PATH", t.path().join("bin"));
-    sot_log::test_wait::run_within(cmd, BOUND)
+    sot_platform::test_wait::run_within(cmd, BOUND)
 }
 
 /// Round 4's two drop-ins, as systemd 249 reads them (systemd-analyze verify): an override behind lines ending in two
@@ -77,7 +77,7 @@ fn verify(t: &TempDir) -> String {
     std::fs::create_dir_all(&run).unwrap();
     std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
     // Its exit status is not asserted (verify exits non-zero for the findings the tests look for); the whole account is.
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         std::process::Command::new("systemd-analyze")
             .env_clear()
             .env("PATH", "/usr/bin:/bin")

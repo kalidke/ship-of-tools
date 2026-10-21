@@ -209,7 +209,7 @@ mod hello_version_tests {
         assert_eq!(hello.app_version, crate::app_version());
         assert_eq!(hello.role, "handoff");
         assert_eq!(hello.host.as_deref(), Some("host-a"));
-        assert_eq!(hello.os_user, sot_log::identity::os_account::own_account_id());
+        assert_eq!(hello.os_user, sot_platform::identity::os_account::own_account_id());
         assert!(hello.session_id.is_none() && hello.instance.is_none() && hello.name.is_none() && hello.token.is_none());
     }
 

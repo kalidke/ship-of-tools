@@ -87,7 +87,7 @@ fn run_case(role: &str, stage: Option<&str>, expect: Expect) -> Result<()> {
     let started = Instant::now();
     let child = command.spawn()?;
     let pid = child.id();
-    let (waited, out, err) = sot_log::test_isolated::drain(child).wait_and_read(Instant::now() + CHILD_BOUND);
+    let (waited, out, err) = sot_platform::test_isolated::drain(child).wait_and_read(Instant::now() + CHILD_BOUND);
     let wall = started.elapsed();
     let shot = capture.exists();
     let verdict = (|| -> Result<()> {

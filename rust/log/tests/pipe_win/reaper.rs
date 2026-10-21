@@ -54,7 +54,7 @@ fn connect(server: &PipeServer, id: &str) -> (std::sync::Arc<sot_log::lane::pipe
 /// Reads `want` bytes from the client within `TIMEOUT`, on a thread of its own (the client is shared with it).
 fn read_exact(client: &std::sync::Arc<sot_log::lane::pipe_win::PipeClient>, want: usize) {
     let client = std::sync::Arc::clone(client);
-    sot_log::test_wait::within(TIMEOUT, "the peer's bytes", move || {
+    sot_platform::test_wait::within(TIMEOUT, "the peer's bytes", move || {
         let mut got = 0;
         let mut buf = [0u8; 64];
         while got < want {

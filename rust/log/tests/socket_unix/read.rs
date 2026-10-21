@@ -132,7 +132,7 @@ fn readable_within(stream: &UnixStream, left: Duration) -> std::io::Result<()> {
 
 fn child_role(test: &str) -> bool {
     if std::env::var("SOT_TEST_SOCKET_ROLE").as_deref() == Ok(test) {
-        sot_log::test_isolated::enter(test);
+        sot_platform::test_isolated::enter(test);
         true
     } else {
         false
@@ -264,7 +264,7 @@ fn setup_and_read_failures_have_distinct_captured_phases() {
     }
     for phase in ["deadline.setup", "read"] {
         let captured =
-            capture_variant(test, sot_log::test_isolated::ISOLATION_TIMEOUT, None, phase);
+            capture_variant(test, sot_platform::test_isolated::ISOLATION_TIMEOUT, None, phase);
         checked_error(&captured, test, phase);
         let wrong = std::panic::catch_unwind(|| {
             checked_error(
@@ -405,7 +405,7 @@ fn real_reads_preserve_eof_data_and_original_deadline() {
     }
     // "late": the step's thread runs again only after its time is spent, as on a loaded runner.
     for variant in ["ordinary", "late"] {
-        let captured = capture_variant(test, sot_log::test_isolated::ISOLATION_TIMEOUT, None, variant);
+        let captured = capture_variant(test, sot_platform::test_isolated::ISOLATION_TIMEOUT, None, variant);
         assert!(captured
             .text
             .contains("read-preservation data=xy eof=0 partial=p deadline=original bodies=1"));

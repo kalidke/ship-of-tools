@@ -1,6 +1,6 @@
 //! Tests: The stall harness, held inputs, take-queue drops, the status-probe keystroke and the held-handshake gate.
 
-use crate::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
+use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
 use crate::lane::client::{Client, Endpoint};
 use crate::attach_client::rules::{OutstandingSlot, QuitDispatcher, ReconnectState, TakeTransaction};
 use crate::lane::wire::{self, AttachClient, AttachServer, DecodedFrame, SupervisorPhase, SupervisorReply};
@@ -58,7 +58,7 @@ impl Endpoint for StallEndpoint {
     fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         Err(crate::lane::transport::TransportError::Cancelled)
     }
-    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
         unreachable!("the re-dial fails before any challenge")
     }
     fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
@@ -404,11 +404,11 @@ impl Endpoint for GateEndpoint {
     fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         Ok(GateClient::Sup(Arc::clone(&self.voyage)))
     }
-    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
         ChallengeOutcome::Proven(TestProcess)
     }
     fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
-        PeerAuthOutcome::Authenticated(crate::identity::challenge::PeerAuthenticated { pid: 7, created: 7 })
+        PeerAuthOutcome::Authenticated(sot_platform::identity::challenge::PeerAuthenticated { pid: 7, created: 7 })
     }
 }
 

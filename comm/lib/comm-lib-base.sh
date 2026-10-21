@@ -202,7 +202,7 @@ sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c
 
 # sot_host — this shell's DECLARED host name for the wire only (ADR 0046
 # decision 1, S1/S2): the ONE resolver matching
-# sot_log::host::state_dir::host_name() on the Rust side exactly — `$SOT_SELF_HOST`
+# sot_platform::host::state_dir::host_name() on the Rust side exactly — `$SOT_SELF_HOST`
 # verbatim if set and non-empty (a NEW variable: `SOT_HOST` already means
 # the SSH target a remote frontend dials, `scripts/launch-sot.ps1`/
 # `launch-sot.sh` — reusing it here would silently rename a frontend's

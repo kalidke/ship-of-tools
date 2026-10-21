@@ -154,7 +154,7 @@ async fn wait_for_client(conn: &mut Conn, n: &mut u64, name: &str) {
 }
 
 fn now_iso(offset_secs: i64) -> String {
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         Command::new("date").args(["-u", "-d", &format!("{offset_secs} seconds"), "+%Y-%m-%dT%H:%M:%SZ"]),
         BOUND,
     )

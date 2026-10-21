@@ -15,7 +15,7 @@ use crate::identity::challenge::{
     exchange_identity, ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome, PeerAuthenticated,
     StatusFailure,
 };
-use crate::lane::client::{PeerIdentity, PeerProcess};
+use crate::identity::peer::{PeerIdentity, PeerProcess};
 use crate::identity::exchange::IdentityExchange;
 use crate::host;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};

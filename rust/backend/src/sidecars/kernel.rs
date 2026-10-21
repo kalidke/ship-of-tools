@@ -319,7 +319,7 @@ async fn supervisor_loop(
     sig: &'static crate::lifecycle::child_signal::Signal,
     bounds: KernelBounds,
 ) {
-    let mut redial = sot_log::host::redial::Redial::new(RESPAWN_BACKOFF_FLOOR, RESPAWN_BACKOFF_CAP);
+    let mut redial = sot_platform::host::redial::Redial::new(RESPAWN_BACKOFF_FLOOR, RESPAWN_BACKOFF_CAP);
     loop {
         if status.is_closed() || sig.is_fired() {
             return;

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
-use sot_log::identity::challenge::{PeerAuthenticated, ProcessIdentity};
+use sot_platform::identity::challenge::{PeerAuthenticated, ProcessIdentity};
 use sot_protocol::ops::{
     lease as bounds, op, FeLeaseReq, FeLeaseRes, FeLeavingReq, FeLeavingRes, FeNoticeSeenReq, FeNoticeSeenRes,
     LeaseOutcome, LeaveIntent,
@@ -575,7 +575,7 @@ where
     let granted = gen.is_some();
     let res = FeLeaseRes {
         outcome,
-        state_root: state_root.filter(|_| granted).map(sot_log::host::state_dir::state_dir_hash),
+        state_root: state_root.filter(|_| granted).map(sot_platform::host::state_dir::state_dir_hash),
         not_ended: if granted { leases.notice() } else { 0 },
     };
     let Some(gen) = gen else {

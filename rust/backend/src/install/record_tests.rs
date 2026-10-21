@@ -90,7 +90,7 @@ fn a_repair_run_moves_nothing() {
     }
 
     let dir = tempfile::tempdir().unwrap();
-    let ran = sot_log::test_wait::run_within(std::process::Command::new("git").arg("init").arg("-q").arg(dir.path()), std::time::Duration::from_secs(20));
+    let ran = sot_platform::test_wait::run_within(std::process::Command::new("git").arg("init").arg("-q").arg(dir.path()), std::time::Duration::from_secs(20));
     assert_eq!(ran.status.code(), Some(0), "{ran}");
     std::fs::create_dir_all(dir.path().join("julia/kernel")).unwrap();
     std::fs::write(dir.path().join("julia/kernel/Manifest.toml"), "resolved\n").unwrap();

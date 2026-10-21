@@ -61,7 +61,7 @@ fn ping(mut child: Child) {
     let _ = input.write_all(b"ping\n").and_then(|()| input.flush());
     let reply = rx.recv_timeout(BOUND).expect("the shell reply within its bound").expect("read the shell reply");
     drop(input);
-    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let (status, _, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     let said = format!("{status}; stderr {stderr:?}");
     assert!(status.success(), "sot_dial failed: {said}");
     assert_eq!(reply, "pong\n", "the bridge carries the reply: {said}");
@@ -74,7 +74,7 @@ fn ping(mut child: Child) {
 #[cfg(unix)]
 #[test]
 fn a_shell_request_to_a_socket_another_account_listens_on_writes_nothing() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "a_shell_request_to_a_socket_another_account_listens_on_writes_nothing",
     ) {
         return;
@@ -103,7 +103,7 @@ fn a_shell_request_to_a_socket_another_account_listens_on_writes_nothing() {
         )
         .expect("bash on Unix");
         drop(child.stdin.take());
-        let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        let (status, stdout, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
         let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
         assert_eq!(foreign.finish(), 0, "{path}: the shell client sent another account's listener bytes (ADR 0049 `## User isolation`)");
         assert!(status.success(), "{path}: bash: {said}");
@@ -128,7 +128,7 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
     use std::time::Instant;
     let home = tempfile::Builder::new().prefix("sotsd-")
         .permissions(std::fs::Permissions::from_mode(0o700)).tempdir_in("/tmp").expect("private scratch home");
-    assert!(sot_log::host::state_dir::is_private_dir(home.path()));
+    assert!(sot_platform::host::state_dir::is_private_dir(home.path()));
     let path = home.path().join("s.sock");
     let listener = UnixListener::bind(&path).expect("bind the private listener");
     listener.set_nonblocking(true).expect("nonblocking listener");
@@ -180,7 +180,7 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
     let script = r#". "${1%/comm/lib/comm-lib.sh}/scripts/lib/sot-daemon.sh" && sot_socket_open "$SOTD_BIN" "${2#unix:}" && echo open"#;
     let mut child = shell(home.path(), script, &endpoint).expect("bash on Unix");
     drop(child.stdin.take());
-    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let (status, stdout, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     assert!(
         status.success() && stdout == "open\n",
         "sot_socket_open did not reach this account's socket: {status}; stdout {stdout:?}; stderr {stderr:?}"
@@ -220,7 +220,7 @@ printf 'dial\n' | sot_dial ssh:box/far1 5
 "#;
     let mut child = shell(home.path(), script, "").expect("bash");
     drop(child.stdin.take());
-    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let (status, stdout, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
     assert!(status.success(), "bash: {said}");
     assert_eq!(
@@ -255,7 +255,7 @@ fn bound_case(source: &str, script: &str) -> (String, Duration, String) {
     let home = tempfile::tempdir().expect("scratch home");
     let mut child = shell(home.path(), &format!("{source}\n{CASE_CLOCK}\n{script}"), "").expect("bash");
     drop(child.stdin.take());
-    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(HUNG);
+    let (status, stdout, stderr) = sot_platform::test_isolated::drain(child).wait_within(HUNG);
     let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
     assert!(status.success(), "bash failed: {said}");
     let took = std::fs::read_to_string(home.path().join("took.ms"))
@@ -450,7 +450,7 @@ sot_bounded 0 true 2>/dev/null; echo "zero $?"
     let mut child = shell(home.path(), &script, "").expect("bash");
     drop(child.stdin.take());
     // About 8 s of one-second bounds and their grace periods on Unix.
-    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(HUNG);
+    let (status, stdout, stderr) = sot_platform::test_isolated::drain(child).wait_within(HUNG);
     // Every line, in the log of a run that passes too (CI runs the tests with --nocapture).
     eprintln!("the bound test's lines ({owner}):\n{stdout}its stderr:\n{stderr}");
     let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
@@ -504,7 +504,7 @@ fn the_shell_dial_reaches_only_a_pipe_this_account_serves() {
         echo.join().expect("pipe echo server");
         let mut child = shell(home.path(), dial, r"pipe:\\.\pipe\epmapper").expect("Git Bash");
         drop(child.stdin.take());
-        let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        let (status, stdout, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
         let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
         assert!(
             !status.success(),

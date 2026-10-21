@@ -185,7 +185,7 @@ fn nothing_is_written_before_every_gate() {
 
     let dir = tempfile::tempdir().unwrap();
     let git = |args: &[&str]| {
-        let ran = sot_log::test_wait::run_within(
+        let ran = sot_platform::test_wait::run_within(
             std::process::Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]).args(args),
             std::time::Duration::from_secs(30),
         );

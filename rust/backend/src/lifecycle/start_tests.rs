@@ -550,7 +550,7 @@ pub(crate) mod unix {
         });
         let dead = watched.dead();
         sender.join().unwrap();
-        sot_log::test_isolated::wait_within(&mut child, Duration::from_secs(10));
+        sot_platform::test_isolated::wait_within(&mut child, Duration::from_secs(10));
         assert!(dead, "a signal during the wait was read as a live process");
     }
 

@@ -152,7 +152,7 @@ pub(crate) fn comm_self_host() -> String {
 
 /// [`comm_self_host`] reading `SOT_SELF_HOST` from `env`.
 pub(crate) fn comm_self_host_in(env: &Env) -> String {
-    sot_log::host::state_dir::host_name_in(env).unwrap_or_default()
+    sot_platform::host::state_dir::host_name_in(env).unwrap_or_default()
 }
 
 /// The topology's half of "this daemon is its comm folder's hub": no topology

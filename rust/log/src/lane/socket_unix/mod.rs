@@ -138,9 +138,9 @@ use crate::lane::client::Endpoint;
 // pid AND the kernel's own reuse generation together (see either module's
 // own doc). No other Unix has one, which is what the gate above says.
 #[cfg(target_os = "macos")]
-use crate::identity::challenge_macos as challenge_os;
+use sot_platform::identity::challenge_macos as challenge_os;
 #[cfg(target_os = "linux")]
-use crate::identity::challenge_unix as challenge_os;
+use sot_platform::identity::challenge_unix as challenge_os;
 use crate::lane::attach_proto::ConnId;
 use crate::lane::pending::{
     self, report_server_teardown_failed, Claimed, ReaperMsg, ThreadJoins, REAPER_INBOX_SLACK,
@@ -212,7 +212,7 @@ pub fn supervisor_socket_path(h: &str) -> Result<PathBuf, TransportError> {
 }
 
 fn socket_path(file_name: &str) -> Result<PathBuf, TransportError> {
-    let dir = crate::host::state_dir::runtime_dir().map_err(TransportError::RuntimeDir)?;
+    let dir = sot_platform::host::state_dir::runtime_dir().map_err(TransportError::RuntimeDir)?;
     let path = dir.join(format!("{file_name}.sock"));
     if path.as_os_str().as_bytes().len() > max_sun_path_bytes() {
         return Err(TransportError::PathTooLong(path));

@@ -38,12 +38,12 @@ fn stdio_flags() -> [u32; 3] {
 #[cfg(windows)]
 fn owned_startup_probe(
     root: &std::path::Path,
-) -> Result<(std::process::Child, sot_log::test_isolated::Entry)> {
+) -> Result<(std::process::Child, sot_platform::test_isolated::Entry)> {
     use std::process::{Command, Stdio};
     let program = root.join("startup-probe.exe");
     sot_log::test_exec::write_executable(&program, std::fs::read(std::env::current_exe()?)?);
     let (recipe, entry) =
-        sot_log::test_isolated::test_command("tests::window_startup_owned_probe");
+        sot_platform::test_isolated::test_command("tests::window_startup_owned_probe");
     let mut command = Command::new(program);
     command.args(recipe.get_args());
     for (name, value) in recipe.get_envs() {
@@ -70,7 +70,7 @@ fn window_startup_hardens_handles_before_starting_children() {
     use windows_sys::Win32::System::Console::{
         GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "tests::window_startup_hardens_handles_before_starting_children",
     ) {
         return;
@@ -137,7 +137,7 @@ fn window_startup_hardens_handles_before_starting_children() {
     probe.stdin.take();
     let pid = probe.id();
     let (status, stdout, stderr) =
-        sot_log::test_isolated::drain(probe).wait_within(std::time::Duration::from_secs(5));
+        sot_platform::test_isolated::drain(probe).wait_within(std::time::Duration::from_secs(5));
     assert!(status.success(), "owned startup probe failed: {stderr}");
     entry.assert_once(pid);
     assert!(
@@ -161,7 +161,7 @@ fn window_startup_owned_probe() {
     if std::env::var("SOT_TEST_WINDOW_STARTUP_PROBE").as_deref() != Ok("1") {
         return;
     }
-    sot_log::test_isolated::enter("tests::window_startup_owned_probe");
+    sot_platform::test_isolated::enter("tests::window_startup_owned_probe");
     use std::io::{Read, Write};
     println!("startup-probe entered");
     std::io::stdout().flush().unwrap();

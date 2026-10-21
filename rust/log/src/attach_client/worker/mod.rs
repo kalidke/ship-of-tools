@@ -134,7 +134,7 @@ pub(super) struct SupLane<C> {
     dialed_at: Instant,
     /// The earliest next dial, set at the first missed probe after the last dial; `None` until then.
     redial_at: Option<Instant>,
-    redial: crate::host::redial::Redial,
+    redial: sot_platform::host::redial::Redial,
 }
 
 

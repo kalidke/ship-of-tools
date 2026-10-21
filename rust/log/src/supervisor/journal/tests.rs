@@ -372,7 +372,7 @@ fn a_journal_file_over_the_size_cap_is_a_loud_error() {
 #[cfg(unix)]
 #[test]
 fn a_failed_publication_leaves_no_temp_file() {
-    if !crate::test_isolated::run_isolated("supervisor::journal::tests::a_failed_publication_leaves_no_temp_file") {
+    if !sot_platform::test_isolated::run_isolated("supervisor::journal::tests::a_failed_publication_leaves_no_temp_file") {
         return;
     }
     let dir = tempfile::tempdir().unwrap();

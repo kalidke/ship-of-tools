@@ -116,7 +116,7 @@ impl TryFrom<u8> for SupervisorPhase {
 /// operations are one command family, one query family, and one
 /// stateless request"). `Hello` MUST be the first frame of every
 /// connection (see its own doc); every request on this lane composes
-/// with the same-connection challenge — see [`crate::identity::challenge`] — which
+/// with the same-connection challenge — see [`sot_platform::identity::challenge`] — which
 /// this module has no opinion on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SupervisorRequest {
@@ -165,7 +165,7 @@ pub enum SupervisorReply {
     /// upstream of this lane let a near-miss through); `pid`/`created` are
     /// this process's own identity, read directly off the OS (never
     /// trusted before the same-connection challenge's SID step already
-    /// succeeded — see [`crate::identity::challenge`]).
+    /// succeeded — see [`sot_platform::identity::challenge`]).
     HelloOk {
         proto: u32,
         build: String,

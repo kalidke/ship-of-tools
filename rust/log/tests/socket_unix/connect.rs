@@ -331,7 +331,7 @@ fn foreign_account_cannot_reach_the_lane() {
         "child.wait",
         "isolated body completes",
         None,
-        sot_log::test_isolated::ISOLATION_TIMEOUT,
+        sot_platform::test_isolated::ISOLATION_TIMEOUT,
     )
     .isolated()
     {

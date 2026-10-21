@@ -1,6 +1,6 @@
 //! The platform subsystem: state dirs, durable publication, kernel locks, held folders, the redial pace.
 //! The glob re-exports below are the module's interface: callers name
-//! `sot_log::host::wide_null`, `sot_log::host::daemon_lock_path` and so on.
+//! `sot_platform::host::wide_null`, `sot_platform::host::daemon_lock_path` and so on.
 
 mod durable;
 pub mod env;
@@ -20,6 +20,11 @@ mod winsec;
 
 #[cfg(windows)]
 use crate::Error;
+
+/// The most bytes of an error's text a caller may carry in a fixed-width record field (the capsule supervisor's
+/// terminal-exit reason is one, `lane::wire::MAX_SUPERVISOR_STRING_LEN`, which takes this value); `io_ctx` keeps its
+/// text within it.
+pub const ERROR_DETAIL_BOUND: usize = 128;
 
 /// Bounded-retry deadline shared by every transient-absorbing loop here:
 /// long enough to outlive an AV/indexer hold or a just-released kernel
@@ -59,7 +64,7 @@ fn io_ctx(e: std::io::Error, what: std::fmt::Arguments<'_>) -> Error {
     let sep = if path.is_empty() { "" } else { ": " };
     // "io: " (4 bytes) is `Error`'s own Display wrapper (`#[error("io:
     // {0}")]`) around whatever this returns.
-    let budget = crate::lane::wire::MAX_SUPERVISOR_STRING_LEN.saturating_sub(4 + head.len() + code.len() + sep.len());
+    let budget = ERROR_DETAIL_BOUND.saturating_sub(4 + head.len() + code.len() + sep.len());
     let tail = if path.len() > budget {
         let keep = budget.saturating_sub(3); // room for the "..." marker itself
         let mut cut = path.len().saturating_sub(keep);
@@ -98,7 +103,9 @@ pub use held_dir::*;
 pub use fd::inherit_none;
 pub use lock::*;
 pub use pinned_dir::*;
-pub use storage::storage_exhaustion;
+pub use storage::native_storage_code;
+#[allow(unused_imports)]
+pub(crate) use storage::storage_exhaustion;
 pub use volume::*;
 #[cfg(windows)]
 pub use winsec::*;

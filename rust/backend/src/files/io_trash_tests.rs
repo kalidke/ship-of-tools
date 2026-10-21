@@ -202,7 +202,7 @@ fn confirmed_zero_is_system_trash() {
         &mut fixture.command(),
         &fixture.source(),
         fixture.dir.path(),
-        sot_log::test_isolated::ISOLATION_TIMEOUT,
+        sot_platform::test_isolated::ISOLATION_TIMEOUT,
         |child| assert!(child.confirmed_reaped()),
     );
     assert!(
@@ -231,7 +231,7 @@ fn nonzero_and_missing_commands_take_recoverable_fallback() {
             &mut command,
             &fixture.source(),
             fixture.dir.path(),
-            sot_log::test_isolated::ISOLATION_TIMEOUT,
+            sot_platform::test_isolated::ISOLATION_TIMEOUT,
             |_| {},
         );
         assert_fallback(result, &fixture.source(), fixture.dir.path());
@@ -371,7 +371,7 @@ fn the_system_trash_command_gets_null_standard_streams() {
     );
     let source = fixture.source();
     let mut child = trash_command(&fixture.program, &source).spawn().unwrap();
-    let status = sot_log::test_isolated::wait_within(&mut child, sot_log::test_isolated::ISOLATION_TIMEOUT);
+    let status = sot_platform::test_isolated::wait_within(&mut child, sot_platform::test_isolated::ISOLATION_TIMEOUT);
     assert!(status.success(), "the trash program ended: {status}");
     assert_eq!(
         std::fs::read_to_string(format!("{}.fds", source.display())).unwrap(),

@@ -10,7 +10,7 @@ const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 static NEXT_SERIAL: AtomicU64 = AtomicU64::new(8_100_000_000);
 
 pub(super) fn git(dir: &Path, args: &[&str]) {
-    sot_log::test_wait::run_within(
+    sot_platform::test_wait::run_within(
         std::process::Command::new("git")
             .arg("-C")
             .arg(dir)
@@ -310,9 +310,9 @@ fn i_the_bounds_of_this_process_refuse_every_private_place() {
         home.join("repo/notes.txt"),
         home.parent().unwrap().join("other-user/x"),
     ]);
-    private.extend(sot_log::host::state_dir::sot_state_dir());
-    private.extend(sot_log::host::state_dir::sot_config_dir().map(|d| d.join("token")));
-    private.push(sot_log::host::state_dir::runtime_sot_dir());
+    private.extend(sot_platform::host::state_dir::sot_state_dir());
+    private.extend(sot_platform::host::state_dir::sot_config_dir().map(|d| d.join("token")));
+    private.push(sot_platform::host::state_dir::runtime_sot_dir());
     for p in &private {
         assert!(b.base_for(p).is_err(), "{} is served", p.display());
     }
@@ -427,9 +427,9 @@ async fn every_private_or_missing_target_has_one_answer() {
     .map(PathBuf::from)
     .collect();
     real.extend([real_home.join(".ssh/id_ed25519"), real_home.join(".sot-comm"), real_home.parent().unwrap().to_path_buf()]);
-    real.extend(sot_log::host::state_dir::sot_state_dir());
-    real.extend(sot_log::host::state_dir::sot_config_dir());
-    real.push(sot_log::host::state_dir::runtime_sot_dir());
+    real.extend(sot_platform::host::state_dir::sot_state_dir());
+    real.extend(sot_platform::host::state_dir::sot_config_dir());
+    real.push(sot_platform::host::state_dir::runtime_sot_dir());
     let mut links: Vec<(String, PathBuf)> = Vec::new();
     for (i, t) in real.iter().enumerate() {
         links.push((format!("p{i}"), t.clone()));

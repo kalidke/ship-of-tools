@@ -10,7 +10,7 @@ where
     D: Fn(tokio::net::TcpStream) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = anyhow::Result<super::Answer>> + Send + 'static,
 {
-    tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "page-proxy", move |browser| {
+    tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "page-proxy", move |browser| {
         let arm = std::sync::Arc::clone(&arm);
         let done = dial(browser);
         async move { super::serve_browser(port, &arm, done).await }

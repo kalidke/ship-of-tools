@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn transport_progresses_while_recorder_is_busy() {
     let test = "lane::socket_unix::server::tests::transport_progresses_while_recorder_is_busy";
-    if !crate::test_isolated::run_isolated(test) {
+    if !sot_platform::test_isolated::run_isolated(test) {
         return;
     }
     let root = tempfile::Builder::new()

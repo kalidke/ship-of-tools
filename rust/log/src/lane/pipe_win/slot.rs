@@ -439,7 +439,7 @@ pub(super) fn wait_overlapped(
             return Err(err);
         }
         let event = unsafe { (*ov).hEvent };
-        let ms = crate::host::duration_to_wait_ms(OVERLAPPED_COMPLETION_PROOF_TIMEOUT);
+        let ms = sot_platform::host::duration_to_wait_ms(OVERLAPPED_COMPLETION_PROOF_TIMEOUT);
         return match unsafe { WaitForSingleObject(event, ms) } {
             WAIT_OBJECT_0 => Err(err),
             WAIT_TIMEOUT => {

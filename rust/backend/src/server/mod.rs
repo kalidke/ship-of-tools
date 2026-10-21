@@ -149,7 +149,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // resume (`startup::begin`). Here because a Cleanup's ends publish on
     // the workspace bus, and before any listener binds, so the record is
     // in the leases before the first grant.
-    let leases = crate::lifecycle::startup::begin(sot_log::host::state_dir::sot_state_dir(), &workspaces, &ws_events_tx);
+    let leases = crate::lifecycle::startup::begin(sot_platform::host::state_dir::sot_state_dir(), &workspaces, &ws_events_tx);
     tokio::spawn(crate::lifecycle::lease::ticker(leases.clone()));
 
     // Topology write path (plan §B "Editing the master list"): one store
@@ -173,7 +173,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // Comm wake (0031 B3): types the unread-mail line into rows at a free
     // prompt. Needs the comm home and this machine's capsule state root.
     if let (Some(comm_home), Some(state_root)) =
-        (crate::comm::sot_comm_home(), sot_log::host::state_dir::sot_state_dir())
+        (crate::comm::sot_comm_home(), sot_platform::host::state_dir::sot_state_dir())
     {
         // Rows' dialog tick: a Claude row whose screen shows a dialog that waits on a person reads red.
         let (home, root) = (comm_home.clone(), state_root.clone());

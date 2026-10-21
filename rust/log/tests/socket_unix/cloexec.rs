@@ -3,7 +3,7 @@
 //! with every descriptor closed. The window between creation and flag on macOS is closed by `host::fd`'s birth lock, which its own tests and the hosted macOS run cover.
 
 use super::*;
-use sot_log::lane::test_progress::{observe_births, Birth};
+use sot_platform::host::fd::{observe_births, Birth};
 
 macro_rules! isolated {
     ($test:expr) => {

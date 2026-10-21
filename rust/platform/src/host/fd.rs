@@ -177,13 +177,13 @@ fn open_pty_pair(size: &libc::winsize) -> io::Result<(RawFd, RawFd)> {
 fn own(role: &'static str, raw: RawFd) -> OwnedFd {
     // SAFETY: `raw` was just returned by the creating call and nothing else owns it.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-    crate::lane::test_progress::birth(role, fd.as_raw_fd());
+    birth(role, fd.as_raw_fd());
     fd
 }
 
 /// Flag `fd` close-on-exec where the platform did not at birth, and check on every platform that it is.
 fn flagged(role: &'static str, fd: &OwnedFd) -> io::Result<()> {
-    if let Some(injected) = crate::lane::test_progress::flag_call() {
+    if let Some(injected) = flag_call() {
         return Err(injected);
     }
     let raw = fd.as_raw_fd();
@@ -249,3 +249,80 @@ pub fn inherit_none() -> std::io::Result<()> {
 #[cfg(test)]
 #[path = "fd_tests.rs"]
 mod tests;
+
+// The birth observer: a test of a descriptor factory sees every birth and fails a chosen flag-setting call.
+/// One descriptor a factory created, as it was when ownership was taken and before any flag-setting call.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Debug)]
+pub struct Birth {
+    pub role: &'static str,
+    pub fd: std::os::fd::RawFd,
+    /// `F_GETFD` read at birth; `-1` when that read failed.
+    pub fd_flags: i32,
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Default)]
+struct BirthScope {
+    births: Vec<Birth>,
+    /// Fail the n-th (1-based) flag-setting call made in this scope.
+    fail_at: Option<usize>,
+    calls: usize,
+}
+
+#[cfg(feature = "test-support")]
+thread_local! {
+    static BIRTHS: std::cell::RefCell<Option<BirthScope>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `factory` on this thread with every descriptor birth observed and, when `fail_at` is set, that flag-setting
+/// call (`set_cloexec`/`set_nonblocking` and the lease's checked pass) failing for real through the factory's own
+/// error path. Returns the factory's result, the births in order, and how many flag-setting calls it made. Reads
+/// `F_GETFD` only; it changes no descriptor.
+#[cfg(feature = "test-support")]
+pub fn observe_births<R>(
+    fail_at: Option<usize>,
+    factory: impl FnOnce() -> R,
+) -> (R, Vec<Birth>, usize) {
+    BIRTHS.with(|scope| {
+        *scope.borrow_mut() = Some(BirthScope {
+            fail_at,
+            ..BirthScope::default()
+        })
+    });
+    let result = factory();
+    let scope = BIRTHS
+        .with(|scope| scope.borrow_mut().take())
+        .expect("the scope opened above");
+    (result, scope.births, scope.calls)
+}
+
+/// A factory has just taken ownership of `fd` for `role`, before any flag-setting call.
+#[cfg(unix)]
+#[inline]
+pub fn birth(role: &'static str, fd: std::os::fd::RawFd) {
+    #[cfg(feature = "test-support")]
+    BIRTHS.with(|scope| {
+        if let Some(scope) = scope.borrow_mut().as_mut() {
+            let fd_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            scope.births.push(Birth { role, fd, fd_flags });
+        }
+    });
+    #[cfg(not(feature = "test-support"))]
+    let _ = (role, fd);
+}
+
+/// A flag-setting call is about to run: the injected error when this is the call a scope chose to fail.
+#[cfg(unix)]
+#[inline]
+pub fn flag_call() -> Option<std::io::Error> {
+    #[cfg(feature = "test-support")]
+    return BIRTHS.with(|scope| {
+        let mut scope = scope.borrow_mut();
+        let scope = scope.as_mut()?;
+        scope.calls += 1;
+        (scope.fail_at == Some(scope.calls)).then(|| std::io::Error::from_raw_os_error(libc::EPERM))
+    });
+    #[cfg(not(feature = "test-support"))]
+    None
+}

@@ -9,7 +9,7 @@
 
 #![cfg(unix)]
 
-use crate::host;
+use sot_platform::host;
 use crate::Result;
 use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
@@ -66,7 +66,7 @@ impl BirthClaim {
     /// a live authority, or another birth's claim.
     pub fn take(state_dir: &Path) -> Result<BirthClaim> {
         let path = super::journal::fence::supervisor_lock_path(state_dir);
-        host::lock_supervisor_for_handover(&path).map(|lock| BirthClaim { lock })
+        Ok(BirthClaim { lock: host::lock_supervisor_for_handover(&path)? })
     }
 
     /// The descriptor the launcher leaves open in the child.
@@ -77,7 +77,7 @@ impl BirthClaim {
     /// The new supervisor's takeover of the claim it was born holding (`fd`).
     pub fn adopt(fd: RawFd, state_dir: &Path) -> Result<BirthClaim> {
         let path = super::journal::fence::supervisor_lock_path(state_dir);
-        host::HandoverLock::adopt(fd, &path).map(|lock| BirthClaim { lock })
+        Ok(BirthClaim { lock: host::HandoverLock::adopt(fd, &path)? })
     }
 }
 

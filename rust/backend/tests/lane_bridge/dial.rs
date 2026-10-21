@@ -567,8 +567,9 @@ fn a_failed_supervisor_handshake_drops_the_spare() {
 
 // Status travels over the retained, challenged supervisor connection; the wire supplies the Ready voyage.
 fn ready_voyage(endpoint: &DaemonLaneEndpoint, supervisor: &sot_protocol::topology::lane_client::DaemonLaneClient) -> String {
-    use sot_log::identity::exchange::{IdentityExchange, ExchangeDecode, SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
-    use sot_log::identity::challenge::ChallengeOutcome;
+    use sot_log::lane::exchange::{SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
+    use sot_platform::identity::exchange::{IdentityExchange, ExchangeDecode};
+    use sot_platform::identity::challenge::ChallengeOutcome;
     use sot_log::lane::{client::Endpoint, wire::{self, DecodedFrame, SupervisorRequest, SupervisorReply, SupervisorPhase}};
     let mut hello = SupervisorLaneExchange::new(SUPERVISOR_LANE_BUILD_ID.to_string());
     assert!(matches!(endpoint.challenge(supervisor, &mut hello, Instant::now() + Duration::from_secs(2)), ChallengeOutcome::Proven(_)), "private supervisor identity must be proven");
@@ -653,7 +654,7 @@ async fn an_expired_spare_uses_a_fresh_voyage_login() {
     let reaped = reap == Some(true);
     let replacement_distinct = replacement == "distinct";
     let outcome_ok = match &first {
-        Ok(client) => matches!(endpoint.authenticate_server(client), sot_log::identity::challenge::PeerAuthOutcome::Authenticated(_)),
+        Ok(client) => matches!(endpoint.authenticate_server(client), sot_platform::identity::challenge::PeerAuthOutcome::Authenticated(_)),
         Err(sot_log::lane::transport::TransportError::Unreachable(error)) =>
             error.kind() == std::io::ErrorKind::TimedOut && error.to_string().starts_with("lane.connect: handshake timed out"),
         _ => false,

@@ -31,10 +31,10 @@ pub(crate) fn warned(logged: &str, needle: &str) -> bool {
 /// records the entry and returns `true`.
 pub(crate) fn isolated(name: &str, bound: Duration) -> bool {
     if std::env::var(CHILD_ENV).as_deref() == Ok(name) {
-        sot_log::test_isolated::enter(name);
+        sot_platform::test_isolated::enter(name);
         return true;
     }
-    let (mut command, entry) = sot_log::test_isolated::test_command(name);
+    let (mut command, entry) = sot_platform::test_isolated::test_command(name);
     command.env(CHILD_ENV, name).stdin(Stdio::null());
     #[allow(
         clippy::disallowed_methods,
@@ -48,7 +48,7 @@ pub(crate) fn isolated(name: &str, bound: Duration) -> bool {
         command.spawn().expect("start isolated test body")
     };
     let pid = child.id();
-    let (status, output, errors) = sot_log::test_isolated::drain(child).wait_within(bound);
+    let (status, output, errors) = sot_platform::test_isolated::drain(child).wait_within(bound);
     print!("{output}{errors}");
     entry.assert_once(pid);
     assert!(status.success(), "isolated test body {name} failed: {status}");
@@ -149,7 +149,7 @@ foreach(println, filter(p -> !own(p) && Base.stale_cachefile(src, p; ignore_load
         reason = "a read-only Julia probe, waited on within 60 s through test_isolated::drain"
     )]
     let child = probe.spawn().expect("setup: start the Pkg cache probe");
-    let (status, out, err) = sot_log::test_isolated::drain(child).wait_within(Duration::from_secs(60));
+    let (status, out, err) = sot_platform::test_isolated::drain(child).wait_within(Duration::from_secs(60));
     assert!(
         status.success(),
         "setup: the Pkg cache probe failed: {status}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"

@@ -21,7 +21,7 @@
 
 #![cfg(windows)]
 
-use crate::host::wide_null;
+use sot_platform::host::wide_null;
 use crate::{Error, Result};
 use std::ffi::c_void;
 use std::fs::File;
@@ -333,7 +333,7 @@ impl PrimaryProcess {
     pub fn wait(&self, timeout: std::time::Duration) -> Result<bool> {
         // Capped at u32::MAX - 1, never the
         // literal Win32 INFINITE -- see host::duration_to_wait_ms's doc.
-        let ms = crate::host::duration_to_wait_ms(timeout);
+        let ms = sot_platform::host::duration_to_wait_ms(timeout);
         match unsafe { WaitForSingleObject(self.raw(), ms) } {
             WAIT_OBJECT_0 => Ok(true),
             WAIT_TIMEOUT => Ok(false),

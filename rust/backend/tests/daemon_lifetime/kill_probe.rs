@@ -76,7 +76,7 @@ pub fn kill_control(fx: &mut Fixture, usr1: Usr1) {
     let child = with_usr1(disposition, || control.spawn())
         .expect("spawn the kill control (EPERM: it was not alone in its group)");
     fx.own(child.id() as i32, "kill control").unwrap();
-    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    let (status, _, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     let want = if usr1 == Usr1::Default {
         "killed"
     } else {

@@ -168,7 +168,7 @@ Windows reading on every system). What it costs there is the dialog side: a dial
 can read as the main box, so on Windows "never a dialog" rests on the dialog reader and the box's rules alone, unproven
 on a Windows screen until one is captured (queue item 65).
 
-The environment: comm's identity and commands read variables only from an `Env` value they are given (`sot_log::host::env`),
+The environment: comm's identity and commands read variables only from an `Env` value they are given (`sot_platform::host::env`),
 one snapshot taken at `sotd comm`'s entry and at each daemon-side entry (`handle_comm_file`, the hub link, the boot
 record); nothing in comm writes the process environment. The daemon-side wrappers that rows and the server call
 (`read_comm_agents`, `remove_comm_agents_for_workspace`, `edit_entry`, `stamp_last_seen`) snapshot the process at their

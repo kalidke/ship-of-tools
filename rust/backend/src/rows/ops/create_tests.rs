@@ -552,7 +552,7 @@ mod startup_cleanup_tests {
         // The Cleanup's end prunes the comm registry.
         let _comm = crate::paths::EnvGuard::capture("SOT_COMM_HOME");
         std::env::set_var("SOT_COMM_HOME", env_dir.path().join("comm"));
-        let state_root = sot_log::host::state_dir::sot_state_dir().expect("the pinned state root");
+        let state_root = sot_platform::host::state_dir::sot_state_dir().expect("the pinned state root");
         std::fs::create_dir_all(&state_root).unwrap();
         let reg = Workspaces::new();
         let seed = |label: &str, task: &str| {
@@ -578,7 +578,7 @@ mod startup_cleanup_tests {
             .collect();
         let listed = row("dup");
         let record = state_root.join(sot_protocol::ops::lease::HELD_RECORD_FILE);
-        let boot = sot_log::identity::challenge::boot_identity().expect("this host's boot");
+        let boot = sot_platform::identity::challenge::boot_identity().expect("this host's boot");
         let closing = HeldRecord { v: 1, boot, holders: vec![], handover_until_ms: None, closing: true, not_ended: 0, forget: vec![] };
         lease::write_or_delete(&record, &closing).unwrap();
 

@@ -23,7 +23,7 @@ async fn a_daemon_of_this_build_is_the_same_version() {
         .env("HOME", &env.home_root)
         .env("USERPROFILE", &env.home_root)
         .env("SOT_COMM_HOME", &env.comm_root);
-    let ran = sot_log::test_wait::run_within(&mut cmd, BOUND);
+    let ran = sot_platform::test_wait::run_within(&mut cmd, BOUND);
     env.kill_daemon_bounded().await;
     assert_eq!(ran.status.code(), Some(0), "{ran}");
     assert_eq!(ran.stdout, "", "{ran}");

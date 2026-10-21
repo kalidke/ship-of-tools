@@ -1,5 +1,4 @@
 use super::*;
-use crate::lane::transport::TransportError;
 
 #[test]
 fn storage_codes_are_recognized_by_native_code_only() {
@@ -10,14 +9,6 @@ fn storage_codes_are_recognized_by_native_code_only() {
     for code in full {
         let io = || std::io::Error::from_raw_os_error(code);
         assert_eq!(storage_exhaustion(&Error::Io(io())), Some(code));
-        // A transport error carrying the same code is not storage exhaustion.
-        let transport = TransportError::Io {
-            op: "write",
-            source: io(),
-        };
-        assert_eq!(storage_exhaustion(&Error::Transport(transport)), None);
-        let runtime = TransportError::RuntimeDir(io());
-        assert_eq!(storage_exhaustion(&Error::Transport(runtime)), None);
     }
     for code in other {
         let io = std::io::Error::from_raw_os_error(code);

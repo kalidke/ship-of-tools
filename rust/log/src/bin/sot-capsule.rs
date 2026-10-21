@@ -40,7 +40,7 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
         // The lane build id this binary will answer the supervisor hello
         // with -- a diagnostic only since ADR 0045 decision 7 (the lane
         // gate is the protocol integer, not this value).
-        Some("build-id") => println!("{}", sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID),
+        Some("build-id") => println!("{}", sot_log::lane::exchange::SUPERVISOR_LANE_BUILD_ID),
         #[cfg(windows)]
         Some("run") => cmd_run::<sot_log::capsule::producer::conpty::producer::ConptyProducer, _, _>(&args[1..], |n| {
             sot_log::lane::platform_transport::PlatformTransport::new(n)
@@ -339,7 +339,7 @@ fn birth_from_flags(claim_fd: Option<i32>, takeover_fd: Option<i32>, usage: &str
 fn leg_exit_code(result: &sot_log::Result<sot_log::capsule::ExitSummary>) -> i32 {
     use sot_log::capsule::producer::ExitStatus;
     match result {
-        Err(e) if sot_log::host::storage_exhaustion(e).is_some() => sot_log::capsule::EXIT_LEG_STORAGE_FULL,
+        Err(e) if sot_log::storage_exhaustion(e).is_some() => sot_log::capsule::EXIT_LEG_STORAGE_FULL,
         Err(_) => 1,
         Ok(s) => match s.exit_code {
             Some(ExitStatus::Code(c)) if c as i32 == sot_log::capsule::EXIT_LEG_STORAGE_FULL => 1,

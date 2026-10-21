@@ -149,8 +149,8 @@ async fn int_and_term_end_a_stalled_daemon_whatever_mask_it_inherited() {
 }
 
 /// `systemctl --user` for one of this case's own units; its whole account.
-fn systemctl(args: &[&str]) -> sot_log::test_wait::Ran {
-    sot_log::test_wait::run_within(
+fn systemctl(args: &[&str]) -> sot_platform::test_wait::Ran {
+    sot_platform::test_wait::run_within(
         std::process::Command::new("systemctl").arg("--user").args(args),
         crate::support::BOUND,
     )
@@ -207,7 +207,7 @@ async fn a_service_manager_counts_int_and_term_as_a_clean_stop() {
             .arg(&env.socket_path)
             .arg("--project-root")
             .arg(&env.daemon_project_root);
-        sot_log::test_wait::run_within(&mut started, crate::support::BOUND).ok();
+        sot_platform::test_wait::run_within(&mut started, crate::support::BOUND).ok();
         let answered = answers_within(&env.socket_path, crate::support::BOUND).await;
         let stimulus = match how {
             "stop" => systemctl(&["stop", &unit]),
@@ -286,7 +286,7 @@ async fn a_close_that_outlasts_its_bound_ends_with_1_and_takes_the_ephemeral_tre
 #[tokio::test]
 async fn early_commands_and_boot_refusals_keep_their_statuses() {
     let _serial = SERIAL.lock().await;
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         crate::support::sotd_command().args(["agent-exec", "no-such-agent-kind"]),
         crate::support::BOUND,
     );
@@ -300,7 +300,7 @@ async fn early_commands_and_boot_refusals_keep_their_statuses() {
         std::fs::read(crate::support::sotd_program()).expect("read sotd to put alone in a folder"),
     );
     let env = Env::new("early");
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         crate::support::sotd_command_at(&alone)
             .arg("--socket")
             .arg(&env.socket_path)
@@ -316,7 +316,7 @@ async fn early_commands_and_boot_refusals_keep_their_statuses() {
     assert_eq!(ran.status.code(), Some(1), "{ran}");
     assert!(ran.stderr.contains("sot-capsule is missing"), "{ran}");
 
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         crate::support::sotd_command()
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())

@@ -43,7 +43,7 @@ pub fn run_diagnostic(
     let child = command
         .spawn()
         .map_err(|error| format!("could not start: {error}"))?;
-    sot_log::test_isolated::drain(child).try_wait_within(bound)
+    sot_platform::test_isolated::drain(child).try_wait_within(bound)
 }
 
 /// Whether an `lsof` listing names `pid` as a holder: a line whose second field, the PID column, is it.

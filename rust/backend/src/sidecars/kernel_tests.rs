@@ -241,7 +241,7 @@ async fn a_generation_removes_its_temporary_folder_after_the_reap() {
 #[tokio::test(start_paused = true)]
 async fn a_kernel_whose_precompile_outlasts_stable_without_serving_backs_off() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    let precompile = sot_log::host::redial::STABLE + Duration::from_secs(1);
+    let precompile = sot_platform::host::redial::STABLE + Duration::from_secs(1);
     for (late_hello, served) in [(false, false), (true, false), (false, true)] {
         let dir = tempfile::tempdir().unwrap();
         let counter = dir.path().join("spawns");

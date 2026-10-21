@@ -3,7 +3,7 @@
 // NOT "the one place in the workspace", and the scope is worth stating exactly
 // rather than claiming more than is delivered:
 //
-//   - `sot_log::host`'s `preflight_nonce` is an independent `<pid>-<seq>`
+//   - `sot_platform::host`'s `preflight_nonce` is an independent `<pid>-<seq>`
 //     generator with its own counter and the same reasoning. It CANNOT share
 //     this one: `sot-log` is the LOWER crate and must not depend on
 //     `sot-updater`. Two, deliberately.
@@ -31,7 +31,7 @@
 // is exactly what makes this class dangerous: it hides on the platform the code
 // is written on, and `latest` runs concurrently in production too (the daemon's
 // periodic check and an `update.check` op can overlap). That scratch folder no
-// longer draws a name from here: it is a held folder (`sot_log::host::HeldDir`),
+// longer draws a name from here: it is a held folder (`sot_platform::host::HeldDir`),
 // whose random name is taken by an exclusive create.
 //
 // This lives in `sot-updater` because every consumer of it already depends on

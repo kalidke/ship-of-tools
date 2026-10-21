@@ -181,13 +181,13 @@ pub use sot_protocol::{current_uid, local_daemon_label, runtime_sot_dir, session
 /// review, PR #175: silently falling back to a `$HOME`-shaped path on
 /// Windows — which depends on which shell launched the daemon — is
 /// exactly the bug class this whole fix exists to close).
-/// `sot_log::host::state_dir::sot_state_dir()` itself derives
+/// `sot_platform::host::state_dir::sot_state_dir()` itself derives
 /// `%USERPROFILE%\AppData\Local` when `%LOCALAPPDATA%` is unset or empty,
 /// so this only panics in the genuinely exceptional case where NEITHER is
 /// set — not a normal Windows login.
 #[cfg(windows)]
 pub(crate) fn windows_state_root() -> PathBuf {
-    sot_log::host::state_dir::sot_state_dir().unwrap_or_else(|| {
+    sot_platform::host::state_dir::sot_state_dir().unwrap_or_else(|| {
         panic!(
             "cannot resolve the Windows state root: neither %LOCALAPPDATA% nor \
              %USERPROFILE% is set — sotd cannot start without one"
@@ -387,10 +387,10 @@ mod secure_private_dir_tests;
 /// `state_dir()`'s platform dispatch. The Unix branch is unchanged
 /// behaviour (still `$XDG_STATE_HOME` / `$HOME/.local/state/sot` /
 /// `/tmp/.local/state/sot`); the precedence of `%LOCALAPPDATA%` over
-/// `$XDG_STATE_HOME` on Windows is `sot_log::host::state_dir::sot_state_dir`'s
+/// `$XDG_STATE_HOME` on Windows is `sot_platform::host::state_dir::sot_state_dir`'s
 /// own contract (tested there) — this only proves `state_dir()` appends
 /// `state` beneath it and still falls back when `%LOCALAPPDATA%` is
-/// unset. Env-guard shape matches `sot_log::host::state_dir`'s own tests
+/// unset. Env-guard shape matches `sot_platform::host::state_dir`'s own tests
 /// (`state_dir.rs`) so the two stay easy to compare.
 #[cfg(test)]
 #[path = "paths_state_dir_tests.rs"]

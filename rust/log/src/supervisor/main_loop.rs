@@ -69,7 +69,7 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         }
     };
 
-    let h = crate::host::state_dir::state_dir_hash(&config.state_dir);
+    let h = sot_platform::host::state_dir::state_dir_hash(&config.state_dir);
 
     // The lane: bound AFTER the fence, BEFORE any adopt or spawn.
     let lane = match Lane::bind_supervisor(&h, MAX_LANE_INSTANCES) {

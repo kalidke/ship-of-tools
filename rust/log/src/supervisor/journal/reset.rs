@@ -14,7 +14,7 @@ use crate::supervisor::*;
 pub(in crate::supervisor) fn reset_pointer(state_dir: &Path, new_voyage: &str, aside_name: Option<&str>) -> crate::Result<()> {
     let live = pointer::pointer_path(state_dir);
     if live.exists() {
-        crate::host::fsync_file(&live).map_err(|e| {
+        sot_platform::host::fsync_file(&live).map_err(crate::Error::from).map_err(|e| {
             state_unless_full(e, |e| format!("reset_pointer: flushing the live pointer {live:?} before renaming it aside: {e}"))
         })?;
         let owned;
@@ -26,7 +26,7 @@ pub(in crate::supervisor) fn reset_pointer(state_dir: &Path, new_voyage: &str, a
             }
         };
         let aside = state_dir.join(name);
-        crate::host::publish_noreplace(&live, &aside).map_err(|e| {
+        sot_platform::host::publish_noreplace(&live, &aside).map_err(crate::Error::from).map_err(|e| {
             state_unless_full(e, |e| format!("reset_pointer: renaming {live:?} aside to {aside:?}: {e}"))
         })?;
     }

@@ -4,11 +4,11 @@ use crate::capsule::producer::ExitStatus;
 use std::time::Duration;
 
 #[cfg(target_os = "macos")]
-use crate::identity::challenge_macos::ChallengedProcess;
+use sot_platform::identity::challenge_macos::ChallengedProcess;
 #[cfg(target_os = "linux")]
-use crate::identity::challenge_unix::ChallengedProcess;
+use sot_platform::identity::challenge_unix::ChallengedProcess;
 #[cfg(windows)]
-use crate::identity::challenge_win::ChallengedProcess;
+use sot_platform::identity::challenge_win::ChallengedProcess;
 #[cfg(target_os = "macos")]
 use crate::supervisor::probe::macos::SpawnedChild;
 #[cfg(target_os = "linux")]

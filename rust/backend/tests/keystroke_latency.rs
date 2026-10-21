@@ -140,7 +140,7 @@ async fn measure(env: &Env) {
 fn fsync_per_op(dir: &Path) -> f64 {
     let f = dir.join("fsync-probe");
     let t0 = Instant::now();
-    sot_log::test_wait::run_within(
+    sot_platform::test_wait::run_within(
         Command::new("dd")
             .args(["if=/dev/zero", "bs=512", "count=200", "oflag=dsync"])
             .arg(format!("of={}", f.display())),
@@ -223,8 +223,8 @@ fn private_bridge_remote(env: &Env, guard: &ParentSshEnvironment) -> (tempfile::
         }
     }
     std::os::unix::fs::symlink(&env.socket_path, sessions.join("sot.sock")).expect("symlink");
-    assert!(sot_log::host::state_dir::is_private_dir(rt.path()), "temp runtime dir is not private");
-    assert!(sot_log::host::state_dir::is_private_dir(&rt.path().join("sot")), "temp sot dir is not private");
+    assert!(sot_platform::host::state_dir::is_private_dir(rt.path()), "temp runtime dir is not private");
+    assert!(sot_platform::host::state_dir::is_private_dir(&rt.path().join("sot")), "temp sot dir is not private");
     // `test -S` fails closed: where this temp dir does not exist (another /tmp behind ssh), the
     // bridge never starts, so it can never fall back to the live runtime dir's socket.
     let remote = format!(

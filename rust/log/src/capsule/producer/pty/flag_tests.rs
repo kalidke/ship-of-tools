@@ -8,11 +8,11 @@ fn fd_is_closed(fd: std::os::fd::RawFd) -> bool {
 
 /// The `call`-th flag step (1 the master's, 2 the slave's) fails for real.
 fn flag_failure(test: &str, call: usize) {
-    if !crate::test_isolated::run_isolated(test) {
+    if !sot_platform::test_isolated::run_isolated(test) {
         return;
     }
     let argv = ["/bin/sh", "-c", "exit 0"].map(String::from);
-    let (spawned, births, calls) = crate::lane::test_progress::observe_births(Some(call), || {
+    let (spawned, births, calls) = sot_platform::host::fd::observe_births(Some(call), || {
         PtyProducer::spawn(&argv, 80, 24)
     });
     assert!(spawned.is_err(), "PTY flag failure {call} was not returned");
@@ -54,7 +54,7 @@ fn slave_flag_failure_is_returned() {
 #[test]
 fn a_pty_pair_is_born_close_on_exec() {
     let argv = ["/bin/sh", "-c", "exit 0"].map(String::from);
-    let (_producer, births, _) = crate::lane::test_progress::observe_births(None, || {
+    let (_producer, births, _) = sot_platform::host::fd::observe_births(None, || {
         PtyProducer::spawn(&argv, 80, 24).expect("spawn")
     });
     assert_eq!(births.len(), 2, "{births:?}");

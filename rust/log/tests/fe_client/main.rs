@@ -28,7 +28,7 @@
 use sot_log::lane::client::{Endpoint, PlatformEndpoint};
 use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
 use sot_log::store::segment::SegmentReader;
-use sot_log::host::state_dir::state_dir_hash;
+use sot_platform::host::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
 use sot_log::lane::wire::{
     MgmtReply, MgmtRequest, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
@@ -211,7 +211,7 @@ fn command(conn: &Client, operation_id: &str, op: SupervisorOp) -> SupervisorOpe
 
 /// One bounded, cancellable `Client::read` — Codex review round,
 /// finding 14: mirrors `tests/e2e_pipe.rs`'s own `read_bounded` (the
-/// `sot_log::identity::deadline` module this pattern is built on is crate-private,
+/// `sot_platform::identity::deadline` module this pattern is built on is crate-private,
 /// unreachable from an external `tests/*.rs` binary, so this file keeps
 /// its own copy of the idiom rather than the machinery). Spawns a worker
 /// thread that owns the actual blocking read; `Client::cancel`,
@@ -272,7 +272,7 @@ fn capsule_pid(voyage: &str) -> u32 {
 /// capsule is killed", the scenario this simulates).
 #[cfg(windows)]
 fn taskkill(pid: u32) {
-    sot_log::test_wait::run_within(
+    sot_platform::test_wait::run_within(
         Command::new("taskkill.exe").args(["/PID", &pid.to_string(), "/F", "/T"]),
         Duration::from_secs(30),
     )

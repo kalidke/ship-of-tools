@@ -62,7 +62,7 @@ async fn hold_link(
 ) {
     // One rule with the window's control transport and the attach worker: the wait starts over only after a link
     // that lasted `STABLE`.
-    let mut redial = sot_log::host::redial::Redial::new(BACKOFF_FLOOR, BACKOFF_CAP);
+    let mut redial = sot_platform::host::redial::Redial::new(BACKOFF_FLOOR, BACKOFF_CAP);
     loop {
         if sig.is_fired() {
             return;
@@ -276,7 +276,7 @@ async fn offer_answer(env: crate::comm::Env, payload: serde_json::Value, self_ho
 /// the frontend wrote it too, but `comm-listen` had already delivered that mail,
 /// so moving it would file it a second time.
 fn move_fe_inbox(env: &crate::comm::Env) -> Result<(), String> {
-    let (Some(dir), Some(home)) = (sot_log::host::state_dir::sot_state_dir_in(env), crate::comm::sot_comm_home_in(env)) else {
+    let (Some(dir), Some(home)) = (sot_platform::host::state_dir::sot_state_dir_in(env), crate::comm::sot_comm_home_in(env)) else {
         return Ok(());
     };
     move_fe_inbox_if(env, cfg!(windows), &dir, &home).map(|n| {

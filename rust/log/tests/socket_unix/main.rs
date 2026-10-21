@@ -17,7 +17,7 @@
 //! # Process-isolated hang bounding
 //!
 //! Same rationale as `tests/pipe_win/`, through the one shared
-//! `sot_log::test_isolated::run_isolated`: a real PROCESS boundary bounds every hang path,
+//! `sot_platform::test_isolated::run_isolated`: a real PROCESS boundary bounds every hang path,
 //! including one inside a wedged `SocketServer::drop` running on the test
 //! thread itself after an earlier assertion panics. Every test below that
 //! touches `SocketServer`/a real `UnixStream` runs this way; the one
@@ -32,7 +32,7 @@
 //! (since each one that touches real I/O runs in its own isolated child
 //! process, per above) never race another test's own env var mutation.
 
-use sot_log::host::state_dir::current_uid;
+use sot_platform::host::state_dir::current_uid;
 use sot_log::lane::attach_proto::ConnId;
 #[cfg(target_os = "linux")]
 use sot_log::lane::socket_unix::connect_voyage_socket;
@@ -42,7 +42,7 @@ use sot_log::lane::transport::CONNECT_BOUND;
 use sot_log::lane::transport::{
     ClosedReason, LaneEvent, TransportError, TEARDOWN_AGGREGATE_DEADLINE,
 };
-use sot_log::test_isolated::{
+use sot_platform::test_isolated::{
     supervise_fixture_until, test_command, ChildWaitKind, FixtureFailure,
 };
 use std::io::{Read, Write};
@@ -53,7 +53,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// A per-event bound used throughout (well inside `sot_log::test_isolated::ISOLATION_TIMEOUT`, so
+/// A per-event bound used throughout (well inside `sot_platform::test_isolated::ISOLATION_TIMEOUT`, so
 /// a stalled event always trips before the parent's own kill fires).
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -308,16 +308,16 @@ impl WaitContext {
     }
 
     fn isolated(&self) -> bool {
-        let result = sot_log::test_isolated::run_isolated_until(&self.test, self.deadline);
+        let result = sot_platform::test_isolated::run_isolated_until(&self.test, self.deadline);
         self.child_outcome(&result);
         result.unwrap_or_else(|error| panic!("{error}"))
     }
 
-    fn child_outcome<T>(&self, result: &Result<T, sot_log::test_isolated::ChildWaitError>) {
+    fn child_outcome<T>(&self, result: &Result<T, sot_platform::test_isolated::ChildWaitError>) {
         match result {
             Ok(_) => self.complete("ok", None, None),
             Err(error) => self.complete(
-                if matches!(error.kind, sot_log::test_isolated::ChildWaitKind::Expired) {
+                if matches!(error.kind, sot_platform::test_isolated::ChildWaitKind::Expired) {
                     "timeout"
                 } else {
                     "error"
@@ -500,7 +500,7 @@ macro_rules! named {
             "child.wait",
             $expected,
             $conn,
-            sot_log::test_isolated::ISOLATION_TIMEOUT,
+            sot_platform::test_isolated::ISOLATION_TIMEOUT,
         )
         .isolated()
     };

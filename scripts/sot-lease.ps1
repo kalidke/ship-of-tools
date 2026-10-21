@@ -17,7 +17,7 @@ function Get-SotBootId {
 }
 
 # This computer's name as the daemon's hello declares it: $env:SOT_SELF_HOST, else the first label of the machine
-# name, lowercased (rust/log/src/host/state_dir.rs host_name). The lease is local on an owner-only pipe, so this
+# name, lowercased (rust/platform/src/host/state_dir.rs host_name). The lease is local on an owner-only pipe, so this
 # need not equal the window's own spelling.
 function Get-SotHelloHost {
     if ($env:SOT_SELF_HOST) { return $env:SOT_SELF_HOST }

@@ -426,7 +426,7 @@ fn a_real_producer_never_records_an_early_output_end() {
 /// writer lock (`lock_writer` retries 250 ms, then fails closed).
 fn writer_lock_held_probe(cfg: &CapsuleConfig) -> Arc<dyn Fn() -> bool + Send + Sync> {
     let lock = cfg.voyage_root.join("writer.lock");
-    Arc::new(move || sot_log::lock_writer(&lock).is_err())
+    Arc::new(move || sot_platform::host::lock_writer(&lock).is_err())
 }
 
 /// `ShutdownGuard`'s fallback `shutdown_all` runs while the voyage's writer

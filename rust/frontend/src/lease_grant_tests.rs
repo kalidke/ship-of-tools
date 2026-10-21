@@ -248,7 +248,7 @@ async fn lease_wire_round_trip() {
         assert_eq!(hello.payload["client_id"], serde_json::json!("sot-fe-lease"));
         assert_eq!(hello.payload["protocol"], serde_json::json!(sot_protocol::PROTOCOL_VERSION));
         assert_eq!(hello.payload["host"], serde_json::json!(crate::net::identity::frontend_identity().host));
-        assert_eq!(hello.payload["os_user"], serde_json::json!(sot_log::identity::os_account::own_account_id()));
+        assert_eq!(hello.payload["os_user"], serde_json::json!(sot_platform::identity::os_account::own_account_id()));
         assert_eq!(req.op, op::FE_LEASE);
         assert_eq!(req.id, 2);
         let me = self_identity().unwrap();
@@ -429,7 +429,7 @@ async fn lease_stream_not_inherited() {
     assert!(!ours.is_empty(), "the connect must have opened a socket");
     // The loop's own status is its last readlink, of the directory's descriptor that is already closed: not an answer.
     // What it printed is, and an empty listing is a failed one.
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         std::process::Command::new("sh").args(["-c", "for f in /proc/self/fd/*; do readlink $f; done"]),
         BOUND,
     );

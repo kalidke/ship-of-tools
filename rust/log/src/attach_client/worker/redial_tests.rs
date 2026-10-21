@@ -4,8 +4,8 @@
 //! through a window's parked rows: a client off screen does not redial.
 
 use crate::attach_client::rules::{OutstandingSlot, QuitDispatcher, ReconnectState, TakeTransaction};
-use crate::host::redial::{Redial, STABLE};
-use crate::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
+use sot_platform::host::redial::{Redial, STABLE};
+use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
 use crate::lane::client::{Client, Endpoint};
 use crate::lane::transport::TransportError;
 use crate::lane::wire::{self, AttachClient, AttachServer, DecodedFrame, SupervisorPhase, SupervisorReply};
@@ -112,13 +112,13 @@ impl Endpoint for DropEndpoint {
     fn challenge(
         &self,
         _conn: &DropClient,
-        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
+        _exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
         _deadline: Instant,
     ) -> ChallengeOutcome<TestProcess> {
         ChallengeOutcome::Proven(TestProcess)
     }
     fn authenticate_server(&self, _conn: &DropClient) -> PeerAuthOutcome {
-        PeerAuthOutcome::Authenticated(crate::identity::challenge::PeerAuthenticated { pid: 7, created: 7 })
+        PeerAuthOutcome::Authenticated(sot_platform::identity::challenge::PeerAuthenticated { pid: 7, created: 7 })
     }
 }
 
@@ -386,7 +386,7 @@ impl Endpoint for HostEndpoint {
     fn challenge(
         &self,
         _conn: &TestClient,
-        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
+        _exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
         _deadline: Instant,
     ) -> ChallengeOutcome<TestProcess> {
         unreachable!("no supervisor dial succeeds")
@@ -459,13 +459,13 @@ impl Endpoint for VoyageHostEndpoint {
     fn challenge(
         &self,
         _conn: &DropClient,
-        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
+        _exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
         _deadline: Instant,
     ) -> ChallengeOutcome<TestProcess> {
         ChallengeOutcome::Proven(TestProcess)
     }
     fn authenticate_server(&self, _conn: &DropClient) -> PeerAuthOutcome {
-        PeerAuthOutcome::Authenticated(crate::identity::challenge::PeerAuthenticated { pid: 7, created: 7 })
+        PeerAuthOutcome::Authenticated(sot_platform::identity::challenge::PeerAuthenticated { pid: 7, created: 7 })
     }
     fn link_up(&self) -> bool {
         self.host.state.lock().unwrap().link_up

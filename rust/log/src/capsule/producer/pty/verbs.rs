@@ -94,7 +94,7 @@ impl Producer for PtyProducer {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        let (master, slave) = crate::host::fd::openpty_cloexec(&winsz).map_err(Error::Io)?;
+        let (master, slave) = sot_platform::host::fd::openpty_cloexec(&winsz).map_err(Error::Io)?;
 
         let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..]);

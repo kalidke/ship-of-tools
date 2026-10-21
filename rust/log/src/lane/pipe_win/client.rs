@@ -31,7 +31,7 @@ impl std::fmt::Debug for PipeClient {
 /// directional (governs who may CONNECT, not who MADE the object), so a
 /// raw successful `CreateFileW` here proves nothing about who is on the
 /// other end; this function runs
-/// [`crate::identity::challenge_win::authenticate_server`] (identify the peer process,
+/// [`sot_platform::identity::challenge_win::authenticate_server`] (identify the peer process,
 /// compare its token-user SID to this account's — NOT the full five-step
 /// `challenge()`, which additionally binds a reply's own pid/creation to
 /// this connection and needs a lane-specific request to get one) before
@@ -56,7 +56,7 @@ impl std::fmt::Debug for PipeClient {
 /// now, not this bounded retry.
 pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, TransportError> {
     let client = connect_voyage_pipe_unchallenged(voyage_id)?;
-    map_peer_auth_outcome(crate::identity::challenge_win::authenticate_server(&client))?;
+    map_peer_auth_outcome(sot_platform::identity::challenge_win::authenticate_server(&client))?;
     Ok(client)
 }
 
@@ -90,7 +90,7 @@ pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeCl
 
 /// ADR 0041 step 6 U2: connect to the supervisor lane's own pipe with NO
 /// authentication — every real caller must run the SAME five-step
-/// [`crate::identity::challenge_win::challenge`] the mgmt lane's own client does (the
+/// [`sot_platform::identity::challenge_win::challenge`] the mgmt lane's own client does (the
 /// supervisor lane's security is "MUTUAL", not the weaker SID-only proof
 /// [`connect_voyage_pipe`] settles for), so unlike that function this one
 /// intentionally has no `_unchallenged`-free sibling here — the caller
@@ -324,14 +324,16 @@ impl PipeClient {
     }
 }
 
-/// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
-/// client implements — `write_all`/`read`/`cancel` already have this
-/// exact signature (modulo the error type, unified by decision 17), so
-/// this is pure delegation. The blanket `impl<C: Client>
-/// ChallengeableConnection for C` in `crate::lane::client` is what makes
-/// `PipeClient` challengeable now — the hand-written façade this impl
-/// used to be (`pipe_error_to_io`, its own `TransportError -> io::Error`
-/// mapping) is gone; `crate::lane::client`'s ONE mapping replaces it.
+// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
+// client implements — `write_all`/`read`/`cancel` already have this
+// exact signature (modulo the error type, unified by decision 17), so
+// this is pure delegation. The blanket `impl<C: Client>
+// ChallengeableConnection for C` in `crate::lane::client` is what makes
+// `PipeClient` challengeable now — the hand-written façade this impl
+// used to be (`pipe_error_to_io`, its own `TransportError -> io::Error`
+// mapping) is gone; `crate::lane::client`'s ONE mapping replaces it.
+crate::challengeable_client!(PipeClient);
+
 impl Client for PipeClient {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
         PipeClient::write_all(self, bytes)
@@ -348,8 +350,8 @@ impl Client for PipeClient {
 
 /// L1-unix LU1a: the Windows-shaped extension half of the same-connection
 /// challenge — see `challenge_win.rs`'s own doc for why this is a separate
-/// trait from [`crate::identity::challenge::ChallengeableConnection`] above.
-impl crate::identity::challenge_win::PipeChallengeable for PipeClient {
+/// trait from [`sot_platform::identity::challenge::ChallengeableConnection`] above.
+impl sot_platform::identity::challenge_win::PipeChallengeable for PipeClient {
     fn raw_handle(&self) -> HANDLE {
         self.raw.0
     }
@@ -364,7 +366,7 @@ pub struct PipeEndpoint;
 
 impl Endpoint for PipeEndpoint {
     type Client = PipeClient;
-    type Process = crate::identity::challenge_win::ChallengedProcess;
+    type Process = sot_platform::identity::challenge_win::ChallengedProcess;
 
     fn connect_voyage_unchallenged(
         &self,
@@ -383,14 +385,14 @@ impl Endpoint for PipeEndpoint {
     fn challenge(
         &self,
         conn: &Self::Client,
-        exchange: &mut dyn crate::identity::exchange::IdentityExchange,
+        exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
         reply_deadline: Instant,
-    ) -> crate::identity::challenge::ChallengeOutcome<Self::Process> {
-        crate::identity::challenge_win::challenge(conn, exchange, reply_deadline)
+    ) -> sot_platform::identity::challenge::ChallengeOutcome<Self::Process> {
+        sot_platform::identity::challenge_win::challenge(conn, exchange, reply_deadline)
     }
 
-    fn authenticate_server(&self, conn: &Self::Client) -> crate::identity::challenge::PeerAuthOutcome {
-        crate::identity::challenge_win::authenticate_server(conn)
+    fn authenticate_server(&self, conn: &Self::Client) -> sot_platform::identity::challenge::PeerAuthOutcome {
+        sot_platform::identity::challenge_win::authenticate_server(conn)
     }
 }
 

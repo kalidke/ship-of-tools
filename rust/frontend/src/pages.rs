@@ -143,7 +143,7 @@ async fn serve_page_listener(
         let (d, g, t) = (target.clone(), gate.clone(), token.clone());
         async move { pipe_one(browser, &d, &g, port, t.as_deref()).await }
     };
-    sot_log::identity::peer_owner::serve_own(listener, "page-proxy", move |browser| {
+    sot_platform::identity::peer_owner::serve_own(listener, "page-proxy", move |browser| {
         let arm = std::sync::Arc::clone(&arm);
         let done = dial(browser);
         async move { serve_browser(port, &arm, done).await }

@@ -453,7 +453,7 @@ fn converge_hub_pins(topo: &Topology, dir: &Path, relays: &[&str], dry_run: bool
 pub(super) fn pin_daemon(dir: &Path, claim: bool, say: &mut dyn FnMut(String)) -> Result<(), String> {
     let pin = match topology::load()? {
         Some((_, topo)) => topology::relay_units::daemon_pin(&topo),
-        None if claim => topology::relay_units::install_pin(&sot_log::host::state_dir::kernel_host_name()?),
+        None if claim => topology::relay_units::install_pin(&sot_platform::host::state_dir::kernel_host_name()?),
         None => return Ok(()),
     };
     converge_pins(dir, &[pin], false, say).map(|_| ())

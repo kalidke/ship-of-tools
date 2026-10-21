@@ -221,7 +221,7 @@
 //! `SocketServer`/`SocketClient`/`challenge_unix::ChallengedProcess` on
 //! Linux) whose own inherent methods already implement
 //! [`crate::lane::transport::LaneServer`]/[`crate::lane::client::Client`]/
-//! [`crate::lane::client::PeerProcess`] purely by delegation (see `client.rs`
+//! [`sot_platform::identity::peer::PeerProcess`] purely by delegation (see `client.rs`
 //! and each concrete module's own `impl LaneServer`/`impl Client` block)
 //! — this file calls those inherent methods directly, exactly as it did
 //! against the concrete Windows types before this lane, so the seam
@@ -241,9 +241,9 @@
 #![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 
 use crate::capsule::producer::ExitStatus;
-use crate::host;
-use crate::host::storage_exhaustion;
-use crate::identity::challenge::ChallengeOutcome;
+use sot_platform::host;
+use crate::storage_exhaustion;
+use sot_platform::identity::challenge::ChallengeOutcome;
 use crate::lane::attach_proto::ConnId;
 use crate::lane::client::{Endpoint, PlatformEndpoint};
 use crate::store::recovery::{self, LatestLegState};
@@ -534,7 +534,7 @@ pub fn supervise(config: SuperviseConfig) -> i32 {
     // `build_run_command`'s default-inherit stdio never carries anything
     // past its own, intentionally-shared stderr (decision 25). Non-fatal.
     #[cfg(windows)]
-    if let Err(e) = crate::host::winhandle::harden_own_stdio(false) {
+    if let Err(e) = sot_platform::host::winhandle::harden_own_stdio(false) {
         note(format_args!(
             "could not harden inherited stdin/stdout ({e}); continuing"
         ));
@@ -584,7 +584,7 @@ pub fn connect_and_challenge_with_build_for_test(
     build: &str,
 ) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
     let conn = PlatformEndpoint::default().connect_supervisor_unchallenged(h)?;
-    let mut exchange = crate::identity::exchange::SupervisorLaneExchange::new(build.to_string());
+    let mut exchange = crate::lane::exchange::SupervisorLaneExchange::new(build.to_string());
     let outcome = PlatformEndpoint::default().challenge(
         &conn,
         &mut exchange,
@@ -603,8 +603,8 @@ pub fn connect_and_challenge_with_proto_for_test(
     proto: u32,
 ) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
     let conn = PlatformEndpoint::default().connect_supervisor_unchallenged(h)?;
-    let mut exchange = crate::identity::exchange::SupervisorLaneExchange::with_proto_for_test(
-        crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID,
+    let mut exchange = crate::lane::exchange::SupervisorLaneExchange::with_proto_for_test(
+        crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID,
         proto,
     );
     let outcome = PlatformEndpoint::default().challenge(
@@ -631,7 +631,7 @@ pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(Client, Process
     crate::attach_client::supervisor_client::connect_and_challenge::<PlatformEndpoint>(
         &PlatformEndpoint::default(),
         h,
-        crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID,
+        crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID,
         Instant::now() + Duration::from_secs(2),
     )
 }

@@ -215,7 +215,7 @@ pub async fn handle_workspace_destroy(
 /// Retire the closed row's state folder under the row's guard (`state_folder::close_row_folder`). A state root that does
 /// not resolve leaves the folder for the next start's sweep.
 async fn retire_closed_row_state_folder(workspace_id: &str) {
-    let Some(state_root) = sot_log::host::state_dir::sot_state_dir() else {
+    let Some(state_root) = sot_platform::host::state_dir::sot_state_dir() else {
         tracing::debug!(workspace_id, "workspace.destroy: no state root to remove the row's state folder from");
         return;
     };

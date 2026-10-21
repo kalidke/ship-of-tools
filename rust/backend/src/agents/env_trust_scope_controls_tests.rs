@@ -61,7 +61,7 @@ fn scope_case(kind: &str) {
 
 #[test]
 fn parent_component_escape_records_nothing() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "agents::env::trust_scope_controls::parent_component_escape_records_nothing",
     ) {
         return;
@@ -72,7 +72,7 @@ fn parent_component_escape_records_nothing() {
 #[cfg(unix)]
 #[test]
 fn symlink_escape_records_nothing() {
-    if !sot_log::test_isolated::run_isolated(
+    if !sot_platform::test_isolated::run_isolated(
         "agents::env::trust_scope_controls::symlink_escape_records_nothing",
     ) {
         return;
@@ -82,13 +82,13 @@ fn symlink_escape_records_nothing() {
 }
 #[test]
 fn outside_is_observable_and_preserves_the_account_env() {
-    if !sot_log::test_isolated::run_isolated("agents::env::trust_scope_controls::outside_is_observable_and_preserves_the_account_env") { return; }
+    if !sot_platform::test_isolated::run_isolated("agents::env::trust_scope_controls::outside_is_observable_and_preserves_the_account_env") { return; }
     scope_case("outside");
     println!("W1 C2 Outside PASS: cwd and prefix fields; account env unchanged");
 }
 #[test]
 fn absent_declaration_is_observable_and_preserves_the_account_env() {
-    if !sot_log::test_isolated::run_isolated("agents::env::trust_scope_controls::absent_declaration_is_observable_and_preserves_the_account_env") { return; }
+    if !sot_platform::test_isolated::run_isolated("agents::env::trust_scope_controls::absent_declaration_is_observable_and_preserves_the_account_env") { return; }
     scope_case("undeclared");
     println!("W1 C2 NotDeclared PASS: declaration file field; account env unchanged");
 }

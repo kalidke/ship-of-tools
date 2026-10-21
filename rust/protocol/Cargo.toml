@@ -21,11 +21,13 @@ anyhow = { workspace = true }
 # dependency on this crate, so this edge is one-directional. This also
 # retires this crate's own direct `libc` dependency (its only call,
 # `getuid()`, moved with `current_uid`).
+sot-platform = { path = "../platform" }
 sot-log = { path = "../log" }
 
 [dev-dependencies]
 # The shell hello test runs the shell client in a scratch home of its own.
 tempfile = { workspace = true }
+sot-platform = { path = "../platform", features = ["test-support"] }
 sot-log = { path = "../log", features = ["test-support"] }
 # The lane client's tests dial a fake daemon on a local socket or pipe, the one transport it has.
 interprocess = { workspace = true }

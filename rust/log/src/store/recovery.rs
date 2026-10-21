@@ -6,7 +6,7 @@
 //! (RENAME_NOREPLACE) → verify → unlink the original. Idempotent at every
 //! crash point; states are distinguished by filename.
 
-use crate::host;
+use sot_platform::host;
 use crate::store::segment::{RecoveryMeta, SegmentIdentity, SegmentReader, SegmentState};
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};

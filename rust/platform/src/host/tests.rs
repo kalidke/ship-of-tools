@@ -19,7 +19,7 @@ fn io_ctx_keeps_the_os_error_code_and_the_path_tail_under_a_very_long_path() {
     let os_err = std::io::Error::from_raw_os_error(206); // ERROR_FILENAME_EXCED_RANGE
     let wrapped = io_ctx(os_err, format_args!("MoveFileExW {deep:?} -> {deep:?}"));
     let msg = format!("{wrapped}");
-    assert!(msg.len() <= crate::lane::wire::MAX_SUPERVISOR_STRING_LEN, "{} bytes: {msg}", msg.len());
+    assert!(msg.len() <= super::ERROR_DETAIL_BOUND, "{} bytes: {msg}", msg.len());
     assert!(msg.starts_with("io: MoveFileExW (os error 206): "), "{msg}");
     assert!(msg.ends_with("segment-recognizable-tail.sotseg.tmp\""), "{msg}");
 }

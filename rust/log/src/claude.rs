@@ -441,7 +441,7 @@ fn unmatched_opens(root: &Path, voyage_id: &str) -> Result<Vec<Seq>> {
 pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Result<ClaudeSummary> {
     // Resolve ONCE — see the capsule's run() for why (a relative path
     // re-resolved after the fence is taken can scan an unfenced store).
-    let voyage_root = crate::host::ensure_container(&config.voyage_root)?;
+    let voyage_root = sot_platform::host::ensure_container(&config.voyage_root)?;
     if !voyage_root.exists() {
         VoyageStore::bootstrap(&voyage_root, &config.voyage_id, config.retention)?;
     }

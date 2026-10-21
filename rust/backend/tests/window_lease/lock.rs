@@ -10,7 +10,7 @@ async fn second_daemon_refuses_live() {
     poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "the first daemon to accept").await;
 
     let started = Instant::now();
-    let ran = sot_log::test_wait::run_within(sotd_on(&env, &[]).as_std_mut(), BOUND);
+    let ran = sot_platform::test_wait::run_within(sotd_on(&env, &[]).as_std_mut(), BOUND);
     let took = started.elapsed();
     assert!(!ran.status.success(), "the second daemon must refuse: {ran}");
     // A daemon that answers on the socket is refused at once (`refuse_live_socket`; on Windows `lock_daemon`): only a
@@ -25,7 +25,7 @@ async fn second_daemon_waits_for_lock() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("lockw");
     std::fs::create_dir_all(state_dir(&env)).expect("create the state dir");
-    let lock = sot_log::host::try_lock_daemon(&state_dir(&env))
+    let lock = sot_platform::host::try_lock_daemon(&state_dir(&env))
         .expect("open the daemon lock")
         .expect("the daemon lock is free");
     let mut daemon = sotd_on(&env, &[("RUST_LOG", "info")])
@@ -78,16 +78,16 @@ async fn daemon_lock_timeout_exits_1() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("lockt");
     std::fs::create_dir_all(state_dir(&env)).expect("create the state dir");
-    let _lock = sot_log::host::try_lock_daemon(&state_dir(&env))
+    let _lock = sot_platform::host::try_lock_daemon(&state_dir(&env))
         .expect("open the daemon lock")
         .expect("the daemon lock is free");
 
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         sotd_on(&env, &[("SOT_TEST_DAEMON_LOCK_WAIT_MS", "1000")]).as_std_mut(),
         BOUND,
     );
     assert_eq!(ran.status.code(), Some(1), "a lock timeout exits 1: {ran}");
-    let lock_path = sot_log::host::daemon_lock_path(&state_dir(&env));
+    let lock_path = sot_platform::host::daemon_lock_path(&state_dir(&env));
     assert!(ran.stderr.contains(&lock_path.display().to_string()), "the error names the lock path: {ran}");
     assert!(try_connect(&env.socket_path).await.is_none(), "a daemon that never got the lock never binds");
 }

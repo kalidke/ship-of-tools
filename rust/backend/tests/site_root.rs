@@ -91,7 +91,7 @@ fn repo(dir: &Path) {
     std::fs::create_dir_all(dir).expect("mkdir");
     let mut git = std::process::Command::new("git");
     git.args(["init", "-q"]).arg(dir).env_remove("GIT_DIR").env_remove("GIT_WORK_TREE");
-    sot_log::test_wait::run_within(&mut git, BOUND).ok();
+    sot_platform::test_wait::run_within(&mut git, BOUND).ok();
 }
 
 /// A project log in a repository: one site with index pages inside it (`journal/`, each campaign's) and a folder with

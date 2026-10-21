@@ -76,9 +76,9 @@ on a computer decides, through its lease, whether that computer's sessions end (
   it reaches them only while the daemon shares their console, as a child that asks for no console of its own does.
 - A Unix child started through `Signal::spawn`, `Signal::spawn_std` or `Signal::output` keeps none of the daemon's
   descriptors past its exec but its stdio, whatever flag one had when it started: `contain::prepare`'s `pre_exec` marks
-  every descriptor above 2 close-on-exec through `sot_log::host::inherit_none`, which owns the sweep and is shared with the
+  every descriptor above 2 close-on-exec through `sot_platform::host::inherit_none`, which owns the sweep and is shared with the
   capsule's leg start. That sweep is the belt: a socket, pipe or pty the lane and the capsule make is born
-  close-on-exec through `sot_log::host::fd` (on macOS under a birth lock that `Signal::spawn` and `spawn_std` take around
+  close-on-exec through `sot_platform::host::fd` (on macOS under a birth lock that `Signal::spawn` and `spawn_std` take around
   their fork, so no fork sees one between its creation and its flag).
 - A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything still in its process group
   (Unix) or job (Windows) when its owner kills, waits for or drops its `Contained` or `ContainedStd`, or the signal
@@ -141,8 +141,8 @@ on a computer decides, through its lease, whether that computer's sessions end (
     - interprocess's `PipeListenerOptions` (its `inheritable` option is false by default and never set,
       `rust/backend/src/server/listen.rs:180`);
     - handles of other kinds (process, thread, event, mutex, job; every call asks for no inheritance);
-    - `SetHandleInformation`, called only to clear the flag (`rust/log/src/identity/peer_owner/mod.rs:95`,
-      `rust/log/src/host/winhandle.rs:29`).
+    - `SetHandleInformation`, called only to clear the flag (`rust/platform/src/identity/peer_owner/mod.rs:95`,
+      `rust/platform/src/host/winhandle.rs:29`).
   - Not held, and called by no Windows code today, among them: interprocess's other unnamed-pipe constructors
     (`unnamed_pipe::tokio::pipe`, the Windows `CreationOptions`), `DuplicateHandle`, and libc's CRT openers on
     windows-gnu (`open`, `pipe`, `socket`, `dup`).

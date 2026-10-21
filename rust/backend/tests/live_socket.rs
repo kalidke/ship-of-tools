@@ -21,7 +21,7 @@ async fn a_second_daemon_on_a_live_socket_refuses_and_the_first_still_answers() 
     // The second daemon has its own state, config and comm home, as the
     // stray test daemon did: only the socket path is shared.
     let second = Env::new("live2");
-    let ran = sot_log::test_wait::run_within(
+    let ran = sot_platform::test_wait::run_within(
         support::sotd_command()
             .arg("--socket")
             .arg(&first.socket_path)

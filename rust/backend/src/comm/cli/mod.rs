@@ -108,7 +108,7 @@ pub(crate) fn run_in(env: &Env, args: &[String]) -> i32 {
 
 /// The agent-layer check for this process (`identity::layers`), for the row its identity names.
 pub(crate) fn gate(env: &Env) -> Result<(), (i32, String)> {
-    let host = sot_log::host::state_dir::host_name_in(env).unwrap_or_default();
+    let host = sot_platform::host::state_dir::host_name_in(env).unwrap_or_default();
     crate::comm::identity::layers::require_agent(env, &crate::comm::identity::context::row_id(env, &host))
 }
 

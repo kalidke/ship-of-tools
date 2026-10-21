@@ -20,7 +20,7 @@
 
 use sot_log::lane::client::{Endpoint, PlatformEndpoint};
 use sot_log::supervisor::journal;
-use sot_log::host::state_dir::state_dir_hash;
+use sot_platform::host::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
 use sot_log::lane::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::{Path, PathBuf};
@@ -464,7 +464,7 @@ fn fence_free(state_dir: &Path) -> bool {
 }
 
 fn writer_free(lock: &Path) -> bool {
-    sot_log::lock_writer(lock).is_ok()
+    sot_platform::host::lock_writer(lock).is_ok()
 }
 
 fn free_within(free: impl Fn() -> bool, bound: Duration) -> bool {
@@ -524,7 +524,7 @@ fn end_what_outlived(state_dir: &Path) {
 /// the parent's state folder, an empty `ready` marker, then a wait on stdin that only the parent's kill
 /// (or its death) ends. It does not make a runtime folder: it uses the parent's, which the parent removes.
 fn killed_child_body(name: &str, dir: &Path) {
-    sot_log::test_isolated::enter(name);
+    sot_platform::test_isolated::enter(name);
     let state_dir = dir.join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let _capsule = spawn_supervisor(&state_dir, "--start", SHELL);
@@ -553,7 +553,7 @@ fn a_killed_test_process_leaves_no_capsule_process() {
     let ready = dir.path().join("ready");
     let log_path = dir.path().join("child.log");
     let log = std::fs::File::create(&log_path).unwrap();
-    let (mut command, entry) = sot_log::test_isolated::test_command(NAME);
+    let (mut command, entry) = sot_platform::test_isolated::test_command(NAME);
     let mut child = command
         .env(KILLED_CHILD, dir.path())
         .stdin(Stdio::piped())
@@ -578,7 +578,7 @@ fn a_killed_test_process_leaves_no_capsule_process() {
         assert!(!writer_free(&writer_lock_path(&state_dir, &voyage)), "precondition: the leg holds the writer lock");
     }));
     let _ = child.kill();
-    let reaped = sot_log::test_isolated::wait_until(&mut child, Instant::now() + Duration::from_secs(5));
+    let reaped = sot_platform::test_isolated::wait_until(&mut child, Instant::now() + Duration::from_secs(5));
     let gone = before_kill.is_ok() && reaped.is_ok() && capsule_gone_within(&state_dir, Duration::from_secs(5));
     end_what_outlived(&state_dir);
 

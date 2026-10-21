@@ -312,7 +312,7 @@ exit 1
 
     #[test]
     fn quarto_failure_reply_survives_error_flood() {
-        if !sot_log::test_isolated::run_isolated(
+        if !sot_platform::test_isolated::run_isolated(
             "pages::ops::error_tests::handler::quarto_failure_reply_survives_error_flood",
         ) { return; }
         crate::lifecycle::child_signal::reset_child_signal();

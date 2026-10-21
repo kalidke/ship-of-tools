@@ -218,7 +218,7 @@ impl Env {
     }
 
     /// Spawn a real `sotd` rooted at this env's project/state/config —
-    /// `sot_log::host::state_dir::sot_state_dir()` reads `%LOCALAPPDATA%` on
+    /// `sot_platform::host::state_dir::sot_state_dir()` reads `%LOCALAPPDATA%` on
     /// Windows / `$XDG_STATE_HOME` on Linux directly (no daemon CLI flag
     /// exists for it), and `rows/store/`'s own registry root reads
     /// `%XDG_CONFIG_HOME%`/`$XDG_CONFIG_HOME` on the respective platform —
@@ -310,7 +310,7 @@ impl Env {
     }
     /// macOS lane: `not(windows)`, mirroring the SHIPPED
     /// `rows::store::app_config_dir`, whose non-Windows arm is
-    /// `sot_log::host::state_dir::sot_config_dir()` (`$XDG_CONFIG_HOME`, else
+    /// `sot_platform::host::state_dir::sot_config_dir()` (`$XDG_CONFIG_HOME`, else
     /// `$HOME/.config`) on every Unix, macOS included — so the Linux gate
     /// here was narrower than the behaviour it mirrors.
     #[cfg(not(windows))]
@@ -569,7 +569,7 @@ impl Env {
             .arg(&self.socket_path)
             .arg("--project-root")
             .arg(&self.daemon_project_root);
-        sot_log::test_wait::run_within(&mut command, BOUND).ok();
+        sot_platform::test_wait::run_within(&mut command, BOUND).ok();
         // Tracked BEFORE returning, not after — a panic between here and
         // the caller ever reading the return value must still leave
         // `Drop` able to find and stop it.
@@ -578,7 +578,7 @@ impl Env {
         // return only once the unit's own `execve` has actually happened
         // — MainPID is therefore already populated the moment `run_within`
         // returns, no poll needed.
-        let pid_ran = sot_log::test_wait::run_within(
+        let pid_ran = sot_platform::test_wait::run_within(
             Command::new("systemctl").args(["--user", "show"]).arg(&unit).args(["--property=MainPID", "--value"]),
             BOUND,
         )
@@ -663,7 +663,7 @@ impl Drop for Env {
         // sweep) — never the asserting version test bodies use.
         #[cfg(target_os = "linux")]
         if let Some(unit) = self.user_service_unit.get_mut().take() {
-            let _ = sot_log::test_wait::try_run_within(Command::new("systemctl").args(["--user", "stop"]).arg(&unit), BOUND);
+            let _ = sot_platform::test_wait::try_run_within(Command::new("systemctl").args(["--user", "stop"]).arg(&unit), BOUND);
         }
 
         // (1) the daemon, first. `&mut self` here (not `&self`), so
@@ -698,7 +698,7 @@ impl Drop for Env {
                     break;
                 }
                 for pid in pids {
-                    let _ = sot_log::test_wait::try_run_within(
+                    let _ = sot_platform::test_wait::try_run_within(
                         Command::new("taskkill").args(["/F", "/T", "/PID"]).arg(pid.to_string()),
                         BOUND,
                     );
@@ -726,8 +726,8 @@ impl Drop for Env {
             let combined_pattern = self.leg_pgrep_pattern();
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
-                let _ = sot_log::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&supervise_pattern), BOUND);
-                let _ = sot_log::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&run_pattern), BOUND);
+                let _ = sot_platform::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&supervise_pattern), BOUND);
+                let _ = sot_platform::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&run_pattern), BOUND);
                 // A pgrep that cannot answer ends the sweep: a Drop cannot fail, and the next check that asks fails
                 // with pgrep's account.
                 if !matches!(count_matching_processes(&combined_pattern), Ok(n) if n > 0) || Instant::now() >= deadline {

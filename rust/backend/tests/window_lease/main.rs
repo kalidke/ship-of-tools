@@ -79,7 +79,7 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[tokio::test]
 async fn lease_holder_child() {
     let Ok(socket) = std::env::var("SOT_TEST_LEASE_CHILD") else { return };
-    let who = sot_log::identity::challenge::self_identity().expect("this process's identity");
+    let who = sot_platform::identity::challenge::self_identity().expect("this process's identity");
     let stream = try_connect(Path::new(&socket)).await.expect("connect to the daemon");
     let (rx, mut tx) = stream.split();
     let mut rx = tokio::io::BufReader::new(rx);

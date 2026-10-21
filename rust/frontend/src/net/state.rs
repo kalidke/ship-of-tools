@@ -73,7 +73,7 @@ pub fn state_path(host: &HostKey) -> PathBuf {
     // session state away from the relaunch sentinel on Windows whenever
     // XDG_STATE_HOME was set. The "." fallback is the pre-existing last
     // resort for when no env var resolves.
-    sot_log::host::state_dir::sot_state_dir()
+    sot_platform::host::state_dir::sot_state_dir()
         .unwrap_or_else(|| PathBuf::from(".").join("sot"))
         .join(format!("session-{}.json", sanitize_for_filename(host)))
 }
@@ -83,7 +83,7 @@ pub fn state_path(host: &HostKey) -> PathBuf {
 /// held that connection's ENTIRE reconnect memory — there was no host
 /// concept to suffix it with.
 fn legacy_state_path() -> PathBuf {
-    sot_log::host::state_dir::sot_state_dir()
+    sot_platform::host::state_dir::sot_state_dir()
         .unwrap_or_else(|| PathBuf::from(".").join("sot"))
         .join("session.json")
 }

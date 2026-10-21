@@ -58,7 +58,7 @@ fn the_macos_peer_token_has_one_reader() {
         .filter(|(_, _, line)| line.contains("LOCAL_PEERTOKEN") || line.contains("TOK_EUID"))
         .map(|(rel, _, line)| (rel.clone(), line.trim().to_string()))
         .collect();
-    let at = "rust/log/src/identity/challenge_macos.rs".to_string();
+    let at = "rust/platform/src/identity/challenge_macos.rs".to_string();
     let expected = vec![
         (at.clone(), "libc::LOCAL_PEERTOKEN,".to_string()),
         (

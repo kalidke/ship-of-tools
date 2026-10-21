@@ -705,7 +705,7 @@ fn sampling_roster(topo: &sot_protocol::topology::Topology, local: &str) -> Vec<
 }
 
 pub fn load_hosts() -> Vec<MonitorHost> {
-    let local = sot_log::host::state_dir::host_name().unwrap_or_else(|_| "local".to_string());
+    let local = sot_platform::host::state_dir::host_name().unwrap_or_else(|_| "local".to_string());
     let hosts = match sot_protocol::topology::load() {
         Ok(Some((path, topo))) => {
             let hosts = sampling_roster(&topo, &local);

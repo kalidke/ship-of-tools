@@ -121,7 +121,7 @@ pub(super) async fn handle_connection<R, W>(
     clients: Clients,
     topology_store: Arc<crate::topology::store::TopologyStore>,
     topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>,
-    peer: Option<sot_log::identity::challenge::PeerAuthenticated>,
+    peer: Option<sot_platform::identity::challenge::PeerAuthenticated>,
     leases: Arc<crate::lifecycle::lease::Leases>,
 ) -> Result<()>
 where
@@ -195,7 +195,7 @@ where
 async fn hand_off<R, W>(
     mut rx: tokio::io::BufReader<R>, mut tx: W, hello_id: u64, hello: Admitted, session: &Session,
     files_mode: &FilesMode, label: &Option<String>, workspaces: &Workspaces, clients: &Clients,
-    peer: Option<sot_log::identity::challenge::PeerAuthenticated>, leases: &crate::lifecycle::lease::Leases,
+    peer: Option<sot_platform::identity::challenge::PeerAuthenticated>, leases: &crate::lifecycle::lease::Leases,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -234,7 +234,7 @@ where
         // A lease (1.2) is a connection of its own: it never enters the request loop, the reaper or any handler.
         (Kind::Req, op::FE_LEASE) => {
             tracing::info!(?peer, "fe.lease — a lease connection");
-            let state_root = sot_log::host::state_dir::sot_state_dir();
+            let state_root = sot_platform::host::state_dir::sot_state_dir();
             let held = crate::lifecycle::lease::hold(rx, &mut tx, next, peer, leases, state_root.as_deref()).await;
             // A lease whose reply or notice could not be written is a peer given up on: closed without the wait.
             if held.is_err() {

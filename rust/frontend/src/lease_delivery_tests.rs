@@ -1,5 +1,5 @@
 use super::*;
-use sot_log::test_isolated::run_isolated;
+use sot_platform::test_isolated::run_isolated;
 
 #[test]
 fn held_book_does_not_extend_forced_delivery() {

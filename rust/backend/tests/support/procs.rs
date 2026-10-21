@@ -97,7 +97,7 @@ pub fn try_own_capsule_pids(state_root: &Path) -> Result<Vec<u32>, String> {
         let _ = stdin.write_all(script.as_bytes());
     }
     // The script is the child's input, so this waits through `drain` rather than `run_within`.
-    let (status, stdout, stderr) = sot_log::test_isolated::drain(child)
+    let (status, stdout, stderr) = sot_platform::test_isolated::drain(child)
         .try_wait_within(BOUND)
         .map_err(|failure| format!("the capsule process list: {failure}"))?;
     if !status.success() {
@@ -268,7 +268,7 @@ pub fn arm_scope_guard(rel: &str, state_dir: &Path) -> ScopeKillGuard {
 /// panics otherwise.
 #[cfg(target_os = "linux")]
 pub fn aim_scope_guard(rel: &str, own_rel: &str, state_dir: &Path) -> String {
-    let hash = sot_log::host::state_dir::state_dir_hash(state_dir);
+    let hash = sot_platform::host::state_dir::state_dir_hash(state_dir);
     if let Err(e) = row_scope_aim::aim(rel, own_rel, &hash) {
         panic!("arm_scope_guard: the production aim rule refuses this target: {e}");
     }
@@ -287,7 +287,7 @@ pub fn aim_scope_guard(rel: &str, own_rel: &str, state_dir: &Path) -> String {
 /// bound — exactly what the caller prints on `SKIPPED:`.
 #[cfg(target_os = "linux")]
 pub fn user_manager_available_for_test() -> Result<(), String> {
-    let ran = sot_log::test_wait::try_run_within(
+    let ran = sot_platform::test_wait::try_run_within(
         Command::new("systemd-run").args(["--user", "--scope", "--quiet", "--", "/bin/true"]),
         Duration::from_secs(5),
     )?;
@@ -314,7 +314,7 @@ pub fn user_manager_available_for_test() -> Result<(), String> {
 /// backing this unit is actually dead.
 #[cfg(target_os = "linux")]
 pub fn stop_user_service(unit: &str, daemon_pid: u32) {
-    sot_log::test_wait::run_within(Command::new("systemctl").args(["--user", "stop", unit]), BOUND).ok();
+    sot_platform::test_wait::run_within(Command::new("systemctl").args(["--user", "stop", unit]), BOUND).ok();
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -338,7 +338,7 @@ pub fn stop_user_service(unit: &str, daemon_pid: u32) {
 #[allow(dead_code)]
 pub fn kill_supervisor_only(state_root: &Path) {
     let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", state_root);
-    let _ = sot_log::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&pattern), BOUND);
+    let _ = sot_platform::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&pattern), BOUND);
     assert!(
         poll_until_no_process_matches(&pattern, BOUND),
         "a supervisor process still matches {pattern:?} after SIGKILL"
@@ -356,7 +356,7 @@ pub fn kill_supervisor_only(state_root: &Path) {
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 pub fn count_matching_processes(pattern: &str) -> std::io::Result<usize> {
-    let ran = sot_log::test_wait::try_run_within(Command::new("pgrep").args(["-f", pattern]), BOUND)
+    let ran = sot_platform::test_wait::try_run_within(Command::new("pgrep").args(["-f", pattern]), BOUND)
         .map_err(std::io::Error::other)?;
     match ran.status.code() {
         Some(0 | 1) => Ok(ran.stdout.lines().filter(|l| !l.trim().is_empty()).count()),

@@ -4,20 +4,20 @@
 //! path it authenticates (`connect_voyage_socket`). Mirrors the
 //! analogous section of `tests/pipe_win/` almost line for line — see
 //! that file's own module doc for the process-isolation rationale
-//! (both use `sot_log::test_isolated::run_isolated`), and
+//! (both use `sot_platform::test_isolated::run_isolated`), and
 //! `tests/socket_unix/`'s own doc for the
 //! `SOT_RUNTIME_DIR`-per-test isolation this also copies (including its
 //! macOS `/tmp`-not-`$TMPDIR` fix — irrelevant here, since this whole
 //! file is Linux-only, but kept for one copy-paste source of truth with
 //! that file rather than a second, silently-diverging one).
 
-use sot_log::test_isolated::run_isolated;
-use sot_log::identity::challenge::{ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome};
-use sot_log::identity::challenge_unix::{
+use sot_platform::test_isolated::run_isolated;
+use sot_platform::identity::challenge::{ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome};
+use sot_platform::identity::challenge_unix::{
     self, authenticate_server, challenge, self_start_ticks, ChallengedProcess, PeerCredentials,
     SocketChallengeable,
 };
-use sot_log::identity::exchange::VoyageMgmtExchange;
+use sot_log::lane::exchange::VoyageMgmtExchange;
 use sot_log::lane::attach_proto::ConnId;
 use sot_log::lane::socket_unix::{
     connect_voyage_socket, voyage_socket_path, SocketClient, SocketServer,
@@ -30,7 +30,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-/// A per-event bound used throughout (well inside `sot_log::test_isolated::ISOLATION_TIMEOUT`, so
+/// A per-event bound used throughout (well inside `sot_platform::test_isolated::ISOLATION_TIMEOUT`, so
 /// a stalled event always trips before the parent's own kill fires).
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -124,7 +124,7 @@ fn ensure_established_gap() {
 /// `self_proven_challenge` — running the separately-typed
 /// `challenge_unix::challenge` on top afterward is legal because
 /// `authenticate_server` never consumes anything from the wire.
-fn self_proven_challenge() -> ChallengeOutcome<sot_log::identity::challenge_unix::ChallengedProcess> {
+fn self_proven_challenge() -> ChallengeOutcome<sot_platform::identity::challenge_unix::ChallengedProcess> {
     let voyage_id = fresh_voyage_id();
     let server = SocketServer::bind(&voyage_id, 1).expect("bind");
     ensure_established_gap();
@@ -303,7 +303,7 @@ fn cross_process_challenge_server_role() {
     let Ok(voyage_id) = std::env::var("CHALLENGE_UNIX_XPROC_VOYAGE_ID") else {
         return;
     };
-    sot_log::test_isolated::enter("cross_process_challenge_server_role");
+    sot_platform::test_isolated::enter("cross_process_challenge_server_role");
     let pid = std::process::id();
     let created = self_start_ticks().expect("self_start_ticks");
     // Review round fix: don't bind (hence don't become connectable) until
@@ -367,7 +367,7 @@ fn cross_process_challenge_proves_a_real_child_server() {
     let _rt = isolated_runtime_dir();
     let voyage_id = fresh_voyage_id();
     let (mut role, role_entry) =
-        sot_log::test_isolated::test_command("cross_process_challenge_server_role");
+        sot_platform::test_isolated::test_command("cross_process_challenge_server_role");
     let mut child = role
         .env("CHALLENGE_UNIX_XPROC_VOYAGE_ID", &voyage_id)
         .stdout(Stdio::piped())
@@ -488,7 +488,7 @@ fn connect_voyage_socket_authentication_pass_against_a_genuine_server() {
 
     let reply = wire::encode_mgmt_reply(&MgmtReply::ProbeOk).unwrap();
     server.send(conn_id, reply.clone(), None).expect("send probe_ok");
-    let (buf, n) = sot_log::test_wait::within(TIMEOUT, "the probe_ok read", move || {
+    let (buf, n) = sot_platform::test_wait::within(TIMEOUT, "the probe_ok read", move || {
         let mut buf = [0u8; 512];
         let n = client.read(&mut buf).expect("read probe_ok");
         (buf, n)

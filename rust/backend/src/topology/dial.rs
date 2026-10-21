@@ -200,7 +200,7 @@ fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal)
         {
             // ADR 0049, User isolation: `connect_own` checks the listener's cached account after its fixed-budget
             // connect, before client I/O.
-            return sot_log::identity::connect_own::connect_own(std::path::Path::new(p))
+            return sot_log::lane::connect_own::connect_own(std::path::Path::new(p))
                 .map(|client| Conn::Unix(client.into_stream()))
                 .map_err(|e| format!("{endpoint}: {e}"));
         }
@@ -215,7 +215,7 @@ fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal)
         {
             // ADR 0049, User isolation: `connect_own` opens the pipe at identification level and checks the serving
             // process's account before a byte is written.
-            let client = sot_log::identity::connect_own::connect_own(std::path::Path::new(p))
+            let client = sot_log::lane::connect_own::connect_own(std::path::Path::new(p))
                 .map_err(|e| format!("{endpoint}: {e}"))?;
             return Ok(Conn::Pipe(std::sync::Arc::new(client)));
         }

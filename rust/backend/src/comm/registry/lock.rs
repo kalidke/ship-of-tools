@@ -153,7 +153,7 @@ impl Me {
 
 /// `sot_host`, every char outside `[A-Za-z0-9._-]` made `_`; `-` if none.
 fn host_field(env: &crate::comm::Env) -> String {
-    let n: String = sot_log::host::state_dir::host_name_in(env)
+    let n: String = sot_platform::host::state_dir::host_name_in(env)
         .unwrap_or_default()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' })
@@ -178,7 +178,7 @@ fn proc_is_mine(pid: u32) -> bool {
 /// macOS: proof needs the boot session and this process's start.
 #[cfg(target_os = "macos")]
 fn proc_is_mine(pid: u32) -> bool {
-    sot_log::identity::challenge::boot_identity().is_ok_and(|b| !b.is_empty()) && proc_start(pid).is_ok()
+    sot_platform::identity::challenge::boot_identity().is_ok_and(|b| !b.is_empty()) && proc_start(pid).is_ok()
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -195,7 +195,7 @@ fn proof_fields(pid: u32) -> [String; 4] {
     let pidns = fs::read_link(format!("/proc/{pid}/ns/pid")).ok().and_then(|l| {
         Some(l.to_str()?.strip_prefix("pid:[")?.strip_suffix(']')?.to_string())
     });
-    let start = sot_log::identity::challenge_unix::process_start_ticks(pid).ok().map(|t| t.to_string());
+    let start = sot_platform::identity::challenge_unix::process_start_ticks(pid).ok().map(|t| t.to_string());
     [crate::comm::mail::inbox::machine_id(), boot, pidns, start]
         .map(|f| f.unwrap_or_else(|| "-".into()))
 }
@@ -203,7 +203,7 @@ fn proof_fields(pid: u32) -> [String; 4] {
 /// macOS: the host UUID, the boot session UUID, `darwin` (no pid namespaces) and the start in seconds.
 #[cfg(target_os = "macos")]
 fn proof_fields(pid: u32) -> [String; 4] {
-    let boot = sot_log::identity::challenge::boot_identity().ok().filter(|b| !b.is_empty());
+    let boot = sot_platform::identity::challenge::boot_identity().ok().filter(|b| !b.is_empty());
     [crate::comm::mail::inbox::machine_id(), boot, Some("darwin".into()), proc_start(pid).ok()]
         .map(|f| f.unwrap_or_else(|| "-".into()))
 }
@@ -305,7 +305,7 @@ fn judge(id: &str, me: &Me) -> (Verdict, &'static str) {
 
 #[cfg(target_os = "linux")]
 fn proc_start(pid: u32) -> std::io::Result<String> {
-    sot_log::identity::challenge_unix::process_start_ticks(pid).map(|t| t.to_string())
+    sot_platform::identity::challenge_unix::process_start_ticks(pid).map(|t| t.to_string())
 }
 
 /// The start of `pid` in whole seconds since the epoch (`proc_pidinfo`'s `pbi_start_tvsec`, what the shell's
