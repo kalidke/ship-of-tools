@@ -66,7 +66,7 @@
 # the row: only if it still matches this exact provisional write (root +
 # nonce + status:"spawning"), never a row that has since been replaced by
 # a real join or an explicit claimant (comm-lib.sh:
-# registry_del_if_provisional). The outcome — rolled back, left alone
+# `sotd comm registry del-provisional`). The outcome — rolled back, left alone
 # because it's no longer ours, or the delete itself failed — is reported
 # honestly in each case, not just claimed, and a spawn that wrote no row
 # at all (a daemon on another box; nc missing or an endpoint that will not
@@ -140,9 +140,7 @@ if [ -n "$TASK" ]; then
     # below for the CHILD and is still "" at this point in the script, so
     # this borrows it briefly rather than adding a parallel helper. The
     # agent half of that check ran first, above.
-    NAME="$SPAWNER"
-    why="$(_sot_identity_routable)" || { echo "FAILED: $why" >&2; exit 1; }
-    NAME=""
+    why="$(sot_comm routable "$SPAWNER" "${PROJECT_ROOT:-}")" || { echo "FAILED: $why" >&2; exit 1; }
 fi
 
 # <name> is OPTIONAL (ADR 0028 addendum): one positional is <repo-path> alone
@@ -221,7 +219,7 @@ fi
 
 # The provisional registry row (see the "addressable FROM SPAWN TIME" note
 # below) — built here, independent of NAME, so a DERIVED name can be
-# decided and written in ONE atomic step (claim_derived_handle) rather than
+# decided and written in ONE atomic step (`sotd comm derive --claim`) rather than
 # derived now and only written later: that gap is exactly the read-then-
 # write race the whole feature exists to close, and comm-spawn drives many
 # joins back-to-back (bulk workspace bring-up), so the window is real.
@@ -229,13 +227,13 @@ fi
 # PROV_NONCE (Codex review PR #148 round 2, finding 1) tags this exact
 # provisional row so rollback (below) can tell "still mine" from "replaced
 # by a real join or an explicit claimant" — root+status alone isn't
-# enough to rule out a coincidence, and an unconditional `registry_del`
+# enough to rule out a coincidence, and an unconditional `registry del`
 # was proven to delete a genuinely live row the child had already written.
 PROV_TS="$(now_iso)"
 PROV_NONCE="$$-${RANDOM}-${RANDOM}"
 # CANON_ROOT is a filesystem path and can start with "/": it reaches jq on stdin
 # (comm-lib-base.sh, free text and jq). Were it mangled, the rollback check below
-# (registry_del_if_provisional) would compare the LIVE $CANON_ROOT against a
+# (`sotd comm registry del-provisional`) would compare the LIVE $CANON_ROOT against a
 # stored root that never matches, and a successful rollback would misreport
 # "something else claimed it".
 PROV_OBJ="$(printf '%s' "$CANON_ROOT" | jq -Rs --arg host "$HOST" --arg repo "$REPO_BASE" --arg ts "$PROV_TS" --arg nonce "$PROV_NONCE" \
@@ -251,7 +249,7 @@ PROV_OBJ="$(printf '%s' "$CANON_ROOT" | jq -Rs --arg host "$HOST" --arg repo "$R
 # here (the derived path hasn't resolved it yet); the reporter below
 # no-ops until there is something to protect.
 #
-# Deletion is CONDITIONAL (registry_del_if_provisional, comm-lib.sh,
+# Deletion is CONDITIONAL (`sotd comm registry del-provisional`,
 # finding 1): only a row that still matches root+nonce+status:"spawning"
 # is removed. A row that has since been replaced — the child joined for
 # real, or (for an explicit name) something else claimed it — is left
@@ -262,7 +260,7 @@ SPAWN_SUCCEEDED=false
 # PROV_WRITTEN (rc9.5): whether either write path below actually ran. A
 # spawn against a daemon on ANOTHER box writes no row at all, and a
 # resolution/endpoint failure now happens BEFORE the write rather than
-# after it — in both cases `registry_del_if_provisional` would find
+# after it — in both cases the conditional delete would find
 # nothing of ours and the reporter below would announce a verdict
 # ("no longer matches what this spawn wrote") on a row that never
 # existed. Silence is the honest report for nothing written.
@@ -277,7 +275,7 @@ _spawn_rollback_report() {
     # can prove this spawn is the row's sole owner.
     [ -n "${NAME:-}" ] || return 0
     local rc=0
-    with_lock registry_del_if_provisional "$NAME" "$CANON_ROOT" "$PROV_NONCE" || rc=$?
+    sot_comm registry del-provisional "$NAME" "$CANON_ROOT" "$PROV_NONCE" || rc=$?
     case "$rc" in
         0) echo "comm-spawn: rolled back provisional registry row for @$NAME after a failed spawn" >&2 ;;
         2) echo "comm-spawn: did NOT roll back @$NAME — its row no longer matches what this spawn wrote (something else has since claimed/updated it); left untouched" >&2 ;;
@@ -383,13 +381,13 @@ done
 
 # NAME omitted -> derive it AND write the provisional row atomically, same
 # algorithm + same locked-claim path as a plain comm-join.sh (ADR 0028
-# addendum; comm-lib.sh: sot_derive_handle / claim_derived_handle) — but in
+# addendum; `sotd comm derive`, with and without `--claim`) — but in
 # FRESH mode (Codex review F3): an existing row for the resolved candidate,
 # even one sharing my own root, is a REFUSAL at that tier, not a reclaim.
 # comm-spawn creates a NEW agent; silently absorbing an existing row would
 # erase a LIVE agent's workspace_id/status fields. `set -e` makes an outright
 # derivation failure (every tier already taken by something else; Codex
-# review F6) abort here with sot_derive_handle's own clear stderr reason.
+# review F6) abort here with the derivation's own clear stderr reason.
 #
 # When the derivation had to qualify past the bare <repo>-<host> tier, also
 # give the new FE workspace a qualified --display-label
@@ -406,13 +404,16 @@ AUTO_DISPLAY_LABEL=false
 if [ -z "$NAME" ] && [ "$AGENT" != none ]; then
     if [ "$SPAWN_IS_LOCAL" = true ]; then
         DERIVED_CLAIM=true
-        claim_derived_handle fresh "$CANON_ROOT" "$HANDLE_HOST" "$PROV_OBJ"
-        NAME="$CLAIMED_NAME"
+        # The derivation and its registry write, one locked step in sotd: three lines, the handle, its qualifier and
+        # tier 1's name.
+        CLAIM_LINES="$(printf '%s' "$PROV_OBJ" | sot_comm derive fresh "$CANON_ROOT" "$HANDLE_HOST" --claim)"
+        { IFS= read -r NAME; IFS= read -r CLAIMED_QUALIFIER; IFS= read -r CLAIMED_TIER1; } <<< "$CLAIM_LINES"
+        [ -n "$NAME" ]
         PROV_WRITTEN=true
     else
         # Daemon on another box (rc9.5): derive the name, claim NOTHING —
-        # `sot_derive_handle` is the pure half of `claim_derived_handle`
-        # (the same three output lines, read the same way, no registry
+        # `sotd comm derive` without `--claim` is the pure half of the claim
+        # above (the same three output lines, read the same way, no registry
         # write). It is handed the TARGET's declared host, not $HOST: a
         # handle for a session on another box that carried THIS host would
         # name the wrong machine, the same guess-from-a-name defect in
@@ -424,7 +425,7 @@ if [ -z "$NAME" ] && [ "$AGENT" != none ]; then
         # nonzero with no output, and the first `read` would then fail
         # under `set -e` and kill the script before this message could
         # say which host it was deriving for.
-        if ! DERIVED_LINES="$(sot_derive_handle fresh "$CANON_ROOT" "$SPAWN_HOST")"; then
+        if ! DERIVED_LINES="$(sot_comm derive fresh "$CANON_ROOT" "$SPAWN_HOST")"; then
             echo "ERROR: could not derive a handle for a session on $SPAWN_HOST — see the reason above, or pass --name" >&2
             exit 1
         fi
@@ -507,7 +508,7 @@ _despawn_cmd() {
 # mail, and replies (~1 min). The real join later overwrites
 # this row with full pane/expertise info; comm-leave.sh --name <handle> removes it if the
 # spawn never boots. For a DERIVED name, PROV_OBJ was already written atomically
-# above (claim_derived_handle) — only an EXPLICIT name still needs the
+# above (`sotd comm derive --claim`) — only an EXPLICIT name still needs the
 # write here (its collision, if any, was already ruled out above).
 #
 # ONLY when the daemon is on THIS box (rc9.5). Both stores are this box's:
@@ -523,7 +524,7 @@ _despawn_cmd() {
 # is not yet reachable say so.
 if [ -n "$NAME" ] && [ "$SPAWN_IS_LOCAL" = true ]; then
     if [ "$DERIVED_CLAIM" = false ]; then
-        with_lock registry_put "$NAME" "$PROV_OBJ"
+        printf '%s' "$PROV_OBJ" | sot_comm registry put "$NAME"
         PROV_WRITTEN=true
     fi
     : >> "$INBOX_DIR/$NAME.jsonl"
@@ -560,7 +561,7 @@ fi
 # anyway, but a TRANSIENT list-only hiccup followed by a working
 # create must not bypass the guard silently.
 #
-# Compared by NORMALIZED SLUG (sot_slug, comm-lib.sh — a verified bash
+# Compared by NORMALIZED SLUG (`sotd comm slug` — a verified
 # mirror of `sot_protocol::slug`), not the raw label
 # string: workspace.create refreshes by slug, so two labels that only
 # differ by case, or by a dot vs underscore, resolve to the SAME
@@ -583,7 +584,7 @@ if [ "$AUTO_DISPLAY_LABEL" = true ]; then
         echo "ERROR: workspace.list returned a malformed reply — refusing to spawn with an unverified auto-derived display label '$LABEL'. Pass --name or --display-label, or retry." >&2
         exit 1
     fi
-    CANDIDATE_SLUG="$(sot_slug "$LABEL")"
+    CANDIDATE_SLUG="$(sot_comm slug "$LABEL")"
     if printf '%s' "$LIST" | jq -e --arg s "$CANDIDATE_SLUG" '.payload.workspaces[] | select(.slug == $s)' >/dev/null 2>&1; then
         echo "ERROR: the auto-derived display label '$LABEL' (slug '$CANDIDATE_SLUG') already names an existing workspace — refusing to risk rebinding it. Pass --name or --display-label to pick a distinct one." >&2
         exit 1
@@ -661,7 +662,7 @@ done
 echo "Capsule row ready (id=$WSID, phase=ready)"
 SPAWN_SUCCEEDED=true
 
-[ -n "$SPAWNER" ] && SOT_LOCK_WAIT_SECS=1 with_lock registry_touch "$SPAWNER" 2>/dev/null || true
+[ -n "$SPAWNER" ] && SOT_LOCK_WAIT_SECS=1 sot_comm registry touch "$SPAWNER" 2>/dev/null || true
 if [ "$AGENT" = none ]; then
     echo "Spawned a bash row as workspace '${SLUG}' (id=${WSID}) on ${REPO_NAME}: no agent, no handle. End it with $(_despawn_cmd)"
     exit 0

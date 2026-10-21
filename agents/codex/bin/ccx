@@ -110,7 +110,7 @@ if [ "$SCAN" = 1 ]; then
     done
 fi
 # The handoff line from the comm library's one rule (a subshell: the library sets umask 077, which codex must not inherit).
-HANDOFF_LINE="$( . "$COMM/comm-lib.sh" 2>/dev/null && sot_handoff_line "$HANDLE" )" ||
+HANDOFF_LINE="$( . "$COMM/comm-lib.sh" 2>/dev/null && sot_comm handoff-line "$HANDLE" )" ||
     echo "ccx: the comm library did not load from $COMM; the first prompt names no handoff" >&2
 PROMPT="You are the comm-aware agent${HANDLE:+ @$HANDLE} on the sot-comm network. House conventions are in your GLOBAL $CODEX_HOME_DIR/AGENTS.md (plus the project's own AGENTS.md when it has one, and \$SOT_MANUAL/docs/USING.md for product help). Then run: $COMM/comm-poll.sh — and handle what it prints. An idle row is woken by the typed line '[sot-comm] you have mail: run comm-poll.sh'; run it and handle what it prints.${HANDOFF_LINE:+ $HANDOFF_LINE}"
 if [ -n "$RESUME_ID" ]; then

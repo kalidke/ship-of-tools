@@ -163,11 +163,11 @@ CTX="$HOME_DIR/bin/comm-context.sh"; [ -x "$CTX" ] || CTX="$SELF_DIR/comm-contex
 # The tools this hook runs besides sotd: it prints its blocks with jq. A session
 # whose jq is missing would never be told of its mail, so the hook SAYS so
 # instead of passing, and prints that block by hand. The list, the test and the
-# message are comm-lib.sh's (sot_mail_tools, sot_require_tools). A lib that
+# message are comm-lib.sh's (sot_require_tools). A lib that
 # cannot be read warns of nothing: the mail read below needs it too.
 # shellcheck disable=SC2046
 tool_warn="$( . "$FE_LIB" 2>/dev/null || exit 0
-    sot_require_tools "check mail at turn end" $(sot_mail_tools) 2>&1 | tr '\n' ' ')"
+    sot_require_tools "check mail at turn end" jq 2>&1 | tr '\n' ' ')"
 tool_warn="${tool_warn% }"
 # sot_registry_read: 0 a row, 1 no row, 2 unreadable (a lib that cannot be
 # sourced is 2 too, never "no row"). Only "no row" ends here; unreadable goes

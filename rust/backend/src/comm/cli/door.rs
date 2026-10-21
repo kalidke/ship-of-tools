@@ -6,7 +6,7 @@ use std::io::Read;
 use serde_json::Value;
 
 use super::{gate, routable as routable_check, Out};
-use crate::comm::identity::derive::{derive as derive_handle, handle_host, sanitize_component, Mode};
+use crate::comm::identity::derive::{derive as derive_handle, Mode};
 use crate::comm::registry::registry::{command_lock_wait, iso8601_utc_now, read_doc, touch, update, TOUCH_LOCK_WAIT};
 
 fn registry_path() -> std::path::PathBuf {
@@ -38,7 +38,7 @@ pub(crate) fn require_agent(_args: &[String]) -> Out {
     }
 }
 
-/// `routable <name> <project root>` (`_sot_identity_routable`): exit 0, or its one reason on stdout and exit 1.
+/// `routable <name> <project root>`: exit 0, or its one reason on stdout and exit 1.
 pub(crate) fn routable(args: &[String]) -> Out {
     let mut o = Out::default();
     let [name, root] = args else { return usage(o, "routable <name> <project root>") };
@@ -51,9 +51,9 @@ pub(crate) fn routable(args: &[String]) -> Out {
     }
 }
 
-/// `registry read [h] | put <h> | del <h> | touch <h> | del-provisional <h> <root> <nonce>`: the registry functions
-/// (`sot_registry_read`: 0 present, 1 absent, 2 unreadable, the JSON on stdout; `registry_put` with the entry on
-/// stdin; `registry_del`; `registry_touch`; `registry_del_if_provisional`: 0 deleted, 2 not ours any more, 1 failed).
+/// `registry read [h] | put <h> | del <h> | touch <h> | del-provisional <h> <root> <nonce>`: `read` exits 0 present,
+/// 1 absent, 2 unreadable, the JSON on stdout; `put` takes the entry on stdin; `del-provisional` exits 0 deleted, 2 not
+/// the spawn's own any more, 1 failed.
 /// Every write is one locked step; a failed one prints its FAILED line on stderr and exits 1.
 pub(crate) fn registry(args: &[String]) -> Out {
     let mut o = Out::default();
@@ -128,8 +128,8 @@ pub(crate) fn registry(args: &[String]) -> Out {
     }
 }
 
-/// `derive <reclaim|fresh> <root> <raw host> [--claim]` (`sot_derive_handle`, and with `--claim` and the entry on
-/// stdin `claim_derived_handle`): three lines, the handle, its qualifier and tier 1's name; the derivation's lines on
+/// `derive <reclaim|fresh> <root> <raw host> [--claim]` (with `--claim`, the entry on stdin and its registry write in
+/// the same locked step): three lines, the handle, its qualifier and tier 1's name; the derivation's lines on
 /// stderr; exit 1 with nothing written when no tier can be taken.
 pub(crate) fn derive(args: &[String]) -> Out {
     let mut o = Out::default();
@@ -186,7 +186,7 @@ pub(crate) fn derive(args: &[String]) -> Out {
     }
 }
 
-/// `self-slot <host> <workspace id>` (`_sot_self_slot`): the unpinned self file's leaf, or its reason and exit 1.
+/// `self-slot <host> <workspace id>`: the unpinned self file's leaf, or its reason and exit 1.
 pub(crate) fn self_slot(args: &[String]) -> Out {
     let mut o = Out::default();
     let (host, ws) = match args {
@@ -206,38 +206,17 @@ pub(crate) fn self_slot(args: &[String]) -> Out {
     }
 }
 
-/// `row-id` (`sot_capsule_workspace_id`): the row this process's identity names, or nothing and exit 1.
-pub(crate) fn row_id(_args: &[String]) -> Out {
-    let mut o = Out::default();
-    let host = sot_log::host::state_dir::host_name().unwrap_or_default();
-    let row = crate::comm::identity::context::row_id(&host);
-    if row.is_empty() {
-        return o.exit(1);
-    }
-    o.out(row);
-    o
-}
-
-/// `name-part component <s> [max] | handle-host <raw> | slug <label> | raw-host`: a handle's pieces, as
-/// `sot_sanitize_component`, `_sot_handle_host`, `sot_slug` and `sot_raw_host` gave them (no newline, as the first two
-/// printed).
-pub(crate) fn name_part(args: &[String]) -> Out {
+/// `slug <label>`: the row slug a label gives, for the spawn's same-label refusal.
+pub(crate) fn slug(args: &[String]) -> Out {
     let mut o = Out::default();
     match args {
-        [k, s] if k == "component" => o.stdout = sanitize_component(s, 20),
-        [k, s, max] if k == "component" => match max.parse() {
-            Ok(m) => o.stdout = sanitize_component(s, m),
-            Err(_) => return usage(o, "name-part component <s> [max]"),
-        },
-        [k, raw] if k == "handle-host" => o.stdout = handle_host(raw),
-        [k, label] if k == "slug" => o.out(sot_protocol::topology::endpoint::slug(label)),
-        [k] if k == "raw-host" => o.stdout = crate::comm::identity::context::raw_host(),
-        _ => return usage(o, "name-part <component <s> [max]|handle-host <raw>|slug <label>|raw-host>"),
+        [label] => o.out(sot_protocol::topology::endpoint::slug(label)),
+        _ => return usage(o, "slug <label>"),
     }
     o
 }
 
-/// `handoff-line <h>` (`sot_handoff_line`): the line naming the session's recovery file, when it exists.
+/// `handoff-line <h>`: the line naming the session's recovery file, when it exists.
 pub(crate) fn handoff_line(args: &[String]) -> Out {
     let mut o = Out::default();
     if let [h] = args {
@@ -248,7 +227,7 @@ pub(crate) fn handoff_line(args: &[String]) -> Out {
     o
 }
 
-/// `ensure-home` (`ensure_home`): the comm folder made whole, as the first command of a session makes it.
+/// `ensure-home`: the comm folder made whole, as the first command of a session makes it.
 pub(crate) fn ensure_home(_args: &[String]) -> Out {
     let mut o = Out::default();
     match crate::comm::home::comm_home() {

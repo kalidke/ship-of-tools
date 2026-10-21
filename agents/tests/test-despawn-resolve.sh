@@ -125,7 +125,7 @@ seed_row() {
     local name="$1" ws="$2" obj
     obj="$(jq -nc --arg ws "$ws" \
         '{host:"test-host",workspace_id:$ws,repo:"repo",root:"/nonexistent",expertise:[],status:"spawning",joined:"2026-09-30T00:00:00Z",last_seen:"2026-09-30T00:00:00Z"}')"
-    SOT_COMM_HOME="$CH" bash -c 'source "$1"; ensure_home; with_lock registry_put "$2" "$3"' _ "$SCRIPTS_DIR/comm-lib.sh" "$name" "$obj"
+    SOT_COMM_HOME="$CH" bash -c 'source "$1"; sot_comm ensure-home; printf "%s" "$3" | sot_comm registry put "$2"' _ "$SCRIPTS_DIR/comm-lib.sh" "$name" "$obj"
 }
 
 reg_hash() { sha256sum "$CH/registry.json" 2>/dev/null | cut -d' ' -f1; }
@@ -266,7 +266,7 @@ case_row_names_unlisted_workspace() {
 
 case_no_row_no_workspace() {
     new_home; mkdir -p "$CH"
-    SOT_COMM_HOME="$CH" bash -c 'source "$1"; ensure_home' _ "$SCRIPTS_DIR/comm-lib.sh"
+    SOT_COMM_HOME="$CH" bash -c 'source "$1"; sot_comm ensure-home' _ "$SCRIPTS_DIR/comm-lib.sh"
     local before; before="$(reg_hash)"
     start_stub_daemon; run_despawn nobody; stop_stub_daemon
     assert_unresolved nobody "no registry row names it" "$before" || return 1

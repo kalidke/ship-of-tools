@@ -328,7 +328,7 @@ case_a_dead_turns_mark_is_never_applied_by_another_join() {
     local rc=0
     jq -n '{agents:{}}' > "$REGISTRY"; "$ST" stop >/dev/null
     CLAUDE_CODE_SESSION_ID=sess-dead W '{"prompt":"/sot-session-start"}'
-    "$SCRIPTS_DIR/comm-join.sh" --name "$NAME" >/dev/null 2>&1
+    "$SCRIPTS_DIR/comm-join.sh" >/dev/null 2>&1
     expect /-/-/-/- ccx-or-probe-join || rc=1
     CLAUDE_CODE_SESSION_ID=sess-next SOT_COMM_HOOKS=off "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
     expect /-/-/-/- another-sessions-join || rc=1
@@ -360,7 +360,10 @@ case_a_nudged_join_is_green_until_its_stop() {
     local NAME=nudged-handle
     jq -n '{agents:{}}' > "$REGISTRY"; "$ST" stop >/dev/null
     W "$(jq -nc '{prompt:"[sot-comm bootstrap from @peer] You have the sot-comm skill but are not joined. Please join and reply."}')"
-    "$SCRIPTS_DIR/comm-join.sh" --name "$NAME" >/dev/null 2>&1
+    # The handle the join takes: the one this session's self file names.
+    write_self "$SOT_COMM_SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT" >/dev/null 2>&1 \
+        || { echo "    could not write the session's self-file"; return 1; }
+    "$SCRIPTS_DIR/comm-join.sh" >/dev/null 2>&1
     expect working/machine/-/-/- joined || rc=1
     I; expect idle/-/-/-/- end || rc=1
     write_self "$SOT_COMM_SELF_FILE" "$suite" "$REPO" "$PROJECT_ROOT" >/dev/null 2>&1 \

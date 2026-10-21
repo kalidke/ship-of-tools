@@ -33,7 +33,7 @@ mkdir -p "$SOT_COMM_HOME"
 ln -s "$SCRIPTS_DIR" "$SOT_COMM_HOME/bin"
 # shellcheck source=../scripts/comm-lib.sh
 source "$SCRIPTS_DIR/comm-lib.sh"
-ensure_home
+sot_comm ensure-home
 NAME="floor-test"
 # The self-file must name THIS checkout's repo/root (comm-context discards a
 # self-file whose root doesn't match the project it runs in), so let

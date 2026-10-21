@@ -6,8 +6,8 @@
 #   comm/tests/interop-066.sh WORK NEW_SOTD OLD_SOTD [OLD_TAG]
 #       Parts 1 and 2 below, on this host, in WORK (made empty first; it must not exist or be empty).
 #   comm/tests/interop-066.sh prepare SOTD COMM_HOME [OLD_TAG]
-#       Part 3's folder: COMM_HOME (new or empty, on a network folder two hosts mount) with @sink-shared joined and the
-#       inbox lock record the 0.6.6 library computes on this host.
+#       Part 3's folder: COMM_HOME (new or empty, on a network folder two hosts mount, outside any git checkout) with
+#       @sink-shared joined and the inbox lock record the 0.6.6 library computes on this host.
 #   comm/tests/interop-066.sh burst SOTD COMM_HOME N
 #       Part 3's writer: N sends from @burst-<host> to @sink-shared through SOTD's own `sotd comm send`, as a session
 #       outside any row. Run it on two hosts at once, then `count`.
@@ -34,7 +34,9 @@ set -u
 fail() { echo "FAIL: $*"; exit 1; }
 pass() { echo "ok   $*"; }
 
-# bare SOTD COMM_HOME WHO HOST VERB ARGS... — `sotd comm VERB` as session WHO of HOST outside any row, no daemon.
+# bare SOTD COMM_HOME WHO HOST VERB ARGS... — `sotd comm VERB` as session WHO of HOST outside any row, no daemon. Its
+# project folder is WHO, so its derived handle is WHO-HOST; COMM_HOME must lie outside any git checkout, or the
+# checkout would be every session's project.
 bare() {
     local sotd="$1" home="$2" who="$3" host="$4" w
     shift 4
@@ -55,7 +57,7 @@ if [ "${1:-}" = prepare ]; then
     bash "$home/../old/comm/tests/stage-bin.sh" "$home/../old-bin" >/dev/null || fail "stage the $tag scripts"
     COMM_HOME="$home" bash -c '. "$1/comm-lib.sh" && sot_inbox_lock_identity "$2/inbox"' _ "$home/../old-bin" "$home" \
         > "$home/inbox-lock-manager" || fail "the 0.6.6 lock identity"
-    out="$(bare "$sotd" "$home" sink shared join --name sink-shared 2>&1)" || fail "join @sink-shared: $out"
+    out="$(bare "$sotd" "$home" sink shared join 2>&1)" || fail "join @sink-shared: $out"
     echo "ok   $home: @sink-shared joined, lock record $(head -1 "$home/inbox-lock-manager")"
     exit 0
 fi
@@ -64,7 +66,7 @@ if [ "${1:-}" = burst ]; then
     [ $# -eq 4 ] || { echo "usage: interop-066.sh burst SOTD COMM_HOME N" >&2; exit 2; }
     sotd="$2" home="$3" n="$4"
     host="$(hostname -s)"
-    out="$(bare "$sotd" "$home" burst "$host" join --name "burst-$host" 2>&1)" || fail "join on $host: $out"
+    out="$(bare "$sotd" "$home" burst "$host" join 2>&1)" || fail "join on $host: $out"
     i=0
     while [ "$i" -lt "$n" ]; do
         i=$((i + 1))

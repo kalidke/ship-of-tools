@@ -141,7 +141,7 @@ case_capsule_flag_with_fresh_flag_stays_fresh_even_with_continue() {
     started_fresh
 }
 
-# A comm home holding the real comm library, so ccx can give its first prompt the handoff line (sot_handoff_line).
+# A comm home holding the real comm library, so ccx can give its first prompt the handoff line (`sotd comm handoff-line`).
 LIB_COMM_HOME="$WORK/lib-comm-home"
 mkdir -p "$LIB_COMM_HOME/bin"
 cp "$SCRIPT_DIR/../../comm/lib/"comm-lib*.sh "$LIB_COMM_HOME/bin/"
@@ -165,7 +165,7 @@ run_ccx_with_lib() {  # extra ccx args...
 
 case_capsule_prompt_names_the_handoff_when_one_exists() {
     rm -f "${ARGV_LOG:?}"
-    # The project is its own git root, so the test decides the root sot_handoff_line reads.
+    # The project is its own git root, so the test decides the root the handoff line reads.
     mkdir -p "$PROJECT_DIR/dev/output"
     [ -d "$PROJECT_DIR/.git" ] || (cd "$PROJECT_DIR" && git init -q)
     printf 'state\n' > "$PROJECT_DIR/dev/output/handoff-ccx-handoff-test.md"

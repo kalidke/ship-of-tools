@@ -241,7 +241,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `Workspace::phase` (the row's observer is its only writer) | state | rows | `rust/backend/src/rows/workspace.rs` `Phase`, `PhaseCell`, `apply_phase_observation`; `rust/backend/src/rows/run/probe.rs` `phase_str` |
 | row guard, run gate | lock | rows | `rust/backend/src/rows/registry.rs` `capsule_guard`; `rust/backend/src/rows/gate.rs` `RunGate`, `StartPermit` |
 | session name `sot-be-<slug>` | rule | rows | `rust/backend/src/rows/mod.rs` `session_name` |
-| label-to-slug rule `slug()` (row slug, session name, socket and pipe names) | rule | rows | `rust/protocol/src/topology/endpoint.rs` `slug` (the shell's `sot_slug` runs it through `sotd comm name-part slug`); window copy `rust/frontend/src/ui/session/switch.rs` `session_name_of` (see two owners) |
+| label-to-slug rule `slug()` (row slug, session name, socket and pipe names) | rule | rows | `rust/protocol/src/topology/endpoint.rs` `slug` (the spawn runs it through `sotd comm slug`); window copy `rust/frontend/src/ui/session/switch.rs` `session_name_of` (see two owners) |
 | default anchor row | state | rows | `rust/backend/src/rows/anchor.rs` `seed_default_row`; `rust/backend/src/rows/registry.rs` `default_id`, `set_default` |
 | `accounts.list` | op | agents | `rust/backend/src/agents/ops.rs` `handle_accounts_list` |
 | `agent.send` (a UI notification; mail is refused) | op | messaging | `rust/backend/src/comm/mail/relay.rs` `handle_agent_send` |

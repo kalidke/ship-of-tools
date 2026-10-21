@@ -18,7 +18,7 @@ guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
 # shellcheck source=../scripts/comm-lib.sh
 source "$SCRIPTS_DIR/comm-lib.sh"
-ensure_home
+sot_comm ensure-home
 
 PASS=0; FAIL=0; SKIP=0
 check() {

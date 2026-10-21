@@ -203,14 +203,15 @@ matrix_preflight() {
     echo
 }
 
-# matrix_runner_join NAME DIR — the runner is a session of its own, outside any row (PROTOCOL.md's row rule): it
-# joins NAME through a private self file DIR/matrix-self.txt, which names no row, from DIR/root, and the entry binds no
+# matrix_runner_join DIR — the runner is a session of its own, outside any row (PROTOCOL.md's row rule): it joins
+# through the private self file the caller pinned (SOT_COMM_SELF_FILE, which names no row) from DIR/probe-matrix, so
+# its derived handle, probe-matrix-<host>, starts with `probe` and the responders answer it, and the entry binds no
 # row. A probe row's entry binds its row, so the runner cannot adopt that row's identity; it reads and sends as itself.
-# Pins SOT_COMM_SELF_FILE in the caller's shell, so every later call is the runner's; the caller moves into DIR/root.
-matrix_runner_join() {  # NAME DIR
-    mkdir -p "$2/root" || return 1
-    export SOT_COMM_SELF_FILE="$2/matrix-self.txt"
-    ( cd "$2/root" && "$SCRIPTS_DIR/comm-join.sh" --name "$1" )
+# Prints the handle; the join's own lines go to stderr. The caller moves into DIR/probe-matrix.
+matrix_runner_join() {  # DIR
+    mkdir -p "$1/probe-matrix" || return 1
+    ( cd "$1/probe-matrix" && "$SCRIPTS_DIR/comm-join.sh" >&2 && eval "$("$SCRIPTS_DIR/comm-context.sh")" \
+        && [ -n "${NAME:-}" ] && printf '%s\n' "$NAME" )
 }
 
 # Runs only when executed, not sourced (the hermetic test sources this for the
@@ -230,10 +231,8 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$BOXES" ] || { echo "usage: comm-matrix.sh --boxes a,b,c [--expect VERSION]" >&2; exit 1; }
-ensure_home
+sot_comm ensure-home
 [ -n "$SELF" ] || SELF="$(sot_host)" || exit 1
-ME="probe-matrix-$SELF"
-INBOX="$INBOX_DIR/$ME.jsonl"
 
 # Every send goes out as the runner's own handle, which starts with `probe` so the responders (comm-probe.sh's
 # probe_handle_ok) reply and hop to it with no change. The runner is no row's session, so comm-relay.sh routes it
@@ -245,11 +244,13 @@ SCRIPTS_DIR="$MATRIX_PRIV_DIR/bin"
 # identity of whatever session ran this.
 trap '[ "${SOT_COMM_SELF_FILE:-}" != "$MATRIX_PRIV_DIR/matrix-self.txt" ] || "$SCRIPTS_DIR/comm-leave.sh" > /dev/null 2>&1; rm -rf "${MATRIX_PRIV_DIR:?}"' EXIT
 bash "$SCRIPT_DIR/stage-bin.sh" "$SCRIPTS_DIR" || exit 2
-matrix_runner_join "$ME" "$MATRIX_PRIV_DIR" > "$MATRIX_PRIV_DIR/join.out" 2>&1 || {
-    echo "FATAL: @$ME could not join: $(tail -n 1 "$MATRIX_PRIV_DIR/join.out")" >&2
+export SOT_COMM_SELF_FILE="$MATRIX_PRIV_DIR/matrix-self.txt"
+ME="$(matrix_runner_join "$MATRIX_PRIV_DIR" 2> "$MATRIX_PRIV_DIR/join.out")" || {
+    echo "FATAL: the runner could not join: $(tail -n 1 "$MATRIX_PRIV_DIR/join.out")" >&2
     exit 2
 }
-cd "$MATRIX_PRIV_DIR/root" || exit 2
+INBOX="$INBOX_DIR/$ME.jsonl"
+cd "$MATRIX_PRIV_DIR/probe-matrix" || exit 2
 
 matrix_preflight "$EXPECT" "$BOXES" "$SELF"
 

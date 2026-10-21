@@ -133,12 +133,15 @@ in `comm/adapters/`.
 
 Calls in: every session through the wrappers (`comm-send.sh`, `comm-poll.sh`, `comm-context.sh`, `comm-join.sh`,
 `comm-leave.sh`, `comm-list.sh`, `comm-relay.sh`, `comm-session-start.sh`), whose names, arguments, output words and
-exit codes are kept; rows' work-state scripts and the agents' CLIs through the shell door's functions, whose names and
-answers are kept (`sot_require_agent`, `sot_registry_read`, `registry_put`, `registry_del`, `registry_touch`,
-`registry_del_if_provisional`, `with_lock` (each write is one locked step), `claim_derived_handle`,
-`sot_derive_handle`, `_sot_identity_routable`, `sot_require_routable_identity`, `_sot_self_slot`,
-`sot_capsule_workspace_id`, `ensure_home`, `sot_sanitize_component`, `_sot_handle_host`, `sot_handoff_line`); the
-Stop hook (`sotd comm unread`, `sotd comm stop-mark`); rows (`edit_entry`, `read_comm_agents`,
+exit codes are kept; rows' work-state scripts and hooks and the agents' CLIs through the shell door
+(`comm/lib/comm-lib-sotd.sh`): `sot_comm VERB`, which runs `sotd comm VERB` (the spawn: `registry put|del-provisional|touch`,
+`derive [--claim]`, `slug`; the despawn: `registry del`, `self-slot`; the spawn, despawn, probe and three comm test suites:
+`ensure-home`; ccx: `handoff-line`; the Stop hook: `unread`, `stop-mark`), and three functions kept because many
+scripts call them and tests stand in for them: `sot_require_agent` (the spawn, despawn, probe and worktree scripts,
+`comm-status.sh` and its two hooks; the heartbeat test stubs it), `sot_registry_read` (the spawn, despawn, probe,
+worktree status and sync scripts, `comm-status.sh`, the turn auditor and both hooks; the probe test stubs it) and
+`sot_require_routable_identity` (`sot-nav.sh`, the bootstrap, the comm matrix). `sot_canonical_path`, which runs no
+sotd, stays beside them for the spawn; rows (`edit_entry`, `read_comm_agents`,
 `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, `dialog_of`); the server (`handle_comm_file`,
 `handle_agent_send`, `Links`, `record_at_boot`, the wake's `run`, the hub link's `run`).
 

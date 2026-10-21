@@ -328,7 +328,7 @@ probe_serve() {
     probe_handle_ok "$me" || probe_die "refusing to serve as '@$me' — probe rows only"
     # The join happens HERE, inside the row, and never in `up`: comm-join.sh
     # declares to the daemon the row THIS SHELL'S IDENTITY names
-    # (sot_capsule_workspace_id) and keys the identity slot by it, so a join run
+    # (the row id its identity carries) and keys the identity slot by it, so a join run
     # from the CALLER's shell would re-declare the caller's own live row under a
     # probe handle. Inside the row, that identity is provably this row's own.
     "$SCRIPT_DIR/comm-join.sh" >/dev/null 2>&1 \
@@ -369,7 +369,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     # anything else, whatever the verb (usage and an unknown verb included),
     # before the comm home is made and before any request.
     _why="$(sot_require_agent)" || probe_die "$_why"
-    ensure_home
+    sot_comm ensure-home
     ENDPOINT="$(sot_daemon_endpoint)" || probe_die "no sotd daemon found on this box"
     case "${1:-}" in
         up)     probe_up ;;

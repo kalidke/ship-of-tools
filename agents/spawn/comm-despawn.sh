@@ -13,7 +13,7 @@ source "$SCRIPT_DIR/comm-lib.sh"
 # A second agent inside the session neither despawns nor spawns rows; the gate
 # comes before any write, so a refused child touches nothing.
 _why="$(sot_require_agent)" || { echo "comm-despawn.sh: $_why" >&2; exit 1; }
-ensure_home
+sot_comm ensure-home
 
 WHO=""; ENDPOINT=""
 while [ $# -gt 0 ]; do
@@ -101,7 +101,7 @@ fi
 VRESP="$(sot_send '{"v":1,"id":3,"kind":"req","op":"version.query","payload":{}}' version.query || true)"
 TARGET_HOST="$(printf '%s' "$VRESP" | sot_jq -r '.payload.daemon.host // empty' 2>/dev/null || true)"
 [ -n "$TARGET_HOST" ] || { echo "FAILED: the daemon at $ENDPOINT declared no host, so the identity slot of '$WHO' cannot be named; nothing was despawned." >&2; exit 1; }
-SLOT_LEAF="$(_sot_self_slot "$TARGET_HOST" "$WSID")" || { echo "FAILED: nothing was despawned." >&2; exit 1; }
+SLOT_LEAF="$(sot_comm self-slot "$TARGET_HOST" "$WSID")" || { echo "FAILED: nothing was despawned." >&2; exit 1; }
 DESTROY="$(jq -nc --arg id "$WSID" '{v:1,id:2,kind:"req",op:"workspace.destroy",payload:{workspace_id:$id}}')"
 RESP="$(sot_send "$DESTROY" workspace.destroy || true)"
 if printf '%s' "$RESP" | jq -e '.payload.workspace_id' >/dev/null 2>&1; then
@@ -109,7 +109,7 @@ if printf '%s' "$RESP" | jq -e '.payload.workspace_id' >/dev/null 2>&1; then
     # The destroyed workspace's identity slot, by its exact name on the daemon's declared host.
     rm -f "${SELF_DIR:?}/${SLOT_LEAF:?}" 2>/dev/null || true
     if [ "$HAS_ROW" = true ]; then
-        with_lock registry_del "$WHO"
+        sot_comm registry del "$WHO"
         echo "Removed @$WHO from sot-comm registry"
     fi
 else

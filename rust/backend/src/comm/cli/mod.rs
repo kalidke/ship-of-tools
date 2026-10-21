@@ -83,8 +83,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
         "registry" => door::registry(rest),
         "derive" => door::derive(rest),
         "self-slot" => door::self_slot(rest),
-        "row-id" => door::row_id(rest),
-        "name-part" => door::name_part(rest),
+        "slug" => door::slug(rest),
         "handoff-line" => door::handoff_line(rest),
         "ensure-home" => door::ensure_home(rest),
         other => {
@@ -111,7 +110,7 @@ pub(crate) fn context(rebind: bool, notes: &mut Vec<String>) -> Result<crate::co
     crate::comm::identity::context::resolve(rebind, &cwd, || true, notes)
 }
 
-/// The identity's own refusal for sending as it (`_sot_identity_routable`): a handle, an entry for it, and that entry's
+/// The identity's own refusal for sending as it (`sotd comm routable`): a handle, an entry for it, and that entry's
 /// root this project's (or none, an entry older than roots). `bin` is where the session's scripts are, for the
 /// recovery line.
 pub(crate) fn routable(name: &str, project_root: &str, registry: &std::path::Path) -> Result<(), String> {

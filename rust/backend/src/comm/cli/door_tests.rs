@@ -48,7 +48,6 @@ fn derive_prints_the_three_lines_the_spawn_reads() {
     assert_eq!((o.code, o.stdout.as_str()), (0, "repo-u-box1\nu\nrepo-box1\n"), "{}", o.stderr);
     assert!(t.agents().get("repo-u-box1").is_none(), "a derive alone writes nothing");
     assert_eq!(self_slot(&args(&["box1", "ws/1"])).stdout, "box1__ws_1.txt");
-    assert_eq!(name_part(&args(&["component", "My Repo!!"])).stdout, "My-Repo");
-    assert_eq!(name_part(&args(&["handle-host", "averyveryverylonghostname"])).stdout, "averyveryver-5b2c20");
+    assert_eq!(slug(&args(&["My Row"])).stdout, format!("{}\n", sot_protocol::topology::endpoint::slug("My Row")));
     assert_eq!(routable(&args(&["", "/r"])).code, 1);
 }
