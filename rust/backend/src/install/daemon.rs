@@ -187,7 +187,7 @@ pub(super) fn ask_restart(work: &str) -> bool {
 pub(super) fn read_answer(question: &str) -> Option<String> {
     use std::io::{BufRead as _, Write as _};
     let tty = std::env::var_os("SOT_INSTALL_TTY").unwrap_or_else(|| "/dev/tty".into());
-    let mut out = std::fs::OpenOptions::new().append(true).open(&tty).ok()?;
+    let mut out = std::fs::OpenOptions::new().write(true).open(&tty).ok()?;
     let input = std::fs::File::open(&tty).ok()?;
     out.write_all(question.as_bytes()).ok()?;
     let mut line = String::new();
