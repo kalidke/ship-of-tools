@@ -37,7 +37,7 @@ fn production_sources_reads_no_test_path() {
 #[test]
 fn no_scan_cuts_a_file_at_its_first_cfg_test() {
     // Built with `concat!`, so this file does not hold the text it looks for.
-    let needle = concat!("#[cfg(test)]", "\"");
+    let needle = concat!("#[cfg(", "test)]", "\"");
     let hits: Vec<String> = rust_sources()
         .into_iter()
         .filter(|(path, text)| path != "rust/log/src/test_scan.rs" && text.contains(needle))
