@@ -86,6 +86,45 @@ record() {  # <d> <version>: an install at the default prefix that records <vers
     printf '{\n  "schema": 1,\n  "version": "%s"\n}\n' "$2" > "$1/home/.local/share/sot/install.json"
 }
 
+# The real sotd (SOT_TEST_SOTD) as a pack's, for the cases that need sotd install itself: REAL_SKIP says why not.
+REAL_SOTD="${SOT_TEST_SOTD:-${CARGO_TARGET_DIR:-$ENTRY_SRC/rust/target}/debug/sotd}"
+real_help="$("$REAL_SOTD" install --help 2>/dev/null)" || real_help=""
+REAL_SKIP=""
+if [ ! -x "$REAL_SOTD" ] || [ "${real_help#*Usage: sotd install}" = "$real_help" ]; then
+    REAL_SKIP="no sotd with install at $REAL_SOTD"
+elif ! command -v jq >/dev/null 2>&1; then
+    REAL_SKIP="no jq on this host, which sotd install requires before its gates"
+else
+    line="$("$REAL_SOTD" --version)"; rv="$(printf '%s\n' "$line" | cut -d' ' -f2)"; rsha="$(printf '%s\n' "$line" | sed -E 's/^[^(]*\(([0-9a-f]+).*/\1/')"
+    rcommit="$(git -C "$ENTRY_SRC" rev-parse "$rsha" 2>/dev/null)" || rcommit=""
+    [ -n "$rcommit" ] || REAL_SKIP="its commit $rsha is not in this tree"
+    JQ_TOOLS="$WORK/entry-jq"; mk_tools "$JQ_TOOLS" jq
+fi
+real_skip() {  # <what>: true, saying so, when the real sotd cannot run here
+    [ -n "$REAL_SKIP" ] || return 1
+    printf '    SKIP %s (%s)\n' "$1" "$REAL_SKIP"
+}
+real_pack() {  # <d>: a pack whose sotd is the real one, with a sot that says the same build
+    local top="sot-$rv-$TGT"
+    mkdir -p "$1/pack/$top"; cp "$REAL_SOTD" "$1/pack/$top/sotd"
+    printf '#!/bin/sh\necho "sot %s (%s 2026-01-01, protocol 3)"\n' "$rv" "$rsha" > "$1/pack/$top/sot"; chmod +x "$1/pack/$top/sot"
+    printf 'archive\n' > "$1/pack/$top.tar.gz"; printf '%s\n' "$rcommit" > "$1/pack/COMMIT"
+    ( cd "$1/pack" && sha256_of "$top.tar.gz" COMMIT > SHA256SUMS )
+}
+# An install a daemon host left on the shared home: its record, binaries and a pointer armed over it.
+shared_install() {  # <d>
+    local p="$1/home/.local/share/sot"
+    mkdir -p "$p/bin" "$p/updates" "$1/home/.config/sot" "$1/run"; chmod 700 "$1/run"
+    printf '{\n  "schema": 1,\n  "version": "0.0.1",\n  "daemon": true,\n  "service": "systemd"\n}\n' > "$p/install.json"
+    printf 'daemon host sotd\n' > "$p/bin/sotd"; printf '{"tag": "v9"}\n' > "$p/updates/pending-$TGT.json"
+    printf 'hub = "hub-box"\n[host.hub-box]\ndaemon = true\n' > "$1/home/.config/sot/hosts.toml"
+}
+sotd_install() {  # <d> <PATH> <args...>: sotd install run as the bootstrap runs it
+    local d="$1" path="$2"; shift 2
+    ENTRY_RC=0
+    ENTRY_OUT="$(env -i HOME="$d/home" PATH="$path" XDG_RUNTIME_DIR="$d/run" SOT_SELF_HOST=laptop "$d/pack/sot-$rv-$TGT/sotd" install --pack "$d/pack" "$@" 2>&1)" || ENTRY_RC=$?
+}
+
 # ---------------------------------------------------------------------------
 case_start "entry_runs_the_tags_own_installer"
 d="$WORK/e-channel"; entry_fixture "$d"; printf 'v2.0.0\n' > "$d/rel/latest"; printf 'v2.1.0-rc1\n' > "$d/rel/newest"
@@ -127,6 +166,15 @@ entry_pack "$d" v3.0.1 norun; entry_run "$d" SOT_INSTALL_TAG=v3.0.1
 check "an unpacked sotd that cannot run: its own error, then one FAIL" "1 1 1" "$ENTRY_RC $(printf '%s\n' "$ENTRY_OUT" | grep -c 'GLIBC_2.99 not found' || true) $(verdicts)"
 entry_pack "$d" v3.0.2 old; entry_run "$d" SOT_INSTALL_TAG=v3.0.2
 check "a release whose sotd has no install is installed only by its own installer" "1" "$(printf '%s\n' "$ENTRY_OUT" | grep -c 'release 3.0.2 predates sotd install' || true)"
+# sotd install asks the version of each binary its role starts: a backend-only run never starts the window, so a
+# frontend that cannot run on this host's libc does not stop it before its gates (here the shared-install refusal).
+if ! real_skip "a --be-only run whose frontend cannot start here"; then
+    d="$WORK/e-pack-be"; mkdir -p "$d"; real_pack "$d"; shared_install "$d"
+    printf '#!/bin/sh\necho "sot: GLIBC_2.35 not found" >&2\nexit 1\n' > "$d/pack/sot-$rv-$TGT/sot"
+    sotd_install "$d" "$JQ_TOOLS" --be-only --no-service
+    check "a --be-only run whose frontend cannot start here goes on to its gates" "2 1" \
+        "$ENTRY_RC $(printf '%s\n' "$ENTRY_OUT" | grep -c 'FAIL: gate: hosts.toml runs no sotd on this host' || true)"
+fi
 
 # ---------------------------------------------------------------------------
 case_start "entry_ends_every_exit_in_one_verdict_line"
@@ -157,84 +205,52 @@ check "a TERM to the bootstrap mid-install ends the run by the signal (143), wel
 check "sotd install got it, and its verdict is the one line, the last" "1 1 FAIL: comm: stopped" \
     "$(logged "$d" 'sotd got TERM') $(grep -c -E '^(PASS|FAIL|ONE STEP LEFT): ' "$d/sig.out" || true) $(tail -1 "$d/sig.out")"
 check "its scratch is gone" "0" "$(find "$d" -maxdepth 1 -name 'sot-install.*' | wc -l | tr -d ' ')"
-
-# ---------------------------------------------------------------------------
-# The real sotd as the pack's: a refused install changes nothing under the home (the prefix, ~/.local, the comm home).
-REAL_SOTD="${SOT_TEST_SOTD:-${CARGO_TARGET_DIR:-$ENTRY_SRC/rust/target}/debug/sotd}"
-case_start "entry_refuses_without_writing"
-real_help="$("$REAL_SOTD" install --help 2>/dev/null)" || real_help=""
-if [ ! -x "$REAL_SOTD" ] || [ "${real_help#*Usage: sotd install}" = "$real_help" ]; then
-    printf '    SKIP the real sotd refusals (no sotd with install at %s)\n' "$REAL_SOTD"
-elif ! command -v jq >/dev/null 2>&1; then
-    printf '    SKIP the real sotd refusals (no jq on this host, which sotd install requires before its gates)\n'
-else
-    line="$("$REAL_SOTD" --version)"; rv="$(printf '%s\n' "$line" | cut -d' ' -f2)"; rsha="$(printf '%s\n' "$line" | sed -E 's/^[^(]*\(([0-9a-f]+).*/\1/')"
-    rcommit="$(git -C "$ENTRY_SRC" rev-parse "$rsha" 2>/dev/null)" || rcommit=""
-    real_pack() {  # <d>: a pack whose sotd is the real one, with a sot that says the same build
-        local top="sot-$rv-$TGT"
-        mkdir -p "$1/pack/$top"; cp "$REAL_SOTD" "$1/pack/$top/sotd"
-        printf '#!/bin/sh\necho "sot %s (%s 2026-01-01, protocol 3)"\n' "$rv" "$rsha" > "$1/pack/$top/sot"; chmod +x "$1/pack/$top/sot"
-        printf 'archive\n' > "$1/pack/$top.tar.gz"; printf '%s\n' "$rcommit" > "$1/pack/COMMIT"
-        ( cd "$1/pack" && sha256_of "$top.tar.gz" COMMIT > SHA256SUMS )
-    }
-    # An install a daemon host left on the shared home: its record, binaries and a pointer armed over it.
-    shared_install() {  # <d>
-        local p="$1/home/.local/share/sot"
-        mkdir -p "$p/bin" "$p/updates" "$1/home/.config/sot" "$1/run"; chmod 700 "$1/run"
-        printf '{\n  "schema": 1,\n  "version": "0.0.1",\n  "daemon": true,\n  "service": "systemd"\n}\n' > "$p/install.json"
-        printf 'daemon host sotd\n' > "$p/bin/sotd"; printf '{"tag": "v9"}\n' > "$p/updates/pending-$TGT.json"
-        printf 'hub = "hub-box"\n[host.hub-box]\ndaemon = true\n' > "$1/home/.config/sot/hosts.toml"
-    }
-    sotd_install() {  # <d> <PATH> <args...>: sotd install run as the bootstrap runs it
-        local d="$1" path="$2"; shift 2
-        ENTRY_RC=0
-        ENTRY_OUT="$(env -i HOME="$d/home" PATH="$path" XDG_RUNTIME_DIR="$d/run" SOT_SELF_HOST=laptop "$d/pack/sot-$rv-$TGT/sotd" install --pack "$d/pack" "$@" 2>&1)" || ENTRY_RC=$?
-    }
-    if [ -z "$rcommit" ]; then
-        printf '    SKIP the real sotd refusals (its commit %s is not in this tree)\n' "$rsha"
-    else
-        JQ_TOOLS="$WORK/entry-jq"; mk_tools "$JQ_TOOLS" jq
-        d="$WORK/e-refuse-host"; mkdir -p "$d"; real_pack "$d"; shared_install "$d"; before="$(tree_of "$d/home")"
-        sotd_install "$d" "$JQ_TOOLS" --be-only --no-service
-        check "a host hosts.toml runs no sotd on is refused over the shared install (exit 2, one verdict)" "2 1" "$ENTRY_RC $(verdicts)"
-        check "it says why" "1" "$(printf '%s\n' "$ENTRY_OUT" | grep -c 'FAIL: gate: hosts.toml runs no sotd on this host, and .* already holds an install' || true)"
-        check "nothing under the home changed" "$before" "$(tree_of "$d/home")"
-        # A backend-only run never starts the window: a frontend that cannot run on this host's libc does not stop it.
-        printf '#!/bin/sh\necho "sot: GLIBC_2.35 not found" >&2\nexit 1\n' > "$d/pack/sot-$rv-$TGT/sot"
-        sotd_install "$d" "$JQ_TOOLS" --be-only --no-service
-        check "a --be-only run whose frontend cannot start here goes on to its gates" "2 1" \
-            "$ENTRY_RC $(printf '%s\n' "$ENTRY_OUT" | grep -c 'FAIL: gate: hosts.toml runs no sotd on this host' || true)"
-        d="$WORK/e-refuse-jq"; mkdir -p "$d"; real_pack "$d"; shared_install "$d"; before="$(tree_of "$d/home")"
-        sotd_install "$d" "$ENTRY_TOOLS" --be-only --no-service
-        check "an install without jq stops naming the command that installs it" "1 1" \
-            "$ENTRY_RC $(printf '%s\n' "$ENTRY_OUT" | grep -c 'sot-comm needs jq, which is not on PATH: install it with ' || true)"
-        check "nothing under the home changed" "$before" "$(tree_of "$d/home")"
-        d="$WORK/e-refuse-flag"; mkdir -p "$d"; real_pack "$d"
-        sotd_install "$d" "$JQ_TOOLS" --frob
-        check "an unknown option: one FAIL, exit 2" "2 1 FAIL: options: unknown flag: --frob" "$ENTRY_RC $(verdicts) $(last)"
-        sotd_install "$d" "$JQ_TOOLS" --prefix "$d/a b"
-        check "a prefix with a space is refused before anything is written" "1 no" "$ENTRY_RC $([ -e "$d/a b" ] && echo yes || echo no)"
-        # A TERM to sotd install while a step runs (here the checkout's clone, which starts a child of its own): the step
-        # and what it started end before the verdict, which is the one line and the last, and nothing writes after it.
-        d="$WORK/e-term"; mkdir -p "$d/stubs" "$d/ctl" "$d/run"; chmod 700 "$d/run"; real_pack "$d"
-        cat > "$d/stubs/git" <<GIT
+# A TERM to sotd install while a step runs (here the checkout's clone, which starts two children: one that ends on TERM
+# and one that ignores it): the step and what it started end before the verdict, the second after the grace, and the
+# verdict is the one line and the last; nothing the step started writes after it.
+if ! real_skip "a TERM to sotd install mid-step"; then
+    d="$WORK/e-term"; mkdir -p "$d/stubs" "$d/ctl" "$d/run"; chmod 700 "$d/run"; real_pack "$d"
+    cat > "$d/stubs/git" <<GIT
 #!/bin/sh
 case " \$* " in
-    *" clone "*) sh -c 'sleep 3; echo late >> "$d/ctl/late"' & echo \$! > "$d/ctl/late.pid"; echo cloning >> "$d/ctl/log"; sleep 30 ;;
+    *" clone "*)
+        sh -c 'sleep 3; echo late >> "$d/ctl/late"' &
+        sh -c 'trap "" TERM; sleep 14; echo late >> "$d/ctl/late"' &
+        echo cloning >> "$d/ctl/log"; sleep 30 ;;
 esac
 exec "$(type -P git)" "\$@"
 GIT
-        chmod +x "$d/stubs/git"
-        env -i HOME="$d/home" PATH="$d/stubs:$JQ_TOOLS" XDG_RUNTIME_DIR="$d/run" SOT_SELF_HOST=laptop SOT_INSTALL_ORIGIN="$ENTRY_SRC" \
-            "$d/pack/sot-$rv-$TGT/sotd" install --pack "$d/pack" --be-only --no-service > "$d/term.out" 2>&1 &
-        term_pid=$!
-        n=0; while [ "$n" -lt 300 ] && [ ! -s "$d/ctl/log" ]; do sleep 0.1; n=$((n + 1)); done
-        kill -TERM "$term_pid"
-        term_rc=0; wait "$term_pid" || term_rc=$?
-        late_pid="$(cat "$d/ctl/late.pid" 2>/dev/null)"; sleep 4
-        check "a TERM to sotd install mid-step ends it by the signal (143), with one verdict, the last" "143 1 FAIL: layout: stopped" \
-            "$term_rc $(grep -c -E '^(PASS|FAIL|ONE STEP LEFT): ' "$d/term.out" || true) $(tail -1 "$d/term.out")"
-        check "and what the step started ended with it: nothing wrote after the verdict" "no gone" \
-            "$([ -e "$d/ctl/late" ] && echo wrote || echo no) $([ -n "$late_pid" ] && kill -0 "$late_pid" 2>/dev/null && echo alive || echo gone)"
-    fi
+    chmod +x "$d/stubs/git"
+    env -i HOME="$d/home" PATH="$d/stubs:$JQ_TOOLS" XDG_RUNTIME_DIR="$d/run" SOT_SELF_HOST=laptop SOT_INSTALL_ORIGIN="$ENTRY_SRC" \
+        "$d/pack/sot-$rv-$TGT/sotd" install --pack "$d/pack" --be-only --no-service > "$d/term.out" 2>&1 &
+    term_pid=$!
+    n=0; while [ "$n" -lt 300 ] && [ ! -s "$d/ctl/log" ]; do sleep 0.1; n=$((n + 1)); done
+    t0=$SECONDS; kill -TERM "$term_pid"
+    term_rc=0; wait "$term_pid" || term_rc=$?
+    # Past the time either child would have written.
+    while [ $((SECONDS - t0)) -lt 16 ]; do sleep 1; done
+    check "a TERM to sotd install mid-step ends it by the signal (143), with one verdict, the last" "143 1 FAIL: layout: stopped" \
+        "$term_rc $(grep -c -E '^(PASS|FAIL|ONE STEP LEFT): ' "$d/term.out" || true) $(tail -1 "$d/term.out")"
+    check "and nothing the step started wrote after the verdict" "no" "$([ -e "$d/ctl/late" ] && echo wrote || echo no)"
+fi
+
+# ---------------------------------------------------------------------------
+# The real sotd as the pack's: a refused install changes nothing under the home (the prefix, ~/.local, the comm home).
+case_start "entry_refuses_without_writing"
+if ! real_skip "the real sotd refusals"; then
+    d="$WORK/e-refuse-host"; mkdir -p "$d"; real_pack "$d"; shared_install "$d"; before="$(tree_of "$d/home")"
+    sotd_install "$d" "$JQ_TOOLS" --be-only --no-service
+    check "a host hosts.toml runs no sotd on is refused over the shared install (exit 2, one verdict)" "2 1" "$ENTRY_RC $(verdicts)"
+    check "it says why" "1" "$(printf '%s\n' "$ENTRY_OUT" | grep -c 'FAIL: gate: hosts.toml runs no sotd on this host, and .* already holds an install' || true)"
+    check "nothing under the home changed" "$before" "$(tree_of "$d/home")"
+    d="$WORK/e-refuse-jq"; mkdir -p "$d"; real_pack "$d"; shared_install "$d"; before="$(tree_of "$d/home")"
+    sotd_install "$d" "$ENTRY_TOOLS" --be-only --no-service
+    check "an install without jq stops naming the command that installs it" "1 1" \
+        "$ENTRY_RC $(printf '%s\n' "$ENTRY_OUT" | grep -c 'sot-comm needs jq, which is not on PATH: install it with ' || true)"
+    check "nothing under the home changed" "$before" "$(tree_of "$d/home")"
+    d="$WORK/e-refuse-flag"; mkdir -p "$d"; real_pack "$d"
+    sotd_install "$d" "$JQ_TOOLS" --frob
+    check "an unknown option: one FAIL, exit 2" "2 1 FAIL: options: unknown flag: --frob" "$ENTRY_RC $(verdicts) $(last)"
+    sotd_install "$d" "$JQ_TOOLS" --prefix "$d/a b"
+    check "a prefix with a space is refused before anything is written" "1 no" "$ENTRY_RC $([ -e "$d/a b" ] && echo yes || echo no)"
 fi

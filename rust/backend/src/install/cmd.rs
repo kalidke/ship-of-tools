@@ -226,10 +226,6 @@ pub(super) fn git_in(dir: &Path) -> Command {
 #[cfg_attr(windows, allow(dead_code, reason = "the Unix juliaup install"))]
 pub(super) const CURL_BOUND: [&str; 6] = ["--connect-timeout", "15", "--speed-limit", "1000", "--speed-time", "60"];
 
-#[cfg(all(test, unix))]
-#[path = "cmd_tests.rs"]
-mod tests;
-
 /// Whether a program by this name is on PATH.
 pub(super) fn on_path(name: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else { return false };

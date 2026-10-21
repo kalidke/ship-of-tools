@@ -72,10 +72,11 @@ fn the_record_time_is_utc_in_its_shape() {
     assert_eq!((now.len(), &now[10..11], &now[19..]), (20, "T", "Z"), "{now}");
 }
 
-/// A repair run over a readable record of the same version and commit changes only the pin; any other run, or a cut
-/// record, gets the record whole.
+/// A repair run moves nothing: its other steps lay again what is there, so the Julia environments' own manifests are
+/// kept (an install's are resolved again), and a readable record of the same build gets its pin and no other change; a
+/// record cut short, or one of another build, is written whole.
 #[test]
-fn a_repair_changes_only_the_pin_of_the_record() {
+fn a_repair_run_moves_nothing() {
     let before = text(&sample(false));
     let mut r = sample(true);
     r.installed_at = "2026-10-21T09:00:00Z".into();
@@ -84,5 +85,13 @@ fn a_repair_changes_only_the_pin_of_the_record() {
     assert_eq!(text_for("{ \"version\": \"0.6.7\", \"comm", &r, true), text(&r), "a cut record is written whole");
     let other = text(&Record { commit: "f".repeat(40), ..sample(false) });
     assert_eq!(text_for(&other, &r, true), text(&r), "another build is written whole");
+
+    let dir = tempfile::tempdir().unwrap();
+    let ran = sot_log::test_wait::run_within(std::process::Command::new("git").arg("init").arg("-q").arg(dir.path()), std::time::Duration::from_secs(20));
+    assert_eq!(ran.status.code(), Some(0), "{ran}");
+    std::fs::create_dir_all(dir.path().join("julia/kernel")).unwrap();
+    std::fs::write(dir.path().join("julia/kernel/Manifest.toml"), "resolved\n").unwrap();
+    assert_eq!(super::super::julia::stale_manifests(dir.path(), false).len(), 1);
+    assert!(super::super::julia::stale_manifests(dir.path(), true).is_empty());
 }
 

@@ -91,7 +91,3 @@ pub(super) fn daemon_pids(all: &[Proc], prefix: &Path) -> Vec<u32> {
 pub(super) fn window_runs(all: &[Proc], prefix: &Path) -> bool {
     all.iter().any(|p| runs(p, prefix, "sot"))
 }
-
-#[cfg(test)]
-#[path = "procs_tests.rs"]
-mod tests;

@@ -1,5 +1,4 @@
 use super::*;
-use std::cell::RefCell;
 
 /// A scratch home and prefix whose `sotd`, `systemctl` and `loginctl` stand-ins append their argv to one log, in call
 /// order; the checkout is this tree, whose library renders the unit. The pin a `--claim` writes names `claim_host`.
@@ -67,213 +66,143 @@ fn template() -> PathBuf {
     tree().join("deploy/sotd.service")
 }
 
-/// The unit is pinned to its hosts before any manager reloads it, then started; its boot start is the drop-in, and no
-/// `enable` runs (on a shared home an enable would link it for every host).
+/// The unit is pinned to its hosts before any reload: the pin (claimed for this host with no hosts.toml) comes before a
+/// manager reloads the unit, then it starts; a unit that cannot be pinned is never written, loaded or started, since on
+/// a shared home every host would start it. Boot start is the drop-in, never an `enable` (on a shared home an enable
+/// links the unit for every host): wired for a unit this run finds new, and over an existing one only where an old link
+/// or the drop-in is, so a person's turn-off survives. A retire never disables the shared unit or removes its file:
+/// under a declared topology it pins the unit, stops this host's run and reloads; with no hosts.toml, a retire on a
+/// host the pin does not name alone keeps the boot drop-in, and on the host the pin names alone removes it; the claimed
+/// pin names this host alone, and a claim names the host it moved the daemon from.
 #[test]
-fn install_pins_the_unit_before_it_is_loaded() {
-    let f = Fixture::new("me");
-    with_units(&f, |u| enable_local_service(u, &template(), "/s.sock")).unwrap();
-    let d = f.units().display().to_string();
-    let pin = f.at(&format!("sotd topology pin --dir {d} --claim")).expect("a claimed pin");
-    let reload = f.at("systemctl --user daemon-reload").expect("a reload");
-    let start = f.at("systemctl --user start sotd.service").expect("a start");
-    assert!(pin < reload && reload < start, "{:?}", f.log());
-    assert!(f.units().join("sotd.service").is_file());
-    assert_eq!(f.wiring(), "dropin none");
-    assert!(!f.log().iter().any(|l| l.contains(" enable") && l.starts_with("systemctl")), "{:?}", f.log());
-}
-
-/// Boot start by one rule for both update paths: a unit this run finds new is wired; over an existing one only where an
-/// old link or the drop-in is, so a person's turn-off survives.
-#[test]
-fn install_wires_boot_start_by_one_rule() {
-    for (state, want) in [("link", "dropin none"), ("dropin", "dropin none"), ("none", "none none")] {
+fn the_unit_is_pinned_before_any_reload() {
+    {
         let f = Fixture::new("me");
-        let u = f.units();
-        std::fs::write(u.join("sotd.service"), format!("[Service]\nExecStart={}/bin/sotd --x\n", f.path("prefix").display())).unwrap();
-        match state {
-            "link" => {
-                std::fs::create_dir_all(u.join("default.target.wants")).unwrap();
-                std::os::unix::fs::symlink("../sotd.service", u.join("default.target.wants/sotd.service")).unwrap();
-            }
-            "dropin" => {
-                std::fs::create_dir_all(u.join("default.target.d")).unwrap();
-                std::fs::write(u.join("default.target.d/sotd.conf"), "[Unit]\nWants=sotd.service\n").unwrap();
-            }
-            _ => {}
-        }
         with_units(&f, |u| enable_local_service(u, &template(), "/s.sock")).unwrap();
-        assert_eq!(f.wiring(), want, "{state}");
+        let d = f.units().display().to_string();
+        let pin = f.at(&format!("sotd topology pin --dir {d} --claim")).expect("a claimed pin");
+        let reload = f.at("systemctl --user daemon-reload").expect("a reload");
+        let start = f.at("systemctl --user start sotd.service").expect("a start");
+        assert!(pin < reload && reload < start, "{:?}", f.log());
+        assert!(f.units().join("sotd.service").is_file());
+        assert_eq!(f.wiring(), "dropin none");
+        assert!(!f.log().iter().any(|l| l.contains(" enable") && l.starts_with("systemctl")), "{:?}", f.log());
+
+        let f = Fixture::new("me");
+        sot_log::test_exec::write_executable(&f.path("prefix/bin/sotd"), format!("#!/bin/sh\nprintf 'sotd %s\\n' \"$*\" >> '{}'\necho 'sotd topology: hosts.toml line 2: expected key = value' >&2\nexit 2\n", f.path("log").display()));
+        let stop = with_units(&f, |u| enable_local_service(u, &template(), "/s.sock")).unwrap_err();
+        assert!(stop.detail.contains("could not pin sotd.service") && stop.detail.contains("hosts.toml line 2"), "{stop:?}");
+        assert!(!f.log().iter().any(|l| l.starts_with("systemctl --user daemon-reload") || l.starts_with("systemctl --user start")), "{:?}", f.log());
+        assert!(!f.units().join("sotd.service").exists(), "no unpinned unit is written");
+    }
+
+    {
+        for (state, want) in [("link", "dropin none"), ("dropin", "dropin none"), ("none", "none none")] {
+            let f = Fixture::new("me");
+            let u = f.units();
+            std::fs::write(u.join("sotd.service"), format!("[Service]\nExecStart={}/bin/sotd --x\n", f.path("prefix").display())).unwrap();
+            match state {
+                "link" => {
+                    std::fs::create_dir_all(u.join("default.target.wants")).unwrap();
+                    std::os::unix::fs::symlink("../sotd.service", u.join("default.target.wants/sotd.service")).unwrap();
+                }
+                "dropin" => {
+                    std::fs::create_dir_all(u.join("default.target.d")).unwrap();
+                    std::fs::write(u.join("default.target.d/sotd.conf"), "[Unit]\nWants=sotd.service\n").unwrap();
+                }
+                _ => {}
+            }
+            with_units(&f, |u| enable_local_service(u, &template(), "/s.sock")).unwrap();
+            assert_eq!(f.wiring(), want, "{state}");
+        }
+    }
+
+    {
+        let f = Fixture::new("me");
+        std::fs::write(f.units().join("sotd.service"), "[Service]\nExecStart=/x/bin/sotd\n").unwrap();
+        with_units(&f, |u| retire_local_service(u, true, "me"));
+        let d = f.units().display().to_string();
+        let pin = f.at(&format!("sotd topology pin --dir {d}")).expect("a pin");
+        let stop = f.at("systemctl --user stop sotd.service").expect("a stop");
+        let reload = f.at("systemctl --user daemon-reload").expect("a reload");
+        assert!(pin < stop && stop < reload, "{:?}", f.log());
+        assert!(!f.log().iter().any(|l| l.contains("disable")), "{:?}", f.log());
+        assert!(f.units().join("sotd.service").is_file());
+        let f = Fixture::new("me");
+        with_units(&f, |u| retire_local_service(u, true, "me"));
+        assert!(f.log().is_empty(), "with no unit file nothing runs: {:?}", f.log());
+    }
+
+    {
+        let f = Fixture::new("unithost-a");
+        with_units(&f, |u| enable_local_service(u, &template(), "/s.sock")).unwrap();
+        assert_eq!(f.wiring(), "dropin none");
+        with_units(&f, |u| retire_local_service(u, false, "unithost-b"));
+        assert!(!f.log().iter().any(|l| l.contains("disable")), "{:?}", f.log());
+        assert_eq!(f.wiring(), "dropin none", "host B's retire keeps host A's boot start");
+        with_units(&f, |u| retire_local_service(u, false, "unithost-a"));
+        assert_eq!(f.wiring(), "none none", "host A's own retire removes the drop-in its pin serves alone");
+        let g = Fixture::new("unithost-b");
+        let pin = g.units().join("sotd.service.d");
+        std::fs::create_dir_all(&pin).unwrap();
+        std::fs::write(pin.join("topology.conf"), "[Unit]\nConditionHost=|unithost-a\nConditionHost=|unithost-a.*\n").unwrap();
+        assert_eq!(role::pin_hosts(&g.units()), ["unithost-a"]);
+        with_units(&g, |u| enable_local_service(u, &template(), "/s.sock")).unwrap();
+        assert_eq!(role::pin_hosts(&g.units()), ["unithost-b"], "the claim moved the daemon to host B");
+    }
+
+    {
+        use sot_protocol::topology::relay_units::{host_pin, install_pin};
+        let dir = tempfile::tempdir().unwrap();
+        let (rel, text) = install_pin("me");
+        let pin = dir.path().join(rel);
+        std::fs::create_dir_all(pin.parent().unwrap()).unwrap();
+        std::fs::write(&pin, text).unwrap();
+        assert!(role::pin_names_only(dir.path(), "me") && !role::pin_names_only(dir.path(), "other") && !role::pin_names_only(dir.path(), ""));
+        assert_eq!(role::pin_hosts(dir.path()), ["me"]);
+        std::fs::write(&pin, host_pin(&["me", "you"])).unwrap();
+        assert!(!role::pin_names_only(dir.path(), "me"));
+        assert_eq!(role::pin_hosts(dir.path()), ["me", "you"]);
     }
 }
 
-/// A retire under a declared topology pins the unit, stops this host's run and reloads, and never disables the shared
-/// unit or removes its file.
+/// Nothing is written before every gate: the front gate refuses a prefix or home a unit, launcher or shell line would
+/// read as syntax, naming the character; the direction gate's advice to a build of the line fetches nothing into the
+/// install's base clone, and says it could not tell.
 #[test]
-fn a_retire_under_a_topology_pins_and_stops_and_never_disables() {
-    let f = Fixture::new("me");
-    std::fs::write(f.units().join("sotd.service"), "[Service]\nExecStart=/x/bin/sotd\n").unwrap();
-    with_units(&f, |u| retire_local_service(u, true, "me"));
-    let d = f.units().display().to_string();
-    let pin = f.at(&format!("sotd topology pin --dir {d}")).expect("a pin");
-    let stop = f.at("systemctl --user stop sotd.service").expect("a stop");
-    let reload = f.at("systemctl --user daemon-reload").expect("a reload");
-    assert!(pin < stop && stop < reload, "{:?}", f.log());
-    assert!(!f.log().iter().any(|l| l.contains("disable")), "{:?}", f.log());
-    assert!(f.units().join("sotd.service").is_file());
-    let f = Fixture::new("me");
-    with_units(&f, |u| retire_local_service(u, true, "me"));
-    assert!(f.log().is_empty(), "with no unit file nothing runs: {:?}", f.log());
-}
-
-/// A home two hosts share, with no hosts.toml: a retire on a host the pin does not name alone stops its own run and
-/// keeps the boot drop-in; on the host the pin names alone it removes it; a claim names the host it moved the daemon from.
-#[test]
-fn a_home_two_hosts_share_with_no_hosts_toml() {
-    let f = Fixture::new("unithost-a");
-    with_units(&f, |u| enable_local_service(u, &template(), "/s.sock")).unwrap();
-    assert_eq!(f.wiring(), "dropin none");
-    with_units(&f, |u| retire_local_service(u, false, "unithost-b"));
-    assert!(!f.log().iter().any(|l| l.contains("disable")), "{:?}", f.log());
-    assert_eq!(f.wiring(), "dropin none", "host B's retire keeps host A's boot start");
-    with_units(&f, |u| retire_local_service(u, false, "unithost-a"));
-    assert_eq!(f.wiring(), "none none", "host A's own retire removes the drop-in its pin serves alone");
-    let g = Fixture::new("unithost-b");
-    let pin = g.units().join("sotd.service.d");
-    std::fs::create_dir_all(&pin).unwrap();
-    std::fs::write(pin.join("topology.conf"), "[Unit]\nConditionHost=|unithost-a\nConditionHost=|unithost-a.*\n").unwrap();
-    assert_eq!(role::pin_hosts(&g.units()), ["unithost-a"]);
-    with_units(&g, |u| enable_local_service(u, &template(), "/s.sock")).unwrap();
-    assert_eq!(role::pin_hosts(&g.units()), ["unithost-b"], "the claim moved the daemon to host B");
-}
-
-/// The pin command a retire tells a person to run, run as printed in this home, passes the claim's own arguments; with
-/// boot start off the retire says so and names no pin command.
-#[test]
-fn the_pin_command_a_retire_prints_is_the_claim() {
-    let f = Fixture::new("me");
-    let u = f.units();
-    std::fs::write(u.join("sotd.service"), "[Service]\nExecStart=/x/bin/sotd\n").unwrap();
-    std::fs::create_dir_all(u.join("default.target.d")).unwrap();
-    std::fs::write(u.join("default.target.d/sotd.conf"), "[Unit]\nWants=sotd.service\n").unwrap();
-    let notes = with_units(&f, |u| retire_local_service(u, false, "me"));
-    let note = notes.iter().find(|n| n.contains("sotd topology pin")).unwrap_or_else(|| panic!("no pin command: {notes:?}"));
-    let printed = note[note.find("sotd topology pin").unwrap()..].split(" on the host").next().unwrap();
-    assert_eq!(printed, "sotd topology pin --dir ~/.config/systemd/user --claim", "the words unit_pin.rs runs");
-    let sotd = f.path("prefix/bin/sotd");
-    let cmd = printed.replacen("sotd", &format!("'{}'", sotd.display()), 1);
-    let ran = cmd::output(Command::new("bash").arg("-c").arg(&cmd).env("HOME", f.path("home")));
-    assert!(ran.ok(), "{cmd}");
-    let as_printed = f.log().last().cloned().unwrap();
-    with_units(&f, |u| u.pin(true)).unwrap();
-    assert_eq!(f.log().last(), Some(&as_printed), "{printed}");
-
-    let g = Fixture::new("me");
-    std::fs::write(g.units().join("sotd.service"), "[Service]\nExecStart=/x/bin/sotd\n").unwrap();
-    let notes = with_units(&g, |u| retire_local_service(u, false, "me"));
-    assert!(notes.iter().any(|n| n.contains("Its boot start is already off")), "{notes:?}");
-    assert!(!notes.iter().any(|n| n.contains("sotd topology pin")), "{notes:?}");
-}
-
-fn work(rows: &[&str], pluto: bool, unsure: Option<&str>) -> daemon::Work {
-    daemon::Work { rows: rows.iter().map(|r| (*r).to_string()).collect(), pluto, unsure: unsure.map(String::from) }
-}
-
-/// The daemon question, run with stand-ins for the daemon, its children and the console: what it decided, and whether
-/// it asked.
-fn ask(q: &Question, live: daemon::Work, kids: Option<Vec<&'static str>>, answer: bool) -> (Result<(daemon::Work, bool), Stop>, bool) {
-    let asked = RefCell::new(false);
-    let asks = Asks {
-        live: &|| live.clone(),
-        kids: &|| kids.clone(),
-        ask: &|_| {
-            *asked.borrow_mut() = true;
-            answer
-        },
-        note: &|_| {},
-    };
-    let got = question(q, &asks);
-    (got, asked.into_inner())
-}
-
-fn q(before: State, unit_runs: bool, restart_flag: bool) -> Question<'static> {
-    Question { before, unit_runs, retire_stops: false, restart_flag, socket: "/s.sock", why: "no answer" }
-}
-
-/// A run whose role has no daemon here stops an active local unit (the retire), so its live work is asked as a
-/// restart's is, whatever version it runs; with nothing live, or --restart-daemon, it goes on.
-#[test]
-fn a_retire_asks_before_it_stops_a_live_daemon() {
-    let retire = |before| Question { before, unit_runs: false, retire_stops: true, restart_flag: false, socket: "/s.sock", why: "no answer" };
-    for before in [State::Current, State::Other, State::Held] {
-        let (got, asked) = ask(&retire(before), work(&["alpha"], false, None), None, false);
-        let stop = got.unwrap_err();
-        assert!(asked && stop.code == 2 && stop.detail.contains("stopping it would end the REPLs of: alpha"), "{before:?}: {stop:?}");
-    }
-    let (got, asked) = ask(&retire(State::Current), work(&[], false, None), None, false);
-    assert!(!asked && got.is_ok(), "nothing live: the retire goes on");
-    let (got, asked) = ask(&Question { restart_flag: true, ..retire(State::Current) }, work(&["alpha"], false, None), None, false);
-    assert!(!asked && got.is_ok(), "--restart-daemon answers it");
-    let (got, _) = ask(&retire(State::Unknown), work(&[], false, None), Some(vec!["repl"]), false);
-    assert_eq!(got.unwrap_err().code, 2, "a daemon that cannot be told, with a REPL child, stops the run");
-}
-
-/// A live daemon is asked before it ends: a unit this run would restart, on another version with a live REPL, stops the
-/// run unless the console says yes or the person gave --restart-daemon; one a window holds, or one no unit runs, is
-/// not restarted here and is not asked.
-#[test]
-fn a_live_daemon_is_asked_before_it_ends() {
-    let repl = work(&["alpha"], false, None);
-    let (got, asked) = ask(&q(State::Other, true, false), repl.clone(), None, false);
-    let stop = got.unwrap_err();
-    assert!(asked && stop.code == 2 && stop.detail.contains("restarting it would end the REPLs of: alpha"), "{stop:?}");
-    let (got, asked) = ask(&q(State::Other, true, false), repl.clone(), None, true);
-    assert!(asked && got.is_ok());
-    let (got, asked) = ask(&q(State::Other, true, true), repl.clone(), None, false);
-    assert!(!asked && got.is_ok(), "--restart-daemon answers it");
-    for (before, unit) in [(State::Held, true), (State::Other, false)] {
-        let (got, asked) = ask(&q(before, unit, false), repl.clone(), None, false);
-        assert!(!asked && got.unwrap().0.rows == ["alpha"], "{before:?} {unit}: the step names the rows");
-    }
-    let (got, asked) = ask(&q(State::Other, true, false), work(&[], false, None), None, false);
-    assert!(!asked && got.is_ok(), "nothing live is nothing to ask");
-}
-
-/// A daemon that runs and cannot be told its version is never taken for none: the run stops unless the unit can be
-/// restarted and nothing live is lost (its own children say so) or the answer is yes.
-#[test]
-fn a_daemon_that_cannot_be_told_stops_the_run() {
-    let (got, _) = ask(&q(State::Unknown, false, true), work(&[], false, None), Some(vec![]), true);
-    assert_eq!(got.unwrap_err().code, 2, "no unit to restart: nothing answers it");
-    let (got, asked) = ask(&q(State::Unknown, true, false), work(&[], false, None), Some(vec![]), false);
-    assert!(!asked && got.is_ok(), "no REPL or Pluto child: the restart ends nothing live");
-    let (got, asked) = ask(&q(State::Unknown, true, false), work(&[], false, None), Some(vec!["repl"]), false);
-    assert!(asked && got.unwrap_err().code == 2);
-    let (got, asked) = ask(&q(State::Unknown, true, false), work(&[], false, None), None, true);
-    assert!(asked && got.is_ok());
-}
-
-/// A daemon that cannot say all of its live work is judged by its children; what it could not say is unknown.
-#[test]
-fn a_daemon_that_cannot_say_is_judged_by_its_children() {
-    let unsure = work(&[], false, Some("no pluto field"));
-    let (got, asked) = ask(&q(State::Other, true, false), unsure.clone(), Some(vec![]), false);
-    assert!(!asked && !got.unwrap().1, "no REPL or Pluto child: nothing is unknown");
-    let (got, asked) = ask(&q(State::Other, true, false), unsure.clone(), Some(vec!["pluto"]), false);
-    let stop = got.unwrap_err();
-    assert!(asked && stop.detail.starts_with("could not ask the daemon on /s.sock in full: it runs another version; no pluto field"), "{stop:?}");
-    let (got, _) = ask(&q(State::Held, true, false), unsure, Some(vec!["repl"]), false);
-    assert!(got.unwrap().1, "a daemon left running says its work is unknown in the step");
-}
-
-/// The front gate refuses a prefix or home a unit, launcher or shell line would read as syntax, naming the character.
-#[test]
-fn a_path_with_syntax_in_it_is_refused() {
+fn nothing_is_written_before_every_gate() {
     assert_eq!(path_refused("prefix", "/home/me/.local/share/sot"), None);
     for (path, ch) in [("/a b", "space"), ("/a%b", "%"), ("/a'b", "'"), ("/a\nb", "newline"), ("/a$b", "$"), ("/a;b", ";")] {
         let line = path_refused("prefix", path).unwrap();
         assert!(line.contains(&format!(" holds {ch}, ")), "{path}: {line}");
     }
+
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let ran = sot_log::test_wait::run_within(
+            std::process::Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]).args(args),
+            std::time::Duration::from_secs(30),
+        );
+        assert_eq!(ran.status.code(), Some(0), "git {args:?}: {ran}");
+        ran.stdout.trim().to_string()
+    };
+    let origin = dir.path().join("origin");
+    let o = origin.to_string_lossy().into_owned();
+    git(&["init", "-q", &o]);
+    git(&["-C", &o, "commit", "-q", "--allow-empty", "-m", "built"]);
+    let built = git(&["-C", &o, "rev-parse", "HEAD"]);
+    let prefix = dir.path().join("prefix");
+    let base = prefix.join("repo/base");
+    git(&["clone", "-q", &o, &base.to_string_lossy()]);
+    git(&["-C", &o, "commit", "-q", "--allow-empty", "-m", "released"]);
+    let release = git(&["-C", &o, "rev-parse", "HEAD"]);
+    let objects = |p: &std::path::Path| git(&["-C", &p.to_string_lossy(), "count-objects", "-v"]);
+    let before = objects(&base);
+    let way = super::super::build_direction(&prefix, &format!("0.6.7-dev+{}", &built[..9]), &release);
+    assert!(way.starts_with("unknown: "), "{way}");
+    assert_eq!(objects(&base), before, "the advice fetched into the install's base clone");
+    git(&["-C", &base.to_string_lossy(), "fetch", "-q", "origin"]);
+    assert_eq!(super::super::build_direction(&prefix, &format!("0.6.7-dev+{}", &built[..9]), &release), "forward");
 }
 
 /// Folder trust is the agents' command's: what it did is said, and a failure (an older sotd, none at all, an outcome it
@@ -293,13 +222,3 @@ fn folder_trust_is_said_as_the_command_reports_it() {
     assert_eq!(trust_report(&dir.path().join("missing"), dir.path())[0], "WARN: folder trust not declared (exit none)");
 }
 
-/// A unit that cannot be pinned to its hosts is never loaded or started: on a shared home every host would start it.
-#[test]
-fn a_unit_that_cannot_be_pinned_is_never_loaded() {
-    let f = Fixture::new("me");
-    sot_log::test_exec::write_executable(&f.path("prefix/bin/sotd"), format!("#!/bin/sh\nprintf 'sotd %s\\n' \"$*\" >> '{}'\necho 'sotd topology: hosts.toml line 2: expected key = value' >&2\nexit 2\n", f.path("log").display()));
-    let stop = with_units(&f, |u| enable_local_service(u, &template(), "/s.sock")).unwrap_err();
-    assert!(stop.detail.contains("could not pin sotd.service") && stop.detail.contains("hosts.toml line 2"), "{stop:?}");
-    assert!(!f.log().iter().any(|l| l.starts_with("systemctl --user daemon-reload") || l.starts_with("systemctl --user start")), "{:?}", f.log());
-    assert!(!f.units().join("sotd.service").exists(), "no unpinned unit is written");
-}

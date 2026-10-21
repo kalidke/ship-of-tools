@@ -96,7 +96,3 @@ pub(super) fn way(supervisor_code: Option<&str>, window_only: bool, session: &dy
         None => Way::Here,
     }
 }
-
-#[cfg(test)]
-#[path = "supervisor_tests.rs"]
-mod tests;

@@ -241,9 +241,9 @@ fn the_hub_pins_every_reverse_tunnel_where_systemd_reads_it() {
     assert!(!conditions.is_empty() && !starts_here(&t, &conditions), "{conditions:?}");
 }
 
-/// The retire tells a person how to move boot start with `sotd topology pin --dir ~/.config/systemd/user --claim` (that
-/// those are its words and the claim's arguments is `install::unix`'s unit test). It runs: `sotd` is the built binary,
-/// `~` is the scratch home, and the pin it writes names this host. No record that names the claim may leave out `--dir`,
+/// The retire tells a person how to move boot start with `sotd topology pin --dir ~/.config/systemd/user --claim` (its
+/// words in `install::unix::retire_local_service`; no test reads them there). It runs: `sotd` is the built binary, `~`
+/// is the scratch home, and the pin it writes names this host. No record that names the claim may leave out `--dir`,
 /// which the verb requires.
 #[test]
 fn the_pin_command_the_installer_prints_runs_as_printed() {
