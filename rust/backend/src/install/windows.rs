@@ -418,7 +418,7 @@ pub(super) fn environments(ctx: &Ctx, found: &mut Found, instantiate: &dyn Fn(&P
     }
     let scratch = ctx.pack.dir.join("tmp");
     let _ = std::fs::create_dir_all(&scratch);
-    for failed in instantiate(&ctx.version_dir, &scratch, false) {
+    for failed in instantiate(&ctx.version_dir, &scratch, ctx.repair) {
         found.fail("julia", failed);
     }
 }
