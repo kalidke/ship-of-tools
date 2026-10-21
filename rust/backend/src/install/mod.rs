@@ -106,7 +106,7 @@ pub(super) fn direction(sotd: &Path, version: &str, prefix: &Path, installed: &s
 
 /// What a build of the line (a `+` in its version) is told about the release a run found, by ancestry and not version
 /// text: its commit (the record's, else the `+<sha>` of its version) against the pack's `COMMIT`, in the install's own
-/// base clone. `forward`, `older` or `unknown: <why>`.
+/// base clone, read and never fetched into. `forward`, `older` or `unknown: <why>`.
 pub(super) fn build_direction(prefix: &Path, installed: &str, release_commit: &str) -> String {
     let base = prefix.join("repo").join("base");
     let recorded = record::string(&record::read(&prefix.join("install.json")), "commit").unwrap_or_default();
@@ -122,8 +122,10 @@ pub(super) fn build_direction(prefix: &Path, installed: &str, release_commit: &s
         return format!("unknown: no base clone at {}", base.display());
     }
     let git = |args: &[&str]| cmd::output(cmd::git_in(&base).args(args)).ok();
-    if !git(&["cat-file", "-e", &format!("{release_commit}^{{commit}}")]) && !git(&["fetch", "--quiet", "origin", release_commit]) {
-        return "unknown: could not fetch the commit of the release".into();
+    // Read only: the run that asks stops, and a stop writes nothing under the prefix, so a commit the clone lacks is
+    // not fetched into it.
+    if !git(&["cat-file", "-e", &format!("{release_commit}^{{commit}}")]) {
+        return format!("unknown: the release's commit is not in {} yet", base.display());
     }
     if !git(&["rev-parse", "--verify", "--quiet", &format!("{built}^{{commit}}")]) {
         return format!("unknown: this build's commit {} is not in {}", &built[..built.len().min(9)], base.display());

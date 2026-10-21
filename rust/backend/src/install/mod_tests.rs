@@ -70,3 +70,35 @@ fn a_missing_binary_beside_a_record_is_guarded() {
     assert_eq!(meet("0.7.0", true, || Ok(())).unwrap(), Meet::Update);
 }
 
+
+/// A build of the line is told the way without its install being written: a release commit its base clone lacks is not
+/// fetched into it (a refused run writes nothing under the prefix), and the advice says it could not tell.
+#[test]
+fn the_build_advice_writes_nothing_under_the_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let ran = sot_log::test_wait::run_within(
+            std::process::Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]).args(args),
+            std::time::Duration::from_secs(30),
+        );
+        assert_eq!(ran.status.code(), Some(0), "git {args:?}: {ran}");
+        ran.stdout.trim().to_string()
+    };
+    let origin = dir.path().join("origin");
+    let o = origin.to_string_lossy().into_owned();
+    git(&["init", "-q", &o]);
+    git(&["-C", &o, "commit", "-q", "--allow-empty", "-m", "built"]);
+    let built = git(&["-C", &o, "rev-parse", "HEAD"]);
+    let prefix = dir.path().join("prefix");
+    let base = prefix.join("repo/base");
+    git(&["clone", "-q", &o, &base.to_string_lossy()]);
+    git(&["-C", &o, "commit", "-q", "--allow-empty", "-m", "released"]);
+    let release = git(&["-C", &o, "rev-parse", "HEAD"]);
+    let objects = |p: &std::path::Path| git(&["-C", &p.to_string_lossy(), "count-objects", "-v"]);
+    let before = objects(&base);
+    let way = build_direction(&prefix, &format!("0.6.7-dev+{}", &built[..9]), &release);
+    assert!(way.starts_with("unknown: "), "{way}");
+    assert_eq!(objects(&base), before, "the advice fetched into the install's base clone");
+    git(&["-C", &base.to_string_lossy(), "fetch", "-q", "origin"]);
+    assert_eq!(build_direction(&prefix, &format!("0.6.7-dev+{}", &built[..9]), &release), "forward");
+}
