@@ -1,64 +1,70 @@
-# rust/protocol: the wire contract and how a daemon is reached (wire, charter)
+# rust/protocol: wire (contract)
 
-Every byte two Ship of Tools programs exchange is defined here, once, and so is the way a process names a daemon's
-endpoint and starts an ssh login. The crate is shared by the frontend and the backend; its only dependency of ours is
-sot-log. The wire definitions own no runtime state; topology clients own their connections and ssh children.
+Every byte two Ship of Tools programs exchange is defined here, once: the frame, its codec and size cap, every op's
+payload, the protocol integer and the product version. The crate (`sot-protocol`) is shared by the window and the
+daemon and owns no runtime state. Until pass 5b moves it out, `src/topology/` (hosts.toml, endpoints, the ssh recipe
+and the lane client) lives beside the wire; it is topology's contract (`src/topology/CLAUDE.md`), not this page's, and
+it is the only part of this crate that depends on sot-log. The wire's own modules depend on platform only, for the
+host name and the OS account a hello declares.
 
-## Idea
-A frame is one `\n`-terminated JSON envelope, and may be followed by raw blob bytes. Payload types are plain serde
-structs, so a client in another language needs only the op name and the JSON shape. The hosts.toml topology and the
-ssh recipes live beside the wire because they are how a frame gets to the other end.
+## Guarantees
+1. **An envelope is at most 1 MiB in every reader and writer.** `MAX_ENVELOPE_BYTES`, its newline not counted;
+   `write_frame` and `write_frame_blocking` fail with `EnvelopeTooLarge` before writing a byte; `read_frame` refuses an
+   envelope one byte past the cap, never reading a line with no newline to its end; `read_frame_blocking` caps while
+   it reads. Rests on: one constant and one codec, no second reader.
+2. **A blob is exactly its declared length.** A frame whose payload has `blob.len` is followed by exactly that many
+   bytes; `read_frame` reads them and grows its buffer only with bytes that arrived, never by the length the
+   envelope declares; `read_envelope` reads the envelope alone, for a reader that must not read a blob it has not
+   admitted; the blocking pair never reads a blob tail.
+3. **A payload grows only by defaulted fields; any other change raises `PROTOCOL_VERSION`, and hello refuses the
+   mismatch.** Payload types are plain serde structs, so a client in another language needs only the op name and the
+   JSON shape. The integer (3) is declared by every hello (`HelloReq::this_process`), by the shell client's literal
+   (held to it by a test that runs it), and gated by the daemon's hello (server's guarantee). Rests on: `#[serde(default)]`
+   on every field added since protocol 3, and the tests that parse the previous shape.
+4. **A child's output is read by lines, lossily, so no byte ends a reader.** A line is the bytes up to `\n`, less a
+   `\r` before it, decoded lossily, through `ChildLines` or `blocking_child_lines` only; `rust/clippy.toml`'s
+   child-output group refuses tokio's and std's strict line readers. Each user keeps its own proof (the sidecars'
+   children, the window's ssh stderr, the hub link, the dial, the lane client).
+5. **The version string is for people; policy asks `is_release_build`.** The string is bare `X.Y.Z` only for a CI
+   build on its clean release tag; every other build carries `+src`, `+<sha>` or `+<sha>-dirty`; the predicate and
+   the string never disagree. Rests on: `build.rs` stamping the inputs, one definition of each.
+6. **The shared grammars have one parser.** The annotation header (two complete trimmed `---` fence lines, CRLF and
+   indentation tolerated, an unclosed header has no hash, the body bytes kept); the physical scale (a string unit and
+   a nonempty axes array of string names with finite positive `nm_per_px`); the loopback page URL; the video suffix
+   classification (the Julia twin is exercised against the same corpus).
 
 ## Owns
-- The frame: `Frame`, `Kind` and `PROTOCOL_VERSION` (lib.rs); the codec and its 1 MiB envelope cap (codec.rs).
-- A child's output read as lines, each decoded lossily (`ChildLines`, `blocking_child_lines`, child_lines.rs).
-- The op names and every op's payload type (`ops/`).
-- The wire's tree and preview payload types, `TreeNode`, `PreviewPayload` and `BlobDescriptor`, and the binary preview cap
-  `PREVIEW_BINARY_CAP` that the daemon sends under and the window unpacks an `.svgz` to (ir.rs). The kernel
-  builds the JSON these deserialize; nothing in the Julia core serializes its own types to them.
-- The product version string and the release predicate (version.rs); build.rs stamps their inputs.
-- The loopback page-URL grammar, owned by pages: `loopback_port_from_url` and `with_loopback_port` (page_url.rs).
-- Reaching a daemon: the topology grammar, endpoints, ssh recipe and lane client (`topology/`).
-- Annotation frontmatter and synced_against (src/annotation.rs), shared by the window and daemon.
-- PhysicalScale's shared JSON validity and parse (src/physical_scale.rs).
-- Rust video suffix classification and its MIME result (src/video_path.rs); the unchanged Julia plugin is exercised against the same suffix corpus by its real matches tests.
+The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
+names and every op's payload type (`ops/`, its page lists the families); the tree and preview payloads and the binary
+preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
+annotation, physical-scale, page-URL and video-suffix grammars. Owns no runtime state.
 
-## Promises
-- An envelope is at most `MAX_ENVELOPE_BYTES` (1 MiB), its newline not counted, in every writer and reader.
-  `write_frame` and `write_frame_blocking` fail with `EnvelopeTooLarge` before writing any byte.
-- A frame whose payload has `blob.len` is followed by exactly that many bytes; `read_frame` reads them, and the
-  blocking pair never reads a blob tail.
-- `read_frame` refuses an envelope one byte past the cap, never reading a line with no newline to its end, and grows
-  a blob's buffer only with bytes that arrived, never by the length the envelope declares; `read_envelope` reads the
-  envelope alone, for a reader that must not read a blob it has not admitted. `read_frame_blocking` caps while it reads.
-- A child's output is read by lines only through `ChildLines` or `blocking_child_lines` (src/child_lines.rs): a line
-  is the bytes up to `\n`, less a `\r` before it, decoded lossily, so no byte a child writes ends its reader.
-  `rust/clippy.toml`'s child-output group refuses tokio's and std's strict line readers (`lines`, `read_line`). Tests
-  `every_byte_a_child_writes_reads_as_a_line` (src/child_lines.rs), and each user's own: the sidecars' children
-  (sidecars charter), `stderr_drain_reads_past_a_byte_that_is_not_utf8` (the window's ssh,
-  rust/frontend/src/net/transport/tests.rs), `a_failed_link_names_an_ssh_line_that_is_not_utf8` (the hub link,
-  rust/backend/src/comm/mail/hub_link.rs), `the_ssh_hint_reads_past_a_byte_that_is_not_utf8` (the dial,
-  rust/backend/src/topology/dial.rs) and `an_ssh_line_that_is_not_utf8_is_kept` (the lane client,
-  src/topology/lane_child_tests.rs).
-- A payload grows only by `#[serde(default)]` fields; any other change raises `PROTOCOL_VERSION`, and hello requires
-  both sides to agree.
-- The version string is bare `X.Y.Z` only for a CI build on its clean release tag. `is_release_build` is the only
-  question policy may ask; the string is for people.
-- An annotation header has two complete trimmed --- fence lines; hash parsing handles CRLF and indentation and trims one matching quote pair. An unclosed header has no hash and splitting preserves body bytes.
-- A physical scale has a string unit and a nonempty axes array of string names and finite, positive nm_per_px; empty string names/units retain their existing acceptance.
+## Calls in
+serde, serde_json, tokio (the async codec), and platform: `host_name` and `own_account_id` for a hello's identity.
 
-## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides: `Frame`, `codec::read_frame`,
-`child_lines::ChildLines`, `child_lines::blocking_child_lines`,
-`codec::read_envelope`, `codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`,
-`sot_hello_frame`, `comm/lib/comm-lib-client.sh`, `fe.lease`, `fe.leaving`, `scripts/sot-lease.ps1`,
-`launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`, `is_release_build`, `rust/backend/src/update.rs`,
-`rust/frontend/src/selfupdate.rs`, `version_line`, `--version`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale, sot_protocol::video_path::video_mime. Uses: `sot_state_dir`, `sot_config_dir`, `host_name`,
-`state_dir_hash`.
+## Calls out
+`Frame`, `read_frame`, `read_envelope`, `write_frame` and their blocking forms, `ChildLines`, `blocking_child_lines`,
+`PROTOCOL_VERSION`, `HelloReq`/`HelloRes` and every op payload, `is_release_build`, `version_line`,
+`annotation::{split_frontmatter, synced_against}`, `physical_scale::{PhysicalScale, parse_physical_scale}`,
+`video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`; the shell twin `sot_hello_frame`
+(`comm/lib/comm-lib-client.sh`) and `scripts/sot-lease.ps1` follow the lease and hello shapes and are owned by them.
 
-## Folders
-- `src/ops/`: the op payloads (wire); its page lists the families.
-- `src/topology/`: the topology subsystem, with its own charter; endpoints, ssh bridge, lane client and relay units.
+## Does not
+Decide policy from the version string (only `is_release_build`). Admit a connection (server's hello gate). Hold a
+connection, a child or a socket. Interpret a payload's meaning (the op's handler does).
+
+## Platforms
+Same on all three; the blocking codec is the one the ssh bridge and shell wrappers use.
+
+## Tests
+| # | guarantee | test |
+|---|---|---|
+| 1 | envelope cap | `codec_tests.rs`: `an_envelope_at_the_cap_is_written_and_read_by_both_pairs`, `oversize_envelope_is_typed_and_writes_nothing`, `an_envelope_with_no_newline_is_refused_at_the_cap` |
+| 2 | blob exact | `codec_tests.rs`: `file_chunk_blob_is_consumed_no_desync`, `a_declared_blob_length_reserves_nothing`, `a_truncated_frame_error_carries_no_frame_bytes` |
+| 3 | defaulted growth, protocol integer | `ops/session_tests.rs`: `legacy_hello_req_defaults_to_preversioning`, `legacy_hello_res_defaults_to_preversioning`, `this_process_declares_the_protocol_the_version_and_the_os_account`; `lib_client_wire_tests.rs`: `the_shell_hello_is_this_protocols_hello`; `ops/lease_wire_tests.rs`: `fe_lease_res_defaults`; the hello gate itself is server's |
+| 4 | lossy lines | `child_lines_tests.rs`: `every_byte_a_child_writes_reads_as_a_line` |
+| 5 | release predicate | `version_app_version_tests.rs`: `the_bare_version_and_the_release_predicate_never_disagree`, `clean_on_tag_is_the_bare_version_only_from_ci` |
+| 6 | grammars | `annotation_tests.rs`, `physical_scale_tests.rs`, `page_url_tests.rs`, `video_path_tests.rs` |
 
 ## Files
 - `Cargo.toml`: the crate manifest; `test-handshake-bound` is enabled only by test-fixture features (the backend's dev-dependencies and the frontend's `test-pane-timing`), for the lane client's handshake bound and the ssh recipe's fixture command
