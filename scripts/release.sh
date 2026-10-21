@@ -124,7 +124,7 @@ if [[ "$head" != "$(git rev-parse "origin/$branch")" ]]; then
     echo "preflight: HEAD != origin/$branch — pull/push first" >&2; exit 1
 fi
 echo "preflight: $branch at ${head:0:9} equals origin/$branch; the tree is clean"
-echo "preflight: $TAG sorts above ${highest:-every tag (none yet)} on the $core line (${#line_tags[@]} tags) and above the stamp v$stamp"
+echo "preflight: $TAG sorts above ${highest:-no tag} (the highest of ${#line_tags[@]} on the $core line) and above the stamp v$stamp"
 echo "preflight: the stamp after it, v$NEXT, sorts above $TAG"
 
 # ---- stamp -----------------------------------------------------------------

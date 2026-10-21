@@ -59,7 +59,7 @@ cat > "$STUBS/cargo" <<STUB
 #!/bin/sh
 echo "cargo \$*" >> "$CALLS"
 case "\$1" in
-    run) [ "\${STUB_VERCMP_RC:-0}" = 0 ] || { echo "\${STUB_VERCMP_HIGHEST:-}"; exit "\$STUB_VERCMP_RC"; } ;;
+    run) echo "\${STUB_VERCMP_HIGHEST:-}"; exit "\${STUB_VERCMP_RC:-0}" ;;
     update) exit "\${STUB_CARGO_UPDATE_RC:-0}" ;;
 esac
 exit 0
@@ -126,10 +126,13 @@ check "a failure after the stamp ends the cut with a failing status" "exit 1" "$
 check "  and says the restore ran" "release: stopped after the stamp; the stamped files are restored" "$(first "$out" release:)"
 check "  and left the tree clean" "" "$(tree_state)"
 check "  with the stamp back at 0.6.6-dev" "0.6.6-dev" "$(stamp_of < "$CUT/rust/Cargo.toml")"
-out=$(cut_out -- 0.6.6 --dry-run)
+out=$(cut_out STUB_VERCMP_HIGHEST=v0.6.6-rc9 -- 0.6.6 --dry-run)
 check "a dry run ends with exit 0" "exit 0" "$(printf '%s\n' "$out" | tail -n1)"
 check "  printing each check's evidence" \
     "preflight: main at $(git -C "$CUT" rev-parse --short=9 HEAD) equals origin/main; the tree is clean" "$(first "$out" "preflight: main")"
+check "  the order's among them" \
+    "preflight: v0.6.6 sorts above v0.6.6-rc9 (the highest of 0 on the 0.6.6 line) and above the stamp v0.6.6-dev" \
+    "$(first "$out" "preflight: v0.6.6 sorts")"
 check "  and the stamp after the tag" "== after the tag the line is stamped 0.6.7-dev" "$(first "$out" "== after")"
 check "  and restores the stamp" "" "$(tree_state)"
 check "  and tags nothing" "" "$(git -C "$CUT" tag --list)"
