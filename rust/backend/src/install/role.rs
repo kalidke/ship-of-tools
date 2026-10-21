@@ -118,11 +118,26 @@ pub(super) fn running_daemon(running: Option<&str>, prefix: &str, force: bool) -
     }
 }
 
-/// The ownership gate over the files a frontend install writes: the wrapper, and the desktop entry (Linux) or app
-/// bundle (macOS), each this install's, another's (consent), or no one's that can be named (never overwritten).
-pub(super) fn ownership(running: Option<&str>, home: &Path, prefix: &str, macos: bool, frontend: bool, force: bool) -> Gate {
+/// The ownership gate over the files an install writes: the unit (when it wires one), the wrapper, and the desktop entry
+/// (Linux) or app bundle (macOS), each this install's, another's (consent), or no one's that can be named (never
+/// overwritten).
+pub(super) fn ownership(running: Option<&str>, home: &Path, prefix: &str, macos: bool, frontend: bool, wires_unit: bool, force: bool) -> Gate {
     let gate = running_daemon(running, prefix, force);
-    if gate != Gate::Allow || !frontend {
+    if gate != Gate::Allow {
+        return gate;
+    }
+    // The unit file, running here or not: on a home several hosts share it is what they start.
+    let unit = home.join(".config/systemd/user/sotd.service");
+    if let (true, Ok(text)) = (wires_unit, std::fs::read_to_string(&unit)) {
+        match unit_owner_path(&text) {
+            None => return Gate::Unresolvable(format!("{} exists but names no program — move it aside and re-run", unit.display())),
+            Some(owner) if !force && !owner.starts_with(&format!("{prefix}/")) => {
+                return Gate::Refuse(format!("{} runs {owner}, another install's sotd; this install targets {prefix}/bin/sotd", unit.display()));
+            }
+            Some(_) => {}
+        }
+    }
+    if !frontend {
         return gate;
     }
     let wrapper = home.join(".local/bin/sot-launch");

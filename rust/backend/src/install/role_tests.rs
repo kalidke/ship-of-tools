@@ -56,11 +56,11 @@ fn the_gates_refuse_another_installs_files_and_never_an_unknown_one() {
     let bin = home.path().join(".local/bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("sot-launch"), "PENDING=\"/q/updates/pending-x.json\"\n").unwrap();
-    assert!(matches!(ownership(None, home.path(), "/p", false, true, false), Gate::Refuse(_)));
-    assert_eq!(ownership(None, home.path(), "/p", false, true, true), Gate::Allow);
-    assert_eq!(ownership(None, home.path(), "/p", false, false, false), Gate::Allow);
+    assert!(matches!(ownership(None, home.path(), "/p", false, true, false, false), Gate::Refuse(_)));
+    assert_eq!(ownership(None, home.path(), "/p", false, true, false, true), Gate::Allow);
+    assert_eq!(ownership(None, home.path(), "/p", false, false, false, false), Gate::Allow);
     std::fs::write(bin.join("sot-launch"), "something else\n").unwrap();
-    assert!(matches!(ownership(None, home.path(), "/p", false, true, true), Gate::Unresolvable(_)));
+    assert!(matches!(ownership(None, home.path(), "/p", false, true, false, true), Gate::Unresolvable(_)));
 }
 
 /// A host the declared topology runs no sotd on never writes over the shared install, and under a declared topology a
@@ -107,3 +107,21 @@ fn a_plan_that_dials_another_daemon_host_gets_the_dialing_launcher() {
     assert!(!plan_dials_others("dial me unix:/s\nself me\n"));
     assert!(!plan_dials_others(""));
 }
+
+/// A unit file another install wrote is never replaced unasked, whether or not it runs here: on a home several hosts
+/// share it is what the other hosts start. The run that wires the unit checks the file's own program.
+#[test]
+fn an_inactive_unit_of_another_install_is_not_replaced() {
+    let home = tempfile::tempdir().unwrap();
+    let units = home.path().join(".config/systemd/user");
+    std::fs::create_dir_all(&units).unwrap();
+    std::fs::write(units.join("sotd.service"), "[Service]\nExecStart=/q/bin/sotd --label sot\n").unwrap();
+    assert!(matches!(ownership(None, home.path(), "/p", false, false, true, false), Gate::Refuse(_)));
+    assert_eq!(ownership(None, home.path(), "/p", false, false, true, true), Gate::Allow, "--force-role-change consents");
+    assert_eq!(ownership(None, home.path(), "/p", false, false, false, false), Gate::Allow, "a run that wires no unit leaves it");
+    std::fs::write(units.join("sotd.service"), "[Service]\nExecStart=/p/bin/sotd --label sot\n").unwrap();
+    assert_eq!(ownership(None, home.path(), "/p", false, false, true, false), Gate::Allow, "this install's own unit");
+    std::fs::write(units.join("sotd.service"), "[Unit]\nDescription=x\n").unwrap();
+    assert!(matches!(ownership(None, home.path(), "/p", false, false, true, true), Gate::Unresolvable(_)), "a unit with no program is never taken");
+}
+

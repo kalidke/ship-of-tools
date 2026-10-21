@@ -252,7 +252,8 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     step("gate");
     let prefix_s = prefix.to_string_lossy().into_owned();
     let running = running_daemon_bin();
-    match role::ownership(running.as_deref(), &home, &prefix_s, macos, resolved.frontend, opts.force_role_change) {
+    let wires_unit = !macos && resolved.daemon && !no_service;
+    match role::ownership(running.as_deref(), &home, &prefix_s, macos, resolved.frontend, wires_unit, opts.force_role_change) {
         Gate::Allow => {}
         Gate::Refuse(why) => {
             println!("       Installing here would replace or disable another install's files. Re-run with --force-role-change if that is what you want.");
