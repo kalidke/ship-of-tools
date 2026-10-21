@@ -168,12 +168,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
             "same" => say(&format!("this computer already runs {pre_version}: a repair run")),
             _ => say(&format!("this run moves the install from {pre_version} to {} ({dir})", pack.version)),
         }
-        if dir == "older" && implicit {
-            return Err(Stop::new(2, format!("this computer runs {pre_version}, which is newer than {}, the release this run found; it never moves back unless told: name the version you want with --version {}", pack.version, pack.tag())));
-        }
-        if dir == "unknown" && implicit && !pre_version.is_empty() {
-            return Err(Stop::new(2, format!("could not tell which way {} moves the install at {} (it records {pre_version}); a run that names no target never moves it unasked: name the version you want with --version {}", pack.tag(), prefix.display(), pack.tag())));
-        }
+        super::guard_direction(implicit, &pre_version, &dir, &pack.version, &prefix, "--version")?;
     }
 
     let config = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map_or_else(|| home.join(".config"), PathBuf::from).join("sot");

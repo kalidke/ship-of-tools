@@ -45,3 +45,28 @@ fn the_windows_install_reads_the_words_the_launcher_writes() {
     assert!(layout.contains(&format!("foreach ($f in @({files}))")));
     assert!(install.contains(&format!("[{}]", files.replace('\'', "\""))));
 }
+
+/// Never backwards unasked, the shared rule: an implicit run refuses an older target, and one it cannot compare while
+/// the installed version is readable; a named run goes either way.
+#[test]
+fn a_run_that_names_no_target_never_moves_back() {
+    let p = std::path::Path::new("/p");
+    assert_eq!(guard_direction(true, "0.7.1", "older", "0.7.0", p, "--version").unwrap_err().code, 2);
+    assert_eq!(guard_direction(true, "0.7.1", "unknown", "0.7.0", p, "-Version").unwrap_err().code, 2);
+    assert!(guard_direction(true, "", "unknown", "0.7.0", p, "--version").is_ok(), "a record with no readable version is rewritten");
+    assert!(guard_direction(false, "0.7.1", "older", "0.7.0", p, "--version").is_ok(), "a named run moves back");
+    assert!(guard_direction(true, "0.7.0", "newer", "0.7.1", p, "--version").is_ok());
+}
+
+/// A record that names a version beside a missing binary is still guarded: the prefix is laid down fresh only after
+/// the direction says it may be.
+#[test]
+fn a_missing_binary_beside_a_record_is_guarded() {
+    let refuse = || Err(verdict::Stop::at("direction", 2, "older"));
+    assert_eq!(meet("0.7.1", false, refuse).unwrap_err().code, 2);
+    assert_eq!(meet("0.7.1", true, refuse).unwrap_err().code, 2);
+    assert_eq!(meet("", false, refuse).unwrap(), Meet::Fresh, "nothing installed: nothing to guard");
+    assert_eq!(meet("0.7.0", false, || Ok(())).unwrap(), Meet::Fresh);
+    assert_eq!(meet("0.7.0", true, || Ok(())).unwrap(), Meet::Update);
+}
+

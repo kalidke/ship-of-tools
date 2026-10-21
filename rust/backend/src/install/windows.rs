@@ -106,11 +106,22 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     };
     let pin = if named { verdict::pin_tail(&ctx.pack.version) } else { String::new() };
     let installed = super::installed_version(&ctx.prefix);
-    let pending = if ctx.sotd().is_file() {
-        update_or_repair(&mut ctx, &new_sotd, &installed, implicit)?
-    } else {
-        fresh(&ctx)?;
-        None
+    let mut dir = String::new();
+    let way = super::meet(&installed, ctx.sotd().is_file(), || {
+        step("direction");
+        if implicit && installed.contains('+') {
+            let way = super::build_direction(&ctx.prefix, &installed, &ctx.pack.commit);
+            return Err(Stop::at("target", 2, super::build_stop(&installed, &ctx.pack.tag(), &way, "-Archive", "-Version")));
+        }
+        dir = super::direction(&new_sotd, &ctx.pack.version, &ctx.prefix, &installed);
+        super::guard_direction(implicit, &installed, &dir, &ctx.pack.version, &ctx.prefix, "-Version")
+    })?;
+    let pending = match way {
+        super::Meet::Update => update_or_repair(&mut ctx, &new_sotd, &installed, &dir)?,
+        super::Meet::Fresh => {
+            fresh(&ctx)?;
+            None
+        }
     };
     let mut found = Found::default();
     found.pass = format!("Ship of Tools {} at {} on this computer", ctx.pack.version, ctx.pack.short());
@@ -203,20 +214,7 @@ fn version_folder(ctx: &Ctx) -> Result<(), Stop> {
 
 /// An install already here: never backwards unasked, a repair run when nothing moves, else the update. The step of an
 /// update left armed for a start, when it is.
-fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, implicit: bool) -> Result<Option<String>, Stop> {
-    step("direction");
-    let tag = ctx.pack.tag();
-    if implicit && installed.contains('+') {
-        let way = super::build_direction(&ctx.prefix, installed, &ctx.pack.commit);
-        return Err(Stop::at("target", 2, super::build_stop(installed, &tag, &way, "-Archive", "-Version")));
-    }
-    let dir = super::direction(new_sotd, &ctx.pack.version, &ctx.prefix, installed);
-    if implicit && dir == "older" {
-        return Err(Stop::new(2, format!("this computer runs {installed}, which is newer than {}, the release this run found; it never moves back unless told: name the version you want with -Version {tag}", ctx.pack.version)));
-    }
-    if implicit && dir == "unknown" && !installed.is_empty() {
-        return Err(Stop::new(2, format!("could not tell which way {tag} moves the install at {} (it records {installed}); a run that names no target never moves it unasked: name the version you want with -Version {tag}", ctx.prefix.display())));
-    }
+fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: &str) -> Result<Option<String>, Stop> {
     let same_commit = record::string(&record::read(&ctx.record_path()), "commit").as_deref() == Some(ctx.pack.commit.as_str());
     let (state, _) = daemon_state(ctx, new_sotd);
     if dir == "same" && same_commit && matches!(state, State::None | State::Current) {

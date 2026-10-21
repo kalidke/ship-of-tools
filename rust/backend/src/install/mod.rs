@@ -145,6 +145,36 @@ pub(super) fn build_stop(installed: &str, tag: &str, way: &str, archive_flag: &s
     format!("this computer runs {installed}, a build of the line, not a release: install a pack of the line with {archive_flag} <folder>; {advice}; ask the person who runs it which they want")
 }
 
+/// Never backwards unasked: a run that names no target refuses a target `direction` calls older, or one it cannot compare
+/// while the installed version is readable. `flag` is this system's spelling of `--version`.
+pub(super) fn guard_direction(implicit: bool, installed: &str, dir: &str, version: &str, prefix: &Path, flag: &str) -> Result<(), verdict::Stop> {
+    let tag = format!("v{version}");
+    if implicit && dir == "older" {
+        return Err(verdict::Stop::at("direction", 2, format!("this computer runs {installed}, which is newer than {version}, the release this run found; it never moves back unless told: name the version you want with {flag} {tag}")));
+    }
+    if implicit && dir == "unknown" && !installed.is_empty() {
+        return Err(verdict::Stop::at("direction", 2, format!("could not tell which way {tag} moves the install at {} (it records {installed}); a run that names no target never moves it unasked: name the version you want with {flag} {tag}", prefix.display())));
+    }
+    Ok(())
+}
+
+/// How an install meets its prefix: laid down fresh (no installed binary to update), or an update of the one there.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Meet {
+    Fresh,
+    Update,
+}
+
+/// The way an install meets its prefix, the direction guarded first whenever a version can be read (the record's,
+/// else the binary's), so a record whose binary is missing is never laid down backwards unasked.
+#[cfg_attr(unix, allow(dead_code, reason = "Windows lays a prefix down fresh or updates it; Unix lays it the same way either time"))]
+pub(super) fn meet(installed: &str, binary: bool, guard: impl FnOnce() -> Result<(), verdict::Stop>) -> Result<Meet, verdict::Stop> {
+    if !installed.is_empty() || binary {
+        guard()?;
+    }
+    Ok(if binary { Meet::Update } else { Meet::Fresh })
+}
+
 pub(super) fn is_commit(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
