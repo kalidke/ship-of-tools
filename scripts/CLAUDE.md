@@ -88,8 +88,10 @@ Guarantees, each with the mechanism it rests on. Install:
   runs or when it ended without one.
 - Verified before it runs. The bootstrap runs nothing from a pack until every file it downloaded or copied matches
   `SHA256SUMS` (a file the list does not name is refused) and the unpacked `sotd` runs here. `sotd install` then reads
-  the pack's identity (the one archive `SHA256SUMS` names for this system, `COMMIT`, each binary's `--version`) and
-  refuses a pack whose parts disagree. This is why the bootstrap is a script: it must verify before anything runs.
+  the pack's identity (the one archive `SHA256SUMS` names for this system, `COMMIT`, and the `--version` of each
+  binary this run's role starts: `sot` only for a role that runs the window, so a backend-only box whose libc the
+  window cannot load still installs) and refuses a pack whose parts disagree. This is why the bootstrap is a script:
+  it must verify before anything runs.
 - A tag's own code. A run that names no pack runs its tag's own installer: the prelude resolves the tag (named, or
   the channel below), fetches that tag's `scripts/install.sh` (`install.ps1`) and runs it; that body runs the tag's own
   `sotd install`. `--archive`/`-Archive` runs the bootstrap given with the pack's own `sotd`. A release whose `sotd` has
@@ -114,17 +116,24 @@ Guarantees, each with the mechanism it rests on. Install:
   key per line with schema 1's keys, the shape every earlier release's readers take (line readers in the scripts,
   `InstallManifest`). A repeat keeps the rollback: a `.prev` copy is made only of a binary that differs, and a prune
   keeps the previous version folder and names and keeps any folder with local changes.
-- A live daemon is asked before it ends. A daemon is restarted only when it runs another version (`sotd
-  same-version`), only where this run owns it (Unix: an active `sotd.service` no window holds; Windows: the window's
-  supervisor, by its converge), and only once its live work (`sotd update repls`: REPL rows and the Pluto server; a
-  daemon that cannot say is judged by its own child processes, by parent id) is answered: yes at a console, or
-  `--restart-daemon`/`-RestartDaemon`; else the run stops changing nothing. A restart must answer as the target within
-  its bound by the clock. A daemon that runs and cannot be told its version is never read as none.
+- A live daemon is asked before it ends. A daemon is restarted only when it runs another version (`sotd same-version`),
+  only where this run owns it (Unix: an active `sotd.service` no window holds; Windows: the window's supervisor, by its
+  converge), and stopped, whatever its version, only where the run's role has no daemon here (Unix: the retire of an
+  active `sotd.service`) or an update applies at the desk (Windows); each only once its live work (`sotd update repls`:
+  REPL rows and the Pluto server; a daemon that cannot say is judged by its own child processes, by parent id) is
+  answered: yes at a console, or `--restart-daemon`/`-RestartDaemon`; else the run stops changing nothing. A restart
+  must answer as the target within its bound by the clock. A daemon that runs and cannot be told its version is never
+  read as none.
 - The role is declared (Unix). hosts.toml's entry for this host decides (a frontend runs its own daemon); else the
   role flag; else what install.json records; else a question at the console; else FAIL 2. A host hosts.toml runs no
   sotd on never writes over an install at the prefix, a run never replaces another install's unit, wrapper or desktop
   entry, and under a declared topology a run never records less than install.json does (`--force-role-change` waives
-  the three; an unrecognized file is never overwritten). The unit is pinned to its hosts before any reload.
+  the three; an unrecognized file is never overwritten).
+- The unit is pinned before any reload (Unix). `sotd topology pin` (`--claim` for this host with no hosts.toml) writes
+  the unit's host pin before the unit is written, reloaded or started; a pin that fails stops the run with no unit
+  written. Boot start is the drop-in, never `enable` (on a shared home an enable links the unit for every host): wired
+  for a unit the run finds new, kept over an existing one only where a link or the drop-in was. A retire never
+  disables the shared unit or removes its file, and drops the boot start only where the pin names this host alone.
 - The Julia the daemon will run meets the kernel's floor (`[compat] julia` of `julia/kernel/Project.toml`): the
   daemon's (`SOT_JULIA_BIN`, else juliaup's default read from `juliaup.json`, else PATH) and the comm refresh's (PATH).
   Below it the run ends ONE STEP LEFT naming the fix; a PATH julia below it ends the run before a Julia step. Julia
@@ -209,8 +218,10 @@ Windows PowerShell 5.1 with ASCII-only string literals and call native commands 
 (`Get-SotLauncherCodeId`) hashes every file `launch-sot.ps1` sources; the bounds the launcher and the daemon share live
 in `rust/protocol/src/ops/lease.rs` (`launcher_bounds_match_ops`).
 
-Tests: one Rust unit test per install guarantee in `rust/backend/src/install/*_tests.rs` (`cargo test -p
-sot-backend install::`); the install smokes (`tests/install-smoke.sh`, `tests/install-smoke.ps1`, the jobs
+Tests: one test per guarantee: a Rust unit test in `rust/backend/src/install/*_tests.rs` (`cargo test -p sot-backend
+install::`), named for its guarantee, for what `sotd install` decides; a case of `tests/installer-entry.sh` for the
+bootstrap's share and for what needs the real `sotd install` as a process (the binaries a backend-only run starts, a
+signal); the install smokes (`tests/install-smoke.sh`, `tests/install-smoke.ps1`, the jobs
 `install-linux`, `install-macos`, `install-windows` that release.yml's `draft` needs): a fresh install, an update from
 the release before (`tests/release-before.sh`, by version order), update-apply (the release before's installed apply
 hands off to the staged release's), update-implicit (no arguments against the real repository: a repair run at the
