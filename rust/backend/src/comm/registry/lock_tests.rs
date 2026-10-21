@@ -1,6 +1,7 @@
 //! Tests of the registry lock: the take, the reclaim and the proofs, against holders in other processes.
 
 use super::*;
+use crate::comm::Env;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,14 +22,14 @@ pub(super) static GONE_IN_SETTLE: AtomicBool = AtomicBool::new(false);
 /// Set, the lock is removed after the next failed retake, before its fresh read.
 pub(super) static GONE_AFTER_RETAKE: AtomicBool = AtomicBool::new(false);
 
-/// Held by every test here: the records read `SOT_SELF_HOST`, which other tests in this binary set.
-fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+/// Held by every test here, for write: they hold the process-wide turn for long, so no other test takes the lock meanwhile.
+fn turn_lock() -> std::sync::RwLockWriteGuard<'static, ()> {
+    TURN_TESTS.write().unwrap_or_else(|e| e.into_inner())
 }
 
 /// This process's record for a lock in the temp folder, where every scratch home here sits.
 fn now_me() -> Me {
-    Me::now(&std::env::temp_dir().join(".registry.lock"))
+    Me::now(&Env::empty(), &std::env::temp_dir().join(".registry.lock"))
 }
 
 fn scratch(tag: &str) -> PathBuf {
@@ -64,7 +65,7 @@ impl Drop for Group {
 /// is the lock's one line.
 fn live_holder(home: &Path) -> Group {
     let c = Command::new("sleep").arg("30").stdout(Stdio::null()).process_group(0).spawn().unwrap();
-    let record = record_for(c.id());
+    let record = record_for(&Env::empty(), c.id());
     fs::write(home.join(".registry.lock"), format!("{record}\n")).unwrap();
     Group(Some(c))
 }
@@ -79,7 +80,7 @@ fn dead_holder(home: &Path) {
 /// A record names its process for the judge: alive while it runs, dead once it has gone.
 #[test]
 fn a_record_is_judged_alive_then_dead_with_its_process() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("judge");
     let mut child = live_holder(&home);
     let id = fs::read_to_string(home.join(".registry.lock")).unwrap().trim().to_string();
@@ -92,12 +93,12 @@ fn a_record_is_judged_alive_then_dead_with_its_process() {
 
 #[test]
 fn a_lock_whose_holder_was_killed_is_reclaimed() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("reclaim");
     dead_holder(&home);
     let dead = fs::read_to_string(home.join(".registry.lock")).unwrap();
     let lock = home.join(".registry.lock");
-    let held = acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50)).expect("reclaimed");
+    let held = acquire_with(&Env::empty(), &lock, Duration::from_secs(2), Duration::from_millis(50)).expect("reclaimed");
     let marker = format!("{}.reclaim.{}", lock.display(), dead.trim().replace(':', "."));
     assert_eq!(fs::read_to_string(&marker).unwrap(), format!("{}\n", now_me().id), "the marker is mine");
     drop(held);
@@ -108,12 +109,12 @@ fn a_lock_whose_holder_was_killed_is_reclaimed() {
 
 #[test]
 fn a_live_holder_is_named_and_never_reclaimed() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("live");
     let mut child = live_holder(&home);
     let lock = home.join(".registry.lock");
     let before = fs::read(&lock).unwrap();
-    let err = acquire_with(&lock, Duration::from_millis(200), Duration::from_millis(50)).err().expect("FAILED");
+    let err = acquire_with(&Env::empty(), &lock, Duration::from_millis(200), Duration::from_millis(50)).err().expect("FAILED");
     let f: Vec<String> = String::from_utf8_lossy(&before).trim().split(':').map(str::to_string).collect();
     let want = format!("is held by {} pid {} start {} (", f[0], f[4], f[5]);
     assert!(err.contains(&want), "{err}");
@@ -128,30 +129,30 @@ fn a_live_holder_is_named_and_never_reclaimed() {
 
 #[test]
 fn a_panic_inside_the_lock_gives_up_the_file_and_the_turn() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("panic");
     let lock = home.join(".registry.lock");
     let l = lock.clone();
     let r = std::thread::spawn(move || {
-        let _held = acquire_with(&l, Duration::from_secs(1), Duration::from_millis(50)).expect("took it");
+        let _held = acquire_with(&Env::empty(), &l, Duration::from_secs(1), Duration::from_millis(50)).expect("took it");
         panic!("inside the lock");
     })
     .join();
     assert!(r.is_err(), "the holder panicked");
     assert!(!lock.exists(), "the file went with the unwind");
-    drop(acquire_with(&lock, Duration::ZERO, Duration::from_millis(50)).expect("the turn went with the unwind"));
+    drop(acquire_with(&Env::empty(), &lock, Duration::ZERO, Duration::from_millis(50)).expect("the turn went with the unwind"));
     let _ = fs::remove_dir_all(&home);
 }
 
 #[test]
 fn waiting_for_another_threads_turn_counts_inside_the_bound() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("turn");
     let lock = home.join(".registry.lock");
-    let held = acquire_with(&lock, Duration::from_secs(1), Duration::from_millis(50)).expect("took it");
+    let held = acquire_with(&Env::empty(), &lock, Duration::from_secs(1), Duration::from_millis(50)).expect("took it");
     let l = lock.clone();
     let t0 = Instant::now();
-    let err = std::thread::spawn(move || acquire_with(&l, Duration::from_millis(200), Duration::from_millis(50)).err())
+    let err = std::thread::spawn(move || acquire_with(&Env::empty(), &l, Duration::from_millis(200), Duration::from_millis(50)).err())
         .join()
         .unwrap()
         .expect("FAILED while another thread holds the turn");
@@ -164,7 +165,7 @@ fn waiting_for_another_threads_turn_counts_inside_the_bound() {
 
 #[test]
 fn a_marker_this_process_abandoned_is_adopted_by_its_next_writer() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("adopt");
     dead_holder(&home);
     let lock = home.join(".registry.lock");
@@ -172,19 +173,19 @@ fn a_marker_this_process_abandoned_is_adopted_by_its_next_writer() {
     let marker = PathBuf::from(format!("{}.reclaim.{}", lock.display(), dead.trim().replace(':', ".")));
     FAIL_REREAD.store(true, Ordering::SeqCst);
     let l = lock.clone();
-    let first = std::thread::spawn(move || acquire_with(&l, Duration::ZERO, Duration::from_millis(50)).map(drop))
+    let first = std::thread::spawn(move || acquire_with(&Env::empty(), &l, Duration::ZERO, Duration::from_millis(50)).map(drop))
         .join()
         .unwrap();
     assert!(first.is_err(), "the writer whose re-read failed gave up");
     assert_eq!(fs::read_to_string(&lock).unwrap(), dead, "the dead holder's lock stayed");
     assert_eq!(fs::read_to_string(&marker).unwrap(), format!("{}\n", now_me().id), "the marker names this process");
     let l = lock.clone();
-    let second = std::thread::spawn(move || acquire_with(&l, Duration::from_secs(2), Duration::from_millis(50)).map(drop))
+    let second = std::thread::spawn(move || acquire_with(&Env::empty(), &l, Duration::from_secs(2), Duration::from_millis(50)).map(drop))
         .join()
         .unwrap();
     assert!(second.is_ok(), "the next writer adopted the marker: {second:?}");
     assert!(!lock.exists(), "released");
-    assert!(acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50)).is_ok(), "a later writer is not wedged");
+    assert!(acquire_with(&Env::empty(), &lock, Duration::from_secs(2), Duration::from_millis(50)).is_ok(), "a later writer is not wedged");
     let markers = fs::read_dir(&home).unwrap().filter(|e| {
         e.as_ref().unwrap().file_name().to_string_lossy().starts_with(".registry.lock.reclaim.")
     });
@@ -194,12 +195,12 @@ fn a_marker_this_process_abandoned_is_adopted_by_its_next_writer() {
 
 #[test]
 fn a_lock_naming_this_daemon_is_reclaimed_by_its_next_writer() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("self");
     let lock = home.join(".registry.lock");
     let me = format!("{}\n", now_me().id);
     fs::write(&lock, &me).unwrap();
-    let held = acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50));
+    let held = acquire_with(&Env::empty(), &lock, Duration::from_secs(2), Duration::from_millis(50));
     assert!(held.is_ok(), "a lock a thread of this daemon left does not wedge it: {:?}", held.err());
     drop(held);
     assert!(!lock.exists(), "released");
@@ -208,7 +209,7 @@ fn a_lock_naming_this_daemon_is_reclaimed_by_its_next_writer() {
     // As a re-read that failed leaves it: the next writer adopts the marker.
     fs::write(&marker, &me).unwrap();
     fs::write(&lock, &me).unwrap();
-    assert!(acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50)).is_ok(), "and again, past a kept marker");
+    assert!(acquire_with(&Env::empty(), &lock, Duration::from_secs(2), Duration::from_millis(50)).is_ok(), "and again, past a kept marker");
     assert!(!marker.exists(), "which went with the lock too");
     let _ = fs::remove_dir_all(&home);
 }
@@ -218,13 +219,13 @@ fn a_lock_naming_this_daemon_is_reclaimed_by_its_next_writer() {
 /// (review SF1).
 #[test]
 fn its_own_marker_goes_when_its_lock_goes_during_the_settle() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("gone");
     let lock = home.join(".registry.lock");
     let me = format!("{}\n", now_me().id);
     fs::write(&lock, &me).unwrap();
     GONE_IN_SETTLE.store(true, Ordering::SeqCst);
-    let held = acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50));
+    let held = acquire_with(&Env::empty(), &lock, Duration::from_secs(2), Duration::from_millis(50));
     assert!(held.is_ok(), "{:?}", held.err());
     drop(held);
     assert!(!marker_for(&lock, me.trim()).exists(), "its own marker went with the lock");
@@ -235,13 +236,13 @@ fn its_own_marker_goes_when_its_lock_goes_during_the_settle() {
 /// lock gone: a free lock, never one to remove by hand (review note 3).
 #[test]
 fn a_lock_free_at_the_deadline_is_never_to_be_removed_by_hand() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("free");
     let lock = home.join(".registry.lock");
     dead_holder(&home);
     *AFTER_STEP.lock().unwrap() = Some("elsewhere:-:-:-:4242:-\n".into());
     GONE_AFTER_RETAKE.store(true, Ordering::SeqCst);
-    let err = acquire_with(&lock, Duration::ZERO, Duration::from_millis(50)).err().expect("FAILED");
+    let err = acquire_with(&Env::empty(), &lock, Duration::ZERO, Duration::from_millis(50)).err().expect("FAILED");
     assert!(!err.contains("by hand") && err.contains(RETAKEN), "{err}");
     assert!(!lock.exists(), "the lock is free");
     let _ = fs::remove_dir_all(&home);
@@ -278,9 +279,9 @@ fn a_lock_released_since_the_last_read_was_held_not_is_held() {
 fn a_comm_home_the_vouch_refuses_gives_a_record_with_no_proof() {
     let lock = Path::new(if cfg!(target_os = "macos") { "/System/Volumes/Data/home/.registry.lock" } else { "/proc/self/.registry.lock" });
     assert!(vouch(lock).is_err(), "the mount is refused");
-    let me = Me::now(lock);
+    let me = Me::now(&Env::empty(), lock);
     assert!(me.mine.is_none(), "{}", me.id);
-    assert_eq!(me.id, format!("{}:-:-:-:{}:-", host_field(), std::process::id()));
+    assert_eq!(me.id, format!("{}:-:-:-:{}:-", host_field(&Env::empty()), std::process::id()));
 }
 
 /// A holder that cannot be proved dead here, on another machine or in another
@@ -324,7 +325,7 @@ fn a_holder_with_no_proof_fields_is_removed_by_hand() {
 #[test]
 fn an_unreadable_live_record_is_released_not_by_hand() {
     use std::os::unix::fs::PermissionsExt;
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("unread");
     let mut child = live_holder(&home);
     let lock = home.join(".registry.lock");
@@ -346,7 +347,7 @@ fn an_unreadable_live_record_is_released_not_by_hand() {
 /// and a live writer links the lock before any existence test.
 #[test]
 fn a_failed_first_read_with_a_live_writer_in_the_lock_is_released() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("first");
     let mut child = live_holder(&home);
     let lock = home.join(".registry.lock");
@@ -361,7 +362,7 @@ fn a_failed_first_read_with_a_live_writer_in_the_lock_is_released() {
 
 /// What was read whole still decides by hand: `why` of a by-hand step.
 fn by_hand_why(tag: &str, make: impl FnOnce(&Path)) -> String {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch(tag);
     let lock = home.join(".registry.lock");
     make(&lock);
@@ -385,10 +386,10 @@ fn an_older_versions_directory_is_by_hand() {
 
 #[test]
 fn an_id_without_proof_is_never_mine() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let me = now_me();
     assert!(me.is_me(&me.id), "this process, with its proof");
-    let bare = Me { id: format!("{}:-:-:-:{}:-", host_field(), std::process::id()), mine: None };
+    let bare = Me { id: format!("{}:-:-:-:{}:-", host_field(&Env::empty()), std::process::id()), mine: None };
     assert!(!bare.is_me(&bare.id), "the same host name and pid, with no proof");
 }
 
@@ -397,14 +398,14 @@ fn an_id_without_proof_is_never_mine() {
 /// bound, and says to remove the lock by hand. Hermetic t14 runs the clear.
 #[test]
 fn a_marker_naming_its_own_dead_holder_stops_every_walk() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("cycle");
     dead_holder(&home);
     let lock = home.join(".registry.lock");
     let dead = fs::read_to_string(&lock).unwrap();
     let marker = marker_for(&lock, dead.trim());
     fs::write(&marker, &dead).unwrap();
-    let err = acquire_with(&lock, Duration::from_millis(300), Duration::from_millis(50)).err().expect("FAILED");
+    let err = acquire_with(&Env::empty(), &lock, Duration::from_millis(300), Duration::from_millis(50)).err().expect("FAILED");
     assert!(err.contains(&format!("its reclaim marker {} names {}", marker.display(), dead.trim())), "{err}");
     assert!(err.ends_with(&format!("remove {} by hand and retry.", lock.display())), "{err}");
     assert_eq!(fs::read_to_string(&lock).unwrap(), dead, "the lock is untouched");
@@ -416,7 +417,7 @@ fn a_marker_naming_its_own_dead_holder_stops_every_walk() {
 /// second dead holder D2 fails at once, and never steps again (review SF3).
 #[test]
 fn a_zero_wait_whose_retake_fails_makes_one_step() {
-    let _env = env_lock();
+    let _env = turn_lock();
     let home = scratch("retake");
     let lock = home.join(".registry.lock");
     dead_holder(&home);
@@ -425,7 +426,7 @@ fn a_zero_wait_whose_retake_fails_makes_one_step() {
     dead_holder(&home);
     let d1 = fs::read_to_string(&lock).unwrap();
     *AFTER_STEP.lock().unwrap() = Some(d2.clone());
-    let err = acquire_with(&lock, Duration::ZERO, Duration::from_millis(200)).err().expect("FAILED");
+    let err = acquire_with(&Env::empty(), &lock, Duration::ZERO, Duration::from_millis(200)).err().expect("FAILED");
     let f: Vec<&str> = d2.trim().split(':').collect();
     assert!(err.contains(&format!("is held by {} pid {} start {} (", f[0], f[4], f[5])) && err.contains(RETAKEN), "{err}");
     assert_eq!(fs::read_to_string(&lock).unwrap(), d2, "D2's lock is untouched");

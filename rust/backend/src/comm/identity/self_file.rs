@@ -170,7 +170,7 @@ pub(crate) fn pin_row(path: &Path, handle: &str, cwd: &Path) -> Result<(), Strin
     let root = paths::canonical(&raw)?;
     if let Some(home) = path.parent().and_then(Path::parent) {
         if !crate::comm::home::is_whole(home) {
-            crate::comm::home::ensure(home);
+            crate::comm::home::ensure(home, &crate::comm::Env::process());
         }
     }
     write(path, handle, &paths::basename(&raw), &root)

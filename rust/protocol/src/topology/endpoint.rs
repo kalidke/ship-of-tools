@@ -53,14 +53,19 @@ pub use sot_log::host::state_dir::{current_uid, is_private_dir, runtime_sot_dir}
 /// the two processes can never derive two different paths for the same
 /// machine.
 pub fn session_socket_path(label: &str) -> PathBuf {
+    session_socket_path_in(label, &sot_log::host::env::Env::process())
+}
+
+/// [`session_socket_path`] reading the variables from `env`.
+pub fn session_socket_path_in(label: &str, env: &sot_log::host::env::Env) -> PathBuf {
     #[cfg(windows)]
     {
-        let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".to_string());
+        let user = env.get("USERNAME").and_then(|u| u.to_str()).unwrap_or("user").to_string();
         PathBuf::from(format!(r"\\.\pipe\sot-{user}-{}", slug(label)))
     }
     #[cfg(not(windows))]
     {
-        let mut p = runtime_sot_dir();
+        let mut p = sot_log::host::state_dir::runtime_sot_dir_in(env);
         p.push("sessions");
         p.push(format!("{}.sock", slug(label)));
         p
@@ -148,15 +153,16 @@ pub fn is_plain_host_name(s: &str) -> bool {
 /// `sot` as a default — on Windows the daemon's label is `local`, and
 /// `sot` derives a pipe nothing listens on.
 pub fn local_endpoint() -> String {
-    let p = std::env::var_os("SOT_SOCKET")
-        .filter(|v| !v.is_empty())
+    local_endpoint_in(&sot_log::host::env::Env::process())
+}
+
+/// [`local_endpoint`] reading the variables from `env`.
+pub fn local_endpoint_in(env: &sot_log::host::env::Env) -> String {
+    let p = env
+        .get_nonempty("SOT_SOCKET")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("SOT_BACKEND_LABEL")
-                .filter(|v| !v.is_empty())
-                .map(|label| crate::session_socket_path(&label.to_string_lossy()))
-        })
-        .unwrap_or_else(|| crate::session_socket_path(crate::local_daemon_label()));
+        .or_else(|| env.get_nonempty("SOT_BACKEND_LABEL").map(|label| session_socket_path_in(&label.to_string_lossy(), env)))
+        .unwrap_or_else(|| session_socket_path_in(crate::local_daemon_label(), env));
     if cfg!(windows) { format!("pipe:{}", p.display()) } else { format!("unix:{}", p.display()) }
 }
 

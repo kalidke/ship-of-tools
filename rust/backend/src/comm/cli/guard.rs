@@ -5,6 +5,7 @@
 //! that runs an installed comm script is denied. Every other case is allowed silently (no `agent_id`, any other
 //! command, input that does not parse): a session is never locked out of its own mail.
 
+use crate::comm::Env;
 use std::io::Read;
 
 use super::Out;
@@ -74,7 +75,7 @@ pub(crate) fn decide(input: &str) -> Option<&'static str> {
     runs_a_comm_script(cmd).then_some(DENY)
 }
 
-pub(crate) fn run(_args: &[String]) -> Out {
+pub(crate) fn run(_env: &Env, _args: &[String]) -> Out {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
     let mut o = Out::default();

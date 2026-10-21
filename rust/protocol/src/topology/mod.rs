@@ -89,17 +89,27 @@ impl Topology {
 /// Where the file is looked for: `$SOT_HOSTS`, else the config dir. The one
 /// search order — documented in the module doc, implemented here only.
 pub fn locate() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("SOT_HOSTS").filter(|v| !v.is_empty()) {
+    locate_in(&sot_log::host::env::Env::process())
+}
+
+/// [`locate`] reading the variables from `env`.
+pub fn locate_in(env: &sot_log::host::env::Env) -> Option<PathBuf> {
+    if let Some(p) = env.get_nonempty("SOT_HOSTS") {
         return Some(PathBuf::from(p));
     }
-    sot_log::host::state_dir::sot_config_dir().map(|d| d.join("hosts.toml"))
+    sot_log::host::state_dir::sot_config_dir_in(env).map(|d| d.join("hosts.toml"))
 }
 
 /// Read and parse the located file. `Ok(None)` when there is no file (the
 /// ordinary state on a box that never declared a topology); `Err` names the
 /// path and the offender for an unreadable or invalid one.
 pub fn load() -> Result<Option<(PathBuf, Topology)>, String> {
-    let Some(path) = locate() else { return Ok(None) };
+    load_in(&sot_log::host::env::Env::process())
+}
+
+/// [`load`] locating the file through `env`.
+pub fn load_in(env: &sot_log::host::env::Env) -> Result<Option<(PathBuf, Topology)>, String> {
+    let Some(path) = locate_in(env) else { return Ok(None) };
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

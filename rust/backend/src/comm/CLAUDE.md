@@ -168,7 +168,17 @@ Windows reading on every system). What it costs there is the dialog side: a dial
 can read as the main box, so on Windows "never a dialog" rests on the dialog reader and the box's rules alone, unproven
 on a Windows screen until one is captured (queue item 65).
 
-Tests: one unit test per guarantee, `cargo test -p sot-backend comm::` (each named in the pass's result); the
+The environment: comm's identity and commands read variables only from an `Env` value they are given (`sot_log::host::env`),
+one snapshot taken at `sotd comm`'s entry and at each daemon-side entry (`handle_comm_file`, the hub link, the boot
+record); nothing in comm writes the process environment. The daemon-side wrappers that rows and the server call
+(`read_comm_agents`, `remove_comm_agents_for_workspace`, `edit_entry`, `stamp_last_seen`) snapshot the process at their
+call and pass it to their `_in` form. One read remains of the process: `wake`'s test-only `SOT_TEST_WAKE_MARKS`.
+
+Tests: every comm unit test builds its own `Env` (`test_home::TestHome::env`) and passes it, so none writes the
+process environment and none needs a lock for one; a test that starts a child sets the child's environment on its
+`Command`. The one lock left, `registry::lock::TURN_TESTS`, guards no variable: the registry lock's turn is
+process-wide, so the module's own tests (which hold it long) take it for write and every test that takes the lock
+takes it for read. One unit test per guarantee, `cargo test -p sot-backend comm::` (each named in the pass's result); the
 integration suites `comm_wake` (a real daemon and capsule row: a free prompt is woken, a draft, a dialog and a working
 row are not), `comm_file`, `comm_send`, `hub_link` and `comm_cli` (the wrappers and `sotd comm` on a scratch home);
 `comm/tests/interop-066.sh`, run by hand on a build host, for the 0.6.6 scripts and a 0.6.6 daemon beside this build,

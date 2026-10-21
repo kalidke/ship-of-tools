@@ -3,6 +3,7 @@
 //! `sot_log::host::wide_null`, `sot_log::host::daemon_lock_path` and so on.
 
 mod durable;
+pub mod env;
 #[cfg(unix)]
 pub mod fd;
 mod held_dir;

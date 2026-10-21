@@ -3,6 +3,7 @@
 //! registry write one step under the registry lock; no argument or variable chooses it (decision 0031). Then the self file, the inbox, and for a row the declaration to its daemon
 //! (`agent.join`).
 
+use crate::comm::Env;
 use serde_json::{json, Value};
 
 use super::{bin_dir, context, gate, wire, Out};
@@ -65,7 +66,7 @@ fn parse(args: &[String]) -> Result<Ask, String> {
 /// the lock is held to; `Err((1, why))` a refusal; `Err((2, why))` an unreadable registry. An entry bound to a row on
 /// another computer of the shared home is held, since no daemon here can rule on it; where no daemon rules, a bound
 /// entry is held and an unbound or absent one is taken (the named limit).
-pub(crate) fn outside_clearance(ctx: &Context, h: &str) -> Result<String, (i32, String)> {
+pub(crate) fn outside_clearance(env: &Env, ctx: &Context, h: &str) -> Result<String, (i32, String)> {
     let state = binding(&ctx.registry(), h, "");
     if state == Binding::Unreadable {
         return Err((2, format!("the registry could not be read, so nothing can say whether @{h} is held; a session outside any row cannot join as it, and nothing was written")));
@@ -75,8 +76,8 @@ pub(crate) fn outside_clearance(ctx: &Context, h: &str) -> Result<String, (i32, 
         _ => String::new(),
     };
     let mut ruled = false;
-    if let Some(endpoint) = wire::own_daemon() {
-        if let Ok(answer) = wire::agent_join(&endpoint, "", h) {
+    if let Some(endpoint) = wire::own_daemon(env) {
+        if let Ok(answer) = wire::agent_join(env, &endpoint, "", h) {
             if answer.get("ok").and_then(Value::as_bool) == Some(true) {
                 ruled = true;
             } else if answer.get("code").and_then(Value::as_str) == Some("held_by_row") {
@@ -106,7 +107,7 @@ fn entry_for(ctx: &Context, expertise: &str) -> Value {
     })
 }
 
-pub(crate) fn join(args: &[String]) -> Out {
+pub(crate) fn join(env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
     let ask = match parse(args) {
         Ok(a) => a,
@@ -119,12 +120,12 @@ pub(crate) fn join(args: &[String]) -> Out {
         o.out(HELP);
         return o;
     }
-    if let Err((_, why)) = gate() {
+    if let Err((_, why)) = gate(env) {
         o.err(format!("comm-join.sh: REFUSING to bind: {why}"));
         return o.exit(1);
     }
     let mut notes = Vec::new();
-    let ctx = match context(true, &mut notes) {
+    let ctx = match context(env, true, &mut notes) {
         Ok(c) => c,
         Err(e) => {
             o.errs(&notes);
@@ -133,14 +134,14 @@ pub(crate) fn join(args: &[String]) -> Out {
         }
     };
     o.errs(&notes);
-    o.errs(&crate::comm::home::ensure(&ctx.comm_home));
-    joined(o, &ctx, ask)
+    o.errs(&crate::comm::home::ensure(&ctx.comm_home, env));
+    joined(env, o, &ctx, ask)
 }
 
 /// The join once the identity is known: the name, the registry write, the self file, the inbox, the declaration.
-fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
+fn joined(env: &Env, mut o: Out, ctx: &Context, ask: Ask) -> Out {
     let mut name = ctx.name.clone();
-    let expertise = if ask.expertise.is_empty() { std::env::var("SOT_COMM_EXPERTISE").unwrap_or_default() } else { ask.expertise.clone() };
+    let expertise = if ask.expertise.is_empty() { env.text("SOT_COMM_EXPERTISE") } else { ask.expertise.clone() };
     if !ask.repin {
         if let Some(_claim) = self_file::conflict(&ctx.self_file, &ctx.repo, &ctx.project_root) {
             o.err(format!(
@@ -158,7 +159,7 @@ fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
     let mut cleared: Vec<(String, String)> = Vec::new();
     if outside {
         if !name.is_empty() {
-            match outside_clearance(ctx, &name) {
+            match outside_clearance(env, ctx, &name) {
                 Ok(ws) => cleared.push((name.clone(), ws)),
                 Err((2, why)) => {
                     o.err(format!("comm-join.sh: FAILED: {why}"));
@@ -174,7 +175,7 @@ fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
             let host = crate::comm::identity::derive::handle_host(&ctx.handle_host);
             for n in 1..=3 {
                 let (_, t) = tier(n, &ctx.project_root, &host, ctx.kind);
-                if let Ok(ws) = outside_clearance(ctx, &t) {
+                if let Ok(ws) = outside_clearance(env, ctx, &t) {
                     cleared.push((t, ws));
                 }
             }
@@ -182,7 +183,7 @@ fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
     }
     let obj = entry_for(ctx, &expertise);
     let derived = name.is_empty();
-    let claim = update(&ctx.registry(), command_lock_wait(), |agents| {
+    let claim = update(env, &ctx.registry(), command_lock_wait(env), |agents| {
         if derived {
             let mut lines = Vec::new();
             let d = derive(Mode::Reclaim, &ctx.project_root, &ctx.handle_host, ctx.kind, agents, outside.then_some(&cleared[..]), &mut lines)?;
@@ -208,10 +209,10 @@ fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
     };
     if let Some(d) = &derivation {
         name = d.name.clone();
-        stranding_warning(&mut o, ctx, d, outside, &cleared);
+        stranding_warning(env, &mut o, ctx, d, outside, &cleared);
     }
     // The self file, under the registry lock (the lock every join's writes take).
-    let wrote = crate::comm::registry::lock::acquire(&ctx.comm_home.join(".registry.lock"), command_lock_wait()).and_then(|_held| {
+    let wrote = crate::comm::registry::lock::acquire_in(env, &ctx.comm_home.join(".registry.lock"), command_lock_wait(env)).and_then(|_held| {
         if !ask.repin {
             if let Some(why) = self_file::conflict(&ctx.self_file, &ctx.repo, &ctx.project_root) {
                 return Err(format!("conflict:{why}"));
@@ -240,8 +241,8 @@ fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
         }
     }
     let _ = std::fs::OpenOptions::new().create(true).append(true).open(ctx.inbox_dir().join(format!("{name}.jsonl")));
-    status_join();
-    declare(&mut o, ctx, &name);
+    status_join(env);
+    declare(env, &mut o, ctx, &name);
     let others = read_doc(&ctx.registry()).ok().map(|doc| {
         let have = doc.get("protocol_version").and_then(Value::as_u64).unwrap_or(0);
         if have != u64::from(crate::comm::home::PROTOCOL_VERSION) {
@@ -262,7 +263,7 @@ fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
 
 /// A derived join that stepped away from tier 1 while tier 1 is still live: often the session's own earlier handle,
 /// evicted as stale. Said loudly; never reclaimed (a fresh `last_seen` does not prove ownership).
-fn stranding_warning(o: &mut Out, ctx: &Context, d: &Derived, outside: bool, cleared: &[(String, String)]) {
+fn stranding_warning(env: &Env, o: &mut Out, ctx: &Context, d: &Derived, outside: bool, cleared: &[(String, String)]) {
     if d.qualifier.is_empty() || d.tier1 == d.name {
         return;
     }
@@ -279,7 +280,7 @@ fn stranding_warning(o: &mut Out, ctx: &Context, d: &Derived, outside: bool, cle
     if !live {
         return;
     }
-    let (n, t1, bin) = (shell_quote(&d.name), shell_quote(&d.tier1), shell_quote(&bin_dir()));
+    let (n, t1, bin) = (shell_quote(&d.name), shell_quote(&d.tier1), shell_quote(&bin_dir(env)));
     let (name, tier1) = (&d.name, &d.tier1);
     o.err(format!(
         "\n*** WARNING: joined as '@{name}', but '@{tier1}' (this project's bare\n\
@@ -305,8 +306,8 @@ fn stranding_warning(o: &mut Out, ctx: &Context, d: &Derived, outside: bool, cle
 
 /// Rows' work-state verb a join sends (`comm-status.sh join`): the turn this join runs in starts its floor from the
 /// turn mark. Best effort, as 0.6.6's join sent it; only where the wrappers named the scripts' folder.
-fn status_join() {
-    let Some(bin) = std::env::var_os("SOT_COMM_BIN").filter(|b| !b.is_empty()) else { return };
+fn status_join(env: &Env) {
+    let Some(bin) = env.get_nonempty("SOT_COMM_BIN") else { return };
     let script = std::path::PathBuf::from(bin).join("comm-status.sh");
     if !script.is_file() {
         return;
@@ -318,18 +319,18 @@ fn status_join() {
 
 /// A row's declaration of its handle to the daemon that pinned its identity: best effort, one warning on failure, as
 /// the next session start retries it.
-fn declare(o: &mut Out, ctx: &Context, name: &str) {
+fn declare(env: &Env, o: &mut Out, ctx: &Context, name: &str) {
     if ctx.row_id.is_empty() {
         return;
     }
-    let Some(endpoint) = wire::own_daemon() else {
+    let Some(endpoint) = wire::own_daemon(env) else {
         o.err(format!(
             "comm-join.sh: WARNING \u{2014} this shell's identity names row '{}' but no daemon endpoint could be resolved; the daemon won't learn '@{name}' until the next comm-session-start.",
             ctx.row_id
         ));
         return;
     };
-    let ok = wire::agent_join(&endpoint, &ctx.row_id, name).is_ok_and(|a| a.get("ok").and_then(Value::as_bool) == Some(true));
+    let ok = wire::agent_join(env, &endpoint, &ctx.row_id, name).is_ok_and(|a| a.get("ok").and_then(Value::as_bool) == Some(true));
     if !ok {
         o.err(format!("comm-join.sh: WARNING \u{2014} could not declare '@{name}' to the daemon (agent.join); it will retry at the next comm-session-start."));
     }

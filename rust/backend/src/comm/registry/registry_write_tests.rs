@@ -4,33 +4,9 @@
 use super::*;
 
 mod prune_write_tests {
-    use super::remove_comm_agents_for_workspace;
+    use super::remove_comm_agents_for_workspace_in;
 
-    struct EnvGuard {
-        _serial: std::sync::MutexGuard<'static, ()>,
-        sot_comm_home: Option<std::ffi::OsString>,
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.sot_comm_home {
-                Some(v) => std::env::set_var("SOT_COMM_HOME", v),
-                None => std::env::remove_var("SOT_COMM_HOME"),
-            }
-        }
-    }
-
-    fn guarded() -> EnvGuard {
-        let serial = crate::paths::ENV_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        EnvGuard {
-            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
-            _serial: serial,
-        }
-    }
-
-    fn seed(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
+    fn seed(env: &mut crate::comm::Env, tag: &str) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
         let dir = std::env::temp_dir().join(format!(
             "sot-registry-write-prune-{tag}-{}-{}",
             std::process::id(),
@@ -40,7 +16,7 @@ mod prune_write_tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SOT_COMM_HOME", &dir);
+        env.set("SOT_COMM_HOME", &dir);
         let registry_path = dir.join("registry.json");
         let seeded = serde_json::to_vec_pretty(&serde_json::json!({
             "agents": {
@@ -55,10 +31,11 @@ mod prune_write_tests {
 
     #[test]
     fn a_prune_writes_pretty_json_and_a_newline_and_no_temp() {
-        let _guard = guarded();
-        let (dir, registry_path, _) = seed("bytes");
+        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
+        let (dir, registry_path, _) = seed(&mut env, "bytes");
 
-        let removed = remove_comm_agents_for_workspace("", "ws-1", "hostA");
+        let removed = remove_comm_agents_for_workspace_in(&env, "", "ws-1", "hostA");
         assert_eq!(removed, vec!["gone".to_string()]);
 
         let mut expected = serde_json::to_vec_pretty(&serde_json::json!({
@@ -74,8 +51,9 @@ mod prune_write_tests {
 
     #[test]
     fn a_failed_temp_write_prunes_nothing() {
-        let _guard = guarded();
-        let (dir, registry_path, seeded) = seed("tmpfail");
+        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
+        let (dir, registry_path, seeded) = seed(&mut env, "tmpfail");
         // On Unix a dangling symlink makes only the create fail (ENOENT): a
         // write that went on to rename would leave the link at the registry.
         #[cfg(unix)]
@@ -83,7 +61,7 @@ mod prune_write_tests {
         #[cfg(not(unix))]
         std::fs::create_dir(dir.join("registry.json.tmp")).unwrap();
 
-        let removed = remove_comm_agents_for_workspace("", "ws-1", "hostA");
+        let removed = remove_comm_agents_for_workspace_in(&env, "", "ws-1", "hostA");
         assert!(removed.is_empty());
         assert_eq!(std::fs::read(&registry_path).unwrap(), seeded);
 
@@ -92,37 +70,7 @@ mod prune_write_tests {
 }
 
 mod edit_write_tests {
-    use super::edit_entry;
-
-    struct EnvGuard {
-        _serial: std::sync::MutexGuard<'static, ()>,
-        sot_comm_home: Option<std::ffi::OsString>,
-        sot_self_host: Option<std::ffi::OsString>,
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.sot_comm_home {
-                Some(v) => std::env::set_var("SOT_COMM_HOME", v),
-                None => std::env::remove_var("SOT_COMM_HOME"),
-            }
-            match &self.sot_self_host {
-                Some(v) => std::env::set_var("SOT_SELF_HOST", v),
-                None => std::env::remove_var("SOT_SELF_HOST"),
-            }
-        }
-    }
-
-    fn guarded() -> EnvGuard {
-        let serial = crate::paths::ENV_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        EnvGuard {
-            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
-            sot_self_host: std::env::var_os("SOT_SELF_HOST"),
-            _serial: serial,
-        }
-    }
+    use super::edit_entry_in;
 
     /// The edit a person's read makes: `done` removed, the state it showed made idle.
     fn clear(entry: &mut serde_json::Map<String, serde_json::Value>) -> ((), bool) {
@@ -132,7 +80,7 @@ mod edit_write_tests {
     }
 
     // An entry `h`, seeded `done` on host-4.
-    fn seed(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
+    fn seed(env: &mut crate::comm::Env, tag: &str) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
         let dir = std::env::temp_dir().join(format!(
             "sot-registry-write-clear-{tag}-{}-{}",
             std::process::id(),
@@ -142,8 +90,8 @@ mod edit_write_tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SOT_COMM_HOME", &dir);
-        std::env::set_var("SOT_SELF_HOST", "host-4");
+        env.set("SOT_COMM_HOME", &dir);
+        env.set("SOT_SELF_HOST", "host-4");
         let registry_path = dir.join("registry.json");
         let seeded = serde_json::to_vec_pretty(&serde_json::json!({
             "agents": {"h": {"host": "host-4", "state": "done", "done": true, "summary": "s"}}
@@ -155,10 +103,11 @@ mod edit_write_tests {
 
     #[test]
     fn an_edit_writes_pretty_json_and_a_newline_and_no_temp() {
-        let _guard = guarded();
-        let (dir, registry_path, _) = seed("bytes");
+        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
+        let (dir, registry_path, _) = seed(&mut env, "bytes");
 
-        assert_eq!(edit_entry("h", std::time::Duration::from_secs(1), clear), Ok(Some(())));
+        assert_eq!(edit_entry_in(&env, "h", std::time::Duration::from_secs(1), clear), Ok(Some(())));
 
         let mut expected = serde_json::to_vec_pretty(&serde_json::json!({
             "agents": {"h": {"host": "host-4", "state": "idle", "summary": "s"}}
@@ -173,8 +122,9 @@ mod edit_write_tests {
 
     #[test]
     fn a_failed_temp_write_writes_nothing() {
-        let _guard = guarded();
-        let (dir, registry_path, seeded) = seed("tmpfail");
+        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
+        let (dir, registry_path, seeded) = seed(&mut env, "tmpfail");
         // On Unix a dangling symlink makes only the create fail (ENOENT): a
         // write that went on to rename would leave the link at the registry.
         #[cfg(unix)]
@@ -182,7 +132,7 @@ mod edit_write_tests {
         #[cfg(not(unix))]
         std::fs::create_dir(dir.join("registry.json.tmp")).unwrap();
 
-        assert_eq!(edit_entry("h", std::time::Duration::from_secs(1), clear), Err(super::EditError::Unwritten));
+        assert_eq!(edit_entry_in(&env, "h", std::time::Duration::from_secs(1), clear), Err(super::EditError::Unwritten));
         assert_eq!(std::fs::read(&registry_path).unwrap(), seeded);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -190,36 +140,17 @@ mod edit_write_tests {
 }
 
 mod stamp_write_tests {
-    use super::stamp_last_seen;
+    use super::stamp_last_seen_in;
     use std::collections::BTreeSet;
 
-    struct EnvGuard {
-        _serial: std::sync::MutexGuard<'static, ()>,
-        sot_comm_home: Option<std::ffi::OsString>,
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.sot_comm_home {
-                Some(v) => std::env::set_var("SOT_COMM_HOME", v),
-                None => std::env::remove_var("SOT_COMM_HOME"),
-            }
-        }
-    }
-
-    fn guarded() -> EnvGuard {
-        let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        EnvGuard { sot_comm_home: std::env::var_os("SOT_COMM_HOME"), _serial: serial }
-    }
-
-    fn seed(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    fn seed(env: &mut crate::comm::Env, tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "sot-registry-write-stamp-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SOT_COMM_HOME", &dir);
+        env.set("SOT_COMM_HOME", &dir);
         let registry_path = dir.join("registry.json");
         let seeded = serde_json::to_vec_pretty(&serde_json::json!({
             "agents": {
@@ -241,9 +172,10 @@ mod stamp_write_tests {
 
     #[test]
     fn it_stamps_listed_entries_only_and_creates_none() {
-        let _guard = guarded();
-        let (dir, registry_path) = seed("listed");
-        assert!(stamp_last_seen(&set(&["a", "b", "nobody"]), STAMP));
+        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
+        let (dir, registry_path) = seed(&mut env, "listed");
+        assert!(stamp_last_seen_in(&env, &set(&["a", "b", "nobody"]), STAMP));
         let root: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
         assert_eq!(root["agents"]["a"], serde_json::json!({"host": "h", "last_seen": STAMP, "state": "idle", "summary": "s"}));
         assert_eq!(root["agents"]["b"], serde_json::json!({"host": "h", "state": "working", "last_seen": STAMP}));
@@ -255,13 +187,14 @@ mod stamp_write_tests {
 
     #[test]
     fn with_nothing_to_change_it_writes_nothing() {
-        let _guard = guarded();
-        let (dir, registry_path) = seed("nothing");
+        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
+        let (dir, registry_path) = seed(&mut env, "nothing");
         #[cfg(unix)]
         let inode = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&registry_path).unwrap());
         let before = std::fs::read(&registry_path).unwrap();
-        assert!(stamp_last_seen(&BTreeSet::new(), STAMP));
-        assert!(stamp_last_seen(&set(&["nobody"]), STAMP));
+        assert!(stamp_last_seen_in(&env, &BTreeSet::new(), STAMP));
+        assert!(stamp_last_seen_in(&env, &set(&["nobody"]), STAMP));
         assert_eq!(std::fs::read(&registry_path).unwrap(), before);
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&registry_path).unwrap()), inode, "the registry was rewritten");
@@ -270,12 +203,14 @@ mod stamp_write_tests {
 
     #[test]
     fn a_held_lock_returns_false_and_leaves_the_bytes_alone() {
-        let _guard = guarded();
-        let (dir, registry_path) = seed("locked");
+        // Held for the whole bound, so no other test takes the lock meanwhile.
+        let _turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
+        let (dir, registry_path) = seed(&mut env, "locked");
         let before = std::fs::read(&registry_path).unwrap();
         // A directory at the lock's path can never be taken.
         std::fs::create_dir(dir.join(".registry.lock")).unwrap();
-        assert!(!stamp_last_seen(&set(&["a"]), STAMP));
+        assert!(!stamp_last_seen_in(&env, &set(&["a"]), STAMP));
         assert_eq!(std::fs::read(&registry_path).unwrap(), before);
         let _ = std::fs::remove_dir_all(&dir);
     }

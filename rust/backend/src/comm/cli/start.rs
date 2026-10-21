@@ -1,6 +1,7 @@
 //! `sotd comm session-start` (comm-session-start.sh): the receive bootstrap. Resolve the identity, join, print one
 //! `BOOTSTRAP-ARM` line and the start lines, and stop: the daemon wakes the row, so there is nothing to arm.
 
+use crate::comm::Env;
 use super::{context, gate, join, Out};
 
 /// The work-state rule, printed on every start: the row's color is read from it.
@@ -26,7 +27,7 @@ pub(crate) fn handoff_line(handle: &str, cwd: &std::path::Path) -> Option<String
         .then(|| format!("HANDOFF: read {file} before other work; it is this session's recovery file."))
 }
 
-pub(crate) fn session_start(args: &[String]) -> Out {
+pub(crate) fn session_start(env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
     if !args.is_empty() {
         o.err("usage: comm-session-start.sh");
@@ -36,12 +37,12 @@ pub(crate) fn session_start(args: &[String]) -> Out {
         o.out("BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a");
         o
     };
-    if let Err((_, why)) = gate() {
+    if let Err((_, why)) = gate(env) {
         o.err(format!("comm-session-start: {why}"));
         return fail(o);
     }
     let mut notes = Vec::new();
-    let ctx = match context(false, &mut notes) {
+    let ctx = match context(env, false, &mut notes) {
         Ok(c) => c,
         Err(e) => {
             o.errs(&notes);
@@ -51,7 +52,7 @@ pub(crate) fn session_start(args: &[String]) -> Out {
     };
     o.errs(&notes);
     // A daemon-pinned self file that does not exist yet: this row never joined, so it has no identity to keep.
-    let cold = std::env::var_os("SOT_COMM_SELF_FILE").is_some_and(|f| !f.is_empty() && !std::path::Path::new(&f).is_file());
+    let cold = env.get_nonempty("SOT_COMM_SELF_FILE").is_some_and(|f| !std::path::Path::new(f).is_file());
     if !ctx.name_held_by.is_empty() && !ctx.row_id.is_empty() {
         let held = crate::comm::identity::self_file::read(&ctx.self_file).map(|f| f.name).unwrap_or_default();
         o.out(format!("comm-session-start: @{held} moved to row {}; this row ({}) joins it again", ctx.name_held_by, ctx.row_id));
@@ -65,7 +66,7 @@ pub(crate) fn session_start(args: &[String]) -> Out {
         ));
         return o;
     }
-    let joined = join::join(&[]);
+    let joined = join::join(env, &[]);
     let mut text = joined.stderr.clone();
     text.push_str(&joined.stdout);
     o.stdout.push_str(&text);

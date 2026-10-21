@@ -1,4 +1,5 @@
 use super::*;
+use crate::comm::Env;
 use std::path::PathBuf;
 
 thread_local! {
@@ -27,7 +28,7 @@ async fn shutdown_kills_the_link_child_and_never_reconnects() {
     STUB_PROGRAM.set(Some(stub.to_string_lossy().into_owned()));
     let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
-    let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", sig).await });
+    let task = tokio::spawn(async move { hold_link(&Env::empty(), &recipe, "self", "sotd-self", sig).await });
     let began = Instant::now();
     // Spawn completes before the stub's first line has run; fire only once
     // that line has written the counter, so the one-spawn precondition is true.
@@ -90,14 +91,14 @@ fn fe_lines() -> String {
 fn moves_exactly_the_unread_lines_once() {
     let (_t, dir, home) = setup(REG, &fe_lines());
     std::fs::write(home.join("read/a.fe.cursor"), "1\n").unwrap();
-    assert_eq!(move_fe_inbox_in(&dir, &home), Ok(2));
+    assert_eq!(move_fe_inbox_in(&Env::empty(), &dir, &home), Ok(2));
     assert_eq!(msgs(&home, "a"), ["a-unread"]);
     assert_eq!(msgs(&home, "b"), ["b-unread"]);
     assert!(!dir.join("fe-inbox.jsonl").exists() && !dir.join("fe-inbox.jsonl.moving").exists());
     assert!(dir.join("fe-inbox.jsonl.moved").exists());
     assert!(!home.join("read/a.fe.cursor").exists(), "a stale cursor outlived the move");
     // A second start finds nothing to move.
-    assert_eq!(move_fe_inbox_in(&dir, &home), Ok(0));
+    assert_eq!(move_fe_inbox_in(&Env::empty(), &dir, &home), Ok(0));
     assert_eq!(msgs(&home, "a"), ["a-unread"]);
 }
 
@@ -109,7 +110,7 @@ fn a_move_interrupted_after_the_rename_finishes_without_loss() {
     let inbox = home.join("inbox");
     std::fs::create_dir_all(&inbox).unwrap();
     crate::comm::mail::inbox::file_frame(&inbox, "x", "a", false, "a-read", "1", Duration::from_secs(5), "none").unwrap();
-    assert!(move_fe_inbox_in(&dir, &home).is_ok());
+    assert!(move_fe_inbox_in(&Env::empty(), &dir, &home).is_ok());
     let a = msgs(&home, "a");
     for want in ["a-read", "a-unread"] {
         assert!(a.iter().any(|m| m == want), "{want} lost: {a:?}");
@@ -121,7 +122,7 @@ fn a_move_interrupted_after_the_rename_finishes_without_loss() {
 #[test]
 fn an_unreadable_registry_leaves_the_mail_where_it_is() {
     let (_t, dir, home) = setup("not a registry", &fe_lines());
-    assert!(move_fe_inbox_in(&dir, &home).is_err());
+    assert!(move_fe_inbox_in(&Env::empty(), &dir, &home).is_err());
     assert!(dir.join("fe-inbox.jsonl").exists());
     assert!(!dir.join("fe-inbox.jsonl.moving").exists());
 }
@@ -130,7 +131,7 @@ fn an_unreadable_registry_leaves_the_mail_where_it_is() {
 fn off_windows_the_old_inbox_is_left_untouched() {
     let (_t, dir, home) = setup(REG, &fe_lines());
     let before = std::fs::read(dir.join("fe-inbox.jsonl")).unwrap();
-    assert_eq!(move_fe_inbox_if(false, &dir, &home), Ok(0));
+    assert_eq!(move_fe_inbox_if(&Env::empty(), false, &dir, &home), Ok(0));
     assert_eq!(std::fs::read(dir.join("fe-inbox.jsonl")).unwrap(), before);
     assert!(!dir.join("fe-inbox.jsonl.moving").exists() && !dir.join("fe-inbox.jsonl.moved").exists());
     assert!(!home.join("inbox").exists(), "a line was filed off Windows");
@@ -175,13 +176,13 @@ async fn fake_hub(rx: tokio::io::DuplexStream, mut tx: tokio::io::DuplexStream, 
 
 /// The answers a link gives, in the order they arrive, to one offer for each of `handles` (request ids from 100),
 /// from a hub that answers its hello. Each answer comes within 20 s.
-async fn answers_to_offers(self_host: &str, handles: &[&str]) -> Vec<(u64, serde_json::Value)> {
+async fn answers_to_offers(env: &Env, self_host: &str, handles: &[&str]) -> Vec<(u64, serde_json::Value)> {
     let (link_tx, hub_rx) = tokio::io::duplex(64 * 1024);
     let (mut hub_tx, link_rx) = tokio::io::duplex(64 * 1024);
-    let host = self_host.to_string();
+    let (host, env) = (self_host.to_string(), env.clone());
     let link = tokio::spawn(async move {
         let (mut tx, mut rx) = (link_tx, codec::buffered(link_rx));
-        converse(&mut tx, &mut rx, &host, "sotd-test").await
+        converse(&env, &mut tx, &mut rx, &host, "sotd-test").await
     });
     let mut hub_rx = codec::buffered(hub_rx);
     let (hello, _) = codec::read_frame(&mut hub_rx).await.expect("the link's hello");
@@ -202,9 +203,9 @@ async fn answers_to_offers(self_host: &str, handles: &[&str]) -> Vec<(u64, serde
     answers
 }
 
-/// A comm folder for a link under test, which `SOT_COMM_HOME` names while the guards live: `agents` its registry;
+/// A comm folder for a link under test, which `SOT_COMM_HOME` names in the environment returned with it: `agents` its registry;
 /// with `record`, the inbox lock record that lets this daemon append.
-fn link_home(agents: serde_json::Value, record: bool) -> (tempfile::TempDir, [crate::paths::EnvGuard; 3]) {
+fn link_home(agents: serde_json::Value, record: bool) -> (tempfile::TempDir, Env) {
     let home = tempfile::tempdir().unwrap();
     let inbox = home.path().join("inbox");
     std::fs::create_dir(&inbox).unwrap();
@@ -212,15 +213,11 @@ fn link_home(agents: serde_json::Value, record: bool) -> (tempfile::TempDir, [cr
     if record {
         std::fs::write(home.path().join("inbox-lock-manager"), format!("{}\n", crate::comm::mail::inbox::lock_identity(&inbox))).unwrap();
     }
-    let guards = [
-        crate::paths::EnvGuard::capture("SOT_COMM_HOME"),
-        crate::paths::EnvGuard::capture("SOT_HOSTS"),
-        crate::paths::EnvGuard::capture(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV),
-    ];
-    std::env::set_var("SOT_COMM_HOME", home.path());
-    std::env::set_var("SOT_HOSTS", home.path().join("no-hosts.toml"));
-    std::env::set_var(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV, "2");
-    (home, guards)
+    let env = Env::empty()
+        .with("SOT_COMM_HOME", home.path())
+        .with("SOT_HOSTS", home.path().join("no-hosts.toml"))
+        .with(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV, "2");
+    (home, env)
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -233,13 +230,12 @@ fn runtime() -> tokio::runtime::Runtime {
 /// holder's and `not_here`.)
 #[test]
 fn a_link_answers_not_here_for_a_handle_its_box_does_not_hold() {
-    let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let agents = serde_json::json!({
         "stale": { "host": "b", "last_seen": "2026-01-01T00:00:00Z" },
         "here": { "host": "a-guest", "last_seen": "2026-01-01T00:00:00Z" },
     });
-    let (_home, _env) = link_home(agents, false);
-    let mut answers = runtime().block_on(answers_to_offers("a-guest", &["stale", "nobody", "here"]));
+    let (_home, env) = link_home(agents, false);
+    let mut answers = runtime().block_on(answers_to_offers(&env, "a-guest", &["stale", "nobody", "here"]));
     answers.sort_by_key(|(id, _)| *id);
     let not_here = |h: &str| serde_json::json!({ "error": format!("no box knows that handle: {h}"), "code": "not_here" });
     assert_eq!(answers[0].1, not_here("stale"), "a handle another box holds");
@@ -256,13 +252,12 @@ fn a_link_answers_not_here_for_a_handle_its_box_does_not_hold() {
 /// only after the first's lock wait.
 #[test]
 fn an_offer_is_answered_without_waiting_behind_another() {
-    let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let now = crate::comm::registry::registry::iso8601_utc_from_secs(crate::comm::registry::registry::unix_now_secs());
     let agents = serde_json::json!({ "held": { "host": "a", "last_seen": now }, "free": { "host": "a", "last_seen": now } });
-    let (home, _env) = link_home(agents, true);
+    let (home, env) = link_home(agents, true);
     let held = std::fs::OpenOptions::new().read(true).create(true).append(true).open(home.path().join("inbox/held.lock")).unwrap();
     held.lock().unwrap();
-    let answers = runtime().block_on(answers_to_offers("a", &["held", "free"]));
+    let answers = runtime().block_on(answers_to_offers(&env, "a", &["held", "free"]));
     assert_eq!(answers[0], (101, serde_json::json!({ "ok": true })), "the free offer was answered first: {answers:?}");
     assert_eq!(
         answers[1],
@@ -287,7 +282,7 @@ async fn a_hub_silent_for_three_ping_intervals_ends_the_link() {
         let hub = tokio::spawn(fake_hub(hub_rx, hub_tx, hello, pings, events));
         let (mut tx, mut rx) = (link_tx, codec::buffered(link_rx));
         let began = tokio::time::Instant::now();
-        let ended = tokio::time::timeout(Duration::from_secs(1200), converse(&mut tx, &mut rx, "self", "sotd-self")).await;
+        let ended = tokio::time::timeout(Duration::from_secs(1200), converse(&Env::empty(), &mut tx, &mut rx, "self", "sotd-self")).await;
         let took = began.elapsed();
         drop((tx, rx));
         let answered = hub.await.unwrap();
@@ -336,7 +331,7 @@ async fn a_failed_link_names_an_ssh_line_that_is_not_utf8() {
     STUB_PROGRAM.set(Some(stub.to_string_lossy().into_owned()));
     let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
-    let ended = tokio::time::timeout(Duration::from_secs(30), link_once(&recipe, "self", "sotd-self", sig)).await;
+    let ended = tokio::time::timeout(Duration::from_secs(30), link_once(&Env::empty(), &recipe, "self", "sotd-self", sig)).await;
     STUB_PROGRAM.set(None);
     let why = ended.expect("the link ends when its ssh exits").expect_err("a stub that exits fails the link");
     assert!(why.ends_with(": Permission denied \u{fffd} (publickey)."), "{why}");
@@ -351,7 +346,7 @@ async fn a_silent_hub_ends_the_link_without_a_stale_ssh_line() {
     STUB_PROGRAM.set(Some(silent_hub_ssh(dir.path())));
     let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
-    let link = tokio::spawn(async move { link_once(&recipe, "self", "sotd-self", sig).await });
+    let link = tokio::spawn(async move { link_once(&Env::empty(), &recipe, "self", "sotd-self", sig).await });
     // A running blocking task holds the paused clock, so the link has the stub's warning and reply before it waits.
     let said = dir.path().join("said");
     tokio::task::spawn_blocking(move || {
@@ -376,7 +371,7 @@ async fn a_link_cut_for_silence_is_dialled_again() {
     STUB_PROGRAM.set(Some(silent_hub_ssh(dir.path())));
     let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
-    let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", sig).await });
+    let task = tokio::spawn(async move { hold_link(&Env::empty(), &recipe, "self", "sotd-self", sig).await });
     // Each link is one process group. The paused clock runs the 90 s cut and the redial in a moment of real time.
     let (began, mut seen) = (Instant::now(), Vec::new());
     while seen.len() < 2 {
@@ -395,6 +390,6 @@ async fn a_link_cut_for_silence_is_dialled_again() {
 fn a_cursor_past_the_end_reads_from_the_start() {
     let (_t, dir, home) = setup(REG, &fe_lines());
     std::fs::write(home.join("read/a.fe.cursor"), "99").unwrap();
-    assert_eq!(move_fe_inbox_in(&dir, &home), Ok(3));
+    assert_eq!(move_fe_inbox_in(&Env::empty(), &dir, &home), Ok(3));
     assert_eq!(msgs(&home, "a"), ["a-read", "a-unread"]);
 }

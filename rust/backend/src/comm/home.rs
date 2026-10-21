@@ -7,8 +7,8 @@ pub(crate) const PROTOCOL_VERSION: u32 = 1;
 
 /// The comm folder, absolute: [`super::sot_comm_home`] made absolute against the working folder, so a command and its
 /// children never mean two folders.
-pub(crate) fn comm_home() -> Option<PathBuf> {
-    let h = super::sot_comm_home()?;
+pub(crate) fn comm_home(env: &super::Env) -> Option<PathBuf> {
+    let h = super::sot_comm_home_in(env)?;
     Some(std::path::absolute(&h).unwrap_or(h))
 }
 
@@ -16,11 +16,11 @@ pub(crate) fn comm_home() -> Option<PathBuf> {
 /// release left open closed ([`tighten`]), and a registry only where there is no file. The registry is published by a
 /// hard link of a synced skeleton, which fails on an existing name, so a registry is never replaced, truncated or
 /// repaired here. Returns the lines to show (a folder that could not be made private).
-pub(crate) fn ensure(home: &Path) -> Vec<String> {
+pub(crate) fn ensure(home: &Path, env: &super::Env) -> Vec<String> {
     for d in ["", "inbox", "self", "read"] {
         let _ = std::fs::create_dir_all(home.join(d));
     }
-    let notes = tighten(home);
+    let notes = tighten(home, env);
     let reg = home.join("registry.json");
     if !reg.is_file() {
         use std::io::Write;
@@ -47,10 +47,10 @@ pub(crate) fn is_whole(home: &Path) -> bool {
 /// home folder or a git checkout (a mistaken `SOT_COMM_HOME`) is left as it is, and said so. Not on Windows, where the
 /// profile's access list is the mechanism.
 #[cfg(unix)]
-pub(crate) fn tighten(home: &Path) -> Vec<String> {
+pub(crate) fn tighten(home: &Path, env: &super::Env) -> Vec<String> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let Ok(phys) = std::fs::canonicalize(home) else { return Vec::new() };
-    let user_home = std::env::var_os("HOME").and_then(|h| std::fs::canonicalize(h).ok());
+    let user_home = env.get("HOME").and_then(|h| std::fs::canonicalize(h).ok());
     let refused = if phys == Path::new("/") {
         Some("the root folder")
     } else if user_home.as_deref() == Some(phys.as_path()) {
@@ -111,7 +111,7 @@ pub(crate) fn tighten(home: &Path) -> Vec<String> {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn tighten(_home: &Path) -> Vec<String> {
+pub(crate) fn tighten(_home: &Path, _env: &super::Env) -> Vec<String> {
     Vec::new()
 }
 

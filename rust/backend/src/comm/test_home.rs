@@ -1,32 +1,15 @@
-//! A scratch comm folder for messaging's unit tests: every variable a command reads is this test's while the guard
-//! lives, the tests that use one run one at a time (`paths::ENV_TEST_LOCK`), and no daemon answers.
+//! A scratch comm folder for messaging's unit tests: the environment a command reads is a value this test builds and
+//! passes, so the tests run in parallel and none writes the process's, and no daemon answers.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-/// The variables a messaging command reads, every one captured and cleared or set by [`TestHome::new`].
-const KEYS: [&str; 14] = [
-    "SOT_COMM_HOME",
-    "SOT_SELF_HOST",
-    "SOT_COMM_TEST_HOST",
-    "SOT_COMM_SELF_FILE",
-    "SOT_WORKSPACE_ID",
-    "SOT_COMM_NAME",
-    "SOT_COMM_EXPERTISE",
-    "SOT_SOCKET",
-    "SOT_BACKEND_LABEL",
-    "SOT_HOSTS",
-    "SOT_LOCK_WAIT_SECS",
-    "SOT_INBOX_LOCK_WAIT_SECS",
-    "SOT_COMM_MSYS",
-    "SOT_COMM_BIN",
-];
-
 pub(crate) struct TestHome {
-    _serial: std::sync::MutexGuard<'static, ()>,
-    _env: Vec<crate::paths::EnvGuard>,
+    _turn: std::sync::RwLockReadGuard<'static, ()>,
     _dir: tempfile::TempDir,
+    /// The environment every command under test is given: this test's alone, the process's never written.
+    pub env: crate::comm::Env,
     /// The comm folder.
     pub home: PathBuf,
     /// The project a command run by this test process belongs to (its working folder's checkout), canonical.
@@ -36,23 +19,30 @@ pub(crate) struct TestHome {
 impl TestHome {
     /// The comm folder `<dir>/comm` on the box `box1`, no topology, no daemon.
     pub(crate) fn new() -> TestHome {
-        let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let env = KEYS.iter().map(|k| crate::paths::EnvGuard::capture(*k)).collect();
-        for k in KEYS {
-            std::env::remove_var(k);
-        }
+        let turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().expect("tempdir");
         let home = dir.path().join("comm");
         let cwd = std::env::current_dir().expect("cwd");
         let project = PathBuf::from(crate::comm::identity::paths::canonical(&crate::comm::identity::paths::raw_root(&cwd)).expect("project"));
-        std::env::set_var("SOT_COMM_HOME", &home);
-        std::env::set_var("SOT_SELF_HOST", "box1");
-        std::env::set_var("SOT_COMM_TEST_HOST", "box1");
-        std::env::set_var("SOT_SOCKET", dir.path().join("no-daemon.sock"));
-        std::env::set_var("SOT_HOSTS", dir.path().join("hosts.toml"));
-        std::env::set_var("SOT_LOCK_WAIT_SECS", "2");
-        crate::comm::home::ensure(&home);
-        TestHome { _serial: serial, _env: env, _dir: dir, home, project }
+        let env = crate::comm::Env::empty()
+            .with("SOT_COMM_HOME", &home)
+            .with("SOT_SELF_HOST", "box1")
+            .with("SOT_COMM_TEST_HOST", "box1")
+            .with("SOT_SOCKET", dir.path().join("no-daemon.sock"))
+            .with("SOT_HOSTS", dir.path().join("hosts.toml"))
+            .with("SOT_LOCK_WAIT_SECS", "2");
+        crate::comm::home::ensure(&home, &env);
+        TestHome { _turn: turn, _dir: dir, env, home, project }
+    }
+
+    /// `self` with `k` set in its environment.
+    pub(crate) fn set(&mut self, k: &str, v: impl AsRef<std::ffi::OsStr>) {
+        self.env = std::mem::take(&mut self.env).with(k, v);
+    }
+
+    /// `self` with `k` unset in its environment.
+    pub(crate) fn unset(&mut self, k: &str) {
+        self.env = std::mem::take(&mut self.env).without(k);
     }
 
     pub(crate) fn root(&self) -> String {

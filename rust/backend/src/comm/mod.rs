@@ -11,6 +11,8 @@ pub(crate) mod wake;
 
 use std::path::PathBuf;
 
+pub(crate) use sot_log::host::env::Env;
+
 /// The sot-comm home directory (`~/.sot-comm` by default) — ONE resolver
 /// (Codex round finding 8), shared by the daemon's own registry reads
 /// (`comm::registry::registry::comm_registry_path`, used on every platform for
@@ -28,22 +30,18 @@ use std::path::PathBuf;
 /// `#[cfg(windows)]`-gated. `None` only when none of the three are set. `comm-lib.sh`'s `COMM_HOME` is the
 /// same rule in shell (`$HOME` is the user profile under Git Bash).
 pub(crate) fn sot_comm_home() -> Option<PathBuf> {
-    if let Some(v) = std::env::var_os("SOT_COMM_HOME") {
-        if !v.is_empty() {
-            return Some(PathBuf::from(v));
-        }
+    sot_comm_home_in(&Env::process())
+}
+
+/// [`sot_comm_home`] reading the three variables from `env`.
+pub(crate) fn sot_comm_home_in(env: &Env) -> Option<PathBuf> {
+    if let Some(v) = env.get_nonempty("SOT_COMM_HOME") {
+        return Some(PathBuf::from(v));
     }
-    if let Some(h) = std::env::var_os("HOME") {
-        if !h.is_empty() {
-            return Some(PathBuf::from(h).join(".sot-comm"));
-        }
+    if let Some(h) = env.get_nonempty("HOME") {
+        return Some(PathBuf::from(h).join(".sot-comm"));
     }
-    if let Some(u) = std::env::var_os("USERPROFILE") {
-        if !u.is_empty() {
-            return Some(PathBuf::from(u).join(".sot-comm"));
-        }
-    }
-    None
+    env.get_nonempty("USERPROFILE").map(|u| PathBuf::from(u).join(".sot-comm"))
 }
 
 #[cfg(test)]

@@ -247,7 +247,7 @@ fn a_stamp_decides_against_the_row_under_the_lock() {
     ] {
         let home = Home::with(json!({ "h": seed }));
         let lock = home.dir.path().join(".registry.lock");
-        let held = crate::comm::registry::lock::acquire(&lock, Duration::from_secs(1)).expect("the holder takes the lock");
+        let held = crate::comm::registry::lock::acquire_in(&crate::comm::Env::empty(), &lock, Duration::from_secs(1)).expect("the holder takes the lock");
         let stop = std::thread::spawn(|| write_event("h", &Event::Stop, Duration::from_secs(10)));
         std::thread::sleep(Duration::from_millis(200));
         let path = home.dir.path().join("registry.json");

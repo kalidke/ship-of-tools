@@ -73,14 +73,11 @@ fn a_broadcast_copy_is_stamped_to_empty() {
 /// With no `SOT_INBOX_LOCK_WAIT_SECS` a filing waits 2 s for a held lock, the shell's default, and says so.
 #[test]
 fn the_default_wait_is_the_shells_two_seconds() {
-    let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _wait = crate::paths::EnvGuard::capture(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV);
-    std::env::remove_var(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV);
     let d = home();
     let held = std::fs::OpenOptions::new().read(true).create(true).append(true).open(d.path().join("inbox/fresh.lock")).unwrap();
     held.lock().unwrap();
     let filer = filer(crate::comm::mail::inbox::Role::Hub, "local m");
-    let wait = crate::comm::mail::inbox::inbox_lock_wait();
+    let wait = crate::comm::mail::inbox::inbox_lock_wait(&crate::comm::Env::empty());
     assert_eq!(
         comm_file_verdict(Some(d.path()), &filer, no_forward, &req("fresh"), NOW, wait),
         err("file_failed", "the inbox lock for @fresh was held for 2s — nothing was appended")

@@ -4,7 +4,7 @@ use serde_json::json;
 
 fn resolve_here(t: &TestHome, rebind: bool) -> (Context, Vec<String>) {
     let mut notes = Vec::new();
-    let c = resolve(rebind, &t.project, || true, &mut notes).expect("resolve");
+    let c = resolve(&t.env, rebind, &t.project, || true, &mut notes).expect("resolve");
     (c, notes)
 }
 
@@ -24,10 +24,10 @@ fn outside_a_row_the_identity_is_the_box_s_shared_slot_and_this_project() {
 /// In a row the daemon pins the self file; its name names the row, whatever the environment says.
 #[test]
 fn a_pinned_self_file_names_the_row_and_a_handle_another_row_binds_is_discarded() {
-    let t = TestHome::new();
+    let mut t = TestHome::new();
     let pinned = t.home.join("self").join("box1__ws-a.txt");
-    std::env::set_var("SOT_COMM_SELF_FILE", &pinned);
-    std::env::set_var("SOT_WORKSPACE_ID", "ws-zzz");
+    t.set("SOT_COMM_SELF_FILE", &pinned);
+    t.set("SOT_WORKSPACE_ID", "ws-zzz");
     t.self_file(&pinned, "repo-box1");
     let (c, notes) = resolve_here(&t, false);
     assert_eq!((c.row_id.as_str(), c.name.as_str()), ("ws-a", "repo-box1"));
@@ -39,7 +39,7 @@ fn a_pinned_self_file_names_the_row_and_a_handle_another_row_binds_is_discarded(
     // A join from the row passes --rebind: the handle stays, so the join moves it back.
     assert_eq!(resolve_here(&t, true).0.name, "repo-box1");
     // A pinned file of any other name names no row, even with SOT_WORKSPACE_ID set.
-    std::env::set_var("SOT_COMM_SELF_FILE", t.home.join("self").join("private.txt"));
+    t.set("SOT_COMM_SELF_FILE", t.home.join("self").join("private.txt"));
     assert_eq!(resolve_here(&t, false).0.row_id, "");
 }
 

@@ -26,13 +26,17 @@
 /// (`sot-protocol`'s `topology`), the workspace/session registries and the
 /// frontend's own settings. `None` when no base env var is set.
 pub fn sot_config_dir() -> Option<std::path::PathBuf> {
+    sot_config_dir_in(&super::env::Env::process())
+}
+
+/// [`sot_config_dir`] reading the variables from `env`.
+pub fn sot_config_dir_in(env: &super::env::Env) -> Option<std::path::PathBuf> {
     if cfg!(windows) {
-        return sot_state_dir().map(|d| d.join("config"));
+        return sot_state_dir_in(env).map(|d| d.join("config"));
     }
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
+    env.get_nonempty("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .or_else(|| env.get("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
         .map(|d| d.join("sot"))
 }
 
@@ -57,22 +61,22 @@ pub fn sot_config_dir() -> Option<std::path::PathBuf> {
 /// `None` elsewhere only when neither `$XDG_STATE_HOME` nor `$HOME` is
 /// set.
 pub fn sot_state_dir() -> Option<std::path::PathBuf> {
+    sot_state_dir_in(&super::env::Env::process())
+}
+
+/// [`sot_state_dir`] reading the variables from `env`.
+pub fn sot_state_dir_in(env: &super::env::Env) -> Option<std::path::PathBuf> {
     let dir = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA")
-            .filter(|v| !v.is_empty())
+        env.get_nonempty("LOCALAPPDATA")
             .map(std::path::PathBuf::from)
             .or_else(|| {
-                std::env::var_os("USERPROFILE")
-                    .filter(|v| !v.is_empty())
+                env.get_nonempty("USERPROFILE")
                     .map(|home| std::path::PathBuf::from(home).join("AppData").join("Local"))
             })
     } else {
-        std::env::var_os("XDG_STATE_HOME")
+        env.get("XDG_STATE_HOME")
             .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|h| std::path::PathBuf::from(h).join(".local").join("state"))
-            })
+            .or_else(|| env.get("HOME").map(|h| std::path::PathBuf::from(h).join(".local").join("state")))
     }?;
     Some(dir.join("sot"))
 }
@@ -96,7 +100,12 @@ pub fn sot_state_dir() -> Option<std::path::PathBuf> {
 /// `Err` — never a fallback string — when neither source yields a usable
 /// label: a process with no nameable host has nothing honest to declare.
 pub fn host_name() -> Result<String, String> {
-    if let Some(v) = std::env::var_os("SOT_SELF_HOST") {
+    host_name_in(&super::env::Env::process())
+}
+
+/// [`host_name`] reading `SOT_SELF_HOST` from `env`.
+pub fn host_name_in(env: &super::env::Env) -> Result<String, String> {
+    if let Some(v) = env.get("SOT_SELF_HOST") {
         let v = v.to_string_lossy().into_owned();
         if !v.is_empty() {
             return Ok(v);
@@ -178,7 +187,12 @@ use std::path::PathBuf;
 /// `SOT_RUNTIME_DIR` override (the capsule lane sockets read it); no
 /// production code sets that variable, so each process resolves its own.
 pub fn runtime_sot_dir() -> PathBuf {
-    if let Some(dir) = private_xdg_runtime_dir() {
+    runtime_sot_dir_in(&super::env::Env::process())
+}
+
+/// [`runtime_sot_dir`] reading `XDG_RUNTIME_DIR` from `env`.
+pub fn runtime_sot_dir_in(env: &super::env::Env) -> PathBuf {
+    if let Some(dir) = private_xdg_runtime_dir(env) {
         return dir.join("sot");
     }
     let uid = current_uid();
@@ -235,8 +249,8 @@ pub fn runtime_dir() -> std::io::Result<PathBuf> {
 /// `$XDG_RUNTIME_DIR` — a process-global env var other tests in this crate
 /// touch concurrently.
 #[cfg(unix)]
-fn private_xdg_runtime_dir() -> Option<PathBuf> {
-    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
+fn private_xdg_runtime_dir(env: &super::env::Env) -> Option<PathBuf> {
+    let dir = PathBuf::from(env.get("XDG_RUNTIME_DIR")?);
     if is_private_dir(&dir) {
         Some(dir)
     } else {
@@ -244,8 +258,8 @@ fn private_xdg_runtime_dir() -> Option<PathBuf> {
     }
 }
 #[cfg(not(unix))]
-fn private_xdg_runtime_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
+fn private_xdg_runtime_dir(env: &super::env::Env) -> Option<PathBuf> {
+    env.get("XDG_RUNTIME_DIR").map(PathBuf::from)
 }
 
 /// `true` if `dir` exists, is a REAL directory (not a symlink to one),

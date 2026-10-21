@@ -1,6 +1,7 @@
 //! The shell door's verbs: what `comm/lib/comm-lib-sotd.sh` turns into the functions rows' work-state scripts and the
 //! agents' CLIs call by their 0.6.6 names, each answering as the function did (its exit codes, its one-line reasons).
 
+use crate::comm::Env;
 use std::io::Read;
 
 use serde_json::Value;
@@ -9,8 +10,8 @@ use super::{gate, routable as routable_check, Out};
 use crate::comm::identity::derive::{derive as derive_handle, Kind, Mode};
 use crate::comm::registry::registry::{command_lock_wait, iso8601_utc_now, read_doc, touch, update, TOUCH_LOCK_WAIT};
 
-fn registry_path() -> std::path::PathBuf {
-    crate::comm::home::comm_home().unwrap_or_default().join("registry.json")
+fn registry_path(env: &Env) -> std::path::PathBuf {
+    crate::comm::home::comm_home(env).unwrap_or_default().join("registry.json")
 }
 
 fn usage(o: Out, text: &str) -> Out {
@@ -27,9 +28,9 @@ fn stdin_text() -> String {
 
 /// `require-agent` (`sot_require_agent`): exit 0 when this process may act as its row's handle; else its one reason on
 /// stdout, exit 1 for a second agent inside the session, 2 for an unreadable ancestry or a row it does not run in.
-pub(crate) fn require_agent(_args: &[String]) -> Out {
+pub(crate) fn require_agent(env: &Env, _args: &[String]) -> Out {
     let mut o = Out::default();
-    match gate() {
+    match gate(env) {
         Ok(()) => o,
         Err((rc, why)) => {
             o.out(why);
@@ -39,10 +40,10 @@ pub(crate) fn require_agent(_args: &[String]) -> Out {
 }
 
 /// `routable <name> <project root>`: exit 0, or its one reason on stdout and exit 1.
-pub(crate) fn routable(args: &[String]) -> Out {
+pub(crate) fn routable(env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
     let [name, root] = args else { return usage(o, "routable <name> <project root>") };
-    match routable_check(name, root, &registry_path()) {
+    match routable_check(env, name, root, &registry_path(env)) {
         Ok(()) => o,
         Err(why) => {
             o.out(why);
@@ -55,9 +56,9 @@ pub(crate) fn routable(args: &[String]) -> Out {
 /// 1 absent, 2 unreadable, the JSON on stdout; `put` takes the entry on stdin; `del-provisional` exits 0 deleted, 2 not
 /// the spawn's own any more, 1 failed.
 /// Every write is one locked step; a failed one prints its FAILED line on stderr and exits 1.
-pub(crate) fn registry(args: &[String]) -> Out {
+pub(crate) fn registry(env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
-    let path = registry_path();
+    let path = registry_path(env);
     let failed = |mut o: Out, e: String| {
         o.err(format!("FAILED: {e}"));
         o.exit(1)
@@ -88,7 +89,7 @@ pub(crate) fn registry(args: &[String]) -> Out {
             let Ok(entry) = serde_json::from_str::<Value>(&stdin_text()) else {
                 return failed(o, "the entry to write is not JSON, so nothing was written".into());
             };
-            match update(&path, command_lock_wait(), |agents| {
+            match update(env, &path, command_lock_wait(env), |agents| {
                 agents.insert(h.clone(), entry);
                 Ok(((), true))
             }) {
@@ -96,11 +97,11 @@ pub(crate) fn registry(args: &[String]) -> Out {
                 Err(e) => failed(o, e),
             }
         }
-        [v, h] if v == "del" => match update(&path, command_lock_wait(), |agents| Ok(((), agents.remove(h).is_some()))) {
+        [v, h] if v == "del" => match update(env, &path, command_lock_wait(env), |agents| Ok(((), agents.remove(h).is_some()))) {
             Ok(()) => o,
             Err(e) => failed(o, e),
         },
-        [v, h] if v == "touch" => match touch(&path, h) {
+        [v, h] if v == "touch" => match touch(env, &path, h) {
             Ok(()) => o,
             Err(e) => failed(o, e),
         },
@@ -108,7 +109,7 @@ pub(crate) fn registry(args: &[String]) -> Out {
             if h.is_empty() || nonce.is_empty() {
                 return o.exit(2);
             }
-            let deleted = update(&path, command_lock_wait(), |agents| {
+            let deleted = update(env, &path, command_lock_wait(env), |agents| {
                 let ours = agents.get(h).is_some_and(|e| {
                     let s = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("");
                     s("status") == "spawning" && s("root") == root && s("nonce") == nonce
@@ -131,7 +132,7 @@ pub(crate) fn registry(args: &[String]) -> Out {
 /// `derive <reclaim|fresh> <root> <raw host> [--claim]` (with `--claim`, the entry on stdin and its registry write in
 /// the same locked step): three lines, the handle, its qualifier and tier 1's name; the derivation's lines on
 /// stderr; exit 1 with nothing written when no tier can be taken.
-pub(crate) fn derive(args: &[String]) -> Out {
+pub(crate) fn derive(env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
     let (mode, root, host, claim) = match args {
         [m, r, h] => (m, r, h, false),
@@ -160,14 +161,14 @@ pub(crate) fn derive(args: &[String]) -> Out {
     let mut notes = Vec::new();
     let unreadable = "comm: the registry could not be read, so no handle was derived; nothing was written".to_string();
     let got = if let Some(entry) = entry {
-        update(&registry_path(), command_lock_wait(), |agents| {
+        update(env, &registry_path(env), command_lock_wait(env), |agents| {
             let d = derive_handle(mode, root, host, Kind::Claude, agents, None, &mut notes)?;
             agents.insert(d.name.clone(), entry);
             Ok((d, true))
         })
         .map_err(|e| if e.starts_with("the registry could not be read") { unreadable.clone() } else { e })
     } else {
-        read_doc(&registry_path())
+        read_doc(&registry_path(env))
             .map_err(|_| unreadable.clone())
             .and_then(|doc| derive_handle(mode, root, host, Kind::Claude, &doc["agents"].as_object().cloned().unwrap_or_default(), None, &mut notes))
     };
@@ -187,7 +188,7 @@ pub(crate) fn derive(args: &[String]) -> Out {
 }
 
 /// `self-slot <host> <workspace id>`: the unpinned self file's leaf, or its reason and exit 1.
-pub(crate) fn self_slot(args: &[String]) -> Out {
+pub(crate) fn self_slot(_env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
     let (host, ws) = match args {
         [h] => (h.as_str(), ""),
@@ -207,7 +208,7 @@ pub(crate) fn self_slot(args: &[String]) -> Out {
 }
 
 /// `slug <label>`: the row slug a label gives, for the spawn's same-label refusal.
-pub(crate) fn slug(args: &[String]) -> Out {
+pub(crate) fn slug(_env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
     match args {
         [label] => o.out(sot_protocol::topology::endpoint::slug(label)),
@@ -217,7 +218,7 @@ pub(crate) fn slug(args: &[String]) -> Out {
 }
 
 /// `handoff-line <h>`: the line naming the session's recovery file, when it exists.
-pub(crate) fn handoff_line(args: &[String]) -> Out {
+pub(crate) fn handoff_line(_env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
     if let [h] = args {
         if let Some(line) = super::start::handoff_line(h, &std::env::current_dir().unwrap_or_default()) {
@@ -228,11 +229,11 @@ pub(crate) fn handoff_line(args: &[String]) -> Out {
 }
 
 /// `ensure-home`: the comm folder made whole, as the first command of a session makes it.
-pub(crate) fn ensure_home(_args: &[String]) -> Out {
+pub(crate) fn ensure_home(env: &Env, _args: &[String]) -> Out {
     let mut o = Out::default();
-    match crate::comm::home::comm_home() {
+    match crate::comm::home::comm_home(env) {
         Some(h) => {
-            o.errs(&crate::comm::home::ensure(&h));
+            o.errs(&crate::comm::home::ensure(&h, env));
             o
         }
         None => {
@@ -244,10 +245,10 @@ pub(crate) fn ensure_home(_args: &[String]) -> Out {
 
 /// `stop-mark <h>`: the Stop hook's mark, `stop_at`, which holds the wake off the row while its hook runs (rows'
 /// `stop` deletes it). One try within a second; silent, as a missed mark only lets the wake look.
-pub(crate) fn stop_mark(args: &[String]) -> Out {
+pub(crate) fn stop_mark(env: &Env, args: &[String]) -> Out {
     let o = Out::default();
     let [h] = args else { return usage(o, "stop-mark <handle>") };
-    let marked = update(&registry_path(), TOUCH_LOCK_WAIT, |agents| {
+    let marked = update(env, &registry_path(env), TOUCH_LOCK_WAIT, |agents| {
         let Some(e) = agents.get_mut(h).and_then(Value::as_object_mut) else { return Ok(((), false)) };
         e.insert("stop_at".into(), iso8601_utc_now().into());
         Ok(((), true))

@@ -150,20 +150,22 @@ fn unreadable(why: &str) -> String {
 }
 
 /// This process's chain, by the platform's walk.
-pub(crate) fn own_chain() -> Result<Vec<Rec>, String> {
+pub(crate) fn own_chain(env: &crate::comm::Env) -> Result<Vec<Rec>, String> {
+    #[cfg(not(windows))]
+    let _ = env;
     #[cfg(target_os = "linux")]
     return Ok(linux::chain(std::path::Path::new("/proc"), std::process::id()));
     #[cfg(target_os = "macos")]
     return macos::chain(std::process::id());
     #[cfg(windows)]
-    return windows::chain(std::env::var("SOT_COMM_MSYS").ok().as_deref());
+    return windows::chain(env.get("SOT_COMM_MSYS").and_then(|v| v.to_str()));
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     return Err("no process walk on this system".into());
 }
 
 /// The check for this process, which names row `row` (`""` for none).
-pub(crate) fn require_agent(row: &str) -> Result<(), (i32, String)> {
-    judge(own_chain(), row)
+pub(crate) fn require_agent(env: &crate::comm::Env, row: &str) -> Result<(), (i32, String)> {
+    judge(own_chain(env), row)
 }
 
 /// Linux: `/proc/<pid>/stat` for the parent, `/proc/<pid>/cmdline` for the arguments; a newline in an argument is

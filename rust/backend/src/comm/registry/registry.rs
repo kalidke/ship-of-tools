@@ -54,8 +54,8 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// Returns `None` only when the resolver itself found nothing (no
 /// `SOT_COMM_HOME`, `HOME`, or `USERPROFILE`) — every other failure is
 /// the caller's to treat as "absent" (empty strings).
-pub(crate) fn comm_registry_path() -> Option<std::path::PathBuf> {
-    let mut p = crate::comm::sot_comm_home()?;
+pub(crate) fn comm_registry_path(env: &crate::comm::Env) -> Option<std::path::PathBuf> {
+    let mut p = crate::comm::sot_comm_home_in(env)?;
     p.push("registry.json");
     Some(p)
 }
@@ -67,7 +67,12 @@ pub(crate) fn comm_registry_path() -> Option<std::path::PathBuf> {
 /// bytes are `read_registry_fresh`'s, whose retry sleeps: call it on a
 /// blocking thread.
 pub(crate) fn read_comm_agents() -> Option<serde_json::Value> {
-    let bytes = read_registry_fresh(&comm_registry_path()?).ok()?;
+    read_comm_agents_in(&crate::comm::Env::process())
+}
+
+/// [`read_comm_agents`] finding the folder through `env`.
+pub(crate) fn read_comm_agents_in(env: &crate::comm::Env) -> Option<serde_json::Value> {
+    let bytes = read_registry_fresh(&comm_registry_path(env)?).ok()?;
     let root: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     root.get("agents").cloned()
 }
@@ -199,10 +204,11 @@ pub(crate) fn last_joiner(handle: &str, host: &str) -> Option<String> {
 /// `comm_registry_path()` (no `SOT_COMM_HOME`/`HOME`/`USERPROFILE`), or a
 /// path with no parent directory.
 fn with_comm_registry_lock<T>(
+    env: &crate::comm::Env,
     bound: std::time::Duration,
     f: impl FnOnce(&std::path::Path, &std::path::Path) -> T,
 ) -> Option<T> {
-    let reg_path = comm_registry_path()?;
+    let reg_path = comm_registry_path(env)?;
     let dir = reg_path.parent()?.to_path_buf();
     let tmp_path = dir.join("registry.json.tmp");
 
@@ -210,7 +216,7 @@ fn with_comm_registry_lock<T>(
     // contains a panic, but a plain "release after the call" would leave the
     // lock behind on unwind, and every later writer would wedge closed. The
     // held lock's `Drop` runs on unwind too.
-    let _held = match crate::comm::registry::lock::acquire(&dir.join(".registry.lock"), bound) {
+    let _held = match crate::comm::registry::lock::acquire_in(env, &dir.join(".registry.lock"), bound) {
         Ok(held) => held,
         Err(e) => {
             tracing::warn!("comm registry lock: {e}");
@@ -251,7 +257,12 @@ const COMM_PRUNE_LOCK_BOUND: std::time::Duration = std::time::Duration::from_sec
 /// a concurrent bash mutator (comm-join / comm-status / …) can't see a torn
 /// file.
 pub(crate) fn remove_comm_agents_for_workspace(agent_name: &str, workspace_id: &str, host: &str) -> Vec<String> {
-    remove_comm_agents_for_workspace_bounded(agent_name, workspace_id, host, COMM_PRUNE_LOCK_BOUND)
+    remove_comm_agents_for_workspace_in(&crate::comm::Env::process(), agent_name, workspace_id, host)
+}
+
+/// [`remove_comm_agents_for_workspace`] finding the folder through `env`.
+pub(crate) fn remove_comm_agents_for_workspace_in(env: &crate::comm::Env, agent_name: &str, workspace_id: &str, host: &str) -> Vec<String> {
+    remove_comm_agents_for_workspace_bounded(env, agent_name, workspace_id, host, COMM_PRUNE_LOCK_BOUND)
 }
 
 /// `remove_comm_agents_for_workspace` with an explicit lock bound — split out
@@ -260,12 +271,13 @@ pub(crate) fn remove_comm_agents_for_workspace(agent_name: &str, workspace_id: &
 /// without waiting out the real `COMM_PRUNE_LOCK_BOUND`. Production code
 /// only ever calls the wrapper above.
 fn remove_comm_agents_for_workspace_bounded(
+    env: &crate::comm::Env,
     agent_name: &str,
     workspace_id: &str,
     host: &str,
     bound: std::time::Duration,
 ) -> Vec<String> {
-    with_comm_registry_lock(bound, |reg_path, tmp_path| -> Vec<String> {
+    with_comm_registry_lock(env, bound, |reg_path, tmp_path| -> Vec<String> {
         let bytes = match read_registry_fresh(reg_path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -331,10 +343,20 @@ pub(crate) fn edit_entry<T>(
     bound: std::time::Duration,
     edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> (T, bool),
 ) -> Result<Option<T>, EditError> {
-    let reg_path = comm_registry_path().ok_or(EditError::NoHome)?;
+    edit_entry_in(&crate::comm::Env::process(), handle, bound, edit)
+}
+
+/// [`edit_entry`] finding the folder through `env`.
+pub(crate) fn edit_entry_in<T>(
+    env: &crate::comm::Env,
+    handle: &str,
+    bound: std::time::Duration,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> (T, bool),
+) -> Result<Option<T>, EditError> {
+    let reg_path = comm_registry_path(env).ok_or(EditError::NoHome)?;
     let dir = reg_path.parent().ok_or(EditError::NoHome)?.to_path_buf();
     let tmp_path = dir.join("registry.json.tmp");
-    let _held = crate::comm::registry::lock::acquire(&dir.join(".registry.lock"), bound).map_err(EditError::Locked)?;
+    let _held = crate::comm::registry::lock::acquire_in(env, &dir.join(".registry.lock"), bound).map_err(EditError::Locked)?;
     let bytes = match read_registry_fresh(&reg_path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -362,7 +384,12 @@ const STAMP_LOCK_BOUND: std::time::Duration = std::time::Duration::from_secs(1);
 /// `with_comm_registry_lock`, on a fresh read, through `replace_registry` only if something
 /// changed. False on a held lock, an unreadable or unparseable registry, or a failed write.
 pub(crate) fn stamp_last_seen(handles: &std::collections::BTreeSet<String>, stamp: &str) -> bool {
-    with_comm_registry_lock(STAMP_LOCK_BOUND, |reg_path, tmp_path| {
+    stamp_last_seen_in(&crate::comm::Env::process(), handles, stamp)
+}
+
+/// [`stamp_last_seen`] finding the folder through `env`.
+pub(crate) fn stamp_last_seen_in(env: &crate::comm::Env, handles: &std::collections::BTreeSet<String>, stamp: &str) -> bool {
+    with_comm_registry_lock(env, STAMP_LOCK_BOUND, |reg_path, tmp_path| {
         let Ok(bytes) = read_registry_fresh(reg_path) else {
             return false;
         };
@@ -388,8 +415,8 @@ pub(crate) fn stamp_last_seen(handles: &std::collections::BTreeSet<String>, stam
 }
 
 /// The registry's lock wait for a command (`SOT_LOCK_WAIT_SECS`, 10 s by default): join, leave, spawn, despawn.
-pub(crate) fn command_lock_wait() -> std::time::Duration {
-    let secs = std::env::var("SOT_LOCK_WAIT_SECS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(10);
+pub(crate) fn command_lock_wait(env: &crate::comm::Env) -> std::time::Duration {
+    let secs = env.get("SOT_LOCK_WAIT_SECS").and_then(|v| v.to_str()).and_then(|v| v.trim().parse().ok()).unwrap_or(10);
     std::time::Duration::from_secs(secs)
 }
 
@@ -455,12 +482,13 @@ pub(crate) fn binding(path: &std::path::Path, handle: &str, row: &str) -> Bindin
 /// and returns its answer and whether to write. `Err` is the sentence a command prints after `FAILED: ` (a held lock's
 /// names its holder and the recovery), and nothing was written.
 pub(crate) fn update<T>(
+    env: &crate::comm::Env,
     path: &std::path::Path,
     bound: std::time::Duration,
     edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<(T, bool), String>,
 ) -> Result<T, String> {
     let dir = path.parent().ok_or("the registry has no folder")?;
-    let _held = crate::comm::registry::lock::acquire(&dir.join(".registry.lock"), bound)?;
+    let _held = crate::comm::registry::lock::acquire_in(env, &dir.join(".registry.lock"), bound)?;
     let mut doc = read_doc(path).map_err(|_| "the registry could not be read or updated, so nothing was written".to_string())?;
     let agents = doc.get_mut("agents").and_then(serde_json::Value::as_object_mut).ok_or("the registry has no agents object")?;
     let (answer, write) = edit(agents)?;
@@ -472,8 +500,8 @@ pub(crate) fn update<T>(
 
 /// Sets `handle`'s `last_seen` to now when it has an entry: the best-effort touch a send and a poll make, one try
 /// within [`TOUCH_LOCK_WAIT`].
-pub(crate) fn touch(path: &std::path::Path, handle: &str) -> Result<(), String> {
-    update(path, TOUCH_LOCK_WAIT, |agents| {
+pub(crate) fn touch(env: &crate::comm::Env, path: &std::path::Path, handle: &str) -> Result<(), String> {
+    update(env, path, TOUCH_LOCK_WAIT, |agents| {
         let Some(e) = agents.get_mut(handle).and_then(serde_json::Value::as_object_mut) else { return Ok(((), false)) };
         e.insert("last_seen".into(), iso8601_utc_now().into());
         Ok(((), true))

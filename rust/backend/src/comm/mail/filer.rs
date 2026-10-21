@@ -1,5 +1,6 @@
 //! comm.file: file one frame into this daemon's comm folder, or forward it to the hub.
 
+use crate::comm::Env;
 use anyhow::Context;
 use anyhow::Result;
 use serde_json::json;
@@ -26,17 +27,19 @@ pub async fn handle_comm_file(
 ) -> Result<HandlerOutput> {
     let req: CommFileReq = serde_json::from_value(payload_json).context("comm.file payload")?;
     let (from, to) = (req.from.clone(), req.to.clone());
-    let mut verdict = file_comm(req.clone()).await?;
+    // The daemon's entry for this request: everything below reads this value, not the process.
+    let env = crate::comm::Env::process();
+    let mut verdict = file_comm(env.clone(), req.clone()).await?;
     // A forwarded request has had its one hop; a link's own request is one.
     if !req.forwarded && matches!(&verdict, Err((code, _)) if code == "not_here") {
-        let within = crate::comm::mail::inbox::inbox_lock_wait() + COMM_FORWARD_SLACK;
+        let within = crate::comm::mail::inbox::inbox_lock_wait(&env) + COMM_FORWARD_SLACK;
         if let Some(offered) = links.offer(&req, within).await {
             verdict = offered;
         }
         // A box that should hold a link and holds none may hold the handle: the refusal names it.
         if matches!(&verdict, Err((code, _)) if code == "not_here") {
             let attached = links.hosts();
-            let unlinked = tokio::task::spawn_blocking(move || crate::comm::mail::hub_link::unlinked(&attached))
+            let unlinked = tokio::task::spawn_blocking(move || crate::comm::mail::hub_link::unlinked(&env, &attached))
                 .await
                 .context("comm.file topology join")?;
             if !unlinked.is_empty() {
@@ -62,15 +65,15 @@ pub async fn handle_comm_file(
 /// under this box's host, `self_host`; only then do the route, the liveness and the append decide (`file_comm`, the
 /// request marked `forwarded`). A box that does not hold the handle never answers with a refusal of its own, so the
 /// first refusal the hub reads is the holder's.
-pub(crate) async fn file_offer(req: CommFileReq, self_host: &str) -> Result<std::result::Result<(), (String, String)>> {
-    let (home, to, host) = (crate::comm::sot_comm_home(), req.to.clone(), self_host.to_string());
+pub(crate) async fn file_offer(env: Env, req: CommFileReq, self_host: &str) -> Result<std::result::Result<(), (String, String)>> {
+    let (home, to, host) = (crate::comm::sot_comm_home_in(&env), req.to.clone(), self_host.to_string());
     let holds = tokio::task::spawn_blocking(move || home.is_some_and(|h| lists_under(&h.join("registry.json"), &to, &host)))
         .await
         .context("comm.file offer join")?;
     if !holds {
         return Ok(Err(not_here(&req.to)));
     }
-    file_comm(CommFileReq { forwarded: true, ..req }).await
+    file_comm(env, CommFileReq { forwarded: true, ..req }).await
 }
 
 /// Whether the registry at `path` lists `to` under `host`. A registry that cannot be read lists nobody.
@@ -89,11 +92,11 @@ pub(crate) fn not_here(to: &str) -> (String, String) {
 /// The filing behind `comm.file`, callable in-process: the hub link
 /// (`hub_link.rs`) files an offer through this same function (`file_offer`).
 /// `Err` inside the `Ok` is the refusal `(code, sentence)`.
-pub(crate) async fn file_comm(req: CommFileReq) -> Result<std::result::Result<(), (String, String)>> {
+pub(crate) async fn file_comm(env: Env, req: CommFileReq) -> Result<std::result::Result<(), (String, String)>> {
     tokio::task::spawn_blocking(move || {
-        let home = crate::comm::sot_comm_home();
-        let self_host = comm_self_host();
-        let topology = sot_protocol::topology::load();
+        let home = crate::comm::sot_comm_home_in(&env);
+        let self_host = comm_self_host_in(&env);
+        let topology = sot_protocol::topology::load_in(&env);
         // Recomputed at every filing: a remount changes it under a running daemon.
         let own = home
             .as_deref()
@@ -110,7 +113,7 @@ pub(crate) async fn file_comm(req: CommFileReq) -> Result<std::result::Result<()
             self_host: self_host.clone(),
         };
         let forward = |fwd: &CommFileReq| {
-            let within = crate::comm::mail::inbox::inbox_lock_wait() + COMM_FORWARD_SLACK;
+            let within = crate::comm::mail::inbox::inbox_lock_wait(&env) + COMM_FORWARD_SLACK;
             let endpoint = match &topology {
                 Ok(Some((_, t))) => sot_protocol::topology::relay_endpoint(t, &self_host),
                 Ok(None) => Err("no hosts.toml names a hub".to_string()),
@@ -129,7 +132,7 @@ pub(crate) async fn file_comm(req: CommFileReq) -> Result<std::result::Result<()
             forward,
             &req,
             unix_now_secs(),
-            crate::comm::mail::inbox::inbox_lock_wait(),
+            crate::comm::mail::inbox::inbox_lock_wait(&env),
         )
     })
     .await
@@ -144,7 +147,12 @@ const COMM_FORWARD_SLACK: std::time::Duration = std::time::Duration::from_secs(1
 /// This host's name — the one `sotd topology` uses — or empty when it has
 /// none, which never matches a hub or a record's writer.
 pub(crate) fn comm_self_host() -> String {
-    sot_log::host::state_dir::host_name().unwrap_or_default()
+    comm_self_host_in(&Env::process())
+}
+
+/// [`comm_self_host`] reading `SOT_SELF_HOST` from `env`.
+pub(crate) fn comm_self_host_in(env: &Env) -> String {
+    sot_log::host::state_dir::host_name_in(env).unwrap_or_default()
 }
 
 /// The topology's half of "this daemon is its comm folder's hub": no topology

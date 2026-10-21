@@ -31,12 +31,15 @@ const PING_EVERY: Duration = Duration::from_secs(30);
 const SILENT_PINGS: u32 = 3;
 
 pub async fn run() {
+    // The daemon's entry for the link: everything below reads this value, not the process.
+    let env = crate::comm::Env::process();
     // Before the first connection: a failed move leaves the old inbox where it was.
-    if let Err(e) = tokio::task::spawn_blocking(move_fe_inbox).await.unwrap_or_else(|e| Err(e.to_string())) {
+    let moving = env.clone();
+    if let Err(e) = tokio::task::spawn_blocking(move || move_fe_inbox(&moving)).await.unwrap_or_else(|e| Err(e.to_string())) {
         tracing::warn!("hub link: the old frontend inbox was not moved: {e}");
     }
-    let self_host = crate::comm::mail::filer::comm_self_host();
-    let recipe = match recipe_for(&self_host) {
+    let self_host = crate::comm::mail::filer::comm_self_host_in(&env);
+    let recipe = match recipe_for(&env, &self_host) {
         Ok(Some(r)) => r,
         Ok(None) => return,
         Err(e) => {
@@ -46,11 +49,12 @@ pub async fn run() {
     };
     let name = format!("sotd-{self_host}");
     tracing::info!(%recipe, %name, "hub link starting");
-    hold_link(&recipe, &self_host, &name, crate::lifecycle::child_signal::process()).await;
+    hold_link(&env, &recipe, &self_host, &name, crate::lifecycle::child_signal::process()).await;
 }
 
 /// Keep the link up until `sig` fires; it never reconnects after.
 async fn hold_link(
+    env: &crate::comm::Env,
     recipe: &sot_protocol::topology::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
@@ -64,7 +68,7 @@ async fn hold_link(
             return;
         }
         let began = Instant::now();
-        match link_once(recipe, self_host, name, sig).await {
+        match link_once(env, recipe, self_host, name, sig).await {
             Ok(()) => tracing::info!("hub link closed"),
             Err(e) => tracing::warn!("hub link dropped: {e}"),
         }
@@ -78,8 +82,8 @@ async fn hold_link(
 
 /// The ssh child's recipe, or `None` when this box has no link to hold: no
 /// topology, or `link_target` names none.
-fn recipe_for(self_host: &str) -> Result<Option<sot_protocol::topology::ssh_bridge::SshRecipe>, String> {
-    let Some((_, topo)) = sot_protocol::topology::load()? else {
+fn recipe_for(env: &crate::comm::Env, self_host: &str) -> Result<Option<sot_protocol::topology::ssh_bridge::SshRecipe>, String> {
+    let Some((_, topo)) = sot_protocol::topology::load_in(env)? else {
         return Ok(None);
     };
     match link_target(&topo, self_host)? {
@@ -99,9 +103,9 @@ fn link_target(topo: &sot_protocol::topology::Topology, host: &str) -> Result<Op
 
 /// On the topology's hub, the boxes that hold a link by `link_target` but have none among `attached`; empty on any
 /// other daemon, or with no topology.
-pub(crate) fn unlinked(attached: &[String]) -> Vec<String> {
-    let self_host = crate::comm::mail::filer::comm_self_host();
-    let Ok(Some((_, topo))) = sot_protocol::topology::load() else {
+pub(crate) fn unlinked(env: &crate::comm::Env, attached: &[String]) -> Vec<String> {
+    let self_host = crate::comm::mail::filer::comm_self_host_in(env);
+    let Ok(Some((_, topo))) = sot_protocol::topology::load_in(env) else {
         return Vec::new();
     };
     if self_host.is_empty() || topo.hub != self_host {
@@ -131,6 +135,7 @@ fn spawn_link(recipe: &sot_protocol::topology::ssh_bridge::SshRecipe) -> Result<
 /// One connection, from spawn to the first failure. The child and what it
 /// started die with `contained`.
 async fn link_once(
+    env: &crate::comm::Env,
     recipe: &sot_protocol::topology::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
@@ -157,7 +162,7 @@ async fn link_once(
         });
     }
     let result = tokio::select! {
-        result = converse(&mut tx, &mut rx, self_host, name) => result,
+        result = converse(env, &mut tx, &mut rx, self_host, name) => result,
         // The daemon is shutting down: the signal has already killed the
         // child's tree.
         _ = sig.fired() => return Ok(()),
@@ -183,7 +188,7 @@ async fn read_owned<R: tokio::io::AsyncBufRead + Unpin>(rx: &mut R) -> (&mut R, 
     (rx, read)
 }
 
-async fn converse<W, R>(tx: &mut W, rx: &mut R, self_host: &str, name: &str) -> Result<(), String>
+async fn converse<W, R>(env: &crate::comm::Env, tx: &mut W, rx: &mut R, self_host: &str, name: &str) -> Result<(), String>
 where
     W: tokio::io::AsyncWrite + Unpin,
     R: tokio::io::AsyncBufRead + Unpin,
@@ -242,19 +247,19 @@ where
         if frame.kind != Kind::Req || frame.op != op::COMM_FILE {
             continue;
         }
-        let (id, self_host) = (frame.id, self_host.to_string());
-        filings.spawn(async move { (id, offer_answer(frame.payload, &self_host).await) });
+        let (id, self_host, env) = (frame.id, self_host.to_string(), env.clone());
+        filings.spawn(async move { (id, offer_answer(env, frame.payload, &self_host).await) });
     }
 }
 
 /// This box's answer to one offer from the hub (`filer::file_offer`): `ok`, or the refusal `{error, code}`.
-async fn offer_answer(payload: serde_json::Value, self_host: &str) -> serde_json::Value {
+async fn offer_answer(env: crate::comm::Env, payload: serde_json::Value, self_host: &str) -> serde_json::Value {
     let req = match serde_json::from_value::<CommFileReq>(payload) {
         Ok(req) => req,
         Err(err) => return serde_json::json!({ "error": format!("comm.file payload: {err}"), "code": "bad_request" }),
     };
     let to = req.to.clone();
-    match crate::comm::mail::filer::file_offer(req, self_host).await {
+    match crate::comm::mail::filer::file_offer(env, req, self_host).await {
         Ok(Ok(())) => {
             tracing::info!(%to, "hub link filed");
             serde_json::json!({ "ok": true })
@@ -270,11 +275,11 @@ async fn offer_answer(payload: serde_json::Value, self_host: &str) -> serde_json
 /// Only a Windows frontend ever read `fe-inbox.jsonl` through a cursor. Elsewhere
 /// the frontend wrote it too, but `comm-listen` had already delivered that mail,
 /// so moving it would file it a second time.
-fn move_fe_inbox() -> Result<(), String> {
-    let (Some(dir), Some(home)) = (sot_log::host::state_dir::sot_state_dir(), crate::comm::sot_comm_home()) else {
+fn move_fe_inbox(env: &crate::comm::Env) -> Result<(), String> {
+    let (Some(dir), Some(home)) = (sot_log::host::state_dir::sot_state_dir_in(env), crate::comm::sot_comm_home_in(env)) else {
         return Ok(());
     };
-    move_fe_inbox_if(cfg!(windows), &dir, &home).map(|n| {
+    move_fe_inbox_if(env, cfg!(windows), &dir, &home).map(|n| {
         if n > 0 {
             tracing::info!(lines = n, "moved unread frontend mail into the inboxes");
         }
@@ -282,11 +287,11 @@ fn move_fe_inbox() -> Result<(), String> {
 }
 
 /// `move_fe_inbox_in` when `on_windows`, else nothing and nothing touched.
-fn move_fe_inbox_if(on_windows: bool, dir: &Path, home: &Path) -> Result<usize, String> {
+fn move_fe_inbox_if(env: &crate::comm::Env, on_windows: bool, dir: &Path, home: &Path) -> Result<usize, String> {
     if !on_windows {
         return Ok(0);
     }
-    move_fe_inbox_in(dir, home)
+    move_fe_inbox_in(env, dir, home)
 }
 
 /// Moves each unread line of `<dir>/fe-inbox.jsonl` into `<home>/inbox/<to>.jsonl`.
@@ -296,7 +301,7 @@ fn move_fe_inbox_if(on_windows: bool, dir: &Path, home: &Path) -> Result<usize, 
 /// cannot be read leaves everything where it is: with no handles, the rename
 /// would drop the mail. Once moved, the frontend's `read/*.fe.cursor` files are
 /// deleted: they counted lines of a file that no longer exists.
-fn move_fe_inbox_in(dir: &Path, home: &Path) -> Result<usize, String> {
+fn move_fe_inbox_in(env: &crate::comm::Env, dir: &Path, home: &Path) -> Result<usize, String> {
     let (inbox, moving, moved) = (dir.join("fe-inbox.jsonl"), dir.join("fe-inbox.jsonl.moving"), dir.join("fe-inbox.jsonl.moved"));
     if !moving.exists() && !inbox.exists() {
         return Ok(0);
@@ -331,7 +336,7 @@ fn move_fe_inbox_in(dir: &Path, home: &Path) -> Result<usize, String> {
                 continue;
             }
             let text = if o.contains_key("msg") { s("msg") } else { s("text") };
-            crate::comm::mail::inbox::file_frame(&inbox_dir, s("from"), h, false, text, s("ts"), crate::comm::mail::inbox::inbox_lock_wait(), &own)?;
+            crate::comm::mail::inbox::file_frame(&inbox_dir, s("from"), h, false, text, s("ts"), crate::comm::mail::inbox::inbox_lock_wait(env), &own)?;
             moved_lines += 1;
         }
     }

@@ -4,6 +4,8 @@
 //! daemon host, with no daemon of its own: the writes are this binary's own code, under the same locks the daemon
 //! takes.
 
+use crate::comm::Env;
+
 mod book;
 mod door;
 mod guard;
@@ -62,30 +64,36 @@ impl Out {
 
 /// Runs `sotd comm <args>`; the process's exit code.
 pub(crate) fn run(args: &[String]) -> i32 {
+    // The one read of the process environment: every verb takes its variables from this value.
+    run_in(&Env::process(), args)
+}
+
+/// [`run`] with the environment it is given.
+pub(crate) fn run_in(env: &Env, args: &[String]) -> i32 {
     let Some((verb, rest)) = args.split_first() else {
         eprintln!("{USAGE}");
         return 2;
     };
     let out = match verb.as_str() {
-        "send" => send::send(rest),
-        "relay" => send::relay(rest),
-        "poll" => poll::poll(rest),
-        "context" => book::context(rest),
-        "join" => join::join(rest),
-        "leave" => book::leave(rest),
-        "list" => book::list(rest),
-        "session-start" => start::session_start(rest),
-        "unread" => poll::unread(rest),
-        "stop-mark" => door::stop_mark(rest),
-        "subagent-guard" => guard::run(rest),
-        "require-agent" => door::require_agent(rest),
-        "routable" => door::routable(rest),
-        "registry" => door::registry(rest),
-        "derive" => door::derive(rest),
-        "self-slot" => door::self_slot(rest),
-        "slug" => door::slug(rest),
-        "handoff-line" => door::handoff_line(rest),
-        "ensure-home" => door::ensure_home(rest),
+        "send" => send::send(env, rest),
+        "relay" => send::relay(env, rest),
+        "poll" => poll::poll(env, rest),
+        "context" => book::context(env, rest),
+        "join" => join::join(env, rest),
+        "leave" => book::leave(env, rest),
+        "list" => book::list(env, rest),
+        "session-start" => start::session_start(env, rest),
+        "unread" => poll::unread(env, rest),
+        "stop-mark" => door::stop_mark(env, rest),
+        "subagent-guard" => guard::run(env, rest),
+        "require-agent" => door::require_agent(env, rest),
+        "routable" => door::routable(env, rest),
+        "registry" => door::registry(env, rest),
+        "derive" => door::derive(env, rest),
+        "self-slot" => door::self_slot(env, rest),
+        "slug" => door::slug(env, rest),
+        "handoff-line" => door::handoff_line(env, rest),
+        "ensure-home" => door::ensure_home(env, rest),
         other => {
             let mut o = Out::default();
             o.err(format!("sotd comm: unknown verb {other:?}\n{USAGE}"));
@@ -99,23 +107,23 @@ pub(crate) fn run(args: &[String]) -> i32 {
 }
 
 /// The agent-layer check for this process (`identity::layers`), for the row its identity names.
-pub(crate) fn gate() -> Result<(), (i32, String)> {
-    let host = sot_log::host::state_dir::host_name().unwrap_or_default();
-    crate::comm::identity::layers::require_agent(&crate::comm::identity::context::row_id(&host))
+pub(crate) fn gate(env: &Env) -> Result<(), (i32, String)> {
+    let host = sot_log::host::state_dir::host_name_in(env).unwrap_or_default();
+    crate::comm::identity::layers::require_agent(env, &crate::comm::identity::context::row_id(env, &host))
 }
 
 /// This process's identity, after the gate passed: the comm folder is made whole when it is not.
-pub(crate) fn context(rebind: bool, notes: &mut Vec<String>) -> Result<crate::comm::identity::context::Context, String> {
+pub(crate) fn context(env: &Env, rebind: bool, notes: &mut Vec<String>) -> Result<crate::comm::identity::context::Context, String> {
     let cwd = std::env::current_dir().map_err(|e| format!("comm-context: no working folder ({e})"))?;
-    crate::comm::identity::context::resolve(rebind, &cwd, || true, notes)
+    crate::comm::identity::context::resolve(env, rebind, &cwd, || true, notes)
 }
 
 /// The identity's own refusal for sending as it (`sotd comm routable`): a handle, an entry for it, and that entry's
 /// root this project's (or none, an entry older than roots). `bin` is where the session's scripts are, for the
 /// recovery line.
-pub(crate) fn routable(name: &str, project_root: &str, registry: &std::path::Path) -> Result<(), String> {
+pub(crate) fn routable(env: &Env, name: &str, project_root: &str, registry: &std::path::Path) -> Result<(), String> {
     use crate::comm::registry::registry::{entry, Entry};
-    let bin = bin_dir();
+    let bin = bin_dir(env);
     let q = |s: &str| crate::comm::identity::context::shell_quote(s);
     if name.is_empty() {
         return Err("your sot-comm identity did not resolve \u{2014} refusing to send with no verifiable from-handle (a reply would silently misroute). Join first: comm-join.sh (if you held a handle before, see the sot-session-start skill's recovery recipe).".into());
@@ -137,9 +145,9 @@ pub(crate) fn routable(name: &str, project_root: &str, registry: &std::path::Pat
 }
 
 /// The folder of the session's comm scripts: `SOT_COMM_BIN`, which every wrapper sets, else `<comm home>/bin`.
-pub(crate) fn bin_dir() -> String {
-    std::env::var("SOT_COMM_BIN").ok().filter(|b| !b.is_empty()).unwrap_or_else(|| {
-        crate::comm::home::comm_home().map(|h| crate::comm::identity::paths::native(&h.join("bin").to_string_lossy())).unwrap_or_default()
+pub(crate) fn bin_dir(env: &Env) -> String {
+    env.get_nonempty("SOT_COMM_BIN").map(|b| b.to_string_lossy().into_owned()).unwrap_or_else(|| {
+        crate::comm::home::comm_home(env).map(|h| crate::comm::identity::paths::native(&h.join("bin").to_string_lossy())).unwrap_or_default()
     })
 }
 

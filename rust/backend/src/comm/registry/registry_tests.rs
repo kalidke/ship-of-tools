@@ -15,33 +15,10 @@ mod with_comm_registry_lock_panic_tests {
     // too.
     use super::with_comm_registry_lock;
 
-    struct EnvGuard {
-        _serial: std::sync::MutexGuard<'static, ()>,
-        sot_comm_home: Option<std::ffi::OsString>,
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.sot_comm_home {
-                Some(v) => std::env::set_var("SOT_COMM_HOME", v),
-                None => std::env::remove_var("SOT_COMM_HOME"),
-            }
-        }
-    }
-
-    fn guarded() -> EnvGuard {
-        let serial = crate::paths::ENV_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        EnvGuard {
-            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
-            _serial: serial,
-        }
-    }
-
     #[test]
     fn a_panicking_closure_still_releases_the_lock() {
-        let _guard = guarded();
+        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
         let dir = std::env::temp_dir().join(format!(
             "sot-comm-registry-lock-panic-test-{}-{}",
             std::process::id(),
@@ -51,11 +28,11 @@ mod with_comm_registry_lock_panic_tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SOT_COMM_HOME", &dir);
+        env.set("SOT_COMM_HOME", &dir);
         let lock_dir = dir.join(".registry.lock");
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_comm_registry_lock(std::time::Duration::from_secs(1), |_reg, _tmp| {
+            with_comm_registry_lock(&env, std::time::Duration::from_secs(1), |_reg, _tmp| {
                 panic!("boom — simulate a write that panics mid-critical-section");
             })
         }));
@@ -76,31 +53,7 @@ mod remove_comm_agents_for_workspace_host_tests {
     // a destroy on host A must remove only host A's row on a session —
     // never host B's same-session row, and never a host-less row (LU5d2:
     // absent `host` is unknown ownership, not a free pass).
-    use super::{remove_comm_agents_for_workspace, remove_comm_agents_for_workspace_bounded};
-
-    struct EnvGuard {
-        _serial: std::sync::MutexGuard<'static, ()>,
-        sot_comm_home: Option<std::ffi::OsString>,
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.sot_comm_home {
-                Some(v) => std::env::set_var("SOT_COMM_HOME", v),
-                None => std::env::remove_var("SOT_COMM_HOME"),
-            }
-        }
-    }
-
-    fn guarded() -> EnvGuard {
-        let serial = crate::paths::ENV_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        EnvGuard {
-            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
-            _serial: serial,
-        }
-    }
+    use super::{remove_comm_agents_for_workspace_in, remove_comm_agents_for_workspace_bounded};
 
     #[test]
     fn by_name_requires_host() {
@@ -108,7 +61,8 @@ mod remove_comm_agents_for_workspace_host_tests {
         // `tmux` is still "") matches on the caller-supplied `agent_name`
         // alone before LU5d2 — a row on another host that happens to share
         // that handle string must survive.
-        let _guard = guarded();
+        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
         let dir = std::env::temp_dir().join(format!(
             "sot-comm-registry-by-name-host-test-{}-{}",
             std::process::id(),
@@ -118,7 +72,7 @@ mod remove_comm_agents_for_workspace_host_tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SOT_COMM_HOME", &dir);
+        env.set("SOT_COMM_HOME", &dir);
         let registry_path = dir.join("registry.json");
         std::fs::write(
             &registry_path,
@@ -133,7 +87,7 @@ mod remove_comm_agents_for_workspace_host_tests {
 
         // No live tmux row for this session, so only the `by_name` term is in
         // play; the stored handle matches, but the row's host does not.
-        let removed = remove_comm_agents_for_workspace("same-name", "", "host-4");
+        let removed = remove_comm_agents_for_workspace_in(&env, "same-name", "", "host-4");
         assert!(removed.is_empty());
 
         let after: serde_json::Value =
@@ -153,7 +107,8 @@ mod remove_comm_agents_for_workspace_host_tests {
         // ADR 0049: the handle moved to a newer row, whose `workspace_id` the
         // entry carries; destroying the older row, whose stored name is
         // still that handle, must not take the newer row's entry.
-        let _guard = guarded();
+        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
         let dir = std::env::temp_dir().join(format!(
             "sot-comm-registry-by-name-moved-test-{}-{}",
             std::process::id(),
@@ -163,7 +118,7 @@ mod remove_comm_agents_for_workspace_host_tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SOT_COMM_HOME", &dir);
+        env.set("SOT_COMM_HOME", &dir);
         let registry_path = dir.join("registry.json");
         std::fs::write(
             &registry_path,
@@ -177,9 +132,9 @@ mod remove_comm_agents_for_workspace_host_tests {
         )
         .unwrap();
 
-        assert!(remove_comm_agents_for_workspace("m5-shared", "older-id", "host-4").is_empty());
+        assert!(remove_comm_agents_for_workspace_in(&env, "m5-shared", "older-id", "host-4").is_empty());
         // An entry with no `workspace_id` is still pruned by name.
-        assert_eq!(remove_comm_agents_for_workspace("m5-bare", "older-id", "host-4"), vec!["m5-bare".to_string()]);
+        assert_eq!(remove_comm_agents_for_workspace_in(&env, "m5-bare", "older-id", "host-4"), vec!["m5-bare".to_string()]);
 
         let after: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
@@ -196,7 +151,8 @@ mod remove_comm_agents_for_workspace_host_tests {
         // `ws.agent_name`, so `by_name` alone never matches its row — but
         // its row carries the workspace's own `workspace_id`, so the
         // second match term must prune it when that workspace is destroyed.
-        let _guard = guarded();
+        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
         let dir = std::env::temp_dir().join(format!(
             "sot-comm-registry-by-workspace-id-test-{}-{}",
             std::process::id(),
@@ -206,7 +162,7 @@ mod remove_comm_agents_for_workspace_host_tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SOT_COMM_HOME", &dir);
+        env.set("SOT_COMM_HOME", &dir);
         let registry_path = dir.join("registry.json");
         std::fs::write(
             &registry_path,
@@ -222,7 +178,7 @@ mod remove_comm_agents_for_workspace_host_tests {
 
         // The driving agent's own handle differs from the manually-joined
         // one, so only the `by_workspace` term can catch it.
-        let removed = remove_comm_agents_for_workspace("driver", "ws-1", "hostA");
+        let removed = remove_comm_agents_for_workspace_in(&env, "driver", "ws-1", "hostA");
         assert_eq!(removed, vec!["manually-joined".to_string()]);
 
         let after: serde_json::Value =
@@ -249,7 +205,9 @@ mod remove_comm_agents_for_workspace_host_tests {
         // it too — via a short bound (`remove_comm_agents_for_workspace_bounded`)
         // so the test doesn't have to wait out the real
         // `COMM_PRUNE_LOCK_BOUND`.
-        let _guard = guarded();
+        // Held for the whole bound, so no other test takes the lock meanwhile.
+        let _turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
+        let mut env = crate::comm::Env::empty();
         let dir = std::env::temp_dir().join(format!(
             "sot-comm-registry-prune-lock-test-{}-{}",
             std::process::id(),
@@ -259,7 +217,7 @@ mod remove_comm_agents_for_workspace_host_tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SOT_COMM_HOME", &dir);
+        env.set("SOT_COMM_HOME", &dir);
         let registry_path = dir.join("registry.json");
         std::fs::write(
             &registry_path,
@@ -278,7 +236,7 @@ mod remove_comm_agents_for_workspace_host_tests {
 
         let bound = std::time::Duration::from_millis(150);
         let start = std::time::Instant::now();
-        let removed = remove_comm_agents_for_workspace_bounded("", "", "host-4", bound);
+        let removed = remove_comm_agents_for_workspace_bounded(&env, "", "", "host-4", bound);
         let elapsed = start.elapsed();
 
         assert!(removed.is_empty(), "a contended lock must prune nothing");

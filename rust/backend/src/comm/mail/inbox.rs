@@ -40,9 +40,10 @@ pub const INBOX_LOCK_WAIT_ENV: &str = "SOT_INBOX_LOCK_WAIT_SECS";
 pub const INBOX_LOCK_WAIT_DEFAULT_SECS: u64 = 2;
 
 /// The wait a writer spends on a held lock before it gives up.
-pub fn inbox_lock_wait() -> Duration {
-    let secs = std::env::var(INBOX_LOCK_WAIT_ENV)
-        .ok()
+pub fn inbox_lock_wait(env: &sot_log::host::env::Env) -> Duration {
+    let secs = env
+        .get(INBOX_LOCK_WAIT_ENV)
+        .and_then(|v| v.to_str())
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(INBOX_LOCK_WAIT_DEFAULT_SECS);
     Duration::from_secs(secs)
@@ -222,11 +223,11 @@ pub struct InboxLockGuard(#[allow(dead_code, reason = "held for its Drop")] Inbo
 /// The shared lock a reader takes on `inbox_dir/<h>.lock` when this box appends to the folder itself
 /// (`appends_here`, with `own` its lock manager), waiting at most `SOT_INBOX_READ_WAIT_SECS` (3 s): a writer's line
 /// still being synced is never counted and then cut back. The descriptor is opened read-write, as every inbox lock is.
-pub fn read_lock(inbox_dir: &Path, handle: &str, own: &str, appends_here: bool) -> ReadLock {
+pub fn read_lock(inbox_dir: &Path, handle: &str, own: &str, appends_here: bool, env: &sot_log::host::env::Env) -> ReadLock {
     if !appends_here {
         return ReadLock::None;
     }
-    let wait = std::env::var(INBOX_READ_WAIT_ENV).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(3);
+    let wait = env.get(INBOX_READ_WAIT_ENV).and_then(|v| v.to_str()).and_then(|v| v.trim().parse().ok()).unwrap_or(3);
     let warn = |why: String| {
         ReadLock::Fault(format!(
             "WARNING: the inbox lock for @{handle} failed ({why}) \u{2014} reading without it; a line may show twice, none is lost"

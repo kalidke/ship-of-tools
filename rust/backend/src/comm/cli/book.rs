@@ -1,11 +1,12 @@
 //! The address book's commands: `context` (comm-context.sh), `leave` (comm-leave.sh) and `list` (comm-list.sh).
 
+use crate::comm::Env;
 use super::{context as ctx_of, gate, Out};
 use crate::comm::registry::registry::{binding, command_lock_wait, entry, read_doc, unix_now_secs, update, Binding, Entry};
 
 /// `sotd comm context [--rebind]`: the identity, eval-able. The comm folder is made whole only when the gate passes;
 /// the identity is read either way.
-pub(crate) fn context(args: &[String]) -> Out {
+pub(crate) fn context(env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
     let rebind = args.first().is_some_and(|a| a == "--rebind");
     let mut notes = Vec::new();
@@ -16,7 +17,7 @@ pub(crate) fn context(args: &[String]) -> Out {
             return o.exit(1);
         }
     };
-    let resolved = crate::comm::identity::context::resolve(rebind, &cwd, || gate().is_ok(), &mut notes);
+    let resolved = crate::comm::identity::context::resolve(env, rebind, &cwd, || gate(env).is_ok(), &mut notes);
     o.errs(&notes);
     match resolved {
         Ok(c) => {
@@ -32,7 +33,7 @@ pub(crate) fn context(args: &[String]) -> Out {
 
 /// `sotd comm leave [--name <h>]`: this session's own entry and self file, or (`--name`) another handle's entry
 /// only, refused for a handle a row holds unless the daemon says no row does.
-pub(crate) fn leave(args: &[String]) -> Out {
+pub(crate) fn leave(env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
     let mut who = String::new();
     let mut it = args.iter();
@@ -58,12 +59,12 @@ pub(crate) fn leave(args: &[String]) -> Out {
             }
         }
     }
-    if let Err((_, why)) = gate() {
+    if let Err((_, why)) = gate(env) {
         o.err(format!("comm-leave.sh: {why}"));
         return o.exit(1);
     }
     let mut notes = Vec::new();
-    let ctx = match ctx_of(false, &mut notes) {
+    let ctx = match ctx_of(env, false, &mut notes) {
         Ok(c) => c,
         Err(e) => {
             o.errs(&notes);
@@ -73,7 +74,7 @@ pub(crate) fn leave(args: &[String]) -> Out {
     };
     o.errs(&notes);
     let del = |h: &str| {
-        update(&ctx.registry(), command_lock_wait(), |agents| {
+        update(env, &ctx.registry(), command_lock_wait(env), |agents| {
             let gone = agents.remove(h).is_some();
             Ok(((), gone))
         })
@@ -91,7 +92,7 @@ pub(crate) fn leave(args: &[String]) -> Out {
             }
         }
         if let Binding::Other { .. } = binding(&ctx.registry(), &who, &ctx.row_id) {
-            match super::join::outside_clearance(&ctx, &who) {
+            match super::join::outside_clearance(env, &ctx, &who) {
                 Ok(_) => {}
                 Err((2, why)) => {
                     o.err(format!("comm-leave.sh: FAILED: {why}"));
@@ -154,11 +155,11 @@ pub(crate) fn epoch_of(stamp: &str) -> Option<u64> {
 
 /// `sotd comm list`: every registered handle with its liveness and work-state line, then the frontend boxes this
 /// daemon talks to (`sot-fe version`, bounded at 5 s).
-pub(crate) fn list(_args: &[String]) -> Out {
+pub(crate) fn list(env: &Env, _args: &[String]) -> Out {
     let mut o = Out::default();
     let mut notes = Vec::new();
     let cwd = std::env::current_dir().unwrap_or_default();
-    let ctx = match crate::comm::identity::context::resolve(false, &cwd, || gate().is_ok(), &mut notes) {
+    let ctx = match crate::comm::identity::context::resolve(env, false, &cwd, || gate(env).is_ok(), &mut notes) {
         Ok(c) => c,
         Err(e) => {
             o.errs(&notes);
@@ -200,7 +201,7 @@ pub(crate) fn list(_args: &[String]) -> Out {
         o.out("  (none)");
     }
     o.out("");
-    let fe = std::path::PathBuf::from(super::bin_dir()).join("sot-fe");
+    let fe = std::path::PathBuf::from(super::bin_dir(env)).join("sot-fe");
     let mut cmd = std::process::Command::new(&fe);
     cmd.arg("version");
     let fe_out = crate::lifecycle::child_signal::process()

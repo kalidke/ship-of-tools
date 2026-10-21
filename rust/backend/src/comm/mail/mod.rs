@@ -13,9 +13,14 @@ pub(crate) mod relay;
 /// through; every writer appends locally only when it computes the same
 /// name. A guest never writes the record.
 pub(crate) fn record_at_boot() {
-    if let Some(home) = crate::comm::sot_comm_home().filter(|h| h.is_dir()) {
-        let self_host = filer::comm_self_host();
-        let topology_hub = filer::comm_topology_hub(&sot_protocol::topology::load(), &self_host);
+    record_at_boot_in(&crate::comm::Env::process());
+}
+
+/// [`record_at_boot`] reading the folder, the host and the topology through `env`.
+pub(crate) fn record_at_boot_in(env: &crate::comm::Env) {
+    if let Some(home) = crate::comm::sot_comm_home_in(env).filter(|h| h.is_dir()) {
+        let self_host = filer::comm_self_host_in(env);
+        let topology_hub = filer::comm_topology_hub(&sot_protocol::topology::load_in(env), &self_host);
         // inbox/ first: its lock manager is computed for inbox/, as the scripts compute it.
         let inbox = home.join("inbox");
         let started = std::fs::create_dir_all(&inbox).and_then(|()| {

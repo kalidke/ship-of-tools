@@ -94,25 +94,21 @@ pub(crate) fn shell_quote(v: &str) -> String {
 }
 
 /// The box's raw host name, as `hostname -s` gives it (case kept); `SOT_COMM_TEST_HOST` first, a test's pin.
-pub(crate) fn raw_host() -> String {
-    if let Some(h) = std::env::var_os("SOT_COMM_TEST_HOST").filter(|h| !h.is_empty()) {
+pub(crate) fn raw_host(env: &crate::comm::Env) -> String {
+    if let Some(h) = env.get_nonempty("SOT_COMM_TEST_HOST") {
         return h.to_string_lossy().into_owned();
     }
     let h = gethostname::gethostname().to_string_lossy().into_owned();
     h.split('.').next().unwrap_or("").trim().to_string()
 }
 
-fn env(key: &str) -> String {
-    std::env::var(key).unwrap_or_default()
-}
-
 /// The row the identity names: the pinned self file's (`<host>__<id>.txt`), else `$SOT_WORKSPACE_ID` when no self file
 /// is pinned. A pinned file of any other name names no row, whatever the environment says: a test that pins its own
 /// scratch identity inherits its launcher's row id, and must not declare into that row.
-pub(crate) fn row_id(host: &str) -> String {
-    match std::env::var_os("SOT_COMM_SELF_FILE").filter(|v| !v.is_empty()) {
-        Some(pinned) => self_file::row_of(Path::new(&pinned), host).unwrap_or_default(),
-        None => env("SOT_WORKSPACE_ID"),
+pub(crate) fn row_id(env: &crate::comm::Env, host: &str) -> String {
+    match env.get_nonempty("SOT_COMM_SELF_FILE") {
+        Some(pinned) => self_file::row_of(Path::new(pinned), host).unwrap_or_default(),
+        None => env.text("SOT_WORKSPACE_ID"),
     }
 }
 
@@ -120,16 +116,16 @@ pub(crate) fn row_id(host: &str) -> String {
 /// but, when the comm folder is not whole and `may_write` (the agent check passed), the folder itself. `rebind` is a
 /// join's: a process with a row id keeps a handle another row's entry binds, since its join moves the handle back.
 /// Lines for the session go to `notes`; `Err` is the line that ends the command.
-pub(crate) fn resolve(rebind: bool, cwd: &Path, may_write: impl FnOnce() -> bool, notes: &mut Vec<String>) -> Result<Context, String> {
-    let host = sot_log::host::state_dir::host_name().map_err(|e| {
+pub(crate) fn resolve(env: &crate::comm::Env, rebind: bool, cwd: &Path, may_write: impl FnOnce() -> bool, notes: &mut Vec<String>) -> Result<Context, String> {
+    let host = sot_log::host::state_dir::host_name_in(env).map_err(|e| {
         format!("comm-context: could not establish this box's declared host ({e}); aborting rather than proceeding with an unknown identity")
     })?;
-    let comm_home = crate::comm::home::comm_home().ok_or("comm-context: no comm folder: none of SOT_COMM_HOME, HOME or USERPROFILE is set")?;
-    let workspace_id = env("SOT_WORKSPACE_ID");
+    let comm_home = crate::comm::home::comm_home(env).ok_or("comm-context: no comm folder: none of SOT_COMM_HOME, HOME or USERPROFILE is set")?;
+    let workspace_id = env.text("SOT_WORKSPACE_ID");
     let raw = paths::raw_root(cwd);
     let repo = paths::basename(&raw);
     let project_root = paths::canonical(&raw).map_err(|e| format!("comm-context: {e}"))?;
-    let self_file = match std::env::var_os("SOT_COMM_SELF_FILE").filter(|v| !v.is_empty()) {
+    let self_file = match env.get_nonempty("SOT_COMM_SELF_FILE") {
         Some(p) => PathBuf::from(p),
         None => {
             let leaf = self_file::slot_leaf(&host, &workspace_id)
@@ -138,10 +134,10 @@ pub(crate) fn resolve(rebind: bool, cwd: &Path, may_write: impl FnOnce() -> bool
         }
     };
     if !crate::comm::home::is_whole(&comm_home) && may_write() {
-        notes.extend(crate::comm::home::ensure(&comm_home));
+        notes.extend(crate::comm::home::ensure(&comm_home, env));
     }
     let mut name = self_file::name_for(&self_file, &project_root, notes);
-    let row_id = row_id(&host);
+    let row_id = row_id(env, &host);
     let mut name_held_by = String::new();
     if !name.is_empty() && !(rebind && !row_id.is_empty()) {
         if let Binding::Other { ws, .. } = binding(&comm_home.join("registry.json"), &name, &row_id) {
@@ -153,11 +149,11 @@ pub(crate) fn resolve(rebind: bool, cwd: &Path, may_write: impl FnOnce() -> bool
     }
     Ok(Context {
         host,
-        handle_host: raw_host(),
+        handle_host: raw_host(env),
         workspace_id,
         row_id,
         repo,
-        kind: Kind::of(&env("SOT_AGENT_KIND")),
+        kind: Kind::of(&env.text("SOT_AGENT_KIND")),
         project_root,
         name,
         name_held_by,

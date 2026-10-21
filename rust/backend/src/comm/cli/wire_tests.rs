@@ -12,8 +12,8 @@ fn a_refused_hello_is_the_daemons_words_and_silence_says_nothing_answered() {
 #[cfg(unix)]
 #[test]
 fn a_silent_daemon_is_a_failure_at_five_seconds() {
-    let _t = crate::comm::test_home::TestHome::new();
-    std::env::set_var(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV, "30");
+    let mut t = crate::comm::test_home::TestHome::new();
+    t.set(crate::comm::mail::inbox::INBOX_LOCK_WAIT_ENV, "30");
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("silent.sock");
     let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
@@ -24,7 +24,7 @@ fn a_silent_daemon_is_a_failure_at_five_seconds() {
         drop(conn);
     });
     let started = std::time::Instant::now();
-    let e = comm_file(&format!("unix:{}", path.display()), "me", "you", "x", false).unwrap_err();
+    let e = comm_file(&t.env, &format!("unix:{}", path.display()), "me", "you", "x", false).unwrap_err();
     let took = started.elapsed();
     assert!(e.starts_with("the daemon did not answer at unix:"), "{e}");
     assert!(took >= FILE_WINDOW && took < FILE_WINDOW + Duration::from_millis(1500), "{took:?}");

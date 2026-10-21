@@ -34,6 +34,11 @@ const SETTLE: Duration = Duration::from_secs(1);
 /// without this a marker one thread abandoned would read as live to them all.
 static TURN: Mutex<()> = Mutex::new(());
 
+/// The turn is process-wide, so a test that holds it for long (this module's) would starve every other test that
+/// takes the lock within its bound: those hold this for read, the module's own tests for write. It guards no variable.
+#[cfg(test)]
+pub(crate) static TURN_TESTS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
 /// The lock, held; dropping it (a panic unwind included) removes the file and
 /// then gives up the turn, so a panicking critical section leaves neither
 /// behind.
@@ -48,17 +53,17 @@ impl Drop for Held {
     }
 }
 
-/// Take `lock`, waiting up to `bound`. `Err` is the one FAILED line naming the
+/// Take `lock`, waiting up to `bound`, naming this host through `env`. `Err` is the one FAILED line naming the
 /// holder and the recovery. The reclaim runs on the first failed take, before
 /// any sleep; a removed lock is retaken at once, as part of the try that
 /// removed it, even past the deadline.
-pub fn acquire(lock: &Path, bound: Duration) -> Result<Held, String> {
-    acquire_with(lock, bound, SETTLE)
+pub fn acquire_in(env: &crate::comm::Env, lock: &Path, bound: Duration) -> Result<Held, String> {
+    acquire_with(env, lock, bound, SETTLE)
 }
 
 /// `bound` is a deadline over the wait for the turn and the lock together,
 /// checked where comm/PROTOCOL.md's Bounds says.
-fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, String> {
+fn acquire_with(env: &crate::comm::Env, lock: &Path, bound: Duration, settle: Duration) -> Result<Held, String> {
     let deadline = Instant::now() + bound;
     let turn = loop {
         match TURN.try_lock() {
@@ -75,7 +80,7 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
         }
         std::thread::sleep(POLL.min(deadline - now));
     };
-    let me = Me::now(lock);
+    let me = Me::now(env, lock);
     let mut last = Blocked { holder: None, who: None, why: "it was released just now".into(), by_hand: false, gone: false };
     let (mut first, mut retook) = (true, false);
     loop {
@@ -127,12 +132,12 @@ struct Me {
 }
 
 impl Me {
-    fn now(lock: &Path) -> Me {
+    fn now(env: &crate::comm::Env, lock: &Path) -> Me {
         let pid = std::process::id();
         if !proc_is_mine(pid) || vouch(lock).is_err() {
-            return Me { id: format!("{}:-:-:-:{pid}:-", host_field()), mine: None };
+            return Me { id: format!("{}:-:-:-:{pid}:-", host_field(env)), mine: None };
         }
-        let id = record_for(pid);
+        let id = record_for(env, pid);
         let f: Vec<&str> = id.split(':').collect();
         let mine = [f[0], f[1], f[2], f[3]].map(str::to_string);
         Me { id, mine: Some(mine) }
@@ -147,8 +152,8 @@ impl Me {
 }
 
 /// `sot_host`, every char outside `[A-Za-z0-9._-]` made `_`; `-` if none.
-fn host_field() -> String {
-    let n: String = sot_log::host::state_dir::host_name()
+fn host_field(env: &crate::comm::Env) -> String {
+    let n: String = sot_log::host::state_dir::host_name_in(env)
         .unwrap_or_default()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' })
@@ -157,9 +162,9 @@ fn host_field() -> String {
 }
 
 /// The record for `pid` on this machine, as its own take writes it.
-fn record_for(pid: u32) -> String {
+fn record_for(env: &crate::comm::Env, pid: u32) -> String {
     let [machine, boot, pidns, start] = proof_fields(pid);
-    format!("{}:{machine}:{boot}:{pidns}:{pid}:{start}", host_field())
+    format!("{}:{machine}:{boot}:{pidns}:{pid}:{start}", host_field(env))
 }
 
 #[cfg(target_os = "linux")]

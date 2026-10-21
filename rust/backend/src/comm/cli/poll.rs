@@ -1,6 +1,7 @@
 //! `sotd comm poll` (comm-poll.sh), the one reader of message bodies and the one cursor writer, and `sotd comm unread`,
 //! the end-of-turn check's count.
 
+use crate::comm::Env;
 use super::{context, gate, Out};
 use crate::comm::mail::cursor::{complete, counts, offset, write};
 use crate::comm::mail::inbox::{appends_here, lock_identity, read_lock, ReadLock};
@@ -25,14 +26,14 @@ pub(crate) fn shown(line: &[u8]) -> Option<String> {
     Some(format!("[{}] [{}:{}] {msg}", f("ts"), f("from"), f("repo")))
 }
 
-pub(crate) fn poll(_args: &[String]) -> Out {
+pub(crate) fn poll(env: &Env, _args: &[String]) -> Out {
     let mut o = Out::default();
-    if let Err((_, why)) = gate() {
+    if let Err((_, why)) = gate(env) {
         o.err(format!("comm-poll: {why}"));
         return o.exit(1);
     }
     let mut notes = Vec::new();
-    let ctx = match context(false, &mut notes) {
+    let ctx = match context(env, false, &mut notes) {
         Ok(c) => c,
         Err(e) => {
             o.errs(&notes);
@@ -62,12 +63,12 @@ pub(crate) fn poll(_args: &[String]) -> Out {
     let path = ctx.inbox_dir().join(format!("{me}.jsonl"));
     if !path.is_file() {
         o.out("No messages.");
-        let _ = touch(&ctx.registry(), &me);
+        let _ = touch(env, &ctx.registry(), &me);
         return o;
     }
     // The batch is read once under the shared lock, the lock let go, and only then shown.
     let own = lock_identity(&ctx.inbox_dir());
-    let lock = read_lock(&ctx.inbox_dir(), &me, &own, appends_here(&ctx.comm_home, &own));
+    let lock = read_lock(&ctx.inbox_dir(), &me, &own, appends_here(&ctx.comm_home, &own), env);
     if let ReadLock::Busy = lock {
         o.out(format!("the inbox for @{me} is being written \u{2014} nothing was read; run comm-poll.sh again"));
         return o.exit(75);
@@ -99,26 +100,26 @@ pub(crate) fn poll(_args: &[String]) -> Out {
     if count == 0 {
         o.out("No new messages.");
     }
-    let _ = touch(&ctx.registry(), &me);
+    let _ = touch(env, &ctx.registry(), &me);
     o
 }
 
 /// `sotd comm unread <h>`: one line, `<total> <unread>`, then the lock fault's warning when there is one; exit 75 when
 /// the inbox is being written (check again at the next turn end), 1 when the count cannot be made. Takes the shared
 /// lock as poll does, and reads nothing else.
-pub(crate) fn unread(args: &[String]) -> Out {
+pub(crate) fn unread(env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
     let Some(h) = args.first().filter(|h| crate::comm::identity::derive::valid_handle(h)) else {
         o.err("usage: sotd comm unread <handle>");
         return o.exit(2);
     };
-    let Some(home) = crate::comm::home::comm_home() else {
+    let Some(home) = crate::comm::home::comm_home(env) else {
         o.err("sot-comm: cannot count unread mail: no comm folder");
         return o.exit(1);
     };
     let dir = home.join("inbox");
     let own = lock_identity(&dir);
-    let lock = read_lock(&dir, h, &own, appends_here(&home, &own));
+    let lock = read_lock(&dir, h, &own, appends_here(&home, &own), env);
     if let ReadLock::Busy = lock {
         return o.exit(75);
     }
