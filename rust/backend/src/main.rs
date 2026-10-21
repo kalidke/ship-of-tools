@@ -18,6 +18,7 @@ mod comm;
 mod daemon_log;
 mod durable;
 mod files;
+mod install;
 mod lifecycle;
 mod pages;
 mod paths;
@@ -61,6 +62,9 @@ const SOTD_HELP: &str = r#"Usage: sotd [OPTIONS]
                           adoption (installed launchers only)
 
 Offline command (returns before daemon initialization):
+  install --pack <folder> [options]
+                          the body of scripts/install.sh and install.ps1,
+                          which verify a pack and run its own sotd install
   trust declare <absolute-prefix>
                           declare folder trust in user-level settings
   update stage <folder> --prefix <prefix>
@@ -122,6 +126,7 @@ fn help_for(args: &[String]) -> Option<&'static str> {
         "same-version" => topology::same_version::USAGE,
         "ancestors" => comm::registry::ancestors::USAGE,
         "update" => update::USAGE,
+        "install" => install::USAGE,
         _ => SOTD_HELP,
     })
 }
@@ -239,6 +244,12 @@ fn main() -> Result<()> {
             "update" => {
                 apply_umask();
                 lifecycle::shutdown::exit(runtime()?.block_on(update::run(&args[1..])));
+            }
+            // `sotd install --pack <folder> [options]`: the installers' body (scripts/CLAUDE.md, Installers). A command a
+            // person runs in the foreground; it starts no daemon, and its files take the person's own umask, as the
+            // shell installer's did.
+            "install" => {
+                std::process::exit(install::run(&args[1..]));
             }
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));

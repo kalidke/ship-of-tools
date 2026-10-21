@@ -1,6 +1,6 @@
 # install-shortcut.ps1 — create a "Ship of Tools" shortcut on the desktop
-# that launches the chrome. A step of scripts/install.ps1 (the installer runs it through repo\current); run by hand it
-# does the same. First time: right-click the shortcut
+# that launches the chrome. A step of the installer (sotd install runs it through repo\current with -NoManifest); run by
+# hand it also writes install.json and the first topology sync (install-manifest.ps1). First time: right-click the shortcut
 # and choose "Pin to taskbar" (modern Windows blocks pinning programmatically).
 # Every re-run AFTER that also re-syncs the existing taskbar pin to the launcher,
 # so the pin never drifts into launching a bare sot.exe ("naive" FE).
@@ -22,7 +22,10 @@ param(
     # Same job as install.sh --hub on Linux/macOS.
     [string]$Hub,
     # The install prefix; default %LOCALAPPDATA%\sot. install.ps1 -Prefix passes its own.
-    [string]$Prefix
+    [string]$Prefix,
+    # The installer writes install.json and runs the first topology sync itself (sotd install); a hand run has this
+    # script do both through install-manifest.ps1.
+    [switch]$NoManifest
 )
 $ErrorActionPreference = 'Stop'
 
@@ -98,7 +101,7 @@ Write-Host "Created: $shortcutPath"
 # bails at its "not a release install" guard and Windows never checks for
 # updates at all (install.sh, the only other writer, refuses to run here).
 # No-ops with an explanation on a source build (a + in its version).
-& (Join-Path $PSScriptRoot 'install-manifest.ps1') -Prefix $prefixDir -Repo $repo.Path -Hub $Hub
+if (-not $NoManifest) { & (Join-Path $PSScriptRoot 'install-manifest.ps1') -Prefix $prefixDir -Repo $repo.Path -Hub $Hub }
 
 # --- Keep the taskbar pin in sync -------------------------------------------
 # The taskbar pin is a SEPARATE .lnk from the desktop shortcut, so it drifts

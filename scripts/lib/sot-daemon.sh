@@ -223,6 +223,33 @@ EOF
     chmod +x "$dest.new.$$" && mv -f "$dest.new.$$" "$dest" || { rm -f "${dest:?}.new.$$"; return 1; }
 }
 
+# Write the launcher that dials the topology plan's hosts for PREFIX into DEST: it applies an armed update, then execs
+# the checkout's launch-sot.sh. BE-ALIAS, when given, is the backend of an install that runs no daemon of its own
+# (`--backend <alias>`, the hub hint of a box the plan does not name yet); with none, the computer runs its own daemon
+# and launch-sot.sh ensures it beside the plan's dials. Exit-75 respawn and the crash-loop rollback are the all-in-one
+# wrapper's alone.
+render_remote_launch() {  # <prefix> <be-alias, or empty> <dest>
+    local prefix="$1" be_alias="$2" dest="$3" host_line="export SOT_OWN_DAEMON=1"
+    sot_path_refused prefix "$prefix" && return 1
+    sot_path_refused home "$HOME" && return 1
+    [ -z "$be_alias" ] || host_line="export SOT_HOST=\"$be_alias\""
+    cat > "$dest.new.$$" <<EOF || { rm -f "${dest:?}.new.$$"; return 1; }
+#!/usr/bin/env bash
+# sot-launch: dials the topology plan (a frontend over SSH to its daemon hosts, ADR 0030 section 5). It applies an armed
+# update first, then runs the pinned checkout's own launch-sot.sh, so the two never drift.
+if [ -x "$prefix/bin/sot-apply" ]; then
+    APPLY_OUT="\$("$prefix/bin/sot-apply" 2>&1)"
+    [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
+fi
+$host_line
+export SOT_PREFIX="$prefix"
+export SOT_FRONTEND_BIN="$prefix/bin/sot"
+export SOT_NO_UPDATE=1
+exec "$prefix/repo/current/scripts/launch-sot.sh" "\$@"
+EOF
+    chmod +x "$dest.new.$$" && mv -f "$dest.new.$$" "$dest" || { rm -f "${dest:?}.new.$$"; return 1; }
+}
+
 # True when SOCKET accepts a connection from this OS account: sotd's own bridge
 # connects only to a socket this account listens on (ADR 0049, User isolation)
 # and, its input empty, closes again at once. A socket it cannot

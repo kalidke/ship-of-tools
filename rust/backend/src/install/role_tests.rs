@@ -1,0 +1,105 @@
+use super::*;
+use crate::install::options::RoleFlag;
+
+/// The role rule and the unit's host pin agree on who runs sotd: for every host of one hosts.toml, the install puts a
+/// daemon exactly where `sotd_hosts` lets the unit start (a frontend runs its own).
+#[test]
+fn the_role_and_the_pin_agree_on_who_runs_sotd() {
+    let hosts = "hub = \"h\"\n[host.h]\ndaemon = true\n[host.d]\ndaemon = true\n[host.f]\nfrontend = true\n[host.df]\ndaemon = true\nfrontend = true\n[host.s]\n";
+    let topo = sot_protocol::topology::parse(hosts).unwrap();
+    let table = sot_protocol::topology::status_table(&topo);
+    let pinned = sot_protocol::topology::sotd_hosts(&topo);
+    for h in ["h", "d", "f", "df", "s"] {
+        let role = from_status(&table, h).unwrap();
+        assert_eq!(role.daemon, pinned.contains(&h), "{h}: {role:?}, the pin names {pinned:?}");
+        assert_eq!(role.daemon, sot_protocol::topology::runs_backend(Some(&topo), h, None), "{h}");
+        assert_eq!(role.frontend, h == "f" || h == "df");
+    }
+    assert_eq!(from_status(&table, "absent"), None);
+}
+
+/// With no flag and no entry, the role is what install.json recorded (a remote install's alias from its wrapper).
+#[test]
+fn the_recorded_role_comes_back() {
+    let rec = |d: bool, f: bool| format!("{{\n  \"daemon\": {d},\n  \"frontend\": {f}\n}}");
+    assert_eq!(recorded(&rec(true, true), ""), Some(RoleFlag::Local));
+    assert_eq!(recorded(&rec(true, false), ""), Some(RoleFlag::BeOnly));
+    assert_eq!(recorded(&rec(false, true), "export SOT_HOST=\"box\"\n"), Some(RoleFlag::Remote("box".into())));
+    assert_eq!(recorded(&rec(false, true), ""), None);
+    assert_eq!(recorded("{\"role\": \"be-only\"}", ""), Some(RoleFlag::BeOnly));
+    assert_eq!(recorded(&rec(false, false), ""), None);
+}
+
+/// Owners are read from the files' own text, in every shape an install wrote; an unknown shape has no owner.
+#[test]
+fn owners_are_read_from_the_files_text() {
+    let unit = "[Service]\nExecStartPre=-/bin/bash -c 'x; exec \"/p/bin/sot-apply\"'\nExecStart=/bin/bash -c '[ -r \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"; exec \"/p/bin/sotd\" --project-root \"/h\" --label sot'\n";
+    assert_eq!(unit_owner_path(unit).as_deref(), Some("/p/bin/sotd"));
+    assert_eq!(unit_owner_path("ExecStart=/old/bin/sotd --label sot\n").as_deref(), Some("/old/bin/sotd"));
+    assert_eq!(wrapper_owner_prefix("#!/bin/bash\nPENDING=\"/p/updates/pending-linux-x86_64.json\"\n").as_deref(), Some("/p"));
+    assert_eq!(wrapper_owner_prefix("export SOT_FRONTEND_BIN=\"/p/bin/sot\"\n").as_deref(), Some("/p"));
+    assert_eq!(wrapper_owner_prefix("exec \"/p/bin/sot\" \"$@\"\n").as_deref(), Some("/p"));
+    assert_eq!(wrapper_owner_prefix("#!/bin/sh\necho hello\n"), None);
+    assert_eq!(exec_target("[Desktop Entry]\nExec=/h/.local/bin/sot-launch\n").as_deref(), Some("/h/.local/bin/sot-launch"));
+    assert_eq!(exec_target("#!/usr/bin/env bash\nexec \"/h/.local/bin/sot-launch\"\n").as_deref(), Some("/h/.local/bin/sot-launch"));
+}
+
+/// A refused install writes nothing: the gates decide from what is there, and consent waives only another install's
+/// files, never a file whose owner cannot be named.
+#[test]
+fn the_gates_refuse_another_installs_files_and_never_an_unknown_one() {
+    assert_eq!(running_daemon(None, "/p", false), Gate::Allow);
+    assert_eq!(running_daemon(Some("/p/bin/sotd"), "/p", false), Gate::Allow);
+    assert!(matches!(running_daemon(Some("/q/bin/sotd"), "/p", false), Gate::Refuse(_)));
+    assert_eq!(running_daemon(Some("/q/bin/sotd"), "/p", true), Gate::Allow);
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join(".local/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("sot-launch"), "PENDING=\"/q/updates/pending-x.json\"\n").unwrap();
+    assert!(matches!(ownership(None, home.path(), "/p", false, true, false), Gate::Refuse(_)));
+    assert_eq!(ownership(None, home.path(), "/p", false, true, true), Gate::Allow);
+    assert_eq!(ownership(None, home.path(), "/p", false, false, false), Gate::Allow);
+    std::fs::write(bin.join("sot-launch"), "something else\n").unwrap();
+    assert!(matches!(ownership(None, home.path(), "/p", false, true, true), Gate::Unresolvable(_)));
+}
+
+/// A host the declared topology runs no sotd on never writes over the shared install, and under a declared topology a
+/// run never records less than install.json does.
+#[test]
+fn the_shared_install_is_written_only_by_its_hosts() {
+    let prefix = tempfile::tempdir().unwrap();
+    assert_eq!(host(true, false, prefix.path(), false), Gate::Allow, "a first install");
+    std::fs::write(prefix.path().join("install.json"), "{\n  \"daemon\": true,\n  \"service\": \"systemd\"\n}\n").unwrap();
+    assert!(matches!(host(true, false, prefix.path(), false), Gate::Refuse(_)));
+    assert_eq!(host(true, true, prefix.path(), false), Gate::Allow);
+    assert_eq!(host(false, false, prefix.path(), false), Gate::Allow);
+    assert_eq!(host(true, false, prefix.path(), true), Gate::Allow);
+    let rec = prefix.path().join("install.json");
+    assert!(matches!(record_gate(&rec, true, false, "none", false), Gate::Refuse(_)));
+    assert!(matches!(record_gate(&rec, true, true, "none", false), Gate::Refuse(_)));
+    assert_eq!(record_gate(&rec, true, true, "systemd", false), Gate::Allow);
+    assert_eq!(record_gate(&rec, false, false, "none", false), Gate::Allow);
+    assert_eq!(record_gate(&rec, true, false, "none", true), Gate::Allow);
+    assert_eq!((service_record(true, true, false), service_record(true, true, true), service_record(false, true, false)), ("systemd", "none", "none"));
+}
+
+/// The retire reads the pin a claim writes as this host's alone; the move notice reads the hosts a pin names.
+#[test]
+fn a_claimed_pin_names_this_host_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("sotd.service.d")).unwrap();
+    let pin = dir.path().join("sotd.service.d/topology.conf");
+    std::fs::write(&pin, "[Unit]\nConditionHost=|me\nConditionHost=|me.*\n").unwrap();
+    assert!(pin_names_only(dir.path(), "me") && !pin_names_only(dir.path(), "other") && !pin_names_only(dir.path(), ""));
+    assert_eq!(pin_hosts(dir.path()), ["me"]);
+    std::fs::write(&pin, "[Unit]\nConditionHost=|me\nConditionHost=|me.*\nConditionHost=|you\nConditionHost=|you.*\n").unwrap();
+    assert!(!pin_names_only(dir.path(), "me"));
+    assert_eq!(pin_hosts(dir.path()), ["me", "you"]);
+}
+
+#[test]
+fn a_plan_that_dials_another_daemon_host_gets_the_dialing_launcher() {
+    assert!(plan_dials_others("self me\ndial me unix:/s\ndial other ssh:other\n"));
+    assert!(!plan_dials_others("dial me unix:/s\nself me\n"));
+    assert!(!plan_dials_others(""));
+}
