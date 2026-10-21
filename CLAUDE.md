@@ -1,75 +1,23 @@
 # Ship of Tools
 
-An agentic development environment for Julia. Agent programs (Claude Code, Codex) run in rows, one project directory
-each; a native window lets the developer steer, watch and review them, browse the project, preview files and run a
-Julia REPL. `requirements.md` is the scope; `docs/history/adr/` records why; `docs/src/` is the user manual.
+An agentic development environment for Julia. `requirements.md` is the scope; `docs/package.md`, loaded below, is the
+map: what runs, the subsystems and the guarantee each gives the others, how they depend on each other, the decisions
+taken and the order of the passes now reorganizing the tree. A subsystem's charter (the CLAUDE.md in the folder the
+package page names) is its contract until its pass rewrites it. `docs/src/` is the user manual. `docs/history/` holds
+the design records and the old folder pages; read one only when a question needs it.
 
-## How it runs
-- `sot`, the window (Rust, winit + wgpu). ratatui computes the chrome's cells only; one wgpu pass draws every pixel.
-  It is not a terminal program. It holds one connection to each daemon it dials.
-- `sotd`, the daemon, one per OS account per computer. It owns that computer's rows, serves files, previews and pages,
-  supervises the Julia children, and answers on one private socket (a named pipe on Windows).
-- `sot-capsule`, one supervisor per row and one leg under it running the agent on a real terminal, recorded into an
-  append-only voyage. Rows outlive the window and the daemon by design; the last window's lease decides whether a
-  computer's rows end when it closes.
-- Julia children of the daemon: a kernel per row (Julia-aware previews and project scans; it never runs user code and
-  never loads the user's environment), a REPL per row (runs user code in the row's environment), one Pluto server.
-- Other computers: `hosts.toml` declares them and names the hub; the window reaches a far daemon over ssh into
-  `sotd stdio-bridge`. Sessions message each other through the comm folder `~/.sot-comm`.
+Every session, in a row or outside any, reads `docs/SESSION.md` at its start and after each compaction. A subagent
+does not read it and uses no mail; it reports to the session that launched it.
 
-## Subsystems
-Each line names the subsystem and the folder of its charter page (idea, owns, promises, connections).
-- **wire**: every byte two programs exchange; one integer for compatibility. `rust/protocol/`
-- **topology**: hosts.toml, endpoints, ssh logins, relay units. `rust/protocol/src/topology/`
-- **server**: sotd's one listener; admission and routing. `rust/backend/src/server/`
-- **lifecycle**: leases, the close, child ownership, bounded exits. `rust/backend/src/lifecycle/`
-- **rows**: the row registry and the daemon side of each row's capsule. `rust/backend/src/rows/`
-- **agents**: the agent launch recipe, accounts, launchers, skills, daemon-client CLIs. `agents/`
-- **capsule**: supervisor, leg, voyage record, lanes, attach client. `rust/log/`
-- **platform**: dirs, host name, durable writes, locks, peer identity. `rust/log/src/host/`
-- **messaging**: inboxes, the registry, work-state, the wake. `comm/`
-- **files**: a workspace's files, previews and `.concept/` annotations. `rust/backend/src/files/`
-- **sidecars**: kernel, REPL, Pluto, MathJax, monitor; the plugin ABI. `rust/backend/src/sidecars/`
-- **pages**: loopback HTTP pages and the window's page proxy. `rust/backend/src/pages/`
-- **fe-ui**: the window's one UI thread, drawing and input. `rust/frontend/src/ui/`
-- **fe-net**: the window's connections to daemons. `rust/frontend/src/net/`
-- **distribution**: release, CI, install, update, apply, launch. `scripts/`
-- **records**: ADRs, the manual, this file. `docs/`
-
-Who owns what is `docs/ownership.md`, and how the subsystems connect is `docs/integration.md` (interim, until one
-generated map replaces both). Neither loads with this page: read the one you need before you change an owner or a
-connection.
-
-## Finding your way
-- Pages come in three tiers: this root map; one charter per subsystem in its charter folder; and a module
-  page in every other source folder. No page repeats its parent.
-- Start from the subsystem list above; `docs/ownership.md` names each concept's owner and files, and
-  `docs/integration.md` each connection. The first Read of a file in a folder loads that folder's page and every page
-  above it; Grep and shell searches load none. So read the file, not only grep it.
-- Folders with no page of their own are listed, with their reason, in `scripts/tests/exempt.txt`.
-- Designed but unbuilt parts (the Project, Types, Math, Outputs and Agents modes; the concept layer's refresh and
-  reference checks; the plugin contract beyond `FileType`) are described, marked unbuilt, in `docs/src/guide/modes.md`,
-  `docs/src/guide/concept-layer.md`, `docs/src/guide/color-coding.md`, `docs/src/extend/abi.md` and
-  `docs/src/extend/mode.md`.
-- Every session, in a row or outside any, reads `docs/SESSION.md` at its start and after each compaction: the
-  workspace row, worktrees, the window's restart, releases, the handoff and messaging between sessions. A subagent
-  does not read it and uses no mail; it reports to the session that launched it.
-
-## Limits
-- A file holds one concept and at most 800 code lines. Tests sit inline, or in a sibling file of at most 800 lines.
-- A folder holds at most 3,000 non-test code lines and 12 source files.
-- A function holds at most 100 lines.
-- The checks: `scripts/tests/check-layout.sh`, run by rust.yml's "Check the layout" with each exception and its reason
-  in `scripts/tests/check-layout.allow`, which also pins the count of function-length allowances (it can only fall); and
-  rust.yml's "Function length and test children" clippy step. This page is the map tier and has no `## Files` list (a
-  reasoned exception in that allow file).
+@docs/package.md
 
 ## Rules
 - **Elegance first: simple and elegant leads to performance and security; as simple as possible, but no simpler.** Every
   design and review round asks both "what is missing?" and "what can be deleted?". A field, type, file or knob names the
   invariant it serves, or it is a deletion candidate. Stripping past an invariant (durability, identity, the honesty of
   the record) is false elegance.
-- One owner per concept. Before adding code, find the concept's owner in the ownership table and change it there.
+- One owner per concept. Before adding code, find the subsystem whose contract owns the concept (the package page, then
+  `docs/ownership.md` until the contracts replace it) and change it there.
 - Julia for plugin code and Julia-aware logic (the kernel parses with JuliaSyntax); Rust for plumbing (rendering, IPC,
   watching, supervision), kept boring. The Rust-Julia boundary is a serialization seam: the daemon speaks to the kernel
   and the REPL in JSON frames over their stdio, and Rust builds every tree node.
@@ -83,15 +31,19 @@ connection.
   declared in `core/` but unbuilt; scope any extensibility claim to `FileType`.
 - Reactive over eager. A concept annotation shows stale when the file's hash, which the kernel computes on
   `file.parse`, no longer matches its `synced_against`; nothing sweeps in the background.
-- Defer features until forced. A diagnosed defect is never deferred: it goes in the next candidate, and the only reasons
-  to hold one back are two fixes contending for one file or a root cause not yet proven (say which, per item).
-- Read `requirements.md` before adding a feature. Change a CLAUDE.md, ADR status or manual page in the commit that
-  changes the code it describes. Plots in Julia use CairoMakie.
+- Defer features until forced. A defect is known when it has been seen in use, by a person or by a session operating
+  the product as a user; a thought from reading code is a note. Either goes to the owning subsystem's queue and is
+  handled at that subsystem's pass; a defect that blocks use is fixed on the release branch.
+- Work happens on main, one writer at a time; a second pass in parallel works in a worktree on a disjoint subsystem.
+  Before a push, the touched crates' tests and the workspace build run locally. Hosted runs happen once at the end of
+  a pass and once at the release gate.
+- Read `requirements.md` before adding a feature. Change the contract or manual page in the commit that changes the
+  code it describes. Plots in Julia use CairoMakie.
 - The repo is public: no private host names, user names, LAN details or host-suffixed handles in commits, PRs, code
   comments or docs. A push is swept for private names before it leaves this machine.
 - The repo is canonical, not any machine's memory: the user works across computers, and per-machine session memory is
-  never a prerequisite. Session memory holds working practices only; a fact about the code belongs in the CLAUDE.md of
-  the folder that owns it.
+  never a prerequisite. Session memory holds operating state only; a fact about the code belongs in its subsystem's
+  contract.
 - Run a command on a second host with `scripts/tests/on-host.sh HOST DIR -- CMD`, never a hand-built `env -u` list
   inside a quoted ssh command: its newlines can run a bare `env` there and print that host's environment.
-- Never kill the window's process: ADR 0017 says how it restarts.
+- Never kill the window's process: ADR 0017 (`docs/history/adr/`) says how it restarts.

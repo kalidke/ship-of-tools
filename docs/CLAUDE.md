@@ -51,6 +51,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `integration.md`: how the sixteen subsystems connect: one table of every connection, then six walk-throughs with a file and a function at every hop.
 - `make.jl`: builds the manual and runs the built-site checks.
 - `ownership.md`: the one table of who owns each state file, process, op, setting and lock, and the pairs of copies that remain.
+- `package.md`: the package page, loaded by the root CLAUDE.md: the subsystems, their guarantees and dependencies, the
+  decisions and the order of the reorganization's passes.
 - `plan.md`: the phase-1 implementation plan; staged into the manual as the roadmap.
 - `tools/`: the docs media scripts: docs-media.sh, run by hand from `SCREENSHOTS.md`.
 - `src/.vitepress/`: the VitePress site configuration and theme.
