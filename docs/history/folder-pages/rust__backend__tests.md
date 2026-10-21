@@ -1,0 +1,146 @@
+# rust/backend/tests: sotd's integration suites (tests)
+
+Each suite is its own test binary that drives a real `sotd` (and a real `sot-capsule` where rows run) over the real
+wire, or runs a `sotd` subcommand as a subprocess. Isolation comes from support's `Env`, which gives every daemon its
+own home, config, state, runtime and comm folders. The suites span subsystems, so this page names no charter.
+
+## Files
+- `trust_declare.rs`: agents; the offline declaration CLI against temporary settings, with no daemon startup.
+- `trust_premises.rs`: agents; declaration spelling and selected-file preparation controls, and (Unix) the installer's
+  `installer_declare_trust` against the real owner: kept answers, invalid settings, a missing and an older `sotd`.
+  Real-Claude consumption and child-observed spelling are proof limits closed by the human release done test; no
+  credentials or Claude process run in CI.
+- `active_frontend.rs`: server; which frontend is active and which window a command goes to, over the wire against a
+  real `sotd` (a stub `julia` announces the `wglshow` page, Unix); each `client_id` is one window (its hello's
+  `instance`), so a second connect with it is that window's redial, which keeps its presence
+- `admission.rs`: server; every connection starts with an accepted hello (every op of `sot_protocol::op` as a first frame is refused), and two OS accounts on one host are refused (ADR 0049 `## User isolation`)
+- `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
+- `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with; the
+  script comm-probe.sh's start line starts under cmd.exe walks through cmd.exe, and one given alone to `bash -c` (exec'd
+  twice) walks nowhere, the limit comm/PROTOCOL.md states
+- `contained_job.rs`: lifecycle; a test job killed from outside (a child that kills itself after starting a ready row, run as the main process of a test container) leaves no row: the row lived in the job's own control group, its fence and writer lock are free and the job's control group is empty
+- `child_folders.rs`: sidecars; a REPL child's temporary folder outlives no daemon (Linux, a shell stand-in for Julia,
+  each daemon's `TMPDIR` a folder of the test's own): a stop and a close remove it, and after a SIGKILL of the guard,
+  which leaves it, the next start removes it while a running daemon's stays, and so does a start in a pid namespace of
+  its own in which the crashed daemon's pid is another process's (where this account can make the namespaces with
+  `unshare -Upf`; skipped, saying so, elsewhere)
+- `comm_file.rs`: messaging; the inbox lock held by the daemon's filer and by the scripts' `sot_inbox_append`. It also executes declared-host join/self-slot agreement, unread activation and destroyed-handle prune in disposable homes.
+- `comm_send.rs`: messaging; the staged `comm-send.sh` against a real `sotd`: `filed` only for a live handle, nothing appended for a gone one, and an idle row's daemon keeps it live, so a send is filed while that daemon is down
+- `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
+- `control_session.rs`: server; a control session's replies pinned over the wire: unknown op, `monitor.*`, `pty.open` refusals, the pooled ops and `concept.read`, the evt skip and the refused hellos; a directed `agent.send` refused, `agent.filed` no op, a UI notification with no receipt fields
+- `daemon_boot.rs`: server; a first boot seeds the default row as the inert anchor, and the registry poll relays a state change; on Linux, observes that a spawned daemon inherits no `SOT_` variable the test did not set
+- `daemon_stdout.rs`: a daemon whose stdout is a regular file writes its log only to `sotd.log`, and that file holds the start line; `sotd log-path` names that file
+- `hub_link.rs`: messaging; a hub `sotd` and a linked `sotd` joined by a stub `ssh`: the hub's `comm.file` for a handle only the linked box lists is filed there, its refusals come back, and it files again after a redial
+- `keystroke_latency.rs`: rows and topology; ignored private-daemon keystroke timing and headless request-to-checkpoint switch timing, with explicit SSH prerequisites; T3 owns proof from the frontend attach request to the pane showing it
+- `live_socket.rs`: server; a second daemon on a live daemon's socket refuses and the first keeps answering
+- `old_watcher.rs`: server; a pre-0.6.6 wake watcher's hello and `pty.input` in its library's exact form: the hello is refused with `protocol_mismatch`, then the connection ends with no other byte
+- `ping_reaper.rs`: server; the reaper of half-open connections that have pinged, over the wire, including a `cli`
+  connection and a `link` connection (the hub link), each answered and reaped when silent
+- `preview_order.rs`: server; a `preview.get` written behind a `preview.set_scale` on one connection carries the new scale
+- `relay_refresh.rs`: topology; `sotd topology refresh` on a scratch hub with a stand-in `systemctl`
+- `repl_windows.rs`: sidecars; two windows on one row (Linux, a shell stand-in for Julia): each is written its own REPL
+  runs under its own numbers and every other run under the daemon's number after its `started` frame, a
+  `repl.execute` run shows in both, and so does a timed-out run's later output; a window that redials mid-eval (the
+  same hello `instance`) is written the rest of its run under its own number, and its interrupt reaches the run; each
+  hello reply names the window's runs still running (`repl_running`), never one that ended, the window away or not
+- `site_windows.rs`: pages; a window's pages over the wire against a real `sotd` (Unix): a page `docs.open` granted a
+  window serves on after the window redials (the same hello `instance`), another window's open takes none of it, a
+  reopen ends the page it replaces, a forgotten window's pages and a connection of no window's end, and a full pool
+  takes a port only from a window with no live connection
+- `site_root.rs`: pages; the folder a page `docs.open` serves, against a real `sotd` whose home is its project root
+  (Unix): a project log's campaign page, its index pages and a folder opened directly load the log's assets, and the
+  walk to the site ends at the page's repository top and never takes in the home folder; a page directly in the home
+  folder is refused
+- `unit_pin.rs`: topology; `sotd topology pin` and `refresh` write host pins into a scratch systemd folder, real systemd
+  loads it in test mode (`systemd --test --user`) and `systemd-analyze --user condition` evaluates the attached
+  conditions on this box; with no hosts.toml the claim pins the unit to this box and a pin without it changes
+  nothing, and the installer's `installer_pin_names_only` reads the claimed pin as this box's alone; `apply` enables
+  nothing when a pin cannot be written, and a dry `apply` writes no pin;
+  `status` without a hosts.toml prints the words the installer matches; and the installer's role rule agrees with
+  `sotd_hosts`
+- `same_version.rs`: topology; `sotd same-version` against a real daemon of this build answers the same version (exit 0)
+- `shell_dial.rs`: topology; comm-lib's `sot_dial` (with and without its bound) and `sot_oneshot_request`, and the
+  launch scripts' `sot_socket_open`, run by bash against the built `sotd`: a socket another account listens on (needs
+  passwordless `sudo -n`; skips without it except on CI) and a pipe another account serves are refused with nothing
+  written, and `sot_dial` and `sot_socket_open` reach this account's; `sot_ssh_bridge` runs the far box's own `sotd
+  stdio-bridge`; and `sot_bounded`, the bound each of the four timed comm calls runs under, through its one perl
+  routine, on each platform's bash and perl, with a group that outlives its leader, a command that leaves its group,
+  the grace period's length, a command that catches TERM and a group call that answers EPERM though it made the group
+  (macOS 26) as tests of their own, every case run against comm-lib's copy and, on Unix, scripts/install.sh's, the two
+  bodies compared byte for byte (`the_comm_bound_copies_are_byte_identical`), each case's ceiling timing only its own
+  call by perl's clock inside the case (ADR 0049 `## User isolation`)
+- `status_integration.rs`: topology; `sotd status` against a real daemon the test starts and stops
+- `stdio_bridge.rs`: topology; `sotd stdio-bridge [--host | --endpoint]` with real pipes and real processes; the two
+  cases with another account's listener (refusal, full backlog) need passwordless `sudo -n` and skip without it except
+  on CI
+- `subcommand_help.rs`: server; every `sotd` subcommand's `--help` prints usage and dials nothing
+- `topology_sync.rs`: topology; `sotd topology sync` against a stand-in `ssh` that never answers: it ends at its 30 s bound, naming the ssh and the bound
+- `topology_set.rs`: topology; `topology.set` and `topology.changed` over the wire; a hub daemon started from umask 022 creates its comm files owner-only
+- `window_start.rs`: lifecycle; a daemon's start from `held.json`, resumed or ended rows
+- `daemon_lifetime/`: lifecycle; the harness of lane L2: native launcher and fence-claim premises on real children, a successor daemon against a held capsule birth, and, on Linux, the lifetime guard, the daemon's controlled outcomes and the update outcomes on real daemons (own page; needs the barrier build)
+- `capsule_workspaces/`: rows; a real `sotd` and a real detached `sot-capsule` over a real local socket (`main.rs` plus modules); `session_env.rs`: a session's `SOTD_BIN` is the daemon's own start path, over an inherited value and, on Linux, after an in-place update; each test's row ends through its own supervisor, and its folders are kept, with a report, when that end is not confirmed
+- `lane_bridge/`: rows and topology; a frontend attach client reaching a capsule row through a daemon and a test-owned relay, plus explicitly spawned SSH stand-ins
+- `switch_latency/`: server; a slow request does not block a later cheap reply on one connection, and a ping is answered while a long op (`quarto.open`) is held; its `dead_kernel` module is sidecars
+- `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
+- `support_checks.rs`: rows; the shared support's own answers: a host check whose tool cannot answer fails with the tool's account, and the command a daemon is given names the runner's Julia binary (Linux)
+- `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs`
+  (`sotd_command` and `sotd_command_at`, which set `SOT_JULIA_BIN` to `julia_binary`; `end_daemon`, a serving daemon's end; for a daemon a suite starts by label,
+  `own_label`, `label_endpoint`, `sotd_daemon_at` and `sotd_client_of`; also loaded alone by suites that need nothing
+  else), `registry.rs` (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the
+  process count)
+- `fixtures/`: data read by the backend's own unit tests (`comm/wake/screen_tests.rs`, `sidecars/monitor_tests.rs`) by path, not suites
+
+## Start here
+Read `support/mod.rs`, then `support/env.rs`, before writing a real-process suite. `live_socket.rs` is a small suite that
+shows the shape.
+
+## Rules
+- P0/P1/P5 remain proof limits closed by the human release done test; CI provisions no Claude credential. Preparation tests observe
+  filesystem effects and diagnostics. Headless task success proves no interactive recognition, parent coverage or dialog suppression.
+  Interactive no-dialog remains a person-run release done-test; existing-file external-writer concurrency is a scoped limit.
+- A capsule row leaves the test's cgroup only when the user manager answers its daemon. Run the suites in a test
+  container (`scripts/tests/in-container.sh`), which withholds it, so a killed job leaves no row; a supervisor's command line begins with its file name when no manager answers. The five tests that need
+  it run under `--user-manager`, by name: `capsule_supervisor_survives_a_real_user_service_stop` and
+  `destroy_ends_a_child_that_left_the_agents_process_group` (capsule_workspaces),
+  `killed_after_capture_next_start_ends_scope` (window_start), `shutdown_ends_a_child_that_left_the_agents_process_group`
+  (window_lease), `a_service_manager_counts_int_and_term_as_a_clean_stop` (daemon_lifetime); so does `contained_job`. The three scope tests and `contained_job` refuse before any row starts where production's cgroup v2 root holds no v2 hierarchy (`require_cgroup_v2_root`, over `row_scope_aim::v2_root`: `/sys/fs/cgroup`, or `/sys/fs/cgroup/unified` on a hybrid host; called by `Env::seed_fake_claude_with_escapee` and by `contained_job`), and `arm_scope_guard` refuses a scope that root does not show.
+- A binary whose tests share one process takes its `SERIAL` before `Env::new`, which sets the process's `SOT_RUNTIME_DIR`
+  (capsule_workspaces, comm_send, comm_wake, daemon_boot, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
+- Every `sotd` a suite starts comes from `support/sotd.rs`: `sotd_command()`, or `sotd_command_at(program)` for a copy
+  or link of the built binary. Both drop every inherited `SOT_` variable, which `daemon_boot.rs` shows on Linux (a
+  started daemon holds only the `SOT_` variables its test set, and `SOT_JULIA_BIN` set to `julia_binary` when one is
+  found, so a juliaup launcher on the PATH never runs under a daemon's made HOME; a suite's own `SOT_JULIA_BIN`, set
+  later, wins); `sotd_exe`, the built binary's path, is private there.
+- A suite writes a comm registry only through `support::write_registry`, which takes the registry lock as the daemon and the comm scripts do (`daemon_boot.rs` scans this folder for any other write).
+- On Linux the `sotd` a suite launches is the daemon's lifetime guard and the daemon is its child. A suite whose daemon may
+  start a REPL or Pluto ends it with `support::end_daemon`, as `Env` (`kill_daemon_bounded` and its `Drop`),
+  `active_frontend.rs` and the lifetime harness's `Run` do: TERM to the guard, so the daemon ends its children's groups
+  and the guard drains the rest, and a SIGKILL only past 20 s. A SIGKILL of the guard leaves what the daemon started to
+  end on its own (ADR 0050, residual 7), and a REPL's or Pluto's Xvfb never does. A guard killed past the bound ends its
+  daemon a moment after it is reaped, so `Env::kill_daemon_bounded` waits until the daemon's socket stops answering
+  before it returns, and a restart never reaches the dying daemon.
+- Every wait is bounded: `support::poll_until` and `BOUND`; a suite runs a child to its end with `sot_log::test_wait::run_within` (`try_run_within` returns its failure as a value instead, for a cleanup, which must not panic, or a probe whose failure a skip names); a child it holds while it runs (it writes the child's input, uses its pid, signals it or runs it beside other work) it waits on with `sot_log::test_isolated::drain(..).wait_within(..)` when it piped the child's streams (`stdio_bridge.rs`, `shell_dial.rs`, `daemon_lifetime/kill_probe.rs`), and otherwise with `sot_log::test_isolated::wait_within` (`comm_file.rs`); a read, accept, receive or join on another party has a bound (`within`, `recv_timeout`, `tokio::time::timeout`); `session_env.rs`'s `OwnedRow` instead polls its daemon's exit with `try_wait` within `BOUND`, since it also runs while a test unwinds, where a second panic would abort.
+- A test that judges a drained child by its status or output puts the status and every stream it did not take itself in
+  that assertion's message, so a hosted failure names its cause.
+- A test that reads a stream it accepted makes it blocking (macOS keeps a non-blocking listener's `O_NONBLOCK` on an
+  accepted socket; Linux does not) and bounds those reads by a deadline it owns, such as waiting for the reading
+  thread's result, never by a read timeout on the accepted socket: Darwin refuses `SO_RCVTIMEO` there (EINVAL;
+  rust/log/tests/macos_kernel_facts/peertoken.rs).
+- A suite that re-runs a test binary is listed in `sot_log::test_isolated`'s pin with its own proof that the selected body ran (`comm_file.rs`, `window_lease/`). `comm_file.rs` drains and waits on its child with `sot_log::test_isolated::drain(..).wait_within(..)`.
+- A suite never reaches the live box: `Env` points its daemon at its own folders (`comm_isolation_dirs`). A daemon a
+  suite starts by label, and every `sotd` client that finds it through `local_endpoint()`, come from
+  `support::sotd_daemon_at` and `sotd_client_of` at a label of the test's own (`own_label`), and the suite dials the
+  endpoint `label_endpoint` returns, other than `stdio_bridge.rs`'s two daemons at the default label, the no-argument
+  bridge's subject (below); each refuses, before anything starts, a label that derives this box's own daemon's
+  endpoint (on Windows the per-user pipe `\\.\pipe\sot-<user>-<label>`, which no folder moves). `stdio_bridge.rs`'s
+  no-argument form reads no label, so it runs only on Unix, under the private `XDG_RUNTIME_DIR` its `runtime_root`
+  makes, which panics on an endpoint outside that folder before anything binds, dials or starts.
+- A binary over 800 lines is `<name>/main.rs` plus modules, loading `#[path = "../support/mod.rs"] mod support;`.
+- window_lease's `lease_holder_child` stays at its binary's root: `Window::open` runs it by exact name.
+- scripts/tests/rc-gate.sh names binaries in `SPLIT` (capsule_workspaces, comm_wake, lane_bridge, fe_client) and some
+  tests by module path in `SLOW_FIRST`; a renamed test changes there in the same commit.
+- Two suites compile src files by `#[path]`: `support/mod.rs` (`row_scope_aim.rs`) and `comm_file.rs` (the inbox
+  source). A move of either src file changes that line in the same commit.
+
+- SSH stand-ins and k3b/k5 observe parent PATH and SHELL preservation through fixture setup, child execution and teardown; equality failures identify the phase without printing environment values.
+- Admission-expiry coverage waits for the expired spare's exit as its parent sees it (`waitid` with WNOWAIT; `/proc`'s `Z` comes first for a child with a second thread), and reports the single first voyage's sanitized typed result, fresh-start count and expired-child reap before assertions; its ordinary gated fallback retains the production handshake bound and typed outcomes, before any worker recovery.
