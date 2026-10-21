@@ -30,7 +30,20 @@ Guarantees, each with the mechanism it rests on:
 - The local gate is `tests/rc-gate.sh` (every suite, in a test container that reaches no user manager) and
   `tests/user-manager-tests.sh` (the five tests that need a user manager, each by name with
   `SOT_TEST_REQUIRE_USER_MANAGER=1`, in a test container that keeps it). Each writes a `summary.txt` naming the head and
-  tree it ran and ending `ALLDONE` or `ALLDONE FAILED`. The maintainer's word is given on a commit both passed.
+  tree it ran and ending `ALLDONE` or `ALLDONE FAILED`. The maintainer's word is given on a commit both passed. The
+  local gate holds to five minutes on descent (`under-bash` aside, which leaves with the shell twins under messaging's
+  decision D1): the sotd unit binary runs in the cuts `.github/test-shards.txt` gives the hosted shards, and the tests
+  that sleep on the clock (the lifetime harness, `window_start`, `window_lease`, the `lane_bridge` outage cases,
+  `fe_client`'s health window) and the page test that needs a prepared Julia depot run only in release-gate.yml, or here
+  with `RCG_FULL` set.
+- The hosted runs are two. rust.yml, at each landing, is the build and the unit tests sharded on all three systems by
+  `.github/test-shards.txt`, each job bound by `timeout-minutes`, with a check that every test of a named target runs in
+  exactly one shard (`tests/shards.py check`), in five to seven minutes. release-gate.yml, dispatched by hand at the
+  release gate (pass 11 and before each final release), never on a tag, holds the rest: the `gate-*` shards (the tests
+  that sleep, the WGL page test with its depot), the native window proofs (minimized, closed, pane timing), the daemon
+  lifetime harness, the hermetic comm and agents suites, the storage-exhaustion run, the gate's own parity tests, the
+  launcher's suites on Windows, the Windows ignored-containment and ConPTY runs, and the shell suites under bash 3.2
+  (Linux and macOS; they leave with the shell twins under D1). No cut reads either.
 - A release's artifacts are CI's build of its tag. release.yml sets `SOT_BUILD_ORIGIN=ci` exactly when the ref is a tag,
   so only a tag run's binaries carry the bare version (`is_release_build`); a branch dispatch's and a local pack's carry
   a `+`. The smokes check that each updater-bearing binary says the run's version, that the Linux `sotd` and `sot-capsule`
@@ -46,8 +59,9 @@ Guarantees, each with the mechanism it rests on:
 - A local pack (`pack-build.sh`, `pack-build.ps1`) is never a release artifact: it unsets `SOT_BUILD_ORIGIN`, so its
   version carries `+`, and it packs only a clean HEAD that a remote branch holds.
 
-Owns: `release.sh`; `rust/updater/examples/vercmp.rs`; `.github/` (release.yml; rust.yml and CI.yml, the hosted gate,
-dispatched at the end of a pass and at the release gate; gitleaks.yml; dependabot); the local gate (`tests/rc-gate.sh`,
+Owns: `release.sh`; `rust/updater/examples/vercmp.rs`; `.github/` (release.yml; rust.yml, the per-landing run, and
+release-gate.yml, the release gate's hosted run, with `test-shards.txt` their one table of test shards, and CI.yml;
+gitleaks.yml; dependabot); the local gate (`tests/rc-gate.sh`,
 `tests/user-manager-tests.sh`); `tests/release-before.sh`; `pack-build.sh`, `pack-build.ps1`; `cliff.toml`; the release
 skill (`.claude/skills/release/SKILL.md`). On GitHub: the `v*` tags and the releases with their assets.
 
@@ -70,7 +84,8 @@ windows-latest and macos-14 and smokes and installs on all three.
 
 Tests: `tests/test-release-cut.sh` (the cut in throwaway repos with a scratch origin, and the workflows' release
 writes), `tests/test-release-before.sh`, `tests/test-rc-gate-*.sh`, the order in `rust/updater/src/semver_tests.rs`, and
-a dispatch of release.yml for the pipeline. rust.yml's checks job runs the shell suites.
+a dispatch of release.yml for the pipeline. rust.yml's checks job runs the gate scripts' own tests and the installer suites;
+release-gate.yml's slow checks job runs the comm and agents suites.
 
 ## Installers (contract; pass 1b)
 A box runs one tagged release, laid under `$PREFIX` and recorded in `$PREFIX/install.json`. Install puts a release

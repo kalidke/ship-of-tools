@@ -193,9 +193,17 @@ jobs:
   scripts-windows:
     name: PowerShell scripts (windows-latest)
     runs-on: windows-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # The install layout suite runs the real sotd.exe (its offline declaration cases).
+      - name: Build the daemon
+        working-directory: rust
+        run: cargo build -p sot-backend --bin sotd --locked
       # The PowerShell scripts are executed by nothing in CI, and no dev box in
       # the Linux fleet has pwsh — so before this step, a ps1 syntax error
       # shipped to main was first discovered by the next FE LAUNCH (launchers

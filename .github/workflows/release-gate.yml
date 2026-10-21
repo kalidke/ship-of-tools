@@ -13,8 +13,8 @@ name: Release gate
 
 on:
   workflow_dispatch: {}
-  # TEMPORARY (pass/ci-fast): a workflow absent from the default branch cannot be dispatched, so this branch's push runs
-  # it once. Dropped before the merge.
+  # TEMPORARY (pass/ci-fast): a workflow absent from the default branch cannot be dispatched, so a push to this branch
+  # runs it. Dropped before the merge.
   push:
     branches: [pass/ci-fast]
 
@@ -339,6 +339,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+      # The storage run below builds offline: its crates come from this fetch.
+      - name: Fetch the crates the offline run reads
+        run: cargo fetch --locked
       - name: Test L3 storage exhaustion
         shell: bash
         timeout-minutes: 15
