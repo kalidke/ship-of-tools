@@ -51,10 +51,11 @@ scripts/CLAUDE.md.
   window-close-windows and window-close-macos run the opt-in main-thread native window_close suite on hosted Windows and macOS; a missing body, native window or required observation is not a passing result. Ordinary native close must exit 0 before 2.5 seconds without the backstop; deliberate stalled teardown must end under the three-second backstop with the decided code.
   window-minimized-windows and window-minimized-macos run the native ten-minute minimized-window event-progress check on hosted Windows and macOS; a runner without a usable native window is not a passing result. Its visible phase starts with the window's thread held for 600 ms. window-minimized-macos-mutation runs the same target with the feature `test-mac-redraw-mutation`, whose transport wakes the window by a `Window` call from its own thread, as before MAC-REDRAW; the job passes only if it prints `mac-redraw-mutation visible failures=` naming `workload_rate`, which is MAC-REDRAW's red shown in the same run. The minimized, mutation and close jobs each allow 25 minutes, their worst case with every case or child run.
   pane-timing-windows and pane-timing-macos build sotd and sot-capsule, then run the opt-in native pane_timing suite on hosted Windows and macOS on its stand-in route: fifteen cold Ready attaches over an `ssh:<hub>/<host>` dial whose ssh is a `sotd stdio-bridge` stand-in: the twelve made in a running window each within `CONNECT_BOUND` from the request to the presented frame, and each child's first, its window's first pane, recorded apart and held only to the driver's 30 s wait, three absent-supervisor attaches recorded apart, and one frame failed before present that completes nothing. The real two-login relayed route runs locally on a Linux host with sshd. A runner without a usable native window is not a passing result.
-- `workflows/CI.yml` ("CI"): push to `main` (paths `core/**`, `julia/**`, `docs/**`, `src/**`, `test/**`, `Project.toml`,
-  `Manifest.toml` and the file itself) and dispatch. Jobs: `test` (the root package on Julia 1.12 and pre-release),
-  `julia-packages` (core, kernel, repl, the two preview plugins and SotLog), `docs` (builds the manual with
-  `docs/make.jl`; a push to `main` deploys it).
+- `workflows/CI.yml` ("CI"): push to `main` or `release/0.6.6` (paths `core/**`, `julia/**`, `docs/**`, `src/**`,
+  `test/**`, `Project.toml`, `Manifest.toml` and the file itself) and dispatch; a push to `release/0.6.6` runs only `docs`.
+  Jobs: `test` (the root package on Julia 1.12 and pre-release), `julia-packages` (core, kernel, repl, the two preview
+  plugins and SotLog), `docs` (builds the manual with `docs/make.jl`; on this branch a push to `release/0.6.6` deploys it
+  to `/stable/`, and the deploying builds share one concurrency group).
 - `workflows/release.yml` ("Release"): a `v*` tag or dispatch (`publish` runs only when the ref is a tag). Jobs: `build`
   (linux, windows and macos targets; the Linux `sotd` and `sot-capsule` are built musl static, with Ubuntu's
   `musl-tools` installed first as the C compiler for sot-log's native launcher), `julia-check`, the three smokes
