@@ -246,6 +246,9 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
             return Err(Stop::new(1, format!("the frontend binary needs glibc >= {}.{} (this box: {shown}); --be-only installs the backend without it.", GLIBC_FLOOR_FE.0, GLIBC_FLOOR_FE.1)));
         }
     }
+    if resolved.frontend {
+        pack.check_binary("sot").map_err(|why| Stop::new(1, why))?;
+    }
 
     step("gate");
     let prefix_s = prefix.to_string_lossy().into_owned();

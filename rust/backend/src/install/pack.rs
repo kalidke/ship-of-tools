@@ -70,8 +70,8 @@ pub(super) fn binary_says(line: &str, name: &str, version: &str, commit: &str) -
     sha.len() >= 7 && commit.starts_with(sha)
 }
 
-/// Read and check the pack in `dir` for `target` (`linux-x86_64`, ...). `want` is the tag the run was told to install,
-/// when it was told one.
+/// Read and check the pack in `dir` for `target` (`linux-x86_64`, ...): its identity and its `sotd`. `want` is the tag
+/// the run was told to install, when it was told one.
 pub(super) fn read(dir: &Path, target: &str, want: Option<&str>) -> Result<Pack, String> {
     let sums_path = dir.join("SHA256SUMS");
     let text = std::fs::read_to_string(&sums_path).map_err(|e| format!("{}: {e}", sums_path.display()))?;
@@ -102,20 +102,23 @@ pub(super) fn read(dir: &Path, target: &str, want: Option<&str>) -> Result<Pack,
     let bin = dir.join(format!("sot-{version}-{target}"));
     let libc = std::fs::read_to_string(dir.join("LIBC")).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     let pack = Pack { dir: dir.to_path_buf(), version, commit, bin, libc };
-    for name in ["sotd", "sot"] {
-        let exe = pack.exe(name);
+    // The frontend is asked by the role that runs it: a backend-only host may lack the libc it was built for.
+    pack.check_binary("sotd")?;
+    Ok(pack)
+}
+
+impl Pack {
+    /// Whether the pack's binary `name` runs here and says the pack's version at its commit; why not, when not.
+    pub fn check_binary(&self, name: &str) -> Result<(), String> {
+        let exe = self.exe(name);
         let ran = cmd::output(std::process::Command::new(&exe).arg("--version"));
         let line = ran.first_line();
-        if !ran.ok() || !binary_says(&line, name, &pack.version, &pack.commit) {
-            return Err(format!(
-                "{} says '{line}', which does not match {} at {} (its SHA256SUMS and COMMIT): repack it",
-                exe.display(),
-                pack.version,
-                pack.short()
-            ));
+        if ran.ok() && binary_says(&line, name, &self.version, &self.commit) {
+            return Ok(());
         }
+        let said = if ran.ok() { format!("says '{line}'") } else { format!("does not run here ({})", ran.last_said()) };
+        Err(format!("{} {said}, which does not match {} at {} (its SHA256SUMS and COMMIT)", exe.display(), self.version, self.short()))
     }
-    Ok(pack)
 }
 
 #[cfg(test)]

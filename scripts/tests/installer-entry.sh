@@ -173,6 +173,11 @@ else
         check "a host hosts.toml runs no sotd on is refused over the shared install (exit 2, one verdict)" "2 1" "$ENTRY_RC $(verdicts)"
         check "it says why" "1" "$(printf '%s\n' "$ENTRY_OUT" | grep -c 'FAIL: gate: hosts.toml runs no sotd on this host, and .* already holds an install' || true)"
         check "nothing under the home changed" "$before" "$(tree_of "$d/home")"
+        # A backend-only run never starts the window: a frontend that cannot run on this host's libc does not stop it.
+        printf '#!/bin/sh\necho "sot: GLIBC_2.35 not found" >&2\nexit 1\n' > "$d/pack/sot-$rv-$TGT/sot"
+        sotd_install "$d" "$JQ_TOOLS" --be-only --no-service
+        check "a --be-only run whose frontend cannot start here goes on to its gates" "2 1" \
+            "$ENTRY_RC $(printf '%s\n' "$ENTRY_OUT" | grep -c 'FAIL: gate: hosts.toml runs no sotd on this host' || true)"
         d="$WORK/e-refuse-jq"; mkdir -p "$d"; real_pack "$d"; shared_install "$d"; before="$(tree_of "$d/home")"
         sotd_install "$d" "$ENTRY_TOOLS" --be-only --no-service
         check "an install without jq stops naming the command that installs it" "1 1" \
