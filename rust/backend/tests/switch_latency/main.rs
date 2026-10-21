@@ -361,6 +361,7 @@ if [ -n "$SOT_LANE_FAKE_JULIA_COUNTER_DIR" ]; then
     gen=$#
 fi
 delay="${SOT_LANE_FAKE_JULIA_HELLO_DELAY_S:-0}"
+parent=$PPID
 die_after="${SOT_LANE_FAKE_JULIA_DIE_AFTER_N:-}"
 [ -n "${SOT_LANE_FAKE_JULIA_HEALTHY_FROM_GEN:-}" ] && [ "$gen" -ge "$SOT_LANE_FAKE_JULIA_HEALTHY_FROM_GEN" ] && die_after=""
 holding="${SOT_LANE_FAKE_JULIA_DIE_HOLDING_N:-1}"
@@ -375,7 +376,12 @@ while IFS= read -r line; do
         continue
     fi
     if [ "$first" = 1 ] && [ "$delay" != "0" ]; then
-        sleep "$delay"
+        # one second at a time while the daemon lives: a daemon killed mid-delay must not leave this sleeping
+        waited=0
+        while [ "$waited" -lt "$delay" ] && kill -0 "$parent" 2> /dev/null; do
+            sleep 1
+            waited=$((waited + 1))
+        done
     fi
     first=0
     if [ "$op" = "kernel.hello" ]; then
