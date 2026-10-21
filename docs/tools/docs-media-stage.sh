@@ -110,10 +110,16 @@ PY
     awk -F: -v OFS=: -v u="$(id -u)" '$3 == u { $1 = "demo"; $5 = "demo"; $6 = "/home/demo" } { print }' /etc/passwd >"$WORK/passwd"
     awk -F: -v OFS=: -v g="$(id -g)" '$3 == g { $1 = "demo" } { print }' /etc/group | sed "s/\b$me\b/demo/g" >"$WORK/group"
 
-    # A free display number: no socket and no lock file.
-    local n
+    # A free display number: no socket and no lock file. A lock of this user's whose server is gone (a run killed
+    # before Xvfb removed it) is removed with its socket, as Xvfb itself would; any other lock keeps its number taken.
+    local n lock
     for n in $(seq 140 199); do
-        [ -e "/tmp/.X11-unix/X$n" ] || [ -e "/tmp/.X$n-lock" ] || { DISPLAY_NUM=":$n"; break; }
+        lock="/tmp/.X$n-lock"
+        if [ -e "$lock" ]; then
+            [ -O "$lock" ] && ! [ -d "/proc/$(tr -d ' ' <"$lock" 2>/dev/null)" ] || continue
+            rm -f "$lock" "/tmp/.X11-unix/X$n" 2>/dev/null || continue
+        fi
+        [ -e "/tmp/.X11-unix/X$n" ] || { DISPLAY_NUM=":$n"; break; }
     done
     [ -n "${DISPLAY_NUM:-}" ] || die "no free X display in :140-:199"
     spawn "$WORK/xvfb.log" Xvfb "$DISPLAY_NUM" -screen 0 "${W}x${H}x24" -nolisten tcp
@@ -134,6 +140,7 @@ PY
         XDG_CONFIG_HOME="$WORK/config" XDG_STATE_HOME="$WORK/state"
         XDG_RUNTIME_DIR="$WORK/runtime" XDG_CACHE_HOME="$WORK/cache"
         SOT_SOCKET="$WORK/runtime/sotd.sock"
+        SOTD_BIN="$BIN/sotd"   # the comm client dials through a sotd binary (sot_dial), and the demo HOME has no install
         DISPLAY="$DISPLAY_NUM" LD_LIBRARY_PATH="$WORK/lib" VK_ICD_FILENAMES="$icd")
 
     # Precompile the demo env and draw the route figure once (data/track.png
@@ -347,11 +354,9 @@ start_daemon() {
 # row. Not --ephemeral, which skips the workspace resume; --no-lease, so a
 # take's end (stop_fe kills the window) never ends the scratch sessions
 # between takes. What the frontend persists lands in the scratch XDG_CONFIG_HOME.
-# FE_H (the hero take only) makes the window shorter than the screen; the
-# recording still grabs the whole screen and the cut crops it.
 start_fe() {   # start_fe flags...
     printf 'window_w = %s\nwindow_h = %s\nwindow_x = 0\nwindow_y = 0\nlast_host = "local"\nlast_workspace_id = "%s"\n' \
-        "$W" "${FE_H:-$H}" "${ROW_ID[DemoProject]}" >"$WORK/config/sot/state-demo.toml"
+        "$W" "$H" "${ROW_ID[DemoProject]}" >"$WORK/config/sot/state-demo.toml"
     # shellcheck disable=SC2068 — flags are a curated word list
     spawn "$WORK/sot.log" "${DEMO_ENV[@]}" "$BIN/sot" --socket "$WORK/runtime/sotd.sock" \
         --font-scale "$FONT_SCALE" --no-lease $@

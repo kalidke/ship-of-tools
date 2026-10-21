@@ -18,15 +18,15 @@ hero:
 
 ```@raw html
 <div class="sot-section sot-hero-media">
-  <DemoLoop name="hero" caption="Asked for a bar chart of the route legs, a Claude Code session edits scripts/route.jl, runs it in the shared Julia REPL and shows the chart in the preview (navigation column cropped, sped up)." />
-  <p class="sot-why">A desktop window, drawn on the GPU, with a keyboard-driven layout: a navigation tree, a file preview, an agent pane and a Julia REPL drawer.</p>
+  <DemoLoop name="hero" caption="Asked for a bar chart of the route legs, a Claude Code session edits scripts/route.jl, runs it in the shared Julia REPL and shows the chart in the preview. The whole window: the file tree, the preview, the Julia drawer, the agent column and, along the bottom, the session strip, where a script sets the other demo sessions' colors (sped up)." />
+  <p class="sot-why">A desktop window, drawn on the GPU, with a keyboard-driven layout: a navigation tree, a file preview, an agent pane, a Julia REPL drawer and, along the bottom, the session strip. The <code>status:</code>, <code>annotation:</code> and <code>key:</code> lines around the tree are plain readouts; <a href="./guide/interface#The-lines-around-the-tree">The interface</a> says what each shows.</p>
   <p class="sot-why">CairoMakie figures appear inline; interactive WGLMakie figures and Pluto notebooks open in your browser. Because the window draws all of this itself, it needs a graphical desktop, not a terminal. Linux; Windows and macOS run as frontends to a Linux backend (macOS is experimental). See <a href="./start/install#platforms">Platforms</a>.</p>
 </div>
 
 <div class="sot-section">
   <h2>Several agents, one list</h2>
   <p class="sot-why">Every agent session is a row in Sessions mode, on this machine or on any connected host. The row color is the agent's <a href="./concepts/work-state">work state</a>, so you can see which session needs you without opening each one. <code>Shift+Right</code> / <code>Shift+Left</code> switch sessions; each session keeps its own Julia REPL, and switching never restarts it.</p>
-  <DemoLoop name="sessions" caption="Demo session rows changing color as a script sets their work states: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle. Each row's ready tag means its supervisor has a live agent process running." />
+  <DemoLoop name="sessions" caption="Demo session rows changing color as a script sets their work states: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle. Each row's [ready] tag means its session process is up. Under the rows, the session strip shows the same colors." />
 </div>
 
 <div class="sot-section">

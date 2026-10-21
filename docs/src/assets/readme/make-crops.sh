@@ -10,4 +10,3 @@ crop() {  # <source still> <geometry> <output>
     convert "$media/$1" -crop "$2" +repage "$here/$3"
 }
 crop state-colors.png 800x226+4+104 sessions-crop.png
-crop repl-figure.png  690x512+6+490 repl-crop.png

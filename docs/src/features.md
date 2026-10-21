@@ -34,7 +34,7 @@ session needs you without opening each one; the colors are listed in
 integration yet: only Claude Code sessions run Julia in the shared REPL.
 
 ```@raw html
-<DemoLoop name="sessions" caption="Demo session rows changing color as a script sets their work states: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle. Each row's ready tag means its supervisor has a live agent process running." />
+<DemoLoop name="sessions" caption="Demo session rows changing color as a script sets their work states: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle. Each row's [ready] tag means its session process is up. Under the rows, the session strip shows the same colors." />
 ```
 
 ### Hand the agent a file path

@@ -7,7 +7,7 @@ swaps between four contents. Every pane is keyboard-driven and every chord is
 rebindable; see [Keybindings](../ref/keybindings.md). On macOS, `Ctrl` in the chords below is ⌘ (`Primary`).
 
 ```@raw html
-<DemoShot path="layout-labelled.png" caption="The default layout with the Julia drawer open." />
+<DemoShot path="layout-labelled.png" caption="The window with the Julia drawer open, and the session strip along the bottom." />
 ```
 
 `Ctrl+J`, `Ctrl+T`, `Ctrl+M` and `F1` swap the REPL, Terminal, Monitor and
@@ -114,7 +114,8 @@ modes.
 - **`status:`** above the tree usually reads `connected · <host>:<workspace> · rev N`:
   the connection, the active workspace, and the last revision of backend state
   the window has received. An action such as a pin replaces it with a short
-  message (`pinned · <path>`).
+  message (`pinned · <path>`), and so does the agent pane when it attaches to a
+  session's running program (`attached to leg started …`).
 - **`annotation:`** below the tree is the [concept annotation](concept-layer.md)
   status of the cursored entry: `present`, `(none)` when no annotation file
   exists for it, `loading`, or `(no target for this row)` for rows such as

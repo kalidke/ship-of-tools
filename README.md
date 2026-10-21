@@ -18,10 +18,10 @@ Ship of Tools is an agentic development environment for Julia: you and a Claude 
     <img src="docs/src/assets/media/hero.gif" alt="Ship of Tools: a Claude Code session edits a Julia script, runs it in the shared REPL and shows the new figure" width="100%">
   </a>
 </p>
-<p align="center"><sub>A Claude Code session edits the script, runs it in the shared Julia REPL, and shows the new chart (navigation column cropped). <a href="https://kalidke.github.io/ship-of-tools/stable/">Documentation</a></sub></p>
+<p align="center"><sub>A Claude Code session edits the script, runs it in the shared Julia REPL, and shows the new chart, in the whole window: file tree, preview, Julia drawer, agent column and session strip. <a href="https://kalidke.github.io/ship-of-tools/stable/">Documentation</a></sub></p>
 
 <p align="center">
-  <img src="docs/src/assets/layout-labelled.png" alt="The default layout, labeled: navigation, preview and drawer on the left, the agent column full height on the right" width="100%">
+  <img src="docs/src/assets/layout-labelled.png" alt="The window, labeled: navigation, preview and drawer on the left, the agent column full height on the right, the session strip along the bottom" width="100%">
 </p>
 <p align="center"><sub>The default layout with the Julia drawer open.</sub></p>
 

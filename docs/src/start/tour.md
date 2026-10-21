@@ -14,7 +14,7 @@ the navigation and preview columns; the agent column always runs the full
 height of the window.
 
 ```@raw html
-<DemoShot path="layout-labelled.png" caption="The default layout with the Julia drawer open: navigation, preview and drawer on the left, the agent column full height on the right." />
+<DemoShot path="layout-labelled.png" caption="The window with the Julia drawer open: navigation, preview and drawer on the left, the agent column full height on the right, the session strip along the bottom." />
 ```
 
 The left column is the **navigation** tree, a collapsible outline whose root
