@@ -44,8 +44,9 @@ Supervisor:
 Ends:
 - A row is reported ended only after the destroy proof: no authority and no leg answers for its state folder
   (`run::end_run`). Then its comm entries are pruned, its toml removed durably, the row unregistered and
-  `workspace.changed` sent. A non-default row's state folder is renamed to `.closed-<id>` and removed on a thread; the
-  default row ends its run and stays registered.
+  `workspace.changed` sent. `workspace.destroy` renames a non-default row's state folder to `.closed-<id>` and removes
+  it on a thread; a row the end API ends keeps its folder for a later start's sweep; the default row ends its run and
+  stays registered.
 - Lifecycle ends rows only through the end API (`end.rs`): `end_every` ends the rows it is given and the drawer
   concurrently, at most `LANE_CONCURRENCY` at a time, tries a refused end again once a second until the deadline it is
   given, and reports each row ended, not ended, or to forget; `forget` drops the rows a past end could not remove. With

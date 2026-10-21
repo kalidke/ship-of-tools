@@ -2,6 +2,7 @@
 
 mod registry;
 pub(crate) mod anchor;
+pub(crate) mod end;
 pub(crate) mod gate;
 pub(super) mod ops;
 pub(crate) mod reauth;
@@ -26,6 +27,9 @@ use crate::paths::slug;
 use crate::sidecars::repl::{Repl, ReplFrameMsg};
 use crate::files::watcher::{PreviewChanged, Watcher};
 use crate::server::reply::HandlerOutput;
+
+pub(crate) use run::resume::resume_all;
+pub(crate) use spawn::state_root::STATE_ROOT_HINT;
 
 use gate::RunGate;
 use workspace::PhaseCell;
