@@ -27,7 +27,8 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   (the arms that use the loop's state or writer, and the placement) and `serve` (every other op to its owner), and the
   unknown-op reply.
 - sotd's entry (argv, umask 077, boot refusals, the log tee to `<state>/sotd.log`, which follows `XDG_STATE_HOME` and
-  has no size bound or rotation), the client roster (`clients.rs`) and the revision ring (`session.rs`), all in the
+  rolls after a daemon write leaves it over 64 MiB: its last 64 MiB go to `sotd.log.1`, replacing an older one, and
+  the log is truncated in place (`daemon_log`)), the client roster (`clients.rs`) and the revision ring (`session.rs`), all in the
   crate root.
 
 ## Promises
