@@ -2,7 +2,7 @@
 # four-numbers.jl: the four numbers every reorganization pass reports, per subsystem, read from git.
 # Usage: julia --startup-file=no scripts/four-numbers.jl [--names] [--unmapped] [<git rev>]
 # Measures a commit (git ls-tree and cat-file), not the working tree. Standard library only.
-const VERSION = "four-numbers 1"
+const VERSION = "four-numbers 2"
 
 # Path prefix -> subsystem; the longest prefix wins. Tests of the two integration folders are assigned by file below.
 const SUBSYSTEMS = ["topology", "wire", "server", "lifecycle", "rows", "agents", "platform", "capsule", "vt100",
@@ -81,7 +81,8 @@ end
 function is_test_file(path)
     parts = split(path, '/')
     any(p -> p in ("tests", "test", "fixtures"), parts[1:end-1]) && return true
-    occursin(r"(^test[_-]|[_-]tests?\.[a-z0-9]+$|^runtests\.jl$)", parts[end])
+    # `tests.rs` is the sibling file of a `mod.rs` module's `#[cfg(test)] #[path = "tests.rs"] mod tests;`.
+    occursin(r"(^test[_-]|^tests\.rs$|[_-]tests?\.[a-z0-9]+$|^runtests\.jl$)", parts[end])
 end
 
 # A same-length copy of Rust source with comments, strings and char literals blanked (newlines kept).
