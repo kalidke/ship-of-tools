@@ -220,7 +220,7 @@ fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, implicit: b
     if dir == "same" && same_commit && matches!(state, State::None | State::Current) {
         println!("this computer already runs {installed} at {}: a repair run", ctx.pack.short());
         // The pin first, then the pointer armed over the install: no arm lands between.
-        set_pin(ctx, ctx.named)?;
+        write_pin(ctx, ctx.named)?;
         let _ = std::fs::remove_file(ctx.pointer());
         return Ok(None);
     }
@@ -247,7 +247,7 @@ fn pipe_listed(pipe: &str) -> bool {
     std::fs::read_dir(r"\\.\pipe\").is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name)))
 }
 
-fn set_pin(ctx: &Ctx, pinned: bool) -> Result<(), Stop> {
+fn write_pin(ctx: &Ctx, pinned: bool) -> Result<(), Stop> {
     record::set_pin(&ctx.record_path(), &ctx.prefix, pinned).map_err(|e| Stop::new(1, format!("writing the pin to {}: {e}", ctx.record_path().display())))?;
     verdict::set_tail(if pinned { verdict::pin_tail(&ctx.pack.version) } else { String::new() });
     Ok(())
@@ -302,7 +302,7 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
     }
     // The pin goes in before the stage, so no automatic arm lands between the stage and the pin.
     let was_pinned = record::boolean(&record::read(&ctx.record_path()), "pinned") == Some(true);
-    set_pin(ctx, ctx.named)?;
+    write_pin(ctx, ctx.named)?;
     println!("staging and preparing {} (this can take many minutes)", ctx.pack.tag());
     let ran = cmd::output(Command::new(new_sotd).args(["update", "stage"]).arg(&ctx.pack.dir).arg("--prefix").arg(&ctx.prefix));
     for l in ran.out.lines() {
@@ -316,7 +316,7 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
         if format!("{}{}", ran.out, ran.err).contains("not armed") {
             detail = format!("{detail} (remove {}\\updates\\bad-{}-windows-x86_64 if the version was marked bad, then run this again)", ctx.prefix.display(), ctx.pack.tag());
         }
-        set_pin(ctx, was_pinned)?;
+        write_pin(ctx, was_pinned)?;
         verdict::set_tail(String::new());
         return Err(Stop::new(1, detail));
     }

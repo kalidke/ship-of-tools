@@ -238,11 +238,11 @@ fn folder_trust_is_said_as_the_command_reports_it() {
     let said = |body: &str| {
         let sotd = dir.path().join(format!("sotd-{}", body.len()));
         sot_log::test_exec::write_executable(&sotd, format!("#!/bin/sh\n{body}\n"));
-        declare_trust(&sotd, dir.path())
+        trust_report(&sotd, dir.path())
     };
     assert_eq!(said("echo Declared"), ["folder trust declared"]);
     assert_eq!(said("echo Kept"), ["folder trust kept"]);
     assert_eq!(said("echo Maybe"), ["WARN: folder trust not declared - unexpected command outcome"]);
     assert_eq!(said("echo 'unknown subcommand trust' >&2; exit 64"), ["WARN: folder trust not declared (exit 64)", "unknown subcommand trust"]);
-    assert_eq!(declare_trust(&dir.path().join("missing"), dir.path())[0], "WARN: folder trust not declared (exit none)");
+    assert_eq!(trust_report(&dir.path().join("missing"), dir.path())[0], "WARN: folder trust not declared (exit none)");
 }

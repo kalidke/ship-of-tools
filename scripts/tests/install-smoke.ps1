@@ -7,7 +7,7 @@
 # under test. Scenarios, as install-smoke.sh's:
 #   fresh         install.ps1 -Archive <pack>: the PASS line, then a repair run
 #   update-entry  -Before installed first, then install.ps1 -Archive <pack> (PASS), then a repair run
-#   update-apply  -Before installed, the run's release staged and armed by its own sotd, the installed sot-apply.ps1 run
+#   update-apply  -Before installed, the run's release staged and armed by -Before's own sotd, the installed sot-apply.ps1 run
 #                 as the launcher's start runs it: the staged release's own apply must run and leave the launcher code
 #                 and install.json at the new release; then the entry's repair run (it also brings comm to the commit)
 #   update-implicit  -Before installed (pinned), then install.ps1 with NO arguments against the real repository, as a lab
@@ -269,7 +269,8 @@ try {
         }
         'update-apply' {
             Install-Before $Before
-            Invoke-Logged 'stage' $pack.Sotd @('update', 'stage', $pack.Dir, '--prefix', $prefix)
+            # Staged and armed by the release before's own sotd, as its updater does; then its installed apply.
+            Invoke-Logged 'stage' (Join-Path $prefix 'bin\sotd.exe') @('update', 'stage', $pack.Dir, '--prefix', $prefix)
             if ($script:Rc -ne 0) { Stop-Smoke "stage: sotd update stage ended with exit $($script:Rc); its last line: $($script:Last)" }
             if (-not (Test-Path -LiteralPath (Join-Path $prefix 'updates\pending-windows-x86_64.json'))) { Stop-Smoke 'stage: no pointer is armed' }
             Invoke-InstalledApply $pack

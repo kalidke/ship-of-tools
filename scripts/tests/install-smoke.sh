@@ -9,9 +9,9 @@
 #   fresh-local    a fresh install (--local; Linux adds --no-service), the entry's PASS line, then a repair run
 #   fresh-be-only  the same with --be-only --no-service (Linux; a hosted container has no user manager for the unit)
 #   update-entry   BEFORE-TAG installed by its own installer, then this entry with the run's artifacts, then a repair run
-#   update-apply   BEFORE-TAG installed, the run's release staged and armed, the installed sot-apply run as the unit's
-#                  ExecStartPre runs it: the staged release's own apply must run, and leave the wrapper, comm and
-#                  install.json at the new release, then the entry's repair run
+#   update-apply   BEFORE-TAG installed, the run's release staged and armed by BEFORE-TAG's own sotd (its updater), the
+#                  installed sot-apply run as the unit's ExecStartPre runs it: the staged release's own apply must run, and
+#                  leave the wrapper, comm and install.json at the new release, then the entry's repair run
 #   update-implicit  BEFORE-TAG installed (pinned), then the entry with NO arguments against the real repository, as a
 #                  lab box runs it: the channel resolves to BEFORE-TAG itself (this run's release is still a draft), so the
 #                  run is a repair run at BEFORE-TAG that clears the pin; then the run's release, staged by the new sotd,
@@ -210,9 +210,10 @@ case "$SCENARIO" in
         [ -f "$PREFIX/updates/pending-$TARGET.json" ] || die "stage: no pointer is armed" ;;
     update-apply)
         install_before
-        # The run's release staged and armed by its own sotd, as the daemon does; then the INSTALLED apply, as the unit's
-        # ExecStartPre (or the wrapper) runs it. It hands off to the staged copy, which is the new release's own.
-        run stage "$NEW_SOTD" update stage "$PACK" --prefix "$PREFIX"
+        # The run's release staged and armed by the release before's own sotd, as its daemon's updater does; then the
+        # INSTALLED apply, as the unit's ExecStartPre (or the wrapper) runs it. It hands off to the staged copy, which is
+        # the new release's own.
+        run stage "$PREFIX/bin/sotd" update stage "$PACK" --prefix "$PREFIX"
         [ "$RC" = 0 ] || die "stage: sotd update stage ended with exit $RC; its last line: $LAST"
         [ -f "$PREFIX/updates/pending-$TARGET.json" ] || die "stage: no pointer is armed"
         run apply "$PREFIX/bin/sot-apply"

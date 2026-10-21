@@ -762,7 +762,7 @@ fn configure(plan: &Plan) -> Result<(), Stop> {
         let kernel_host = sot_log::host::state_dir::kernel_host_name().unwrap_or_default();
         retire_local_service(&plan.units_ctx(), plan.topo_declared, &kernel_host);
     }
-    for line in declare_trust(&plan.sotd(), &plan.home) {
+    for line in trust_report(&plan.sotd(), &plan.home) {
         say(&line);
     }
     Ok(())
@@ -770,7 +770,7 @@ fn configure(plan: &Plan) -> Result<(), Stop> {
 
 /// Folder trust, declared by the agents' own offline command (`sotd trust declare <home>`): the lines that say what came
 /// of it. A failure is said, with what the command said, and never described as a declaration.
-pub(super) fn declare_trust(sotd: &Path, home: &Path) -> Vec<String> {
+pub(super) fn trust_report(sotd: &Path, home: &Path) -> Vec<String> {
     let ran = cmd::output(Command::new(sotd).args(["trust", "declare"]).arg(home));
     match (ran.code, ran.out.trim()) {
         (Some(0), "Declared") => vec!["folder trust declared".into()],
