@@ -255,11 +255,18 @@ fn the_windows_walk_counts_the_agents_above_git_bash() {
     std::fs::write(&level2, format!("@\"{GIT_BASH}\" -c \"bash '{}'\"\r\n", fwd(&script))).unwrap();
     let level1 = dir.join("level1.bat");
     std::fs::write(&level1, format!("@\"{}\" /d /c \"{}\"\r\n", dir.join("codex.exe").display(), level2.display())).unwrap();
+    // The verdict is the staged script's last `rc=` line; a failure says what the script printed, so a missing line
+    // shows its cause (the exit code, both streams) in the one hosted run.
     let run = |program: &Path, batch: &Path| {
         let ran = run_within(Command::new(program).args(["/d", "/c"]).arg(batch), BOUND);
-        ran.stdout.lines().filter(|l| l.starts_with("rc=")).last().unwrap_or_default().to_string()
+        let rc = ran.stdout.lines().filter(|l| l.starts_with("rc=")).last().unwrap_or_default().to_string();
+        let account = format!("exit {:?}\n--- stdout ---\n{}\n--- stderr ---\n{}", ran.status.code(), ran.stdout, ran.stderr);
+        (rc, account)
     };
-    assert_eq!(run(&cmd, &level2), "rc=0", "no agent above");
-    assert_eq!(run(&dir.join("claude.exe"), &level2), "rc=0", "the session's own agent");
-    assert_eq!(run(&dir.join("claude.exe"), &level1), "rc=1", "a second agent inside the session is refused");
+    let (rc, account) = run(&cmd, &level2);
+    assert_eq!(rc, "rc=0", "no agent above: {account}");
+    let (rc, account) = run(&dir.join("claude.exe"), &level2);
+    assert_eq!(rc, "rc=0", "the session's own agent: {account}");
+    let (rc, account) = run(&dir.join("claude.exe"), &level1);
+    assert_eq!(rc, "rc=1", "a second agent inside the session is refused: {account}");
 }
