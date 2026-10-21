@@ -72,17 +72,12 @@ fn capsule_supervisor_env_carries_slug_workspace_and_comm_home() {
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
     std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
-    let env = capsule_supervisor_env(
-        "ws-myrepo-1a2b",
-        "myrepo",
-        Path::new("/home/me/myrepo"),
-        "myrepo-myhost",
-    );
+    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"));
     let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
     assert_eq!(get("SOT_WORKSPACE"), Some("myrepo"));
     assert_eq!(get("SOT_WORKSPACE_ID"), Some("ws-myrepo-1a2b"));
     assert_eq!(get("SOT_WORKSPACE_ROOT"), Some("/home/me/myrepo"));
-    assert_eq!(get("SOT_COMM_NAME"), Some("myrepo-myhost"));
+    assert_eq!(get("SOT_COMM_NAME"), None, "no command chooses a handle: a row's comes from its self file");
     assert_eq!(get("SOT_SESSION"), Some("1"));
     assert_eq!(get("SOT_HOST"), None, "no SOT_SELF_HOST pin -- inheritance carries an override, if any");
     if cfg!(unix) {
@@ -118,15 +113,13 @@ fn capsule_supervisor_env_disables_the_feedback_survey() {
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
     std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
-    for name in ["myrepo-myhost", ""] {
-        let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), name);
-        let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY").collect();
-        assert_eq!(hits.len(), 1, "exactly one survey switch for agent_name {name:?}");
-        assert_eq!(hits[0].1, "1");
-        assert!(!env
-            .iter()
-            .any(|(k, _)| k == "DISABLE_TELEMETRY" || k == "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"));
-    }
+    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"));
+    let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY").collect();
+    assert_eq!(hits.len(), 1, "exactly one survey switch");
+    assert_eq!(hits[0].1, "1");
+    assert!(!env
+        .iter()
+        .any(|(k, _)| k == "DISABLE_TELEMETRY" || k == "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"));
 }
 
 #[test]
@@ -137,40 +130,13 @@ fn capsule_supervisor_env_keeps_the_conversation_in_its_row() {
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
     std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
-    for agent_name in ["myrepo-myhost", ""] {
-        let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), agent_name);
-        let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_AGENT_VIEW").collect();
-        assert_eq!(hits.len(), 1, "exactly one agent-view switch for agent_name {agent_name:?}");
-        assert_eq!(hits[0].1, "1");
-        assert!(!env
-            .iter()
-            .any(|(k, _)| k == "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" || k == "CLAUDE_CODE_DISABLE_BG_EXIT_HANDOFF"));
-    }
-}
-
-#[test]
-fn capsule_supervisor_env_omits_comm_name_when_unnamed() {
-    // Codex round finding 2: NO synthesized default here — an
-    // un-pinned autostart (no explicit agent_name in the request)
-    // gets no SOT_COMM_NAME at all. comm-join.sh's own #148
-    // auto-disambiguating derivation decides the handle instead
-    // (reading SOT_COMM_SELF_FILE to know where to write it), exactly
-    // as a hand-started shell would — a synthesized <slug>-<host>
-    // pin would become an explicit overwrite of any existing row of
-    // that name, which PROTOCOL.md's "never reuse a handle" forbids.
-    // SOT_WORKSPACE/SOT_COMM_HOME/SOT_COMM_SELF_FILE stay
-    // unconditional regardless.
-    let _guard = self_file_env_guarded();
-    std::env::set_var("SOT_SELF_HOST", "testhost");
-    std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
-    let env = capsule_supervisor_env("ws-anon-9f9f", "anon", Path::new("/home/me/anon"), "");
-    let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
-    assert_eq!(get("SOT_WORKSPACE"), Some("anon"));
-    assert_eq!(get("SOT_COMM_NAME"), None);
-    assert_eq!(
-        get("SOT_COMM_SELF_FILE"),
-        Some("/fake-home/.sot-comm/self/testhost__ws-anon-9f9f.txt")
-    );
+    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"));
+    let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_AGENT_VIEW").collect();
+    assert_eq!(hits.len(), 1, "exactly one agent-view switch");
+    assert_eq!(hits[0].1, "1");
+    assert!(!env
+        .iter()
+        .any(|(k, _)| k == "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" || k == "CLAUDE_CODE_DISABLE_BG_EXIT_HANDOFF"));
 }
 
 #[test]

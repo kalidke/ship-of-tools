@@ -61,7 +61,7 @@ fn a_sender_with_no_routable_identity_sends_nothing() {
     assert!(o.stderr.starts_with("FAILED -> @you-box1: your sot-comm identity did not resolve"), "{}", o.stderr);
     t.self_file(&t.nopane(), "me-box1");
     let o = deliver_all(parse_send(&args(&["@you-box1", "x"])).unwrap(), |_| unreachable!());
-    assert!(o.stderr.contains("your identity @me-box1 has no registry row; reclaim it with"), "{}", o.stderr);
+    assert!(o.stderr.contains("your identity @me-box1 has no registry row; join again:"), "{}", o.stderr);
     t.put("me-box1", json!({"host": "box1", "root": "/another/project"}));
     let o = deliver_all(parse_send(&args(&["@you-box1", "x"])).unwrap(), |_| unreachable!());
     assert!(o.stderr.contains("registered to a DIFFERENT project's root"), "{}", o.stderr);

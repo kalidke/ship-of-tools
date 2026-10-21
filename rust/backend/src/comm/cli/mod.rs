@@ -119,18 +119,17 @@ pub(crate) fn routable(name: &str, project_root: &str, registry: &std::path::Pat
     let bin = bin_dir();
     let q = |s: &str| crate::comm::identity::context::shell_quote(s);
     if name.is_empty() {
-        return Err("your sot-comm identity did not resolve \u{2014} refusing to send with no verifiable from-handle (a reply would silently misroute). Join first: comm-join.sh --name <canonical-handle> (never a bare comm-join.sh if you previously held one \u{2014} see the sot-session-start skill's recovery recipe).".into());
+        return Err("your sot-comm identity did not resolve \u{2014} refusing to send with no verifiable from-handle (a reply would silently misroute). Join first: comm-join.sh (if you held a handle before, see the sot-session-start skill's recovery recipe).".into());
     }
     match entry(registry, name) {
-        Entry::Absent => Err(format!("your identity @{name} has no registry row; reclaim it with {}/comm-join.sh --name {}", q(&bin), q(name))),
+        Entry::Absent => Err(format!("your identity @{name} has no registry row; join again: {}/comm-join.sh", q(&bin))),
         Entry::Unreadable => Err(format!("the registry could not be read, so identity @{name} is unverified; nothing was sent")),
         Entry::Present(e) => {
             let root = e.get("root").and_then(serde_json::Value::as_str).unwrap_or("");
             if !root.is_empty() && !crate::comm::identity::paths::same_root(root, project_root) {
                 return Err(format!(
-                    "your sot-comm identity '@{name}' is registered to a DIFFERENT project's root ('{root}') \u{2014} refusing to send with a misrouting from-handle. Reclaim it: {}/comm-join.sh --name {}",
-                    q(&bin),
-                    q(name)
+                    "your sot-comm identity '@{name}' is registered to a DIFFERENT project's root ('{root}') \u{2014} refusing to send with a misrouting from-handle. Join again: {}/comm-join.sh",
+                    q(&bin)
                 ));
             }
             Ok(())

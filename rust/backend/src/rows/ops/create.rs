@@ -415,14 +415,10 @@ async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateR
             "could not resolve this machine's state root ({} unset)",
             crate::rows::spawn::state_root::STATE_ROOT_HINT
         )),
-        // `&req.agent_name` verbatim (Codex round finding 2: no
-        // synthesized default — a synthesized `<slug>-<host>` handed
-        // to SOT_COMM_NAME would become an explicit pin that
-        // overwrites any existing registry row of that name,
-        // violating PROTOCOL.md's "never reuse a handle"; an empty
-        // `agent_name` is a real, supported case now — comm-join.sh's
-        // own #148 auto-disambiguating derivation picks the handle,
-        // via the SOT_COMM_SELF_FILE this spawn pins).
+        // `&req.agent_name` verbatim, no synthesized default: a named
+        // row's start writes the name into its pinned self file
+        // (`self_file::pin_row`), and an empty `agent_name` leaves the
+        // handle to the session's first join, which derives it.
         Some(state_root) => {
             let workspace_id = ws_handle.workspace_id.clone();
             let capsule_argv = capsule_argv.clone();

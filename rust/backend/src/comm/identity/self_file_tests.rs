@@ -59,3 +59,25 @@ fn a_row_slot_never_comes_to_name_another_projects_session() {
     write(&shared, "a-box1", "a", "/a").unwrap();
     assert_eq!(conflict(&shared, "b", "/b"), None, "the shared slot is last-writer-wins");
 }
+
+/// A row's start writes the handle it was created with into its pinned self file once, and never over a record.
+#[test]
+fn a_row_start_pins_its_handle_once_and_keeps_a_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("comm");
+    let p = home.join("self").join("box1__ws-1.txt");
+    let cwd = std::env::current_dir().unwrap();
+    let root = paths::canonical(&paths::raw_root(&cwd)).unwrap();
+    pin_row(&p, "", &cwd).unwrap();
+    assert!(!p.exists(), "an unnamed row's first join derives its handle");
+    assert!(pin_row(&p, "../x", &cwd).is_err());
+    assert!(!p.exists());
+    pin_row(&p, "row-box1", &cwd).unwrap();
+    let mut notes = Vec::new();
+    assert_eq!(name_for(&p, &root, &mut notes), "row-box1", "{notes:?}");
+    #[cfg(unix)]
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&p).unwrap().permissions()) & 0o077, 0);
+    write(&p, "moved-box1", "r", &root).unwrap();
+    pin_row(&p, "row-box1", &cwd).unwrap();
+    assert_eq!(name_for(&p, &root, &mut notes), "moved-box1", "a record the session wrote is kept");
+}

@@ -100,6 +100,15 @@ pub fn own_sotd_bin() -> Option<&'static str> {
         .as_deref()
 }
 
+/// A row's comm home and its pinned self file, `<comm home>/self/<declared host>__<row id>.txt`, in the forward-slash
+/// form a Git Bash shell reads; `None` when no comm home can be named.
+pub fn row_self_file(workspace_id: &str) -> Option<(String, String)> {
+    let comm_home = capsule_comm_home_str()?;
+    let host = crate::rows::store::declared_host();
+    let self_file = format!("{}/self/{}__{}.txt", comm_home.trim_end_matches('/'), host, workspace_id);
+    Some((comm_home, self_file))
+}
+
 /// The `SOT_*` awareness env a capsule supervisor spawn stamps on its
 /// producer — capsule-comm-identity fix: a capsule has no tmux pane, so
 /// `comm-context.sh`'s pane-keyed self-file slot never applies to it, and
@@ -115,12 +124,10 @@ pub fn own_sotd_bin() -> Option<&'static str> {
 /// active workspace by SLUG, not the internal `ws-<slug>-<hex>` id;
 /// `workspace_id` is used ALSO below, for the state dir and self-file
 /// paths, where stability and uniqueness matter more than the display
-/// shape). `SOT_COMM_NAME` is set ONLY for an explicitly requested
-/// `agent_name` (Codex round finding 2: a synthesized default here would
-/// become an explicit pin that OVERWRITES any existing registry row of
-/// that name — exactly what PROTOCOL.md's "never reuse a handle" forbids,
-/// and a hand-started session in the same repo on the same host derives
-/// precisely `<slug>-<host>` on its own). `SOT_COMM_SELF_FILE`
+/// shape). No `SOT_COMM_NAME`: no command chooses a handle (decision 0031). A row created with a handle keeps it
+/// through its pinned self file, which the start writes before the session first joins
+/// (`comm::identity::self_file::pin_row`, from `rows::spawn::detach`); an unnamed row's first join derives one.
+/// `SOT_COMM_SELF_FILE`
 /// (`<comm_home>/self/<host>__<workspace_id>.txt`, comm-lib.sh's EXISTING
 /// pin-the-self-file-path seam — already used by its own test suite, and
 /// already honoured unchanged by both `comm-context.sh`, the reader, and
@@ -133,14 +140,9 @@ pub fn own_sotd_bin() -> Option<&'static str> {
 /// reads the self-file back.
 /// `SOTD_BIN` is this daemon's own start path ([`own_sotd_bin`]), so the session's comm shell bridges with the daemon's
 /// own binary.
-pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
+pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path) -> Vec<(String, String)> {
     let mut env = crate::agents::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
-    if !agent_name.is_empty() {
-        env.push(("SOT_COMM_NAME".to_string(), agent_name.to_string()));
-    }
-    if let Some(comm_home) = capsule_comm_home_str() {
-        let host = crate::rows::store::declared_host();
-        let self_file = format!("{}/self/{}__{}.txt", comm_home.trim_end_matches('/'), host, workspace_id);
+    if let Some((comm_home, self_file)) = row_self_file(workspace_id) {
         env.push(("SOT_COMM_HOME".to_string(), comm_home));
         env.push(("SOT_COMM_SELF_FILE".to_string(), self_file));
     }

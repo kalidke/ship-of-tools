@@ -25,17 +25,21 @@ fn a_plain_join_takes_the_derived_handle_and_writes_entry_self_file_and_inbox() 
     assert!(join(&[]).stdout.starts_with(&format!("Joined sot-comm as @{h} ")));
 }
 
+/// Handles are derived, never chosen (decision 0031): `--name`, a bare name and `SOT_COMM_NAME` choose nothing.
 #[test]
-fn a_pin_and_a_name_are_taken_verbatim_and_a_bad_name_is_refused_before_any_write() {
+fn no_argument_or_variable_chooses_a_handle() {
     let t = TestHome::new();
-    std::env::set_var("SOT_COMM_NAME", "pinned-box1");
-    assert!(join(&[]).stdout.starts_with("Joined sot-comm as @pinned-box1 "));
-    assert!(join(&args(&["--name", "named-box1"])).stdout.starts_with("Joined sot-comm as @named-box1 "), "--name beats the pin");
-    let o = join(&args(&["--name", "../x"]));
-    assert_eq!(o.code, 2);
-    assert!(o.stderr.contains("REFUSING --name"), "{}", o.stderr);
+    for a in [&["--name", "named-box1"][..], &["--name=named-box1"], &["named-box1"]] {
+        let o = join(&args(a));
+        assert_eq!(o.code, 2, "{a:?}");
+        assert!(o.stderr.contains("handles are derived, never chosen"), "{}", o.stderr);
+    }
     assert_eq!(join(&args(&["--bogus"])).code, 2);
-    assert!(t.agents().get("../x").is_none());
+    assert!(t.agents().as_object().unwrap().is_empty(), "a refusal writes nothing");
+    std::env::set_var("SOT_COMM_NAME", "pinned-box1");
+    let o = join(&[]);
+    assert!(o.stdout.starts_with(&format!("Joined sot-comm as @{} ", tier1(&t))), "{}", o.stdout);
+    assert!(t.agents().get("pinned-box1").is_none());
 }
 
 /// A row's slot never comes to name another project's session.
@@ -58,9 +62,11 @@ fn a_slot_claimed_for_another_project_is_refused_unless_repinned() {
 fn outside_any_row_a_handle_bound_to_a_row_elsewhere_is_refused() {
     let t = TestHome::new();
     t.put("taken-box1", serde_json::json!({"host": "box2", "workspace_id": "ws-z"}));
-    let o = join(&args(&["--name", "taken-box1"]));
-    assert_eq!(o.code, 1);
-    assert!(o.stderr.contains("REFUSING to join: @taken-box1 is bound to row ws-z on another computer (box2)"), "{}", o.stderr);
+    crate::comm::identity::self_file::write(&t.nopane(), "taken-box1", &t.repo(), &t.root()).unwrap();
+    let o = join(&[]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stderr.contains("@taken-box1 belongs to row ws-z; this process carries no row id"), "{}", o.stderr);
+    assert!(o.stdout.starts_with(&format!("Joined sot-comm as @{} ", tier1(&t))), "{}", o.stdout);
     assert_eq!(t.agents()["taken-box1"]["workspace_id"].as_str(), Some("ws-z"), "untouched");
     // A derived join steps past it to the session's own.
     t.put(&tier1(&t), serde_json::json!({"host": "box2", "workspace_id": "ws-z"}));

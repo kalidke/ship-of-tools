@@ -21,9 +21,13 @@ Address:
   its `root=` line is this project's root; else it is derived when it joins: the project folder's name and the box's
   name, `<folder>-<host>`, qualified by the parent folder's name and then by a hash of the root only when another project
   holds the shorter one (`identity::derive`). The derivation and the registry write are one step under the registry
-  lock, so two joins never claim one handle. `--name` and `SOT_COMM_NAME` name a handle verbatim. This differs from
-  0031 ("explicit `--name` handles are gone"): the agents' launchers and probe rows pass them (`ccx`, `comm-probe.sh`,
-  `comm-worktree-clean.sh`), so they stay until the agents pass removes those callers.
+  lock, so two joins never claim one handle. No argument or variable chooses a handle (0031): `sotd comm join` refuses
+  `--name` and a bare name, and `SOT_COMM_NAME` is read by nothing. A row created with a handle (rows' `agent_name`)
+  keeps it through its self file, which the row's start writes when it names nothing yet
+  (`identity::self_file::pin_row`, called from `rows::spawn::detach`). A row with no stored handle derives one at its
+  first join, so a second unnamed row in a folder another row holds takes that handle and the newer join moves it. The
+  one remaining way to name a handle is `workspace.create`'s `agent_name` (the spawn's derived claim, the worktree
+  script's `<repo>-wt-<short>`, the probe rows' `probe-<box>`), which is agents'.
 - A handle belongs to one row at a time and survives restarts, compactions and clears: the row's self file and rows'
   declaration keep it, and a newer join moves it (rows' `set_agent_handle`). A process acts as a row's handle only from
   inside that row: the identity (`identity::context`) discards a handle whose registry entry binds another row, and a

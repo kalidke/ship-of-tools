@@ -50,18 +50,17 @@ pub(crate) fn session_start(args: &[String]) -> Out {
         }
     };
     o.errs(&notes);
-    let pin = std::env::var("SOT_COMM_NAME").unwrap_or_default();
     // A daemon-pinned self file that does not exist yet: this row never joined, so it has no identity to keep.
     let cold = std::env::var_os("SOT_COMM_SELF_FILE").is_some_and(|f| !f.is_empty() && !std::path::Path::new(&f).is_file());
     if !ctx.name_held_by.is_empty() && !ctx.row_id.is_empty() {
         let held = crate::comm::identity::self_file::read(&ctx.self_file).map(|f| f.name).unwrap_or_default();
         o.out(format!("comm-session-start: @{held} moved to row {}; this row ({}) joins it again", ctx.name_held_by, ctx.row_id));
     }
-    // The slot already names another project's identity (the context discarded it) and no pin says which: refuse.
-    if !cold && pin.is_empty() && ctx.name.is_empty() && ctx.name_held_by.is_empty() && ctx.self_file.is_file() {
+    // The slot already names another project's identity (the context discarded it): refuse.
+    if !cold && ctx.name.is_empty() && ctx.name_held_by.is_empty() && ctx.self_file.is_file() {
         o.out("BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a");
         o.err(format!(
-            "REFUSED: {} already names a different, validated identity (see the diagnostic line above) and no SOT_COMM_NAME pin was given \u{2014} refusing to join over it. The session's launcher pins a distinct SOT_COMM_NAME and, outside a row, a private SOT_COMM_SELF_FILE of its own; nothing started inside a session joins. See this skill's Identity line and references/reclaim-handle.md.",
+            "REFUSED: {} already names a different, validated identity (see the diagnostic line above) \u{2014} refusing to join over it. A row's self file is its own; a session outside any row that shares a slot is started with a private SOT_COMM_SELF_FILE of its own; nothing started inside a session joins. See this skill's Identity line and references/reclaim-handle.md.",
             ctx.self_file.display()
         ));
         return o;

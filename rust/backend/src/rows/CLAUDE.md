@@ -23,8 +23,9 @@ Identity:
   `handle.rs`, so the binding is read only through `bound_handle` (the list, the work-state, the liveness stamp, a
   join from outside any row) and the declared value only through `declared_handle` (the row's toml, the list's
   `agent_handle` field, and the wake, since a session that never joined has no mail to wake for); it changes only
-  through `set_agent_handle`, `clear_shared_handles` and `clear_declared`. The stored name (`agent_name`) is the name a
-  row is started with (its `SOT_COMM_NAME` pin) and the prune's key; it binds a handle only through `bound_handle`.
+  through `set_agent_handle`, `clear_shared_handles` and `clear_declared`. The stored name (`agent_name`) is the handle a
+  row was created with, written into its pinned self file at its start when that file names nothing yet
+  (`comm::identity::self_file::pin_row`; no `SOT_COMM_NAME` pin, decision 0031), and the prune's key; it binds a handle only through `bound_handle`.
 - The default row is an inert anchor when its agent is `none`, on every runtime (`anchor::is_inert_default_anchor`, the
   one predicate); its declared handle survives the boot re-seed (`seed_default_row`).
 

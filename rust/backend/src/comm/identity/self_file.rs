@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::paths::same_root;
+use super::paths::{self, same_root};
 
 /// The self-file leaf for `host` and row `workspace_id`: `<host>__<id>.txt`, the id's bytes outside `A-Za-z0-9._-`
 /// made `_`, `nopane` for no row. `Err` when the leaf is not one file name this file system can hold as written (the
@@ -136,19 +136,44 @@ pub(crate) fn conflict(path: &Path, repo: &str, root: &str) -> Option<String> {
     Some(format!("the identity slot '{}' already names @{}, claimed for {claim}", path.display(), f.name))
 }
 
-/// Replaces `path` with the three lines for `name`, through a temp file beside it and a rename, so a reader never sees
-/// half a file. The caller holds the registry lock, which a join's other writes take too. `Err` says why, and `path`
-/// is as it was.
+/// Replaces `path` with the three lines for `name`, through a temp file beside it (its user's alone, whatever the
+/// process's umask) and a rename, so a reader never sees half a file. A join holds the registry lock, which its other
+/// writes take too. `Err` says why, and `path` is as it was.
 pub(crate) fn write(path: &Path, name: &str, repo: &str, root: &str) -> Result<(), String> {
     use std::io::Write;
     let tmp = PathBuf::from(format!("{}.tmp.{}", path.display(), std::process::id()));
-    let written = std::fs::File::create(&tmp)
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    let written = open
+        .open(&tmp)
         .and_then(|mut f| f.write_all(format!("{name}\nrepo={repo}\nroot={root}\n").as_bytes()).and_then(|()| f.sync_all()))
         .and_then(|()| std::fs::rename(&tmp, path));
     written.map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("could not write the self file '{}': {e}", path.display())
     })
+}
+
+/// A row's start: when the row was created with a handle and its pinned self file `path` names nothing yet, the file
+/// names `handle` for the project at `cwd`, so the session's first join takes the handle the row was created with and
+/// no command chooses one (decision 0031). A file already there is the row's own record, kept as it is.
+pub(crate) fn pin_row(path: &Path, handle: &str, cwd: &Path) -> Result<(), String> {
+    if handle.is_empty() || path.exists() {
+        return Ok(());
+    }
+    if !crate::comm::identity::derive::valid_handle(handle) {
+        return Err(format!("the row's handle '{handle}' is not a handle (1 to 64 of A-Z a-z 0-9 . _ -)"));
+    }
+    let raw = paths::raw_root(cwd);
+    let root = paths::canonical(&raw)?;
+    if let Some(home) = path.parent().and_then(Path::parent) {
+        if !crate::comm::home::is_whole(home) {
+            crate::comm::home::ensure(home);
+        }
+    }
+    write(path, handle, &paths::basename(&raw), &root)
 }
 
 #[cfg(test)]

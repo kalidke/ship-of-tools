@@ -24,8 +24,11 @@ struct Staged {
     bin: PathBuf,
 }
 
+/// The sender's handle: derived from its project folder, `m4`, and the box (decision 0031: no session chooses one).
+const SENDER: &str = "m4-testhost";
+
 impl Staged {
-    /// Waits for the hub's lock record and socket, stages the scripts and joins `m4-sender`.
+    /// Waits for the hub's lock record and socket, stages the scripts and joins as the folder `m4`'s handle, `SENDER`.
     fn ready(env: Env) -> Self {
         let deadline = Instant::now() + Duration::from_secs(20);
         while !(env.comm_root.join("inbox-lock-manager").exists() && env.socket_path.exists()) {
@@ -44,7 +47,7 @@ impl Staged {
         )
         .ok();
         let this = Self { env, bin };
-        this.script("comm-join.sh", &["--name", "m4-sender"]).ok();
+        this.script("comm-join.sh", &[]).ok();
         this
     }
 
@@ -118,7 +121,7 @@ fn a_send_to_a_handle_no_live_session_holds_is_failed_and_appends_nothing() {
     let inbox = std::fs::read_to_string(b.env.comm_root.join("inbox/m4-live.jsonl")).expect("inbox");
     assert_eq!(inbox.lines().count(), 1, "{inbox}");
     let line: serde_json::Value = serde_json::from_str(inbox.lines().next().unwrap()).unwrap();
-    assert_eq!(line["from"], "m4-sender");
+    assert_eq!(line["from"], SENDER);
     assert_eq!(line["msg"], "hello");
 }
 

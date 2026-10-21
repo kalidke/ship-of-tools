@@ -289,7 +289,7 @@ start_rows() {
     # (activity_order in the frontend). Joining a second apart gives every
     # row a distinct stamp, so the idle order is the same in every frame.
     for label in "${SESSION_ROWS[@]}"; do
-        row_type "$label" "clear; comm-join.sh --name ${label,,} >/dev/null && comm-status.sh stop"
+        row_type "$label" "clear; comm-join.sh >/dev/null && comm-status.sh stop"
         ROW_STATE[$label]=idle
         sleep 1.1
     done

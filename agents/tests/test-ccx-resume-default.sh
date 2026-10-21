@@ -62,7 +62,6 @@ run_ccx() {  # extra ccx args...
         HOME="$WORK/empty-home" \
         PATH="$STUB_DIR:$PATH" \
         SOT_COMM_HOME="$EMPTY_COMM_HOME" \
-        SOT_COMM_NAME="ccx-resume-test" \
         CODEX_HOME="$CODEX_HOME_DIR" \
         "$CCX" "$@" >/dev/null 2>"$WORK/stderr.log"
     )
@@ -86,7 +85,6 @@ case_row_env_starts_fresh() {
         HOME="$WORK/empty-home" \
         PATH="$STUB_DIR:$PATH" \
         SOT_COMM_HOME="$EMPTY_COMM_HOME" \
-        SOT_COMM_NAME="ccx-resume-test" \
         CODEX_HOME="$CODEX_HOME_DIR" \
         SOT_WORKSPACE_ID="ws-row-1" \
         "$CCX" >/dev/null 2>"$WORK/stderr.log"
@@ -110,7 +108,6 @@ case_hand_run_ccx_inside_a_capsule_row_starts_fresh() {
         HOME="$WORK/empty-home" \
         PATH="$STUB_DIR:$PATH" \
         SOT_COMM_HOME="$EMPTY_COMM_HOME" \
-        SOT_COMM_NAME="ccx-resume-test" \
         SOT_COMM_SELF_FILE="$EMPTY_COMM_HOME/self/host__ws-capsule-row-1.txt" \
         CODEX_HOME="$CODEX_HOME_DIR" \
         SOT_WORKSPACE_ID="ws-capsule-row-1" \
@@ -148,6 +145,11 @@ case_capsule_flag_with_fresh_flag_stays_fresh_even_with_continue() {
 LIB_COMM_HOME="$WORK/lib-comm-home"
 mkdir -p "$LIB_COMM_HOME/bin"
 cp "$SCRIPT_DIR/../../comm/lib/"comm-lib*.sh "$LIB_COMM_HOME/bin/"
+# The join takes the session's handle and comm-context names it back: here, a join that does nothing and a context
+# that names ccx-handoff-test.
+printf '#!/bin/sh\nexit 0\n' > "$LIB_COMM_HOME/bin/comm-join.sh"
+printf '#!/bin/sh\necho NAME=ccx-handoff-test\n' > "$LIB_COMM_HOME/bin/comm-context.sh"
+chmod +x "$LIB_COMM_HOME/bin/comm-join.sh" "$LIB_COMM_HOME/bin/comm-context.sh"
 
 run_ccx_with_lib() {  # extra ccx args...
     (
@@ -156,7 +158,6 @@ run_ccx_with_lib() {  # extra ccx args...
         HOME="$WORK/empty-home" \
         PATH="$STUB_DIR:$PATH" \
         SOT_COMM_HOME="$LIB_COMM_HOME" \
-        SOT_COMM_NAME="ccx-handoff-test" \
         CODEX_HOME="$CODEX_HOME_DIR" \
         "$CCX" "$@" >/dev/null 2>"$WORK/stderr.log"
     )

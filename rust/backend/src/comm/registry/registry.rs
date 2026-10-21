@@ -236,9 +236,9 @@ const COMM_PRUNE_LOCK_BOUND: std::time::Duration = std::time::Duration::from_sec
 /// stored `agent_name` AND `host_matches` too (LU5d2: the stored name is
 /// caller-supplied, not proof of ownership — a same-named row stamped by
 /// another host must survive), or when its own `workspace_id` field equals
-/// this workspace's id AND `host_matches` (covers a manually-joined handle,
-/// e.g. `comm-join.sh --name other`, whose `agent_name` was never set to
-/// this workspace's). A by-name match whose entry carries another row's
+/// this workspace's id AND `host_matches` (covers a handle the row's
+/// session derived at its join, which is not the row's stored
+/// `agent_name`). A by-name match whose entry carries another row's
 /// `workspace_id` is skipped (ADR 0049: the handle moved to that row). ALL
 /// matching rows are dropped, including stale
 /// duplicates on the same session.

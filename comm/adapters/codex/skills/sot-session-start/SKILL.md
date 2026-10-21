@@ -9,17 +9,11 @@ description: Declare a backend Codex session's sot-comm handle and check its unr
 when the session was started without `ccx`, or was resumed in an existing
 pane.
 
-Set a Codex-specific handle first (kept distinct from a Claude backend's
-`<repo>-<host>` on the same box, via `-cx-`), if the launcher did not — this
-is a PIN (`$SOT_COMM_NAME`), which always wins over anything a self-file
-might otherwise resolve:
+The handle is derived, never chosen (decision 0031): the one this session's
+self-file names (a row keeps the handle it was created with), else
+`<repo>-<host>`:
 
 ```bash
-if [ -z "${SOT_COMM_NAME:-}" ]; then
-  repo="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
-  host="$(hostname -s 2>/dev/null || hostname)"
-  export SOT_COMM_NAME="${repo}-cx-${host}"
-fi
 ~/.sot-comm/bin/comm-session-start.sh
 ```
 
@@ -30,8 +24,7 @@ an earlier one only when asked.
 
 It declares this session's handle to the daemon. `identity=FAIL` with a
 `REFUSED:` line means the identity slot already names a different project —
-re-run with a more specific `$SOT_COMM_NAME` (you already set one above; this
-only fires if that name itself collides).
+outside a row, re-run with a private `SOT_COMM_SELF_FILE` of this session's own.
 
 **What a session is told at start.** `comm-context.sh` prints your handle. Send
 with `comm-send.sh @handle 'text'` and read its one result. When

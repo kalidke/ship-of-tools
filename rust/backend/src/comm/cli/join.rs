@@ -1,24 +1,22 @@
-//! `sotd comm join` (comm-join.sh): take this session's handle. The handle is `--name`, else `$SOT_COMM_NAME`, else the
-//! one the session's self file already names, else derived (`identity::derive`), the derivation and its registry write
-//! one step under the registry lock. Then the self file, the inbox, and for a row the declaration to its daemon
+//! `sotd comm join` (comm-join.sh): take this session's handle. The handle is the one the session's self file already
+//! names (for a row, the one the row was created with), else derived (`identity::derive`), the derivation and its
+//! registry write one step under the registry lock; no argument or variable chooses it (decision 0031). Then the self file, the inbox, and for a row the declaration to its daemon
 //! (`agent.join`).
 
 use serde_json::{json, Value};
 
 use super::{bin_dir, context, gate, wire, Out};
 use crate::comm::identity::context::{shell_quote, Context};
-use crate::comm::identity::derive::{derive, still_cleared, tier, valid_handle, Derived, Mode};
+use crate::comm::identity::derive::{derive, still_cleared, tier, Derived, Mode};
 use crate::comm::identity::self_file;
 use crate::comm::registry::registry::{binding, command_lock_wait, iso8601_utc_now, read_doc, unix_now_secs, update, Binding};
 
 pub(crate) const HELP: &str = "comm-join.sh \u{2014} register this session in the sot-comm network.
 
 Usage:
-  comm-join.sh                       just run it: joins as the canonical
-                                     default handle <repo>-<host>
-  comm-join.sh --name NAME           join as an explicit handle: 1 to 64 of
-                                     A-Z a-z 0-9 . _ -, no '..', no leading '-'
-  comm-join.sh --name=NAME           (equals form also accepted)
+  comm-join.sh                       just run it: joins as this session's
+                                     handle, the one its self file names,
+                                     else derived: <repo>-<host>
   comm-join.sh --repin               this row really is this project now:
                                      write the identity even though the slot
                                      names a different one (refused otherwise)
@@ -26,11 +24,10 @@ Usage:
   comm-join.sh --expertise=\"a, b\"    (equals form also accepted)
   comm-join.sh -h | --help           this help
 
-Derived vs explicit: the default <repo>-<host> handle is auto-disambiguated
-against the registry's recorded project root when two different projects
-share a basename+host: you get <repo>-<parentdir>-<host>, or a hash-qualified
-handle as a last resort. An explicit --name, $SOT_COMM_NAME, or an
-already-joined identity is always used verbatim, in that precedence order.
+Handles are derived, never chosen: <repo>-<host>, disambiguated against the
+registry's recorded project root when two different projects share a
+basename+host: <repo>-<parentdir>-<host>, or a hash-qualified handle as a last
+resort. A row keeps the handle it was created with through its self file.
 
 On success prints \"Joined sot-comm as @<handle>\" \u{2014} that line IS your
 identity confirmation.";
@@ -38,11 +35,13 @@ identity confirmation.";
 /// What `join` was asked.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Ask {
-    name: String,
     expertise: String,
     repin: bool,
     help: bool,
 }
+
+/// The refusal of a chosen handle.
+const NO_NAME: &str = "comm-join.sh: handles are derived, never chosen (decision 0031): a row keeps the one it was created with through its self file, and any other session joins as <repo>-<host>; run comm-join.sh with no name";
 
 fn parse(args: &[String]) -> Result<Ask, String> {
     let mut a = Ask::default();
@@ -50,16 +49,12 @@ fn parse(args: &[String]) -> Result<Ask, String> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => a.help = true,
-            "--name" => a.name = it.next().cloned().unwrap_or_default(),
             "--repin" => a.repin = true,
             "--expertise" => a.expertise = it.next().cloned().unwrap_or_default(),
-            s if s.starts_with("--name=") => a.name = s["--name=".len()..].to_string(),
+            s if s == "--name" || s.starts_with("--name=") => return Err(NO_NAME.to_string()),
             s if s.starts_with("--expertise=") => a.expertise = s["--expertise=".len()..].to_string(),
-            s if s.starts_with('-') => {
-                return Err(format!("comm-join.sh: unknown option '{s}' (a handle can't start with '-'; see --help)"));
-            }
-            s if a.name.is_empty() => a.name = s.to_string(),
-            _ => {}
+            s if s.starts_with('-') => return Err(format!("comm-join.sh: unknown option '{s}' (see --help)")),
+            _ => return Err(NO_NAME.to_string()),
         }
     }
     Ok(a)
@@ -124,13 +119,6 @@ pub(crate) fn join(args: &[String]) -> Out {
         o.out(HELP);
         return o;
     }
-    if !ask.name.is_empty() && !valid_handle(&ask.name) {
-        o.err(format!(
-            "comm-join.sh: REFUSING --name {}: a handle is 1 to 64 of A-Z a-z 0-9 . _ - with no '..' and no leading '-'",
-            shell_quote(&ask.name)
-        ));
-        return o.exit(2);
-    }
     if let Err((_, why)) = gate() {
         o.err(format!("comm-join.sh: REFUSING to bind: {why}"));
         return o.exit(1);
@@ -151,14 +139,7 @@ pub(crate) fn join(args: &[String]) -> Out {
 
 /// The join once the identity is known: the name, the registry write, the self file, the inbox, the declaration.
 fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
-    let pin = std::env::var("SOT_COMM_NAME").unwrap_or_default();
-    let (mut name, mut from_self) = if !ask.name.is_empty() {
-        (ask.name.clone(), false)
-    } else if !pin.is_empty() {
-        (pin, false)
-    } else {
-        (ctx.name.clone(), !ctx.name.is_empty())
-    };
+    let mut name = ctx.name.clone();
     let expertise = if ask.expertise.is_empty() { std::env::var("SOT_COMM_EXPERTISE").unwrap_or_default() } else { ask.expertise.clone() };
     if !ask.repin {
         if let Some(_claim) = self_file::conflict(&ctx.self_file, &ctx.repo, &ctx.project_root) {
@@ -183,15 +164,9 @@ fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
                     o.err(format!("comm-join.sh: FAILED: {why}"));
                     return o.exit(1);
                 }
-                Err((_, why)) if from_self => {
+                Err(_) => {
                     o.err(format!("comm: @{name} (named by this session's self file) is held by a row; a session outside any row joins as its own handle"));
-                    let _ = why;
                     name.clear();
-                    from_self = false;
-                }
-                Err((_, why)) => {
-                    o.err(format!("comm-join.sh: REFUSING to join: {why}"));
-                    return o.exit(1);
                 }
             }
         }
@@ -205,7 +180,6 @@ fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
             }
         }
     }
-    let _ = from_self;
     let obj = entry_for(ctx, &expertise);
     let derived = name.is_empty();
     let claim = update(&ctx.registry(), command_lock_wait(), |agents| {
@@ -259,7 +233,7 @@ fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
         }
         Err(e) => {
             o.err(format!(
-                "comm-join.sh: FATAL \u{2014} joined as @{name} in the registry, but could not write the local self-file at '{}' ({e}). This shell has no identity record; every comm-* call from it will say 'not joined'. Fix the self-file directory's permissions and re-run comm-join.sh --name {name}.",
+                "comm-join.sh: FATAL \u{2014} joined as @{name} in the registry, but could not write the local self-file at '{}' ({e}). This shell has no identity record; every comm-* call from it will say 'not joined'. Fix the self-file directory's permissions and re-run comm-join.sh.",
                 ctx.self_file.display()
             ));
             return o.exit(1);
@@ -321,10 +295,11 @@ fn stranding_warning(o: &mut Out, ctx: &Context, d: &Derived, outside: bool, cle
          *** being filled while everyone else now addresses you as '@{name}'.\n\
          ***\n\
          *** If you confirm sole ownership (one live session with this repo as cwd,\n\
-         *** and no other row on this box holding '@{tier1}'), reclaim\n\
-         *** the bare handle instead of staying on '@{name}':\n\
+         *** and no other row on this box holding '@{tier1}'), free the bare\n\
+         *** handle and join again, bare: the derivation takes it.\n\
          ***   {bin}/comm-leave.sh --name {n}\n\
-         ***   {bin}/comm-join.sh --name {t1}"
+         ***   {bin}/comm-leave.sh --name {t1}\n\
+         ***   {bin}/comm-join.sh"
     ));
 }
 

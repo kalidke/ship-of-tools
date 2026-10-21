@@ -474,8 +474,8 @@ fi
 BIN="$COMM_HOME/bin"
 
 # NO spawn brief (decided 2026-06-17). A spawned agent gets its context from its
-# repo's own CLAUDE.md and joins comm via /sot-session-start (handle pinned by
-# SOT_COMM_NAME) — we do NOT inject a "you are an agent, your task is…" startup
+# repo's own CLAUDE.md and joins comm via /sot-session-start (its handle written
+# into the row's self file at its start) — we do NOT inject a "you are an agent, your task is…" startup
 # paste. That brief was unwanted, redundant with the repo CLAUDE.md, and the FE
 # re-injected it on every workspace re-attach. The workspace `task` field is left
 # EMPTY so the FE has nothing to deliver. If --task was given it is sent AFTER
@@ -667,7 +667,7 @@ if [ "$AGENT" = none ]; then
     exit 0
 fi
 # The row's capsule already runs the agent (workspace.create started it, and the
-# wait above saw it ready), with SOT_COMM_NAME=<agent_name>. The agent joins
+# wait above saw it ready), its self file naming <agent_name>. The agent joins
 # comm and reads its repo CLAUDE.md; nothing is pasted.
 echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}, autostart; NO brief — agent uses its repo CLAUDE.md / AGENTS.md)."
 # Said BEFORE the --task attempt below, because it is also why that attempt

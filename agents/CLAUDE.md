@@ -36,7 +36,7 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
   the supervisor as `--first-leg-only`, so no later leg or watchdog restart carries it), or by a person (`ccb
   --continue`, `ccx --continue`; a bare `ccb` or `ccx` starts fresh). A fresh session reads its handoff from the `HANDOFF:` line
   that `sot_handoff_line` (comm library) gives `comm-session-start.sh` and `ccx`.
-- ccx's default handle `<repo>-cx-<host>` is built from the comm library's safe pieces (`sot_sanitize_component`, `_sot_handle_host`), so it is always a name `workspace.create` accepts; a derivation that cannot run stops the launch before the join and before codex (`agents/tests/test-ccx-launch.sh`).
+- ccx chooses no handle (decision 0031): it joins with no name and names in codex's first prompt the handle `comm-context.sh` reads back; a join that gives none still starts codex and says so (`agents/tests/test-ccx-launch.sh`).
 - Scripts run under bash 3.2 and git-bash, as messaging's do (comm/CLAUDE.md, `scripts/tests/under-bash.sh`); `ccb`,
   `ccx` and the `sot-fe` and `sot-gh-auth` wrappers start `#!/bin/bash`, which is 3.2 on every Mac.
 - Folder trust is recorded only when the OS-resolved root lies under the OS-resolved declared prefix. The key uses the child cwd's spelling; an already accepted entry is not rewritten. Outside, undeclared and failed preparation are observable and the agent still starts. The trust file follows the child's effective `CLAUDE_CONFIG_DIR`: account additions override inheritance; with no config override it is the home-level file. Automated evidence establishes preparation; actual child-config consumption remains a human done-test proof limit. Interactive trust recognition, parent coverage and no-dialog behavior remain outside the headless proof.
@@ -60,7 +60,7 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sotd trust declare <absolute-prefix>`, `agent_argv`, `agent_exec_argv`,
 `claude_recipe`, `account_env`, `account_spawn_env`, `ensure_folder_trusted`, `capsule_supervisor_env`,
 `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`,
-`sot_dial`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot-fe preview`, `docs/tools/docs-media.sh`. Uses:
+`sot_dial`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot-fe preview`, `docs/tools/docs-media.sh`. Uses:
 `sot_hello_frame`, `comm/lib/comm-lib-client.sh`, `sot_ssh_bridge`, `_sot_is_plain_host_name`, `sot_slug`,
 `comm/lib/comm-lib-sotd.sh`, `SshRecipe`, `is_plain_host_name`, `slug`, `sotd stdio-bridge`, `sotd topology relay-endpoint`,
 `relay_endpoint_cmd`, `_sot_planned_relay_endpoint`, `version.query`,

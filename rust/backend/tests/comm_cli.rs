@@ -113,7 +113,7 @@ fn a_join_a_send_and_a_poll_through_the_wrappers() {
     let b = Scratch::new();
     let j = b.run("alpha", "comm-join.sh", &[]).ok();
     assert!(j.stdout.starts_with("Joined sot-comm as @alpha-box1  (alpha on box1)."), "{j}");
-    b.run("beta", "comm-join.sh", &["--name", "beta-box1"]).ok();
+    b.run("beta", "comm-join.sh", &[]).ok();
     b.own_lock_record();
     let ctx = b.run("alpha", "comm-context.sh", &[]).ok();
     assert!(ctx.stdout.contains("\nNAME=alpha-box1\n") && ctx.stdout.contains("\nROW_ID=\n"), "{ctx}");

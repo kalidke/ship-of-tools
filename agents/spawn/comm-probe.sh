@@ -123,9 +123,9 @@ probe_wait_join() {
 # probe_create HANDLE — create the row, print its workspace id. `agent:"none"`
 # is the bare platform shell (agents/argv.rs `agent_argv`/`none_argv`), so
 # the pane is a shell we can type into (`probe_start_line`); `agent_name` is the
-# handle the row expects: the capsule pins it as the responder's SOT_COMM_NAME,
-# and the responder declares it by joining from inside the row (see the note in
-# `serve`), never from the caller's shell.
+# handle the row expects: the row's start writes it into the row's self file
+# (`self_file::pin_row`), and the responder declares it by joining from inside
+# the row (see the note in `serve`), never from the caller's shell.
 # A same-slug create refreshes a `probe-…` row only while it is not in use; one
 # in use is refused (`label_in_use`). The slug comes from the label, so this
 # never adopts someone else's row.
@@ -321,19 +321,17 @@ probe_handle_line() {
 
 probe_serve() {
     local me line rc stamp last_stamp polled
-    # The capsule pins SOT_COMM_NAME to the row's agent_name (agents/env.rs
-    # `capsule_supervisor_env`), and every probe row has one: a responder that
-    # cannot name itself must not run.
-    me="${SOT_COMM_NAME:-}"
-    [ -n "$me" ] || probe_die "cannot resolve this row's handle: SOT_COMM_NAME is unset (run \`serve\` only in a probe row)"
+    # A probe row's self file names the handle it was created with (the row's start writes it from its agent_name),
+    # and comm-context reads it before any join: a responder that cannot name itself as a probe must not run.
+    me="$( eval "$("$SCRIPT_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null; printf '%s' "${NAME:-}" )"
+    [ -n "$me" ] || probe_die "cannot resolve this row's handle: its self file names none (run \`serve\` only in a probe row)"
     probe_handle_ok "$me" || probe_die "refusing to serve as '@$me' — probe rows only"
-    export SOT_COMM_NAME="$me"
     # The join happens HERE, inside the row, and never in `up`: comm-join.sh
     # declares to the daemon the row THIS SHELL'S IDENTITY names
     # (sot_capsule_workspace_id) and keys the identity slot by it, so a join run
     # from the CALLER's shell would re-declare the caller's own live row under a
     # probe handle. Inside the row, that identity is provably this row's own.
-    "$SCRIPT_DIR/comm-join.sh" --name "$me" >/dev/null 2>&1 \
+    "$SCRIPT_DIR/comm-join.sh" >/dev/null 2>&1 \
         || echo "comm-probe.sh: WARNING — join as @$me failed; local sends may not name this row" >&2
     echo "serving as @$me (${PROBE_READ_TIMEOUT}s read, $PROBE_STOP_LINE to stop)"
     last_stamp="$(probe_inbox_stamp "$me")"

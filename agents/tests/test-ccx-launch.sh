@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# test-ccx-launch.sh — ccx's default handle is built from the comm library's own
-# safe pieces (sot_sanitize_component, _sot_handle_host), so it is always a
-# name workspace.create accepts and the host piece matches sot_derive_handle's.
-# A derivation that cannot run stops the launch before the join and before codex.
-# Runs the REAL ccx with a stub `codex` and a recording `comm-join.sh`.
+# test-ccx-launch.sh — ccx chooses no handle (decision 0031): it joins with no name, and codex's first prompt names
+# the handle comm-context reads back, whatever SOT_COMM_NAME says. A join that gives no handle still starts codex,
+# with a prompt that names none and one stderr line saying so.
+# Runs the REAL ccx with a stub `codex`, a recording `comm-join.sh` and a `comm-context.sh` that names a handle.
 #
 # Usage: agents/tests/test-ccx-launch.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -33,111 +32,61 @@ check() {
     fi
 }
 
-STUB_DIR="$WORK/stubbin"; FAIL_DIR="$WORK/failbin"
-mkdir -p "$STUB_DIR" "$FAIL_DIR"
+STUB_DIR="$WORK/stubbin"
+mkdir -p "$STUB_DIR"
 CODEX_LOG="$WORK/codex.log"; JOIN_LOG="$WORK/join.log"
 cat > "$STUB_DIR/codex" <<'STUB'
 #!/bin/sh
-printf '%s\n' "$SOT_COMM_NAME" > "$CODEX_LOG_PATH"
+for a in "$@"; do printf '%s\n' "$a"; done > "$CODEX_LOG_PATH"
 STUB
 chmod +x "$STUB_DIR/codex"
 cat > "$STAGE/comm-join.sh" <<'STUB'
 #!/bin/sh
-printf '%s\n' "$2" > "$JOIN_LOG_PATH"
+printf 'args=%s\n' "$*" > "$JOIN_LOG_PATH"
 STUB
 chmod +x "$STAGE/comm-join.sh"
-# A sotd that fails: the pieces of the handle are messaging's, in sotd, so a derivation that cannot run is one.
-printf '#!/bin/sh\nexit 1\n' > "$FAIL_DIR/sotd"; chmod +x "$FAIL_DIR/sotd"
+# comm-context.sh's eval lines, naming CONTEXT_NAME (empty: the join gave no handle).
+cat > "$STAGE/comm-context.sh" <<'STUB'
+#!/bin/sh
+printf 'NAME=%s\n' "$CONTEXT_NAME"
+STUB
+chmod +x "$STAGE/comm-context.sh"
 
-# run_ccx DIRNAME HOST [EXTRA_PATH_DIR] : ccx in a fresh project dir, stdout/stderr to $WORK/out
+# run_ccx NAME [ENV=VALUE...] : ccx in a fresh project dir, comm-context naming NAME; stderr to $WORK/err
 run_ccx() {
-    local proj="$WORK/projects/$1" host="$2" front="${3:-}"
+    local name="$1" proj="$WORK/projects/p"
+    shift
     mkdir -p "$proj"
     rm -f "${CODEX_LOG:?}" "${JOIN_LOG:?}"
     (
         cd "$proj" || exit 1
-        CODEX_LOG_PATH="$CODEX_LOG" JOIN_LOG_PATH="$JOIN_LOG" \
-        PATH="${front:+$front:}$STUB_DIR:$PATH" \
-        CODEX_HOME="$WORK/codex-home" \
-        SOT_COMM_TEST_HOST="$host" \
-        "$CCX" --fresh >"$WORK/out" 2>&1
+        env CODEX_LOG_PATH="$CODEX_LOG" JOIN_LOG_PATH="$JOIN_LOG" CONTEXT_NAME="$name" \
+            PATH="$STUB_DIR:$PATH" CODEX_HOME="$WORK/codex-home" "$@" \
+            "$CCX" --fresh >/dev/null 2>"$WORK/err"
     )
 }
 
-LONG_A="averyveryverylonghostname-one"
-LONG_B="averyveryverylonghostname-two"
-digest() { printf '%s' "$1" | sha256sum | cut -c1-6; }
-name_ok() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; }
-codex_name() { cat "$CODEX_LOG" 2>/dev/null; }
-
-case_unsafe_repo_and_long_host_give_a_safe_name() {
-    run_ccx 'my repo; $(x) é' "$LONG_A" || { cat "$WORK/out"; return 1; }
-    local n; n="$(codex_name)"
-    name_ok "$n" || { echo "  unsafe or missing handle: '$n'"; return 1; }
-    [ "$n" = "my-repo-x-cx-averyveryver-$(digest "$LONG_A")" ] \
-        || { echo "  unexpected handle: '$n'"; return 1; }
-    [ "$(cat "$JOIN_LOG")" = "$n" ] || { echo "  join named '$(cat "$JOIN_LOG")'"; return 1; }
+case_the_join_names_no_handle_and_the_prompt_names_the_sessions() {
+    run_ccx proj-box1 || { cat "$WORK/err"; return 1; }
+    [ "$(cat "$JOIN_LOG")" = "args=" ] || { echo "  join: $(cat "$JOIN_LOG")"; return 1; }
+    grep -q '^You are the comm-aware agent @proj-box1 on the sot-comm network\.' "$CODEX_LOG" \
+        || { echo "  prompt: $(head -c 200 "$CODEX_LOG")"; return 1; }
 }
 
-case_hosts_differing_past_the_clamp_stay_distinct() {
-    run_ccx same "$LONG_A" || return 1; local a; a="$(codex_name)"
-    run_ccx same "$LONG_B" || return 1; local b; b="$(codex_name)"
-    [ -n "$a" ] && [ "$a" != "$b" ] || { echo "  '$a' vs '$b'"; return 1; }
+case_sot_comm_name_chooses_nothing() {
+    run_ccx proj-box1 SOT_COMM_NAME=chosen-name || return 1
+    [ "$(cat "$JOIN_LOG")" = "args=" ] && grep -q '@proj-box1 ' "$CODEX_LOG" && ! grep -q chosen-name "$CODEX_LOG"
 }
 
-case_a_short_host_is_kept_as_is() {
-    run_ccx proj short-box || return 1
-    [ "$(codex_name)" = "proj-cx-short-box" ]
+case_no_handle_still_starts_codex_and_says_so() {
+    run_ccx "" || return 1
+    grep -q '^You are the comm-aware agent on the sot-comm network\.' "$CODEX_LOG" \
+        && grep -q 'gave this session no handle' "$WORK/err"
 }
 
-case_an_empty_component_becomes_x() {
-    run_ccx -- short-box || return 1
-    [ "$(codex_name)" = "x-cx-short-box" ]
-}
-
-case_the_host_piece_is_the_one_derive_handle_uses() {
-    run_ccx proj "$LONG_A" || return 1
-    local proj="$WORK/projects/proj" derived
-    derived="$(SOT_COMM_HOME="$SOT_COMM_HOME" bash -c '. "$1/comm-lib.sh" && ensure_home && sot_derive_handle reclaim "$2" "$3" | head -n1' _ "$STAGE" "$proj" "$LONG_A")"
-    local c; c="$(codex_name)"
-    [ -n "$derived" ] && [ "${derived#proj-}" = "${c#proj-cx-}" ] || { echo "  derive '$derived' vs ccx '$c'"; return 1; }
-}
-
-case_an_explicit_pin_wins_verbatim() {
-    local proj="$WORK/projects/pin"; mkdir -p "$proj"; rm -f "${CODEX_LOG:?}" "${JOIN_LOG:?}"
-    (
-        cd "$proj" || exit 1
-        CODEX_LOG_PATH="$CODEX_LOG" JOIN_LOG_PATH="$JOIN_LOG" PATH="$STUB_DIR:$PATH" \
-        CODEX_HOME="$WORK/codex-home" SOT_COMM_NAME="my pinned.name" "$CCX" --fresh >/dev/null 2>&1
-    )
-    [ "$(codex_name)" = "my pinned.name" ]
-}
-
-refused_before_join_and_codex() {  # extra stderr pattern in $WORK/out
-    [ ! -e "$CODEX_LOG" ] && [ ! -e "$JOIN_LOG" ] && grep -q "cannot derive the default handle" "$WORK/out"
-}
-
-case_a_failing_derivation_stops_the_launch() {
-    run_ccx proj "$LONG_A" "$FAIL_DIR" && { echo "  ccx exited 0"; return 1; }
-    refused_before_join_and_codex
-}
-
-case_a_missing_library_stops_the_launch() {
-    mv "$STAGE/comm-lib.sh" "$STAGE/comm-lib.sh.away" || return 1
-    run_ccx proj short-box; local rc=$?
-    mv "$STAGE/comm-lib.sh.away" "$STAGE/comm-lib.sh"
-    [ "$rc" -ne 0 ] || { echo "  ccx exited 0"; return 1; }
-    refused_before_join_and_codex
-}
-
-check "an unsafe repo name and a long host give a name workspace.create accepts, and the join uses it" case_unsafe_repo_and_long_host_give_a_safe_name
-check "two hosts that differ only past the clamp get different handles" case_hosts_differing_past_the_clamp_stay_distinct
-check "a short host is kept as is" case_a_short_host_is_kept_as_is
-check "a repo name with nothing usable becomes x" case_an_empty_component_becomes_x
-check "ccx and sot_derive_handle build the same host piece" case_the_host_piece_is_the_one_derive_handle_uses
-check "an explicit SOT_COMM_NAME wins verbatim" case_an_explicit_pin_wins_verbatim
-check "a derivation that cannot run stops the launch before the join and codex" case_a_failing_derivation_stops_the_launch
-check "a missing comm library stops the launch before the join and codex" case_a_missing_library_stops_the_launch
+check "ccx joins with no name and the first prompt names the handle comm-context reads" case_the_join_names_no_handle_and_the_prompt_names_the_sessions
+check "SOT_COMM_NAME chooses nothing" case_sot_comm_name_chooses_nothing
+check "a join that gives no handle still starts codex and says so" case_no_handle_still_starts_codex_and_says_so
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

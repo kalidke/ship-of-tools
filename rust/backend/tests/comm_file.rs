@@ -235,7 +235,9 @@ fn fsize_child_files_one() {
 }
 
 /// Stages the scripts and runs `comm-join.sh` for row `ws` as that row's session, on the raw host `raw` under the declared host `declared`.
-fn join_in_row(env: &Env, ws: &str, handle: &str, raw: &str, declared: &str) {
+/// The row's session joins, bare: its handle is the one the row was created with, which the row's start wrote into the
+/// self file.
+fn join_in_row(env: &Env, ws: &str, raw: &str, declared: &str) {
     let bin = env._tmp.path().join("bin");
     sot_log::test_wait::run_within(
         Command::new("bash")
@@ -250,10 +252,9 @@ fn join_in_row(env: &Env, ws: &str, handle: &str, raw: &str, declared: &str) {
     // Beneath a stand-in for the row's capsule (the process walk reads only the command line), as the session is.
     sot_log::test_wait::run_within(
         Command::new("bash")
-            .args(["-c", "exec -a sot-capsule bash -c 'shift; \"$@\"; exit $?' _ \"/in-row/state/workspaces/$0/voyages/v0\" timeout 60 bash \"$1\" --name \"$2\""])
+            .args(["-c", "exec -a sot-capsule bash -c 'shift; \"$@\"; exit $?' _ \"/in-row/state/workspaces/$0/voyages/v0\" timeout 60 bash \"$1\""])
             .arg(ws)
             .arg(bin.join("comm-join.sh"))
-            .arg(handle)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             // The wrapper runs this build's sotd, never one an install put on PATH.
@@ -299,6 +300,7 @@ async fn a_join_under_a_distinct_declared_host_binds_clears_and_is_pruned() {
     let (mut conn, mut id) = connect_and_hello(&env.socket_path).await;
     let create = serde_json::json!({
         "label": "host-row", "project_root": env.workspace_project_root.to_string_lossy(), "runtime": "capsule", "agent": "claude",
+        "agent_name": HANDLE,
     });
     let res = call(&mut conn, id, op::WORKSPACE_CREATE, create).await;
     id += 1;
@@ -312,7 +314,7 @@ async fn a_join_under_a_distinct_declared_host_binds_clears_and_is_pruned() {
         .expect("workspace_id")
         .to_string();
 
-    join_in_row(&env, &ws, HANDLE, RAW, DECLARED);
+    join_in_row(&env, &ws, RAW, DECLARED);
 
     let registry = || registry_of(&env);
     assert_eq!(
