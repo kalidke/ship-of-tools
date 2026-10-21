@@ -73,8 +73,8 @@ fn the_record_time_is_utc_in_its_shape() {
 }
 
 /// A repair run moves nothing: its other steps lay again what is there, so the Julia environments' own manifests are
-/// kept (an install's are resolved again), and a readable record of the same build gets its pin and no other change; a
-/// record cut short, or one of another build, is written whole.
+/// kept (an install's are resolved again), and a readable record of the same build and role gets its pin and no other
+/// change; a record cut short, one of another build, or a run that changes the role or the hub is written whole.
 #[test]
 fn a_repair_run_moves_nothing() {
     let before = text(&sample(false));
@@ -85,6 +85,9 @@ fn a_repair_run_moves_nothing() {
     assert_eq!(text_for("{ \"version\": \"0.6.7\", \"comm", &r, true), text(&r), "a cut record is written whole");
     let other = text(&Record { commit: "f".repeat(40), ..sample(false) });
     assert_eq!(text_for(&other, &r, true), text(&r), "another build is written whole");
+    for changed in [Record { frontend: true, ..r.clone() }, Record { hub: "other-hub".into(), ..r.clone() }] {
+        assert_eq!(text_for(&before, &changed, true), text(&changed), "a run that changes the role or the hub is no repair");
+    }
 
     let dir = tempfile::tempdir().unwrap();
     let ran = sot_log::test_wait::run_within(std::process::Command::new("git").arg("init").arg("-q").arg(dir.path()), std::time::Duration::from_secs(20));

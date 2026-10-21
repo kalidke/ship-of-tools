@@ -34,7 +34,8 @@ impl Ran {
 
 /// The steps a run starts, so a stop can end the one running, and every process it started, before the verdict is
 /// printed (scripts/CLAUDE.md, Installers: "One verdict"). On Unix each step leads a process group of its own, which a
-/// stop signals whole; on Windows Ctrl+C reaches the console's every process, and a stop waits for the step to end.
+/// stop signals whole; on Windows Ctrl+C reaches the console's every process, and a step left after the grace is ended
+/// with its process tree.
 pub(super) struct Steps {
     running: Mutex<Vec<u32>>,
     stopping: AtomicBool,
@@ -54,17 +55,22 @@ impl Steps {
 
     #[allow(clippy::disallowed_methods, reason = "sotd install is a one-shot command a person runs in the foreground, not the daemon: its children are its own install steps, each waited for here (scripts/CLAUDE.md, Installers)")]
     fn start(&self, cmd: &mut Command) -> std::io::Result<std::process::Child> {
-        // A stop is under way: no step starts after it, and its verdict ends the run.
-        while self.stopping.load(Ordering::SeqCst) {
-            std::thread::park();
-        }
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt as _;
             cmd.process_group(0);
         }
+        // The check, the spawn and the registration hold the list a stop reads, so a step either is in the list the
+        // stop signals or never starts.
+        let mut running = self.running();
+        // A stop is under way: no step starts after it, and its verdict ends the run.
+        while self.stopping.load(Ordering::SeqCst) {
+            drop(running);
+            std::thread::park();
+            running = self.running();
+        }
         let child = cmd.spawn()?;
-        self.running().push(child.id());
+        running.push(child.id());
         Ok(child)
     }
 
@@ -147,14 +153,20 @@ impl Steps {
     /// and after `grace` what is left is killed. Returns once the step has ended, or the grace and one second more have
     /// passed.
     pub(super) fn stop(&self, signal: i32, grace: Duration) {
-        self.stopping.store(true, Ordering::SeqCst);
-        let groups: Vec<u32> = self.running().clone();
+        let groups: Vec<u32> = {
+            let running = self.running();
+            self.stopping.store(true, Ordering::SeqCst);
+            running.clone()
+        };
         signal_groups(&groups, signal);
         let t0 = Instant::now();
         while !self.running().is_empty() && t0.elapsed() < grace {
             std::thread::sleep(Duration::from_millis(20));
         }
+        // What is left is killed: on Unix its group; on Windows, where Ctrl+C was the signal, its process tree.
         signal_groups(&groups, KILL);
+        #[cfg(windows)]
+        kill_trees(&self.running().clone());
         let t1 = Instant::now();
         while !self.running().is_empty() && t1.elapsed() < Duration::from_secs(1) {
             std::thread::sleep(Duration::from_millis(20));
@@ -178,6 +190,15 @@ fn signal_groups(groups: &[u32], signal: i32) {
     }
     #[cfg(not(unix))]
     let _ = (groups, signal);
+}
+
+/// End each step that outlived a stop's grace with every process under it (`taskkill /T /F`, a tool of every Windows).
+#[cfg(windows)]
+#[allow(clippy::disallowed_methods, reason = "the stop's last act: no step may start now, so the kill runs outside the steps and is waited for here")]
+fn kill_trees(pids: &[u32]) {
+    for pid in pids {
+        let _ = Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
 }
 
 /// End a step that outlived its bound, with its group, and reap it.

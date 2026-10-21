@@ -123,13 +123,16 @@ pub(super) fn build_direction(prefix: &Path, installed: &str, release_commit: &s
     }
     let git = |args: &[&str]| cmd::output(cmd::git_in(&base).args(args)).ok();
     // Read only: the run that asks stops, and a stop writes nothing under the prefix, so a commit the clone lacks is
-    // not fetched into it.
-    if !git(&["cat-file", "-e", &format!("{release_commit}^{{commit}}")]) {
+    // not fetched into it. The clone is blobless, and asking it for an object it lacks fetches that object from its
+    // promisor remote; the commits its refs reach are all there, so they are listed and looked up, never asked for.
+    let listed = cmd::output(cmd::git_in(&base).args(["rev-list", "--all"]));
+    let has = |c: &str| listed.out.lines().any(|l| l.trim() == c);
+    if !listed.ok() || !has(release_commit) {
         return format!("unknown: the release's commit is not in {} yet", base.display());
     }
-    if !git(&["rev-parse", "--verify", "--quiet", &format!("{built}^{{commit}}")]) {
+    let Some(built) = listed.out.lines().map(str::trim).find(|l| l.starts_with(built.as_str())).map(String::from) else {
         return format!("unknown: this build's commit {} is not in {}", &built[..built.len().min(9)], base.display());
-    }
+    };
     if git(&["merge-base", "--is-ancestor", &built, release_commit]) {
         "forward".into()
     } else if git(&["merge-base", "--is-ancestor", release_commit, &built]) {

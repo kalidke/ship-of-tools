@@ -218,9 +218,10 @@ fn version_folder(ctx: &Ctx) -> Result<(), Stop> {
 /// An install already here: never backwards unasked, a repair run when nothing moves, else the update. The step of an
 /// update left armed for a start, when it is.
 fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: &str) -> Result<Option<String>, Stop> {
-    let same_commit = record::string(&record::read(&ctx.record_path()), "commit").as_deref() == Some(ctx.pack.commit.as_str());
+    // A repair changes nothing in the record but its pin: a new -Hub is an install over the same build.
+    let keeps = record::keeps(&record::read(&ctx.record_path()), &record_of(ctx));
     let (state, _) = daemon_state(ctx, new_sotd);
-    if dir == "same" && same_commit && matches!(state, State::None | State::Current) {
+    if dir == "same" && keeps && matches!(state, State::None | State::Current) {
         println!("this computer already runs {installed} at {}: a repair run", ctx.pack.short());
         ctx.repair = true;
         // The pin first, then the pointer armed over the install: no arm lands between.
@@ -402,7 +403,7 @@ fn layout_and_comm(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
     if !ctx.version_dir.join("julia\\kernel\\Manifest.toml").is_file() {
         let scratch = ctx.pack.dir.join("tmp");
         let _ = std::fs::create_dir_all(&scratch);
-        for failed in julia::instantiate(&ctx.version_dir, None, &scratch, false, &|t| println!("  {t}")) {
+        for failed in julia::instantiate(&ctx.version_dir, None, &scratch, ctx.repair, &|t| println!("  {t}")) {
             found.fail("julia", failed);
         }
     }
@@ -458,13 +459,11 @@ fn sync_hub(ctx: &Ctx) -> Option<String> {
     said.contains("does not list this box").then_some(hub)
 }
 
-fn write_record(ctx: &Ctx) -> Result<(), Stop> {
-    step("record");
-    let path = ctx.record_path();
-    let before = record::read(&path);
-    let hub = ctx.opts.hub.clone().or_else(|| record::string(&before, "hub")).unwrap_or_default();
+/// The record this run writes: the hub this run names, else the one recorded.
+fn record_of(ctx: &Ctx) -> record::Record {
+    let hub = ctx.opts.hub.clone().or_else(|| record::string(&record::read(&ctx.record_path()), "hub")).unwrap_or_default();
     let config = std::env::var_os("APPDATA").map_or_else(PathBuf::new, PathBuf::from).join("sot");
-    let r = record::Record {
+    record::Record {
         prefix: ctx.prefix.to_string_lossy().into_owned(),
         config: config.to_string_lossy().into_owned(),
         service: "none".into(),
@@ -475,7 +474,14 @@ fn write_record(ctx: &Ctx) -> Result<(), Stop> {
         daemon: true,
         frontend: true,
         pinned: ctx.named,
-    };
+    }
+}
+
+fn write_record(ctx: &Ctx) -> Result<(), Stop> {
+    step("record");
+    let path = ctx.record_path();
+    let before = record::read(&path);
+    let r = record_of(ctx);
     // A new install is a new transaction: a pointer armed over the one it replaces would apply onto it.
     if record::string(&before, "version").as_deref() != Some(&ctx.pack.version) || record::string(&before, "commit").as_deref() != Some(&ctx.pack.commit) {
         let _ = std::fs::remove_file(ctx.pointer());
@@ -542,15 +548,18 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
         }
     }
     let sotd = ctx.sotd();
-    let (mut st, why) = daemon_state(ctx, &sotd);
-    if ctx.expect_daemon {
+    // After a converge the waiter is the only ask, so the check keeps its bound; else one ask says what runs.
+    let (st, why) = if ctx.expect_daemon && !ctx.pipe.is_empty() {
         let bound = super::secs_env("SOT_INSTALL_DAEMON_WAIT_S", 60);
-        let runs = st != State::None;
-        st = daemon::wait_current(&sotd, &ctx.endpoint(), bound, false, runs);
+        let runs = pipe_listed(&ctx.pipe) || !procs::daemon_pids(&procs::snapshot(), &ctx.prefix).is_empty();
+        let (st, why) = daemon::wait_current(&sotd, &ctx.endpoint(), bound, false, runs);
         if st != State::Current {
             found.fail("daemon", format!("the daemon on {} did not answer as {v} within {} s after the converge (it is '{}')", ctx.pipe, bound.as_secs(), st.word()));
         }
-    }
+        (st, why)
+    } else {
+        daemon_state(ctx, &sotd)
+    };
     match st {
         State::Unknown => found.fail("daemon", format!("a daemon runs on {} and could not be told its version ({why})", ctx.pipe)),
         State::Other | State::Held => found.fail("daemon", format!("the daemon on {} still runs another version than {v}", ctx.pipe)),

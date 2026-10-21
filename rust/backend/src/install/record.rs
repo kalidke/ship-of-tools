@@ -136,13 +136,19 @@ pub(super) fn set_pin(path: &Path, prefix: &Path, pinned: bool) -> std::io::Resu
     Ok(pinned)
 }
 
-/// The record a run leaves: written whole, except by a repair run over a readable record of the same version and
-/// commit, which edits only its pin and keeps every other byte (a repair moves nothing).
+/// Whether the readable record `before` already says everything `r` would write but the pin and the time: a run that
+/// would change nothing else in it (the version, the commit, the role, the hub, the prefix and config) and so may be a
+/// repair.
+pub(super) fn keeps(before: &str, r: &Record) -> bool {
+    let parse = |t: &str| serde_json::from_str::<serde_json::Value>(t.trim_start_matches('\u{feff}')).ok();
+    let (Some(old), Some(serde_json::Value::Object(new))) = (parse(before), parse(&text(r))) else { return false };
+    new.iter().filter(|(k, _)| !matches!(k.as_str(), "installed_at" | "pinned")).all(|(k, v)| old.get(k) == Some(v))
+}
+
+/// The record a run leaves: written whole, except by a repair run over a readable record it keeps, which edits only
+/// its pin and keeps every other byte (a repair moves nothing).
 pub(super) fn text_for(before: &str, r: &Record, repair: bool) -> String {
-    let same = string(before, "version").as_deref() == Some(r.version.as_str())
-        && string(before, "commit").as_deref() == Some(r.commit.as_str())
-        && serde_json::from_str::<serde_json::Value>(before.trim_start_matches('\u{feff}')).is_ok();
-    if repair && same { with_pin(before, r.pinned) } else { text(r) }
+    if repair && keeps(before, r) { with_pin(before, r.pinned) } else { text(r) }
 }
 
 /// The time now, as the record writes it: `YYYY-MM-DDTHH:MM:SSZ`, UTC.

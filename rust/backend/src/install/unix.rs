@@ -61,6 +61,21 @@ struct Plan {
 }
 
 impl Plan {
+    /// The record this run writes, at `commit`.
+    fn record(&self, commit: &str) -> record::Record {
+        record::Record {
+            prefix: self.prefix.to_string_lossy().into_owned(),
+            config: self.config.to_string_lossy().into_owned(),
+            service: role::service_record(!self.macos, self.role.daemon, self.no_service).into(),
+            version: self.pack.version.clone(),
+            commit: commit.to_string(),
+            installed_at: record::now_utc(),
+            hub: self.hub.clone(),
+            daemon: self.role.daemon,
+            frontend: self.role.frontend,
+            pinned: self.named,
+        }
+    }
     fn sotd(&self) -> PathBuf {
         self.prefix.join("bin/sotd")
     }
@@ -168,7 +183,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
             "same" if pre_commit != pack.commit && super::is_commit(&pre_commit) => {
                 say(&format!("this computer already runs {pre_version}: same version, another build ({} to {})", &pre_commit[..9], pack.short()));
             }
-            "same" => say(&format!("this computer already runs {pre_version}: a repair run")),
+            "same" => say(&format!("this computer already runs {pre_version} at {}", pack.short())),
             _ => say(&format!("this run moves the install from {pre_version} to {} ({dir})", pack.version)),
         }
         super::guard_direction(implicit, &pre_version, &dir, &pack.version, &prefix, "--version")?;
@@ -279,11 +294,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     let unit_runs = resolved.daemon && !no_service && unit_active;
     // A role with no daemon here stops this host's run of the unit (the retire), so its daemon is asked too.
     let retire_stops = !resolved.daemon && unit_active && home.join(".config/systemd/user/sotd.service").is_file();
-    let (before, why) = if resolved.daemon || retire_stops {
-        daemon::state(&new_sotd, &endpoint, unit_runs || !procs::daemon_pids(&all, &prefix).is_empty())
-    } else {
-        (State::None, String::new())
-    };
+    let (before, why) = discover(&new_sotd, &endpoint, resolved.daemon, retire_stops, unit_runs, !procs::daemon_pids(&all, &prefix).is_empty());
     let windows_before = procs::window_runs(&all, &prefix);
     let repair = dir == "same" && pre_commit == pack.commit && matches!(before, State::None | State::Current);
     let mut plan = Plan {
@@ -316,6 +327,12 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
         live: daemon::Work::default(),
         rows_unknown: false,
     };
+    // A repair changes nothing in the record but its pin: a run of the same build that changes the role or the hub
+    // is an install over it.
+    plan.repair = plan.repair && record::keeps(&pre_text, &plan.record(&plan.pack.commit));
+    if plan.repair {
+        say("a repair run: nothing moves, and the record gets its pin");
+    }
     ask_daemon(&mut plan, &new_sotd, &why)?;
     Ok(plan)
 }
@@ -494,6 +511,18 @@ pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), S
         }
     }
     Ok((live, unknown))
+}
+
+/// The daemon a run finds, asked of the target's sotd when the run may end one: its role runs a daemon here, or the
+/// retire stops an active unit. One runs when the unit runs (the one this run restarts, or the active one the retire
+/// stops, whichever install's it is) or the install's own daemon process does (`own_pids`), so one that cannot be told
+/// is never read as none.
+pub(super) fn discover(sotd: &Path, endpoint: &str, daemon_here: bool, retire_stops: bool, unit_runs: bool, own_pids: bool) -> (State, String) {
+    if daemon_here || retire_stops {
+        daemon::state(sotd, endpoint, unit_runs || retire_stops || own_pids)
+    } else {
+        (State::None, String::new())
+    }
 }
 
 fn ask_daemon(plan: &mut Plan, new_sotd: &Path, why: &str) -> Result<(), Stop> {
@@ -767,7 +796,7 @@ fn configure(plan: &Plan) -> Result<(), Stop> {
     }
     if !plan.role.daemon {
         let kernel_host = sot_log::host::state_dir::kernel_host_name().unwrap_or_default();
-        retire_local_service(&plan.units_ctx(), plan.topo_declared, &kernel_host);
+        retire_local_service(&plan.units_ctx(), plan.topo_declared, &kernel_host)?;
     }
     for line in trust_report(&plan.sotd(), &plan.home) {
         say(&line);
@@ -834,15 +863,14 @@ impl Units<'_> {
 /// another host of a shared home, so only this host's run is stopped and the shared unit is never disabled; under a
 /// declared topology the unit's host pin keeps it from starting here, and with no hosts.toml a pin that names this host
 /// alone lets the drop-in go. `kernel_host` is the kernel's name for this host, which the pin names.
-pub(super) fn retire_local_service(u: &Units, declared: bool, kernel_host: &str) {
+pub(super) fn retire_local_service(u: &Units, declared: bool, kernel_host: &str) -> Result<(), Stop> {
     let ud = u.dir().to_string_lossy().into_owned();
     if !u.has_systemctl() || !u.dir().join("sotd.service").is_file() {
-        return;
+        return Ok(());
     }
     if declared {
-        if let Err(why) = u.pin(false) {
-            say(&format!("WARNING: sotd topology pin failed ({why}): sotd.service is not pinned to the hosts that run sotd"));
-        }
+        // The pin before any reload: a unit left unpinned would start on every host of a shared home.
+        u.pin(false).map_err(|why| Stop::new(1, format!("could not pin sotd.service to the hosts that run sotd ({why}); it was not stopped or reloaded: fix hosts.toml (sotd topology status names the line) and run this again")))?;
         if !u.lib("sot_boot_keep", &[&ud]).ok() {
             say("WARNING: could not move sotd.service's boot start onto its drop-in");
         }
@@ -865,6 +893,7 @@ pub(super) fn retire_local_service(u: &Units, declared: bool, kernel_host: &str)
             say("Stopped this computer's sotd. Its boot start is already off: sotd.service has no boot drop-in, and enable and disable change no file for it; to turn it on, write ~/.config/systemd/user/default.target.d/sotd.conf with the two lines [Unit] and Wants=sotd.service");
         }
     }
+    Ok(())
 }
 
 /// The unit, the launcher and the restart; whether the run restarted the daemon.
@@ -1026,18 +1055,7 @@ fn desktop_entry(plan: &Plan, wrapper: &str) -> Result<(), Stop> {
 fn write_record(plan: &Plan) -> Result<(), Stop> {
     step("record");
     let commit = cmd::output(cmd::git_in(&plan.checkout).args(["rev-parse", "HEAD"])).first_line();
-    let r = record::Record {
-        prefix: plan.prefix.to_string_lossy().into_owned(),
-        config: plan.config.to_string_lossy().into_owned(),
-        service: role::service_record(!plan.macos, plan.role.daemon, plan.no_service).into(),
-        version: plan.pack.version.clone(),
-        commit: if commit.is_empty() { "unknown".into() } else { commit },
-        installed_at: record::now_utc(),
-        hub: plan.hub.clone(),
-        daemon: plan.role.daemon,
-        frontend: plan.role.frontend,
-        pinned: plan.named,
-    };
+    let r = plan.record(if commit.is_empty() { "unknown" } else { &commit });
     let path = plan.prefix.join("install.json");
     record::write_whole(&path, &record::text_for(&record::read(&path), &r, plan.repair)).map_err(|e| Stop::new(1, format!("writing {}: {e}", path.display())))?;
     if plan.named {
@@ -1166,14 +1184,13 @@ fn daemon_after(plan: &Plan, restarted: bool, found: &mut Found) -> State {
     }
     let held_ok = plan.unit_runs && !restarted;
     if systemctl(&["is-active", "sotd.service"]).ok() {
-        let st = daemon::wait_current(&plan.sotd(), &endpoint, super::secs_env("SOT_INSTALL_RESTART_WAIT_S", 30), held_ok, true);
+        let (st, why) = daemon::wait_current(&plan.sotd(), &endpoint, super::secs_env("SOT_INSTALL_RESTART_WAIT_S", 30), held_ok, true);
         match st {
             State::Current => {}
             State::Held if held_ok => {}
             State::Held => found.fail("daemon", format!("sotd.service is active, but the daemon on {socket} still runs another version, held by a window; {journal}")),
             State::Other => found.fail("daemon", format!("sotd.service is active, but the daemon on {socket} still runs another version, not {}; {journal}", plan.pack.version)),
             State::Unknown => {
-                let (_, why) = daemon::state(&plan.sotd(), &endpoint, true);
                 found.fail("daemon", format!("sotd.service is active, but the daemon on {socket} could not be told its version ({why}); {journal}"));
             }
             State::None => found.fail("daemon", format!("sotd.service is active, but no daemon answers on {socket}; {journal}")),

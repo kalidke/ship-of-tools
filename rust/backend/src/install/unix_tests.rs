@@ -120,7 +120,7 @@ fn the_unit_is_pinned_before_any_reload() {
     {
         let f = Fixture::new("me");
         std::fs::write(f.units().join("sotd.service"), "[Service]\nExecStart=/x/bin/sotd\n").unwrap();
-        with_units(&f, |u| retire_local_service(u, true, "me"));
+        with_units(&f, |u| retire_local_service(u, true, "me")).unwrap();
         let d = f.units().display().to_string();
         let pin = f.at(&format!("sotd topology pin --dir {d}")).expect("a pin");
         let stop = f.at("systemctl --user stop sotd.service").expect("a stop");
@@ -129,18 +129,24 @@ fn the_unit_is_pinned_before_any_reload() {
         assert!(!f.log().iter().any(|l| l.contains("disable")), "{:?}", f.log());
         assert!(f.units().join("sotd.service").is_file());
         let f = Fixture::new("me");
-        with_units(&f, |u| retire_local_service(u, true, "me"));
+        with_units(&f, |u| retire_local_service(u, true, "me")).unwrap();
         assert!(f.log().is_empty(), "with no unit file nothing runs: {:?}", f.log());
+        let f = Fixture::new("me");
+        std::fs::write(f.units().join("sotd.service"), "[Service]\nExecStart=/x/bin/sotd\n").unwrap();
+        sot_log::test_exec::write_executable(&f.path("prefix/bin/sotd"), format!("#!/bin/sh\nprintf 'sotd %s\\n' \"$*\" >> '{}'\necho 'sotd topology: hosts.toml line 2: expected key = value' >&2\nexit 2\n", f.path("log").display()));
+        let stop = with_units(&f, |u| retire_local_service(u, true, "me")).unwrap_err();
+        assert!(stop.detail.contains("hosts.toml line 2"), "{stop:?}");
+        assert!(!f.log().iter().any(|l| l.starts_with("systemctl --user daemon-reload")), "a retire whose pin failed reloaded: {:?}", f.log());
     }
 
     {
         let f = Fixture::new("unithost-a");
         with_units(&f, |u| enable_local_service(u, &template(), "/s.sock")).unwrap();
         assert_eq!(f.wiring(), "dropin none");
-        with_units(&f, |u| retire_local_service(u, false, "unithost-b"));
+        with_units(&f, |u| retire_local_service(u, false, "unithost-b")).unwrap();
         assert!(!f.log().iter().any(|l| l.contains("disable")), "{:?}", f.log());
         assert_eq!(f.wiring(), "dropin none", "host B's retire keeps host A's boot start");
-        with_units(&f, |u| retire_local_service(u, false, "unithost-a"));
+        with_units(&f, |u| retire_local_service(u, false, "unithost-a")).unwrap();
         assert_eq!(f.wiring(), "none none", "host A's own retire removes the drop-in its pin serves alone");
         let g = Fixture::new("unithost-b");
         let pin = g.units().join("sotd.service.d");
@@ -189,12 +195,17 @@ fn nothing_is_written_before_every_gate() {
     let origin = dir.path().join("origin");
     let o = origin.to_string_lossy().into_owned();
     git(&["init", "-q", &o]);
-    git(&["-C", &o, "commit", "-q", "--allow-empty", "-m", "built"]);
+    git(&["-C", &o, "config", "uploadpack.allowFilter", "true"]);
+    std::fs::write(origin.join("f"), "built\n").unwrap();
+    git(&["-C", &o, "add", "f"]);
+    git(&["-C", &o, "commit", "-q", "-m", "built"]);
     let built = git(&["-C", &o, "rev-parse", "HEAD"]);
     let prefix = dir.path().join("prefix");
     let base = prefix.join("repo/base");
-    git(&["clone", "-q", &o, &base.to_string_lossy()]);
-    git(&["-C", &o, "commit", "-q", "--allow-empty", "-m", "released"]);
+    // An install's base clone is blobless: a commit it lacks is one its promisor remote could be asked for.
+    git(&["clone", "-q", "--filter=blob:none", "--no-checkout", &format!("file://{o}"), &base.to_string_lossy()]);
+    std::fs::write(origin.join("f"), "released\n").unwrap();
+    git(&["-C", &o, "commit", "-q", "-am", "released"]);
     let release = git(&["-C", &o, "rev-parse", "HEAD"]);
     let objects = |p: &std::path::Path| git(&["-C", &p.to_string_lossy(), "count-objects", "-v"]);
     let before = objects(&base);

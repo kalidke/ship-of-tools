@@ -63,20 +63,21 @@ fn state_within(sotd: &Path, endpoint: &str, runs: bool, bound: Duration) -> (St
 }
 
 /// The state once the daemon has had up to `bound` by the clock to answer as the target: `Current` as soon as it does,
-/// else what the last ask said. `held_ok` also ends the wait at `Held`.
-pub(super) fn wait_current(sotd: &Path, endpoint: &str, bound: Duration, held_ok: bool, runs: bool) -> State {
+/// else what the last ask said, with sotd's reason, so no caller asks again past the bound. `held_ok` also ends the
+/// wait at `Held`.
+pub(super) fn wait_current(sotd: &Path, endpoint: &str, bound: Duration, held_ok: bool, runs: bool) -> (State, String) {
     let deadline = Instant::now() + bound;
     loop {
         // Every ask ends by the deadline, and none starts after it.
         let left = deadline.saturating_duration_since(Instant::now());
-        let (st, _) = state_within(sotd, endpoint, runs, left.max(Duration::from_millis(1)));
+        let (st, why) = state_within(sotd, endpoint, runs, left.max(Duration::from_millis(1)));
         let left = deadline.saturating_duration_since(Instant::now());
         if st == State::Current || (held_ok && st == State::Held) || left.is_zero() {
-            return st;
+            return (st, why);
         }
         std::thread::sleep(left.min(Duration::from_secs(1)));
         if Instant::now() >= deadline {
-            return st;
+            return (st, why);
         }
     }
 }
