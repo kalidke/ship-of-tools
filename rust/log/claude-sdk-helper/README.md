@@ -1,6 +1,6 @@
 # claude-sdk-helper
 
-Ship's Log **P2** adapter (see `docs/adr/0037-ships-log-substrate.md`, "P2: the
+Ship's Log **P2** adapter (see `docs/history/adr/0037-ships-log-substrate.md`, "P2: the
 first rich writer: Claude through its SDK"). This is a per-capsule Node
 process, spawned by the Rust capsule with stdio pipes. It owns **one Claude
 Agent SDK session** across many turns and speaks a small NDJSON protocol
@@ -8,7 +8,7 @@ Agent SDK session** across many turns and speaks a small NDJSON protocol
 line, in each direction.
 
 The capsule itself, and how its output becomes voyage frames on disk, is out
-of scope here; that's `docs/adr/0039-voyage-frame-codec-and-segment-format.md`.
+of scope here; that's `docs/history/adr/0039-voyage-frame-codec-and-segment-format.md`.
 This package's only job is: turn stdin ops into SDK `query()` calls, and turn
 SDK messages into stdout lines, faithfully and losslessly.
 

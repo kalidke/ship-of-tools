@@ -13,7 +13,7 @@ changelog describing deleted functions is worse than no changelog.
 state covering both grids, alternate-screen identity, the current and saved
 cursor and attributes, the scroll region, origin mode, per-row wrap flags,
 and the input modes. See `src/checkpoint.rs` for the format and
-`docs/adr/0041-fe-local-capsules-windows.md` for why it exists: a capsule
+`docs/history/adr/0041-fe-local-capsules-windows.md` for why it exists: a capsule
 outlives the frontend that renders it, and the frontend that attaches must
 be handed the state rather than a reconstruction of it.
 

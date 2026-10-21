@@ -35,7 +35,7 @@ It answers from **this repo**, checked out locally right where you're reading
 this. Every Ship of Tools workspace exports **`$SOT_MANUAL`**, pointing at this
 checkout — the manual's root — so the agent reads straight from it: the docs
 under `$SOT_MANUAL/docs/` (including this file, `$SOT_MANUAL/docs/USING.md`),
-the design decisions in `$SOT_MANUAL/docs/adr/`, the scope document
+the design decisions in `$SOT_MANUAL/docs/history/adr/`, the scope document
 `$SOT_MANUAL/requirements.md`, and the full user guide under
 `$SOT_MANUAL/docs/src/guide/`. Nothing here is a duplicate — it's the same
 corpus, just read directly instead of rendered to a website. If the published

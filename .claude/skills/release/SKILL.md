@@ -10,7 +10,7 @@ the whole ship, released as a git tag that CI turns into platform binaries +
 a GitHub Release. CI creates that release as a draft, which no updater lists;
 step 3 of *Watch + verify* publishes it (installs clone the repo at the tag —
 there is no separate julia bundle). Read
-`docs/adr/0030-versioning-release-and-auto-update.md` §1–3 before your first
+`docs/history/adr/0030-versioning-release-and-auto-update.md` §1–3 before your first
 release from a fresh context.
 
 ## Preflight (do all six, report anything amiss instead of proceeding)

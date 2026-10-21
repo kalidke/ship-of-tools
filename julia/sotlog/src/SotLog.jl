@@ -8,7 +8,7 @@ Julia half of the ADR's merge gate: "cross-language golden fixtures (Rust
 writes, Julia reads — the fixtures are conformance tests for this ADR, not
 its substitute)".
 
-READER ONLY — no writer. See `docs/adr/0039-voyage-frame-codec-and-segment-format.md`
+READER ONLY — no writer. See `docs/history/adr/0039-voyage-frame-codec-and-segment-format.md`
 for the normative spec; this module implements exactly that document, byte
 for byte, against `rust/log/src/store/record.rs` and `rust/log/src/store/segment.rs` as
 the reference implementation.

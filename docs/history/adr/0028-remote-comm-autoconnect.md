@@ -164,7 +164,7 @@ below).
 The isolation lane (`dev/output/isolation-plan.md`) deletes the frontend's
 `ssh -L` forwarding and the name-derived local-port series everywhere they
 served the Rust frontend↔backend connection — see
-[Transport](../src/concepts/transport.md). That is a different transport
+[Transport](../../src/concepts/transport.md). That is a different transport
 than the one this ADR describes: none of it touches the **reverse**
 `sot-relay-tunnel@<host>` units above, their `systemd --user` supervision, or
 `sotd topology apply`'s generation of them, all of which are unchanged.

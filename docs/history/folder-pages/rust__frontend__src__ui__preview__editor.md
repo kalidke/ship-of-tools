@@ -1,0 +1,19 @@
+# rust/frontend/src/ui/preview/editor: in-pane editing (fe-ui)
+
+The text buffer behind the preview pane's editor. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
+
+## Files
+- `mod.rs`: declares `buffer`, `state` and `replies`.
+- `buffer.rs`: `EditBuffer`, a UTF-8 body with a byte cursor, edits and undo.
+- `keys.rs`: The editor's keys, and entering edit mode from the preview.
+- `state.rs`: `EditState`, the active annotation edit, and `State::rebuild_edit_preview`, which shapes its preview buffer.
+- `replies.rs`: file read and write replies for the editor
+
+## Start here
+`EditBuffer` in buffer.rs; `EditState` in state.rs for what an edit carries.
+
+## Rules
+- The cursor is a byte index on a char boundary (`EditBuffer::prev_boundary`, `next_boundary`).
+- A typed run is one undo step and a cursor move ends it (test `cursor_move_breaks_the_undo_run`).
+- An edit holds the body only; save joins the frontmatter back (`EditState::full_content`).
+- The stale-write banner outranks every other footer (`State::rebuild_edit_preview`).

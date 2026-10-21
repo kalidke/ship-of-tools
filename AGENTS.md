@@ -75,7 +75,7 @@ ask.
 - Codex does not load `CLAUDE.md` files by itself. Before reading or editing a
   file, read every `CLAUDE.md` from the repo root down to that file's folder.
 - `$SOT_MANUAL` points at the product checkout: `docs/USING.md` (user help),
-  `docs/adr/` (why things are the way they are), `requirements.md` (scope).
+  `docs/history/adr/` (why things are the way they are), `requirements.md` (scope).
 
 Then, as global rules for any repo:
 

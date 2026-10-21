@@ -79,7 +79,7 @@ per-session local TCP port" clause that followed it, describe a transport the
 frontend no longer has. The frontend now spawns `ssh <host> sotd
 stdio-bridge` and speaks the protocol directly over that child's own
 stdin/stdout — no local socket, no local port, on any platform. See
-[Transport](../src/concepts/transport.md).
+[Transport](../../src/concepts/transport.md).
 
 ## Update (2026-10-02, 0.6.6): persistence past a window close is the remote model only
 

@@ -88,7 +88,7 @@ fi
 # inherit a different session's identity. Full rationale for everything below — the root=/repo=/
 # registry/nopane read-side matrix, including the round-3 additions
 # (malformed third line, registry-read errors) — lives in
-# docs/adr/0028-remote-comm-autoconnect.md's "Self-file read-side
+# docs/history/adr/0028-remote-comm-autoconnect.md's "Self-file read-side
 # transition" section, THE single home of this logic's rationale. Keep
 # comments here to short invariant statements only.
 #

@@ -124,7 +124,7 @@ In active development. Linux; Windows and macOS run as frontends to a Linux back
 
 ## Contributing
 
-Read the [contributing guide](https://kalidke.github.io/ship-of-tools/dev/contributing) before opening a PR; design decisions are in [`docs/adr/`](docs/adr/).
+Read the [contributing guide](https://kalidke.github.io/ship-of-tools/dev/contributing) before opening a PR; design decisions are in [`docs/history/adr/`](docs/history/adr/).
 
 ## License
 

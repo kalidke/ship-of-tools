@@ -545,7 +545,7 @@ top line of the nav pane always shows the pane-switch keys.**
     `scripts\sot-apply.ps1` on the next launch to verify and swap the binaries, keeping `.prev` and rolling back if the
     new build crash-loops. Scripts and config update the same way: the shortcut targets
     `%LOCALAPPDATA%\sot\repo\current\scripts\launch-sot.ps1` and `sot-apply.ps1`'s junction flip carries them in the same
-    transaction as the binaries (docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17 amendment).
+    transaction as the binaries (docs/history/adr/0030-versioning-release-and-auto-update.md's 2026-09-17 amendment).
   - A source build (a `+` in its version) never self-updates on any platform;
     they update by pulling and rebuilding.
 - Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`;

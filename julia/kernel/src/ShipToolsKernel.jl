@@ -30,7 +30,7 @@ const PROTOCOL_VERSION = 1
 Run the kernel NDJSON dispatch loop on the given streams. One JSON request
 per line on `io_in`; one JSON response per line on `io_out`.
 
-The wire format mirrors `docs/adr/0001-protocol.md`: envelopes are
+The wire format mirrors `docs/history/adr/0001-protocol.md`: envelopes are
 `{v, id, kind, op, payload}`, with optional `rev` for revision-bearing
 frames. The kernel is a pure-function service — it never bumps a session
 revision of its own — so kernel responses leave `rev` unset and the backend

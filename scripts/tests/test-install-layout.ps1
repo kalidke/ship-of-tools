@@ -1,7 +1,7 @@
 # test-install-layout.ps1 -- regression harness for scripts/sot-install-
 # layout.ps1's Test-SotPinnedCheckout and Get-SotLauncherTarget: the one
 # predicate that replaces the four disagreeing dev-vs-release heuristics
-# launch-sot.ps1 used to have (docs/adr/0030-versioning-release-and-auto-
+# launch-sot.ps1 used to have (docs/history/adr/0030-versioning-release-and-auto-
 # update.md's 2026-09-17 amendment). Test-SotPinnedCheckout is a path
 # identity (is this script running FROM repo\current), not a git-state
 # check, so no git fixture is needed here -- CI's ParseFile gate
