@@ -1,4 +1,4 @@
-# The test-children rule (docs/ownership.md), read by rust.yml's "Function length and test children" step, which
+# The test-children rule (docs/ownership.md), read by rust.yml's "Test children" steps, which
 # names this folder in CLIPPY_CONF_DIR; every other clippy run reads rust/clippy.toml. A test runs a child to its end
 # through sot_log::test_wait::run_within (or try_run_within, which returns the failure as a value), and waits on a
 # child it holds while it runs through test_isolated::drain(..).wait_within, or test_isolated::wait_within when it did

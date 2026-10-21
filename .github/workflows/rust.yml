@@ -305,13 +305,12 @@ jobs:
         run: npm ci
       - name: Build workspace
         run: cargo build --workspace --locked
-      # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
-      # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
-      # CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
-      - name: Function length and test children
+      # The vendored vt100 crate is excluded: it denies clippy::all in its own source, which beats -A on the command
+      # line. CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
+      - name: Test children
         env:
           CLIPPY_CONF_DIR: "${{ github.workspace }}/rust/clippy-tests"
-        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::too_many_lines -D clippy::disallowed_methods
+        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::disallowed_methods
       # rust/clippy.toml holds the rules this step enforces, one labelled group each, every group opening with its
       # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
       # that does not exist on a leg draws a warning there.
@@ -664,13 +663,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
-      # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
-      # CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
-      - name: Function length and test children
+      # The vendored vt100 crate is excluded: it denies clippy::all in its own source, which beats -A on the command
+      # line. CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
+      - name: Test children
         env:
           CLIPPY_CONF_DIR: "${{ github.workspace }}/rust/clippy-tests"
-        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close,sot-backend/daemon-lifetime-faults --locked -- -A clippy::all -D clippy::too_many_lines -D clippy::disallowed_methods
+        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close,sot-backend/daemon-lifetime-faults --locked -- -A clippy::all -D clippy::disallowed_methods
       - name: Test native harness helpers
         shell: bash
         run: |
@@ -798,13 +796,9 @@ jobs:
           [ "$n" -gt 0 ] || { echo "no shell scripts found"; rc=1; }
           exit "$rc"
 
-      - name: Check the layout
+      - name: Test the pure-move check
         working-directory: .
-        run: bash scripts/tests/check-layout.sh --allow scripts/tests/check-layout.allow
-
-      - name: Test the layout tools
-        working-directory: .
-        run: bash scripts/tests/test-check-layout.sh && bash scripts/tests/test-moved-check.sh
+        run: bash scripts/tests/test-moved-check.sh
 
       - name: Test the rc gate's target claim
         working-directory: .

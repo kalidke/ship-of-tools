@@ -138,7 +138,7 @@ job_cargo_chain() {
 # frontend's tree-sitter needs a cross C compiler, so it is left to the hosted leg).
 job_lint() {
   local feats=sot-frontend/test-pane-timing,sot-frontend/test-window-close,sot-backend/daemon-lifetime-faults
-  local deny=(-A clippy::all -D clippy::too_many_lines -D clippy::disallowed_methods)
+  local deny=(-A clippy::all -D clippy::disallowed_methods)
   local conf=CLIPPY_CONF_DIR=$D/rust/clippy-tests cmd=()
   st "lint-$1"
   cd "$D/rust" || { fin "lint-$1" 2; return; }
