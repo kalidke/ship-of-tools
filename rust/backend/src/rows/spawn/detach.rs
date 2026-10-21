@@ -242,7 +242,7 @@ pub(crate) fn spawn_detached_supervisor(
         ));
     }
     let account_env_extra = crate::agents::env::account_spawn_env(agent_kind, account, cwd, workspace_id)?;
-    let supervisor_env = capsule_supervisor_env(workspace_id, slug, cwd);
+    let supervisor_env = capsule_supervisor_env(workspace_id, slug, cwd, agent_kind);
     // A row created with a handle keeps it: its pinned self file names it before the session first joins. A file that
     // cannot be written fails the start, as the session would otherwise join under another handle.
     if let Some((_, self_file)) = crate::agents::env::row_self_file(workspace_id) {

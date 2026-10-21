@@ -72,7 +72,7 @@ fn capsule_supervisor_env_carries_slug_workspace_and_comm_home() {
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
     std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
-    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"));
+    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude");
     let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
     assert_eq!(get("SOT_WORKSPACE"), Some("myrepo"));
     assert_eq!(get("SOT_WORKSPACE_ID"), Some("ws-myrepo-1a2b"));
@@ -113,7 +113,7 @@ fn capsule_supervisor_env_disables_the_feedback_survey() {
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
     std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
-    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"));
+    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude");
     let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY").collect();
     assert_eq!(hits.len(), 1, "exactly one survey switch");
     assert_eq!(hits[0].1, "1");
@@ -130,7 +130,7 @@ fn capsule_supervisor_env_keeps_the_conversation_in_its_row() {
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
     std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
-    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"));
+    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude");
     let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_AGENT_VIEW").collect();
     assert_eq!(hits.len(), 1, "exactly one agent-view switch");
     assert_eq!(hits[0].1, "1");

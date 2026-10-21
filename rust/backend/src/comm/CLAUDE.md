@@ -19,13 +19,14 @@ Address:
   handle its session declared with `agent.join`. A session's handle is the one its self file names (`self/<host>__<row
   id>.txt` for a row, which the daemon pins as `SOT_COMM_SELF_FILE`; `self/<host>__nopane.txt` outside any row) when
   its `root=` line is this project's root; else it is derived when it joins: the project folder's name and the box's
-  name, `<folder>-<host>`, qualified by the parent folder's name and then by a hash of the root only when another project
+  name, `<folder>-<host>` for a Claude row and `<folder>-cx-<host>` for a Codex row (the row's start stamps
+  `SOT_AGENT_KIND`, so the two kinds in one folder hold two handles), qualified by the parent folder's name and then by a hash of the root only when another project
   holds the shorter one (`identity::derive`). The derivation and the registry write are one step under the registry
   lock, so two joins never claim one handle. No argument or variable chooses a handle (0031): `sotd comm join` refuses
   `--name` and a bare name, and `SOT_COMM_NAME` is read by nothing. A row created with a handle (rows' `agent_name`)
   keeps it through its self file, which the row's start writes when it names nothing yet
   (`identity::self_file::pin_row`, called from `rows::spawn::detach`). A row with no stored handle derives one at its
-  first join, so a second unnamed row in a folder another row holds takes that handle and the newer join moves it. The
+  first join, so a second unnamed row of the same kind in a folder another row holds takes that handle and the newer join moves it. The
   one remaining way to name a handle is `workspace.create`'s `agent_name` (the spawn's derived claim, the worktree
   script's `<repo>-wt-<short>`, the probe rows' `probe-<box>`), which is agents'.
 - A handle belongs to one row at a time and survives restarts, compactions and clears: the row's self file and rows'

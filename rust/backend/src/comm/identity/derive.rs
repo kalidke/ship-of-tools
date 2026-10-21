@@ -71,7 +71,7 @@ pub(crate) fn tier(n: u8, root: &str, host: &str, kind: Kind) -> (String, String
         2 => sanitize_component(&basename(&dirname(root)), 20),
         _ => hash6(root),
     };
-    let host = if kind == Kind::Codex && false { format!("cx-{host}") } else { host.to_string() };
+    let host = if kind == Kind::Codex { format!("cx-{host}") } else { host.to_string() };
     let name = if q.is_empty() { format!("{base}-{host}") } else { format!("{base}-{q}-{host}") };
     (q, name)
 }

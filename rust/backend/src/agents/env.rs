@@ -124,7 +124,7 @@ pub fn row_self_file(workspace_id: &str) -> Option<(String, String)> {
 /// active workspace by SLUG, not the internal `ws-<slug>-<hex>` id;
 /// `workspace_id` is used ALSO below, for the state dir and self-file
 /// paths, where stability and uniqueness matter more than the display
-/// shape). No `SOT_COMM_NAME`: no command chooses a handle (decision 0031). A row created with a handle keeps it
+/// shape). No `SOT_COMM_NAME`: no command chooses a handle (decision 0031); `SOT_AGENT_KIND` is the kind its derivation takes. A row created with a handle keeps it
 /// through its pinned self file, which the start writes before the session first joins
 /// (`comm::identity::self_file::pin_row`, from `rows::spawn::detach`); an unnamed row's first join derives one.
 /// `SOT_COMM_SELF_FILE`
@@ -140,8 +140,10 @@ pub fn row_self_file(workspace_id: &str) -> Option<(String, String)> {
 /// reads the self-file back.
 /// `SOTD_BIN` is this daemon's own start path ([`own_sotd_bin`]), so the session's comm shell bridges with the daemon's
 /// own binary.
-pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path) -> Vec<(String, String)> {
+pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_kind: &str) -> Vec<(String, String)> {
     let mut env = crate::agents::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
+    // The kind is an input to the session's derived handle (`comm::identity::derive::Kind`).
+    env.push(("SOT_AGENT_KIND".to_string(), agent_kind.to_string()));
     if let Some((comm_home, self_file)) = row_self_file(workspace_id) {
         env.push(("SOT_COMM_HOME".to_string(), comm_home));
         env.push(("SOT_COMM_SELF_FILE".to_string(), self_file));
