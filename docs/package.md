@@ -138,13 +138,18 @@ with no wildcard; other threads only wake the window; untrusted text reaches the
 input goes only to the selected row's live client or is counted; showing a result never steals the view. Rests on:
 fe-net, capsule's attach client, winit and wgpu. Owns: all view state and UI persistence. Decision D4.
 
-**distribution.** The release path's contract is settled (pass 1a): `scripts/CLAUDE.md`, "Release path". The cut
-tags only on the maintainer's word and runs no tests and reads no hosted run; the local gate is `rc-gate.sh` plus
-`user-manager-tests.sh`; CI only drafts. The installers' half, pass 1b's: install verifies checksums before any
-write and writes `install.json` last; a refused install writes nothing; an install never moves backwards; apply
-verifies before it mutates, restores on failure and exits 0; the launch path never stops on an update; every exit of
-an installer ends in one verdict line. Rests on: the release tag, `sotd` subcommands (`update direction`,
-`same-version`, `topology plan`), GitHub releases. Owns: `$PREFIX`, the units, the comm install. Decision D5.
+**distribution.** Both contracts are settled, in `scripts/CLAUDE.md`. The release path (pass 1a): the cut tags only
+on the maintainer's word, runs no tests and reads no hosted run; the local gate is `rc-gate.sh` plus
+`user-manager-tests.sh`; CI only drafts. The installers (pass 1b, decision D5): `install.sh` and `install.ps1` are
+bootstraps that fetch a pack, verify it against `SHA256SUMS` and run its `sotd install` (`rust/backend/src/install/`),
+where every rule of install lives once for all three systems. An install ends in one verdict line, runs nothing it
+has not verified, writes nothing before every gate has passed, never moves backwards unasked, writes `install.json`
+last, whole and in the shape every earlier release reads, asks before it ends a live daemon, and pins the unit to its
+hosts before any reload; a repair run moves nothing but the pin. An update arms only strictly above the installed
+version; apply verifies before it mutates and restores on failure; launch fails open. Rests on: the release tag,
+`sotd` subcommands (`update`, `same-version`, `topology`), GitHub releases. Owns: `$PREFIX`, the units, the comm
+install. Proven only at the release gate: the Windows converge (an update with a window running) and an rc9.15 box's
+old prelude handing off to the first 0.7.0 candidate on a backend-only host with glibc 2.31.
 
 **records.** Guarantees: the manual says what is true now; a design not built is marked unbuilt; no private names.
 After the reorganization the package page and the contracts are the only descriptive records a session loads; ADRs
@@ -223,8 +228,8 @@ package page: 15 minutes, 5 dollars). Each estimate is replaced by the measured 
 | # | pass | hours | dollars | measured |
 |---:|---|---:|---:|---|
 | 0 | Mechanical preparation: tests out of product files into sibling files; the 117 folder pages (164k tokens) to one-line pointers, their full text kept in `docs/history/`; the 52 ADRs (215k tokens) to `docs/history/adr/`, loaded by nobody; the root CLAUDE.md to this page; the size-limit and page checks retired; memory pruned to operating state; the four-number script | 3-6 | 60-120 | 0.7 h, about 30-35 dollars; product 1,959 -> 1,962k, tests 2,087 -> 2,034k |
-| 1a | Distribution, the release path: `release.sh` without its test re-run or green-at-HEAD rule, one hosted run, the pack; done test: thirty minutes from fixes in hand to a candidate installed on the maintainer's workstation; the outside review | 2-4 | 40-80 | 1.6 h (pass 1.1, gate and landing 0.5); done test 22.4 min by segments; distribution 215/295 -> 213/298k |
-| 1b | Distribution, install, update and launch (D5) | 6-12 | 120-240 | |
+| 1a | Distribution, the release path: `release.sh` without its test re-run or green-at-HEAD rule, one hosted run, the pack; done test: thirty minutes from fixes in hand to a candidate installed on the maintainer's workstation; the outside review | 2-4 | 40-80 | 1.6 h (pass 1.1, gate and landing 0.5); done test 22.4 min by segments; about $23 all-in; distribution 215/295 -> 213/298k |
+| 1b | Distribution, install, update and launch (D5) | 6-12 | 120-240 | 10.4 h wall in six runs (the pass 2.9 h; five fix rounds after two outside reviews 7.2 h); about $157 for the pass's agent; distribution 214/298 -> 221/252k, twice 30 -> 56 (one function per system); `install.sh` 2,053 -> 216 lines, `install.ps1` 975 -> 215 |
 | 3 | Rows, with work-state and how a row's state is shown | 4-8 | 80-160 | |
 | 4 | Messaging (D1) | 6-12 | 120-240 | |
 | 5 | Daemon core: server, lifecycle and containment carved; wire, topology and platform contracts | 6-10 | 120-200 | |
@@ -266,6 +271,7 @@ and `rust/log/tests` (27 thousand lines) are assigned by file:
 - The reorganization started 2026-10-20 from main at a25f3c39f, with v0.6.6-rc9.15 published and in use; the
   `release/0.6.6` branch takes fixes found in use, nothing else.
 - D1 to D5 are settled (above).
-- Step 0 landed 2026-10-20. Pass 1a landed 2026-10-20: the release path's contract is the first settled. Pass 1b, the
-  installers, is next. Nothing is half-done on main.
+- Step 0 landed 2026-10-20. Pass 1a landed 2026-10-21: the release path's contract is the first settled. Pass 1b
+  landed 2026-10-21: the installers' contract is settled, and `sotd install` is the installers' body on every system.
+  Pass 3 (rows) lands next; pass 4 (messaging, D1) is being built. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
