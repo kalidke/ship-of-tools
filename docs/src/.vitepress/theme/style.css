@@ -216,7 +216,7 @@ mjx-container svg path {
 /* ==========================================================================
    Ship of Tools brand layer (overrides the DocumenterVitepress defaults above).
    Blue is the wordmark; green / red / purple are the helm's Julia dots and
-   double as the app's work-state colours (working / needs you / waiting).
+   double as the app's work-state colors (working / needs you / waiting).
    ========================================================================== */
 :root {
   --sot-blue: #4063d8;
@@ -398,7 +398,7 @@ html.dark {
 .sot-model-row { flex: 1 1 220px; border: 1px solid var(--sot-blue-soft); border-radius: 8px; padding: 0.6rem; }
 .sot-model-row span { display: block; margin-top: 0.35rem; padding: 0.2rem 0.5rem; border-radius: 6px; background: var(--vp-c-bg-soft); }
 
-/* Work-state table: the colour swatch sits in the Colour cell. */
+/* Work-state table: the color swatch sits in the Color cell. */
 .vp-doc td:has(> .sot-state) { white-space: nowrap; }
 
 /* Wide tables scroll inside the content column instead of spilling past it. */

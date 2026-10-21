@@ -373,7 +373,7 @@ AGENT_TIMEOUT="${SOT_MEDIA_AGENT_TIMEOUT:-420}"
 # Flag settings for the demo session: no status line (the operator's shows
 # session cost and account details), no spinner tips and one plain spinner
 # verb ("Working", not a rotating list), no suggested next prompt (it
-# would stand greyed in the input line of every end frame), no skills synced from
+# would stand grayed in the input line of every end frame), no skills synced from
 # the operator's claude.ai account and none bundled with Claude Code (only
 # the project's julia-repl and show-result), and the full-screen renderer, which
 # positions every cell itself instead of redrawing by counted lines. The
@@ -484,7 +484,7 @@ clip_agent() {     # -> $AGENT_RAW/{hero,navigate,repl,crop,copy}.mkv, layout.pn
     rec_stop
     printf 'T_PROMPT=%s\nT_FIG=%s\n' "$T_PROMPT" "$T_FIG" >"$AGENT_RAW/times.sh"
     # navigate: the finished conversation stays in the agent pane while the
-    # user browses. layout.png (the labelled layout's source) is this
+    # user browses. layout.png (the labeled layout's source) is this
     # layout once the take ends, back on the agent's bar chart, the drawer
     # opened and a run of the script in it.
     stop_fe
@@ -536,7 +536,7 @@ clip_agent() {     # -> $AGENT_RAW/{hero,navigate,repl,crop,copy}.mkv, layout.pn
 # It is found per frame as the topmost pixel row whose text ends where
 # "/clear" ends (x 92..108 past the border; the empty input line ends
 # sooner, any other line later, "Working…" included), with a dark gap
-# before the text (not the logo) and the grey prompt mark in the gutter
+# before the text (not the logo) and the gray prompt mark in the gutter
 # within 8 px (not a white or green tool bullet).
 banner_masks() {
     ffmpeg -loglevel error -i "$1" -vf "fps=$FPS,crop=200:480:$((AGENT_PANE_X + 2)):40" \
@@ -545,7 +545,7 @@ import sys
 fps, x0, w, bg = float(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 C, R = 200, 480
 lit = bytes(1 if v > 90 else 0 for v in range(256))
-def grey(r):
+def gray(r):
     return any(60 < max(p) < 180 and max(p) - min(p) < 25 for p in zip(r[0:60:3], r[1:60:3], r[2:60:3]))
 bots = []
 while (f := sys.stdin.buffer.read(3 * C * R)) and len(f) == 3 * C * R:
@@ -553,7 +553,7 @@ while (f := sys.stdin.buffer.read(3 * C * R)) and len(f) == 3 * C * R:
     g = [r[1::3] for r in rows]
     end = [r[22:].translate(lit).rfind(1) + 22 for r in g]
     ys = [y for y in range(R) if 92 <= end[y] <= 108 and max(g[y][14:26]) < 60
-          and any(grey(r) for r in rows[max(0, y - 8):y + 9])]
+          and any(gray(r) for r in rows[max(0, y - 8):y + 9])]
     y = ys[0] if ys else -1
     while y >= 0 and y + 1 < R and (y + 1) in ys: y += 1
     bots.append(40 + y + 14 if y >= 0 else -1)
@@ -664,7 +664,7 @@ agent_cut() {      # $AGENT_RAW -> the agent loops, hero.gif, hero-phone.png, ag
     cp "$OUT/hero.png" "$OUT/agent-result.png"
     ffmpeg -loglevel error -y -i "$OUT/hero.png" -vf "$(cards_vf v "$PHONE_CHART" "$PHONE_AGENT")" "$OUT/hero-phone.png"
     # README fallback: the left column beside the agent's rows as two cards,
-    # tighter than the hero for GitHub's ~830 px column; flat colours, no
+    # tighter than the hero for GitHub's ~830 px column; flat colors, no
     # dither (dithered bars speckle).
     ffmpeg -loglevel error -y -i "$WORK/hero.mkv" -filter_complex \
         "fps=8,$(cards_vf h "$GIF_LEFT" "$GIF_AGENT"),split[p][q];[p]palettegen=max_colors=256:stats_mode=full[pal];[q][pal]paletteuse=dither=none:diff_mode=rectangle" \

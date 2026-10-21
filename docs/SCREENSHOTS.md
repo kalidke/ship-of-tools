@@ -60,7 +60,7 @@ ICD (`mesa-vulkan-drivers`). Shoot every published file on one build: check
 - **No version label.** The window's bottom border carries a label naming
   the frontend and backend versions. No published file shows it: every crop
   but `preview-math` ends above it (`BODY_H`, y 1014 at most), including the
-  full-window `repl` loop, and `layout-labelled`, cut before labelling;
+  full-window `repl` loop, and `layout-labelled`, cut before labeling;
   `preview-math` runs lower but shows only the pane border there.
 
 ### Agent takes (`docs-media.sh agent`)
@@ -110,9 +110,9 @@ take.
 - **Banner.** Claude Code's welcome banner names the account's plan, no
   setting hides it, and `/clear` does not remove it; under it sit a promo
   line ("Get to finished work sooner … /model") and the `/clear` echo.
-  `banner_masks` finds the `/clear` line in every frame of a take (a grey
+  `banner_masks` finds the `/clear` line in every frame of a take (a gray
   prompt mark, then text ending where "/clear" ends) and blanks the agent
-  pane from its top row down through it in the pane's own colour, so the
+  pane from its top row down through it in the pane's own color, so the
   logo, the plan, the promo line and `/clear` never show, in the hero or in
   the full-window `repl` loop alike; the gallery crops' agent rows start
   below it. Check a new cut's first seconds for any of them.

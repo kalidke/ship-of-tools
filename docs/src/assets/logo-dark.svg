@@ -16,7 +16,7 @@
     <circle cx="27" cy="27" r="7"/>
   </g>
   <!-- canonical Julia orientation: green top, red bottom-left, purple bottom-right.
-       Enlarged (r 7.5 -> 12) so the Julia colours survive the downscale to the
+       Enlarged (r 7.5 -> 12) so the Julia colors survive the downscale to the
        miniature nav-strip logo, where r=7.5 knobs shrank to invisible dots. -->
   <circle cx="64" cy="12" r="12" fill="#389826"/>
   <circle cx="27" cy="101" r="12" fill="#cb3c33"/>

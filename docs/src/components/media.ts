@@ -1,7 +1,7 @@
 // Demo media resolved at BUILD time through Vite's glob import, so a missing
 // file is simply absent from the map: the page still builds and the component
 // renders an empty frame in its place. mediaUrl looks in assets/media/;
-// assetUrl takes a path relative to assets/ (for crops and labelled stills).
+// assetUrl takes a path relative to assets/ (for crops and labeled stills).
 // mediaSize and assetSize give a PNG's [width, height] (see config.mts).
 import sizes from 'virtual:sot-media-sizes'
 
