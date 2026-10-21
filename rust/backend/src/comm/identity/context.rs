@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::derive::Kind;
 use super::{paths, self_file};
 use crate::comm::registry::registry::{binding, Binding};
 
@@ -18,6 +19,8 @@ pub(crate) struct Context {
     /// The row the identity names: a pinned self file's, else `$SOT_WORKSPACE_ID`.
     pub row_id: String,
     pub repo: String,
+    /// The agent kind the row's start stamped as `$SOT_AGENT_KIND`; Claude when absent.
+    pub kind: Kind,
     /// The canonical project root.
     pub project_root: String,
     /// The handle, or `""` (not joined, or another row's).
@@ -154,6 +157,7 @@ pub(crate) fn resolve(rebind: bool, cwd: &Path, may_write: impl FnOnce() -> bool
         workspace_id,
         row_id,
         repo,
+        kind: Kind::of(&env("SOT_AGENT_KIND")),
         project_root,
         name,
         name_held_by,

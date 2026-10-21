@@ -5,7 +5,7 @@ use crate::comm::test_home::TestHome;
 fn a_session_start_joins_and_prints_one_bootstrap_line_and_the_rules() {
     let t = TestHome::new();
     let o = session_start(&[]);
-    let h = crate::comm::identity::derive::tier(1, &t.root(), "box1").1;
+    let h = crate::comm::identity::derive::tier(1, &t.root(), "box1", Default::default()).1;
     assert_eq!(o.code, 0);
     assert!(o.stdout.contains(&format!("Joined sot-comm as @{h} ")), "{}", o.stdout);
     assert!(o.stdout.contains(&format!("\nBOOTSTRAP-ARM handle={h} identity=ok WAKE: daemon\n")), "{}", o.stdout);

@@ -6,7 +6,7 @@ fn args(a: &[&str]) -> Vec<String> {
 }
 
 fn tier1(t: &TestHome) -> String {
-    tier(1, &t.root(), "box1").1
+    tier(1, &t.root(), "box1", Default::default()).1
 }
 
 /// A plain join derives `<folder>-<host>`, writes the entry, the self file and the inbox, and says so.

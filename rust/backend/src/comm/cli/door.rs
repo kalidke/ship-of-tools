@@ -6,7 +6,7 @@ use std::io::Read;
 use serde_json::Value;
 
 use super::{gate, routable as routable_check, Out};
-use crate::comm::identity::derive::{derive as derive_handle, Mode};
+use crate::comm::identity::derive::{derive as derive_handle, Kind, Mode};
 use crate::comm::registry::registry::{command_lock_wait, iso8601_utc_now, read_doc, touch, update, TOUCH_LOCK_WAIT};
 
 fn registry_path() -> std::path::PathBuf {
@@ -161,7 +161,7 @@ pub(crate) fn derive(args: &[String]) -> Out {
     let unreadable = "comm: the registry could not be read, so no handle was derived; nothing was written".to_string();
     let got = if let Some(entry) = entry {
         update(&registry_path(), command_lock_wait(), |agents| {
-            let d = derive_handle(mode, root, host, agents, None, &mut notes)?;
+            let d = derive_handle(mode, root, host, Kind::Claude, agents, None, &mut notes)?;
             agents.insert(d.name.clone(), entry);
             Ok((d, true))
         })
@@ -169,7 +169,7 @@ pub(crate) fn derive(args: &[String]) -> Out {
     } else {
         read_doc(&registry_path())
             .map_err(|_| unreadable.clone())
-            .and_then(|doc| derive_handle(mode, root, host, &doc["agents"].as_object().cloned().unwrap_or_default(), None, &mut notes))
+            .and_then(|doc| derive_handle(mode, root, host, Kind::Claude, &doc["agents"].as_object().cloned().unwrap_or_default(), None, &mut notes))
     };
     o.errs(&notes);
     match got {

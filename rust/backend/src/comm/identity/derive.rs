@@ -46,15 +46,32 @@ pub(crate) fn handle_host(raw: &str) -> String {
     if host == raw { host } else { format!("{host}-{}", hash6(raw)) }
 }
 
-/// Tier `n`'s qualifier and handle for `root` on `host` (the host piece): tier 1 has none, tier 2 the parent folder's
-/// name, tier 3 the root's hash.
-pub(crate) fn tier(n: u8, root: &str, host: &str) -> (String, String) {
+/// The agent kind a handle is derived for: a Codex row's handle carries `-cx` before the host, so it never meets a
+/// Claude row's in the same folder.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Kind {
+    #[default]
+    Claude,
+    Codex,
+}
+
+impl Kind {
+    /// The kind a row's `agent_kind` names; anything but `codex` is Claude.
+    pub(crate) fn of(agent_kind: &str) -> Kind {
+        if agent_kind == "codex" { Kind::Codex } else { Kind::Claude }
+    }
+}
+
+/// Tier `n`'s qualifier and handle for `root` on `host` (the host piece) for an agent of `kind`: tier 1 has none, tier 2
+/// the parent folder's name, tier 3 the root's hash.
+pub(crate) fn tier(n: u8, root: &str, host: &str, kind: Kind) -> (String, String) {
     let base = sanitize_component(&basename(root), 20);
     let q = match n {
         1 => String::new(),
         2 => sanitize_component(&basename(&dirname(root)), 20),
         _ => hash6(root),
     };
+    let host = if kind == Kind::Codex && false { format!("cx-{host}") } else { host.to_string() };
     let name = if q.is_empty() { format!("{base}-{host}") } else { format!("{base}-{q}-{host}") };
     (q, name)
 }
@@ -90,13 +107,14 @@ fn bound_row(agents: &Map<String, Value>, name: &str) -> String {
 }
 
 /// The derivation over the registry's `agents` (read under the lock by the caller that writes the result). `root` is
-/// canonical; `raw_host` the box's raw host name. A join from outside any row passes `cleared`: a tier must also be
+/// canonical; `raw_host` the box's raw host name; `kind` the agent's. A join from outside any row passes `cleared`: a tier must also be
 /// still cleared, an unheld one included. Lines for the session (a stepped-past tier) go to `notes`; `Err` is the
 /// reason no tier can be taken, and nothing is to be written.
 pub(crate) fn derive(
     mode: Mode,
     root: &str,
     raw_host: &str,
+    kind: Kind,
     agents: &Map<String, Value>,
     cleared: Option<&Cleared>,
     notes: &mut Vec<String>,
@@ -113,11 +131,11 @@ pub(crate) fn derive(
         }
     };
     let shown = |name: &str| held(name).filter(|r| !r.is_empty()).unwrap_or_else(|| "an unknown project".to_string());
-    let (_, t1) = tier(1, root, &host);
+    let (_, t1) = tier(1, root, &host, kind);
     if claimable(&t1) {
         return Ok(Derived { name: t1.clone(), qualifier: String::new(), tier1: t1 });
     }
-    let (q2, t2) = tier(2, root, &host);
+    let (q2, t2) = tier(2, root, &host, kind);
     if claimable(&t2) {
         if cleared.is_some_and(|c| !still_cleared(agents, &t1, c)) {
             notes.push(format!("comm: @{t1} is held by a row; a session outside any row joins as @{t2}"));
@@ -126,7 +144,7 @@ pub(crate) fn derive(
         }
         return Ok(Derived { name: t2, qualifier: q2, tier1: t1 });
     }
-    let (q3, t3) = tier(3, root, &host);
+    let (q3, t3) = tier(3, root, &host, kind);
     if claimable(&t3) {
         notes.push(format!(
             "comm: '@{t1}' (held by {}) and '@{t2}' (held by {}) are both taken \u{2014} joining as '@{t3}' instead",

@@ -173,7 +173,7 @@ fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
         if name.is_empty() {
             let host = crate::comm::identity::derive::handle_host(&ctx.handle_host);
             for n in 1..=3 {
-                let (_, t) = tier(n, &ctx.project_root, &host);
+                let (_, t) = tier(n, &ctx.project_root, &host, ctx.kind);
                 if let Ok(ws) = outside_clearance(ctx, &t) {
                     cleared.push((t, ws));
                 }
@@ -185,7 +185,7 @@ fn joined(mut o: Out, ctx: &Context, ask: Ask) -> Out {
     let claim = update(&ctx.registry(), command_lock_wait(), |agents| {
         if derived {
             let mut lines = Vec::new();
-            let d = derive(Mode::Reclaim, &ctx.project_root, &ctx.handle_host, agents, outside.then_some(&cleared[..]), &mut lines)?;
+            let d = derive(Mode::Reclaim, &ctx.project_root, &ctx.handle_host, ctx.kind, agents, outside.then_some(&cleared[..]), &mut lines)?;
             agents.insert(d.name.clone(), obj.clone());
             Ok(((Some(d), lines), true))
         } else {
