@@ -15,8 +15,9 @@ unread. Design of record: docs/history/adr/0049-messaging-on-one-page.md. The co
 - Address book scripts: `comm-context.sh`, `comm-join.sh`, `comm-leave.sh`, `comm-list.sh`, `comm-self-audit.sh`,
   `comm-registry-lock-clear.sh`, `comm-session-start.sh`, and the registry half of the library (`registry_replace`, `sot_registry_read` in `lib/comm-lib-registry.sh`, `with_lock` in `lib/comm-lib-registry-lock.sh`,
   `sot_require_agent` in `lib/comm-lib-agent-layers.sh`).
-- Work-state: `comm-status.sh`, `comm-turn-auditor.sh`, the four Claude status hooks and the Codex blocked hook (the row
-  colour is a reduction of the facts they stamp).
+- Housed here, rows': work-state (`work_state/`: `comm-status.sh`, `comm-turn-auditor.sh`, the status hooks), whose
+  contract is rows' (rust/backend/src/rows/CLAUDE.md, work-state); the Stop hook's mail gate and
+  `comm-subagent-guard.sh` in `work_state/hooks/` are messaging's.
 - Housed here, not messaging: the shell daemon client in `lib/comm-lib-client.sh` (`sot_oneshot_request`) and the agent adapters under
   `adapters/`. The CLIs that start, end, probe and bootstrap rows moved to `agents/spawn/`, the `/worktree` scripts to
   `agents/worktree/`, and `sot-fe` and `sot-nav.sh` to `agents/sot-fe/`, installed into the same bin. The launchers, the
@@ -82,7 +83,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mail/`: `comm-send.sh`, `comm-relay.sh` and `comm-poll.sh`, installed flat beside the library.
 - `registry/`: the address book scripts: identity, join, leave, list, self-audit, lock recovery, session start.
 - `tests/`: the hermetic suites that prove the scripts, run from a staged flat bin (see its page).
-- `work_state/`: `comm-status.sh`, `comm-turn-auditor.sh` and the status hooks (`work_state/hooks/`), the row colour's reduction.
+- `work_state/`: rows' work-state scripts and hooks (`work_state/hooks/`), installed with these; their contract is rows'.
 - `rust/backend/src/comm/mail/`: the daemon's delivery: `comm.file` (`file_comm`), its offers to linked daemons
   (`links.rs`) and the hub link that answers them (`run`), the append (`file_frame`), and the `agent.send` UI
   notification and its `agent.message` bus (`relay.rs`).
@@ -98,7 +99,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mail/`: the send, relay and poll scripts (see Folders).
 - `registry/`: the address book scripts (see Folders).
 - `tests/`: the suites and their stage (see Folders).
-- `work_state/`: the work-state scripts and hooks (see Folders).
+- `work_state/`: rows' work-state scripts and hooks (see Folders).
 
 ## Start here
 For mail, `mail/comm-send.sh` then `sot_inbox_append` in `lib/comm-lib-inbox.sh`, and `rust/backend/src/comm/mail/inbox.rs`

@@ -1,1 +1,1 @@
-Part of messaging: see ../CLAUDE.md.
+Part of rows: see ../../rust/backend/src/rows/CLAUDE.md (work-state).
