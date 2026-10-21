@@ -63,9 +63,10 @@ core="${VERSION%%-*}"
 remote_tags=$(git ls-remote --tags origin "v$core" "v$core-*") \
     || { echo "preflight: cannot read origin's tags — the highest tag on the $core line is unknown" >&2; exit 1; }
 line_tags=()
+# `[^^]*` drops the `refs/tags/<tag>^{}` peel lines; a tag name cannot hold `^`. (No comment inside the substitution:
+# bash 3.2 reads an apostrophe in one as an open quote.)
 while read -r t; do [[ -n "$t" ]] && line_tags+=("$t"); done < <(
     { git tag --list "v$core" "v$core-*"
-      # `[^^]*` drops the `refs/tags/<tag>^{}` peel lines; a tag name can't hold `^`.
       printf '%s\n' "$remote_tags" | sed -n 's|^.*refs/tags/\([^^]*\)$|\1|p'
     } | sort -u
 )

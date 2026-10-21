@@ -120,7 +120,8 @@ check "windows-only test code: windows-tests goes red" 'winis winonly red'
 new_ub() {
   new_repo "$1"
   cp "$here/under-bash.sh" "$here/sigpipe-scan.awk" "$repo/scripts/tests/"
-  for s in installer-state installer-wrapper installer-apply installer-shared-home test-topology-plan test-sigpipe-scan; do
+  for s in installer-state installer-wrapper installer-apply installer-shared-home test-topology-plan test-sigpipe-scan \
+      test-release-cut; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/tests/$s.sh"
   done
   printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/comm/tests/test-ok.sh"

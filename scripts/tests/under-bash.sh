@@ -7,7 +7,7 @@
 # the scripts it tests into its own shell, so it runs on BASH itself; any other suite runs on the bash running this
 # script, which must be 4 or later, since those suites use what 3.2 lacks. With no SUITE: every hermetic suite, each
 # comm/tests/test-*.sh and agents/tests/test-*.sh but the five that need peer hosts (comm/tests/CLAUDE.md), and the
-# five scripts/tests suites. Prints `under-bash: PASS|FAIL SUITE` per suite and `under-bash: FAIL parse SCRIPT` per
+# seven scripts/tests suites. Prints `under-bash: PASS|FAIL SUITE` per suite and `under-bash: FAIL parse SCRIPT` per
 # script that does not parse or runs a utility by the `command` builtin outside a pipeline (under bash 3.2 and set -e
 # that ends the shell when the utility fails, even where an if, ! or || handles it), and `under-bash: FAIL early-reader
 # SCRIPT:LINE:TEXT` per pipeline whose reader can stop early (sigpipe-scan.awk), and `under-bash: FAIL bare-in-place-sed
@@ -27,7 +27,8 @@ if [ $# -eq 0 ]; then
         esac
     done
     set -- "$@" scripts/tests/installer-state.sh scripts/tests/installer-wrapper.sh scripts/tests/installer-apply.sh \
-        scripts/tests/installer-shared-home.sh scripts/tests/test-topology-plan.sh scripts/tests/test-sigpipe-scan.sh
+        scripts/tests/installer-shared-home.sh scripts/tests/test-topology-plan.sh scripts/tests/test-sigpipe-scan.sh \
+        scripts/tests/test-release-cut.sh
 fi
 shadow="$(mktemp -d "${TMPDIR:-/tmp}/under-bash-XXXXXX")" || exit 2
 trap 'rm -rf "${shadow:?}"' EXIT
