@@ -222,118 +222,17 @@ async fn serve_request(stream: &mut TcpStream, request: &Request) -> Result<bool
 }
 
 #[cfg(test)]
-mod bind_fallback_tests {
-    use super::*;
-    use tokio::io::AsyncWriteExt;
-
-    const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
-    /// Preferred port taken (an ephemeral squatter standing in for another
-    /// user's daemon on a shared host) → `spawn` falls back to an
-    /// OS-assigned port, records it for `bound_video_port()`, and actually
-    /// serves on it (unknown grant → 404, proving it's OUR server).
-    #[tokio::test]
-    async fn spawn_falls_back_to_ephemeral_when_preferred_taken() {
-        let squatter = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let taken = squatter.local_addr().unwrap().port();
-        spawn(taken).await.expect("fallback bind should succeed");
-        let bound = bound_video_port().expect("actual port recorded");
-        assert_ne!(bound, taken, "must not claim the squatted port");
-        let mut s = TcpStream::connect(("127.0.0.1", bound)).await.unwrap();
-        s.write_all(b"GET /nosuchtoken HTTP/1.1\r\nHost: x\r\n\r\n")
-            .await
-            .unwrap();
-        let mut buf = [0u8; 128];
-        let n = tokio::time::timeout(BOUND, s.read(&mut buf))
-            .await
-            .expect("the video server's answer within BOUND")
-            .unwrap();
-        let head = String::from_utf8_lossy(&buf[..n]);
-        assert!(head.contains("404"), "unknown grant must 404, got: {head}");
-    }
-}
+#[path = "video_bind_fallback_tests.rs"]
+mod bind_fallback_tests;
 
 #[cfg(test)]
-mod grant_token_tests {
-    use super::*;
-
-    #[test]
-    fn register_video_mints_fresh_lowercase_hex_tokens() {
-        let a = register_video(PathBuf::from("/mw09/a.mp4")).expect("token");
-        let b = register_video(PathBuf::from("/mw09/b.mp4")).expect("token");
-        for t in [&a, &b] {
-            assert_eq!(t.len(), 32, "token {t}");
-            assert!(t.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')), "token {t}");
-        }
-        assert_ne!(a, b);
-    }
-}
+#[path = "video_grant_token_tests.rs"]
+mod grant_token_tests;
 
 #[cfg(test)]
-mod video_ext_tests {
-    use super::*;
-
-    #[test]
-    fn servable_video_is_the_five_extensions_in_any_case() {
-        for p in ["a.mp4", "A.MP4", "b.WebM", "c.mov", "d.MKV", "e.m4v"] {
-            assert!(is_servable_video(Path::new(p)), "{p} should be servable");
-        }
-        for p in ["clip.avi", "song.mp3", "x.gif", "noext", "mp4"] {
-            assert!(!is_servable_video(Path::new(p)), "{p} should not be servable");
-        }
-    }
-
-    /// The Julia plugin matches a name that ends in a dotted suffix, a leading-dot name included; the server
-    /// serves and types exactly those names.
-    #[test]
-    fn dotfile_video_has_one_route_and_mime() {
-        let video = [
-            (".mp4", "video/mp4"),
-            (".M4V", "video/mp4"),
-            ("dir.d/.webm", "video/webm"),
-            ("a.b.c.MOV", "video/quicktime"),
-            ("/x/y/clip.Mkv", "video/x-matroska"),
-        ];
-        for (p, mime) in video {
-            assert!(is_servable_video(Path::new(p)), "{p} should be servable");
-            assert_eq!(content_type(Path::new(p)), mime, "{p}");
-        }
-        for p in [
-            "mp4",
-            "webm",
-            "dir.mp4/clip",
-            "clip.mp4.txt",
-            "clip.mp4/",
-            "",
-            "clip.avi",
-        ] {
-            assert!(
-                !is_servable_video(Path::new(p)),
-                "{p} should not be servable"
-            );
-            assert!(!content_type(Path::new(p)).starts_with("video/"), "{p}");
-        }
-    }
-}
+#[path = "video_ext_tests.rs"]
+mod video_ext_tests;
 
 #[cfg(test)]
-mod serve_own_tests {
-    use super::*;
-    use tokio::io::AsyncWriteExt;
-
-    #[tokio::test]
-    async fn this_accounts_connection_is_served_through_the_real_check() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "test", serve_conn));
-        let mut c = TcpStream::connect(addr).await.unwrap();
-        c.write_all(b"GET /nosuchtoken HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
-        let mut buf = [0u8; 128];
-        let n = tokio::time::timeout(std::time::Duration::from_secs(5), c.read(&mut buf))
-            .await
-            .expect("this account's connection must be answered")
-            .unwrap();
-        let head = String::from_utf8_lossy(&buf[..n]);
-        assert!(head.starts_with("HTTP/1.1 404"), "got: {head}");
-    }
-}
+#[path = "video_serve_own_tests.rs"]
+mod serve_own_tests;

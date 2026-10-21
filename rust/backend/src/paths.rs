@@ -136,73 +136,16 @@ pub fn simplify_verbatim(p: std::path::PathBuf) -> std::path::PathBuf {
 }
 
 #[cfg(all(test, windows))]
-mod verbatim_tests {
-    use super::simplify_verbatim;
-    use std::path::PathBuf;
-
-    #[test]
-    fn strips_drive_verbatim() {
-        assert_eq!(
-            simplify_verbatim(PathBuf::from(r"\\?\C:\Users\k\proj")),
-            PathBuf::from(r"C:\Users\k\proj")
-        );
-    }
-
-    #[test]
-    fn strips_unc_verbatim() {
-        assert_eq!(
-            simplify_verbatim(PathBuf::from(r"\\?\UNC\srv\share\x")),
-            PathBuf::from(r"\\srv\share\x")
-        );
-    }
-
-    #[test]
-    fn strips_single_backslash_drive_verbatim() {
-        // The shape `toml_unquote` (`rows/store/codec.rs`) produces for a raw,
-        // never-escaped legacy write of `\\?\C:\...`: its leading `\\`
-        // reads as one escaped backslash, halving the prefix to `\?\`.
-        assert_eq!(
-            simplify_verbatim(PathBuf::from(r"\?\C:\Users\k\proj")),
-            PathBuf::from(r"C:\Users\k\proj")
-        );
-    }
-
-    #[test]
-    fn leaves_plain_and_odd_verbatim_alone() {
-        assert_eq!(
-            simplify_verbatim(PathBuf::from(r"C:\plain")),
-            PathBuf::from(r"C:\plain")
-        );
-        // A verbatim path whose remainder isn't a drive path stays verbatim
-        // rather than being mangled.
-        assert_eq!(
-            simplify_verbatim(PathBuf::from(r"\\?\Volume{guid}\x")),
-            PathBuf::from(r"\\?\Volume{guid}\x")
-        );
-    }
-}
+#[path = "paths_verbatim_tests.rs"]
+mod verbatim_tests;
 
 /// `simplify_verbatim` is a Windows-only rewrite — everywhere else (this
 /// crate's Linux/macOS CI leg included) it must be a true no-op, verbatim
 /// prefix or not, so a Windows-formatted string passed through on a
 /// non-Windows host round-trips unchanged rather than being mangled.
 #[cfg(all(test, not(windows)))]
-mod non_windows_noop_tests {
-    use super::simplify_verbatim;
-    use std::path::PathBuf;
-
-    #[test]
-    fn leaves_plain_path_unchanged() {
-        let p = PathBuf::from("/home/u/proj");
-        assert_eq!(simplify_verbatim(p.clone()), p);
-    }
-
-    #[test]
-    fn leaves_windows_style_verbatim_string_unchanged() {
-        let p = PathBuf::from(r"\\?\C:\Users\k\proj");
-        assert_eq!(simplify_verbatim(p.clone()), p);
-    }
-}
+#[path = "paths_non_windows_noop_tests.rs"]
+mod non_windows_noop_tests;
 
 /// Filesystem-safe slug derived from an arbitrary label. Lowercased; runs of
 /// non-`[a-z0-9_-]` characters collapse to a single `-`; dots are replaced
@@ -438,70 +381,8 @@ pub(crate) fn valid_name(s: &str) -> bool {
 /// parent dir (F1: this is the function that actually closes the hijack
 /// hole, since `tmux.rs`/`pty.rs` call THIS, not `is_private_dir` directly).
 #[cfg(all(test, unix))]
-mod secure_private_dir_tests {
-
-    #[test]
-    fn a_missing_parent_is_created_and_the_leaf_is_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let root = tempfile::tempdir().unwrap();
-        let leaf = root.path().join("a").join("b").join("sot");
-        secure_private_dir(&leaf).unwrap();
-        assert_eq!(std::fs::metadata(&leaf).unwrap().permissions().mode() & 0o777, 0o700);
-        secure_private_dir(&leaf).unwrap(); // idempotent on the second boot
-    }
-    use super::secure_private_dir;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-
-    /// A fresh folder and a path `name` inside it; the folder's drop removes both, even when the test panics.
-    fn scratch_path(name: &str) -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(name);
-        (dir, path)
-    }
-
-    #[test]
-    fn absent_dir_is_created_owner_only() {
-        let (_d_dir, d) = scratch_path("absent");
-        assert!(secure_private_dir(&d).is_ok());
-        let meta = std::fs::symlink_metadata(&d).unwrap();
-        assert!(meta.is_dir());
-        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
-    }
-
-    #[test]
-    fn existing_owner_only_dir_is_accepted() {
-        let (_d_dir, d) = scratch_path("existing-ok");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(secure_private_dir(&d).is_ok());
-    }
-
-    #[test]
-    fn existing_group_readable_dir_is_rejected() {
-        let (_d_dir, d) = scratch_path("existing-group-readable");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o750)).unwrap();
-        assert!(secure_private_dir(&d).is_err());
-    }
-
-    #[test]
-    fn existing_symlink_is_rejected_even_to_a_valid_dir() {
-        let (_target_dir, target) = scratch_path("symlink-target");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let (_link_dir, link) = scratch_path("symlink-link");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert!(secure_private_dir(&link).is_err());
-    }
-
-    #[test]
-    fn existing_regular_file_is_rejected() {
-        let (_d_dir, d) = scratch_path("a-file");
-        std::fs::write(&d, b"not a dir").unwrap();
-        assert!(secure_private_dir(&d).is_err());
-    }
-}
+#[path = "paths_secure_private_dir_tests.rs"]
+mod secure_private_dir_tests;
 
 /// `state_dir()`'s platform dispatch. The Unix branch is unchanged
 /// behaviour (still `$XDG_STATE_HOME` / `$HOME/.local/state/sot` /
@@ -512,143 +393,9 @@ mod secure_private_dir_tests {
 /// unset. Env-guard shape matches `sot_log::host::state_dir`'s own tests
 /// (`state_dir.rs`) so the two stay easy to compare.
 #[cfg(test)]
-mod state_dir_tests {
-    use super::*;
-
-    struct EnvGuard {
-        _serial: std::sync::MutexGuard<'static, ()>,
-        xdg_state_home: Option<std::ffi::OsString>,
-        home: Option<std::ffi::OsString>,
-        localappdata: Option<std::ffi::OsString>,
-        userprofile: Option<std::ffi::OsString>,
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (key, val) in [
-                ("XDG_STATE_HOME", &self.xdg_state_home),
-                ("HOME", &self.home),
-                ("LOCALAPPDATA", &self.localappdata),
-                ("USERPROFILE", &self.userprofile),
-            ] {
-                match val {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-    }
-
-    fn guarded() -> EnvGuard {
-        let serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        EnvGuard {
-            xdg_state_home: std::env::var_os("XDG_STATE_HOME"),
-            home: std::env::var_os("HOME"),
-            localappdata: std::env::var_os("LOCALAPPDATA"),
-            userprofile: std::env::var_os("USERPROFILE"),
-            _serial: serial,
-        }
-    }
-
-    #[test]
-    #[cfg(not(windows))]
-    fn unix_still_prefers_xdg_state_home() {
-        let _guard = guarded();
-        std::env::set_var("XDG_STATE_HOME", "/xdg-state");
-        std::env::set_var("HOME", "/home/someone");
-        assert_eq!(state_dir(), PathBuf::from("/xdg-state/sot"));
-    }
-
-    #[test]
-    #[cfg(not(windows))]
-    fn unix_falls_back_to_home_when_xdg_state_home_unset() {
-        let _guard = guarded();
-        std::env::remove_var("XDG_STATE_HOME");
-        std::env::set_var("HOME", "/home/someone");
-        assert_eq!(state_dir(), PathBuf::from("/home/someone/.local/state/sot"));
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_uses_localappdata_state_subdir() {
-        let _guard = guarded();
-        std::env::set_var("LOCALAPPDATA", r"C:\Users\someone\AppData\Local");
-        assert_eq!(
-            state_dir(),
-            PathBuf::from(r"C:\Users\someone\AppData\Local\sot\state")
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_ignores_xdg_state_home() {
-        let _guard = guarded();
-        std::env::set_var("XDG_STATE_HOME", r"C:\should\be\ignored");
-        std::env::set_var("LOCALAPPDATA", r"C:\Users\someone\AppData\Local");
-        assert_eq!(
-            state_dir(),
-            PathBuf::from(r"C:\Users\someone\AppData\Local\sot\state")
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_falls_back_to_userprofile_when_localappdata_unset() {
-        let _guard = guarded();
-        std::env::remove_var("LOCALAPPDATA");
-        std::env::remove_var("XDG_STATE_HOME");
-        std::env::set_var("USERPROFILE", r"C:\Users\someone");
-        assert_eq!(
-            state_dir(),
-            PathBuf::from(r"C:\Users\someone\AppData\Local\sot\state")
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    #[should_panic(expected = "cannot resolve the Windows state root")]
-    fn windows_panics_when_localappdata_and_userprofile_are_both_unset() {
-        let _guard = guarded();
-        std::env::remove_var("LOCALAPPDATA");
-        std::env::remove_var("USERPROFILE");
-        let _ = state_dir();
-    }
-}
+#[path = "paths_state_dir_tests.rs"]
+mod state_dir_tests;
 
 #[cfg(test)]
-mod valid_name_tests {
-    use super::valid_name;
-
-    #[test]
-    fn accepts_typical_names() {
-        assert!(valid_name("sot-be-myhost"));
-        assert!(valid_name("myhost-dev"));
-        assert!(valid_name("MyPackage.jl"));
-        assert!(valid_name("a"));
-        assert!(valid_name(&"a".repeat(64)));
-    }
-
-    #[test]
-    fn rejects_empty_and_oversize() {
-        assert!(!valid_name(""));
-        assert!(!valid_name(&"a".repeat(65)));
-    }
-
-    #[test]
-    fn rejects_shell_and_parser_metacharacters() {
-        // The pipe is the specific `tmux.rs` list-parsing corruption vector;
-        // the rest are generic shell-injection/whitespace rejects.
-        for bad in [
-            "a|b",
-            "a;b",
-            "a b",
-            "a'b",
-            "a$b",
-            "a`b",
-            "a\nb",
-            "/etc/passwd",
-        ] {
-            assert!(!valid_name(bad), "expected {bad:?} to be rejected");
-        }
-    }
-}
+#[path = "paths_valid_name_tests.rs"]
+mod valid_name_tests;
