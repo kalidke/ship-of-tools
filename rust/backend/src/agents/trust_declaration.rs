@@ -105,7 +105,7 @@ fn declare_with(
         .ok_or_else(|| at(path, "settings file has no parent"))?;
     std::fs::create_dir_all(parent).map_err(|e| at(path, e))?;
     if existing.is_some() {
-        crate::durable::write(path, &bytes).map_err(|e| at(path, e))?;
+        sot_platform::host::write_durable(path, &bytes).map_err(|e| at(path, e))?;
         Ok(DeclarationOutcome::Declared)
     } else {
         create_declaration(path, &bytes, before_publish)

@@ -309,7 +309,7 @@ impl Repl {
     /// binary itself ("re-resolved on every spawn attempt, so a removed or
     /// replaced install recovers on the very next attempt").
     fn repl_project() -> PathBuf {
-        crate::paths::resource_dir("julia/repl")
+        sot_platform::host::paths::resource_dir("julia/repl")
     }
 
     /// Request/response op that NEVER spawns a child: queue the submission on

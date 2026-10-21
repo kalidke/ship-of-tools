@@ -170,7 +170,7 @@ fn supervisor_stderr() -> Stdio {
 fn supervisor_stderr_file() -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new()
         .append(true)
-        .open(crate::paths::state_dir().join("sotd.log"))
+        .open(sot_platform::host::state_dir::daemon_state_dir().join("sotd.log"))
 }
 
 /// [`supervisor_stderr`] for a `std` command: the durable parent's own standard error.

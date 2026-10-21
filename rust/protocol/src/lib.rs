@@ -44,11 +44,7 @@ pub use ops::{
     WorkspaceListEntry, WorkspaceListReq, WorkspaceListRes, WorkspaceReauthReq,
     WorkspaceReauthRes,
 };
-// `is_private_dir` stays module-private to `topology::endpoint` (not
-// re-exported here): nothing outside that module calls it directly
-// (`runtime_sot_dir` is its only caller), so a crate-root re-export would
-// be dead weight -- codex follow-up, ADR 0042 L2b.
-pub use topology::endpoint::{current_uid, local_daemon_label, runtime_sot_dir, session_socket_path, slug};
+pub use topology::endpoint::{local_daemon_label, session_socket_path, slug};
 
 use serde::{Deserialize, Serialize};
 

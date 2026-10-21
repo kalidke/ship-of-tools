@@ -74,3 +74,43 @@ fn trailing_dotdot_flushes_semantic_parent() {
         std::fs::canonicalize(dir.path()).unwrap().join("a").join("v1")
     );
 }
+
+#[test]
+fn publish_noreplace_refuses_an_existing_target_and_leaves_both_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let (source, target) = (dir.path().join("source"), dir.path().join("target"));
+    std::fs::write(&source, b"new").unwrap();
+    std::fs::write(&target, b"first").unwrap();
+    match publish_noreplace(&source, &target) {
+        Err(Error::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists),
+        other => panic!("a publish over an existing target must refuse: {other:?}"),
+    }
+    assert_eq!(std::fs::read(&target).unwrap(), b"first");
+    assert_eq!(std::fs::read(&source).unwrap(), b"new");
+    std::fs::remove_file(&target).unwrap();
+    publish_noreplace(&source, &target).unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    assert!(!source.exists());
+}
+
+#[test]
+fn write_durable_replaces_a_record_and_leaves_no_temporary_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("record");
+    write_durable(&path, b"one").unwrap();
+    write_durable(&path, b"two").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"two");
+    let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(names, vec![std::ffi::OsString::from("record")]);
+}
+
+#[test]
+fn remove_durable_is_idempotent_and_accepts_a_missing_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("record");
+    write_durable(&path, b"x").unwrap();
+    remove_durable(&path).unwrap();
+    assert!(!path.exists());
+    remove_durable(&path).unwrap();
+    remove_durable(&dir.path().join("gone").join("record")).unwrap();
+}

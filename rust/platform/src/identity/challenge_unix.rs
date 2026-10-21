@@ -92,7 +92,7 @@ pub struct PeerCredentials {
     pub gid: u32,
 }
 
-pub(crate) fn peer_credentials(fd: RawFd) -> io::Result<PeerCredentials> {
+pub fn peer_credentials(fd: RawFd) -> io::Result<PeerCredentials> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     let rc = unsafe {

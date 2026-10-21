@@ -348,8 +348,8 @@ impl Prior {
         }
         let toml_path = crate::rows::store::toml_path_for(&created.slug);
         let undone = match &self.toml {
-            Some(bytes) => crate::durable::write(&toml_path, bytes),
-            None => crate::durable::remove(&toml_path),
+            Some(bytes) => sot_platform::host::write_durable(&toml_path, bytes),
+            None => sot_platform::host::remove_durable(&toml_path),
         };
         if let Err(e) = undone {
             tracing::warn!(error = %e, path = ?toml_path, "workspace.create rollback: toml restore failed");
@@ -606,7 +606,7 @@ pub async fn handle_workspace_create(
 /// rejects one as a working directory, and the row's root reaches the agent's environment (`SOT_WORKSPACE_ROOT`) and
 /// every comparison in that spelling.
 fn requested_root(req: &sot_protocol::WorkspaceCreateReq) -> std::path::PathBuf {
-    crate::paths::simplify_verbatim(std::path::PathBuf::from(&req.project_root))
+    sot_platform::host::paths::simplify_verbatim(std::path::PathBuf::from(&req.project_root))
 }
 
 #[cfg(test)]

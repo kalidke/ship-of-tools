@@ -84,7 +84,7 @@ fn runtime_root() -> &'static Path {
 }
 
 /// Creates `dir` and every component of it below `root` with an explicit
-/// `0700`, mirroring `paths::secure_socket_dir` — the check the daemon
+/// `0700`, mirroring `sot_platform::host::paths::secure_socket_dir` — the check the daemon
 /// applies to its own socket's parents, and BAILS on. A plain
 /// `create_dir_all` here would leave whatever the ambient umask allows:
 /// `0700` on a box with a `0077` umask, `0755` on a CI runner's `0022`,

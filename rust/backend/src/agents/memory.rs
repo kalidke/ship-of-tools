@@ -80,7 +80,7 @@ fn shared_projects_root(
     // branch was handing over whenever the default's `projects` was itself a
     // link. Review caught it as the emit-side twin of the cwd-check blocker.
     let emit = if kind.file_type().is_symlink() {
-        crate::paths::simplify_verbatim(canonical.clone())
+        sot_platform::host::paths::simplify_verbatim(canonical.clone())
     } else {
         spelled.clone()
     };
@@ -244,7 +244,7 @@ fn auto_memory_reason(
     // one platform where every new workspace is a capsule row. It was inverted
     // too: `canonicalize` is idempotent on verbatim input, so a `\\?\` root
     // PASSED while the plain spelling the child actually receives was refused.
-    match std::fs::canonicalize(cwd).map(crate::paths::simplify_verbatim) {
+    match std::fs::canonicalize(cwd).map(sot_platform::host::paths::simplify_verbatim) {
         Ok(resolved) if resolved.to_str().is_some_and(|r| same_cwd_spelling(r, cwd, cfg!(windows))) => {}
         _ => return Err("the cwd is not the canonical spelling the session would derive"),
     }

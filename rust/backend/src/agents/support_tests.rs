@@ -11,7 +11,7 @@ pub(super) fn touch_file(path: &Path) {
 
 /// The spelling the platform itself would hand a child. Not a `#[test]`.
 pub(super) fn platform_spelling(p: &std::path::Path) -> PathBuf {
-    crate::paths::simplify_verbatim(p.canonicalize().expect("canonical tempdir"))
+    sot_platform::host::paths::simplify_verbatim(p.canonicalize().expect("canonical tempdir"))
 }
 
 // Serialized under the crate-wide `paths::ENV_TEST_LOCK` (mirrors

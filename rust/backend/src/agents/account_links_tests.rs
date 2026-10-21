@@ -252,7 +252,7 @@ fn a_junction_reads_back_and_removes_without_touching_its_target() {
     let link = tmp.path().join("l");
     make_junction(&target, &link).unwrap();
     assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
-    assert_eq!(std::fs::read_link(&link).unwrap(), crate::paths::simplify_verbatim(target.clone()));
+    assert_eq!(std::fs::read_link(&link).unwrap(), sot_platform::host::paths::simplify_verbatim(target.clone()));
     if std::fs::metadata(&link).is_ok() {
         assert!(link.join("foo").is_dir());
     }

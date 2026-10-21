@@ -125,9 +125,9 @@ fn remember(state_dir: &Path, rels: &[String]) -> Result<(), String> {
 fn rewrite(state_dir: &Path, rels: &[String]) -> Result<(), String> {
     let path = state_dir.join(SCOPES_FILE);
     let written = if rels.is_empty() {
-        crate::durable::remove(&path)
+        sot_platform::host::remove_durable(&path)
     } else {
-        crate::durable::write(&path, format!("{}\n", rels.join("\n")).as_bytes())
+        sot_platform::host::write_durable(&path, format!("{}\n", rels.join("\n")).as_bytes())
     };
     written.map_err(|e| format!("record the row's scopes in {path:?}: {e}"))
 }

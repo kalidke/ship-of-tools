@@ -53,7 +53,7 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 /// 3. `statfs` the resolved root and refuse a root that is not durable
 ///    enough to keep RESUMING capsule rows from across a daemon restart
 ///    — a SECOND, daemon-side deny list answering a different question
-///    than [`sot_platform::host::state_dir::preflight_volume`]'s own remote-fs one:
+///    than [`sot_platform::host::preflight_volume`]'s own remote-fs one:
 ///    that one asks whether the store's primitives work at all (tmpfs
 ///    passes — see its own doc); this one asks about durability, which
 ///    tmpfs/ramfs answer no to regardless of how well they support
@@ -82,7 +82,7 @@ pub fn qualified_state_root(row: Option<&Path>) -> Result<PathBuf, String> {
     // dir already uses for exactly this threat model (atomic 0700 create
     // when absent; symlink/owner/mode-checked, never trusted, when
     // present) -- reused here rather than a second bespoke check.
-    crate::paths::secure_private_dir(&root)
+    sot_platform::host::paths::secure_private_dir(&root)
         .map_err(|e| format!("could not secure the state root {root:?}: {e}"))?;
     let root = std::fs::canonicalize(&root)
         .map_err(|e| format!("could not resolve the state root {root:?}: {e}"))?;
@@ -108,7 +108,7 @@ pub fn qualified_state_root(row: Option<&Path>) -> Result<PathBuf, String> {
             ));
         }
     }
-    preflight_verdict(sot_platform::host::state_dir::preflight_volume(&root).map_err(sot_log::Error::from), row.is_some_and(row_has_run))?;
+    preflight_verdict(sot_platform::host::preflight_volume(&root).map_err(sot_log::Error::from), row.is_some_and(row_has_run))?;
     Ok(root)
 }
 
@@ -163,7 +163,7 @@ mod linux_only {
     /// Volatile filesystem magic numbers `statfs(2)` can report — refused
     /// on the state root itself regardless of how well they support the
     /// store's own primitives (tmpfs/ramfs support `RENAME_NOREPLACE`
-    /// and directory fsync fine — [`sot_platform::host::state_dir::preflight_volume`]'s
+    /// and directory fsync fine — [`sot_platform::host::preflight_volume`]'s
     /// own remote-fs deny list does NOT refuse them, deliberately, since
     /// developer `/tmp` is often tmpfs). A durable capsule RECORD ROOT is
     /// a different, stricter question this second list answers.

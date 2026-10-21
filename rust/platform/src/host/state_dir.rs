@@ -40,6 +40,31 @@ pub fn sot_config_dir_in(env: &super::env::Env) -> Option<std::path::PathBuf> {
         .map(|d| d.join("sot"))
 }
 
+/// The folder the daemon keeps its logs, its lease and its rows' capsule state in: the state folder itself on Unix, its
+/// `state` subfolder under `%LOCALAPPDATA%\sot` on Windows (a sibling of `config`, so neither collides with a capsule's
+/// `workspaces\<id>` subtree). Windows panics when no base variable is set, because a `$HOME`-shaped guess there depends
+/// on which shell launched the daemon; Unix falls back to `/tmp/.local/state/sot` for a login with neither
+/// `$XDG_STATE_HOME` nor `$HOME`.
+pub fn daemon_state_dir() -> std::path::PathBuf {
+    daemon_state_dir_in(&super::env::Env::process())
+}
+
+/// [`daemon_state_dir`] reading the variables from `env`.
+pub fn daemon_state_dir_in(env: &super::env::Env) -> std::path::PathBuf {
+    let root = sot_state_dir_in(env);
+    if cfg!(windows) {
+        return root
+            .unwrap_or_else(|| {
+                panic!(
+                    "cannot resolve the Windows state root: neither %LOCALAPPDATA% nor \
+                     %USERPROFILE% is set — sotd cannot start without one"
+                )
+            })
+            .join("state");
+    }
+    root.unwrap_or_else(|| std::path::PathBuf::from("/tmp/.local/state/sot"))
+}
+
 /// Resolve the per-machine state directory: `%LOCALAPPDATA%\sot` (falling
 /// back to `%USERPROFILE%\AppData\Local\sot` — the same location
 /// `%LOCALAPPDATA%` names, derived directly for the rare login where the
@@ -118,22 +143,16 @@ pub fn host_name_in(env: &super::env::Env) -> Result<String, String> {
 /// `.`-delimited label, lowercased. [`host_name`] without its `SOT_SELF_HOST` override; the host pin that systemd's
 /// `ConditionHost=` compares names a box this way. `Err` when the kernel gives no usable label.
 pub fn kernel_host_name() -> Result<String, String> {
-    let raw = gethostname::gethostname().to_string_lossy().into_owned();
+    host_label(&gethostname::gethostname().to_string_lossy())
+}
+
+/// The name a kernel's raw host name gives: its first `.`-delimited label, trimmed and lowercased; `Err` when none is left.
+fn host_label(raw: &str) -> Result<String, String> {
     let label = raw.split('.').next().unwrap_or("").trim().to_lowercase();
     if label.is_empty() {
         return Err("gethostname returned no usable label".to_string());
     }
     Ok(label)
-}
-
-/// LU5a (ADR 0043 decision 23): the store's own volume preflight
-/// (`host::preflight_volume`), exposed here as the narrow public seam
-/// the daemon's own `qualified_state_root` needs, the same pattern
-/// `fence::lock_supervisor` already uses for a different `host`
-/// primitive. Lives here (this module, not `fence`) because it is a
-/// STATE-ROOT check, not a fence one.
-pub fn preflight_volume(dir: &std::path::Path) -> crate::Result<()> {
-    crate::host::preflight_volume(dir)
 }
 
 /// L1-unix LU3b: moved here from `supervisor/` (a pure hash of a path,

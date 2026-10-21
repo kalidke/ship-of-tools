@@ -706,10 +706,10 @@ pub(crate) fn read_record(path: &Path) -> Result<Option<HeldRecord>, String> {
 /// file when the record is empty.
 pub(crate) fn write_or_delete(path: &Path, rec: &HeldRecord) -> std::io::Result<()> {
     if rec.is_empty() {
-        return crate::durable::remove(path);
+        return sot_platform::host::remove_durable(path);
     }
     let bytes = serde_json::to_vec(rec).map_err(std::io::Error::other)?;
-    crate::durable::write(path, &bytes)
+    sot_platform::host::write_durable(path, &bytes)
 }
 
 /// The grant rule's claim checks, in order: the claimant's identity, or

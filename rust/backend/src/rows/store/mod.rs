@@ -200,7 +200,7 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         // awareness env, the tmux path, display, comm-identity root
         // compares) sees the plain form the daemon has always assumed. A
         // no-op on non-Windows and on already-plain paths.
-        let project_root = paths::simplify_verbatim(PathBuf::from(
+        let project_root = sot_platform::host::paths::simplify_verbatim(PathBuf::from(
             kv.get("project_root").cloned().unwrap_or_default(),
         ));
         // `tmux_session` is the key every release before protocol 2 wrote
@@ -270,7 +270,7 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
     });
     // simplify_verbatim: same normalization as the canonical branch above
     // — a legacy toml is just as capable of carrying a stale verbatim root.
-    let project_root = paths::simplify_verbatim(PathBuf::from(
+    let project_root = sot_platform::host::paths::simplify_verbatim(PathBuf::from(
         backend
             .get("project_dir")
             .cloned()
@@ -361,7 +361,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
 
     // Durable (tmp, fsync, replace, directory sync): a shutdown's anchor
     // reset must survive a power loss, as the registration delete does.
-    crate::durable::write(&target, final_text.as_bytes())
+    sot_platform::host::write_durable(&target, final_text.as_bytes())
         .with_context(|| format!("durable write {target:?}"))?;
     Ok(target)
 }
@@ -409,57 +409,26 @@ fn sessions_dir() -> PathBuf {
     app_config_dir().join(format!("sessions-{}", declared_host()))
 }
 
-/// App config dir: `~/.config/sot`. Shared so every backend config resolver
-/// (workspaces, sessions, backend-identity) agrees on one dir.
-///
-/// Windows: delegates to `paths::windows_state_root()`
-/// (`%LOCALAPPDATA%\sot`, or `%USERPROFILE%\AppData\Local\sot` — see that
-/// function), joined with `config`, instead of the `config_dir()` logic
-/// below — which resolves via `$HOME`, a POSIX-only env var with no
-/// Windows branch. That was the actual defect (v0.6.0-rc.3 field report):
-/// a git-bash shell exports `HOME` (`config_dir()` used to land on
-/// `C:\Users\<u>\.config\sot`) while the PowerShell launcher does not (it
-/// fell through to the `/tmp/.config` literal, which Windows path
-/// handling turns into `\tmp\.config` on whatever the current drive is) —
-/// so a hand-started daemon and a launcher-started one built and wrote to
-/// TWO DIFFERENT registries, and the default workspace was created twice
-/// with different ids, dropping rows between them. `config` keeps this a
-/// sibling of `paths::state_dir()`'s `state` under the same
-/// `%LOCALAPPDATA%\sot` root, chosen so neither collides with the capsule
-/// runtime's own `workspaces\<id>` subtree
-/// (`rows::spawn::state_root::state_dir_for`). Mirrors
-/// `sot_platform::host::state_dir::sot_state_dir`'s own precedent of ignoring
-/// `XDG_*` on Windows in favour of `%LOCALAPPDATA%` (its module doc:
-/// letting a second env var win on Windows is exactly how the FE/capsule
-/// state dirs drifted apart once already) — `$XDG_CONFIG_HOME` keeps
-/// working here on Unix, unchanged, same as before this fix. NO fallback
-/// to the `config_dir()` logic below on Windows any more (Codex review,
-/// PR #175): `windows_state_root()` panics with a clear message instead
-/// of silently landing on a `$HOME`-shaped path there.
-///
-/// The derivation itself is `sot_platform::host::state_dir::sot_config_dir` (one
-/// resolver, shared with `sot-protocol`'s `topology` reader so the daemon
-/// and `sotd topology` read `hosts.toml` from the same place); this wrapper
-/// keeps the Windows panic; on Unix a process with neither
-/// `$XDG_CONFIG_HOME` nor `$HOME` panics with `CONFIG_DIR_UNDERIVABLE`
-/// rather than fall back to a shared directory such as `/tmp`, where any
-/// local user could pre-create the registry. `main` checks this at startup
-/// (`check_config_dir`), so the panic only fires in a caller that skipped it.
+/// App config dir: `~/.config/sot`. Shared so every backend config resolver (workspaces, sessions, backend-identity)
+/// agrees on one dir. The derivation is platform's `sot_config_dir` (`%LOCALAPPDATA%\sot\config` on Windows), the one
+/// resolver `sotd topology` shares, so the daemon and `sotd topology` read `hosts.toml` from the same place. A process
+/// with no base variable panics with `CONFIG_DIR_UNDERIVABLE` rather than fall back to a shared directory such as `/tmp`,
+/// where any local user could pre-create the registry; `main` checks this at startup (`check_config_dir`), so the panic
+/// only fires in a caller that skipped it.
 pub(crate) fn app_config_dir() -> PathBuf {
-    #[cfg(windows)]
-    return crate::paths::windows_state_root().join("config");
-    #[cfg(not(windows))]
     sot_platform::host::state_dir::sot_config_dir().expect(CONFIG_DIR_UNDERIVABLE)
 }
 
 /// The refusal text for a config dir that cannot be derived.
-pub(crate) const CONFIG_DIR_UNDERIVABLE: &str = "the daemon's config dir cannot be derived: neither XDG_CONFIG_HOME nor HOME is set; set HOME or XDG_CONFIG_HOME and start it again (it refuses to fall back to a shared directory such as /tmp)";
+pub(crate) const CONFIG_DIR_UNDERIVABLE: &str = if cfg!(windows) {
+    "the daemon's config dir cannot be derived: neither LOCALAPPDATA nor USERPROFILE is set"
+} else {
+    "the daemon's config dir cannot be derived: neither XDG_CONFIG_HOME nor HOME is set; set HOME or XDG_CONFIG_HOME and start it again (it refuses to fall back to a shared directory such as /tmp)"
+};
 
 /// Startup form of `app_config_dir`'s refusal: an `Err` carrying
-/// `CONFIG_DIR_UNDERIVABLE` instead of a panic. Always `Ok` on Windows,
-/// which has its own check (`paths::windows_state_root`).
+/// `CONFIG_DIR_UNDERIVABLE` instead of a panic.
 pub(crate) fn check_config_dir() -> Result<(), String> {
-    #[cfg(not(windows))]
     if sot_platform::host::state_dir::sot_config_dir().is_none() {
         return Err(CONFIG_DIR_UNDERIVABLE.to_string());
     }

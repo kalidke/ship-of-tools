@@ -273,7 +273,7 @@ impl Env {
         debug_assert!(previous.is_none(), "spawn_sotd called while a prior daemon was still tracked");
     }
 
-    /// The daemon's log of record for THIS env, per platform (`paths::state_dir().join("sotd.log")`): Windows joins
+    /// The daemon's log of record for THIS env, per platform (`sot_platform::host::state_dir::daemon_state_dir().join("sotd.log")`): Windows joins
     /// `sot\state` onto its state root, everywhere else `sot` is the whole state folder.
     #[allow(dead_code)] // not every suite reads the daemon's log
     pub fn daemon_log(&self) -> PathBuf {

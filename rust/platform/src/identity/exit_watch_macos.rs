@@ -40,7 +40,7 @@ use std::time::Duration;
 /// was rejected". No `EV_ONESHOT` and no `EV_CLEAR`: neither names an
 /// invariant here, and the latch each owner carries already owns the
 /// once-only semantics.
-pub(crate) fn watch_exit(pid: u32) -> io::Result<Option<OwnedFd>> {
+pub fn watch_exit(pid: u32) -> io::Result<Option<OwnedFd>> {
     // SAFETY: `kqueue()` takes no arguments and returns a fresh fd or -1.
     let raw = unsafe { libc::kqueue() };
     if raw < 0 {
@@ -106,7 +106,7 @@ pub(crate) fn watch_exit(pid: u32) -> io::Result<Option<OwnedFd>> {
 /// function) names an instance, so "no such process" is that instance
 /// gone. Unlike the ESRCH at attach time ([`watch_exit`]), it carries no
 /// per-owner policy.
-pub(crate) fn drain_exit(kq: RawFd, timeout: Duration) -> io::Result<bool> {
+pub fn drain_exit(kq: RawFd, timeout: Duration) -> io::Result<bool> {
     let mut ev: libc::kevent = unsafe { std::mem::zeroed() };
     let ts = kevent_timeout(timeout);
     // SAFETY: `kq` is a live kqueue owned by the caller for the whole

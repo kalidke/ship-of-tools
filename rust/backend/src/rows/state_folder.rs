@@ -290,7 +290,7 @@ fn sweep_state_folders_at(state_root: &Path, workspaces: &Workspaces, now: Syste
     let whole = named.is_ok();
     sweep_with(state_root, workspaces, &named, now);
     if whole && real_dir(&state_root.join("workspaces")).unwrap_or(false) {
-        if let Err(e) = crate::durable::write(&record, config.as_bytes()) {
+        if let Err(e) = sot_platform::host::write_durable(&record, config.as_bytes()) {
             tracing::warn!(error = %e, "state folder sweep: could not record the config folder whose registries were read");
         }
     }

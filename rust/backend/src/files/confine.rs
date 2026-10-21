@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::paths::simplify_verbatim;
+use sot_platform::host::paths::simplify_verbatim;
 use crate::rows::Workspaces;
 
 /// Canonicalize the longest EXISTING ancestor of `p`, walking up past

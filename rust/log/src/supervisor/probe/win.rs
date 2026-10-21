@@ -192,9 +192,8 @@ impl ProbeOps for RealProbeOps {
             // The guard drops here, releasing the fence immediately --
             // this is a PROBE, never a hold.
             Ok(_guard) => FenceProbe::Free,
-            Err(crate::Error::State(_)) => FenceProbe::Held,
-            Err(crate::Error::Io(e)) => FenceProbe::Error(e),
-            Err(other) => FenceProbe::Error(std::io::Error::other(other)),
+            Err(sot_platform::Error::State(_)) => FenceProbe::Held,
+            Err(sot_platform::Error::Io(e)) => FenceProbe::Error(e),
         }
     }
 

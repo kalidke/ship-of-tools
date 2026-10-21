@@ -16,7 +16,6 @@ mod agents;
 mod clients;
 mod comm;
 mod daemon_log;
-mod durable;
 mod files;
 mod install;
 mod lifecycle;
@@ -199,7 +198,7 @@ fn main() -> Result<()> {
             // The daemon's log of record: the launchers name it when a backend does not come up, because a daemon
             // whose stdout is a file writes its log only there. A pure query like the arm above.
             "log-path" => {
-                println!("{}", paths::state_dir().join("sotd.log").display());
+                println!("{}", sot_platform::host::state_dir::daemon_state_dir().join("sotd.log").display());
                 return Ok(());
             }
             // `sotd ancestors [--from <pid>]` (Windows only): comm-lib.sh reads it to count
@@ -317,20 +316,20 @@ fn main() -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let dir = paths::state_dir();
+        let dir = sot_platform::host::state_dir::daemon_state_dir();
         if let Ok(meta) = std::fs::symlink_metadata(&dir) {
             if meta.is_dir()
-                && meta.uid() == paths::current_uid()
+                && meta.uid() == sot_platform::host::state_dir::current_uid()
                 && meta.permissions().mode() & 0o077 != 0
             {
                 let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
             }
         }
     }
-    if let Err(e) = paths::secure_private_dir(&paths::state_dir()) {
+    if let Err(e) = sot_platform::host::paths::secure_private_dir(&sot_platform::host::state_dir::daemon_state_dir()) {
         eprintln!(
             "sotd: state dir {} is not private ({e}) — refusing to start",
-            paths::state_dir().display()
+            sot_platform::host::state_dir::daemon_state_dir().display()
         );
         lifecycle::shutdown::exit(1);
     }

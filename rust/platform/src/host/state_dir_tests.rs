@@ -168,3 +168,66 @@ fn host_name_falls_back_to_gethostname_when_sot_self_host_is_unset() {
     std::env::remove_var("SOT_SELF_HOST");
     assert!(host_name().is_ok(), "a real host always has a gethostname label");
 }
+
+// The state folders are values of an `Env`, never the process's: no test here writes the environment.
+fn env_of(pairs: &[(&str, &str)]) -> super::super::env::Env {
+    pairs.iter().fold(super::super::env::Env::empty(), |e, (k, v)| e.with(k, v))
+}
+
+#[test]
+fn a_raw_host_name_gives_its_first_lowercase_label_or_an_error() {
+    assert_eq!(host_label("Box.Example.Org"), Ok("box".to_string()));
+    assert_eq!(host_label("  BOX \n"), Ok("box".to_string()));
+    assert!(host_label("").is_err());
+    assert!(host_label(" ").is_err());
+    assert!(host_label(".example").is_err());
+}
+
+#[test]
+fn the_state_folder_has_one_rule_and_the_config_folder_is_its_sibling_rule() {
+    use std::path::PathBuf;
+    #[cfg(not(windows))]
+    {
+        let xdg = env_of(&[("XDG_STATE_HOME", "/xdg-state"), ("XDG_CONFIG_HOME", "/xdg-config"), ("HOME", "/home/someone")]);
+        assert_eq!(sot_state_dir_in(&xdg), Some(PathBuf::from("/xdg-state/sot")));
+        assert_eq!(sot_config_dir_in(&xdg), Some(PathBuf::from("/xdg-config/sot")));
+        let home = env_of(&[("HOME", "/home/someone")]);
+        assert_eq!(sot_state_dir_in(&home), Some(PathBuf::from("/home/someone/.local/state/sot")));
+        assert_eq!(sot_config_dir_in(&home), Some(PathBuf::from("/home/someone/.config/sot")));
+        assert_eq!(sot_state_dir_in(&env_of(&[])), None);
+        assert_eq!(sot_config_dir_in(&env_of(&[])), None);
+    }
+    #[cfg(windows)]
+    {
+        let local = env_of(&[("LOCALAPPDATA", r"C:\Users\someone\AppData\Local"), ("XDG_STATE_HOME", r"C:\ignored")]);
+        assert_eq!(sot_state_dir_in(&local), Some(PathBuf::from(r"C:\Users\someone\AppData\Local\sot")));
+        assert_eq!(sot_config_dir_in(&local), Some(PathBuf::from(r"C:\Users\someone\AppData\Local\sot\config")));
+    }
+}
+
+#[test]
+#[cfg(not(windows))]
+fn the_daemons_state_folder_is_the_state_folder_and_falls_back_to_tmp_without_a_home() {
+    use std::path::PathBuf;
+    let xdg = env_of(&[("XDG_STATE_HOME", "/xdg-state"), ("HOME", "/home/someone")]);
+    assert_eq!(daemon_state_dir_in(&xdg), PathBuf::from("/xdg-state/sot"));
+    assert_eq!(daemon_state_dir_in(&env_of(&[("HOME", "/home/someone")])), PathBuf::from("/home/someone/.local/state/sot"));
+    assert_eq!(daemon_state_dir_in(&env_of(&[])), PathBuf::from("/tmp/.local/state/sot"));
+}
+
+#[test]
+#[cfg(windows)]
+fn the_daemons_state_folder_is_the_state_subfolder_of_localappdata_or_userprofile() {
+    use std::path::PathBuf;
+    let local = env_of(&[("LOCALAPPDATA", r"C:\Users\someone\AppData\Local"), ("XDG_STATE_HOME", r"C:\ignored")]);
+    assert_eq!(daemon_state_dir_in(&local), PathBuf::from(r"C:\Users\someone\AppData\Local\sot\state"));
+    let profile = env_of(&[("USERPROFILE", r"C:\Users\someone")]);
+    assert_eq!(daemon_state_dir_in(&profile), PathBuf::from(r"C:\Users\someone\AppData\Local\sot\state"));
+}
+
+#[test]
+#[cfg(windows)]
+#[should_panic(expected = "cannot resolve the Windows state root")]
+fn the_daemons_state_folder_panics_on_windows_without_a_base_variable() {
+    let _ = daemon_state_dir_in(&env_of(&[]));
+}

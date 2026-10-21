@@ -30,20 +30,6 @@
 
 use std::path::PathBuf;
 
-// L1-unix LU1b (ADR 0043 decision 1): `runtime_sot_dir`/`is_private_dir`/
-// `current_uid` moved DOWN into `sot-log`'s `state_dir` module — the Unix
-// domain-socket transport (`sot_log::lane::socket_unix`) needs the identical
-// derivation `session_socket_path`'s own Unix branch already used, and
-// `sot-log` is the lower crate (this crate gains a dependency on it, never
-// the reverse — `sot-log` has none on `sot-protocol`). Re-exported
-// verbatim so every existing `runtime_sot_dir()` / `is_private_dir(...)` /
-// `current_uid()` call site in this module (and every downstream
-// `sot_protocol::{runtime_sot_dir, current_uid}` re-export in
-// `rust/backend/src/paths.rs`) keeps compiling unchanged. See
-// `sot_platform::host::state_dir` for the doc comments, the tests, and the
-// `SOT_RUNTIME_DIR` override (`state_dir::runtime_dir`; nothing in
-// production sets it).
-pub use sot_platform::host::state_dir::{current_uid, is_private_dir, runtime_sot_dir};
 
 /// Conventional per-user session endpoint for a backend with the given
 /// label: a Unix socket path, or (Windows) a named pipe path. `sotd

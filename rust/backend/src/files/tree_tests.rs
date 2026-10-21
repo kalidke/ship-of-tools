@@ -42,7 +42,7 @@ fn path_to_node_id_round_trips() {
     // The round-trip yields the DE-VERBATIMED form by design (the root is
     // simplified at construction, so composed paths are plain even when
     // the input was `\\?\` verbatim). Identity on non-Windows.
-    assert_eq!(back, crate::paths::simplify_verbatim(abs));
+    assert_eq!(back, sot_platform::host::paths::simplify_verbatim(abs));
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn resolvers_reject_traversal_and_absolute() {
     // and rejects — see the cfg(windows) test).
     #[cfg(unix)]
     {
-        let root = crate::paths::simplify_verbatim(std::fs::canonicalize(dir.path()).unwrap());
+        let root = sot_platform::host::paths::simplify_verbatim(std::fs::canonicalize(dir.path()).unwrap());
         let p = fm.node_id_to_path("files:a:b.png").unwrap();
         assert_eq!(p, root.join("a:b.png"));
         // A Windows drive STRING can't escape on unix — backslash and colon
@@ -193,7 +193,7 @@ fn node_id_to_path_allows_new_file_under_root() {
     // may not be canonical on every platform (e.g. macOS's `/tmp` ->
     // `/private/tmp`), and Windows canonicalization adds a `\\?\` prefix
     // that FilesMode deliberately strips.
-    let root = crate::paths::simplify_verbatim(std::fs::canonicalize(dir.path()).unwrap());
+    let root = sot_platform::host::paths::simplify_verbatim(std::fs::canonicalize(dir.path()).unwrap());
     assert_eq!(p, root.join("brand").join("new").join("file.txt"));
 }
 

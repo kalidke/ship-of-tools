@@ -204,7 +204,7 @@ impl Kernel {
     /// layouts (dev checkout / release install) via `paths::resource_dir`
     /// (ADR 0030 §4).
     pub fn default_kernel_project() -> PathBuf {
-        crate::paths::resource_dir("julia/kernel")
+        sot_platform::host::paths::resource_dir("julia/kernel")
     }
 
     /// Send a request to the kernel and wait for the matching response,

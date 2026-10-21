@@ -32,6 +32,7 @@ pub fn connect_own(path: &Path) -> Result<crate::lane::socket_unix::SocketClient
 /// 200 ms wait); this is not an exact elapsed-time limit.
 #[cfg(windows)]
 pub fn connect_own(path: &Path) -> Result<crate::lane::pipe_win::PipeClient, TransportError> {
+    use sot_platform::identity::challenge_win::PipeChallengeable as _;
     use std::os::windows::io::{BorrowedHandle, RawHandle};
     let text = path.to_str().ok_or_else(|| TransportError::Io {
         op: "connect_own",

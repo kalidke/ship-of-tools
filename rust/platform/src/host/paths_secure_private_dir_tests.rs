@@ -60,3 +60,12 @@ fn existing_regular_file_is_rejected() {
     std::fs::write(&d, b"not a dir").unwrap();
     assert!(secure_private_dir(&d).is_err());
 }
+
+#[test]
+fn ensure_private_dir_makes_an_owner_only_folder_that_is_private() {
+    let root = tempfile::tempdir().unwrap();
+    let leaf = root.path().join("a").join("b");
+    super::ensure_private_dir(&leaf).unwrap();
+    assert_eq!(std::fs::metadata(&leaf).unwrap().permissions().mode() & 0o777, 0o700);
+    assert!(crate::host::state_dir::is_private_dir(&leaf));
+}

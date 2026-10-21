@@ -172,7 +172,7 @@ fn auto_memory_settings_leaves_the_owners_own_choice_alone() {
 /// `cfg(unix)` only, and not because the limit is platform-specific — it
 /// is not. The fixture has to CREATE a path past the limit, and a
 /// de-verbatimed Windows root re-gains `MAX_PATH` (see
-/// `paths::simplify_verbatim`'s own trade-off note), so the fixture, not
+/// `sot_platform::host::paths::simplify_verbatim`'s own trade-off note), so the fixture, not
 /// the code under test, is what would fail there.
 #[test]
 #[cfg(unix)]

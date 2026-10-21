@@ -8,6 +8,7 @@ pub mod env;
 pub mod fd;
 mod held_dir;
 mod lock;
+pub mod paths;
 mod pinned_dir;
 pub mod process_tree;
 pub mod redial;
@@ -87,7 +88,7 @@ fn io_ctx(e: std::io::Error, what: std::fmt::Arguments<'_>) -> Error {
 /// both `ChallengedProcess` and `supervisor::probe::win::SpawnedChild`) so the guard
 /// exists exactly once, not once per call site.
 #[cfg(windows)]
-pub(crate) fn duration_to_wait_ms(timeout: std::time::Duration) -> u32 {
+pub fn duration_to_wait_ms(timeout: std::time::Duration) -> u32 {
     u32::try_from(timeout.as_millis())
         .unwrap_or(u32::MAX)
         .min(u32::MAX - 1)

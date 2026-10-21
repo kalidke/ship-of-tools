@@ -47,7 +47,7 @@ impl FilesMode {
         // ADVERTISED (HelloRes.project_root) and every FE/kernel path
         // composition builds on it, so a verbatim root poisons them all
         // (the concept-stale drift-badge saga). De-verbatim at the source.
-        let canon = crate::paths::simplify_verbatim(
+        let canon = sot_platform::host::paths::simplify_verbatim(
             std::fs::canonicalize(&root)
                 .with_context(|| format!("canonicalize project root {root:?}"))?,
         );
@@ -106,10 +106,10 @@ impl FilesMode {
     /// a path the FilesMode never exposed). Forward slashes regardless of
     /// platform to match `node_id_to_path`'s splitter.
     pub fn path_to_node_id(&self, path: &Path) -> Option<String> {
-        // Symmetry with the de-verbatimed root (paths::simplify_verbatim in
+        // Symmetry with the de-verbatimed root (sot_platform::host::paths::simplify_verbatim in
         // `new`): callers hand us canonicalized paths, which on Windows are
         // `\\?\` verbatim and would never prefix-match the plain root.
-        let path = crate::paths::simplify_verbatim(path.to_path_buf());
+        let path = sot_platform::host::paths::simplify_verbatim(path.to_path_buf());
         let rel = path.strip_prefix(&self.root).ok()?;
         if rel.as_os_str().is_empty() {
             return Some(ID_PREFIX.to_string());

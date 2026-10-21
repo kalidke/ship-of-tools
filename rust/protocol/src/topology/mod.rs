@@ -295,7 +295,7 @@ pub fn relay_endpoint(topo: &Topology, self_host: &str) -> Result<String, String
 /// need a user manager, and every client dial goes through `connect_own`,
 /// which refuses another account's listener before it writes a byte.
 fn runtime_relay_dir() -> PathBuf {
-    let run = crate::runtime_sot_dir();
+    let run = sot_platform::host::state_dir::runtime_sot_dir();
     run.parent().map(PathBuf::from).unwrap_or(run)
 }
 

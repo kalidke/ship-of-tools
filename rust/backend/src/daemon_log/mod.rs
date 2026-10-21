@@ -8,7 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::paths;
 
-/// Writer for `tracing_subscriber::fmt`: mirrors every log line to a private `0600` file under `paths::state_dir()` and,
+/// Writer for `tracing_subscriber::fmt`: mirrors every log line to a private `0600` file under `sot_platform::host::state_dir::daemon_state_dir()` and,
 /// unless stdout is a regular file (a launcher's per-start log, which would grow without a bound beside the file that
 /// rolls), to stdout (a terminal, a pipe or a journal socket). The file half is best-effort: `None` or a write failure
 /// there never breaks the stdout path.
@@ -140,8 +140,8 @@ fn roll_log(path: &std::path::Path, len: u64, cap: u64) -> std::io::Result<()> {
 /// under a looser umask, won't self-correct otherwise). `None` on any failure: the caller logs to stdout only, as a
 /// log-file problem shouldn't block the daemon from starting.
 fn open_private_log_file() -> Option<Arc<Mutex<LogFile>>> {
-    let dir = paths::state_dir();
-    if let Err(e) = paths::ensure_private_dir(&dir) {
+    let dir = sot_platform::host::state_dir::daemon_state_dir();
+    if let Err(e) = sot_platform::host::paths::ensure_private_dir(&dir) {
         eprintln!(
             "sotd: could not create state dir {}: {e} (logging to stdout only)",
             dir.display()

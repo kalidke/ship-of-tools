@@ -338,7 +338,7 @@ pub(crate) fn remove_row_files(slug: &str) -> bool {
 fn remove_registration(paths: &[std::path::PathBuf]) -> bool {
     let mut toml_removed = true;
     for toml_path in paths {
-        if let Err(e) = crate::durable::remove(toml_path) {
+        if let Err(e) = sot_platform::host::remove_durable(toml_path) {
             tracing::warn!(error = %e, path = ?toml_path, "workspace toml remove failed");
             toml_removed = false;
         }

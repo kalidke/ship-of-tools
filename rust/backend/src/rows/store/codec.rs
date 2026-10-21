@@ -160,7 +160,7 @@ pub(super) fn toml_quote(s: &str) -> String {
 /// a `project_root` containing `\` round-tripped as doubled backslashes
 /// (harmless on Windows, which tolerates repeated separators, so this hid
 /// for months) and a saved Windows verbatim root (`\\?\C:\...`, doubled by
-/// the writer to `\\\\?\\C:\\...`) never matched `paths::simplify_verbatim`
+/// the writer to `\\\\?\\C:\\...`) never matched `sot_platform::host::paths::simplify_verbatim`
 /// at all, so `CreateProcess` rejected it as a working directory
 /// (`capsule supervisor spawn failed: The directory name is invalid. (os
 /// error 267)`). `simplify_verbatim` also grew a second, single-backslash

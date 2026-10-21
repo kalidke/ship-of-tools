@@ -148,7 +148,7 @@ impl PeerProcess for ChallengedProcess {
 /// above, and `crate::supervisor::probe::win::SpawnedChild::wait` — the pre-proof owned
 /// child, which needs the identical bounded wait but is deliberately a
 /// DIFFERENT type (nothing has proven ITS identity yet).
-pub(crate) fn wait_handle(handle: HANDLE, timeout: Duration) -> std::io::Result<bool> {
+pub fn wait_handle(handle: HANDLE, timeout: Duration) -> std::io::Result<bool> {
     let ms = host::duration_to_wait_ms(timeout);
     match unsafe { WaitForSingleObject(handle, ms) } {
         WAIT_OBJECT_0 => Ok(true),
@@ -160,7 +160,7 @@ pub(crate) fn wait_handle(handle: HANDLE, timeout: Duration) -> std::io::Result<
 
 /// `TerminateProcess`. Shared by [`ChallengedProcess::terminate`] and
 /// `crate::supervisor::probe::win::SpawnedChild::terminate`.
-pub(crate) fn terminate_handle(handle: HANDLE) -> std::io::Result<()> {
+pub fn terminate_handle(handle: HANDLE) -> std::io::Result<()> {
     if unsafe { TerminateProcess(handle, 1) } == 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -198,7 +198,7 @@ pub fn creation_filetime_bits(handle: HANDLE) -> std::io::Result<u64> {
 /// `access` is the process right step 2 asks for: the full challenge's
 /// mask ([`CHALLENGE_ACCESS`]), or only the query right a token read needs
 /// ([`QUERY_ACCESS`], what `connect_own::own_pipe` asks for).
-pub(crate) fn authenticate_steps_1_to_3(
+pub fn authenticate_steps_1_to_3(
     pipe: HANDLE,
     access: u32,
 ) -> ChallengeOutcome<(OwnedHandle, u32)> {
@@ -240,7 +240,7 @@ const CHALLENGE_ACCESS: u32 = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMAT
 
 /// The one process right a token read needs: what `connect_own::own_pipe` asks for, where no kill, wait or reply-bound
 /// proof is wanted.
-pub(crate) const QUERY_ACCESS: u32 = PROCESS_QUERY_LIMITED_INFORMATION;
+pub const QUERY_ACCESS: u32 = PROCESS_QUERY_LIMITED_INFORMATION;
 
 /// The five pinned steps (ADR 0041 Lifecycle "The challenge"), in order:
 /// (1) read the server pid `P` via `GetNamedPipeServerProcessId`; (2)

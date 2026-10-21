@@ -99,7 +99,7 @@ impl Pluto {
     /// `julia/pluto` resolved for both layouts (dev checkout / release
     /// install) via `paths::resource_dir` (ADR 0030 §4).
     pub fn default_project_dir() -> PathBuf {
-        crate::paths::resource_dir("julia/pluto")
+        sot_platform::host::paths::resource_dir("julia/pluto")
     }
 
     /// `<repo>/julia/pluto/start.jl` resolved via `CARGO_MANIFEST_DIR`.

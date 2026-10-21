@@ -10,7 +10,7 @@ use std::os::fd::{AsRawFd, BorrowedFd};
 #[cfg(windows)]
 use crate::identity::challenge::ChallengeOutcome;
 #[cfg(windows)]
-use crate::identity::challenge_win::{authenticate_steps_1_to_3, PipeChallengeable, QUERY_ACCESS};
+use crate::identity::challenge_win::{authenticate_steps_1_to_3, QUERY_ACCESS};
 
 /// Unix: refuse the connected client end `sock` unless the account the kernel recorded when the socket's listener
 /// called

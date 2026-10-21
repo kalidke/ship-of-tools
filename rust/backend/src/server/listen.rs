@@ -244,7 +244,7 @@ pub(super) async fn run_local(
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
         if !parent.as_os_str().is_empty() {
-            paths::secure_socket_dir(parent)
+            sot_platform::host::paths::secure_socket_dir(parent)
                 .with_context(|| format!("secure socket dir {}", parent.display()))?;
         }
     }

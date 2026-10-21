@@ -121,7 +121,7 @@ impl MathJax {
     /// at that same repo-shaped path) via `paths::resource_dir` (ADR 0030 §4).
     /// Can be overridden at runtime by passing a different path to `new`.
     pub fn default_script_path() -> PathBuf {
-        crate::paths::resource_dir("rust/backend/sidecars/mathjax/render.mjs")
+        sot_platform::host::paths::resource_dir("rust/backend/sidecars/mathjax/render.mjs")
     }
 
     /// Convert LaTeX to SVG via the sidecar, within `START_BOUND` for the

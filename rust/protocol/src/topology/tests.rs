@@ -169,7 +169,7 @@ fn plan_lines_are_stable() {
 fn relay_socket_path_is_a_sibling_of_the_relay_socket() {
     let a = relay_socket_path("gamma");
     assert_eq!(a.file_name().unwrap(), "sot-host-gamma.sock");
-    let relay = crate::runtime_sot_dir();
+    let relay = sot_platform::host::state_dir::runtime_sot_dir();
     let base = relay.parent().map(PathBuf::from).unwrap_or(relay);
     assert_eq!(a.parent().unwrap(), base, "the hub's per-host sockets sit beside sot-relay.sock");
     assert_ne!(relay_socket_path("gamma"), relay_socket_path("delta"));

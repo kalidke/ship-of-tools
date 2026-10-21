@@ -68,7 +68,7 @@ pub(crate) fn awareness_env(
 fn manual_root() -> Option<&'static Path> {
     static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
     ROOT.get_or_init(|| {
-        let manual = crate::paths::resource_dir("docs");
+        let manual = sot_platform::host::paths::resource_dir("docs");
         if manual.exists() {
             manual.parent().map(Path::to_path_buf)
         } else {
