@@ -7,6 +7,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use super::verdict::Stop;
 use super::{cmd, procs};
 
 /// What a run knows of the daemon on an endpoint.
@@ -182,6 +183,59 @@ pub(super) fn rows_note(rows: &[String], pluto: bool, unknown: bool) -> String {
         (true, true) => "its live REPLs and Pluto server could not be listed, so starting it again may end some".to_string(),
         (false, _) => work,
     }
+}
+
+/// How a question asks: the daemon's live work, its child processes, the person at the console, and a note.
+pub(super) struct Asks<'a> {
+    pub live: &'a dyn Fn() -> Work,
+    pub kids: &'a dyn Fn() -> Option<Vec<&'static str>>,
+    pub ask: &'a dyn Fn(&str) -> bool,
+    pub note: &'a dyn Fn(&str),
+}
+
+/// The Windows update's question: every way an update applies may stop or restart the daemon on `pipe`, so one that
+/// runs (`state` not `None`), whatever its version, is asked first, yes at a console or `-RestartDaemon`
+/// (`restart_flag`); a daemon that cannot say is judged by its own children. Changes nothing. What the restart would
+/// end, for the update's steps; empty when nothing is live.
+#[cfg_attr(not(windows), allow(dead_code, reason = "the Windows update asks before it restarts the daemon"))]
+pub(super) fn ask_before_update(state: State, pipe: &str, why: &str, restart_flag: bool, a: &Asks) -> Result<String, Stop> {
+    if state == State::None {
+        return Ok(String::new());
+    }
+    let work = (a.live)();
+    let unsure = work.unsure.is_some() || state == State::Unknown;
+    let kids = if unsure { (a.kids)() } else { None };
+    if unsure && kids.as_ref().is_some_and(Vec::is_empty) && work.rows.is_empty() && !work.pluto {
+        (a.note)(&format!("note: could not ask the daemon on {pipe} in full ({}); it has no REPL or Pluto child, so restarting it ends nothing live", work.unsure.as_deref().unwrap_or(why)));
+        return Ok(String::new());
+    }
+    let live = live_text(state, pipe, &work, why);
+    if live.is_empty() || restart_flag {
+        return Ok(live);
+    }
+    let (repl, pluto) = kids.as_ref().map_or((false, false), |k| (k.contains(&"repl"), k.contains(&"pluto")));
+    if (a.ask)(&ask_words(&work.rows, repl, work.pluto || pluto, unsure)) {
+        (a.note)("note: restarting the daemon as answered");
+        return Ok(live);
+    }
+    println!("       Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then run this again with -RestartDaemon.");
+    Err(Stop::new(2, live))
+}
+
+/// What a restart of the daemon on `pipe` would end, as the reason of the question; empty when nothing is live.
+fn live_text(state: State, pipe: &str, work: &Work, why: &str) -> String {
+    let is = if state == State::Current { "is running" } else { "runs another version" };
+    let rows = work.rows.join(", ");
+    if state == State::Unknown {
+        let rest = if rows.is_empty() { "; restarting it could end live REPLs and Pluto notebooks".to_string() } else { format!("; restarting it would end the REPLs of: {rows}") };
+        return format!("a daemon runs on {pipe} and could not be told its version ({why}){rest}");
+    }
+    if let Some(reason) = &work.unsure {
+        let rest = if rows.is_empty() { String::new() } else { format!(", and restarting it would end the REPLs of: {rows}") };
+        return format!("could not ask the daemon on {pipe} in full: it {is}{rest}; sotd update repls: {reason}");
+    }
+    let t = work_words(&work.rows, work.pluto, "restarting it would end");
+    if t.is_empty() { t } else { format!("the daemon on {pipe} {is}, and {t}") }
 }
 
 /// One answer, asked in place at the console: "Restart the daemon? This ends WORK [y/N]". False, asking nothing, where

@@ -59,3 +59,48 @@ fn a_wait_for_the_daemon_keeps_its_bound() {
     assert!(t0.elapsed() < Duration::from_millis(1800), "the wait took {:?}", t0.elapsed());
     assert_eq!(st, State::Unknown, "a daemon that runs and did not answer in time is not taken for none");
 }
+
+/// The Windows update's question, run with stand-ins for the daemon, its children and the console: what it decided,
+/// and what it asked.
+fn ask_update(state: State, live: Work, kids: Option<Vec<&'static str>>, flag: bool, answer: bool) -> (Result<String, Stop>, Option<String>) {
+    let asked = std::cell::RefCell::new(None);
+    let asks = Asks {
+        live: &|| live.clone(),
+        kids: &|| kids.clone(),
+        ask: &|words| {
+            *asked.borrow_mut() = Some(words.to_string());
+            answer
+        },
+        note: &|_| {},
+    };
+    let got = ask_before_update(state, "P", "no answer", flag, &asks);
+    (got, asked.into_inner())
+}
+
+/// A Windows update asks before any daemon it may stop or restart, whatever its version: live work stops the run unless
+/// the console says yes or the person gave -RestartDaemon; nothing live, or no daemon, goes on unasked; a daemon that
+/// cannot be told or cannot say is judged by its own children.
+#[test]
+fn a_windows_update_asks_before_it_restarts_a_live_daemon() {
+    let repl = Work { rows: vec!["a".into()], ..Work::default() };
+    let (got, asked) = ask_update(State::Current, repl.clone(), None, false, false);
+    assert_eq!(got.unwrap_err().code, 2);
+    assert_eq!(asked.as_deref(), Some("the REPLs of: a"));
+    let (got, _) = ask_update(State::Current, repl.clone(), None, false, true);
+    assert_eq!(got.unwrap(), "the daemon on P is running, and restarting it would end the REPLs of: a");
+    let (got, asked) = ask_update(State::Other, repl, None, true, false);
+    assert_eq!((got.unwrap().as_str(), asked), ("the daemon on P runs another version, and restarting it would end the REPLs of: a", None));
+    for state in [State::None, State::Other] {
+        let (got, asked) = ask_update(state, Work::default(), None, false, false);
+        assert_eq!((got.unwrap(), asked), (String::new(), None), "{state:?}");
+    }
+    let (got, asked) = ask_update(State::Unknown, Work::default(), Some(vec![]), false, false);
+    assert_eq!((got.unwrap(), asked), (String::new(), None), "no REPL or Pluto child: nothing live");
+    let (got, asked) = ask_update(State::Unknown, Work::default(), None, false, false);
+    assert!(got.unwrap_err().detail.contains("could not be told its version (no answer)"));
+    assert_eq!(asked.as_deref(), Some("any REPL or Pluto notebook that is live"));
+    let unsure = Work { unsure: Some("timed out".into()), ..Work::default() };
+    let (got, asked) = ask_update(State::Other, unsure, Some(vec!["repl"]), false, false);
+    assert!(got.unwrap_err().detail.contains("could not ask the daemon on P in full"));
+    assert_eq!(asked.as_deref(), Some("a live REPL (the daemon could not name its row), and any other the daemon could not list"));
+}

@@ -7,12 +7,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::daemon::{self, State};
 use super::options::Options;
 use super::pack::Pack;
-use super::supervisor::Converge;
+use super::supervisor::Way;
 use super::verdict::{self, step, Found, Stop};
 use super::{cmd, julia, procs, record};
 
@@ -257,48 +257,19 @@ fn write_pin(ctx: &Ctx, pinned: bool) -> Result<(), Stop> {
     Ok(())
 }
 
-/// What a restart of the daemon would end, as the reason of the question; empty when nothing is live or unsure.
-fn live_text(state: State, pipe: &str, work: &daemon::Work, why: &str) -> String {
-    let is = if state == State::Current { "is running" } else { "runs another version" };
-    let rows = work.rows.join(", ");
-    if state == State::Unknown {
-        let rest = if rows.is_empty() { "; restarting it could end live REPLs and Pluto notebooks".to_string() } else { format!("; restarting it would end the REPLs of: {rows}") };
-        return format!("a daemon runs on {pipe} and could not be told its version ({why}){rest}");
-    }
-    if let Some(reason) = &work.unsure {
-        let rest = if rows.is_empty() { String::new() } else { format!(", and restarting it would end the REPLs of: {rows}") };
-        return format!("could not ask the daemon on {pipe} in full: it {is}{rest}; sotd update repls: {reason}");
-    }
-    let t = daemon::work_words(&work.rows, work.pluto, "restarting it would end");
-    if t.is_empty() { t } else { format!("the daemon on {pipe} {is}, and {t}") }
-}
-
 /// Stage with the pack's own sotd, then apply one way, by what runs here; the step when the update stays armed.
 #[allow(clippy::too_many_lines, reason = "install.ps1's update in its order: the question, the stage, then the one way it applies")]
 fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<String>, Stop> {
     step("daemon");
     // Every path below that stops or restarts a daemon asks first, whatever its version.
     let (state, why) = daemon_state(ctx, new_sotd);
-    let mut live = String::new();
-    if state != State::None {
-        let work = daemon::work(new_sotd, &ctx.endpoint());
-        let unsure = work.unsure.is_some() || state == State::Unknown;
-        let kids = if unsure { daemon::children(&ctx.prefix) } else { None };
-        if unsure && kids.as_ref().is_some_and(Vec::is_empty) && work.rows.is_empty() && !work.pluto {
-            println!("note: could not ask the daemon on {} in full ({}); it has no REPL or Pluto child, so restarting it ends nothing live", ctx.pipe, work.unsure.as_deref().unwrap_or(&why));
-        } else {
-            live = live_text(state, &ctx.pipe, &work, &why);
-        }
-        if !live.is_empty() && !ctx.opts.restart_daemon {
-            let (repl, pluto) = kids.as_ref().map_or((false, false), |k| (k.contains(&"repl"), k.contains(&"pluto")));
-            if daemon::ask_restart(&daemon::ask_words(&work.rows, repl, work.pluto || pluto, unsure)) {
-                println!("note: restarting the daemon as answered");
-            } else {
-                println!("       Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then run this again with -RestartDaemon.");
-                return Err(Stop::new(2, live));
-            }
-        }
-    }
+    let asks = daemon::Asks {
+        live: &|| daemon::work(new_sotd, &ctx.endpoint()),
+        kids: &|| daemon::children(&ctx.prefix),
+        ask: &daemon::ask_restart,
+        note: &|t| println!("{t}"),
+    };
+    let live = daemon::ask_before_update(state, &ctx.pipe, &why, ctx.opts.restart_daemon, &asks)?;
     step("stage");
     if !ctx.base.join(".git").exists() {
         init_base(ctx)?;
@@ -329,19 +300,22 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
     let sup = supervisor(&ctx.log_dir, &all);
     let window_only = sup.is_none() && procs::window_runs(&all, &ctx.prefix);
     let work = if live.is_empty() { String::new() } else { format!("; {live}") };
-    if sup.as_ref().is_some_and(|(_, code)| !code.is_empty()) {
-        let wait = super::secs_env("SOT_INSTALL_CONVERGE_WAIT_S", 1800);
-        let relaunch = relaunch_script(ctx, installed)?;
-        converge(ctx, wait, &relaunch)?;
-        ctx.expect_daemon = state != State::None;
-        verdict::set_tail(if ctx.named { verdict::pin_tail(&ctx.pack.version) } else { String::new() });
-        return Ok(None);
-    }
-    if sup.is_some() || window_only {
-        return Ok(Some(format!("quit Ship of Tools, choose Keep, and start it from the shortcut; the start applies {}, then run this again to confirm (a converge here could end the box's sessions){work}", ctx.pack.tag())));
-    }
-    if session_id() == Some(0) {
-        return Ok(Some(format!("start Ship of Tools at the desk; the start applies {} (nothing was stopped from this session, which is not at the desk){work}", ctx.pack.tag())));
+    match super::supervisor::way(sup.as_ref().map(|(_, code)| code.as_str()), window_only, &session_id) {
+        Way::Converge => {
+            let wait = super::secs_env("SOT_INSTALL_CONVERGE_WAIT_S", 1800);
+            let relaunch = relaunch_script(ctx, installed)?;
+            converge(ctx, wait, &relaunch)?;
+            ctx.expect_daemon = state != State::None;
+            verdict::set_tail(if ctx.named { verdict::pin_tail(&ctx.pack.version) } else { String::new() });
+            return Ok(None);
+        }
+        Way::Quit => {
+            return Ok(Some(format!("quit Ship of Tools, choose Keep, and start it from the shortcut; the start applies {}, then run this again to confirm (a converge here could end the box's sessions){work}", ctx.pack.tag())));
+        }
+        Way::Desk => {
+            return Ok(Some(format!("start Ship of Tools at the desk; the start applies {} (nothing was stopped from this session, which is not at the desk){work}", ctx.pack.tag())));
+        }
+        Way::Here => {}
     }
     // Nothing runs and this is a desktop session: apply here, the daemon stopped first so it pins no stale image.
     step("apply");
@@ -393,27 +367,7 @@ fn converge(ctx: &Ctx, bound: Duration, relaunch: &Path) -> Result<(), Stop> {
         return Err(Stop::new(1, format!("relaunch-sot.ps1 -Converge ended with exit {}: {}", q.code.map_or("none".into(), |c| c.to_string()), q.last_said())));
     }
     println!("converge requested: waiting for the window's supervisor to apply {} (up to {} s)", ctx.pack.tag(), bound.as_secs());
-    let t0 = Instant::now();
-    let mut last_note = t0;
-    let outcome = loop {
-        if t0.elapsed() >= bound {
-            break Err(Stop::new(1, format!("the supervisor did not report {} applied within {} s: see {}", ctx.pack.tag(), bound.as_secs(), log.display())));
-        }
-        std::thread::sleep(Duration::from_secs(1));
-        let text = std::fs::read(&log).map(|b| String::from_utf8_lossy(&b[usize::try_from(start).unwrap_or(0).min(b.len())..]).into_owned()).unwrap_or_default();
-        match super::supervisor::converge_state(&text, &ctx.pack.tag()) {
-            Converge::Done => break Ok(()),
-            Converge::Restored => break Err(Stop::new(1, format!("the supervisor's apply did not complete: see {}", log.display()))),
-            Converge::Waiting => {}
-        }
-        if last_note.elapsed() >= Duration::from_secs(30) {
-            last_note = Instant::now();
-            println!("  still waiting ({} s)", t0.elapsed().as_secs());
-        }
-    };
-    // A sentinel nobody consumed would make the next window converge the moment it starts.
-    let _ = std::fs::remove_file(&sentinel);
-    outcome
+    super::supervisor::wait_converge(&log, start, &sentinel, &ctx.pack.tag(), bound, &|s| println!("  still waiting ({s} s)")).map_err(|why| Stop::new(1, why))
 }
 
 /// This process's logon session: 0 for an ssh logon, a later one at the desk.

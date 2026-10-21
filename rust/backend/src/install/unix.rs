@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::daemon::{self, State};
+use super::daemon::{self, Asks, State};
 use super::options::{Options, RoleFlag};
 use super::pack::Pack;
 use super::role::{self, Gate, Role};
@@ -419,14 +419,6 @@ pub(super) struct Question<'a> {
     pub restart_flag: bool,
     pub socket: &'a str,
     pub why: &'a str,
-}
-
-/// How the question asks: the daemon's live work, its child processes, the person at the console, and a note.
-pub(super) struct Asks<'a> {
-    pub live: &'a dyn Fn() -> daemon::Work,
-    pub kids: &'a dyn Fn() -> Option<Vec<&'static str>>,
-    pub ask: &'a dyn Fn(&str) -> bool,
-    pub note: &'a dyn Fn(&str),
 }
 
 /// The daemon question (scripts/CLAUDE.md, Installers: "A live daemon is asked before it ends"): an active unit on
