@@ -51,6 +51,7 @@ struct Plan {
     pre_commit: String,
     socket: String,
     unit_runs: bool,
+    retire_stops: bool,
     before: State,
     windows_before: bool,
     live: daemon::Work,
@@ -275,8 +276,11 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     let socket = sotd_at(&new_sotd, &["session-socket-path", "sot"]).first_line();
     let endpoint = format!("unix:{socket}");
     let all = procs::snapshot();
-    let unit_runs = resolved.daemon && !macos && !no_service && systemctl(&["is-active", "sotd.service"]).ok();
-    let (before, why) = if resolved.daemon {
+    let unit_active = !macos && cmd::on_path("systemctl") && systemctl(&["is-active", "sotd.service"]).ok();
+    let unit_runs = resolved.daemon && !no_service && unit_active;
+    // A role with no daemon here stops this host's run of the unit (the retire), so its daemon is asked too.
+    let retire_stops = !resolved.daemon && unit_active && home.join(".config/systemd/user/sotd.service").is_file();
+    let (before, why) = if resolved.daemon || retire_stops {
         daemon::state(&new_sotd, &endpoint, unit_runs || !procs::daemon_pids(&all, &prefix).is_empty())
     } else {
         (State::None, String::new())
@@ -305,6 +309,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
         pre_commit,
         socket,
         unit_runs,
+        retire_stops,
         before,
         windows_before,
         live: daemon::Work::default(),
@@ -408,6 +413,8 @@ fn ask_role(me: &str) -> Result<RoleFlag, Stop> {
 pub(super) struct Question<'a> {
     pub before: State,
     pub unit_runs: bool,
+    /// The role runs no daemon here and `sotd.service` is active: the retire stops it, whatever its version.
+    pub retire_stops: bool,
     pub restart_flag: bool,
     pub socket: &'a str,
     pub why: &'a str,
@@ -428,17 +435,20 @@ pub(super) struct Asks<'a> {
 pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), Stop> {
     let (socket, why) = (q.socket, q.why);
     let refuse_hint = "Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.";
+    // The run ends the unit it restarts, or the one its role's retire stops.
+    let ends_unit = q.unit_runs || q.retire_stops;
+    let (acting, act) = if q.retire_stops { ("stopping", "stopping it would end") } else { ("restarting", "restarting it would end") };
     if q.before == State::Unknown {
         let kids = (a.kids)();
         let (repl, pluto) = kids.as_ref().map_or((false, false), |k| (k.contains(&"repl"), k.contains(&"pluto")));
-        if q.unit_runs && q.restart_flag {
+        if ends_unit && q.restart_flag {
             (a.note)(&format!("note: the daemon on {socket} could not be told its version ({why}); restarting sotd.service ends any live REPL or Pluto notebook (--restart-daemon)"));
-        } else if q.unit_runs && kids.as_ref().is_some_and(Vec::is_empty) {
+        } else if ends_unit && kids.as_ref().is_some_and(Vec::is_empty) {
             (a.note)(&format!("note: the daemon on {socket} could not be told its version ({why}); it has no REPL or Pluto child, so restarting sotd.service ends nothing live"));
-        } else if q.unit_runs && (a.ask)(&daemon::ask_words(&[], repl, pluto, true)) {
+        } else if ends_unit && (a.ask)(&daemon::ask_words(&[], repl, pluto, true)) {
             (a.note)(&format!("note: the daemon on {socket} could not be told its version ({why}); restarting sotd.service as answered"));
         } else {
-            let hint = if q.unit_runs {
+            let hint = if ends_unit {
                 "Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); ask whoever uses this computer, then re-run with --restart-daemon."
             } else {
                 "Find why it does not answer, or stop it, then run this again."
@@ -447,23 +457,24 @@ pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), S
             return Err(Stop::new(2, format!("a daemon runs on {socket} and could not be told its version ({why})")));
         }
     }
-    if !matches!(q.before, State::Other | State::Held) {
+    if !(matches!(q.before, State::Other | State::Held) || (q.retire_stops && q.before == State::Current)) {
         return Ok((daemon::Work::default(), false));
     }
-    let will_restart = q.unit_runs && q.before == State::Other;
+    let will_restart = (q.unit_runs && q.before == State::Other) || q.retire_stops;
     let live = (a.live)();
     let ended = |lead: &str| daemon::work_words(&live.rows, live.pluto, lead);
     let mut unknown = false;
     match &live.unsure {
         None if live.rows.is_empty() && !live.pluto => {}
         None if !will_restart => {}
-        None if q.restart_flag => (a.note)(&format!("{} (--restart-daemon)", ended("restarting the daemon ends"))),
+        None if q.restart_flag => (a.note)(&format!("{} (--restart-daemon)", ended(&format!("{acting} the daemon ends")))),
         None if (a.ask)(&daemon::ask_words(&live.rows, false, live.pluto, false)) => {
-            (a.note)(&format!("{} (answered yes)", ended("restarting the daemon ends")));
+            (a.note)(&format!("{} (answered yes)", ended(&format!("{acting} the daemon ends"))));
         }
         None => {
             println!("       Restarting the daemon ends those REPLs and notebooks (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.");
-            return Err(Stop::new(2, format!("the daemon on {socket} runs another version, and {}", ended("restarting it would end"))));
+            let what = if q.retire_stops { format!("this run stops the daemon on {socket}, since this computer runs none in this role") } else { format!("the daemon on {socket} runs another version") };
+            return Err(Stop::new(2, format!("{what}, and {}", ended(act))));
         }
         Some(reason) => {
             // The daemon could not say; its own children can: with none that is a REPL or the Pluto server, nothing live
@@ -495,7 +506,7 @@ pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), S
 fn ask_daemon(plan: &mut Plan, new_sotd: &Path, why: &str) -> Result<(), Stop> {
     let endpoint = format!("unix:{}", plan.socket);
     let prefix = plan.prefix.clone();
-    let q = Question { before: plan.before, unit_runs: plan.unit_runs, restart_flag: plan.opts.restart_daemon, socket: &plan.socket, why };
+    let q = Question { before: plan.before, unit_runs: plan.unit_runs, retire_stops: plan.retire_stops, restart_flag: plan.opts.restart_daemon, socket: &plan.socket, why };
     let asks = Asks {
         live: &|| daemon::work(new_sotd, &endpoint),
         kids: &|| daemon::children(&prefix),

@@ -169,7 +169,25 @@ fn ask(q: &Question, live: daemon::Work, kids: Option<Vec<&'static str>>, answer
 }
 
 fn q(before: State, unit_runs: bool, restart_flag: bool) -> Question<'static> {
-    Question { before, unit_runs, restart_flag, socket: "/s.sock", why: "no answer" }
+    Question { before, unit_runs, retire_stops: false, restart_flag, socket: "/s.sock", why: "no answer" }
+}
+
+/// A run whose role has no daemon here stops an active local unit (the retire), so its live work is asked as a
+/// restart's is, whatever version it runs; with nothing live, or --restart-daemon, it goes on.
+#[test]
+fn a_retire_asks_before_it_stops_a_live_daemon() {
+    let retire = |before| Question { before, unit_runs: false, retire_stops: true, restart_flag: false, socket: "/s.sock", why: "no answer" };
+    for before in [State::Current, State::Other, State::Held] {
+        let (got, asked) = ask(&retire(before), work(&["alpha"], false, None), None, false);
+        let stop = got.unwrap_err();
+        assert!(asked && stop.code == 2 && stop.detail.contains("stopping it would end the REPLs of: alpha"), "{before:?}: {stop:?}");
+    }
+    let (got, asked) = ask(&retire(State::Current), work(&[], false, None), None, false);
+    assert!(!asked && got.is_ok(), "nothing live: the retire goes on");
+    let (got, asked) = ask(&Question { restart_flag: true, ..retire(State::Current) }, work(&["alpha"], false, None), None, false);
+    assert!(!asked && got.is_ok(), "--restart-daemon answers it");
+    let (got, _) = ask(&retire(State::Unknown), work(&[], false, None), Some(vec!["repl"]), false);
+    assert_eq!(got.unwrap_err().code, 2, "a daemon that cannot be told, with a REPL child, stops the run");
 }
 
 /// A live daemon is asked before it ends: a unit this run would restart, on another version with a live REPL, stops the
