@@ -20,7 +20,7 @@ processes that serve them, and the window holds one connection to each daemon it
 
 ## Subsystems
 
-What each guarantees to the rest. Sizes are `scripts/four-numbers.jl` at a25f3c39f: product and test tokens
+What each guarantees to the rest. Sizes are `scripts/four-numbers.jl` (version 2) at a25f3c39f: product and test tokens
 (characters / 4, comments included; integration tests assigned by file), names implemented twice, and cross-subsystem
 module references (the baseline for the fourth number until each subsystem is its own crate). A pass loads the package
 page, every contract and one subsystem whole; that leaves room for about 200 thousand tokens of code and tests.
@@ -29,22 +29,22 @@ page, every contract and one subsystem whole; that leaves room for about 200 tho
 |---|---|---:|---:|---:|---:|---|
 | platform | one answer per machine fact; durable publish, kernel locks, close-on-exec births, the peer challenge | 82 | 69 | 43 | 8 | yes |
 | wire | every byte between our programs: one frame codec, one op table, one protocol integer | 42 | 15 | 3 | 2 | yes |
-| topology | hosts.toml read one way; one ssh recipe; a link gate that ends logins on close | 54 | 50 | 31 | 23 | yes |
+| topology | hosts.toml read one way; one ssh recipe; a link gate that ends logins on close | 50 | 54 | 31 | 23 | yes |
 | containment (now in lifecycle) | every child in a kill domain its owner ends; every wait bounded | | | | | yes |
 | lifecycle | the last window's lease decides whether rows end; every daemon end is bounded and fires the child signal | 45 | 70 | 37 | 18 | yes |
 | server | one listener; nothing served before the OS peer check and an admitted hello; one writer per connection | 52 | 121 | 14 | 42 | yes |
-| rows | a row's id survives restarts; one guard per row; no second supervisor over a live one | 134 | 138 | 38 | 41 | no |
-| capsule | a row's terminal outlives the window and the daemon; every viewer attaches through one client | 421 | 462 | 142 | 2 | no (4x) |
+| rows | a row's id survives restarts; one guard per row; no second supervisor over a live one | 128 | 145 | 38 | 41 | no |
+| capsule | a row's terminal outlives the window and the daemon; every viewer attaches through one client | 414 | 469 | 140 | 2 | no (4x) |
 | messaging | `filed` only when the line is appended; a wake for an idle row; one writer per registry | 139 | 308 | 22 | 22 | no (2x) |
 | agents | rows get one argv and environment per agent kind and account, with folder trust prepared first | 137 | 79 | 10 | 12 | borderline |
 | files | a workspace's files confined to its root; versioned writes; delete is a trash | 37 | 19 | 6 | 48 | yes |
-| sidecars | per row a kernel and a REPL, per daemon Pluto and MathJax; callers submit and wait a stated bound, never spawn | 106 | 119 | 44 | 34 | borderline |
-| pages | nothing served that an op did not grant; loopback only; a remote window reaches pages over its one link | 37 | 50 | 12 | 26 | yes |
-| fe-net | one connection per dialled host, retried on a pace; typed requests and events, never bytes | 70 | 25 | 23 | 82 | yes |
-| fe-ui | one UI thread owns all view state; one wgpu pass draws every pixel | 402 | 182 | 79 | 31 | no (3x) |
-| distribution | a box runs exactly one tagged release; install verifies before it writes; launch fails open | 211 | 308 | 31 | 18 | no (2.5x) |
+| sidecars | per row a kernel and a REPL, per daemon Pluto and MathJax; callers submit and wait a stated bound, never spawn | 106 | 119 | 42 | 34 | borderline |
+| pages | nothing served that an op did not grant; loopback only; a remote window reaches pages over its one link | 36 | 50 | 12 | 26 | yes |
+| fe-net | one connection per dialled host, retried on a pace; typed requests and events, never bytes | 62 | 33 | 22 | 79 | yes |
+| fe-ui | one UI thread owns all view state; one wgpu pass draws every pixel | 391 | 194 | 66 | 29 | no (3x) |
+| distribution | a box runs exactly one tagged release; install verifies before it writes; launch fails open | 211 | 308 | 30 | 18 | no (2.5x) |
 | records | the manual says what is true now | 20 | 1 | 10 | 0 | yes |
-| total | | 1,996 | 2,050 | 314 | 409 | |
+| total | | 1,959 | 2,087 | 305 | 404 | |
 
 Outside the table: the vt100 fork (47 + 39, vendored, never loaded in a pass) and the shared test support (26).
 The design records (52 ADRs) and the old folder pages live in `docs/history/` and load nowhere.
@@ -138,11 +138,13 @@ with no wildcard; other threads only wake the window; untrusted text reaches the
 input goes only to the selected row's live client or is counted; showing a result never steals the view. Rests on:
 fe-net, capsule's attach client, winit and wgpu. Owns: all view state and UI persistence. Decision D4.
 
-**distribution.** Guarantees: install verifies checksums before any write and writes `install.json` last; a refused
-install writes nothing; an install never moves backwards; apply verifies before it mutates, restores on failure and
-exits 0; the launch path never stops on an update; every exit of an installer ends in one verdict line. Rests on: the
-release tag, `sotd` subcommands (`update direction`, `same-version`, `topology plan`), GitHub releases. Owns: `$PREFIX`,
-the units, the comm install. Decision D5.
+**distribution.** The release path's contract is settled (pass 1a): `scripts/CLAUDE.md`, "Release path". The cut
+tags only on the maintainer's word and runs no tests and reads no hosted run; the local gate is `rc-gate.sh` plus
+`user-manager-tests.sh`; CI only drafts. The installers' half, pass 1b's: install verifies checksums before any
+write and writes `install.json` last; a refused install writes nothing; an install never moves backwards; apply
+verifies before it mutates, restores on failure and exits 0; the launch path never stops on an update; every exit of
+an installer ends in one verdict line. Rests on: the release tag, `sotd` subcommands (`update direction`,
+`same-version`, `topology plan`), GitHub releases. Owns: `$PREFIX`, the units, the comm install. Decision D5.
 
 **records.** Guarantees: the manual says what is true now; a design not built is marked unbuilt; no private names.
 After the reorganization the package page and the contracts are the only descriptive records a session loads; ADRs
@@ -209,7 +211,8 @@ Windows).
   three byte-equal copies of two helpers) move into `sotd install`, which the pack already carries; `install.sh` and
   `install.ps1` shrink to fetch, verify and exec it. Distribution goes in two passes: 1a the release path first, with
   the thirty-minute done test and the outside review, then 1b the installer.
-- Open: the repo's committed permission settings (step 0's last item), the maintainer's call.
+- The repo's committed permission settings (`.claude/settings.json`, step 0) allow its own build, check, test, lint,
+  gate, pack, workflow-run and install commands and reading its releases; nothing in them tags or releases.
 
 ## Order of passes (session hours and dollars, estimates until each pass is measured)
 
@@ -219,8 +222,8 @@ package page: 15 minutes, 5 dollars). Each estimate is replaced by the measured 
 
 | # | pass | hours | dollars | measured |
 |---:|---|---:|---:|---|
-| 0 | Mechanical preparation: tests out of product files into sibling files; the 117 folder pages (164k tokens) to one-line pointers, their full text kept in `docs/history/`; the 52 ADRs (215k tokens) to `docs/history/adr/`, loaded by nobody; the root CLAUDE.md to this page; the size-limit and page checks retired; memory pruned to operating state; the four-number script | 3-6 | 60-120 | |
-| 1a | Distribution, the release path: `release.sh` without its test re-run or green-at-HEAD rule, one hosted run, the pack; done test: thirty minutes from fixes in hand to a candidate installed on the maintainer's workstation; the outside review | 2-4 | 40-80 | |
+| 0 | Mechanical preparation: tests out of product files into sibling files; the 117 folder pages (164k tokens) to one-line pointers, their full text kept in `docs/history/`; the 52 ADRs (215k tokens) to `docs/history/adr/`, loaded by nobody; the root CLAUDE.md to this page; the size-limit and page checks retired; memory pruned to operating state; the four-number script | 3-6 | 60-120 | 0.7 h, about 30-35 dollars; product 1,959 -> 1,962k, tests 2,087 -> 2,034k |
+| 1a | Distribution, the release path: `release.sh` without its test re-run or green-at-HEAD rule, one hosted run, the pack; done test: thirty minutes from fixes in hand to a candidate installed on the maintainer's workstation; the outside review | 2-4 | 40-80 | 1.6 h (pass 1.1, gate and landing 0.5); done test 22.4 min by segments; distribution 215/295 -> 213/298k |
 | 1b | Distribution, install, update and launch (D5) | 6-12 | 120-240 | |
 | 3 | Rows, with work-state and how a row's state is shown | 4-8 | 80-160 | |
 | 4 | Messaging (D1) | 6-12 | 120-240 | |
@@ -262,6 +265,7 @@ and `rust/log/tests` (27 thousand lines) are assigned by file:
 
 - The reorganization started 2026-10-20 from main at a25f3c39f, with v0.6.6-rc9.15 published and in use; the
   `release/0.6.6` branch takes fixes found in use, nothing else.
-- D1 to D5 are settled (above); the repo's committed permission settings wait on the maintainer.
-- Step 0 is in progress. No contract is settled yet; nothing is half-done on main.
+- D1 to D5 are settled (above).
+- Step 0 landed 2026-10-20. Pass 1a landed 2026-10-20: the release path's contract is the first settled. Pass 1b, the
+  installers, is next. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
