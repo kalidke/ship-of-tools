@@ -64,18 +64,19 @@ jobs:
           save-if: ${{ matrix.shard == 'rest' }}
       # The sotd unit tests render through the real MathJax node script, which needs its npm modules.
       - uses: actions/setup-node@v7
-        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
+        if: matrix.shard == 'sotd' || matrix.shard == 'gate-wgl'
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: rust/backend/sidecars/mathjax/package-lock.json
       - name: Install the MathJax helper's modules
-        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
+        if: matrix.shard == 'sotd' || matrix.shard == 'gate-wgl'
         working-directory: rust/backend/sidecars/mathjax
         run: npm ci
-      # Every shard has the Julia every leg installs, so a test that starts Julia (the sidecar tests in sotd, the daemon
-      # suites in rest that send kernel, preview or REPL ops) runs 1.13 on every system.
+      # The shards whose tests start Julia (the sidecar tests in sotd, the daemon suites in wake and rest that send kernel,
+      # preview or REPL ops) have the 1.13 every system runs.
       - uses: julia-actions/setup-julia@v3
+        if: true
         with:
           version: '1.13'
       # The WGL page test adds WGLMakie offline from the depot JULIA_DEPOT_PATH names; .github/wgl-depot.sh builds it and

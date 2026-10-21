@@ -1,21 +1,23 @@
 # The workspace's test shards: one row per target selection, `shard kind target [libtest filters]`, read by
-# scripts/tests/shards.py (the run, the job matrix and the coverage check) and by nothing else.
+# scripts/tests/shards.py (the run, the job matrix, the coverage check and rc-gate.sh) and by nothing else.
 #
 # A target is a test executable (kind bin, test, example or bench). A row with no filters runs it whole; positional
 # filters are alternatives and `--skip X` removes, as in libtest. A target's rows together select each of its tests
-# exactly once: the check in rust.yml fails, naming the test, on one that runs nowhere or twice.
+# exactly once: the check in rust.yml fails, naming the test, on one that runs nowhere or twice. A shard runs its rows
+# one after the other; rc-gate.sh runs each row that has filters as a job of its own.
 # A shard named gate-* runs in release-gate.yml, once per release; every other shard runs in rust.yml at each landing.
 # `rest` is never named: it runs every test executable this table does not name, then the doc tests.
 #
 # The wall-clock tests (they sleep on the clock, 60 to 180 s each) and the page test that needs a prepared Julia depot
-# are in gate-* shards; the rest are cut so no landing shard runs over about three minutes of tests.
+# are in gate-* shards; the rest are cut so a landing shard runs about three minutes of tests.
 
 supervisor test supervisor
-supervisor test fe_client --skip unresponsive_supervisor_expires_the_health_window
 lane       test lane_bridge --skip outage::
-lane       test capsule_workspaces
-sotd-a     bin  sotd sidecars:: --skip repl_page_secret_never_reaches_command_line
-sotd-b     bin  sotd --skip sidecars:: --skip repl_page_secret_never_reaches_command_line
+lane       test fe_client --skip unresponsive_supervisor_expires_the_health_window
+workspaces test capsule_workspaces
+wake       test comm_wake
+sotd       bin  sotd sidecars:: --skip repl_page_secret_never_reaches_command_line
+sotd       bin  sotd --skip sidecars:: --skip repl_page_secret_never_reaches_command_line
 
 gate-sleep test lane_bridge outage::
 gate-sleep test window_start

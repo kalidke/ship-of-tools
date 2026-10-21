@@ -131,9 +131,11 @@ def gate_whole(target):
 
 
 def parts(everything):
+    seen = {}
     for shard, kind, target, filters in rows():
+        seen[shard] = seen.get(shard, 0) + 1
         if filters and (everything or not shard.startswith('gate-')):
-            print('\t'.join([shard, kind, target, ' '.join(filters)]))
+            print('\t'.join([f'{shard}-{seen[shard]}', kind, target, ' '.join(filters)]))
 
 
 def main():

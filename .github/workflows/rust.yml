@@ -86,18 +86,19 @@ jobs:
           save-if: ${{ matrix.shard == 'rest' }}
       # The sotd unit tests render through the real MathJax node script, which needs its npm modules.
       - uses: actions/setup-node@v7
-        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
+        if: matrix.shard == 'sotd' || matrix.shard == 'gate-wgl'
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: rust/backend/sidecars/mathjax/package-lock.json
       - name: Install the MathJax helper's modules
-        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
+        if: matrix.shard == 'sotd' || matrix.shard == 'gate-wgl'
         working-directory: rust/backend/sidecars/mathjax
         run: npm ci
-      # Every shard has the Julia every leg installs, so a test that starts Julia (the sidecar tests in sotd, the daemon
-      # suites in rest that send kernel, preview or REPL ops) runs 1.13 on every system.
+      # The shards whose tests start Julia (the sidecar tests in sotd, the daemon suites in wake and rest that send kernel,
+      # preview or REPL ops) have the 1.13 every system runs.
       - uses: julia-actions/setup-julia@v3
+        if: contains(fromJSON('["sotd", "wake", "rest"]'), matrix.shard)
         with:
           version: '1.13'
       # sotd and sot-capsule sit in the target dir the backend tests spawn them from.
@@ -166,7 +167,7 @@ jobs:
       # here. --no-fail-fast: one failing test binary must not hide the others.
       - name: Test shard ${{ matrix.shard }}
         shell: bash
-        timeout-minutes: 6
+        timeout-minutes: 5
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
