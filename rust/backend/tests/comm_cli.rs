@@ -25,6 +25,19 @@ fn fwd(p: &Path) -> String {
     s.strip_prefix("//?/").map(str::to_string).unwrap_or(s)
 }
 
+/// `p` without a verbatim `\\?\` prefix: `cmd.exe` cannot run a batch file named that way ("The system cannot find the path
+/// specified."), though the folder is the same.
+fn plain(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(&s).to_string())
+}
+
+#[test]
+fn a_verbatim_path_loses_its_prefix_for_cmd() {
+    assert_eq!(plain(Path::new(r"\\?\C:\Users\x\agents")), PathBuf::from(r"C:\Users\x\agents"));
+    assert_eq!(plain(Path::new("/tmp/x")), PathBuf::from("/tmp/x"));
+}
+
 /// A scratch box: its home, its comm folder, the staged scripts, a project folder for each session.
 struct Scratch {
     _tmp: tempfile::TempDir,
@@ -233,7 +246,7 @@ fn the_windows_walk_counts_the_agents_above_git_bash() {
     const GIT_BASH: &str = r"C:\Program Files\Git\bin\bash.exe";
     assert!(Path::new(GIT_BASH).exists(), "Git Bash is missing at {GIT_BASH}");
     let b = Scratch::new();
-    let dir = b.root.join("agents");
+    let dir = plain(&b.root.join("agents"));
     std::fs::create_dir_all(&dir).unwrap();
     let cmd = PathBuf::from(std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into()));
     for agent in ["claude.exe", "codex.exe"] {
@@ -255,6 +268,9 @@ fn the_windows_walk_counts_the_agents_above_git_bash() {
     std::fs::write(&level2, format!("@\"{GIT_BASH}\" -c \"bash '{}'\"\r\n", fwd(&script))).unwrap();
     let level1 = dir.join("level1.bat");
     std::fs::write(&level1, format!("@\"{}\" /d /c \"{}\"\r\n", dir.join("codex.exe").display(), level2.display())).unwrap();
+    for staged in [&level1, &level2, &script, &dir.join("codex.exe"), &dir.join("claude.exe"), Path::new(GIT_BASH)] {
+        assert!(staged.exists() && !staged.to_string_lossy().starts_with(r"\\?\"), "cmd cannot read {}", staged.display());
+    }
     // The verdict is the staged script's last `rc=` line; a failure says what the script printed, so a missing line
     // shows its cause (the exit code, both streams) in the one hosted run.
     let run = |program: &Path, batch: &Path| {
