@@ -48,9 +48,18 @@ impl Scratch {
     /// this build's sotd, the box's comm folder, no daemon to find.
     #[cfg(unix)]
     fn session(&self, who: &str, script: &str, args: &[&str]) -> Command {
+        self.session_under(None, who, script, args)
+    }
+
+    /// [`Scratch::session`] under the umask `umask` when one is named, else the runner's.
+    #[cfg(unix)]
+    fn session_under(&self, umask: Option<&str>, who: &str, script: &str, args: &[&str]) -> Command {
         let project = self.root.join("projects").join(who);
         std::fs::create_dir_all(&project).expect("project");
         let mut c = bash();
+        if let Some(m) = umask {
+            c.arg("-c").arg(format!(r#"umask {m}; exec bash "$0" "$@""#));
+        }
         c.arg(fwd(&self.bin.join(script)))
             .args(args)
             .current_dir(&project)
@@ -127,6 +136,37 @@ fn a_join_a_send_and_a_poll_through_the_wrappers() {
     let unknown = b.run("beta", "comm-send.sh", &["@nobody", "x"]);
     assert_eq!(unknown.status.code(), Some(1));
     assert!(unknown.stderr.starts_with("FAILED -> @nobody: "), "{unknown}");
+}
+
+/// Everything a session's commands write in the comm folder is its user's alone, under any umask the caller has.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_comm_folder_is_the_users_alone_under_an_open_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    let b = Scratch::new();
+    let open = |who: &str, script: &str, args: &[&str]| run_within(&mut b.session_under(Some("000"), who, script, args), BOUND).ok();
+    open("alpha", "comm-join.sh", &[]);
+    open("beta", "comm-join.sh", &[]);
+    b.own_lock_record();
+    open("beta", "comm-send.sh", &["@alpha-box1", "x"]);
+    open("alpha", "comm-poll.sh", &[]);
+    let mut seen = 0;
+    let mut walk = vec![b.comm()];
+    while let Some(dir) = walk.pop() {
+        for e in std::fs::read_dir(&dir).expect("read the comm folder") {
+            let p = e.expect("entry").path();
+            if p.ends_with("inbox-lock-manager") {
+                continue; // the test wrote it, as the hub's daemon would
+            }
+            let mode = std::fs::metadata(&p).expect("stat").permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{} is open to others: {mode:o}", p.display());
+            seen += 1;
+            if p.is_dir() {
+                walk.push(p);
+            }
+        }
+    }
+    assert!(seen >= 8, "only {seen} entries in the comm folder");
 }
 
 /// The subagent guard: a subagent's run of an installed comm script is denied, a session's own is not.

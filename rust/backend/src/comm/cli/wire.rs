@@ -64,11 +64,18 @@ pub(crate) fn agent_join(endpoint: &str, workspace_id: &str, handle: &str) -> Re
 /// One request and its answer; `Err` names a refused hello in its own words, else that nothing answered.
 fn call(endpoint: &str, op: &str, payload: serde_json::Value, within: Duration) -> Result<serde_json::Value, String> {
     let me = sot_log::host::state_dir::host_name().unwrap_or_default();
-    crate::topology::dial::dial_and_call(endpoint, &me, op, payload, within).map_err(|e| {
-        let e = e.strip_prefix(&format!("{endpoint}: ")).unwrap_or(&e).to_string();
-        match e.split_once("hello refused: ") {
-            Some((_, why)) => format!("hello refused: {why}"),
-            None => format!("the daemon did not answer at {endpoint}: {e}"),
-        }
-    })
+    crate::topology::dial::dial_and_call(endpoint, &me, op, payload, within).map_err(|e| said(endpoint, &e))
 }
+
+/// The sentence a failed dial gives the sender: a refused hello in the daemon's own words, else that nothing answered.
+fn said(endpoint: &str, e: &str) -> String {
+    let e = e.strip_prefix(&format!("{endpoint}: ")).unwrap_or(e);
+    match e.split_once("hello refused: ") {
+        Some((_, why)) => format!("hello refused: {why}"),
+        None => format!("the daemon did not answer at {endpoint}: {e}"),
+    }
+}
+
+#[cfg(test)]
+#[path = "wire_tests.rs"]
+mod tests;
