@@ -19,9 +19,12 @@ Identity:
   handle the row's session declared (`agent.join`), else the name the row was created with, unless another row declares
   that name. A join moves a handle: `set_agent_handle` clears it from every other row under the registry's write lock;
   at boot `store::scan_disk` keeps a handle several tomls declare only on the row the comm registry names as its last
-  joiner (`clear_shared_handles`). Every reader of a row's handle asks `bound_handle` (`handle.rs`): the list, the
-  work-state, the liveness stamp and a join from outside any row; the wake reads the declared handle alone, since a
-  session that never joined has no mail to wake for.
+  joiner (`clear_shared_handles`). This holds by construction: the declared cell (`handle::Declared`) is private to
+  `handle.rs`, so the binding is read only through `bound_handle` (the list, the work-state, the liveness stamp, a
+  join from outside any row) and the declared value only through `declared_handle` (the row's toml, the list's
+  `agent_handle` field, and the wake, since a session that never joined has no mail to wake for); it changes only
+  through `set_agent_handle`, `clear_shared_handles` and `clear_declared`. The stored name (`agent_name`) is the name a
+  row is started with (its `SOT_COMM_NAME` pin) and the prune's key; it binds a handle only through `bound_handle`.
 - The default row is an inert anchor when its agent is `none`, on every runtime (`anchor::is_inert_default_anchor`, the
   one predicate); its declared handle survives the boot re-seed (`seed_default_row`).
 
@@ -162,8 +165,9 @@ restarts a live one in place.
 - `mod.rs`: the `Workspace`, `Workspaces` and `Inner` structs, `row_or_reply`, the `WorkspaceChanged` event and the
   session name rule.
 - `workspace.rs`: the row's methods, `Phase`, `Observation`, `SupervisorIdentity`, the phase cell, `now_unix`.
-- `registry.rs`: `Workspaces` insert, lookup, removal, observers, buses and the per-row guard.
-- `handle.rs`: `bound_handle`, the one answer to a row's handle, and the liveness stamp's choice of handles.
+- `registry.rs`: `Workspaces` insert, lookup, removal, observers, buses, the account cell and the per-row guard.
+- `handle.rs`: the declared cell (`Declared`), `bound_handle`, `declared_handle`, the two moves of a handle
+  (`set_agent_handle`, `clear_shared_handles`) and the liveness stamp's choice of handles.
 - `end.rs`: the end API lifecycle calls: `end_every`, `forget`, `EndReport`.
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`.
 - `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `end_default_row_run`, `default_row_launch_seed`,

@@ -88,7 +88,7 @@ async fn the_record_carries_the_new_account_before_the_replacement_is_spawned() 
     assert_eq!(after.account(), "team");
     assert_eq!(after.workspace_id, id);
     assert_eq!(after.slug, slug);
-    assert_eq!(after.agent_handle(), "row-declared-handle");
+    assert_eq!(crate::rows::handle::declared_handle(&after), "row-declared-handle");
     assert_eq!(after.agent(), "claude");
 
     let toml = std::fs::read_to_string(crate::rows::store::toml_path_for(&slug))

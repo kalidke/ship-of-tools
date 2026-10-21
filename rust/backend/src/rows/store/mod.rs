@@ -243,7 +243,7 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         // ADR 0046 decision 1. An older toml predates this key → "" (never
         // joined), matching `meta_only`'s own default.
         if let Some(h) = kv.get("agent_handle") {
-            ws.agent_handle = Mutex::new(h.clone());
+            ws.agent_handle = crate::rows::handle::Declared::new(h.clone());
         }
         // Accounts brief: an older toml predates this key too → "" (the
         // default account), matching `meta_only`'s own default.
@@ -347,7 +347,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
     body.push_str(&format!("runtime       = {}\n", toml_quote(&ws.runtime)));
     body.push_str(&format!(
         "agent_handle  = {}\n",
-        toml_quote(&ws.agent_handle())
+        toml_quote(&crate::rows::handle::declared_handle(ws))
     ));
     body.push_str(&format!("account       = {}\n", toml_quote(&ws.account())));
 

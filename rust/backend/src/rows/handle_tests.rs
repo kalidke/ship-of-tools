@@ -49,8 +49,8 @@ use crate::rows::workspace::{Observation, SupervisorIdentity};
 
 /// A row created as `name`, having declared `declared`; Ready when `ready`.
 fn row(label: &str, name: &str, declared: &str, ready: bool) -> Arc<Workspace> {
-    let w = Workspace::from_label(label, std::env::temp_dir(), false, "claude".into(), name.into(), String::new());
-    *w.agent_handle.lock().unwrap() = declared.to_string();
+    let mut w = Workspace::from_label(label, std::env::temp_dir(), false, "claude".into(), name.into(), String::new());
+    w.agent_handle = crate::rows::handle::Declared::new(declared);
     if ready {
         assert!(w.apply_phase_observation(Observation::Phase {
             phase: Phase::Ready,

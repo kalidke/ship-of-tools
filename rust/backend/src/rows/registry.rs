@@ -41,7 +41,7 @@ impl Workspaces {
                 );
                 w.runtime = ws.runtime.clone();
                 w.account = Mutex::new(ws.account());
-                w.agent_handle = Mutex::new(ws.agent_handle());
+                w.agent_handle = ws.agent_handle.copy();
                 w
             }
             None => ws,
@@ -197,97 +197,6 @@ impl Workspaces {
     pub fn default_id(&self) -> Option<String> {
         let g = self.inner.read().expect("workspaces lock");
         g.default_id.clone()
-    }
-
-    /// Record the sot-comm handle a session inside `workspace_id` DECLARED
-    /// via `agent.join` (ADR 0046 decision 1) — the daemon is told once
-    /// instead of re-deriving it from a self-file read-back on every
-    /// row-handle read (`rows::handle::bound_handle`) — and MOVE it: ADR 0049
-    /// gives a handle to one row only, so every OTHER row whose declared
-    /// handle equals `handle` loses it (cell cleared) in the same step.
-    /// Returns the row and the ids of the rows that lost the handle, for
-    /// the caller to persist; an empty `handle` moves nothing. `None` if
-    /// `workspace_id` is not registered (the `agent.join` handler reports
-    /// this as `unknown_workspace`).
-    ///
-    /// (S6, Codex finding B5): a GUARDED IN-PLACE update,
-    /// never a replacement `insert`. The write lands on each row's OWN
-    /// interior `agent_handle` cell (the SAME `Arc<Workspace>`, resource
-    /// caches — kernel, repl, watcher — untouched), not on a freshly
-    /// reconstructed `Workspace` that would start every cache cold. This
-    /// also closes the destroy race the old replace-based version had:
-    /// since this method never touches `by_id`/`by_slug`, a `destroy` that
-    /// removes the row between the lookup and this write leaves the row
-    /// destroyed — the write lands on an orphaned `Arc` nobody can
-    /// `resolve()` to anymore, never a resurrection.
-    ///
-    /// The registry's WRITE lock is held across the whole move, so two
-    /// concurrent declarations of one handle serialise and the later one
-    /// wins; a cell is locked only for one clone or one write, so taking
-    /// cells under the registry lock cannot deadlock.
-    pub fn set_agent_handle(&self, workspace_id: &str, handle: &str) -> Option<(Arc<Workspace>, Vec<String>)> {
-        let g = self.inner.write().expect("workspaces lock");
-        let ws = g.by_id.get(workspace_id)?.clone();
-        let mut moved = Vec::new();
-        if !handle.is_empty() {
-            for (id, other) in g.by_id.iter() {
-                if id == workspace_id {
-                    continue;
-                }
-                let mut cell = other.agent_handle.lock().unwrap_or_else(|e| e.into_inner());
-                if *cell == handle {
-                    cell.clear();
-                    moved.push(id.clone());
-                }
-            }
-        }
-        *ws.agent_handle.lock().unwrap_or_else(|e| e.into_inner()) = handle.to_string();
-        Some((ws, moved))
-    }
-
-    /// Boot's side of one row per handle (ADR 0049): every non-empty
-    /// declared handle that two or more rows hold stays only on the row
-    /// `keep(handle)` names (a workspace id) and is cleared on the rest; a
-    /// `keep` that names none of them clears it on all. `keep` runs with
-    /// no lock held; the clears run under the registry's write lock, like
-    /// [`set_agent_handle`](Self::set_agent_handle)'s. Returns each such
-    /// handle with the rows it was cleared on, for the caller to save.
-    pub(crate) fn clear_shared_handles(
-        &self,
-        keep: impl Fn(&str) -> Option<String>,
-    ) -> Vec<(String, Vec<Arc<Workspace>>)> {
-        let mut by_handle: std::collections::BTreeMap<String, Vec<Arc<Workspace>>> = Default::default();
-        for ws in self.list() {
-            let h = ws.agent_handle();
-            if !h.is_empty() {
-                by_handle.entry(h).or_default().push(ws);
-            }
-        }
-        let shared: Vec<(String, Vec<Arc<Workspace>>, Option<String>)> = by_handle
-            .into_iter()
-            .filter(|(_, rows)| rows.len() > 1)
-            .map(|(h, rows)| {
-                let kept = keep(&h);
-                (h, rows, kept)
-            })
-            .collect();
-        let _g = self.inner.write().expect("workspaces lock");
-        let mut out = Vec::new();
-        for (handle, rows, kept) in shared {
-            let mut cleared = Vec::new();
-            for ws in rows {
-                if kept.as_deref() == Some(ws.workspace_id.as_str()) {
-                    continue;
-                }
-                let mut cell = ws.agent_handle.lock().unwrap_or_else(|e| e.into_inner());
-                if *cell == handle {
-                    cell.clear();
-                    cleared.push(ws.clone());
-                }
-            }
-            out.push((handle, cleared));
-        }
-        out
     }
 
     /// Record which account this row's agent runs as (ADR 0046 decision

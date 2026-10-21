@@ -100,7 +100,7 @@ impl std::fmt::Debug for Workspace {
             .field("task", &self.task)
             .field("runtime", &self.runtime)
             .field("account", &self.account())
-            .field("agent_handle", &self.agent_handle())
+            .field("agent_handle", &crate::rows::handle::declared_handle(self))
             .field("phase", &self.phase())
             .field("watchdog_owner", &self.watchdog_owner())
             .field("activation_error", &self.activation_error())
@@ -145,7 +145,7 @@ impl Workspace {
             // `workspace.create`'s own resolution) sets it after
             // construction. `""` here is the default account.
             account: Mutex::new(String::new()),
-            agent_handle: Mutex::new(String::new()),
+            agent_handle: crate::rows::handle::Declared::default(),
             phase_cell: Mutex::new(PhaseCell::default()),
             watchdog_owner: Mutex::new(None),
             activation_error: Mutex::new(None),
@@ -155,13 +155,6 @@ impl Workspace {
             repl: OnceLock::new(),
             watcher: OnceLock::new(),
         }
-    }
-
-    /// The sot-comm handle this workspace's session has DECLARED (ADR
-    /// 0046 decision 1) — `""` if never joined. The one reader for the
-    /// interior-mutable `agent_handle` cell; see that field's own doc.
-    pub fn agent_handle(&self) -> String {
-        self.agent_handle.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn agent(&self) -> String {
@@ -184,7 +177,7 @@ impl Workspace {
         *self.agent.lock().unwrap_or_else(|e| e.into_inner()) = "none".to_string();
         *self.agent_name.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
         // Nothing runs in an inert anchor, so it holds no handle against a join from outside any row.
-        *self.agent_handle.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
+        crate::rows::handle::clear_declared(self);
     }
 
     pub fn phase(&self) -> Phase {

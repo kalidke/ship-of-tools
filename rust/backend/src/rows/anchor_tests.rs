@@ -37,7 +37,7 @@ fn reset_agent_to_none_makes_a_carried_over_default_row_inert_again() {
         "hello".into(),
     );
     row.runtime = "capsule".to_string();
-    row.agent_handle = std::sync::Mutex::new("anchor-old-box".to_string());
+    row.agent_handle = crate::rows::handle::Declared::new("anchor-old-box".to_string());
     let row = reg.insert(row);
     reg.set_default(&row.workspace_id);
     let original_id = row.workspace_id.clone();
@@ -52,7 +52,7 @@ fn reset_agent_to_none_makes_a_carried_over_default_row_inert_again() {
     assert_eq!(reset.workspace_id, original_id, "reset must preserve the id");
     assert_eq!(reset.agent(), "none");
     assert_eq!(reset.agent_name(), "");
-    assert_eq!(reset.agent_handle(), "", "an inert anchor holds no handle against a join from outside any row");
+    assert_eq!(crate::rows::handle::declared_handle(&reset), "", "an inert anchor holds no handle against a join from outside any row");
     assert_eq!(reset.runtime, "capsule", "unrelated metadata must survive the reset");
     assert!(
         reg.is_inert_default_anchor(&reset),

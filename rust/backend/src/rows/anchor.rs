@@ -167,7 +167,7 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
     // fresh row with none at all, so without this every boot silently
     // wiped a default row's already-joined handle on the very next save.
     if let Some(existing) = &existing_default {
-        default_ws_seed.agent_handle = std::sync::Mutex::new(existing.agent_handle());
+        default_ws_seed.agent_handle = existing.agent_handle.copy();
     }
     workspaces.insert(default_ws_seed);
     let default_ws = workspaces
