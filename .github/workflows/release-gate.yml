@@ -103,6 +103,75 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
         run: python3 ../scripts/tests/shards.py run ${{ matrix.shard }}
 
+  # The proofs Windows does not run at each landing (rust.yml `test`, sup shard, macOS only): the clippy gate over every
+  # target, with the test-children rule, and the portable selected-body proofs, on windows-latest.
+  checks-windows:
+    name: checks (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - name: Line tables only (Windows)
+        shell: bash
+        run: echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          shared-key: test-windows-latest
+      # The vendored vt100 crate is excluded: it denies clippy::all in its own source, which beats -A on the command
+      # line. CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
+      - name: Test children
+        env:
+          CLIPPY_CONF_DIR: "${{ github.workspace }}/rust/clippy-tests"
+        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::disallowed_methods
+      - name: Build selected-body fixture
+        shell: bash
+        run: |
+          mkdir -p ../dev/output
+          cargo test -p sot-log --test test_body_fixture --locked --no-run --message-format=json > ../dev/output/iso-sh-ci-artifacts.json
+          python3 - <<'PYFIXTURE'
+          import json, os
+          rows = [json.loads(line) for line in open('../dev/output/iso-sh-ci-artifacts.json') if line.startswith('{')]
+          paths = [row['executable'] for row in rows if row.get('target', {}).get('name') == 'test_body_fixture' and row.get('executable')]
+          if len(paths) != 1:
+              raise SystemExit('expected exactly one compiled selected-body fixture')
+          path = os.path.abspath(paths[0]).replace('\\', '/')
+          with open('../dev/output/iso-sh-ci-path', 'w') as output:
+              output.write(path + '\n')
+          PYFIXTURE
+      - name: Test selected Rust bodies
+        shell: bash
+        run: |
+          python3 - <<'PYCARGO'
+          import json, os, pathlib, subprocess
+          manifest = pathlib.Path('Cargo.toml').resolve()
+          root = pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve()
+          root.mkdir()
+          environment = {k: v for k, v in os.environ.items() if not k.startswith('SOT_')}
+          runner = root / 'runner.py'
+          runner.write_text('import os, subprocess, sys\nos.chdir(sys.argv[1])\nsys.exit(subprocess.run(sys.argv[2:]).returncode)\n')
+          environment.setdefault('CARGO_HOME', str(pathlib.Path.home() / '.cargo'))
+          environment.setdefault('RUSTUP_HOME', str(pathlib.Path.home() / '.rustup'))
+          home = root / 'home'
+          home.mkdir()
+          for name in ('HOME', 'USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME'):
+              environment[name] = str(home)
+          for key, name, flags in [('normal', 'ordinary', ['--exact']), ('ignored', 'qualified::ignored_positive', ['--ignored', '--exact']), ('absent', 'absent', ['--exact']), ('substring', 'near', [])]:
+              directory = root / key
+              directory.mkdir()
+              (directory / 'iso-sh-fixture-request').touch()
+              (directory / 'go').touch()
+              with (directory / 'cargo.log').open('w') as output:
+                  subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-log', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
+          PYCARGO
+          ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh --portable "$(cat ../dev/output/iso-sh-ci-path)"
+
   window-minimized-windows:
     name: native minimized window (Windows)
     runs-on: windows-latest

@@ -107,12 +107,13 @@ jobs:
       # sotd and sot-capsule sit in the target dir the backend tests spawn them from.
       - name: Build workspace
         run: cargo build --workspace --locked
-      # Windows and macOS run, in the sup shard, the clippy gates and the portable selected-body
-      # proofs that `checks` runs on Linux: cfg(windows) and cfg(macos) code is checked only where it compiles.
+      # macOS runs, in the sup shard, the clippy gate and the portable selected-body proofs that `checks` runs on Linux:
+      # cfg(macos) code is checked only where it compiles. Windows runs them in release-gate.yml (checks-windows): they
+      # cost it about two minutes before its tests, and the disallowed-methods gate below still runs on both.
       # The vendored vt100 crate is excluded: it denies clippy::all in its own source, which beats -A on the command
       # line. CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
       - name: Test children
-        if: matrix.os != 'ubuntu-latest' && contains(matrix.shard, 'sup')
+        if: matrix.os == 'macos-latest' && contains(matrix.shard, 'sup')
         env:
           CLIPPY_CONF_DIR: "${{ github.workspace }}/rust/clippy-tests"
         run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::disallowed_methods
@@ -123,7 +124,7 @@ jobs:
         if: matrix.os != 'ubuntu-latest' && contains(matrix.shard, 'sup')
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
       - name: Build selected-body fixture
-        if: matrix.os != 'ubuntu-latest' && contains(matrix.shard, 'sup')
+        if: matrix.os == 'macos-latest' && contains(matrix.shard, 'sup')
         shell: bash
         run: |
           mkdir -p ../dev/output
@@ -139,7 +140,7 @@ jobs:
               output.write(path + '\n')
           PYFIXTURE
       - name: Test selected Rust bodies
-        if: matrix.os != 'ubuntu-latest' && contains(matrix.shard, 'sup')
+        if: matrix.os == 'macos-latest' && contains(matrix.shard, 'sup')
         shell: bash
         run: |
           python3 - <<'PYCARGO'

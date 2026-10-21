@@ -39,5 +39,5 @@ gate-storage test fault_storage native_volume_fill_free_sync
 # The jobs of each system (seconds from run 39646399759; a job's tests run about four minutes at most). Linux and Windows
 # share 20 concurrent jobs with the checks, macOS has 5. rest-0 to rest-2 split the targets named nowhere above.
 fold linux   ws2+rest-2 sotd-a+sotd-b+sotd-c rest-0+rest-1
-fold windows sup+wake sotd-a+sotd-b+ws2 lane+ws rest-0 rest-1 sotd-c+rest-2
+fold windows sotd-a+sotd-b+ws2 lane+ws rest-0 rest-1 sotd-c+rest-2
 fold macos   sotd-c sotd-b+lane+wake sotd-a+rest-0 rest-1+rest-2 sup+ws+ws2
