@@ -1,14 +1,14 @@
-# Rust CI (ADR 0030 §3): build + test on the blocking platforms.
+# Rust CI (ADR 0030 §3): build + test on the blocking platforms, at each landing.
 #
-# Runs on pushes to main and on demand -- NOT on pull requests
-# (decided 2026-09-08: waiting on hosted CI per PR was the workflow's
-# slowest step and burned the Actions allowance; a change merges on its
-# local suites, the windows-gnu cross-check and its review round. Hosted
-# runs happen once at the end of a pass and once at the release gate, by
-# dispatch; no cut reads them (scripts/CLAUDE.md, "Release path").
-# Windows-only frontend code that cannot be cross-compiled on the backend
-# runs this workflow on its branch by hand: `gh workflow run rust.yml --ref
-# <branch>`.)
+# Runs on pushes to main and on demand -- NOT on pull requests (decided 2026-09-08: waiting on hosted CI per PR was the
+# workflow's slowest step and burned the Actions allowance; a change merges on its local suites, the windows-gnu
+# cross-check and its review round). The per-landing run is held to five to seven minutes wall: the build, the unit
+# tests and the integration tests that finish in seconds, sharded on all three systems by .github/test-shards.txt, and
+# every job carries a `timeout-minutes` at its bound so a slow one fails, named, instead of stretching the wall.
+# Everything that sleeps on the clock, needs a prepared Julia depot, drives a native window, or cannot fit a shard runs
+# once per release in release-gate.yml (dispatched by hand at the release gate, never on a tag: scripts/CLAUDE.md,
+# "Release path"). Windows-only frontend code that cannot be cross-compiled on the backend runs this workflow on its
+# branch by hand: `gh workflow run rust.yml --ref <branch>`.
 #
 # Deliberately NO `cargo fmt --check` / `clippy -D warnings` yet — the
 # workspace predates the gate and isn't fmt/clippy-clean; normalizing it is a
@@ -24,6 +24,7 @@
 # publish job and kills the whole release. Testing it only at tag time meant
 # the tag was the first place anyone learned it was broken, with no way to
 # fix it in place. Pre-merge is where that belongs.
+# Hosted runners run 20 jobs at once, 5 of them macOS: this workflow starts 18, 5 on macOS.
 
 name: Rust
 
@@ -36,7 +37,7 @@ on:
     # comm/** added alongside the "Test sot-comm disambiguation" step below
     # (PR #148 Codex review F10) — without it, a comm-only change (like the
     # one that added that step) would never trigger this workflow at all.
-    paths: ["rust/**", "scripts/**", "docs/tools/**", "comm/**", "agents/**", ".github/workflows/rust.yml", ".github/wgl-depot.sh"]
+    paths: ["rust/**", "scripts/**", "docs/tools/**", "comm/**", "agents/**", ".github/workflows/rust.yml", ".github/test-shards.txt", ".github/wgl-depot.sh"]
   workflow_dispatch: {}
 
 concurrency:
@@ -47,238 +48,28 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
-  window-minimized-windows:
-    name: native minimized window (Windows)
-    runs-on: windows-latest
-    # Worst case: build up to 300 s, the fixtures child up to 120 s, the workload up to 780 s, about 1200 s in all.
-    timeout-minutes: 25
-    defaults:
-      run:
-        working-directory: rust
-    env:
-      RUST_BACKTRACE: "1"
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Prove native minimized workload and progress
-        run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
-
-  window-minimized-macos:
-    name: native minimized window (macOS)
-    runs-on: macos-latest
-    # Worst case: build up to 300 s, the fixtures child up to 120 s, the workload up to 780 s, about 1200 s in all.
-    timeout-minutes: 25
-    defaults:
-      run:
-        working-directory: rust
-    env:
-      RUST_BACKTRACE: "1"
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Prove native minimized workload and progress
-        run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
-
-  window-minimized-macos-mutation:
-    name: native minimized window, MAC-REDRAW mutation leg, expected red (macOS)
-    runs-on: macos-latest
-    # Its worst case is the same target's: build up to 300 s, the fixtures child up to 120 s, the workload child up to
-    # its own 780 s bound if it hangs before the visible verdict, about 1200 s in all. 25 minutes lets the parent print
-    # its verdict rather than the job be cancelled.
-    timeout-minutes: 25
-    defaults:
-      run:
-        working-directory: rust
-    env:
-      RUST_BACKTRACE: "1"
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      # MAC-REDRAW's red, shown in the same run: with the off-main `Window` call restored, the visible phase's held
-      # window thread must stall the transport past the lateness bound. The job passes only if that red is printed.
-      - name: Mutation leg, expected red (MAC-REDRAW)
-        shell: bash
-        run: |
-          set +e
-          cargo test -p sot-frontend --test window_minimized --features test-mac-redraw-mutation --locked > mutation.log 2>&1
-          rc=$?
-          grep -E "phase=completed|^mac-redraw-mutation|^Error" mutation.log
-          if grep -q "mac-redraw-mutation visible failures=.*workload_rate" mutation.log; then
-            echo "mac-redraw mutation: red as expected (exit $rc)"
-          else
-            echo "mac-redraw mutation: the off-main redraw did not fail the visible phase's lateness bound (exit $rc)"
-            exit 1
-          fi
-
-  window-close-windows:
-    name: native window close (Windows)
-    runs-on: windows-latest
-    # Worst case on Windows: about 4.5 min to Running, 11 cases each overrunning about 62 s, about 1 min of passing
-    # ones: about 17 min.
-    timeout-minutes: 25
-    defaults:
-      run:
-        working-directory: rust
-    env:
-      RUST_BACKTRACE: "1"
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Prove native window close and the teardown backstop
-        run: cargo test -p sot-frontend --test window_close --features test-window-close --locked
-
-  window-close-macos:
-    name: native window close (macOS)
-    runs-on: macos-latest
-    # As window-close-windows: every case runs, so up to 11 overruns of about 62 s each.
-    timeout-minutes: 25
-    defaults:
-      run:
-        working-directory: rust
-    env:
-      RUST_BACKTRACE: "1"
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Prove native window close and the teardown backstop
-        run: cargo test -p sot-frontend --test window_close --features test-window-close --locked
-
-  pane-timing-windows:
-    name: native pane timing, stand-in route (Windows)
-    runs-on: windows-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: rust
-    env:
-      RUST_BACKTRACE: "1"
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Build the private daemon
-        run: cargo build -p sot-backend --bin sotd --locked
-      - name: Build the capsule
-        run: cargo build -p sot-log --bin sot-capsule --locked
-      - name: Time cold attaches over the stand-in route to the presented pane
-        run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
-
-  pane-timing-macos:
-    name: native pane timing, stand-in route (macOS)
-    runs-on: macos-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: rust
-    env:
-      RUST_BACKTRACE: "1"
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Build the private daemon
-        run: cargo build -p sot-backend --bin sotd --locked
-      - name: Build the capsule
-        run: cargo build -p sot-log --bin sot-capsule --locked
-      - name: Time cold attaches over the stand-in route to the presented pane
-        run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
-
-  # ADR 0050, the daemon's lifetime, read on real daemons and real children (rust/backend/tests/daemon_lifetime). Linux runs
-  # the whole harness, the cases that need Julia 1.12 (the REPL, Pluto's environment) and Quarto 1.9.38 included; macOS runs
-  # the premises on real children (its guard-free cases are the in-crate lifecycle tests of the `test` job below).
-  daemon-lifetime-linux:
-    name: daemon lifetime harness (Linux)
+  plan:
+    name: plan the test shards
     runs-on: ubuntu-latest
-    timeout-minutes: 75
-    defaults:
-      run:
-        working-directory: rust
+    timeout-minutes: 3
+    outputs:
+      landing: ${{ steps.plan.outputs.landing }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: '1.12'
-      - uses: julia-actions/cache@v3
-      # 1.9.38 or later: its reader waits up to two seconds for the Julia server's transport line; 1.7.31 retried
-      # without waiting and could fail on a line not yet written.
-      - uses: quarto-dev/quarto-actions/setup@v2
-        with:
-          version: 1.9.38
-      # Every Julia a case starts runs on a depot of the case's own, with this runner's depot behind it, read only. This
-      # step fills the runner's depot once: Pluto's environment, with one notebook run so its worker side compiles too,
-      # and Quarto's Julia runner, with one document rendered. SOT_L2_PLUTO_MANIFEST and QUARTO_JULIA_PROJECT hand the
-      # cases exactly those environments, so no case resolves, installs or compiles them again.
-      - name: Prepare Pluto and Quarto's Julia runner in the runner's depot
-        working-directory: .
-        shell: bash
-        run: |
-          set -euo pipefail
-          warm="$RUNNER_TEMP/l2-warm"
-          quarto_julia="$RUNNER_TEMP/l2-quarto-julia"
-          mkdir -p "$warm" "$quarto_julia"
-          cp rust/backend/tests/daemon_lifetime/fixtures/notebook.jl "$warm/notebook.jl"
-          julia --startup-file=no --project=julia/pluto rust/backend/tests/daemon_lifetime/fixtures/warm_pluto.jl "$warm/notebook.jl"
-          echo "SOT_L2_PLUTO_MANIFEST=$GITHUB_WORKSPACE/julia/pluto/Manifest.toml" >> "$GITHUB_ENV"
-          cp "$(quarto --paths | sed -n 2p)/extension-subtrees/julia-engine/_extensions/julia-engine/Project.toml" "$quarto_julia/"
-          julia --startup-file=no --project="$quarto_julia" -e 'using Pkg; Pkg.instantiate()'
-          printf -- '---\nengine: julia\n---\n\n```{julia}\n1 + 1\n```\n' > "$warm/render.qmd"
-          QUARTO_JULIA_PROJECT="$quarto_julia" QUARTO_JULIA="$(command -v julia)" quarto render "$warm/render.qmd" --to html
-          QUARTO_JULIA_PROJECT="$quarto_julia" quarto call engine julia kill
-          echo "QUARTO_JULIA_PROJECT=$quarto_julia" >> "$GITHUB_ENV"
-      - name: Build the capsule with its phase barriers
-        run: cargo build -p sot-log --locked --features native-barrier --bin sot-capsule
-      - name: Prove the daemon's lifetime on real daemons
-        run: cargo test -p sot-backend --locked --features daemon-lifetime-faults --test daemon_lifetime -- --include-ignored --test-threads=1
-
-  daemon-lifetime-macos:
-    name: daemon lifetime premises (macOS)
-    runs-on: macos-latest
-    timeout-minutes: 45
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Build the capsule with its phase barriers
-        run: cargo build -p sot-log --locked --features native-barrier --bin sot-capsule
-      - name: Prove the native launcher and the fence claim on real children
-        run: cargo test -p sot-backend --locked --features daemon-lifetime-faults --test daemon_lifetime -- --test-threads=1
+      - id: plan
+        run: echo "landing=$(python3 scripts/tests/shards.py plan landing)" >> "$GITHUB_OUTPUT"
 
   test:
-    name: build+test (${{ matrix.os }})
+    name: build+test (${{ matrix.os }}, ${{ matrix.shard }})
+    needs: plan
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # The bound of the shard: about 1 min of setup, 2 of cached build, up to 5 of tests. A slow shard fails here, named.
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        shard: ${{ fromJSON(needs.plan.outputs.landing) }}
     defaults:
       run:
         working-directory: rust
@@ -290,20 +81,34 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      # The MathJax helper's tests render through the real node script, which needs its npm modules.
+          shared-key: ${{ matrix.os == 'ubuntu-latest' && 'test-linux' || '' }}
+          cache-on-failure: true
+          save-if: ${{ matrix.shard == 'rest' }}
+      # The sotd unit tests render through the real MathJax node script, which needs its npm modules.
       - uses: actions/setup-node@v7
+        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: rust/backend/sidecars/mathjax/package-lock.json
       - name: Install the MathJax helper's modules
+        if: startsWith(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
         working-directory: rust/backend/sidecars/mathjax
         run: npm ci
+      # Every shard has the Julia every leg installs, so a test that starts Julia (the sidecar tests in sotd, the daemon
+      # suites in rest that send kernel, preview or REPL ops) runs 1.13 on every system.
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.13'
+      # sotd and sot-capsule sit in the target dir the backend tests spawn them from.
       - name: Build workspace
         run: cargo build --workspace --locked
+      # Windows and macOS run, in the supervisor shard, the clippy gates and the portable selected-body
+      # proofs that `checks` runs on Linux: cfg(windows) and cfg(macos) code is checked only where it compiles.
       # The vendored vt100 crate is excluded: it denies clippy::all in its own source, which beats -A on the command
       # line. CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
       - name: Test children
+        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'supervisor'
         env:
           CLIPPY_CONF_DIR: "${{ github.workspace }}/rust/clippy-tests"
         run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::disallowed_methods
@@ -311,8 +116,10 @@ jobs:
       # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
       # that does not exist on a leg draws a warning there.
       - name: Disallowed methods
+        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'supervisor'
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
       - name: Build selected-body fixture
+        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'supervisor'
         shell: bash
         run: |
           mkdir -p ../dev/output
@@ -328,6 +135,7 @@ jobs:
               output.write(path + '\n')
           PYFIXTURE
       - name: Test selected Rust bodies
+        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'supervisor'
         shell: bash
         run: |
           python3 - <<'PYCARGO'
@@ -354,30 +162,40 @@ jobs:
           PYCARGO
           ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh --portable "$(cat ../dev/output/iso-sh-ci-path)"
 
-      - name: Folder trust premises (Windows and macOS)
-        run: |
-          cargo test -p sot-backend --bin sotd trust_declaration --locked -- --nocapture
-          cargo test -p sot-backend --bin sotd agents::folder_trust --locked -- --nocapture
-          cargo test -p sot-backend --test trust_declare --test trust_premises --locked -- --nocapture
-      # The sidecar tests start a real Julia, which the macOS image lacks, and the WGL page test adds WGLMakie offline
-      # from the depot JULIA_DEPOT_PATH names; .github/wgl-depot.sh builds it and says why it is built so.
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: '1.13'
-      - name: Prepare the Julia depot the WGL page test reads
+      # --nocapture: tests that report on stdout (the fault sweeps' hit counts, the PASS lines other lanes read) print
+      # here. --no-fail-fast: one failing test binary must not hide the others.
+      - name: Test shard ${{ matrix.shard }}
         shell: bash
-        run: bash ../.github/wgl-depot.sh
-      # --nocapture: the fault sweeps REPORT (never assert) their torn-tail
-      # hit counts on stderr — captured output would hide them from CI logs,
-      # making the sweeps' actual coverage invisible (review finding).
-      # --no-fail-fast: one failing test binary must not hide the others.
-      - name: Test workspace
+        timeout-minutes: 6
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
-        run: cargo test --workspace --locked --no-fail-fast -- --nocapture
+        run: python3 ../scripts/tests/shards.py run ${{ matrix.shard }}
+      # Every test of a named target runs in exactly one shard of .github/test-shards.txt; a test unassigned or assigned twice
+      # fails the run here, named.
+      - name: Check that every test runs in exactly one shard
+        if: matrix.shard == 'rest'
+        shell: bash
+        timeout-minutes: 3
+        run: python3 ../scripts/tests/shards.py check
+      # No comm or agents script leaves a file in its temporary folders (the two temp-file suites; Linux runs them in
+      # `checks-slow`, Windows on the native box).
+      - name: Test comm temp files (hermetic)
+        if: matrix.os == 'macos-latest' && matrix.shard == 'rest'
+        shell: bash
+        timeout-minutes: 3
+        working-directory: .
+        run: bash comm/tests/test-temp-files.sh && bash agents/tests/test-temp-files.sh
 
+  # The PowerShell scripts' suites, each in a scratch profile of its own (scripts/tests/scratch-guard.ps1); the launcher's
+  # (the local daemon, the leases) and the heartbeat suite run in release-gate.yml.
+  scripts-windows:
+    name: PowerShell scripts (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
       # The PowerShell scripts are executed by nothing in CI, and no dev box in
       # the Linux fleet has pwsh — so before this step, a ps1 syntax error
       # shipped to main was first discovered by the next FE LAUNCH (launchers
@@ -393,7 +211,6 @@ jobs:
       # it is what must vet these files. (See the AUTHORING GOTCHA at the top
       # of launch-sot.ps1.)
       - name: Parse PowerShell scripts
-        if: matrix.os == 'windows-latest'
         shell: powershell
         working-directory: scripts
         run: |
@@ -414,7 +231,6 @@ jobs:
       # (a home under the account's real temp folder, a child PowerShell there). This step tests that guard: its rule, and
       # the whole entry on a probe suite.
       - name: Test scratch guard
-        if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
         run: .\scripts\tests\test-scratch-guard.ps1
@@ -424,7 +240,6 @@ jobs:
       # file loads; this proves it actually applies, verifies digests, rolls
       # back, and refuses a foreign-target pointer. Same 5.1 host as above.
       - name: Test sot-apply.ps1
-        if: matrix.os == 'windows-latest'
         shell: powershell
         run: .\scripts\tests\test-sot-apply.ps1
         working-directory: .
@@ -432,7 +247,6 @@ jobs:
       # install-manifest.ps1 drops the pointer armed over the install it replaces, and keeps it across a same-version
       # rewrite. A stand-in sot.exe built with the runner's csc.exe, a scratch git repo, no network.
       - name: Test install-manifest.ps1
-        if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
         run: .\scripts\tests\test-install-manifest.ps1
@@ -444,7 +258,6 @@ jobs:
       # rule that reads it. Real git state (a temp repo, a branch clone, a
       # detached worktree), no fake, same 5.1 host as the steps above.
       - name: Test install layout (pinned-checkout predicate)
-        if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
         run: .\scripts\tests\test-install-layout.ps1
@@ -453,7 +266,6 @@ jobs:
       # The PowerShell scripts' network bounds: Invoke-SotWithin (sot-hosts.ps1), the bound every script ssh call
       # runs under, and each script call a test can reach with a stand-in.
       - name: Test Invoke-SotWithin
-        if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
         run: .\scripts\tests\test-sot-within.ps1
@@ -462,190 +274,27 @@ jobs:
       # A script under 'Stop' must not depend on how its caller redirects: Invoke-SotNative, pack-build.ps1 and
       # relaunch-sot.ps1 against a stand-in cargo that warns on stderr.
       - name: Test native stderr under Stop
-        if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
         run: .\scripts\tests\test-native-stderr.ps1
-        working-directory: .
-
-      # ADR 0042 L1c: the launcher's local-daemon start/stop (sot-local-
-      # daemon.ps1), driven against the sotd.exe this same job's "Build
-      # workspace" step already built (target\debug, since that step has no
-      # --release) -- see the test's own header for why a debug build is
-      # sufficient. Same 5.1 host as the two steps above. Bounded: every
-      # wait inside the test is itself bounded, but a real spawned sotd.exe
-      # that never comes up (or never goes down) must not hang the job.
-      - name: Test local daemon launcher
-        if: matrix.os == 'windows-latest'
-        shell: powershell
-        timeout-minutes: 10
-        run: .\scripts\tests\test-local-daemon.ps1
-        working-directory: .
-
-      - name: Test launcher leases
-        if: matrix.os == 'windows-latest'
-        shell: powershell
-        timeout-minutes: 10
-        run: .\scripts\tests\test-launcher-leases.ps1
         working-directory: .
 
       # scripts/sot-hosts.ps1's Get-SotTopologyPlan against a fake sotd that prints fixed plan lines -- pure text
       # processing, no ssh, no network, so this needs neither a built sotd.exe nor CI's $env:CI-gated real-daemon
       # sections. Same 5.1 host as the steps above.
       - name: Test topology plan
-        if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
         run: .\scripts\tests\test-topology-plan.ps1
         working-directory: .
 
-      # The context deadline covers foreground children and the final wait.
-      # Fixtures are finite, isolated, and require entry and completion evidence.
-      - name: Test heartbeat context deadline (hermetic)
-        shell: bash
-        timeout-minutes: 5
-        working-directory: .
-        run: bash comm/tests/test-heartbeat-ctx-wait.sh
-
-      # No comm or agents script leaves a file in its temporary folders (the two temp-file suites; Linux runs them in
-      # checks-linux, Windows on the native box).
-      - name: Test comm temp files (hermetic)
-        if: matrix.os == 'macos-latest'
-        shell: bash
-        timeout-minutes: 10
-        working-directory: .
-        run: bash comm/tests/test-temp-files.sh && bash agents/tests/test-temp-files.sh
-
-      # comm/CLAUDE.md and scripts/CLAUDE.md promise the scripts run under bash 3.2, and macOS's /bin/bash is 3.2.57.
-      # under-bash.sh parses each shipped script with it, then runs every hermetic suite, as bash32-linux does, with
-      # /bin/bash first on PATH as `bash`, so every script they start gets 3.2. The
-      # suites' own code needs bash 4 or later, and the image's only bash is /bin/bash: Homebrew's runs them
-      # (under-bash.sh refuses an older one).
-      - name: Comm and agents suites under /bin/bash 3.2
-        if: matrix.os == 'macos-latest'
-        shell: bash
-        timeout-minutes: 30
-        working-directory: .
-        run: |
-          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install bash
-          "$(brew --prefix bash)/bin/bash" scripts/tests/under-bash.sh /bin/bash
-
-  # The ubuntu build and test, one job per shard, so the slowest test binaries run side by side. SHARDS is the one table
-  # of named shards, a row each: shard, target kind (test or bin), target name, then any libtest arguments. A target runs
-  # whole (one row, no arguments) or split once (two rows, `X` and `--skip X`, as lane_bridge is). The shard `rest` runs
-  # every test executable the table does not name, then the doc tests, so no row names `rest`. The matrix lists the
-  # table's shards in the order they first appear, then `rest`. Before it runs anything, every shard fails unless no row
-  # names `rest`, every split is such a pair and the matrix runs that many jobs, and a job fails unless its shard is the
-  # one at its place (`strategy.job-index`) in that list. Each binary's SERIAL lock guards only its own process, so
-  # binaries on different runners share nothing. Every command selects `--workspace`, so features unify as in one
-  # `cargo test --workspace`.
-  test-linux:
-    name: build+test (ubuntu-latest, ${{ matrix.shard }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [outage, capsule, wake, sotd, rest]
-    defaults:
-      run:
-        working-directory: rust
-    env:
-      SHARDS: |
-        outage  test lane_bridge outage::
-        capsule test lane_bridge --skip outage::
-        capsule test capsule_workspaces
-        wake    test comm_wake
-        wake    test window_start
-        sotd    bin  sotd
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-          shared-key: test-linux
-          save-if: ${{ matrix.shard == 'rest' }}
-      # The sotd unit tests render through the real MathJax node script, which needs its npm modules.
-      - uses: actions/setup-node@v7
-        if: matrix.shard == 'sotd'
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: rust/backend/sidecars/mathjax/package-lock.json
-      - name: Install the MathJax helper's modules
-        if: matrix.shard == 'sotd'
-        working-directory: rust/backend/sidecars/mathjax
-        run: npm ci
-      # Every shard installs the Julia every leg of `test` installs, so a test that starts Julia (the sidecar tests in sotd,
-      # the daemon suites in rest that send kernel, preview or REPL ops) runs 1.13 as on the other legs. The WGL page test
-      # (shard sotd) adds WGLMakie offline from the depot JULIA_DEPOT_PATH names, built by .github/wgl-depot.sh.
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: '1.13'
-      - name: Prepare the Julia depot the WGL page test reads
-        if: matrix.shard == 'sotd'
-        shell: bash
-        run: bash ../.github/wgl-depot.sh
-      # sotd and sot-capsule sit in the target dir the backend tests spawn them from.
-      - name: Build workspace
-        run: cargo build --workspace --locked
-      # --nocapture: tests that report on stdout (the fault sweeps' hit counts, the PASS lines other lanes read) print
-      # here. --no-fail-fast: one failing test binary must not hide the others.
-      - name: Test shard ${{ matrix.shard }}
-        shell: bash
-        env:
-          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
-          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
-        run: |
-          python3 - "${{ matrix.shard }}" "${{ strategy.job-index }}" "${{ strategy.job-total }}" <<'PYSHARD'
-          import json, os, subprocess, sys
-          shard, index, total = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-          rows = [line.split(None, 3) for line in os.environ['SHARDS'].splitlines() if line.strip()]
-          named = {(row[1], row[2]) for row in rows}
-          order = [*dict.fromkeys(row[0] for row in rows), 'rest']
-          TARGET_KINDS = ('bin', 'test', 'example', 'bench')
-          if order.count('rest') != 1:
-              sys.exit('SHARDS names the shard rest; rest runs only what the table does not name')
-          if total != len(order) or order[index] != shard:
-              sys.exit(f'job {index} of {total} (from 0) runs {shard}; the matrix must list {order} in that order')
-          for target in named:
-              split = [tuple(row[3].split()) if len(row) > 3 else () for row in rows if (row[1], row[2]) == target]
-              if split != [()] and not (len(split) == 2 and any(len(a) == 1 and ('--skip', a[0]) in split for a in split)):
-                  sys.exit(f'SHARDS runs {target[1]} as {split}; a target runs whole, or split once as X and --skip X')
-          def failed(selection, libtest=()):
-              command = ['cargo', 'test', '--workspace', '--locked', '--no-fail-fast', *selection, '--', *libtest, '--nocapture']
-              print('shard ' + shard + ': ' + ' '.join(command), flush=True)
-              return subprocess.run(command).returncode != 0
-          if shard != 'rest':
-              mine = [row for row in rows if row[0] == shard]
-              results = [failed(['--' + kind, name], libtest[0].split() if libtest else []) for _, kind, name, *libtest in mine]
-          else:
-              out = subprocess.run(['cargo', 'test', '--workspace', '--locked', '--no-run', '--message-format=json-render-diagnostics'],
-                                   stdout=subprocess.PIPE, text=True, check=True).stdout
-              built = set()
-              for line in out.splitlines():
-                  message = json.loads(line) if line.startswith('{') else {}
-                  if message.get('reason') == 'compiler-artifact' and message['profile']['test'] and message['executable']:
-                      built.add((message['target']['kind'][0], message['target']['name']))
-              if named - built:
-                  sys.exit('SHARDS names targets that build no test executable: ' + repr(sorted(named - built)))
-              rest = sorted(built - named)
-              selection = ['--lib'] if any(kind not in TARGET_KINDS for kind, _ in rest) else []
-              selection += [arg for kind, name in rest if kind in TARGET_KINDS for arg in ('--' + kind, name)]
-              print(f'shard coverage: {len(built)} test executables, {len(named)} named in {len(order) - 1} shards, '
-                    f'{len(rest)} in rest', flush=True)
-              results = [failed(selection), failed(['--doc'])]
-          sys.exit(1 if any(results) else 0)
-          PYSHARD
-
-  # The ubuntu checks: the clippy gates and the allowance count, the selected-body proofs (all of them on this leg), the
-  # L3 storage-exhaustion run and the shell suites. The shell steps set their own working directory.
+  # The ubuntu checks at each landing: the clippy gates, the selected-body proofs (all of them on this leg), the gate scripts'
+  # own tests and the installer suites. The slow ones (storage exhaustion, the gate's clippy and bash 3.2 jobs, the comm and
+  # agents suites) run in release-gate.yml. The shell steps set their own working directory.
   checks-linux:
     name: checks (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: rust
@@ -715,69 +364,6 @@ jobs:
           ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh --all "$(cat ../dev/output/iso-sh-ci-path)"
           bash ../scripts/tests/test-filtered-tests.sh "$(cat ../dev/output/iso-sh-ci-path)"
 
-      - name: Test L3 storage exhaustion
-        shell: bash
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          umask 022
-          case "$RUNNER_TEMP" in
-            /*) ;;
-            *) printf 'L3 HARNESS FAILURE: runner temporary root is not absolute\n'; exit 1 ;;
-          esac
-          fixture_root=$(mktemp -d "$RUNNER_TEMP/l3-ext4.XXXXXX")
-          image="$fixture_root/volume.img"
-          volume_mount="$fixture_root/volume"
-          loop_device=''
-          mounted=0
-          cleanup() {
-            local failed=0
-            if [ "$mounted" -eq 1 ]; then
-              if sudo umount "$volume_mount" && ! mountpoint -q "$volume_mount"; then
-                mounted=0
-                printf 'L3 hosted ext4 unmount=ok\n'
-              else
-                printf 'L3 HARNESS FAILURE: hosted unmount failed\n'
-                failed=1
-              fi
-            fi
-            if [ "$mounted" -eq 0 ] && [ -n "$loop_device" ]; then
-              if sudo losetup --detach "$loop_device" && remaining=$(sudo losetup --associated "$image") && [ -z "$remaining" ]; then
-                loop_device=''
-                printf 'L3 hosted ext4 loop-release=ok\n'
-              else
-                printf 'L3 HARNESS FAILURE: hosted loop release failed\n'
-                failed=1
-              fi
-            fi
-            if [ "$failed" -eq 0 ] && [ "$mounted" -eq 0 ] && [ -z "$loop_device" ]; then
-              if rm -rf -- "${fixture_root:?}"; then
-                printf 'L3 fixture linux detach=ok owned-root-removal=ok\n'
-              else
-                printf 'L3 HARNESS FAILURE: owned fixture root removal failed\n'
-                return 1
-              fi
-            else
-              printf 'L3 HARNESS FAILURE: owned fixture retained for cleanup\n'
-              return 1
-            fi
-          }
-          trap 'status=$?; trap - EXIT; cleanup || status=1; exit "$status"' EXIT
-          trap 'exit 130' INT TERM
-          mkdir "$volume_mount"
-          truncate -s 64M "$image"
-          loop_device=$(sudo losetup --find --show "$image")
-          sudo mkfs.ext4 -F "$loop_device" > "$fixture_root/format.log" 2>&1
-          mounted=1
-          sudo mount -t ext4 "$loop_device" "$volume_mount"
-          mountpoint -q "$volume_mount"
-          sudo chown "$(id -u):$(id -g)" "$volume_mount"
-          sudo chmod 0700 "$volume_mount"
-          printf 'L3 hosted ext4 setup=ok declared-bytes=67108864 mount=validated\n'
-          L3_HOSTED_VOLUME_ROOT="$volume_mount" L3_HOSTED_VOLUME_BYTES=67108864 TMPDIR="$RUNNER_TEMP" \
-            CARGO_NET_OFFLINE=true \
-            nice timeout 12m cargo test -p sot-log --test fault_storage -j 8 --locked -- --include-ignored --nocapture --test-threads=1
-
       - name: Parse shell scripts
         working-directory: .
         run: |
@@ -805,12 +391,6 @@ jobs:
       - name: Test the rc gate's suite result names
         working-directory: .
         run: bash scripts/tests/test-rc-gate-basename.sh
-
-      # The gate's clippy and bash 3.2 jobs go red on a stand-in workspace and tree that hold what each catches.
-      - name: Test the rc gate's clippy and bash 3.2 jobs
-        working-directory: .
-        timeout-minutes: 10
-        run: bash scripts/tests/test-rc-gate-parity.sh
 
       - name: Test the rc gate's job logs
         working-directory: .
@@ -878,303 +458,6 @@ jobs:
         run: bash scripts/tests/test-release-cut.sh
         working-directory: .
 
-      # The context deadline covers foreground children and the final wait.
-      # Fixtures are finite, isolated, and require entry and completion evidence.
-      - name: Test heartbeat context deadline (hermetic)
-        shell: bash
-        timeout-minutes: 5
-        working-directory: .
-        run: bash comm/tests/test-heartbeat-ctx-wait.sh
-
-      # PR #148 Codex review F10: hermetic + fast, so it runs among the
-      # checks rather than in a job of its own.
-      - name: Test sot-comm disambiguation (hermetic)
-        working-directory: comm/tests
-        run: |
-          bash test-join-disambiguation.sh
-          # C10 (isolation-plan.md §3): the one gate every endpoint value
-          # leaves comm-lib.sh through, plus the ssh: resolvers and the
-          # sot_ssh_bridge wire round trip -- a suite that runs nowhere is
-          # not a test.
-          bash test-endpoint-gate.sh
-          # The verdict table: every receipt/ack/exit-status/stderr
-          # combination through the one place a send's verdict is decided,
-          # asserting the rule PROTOCOL.md now states -- a send with a
-          # receipt reports delivered, whatever the transport's exit status
-          # or stderr say. Three rounds of fixes each closed the instances
-          # they were handed and left another behind, because the verdict was
-          # read from the transport; 22 of its 38 rows disagreed with the
-          # rule before this stage. A table that runs only when somebody
-          # remembers cannot hold that closed. 28 seconds, hermetic.
-          bash test-relay-file-first.sh
-          # 0031 B1: every inbox append is taken under the kernel's file
-          # lock, and one that cannot be made is FAILED, never `filed` -- the
-          # two writers, a killed holder, a frozen one, the no-flock route and
-          # the one wait constant.
-          bash test-hub-files.sh
-          # The registry's one writer never publishes an empty, unparseable or
-          # two-document file, and its one reader says unreadable, never absent.
-          bash test-registry-io.sh
-          # The read cursor is a line count with the hash of the last line
-          # read, so a cut-back steps back one line and nothing is shown twice.
-          bash test-comm-poll-cursor.sh
-          # Suite bootstrap policy and executed shared-await controls.
-          bash test-rm-guard.sh
-          # Staging publishes each file whole by a sibling rename, copying no source permissions.
-          bash test-stage-bin.sh
-          # 0031 B1's caller: a registry miss goes to the wire and one lap ends
-          # in one verdict; the acceptance matrix's classifier keys on that
-          # verdict.
-          bash test-send-routes-to-relay.sh
-          bash test-comm-matrix-verdict.sh
-          bash test-status-floor.sh
-          # ADR 0049, User isolation: every writer makes the comm folder 0700/0600 under umask 022,
-          # a folder an older release left is tightened at join, user files keep the caller's umask.
-          bash test-comm-private.sh
-          # A session may declare its handle only into the row its own
-          # identity names. Until this suite ran here, the one thing that
-          # proves it was a suite nobody ran but by hand -- and the defect it
-          # now covers let every hermetic run rewrite the handle of whichever
-          # live row happened to be running the tests.
-          bash test-agent-join.sh
-          # A session outside any row never takes, and never reads the mail of,
-          # a handle a row holds: the daemon's word, and the row id.
-          bash test-identity-row-rule.sh
-          # The carriage-return suite for jq. A native jq on Windows rewrites every
-          # \n to \r\n and command substitution keeps the \r on the value;
-          # until this ran here, the only thing standing between that and a
-          # false "no such handle" was a human remembering to run it. Its
-          # sibling for a token GitHub rejects runs in the agents step below.
-          # Hermetic, under a second.
-          bash test-crlf-jq-output.sh
-          # A missing jq, flock or perl is named to the session by poll, session
-          # start and the Stop hook, never passed silently.
-          bash test-comm-deps.sh
-          # B1b: the registry lock names its holder, a holder proved dead on
-          # this machine is reclaimed through one marker, and any other is
-          # named in the FAILED line; the race, the mixed rollout, the touch
-          # bound and the clear command.
-          bash test-registry-lock.sh
-          # A second agent started inside a session (codex exec, claude -p) never acts as the row's handle.
-          bash test-agent-layers.sh
-          # No messaging script or library call leaves a file in its temporary folders, on success, failure, a kill or a signal.
-          bash test-temp-files.sh
-
-      - name: Test agents CLIs (hermetic)
-        working-directory: agents/tests
-        run: |
-          # A spawn onto another box writes no row here, so a folder that lists
-          # a handle is one whose own box can file for it.
-          bash test-spawn-remote-no-local-row.sh
-          bash test-spawn-capsule-workspace.sh
-          bash test-despawn-resolve.sh
-          # comm-probe.sh finds a row that never joined, `up` waits for each join, and its typed line runs in cmd.exe.
-          bash test-comm-probe.sh
-          bash test-sot-fe-version.sh
-          # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
-          bash test-sot-fe-reauth.sh
-          # goto switches the window and starts nothing: --boot is refused as an unknown flag.
-          bash test-sot-fe-goto.sh
-          # An absolute path is sent relative to its root in every spelling Windows gives one folder.
-          bash test-sot-fe-paths.sh
-          # ccx's default handle is built from the comm library's safe pieces; a failed derivation stops the launch.
-          bash test-ccx-launch.sh
-          # The carriage-return rule for the token (a \r kept on it is a token
-          # GitHub rejects), every curl's stall bound, and the script's 30 s bound
-          # on a gh call that hangs. Hermetic; about 31 s, all but one second the
-          # hung-gh case.
-          bash test-crlf-gh-auth.sh
-          # No agents script leaves a file in its temporary folders; a signal or the code's expiry ends the sign-in poll.
-          bash test-temp-files.sh
-          # Each skill's canonical copy under .claude/skills/ and its install payload under agents/claude/ stay byte-identical.
-          bash test-skill-copies.sh
-
-  # comm/CLAUDE.md and scripts/CLAUDE.md promise the scripts run under bash 3.2. GNU bash 3.2.57, built from its
-  # tarball (sha256 pinned), parses each shipped script and is the bash every hermetic suite's scripts run under
-  # (scripts/tests/under-bash.sh, whose default is every hermetic suite, so a new suite joins by its name alone).
-  bash32-linux:
-    name: scripts under bash 3.2.57 (ubuntu-latest)
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v7
-      - name: Build bash 3.2.57
-        run: bash scripts/tests/bash32.sh "$RUNNER_TEMP/bash-3.2.57" > /dev/null
-      # A session's work-state write is rows' `sotd work-state`: the suites' stub sotd hands it to this build
-      # (comm/tests/lib-home-guard.sh, GUARD_SOTD).
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Build sotd for the work-state write
-        working-directory: rust
-        run: cargo build -p sot-backend --bin sotd --locked
-      - name: Scripts under bash 3.2.57
-        timeout-minutes: 30
-        run: bash scripts/tests/under-bash.sh "$RUNNER_TEMP/bash-3.2.57/bash"
-
-  # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
-  # `ClosePseudoConsole` that returns immediately — it cannot exercise the
-  # pre-24H2 blocking close the ConPTY drain ordering (`Pseudoconsole::close_pty`
-  # in capsule/producer/conpty/mod.rs) is pinned against. `windows-2022` is the older image that
-  # still blocks there. Deliberately its own tiny job rather than added to
-  # the main matrix above: it exists ONLY to catch that one behavioral gap,
-  # not to duplicate the full workspace build+test on a second Windows image.
-  #
-  # `tests/capsule_win.rs` (the capsule runtime, step 4 unit 2) joined this
-  # job rather than getting a third one: its teardown ALSO calls
-  # `close_pty()` and depends on the exact same blocking-close/concurrent-
-  # drain ordering, so `windows-latest` alone could pass it there too
-  # without ever exercising the hang risk this job exists to catch.
-  #
-  # ADR 0041 step 6, unit U0 round-1: `pipe_win` and `e2e_pipe` joined this
-  # job too — the same-connection challenge's security-sensitive Windows
-  # tests (real named pipes, a real cross-process server) belong in a named,
-  # budgeted job, not folded anonymously into the general `windows-latest`
-  # matrix's blanket `cargo test --workspace`. This is the FULL adoption of
-  # the ADR's pinned five-command table (conpty/capsule_win/pipe_win/
-  # e2e_pipe/supervisor, ~75 min total incl. checkout+build), each at
-  # its own ADR-pinned per-step cap, PLUS step 6 U3's own `fe_client`
-  # addition below (~95 min total incl. checkout+build); the job-level
-  # timeout leaves headroom for checkout+build plus every step's worst
-  # case. `pipe_win`/`e2e_pipe` ALSO still run via the main `test` job's
-  # blanket `cargo test --workspace` on `windows-latest` — the duplication
-  # is deliberate, not yet worth a special-case exclusion.
-  #
-  # ADR 0041 step 6, unit U2 (L1-unix LU3c: `supervisor_win.rs` renamed
-  # `supervisor/` and ungated to run on Linux too): `supervisor` spawns
-  # the real `sot-capsule` binary and drives it as a real client (the
-  # supervisor lane, a real cross-process authority) — belongs here for
-  # the identical "real named pipes, a real cross-process server" reason
-  # `pipe_win`/`e2e_pipe` do, at the ADR's own pinned 15-minute cap.
-  #
-  # ADR 0041 step 6, unit U3 (L1-unix LU3c: `fe_client_win.rs` renamed
-  # `fe_client/`, same ungating): `fe_client` drives the FE attach-only
-  # client against a real supervisor + real capsule the identical way —
-  # belongs here for the same reason, budgeted separately (20 min) since
-  # its reconnect case spawns a SECOND real supervisor process.
-  conpty-windows-2022:
-    name: conpty + capsule owned-ConPTY + pipe/challenge/supervisor/fe-client tests (windows-2022)
-    runs-on: windows-2022
-    # See the per-step caps below for what each command budgets; this is
-    # checkout+build (~15 min per the ADR) plus all six steps' worst case.
-    timeout-minutes: 95
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      # Built FIRST: the real-process suites below leave supervisors
-      # behind that outlive their step (the runner reaps them at job end)
-      # and a live sot-capsule.exe pins the file -- a rebuild after them
-      # fails with 'Access is denied' as soon as the suites run fast enough.
-      # ADR 0042 slice L1a: `sot-capsule` lives in the sot-log package, a
-      # DIFFERENT crate than `sotd` (sot-backend) — `cargo test -p
-      # sot-backend` builds `sotd.exe` itself (CARGO_BIN_EXE_sotd, same
-      # package as the test) but has no reason to build a binary from a
-      # dependency crate, so it's built explicitly here, into the SAME
-      # target dir `sotd.exe` lands in — exactly the sibling-executable
-      # layout the daemon's own `rows::spawn::detach::sot_capsule_exe()`
-      # (current_exe().parent()) assumes in production.
-      - name: Build sot-capsule (for the backend capsule-workspace test below)
-        timeout-minutes: 5
-        run: cargo build -p sot-log --bin sot-capsule
-      # --test conpty: the one test BINARY (tests/conpty.rs), not a name
-      # substring filter — nothing else in the workspace needs this image.
-      # --nocapture: test 4's DA1-presence finding and the jobbed-probe
-      # logged in test 1 are deliberately only logged (see conpty.rs), never
-      # asserted; captured output would hide them from CI, the same
-      # reasoning the fault sweeps above already establish for this
-      # workspace.
-      #
-      # A close-ordering bug here is exactly a HANG (pre-24H2's
-      # ClosePseudoConsole blocking forever with nothing draining hOutput) —
-      # bounded so that failure mode fails the job in minutes, not by
-      # waiting out the platform-wide default.
-      - name: Test conpty (owned ConPTY + job containment)
-        timeout-minutes: 5
-        run: cargo test -p sot-log --test conpty -- --nocapture
-      # --test capsule: same reasoning, one test BINARY (tests/capsule/,
-      # L1-unix LU2a: renamed from tests/capsule_win.rs when the writer
-      # loop became generic over `Producer`) — the DSR-presence finding in
-      # the e2e test is likewise logged, not asserted
-      # (host/build-version-dependent).
-      - name: Test capsule (capsule runtime, ConPTY producer)
-        timeout-minutes: 10
-        run: cargo test -p sot-log --test capsule -- --nocapture
-      # --test pipe_win: the named-pipe transport plus the same-connection
-      # challenge's real-pipe and real-cross-process tests (ADR 0041 U0
-      # round-1).
-      - name: Test pipe_win (named-pipe transport + same-connection challenge)
-        timeout-minutes: 10
-        run: cargo test -p sot-log --test pipe_win -- --nocapture
-      # --test e2e_pipe: the full real-pipe attach/mgmt end-to-end.
-      - name: Test e2e_pipe (real-pipe end-to-end)
-        timeout-minutes: 10
-        run: cargo test -p sot-log --test e2e_pipe -- --nocapture
-      # --test supervisor: the real-process supervisor authority --
-      # spawn/adopt, the anti-flap bound, end_run's record_closed then
-      # record_verified, and the version-skew refusal, all against a real
-      # `sot-capsule supervise` child. L1-unix LU3c: renamed from
-      # `tests/supervisor_win.rs` when the suite ungated to run on Linux
-      # too (over a real socket lane, a real `/bin/sh` producer) -- this
-      # job proves Windows behavior is unchanged; the Linux half runs in
-      # the `rest` shard of `test-linux`.
-      - name: Test supervisor (the supervisor authority, real process)
-        timeout-minutes: 15
-        run: cargo test -p sot-log --test supervisor -- --nocapture
-      # --test fe_client: ADR 0041 step 6 U3, the FE attach-only
-      # client -- attach as a watcher and receive the checkpoint;
-      # take-on-first-input's resize-before-flush ordering (proven via
-      # the sealed voyage record); end_run from the quit dispatcher
-      # reaching record_closed; and reconnect after the capsule is
-      # killed and a fresh supervisor takes over restoring the screen
-      # from the new checkpoint -- the last of which spawns a SECOND
-      # real supervisor process and rides the client's own real
-      # 250ms-to-4s backoff, hence the generous budget. L1-unix LU3c:
-      # renamed from `tests/fe_client_win.rs`, same reason as
-      # `supervisor` above.
-      - name: Test fe_client (FE attach-only client, real process)
-        timeout-minutes: 20
-        run: cargo test -p sot-log --test fe_client -- --nocapture
-      # --test capsule_workspaces: ADR 0042 slice L1a, the daemon's capsule
-      # workspace runtime -- a real `sotd` spawning a real, DETACHED
-      # `sot-capsule supervise` for workspace.create, workspace.list
-      # reaching phase "ready", pty.open's attach_direct refusal, adoption
-      # by a fresh `sotd` after the first one is killed (the supervisor
-      # must have survived), and workspace.destroy ending the run without
-      # deleting the state directory.
-      - name: Test capsule_workspaces (daemon capsule workspace runtime, real process)
-        timeout-minutes: 15
-        run: cargo test -p sot-backend --test capsule_workspaces -- --nocapture
-
-  # The Windows containment tests that need julia, Git for Windows' bash or a job around the test process are `#[ignore]`
-  # in `cargo test` (rust/backend/src/lifecycle/contain.rs); this job runs them, with julia installed, on every run. The
-  # count is the number of `#[ignore]` tests in `lifecycle::contain::tests`: a selection that runs any other number fails.
-  windows-ignored-containment:
-    name: containment, ignored tests (windows-latest)
-    runs-on: windows-latest
-    timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: '1.12'
-      - name: Test the ignored containment tests
-        shell: bash
-        run: |
-          bash ../scripts/tests/run-filtered-tests.sh 3 ../dev/output/containment-ignored.log -- cargo test -p sot-backend --bin sotd --locked lifecycle::contain::tests:: -- --ignored --test-threads=1
 
   p2-e2e:
     name: P2 e2e (real helper, offline)
@@ -1202,3 +485,4 @@ jobs:
         env:
           SOT_HELPER_E2E: "1"
         run: cargo test -p sot-log --test claude_e2e -- --nocapture
+
