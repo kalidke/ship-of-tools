@@ -45,3 +45,17 @@ fn the_question_and_the_steps_name_the_work() {
     assert_eq!(rows_note(&[], false, true), "its live REPLs and Pluto server could not be listed, so starting it again may end some");
     assert!(rows_note(&rows, false, true).ends_with("; it could not say the rest, so starting it again may end more"));
 }
+
+/// A wait for the daemon keeps its bound by the clock: a daemon whose endpoint accepts and never answers costs the
+/// bound, not the bound plus an ask's own reply bound, and no ask starts after the deadline.
+#[cfg(unix)]
+#[test]
+fn a_wait_for_the_daemon_keeps_its_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    let sotd = dir.path().join("sotd");
+    sot_log::test_exec::write_executable(&sotd, "#!/bin/sh\nsleep 10\nexit 3\n");
+    let t0 = Instant::now();
+    let st = wait_current(&sotd, "unix:/nowhere.sock", Duration::from_secs(1), false, true);
+    assert!(t0.elapsed() < Duration::from_millis(1800), "the wait took {:?}", t0.elapsed());
+    assert_eq!(st, State::Unknown, "a daemon that runs and did not answer in time is not taken for none");
+}

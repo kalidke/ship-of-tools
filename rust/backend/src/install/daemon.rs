@@ -51,7 +51,12 @@ pub(super) fn state_of(code: Option<i32>, runs: bool) -> State {
 
 /// The daemon on `endpoint` (`unix:<path>`, `pipe:<path>`), asked of `sotd`, and sotd's one line when it could not tell.
 pub(super) fn state(sotd: &Path, endpoint: &str, runs: bool) -> (State, String) {
-    let ran = cmd::output(Command::new(sotd).args(["same-version", "--endpoint", endpoint]));
+    state_within(sotd, endpoint, runs, Duration::from_secs(30))
+}
+
+/// [`state`] with the ask itself held to `bound` by the clock: an ask cut at its bound could not tell.
+fn state_within(sotd: &Path, endpoint: &str, runs: bool, bound: Duration) -> (State, String) {
+    let ran = cmd::output_within(Command::new(sotd).args(["same-version", "--endpoint", endpoint]), bound);
     let why = Some(ran.last_said()).filter(|s| !s.is_empty()).unwrap_or_else(|| "sotd same-version gave no reason".into());
     (state_of(ran.code, runs), why)
 }
@@ -59,13 +64,19 @@ pub(super) fn state(sotd: &Path, endpoint: &str, runs: bool) -> (State, String) 
 /// The state once the daemon has had up to `bound` by the clock to answer as the target: `Current` as soon as it does,
 /// else what the last ask said. `held_ok` also ends the wait at `Held`.
 pub(super) fn wait_current(sotd: &Path, endpoint: &str, bound: Duration, held_ok: bool, runs: bool) -> State {
-    let t0 = Instant::now();
+    let deadline = Instant::now() + bound;
     loop {
-        let (st, _) = state(sotd, endpoint, runs);
-        if st == State::Current || (held_ok && st == State::Held) || t0.elapsed() >= bound {
+        // Every ask ends by the deadline, and none starts after it.
+        let left = deadline.saturating_duration_since(Instant::now());
+        let (st, _) = state_within(sotd, endpoint, runs, left.max(Duration::from_millis(1)));
+        let left = deadline.saturating_duration_since(Instant::now());
+        if st == State::Current || (held_ok && st == State::Held) || left.is_zero() {
             return st;
         }
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(left.min(Duration::from_secs(1)));
+        if Instant::now() >= deadline {
+            return st;
+        }
     }
 }
 
