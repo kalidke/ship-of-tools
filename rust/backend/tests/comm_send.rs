@@ -1,5 +1,5 @@
 #![cfg(target_os = "linux")]
-//! One meaning of `filed` (ADR 0049, Sending): the staged `comm-send.sh`, run against a
+//! One meaning of `filed` (ADR 0049, Sending): the staged `comm-send.sh`, which runs `sotd comm send`, against a
 //! real `sotd`, prints `filed` only for a handle whose `last_seen` is under ten minutes old,
 //! and the daemon that runs a row keeps that stamp fresh, so an idle row stays live.
 //!
@@ -58,6 +58,8 @@ impl Staged {
                 .args(args)
                 .env_clear()
                 .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                // The wrapper runs this build's sotd, never one an install put on PATH.
+                .env("SOTD_BIN", env!("CARGO_BIN_EXE_sotd"))
                 .env("HOME", &self.env.home_root)
                 .env("SOT_COMM_HOME", &self.env.comm_root)
                 .env("SOT_COMM_SELF_FILE", self.env._tmp.path().join("self.txt"))

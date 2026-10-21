@@ -250,18 +250,12 @@ producer() {
     fe_client/supervisor_word::unresponsive_supervisor_expires_the_health_window
     test-spawn-capsule-workspace
     capsule_workspaces/spawn::capsule_supervisor_spawn_survives_fence_contention_without_marking_terminal
-    test-hub-files
     supervisor
     test-status-floor
-    test-relay-file-first
-    test-registry-lock
   )
   # shell suites: the SLOW_FIRST ones are emitted early, the rest at step 5
   for f in "$D"/comm/tests/test-*.sh "$D"/agents/tests/test-*.sh; do
-    case $(basename "$f" .sh) in
-      test-comm-e2e-readers|test-inbox-lock-onehost|test-inbox-lock-twohost|test-registry-twohost|test-registry-lock-twohost) ;;
-      *) SHELL_ALL+=("$f") ;;
-    esac
+    SHELL_ALL+=("$f")
   done
   SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/installer-wrapper.sh" "$D/scripts/tests/installer-apply.sh" "$D/scripts/tests/installer-shared-home.sh" "$D/scripts/tests/test-topology-plan.sh" "$D/scripts/tests/test-test-body.sh" "$D/scripts/tests/test-bash32.sh" "$D/scripts/tests/test-release-cut.sh")
 

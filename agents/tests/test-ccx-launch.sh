@@ -46,9 +46,8 @@ cat > "$STAGE/comm-join.sh" <<'STUB'
 printf '%s\n' "$2" > "$JOIN_LOG_PATH"
 STUB
 chmod +x "$STAGE/comm-join.sh"
-for t in sha256sum shasum hostname; do
-    printf '#!/bin/sh\nexit 1\n' > "$FAIL_DIR/$t"; chmod +x "$FAIL_DIR/$t"
-done
+# A sotd that fails: the pieces of the handle are messaging's, in sotd, so a derivation that cannot run is one.
+printf '#!/bin/sh\nexit 1\n' > "$FAIL_DIR/sotd"; chmod +x "$FAIL_DIR/sotd"
 
 # run_ccx DIRNAME HOST [EXTRA_PATH_DIR] : ccx in a fresh project dir, stdout/stderr to $WORK/out
 run_ccx() {
@@ -118,13 +117,8 @@ refused_before_join_and_codex() {  # extra stderr pattern in $WORK/out
     [ ! -e "$CODEX_LOG" ] && [ ! -e "$JOIN_LOG" ] && grep -q "cannot derive the default handle" "$WORK/out"
 }
 
-case_a_failing_digest_stops_the_launch() {
+case_a_failing_derivation_stops_the_launch() {
     run_ccx proj "$LONG_A" "$FAIL_DIR" && { echo "  ccx exited 0"; return 1; }
-    refused_before_join_and_codex
-}
-
-case_a_failing_host_read_stops_the_launch() {
-    run_ccx proj "" "$FAIL_DIR" && { echo "  ccx exited 0"; return 1; }
     refused_before_join_and_codex
 }
 
@@ -142,8 +136,7 @@ check "a short host is kept as is" case_a_short_host_is_kept_as_is
 check "a repo name with nothing usable becomes x" case_an_empty_component_becomes_x
 check "ccx and sot_derive_handle build the same host piece" case_the_host_piece_is_the_one_derive_handle_uses
 check "an explicit SOT_COMM_NAME wins verbatim" case_an_explicit_pin_wins_verbatim
-check "a failing digest stops the launch before the join and codex" case_a_failing_digest_stops_the_launch
-check "a failing host read stops the launch before the join and codex" case_a_failing_host_read_stops_the_launch
+check "a derivation that cannot run stops the launch before the join and codex" case_a_failing_derivation_stops_the_launch
 check "a missing comm library stops the launch before the join and codex" case_a_missing_library_stops_the_launch
 
 echo "---"

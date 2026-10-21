@@ -80,7 +80,7 @@ case_self_echo_never_blocks() {
     local out; out="$(IT 'all done.')"
     [ -z "$out" ] || { echo "    a self-echo frame blocked the stop: '$out'"; return 1; }
 }
-# H1, H2: the hook counts by the wake's rule (sot_unread), so a line the wake
+# H1, H2: the hook counts by the wake's rule (sotd comm unread), so a line the wake
 # never wakes for never holds a turn: one addressed to another handle, or one
 # whose `to` is not a string.
 case_a_line_to_another_handle_never_blocks() {

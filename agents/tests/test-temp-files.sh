@@ -173,7 +173,9 @@ a14_check() {
     fi
     return "$bad"
 }
-TF_HOLD=.registry.lock TF_CHECK=a14_check tf_signal "A14 comm-spawn's rollback trap (the signal twice)" HUP \
+# The rollback's registry write is one sotd call, which holds and releases the registry lock itself: no rm of the lock
+# runs in the trap to hold, so A14 is the signal once.
+TF_CHECK=a14_check tf_signal "A14 comm-spawn's rollback trap (a hangup)" HUP \
     env SOT_SELF_HOST=testhost "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll "${EP[@]}"
 TF_AT_ONCE=1 TF_CHECK=a14_check tf_signal "A15 comm-spawn's rollback trap (the signal twice at once)" HUP \
     env SOT_SELF_HOST=testhost "$SCRIPTS_DIR/comm-spawn.sh" "$WORK/repo3" --name t-roll2 "${EP[@]}"

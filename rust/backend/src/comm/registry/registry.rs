@@ -89,27 +89,25 @@ fn replace_registry(
     tmp_path: &std::path::Path,
     root: &serde_json::Value,
 ) -> bool {
-    let mut serialized = match serde_json::to_vec_pretty(root) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "comm registry serialize failed");
-            return false;
-        }
-    };
-    serialized.push(b'\n');
-    if let Err(e) = write_synced(tmp_path, &serialized) {
-        tracing::warn!(error = %e, "comm registry tmp write failed");
-        return false;
-    }
-    if let Err(e) = std::fs::rename(tmp_path, reg_path) {
-        tracing::warn!(error = %e, "comm registry rename failed");
-        let _ = std::fs::remove_file(tmp_path);
-        return false;
-    }
-    true
+    write_registry(reg_path, tmp_path, root).inspect_err(|e| tracing::warn!("comm registry: {e}")).is_ok()
 }
 
-/// The registry's bytes, as the scripts' `sot_registry_bytes` reads them. An
+/// [`replace_registry`] with its failure as the sentence a command prints after `FAILED: `.
+fn write_registry(reg_path: &std::path::Path, tmp_path: &std::path::Path, root: &serde_json::Value) -> Result<(), String> {
+    let nothing = "so nothing was written";
+    let mut serialized = serde_json::to_vec_pretty(root).map_err(|e| format!("the registry could not be updated ({e}), {nothing}"))?;
+    serialized.push(b'\n');
+    if let Err(e) = write_synced(tmp_path, &serialized) {
+        let _ = std::fs::remove_file(tmp_path);
+        return Err(format!("the registry update could not be flushed ({e}), {nothing}"));
+    }
+    std::fs::rename(tmp_path, reg_path).map_err(|e| {
+        let _ = std::fs::remove_file(tmp_path);
+        format!("the registry update could not be renamed into place ({e}), {nothing}")
+    })
+}
+
+/// The registry's bytes, as every reader takes them (the 0.6.6 scripts read them the same way). An
 /// NFSv4 client can get ESTALE (stale file handle) from a read after its open
 /// succeeded, when another host renames a new registry over the file: the
 /// two-host test measured 16 in about 2,000 reads on the first host before the
@@ -387,6 +385,99 @@ pub(crate) fn stamp_last_seen(handles: &std::collections::BTreeSet<String>, stam
         !changed || replace_registry(reg_path, tmp_path, &root)
     })
     .unwrap_or(false)
+}
+
+/// The registry's lock wait for a command (`SOT_LOCK_WAIT_SECS`, 10 s by default): join, leave, spawn, despawn.
+pub(crate) fn command_lock_wait() -> std::time::Duration {
+    let secs = std::env::var("SOT_LOCK_WAIT_SECS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(10);
+    std::time::Duration::from_secs(secs)
+}
+
+/// The lock wait of a best-effort `last_seen` touch (send, poll) and of the Stop hook's mark.
+pub(crate) const TOUCH_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The registry at `path`, whole: one JSON document whose `agents` is an object. `Err` says why it is unreadable: a
+/// missing file is unreadable too (the comm folder's first command creates it), never an empty registry.
+pub(crate) fn read_doc(path: &std::path::Path) -> Result<serde_json::Value, String> {
+    let bytes = read_registry_fresh(path).map_err(|e| e.to_string())?;
+    let doc: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if doc.get("agents").is_some_and(serde_json::Value::is_object) {
+        Ok(doc)
+    } else {
+        Err("no agents object".into())
+    }
+}
+
+/// One entry, as a reader of the registry finds it.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Entry {
+    Present(serde_json::Value),
+    Absent,
+    Unreadable,
+}
+
+/// `handle`'s entry in the registry at `path`.
+pub(crate) fn entry(path: &std::path::Path, handle: &str) -> Entry {
+    match read_doc(path) {
+        Ok(doc) => doc["agents"].get(handle).cloned().map_or(Entry::Absent, Entry::Present),
+        Err(_) => Entry::Unreadable,
+    }
+}
+
+/// Whose row `handle`'s entry binds, for a process that proves row `row` (`""` for none).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Binding {
+    /// It binds `row`.
+    Owner,
+    /// It binds another row (or any row, to a process with no row): its row id and host.
+    Other { ws: String, host: String },
+    /// No entry, or one that binds no row.
+    Unbound,
+    /// The registry cannot be read, or the entry is not an object.
+    Unreadable,
+}
+
+/// The one answer to whose row a handle is, for the identity's discard, poll's read and a join's check.
+pub(crate) fn binding(path: &std::path::Path, handle: &str, row: &str) -> Binding {
+    let Ok(doc) = read_doc(path) else { return Binding::Unreadable };
+    match doc["agents"].get(handle) {
+        None => Binding::Unbound,
+        Some(e) if !e.is_object() => Binding::Unreadable,
+        Some(e) => match entry_row(e) {
+            None => Binding::Unbound,
+            Some(ws) if ws == row => Binding::Owner,
+            Some(ws) => Binding::Other { ws: ws.to_string(), host: e["host"].as_str().unwrap_or("").to_string() },
+        },
+    }
+}
+
+/// One read-decide-write of the registry at `path` under its lock, on a fresh read: `edit` gets the `agents` object
+/// and returns its answer and whether to write. `Err` is the sentence a command prints after `FAILED: ` (a held lock's
+/// names its holder and the recovery), and nothing was written.
+pub(crate) fn update<T>(
+    path: &std::path::Path,
+    bound: std::time::Duration,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<(T, bool), String>,
+) -> Result<T, String> {
+    let dir = path.parent().ok_or("the registry has no folder")?;
+    let _held = crate::comm::registry::lock::acquire(&dir.join(".registry.lock"), bound)?;
+    let mut doc = read_doc(path).map_err(|_| "the registry could not be read or updated, so nothing was written".to_string())?;
+    let agents = doc.get_mut("agents").and_then(serde_json::Value::as_object_mut).ok_or("the registry has no agents object")?;
+    let (answer, write) = edit(agents)?;
+    if write {
+        write_registry(path, &dir.join("registry.json.tmp"), &doc)?;
+    }
+    Ok(answer)
+}
+
+/// Sets `handle`'s `last_seen` to now when it has an entry: the best-effort touch a send and a poll make, one try
+/// within [`TOUCH_LOCK_WAIT`].
+pub(crate) fn touch(path: &std::path::Path, handle: &str) -> Result<(), String> {
+    update(path, TOUCH_LOCK_WAIT, |agents| {
+        let Some(e) = agents.get_mut(handle).and_then(serde_json::Value::as_object_mut) else { return Ok(((), false)) };
+        e.insert("last_seen".into(), iso8601_utc_now().into());
+        Ok(((), true))
+    })
 }
 
 #[cfg(test)]

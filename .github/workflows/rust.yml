@@ -507,14 +507,14 @@ jobs:
         working-directory: .
         run: bash comm/tests/test-heartbeat-ctx-wait.sh
 
-      # No comm or agents script leaves a file in its temporary folders (the two temp-file suites; Linux runs them in
-      # checks-linux, Windows on the native box).
-      - name: Test comm temp files (hermetic)
+      # No agents script leaves a file in its temporary folders (Linux runs it in checks-linux, Windows on the native
+      # box). Messaging's commands are sotd's and make no temporary file.
+      - name: Test agents temp files (hermetic)
         if: matrix.os == 'macos-latest'
         shell: bash
         timeout-minutes: 10
         working-directory: .
-        run: bash comm/tests/test-temp-files.sh && bash agents/tests/test-temp-files.sh
+        run: bash agents/tests/test-temp-files.sh
 
       # comm/CLAUDE.md and scripts/CLAUDE.md promise the scripts run under bash 3.2, and macOS's /bin/bash is 3.2.57.
       # under-bash.sh parses each shipped script with it, then runs every hermetic suite, as bash32-linux does, with
@@ -886,79 +886,20 @@ jobs:
         working-directory: .
         run: bash comm/tests/test-heartbeat-ctx-wait.sh
 
-      # PR #148 Codex review F10: hermetic + fast, so it runs among the
-      # checks rather than in a job of its own.
-      - name: Test sot-comm disambiguation (hermetic)
+      # Messaging's own guarantees are `cargo test -p sot-backend comm::` and the comm_* integration suites; these are
+      # the shell side's: the endpoint gate of the daemon client the agents' CLIs use, the stager, the acceptance
+      # matrix's classifier, and the suites' own policy (the home guard first, no pkill, no bare sleep).
+      - name: Test the comm shell side (hermetic)
         working-directory: comm/tests
+        env:
+          SOT_TEST_SOTD: "${{ github.workspace }}/rust/target/debug/sotd"
         run: |
-          bash test-join-disambiguation.sh
-          # C10 (isolation-plan.md §3): the one gate every endpoint value
-          # leaves comm-lib.sh through, plus the ssh: resolvers and the
-          # sot_ssh_bridge wire round trip -- a suite that runs nowhere is
-          # not a test.
           bash test-endpoint-gate.sh
-          # The verdict table: every receipt/ack/exit-status/stderr
-          # combination through the one place a send's verdict is decided,
-          # asserting the rule PROTOCOL.md now states -- a send with a
-          # receipt reports delivered, whatever the transport's exit status
-          # or stderr say. Three rounds of fixes each closed the instances
-          # they were handed and left another behind, because the verdict was
-          # read from the transport; 22 of its 38 rows disagreed with the
-          # rule before this stage. A table that runs only when somebody
-          # remembers cannot hold that closed. 28 seconds, hermetic.
-          bash test-relay-file-first.sh
-          # 0031 B1: every inbox append is taken under the kernel's file
-          # lock, and one that cannot be made is FAILED, never `filed` -- the
-          # two writers, a killed holder, a frozen one, the no-flock route and
-          # the one wait constant.
-          bash test-hub-files.sh
-          # The registry's one writer never publishes an empty, unparseable or
-          # two-document file, and its one reader says unreadable, never absent.
-          bash test-registry-io.sh
-          # The read cursor is a line count with the hash of the last line
-          # read, so a cut-back steps back one line and nothing is shown twice.
-          bash test-comm-poll-cursor.sh
-          # Suite bootstrap policy and executed shared-await controls.
-          bash test-rm-guard.sh
-          # Staging publishes each file whole by a sibling rename, copying no source permissions.
           bash test-stage-bin.sh
-          # 0031 B1's caller: a registry miss goes to the wire and one lap ends
-          # in one verdict; the acceptance matrix's classifier keys on that
-          # verdict.
-          bash test-send-routes-to-relay.sh
           bash test-comm-matrix-verdict.sh
+          bash test-rm-guard.sh
+          # Rows' work-state through the hooks, whose identity and mail gate are now `sotd comm` calls.
           bash test-status-floor.sh
-          # ADR 0049, User isolation: every writer makes the comm folder 0700/0600 under umask 022,
-          # a folder an older release left is tightened at join, user files keep the caller's umask.
-          bash test-comm-private.sh
-          # A session may declare its handle only into the row its own
-          # identity names. Until this suite ran here, the one thing that
-          # proves it was a suite nobody ran but by hand -- and the defect it
-          # now covers let every hermetic run rewrite the handle of whichever
-          # live row happened to be running the tests.
-          bash test-agent-join.sh
-          # A session outside any row never takes, and never reads the mail of,
-          # a handle a row holds: the daemon's word, and the row id.
-          bash test-identity-row-rule.sh
-          # The carriage-return suite for jq. A native jq on Windows rewrites every
-          # \n to \r\n and command substitution keeps the \r on the value;
-          # until this ran here, the only thing standing between that and a
-          # false "no such handle" was a human remembering to run it. Its
-          # sibling for a token GitHub rejects runs in the agents step below.
-          # Hermetic, under a second.
-          bash test-crlf-jq-output.sh
-          # A missing jq, flock or perl is named to the session by poll, session
-          # start and the Stop hook, never passed silently.
-          bash test-comm-deps.sh
-          # B1b: the registry lock names its holder, a holder proved dead on
-          # this machine is reclaimed through one marker, and any other is
-          # named in the FAILED line; the race, the mixed rollout, the touch
-          # bound and the clear command.
-          bash test-registry-lock.sh
-          # A second agent started inside a session (codex exec, claude -p) never acts as the row's handle.
-          bash test-agent-layers.sh
-          # No messaging script or library call leaves a file in its temporary folders, on success, failure, a kill or a signal.
-          bash test-temp-files.sh
 
       - name: Test agents CLIs (hermetic)
         working-directory: agents/tests

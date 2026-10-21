@@ -41,7 +41,7 @@ const PREFIXES = [
 const TEST_STEMS = Dict{String,Vector{String}}(
     "distribution" => ["shell_dial", "unit_pin", "same_version", "window_start"],
     "rows" => ["capsule_workspaces"],
-    "messaging" => ["comm_wake", "comm_file", "comm_send", "hub_link"],
+    "messaging" => ["comm_wake", "comm_file", "comm_send", "hub_link", "comm_cli"],
     "server" => ["daemon_lifetime", "admission", "control_session", "ping_reaper", "live_socket", "daemon_boot",
                  "daemon_stdout", "subcommand_help", "support_checks", "active_frontend", "stdio_bridge",
                  "status_integration"],

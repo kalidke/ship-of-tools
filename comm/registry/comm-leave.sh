@@ -1,52 +1,6 @@
 #!/usr/bin/env bash
-# comm-leave.sh — remove this session from the network, or (--name) remove a
-# specific handle's registry row (e.g. an orphan left by a dead spawned agent).
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/comm-lib.sh"
-# A second agent inside the session never removes a row, its own or another's;
-# the gate comes before the context call, so a refused child touches nothing.
-_why="$(sot_require_agent)" || { echo "comm-leave.sh: $_why" >&2; exit 1; }
-eval "$("$SCRIPT_DIR/comm-context.sh")"
-
-# Arg handling is strict: this script once took no args and silently ignored
-# them, so `comm-leave.sh --name X` removed the CALLER's row instead of X's
-# (regression found 2026-06-12). Unknown args are now fatal.
-WHO=""
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --name)   WHO="${2:?--name needs a handle}"; shift 2 ;;
-        --name=*) WHO="${1#--name=}"; [ -n "$WHO" ] || { echo "--name= needs a handle" >&2; exit 1; }; shift ;;
-        *) echo "usage: comm-leave.sh [--name <handle>]" >&2; exit 1 ;;
-    esac
-done
-
-if [ -n "$WHO" ] && [ "$WHO" != "$NAME" ]; then
-    # Removing someone else's row touches the registry only — their SELF_FILE
-    # belongs to their session, and comm-despawn.sh is the full teardown tool.
-    rc=0; sot_registry_read "$WHO" >/dev/null || rc=$?
-    case "$rc" in
-        0) ;;
-        1) echo "@$WHO not in registry — nothing to do."; exit 0 ;;
-        *) echo "FAILED: the registry could not be read; nothing was removed" >&2; exit 1 ;;
-    esac
-    # An entry bound to another row is that row's handle: a session outside any row, or in another row, removes it
-    # only where the daemon says no row holds it (the clearance a join needs), so leave then join takes nothing.
-    IFS=$'\t' read -r _bind _ <<< "$(sot_row_binding "$WHO" "$ROW_ID")"
-    if [ "$_bind" = other ]; then
-        _rc=0; _why="$(sot_outside_join_clearance "$WHO")" || _rc=$?
-        case "$_rc" in
-            0) ;;
-            2) echo "comm-leave.sh: FAILED: $_why" >&2; exit 1 ;;
-            *) echo "comm-leave.sh: REFUSING to remove @$WHO: ${_why/ cannot join as it/ cannot remove it}" >&2; exit 1 ;;
-        esac
-    fi
-    with_lock registry_del "$WHO"
-    echo "Removed @$WHO from the registry (row only; comm-despawn.sh does full teardown)."
-    exit 0
-fi
-
-[ -z "$NAME" ] && { echo "Not joined — nothing to do."; exit 0; }
-with_lock registry_del "$NAME"
-rm -f "${SELF_FILE:?}"
-echo "Left sot-comm (@$NAME removed)."
+# comm-leave.sh — give up this session's handle, or (--name <handle>) remove another handle's registry entry only, as
+# an orphan a dead spawn left; a handle a row holds is refused. This is `sotd comm leave`
+# (rust/backend/src/comm/CLAUDE.md).
+. "$(dirname "${BASH_SOURCE[0]}")/comm-lib.sh" || exit 1
+sot_comm leave "$@"

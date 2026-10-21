@@ -1,7 +1,8 @@
-//! The inbox append (0031 B1): the daemon's arm of the ONE lock both writers
-//! take. `comm-lib.sh`'s `sot_inbox_append` is the other arm, and the two
-//! meet at the kernel: `flock(1)` and `File::lock` are both `flock(2)` on
-//! unix, on the same sidecar `inbox/<handle>.lock`. The OS releases the lock
+//! The inbox append (0031 B1) and the ONE lock every writer takes: the daemon's
+//! filer and `sotd comm send` in a process of its own run this code, and the
+//! 0.6.6 scripts' `flock(1)` takes the same `flock(2)` on the same sidecar
+//! `inbox/<handle>.lock`, so the two versions exclude each other during an
+//! install. The OS releases the lock
 //! when its holder's handle closes — a kill, a panic, a lost ssh child — so
 //! there is no reclaim; a frozen holder only makes the next writer wait, and a
 //! writer that cannot take the lock within the wait appends NOTHING.
@@ -14,10 +15,10 @@
 //! lock and an NFSv4 lock on one export exclude nothing, and a local `flock`
 //! on a disk other hosts mount does not exclude their NFS locks. So the
 //! folder's hub names its lock manager in `<comm home>/inbox-lock-manager` at
-//! startup, and every writer — a script, or a daemon at each filing — appends
-//! locally only when it computes the same name for the inbox by the same
-//! rule; a script sends anything else to a daemon, a guest daemon forwards it
-//! to the hub, and the hub refuses it with the recovery named. An unknown lock
+//! startup, and every writer — `sotd comm send`, or a daemon at each filing —
+//! appends locally only when it computes the same name for the inbox by the
+//! same rule; a send hands anything else to a daemon, a guest daemon forwards
+//! it to the hub, and the hub refuses it with the recovery named. An unknown lock
 //! is named `none@<machine-id>`, so it binds the folder to the one machine
 //! that wrote the record: that machine's processes share its one kernel lock,
 //! and every other machine computes a different name.
@@ -58,9 +59,9 @@ struct Line<'a> {
 }
 
 /// Append one frame to `inbox_dir/<to>.jsonl` under the inbox lock. The line
-/// is `{from, to, repo:"daemon", msg, ts}`, LF-terminated — what the relay
-/// bridge has always written, so every reader renders it unchanged; a
-/// `broadcast` copy is stamped `to:""`, as `comm-send.sh` stamps one. `Err`
+/// is `{from, to, repo, msg, ts}`, LF-terminated (`repo` is the sender's
+/// project, or `daemon` for a line a daemon files for another), so every
+/// reader renders it unchanged; a `broadcast` copy is stamped `to:""`. `Err`
 /// is the sentence the sender prints after `FAILED -> @<to>: `, and it means
 /// nothing was appended. The wait is bounded, but a helper thread stays
 /// blocked behind a frozen holder until that holder releases or dies; if it
@@ -78,13 +79,30 @@ pub fn file_frame(
     wait: Duration,
     own: &str,
 ) -> Result<(), String> {
-    file_frame_with(inbox_dir, from, to, broadcast, text, ts, wait, own, File::sync_data)
+    file_frame_from(inbox_dir, from, "daemon", to, broadcast, text, ts, wait, own)
+}
+
+/// [`file_frame`] with the sender's project as the line's `repo`.
+#[allow(clippy::too_many_arguments)]
+pub fn file_frame_from(
+    inbox_dir: &Path,
+    from: &str,
+    repo: &str,
+    to: &str,
+    broadcast: bool,
+    text: &str,
+    ts: &str,
+    wait: Duration,
+    own: &str,
+) -> Result<(), String> {
+    file_frame_with(inbox_dir, from, repo, to, broadcast, text, ts, wait, own, File::sync_data)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn file_frame_with(
     inbox_dir: &Path,
     from: &str,
+    repo: &str,
     to: &str,
     broadcast: bool,
     text: &str,
@@ -97,7 +115,7 @@ fn file_frame_with(
     let mut line = serde_json::to_string(&Line {
         from,
         to: if broadcast { "" } else { to },
-        repo: "daemon",
+        repo,
         msg: text,
         ts,
     })
@@ -105,7 +123,7 @@ fn file_frame_with(
     line.push('\n');
 
     let lock = open_lock(inbox_dir, to).map_err(failed)?;
-    let lock = take_lock(lock, own, wait).map_err(|e| match e {
+    let lock = take_lock(lock, own, wait, false).map_err(|e| match e {
         LockWait::Timeout => format!("the inbox lock for @{to} was held for {}s — nothing was appended", wait.as_secs()),
         LockWait::Io(e) => failed(e),
     })?;
@@ -140,8 +158,8 @@ enum LockWait {
     Io(std::io::Error),
 }
 
-/// The exclusive lock on the inbox's `.lock` file within `wait`, chosen by the
-/// lock manager `own`. The Linux NFSv4 client retries a blocked lock with a
+/// The lock on the inbox's `.lock` file within `wait`, exclusive for a writer and `shared` for a reader, chosen by
+/// the lock manager `own`. The Linux NFSv4 client retries a blocked lock with a
 /// backoff that doubles from 100 ms, so a local writer re-takes the lock before
 /// a remote waiter's next retry and a blocking waiter can sleep past a free lock
 /// and time out: under `nfs4 ` a non-blocking try is repeated every 15-25 ms
@@ -150,12 +168,12 @@ enum LockWait {
 /// the caller bounds. A `flock` belongs to the open file description, which a
 /// forked child shares until it execs, so the lock is held by an `InboxLock`,
 /// whose `Drop` unlocks it: the lock never outlives its holder's drop.
-fn take_lock(lock: File, own: &str, wait: Duration) -> Result<InboxLock, LockWait> {
+fn take_lock(lock: File, own: &str, wait: Duration, shared: bool) -> Result<InboxLock, LockWait> {
     if own.starts_with("nfs4 ") {
         let deadline = Instant::now() + wait;
         loop {
             #[allow(clippy::disallowed_methods, reason = "the InboxLock built from this lock unlocks it in its Drop")]
-            let locked = lock.try_lock();
+            let locked = if shared { lock.try_lock_shared() } else { lock.try_lock() };
             match locked {
                 Ok(()) => return Ok(InboxLock(lock)),
                 Err(std::fs::TryLockError::Error(e)) => return Err(LockWait::Io(e)),
@@ -171,16 +189,65 @@ fn take_lock(lock: File, own: &str, wait: Duration) -> Result<InboxLock, LockWai
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         #[allow(clippy::disallowed_methods, reason = "the InboxLock built from this lock unlocks it in its Drop")]
-        let locked = lock.lock().map(|()| InboxLock(lock));
+        let locked = if shared { lock.lock_shared() } else { lock.lock() };
         // A send that fails means the caller gave up: the guard comes back in
         // the error and is dropped at once, which unlocks.
-        let _ = tx.send(locked);
+        let _ = tx.send(locked.map(|()| InboxLock(lock)));
     });
     match rx.recv_timeout(wait) {
         Ok(Ok(lock)) => Ok(lock),
         Ok(Err(e)) => Err(LockWait::Io(e)),
         Err(_) => Err(LockWait::Timeout),
     }
+}
+
+/// The reader's wait on a held inbox lock, read under the same name as the 0.6.6 scripts' arm.
+pub const INBOX_READ_WAIT_ENV: &str = "SOT_INBOX_READ_WAIT_SECS";
+
+/// What a reader got when it asked for the shared lock on `inbox/<h>.lock`.
+pub enum ReadLock {
+    /// Held until dropped: no writer is mid-append.
+    Held(#[allow(dead_code, reason = "held for its Drop")] InboxLockGuard),
+    /// No lock applies: this box files through a daemon, so no writer here shares its lock.
+    None,
+    /// Held elsewhere past the wait: try again, never a skip.
+    Busy,
+    /// Any other lock fault: read without it, and say so in these words.
+    Fault(String),
+}
+
+/// A held inbox lock, as a reader holds it.
+pub struct InboxLockGuard(#[allow(dead_code, reason = "held for its Drop")] InboxLock);
+
+/// The shared lock a reader takes on `inbox_dir/<h>.lock` when this box appends to the folder itself
+/// (`appends_here`, with `own` its lock manager), waiting at most `SOT_INBOX_READ_WAIT_SECS` (3 s): a writer's line
+/// still being synced is never counted and then cut back. The descriptor is opened read-write, as every inbox lock is.
+pub fn read_lock(inbox_dir: &Path, handle: &str, own: &str, appends_here: bool) -> ReadLock {
+    if !appends_here {
+        return ReadLock::None;
+    }
+    let wait = std::env::var(INBOX_READ_WAIT_ENV).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(3);
+    let warn = |why: String| {
+        ReadLock::Fault(format!(
+            "WARNING: the inbox lock for @{handle} failed ({why}) \u{2014} reading without it; a line may show twice, none is lost"
+        ))
+    };
+    let lock = match open_lock(inbox_dir, handle) {
+        Ok(l) => l,
+        Err(_) => return warn("cannot open its lock file".into()),
+    };
+    match take_lock(lock, own, Duration::from_secs(wait), true) {
+        Ok(l) => ReadLock::Held(InboxLockGuard(l)),
+        Err(LockWait::Timeout) => ReadLock::Busy,
+        Err(LockWait::Io(e)) => warn(e.to_string()),
+    }
+}
+
+/// Whether a process whose lock manager for `<comm_home>/inbox` is `own` appends there itself: `own` is line 1 of the
+/// folder's `inbox-lock-manager` record and is not bare `none` (no machine id, which never matches).
+pub fn appends_here(comm_home: &Path, own: &str) -> bool {
+    let record = std::fs::read_to_string(comm_home.join(LOCK_RECORD)).unwrap_or_default();
+    own != "none" && !own.is_empty() && parse_record(&record).0 == own
 }
 
 /// `line` goes in whole or not at all ("filed" means kept): an unterminated
@@ -581,8 +648,8 @@ fn windows_machine_guid() -> Option<String> {
 /// v4 mount with `local_lock=none`), `local <machine-id>`, or, for anything
 /// whose lock is not provably one manager's — every non-Linux platform
 /// included — `none@<machine-id>`, this machine's own lock alone (bare `none`
-/// with no machine id, which never matches). `comm-lib.sh`'s
-/// `sot_inbox_lock_identity` computes the same string with `findmnt -T`.
+/// with no machine id, which never matches). The 0.6.6 scripts computed the
+/// same string with `findmnt -T`.
 pub fn lock_identity(dir: &Path) -> String {
     let mid = machine_id().unwrap_or_default();
     #[cfg(target_os = "linux")]

@@ -98,6 +98,8 @@ Pure queries (no startup side effects, answered before any of the above):
   work-state <verb> --handle <h> [--origin user|machine] [--text]
                           one work-state write for a session's row, the
                           way comm-status.sh reaches it (text on stdin)
+  comm <verb> [args]      messaging: send, poll, join, the identity, the
+                          shell wrappers' one command (`sotd comm --help`)
   topology <plan|status|relay-endpoint|sync|apply>
                           what this box derives from hosts.toml
                           (`sotd topology` alone prints the details)
@@ -129,6 +131,7 @@ fn help_for(args: &[String]) -> Option<&'static str> {
         "same-version" => topology::same_version::USAGE,
         "ancestors" => comm::registry::ancestors::USAGE,
         "work-state" => rows::work_state::cli::USAGE,
+        "comm" => comm::cli::USAGE,
         "update" => update::USAGE,
         "install" => install::USAGE,
         _ => SOTD_HELP,
@@ -208,6 +211,12 @@ fn main() -> Result<()> {
             "work-state" => {
                 apply_umask();
                 std::process::exit(rows::work_state::cli::run(&args[1..]));
+            }
+            // `sotd comm <verb> ...`: messaging's commands (comm/CLAUDE.md), which every session runs through its shell
+            // wrappers, on any box that shares a home with a daemon host. The comm folder is private: the umask first.
+            "comm" => {
+                apply_umask();
+                std::process::exit(comm::cli::run(&args[1..]));
             }
             // The capsule-only birth parent (`rows::spawn::durable`): the daemon starts it over a private channel it
             // holds as standard input. Not a user command, so it is in no usage text.

@@ -1,47 +1,38 @@
 # sot-comm protocol — v1
 
-Session-to-session messaging for Ship of Tools. A fork of the `agent-comm` user skill
-with the single-session jail removed and a durable inbox added, so
-sessions can address each other across capsule rows and across machines.
+Session-to-session messaging for Ship of Tools: the files in the comm folder and the requests on the wire. This page
+is the formats; what they guarantee, and the mechanism behind each guarantee, is messaging's contract
+(`rust/backend/src/comm/CLAUDE.md`). Every client reads and writes exactly these formats: `sotd comm` (the commands
+sessions type, `comm-send.sh` and its siblings, are wrappers over it), the daemon's own mail and wake, and the 0.6.6
+shell scripts during an install, so a box on either version shares one comm folder and one hub.
 
-This file is the **contract**. Every client — the Claude skill today, a Codex or
-Gemini adapter or the in-app Ship of Tools `Tool` plugin later — implements *this*, so
-all clients are mutually addressable through the same registry and inboxes.
-
-## Layout (runtime, under `$SOT_COMM_HOME`, default `~/.sot-comm`)
+## Layout (under `$SOT_COMM_HOME`, default `~/.sot-comm`)
 
 ```
 ~/.sot-comm/
-  bin/                     # installed scripts (the reference client)
+  bin/                     # installed scripts: the wrappers, the shell library, the hooks
   VERSION                  # the installer's commit stamp
-  registry.json            # who is reachable + liveness  (source of truth for discovery)
+  registry.json            # who is reachable, and liveness (below)
   registry.json.tmp        # a registry write's temp file, renamed over registry.json
-  registry.json.new.<pid>.<n>  # the skeleton ensure_home links into place when there is no registry
+  registry.json.new.<pid>.<n>  # the skeleton a first command links into place when there is no registry
   .registry.lock           # the registry-write lock: a file naming its holder (below)
-  .registry.lock.reclaim.<id>  # one marker per holder a waiter proved dead; kept forever, but a daemon's own
+  .registry.lock.reclaim.<id>  # one marker per holder a waiter proved dead
   .registry.lock.tmp.<id>      # a take's temp file, removed by the take
-  inbox-lock-manager       # the hub daemon's record of the inbox lock's mount, written at boot
+  inbox-lock-manager       # the hub daemon's record of the inbox lock's manager, written at its start
   .inbox-lock-manager.<id>.<pid>.<n>  # that record's temp file
-  gh-device-auth.json      # sot-gh-auth.sh's device-flow state
+  gh-device-auth.json      # sot-gh-auth.sh's device-flow state (agents')
   inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
   inbox/<name>.lock        # that inbox's lock file
-  read/<name>.cursor       # per-recipient read cursor (`<count> <crc>-<len>`: lines shown, and a hash of the last)
-  self/<host>__<pane>.txt  # unpinned declared-host slot; complete native leaf validated before mutation, explicit pins retained
-  state/                   # per-session scratch; the end-of-turn check keeps mail-<key>.tick,
-                           # lock-fault-<handle>.<key>.tick and stop-feedback-<key>.jsonl here,
-                           # and comm-status.sh keeps turn-<self slot> while a turn runs.
-                           # Nothing removes a mail tick, so every session ever held on mail
-                           # leaves one. Bounded per-session litter, and nothing sweeps it.
+  read/<name>.cursor       # per-recipient read cursor
+  self/<host>__<row>.txt   # a session's handle between commands (below)
+  state/                   # per-session scratch of the hooks: the end-of-turn check's tick files and
+                           # feedback record, rows' turn marks. Bounded per-session litter; nothing sweeps it.
   probe/<handle>/          # a probe row's project root (comm-probe.sh)
 ```
 
-Every entry above except `bin/` and `VERSION` (the installer's) is 0700 (a folder) or 0600 (a file), created so by every
-writer; `ensure_home` closes an older folder's entries at the next join. Anything else in the folder keeps its mode behind
-the 0700 folder. On Windows the folder inherits the profile's access list.
-
-The registry and inboxes are **data at rest** — discovery and catch-up need a
-shared place to publish, not a live broker. In an optional shared-home
-deployment, one `~/.sot-comm` serves every host sharing that home.
+Every entry above except `bin/` and `VERSION` is 0700 (a folder) or 0600 (a file): `sotd comm` runs under umask 077,
+and a join closes what an older release left open (never a folder that is the root, the home or a git checkout). On
+Windows the folder inherits the profile's access list.
 
 ## registry.json
 
@@ -50,704 +41,166 @@ deployment, one `~/.sot-comm` serves every host sharing that home.
   "protocol_version": 1,
   "agents": {
     "<name>": {
-      "host":       "<host>",                      // daemon's declared host; exact accepted override, otherwise the declared-host default
-      "workspace_id": "ws-…",                      // the row this session runs in (SOT_WORKSPACE_ID); "" in a bare shell
-      "repo":       "Ship of Tools",
-      "expertise":  ["files", "rust-backend"],
-      "status":     "idle",                        // lifecycle: idle | spawning
+      "host":       "<host>",          // the box's declared host
+      "workspace_id": "ws-…",          // the row whose session joined; "" for a session outside any row
+      "repo":       "Ship of Tools",   // the project folder's name
+      "root":       "/home/u/repo",    // its canonical root
+      "expertise":  ["files"],
+      "status":     "idle",            // idle | spawning (a spawn's provisional entry, with its "nonce")
       "joined":     "2026-05-29T18:00:00Z",
-      "last_seen":  "2026-05-29T18:04:00Z",        // heartbeat, bumped on send/poll/join
-      "state":      "working",                     // ADE state-nav WORK state: working | idle | blocked | waiting | done
-      "summary":    "rebuilding backend + BE suite",// one-line current / just-finished work ("" when none)
-      "status_at":  "2026-06-15T19:32:13Z"         // when state/summary were last written; nav ages a stale "working"
+      "last_seen":  "2026-05-29T18:04:00Z",
+      "stop_at":    "…",               // the Stop hook's mark while it runs (the wake holds off)
+      "state": "working", "summary": "…", "status_at": "…"   // rows' work-state, with its facts
     }
   }
 }
 ```
 
-A row's `state` is `blocked`, with the dialog's text as its `summary`, while the agent shows a dialog that waits on a
-person, even while its turn runs. `comm-status.sh dialog "T"` sets that fact (`dialog`), and `comm-status.sh resumed`
-clears it, as a turn's `prompt` and `stop` also do. A Codex session's PermissionRequest hook sends `dialog` and the
-heartbeat sends `resumed`. A Claude Code session sends no event when a dialog shows, so the daemon reads the screen
-of each Ready Claude row every 5 seconds and writes both itself. Every write of these fields is rows' one work-state
-write (`sotd work-state`, which `comm-status.sh` runs; the daemon's in its own process), whose contract is rows'
-(rust/backend/src/rows/CLAUDE.md, work-state).
+The address-book fields are messaging's; `state`, `summary`, `status_at` and the facts they reduce (`floor`,
+`question`, `waiting`, `done`, `dialog`, `note`) are rows' work-state (rust/backend/src/rows/CLAUDE.md). A join writes
+the whole entry; every other write changes only its own fields.
 
-Registry host facts and unpinned self-slot keys use the daemon's declared host. Raw host text is a derived-handle component and validated legacy-slot input only; explicit identity pins retain their text.
+**Liveness** is one fact, `last_seen`: a handle is live when its `last_seen` is a `YYYY-MM-DDTHH:MM:SSZ` stamp under
+600 seconds old. The session stamps it at each command (join, send, poll, its work-state events), and the daemon that
+runs a Starting or Ready row stamps that row's handle every minute, so an idle row stays live while it runs and for
+ten minutes after. An age is read against the reader's clock.
 
-**Liveness** is one fact, `last_seen`: a handle is *live* when its `last_seen` is a
-`YYYY-MM-DDTHH:MM:SSZ` stamp under 600 seconds old (`COMM_LIVE_SECS`, `LIVE_SECS`). The
-session stamps it (join, send, poll, status, and each turn's heartbeat), and the daemon that
-runs a Starting or Ready row stamps that row's handle every minute (rows' `handle.rs`), so an
-idle row stays live while it runs, through a daemon restart, and until ten minutes after its
-last stamp. A daemon that cannot take the registry lock, or read or write the registry,
-stamps nothing. Its warning says so each minute, and ten minutes after a row's last stamp a
-send to that row fails as `no live session holds @h`; the lock rules are below, and
-`comm-registry-lock-clear.sh` clears a lock whose holder this box proves dead. An age is read against the reader's
-clock, so skew between two boxes moves the ten minutes by the skew. `host` + `workspace_id`
-are the address a same-host daemon resolves.
-
-**Work-state** (`state` + `summary`, stamped by `status_at`) powers the ADE
-*state-nav* at-a-glance view, and is distinct from the lifecycle `status` above.
-It is written by `comm-status.sh <state> ["summary"]` (merge-only; self-gating —
-a silent no-op in any session that is not a joined comm agent). Two writers by
-design: the model pre-announces long work (`comm-status.sh working "<one-liner>"`
-when it judges a turn will run >~30s), and a global `Stop` hook floors each
-turn-end to `idle`. The daemon joins these fields onto `workspace.list` (as
-`agent_state` / `agent_summary` / `agent_status_at`, keyed by the workspace's
-`agent_name`) so the frontend — which cannot read this registry directly —
-renders `summary` as the per-session glance, colored by `state` and aged off
-`status_at`.
-
-**One writer, one reader.** Every script write goes through `registry_replace`
-(`comm-lib-registry.sh`), under the registry lock (below). jq writes a tmp, and the tmp is
-renamed over `registry.json` only if it is one JSON document with an object
-`.agents` and its data has been flushed to the server; otherwise nothing is
-written and the writer prints `FAILED: the registry could not be read or
-updated, so nothing was written` (or `FAILED: the registry update could not be
-flushed (…), so nothing was written`, or `… could not be renamed into place
-(…) …`). The heartbeat hook calls the same `registry_replace`, under the same lock
-with one try, and stays silent; the daemon flushes its tmp before its rename too. **perl is required for registry writes**: the flush is perl's
-`sync`, and a host without perl fails closed with the "could not be flushed"
-line. `ensure_home` creates the registry only when there is no file: it flushes a
-skeleton tmp and publishes it by a hard link, which fails on an existing name,
-so it never replaces, truncates or repairs a registry. Every read goes through
-`sot_registry_read` (the hooks source the library in a subshell for it; only the Stop
-hook's joined-agent test on a host without jq greps `sot_registry_bytes` instead), which has three
-answers: present, absent (it parsed; no such row) and unreadable (missing,
-empty, not JSON, not exactly one document, or no object `.agents`; or jq is
-missing, which it says on stderr).
-Unreadable is never absent. Every read, and every writer's read under the
-lock, takes its bytes from `sot_registry_bytes` (every daemon read from its
-Rust twin, `read_registry_fresh`, but its 1.5 s change poll, where a failed read
-skips one tick), because an NFSv4 client can get ESTALE (stale file handle) on a
-read after its open succeeded, when another host renames a new registry over
-the file. Before the retry, the two-host test measured 16 such reads in about
-2,000 on the first host, and 0 in about 9,000 on the peer. So a read that failed
-(any error but a missing file, even after some bytes, which are discarded) or
-that returned zero bytes revalidates the folder and opens the file by path
-again, up to 3 times in about 200 ms; no good read by then is unreadable. A
-missing file is told at the open, never by a stat. Zero bytes stays in the rule
-because an empty file is never a valid registry, but no zero-byte read has ever
-been observed. Non-empty bytes that do not parse are never retried. A send on
-an unreadable registry prints
-`FAILED -> @<to>: the registry could not be read, so identity @<me> is
-unverified; nothing was sent`. leave, list, spawn and despawn print
-`FAILED: the registry could not be read; nothing was <removed|listed|spawned|despawned>`,
-status and worktree-sync end the same line with `stamp discarded` and `nobody
-was reminded`, and a join prints the writer's FAILED line or `the registry
-could not be read, so no handle was derived; nothing was written`. Each exits
-1. **A registry that stays unreadable is not repaired
-automatically**, because rewriting an unreadable file is the wipe. The fix is
-by hand: move `registry.json` aside; the next script creates an empty one, and
-each session's next send says `reclaim it with comm-join.sh --name <handle>`.
+**One writer path, one read.** Every write is one read-decide-write under the registry lock on a fresh read, written
+to `registry.json.tmp`, synced, and renamed over `registry.json`; a failed step writes nothing and says `FAILED: the
+registry …, so nothing was written`. A registry is created only where there is no file, by a hard link of a synced
+skeleton, so nothing ever replaces, truncates or repairs one. A read that fails (an NFS stale handle after another
+host's rename, or zero bytes) opens the folder and reads again, up to 3 times in about 200 ms; no good read by then is
+unreadable, and unreadable is never absent. A registry that stays unreadable is moved aside by hand; the next command
+creates an empty one, and each session's next join takes its handle again.
 
 ## The registry lock
 
-Every write to `registry.json` (the scripts' `with_lock`, the daemon's
-`with_comm_registry_lock`) holds `.registry.lock`, a regular file whose one line
-names its holder: `name:machine:boot:pidns:pid:start` — the host name, Linux
-`/etc/machine-id`, the kernel's `boot_id`, the pid namespace, the pid, and that
-pid's start tick (field 22 of `/proc/<pid>/stat`); on macOS the host UUID, the
-boot session UUID, `darwin`, the pid and its start in whole seconds since the
-epoch. A field that cannot be read is `-`, which never equals anything; on
-other systems, and where the comm home's mount proves no fresh read (Proof of
-death), the last four proof fields are `-`. In file names ':' is written '.', because Windows reads a ':' in a name as
-a stream; the record keeps its colons.
+The lock is the file `.registry.lock`, whose one line names its holder: `name:machine:boot:pidns:pid:start` (the
+declared host, Linux `/etc/machine-id`, the kernel's `boot_id`, the pid namespace, the pid, and its start tick; on
+macOS the host UUID, the boot session UUID, `darwin`, the pid and its start in seconds). A field that cannot be read is
+`-`, which never equals anything; where the comm folder's mount proves no fresh read (anything but a local file system,
+tmpfs, or NFS without `nocto`; on macOS anything but the Mac's own disk) the four proof fields are `-`. In file names
+`:` is written `.`.
 
-- **Take.** Write the record to a temp file and `link(2)` it to the lock (the
-  command `link`, never `ln`, which links INTO an older peer's lock directory
-  and "succeeds"). The lock never exists without its holder, and a link never
-  replaces anything. A failed link after which the caller's fresh temp file is
-  the lock was taken (a retransmitted NFSv3 LINK answers "exists" for the
-  caller's own link). **Release** removes the file. The comm home must support
-  hard links: every filesystem listed under Reclaim does, and so does NTFS; on
-  FAT every write fails (the best-effort touches silently), and a ruled one
-  FAILs naming "cannot hard-link in <dir>: <errno>".
-- **Proof of death** (Linux and macOS, and only from the holder's own machine): the
-  same boot and pid namespace, with the pid gone or its start tick changed; or
-  the same machine-id AND the same host name with a different boot. This
-  assumes a machine-id is unique to one machine: a cloned image that shares one
-  would read a live clone as rebooted. A box proves a death only where its
-  comm home's mount, the one on top where mounts are stacked, makes a read
-  fresh: ext2, ext3, ext4, xfs, btrfs, zfs, f2fs or tmpfs, or nfs or nfs4
-  without `nocto`, or on macOS the Mac's own disk (`MNT_LOCAL`); on any
-  other (overlayfs, a Mac's network home) its records have no proof
-  fields, so its dead holders are removed by hand. No timeout proves anything,
-  so a frozen holder, one on another machine, or any unprovable one, is never
-  forced.
-- **Reclaim.** It runs on the FIRST failed take, before any sleep. A waiter that
-  proves the holder D dead takes the marker `.registry.lock.reclaim.<D>` by the same link step,
-  settles 1 s, reads the lock again fresh (open its folder, then open the
-  record), and removes it only if it still names D. Only the marker's creator
-  acts; if the creator died too, the next waiter proves that and takes
-  `reclaim.<creator>`, which carries the same authority. A lock naming the
-  daemon itself, seen by the daemon thread with the turn (below), was left by
-  one of its threads, and is reclaimed like a dead holder's, through a marker
-  naming the daemon. Markers are kept forever, but for that one: the daemon
-  removes it when that reclaim removes the lock or finds it gone after the
-  settle, and every record its walk passed is its own. An ID is the process's
-  own only with its proof fields: `-` never equals anything, so a daemon or
-  script with none never adopts a marker or reclaims a lock as its own. A
-  marker naming a record the walk has already passed, other than the waiter's
-  own, ends it: no reclaim can pass that marker, and FAILED says to remove the
-  lock by hand. A removed lock is retaken at once, as part of the try that
-  removed it, even past the deadline below.
-- **Bounds** are deadlines, polled every 50 ms (`SOT_LOCK_WAIT_SECS` in the
-  scripts): 10 s for join, leave, spawn, despawn, status and the daemon's
-  workspace destroy; about 1 s for the best-effort `last_seen` touches of send,
-  poll and spawn, and for the daemon's unread clear; 0 for the heartbeat, which
-  still makes its one try and reclaims a dead holder. There is always one try,
-  and with a clock its reclaim step (in the daemon, once the thread has its
-  turn); after the first failed take the deadline is checked after every
-  failed take, every sleep and every marker a step walks past its first, so no
-  reclaim chains past the deadline and no try starts after it. One daemon
-  thread at a time is inside the lock, and its wait for that turn counts
-  inside the same deadline. The scripts' clock is bash 5's `EPOCHREALTIME`, or perl's `Time::HiRes` before bash 5
-  (the mail tools check it there); both are wall clocks, so a clock jump can
-  stretch or shorten one wait. The daemon's is monotonic.
-- **FAILED** names the holder and the recovery, in the scripts and in the
-  daemon's log alike: `registry lock <path> is held by <host> pid <pid> start
-  <tick> (<age> old): <why>. If it is dead, run any comm command on <host>.`
-  Where this box cannot prove it dead, on another machine or in another pid
-  namespace, the last sentence is instead `If it is dead: run any comm command
-  on <host>, or, if <host> will not run again or a comm command there says it
-  cannot prove a death, remove <path> by hand.` (in a pid namespace: `on
-  <host> in its pid namespace, or, if nothing will run there again or ...`):
-  no reclaimer can be pending where nothing proves its death, and the clause
-  stands under "If it is dead", as a live holder is never proved dead. A
-  holder the step did not judge, one that took the lock during the reclaim,
-  gets the first sentence. When the record that blocks has no proof fields, which no box
-  can prove dead, its last sentence is instead `No box can prove <host> pid
-  <pid> dead (its record has no proof fields): if it is, remove <path> by
-  hand.` A lock
-  found released since the last read
-  says instead `registry lock <path> was held by <host> pid <pid> start <tick>
-  when last read (<why>); it may have been released since. Retry.` With no clock the scripts say `registry
-  lock <path> is held, and there is no clock to wait by: <which>`; a daemon
-  thread that never got its turn says `registry lock <path> was not tried:
-  another thread of this daemon held its turn past the bound`. A lock no
-  reclaim can clear (a record read whole that does not parse, an older
-  version's directory, or a marker naming a record its walk already passed) says `registry lock <path> still
-  held (<age> old): <why>. If its holder is dead, remove <path> by hand and
-  retry.` A wait that ends with no holder read, the lock released or taken
-  again just then or its record not read, says `registry lock <path> was not taken by the deadline:
-  <why>. Retry.` `comm-registry-lock-clear.sh` takes the
-  reclaim path above at once, with no deadline, and clears only a lock whose
-  holder this box proves dead: a holder it cannot prove dead may be alive, and
-  clearing it would give the registry two writers. Its refusal names the
-  recovery the FAILED line names. It is never a bare `rm`, which would let a pending reclaimer
-  remove the next holder's lock. With no lock it says the lock is free and exits 0. When no
-  reclaim can clear the lock, its refusal says to remove the lock by hand.
-- **Older peers.** An older version's lock is a holderless directory: it is
-  never reclaimed, and FAILED says "held by an older version that records no
-  holder". An older waiter's `mkdir` fails on the file and waits as before. An
-  older clear (before 0.6.6) takes a person's word for a holder it cannot
-  prove dead.
-- **Residual.** A dead holder on a server where nothing comm-related runs again
-  wedges registry writes fleet-wide until someone removes the lock by hand: every
-  other box FAILs each ruled lock after 10 s, and every send or poll waits out
-  the ~1 s touch bound. The 1 s settle is the only guard against a dead holder's
-  late operations, its orphaned release `rm` and its in-flight calls; one that
-  lands later than that is not covered. A daemon S killed after taking its
-  own marker and before removing the lock (the settle and the re-read
-  included), or whose re-read fails and that dies before another of its writes
-  adopts the marker, leaves `reclaim.<S>` naming S while the lock names S; so
-  does one whose removal of that marker fails and that later leaves its lock
-  and dies. Every walk then stops at that marker, and the lock is removed by
-  hand. A removal of `reclaim.<S>` that failed for a
-  live S but reaches the server later (NFS) can remove a later walker's
-  `reclaim.<S>` after S has died, so two walkers each act for one dead holder,
-  and one can remove the lock the other retook; this is very improbable. A lock
-  whose record stays unreadable (a permission or I/O error) is never reclaimed,
-  and its FAILED line says only that its record could not be read; it is
-  removed by hand. Where a box's two arms disagree about whether it proves a
-  death (no findmnt or stacked mounts; on macOS, a shell whose PATH finds a
-  date or ps that is not the system's, as Homebrew's coreutils gnubin puts
-  first, so it writes no proof while the daemon does), the arm that proves a
-  death can be mid-reclaim
-  while a person, told by the other arm's line, removes the lock by hand; two
-  writers need that removal and a new holder's link to land between the
-  reclaimer's re-read and its unlink.
+- **Take**: the record goes into a temp file, which is hard-linked to the lock; a link never replaces anything, and the
+  lock never exists without its holder. **Release** removes the file.
+- **Proof of death**, only from the holder's own machine: the same boot and pid namespace with the pid gone or its start
+  changed, or the same machine and host with a different boot. Nothing else, and no timeout, proves a death: a frozen
+  holder, one on another machine, or one with no proof fields is never forced.
+- **Reclaim**, on the first failed take: a waiter that proves the holder D dead takes the marker
+  `.registry.lock.reclaim.<D>` the same way, settles 1 s, reads the lock again fresh, and removes it only if it still
+  names D. Only the marker's creator acts; if it died too, the next waiter proves that and takes its marker. A marker
+  naming a record the walk already passed ends the walk, and the lock is removed by hand.
+- **Bounds**: `SOT_LOCK_WAIT_SECS`, 10 s, for a join, a leave, a spawn and a work-state declaration; 1 s for the
+  best-effort `last_seen` touch of a send or a poll and for the Stop hook's mark; 0 for the heartbeat's one try.
+- **FAILED** names the holder and the recovery: `registry lock <path> is held by <host> pid <pid> start <tick> (<age>
+  old): <why>. If it is dead, run any comm command on <host>.`, with the by-hand clause where no box can prove it dead.
 
-## Message frame (inbox JSONL, one object per line)
+## The inbox
+
+One line per message, JSON, LF-terminated:
 
 ```json
-{"from": "<name>", "to": "<name>|\"\"", "repo": "<repo>", "msg": "<text>", "ts": "2026-05-29T18:04:00Z"}
+{"from": "<name>", "to": "<name>", "repo": "<the sender's project>", "msg": "<text>", "ts": "2026-05-29T18:04:00Z"}
 ```
 
-ISO-8601 UTC timestamps sort lexically, but they are NOT the read cursor: the
-cursor is the NUMBER of inbox lines already shown. Stamps are second-resolution
-and every comparison was strictly-greater, so a frame filed in the same second
-as one already read was shown to nobody while its sender was told it had
-landed. A count cannot lose a frame that way. `comm-poll.sh` is the only writer;
-a legacy timestamp cursor is converted on first read (the count of lines at or
-before it). The cursor is `<count> <crc>-<len>`: the count, then the `cksum` of
-line `<count>` without its newline and NUL bytes — one hash, taken alike of the
-file's line and of the reader's copy. If that line no longer hashes so, a
-cut-back removed it, and the reader steps back one line and says so. A
-count-only cursor still works. The daemon's wake reads every form exactly as
-`sot_cursor_offset` does and never writes the cursor: a timestamp-form cursor
-means "read up to that time" until the next poll that shows a line. Only
-newline-terminated lines are ever counted.
+`to` equal to the handle is directed mail; `""` is a broadcast copy, shown at the next poll and never counted as unread.
+A line whose `to` is missing, not a string or another handle's, or whose `from` is this handle, is shown and never
+counted. A line a daemon files for another sender carries `"repo": "daemon"`. Only newline-terminated lines are ever
+counted or read.
 
-`to` equal to the handle is directed mail and counts as unread; `""` is a
-broadcast copy, filed and read at the next poll, never counted as unread. A
-line whose `to` is missing, not a string or another handle's, or whose `from`
-is this handle, is shown at the next poll and never counted. One rule counts:
-the wake's `counts` in Rust and its shell twin `sot_unread`, pinned by
-`unread_agrees_with_the_shell`. They agree on every line a product writer emits
-(jq -c, serde_json); a line that is not strict JSON (invalid UTF-8, a
-byte-order mark, NaN, a number out of range, nesting past 127) may be counted
-by the shell and not by the wake, so the hook holds one turn for mail comm-poll
-shows.
+**The append** takes the kernel's file lock on `inbox/<name>.lock` (opened read-write), opens the inbox under it, cuts
+an unterminated tail back to the last newline (a dead writer's partial; logged), writes the line whole, syncs it, and on
+any failure cuts the file back to its length before the line. The wait is bounded at `SOT_INBOX_LOCK_WAIT_SECS`, 2 s:
+under an `nfs4` manager a non-blocking try every 15 to 25 ms, under any other a blocking wait; past the bound nothing is
+appended and the answer is `the inbox lock for @<name> was held for 2s — nothing was appended`.
 
-## Delivery
+**The lock manager.** A lock excludes only writers that share one lock manager, so the folder's hub records its own
+in `inbox-lock-manager` at its start: line 1 `nfs4 <server>:<export>` (an NFS v4 mount with `local_lock=none`), `local
+<machine-id>` (a local file system), or `none@<machine-id>` (any other mount, and every mount on macOS and Windows:
+that one machine's own lock); line 2 the writing machine's id. A process appends itself only when the manager it
+computes for `inbox/` equals line 1 (never on bare `none`, a machine with no id); everything else is handed to the
+daemon that owns the folder as `comm.file`. The hub is the daemon with no topology, the topology's hub, or one whose
+comm folder is on its own disk; it creates the record by an exclusive create, keeps a record line 1 already names it
+by, replaces only one its own machine wrote, and refuses every filing while a record names another machine's manager,
+naming the recovery. A guest daemon never writes the record and forwards what it cannot file to the hub.
 
-This section is ADR 0049's design of record. The hub files for every handle
-its own comm folder lists; a box with its own comm folder (a Windows host) holds
-its own link to the hub, and its daemon files for that folder the requests the
-hub offers it over the link, the frontend playing no part.
+**The read cursor**, `read/<name>.cursor`, is `<count> <crc>-<len>`: how many inbox lines its reader has been shown,
+and the POSIX `cksum` of the last one without its newline and NUL bytes. A cursor whose last line no longer hashes so
+(a failed append cut it back after a reader counted it) steps back one line. A count past the end is 0, but a hashed
+count one past it is the end. A count without a hash, and the old timestamp form (the lines before the first one
+stamped later), are read as before. Only `sotd comm poll` writes a cursor, after it has shown the batch, from the bytes
+it read; a reader on a box that appends itself counts and reads under a shared lock, bounded at
+`SOT_INBOX_READ_WAIT_SECS`, 3 s (a held lock is "try again", exit 75).
 
-**Words.** A *row* is a session running inside Ship of Tools. The *daemon*
-is the background program on each box that runs that box's rows; it keeps
-running when the window closes. The *hub* is the one daemon every box can
-reach.
+## The self file
 
-**Address.** A handle is a session's repository or worktree folder name plus
-its box name; two boxes never share one. A row's session declares its
-handle to its daemon when it first starts; the daemon keeps it through
-restarts, compactions and clears, gives each handle to one row only, and a
-newer declaration moves it. A box whose daemon runs no rows holds no
-addresses.
+`self/<host>__<row id>.txt` for a row (the daemon pins it as `SOT_COMM_SELF_FILE`; `<row id>` with its bytes outside
+`A-Za-z0-9._-` made `_`), `self/<host>__nopane.txt` for every session outside a row on the box (shared,
+last-writer-wins), or any private file a launcher pins. Three lines:
 
-**Inbox.** One file per handle, `inbox/<handle>.jsonl`, in the box's comm
-folder. The read cursor is a line count and a hash of its last line, kept in
-`read/<handle>.cursor`.
-Unread mail is any line past it addressed to this handle by someone else.
+```
+<handle>
+repo=<the project folder's name>
+root=<the canonical project root>
+```
 
-**Sending** picks one of two routes, by whether the sender's own comm folder
-lists the receiver:
+It names a handle only for a process in that root; a file without a `root=` line names nobody. A join refuses to put an
+identity for one project into a row's slot that names another's, unless asked to (`--repin`).
 
-1. It can reach the inbox (same box, or a box sharing the home): the line
-   goes in under the inbox lock — the kernel's file lock (`flock`) on
-   `inbox/<handle>.lock`, taken by the daemon's filer and the scripts alike.
-   The inbox is opened inside the lock and closed before it is released.
-   "Filed" means kept: the line is flushed to disk before the answer, an
-   unterminated last line (a dead writer's partial) is cut back to the last
-   newline first, and logged, so the new one stays whole, and a failed append
-   is cut back to the length before it (after that cut), taken by a seek to the end of the
-   descriptor opened under the lock, never from a path's cached size. A
-   lock excludes only writers that share one lock manager, so the folder's
-   hub records its own in `inbox-lock-manager`, beside `registry.json`, when
-   it starts. Line 1 is the manager: `nfs4 <server>:<export>` (an NFS v4
-   mount with `local_lock=none`), `local <machine-id>`, or, on NFSv3 or any
-   other mount whose lock is unknown, `none@<machine-id>` — that one
-   machine's own lock, so the record binds the folder to the machine that
-   wrote it (bare `none`, with no machine id, never matches). A non-Linux
-   daemon is `none@<its machine id>` on every mount. Line 2 is the writing
-   machine's id (Linux `/etc/machine-id`, macOS its host UUID, Windows
-   `MachineGuid`; never a hostname, which two machines can share); a record
-   without it has an unknown writer. Every route compares line 1 only. The hub is
-   the daemon with no topology, the topology's hub (an unreadable
-   `hosts.toml` names no hub, so that daemon is a guest unless its folder is
-   on its own disk), or a daemon whose comm
-   folder is on its own disk, asked of the folder on each OS (Linux: `local
-   <machine-id>`; macOS: its mount is `MNT_LOCAL`; Windows: a fixed drive, not a
-   UNC path; anything else, or an error: not own disk); every
-   other daemon is a guest on the hub's folder and never writes or deletes
-   the record. The hub makes it by an exclusive create when it is absent
-   (of two daemons starting at once only one writes it; the other reads the
-   winner's), leaves it alone when line 1 already names the hub's own
-   manager, and replaces it only when line 2 is the hub's own machine id
-   (the hub after a remount). A record another machine wrote names a
-   different lock manager: the hub leaves it untouched and logs it as an
-   error, and only an explicit reset with no other daemon running replaces
-   it. A hub with no machine id (bare `none`) never creates or replaces the
-   record and refuses every filing, saying so: give the machine a machine id
-   (`/etc/machine-id` on Linux), then restart the daemon. A v3 hub writes `none@<its machine>` and serves other hosts over the
-   wire. A script
-   adds the line itself only when `flock(1)` and `perl` exist (perl makes
-   the append, its fsync and its cut-back on one descriptor), the box is Linux, and
-   `findmnt -T` on the inbox names that same manager — under a `none@…`
-   record, only a script on the record's own machine. Anything else (another
-   machine's `none@…`, a mismatched export, another box mounting the daemon's local disk, no
-   record, a bare `none`, no `flock(1)` or `perl`) hands the line to the daemon that owns the comm folder as
-   `comm.file`: this box's own daemon, else the relay endpoint (the hub). A
-   daemon that does not answer is `FAILED` and no second route is tried; one
-   older than the record answers `unknown op: comm.file`. Every daemon
-   rechecks its own manager against line 1 at each filing: a match appends
-   (never on bare `none`); a guest forwards anything else to the
-   hub, once, marked `forwarded`, and answers with the hub's own verdict;
-   the hub refuses it as `file_failed` with the recovery named — restart
-   the hub when its own machine wrote the record (a remount), else stop
-   every daemon on the folder, delete the record and start the hub.
-   On Windows, the daemon's first start moves the old frontend inbox's
-   unread lines (`fe-inbox.jsonl`) into the inboxes; lines for handles not in
-   the registry stay in `fe-inbox.jsonl.moved`.
-2. It cannot: `comm-relay.sh send @h` (which `comm-send.sh` execs on a
-   registry miss) writes ONE `comm.file` request to the relay endpoint, the
-   hub, and reads ONE answer. The hub files for its own home: when its comm
-   folder lists the handle and a session holds it, it adds the line under
-   the same inbox lock and answers `ok`. A handle its folder does not list
-   (`not_here`) it offers, as the same `comm.file` request marked
-   `forwarded`, to every daemon linked to it (a hello of role `link`), all at
-   once, and answers with theirs: the first `ok`; else the first refusal that
-   is not `not_here`, that box's own words; else `the daemon on <host> did not
-   answer within <n>s; @<h> may still be filed` for a link that gave no answer
-   in time; else `no box knows that handle: <h>`, or, when a box that should
-   hold a link to the hub (a frontend box other than the hub, by `hosts.toml`)
-   holds none, `no linked box knows that handle: <h>; not linked: <boxes>`. A
-   linked daemon answers `not_here` unless its own folder lists the handle under
-   its own box; only then does it file the offer by the rules of route 1, and it
-   never offers or forwards it again. It files each offer as it comes, so one
-   held lock delays no other answer. A request that arrived `forwarded` is not
-   offered.
+## Handles
 
-**The wait is chosen by lock kind, and bounded at 2 s (`SOT_INBOX_LOCK_WAIT_SECS`)
-on both paths.** The Linux NFSv4 client retries a blocked lock with a backoff
-that doubles from 100 ms, so a local writer re-takes the lock before a remote
-waiter's next retry and a blocking waiter can sleep past a free lock. Under
-`nfs4 …` the daemon's filer and the scripts therefore try the lock without
-blocking every 15-25 ms (jittered) until the bound; under `local …` or
-`none@…` (NLM on v3, one machine's own kernel lock) a blocked waiter is woken
-on release, so they block, bounded. Past the bound nothing is appended and the
-answer is `FAILED -> @<h>: the inbox lock for @<h> was held for 2s — nothing
-was appended`. The reader's shared lock takes the same choice for its 3 s
-bound. `test-inbox-lock-twohost.sh` counts a concurrency case as proof only
-when its content checks pass and its two writers overlap; its unpaced liveness
-case (shell here, shell on the peer and the daemon's filer, 200 each at once)
-expects 0 `FAILED`, since a send that fails under ordinary two-host load is a
-working-comms failure, and counts as proof only when its three writers overlap
-too. `test-comm-e2e-readers.sh` runs the real readers (comm-poll, the Stop
-hook and the daemon's wake) on three hosts against a scratch comm home on
-the shared mount; like the two lock tests it needs real boxes, so it runs in no
-workflow.
+A handle is 1 to 64 bytes of `A-Za-z0-9._-`, with no `..` and no leading `-`. Derived, it is
+`<folder>-<host>`: the project folder's name and the box's raw host name, each with every other byte made `-`, runs of
+`-` collapsed and clamped (the folder to 20, the host to 12, with `-<the first six hex digits of the host's SHA-256>`
+when the clamp changed it). Only when another project's root holds that name is it qualified, by the parent folder's
+name (`<folder>-<parent>-<host>`) and then by the root's hash (`<folder>-<hash6>-<host>`). Names come from the folder,
+never the task: a worktree's handle is derived from its folder like any other (the `/worktree` skill names the folder
+`<repo>-wt-<short>`).
 
-**Readers** have two guards against a line that a failed append then cuts
-back. Where a writer would append locally (`flock(1)` and `perl`, Linux,
-identity equal to line 1), the count-and-read runs under a shared lock on
-`inbox/<handle>.lock`, bounded by `SOT_INBOX_READ_WAIT_SECS` (default 3). Every
-inbox lock descriptor, a reader's or a writer's, is opened read-write: the
-Linux NFS client refuses a shared lock on one without read access.
-`comm-poll.sh` reads its batch once under the lock, lets go, shows the batch,
-and then writes the cursor from the bytes of the last line it read, never from
-the file again, so a slow display never holds off a writer. A timeout means
-try again, never a skip: `comm-poll.sh` says the inbox is being written,
-leaves the cursor and exits 75, the end-of-turn hook prints that the inbox was
-busy and does not block the turn, and a wake reader checks again on its next
-tick. The end-of-turn hook counts only with `sot_unread`, and only when jq is on
-`PATH` (without jq its tool block is its one word on it); a count that fails
-with jq present is named like a lock fault (`WARNING: the unread count for @h
-failed (…) — run comm-poll.sh to read your mail`), never read as 0. Only a held lock is "try again": any other lock fault, a lock file that
-cannot be opened or any flock error, is named (flock's code and its own error
-text) where the session sees it (comm-poll's output, every block of the
-end-of-turn hook) and the read runs unlocked, covered by the hashed cursor. On
-every host the hashed cursor steps back one line when a cut-back removed the
-last line read. The accepted residual: a reader on a
-mismatched host may deliver a line whose sender was told `FAILED`, so a retry
-can duplicate it; it can never lose one.
+## The wire
 
-Every route checks liveness before it appends, by the one rule above: a script that reads the
-receiver's entry refuses a handle that is not live itself, and the daemon's filer refuses it
-the same way, so `filed` is never printed for a handle no live session holds. The shell's
-`sot_heartbeat_fresh` and the filer's `heartbeat_fresh` are one rule, pinned by
-`heartbeat_agrees_with_the_shell`.
+Every request opens with the `hello` every client sends, and a refused hello is the answer.
 
-**The one result**, nothing else:
+- **`comm.file`** `{from, to, text, broadcast, forwarded}`: file one line. The daemon appends it under the rules above,
+  forwards it to the hub (a guest), or, as the hub, offers a handle its folder does not list to every daemon linked to
+  it (a `link`-role connection), each given the lock wait plus 1 s; the first `ok` wins, else the listing box's own
+  refusal, else a box that did not answer, else `no box knows that handle: <h>` (naming the boxes that should hold a
+  link and hold none). The answer is `{ok: true}` or `{error, code}` (`not_here`, `no_live_session`, `bad_handle`,
+  `file_failed`). A daemon older than the op answers `unknown op: comm.file`.
+- **`agent.join`** `{workspace_id, handle}`: a row's session declares its handle (the row's from then on); with an empty
+  `workspace_id` it is a question from a session outside any row, answered `ok` or `held_by_row`.
+- **`agent.send`**: the window's UI notifications, never mail; one that names a handle is refused
+  (`mail_requires_comm_file`).
 
-- `filed -> @h` (exit 0; a script's own append prints it indented).
-- `FAILED -> @h: <reason>` (exit 1), the reason being the daemon's own
-  sentence whenever there is one: `no box knows that handle: <h>`,
-  `no live session holds @h`, `not a handle: …`, a failed append; the inbox
-  lock held for 2 seconds (`the inbox lock for @h was held for 2s — nothing
-  was appended`); a daemon older than the op (`unknown op: comm.file`); a daemon that refused
-  this client's hello and answered nothing else (`hello refused: <the
-  daemon's own words>`: this host has said hello as two OS accounts, or the
-  two sides speak different protocols; a daemon older than this release
-  refuses only for the protocol and still answers the request, and that
-  answer decides); or no
-  answer at all (`the daemon did not answer at <endpoint>`, followed by the
-  transport's own stderr when it wrote any). A refusal means nothing was
-  added; with no answer nothing is known to have been. Retrying or reporting
-  is the sender's call.
+**The one result** of a send is `filed -> @h` (exit 0; indented, `  filed -> @h`, when this box's folder took it) or
+`FAILED -> @h: <reason>` (exit 1), the reason the daemon's own words where it gave any. The answer decides, never the
+transport's exit status; no answer within the lock wait plus 3 s (5 s) is `FAILED`. Nothing is queued, and no second
+route is tried.
 
-**The answer decides, whatever the transport's exit status or stderr say**:
-the transport's stderr is read only when no answer came, and then only
-lengthens the reason. No answer within 5 seconds is `FAILED` (decision 0031): the
-read window is the lock wait plus 3 seconds, 5 at the default 2 s wait, and a
-daemon gives a guest's forward or an offer to a linked daemon the lock wait plus
-1 second, so an appender that waited out the lock and then filed is not reported
-`FAILED`.
+## Waking
 
-With no daemon found at all a wire send prints
-`FAILED -> @h: no sotd daemon found; …` and exits 1. `agent.send` is not
-mail: it carries the frontend's UI notifications (`sot-nav.sh`'s nav
-envelope, the ROI echo) with an empty `to`, published to every connection as
-`agent.message`; one that names a handle is refused
-(`mail_requires_comm_file`) and nothing is published.
+The daemon running a row types one fixed line, `[sot-comm] you have mail: run comm-poll.sh`, and Enter, into a free
+prompt of an idle Claude Code row with unread mail, and never anywhere else; the contract says what a free prompt is
+and what a wake never touches. A Codex row has no wake (no Codex screen has been read). The Stop hook holds a busy turn
+until its mail is read, once per batch, through `sotd comm unread <h>`.
 
-Nothing is queued anywhere, and a failed send is not retried by another
-route. To get an answer, send, end the turn, and be woken.
+## Upgrading to 0.7.0
 
-**Waking.** Every two seconds each daemon looks at every row it runs. If the
-row's handle has unread mail and the row sits at a free prompt — the cursor
-sitting at the start of the input line marked by the prompt glyph (`❯`,
-or on Windows `❯` or `>`, the latter being Claude Code's fallback when its
-unicode check fails), followed by a no-break space, between the input box's
-two rules (on every OS; on Windows a bare glyph too, for now), so a grey
-suggestion (drawn dim) or any other dim decoration does not count as a draft, while
-a draft is not free wherever its cursor sits, and the screen down to the
-input box's lower rule (the background-agent footer below it is not watched)
-must then hold still for a second and a half before anything is typed, so a working
-session is not typed into while its screen is still changing — the daemon
-types one fixed line, `[sot-comm] you have mail: run
-comm-poll.sh`, and Enter. The daemon does this, not the frontend or the
-sender — several frontends can show one row and each would type, and a
-closed window would leave the row deaf. It types a fixed notice, never the
-message itself: a pasted message is never marked read, so it would show
-again. One line per new batch of mail; one more if it is
-still unread ten minutes later at a free prompt. A line it typed that did not
-send is sent by a later tick, with Enter alone, once main's input box holds just
-that line, whether or not the mail has been read by then (the session then finds
-nothing new); a box that holds anything else is left as it is. Within one daemon
-run the line is never typed twice; a restart forgets it, so a restarted daemon
-looks once at each row it may type into and sends Enter alone if main's input box
-holds exactly the wake line, whether or not its mail is unread; any other box is
-left as it is. A row whose registry entry
-carries a `stop_at` under a minute old is running its Stop hook and is not typed
-into: the hook stamps it as it starts, its `stop` deletes it when the turn ends,
-and the hook reads the mail itself. A turn ended by Esc or an API error runs no
-Stop, so a mark over a minute old holds nothing. A busy session needs no
-typing: its end-of-turn check will not let a turn finish while unread mail
-waits. That check reads the inbox before anything else, so a turn that closes
-with a report marker is held too, and its row is stamped only at the turn end
-that passes, from the last marker anywhere in the turn: the check's own
-held-turn notices do not start a new turn. This is the only wake — no per-session watcher, listener, bridge or
-Monitor exists.
-
-**Cases.**
-
-- A Claude or Codex row gets the same line and check; the free-prompt test
-  knows each tool's prompt.
-- A row that just restarted, compacted or cleared re-arms nothing: the
-  handle stays with the row and the count is a file.
-- A session outside any row (a bare terminal, or one on a box with no
-  daemon) has a handle and an inbox, and its end-of-turn check reads new
-  mail before a turn ends. While idle it sees mail only at its next turn,
-  and after ten idle minutes sends to it fail as "no live session".
-- A subagent that runs inside its parent's agent process uses no mail: it
-  neither sends nor reads, and it reports to its parent, which sends. On
-  Claude Code a `PreToolUse` hook on Bash (`comm-subagent-guard.sh`) enforces
-  it: the hook input carries `agent_id` only inside a subagent, and the hook
-  denies a Bash command that names a `comm-*.sh` script there; a session's own
-  input has none, so it is never refused.
-  Another agent started inside a session (`codex exec`, `claude -p`), and
-  anything it starts, has no comm identity: a process acts as a handle only if
-  at most one agent (claude or codex) lies between it and its row's capsule, or
-  the top of its process tree outside a row. A `node` process is an agent when
-  any of its arguments names one or lies in its npm package, and it counts once
-  with its native child only when that child is its direct child and its
-  arguments after the binary equal the host's after its script (on Windows, as
-  the Microsoft C runtime splits each command line, its backslash and `""`
-  rules included). Agents are named, not launchers: the list is the agents comm
-  ships an adapter for, and it grows in the commit that adds one. The check
-  reads each ancestor's full command line, and an ancestry it cannot read in
-  full (a walk past 64 processes, an unreadable /proc record, a parse that did
-  not finish, a `sotd.exe` that fails or is too old) is refused, not trusted.
-  On Windows the walk reads Cygwin's own /proc (the MSYS runtime Git for
-  Windows ships) from the script's own process up through its MSYS parents, and
-  `sotd.exe ancestors --from <pid>` above the first one whose parent is native.
-  An MSYS program that execs another is a new Windows process whose Windows
-  parent has exited, so where the native walk stops at an MSYS process, the
-  walk goes on from that process's MSYS parent. An ancestor whose parent has
-  exited with no MSYS parent to go on from, whose record cannot be opened, or
-  whose creation time is after its child's, ends the walk as the top; for a
-  process that names no row, only the 64 cap, an unreadable /proc record and
-  node.exe's unreadable command line are refused (the row rule below refuses
-  that early top for one that names a row). On Windows, and on macOS where
-  `ps` prints `(name)` for arguments it cannot read, an unreadable command
-  line is recorded as the program name with arguments unknown, which equals
-  nothing: a native agent so recorded never counts once with its node host,
-  though a standalone one is one layer, and a `node` so recorded is refused.
-  On Windows every comm script that reads mail, sends, joins or
-  stamps refuses until the installed `sotd.exe` has `ancestors --from` (an
-  older one fails, "update sotd", or prints lines that carry no pid, which is
-  an unreadable ancestry), so the scripts and `sotd.exe` ship together. A
-  refused process may neither spawn nor despawn rows (`comm-probe.sh`'s
-  included) nor run `comm-worktree-new.sh`, which refuses it before any git
-  write, and no hook of it writes anything under the comm home. An agent
-  that needs its own handle is started as its own row.
-- A process whose identity names a row acts as that row's handle only if that
-  row's capsule is one of its ancestors. The identity names row `<id>` when its
-  pinned self file is named `<host>__<id>.txt` and `<id>` is not `nopane`. When
-  no self file is pinned, it names the row `SOT_WORKSPACE_ID` gives. A capsule is
-  that row's when one of its arguments before `--` (with `\` read as `/`) ends
-  in `/workspaces/<id>` or contains `/workspaces/<id>/voyages/`. The process is
-  refused, and nothing is read, sent or stamped, when its walk ends in any of
-  three ways: at the top, at another row's capsule, or at a capsule whose
-  command line cannot be read. So for a process that names a row, two kinds of
-  early stop no longer pass: being reparented away from the row, and, on
-  Windows, a walk that stops at an ancestor it cannot open (a sandboxed agent's
-  child may be unable to open its parent even under the same account), at a
-  reused pid, or at one that has exited. So on Windows a comm script given
-  alone to `bash -c` by a native program (cmd.exe, PowerShell) inside a row is
-  refused: bash execs it, its `#!/usr/bin/env bash` execs bash again, and the
-  second image's Windows parent has exited and its Cygwin parent is pid 1,
-  so no walk reaches the row. Given to Git for Windows' bash.exe, by its path,
-  with the script as its file argument, or typed at a Git Bash prompt, it is
-  not refused (rust/backend/tests/ancestors.rs shows
-  both). Only a process that names no row may end its walk at the top,
-  which is how a session outside any row passes, including one under another
-  account's sshd. A private identity file for a process outside any row must not
-  be named `<host>__<id>.txt`.
-- A handle a row holds is read and taken only from inside that row. The row id a process carries is the one the
-  agent-layer walk proves (`sot_capsule_workspace_id`, `comm-context.sh`'s `ROW_ID`): `$SOT_WORKSPACE_ID` with no private
-  self file, or the id a row-keyed self file `<host>__<id>.txt` names; an id exported over any other private self file
-  names no row. The registry entry's `workspace_id` says which row holds the handle.
-  Reading: `sot_row_binding` is the one answer (`owner`, `other`, `unbound`, `unreadable`, by one jq over the registry's
-  bytes). `comm-context.sh` discards the handle, with `@<h> belongs to row <id>; this process carries <its id or no row
-  id>, so it is not this row's inbox`, when the entry binds another row (or any row, to a process with no row id), and
-  emits `NAME_HELD_BY=<id>`; so a stray session in the row's folder, or a process of another row, reads, sends and
-  stamps as nobody, and the Stop hook has no identity to block on. `comm-poll.sh` asks `sot_row_binding` itself and
-  reads nothing, moving no cursor, for another row's handle or an unreadable registry. An entry with no `workspace_id`
-  is unchanged.
-  Taking: a join by a process with no row id never takes a handle a daemon's row holds. Whatever the registry file
-  says, when a daemon endpoint resolves the script asks it (`agent.join` with an empty `workspace_id`,
-  `sot_outside_join_clearance`): it writes nothing and answers `held_by_row` for any row it has not seen end (a row
-  loaded from disk and not yet probed, Stopped, Unreachable, Foreign and Ending ones too; only a latched Terminal or
-  EndedNoRespawn row, or none, frees a handle), else ok. An explicit `--name` or `$SOT_COMM_NAME` is refused, `comm-join.sh:
-  REFUSING to join: @<h> is held by a row (row <id>); a session outside any row cannot join as it`. A name only
-  the self file gave is not a pin: the join steps past a held one to the session's own derived handle (`comm: @<h>
-  (named by this session's self file) is held by a row; ...`), and the self file then names that handle, so the
-  session reads the held inbox no more. A derived join asks about its three tier names before the registry lock and steps past a held tier to the session's own, with one
-  line, `comm: @<tier 1> is held by a row; a session outside any row joins as @<tier 2>`, no stranding warning and
-  no MISMATCH. The writes under the lock are held to what was cleared (`_sot_outside_cleared`): a row that binds the
-  handle between the answer and the write is refused, never overwritten. An entry bound to a row on another computer of
-  the shared home (its `host` is not this one) is held, since no local daemon can rule on it. Where the daemon gives no
-  ruling (none answering, an older one, a failed call) the registry's binding refuses: a bound entry is held, and an
-  unreadable registry refuses. `comm-leave.sh --name H` of an entry bound to another row asks the same clearance and is
-  refused where a join would be (`REFUSING to remove @H`, or FAILED for an unreadable registry): a destroyed row's
-  orphan, which the daemon does not hold, stays removable, and with no daemon answering a bound entry stays. Named
-  limit: with no daemon answering and the entry unbound or absent, a session outside any row takes the handle.
-  A join carrying a row id is unchanged: `comm-join.sh` alone passes `comm-context.sh --rebind`, honored only with a row id, so a respawned row, or a row a newer row's join displaced (M5, `agent.join`
-  moves the handle), takes it back; the displaced row's `comm-session-start.sh` says `@<h> moved to row <id>` and
-  rejoins. Two rows in one folder that derive one handle keep taking it from each other (0.6.7). A child of a row (a
-  subagent, `claude -p`, `codex exec`) is judged as before, by the agent-layer walk above. A forged id: with no private
-  self file the walk must reach that row's capsule, so a stray that exports a row's id is refused; with a private
-  self file that names no row, the exported id is no row id. Not closed: a process that writes the registry or the
-  daemon's socket by hand (one account). `comm-matrix.sh`'s runner is a session of its own, `probe-matrix-<host>`: it
-  joins from outside any row through a private self file that names no row, reads only its own inbox, sends as itself
-  and leaves at exit, so it needs no row's identity.
-- What the check does not see: for a process that names no row, an agent above
-  a reparenting, or on Windows above an ancestor that has exited with no MSYS
-  parent to go on from (a process of another MSYS or Cygwin installation is not
-  in this one's /proc), cannot be opened, or was created after its child; an
-  agent whose name is not in the list; a macOS agent whose argv[0] contains a
-  space; on macOS, an agent whose arguments `ps` cannot read and whose program
-  file is not named after it; and a shim that starts `node` under the agent's
-  own name (a
-  volta-style shim), which may be refused instead. On macOS a capsule binary
-  installed under a path that holds a space is not recognised (`ps` splits its
-  argv[0]), and a state path holding a standalone `--` word ends the argument
-  scan early; either way a process naming its row is refused there. An argument
-  whose state root itself lies inside another row's voyages folder (a path
-  holding `/workspaces/<id>/voyages/` before its own) matches that row too. On
-  macOS the walk reads `ps`, which folds runs of white space, so a native agent
-  started directly by its node host with arguments that differ only in white
-  space counts as one layer with it; exact argv on macOS comes after 0.6.6. An
-  argument that itself contains the record's marker bytes (\x1f, \x1e, \x1c,
-  \x1b) reads as a separator, an unknown marker or an encoded newline or
-  return. On Windows an unpaired UTF-16 surrogate in a command line reads as
-  U+FFFD. On Linux a process whose whole command line is exactly `!end` ends
-  the walk as if it were the top. Nor does the check see a subagent: a
-  subagent's shell has its session's ancestry, so the check takes it for the
-  session. That a subagent neither sends nor reads is enforced for Claude Code
-  by the hook above, which reads `agent_id` from the hook input; Codex has no
-  such hook, so there the rule is an instruction only.
-
-## Dependencies
-
-The shell client needs `jq` (every path that reads or writes a frame) and, on
-Linux, `flock` and `perl` (the inbox lock and the whole-line append). A session
-whose tool is missing would never see its mail, so each path that reads mail
-checks the tools it runs before first use and says so, naming the tool:
-`comm-poll.sh` prints the line on stdout and exits 1; `comm-session-start.sh`
-prints it and exits 1; the Stop hook blocks once per episode with it as the
-reason, prefixes every later block with it, and clears it on the first turn end
-with the tools present. The client's request builders (`sot_hello_frame`,
-`sot_pty_input`, `sot_pty_screen`), the registry reader, `comm-join.sh` and
-`comm-relay.sh` check jq the same way and name it on stderr before any write or
-connection; `comm-relay.sh send` says it as `FAILED -> @<to>: ...`.
-
-## Upgrading to 0.6.6
-
-Once 0.6.6 is installed, bridge loops started by earlier versions stop working:
-`comm-relay.sh bridge` is retired. A loop tied to a session ends with that
-session, and an untied one sleeps idle until the next reboot. No action is
-needed. The install also removes the comm scripts a release no longer ships
-(`comm-listen.sh`, `bus.sh`, and any later retirement), by exact name, from
-the list it recorded in `bin/.sot-comm-installed`. A commit that retires a
-bin script first checks every shipped version for a running loop that
-re-execs it; if one exists, the name stays shipped as a stub that logs once
-and then sleeps, and only otherwise is the file deleted.
-
-## Verbs (reference client = `bin/*.sh`)
-
-| Verb        | Script           | Notes |
-|-------------|------------------|-------|
-| join        | `comm-join.sh`   | **Superseded by ADR 0049, removed in B6** — the handle is derived (folder plus box name), not chosen by flag. `--name <n>` `--expertise "a, b"`; writes registry + self file. Refuses (exit 3) when the self-file slot is already claimed for a DIFFERENT project — the slot is keyed by the workspace row in the environment while the identity comes from the shell's cwd, and a row that comes to name another project's session reads that session's mail. `--repin` is the deliberate override |
-| audit slots | `comm-self-audit.sh` | compares each workspace-keyed slot's key against the `repo=` it carries; reports the ones naming a different project (exit 1), passes a suffixed or path-disambiguated name |
-| send        | `comm-send.sh`   | `@name 'msg'`, `@name --file <path \| ->` (the body is the file's bytes, read whole, and never argv on a local send) or `--broadcast 'msg'`; recipient is only the first positional `@arg`, so the message may itself begin with `@`. **Either verb routes**: a directed target this box's registry names is filed by route 1 of Delivery (`comm-relay.sh send` execs here), and one it cannot name goes to the hub as `comm.file` (this execs `comm-relay.sh send`). The triggers are mutually exclusive, so a session never has to know which verb reaches a peer |
-| poll        | `comm-poll.sh`   | shows the inbox lines past the read cursor, then advances it; a busy inbox exits 75 (try again) |
-| list        | `comm-list.sh`   | all agents + live/stale + (me) marker |
-| leave       | `comm-leave.sh`  | removes self from registry; `--name <handle>` removes an orphan row (registry only — `comm-despawn.sh` is full teardown), refused for a row's handle the daemon holds |
-
-## Naming — everything derives from the repo
-
-One rule, enforced where possible: **names come from the repo, never from the
-task**. A task-named anything is unfindable next to its repo-named siblings
-(a spawn labeled `edge-classify` hid the MyPackage agent, 2026-06-12).
-
-| Thing | Convention | Example |
-|-------|-----------|---------|
-| Durable BE peer handle | `<repo-lowercase>-<host>` | `myrepo-myhost` (Ship of Tools on the backend host), `lldevtools-myhost` |
-| Spawned agent — repo checkout | `<repo-lowercase>` (bare, **no** descriptor) — **superseded by ADR 0049, removed in B6:** the handle also carries the box name | `myrepo` |
-| Spawned agent — git **worktree** | `<repo>-wt-<shortname>` (the `-wt-` infix is reserved for worktrees and groups them next to the parent; `<shortname>` names the WORKTREE, never the task). Created via the `/worktree` skill — **superseded by ADR 0049, removed in B6:** the handle also carries the box name | `MyAnalysis-wt-rotation` (worktree `rotation`) |
-| Frontend address | `fe@<host>` — the frontend PROCESS's declared hello `name`, the target `sot-fe --fe <host>` scopes a directed `fe.command`/`open-url` to (two frontends on one box differ by `instance`); the frontend is a client, never a comm peer, and no session derives or joins as this name | `fe@laptop` |
-| Workspace label | repo basename (comm-spawn default; task-named labels are **rejected**) | `MyPackage` |
-| Workspace slug (the row's name) | derived from the label by the daemon | `mypackage` |
-| Second session on one repo | a git worktree (`comm-worktree-new.sh`); `comm-spawn.sh` refuses a root that already has a workspace | `MyPackage-wt-rotation` |
-
-A bare `<repo-lowercase>` handle is the default for a normal repo checkout. For a
-**git worktree**, use `<repo>-wt-<shortname>` — the `-wt-` infix is reserved for
-worktrees (so they read as worktrees at a glance and the shared `<repo>-` prefix
-groups them next to the parent in the sessions list), and `<shortname>` names the
-worktree, never the task. Don't hand-roll it: the **`/worktree`** skill
-(`comm-worktree-new.sh`) creates the worktree at
-`<repo-parent>/worktrees/<repo>-wt-<shortname>` on branch `wt/<shortname>` and
-spawns the session with that handle+label, so the slug groups it correctly. (Today the
-worktree handle carries no box name and the parent is found by repo family —
-**superseded by ADR 0049, removed in B6:** every handle carries the box name.) Never a suffix on a plain repo open, and never a task
-name (`repo-fix` for a direct checkout was wrong on both counts: a
-task-ish descriptor AND a shortened base; the right handle was
-`myrepo`).
-
-Task identity lives in `--task` / `--expertise` / the message body. Never reuse
-a handle that has a registry row, even a stale-looking one — the owner may be
-alive with a lagging heartbeat, and a collision makes two sessions execute the
-same briefs in parallel.
-
-## Conventions carried over from agent-comm (keep these)
-
-- **Domain-expertise rule:** state your goal or the problem; suggest a fix if you
-  have one, but don't dictate the other session's implementation.
-- **Anti-groupthink tags:** `[design]` `[question]` `[breaks]` `[challenge]`
-  `[consensus]`. No `[consensus]` without a prior `[breaks]` in the thread.
+Nothing on disk changes: a 0.6.6 script and `sotd comm` read and write the same files, and a hub and a linked box on
+the two versions carry each other's mail. The install publishes the shell library first and the wrappers after it; for
+the seconds between, an old script that loads the new library, or the reverse, fails with `FAILED` or an error, never
+`filed`. The scripts 0.7.0 no longer ships (`comm-self-audit.sh`, `comm-registry-lock-clear.sh`) are removed by name from
+the list the last install recorded; `comm-relay.sh bridge`, which pre-0.6.6 loops re-run, stays a sleeping stub.
 
 ## Versioning
 
-`protocol_version` is stamped into the registry on creation and checked on
-`join`. A mismatch warns loudly (no quiet degradation) and means a machine needs
-`ShipTools.update_comm()`. Bump this integer on any breaking change to the schema,
-frame, or delivery semantics.
+`protocol_version` is stamped into a new registry and checked at a join: a mismatch warns loudly. It rises with any
+breaking change to the schema, the line, the cursor or delivery, and with it the contract's install step.
+
+## Conventions carried over from agent-comm
+
+- **Domain-expertise rule:** state your goal or the problem; suggest a fix if you have one, but don't dictate the
+  other session's implementation.
+- **Anti-groupthink tags:** `[design]` `[question]` `[breaks]` `[challenge]` `[consensus]`. No `[consensus]` without a
+  prior `[breaks]` in the thread.

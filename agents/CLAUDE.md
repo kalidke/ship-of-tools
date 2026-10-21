@@ -62,7 +62,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`,
 `sot_dial`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot-fe preview`, `docs/tools/docs-media.sh`. Uses:
 `sot_hello_frame`, `comm/lib/comm-lib-client.sh`, `sot_ssh_bridge`, `_sot_is_plain_host_name`, `sot_slug`,
-`comm/lib/comm-lib-identity.sh`, `SshRecipe`, `is_plain_host_name`, `slug`, `sotd stdio-bridge`, `sotd topology relay-endpoint`,
+`comm/lib/comm-lib-sotd.sh`, `SshRecipe`, `is_plain_host_name`, `slug`, `sotd stdio-bridge`, `sotd topology relay-endpoint`,
 `relay_endpoint_cmd`, `_sot_planned_relay_endpoint`, `version.query`,
 `workspace.create`,
 `workspace.destroy`, `workspace.list`, `workspace.reauth`, `pty.input`, `pty.screen`, `workspace.changed`, `sot_host`,

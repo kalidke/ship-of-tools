@@ -1,14 +1,12 @@
 #![cfg(target_os = "linux")]
-//! The inbox lock (0031 B1) across the two writers that take it: the
-//! daemon's filer (`comm_inbox::file_frame`, included by path because this
-//! crate is a binary) and the scripts' `sot_inbox_append` (`comm-lib.sh`).
-//! Both are `flock(2)` on the same sidecar, so a mixed run is the proof they
-//! take the SAME lock, not two that merely look alike.
+//! The inbox lock (0031 B1) across the processes that take it: the daemon's
+//! filer (`comm_inbox::file_frame`, included by path because this crate is a
+//! binary) and `sotd comm send` in a process of its own, which appends with
+//! the same code when it takes the folder's lock itself. Both are `flock(2)`
+//! on the same sidecar, so a mixed run is the proof that two processes take
+//! the SAME lock.
 //!
-//! The `#[ignore]`d cases are driven by `comm/tests/
-//! test-inbox-lock-twohost.sh` against the directory named in
-//! `SOT_TEST_INBOX_DIR` — a folder on the shared home, which is where
-//! in-process and cross-box exclusion have to be proved rather than assumed.
+//! Two boxes on one shared folder are `comm/tests/interop-066.sh`'s, run by hand on build hosts.
 
 #[path = "../src/comm/mail/inbox.rs"]
 #[allow(dead_code)] // the forward's sentence is the binary's alone
@@ -26,14 +24,7 @@ use support::{call, connect_and_hello, Env, BOUND};
 
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-use comm_inbox::{
-    create_lock_record, file_frame, inbox_lock_wait, lock_identity, machine_id, record_at_start, route, AtStart, Role, Route,
-    LOCK_RECORD,
-};
-
-fn comm_lib() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm/lib/comm-lib.sh")
-}
+use comm_inbox::{create_lock_record, file_frame, lock_identity, machine_id};
 
 /// Every line one JSON object, LF-terminated; returns each line's `msg`.
 fn whole_lines(p: &Path) -> Vec<String> {
@@ -92,70 +83,69 @@ fn stopped(pid: u32) -> bool {
     state == Some("T")
 }
 
-/// Sourced after `comm-lib.sh`: the script arm's daemon is one that is not
-/// there, so no case can reach a live daemon (with `SOT_SOCKET` removed).
-const NO_DAEMON: &str = r#"sot_daemon_endpoint() { printf 'unix:/nonexistent/sot-test.sock'; }"#;
-
-/// `sot_inbox_lock_identity DIR` from the script arm.
-fn script_identity(dir: &Path) -> String {
-    let ran = sot_log::test_wait::run_within(
-        Command::new("bash")
-            .arg("-c")
-            .arg(format!(r#"source "$1"; {NO_DAEMON}; sot_inbox_lock_identity "$2""#))
-            .args(["_", comm_lib().to_str().unwrap(), dir.to_str().unwrap()])
-            .env_remove("SOT_SOCKET"),
-        BOUND,
-    )
-    .ok();
-    ran.stdout.trim_end().to_string()
+/// `sotd comm send @<to> <text>` from a session `from` outside any row, whose self file and entry are in `home`'s
+/// comm folder `<home>/comm`, run in `project`; no daemon, no topology.
+fn sotd_send(home: &Path, project: &Path, from: &str, to: &str, text: &str) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_sotd"));
+    c.args(["comm", "send", &format!("@{to}"), text])
+        .current_dir(project)
+        .env("SOT_COMM_HOME", home.join("comm"))
+        .env("SOT_COMM_SELF_FILE", home.join(format!("self-{from}.txt")))
+        .env("SOT_SELF_HOST", "box1")
+        .env("SOT_SOCKET", home.join("no-daemon.sock"))
+        .env("SOT_HOSTS", home.join("no-hosts.toml"))
+        .env("SOT_INBOX_LOCK_WAIT_SECS", "60")
+        .env_remove("SOT_WORKSPACE_ID")
+        .env_remove("SOT_COMM_NAME");
+    c
 }
 
-// Identity parity on the real mounts: the daemon's mountinfo walk and the
-// script's `findmnt -T` name the same lock manager for the same folders.
-#[test]
-fn the_filer_and_the_script_name_the_same_lock_manager() {
-    let d = inbox_home();
-    let dirs = [d.path().join("inbox"), PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from("/")];
-    for dir in &dirs {
-        assert_eq!(lock_identity(dir), script_identity(dir), "{}", dir.display());
+/// A comm folder under `home` whose inbox lock record names this machine's own lock manager (so `sotd comm send`
+/// appends itself), a live recipient `to`, and a joined sender `from` rooted at `project`.
+fn sending_home(home: &Path, project: &Path, from: &str, to: &str) {
+    let comm = home.join("comm");
+    std::fs::create_dir_all(comm.join("inbox")).unwrap();
+    for d in ["self", "read"] {
+        std::fs::create_dir_all(comm.join(d)).unwrap();
     }
+    let id = lock_identity(&comm.join("inbox"));
+    assert_ne!(id, "none", "this test needs a folder whose lock manager is provable");
+    create_lock_record(&comm, &id, machine_id().as_deref()).unwrap();
+    let root = std::fs::canonicalize(project).unwrap().to_string_lossy().into_owned();
+    // A stamp no clock reaches is fresh to every reader: the entries are live for the whole run.
+    let now = "2999-01-01T00:00:00Z";
+    let reg = serde_json::json!({"protocol_version": 1, "agents": {
+        from: {"host": "box1", "workspace_id": "", "root": root, "last_seen": now},
+        to: {"host": "box1", "workspace_id": "", "root": "/elsewhere", "last_seen": now},
+    }});
+    std::fs::write(comm.join("registry.json"), reg.to_string()).unwrap();
+    std::fs::write(home.join(format!("self-{from}.txt")), format!("{from}\nrepo=r\nroot={root}\n")).unwrap();
 }
 
-// T3 (mixed) — the filer and `sot_inbox_append` on one inbox at once. The
-// record comes from the daemon's own writer; a script appends locally only
-// when it computes the same identity, so this is parity on a real mount too.
-// It proves exclusion, not the wait: a loaded runner can stall one append's
-// sync past the 2 s default, so both arms wait 60 s; the frozen-holder tests
-// own the expiry.
+// T3 (mixed) — the filer in this process and `sotd comm send` in processes of their own on one inbox at once: 400
+// whole lines, none lost or doubled. It proves exclusion, not the wait: a loaded runner can stall one append's sync
+// past the 2 s default, so both arms wait 60 s; the frozen-holder tests own the expiry.
 #[test]
-fn the_filer_and_the_script_take_the_same_lock() {
+fn the_filer_and_sotd_comm_send_take_the_same_lock() {
     let d = inbox_home();
-    let inbox = d.path().join("inbox");
+    let project = d.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    sending_home(d.path(), &project, "sh", "t3");
+    let inbox = d.path().join("comm/inbox");
     let id = lock_identity(&inbox);
-    create_lock_record(d.path(), &id, machine_id().as_deref()).unwrap();
-    assert_ne!(id, "none", "this test needs a folder whose lock manager is provable");
-    let script = {
-        let home = d.path().to_path_buf();
+    let senders = {
+        let (home, project) = (d.path().to_path_buf(), project.clone());
         std::thread::spawn(move || {
-            sot_log::test_wait::run_within(
-                Command::new("bash")
-                    .arg("-c")
-                    .arg(format!(r#"source "$1"; {NO_DAEMON}; for i in $(seq 0 199); do
-                        printf '{{"from":"sh","to":"t3","repo":"r","msg":"sh-%s","ts":"t"}}\n' "$i" \
-                          | sot_inbox_append t3 >/dev/null || exit 1; done"#))
-                    .args(["_", comm_lib().to_str().unwrap()])
-                    .env_remove("SOT_SOCKET")
-                    .env("SOT_COMM_HOME", &home)
-                    .env("SOT_INBOX_LOCK_WAIT_SECS", "60"),
-                BOUND,
-            )
-            .ok();
+            for i in 0..200 {
+                let ran = sot_log::test_wait::run_within(&mut sotd_send(&home, &project, "sh", "t3", &format!("sh-{i}")), BOUND);
+                assert!(ran.status.success() && ran.stdout.contains("filed -> @t3"), "{ran}");
+            }
         })
     };
     for i in 0..200 {
-        file_frame(&inbox, "rust", "t3", false, &format!("rust-{i}"), "t", Duration::from_secs(60), "local t").unwrap();
+        file_frame(&inbox, "rust", "t3", false, &format!("rust-{i}"), "t", Duration::from_secs(60), &id).unwrap();
     }
-    script.join().unwrap();
+    senders.join().unwrap();
     assert_distinct(&whole_lines(&inbox.join("t3.jsonl")), 400);
 }
 
@@ -237,132 +227,10 @@ fn a_write_cut_short_by_the_file_size_limit_leaves_the_file_byte_identical() {
 #[test]
 #[ignore = "run by a_write_cut_short_by_the_file_size_limit_leaves_the_file_byte_identical"]
 fn fsize_child_files_one() {
-    match file_frame(&env_dir(), "rust", "z", false, &"y".repeat(200), "t", Duration::from_secs(1), "local t") {
+    let dir = PathBuf::from(std::env::var_os("SOT_TEST_INBOX_DIR").expect("SOT_TEST_INBOX_DIR"));
+    match file_frame(&dir, "rust", "z", false, &"y".repeat(200), "t", Duration::from_secs(1), "local t") {
         Ok(()) => println!("filed"),
         Err(e) => println!("FAILED {e}"),
-    }
-}
-
-fn env_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("SOT_TEST_INBOX_DIR").expect("SOT_TEST_INBOX_DIR"))
-}
-
-// T3 on the shared home — two threads of ONE process: flock on a network
-// mount is emulated, so in-process exclusion there is a fact to prove. The
-// wait is 60 s, as in the mixed case: exclusion, not the wait; (a3) of the
-// driver keeps the default's liveness.
-#[test]
-#[ignore = "driven by test-inbox-lock-twohost.sh"]
-fn two_threads_on_the_env_dir() {
-    let inbox = env_dir();
-    let threads: Vec<_> = ["a", "b"]
-        .into_iter()
-        .map(|w| {
-            let inbox = inbox.clone();
-            std::thread::spawn(move || {
-                for i in 0..200 {
-                    file_frame(&inbox, w, "t3", false, &format!("{w}-{i}"), "t", Duration::from_secs(60), &lock_identity(&inbox)).unwrap();
-                }
-            })
-        })
-        .collect();
-    for t in threads {
-        t.join().unwrap();
-    }
-    assert_distinct(&whole_lines(&inbox.join("t3.jsonl")), 400);
-}
-
-// T11 (a) — the Rust side of a two-box run: 200 lines, one verdict each,
-// started together with the other side: `rust.ready` says this side is up,
-// and the driver's `go`, created on this box, releases it.
-#[test]
-#[ignore = "driven by test-inbox-lock-twohost.sh"]
-fn t11_rust_appends_200() {
-    let inbox = env_dir();
-    std::fs::write(inbox.join("rust.ready"), "").unwrap();
-    let t0 = Instant::now();
-    while !inbox.join("go").exists() {
-        assert!(t0.elapsed() < Duration::from_secs(120), "no go from the driver");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    for i in 0..200 {
-        let msg = format!("rust-{i}");
-        match file_frame(&inbox, "rust", "t11", false, &msg, "t", inbox_lock_wait(), &lock_identity(&inbox)) {
-            Ok(()) => println!("filed {msg}"),
-            Err(e) => println!("FAILED {msg}: {e}"),
-        }
-        // Paced near the shell arm's fork-per-line rate, so the two sides
-        // overlap instead of this one finishing before the other starts.
-        // A remote waiter's NFS lock retries back off from ~100 ms, so a burst shorter than that can finish before the other host gets one turn and the case would prove no concurrency.
-        // The unpaced liveness case sets SOT_T11_PACE_MS=0.
-        let pace = std::env::var("SOT_T11_PACE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(25);
-        std::thread::sleep(Duration::from_millis(pace));
-    }
-}
-
-// T11 — the record the hub writes at startup, into the driver's comm folder
-// (the parent of `SOT_TEST_INBOX_DIR`): this box is that folder's hub.
-#[test]
-#[ignore = "driven by test-inbox-lock-twohost.sh"]
-fn t11_write_lock_record() {
-    std::fs::create_dir_all(env_dir()).unwrap();
-    let id = lock_identity(&env_dir());
-    let (role, did) = record_at_start(env_dir().parent().unwrap(), true, &id, machine_id().as_deref()).unwrap();
-    assert_eq!((role, did), (Role::Hub, AtStart::Create));
-    println!("record {id}");
-}
-
-// The one-host case (test-inbox-lock-onehost.sh), the daemon's shape: four
-// filer threads in ONE process on the machine the record binds, 50 long lines
-// each, once its route says this machine files locally.
-#[test]
-#[ignore = "driven by test-inbox-lock-onehost.sh"]
-fn onehost_four_filer_threads() {
-    let inbox = env_dir();
-    let home = inbox.parent().unwrap().to_path_buf();
-    let record = std::fs::read_to_string(home.join(LOCK_RECORD)).ok();
-    let own = lock_identity(&inbox);
-    let r = route(Role::Hub, &own, machine_id().as_deref(), record.as_deref(), false, "onehost", &home.join(LOCK_RECORD));
-    println!("route {own}: {r:?}");
-    assert_eq!(r, Route::Local);
-    let t0 = Instant::now();
-    while !inbox.join("go").exists() {
-        assert!(t0.elapsed() < Duration::from_secs(120), "no go from the driver");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let pad = "x".repeat(2048);
-    let threads: Vec<_> = (0..4)
-        .map(|t| {
-            let (inbox, pad) = (inbox.clone(), pad.clone());
-            std::thread::spawn(move || {
-                for i in 0..50 {
-                    let key = format!("rust{t}-{i}");
-                    match file_frame(&inbox, &format!("rust{t}"), "t1h", false, &format!("{key} {pad}"), "t", inbox_lock_wait(), &lock_identity(&inbox)) {
-                        Ok(()) => println!("filed {key}"),
-                        Err(e) => println!("FAILED {key}: {e}"),
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            })
-        })
-        .collect();
-    for t in threads {
-        t.join().unwrap();
-    }
-}
-
-// T11 (b), (c) — one send, its verdict and how long it took.
-#[test]
-#[ignore = "driven by test-inbox-lock-twohost.sh"]
-fn t11_rust_sends_one() {
-    let inbox = env_dir();
-    let msg = format!("rust-one-{}", std::process::id());
-    let t0 = Instant::now();
-    let r = file_frame(&inbox, "rust", "t11", false, &msg, "t", inbox_lock_wait(), &lock_identity(&inbox));
-    let ms = t0.elapsed().as_millis();
-    match r {
-        Ok(()) => println!("filed {msg} after {ms}ms"),
-        Err(e) => println!("FAILED {msg}: {e} after {ms}ms"),
     }
 }
 
@@ -388,6 +256,8 @@ fn join_in_row(env: &Env, ws: &str, handle: &str, raw: &str, declared: &str) {
             .arg(handle)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            // The wrapper runs this build's sotd, never one an install put on PATH.
+            .env("SOTD_BIN", env!("CARGO_BIN_EXE_sotd"))
             .env("HOME", &env.home_root)
             .env("SOT_COMM_HOME", &env.comm_root)
             .env("SOT_COMM_TEST_HOST", raw)

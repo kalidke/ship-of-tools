@@ -14,10 +14,8 @@ _sot_is_windows() {
     return 1
 }
 
-PROTOCOL_VERSION=1
-
-# The one comm-folder rule; the daemon spells it as `sot_comm_home` (rust/backend/src/comm/mod.rs), taking a relative
-# path against its own cwd.
+# The one comm-folder rule, as `sotd comm` reads it (rust/backend/src/comm/mod.rs, `sot_comm_home`), for the scripts
+# that name a file in it (a spawn's new inbox, a recovery line).
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 # Absolute, and exported so, so a later cd or an exported CDPATH cannot make two commands, or a script and its
 # children, mean two folders.
@@ -26,8 +24,6 @@ REGISTRY="$COMM_HOME/registry.json"
 INBOX_DIR="$COMM_HOME/inbox"
 SELF_DIR="$COMM_HOME/self"
 READ_DIR="$COMM_HOME/read"
-# The registry lock (see with_lock): a FILE naming its holder.
-_SOT_REG_LOCK="$COMM_HOME/.registry.lock"
 # Everything a comm script makes is its user's alone (ADR 0049, User isolation).
 umask 077
 # Every shell that loads this library arms its cleanup traps here, before it holds anything (cleanup traps, below).
@@ -40,23 +36,10 @@ now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 sot_epoch() { date -u -d "$1" +%s 2>/dev/null || LC_ALL=C date -u -j -f %Y-%m-%dT%H:%M:%SZ "$1" +%s 2>/dev/null; }
 sot_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
-# sot_mail_tools — the tools every path that reads mail runs, one line: jq
-# parses every frame; flock and perl are the inbox's read and write lock,
-# Linux only; before bash 5 (macOS's 3.2), perl's Time::HiRes is the registry
-# lock's clock. Poll, session start and the Stop hook all take their list here.
-sot_mail_tools() {
-    local t=jq
-    [ "$(uname -s 2>/dev/null)" != Linux ] || t="jq flock perl"
-    [ "${BASH_VERSINFO[0]}" -ge 5 ] || t="$t Time::HiRes"
-    echo "$t"
-}
-
 # sot_require_tools PATH_NAME TOOL... — say, on stderr, one line per TOOL that
 # is not on PATH (a TOOL with `::` is a perl module perl cannot load), and
-# return nonzero if any is missing. A session whose jq,
-# flock or perl is missing never sees its mail and used to be told nothing:
-# each path that reads mail (comm-poll, session start, the Stop hook) checks
-# the tools IT runs before first use and shows this line to the session.
+# return nonzero if any is missing: a script checks the tools it runs before
+# first use and shows this line where its caller sees it.
 sot_require_tools() {
     local path_name="$1" t rc=0
     shift
@@ -177,11 +160,6 @@ sot_jq() {
     return "${PIPESTATUS[0]}"
 }
 
-# How old a heartbeat may be and still count as live: the one
-# number, which `sot_heartbeat_fresh` applies here and the daemon's filer
-# (`LIVE_SECS`, rust/backend/src/comm/mail/filer.rs) applies to the same stamp.
-COMM_LIVE_SECS=600
-
 # --- free text and jq ---
 #
 # When a NATIVE jq.exe runs under git-bash, MSYS2 rewrites every argv element that starts with "/" into a Windows
@@ -191,27 +169,8 @@ COMM_LIVE_SECS=600
 # ever a `--arg` value: free text reaches jq on stdin. One value is jq's raw input,
 # `printf '%s' "$v" | jq -Rs ...` with the value as `.`. Several are a stream of JSON texts (`sot_json_escape` for
 # each free-text value, an object already built as itself) read with `jq -n` and `input`, one `input` per value in
-# stream order, so a value missing from the stream is jq's error, never a null or the next value in its place. A
-# value the registry write needs goes after the registry, `registry_replace --text`. Never a temporary file: a file
-# outlives a caller that fails or is killed before its `rm`.
-#
-# sot_jq_rawfile VALUE — VALUE in a fresh temporary file, its path printed, for `jq --rawfile`; the caller removes
-# the file. No script of this release calls it. It stays because an install publishes this library before the
-# scripts, and the previous release's scripts call it (comm/lib/CLAUDE.md, Rules).
-sot_jq_rawfile() {
-    local f
-    f="$(mktemp "${TMPDIR:-/tmp}/sot-comm-jq.XXXXXX" 2>/dev/null)" || {
-        echo "sot_jq_rawfile: could not create a temp file for a jq --rawfile value" >&2
-        return 1
-    }
-    if ! printf '%s' "$1" > "$f" 2>/dev/null; then
-        echo "sot_jq_rawfile: write to temp file '$f' failed" >&2
-        rm -f "${f:?}" 2>/dev/null
-        return 1
-    fi
-    printf '%s' "$f"
-}
-
+# stream order, so a value missing from the stream is jq's error, never a null or the next value in its place. Never
+# a temporary file: a file outlives a caller that fails or is killed before its `rm`.
 # --- cleanup traps ---
 #
 # A cleanup trap is an EXIT trap that removes or undoes what its shell holds. Its body starts `trap "" HUP INT TERM`,

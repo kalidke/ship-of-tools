@@ -53,7 +53,10 @@ printf '\r\n'
 /// 0.2 s with a counter.
 ///
 /// More control files, in `ctl` (the daemon's `SOT_TEST_WAKE_MARKS` is `ctl/marks`): `suggest` draws a dim
-/// suggestion after the prompt's NBSP; `panel` draws a leader agents panel (`● main`, `◯ worker`, the
+/// suggestion after the prompt's NBSP; `draft`, `draft-home`, `draft-wrap` and `draft-nl` (their content the text)
+/// draw a person's unsent text in the box, not dim: the cursor after it, the cursor moved back to its start, the text
+/// wrapped onto a second row (`and push every branch`) with the cursor at its end, and a newline after it with the
+/// cursor on the empty second row; `clear-draft` then redraws the box empty, as a person's send or clear leaves it; `panel` draws a leader agents panel (`● main`, `◯ worker`, the
 /// `← for agents` hint) under the lower rule in place of the footer, which reads free; with `panel`, `focus-hold`
 /// redraws it focused (`❯ ● main`, the hint gone) once the daemon's hold has begun (`marks/hold`), and
 /// `focus-after` does the same once its final check has passed (`marks/final-ok`) and then leaves the cursor on
@@ -80,10 +83,18 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &
            sug=''; [ -f '{ctl}/suggest' ] && sug=$(printf '\\033[2mtry something\\033[22m')\n\
            if [ -f '{ctl}/panel' ]; then\n\
              printf '%s\\033[K\\n\\342\\235\\257\\302\\240%s\\033[K\\n%s\\033[K\\n  \\342\\227\\217 main\\033[K\\n  \\342\\227\\257 worker\\033[K\\n  \\342\\217\\265\\342\\217\\265 auto mode on \\302\\267 \\342\\206\\220 for agents\\033[K\\033[4A\\033[3G' \"$rule\" \"$sug\" \"$rule\"\n\
+           elif [ -f '{ctl}/draft' ]; then\n\
+             d=$(cat '{ctl}/draft'); printf '%s\\033[K\\n\\342\\235\\257\\302\\240%s\\033[K\\n%s\\033[K\\n footer 0\\033[K\\033[2A\\033[%dG' \"$rule\" \"$d\" \"$rule\" $((3 + ${{#d}}))\n\
+           elif [ -f '{ctl}/draft-home' ]; then\n\
+             d=$(cat '{ctl}/draft-home'); printf '%s\\033[K\\n\\342\\235\\257\\302\\240%s\\033[K\\n%s\\033[K\\n footer 0\\033[K\\033[2A\\033[3G' \"$rule\" \"$d\" \"$rule\"\n\
+           elif [ -f '{ctl}/draft-wrap' ]; then\n\
+             d=$(cat '{ctl}/draft-wrap'); printf '%s\\033[K\\n\\342\\235\\257\\302\\240%s\\033[K\\n  and push every branch\\033[K\\n%s\\033[K\\n footer 0\\033[K\\033[2A\\033[24G' \"$rule\" \"$d\" \"$rule\"\n\
+           elif [ -f '{ctl}/draft-nl' ]; then\n\
+             d=$(cat '{ctl}/draft-nl'); printf '%s\\033[K\\n\\342\\235\\257\\302\\240%s\\033[K\\n\\033[K\\n%s\\033[K\\n footer 0\\033[K\\033[2A\\033[3G' \"$rule\" \"$d\" \"$rule\"\n\
            else\n\
              printf '%s\\033[K\\n\\342\\235\\257\\302\\240%s\\033[K\\n%s\\033[K\\n footer 0\\033[K\\033[2A\\033[3G' \"$rule\" \"$sug\" \"$rule\"\n\
            fi\n\
-           ( n=0; fh=0; fa=0; while :; do n=$((n+1)); if [ -f '{spin}' ]; then printf '\\0337\\033[2A\\r spinner %d\\033[K\\0338' $n; fi; if [ -f '{foot}' ]; then printf '\\0337\\033[2B\\r footer %d\\033[K\\0338' $n; fi; if [ -f '{ctl}/panel' ]; then if [ $fh = 0 ] && [ -f '{ctl}/marks/hold' ] && [ -f '{ctl}/focus-hold' ]; then fh=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338'; : > '{ctl}/marks/focus-moved'; fi; if [ $fa = 0 ] && [ -f '{ctl}/marks/final-ok' ] && [ -f '{ctl}/focus-after' ]; then fa=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338\\033[2B\\r'; : > '{ctl}/marks/focus-moved'; fi; fi; sleep 0.2; done ) &\n\
+           ( n=0; fh=0; fa=0; dc=0; while :; do n=$((n+1)); if [ $dc = 0 ] && [ -f '{ctl}/clear-draft' ]; then dc=1; if [ -f '{ctl}/draft-wrap' ] || [ -f '{ctl}/draft-nl' ]; then printf '\\r\\033[M\\033[1A'; fi; printf '\\r\\342\\235\\257\\302\\240\\033[K\\033[3G'; fi; if [ -f '{spin}' ]; then printf '\\0337\\033[2A\\r spinner %d\\033[K\\0338' $n; fi; if [ -f '{foot}' ]; then printf '\\0337\\033[2B\\r footer %d\\033[K\\0338' $n; fi; if [ -f '{ctl}/panel' ]; then if [ $fh = 0 ] && [ -f '{ctl}/marks/hold' ] && [ -f '{ctl}/focus-hold' ]; then fh=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338'; : > '{ctl}/marks/focus-moved'; fi; if [ $fa = 0 ] && [ -f '{ctl}/marks/final-ok' ] && [ -f '{ctl}/focus-after' ]; then fa=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338\\033[2B\\r'; : > '{ctl}/marks/focus-moved'; fi; fi; sleep 0.2; done ) &\n\
            spid=$!\n\
            if [ -f '{ctl}/echo-after' ]; then w=''; [ -f '{ctl}/focus-after' ] && w='{ctl}/marks/focus-moved'; bash '{slow}' \"$(cat '{ctl}/echo-after')\" '{ctl}/line' \"$w\"; line=$(cat '{ctl}/line'); else IFS= read -r line; fi\n\
            kill $spid\n\
@@ -277,6 +288,62 @@ async fn a_row_in_a_dialog_is_not_typed_into_until_it_closes() {
     std::fs::remove_file(&row.dialog).unwrap();
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?} of the dialog closing");
     row.env.kill_daemon_bounded().await;
+}
+
+/// 69: a person's unsent text in the box is never typed into, appended to or sent, whatever its shape and wherever
+/// its cursor sits; once the box is empty again the row is woken, so the wake was looking all along. The stub logs
+/// any line it reads: none but the wake line, and that only after the clear.
+#[tokio::test]
+async fn a_row_holding_a_persons_unsent_text_is_never_typed_into() {
+    let _serial = SERIAL.lock().await;
+    for (tag, ctl) in [
+        ("cwu1", "draft=close the worktrees".to_string()),
+        ("cwu2", "draft-home=close the worktrees".to_string()),
+        ("cwu3", "draft-wrap=close the worktrees".to_string()),
+        ("cwu4", "draft-nl=close the worktrees".to_string()),
+    ] {
+        let mut row = start_with(tag, None, false, &[&ctl], &[]).await;
+        assert!(row.screen_has("close the worktrees").await, "{ctl}: the draft is not on screen");
+        append_mail(&row.env, 1);
+        tokio::time::sleep(THREE_TICKS).await;
+        assert!(!row.screen_has("[sot-comm]").await, "{ctl}: typed into a person's unsent text: {:?}", row.screen().await);
+        assert_eq!((pings(&row.log), others(&row.log)), (0, 0), "{ctl}: a line was sent");
+        std::fs::write(row.env._tmp.path().join("ctl/clear-draft"), b"").unwrap();
+        assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "{ctl}: no wake within {WAKE_WITHIN:?} of the box emptying");
+        assert_eq!(others(&row.log), 0, "{ctl}: the draft or a mix of it and the wake line was sent");
+        row.env.kill_daemon_bounded().await;
+    }
+}
+
+/// 69, typed the way a person types: the text reaches the row's terminal as keystrokes (`pty.input` with no Enter, what
+/// the window sends) and sits unsent in the box. The wake leaves it alone; once the person kills the line (Ctrl-U) the
+/// row is woken, and the only line the agent reads is the wake line.
+#[tokio::test]
+async fn a_line_a_person_typed_and_did_not_send_is_never_typed_into() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_with("cwut", None, false, &[], &[]).await;
+    let typed = serde_json::json!({ "workspace_id": row.ws, "data_b64": base64_of("close the worktrees"), "enter": false });
+    let res = call(&mut row.conn, row.next_id, op::PTY_INPUT, typed).await;
+    row.next_id += 1;
+    assert_eq!(res.payload["ok"], true, "pty.input failed: {:?}", res.payload);
+    wait_for_screen(&mut row, "close the worktrees").await;
+    append_mail(&row.env, 1);
+    tokio::time::sleep(THREE_TICKS).await;
+    assert!(!row.screen_has("[sot-comm]").await, "typed into a person's unsent line: {:?}", row.screen().await);
+    assert_eq!((pings(&row.log), others(&row.log)), (0, 0), "a line was sent");
+    let kill = serde_json::json!({ "workspace_id": row.ws, "data_b64": base64_of("\u{15}"), "enter": false });
+    let res = call(&mut row.conn, row.next_id, op::PTY_INPUT, kill).await;
+    row.next_id += 1;
+    assert_eq!(res.payload["ok"], true, "pty.input failed: {:?}", res.payload);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?} of the line being killed");
+    assert_eq!(others(&row.log), 0, "the person's line was sent");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// `text` in standard base64, as `pty.input` takes its data.
+fn base64_of(text: &str) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(text)
 }
 
 /// A working row (its spinner redrawing above a live prompt) is not typed
@@ -550,21 +617,6 @@ async fn a_dead_row_is_never_restarted_by_a_wake() {
     tokio::time::sleep(THREE_TICKS).await;
     assert_eq!(pings(&row.log), 0, "a dead row was typed a wake");
     assert_eq!(phase_of_row(&mut row, &ws).await, before, "the wake restarted the row");
-    row.env.kill_daemon_bounded().await;
-}
-
-/// The e2e harness's 5a (`test-comm-e2e-readers.sh`): the real tick against a
-/// free stub row. `SOT_E2E_PING_LOG` names the file the stub appends
-/// `<ms> ping` to for the wake line; the mail is filed here, after the row is
-/// ready, and the harness measures from the log.
-#[tokio::test]
-#[ignore = "run by test-comm-e2e-readers.sh with SOT_E2E_PING_LOG set"]
-async fn comm_wake_e2e() {
-    let _serial = SERIAL.lock().await;
-    let log = PathBuf::from(std::env::var_os("SOT_E2E_PING_LOG").expect("SOT_E2E_PING_LOG names the ping log"));
-    let row = start("cwe", Some(log.clone()), false).await;
-    append_mail(&row.env, 1);
-    assert!(wait_pings(&log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?}");
     row.env.kill_daemon_bounded().await;
 }
 

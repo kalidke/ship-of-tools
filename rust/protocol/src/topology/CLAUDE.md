@@ -61,7 +61,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `is_plain_host_name`, `LinkGate`, `SSH_OPTS`, `DaemonLaneEndpoint`, `SshRecipe`, `recipe_for`, `dial_and_call`,
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
 `scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `TopologyStore`, `topology.set`, `topology.changed`, `sot_ssh_bridge`,
-`_sot_is_plain_host_name`, `comm/lib/comm-lib-client.sh`, `sot_slug`, `comm/lib/comm-lib-identity.sh`, `slug`,
+`_sot_is_plain_host_name`, `comm/lib/comm-lib-client.sh`, `sot_slug`, `comm/lib/comm-lib-sotd.sh`, `slug`,
 `sotd topology relay-endpoint`, `relay_endpoint_cmd`, `sotd topology pin`. Uses:
 `dispatch`, `sotd stdio-bridge`, `Signal::spawn_std`, `Signal::output`, `ContainedStd`, `Signal`,
 `child_signal::process`, `lane.connect`, `Endpoint`, `DaemonLaneEndpoint`, `sot_state_dir`, `sot_config_dir`,

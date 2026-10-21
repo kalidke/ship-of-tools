@@ -363,7 +363,7 @@ case_a_nudged_join_is_green_until_its_stop() {
     "$SCRIPTS_DIR/comm-join.sh" --name "$NAME" >/dev/null 2>&1
     expect working/machine/-/-/- joined || rc=1
     I; expect idle/-/-/-/- end || rc=1
-    sot_write_self_file "$SOT_COMM_SELF_FILE" "$suite" "$REPO" "$PROJECT_ROOT" >/dev/null 2>&1 \
+    write_self "$SOT_COMM_SELF_FILE" "$suite" "$REPO" "$PROJECT_ROOT" >/dev/null 2>&1 \
         || { echo "    could not restore the suite's self-file"; rc=1; }
     return "$rc"
 }

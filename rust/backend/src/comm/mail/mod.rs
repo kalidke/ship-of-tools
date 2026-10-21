@@ -2,6 +2,7 @@
 //! answers them, a guest's forward to the hub, and the `agent.send` UI notification.
 
 pub(crate) mod bus;
+pub(crate) mod cursor;
 pub(crate) mod filer;
 pub(crate) mod hub_link;
 pub(crate) mod inbox;

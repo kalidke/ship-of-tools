@@ -1,0 +1,70 @@
+use super::*;
+use crate::comm::test_home::TestHome;
+
+fn args(a: &[&str]) -> Vec<String> {
+    a.iter().map(|s| s.to_string()).collect()
+}
+
+fn tier1(t: &TestHome) -> String {
+    tier(1, &t.root(), "box1").1
+}
+
+/// A plain join derives `<folder>-<host>`, writes the entry, the self file and the inbox, and says so.
+#[test]
+fn a_plain_join_takes_the_derived_handle_and_writes_entry_self_file_and_inbox() {
+    let t = TestHome::new();
+    let o = join(&[]);
+    let h = tier1(&t);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stdout.starts_with(&format!("Joined sot-comm as @{h}  ({} on box1).\n", t.repo())), "{}", o.stdout);
+    let e = &t.agents()[&h];
+    assert_eq!((e["host"].as_str(), e["root"].as_str(), e["workspace_id"].as_str()), (Some("box1"), Some(t.root().as_str()), Some("")));
+    assert_eq!(std::fs::read_to_string(t.nopane()).unwrap(), format!("{h}\nrepo={}\nroot={}\n", t.repo(), t.root()));
+    assert!(t.home.join("inbox").join(format!("{h}.jsonl")).is_file());
+    // A second join keeps it: the self file names it for this root.
+    assert!(join(&[]).stdout.starts_with(&format!("Joined sot-comm as @{h} ")));
+}
+
+#[test]
+fn a_pin_and_a_name_are_taken_verbatim_and_a_bad_name_is_refused_before_any_write() {
+    let t = TestHome::new();
+    std::env::set_var("SOT_COMM_NAME", "pinned-box1");
+    assert!(join(&[]).stdout.starts_with("Joined sot-comm as @pinned-box1 "));
+    assert!(join(&args(&["--name", "named-box1"])).stdout.starts_with("Joined sot-comm as @named-box1 "), "--name beats the pin");
+    let o = join(&args(&["--name", "../x"]));
+    assert_eq!(o.code, 2);
+    assert!(o.stderr.contains("REFUSING --name"), "{}", o.stderr);
+    assert_eq!(join(&args(&["--bogus"])).code, 2);
+    assert!(t.agents().get("../x").is_none());
+}
+
+/// A row's slot never comes to name another project's session.
+#[test]
+fn a_slot_claimed_for_another_project_is_refused_unless_repinned() {
+    let t = TestHome::new();
+    // A private slot that names no row, so the gate passes outside any capsule.
+    let slot = t.home.join("self").join("private-a.txt");
+    std::env::set_var("SOT_COMM_SELF_FILE", &slot);
+    crate::comm::identity::self_file::write(&slot, "other-box1", "other", "/other/project").unwrap();
+    let o = join(&[]);
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    assert!(o.stderr.contains("REFUSING to put"), "{}", o.stderr);
+    assert!(t.agents().as_object().unwrap().is_empty(), "a refusal costs no registry entry");
+    assert_eq!(join(&args(&["--repin"])).code, 0);
+}
+
+/// A session outside any row never takes a handle a row on another computer holds.
+#[test]
+fn outside_any_row_a_handle_bound_to_a_row_elsewhere_is_refused() {
+    let t = TestHome::new();
+    t.put("taken-box1", serde_json::json!({"host": "box2", "workspace_id": "ws-z"}));
+    let o = join(&args(&["--name", "taken-box1"]));
+    assert_eq!(o.code, 1);
+    assert!(o.stderr.contains("REFUSING to join: @taken-box1 is bound to row ws-z on another computer (box2)"), "{}", o.stderr);
+    assert_eq!(t.agents()["taken-box1"]["workspace_id"].as_str(), Some("ws-z"), "untouched");
+    // A derived join steps past it to the session's own.
+    t.put(&tier1(&t), serde_json::json!({"host": "box2", "workspace_id": "ws-z"}));
+    let o = join(&[]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stderr.contains("is held by a row; a session outside any row joins as"), "{}", o.stderr);
+}
