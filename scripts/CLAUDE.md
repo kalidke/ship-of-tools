@@ -7,6 +7,9 @@ and the launch path fails open: no update step can stop a window from starting.
 
 ## Owns
 - The release cut and CI: `release.sh`, `tests/rc-gate.sh`, `.github/`.
+- `four-numbers.jl`: per subsystem, the product and test tokens, names implemented twice and cross-subsystem module
+  references of a commit, read from git (`julia --startup-file=no scripts/four-numbers.jl [--names] [--unmapped] [<rev>]`;
+  its subsystem map is the table at its top; `tests/test-four-numbers.sh` checks it).
 - Install and the update entry: `install.sh` (Linux and macOS) and `install.ps1` (Windows); "update sot from the repo"
   runs the one for the OS. On Windows `install.ps1` runs `install-shortcut.ps1` and `install-manifest.ps1` and the
   launcher's own `Initialize-InstallLayout` (in `sot-install-layout.ps1`, also run by `launch-sot.ps1`) and
