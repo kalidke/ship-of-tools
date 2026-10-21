@@ -108,10 +108,12 @@ Guarantees, each with the mechanism it rests on. Install:
 - The pin. A run that names its target pins the install (`"pinned": true`); one that names none removes the pin; the
   automatic writers never arm over a pin or over a record that cannot be read (`InstalledBuild::admits`). Every
   verdict line of a pinning run says so once the pin is written.
-- A repair run moves nothing. A named run of the installed version and commit, with no daemon on another version,
-  writes the pin, drops any pointer armed over the install, and stops, restarts, stages and applies nothing; its other
-  steps lay again what is there (the same binaries and checkout, the environments' own manifests kept), so a repeat
-  finishes a half-done install, and a readable record of that build gets its pin and no other change.
+- A repair run moves nothing. A named run of the installed version and commit that would change nothing else the
+  readable record says (the role, the hub, the prefix; `record::keeps`), with no daemon on another version, writes the
+  pin, drops any pointer armed over the install, and stops, restarts, stages and applies nothing; its other steps lay
+  again what is there (the same binaries and checkout, the environments' own manifests kept), so a repeat finishes a
+  half-done install, and the record gets its pin and no other change. A run of the same build that changes the role
+  or the hub is an install over it, and writes the record whole.
 - The record last, whole, in its old shape. `install.json` is written last, beside itself and renamed in (no BOM), one
   key per line with schema 1's keys, the shape every earlier release's readers take (line readers in the scripts,
   `InstallManifest`). A repeat keeps the rollback: a `.prev` copy is made only of a binary that differs, and a prune
@@ -131,7 +133,7 @@ Guarantees, each with the mechanism it rests on. Install:
   the three; an unrecognized file is never overwritten).
 - The unit is pinned before any reload (Unix). `sotd topology pin` (`--claim` for this host with no hosts.toml) writes
   the unit's host pin before the unit is written, reloaded or started; a pin that fails stops the run with no unit
-  written. Boot start is the drop-in, never `enable` (on a shared home an enable links the unit for every host): wired
+  written, and a retire's pin that fails stops it with nothing stopped or reloaded. Boot start is the drop-in, never `enable` (on a shared home an enable links the unit for every host): wired
   for a unit the run finds new, kept over an existing one only where a link or the drop-in was. A retire never
   disables the shared unit or removes its file, and drops the boot start only where the pin names this host alone.
 - The Julia the daemon will run meets the kernel's floor (`[compat] julia` of `julia/kernel/Project.toml`): the
