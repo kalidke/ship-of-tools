@@ -263,7 +263,7 @@ producer() {
       *) SHELL_ALL+=("$f") ;;
     esac
   done
-  SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/installer-wrapper.sh" "$D/scripts/tests/installer-apply.sh" "$D/scripts/tests/installer-shared-home.sh" "$D/scripts/tests/test-topology-plan.sh" "$D/scripts/tests/test-test-body.sh" "$D/scripts/tests/test-bash32.sh")
+  SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/installer-wrapper.sh" "$D/scripts/tests/installer-apply.sh" "$D/scripts/tests/installer-shared-home.sh" "$D/scripts/tests/test-topology-plan.sh" "$D/scripts/tests/test-test-body.sh" "$D/scripts/tests/test-bash32.sh" "$D/scripts/tests/test-release-cut.sh")
 
   [ -n "${RCG_LIFETIME:-}" ] && emit lifetime lifetime
   for s in julia-root "${JULIA_PKGS[@]/#/julia-}"; do echo unrun > "$L/steps/${s//\//-}.rc"; done

@@ -4,8 +4,8 @@
 //!   cargo run -q -p sot-updater --example vercmp -- <candidate> [<existing>...]
 //!
 //! Exit 0: `<candidate>` sorts strictly above every `<existing>` (vacuously so
-//! when none are given). Exit 1: it does not, and the highest `<existing>` is
-//! printed on stdout. Exit 2: usage.
+//! when none are given). Exit 1: it does not. Either way the highest
+//! `<existing>` is printed on stdout, when there is one. Exit 2: usage.
 //!
 //! It exists so `scripts/release.sh` can enforce release ordering with the
 //! updater's own `compare_versions` — the same comparison every installed box
@@ -26,8 +26,8 @@ fn main() {
     };
     // max_by, not sort: the same selection select.rs makes over release tags.
     if let Some(highest) = args.max_by(|a, b| compare_versions(a, b)) {
+        println!("{highest}");
         if compare_versions(&candidate, &highest) != Ordering::Greater {
-            println!("{highest}");
             std::process::exit(1);
         }
     }

@@ -1,1 +1,1 @@
-Part of distribution: see ../scripts/CLAUDE.md.
+Part of distribution's release path: see ../scripts/CLAUDE.md, "Release path".

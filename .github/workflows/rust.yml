@@ -3,10 +3,9 @@
 # Runs on pushes to main and on demand -- NOT on pull requests
 # (decided 2026-09-08: waiting on hosted CI per PR was the workflow's
 # slowest step and burned the Actions allowance; a change merges on its
-# local suites, the windows-gnu cross-check and its review round. Hosted CI
-# runs when the line becomes a tag: a tag is never cut unless this workflow
-# and CI.yml, dispatched on main, are green at its HEAD
-# (scripts/release.sh's preflight).
+# local suites, the windows-gnu cross-check and its review round. Hosted
+# runs happen once at the end of a pass and once at the release gate, by
+# dispatch; no cut reads them (scripts/CLAUDE.md, "Release path").
 # Windows-only frontend code that cannot be cross-compiled on the backend
 # runs this workflow on its branch by hand: `gh workflow run rust.yml --ref
 # <branch>`.)
@@ -209,7 +208,6 @@ jobs:
   daemon-lifetime-linux:
     name: daemon lifetime harness (Linux)
     runs-on: ubuntu-latest
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     timeout-minutes: 75
     defaults:
       run:
@@ -258,7 +256,6 @@ jobs:
   daemon-lifetime-macos:
     name: daemon lifetime premises (macOS)
     runs-on: macos-latest
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     timeout-minutes: 45
     defaults:
       run:
@@ -277,7 +274,6 @@ jobs:
   test:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -546,7 +542,6 @@ jobs:
   test-linux:
     name: build+test (ubuntu-latest, ${{ matrix.shard }})
     runs-on: ubuntu-latest
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -650,7 +645,6 @@ jobs:
   checks-linux:
     name: checks (ubuntu-latest)
     runs-on: ubuntu-latest
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     timeout-minutes: 40
     defaults:
       run:
@@ -878,10 +872,10 @@ jobs:
         run: bash scripts/tests/test-release-before.sh
         working-directory: .
 
-      # release.sh's branch guard: a tag is cut from main only, checked in a throwaway repo with no origin.
-      - name: Test release.sh branch guard (bash)
+      # release.sh, the cut, in throwaway repos with a scratch origin: its refusals, its restore, and a whole cut.
+      - name: Test the release cut (bash)
         timeout-minutes: 5
-        run: bash scripts/tests/test-release-branch.sh
+        run: bash scripts/tests/test-release-cut.sh
         working-directory: .
 
       # The context deadline covers foreground children and the final wait.
@@ -1001,7 +995,6 @@ jobs:
   bash32-linux:
     name: scripts under bash 3.2.57 (ubuntu-latest)
     runs-on: ubuntu-latest
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
@@ -1054,7 +1047,6 @@ jobs:
   conpty-windows-2022:
     name: conpty + capsule owned-ConPTY + pipe/challenge/supervisor/fe-client tests (windows-2022)
     runs-on: windows-2022
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     # See the per-step caps below for what each command budgets; this is
     # checkout+build (~15 min per the ADR) plus all six steps' worst case.
     timeout-minutes: 95
@@ -1157,7 +1149,6 @@ jobs:
   windows-ignored-containment:
     name: containment, ignored tests (windows-latest)
     runs-on: windows-latest
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     timeout-minutes: 60
     defaults:
       run:
@@ -1180,7 +1171,6 @@ jobs:
     name: P2 e2e (real helper, offline)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -1219,7 +1209,6 @@ jobs:
     runs-on: ubuntu-latest
     # Usually 3 to 4 minutes.
     timeout-minutes: 15
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     container: ubuntu:22.04
     steps:
       - uses: actions/checkout@v7

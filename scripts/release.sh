@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# release.sh — cut a Ship of Tools release (ADR 0030 §3, Phase B).
+# release.sh — cut a Ship of Tools release: the release path's cut (scripts/CLAUDE.md, "Release path").
 #
-#   scripts/release.sh <X.Y.Z[-pre]> [--dry-run] [--yes] [--skip-tests] [--allow-dirty]
+#   scripts/release.sh <X.Y.Z[-pre]> [--dry-run] [--yes]
 #
-# Stamps the single-source product version everywhere, refreshes Cargo.lock,
-# optionally regenerates CHANGELOG.md (when git-cliff is installed — the
-# release workflow generates the release notes regardless), runs the test
-# suite, then commits `release: vX.Y.Z`, tags `vX.Y.Z`, stamps the line's next
-# -dev version in a commit of its own, and pushes both. The tag push triggers
-# .github/workflows/release.yml, which builds the
-# platform artifacts and creates the GitHub Release as a draft (the julia bundle is
-# retired — installs clone the repo at the tag; ADR 0030 amendment).
+# Stamps the single-source product version everywhere, refreshes Cargo.lock, commits `release: vX.Y.Z`, tags `vX.Y.Z`,
+# stamps the line's next -dev version in a commit of its own, and pushes the branch and the tag in one atomic push,
+# after the maintainer's word: the prompt, or --yes when the word was given. The tag push starts
+# .github/workflows/release.yml, which builds, smokes and installs the artifacts and drafts the release; publishing the
+# draft is the maintainer's own act (the release skill).
+#
+# It runs no tests and reads no hosted run: the commit it tags passed the local gate (rc-gate.sh and
+# user-manager-tests.sh) before the word, and a re-run here would only repeat it. What it checks protects an invariant
+# of the tag itself, and each check prints what it found: the cut is from main, HEAD equals origin/main, the tree is
+# clean, the tag sorts above every tag of its line and above the line's stamp, and the stamp after it sorts above it.
 #
 # --dry-run stamps, shows the diff, and restores — nothing committed.
 # Run it from anywhere inside the repo; it re-roots itself.
@@ -19,59 +21,52 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="" DRY_RUN=0 YES=0 SKIP_TESTS=0 ALLOW_DIRTY=0
+VERSION="" DRY_RUN=0 YES=0
 for a in "$@"; do
     case "$a" in
         --dry-run) DRY_RUN=1 ;;
         --yes) YES=1 ;;
-        --skip-tests) SKIP_TESTS=1 ;;
-        --allow-dirty) ALLOW_DIRTY=1 ;;
         -*) echo "unknown flag: $a" >&2; exit 2 ;;
         *) VERSION="$a" ;;
     esac
 done
 
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
-    || { echo "usage: scripts/release.sh <X.Y.Z[-pre]> [--dry-run] [--yes] [--skip-tests] [--allow-dirty]" >&2; exit 2; }
+    || { echo "usage: scripts/release.sh <X.Y.Z[-pre]> [--dry-run] [--yes]" >&2; exit 2; }
 TAG="v$VERSION"
 
 # ---- preflight -------------------------------------------------------------
-# Every tag, candidate or final, is cut from main. The maintainer, 2026-10-16:
-# "so just like our julia packages, once we tag we move main to next version as
-# dev." So main is the -dev line: work merges to main, a cut is tagged from it,
-# and the stamp after the tag moves main to the next version (below). Nothing
-# else is accepted, because a tag from an arbitrary branch is a release whose
-# history nobody can find. `$branch` is then the one thing the CI gate reads and
-# the push pushes — below here the script never names a branch again.
+# Every tag, candidate or final, is cut from main. Main is the -dev line: work merges to main, a cut is tagged from it,
+# and the stamp after the tag moves main to the next version (below). A tag from any other branch is a release whose
+# history nobody can find. `$branch` is then the one thing the push pushes — below here the script never names a
+# branch again.
 branch=$(git rev-parse --abbrev-ref HEAD)
 case "$branch" in
     main) ;;
     *) echo "preflight: on '$branch' — every tag is cut from main" >&2; exit 1 ;;
 esac
-if [[ $ALLOW_DIRTY -eq 0 && -n "$(git status --porcelain)" ]]; then
-    echo "preflight: working tree not clean (see git status; --allow-dirty to override)" >&2; exit 1
+# A clean tree: the tag holds HEAD's committed tree plus the stamp, and the restore after a failure (`git restore` of
+# the stamped files) would otherwise discard an uncommitted edit to one of them.
+if [[ -n "$(git status --porcelain)" ]]; then
+    echo "preflight: working tree not clean (see git status)" >&2; exit 1
 fi
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && { echo "preflight: tag $TAG already exists" >&2; exit 1; }
-# The line's ceiling, enforced by the tool rather than written down. Semver §11
-# compares two pre-release identifiers numerically only when BOTH parse as
-# integers, and `rc9`/`rc10` are each ONE alphanumeric identifier — so they
-# compare as text and `v0.6.6-rc10` sorts BELOW `v0.6.6-rc9`. Two sessions have
-# already restated that as prose ("the line stops at rcN") and drawn the wrong
-# conclusion from it, so the rule lives here: a tag must sort strictly above
-# every tag already on its line, computed with the updater's own
-# `compare_versions` (rust/updater/src/semver.rs) — the comparison every
-# installed box uses to decide what "newer" means. Never a second semver
-# implementation in shell; a second one is what hid this inversion.
-# This runs before the stamp, because a mid-run failure leaves 14 files stamped.
+# The line's ceiling, enforced by the tool rather than written down. Semver §11 compares two pre-release identifiers
+# numerically only when BOTH parse as integers, and `rc9`/`rc10` are each ONE alphanumeric identifier — so they compare
+# as text and `v0.6.6-rc10` sorts BELOW `v0.6.6-rc9`. So a tag must sort strictly above every tag already on its line,
+# computed with the updater's own `compare_versions` (rust/updater/src/semver.rs) — the comparison every installed box
+# uses to decide what "newer" means. Never a second semver implementation in shell; a second one is what hid this
+# inversion. This runs before the stamp, because a mid-run failure leaves 14 files stamped.
 core="${VERSION%%-*}"
 # Literal globs, not a parse: the line is its final tag plus its pre-releases.
 # Local tags AND origin's, because another box may have cut one minutes ago.
 remote_tags=$(git ls-remote --tags origin "v$core" "v$core-*") \
     || { echo "preflight: cannot read origin's tags — the highest tag on the $core line is unknown" >&2; exit 1; }
 line_tags=()
+# `[^^]*` drops the `refs/tags/<tag>^{}` peel lines; a tag name cannot hold `^`. (No comment inside the substitution:
+# bash 3.2 reads an apostrophe in one as an open quote.)
 while read -r t; do [[ -n "$t" ]] && line_tags+=("$t"); done < <(
     { git tag --list "v$core" "v$core-*"
-      # `[^^]*` drops the `refs/tags/<tag>^{}` peel lines; a tag name can't hold `^`.
       printf '%s\n' "$remote_tags" | sed -n 's|^.*refs/tags/\([^^]*\)$|\1|p'
     } | sort -u
 )
@@ -120,48 +115,18 @@ case $next_rc in
     1) echo "preflight: the stamp after this cut, v$NEXT, does not sort above $TAG" >&2; exit 1 ;;
     *) echo "preflight: the next-stamp order check did not run (cargo output above) — a release is never cut blind" >&2; exit 1 ;;
 esac
-# Explicit refspec: `git fetch origin <branch>` only updates the tracking ref
-# opportunistically, and the comparison below has to read a ref that is
-# certainly fresh. A branch that isn't on origin yet fails here by design —
-# CI cannot have run on what was never pushed.
+# Explicit refspec: `git fetch origin <branch>` only updates the tracking ref opportunistically, and the comparison
+# below has to read a ref that is certainly fresh. HEAD must be origin's main exactly: a commit origin lacks is one no
+# gate on another box can have seen, and a stale HEAD would push a tag beside a main that moved on.
 git fetch -q origin "refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null \
-    || { echo "preflight: $branch is not on origin — push it and let CI run there first" >&2; exit 1; }
-if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$branch")" ]]; then
+    || { echo "preflight: $branch is not on origin — push it first" >&2; exit 1; }
+head=$(git rev-parse HEAD)
+if [[ "$head" != "$(git rev-parse "origin/$branch")" ]]; then
     echo "preflight: HEAD != origin/$branch — pull/push first" >&2; exit 1
 fi
-# CI is the TAG gate, not the per-PR gate: the
-# LATEST run of each ON THE BRANCH BEING CUT must be green and must sit at
-# HEAD. Anything else (failed, cancelled, still running, a run on any other
-# commit) refuses the cut; rerun a flaky leg (`gh run rerun <id> --failed`),
-# never skip it. gh is required — a release is never cut blind. Dispatch both
-# workflows there first (`gh workflow run <wf> --ref main`): push runs are
-# path-filtered, so HEAD may have none of its own, and the cut's runs are
-# dispatched ones. An empty list REFUSES the cut rather than waving it through.
-command -v gh >/dev/null 2>&1 || { echo "preflight: gh not found — CI on $branch cannot be verified" >&2; exit 1; }
-for wf in rust.yml CI.yml; do
-    # The version-stamp commit's run is skipped by the workflows' own `if`
-    # (2026-09-18), so read past skipped runs to the latest real verdict.
-    run="$(gh run list --branch "$branch" --workflow "$wf" --limit 5 --json headSha,status,conclusion,databaseId \
-        --jq '[.[] | select(.conclusion != "skipped")][0] | "\(.headSha) \(.status) \(.conclusion) \(.databaseId)"' 2>/dev/null || true)"
-    [[ -n "$run" && "$run" != "null null null null" ]] || { echo "preflight: no $wf run on $branch — push and let CI finish, or: gh workflow run $wf --ref $branch" >&2; exit 1; }
-    read -r run_sha run_status run_concl run_id <<<"$run"
-    if [[ "$run_concl" != "success" ]]; then
-        echo "preflight: latest $wf run on $branch (id $run_id, ${run_sha:0:8}) is $run_status/$run_concl — rerun it (gh run rerun $run_id --failed) and cut when green" >&2; exit 1
-    fi
-    [[ "$run_sha" == "$(git rev-parse HEAD)" ]] \
-        || { echo "preflight: latest green $wf run is at ${run_sha:0:8}, not at HEAD — dispatch it there: gh workflow run $wf --ref $branch" >&2; exit 1; }
-done
-
-# What the test step needs, checked before the stamp: a failure after it leaves 14 files stamped. The MathJax modules
-# are what two contract tests of the workspace run need (rc-gate.sh checks the same); the test step also sets
-# SOT_TEST_REQUIRE_USER_MANAGER=1, which panics without a reachable user manager, and a test container
-# (scripts/tests/in-container.sh) strips the user bus unless it is started with --user-manager.
-if [[ $SKIP_TESTS -eq 0 ]]; then
-    [[ -d rust/backend/sidecars/mathjax/node_modules ]] \
-        || { echo "preflight: rust/backend/sidecars/mathjax/node_modules is missing — run npm ci in rust/backend/sidecars/mathjax" >&2; exit 1; }
-    systemctl --user show-environment >/dev/null 2>&1 \
-        || { echo "preflight: no systemd user manager is reachable — run the cut in a test container started with --user-manager (the release skill has the command)" >&2; exit 1; }
-fi
+echo "preflight: $branch at ${head:0:9} equals origin/$branch; the tree is clean"
+echo "preflight: $TAG sorts above ${highest:-no tag} (the highest of ${#line_tags[@]} on the $core line) and above the stamp v$stamp"
+echo "preflight: the stamp after it, v$NEXT, sorts above $TAG"
 
 # ---- stamp -----------------------------------------------------------------
 # One version into every file that carries it: called with the release version,
@@ -188,11 +153,9 @@ stamp_version() {
 }
 
 STAMPED=()
-NEW_FILES=()
-# Until the commit, any failure puts the tree back as it was: the stamped files restored, a CHANGELOG.md it created removed.
+# Until the commit, any failure puts the stamped files back as they were.
 restore_stamp() {
     [[ ${#STAMPED[@]} -eq 0 ]] || git restore -- "${STAMPED[@]}"
-    [[ ${#NEW_FILES[@]} -eq 0 ]] || rm -f -- "${NEW_FILES[@]:?}"
 }
 trap 'rc=$?; if [[ $rc -ne 0 ]]; then restore_stamp; echo "release: stopped after the stamp; the stamped files are restored" >&2; fi' EXIT
 trap 'exit 130' INT TERM
@@ -201,14 +164,6 @@ JULIA_TOMLS=(Project.toml core/Project.toml julia/kernel/Project.toml
              julia/repl/Project.toml julia/pluto/Project.toml
              julia/plugins/*/Project.toml examples/plugins/*/Project.toml)
 stamp_version "$VERSION"
-
-if command -v git-cliff >/dev/null 2>&1; then
-    git ls-files --error-unmatch CHANGELOG.md >/dev/null 2>&1 \
-        && STAMPED+=(CHANGELOG.md) || NEW_FILES+=(CHANGELOG.md)
-    git-cliff --tag "$TAG" -o CHANGELOG.md
-else
-    echo "note: git-cliff not installed — skipping CHANGELOG.md (release notes are generated in CI)"
-fi
 
 echo "== stamped $VERSION into:"
 git diff --stat -- "${STAMPED[@]}"
@@ -220,41 +175,14 @@ if [[ $DRY_RUN -eq 1 ]]; then
     exit 0
 fi
 
-# ---- test ------------------------------------------------------------------
-if [[ $SKIP_TESTS -eq 0 ]]; then
-    # SOT_TEST_REQUIRE_USER_MANAGER=1 (ADR 0043 decision 32, Codex
-    # SHOULD-FIX): a release is always cut on the backend host, which has
-    # a real `systemd --user` manager -- so the real survival proof
-    # (capsule_supervisor_survives_a_real_user_service_stop) must actually
-    # RUN here, panicking rather than silently SKIPPED:-ing forever the
-    # way a bare hosted CI runner (no user manager) is allowed to.
-    #
-    # This box's own SOT_ env (a live session's SOT_SOCKET, SOT_COMM_HOME,
-    # SOT_RELAY_ENDPOINT, ...) must never reach a test daemon -- the
-    # harness-isolation lane's whole point is a daemon that only ever
-    # discovers a registry/socket a test itself minted. Unset every
-    # ambient SOT_-prefixed var first (SOT_TEST_REQUIRE_USER_MANAGER=1
-    # below is a test knob, not host state, so it's set fresh after);
-    # DBUS_SESSION_BUS_ADDRESS/XDG_RUNTIME_DIR are left alone -- the real
-    # user-manager survival test needs a reachable `systemd --user` -- and
-    # so are HOME/PATH, both still needed by git and gh.
-    (
-        cd rust
-        for v in $(compgen -v SOT_); do unset "$v"; done
-        SOT_TEST_REQUIRE_USER_MANAGER=1 cargo test --workspace --locked
-    )
-fi
-
 # ---- commit, tag, push -----------------------------------------------------
 if [[ $YES -eq 0 ]]; then
-    read -r -p "Push release $TAG and the $NEXT dev stamp to origin (commit + tag -> CI builds and creates the draft release)? [y/N] " ans
+    read -r -p "Push release $TAG and the $NEXT dev stamp to origin (the tag starts the release workflow, which drafts the release)? [y/N] " ans
     [[ "$ans" == [yY]* ]] || { trap - EXIT; restore_stamp; echo "aborted, restored"; exit 1; }
 fi
 trap - EXIT   # from here the stamp is committed or about to be; a later failure is a half-cut to undo by the skill's steps
 
-# ${arr[@]+...} (not ${arr[@]:-}) — an empty array must expand to NOTHING;
-# the :- form yields one empty string, which git add rejects as a pathspec.
-git add -- "${STAMPED[@]}" ${NEW_FILES[@]+"${NEW_FILES[@]}"}
+git add -- "${STAMPED[@]}"
 git commit -m "release: $TAG"
 git tag -a "$TAG" -m "Ship of Tools $TAG"
 STAMPED=()

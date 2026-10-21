@@ -1,31 +1,38 @@
 ---
 name: release
-description: Cut a Ship of Tools release — stamp the product version everywhere, tag, let CI build the GitHub Release as a draft, and publish it on the go (ADR 0030 Phase B). Activates for "cut a release", "release vX.Y.Z", "tag a release", "publish a release".
+description: Cut a Ship of Tools release — stamp the product version everywhere, tag, let CI build the GitHub Release as a draft, install the draft on a box and publish it on the maintainer's word (ADR 0030 Phase B). Activates for "cut a release", "release vX.Y.Z", "tag a release", "publish a release".
 ---
 
 # release — cut a Ship of Tools release
 
 One product version across all components (ADR 0030 §1): the release unit is
 the whole ship, released as a git tag that CI turns into platform binaries +
-a GitHub Release. CI creates that release as a draft, which no updater lists;
-step 3 of *Watch + verify* publishes it (installs clone the repo at the tag —
-there is no separate julia bundle). Read
+a GitHub Release draft, which no updater lists until the maintainer publishes
+it. The contract is `scripts/CLAUDE.md`, "Release path". Read
 `docs/history/adr/0030-versioning-release-and-auto-update.md` §1–3 before your first
 release from a fresh context.
 
-## Preflight (do all six, report anything amiss instead of proceeding)
+Every tag and every release action (draft, publish, edit, delete) runs only on
+the maintainer's word. The cut and the draft follow from the word to cut; the
+publish waits for a second word. From the word to a candidate installed on the
+maintainer's workstation takes about 23 minutes (measured 2026-10-20: the dry
+run and the cut under a minute, release.yml 21 minutes to the draft, the
+download and the archive install under a minute; the same download has also
+run at 53 to 140 KB/s, about 3 to 7 minutes for the Linux archive).
 
-1. **CI is green on main**: the latest real (not skipped) `rust.yml` and `CI.yml` runs on main succeeded and sit at
-   HEAD; `scripts/release.sh` refuses the cut otherwise. Dispatch them on main first, since push runs are
-   path-filtered and the cut's runs are dispatched ones: `gh workflow run <wf> --ref main`.
-2. **Tree clean + synced**: `git status --porcelain` empty, HEAD == `origin/main`. Coordinate over sot-comm if a
-   session announced pending pushes (sync-before-push convention).
+## Before the word (report anything amiss instead of proceeding)
+
+1. **The local gate passed at this commit**: `scripts/tests/rc-gate.sh` and
+   `scripts/tests/user-manager-tests.sh`, each run in its test container (their
+   headers have the commands), each `summary.txt` naming HEAD's tree and ending
+   `ALLDONE`. The cut runs no tests and reads no hosted run; it relies on this.
+2. **Tree clean + synced**: `git status --porcelain` empty, HEAD == `origin/main`
+   (`release.sh` refuses otherwise). Coordinate over sot-comm if a session
+   announced pending pushes.
 3. **Pick the version**: semver, pre-1.0 (minor = anything may change). Between tags the line carries the next
    version with `-dev`; a release is the commit that drops it, so the version is normally HEAD's stamp minus `-dev`
    (`release.sh` refuses a cut that sorts below the stamp).
-   Check `git tag -l` for the last tag; if no public-track tags exist, use the
-   current product version as the baseline. Prereleases use `-rc.N`
-   (auto-marked prerelease on the GitHub Release by the workflow).
+   Prereleases use `-rc.N` (auto-marked prerelease on the GitHub Release by the workflow).
    **The dot is load-bearing, and the form is fixed for a whole X.Y.Z line.**
    The updater compares semver, so a dotted `rc.N` sorts numerically and has
    no ceiling, while an undotted `rcN` is one alphanumeric identifier compared
@@ -49,111 +56,82 @@ release from a fresh context.
 5. **The comm matrix has run, if this candidate carries any comm change**:
    `comm/tests/comm-matrix.sh --boxes <a,b,c> [--expect <version>]`. The
    hermetic suites gate a merge; the matrix gates the CANDIDATE, because a
-   sender's receipt and an actual delivery are different facts and every comm
-   outage so far has been the gap between them. A candidate carrying a comm
-   change with no matrix run is not ready to cut. The cross-OS leg needs an
-   attached frontend on the non-Linux box, so schedule it rather than
-   discovering it at cut time.
-6. **A candidate needs a named consumer** (decision 0013 as amended, after the
-   owner asked why we were cutting tags nobody used). Cut a candidate only when
-   **a named box or person installs it the same day and a named test runs on
-   it** — write both down before you cut, not after. A candidate nobody has
-   installed is not a milestone; it is a tag that cost CI minutes and told us
-   nothing.
+   sender's receipt and an actual delivery are different facts.
+6. **A candidate needs a named consumer** (decision 0013 as amended). Cut a
+   candidate only when **a named box or person installs it the same day and a
+   named test runs on it** — write both down before you cut, not after.
    - A defect found **before the candidate is tagged** rides into **that same
      candidate**: it lands on main before the cut, so the tag carries it. A
-     defect found **after the tag** goes into the **next rc** (see *Hard
-     rules*); a published rc is never re-cut.
+     defect found **after the tag** goes into the **next rc**; a published rc
+     is never re-cut.
    - The one exception is a test that genuinely needs a **newer published
      version** — an updater/downgrade check, say — named as such when you cut.
-   - This bounds the "everything we know is wrong goes in the next rc" rule in
-     *Hard rules* below; it never licenses parking a defect. Same candidate
-     before its tag, never a later line.
 
-## Cut it
+## Cut it (on the word)
 
 ```bash
-scripts/release.sh <X.Y.Z> --dry-run   # inspect the stamp diff first
-scripts/release.sh <X.Y.Z> --yes       # stamp + test + commit + tag + push
+scripts/release.sh <X.Y.Z> --dry-run   # the checks' evidence and the stamp diff
+scripts/release.sh <X.Y.Z>             # asks before the push; --yes when the word was given for this version
 ```
 
-The cut runs in a test container with the user manager kept, because its test step needs a reachable `systemd --user`
-(`SOT_TEST_REQUIRE_USER_MANAGER=1`) and a bare test container strips it. Run `npm ci` in `rust/backend/sidecars/mathjax`
-once first (two contract tests need the modules), then, from the clean main checkout:
-
-```bash
-scripts/tests/in-container.sh --user-manager release-cut -- scripts/release.sh <X.Y.Z> --yes
-```
-
-`release.sh` checks both before it stamps and refuses with one line naming the fix; a failure after the stamp restores the
-stamped files. The full serial test run takes about 40 minutes.
-
-The script stamps `rust/Cargo.toml [workspace.package]` + every Julia
-`Project.toml`, refreshes `Cargo.lock`, regenerates `CHANGELOG.md` iff
-git-cliff is installed (optional — CI generates the release notes), runs
-`cargo test --workspace --locked`, commits `release: vX.Y.Z`, tags, then stamps the line's next dev version in a commit
-of its own (`version: <next> opens the line after vX.Y.Z [skip ci]`) and pushes main and the tag in one `git push --atomic`: origin takes both or neither.
+Run it from the clean main checkout; it needs cargo (the order check builds the
+updater's `vercmp` example), git and origin, nothing else. Each check prints
+what it found: HEAD and origin's main, the highest tag on the line, the stamp,
+and the stamp after the tag. The script stamps `rust/Cargo.toml [workspace.package]` + every Julia
+`Project.toml`, refreshes `Cargo.lock`, commits `release: vX.Y.Z`, tags, then stamps the line's next dev version in a commit
+of its own (`version: <next> opens the line after vX.Y.Z [skip ci]`) and pushes main and the tag in one `git push --atomic`:
+origin takes both or neither.
 
 A cut that fails before or at the push leaves only its local commits and tag, and nothing on origin: `git tag -d vX.Y.Z`
 and `git reset --hard origin/main` undo them, then run it again. A push alone that failed (origin moved on) is
-re-run with `git push --atomic origin main vX.Y.Z` once main is synced, with no test run again.
+re-run with `git push --atomic origin main vX.Y.Z` once main is synced.
 
-## Watch + verify (required — a tag that half-published is worse than none)
+## Watch, install, publish
 
-1. `gh run watch` the `Release` workflow (or poll
-   `gh run list --workflow Release --limit 1` in a background monitor).
-   **All three platform legs are blocking, macOS included** (`release.yml`
-   sets `experimental: false` everywhere and `publish` requires
-   `smoke-macos`) — a macOS failure fails the release; fix or revert, don't
-   wave it through. The same holds for the install smokes (`install-linux`,
-   `install-macos`, `install-windows`): `publish` requires them, and each runs
-   the installer against this run's artifacts, fresh and as an update from the
-   release before (`scripts/tests/install-smoke.sh`, `install-smoke.ps1`). Each
-   install smoke also has an `update-implicit` leg: the release before installed
-   by `--version`, then the entry run with no arguments against the real
-   repository, which must end as a repair run at that release that clears the pin,
-   and the run's release staged afterwards must read `newer` and arm. A leg that
-   fails is an installer or artifact defect to fix, not a flake. The smokes do
-   not prove the Windows converge (a resident supervisor and a window; the hosted
-   runner has no desk) or the systemd path (the unit, `ExecStartPre`, the restart
-   check); those stay proofs on a lab box.
-2. On success, verify the release assets:
-   `gh release view vX.Y.Z` must list `sot-<ver>-linux-x86_64.tar.gz`,
-   `sot-<ver>-windows-x86_64.zip`, `sot-<ver>-macos-aarch64.tar.gz`,
-   `SHA256SUMS`. It shows the release as a draft (`gh release view vX.Y.Z
-   --json isDraft` reads `true`), which is the expected state until step 3.
-   No julia bundle — installs clone the repo at the tag; the release-blocking
-   `julia-check` job proves the envs resolve + load at this ref.
-3. **Publish the draft — on the go, run alone.** Until this step no updater
-   sees the release, so a box moves to it only after this publish. Publish only
-   on the go (the owner's for a candidate, the maintainer's for a final).
-   Before the go, any box chosen to move first installs the draft's files by a
-   named archive run, which pins it at this tag. A draft has no public download
-   URL, so `install.ps1 -Version` cannot reach it:
+1. `gh run watch <id> --exit-status` the `Release` run the tag started (about
+   20 minutes; the Windows build and its install smokes are the long pole).
+   **Every leg is blocking, macOS included**, and so are the install smokes
+   (`install-linux`, `install-macos`, `install-windows`): the `draft` job needs
+   them all, and each runs the installer against this run's artifacts, fresh
+   and as an update from the release before (`scripts/tests/install-smoke.sh`,
+   `install-smoke.ps1`), and an `update-implicit` leg (the release before
+   installed by `--version`, then the entry with no arguments, which must end
+   as a repair run at that release that clears the pin, and the run's release
+   staged afterwards must read `newer` and arm). A leg that fails is an
+   installer or artifact defect to fix, not a flake. The smokes do not prove
+   the Windows converge (a resident supervisor and a window) or the systemd
+   path (the unit, `ExecStartPre`, the restart check); those stay proofs on a
+   lab box.
+2. On success, `gh release view vX.Y.Z` lists `sot-<ver>-linux-x86_64.tar.gz`,
+   `sot-<ver>-windows-x86_64.zip`, `sot-<ver>-macos-aarch64.tar.gz`, `COMMIT`
+   and `SHA256SUMS`, as a draft (`--json isDraft` reads `true`).
+3. **Install the draft on the named box** by an archive run of its own files,
+   which pins the box at this tag (a draft has no public download URL, so
+   `--version` cannot reach it):
    ```bash
    gh release download vX.Y.Z -p SHA256SUMS -p COMMIT -p 'sot-*-<platform>*' -D <folder>
    scripts/install.sh --archive <folder>      # linux, macos
    scripts/install.ps1 -Archive <folder>      # windows
    ```
-   Then publish, in its own command, with nothing chained after it:
+4. **Publish — on the maintainer's word, run alone.** Until this step no
+   updater sees the release. Publish in its own command, with nothing chained
+   after it:
    ```bash
    gh release edit vX.Y.Z --draft=false
    ```
-   The publish report names the boxes that moved by archive run and the go
-   that published it. A draft left unpublished is reported, as an unclosed loop
-   is.
-4. Announce: a sot-comm broadcast so fleet sessions know a release landed
-   (they stay on dev builds; this is for awareness).
-5. **Close the loop on the named consumer**: the publish report says **who
-   installed the tag and what the test showed**. A candidate that was cut and
-   never installed is reported as exactly that, on the same day — an unclosed
-   loop is the finding, not an omission to leave quiet.
+   The publish report names the boxes that moved by archive run and the word
+   that published it. A draft left unpublished is reported, as an unclosed
+   loop is.
+5. Announce: a sot-comm broadcast so fleet sessions know a release landed.
+6. **Close the loop on the named consumer**: the report says **who installed
+   the tag and what the test showed**. A candidate that was cut and never
+   installed is reported as exactly that, on the same day.
 
 ## Pipeline validation without a tag
 
-`gh workflow run Release` (workflow_dispatch) runs build, the smokes, julia-check
+`gh workflow run release.yml --ref <branch>` runs build, the smokes, julia-check
 and the install smokes with a `0.0.0-ci.<sha>` artifact name (the binaries carry
-their real `+<sha>` version, which the install smokes read) and SKIPS publish —
+their real `+<sha>` version, which the install smokes read) and drafts nothing —
 use it after editing the workflow or before a first-of-its-kind release.
 
 ## Hard rules
@@ -163,22 +141,21 @@ use it after editing the workflow or before a first-of-its-kind release.
   later line to keep a candidate tidy: the next candidate carries every open
   defect, and the only legitimate reasons to hold one back are that two fixes
   contend for the same file, or that a fix rests on an unproven root cause and
-  a cheaper diagnostic ships first. "Small", "not a blocker", and "it can wait"
-  are not reasons. Say the split out loud with its reason per item, and put
-  features — not defects — in the later candidate.
+  a cheaper diagnostic ships first. Say the split out loud with its reason per
+  item, and put features — not defects — in the later candidate.
 - **Every tag is cut from main, candidates and finals alike.** Main is the
   -dev line, as the Julia packages' main is: work merges to main, a cut is
   tagged from main, and the stamp after the tag moves main to the next version
-  with `-dev`. `fixes/0.6.6-comm` stays only as an alias until the next cut,
-  then is retired. Before any final, prove main actually carries what the last
+  with `-dev`. Before any final, prove main actually carries what the last
   tested candidate carried — by content, not by ancestry.
 - `scripts/release.sh` enforces the branch (`main` only), a clean tree,
-  HEAD == `origin/main`, a tag that does not exist and sorts above every tag on
-  its line, and green CI at HEAD on main.
+  HEAD == `origin/main`, and a tag that sorts above every tag on its line and
+  above the line's stamp. It runs no tests and reads no hosted run.
 - **Never** delete/re-cut a published tag that anyone may have fetched — cut a
   patch release instead. A broken candidate may be deleted (tag and release) and
-  re-cut under the same number only while its release is still a draft that no
-  box has installed by archive run. Once it is published, or any box has
-  installed it that way, it is never re-cut: the fix goes into the next rc.
+  re-cut under the same number, on the maintainer's word, only while its release
+  is still a draft that no box has installed by archive run. Once it is
+  published, or any box has installed it that way, it is never re-cut: the fix
+  goes into the next rc.
 - Publishing visibility and release availability are maintainer-gated. **Never
   treat a local tag or release procedure as permission to publish the repo.**

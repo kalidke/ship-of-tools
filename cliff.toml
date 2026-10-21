@@ -1,6 +1,5 @@
 # git-cliff config — conventional-commit changelog/release notes (ADR 0030 §3).
-# Used by the release workflow (orhun/git-cliff-action) and, when installed
-# locally, by scripts/release.sh to regenerate CHANGELOG.md.
+# Used by the release workflow (orhun/git-cliff-action) for the draft's notes.
 
 [changelog]
 header = """
