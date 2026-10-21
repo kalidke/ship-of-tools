@@ -55,7 +55,9 @@ fn body(args: &[String]) -> Result<(verdict::Found, String), verdict::Stop> {
 /// A progress line.
 #[cfg_attr(windows, allow(dead_code, reason = "Windows prints its lines as install.ps1 did, with no lead"))]
 pub(super) fn say(text: &str) {
-    println!("== {text}");
+    if !cmd::STEPS.is_stopping() {
+        println!("== {text}");
+    }
 }
 
 /// The person's home folder: `HOME` on Unix, `USERPROFILE` on Windows.

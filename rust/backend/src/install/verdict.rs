@@ -117,8 +117,9 @@ pub(super) fn finish(outcome: Result<(Found, String), Stop>) -> i32 {
     }
 }
 
-/// Watch for a person stopping the run (INT, TERM, HUP; Ctrl+C on Windows): the FAIL line names the step, and the run
-/// exits 128 plus the signal, which the bootstraps read as a run that printed its verdict.
+/// Watch for a person stopping the run (INT, TERM, HUP; Ctrl+C on Windows): the running step is ended with what it
+/// started, then the FAIL line names the step, and the run exits 128 plus the signal, which the bootstraps read as a run
+/// that printed its verdict.
 pub(super) fn watch_signals() {
     std::thread::spawn(|| {
         let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
@@ -143,6 +144,9 @@ pub(super) fn watch_signals() {
             }
         });
         let Some(code) = code else { return };
+        // The running step and what it started end first, so nothing writes after the verdict and the bootstrap
+        // removes a scratch folder no process still uses.
+        super::cmd::STEPS.stop(code - 128, std::time::Duration::from_secs(10));
         if print_once(&format!("FAIL: {}: stopped{}", current_step(), tail())) {
             std::process::exit(code);
         }
