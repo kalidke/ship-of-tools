@@ -130,3 +130,43 @@ fn agent_exec_unknown_kind_exits_2() {
     assert_eq!(status.code(), Some(2), "{said}");
     assert!(stderr.contains("bogus"), "{said}");
 }
+
+/// `sotd agent-exec claude` over a comm home of the test's own: with the layer installed the leg's argv names it
+/// (`--add-dir=` and the hooks in `--settings`), and with none it names nothing of it. The real binary reads the comm
+/// home from its environment, so this proves the path from `SOT_COMM_HOME` to the exec'd argv.
+#[test]
+fn agent_exec_claude_carries_the_layer_when_installed() {
+    let home = tempfile::tempdir().expect("tempdir");
+    seed_printing_claude_stub(home.path());
+    let comm = home.path().join("comm");
+    let argv_of = |comm_home: &std::path::Path| {
+        let mut cmd = sotd::sotd_command();
+        cmd.arg("agent-exec")
+            .arg("claude")
+            .env_clear()
+            .env("HOME", home.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env("SOT_COMM_HOME", comm_home);
+        let (status, stdout, stderr) = run(cmd);
+        assert!(status.success(), "{status}; stdout {stdout:?}; stderr {stderr:?}");
+        stdout
+            .lines()
+            .filter_map(|l| l.strip_prefix("ARG").and_then(|r| r.split_once('=')))
+            .filter(|(n, _)| n.chars().all(|c| c.is_ascii_digit()))
+            .map(|(_, v)| v.to_string())
+            .collect::<Vec<_>>()
+    };
+
+    std::fs::create_dir_all(&comm).unwrap();
+    let plain = argv_of(&comm);
+    assert!(!plain.iter().any(|a| a.starts_with("--add-dir") || a.contains("\"hooks\"")), "{plain:?}");
+
+    let layer = comm.join("claude-layer");
+    std::fs::create_dir_all(layer.join(".claude").join("skills")).unwrap();
+    let with = argv_of(&comm);
+    assert_eq!(with[0], format!("--add-dir={}", layer.display()), "{with:?}");
+    assert_eq!(&with[1..3], ["--permission-mode", "auto"], "{with:?}");
+    let at = with.iter().position(|a| a == "--settings").expect("--settings carries the hooks");
+    assert!(with[at + 1].contains("\"hooks\""), "{with:?}");
+    assert_eq!(with.last().map(String::as_str), Some("/sot-session-start"));
+}

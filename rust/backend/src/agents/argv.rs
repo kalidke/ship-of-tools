@@ -10,6 +10,7 @@ struct AgentEnv {
     path: Option<std::ffi::OsString>,
     home: Option<PathBuf>,
     shell: Option<String>,
+    comm_home: Option<PathBuf>,
 }
 
 impl AgentEnv {
@@ -18,6 +19,7 @@ impl AgentEnv {
             path: std::env::var_os("PATH"),
             home: std::env::var_os("HOME").map(PathBuf::from),
             shell: std::env::var("SHELL").ok(),
+            comm_home: crate::comm::sot_comm_home(),
         }
     }
 }
@@ -91,7 +93,7 @@ fn caller_brought_settings(extra: &[String]) -> bool {
 /// below, keeps the literal name); `"codex"` has its own, much smaller,
 /// recipe ([`codex_argv`]) rather than sharing this one — its flag shape
 /// (no skill argv) is unrelated to claude's.
-fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>) -> Vec<String> {
+fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>, comm_home: Option<&Path>) -> Vec<String> {
     let mut argv = vec![
         "claude".to_string(),
         "--permission-mode".to_string(),
@@ -132,8 +134,8 @@ fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>) -> Vec<String> {
 /// the daemon's own `PATH` (a detached child inherits it); that stays
 /// out of scope here, not a gap this decision closes.
 #[cfg(windows)]
-fn claude_argv(_env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
-    Ok(claude_recipe(&[], memory_cwd))
+fn claude_argv(env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
+    Ok(claude_recipe(&[], memory_cwd, env.comm_home.as_deref()))
 }
 /// macOS lane: widened from `target_os = "linux"` to `unix`, a DELETION
 /// of the third arm that used to refuse here ("claude has no capsule
@@ -146,7 +148,7 @@ fn claude_argv(_env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>
 #[cfg(unix)]
 fn claude_argv(env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
     let claude = resolve_claude(env.path.as_deref(), env.home.as_deref())?;
-    let mut argv = claude_recipe(&[], memory_cwd);
+    let mut argv = claude_recipe(&[], memory_cwd, env.comm_home.as_deref());
     argv[0] = claude;
     Ok(argv)
 }
@@ -179,6 +181,7 @@ fn claude_resume_argv_in(
     let mut argv = claude_recipe(
         &["--resume".to_string(), session_id.to_string()],
         memory_cwd,
+        env.comm_home.as_deref(),
     );
     argv[0] = claude;
     Ok(argv)
@@ -187,13 +190,14 @@ fn claude_resume_argv_in(
 /// daemon's own `PATH` exactly as [`claude_argv`]'s Windows arm is.
 #[cfg(windows)]
 fn claude_resume_argv_in(
-    _env: &AgentEnv,
+    env: &AgentEnv,
     session_id: &str,
     memory_cwd: Option<&Path>,
 ) -> Result<Vec<String>, String> {
     Ok(claude_recipe(
         &["--resume".to_string(), session_id.to_string()],
         memory_cwd,
+        env.comm_home.as_deref(),
     ))
 }
 
@@ -254,7 +258,7 @@ fn agent_exec_argv_in(env: &AgentEnv, kind: &str, extra: &[String]) -> Result<Ve
             // child), so this process's own cwd is already the directory
             // the session will run in — `ccb`'s caller chose it.
             let cwd = std::env::current_dir().ok();
-            let mut recipe = claude_recipe(extra, cwd.as_deref());
+            let mut recipe = claude_recipe(extra, cwd.as_deref(), env.comm_home.as_deref());
             recipe[0] = claude;
             Ok(recipe)
         }
