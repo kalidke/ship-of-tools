@@ -239,7 +239,9 @@ R4. **An interrupt signals only the eval the child runs, only while it runs, and
     collection take the signal only when they return, and forcing inside them can crash or hang the REPL; on Linux a
     loaded computer counts five signals as two or three, so a forced interrupt may not stop the eval, which the answer says. This is queue item 20
     (an interrupt never reaches an eval that does not yield): since the escalation it does reach one, to the stated limits;
-    nothing is built for it in 8b.
+    nothing is built for it in 8b. The run_shim signal tests of `julia/repl` (`interrupt_child.jl`) run only in the local
+    gate and the release gate (`SOT_REPL_SIGNAL_TESTS=1`), because the last of them fails on a loaded computer (queue:
+    CI-PRE-REPL-INTERRUPT).
 R5. **A retirement is checked, and an unfinished one stays owned.** A restart stops the old supervisor, which closes out
     its work, asks for its tree's termination and confirms the direct child's reap; the owner joins it for at most
     `REPL_RESTART_WAIT`. A timeout or a failed retirement is returned as an error, no replacement starts, and what has not
@@ -369,6 +371,19 @@ One per guarantee. Paths are under `rust/backend/src/sidecars/` unless they star
 ## Sidecars queue
 Seen at pass 8a and its review round, handled at the sidecars' next pass; none is a defect seen in use. The REPL's follow the
 guarantees' table. Each names the file, the scenario and the fix.
+- CI-PRE-REPL-INTERRUPT, cause found (8b): `julia/repl/test/interrupt_child.jl`, the testset "signals after a forced stop
+  meet a child held still", sends exactly five signals 50 ms apart and expects Julia to force the stop. On Linux Julia
+  counts a signal only when the eval's thread runs between two, so on a loaded computer the five merge into two or three
+  counts, the loop `while true end` is never forced and neither it nor the interrupt request is answered (reproduced on
+  Julia 1.12.7: two cores shared with six busy loops, 20 of the testset's 32 checks fail, the child silent until the
+  test's 240 s kill; the same file passes on 1.12.7 and 1.13.0 on an idle computer). The product is not at fault: the
+  daemon's `Escalation` keeps signalling every 50 ms until the child speaks and answers a forced request that did not stop
+  the eval itself (R4). Fix: drive the test's signals as `Escalation` does (until the child says something, for
+  `FORCE_SPAN`) and place the held-still window from the first line the child writes, not from a count of five; then
+  return the three testsets to CI.yml. The hosted failure on the pre-release leg (Julia 1.14.0-alpha1, the first
+  testset at the first single signal, the child silent from then on) was not reproduced: that Julia was not obtainable
+  here, and no lab box runs one.
+
 - `julia.rs:355` and `:84`: an empty or relative PATH entry can give a relative answer; a broken juliaup default falls
   through to PATH. Fix: refuse a non-absolute candidate; decide the default's fallthrough.
 - `kernel.rs:294`, `:643`: queued submissions at a generation's death get the generic error. Fix: drain the queue with
