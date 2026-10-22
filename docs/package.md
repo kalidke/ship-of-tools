@@ -66,7 +66,9 @@ hands out.
 in every reader and writer; a blob is exactly its declared length, and the writer refuses a mismatch before a byte; a
 payload grows only by defaulted fields, else the protocol integer rises and hello refuses the mismatch (the server's
 check, tested there); a child's output is read by lines lossily, so no byte ends a reader; policy asks
-`is_release_build`, never the version string; the shared grammars have one parser. Rests on: serde, the compiler and
+`is_release_build`, never the version string; the shared grammars have one parser. Since pass 5c it also holds what the
+services share for replies (`sot_protocol::reply`: the handler output, a bounded frame write, and `reject`, which is not
+bounded) and the handoff byte pump (`sot_protocol::pipe`). Rests on: serde, the compiler and
 platform. Owns: nothing at run time.
 
 **topology.** The contract is settled (pass 5b-2): `rust/topology/CLAUDE.md`, the crate `sot-topology` (on wire,
@@ -100,11 +102,16 @@ accepting before it touches a row, ends rows only through rows' end API (a row n
 codes (0, 1, 2, 75, 78, 101; INT and TERM by the signal). Rests on: containment, rows' end API, server's accept loop.
 Owns: `held.json`, the leases, the terminal. Does not: end rows itself, contain a child.
 
-**server.** Guarantees: one daemon per state root; a socket a live daemon answers on is never unlinked; a connection
-is admitted twice (OS peer at accept, hello at first frame) and nothing is served before; one writer per connection;
-an op runs off the loop unless named inline, so a ping is answered at once; a peer that cannot drain is dropped.
-Rests on: platform (peer identity, locks), wire. Owns: the listener, the roster, the op table. Does not: implement any
-op beyond hello, ping and the handoffs.
+**server.** The contract is settled (pass 5c): `rust/backend/src/server/CLAUDE.md`, in the `sotd` binary. Guarantees,
+each with the limit the contract states: one daemon per state root while `run` runs; a start does not unlink a socket
+a live daemon answers on (live means a reply within one deadline; a busy daemon is fenced by its state lock); a
+connection of another account is dropped at accept before a byte is read; nothing is served before an accepted hello;
+one writer per connection; a handler's failure is one frame for the ops that reach `finish_dispatch`; a peer that
+cannot drain is dropped; a ping is answered whatever the role, and a silent pinger is reaped even under event load; an
+op runs off the loop unless `INLINE` names it; an event reaches a connection as one frame, or is dropped when its bus
+lags. Services reach the server only through their handler arguments: the compiler enforces the server's private
+submodules, the rest is convention until the services are crates. Owns: the listener, the roster, the op table. Does
+not: implement any op beyond hello, ping and the handoffs.
 
 **rows.** The contract is settled (pass 3): `rust/backend/src/rows/CLAUDE.md`. Guarantees: a row's id survives every
 daemon restart and every refresh of its label; a row's comm handle has one answer, `bound_handle`, by construction (the
@@ -290,7 +297,7 @@ at its end and one round for its findings; a class of breaks stops it, and the s
 | 5a | Platform and wire: their contracts; platform its own crate out of `sot-log`, its copies folded | 4-6 | 80-120 | 1.2 h wall in three agent rounds (the pass 25 min to a gate-ready head, the review round 6 min after an outside review, a landing fix 8 min), about 40 agent minutes; about $15 for the agent; platform 83/65/47/8 -> 79/80/48/0 (tests rose with the shared test helpers moved in; twice rose by one, generic names such as `context`), wire 42/14/3/2 -> 42/15/3/2; three hosted runs, the landing one 7.9 min |
 | 5b-1 | Containment carved out of lifecycle into its own crate; lifecycle's contract (5b split by the load rule: 211k of code and tests) | 2-3 | 40-60 | 1.0 h wall in two agent rounds (the pass 23 min to a gate-ready head, the review round 5 min after an outside review), about 30 agent minutes; about $11 for the agent; lifecycle 42/67/39/15 -> 22/44/21/14, containment (new) 23/21/22/3; the landing run 12.2 min |
 | 5b-2 | Topology: its contract; its own crate out of `rust/protocol`, which ends wire's edge to `sot-log` | 2-3 | 40-60 | 1.0 h wall in two agent rounds (the pass 21 min to a gate-ready head, the review round 5 min after an outside review), about 28 agent minutes; about $9 for the agent; seven defects fixed red first (unserialized `topology.set`, a sync that could overwrite a newer hub edit, three unchecked names reaching ssh or a socket path, a monitor label repeated across headers, a refused edit swallowing a hand edit); topology 50/52/35/26 -> 52/55/35/23, wire 42/15/3/2 -> 41/15/3/1; the landing run 6.9 min |
-| 5c | Server: its contract; the op table into the binary, every service a handler with an explicit context | 4-6 | 80-120 | |
+| 5c | Server: its contract; the op table into the binary, every service a handler with an explicit context | 4-6 | 80-120 | 0.9 h wall in two agent rounds (the pass 22 min to a gate-ready head, the review round 7 min after an outside review), about 29 agent minutes; about $7 for the agent; the op table was already one table and handlers already took explicit arguments, so the cut was the shared reply helpers and byte pump moved to wire, the server's submodules made private, pages and the updater given a closure instead of the roster; queue item 21 fixed on the real start path and the reaper fixed under event load, both red first; server 54/119/15/44 -> 52/118/14/45, wire 41/15/3/1 -> 43/17/4/1; the landing run 9.3 min |
 | 6 | Capsule (D2) | 10-20 | 200-400 | |
 | 7 | Frontend: State apart first, one short pass per cluster (the row record, focus and prompt, preview requests, the REPL and agent pane), each moving its fields into a type with private fields; then the five crate cuts (D4) as moves: app and render, chrome and input, navigation and session, agent pane and drawer, preview and control | 22-52 | 440-1,040 | |
 | 8 | Sidecars (D3) | 4-8 | 80-160 | |
@@ -338,5 +345,6 @@ and `rust/log/tests` (27 thousand lines) are assigned by file:
   settled, and platform is its own crate, `sot-platform`, depending on nothing of ours. Pass 5b-1 landed 2026-10-21:
   containment's and lifecycle's contracts are settled, and containment is its own crate, `sot-containment`. Pass 5b-2
   landed 2026-10-21: topology's contract is settled, topology is its own crate, `sot-topology`, and wire depends on
-  platform alone. Pass 5c (server and the op table) is next. Nothing is half-done on main.
+  platform alone. Pass 5c landed 2026-10-21: the server's contract is settled, and no service names the server's
+  internals. The capsule pass (D2) is next, starting with its cut. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
