@@ -98,7 +98,6 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
     )
     .await;
 
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
     // 5s SUSTAINED silence (250ms loop) — the regression this closes is a
     // respawn some moments AFTER destroy, not merely "not respawned yet."
     let sustain_deadline = Instant::now() + Duration::from_secs(5);
@@ -108,7 +107,7 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
             "a destroyed, adopted row answered a status query again — it respawned"
         );
         assert!(
-            !any_process_matches(&pattern),
+            own_supervisor_pids(&env.state_root).is_empty(),
             "a destroyed, adopted row's supervisor process reappeared — it respawned"
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -223,7 +222,7 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
     )
     .await;
 
-    kill_supervisor_only(&env.state_root);
+    kill_supervisor(&env.state_root);
 
     // `destroy_capsule_workspace`'s own resume pre-step re-establishes
     // the authority before `end_run` ever runs; a lane still settling
@@ -254,16 +253,8 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let supervise_pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
-    let run_pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "run", &env.state_root);
-    assert!(
-        poll_until_no_process_matches(&supervise_pattern, Duration::from_secs(10)),
-        "a supervisor process still matches {supervise_pattern:?} after destroy"
-    );
-    assert!(
-        poll_until_no_process_matches(&run_pattern, Duration::from_secs(10)),
-        "a leg process still matches {run_pattern:?} after destroy"
-    );
+    let left = poll_until_no_capsule_pids(&env.state_root, Duration::from_secs(10));
+    assert!(left.is_empty(), "capsule processes {left:?} remain after destroy");
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
     next_id += 1;
@@ -370,8 +361,7 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     )
     .await;
 
-    kill_supervisor_only(&env.state_root);
-    kill_leg_only(&env.state_root);
+    kill_capsule(&env.state_root);
 
     // The "markerless" precondition this test is named for, checked
     // directly rather than only inferred from the recovery behaviour
@@ -416,16 +406,8 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let supervise_pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
-    let run_pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "run", &env.state_root);
-    assert!(
-        poll_until_no_process_matches(&supervise_pattern, Duration::from_secs(10)),
-        "a supervisor process still matches {supervise_pattern:?} after destroy"
-    );
-    assert!(
-        poll_until_no_process_matches(&run_pattern, Duration::from_secs(10)),
-        "a leg process still matches {run_pattern:?} after destroy"
-    );
+    let left = poll_until_no_capsule_pids(&env.state_root, Duration::from_secs(10));
+    assert!(left.is_empty(), "capsule processes {left:?} remain after destroy");
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
     next_id += 1;

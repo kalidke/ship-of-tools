@@ -4,10 +4,10 @@ use super::*;
 
 /// Decision 33: a headless op (`pty.input`) resumes a row whose
 /// supervisor died between two ops, in place, under the row's own guard —
-/// `resume_if_absent` in place of a bare `phase_of` read. The surviving
-/// leg (a SIGKILL of the authority alone never touches it, ADR 0041
-/// Lifecycle) is ADOPTED by the resume, not replaced: the leg epoch is
-/// unchanged.
+/// `resume_if_absent` in place of a bare `phase_of` read. The row returns
+/// to `ready` in the SAME voyage (whether the resume adopts a surviving
+/// run or starts a new one is the capsule's, so the leg epoch is not
+/// asserted) and the input lands.
 ///
 /// Codex review (2026-09-11): the authority is first ADOPTED across a
 /// daemon restart (`restart_daemon_and_prove_adoption`,
@@ -60,18 +60,17 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let leg_before = tokio::task::spawn_blocking({
+    let (leg_before, voyage_before) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            sot_log::attach_client::supervisor_client::query_status(&dir)
+            let report = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before killing the supervisor")
-                .0
-                .leg
+                .0;
+            (report.leg.expect("a ready capsule has a leg"), report.voyage.expect("a ready capsule has a voyage"))
         }
     })
     .await
-    .unwrap()
-    .expect("a ready capsule has a leg");
+    .unwrap();
 
     // Adopt across a daemon restart FIRST -- the authority survives, this
     // daemon lifetime never spawned it, so no watchdog exists for it.
@@ -86,7 +85,7 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     )
     .await;
 
-    kill_supervisor_only(&env.state_root);
+    kill_supervisor(&env.state_root);
 
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
@@ -114,21 +113,21 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(30))).await;
 
-    let leg_after = tokio::task::spawn_blocking({
+    let voyage_after = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after the resume")
                 .0
-                .leg
+                .voyage
         }
     })
     .await
     .unwrap();
     assert_eq!(
-        leg_after,
-        Some(leg_before),
-        "the leg epoch changed — the surviving leg was not adopted by the resume"
+        voyage_after.as_deref(),
+        Some(voyage_before.as_str()),
+        "the resume must continue the row's own voyage, never mint another"
     );
 
     let _ = tokio::task::spawn_blocking({
@@ -226,7 +225,7 @@ async fn capsule_resume_never_resets_an_ended_row() {
     env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
-    kill_supervisor_only(&env.state_root);
+    kill_supervisor(&env.state_root);
 
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
@@ -356,8 +355,7 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     )
     .await;
 
-    kill_supervisor_only(&env.state_root);
-    kill_leg_only(&env.state_root);
+    kill_capsule(&env.state_root);
 
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
@@ -468,7 +466,7 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
+    let state_root = env.state_root.clone();
     let log_path = env.state_root.join("sot").join("sotd.log");
     let backoff_needle = "capsule supervisor watchdog: crashed, restarting with --resume";
 
@@ -484,15 +482,15 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
         let stop = stop.clone();
         let max_seen = max_seen.clone();
         let sampler_error = sampler_error.clone();
-        let pattern = pattern.clone();
+        let state_root = state_root.clone();
         tokio::spawn(async move {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let pattern = pattern.clone();
-                let outcome = tokio::task::spawn_blocking(move || count_matching_processes(&pattern)).await;
+                let state_root = state_root.clone();
+                let outcome = tokio::task::spawn_blocking(move || try_own_supervisor_count(&state_root)).await;
                 match outcome {
                     Ok(Ok(n)) => max_seen.fetch_max(n, std::sync::atomic::Ordering::Relaxed),
                     Ok(Err(e)) => {
-                        *sampler_error.lock().unwrap() = Some(format!("pgrep failed: {e}"));
+                        *sampler_error.lock().unwrap() = Some(format!("the capsule process listing failed: {e}"));
                         return;
                     }
                     Err(join_err) => {
@@ -507,7 +505,7 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
 
     for _cycle in 0..3 {
         let backoff_seen_before = count_log_occurrences(&log_path, backoff_needle);
-        kill_supervisor_only(&env.state_root);
+        kill_supervisor(&env.state_root);
 
         // Synchronize on the watchdog's OWN backoff log line (Codex
         // review, 2026-09-11) — a NEW occurrence of the line the Crash
@@ -543,7 +541,7 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
         // anything; wait for a real OS-level process count instead.
         let process_deadline = Instant::now() + BOUND;
         loop {
-            if count_matching_processes(&pattern).expect("pgrep") == 1 {
+            if try_own_supervisor_count(&state_root).expect("the capsule process listing") == 1 {
                 break;
             }
             assert!(

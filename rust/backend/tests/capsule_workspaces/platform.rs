@@ -2,76 +2,21 @@
 
 use super::*;
 
-/// One `MgmtRequest::Status` round trip against the LEG's own real
-/// voyage socket (`sot_log::lane::socket_unix::connect_voyage_socket`, ADR
-/// 0043 decision 8 steps 1-3: connect + same-user auth, the ordinary
-/// step-5-client-facing constructor) — the WIRE value the degrade test
-/// proves against (Codex SHOULD-FIX: `/proc/<pid>/cmdline` text does not
-/// prove propagation onto the wire; restoring the deleted Unix survival
-/// clamp would still leave a cmdline-only check green). Distinct from
-/// [`try_query_status`]'s own `sot_log::attach_client::supervisor_client::query_status`:
-/// that is the SUPERVISOR's own status (`SupervisorReply::StatusOk`,
-/// which carries no `survival` field at all) — `survival` lives only on
-/// `MgmtReply::StatusOk`, the LEG's own mgmt lane. The SOM0 mgmt lane
-/// has no hello frame (unlike the supervisor/attach lanes) — `connect_
-/// voyage_socket`'s own same-user auth already happened before this
-/// function ever gets a `SocketClient` back, so the very first frame
-/// sent here is the request itself. Bounded like every other wire round
-/// trip in this file ([`call`]'s own `BOUND`) — the blocking body runs
-/// on its own thread via `spawn_blocking`, abandoned (not cancelled) on
-/// timeout: it leaks a blocked thread rather than hang, the trade
-/// `sot_platform::test_wait::within` makes.
-#[cfg(target_os = "linux")]
-async fn leg_survival(voyage_id: &str) -> sot_log::lane::wire::Survival {
-    let voyage_id_owned = voyage_id.to_string();
-    let voyage_id_for_body = voyage_id_owned.clone();
-    tokio::time::timeout(
-        BOUND,
-        tokio::task::spawn_blocking(move || -> sot_log::lane::wire::Survival {
-            let client = sot_log::lane::socket_unix::connect_voyage_socket(&voyage_id_for_body)
-                .unwrap_or_else(|e| panic!("connect_voyage_socket({voyage_id_for_body}): {e}"));
-            let body = sot_log::lane::wire::encode_mgmt_request(&sot_log::lane::wire::MgmtRequest::Status)
-                .expect("MgmtRequest::Status has no fields; encoding cannot fail");
-            client.write_all(&body).expect("write MgmtRequest::Status");
-            let mut splitter = sot_log::lane::wire::FrameSplitter::new();
-            let mut buf = [0u8; 512];
-            loop {
-                let n = client.read(&mut buf).expect("read mgmt reply");
-                assert!(n > 0, "voyage socket closed before answering status");
-                let (frames, err) = splitter.feed(&buf[..n]);
-                assert!(err.is_none(), "mgmt lane wire error: {err:?}");
-                for frame in frames {
-                    if let sot_log::lane::wire::DecodedFrame::MgmtReply(sot_log::lane::wire::MgmtReply::StatusOk {
-                        survival,
-                        ..
-                    }) = frame
-                    {
-                        return survival;
-                    }
-                }
-            }
-        }),
-    )
-    .await
-    .unwrap_or_else(|_| panic!("leg mgmt status for {voyage_id_owned} did not answer within {BOUND:?}"))
-    .expect("leg_survival's own blocking task panicked")
-}
-
 /// LU4 review round 2, F4's own cleanup contract, proved directly here
 /// rather than re-asserted in every test above (F4's own "whichever is
 /// smaller" — one dedicated test beats touching all six bodies). Spawns
 /// one real capsule row and waits for it to reach a leg worth cleaning up
 /// (so the "empty after" assertions below are not vacuously true), then
 /// drops `env` explicitly and proves `Env`'s own `Drop`:
-///  - swept every process matching this env's own anchored leg pattern
-///    ([`Env::leg_pgrep_pattern`], never the old unanchored substring
-///    match a `tail -f` could false-match),
+///  - swept every capsule process listed for this env's own state root
+///    ([`own_capsule_pids`], by argv, never a substring match a `tail -f`
+///    could false-match),
 ///  - killed this env's own ISOLATED tmux server (F3) rather than ever
 ///    touching the developer's real one (a different socket entirely —
 ///    this env's daemon never saw that path at all, `SOT_TMUX_SOCK`),
 ///  - and removed its own temp project/state/config dir AND its own
 ///    `SOT_RUNTIME_DIR` tempdir (no `/tmp/sotcw-*`/`/tmp/sotrt-*` left).
-/// Linux only: `pkill`/`pgrep`/`tmux` are shelled out to directly.
+/// Linux only: `tmux` is shelled out to directly.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_backend_test_env_drop_cleans_up_legs_and_daemon() {
@@ -116,12 +61,12 @@ async fn capsule_backend_test_env_drop_cleans_up_legs_and_daemon() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    // Not vacuous: a real `sot-capsule supervise`/leg pair matching this
-    // env's own anchored pattern is alive right now.
-    let pattern = env.leg_pgrep_pattern();
+    // Not vacuous: a real `sot-capsule` process over this env's own state
+    // root is alive right now.
+    let state_root = env.state_root.clone();
     assert!(
-        any_process_matches(&pattern),
-        "expected a live sot-capsule leg matching {pattern:?} before the cleanup guard runs"
+        !own_capsule_pids(&state_root).is_empty(),
+        "expected a live sot-capsule process over {state_root:?} before the cleanup guard runs"
     );
 
     // The bounded, deliberate daemon teardown every other test in this
@@ -143,11 +88,9 @@ async fn capsule_backend_test_env_drop_cleans_up_legs_and_daemon() {
     drop(env);
 
     // G3: the same bounded, sweep-until-empty shape `Drop`'s own loop
-    // uses, read-only here (see `poll_until_no_process_matches`'s doc).
-    assert!(
-        poll_until_no_process_matches(&pattern, Duration::from_secs(2)),
-        "the cleanup guard must leave no process matching {pattern:?}"
-    );
+    // uses, read-only here (see `poll_until_no_capsule_pids`'s doc).
+    let left = poll_until_no_capsule_pids(&state_root, Duration::from_secs(2));
+    assert!(left.is_empty(), "the cleanup guard must leave no capsule process over {state_root:?}: {left:?}");
     assert!(
         !tmp_root.exists(),
         "the cleanup guard must remove the env's own temp project/state/config dir: {tmp_root:?}"
@@ -387,14 +330,13 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
     env.forget_user_service();
 
     // 3 s SUSTAINED (never a single lucky sample): the supervisor's own
-    // lane keeps answering and its leg keeps running for the WHOLE
-    // window, proving survival actually crossed the unit stop rather than
-    // merely outliving it by a race.
-    let run_pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "run", &env.state_root);
+    // lane keeps answering, as the same process, for the WHOLE window,
+    // proving survival actually crossed the unit stop rather than merely
+    // outliving it by a race.
     let sustain_deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let alive = try_query_status(state_dir.clone()).await.is_some() && any_process_matches(&run_pattern);
-        assert!(alive, "supervisor lane or its leg went away within 3s of the daemon's own unit stopping");
+        let alive = try_query_status(state_dir.clone()).await.is_some_and(|report| report.pid == pid);
+        assert!(alive, "the supervisor's lane went away within 3s of the daemon's own unit stopping");
         if Instant::now() >= sustain_deadline {
             break;
         }
@@ -528,12 +470,11 @@ fn scope_guard_refuses_everything_the_aim_rule_refuses() {
 /// `systemd --user` manager", so this runs deterministically regardless
 /// of whether a REAL one exists here too), the row still reaches "ready"
 /// — contained, degraded, but never refused — and the daemon reports
-/// exactly why: the LEG's own mgmt status reports `survival: Degraded`
-/// on the wire ([`leg_survival`] — Codex SHOULD-FIX: cmdline text proves
-/// only what was typed on the command line, not what the process
-/// actually configured or reported; restoring the deleted Unix survival
-/// clamp would still leave a cmdline-only check green), and the daemon's
-/// own log names the probe's stderr.
+/// exactly why: the supervisor it started carries `--survival degraded`
+/// in its argv (read from `/proc/<pid>/cmdline` for the pid its own
+/// status reports; the degrade is rows' decision, made in
+/// `rows/spawn/detach.rs`), and the daemon's own log names the probe's
+/// stderr.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_launch_degrades_when_no_user_scope_is_available() {
@@ -576,13 +517,14 @@ async fn capsule_launch_degrades_when_no_user_scope_is_available() {
     .unwrap()
     .expect("query_status on the degraded row");
     drop(process);
-    let voyage_id = status.voyage.expect("a voyage id on a ready row");
 
-    let survival = leg_survival(&voyage_id).await;
-    assert_eq!(
-        survival,
-        sot_log::lane::wire::Survival::Degraded,
-        "the leg's own mgmt status must report survival=degraded when the user scope is denied"
+    let cmdline = std::fs::read(format!("/proc/{}/cmdline", status.pid))
+        .unwrap_or_else(|e| panic!("read /proc/{}/cmdline of the degraded row's supervisor: {e}", status.pid));
+    let argv: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+    assert!(
+        argv.windows(2).any(|pair| pair == [b"--survival".as_slice(), b"degraded".as_slice()]),
+        "the supervisor's argv must carry --survival degraded when the user scope is denied: {:?}",
+        argv.iter().map(|a| String::from_utf8_lossy(a)).collect::<Vec<_>>()
     );
 
     let log_path = env.state_root.join("sot").join("sotd.log");

@@ -381,9 +381,8 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
             !old_cmdline.contains("supervise"),
             "the old resident authority (pid {original_pid}) must be gone or no longer running `supervise`: {old_cmdline:?}"
         );
-        let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
         assert_eq!(
-            count_matching_processes(&pattern).expect("pgrep"),
+            own_supervisor_pids(&env.state_root).len(),
             1,
             "exactly one supervise process must match this row's state dir after recovery"
         );

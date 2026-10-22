@@ -614,22 +614,6 @@ impl Env {
         sot_platform::test_exec::write_executable(&stub, b"#!/bin/sh\necho 'stub: no user manager' >&2; exit 1\n");
         dir
     }
-
-    /// LU4 review round 2, F4 (anchor tightened round 3, G2): the
-    /// anchored `pgrep`/`pkill` pattern for every real leg THIS env's own
-    /// daemon could ever have spawned, covering EITHER subcommand
-    /// (`rows/spawn/detach.rs`'s own two spawn sites) against this env's
-    /// own `state_root` (every workspace's own `state_dir_for` nests
-    /// under it, `state_root.join("workspaces").join(workspace_id)`, so
-    /// anchoring on the ROOT alone covers every row this `Env` could ever
-    /// create without having to learn each workspace's own state dir as
-    /// it's discovered). See [`build_leg_pgrep_pattern`] for why this
-    /// anchors on the ESCAPED, EXACT executable path (or its file name)
-    /// rather than a wildcard.
-    #[cfg(target_os = "linux")]
-    pub fn leg_pgrep_pattern(&self) -> String {
-        build_leg_pgrep_pattern(&sot_capsule_exe(), "(supervise|run)", &self.state_root)
-    }
 }
 
 /// ADR 0043 decision 32 (lane L2), Codex BLOCKER 2: stop this env's own
@@ -640,9 +624,10 @@ impl Env {
 /// live daemon process a panic could leave running. THEN: kill the
 /// tracked daemon `Child` (so its own crash-restart policy can't spawn a
 /// fresh contender into a state dir this impl is about to sweep), THEN
-/// sweep this env's own legs with the ANCHORED pattern
-/// ([`Env::leg_pgrep_pattern`] — never the old unanchored `pkill -f
-/// <state_dir>` substring match), THEN kill this env's own ISOLATED tmux
+/// sweep this env's own capsule processes
+/// ([`try_own_capsule_pids`], listed by argv naming this env's own state
+/// root, each ended through a handle opened first — never a pattern kill
+/// or a bare pid), THEN kill this env's own ISOLATED tmux
 /// server (F3) — in that exact order, on EVERY exit path including a
 /// panic, which a per-test teardown call can never guarantee.
 /// `_tmp`/`_runtime_tmp`'s own `Drop` (temp dir removal, the final step)
@@ -677,65 +662,43 @@ impl Drop for Env {
             end_daemon(&mut child);
         }
 
-        // (2, Windows) the counterpart of the Linux leg sweep below: a
-        // capsule outlives a killed daemon BY DESIGN (it breaks away from
-        // the daemon's job), so without this a test's supervisors, `run`
-        // legs and the agent trees under them stay alive after the test
-        // ends. Supervisors first so no NEW leg appears after a pass's
-        // own kill; `taskkill /T` takes each one's whole tree (the agent,
-        // its cmd.exe and conhost.exe). Repeated until a pass finds none
-        // or 5 s pass. Best-effort: never panics.
-        #[cfg(windows)]
+        // (2) sweep this env's own capsule processes, REPEATED until a
+        // pass finds none or 2 s (5 s on Windows) pass. A capsule outlives a
+        // killed daemon BY DESIGN (it breaks away from the daemon's job),
+        // so without this a test's processes stay alive after the test
+        // ends. Each is ended through a handle opened before its identity
+        // is read again (`kill_verified`, `kill_by_handle`), never by a
+        // bare discovered pid. Supervisors come first in the listing, so a
+        // supervisor ended on this pass cannot start anything after it.
+        // Best-effort: never panics, but every failure and every process
+        // left behind is named on stderr before the folders go.
+        #[cfg(any(windows, target_os = "linux"))]
         {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + if cfg!(windows) { Duration::from_secs(5) } else { Duration::from_secs(2) };
             loop {
-                // A listing that cannot answer ends the sweep: a Drop cannot fail, and the next check that asks
-                // fails with the listing's account.
-                let Ok(pids) = try_own_capsule_pids(&self.state_root) else {
-                    break;
+                let pids = match try_own_capsule_pids(&self.state_root) {
+                    Ok(pids) => pids,
+                    Err(error) => {
+                        eprintln!("Env::drop: cannot list the capsule processes over {:?}: {error}", self.state_root);
+                        break;
+                    }
                 };
-                if pids.is_empty() || Instant::now() >= deadline {
+                if pids.is_empty() {
                     break;
                 }
-                for pid in pids {
-                    let _ = sot_platform::test_wait::try_run_within(
-                        Command::new("taskkill").args(["/F", "/T", "/PID"]).arg(pid.to_string()),
-                        BOUND,
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(200));
-            }
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            // (2) sweep this env's own legs, anchored, REPEATED until a
-            // full pass finds nothing (G2/G3, LU4 review round 2): a
-            // single `pkill` SELECTS its targets before signalling them,
-            // so a supervisor process killed just now can still have
-            // spawned a fresh leg a moment earlier that the same
-            // selection pass never saw — the two-second follow-up this
-            // used to be only ever OBSERVED that gap, never closed it.
-            // Killing supervisors FIRST each pass (before their own
-            // legs) means no NEW leg can be spawned after this pass's own
-            // supervisor-kill lands; a leg from a supervisor killed on an
-            // EARLIER pass is still caught by this pass's own `run`-kill.
-            let exe = sot_capsule_exe();
-            let supervise_pattern = build_leg_pgrep_pattern(&exe, "supervise", &self.state_root);
-            let run_pattern = build_leg_pgrep_pattern(&exe, "run", &self.state_root);
-            let combined_pattern = self.leg_pgrep_pattern();
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                let _ = sot_platform::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&supervise_pattern), BOUND);
-                let _ = sot_platform::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&run_pattern), BOUND);
-                // A pgrep that cannot answer ends the sweep: a Drop cannot fail, and the next check that asks fails
-                // with pgrep's account.
-                if !matches!(count_matching_processes(&combined_pattern), Ok(n) if n > 0) || Instant::now() >= deadline {
+                if Instant::now() >= deadline {
+                    eprintln!("Env::drop: leaves capsule processes {pids:?} over {:?}", self.state_root);
                     break;
+                }
+                #[cfg(target_os = "linux")]
+                let ended = kill_verified(&RealProcFs, &pids, &sot_capsule_exe(), &self.state_root);
+                #[cfg(windows)]
+                let ended = kill_by_handle(&self.state_root, &pids);
+                if let Err(error) = ended {
+                    eprintln!("Env::drop: could not end capsule processes {pids:?}: {error}");
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-
         }
 
         // (4) `_tmp`/`_runtime_tmp` remove themselves right after this

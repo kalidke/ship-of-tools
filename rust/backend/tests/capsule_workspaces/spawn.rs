@@ -484,16 +484,24 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
 
     // (1) The row reaches phase "terminal" within a bound -- never
-    // cycling Starting -> Terminal -> Starting forever. Generous over
-    // the anti-flap bound's own worst case (three near-instant spawn
-    // failures) plus the authority's own 2s self-exit grace plus the
-    // daemon watchdog's own child-wait — comfortably inside `BOUND`.
-    let terminal_deadline = Instant::now() + BOUND;
+    // cycling Starting -> Terminal -> Starting forever, and never resting
+    // at "ended_no_respawn" on the way (an agent that cannot start is not
+    // an agent that was asked to end). The bound is the daemon watchdog's
+    // restart backoffs (1 + 3 + 7 + 15 + 30 s, `RESTART_BACKOFFS`, which
+    // this suite cannot import) plus the suite's own `BOUND`: whichever
+    // capsule ends the row, the one restart budget is the longest it can
+    // take.
+    let terminal_deadline = Instant::now() + Duration::from_secs(56) + BOUND;
     loop {
         let id = next_id;
         next_id += 1;
         let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
         if let Some(row) = find_row(&payload, &default_workspace_id) {
+            assert_ne!(
+                row["phase"].as_str(),
+                Some("ended_no_respawn"),
+                "an agent that cannot start must never rest as ended_no_respawn: {row:?}"
+            );
             if row["phase"].as_str() == Some("terminal") {
                 break;
             }

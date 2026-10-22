@@ -164,7 +164,7 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
     let env = Env::new("lb3");
     env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-    let (_workspace_id, target) = create_ready_capsule_row(&env, &mut conn, &mut next_id, "lb3-workspace").await;
+    let (workspace_id, target) = create_ready_capsule_row(&env, &mut conn, &mut next_id, "lb3-workspace").await;
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
@@ -194,20 +194,19 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
     }
     let leg_notice = client.notice().map(|s| s.to_string());
 
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
-    kill_supervisor_only(&env.state_root);
+    kill_supervisor(&env.state_root);
 
     let resumed_deadline = Instant::now() + Duration::from_secs(60);
     loop {
         client.pump();
         assert!(!client.is_dead(), "a lane-only drop must never go terminal: {}", client.status_line());
-        if count_matching_processes(&pattern).expect("pgrep") >= 1 {
+        if !own_supervisor_pids(&env.state_root).is_empty() {
             break;
         }
         assert!(Instant::now() < resumed_deadline, "the daemon never resumed the dropped row");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert_eq!(count_matching_processes(&pattern).expect("pgrep"), 1, "ensure_started must spawn exactly one new supervise process");
+    assert_eq!(own_supervisor_pids(&env.state_root).len(), 1, "ensure_started must spawn exactly one new supervise process");
 
     // Functional recovery, not merely a resumed process: a fresh input
     // through the SAME client lands, and the leg identity is unchanged.
@@ -222,7 +221,18 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
         assert!(Instant::now() < input_deadline, "resumed client's own input never echoed");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(client.notice().map(|s| s.to_string()), leg_notice, "notice() must still name the SAME leg after a lane-only drop");
+    // The notice names the process the attach lane is served from, which after the kill is whichever process the row
+    // answers from now: the surviving leg (the same notice as before) or the resumed supervisor (its own creation
+    // identity, as its SOSV status reports it).
+    let answering = sot_log::attach_client::supervisor_client::query_status(&env.state_root.join("sot").join("workspaces").join(&workspace_id))
+        .expect("query_status after the resume")
+        .0;
+    let notice = client.notice().map(|s| s.to_string());
+    assert!(
+        notice == leg_notice || notice.as_deref().is_some_and(|n| n.contains(&answering.created.to_string())),
+        "notice() must name the process the row now answers from (created {}): {notice:?}, before the drop {leg_notice:?}",
+        answering.created
+    );
     assert!(!client.is_dead(), "the client must never have gone terminal across the drop");
 
     drop(client);
@@ -252,8 +262,7 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
     assert_eq!(row["phase"].as_str(), Some("stopped"), "row must be genuinely never-started: {row:?}");
     let target = row["session_name"].as_str().expect("session_name").to_string();
 
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
-    assert_eq!(count_matching_processes(&pattern).expect("pgrep"), 0, "no supervise process must exist before the dial");
+    assert_eq!(own_supervisor_pids(&env.state_root).len(), 0, "no supervise process must exist before the dial");
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
@@ -291,7 +300,7 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
             saw_absent_answer = true;
         }
         assert_eq!(
-            count_matching_processes(&pattern).expect("pgrep"),
+            own_supervisor_pids(&env.state_root).len(),
             0,
             "a bridge dial must never start a row's first-ever run"
         );

@@ -165,20 +165,12 @@ async fn assert_adopted(env: &Env, row: &Row, why: &str) {
     assert!(row_toml(env, &row.slug).exists(), "{why}: row {}'s toml is gone", row.id);
 }
 
-/// Kill -9 every leg of `row`, its supervisor and its run, by the
-/// pattern anchored on the row's own state dir: the row's capsule dies
-/// with no end, as a crash leaves it.
+/// Kill -9 every capsule process of `row`, by the pids listed for the row's own
+/// state dir: the row's capsule dies with no end, as a crash leaves it.
 #[cfg(target_os = "linux")]
 fn kill_row_capsule(row: &Row) {
-    let legs = row_legs(row);
-    assert!(support::any_process_matches(&legs), "no leg of row {} matches {legs}", row.id);
-    let _ = sot_platform::test_wait::try_run_within(std::process::Command::new("pkill").args(["-9", "-f", &legs]), BOUND);
-    assert!(support::poll_until_no_process_matches(&legs, BOUND), "row {}'s legs survived the kill", row.id);
-}
-
-#[cfg(target_os = "linux")]
-fn row_legs(row: &Row) -> String {
-    support::build_leg_pgrep_pattern(&support::sot_capsule_exe(), "(supervise|run)", &row.state_dir)
+    assert!(!support::own_capsule_pids(&row.state_dir).is_empty(), "no capsule process of row {} is running", row.id);
+    support::kill_capsule(&row.state_dir);
 }
 
 /// The "slow row": its legs killed, then its fence held here, so no end
@@ -193,11 +185,10 @@ async fn hold_row_end(row: &Row) -> sot_log::supervisor::journal::fence::Supervi
 /// No sot-capsule leg of `row` appears for 3 s: the start never resumed it.
 #[cfg(target_os = "linux")]
 fn assert_never_resumed(row: &Row, why: &str) {
-    let legs = row_legs(row);
     let until = Instant::now() + Duration::from_secs(3);
     while Instant::now() < until {
         assert!(
-            !support::any_process_matches(&legs),
+            support::own_capsule_pids(&row.state_dir).is_empty(),
             "{why}: row {} was resumed: a sot-capsule appeared for its state dir",
             row.id
         );

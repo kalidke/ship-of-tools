@@ -37,14 +37,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sot_protocol::op;
-// Linux-only: every `Command` call site left in this file after
-// the ADR 0045 lane B4b support-module lift (`kill_supervisor_only`,
-// `count_matching_processes`; `kill_leg_only` stays here) and every `Frame`/`codec::`
-// call site (the `lane.connect` fixtures) live inside
-// `#[cfg(target_os = "linux")]` helpers -- an unguarded import here would
-// warn unused on Windows.
-#[cfg(target_os = "linux")]
-use std::process::Command;
+// Linux-only: every `Frame`/`codec::` call site (the `lane.connect`
+// fixtures) lives inside `#[cfg(target_os = "linux")]` helpers -- an
+// unguarded import here would warn unused on Windows.
 #[cfg(target_os = "linux")]
 use sot_protocol::{codec, Frame};
 // LU5a: only the Linux-only unqualified-state-root refusal test below
@@ -57,9 +52,8 @@ use sot_topology::endpoint::slug;
 // ADR 0045 lane B4b: `Env`, the wire-protocol round-trip helpers
 // (`connect_and_hello`, `call`, `poll_until`, `poll_for_phase`), `find_row`,
 // `try_query_status`, `create_ready_workspace_then_stop_its_supervisor`, and
-// the anchored-pgrep leg-sweep machinery (`build_leg_pgrep_pattern` and
-// friends, `Env::leg_pgrep_pattern`, `kill_supervisor_only`,
-// `count_matching_processes`) and `wake_flag_for_test` moved verbatim to `tests/support/`
+// the capsule process listing and kills by pid (`own_capsule_pids`,
+// `kill_supervisor`) and `wake_flag_for_test` moved to `tests/support/`
 // so `lane_bridge/main.rs`'s own cross-process proofs can reuse them without a
 // second, drifting copy. `mod support;` (not a `tests/*.rs` file itself —
 // Cargo only auto-discovers direct children of `tests/`) plus a glob import
@@ -95,44 +89,6 @@ mod spawn;
 #[cfg(target_os = "linux")]
 mod work_state;
 
-#[cfg(target_os = "linux")]
-#[cfg(test)]
-mod leg_pgrep_pattern_tests {
-    use super::*;
-
-    /// G2's own regression case: a space in the executable path (a legal
-    /// `CARGO_TARGET_DIR` with a space in it) must still produce a
-    /// pattern that matches that path LITERALLY — a space is not an ERE
-    /// metacharacter, so it must pass through `regex_escape_path`
-    /// untouched rather than being dropped or mis-escaped.
-    #[test]
-    fn build_leg_pgrep_pattern_keeps_a_literal_space_in_the_exe_path() {
-        let exe = Path::new("/scratch/build target/debug/sot-capsule");
-        let state_root = Path::new("/tmp/sotcw-abc123/state");
-        let pattern = build_leg_pgrep_pattern(&exe, "supervise", &state_root);
-        assert_eq!(
-            pattern,
-            r"^(/scratch/build target/debug/sot-capsule|sot-capsule) supervise /tmp/sotcw-abc123/state"
-        );
-    }
-
-    /// Regex metacharacters in EITHER half (`+`/`.`) must be escaped so
-    /// they match themselves literally rather than being interpreted by
-    /// `pkill`/`pgrep`'s own POSIX ERE engine (a stray `.` would
-    /// otherwise match any single character, widening the match rather
-    /// than narrowing it to this exact path).
-    #[test]
-    fn build_leg_pgrep_pattern_escapes_regex_metacharacters_in_both_halves() {
-        let exe = Path::new("/scratch/target+build/sot-capsule");
-        let state_root = Path::new("/tmp/sotcw-v1.2/state");
-        let pattern = build_leg_pgrep_pattern(&exe, "run", &state_root);
-        assert_eq!(
-            pattern,
-            r"^(/scratch/target\+build/sot-capsule|sot-capsule) run /tmp/sotcw-v1\.2/state"
-        );
-    }
-}
-
 // A DETACHED leg this test's own row may have left running (`stop` ends
 // ONLY the supervisor AUTHORITY — ADR 0041 Lifecycle, legs are
 // deliberately outside the supervisor's own job — so a test whose own
@@ -154,11 +110,12 @@ enum AuthorityAtRestart {
     /// still-answering lane rather than racing a competing `--resume`
     /// into its fence.
     Alive,
-    /// The authority is explicitly stopped first
-    /// (`sot_log::attach_client::supervisor_client::stop`) — its capsule leg
-    /// deliberately survives (ADR 0041 Lifecycle: legs are outside the
-    /// supervisor's own job). Proves `sot-capsule`'s OWN leg-adoption of
-    /// a still-alive orphaned leg behind a genuinely DEAD lane.
+    /// The supervisor is explicitly stopped first
+    /// (`sot_log::attach_client::supervisor_client::stop`). A stop is not an
+    /// end of the run: the next start resumes the row, in the same voyage,
+    /// behind a genuinely DEAD lane. Whether that resume adopts a surviving
+    /// run or starts a new one is the capsule's, so only the voyage is
+    /// asserted, not the leg epoch.
     Stopped,
 }
 
@@ -179,9 +136,10 @@ enum AuthorityAtRestart {
 /// poll could exit before a DELAYED terminal-mark regression ever showed
 /// up — the `Stopped` scenario's resume is a real process spawn with no
 /// fence contention at risk once it reports ready, so it gets no extra
-/// dwell). Finally asserts the leg epoch is UNCHANGED across the restart
-/// — the proof that whichever mechanism resumed the run ADOPTED it
-/// rather than spawning a fresh contender. Returns the new connection/
+/// dwell). Finally asserts the voyage is UNCHANGED across the restart and,
+/// for [`AuthorityAtRestart::Alive`], the leg epoch too — the proof that
+/// whichever mechanism resumed the run ADOPTED it rather than spawning a
+/// fresh contender. Returns the new connection/
 /// next-id so a caller (today: only the `Stopped` scenario) can continue
 /// past this point on the SAME connection — the new daemon itself needs
 /// no return: `env` already owns it (`Env::spawn_sotd`, F4), so a later
@@ -195,6 +153,18 @@ async fn restart_daemon_and_prove_adoption(
     leg_before: u64,
     authority: AuthorityAtRestart,
 ) -> (Conn, u64) {
+    let voyage_before = tokio::task::spawn_blocking({
+        let dir = state_dir_path.to_path_buf();
+        move || {
+            sot_log::attach_client::supervisor_client::query_status(&dir)
+                .expect("query_status before the daemon restart")
+                .0
+                .voyage
+        }
+    })
+    .await
+    .unwrap()
+    .expect("a ready capsule has a voyage");
     if matches!(authority, AuthorityAtRestart::Stopped) {
         tokio::task::spawn_blocking({
             let dir = state_dir_path.to_path_buf();
@@ -272,22 +242,28 @@ async fn restart_daemon_and_prove_adoption(
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let leg_after = tokio::task::spawn_blocking({
+    let after = tokio::task::spawn_blocking({
         let dir = state_dir_path.to_path_buf();
         move || {
             sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after restart")
                 .0
-                .leg
         }
     })
     .await
     .unwrap();
     assert_eq!(
-        leg_after,
-        Some(leg_before),
-        "the leg epoch changed across the daemon restart (authority={authority:?}) -- a fresh/competing leg was spawned, not adopted"
+        after.voyage.as_deref(),
+        Some(voyage_before.as_str()),
+        "the voyage changed across the daemon restart (authority={authority:?}) -- the row was reset, not resumed"
     );
+    if matches!(authority, AuthorityAtRestart::Alive) {
+        assert_eq!(
+            after.leg,
+            Some(leg_before),
+            "the leg epoch changed across the daemon restart (authority={authority:?}) -- a fresh/competing leg was spawned, not adopted"
+        );
+    }
 
     (conn2, next_id2)
 }
@@ -305,19 +281,6 @@ async fn state_dir_from_list(conn: &mut Conn, next_id: &mut u64, workspace_id: &
 
 // --- ADR 0043 decision 33 (lane L1a): the per-row guard, resume_if_absent,
 // and the watchdog's guard-through-backoff restart --- //
-
-/// [`kill_supervisor_only`]'s twin for the capsule LEG (the `run`
-/// subcommand) — used only where a test needs the leg genuinely gone too
-/// (no marker, no survivor to adopt), never on its own.
-#[cfg(target_os = "linux")]
-fn kill_leg_only(state_root: &Path) {
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "run", state_root);
-    let _ = sot_platform::test_wait::try_run_within(Command::new("pkill").args(["-9", "-f"]).arg(&pattern), BOUND);
-    assert!(
-        poll_until_no_process_matches(&pattern, BOUND),
-        "a leg process still matches {pattern:?} after SIGKILL"
-    );
-}
 
 /// How many times `needle` appears in `sotd.log` so far — used to
 /// synchronize on a NEW occurrence of a specific watchdog log line

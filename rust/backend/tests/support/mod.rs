@@ -289,8 +289,9 @@ pub async fn try_query_status(state_dir: PathBuf) -> Option<sot_log::attach_clie
 }
 /// Real-supervisor preamble shared by both lane-refusal tests below:
 /// create a capsule workspace, wait for a REAL supervisor (this
-/// checkout's own build) to reach "ready", then stop JUST the authority
-/// (the leg survives, ADR 0041 Lifecycle) so the state dir carries a
+/// checkout's own build) to reach "ready", then stop the supervisor (a
+/// stop is not an end of the run: the next start resumes the row in the
+/// same voyage) so the state dir carries a
 /// published pointer with nothing currently answering its socket —
 /// exactly the precondition [`spawn_lane_refusal_fixture`]'s caller needs
 /// before binding in the real supervisor's place.
