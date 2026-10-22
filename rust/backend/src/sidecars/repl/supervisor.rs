@@ -173,7 +173,7 @@ pub(super) mod seams;
 #[allow(clippy::too_many_lines, reason = "the REPL supervisor task: one loop over the child's output and the submissions; predates the 100-line limit")]
 async fn supervisor_task(
     mut contained: sot_containment::Contained,
-    mut stdin: ChildStdin,
+    stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
     mut stop_rx: oneshot::Receiver<()>,
@@ -198,6 +198,9 @@ async fn supervisor_task(
     // even when the shim emits no `done` frame (the missing-file res path).
     let mut collector_ids: HashMap<u64, u64> = HashMap::new();
     let mut next_id: u64 = 1;
+    let mut stdin = Some(stdin);
+    // The write of the last submission, while it has not finished: it owns the pipe meanwhile.
+    let mut writing: Option<std::pin::Pin<Box<dyn std::future::Future<Output = (ChildStdin, std::io::Result<()>)> + Send>>> = None;
     let mut stdout_lines = ChildLines::new(stdout);
     // The evals in flight in the order they were written to the child: the first is the one it runs (the shim holds
     // one eval at a time), so it is the only eval an interrupt signal can reach.
@@ -225,7 +228,7 @@ async fn supervisor_task(
             _ = tmp.display_ended() => {
                 break ReplEnded::DisplayEnded;
             }
-            sub = submit_rx.recv() => {
+            sub = submit_rx.recv(), if writing.is_none() => {
                 // Every sender is gone: the same closeout as a stop.
                 let Some(sub) = sub else {
                     break ReplEnded::Stopped;
@@ -252,31 +255,6 @@ async fn supervisor_task(
                     }
                 };
                 line.push('\n');
-                // The write and flush give way to a stop or the signal, so a
-                // child that reads nothing cannot hold the owner. The
-                // submission stays ours until it is written; a cancelled one
-                // is closed out with the rest and never resent.
-                let written = tokio::select! {
-                    biased;
-                    _ = sig.fired() => Err(ReplEnded::Stopped),
-                    stop = &mut stop_rx => Err(retired(stop)),
-                    _ = tmp.display_ended() => Err(ReplEnded::DisplayEnded),
-                    r = async {
-                        stdin.write_all(line.as_bytes()).await?;
-                        stdin.flush().await
-                    } => r.map_err(|e| {
-                        tracing::warn!(error = %e, "repl stdin");
-                        ReplEnded::Died
-                    }),
-                };
-                if let Err(end) = written {
-                    if let Some(reply) = sub.reply {
-                        let _ = reply.send(Err(anyhow::Error::new(end)));
-                    } else if let (Some(eid), Some(owner)) = (sub.payload.get("eval_id").and_then(Value::as_u64), sub.owner) {
-                        streaming.insert(eid, owner);
-                    }
-                    break end;
-                }
                 let eid = sub.payload.get("eval_id").and_then(Value::as_u64);
                 // `repl.execute` submissions carry a collector: tee this
                 // eval_id's frames into it loss-free (in addition to `pending`,
@@ -302,6 +280,28 @@ async fn supervisor_task(
                 }
                 if let Some(eid) = eid.filter(|e| streaming.contains_key(e) || collectors.contains_key(e)) {
                     in_order.push_back(eid);
+                }
+                // The submission is ours from here, so an end closes it out whether or not its bytes went; the
+                // write runs beside the loop's other arms, so a child that reads nothing hides neither its exit nor
+                // its output nor an escalation, and the owner's stop and the signal still end it.
+                let mut pipe = stdin.take().expect("one write at a time");
+                writing = Some(Box::pin(async move {
+                    let r = async {
+                        pipe.write_all(line.as_bytes()).await?;
+                        pipe.flush().await
+                    }
+                    .await;
+                    (pipe, r)
+                }));
+            }
+            (pipe, r) = async { writing.as_mut().expect("guarded").await }, if writing.is_some() => {
+                writing = None;
+                match r {
+                    Ok(()) => stdin = Some(pipe),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "repl stdin");
+                        break ReplEnded::Died;
+                    }
                 }
             }
             line = stdout_lines.next_line() => {
@@ -439,6 +439,7 @@ async fn supervisor_task(
     }
     // Retirement: request the tree's termination and check the direct
     // child's reap. The result is the owner's join value.
+    drop(writing);
     drop(stdin);
     #[cfg(test)]
     {

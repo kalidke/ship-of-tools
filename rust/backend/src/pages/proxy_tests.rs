@@ -99,6 +99,25 @@ fn a_stale_generation_is_refused_by_the_table() {
     PagesGrants.apply(PortEvent::End { owner, generation: 6 }).expect("end");
 }
 
+/// An `Allow` is acknowledged only if the port stays granted: with the owner's table full, a port the cap would evict
+/// at once (the smallest) is refused, and the ports already granted stand.
+#[test]
+fn an_allow_the_cap_would_evict_at_once_is_refused() {
+    use crate::sidecars::ports::{PortEvent, PortGrants, PortRefused};
+    let owner = "wsEvict-test".to_string();
+    for p in 0..BROWSER_PORTS_PER_WS as u16 {
+        PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 3, port: 47000 + p }).expect("room");
+    }
+    let refused = PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 3, port: 46999 });
+    assert!(matches!(refused, Err(PortRefused::Failed(_))), "{refused:?}");
+    assert!(!allowed_proxy_ports().contains(&46999));
+    assert!(allowed_proxy_ports().contains(&47000), "the granted ports stand");
+    // A larger port evicts the smallest and stays.
+    PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 3, port: 47100 }).expect("kept");
+    assert!(allowed_proxy_ports().contains(&47100) && !allowed_proxy_ports().contains(&47000));
+    PagesGrants.apply(PortEvent::End { owner, generation: 3 }).expect("end");
+}
+
 /// An older child's `End` is refused and leaves its replacement's grant standing.
 #[test]
 fn an_older_childs_end_cannot_erase_its_replacements_grant() {

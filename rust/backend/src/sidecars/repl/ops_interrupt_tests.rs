@@ -111,3 +111,28 @@ async fn an_interrupt_reaches_the_child_with_the_evals_it_names() {
     let reached = json!({ "workspace_id": id, "eval_ids": [number, 1u64 << 40] });
     assert_eq!(interrupts[0]["payload"], reached, "the child is named the eval by the daemon's number");
 }
+
+/// An eval whose `code` is not a string is refused at the op, before anything is announced or queued: the shim could
+/// answer it only with a response a streamed run drops, which would leave the run open.
+#[tokio::test]
+async fn an_eval_whose_code_is_not_a_string_is_refused_before_it_is_accepted() {
+    let tmp = tempfile::Builder::new().prefix("sot-repl-badcode-").tempdir().unwrap();
+    let root = tmp.path().join("row");
+    std::fs::create_dir_all(&root).unwrap();
+    let (frame_tx, mut bus) = tokio::sync::broadcast::channel(256);
+    let workspaces = Workspaces::new();
+    workspaces.set_repl_frame_tx(frame_tx);
+    let session = Session::new();
+    let ws = crate::rows::Workspace::from_label("badcode", root, false, "none".into(), String::new(), String::new());
+    let id = ws.workspace_id.clone();
+    workspaces.insert(ws);
+    for code in [json!(123), json!(null), json!(["1"])] {
+        let out = handle_repl_eval(1, json!({ "workspace_id": id, "eval_id": 7, "code": code }), &session, &workspaces, &Default::default())
+            .await
+            .expect("handler");
+        let payload = &out[0].0.payload;
+        assert_eq!(payload["code"], "repl_eval_failed", "{payload}");
+        assert!(payload["error"].as_str().unwrap_or("").contains("code"), "{payload}");
+        assert!(bus.try_recv().is_err(), "a refused eval announces nothing");
+    }
+}
