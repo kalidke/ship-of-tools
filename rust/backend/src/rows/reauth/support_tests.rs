@@ -144,6 +144,20 @@ pub(super) fn seed_row_into(
     account: &str,
     handle: &str,
 ) -> (String, String) {
+    seed_row_with_id(reg, None, label, root, account, handle)
+}
+
+/// [`seed_row_into`] under a given id: a row re-inserted under an id it already had. A minted id mixes the pid with the
+/// clock's second (`Workspace::from_label`), so two mints agree only within one second; a test that re-inserts a row
+/// names its id instead.
+pub(super) fn seed_row_with_id(
+    reg: &Workspaces,
+    id: Option<&str>,
+    label: &str,
+    root: &Path,
+    account: &str,
+    handle: &str,
+) -> (String, String) {
     let mut ws = Workspace::from_label(
         label,
         root.to_path_buf(),
@@ -152,6 +166,9 @@ pub(super) fn seed_row_into(
         "row-agent".into(),
         String::new(),
     );
+    if let Some(id) = id {
+        ws.workspace_id = id.to_string();
+    }
     ws.runtime = "capsule".to_string();
     ws.account = std::sync::Mutex::new(account.to_string());
     let id = ws.workspace_id.clone();

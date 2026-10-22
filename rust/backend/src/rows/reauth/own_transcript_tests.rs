@@ -251,8 +251,8 @@ async fn a_row_replaced_while_its_reauth_waits_is_refused() {
         );
         tokio::task::yield_now().await;
     }
-    let (same_id, _) = seed_row_into(&reg, "reauth-row", &moved, "", "row-declared-handle");
-    assert_eq!(same_id, id, "a re-inserted slug keeps its id");
+    // The replacement keeps the row's id: it is re-inserted under it, not minted again in a later second.
+    seed_row_with_id(&reg, Some(&id), "reauth-row", &moved, "", "row-declared-handle");
     drop(held);
 
     let (payload, restart) = waiting.await.unwrap();
