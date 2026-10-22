@@ -2,18 +2,23 @@
 //! is forwarded, a refusal is visible at the run, and a new handle's generations start above the last.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 use super::*;
-use crate::sidecars::contract_tests::{isolated, OwnedRoot};
 use crate::sidecars::ports::{PortEvent, PortGrants, PortRefused, PortSink};
+#[cfg(unix)]
+use crate::sidecars::contract_tests::{isolated, OwnedRoot};
+#[cfg(unix)]
+use serde_json::{json, Value};
+#[cfg(unix)]
+use std::time::Duration;
 
+#[cfg(unix)]
 const BODY: Duration = Duration::from_secs(120);
 
 /// A `julia` stand-in that answers every request with a `browser` frame for eval 7.
+#[cfg(unix)]
 const BROWSER_STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do\n  printf '%s\\n' '{\"id\":0,\"kind\":\"evt\",\"op\":\"repl.frame\",\"payload\":{\"eval_id\":7,\"frame\":{\"kind\":\"browser\",\"url\":\"http://127.0.0.1:45621/page\"}}}'\ndone\n";
 
 /// A receiver that keeps every event, says whether the frame was already on the bus when each arrived, and answers with
@@ -47,12 +52,14 @@ impl PortGrants for Recorder {
 }
 
 /// A REPL over the stub, owned by a private root, with its frame bus.
+#[cfg(unix)]
 struct Fixture {
     owned: OwnedRoot,
     repl: Repl,
     bus: broadcast::Receiver<ReplFrameMsg>,
 }
 
+#[cfg(unix)]
 fn fixture(refuse: Option<PortRefused>) -> (Fixture, Arc<Recorder>) {
     let owned = OwnedRoot::private();
     let root = owned.path().to_path_buf();
@@ -70,6 +77,7 @@ fn fixture(refuse: Option<PortRefused>) -> (Fixture, Arc<Recorder>) {
     (Fixture { owned, repl, bus }, recorder)
 }
 
+#[cfg(unix)]
 /// The frames of eval 7 up to and including the first `browser` or `stderr` one, as kinds with their text.
 async fn first_frame_of_the_page(fx: &mut Fixture) -> (Vec<String>, Value) {
     let mut kinds = Vec::new();
@@ -87,6 +95,7 @@ async fn first_frame_of_the_page(fx: &mut Fixture) -> (Vec<String>, Value) {
 }
 
 /// Port 45621 is granted, and the grant is applied and answered before its `browser` frame is on the bus.
+#[cfg(unix)]
 #[tokio::test]
 async fn an_allow_is_applied_before_its_browser_frame_is_forwarded() {
     if !isolated("sidecars::repl::ports_tests::an_allow_is_applied_before_its_browser_frame_is_forwarded", BODY) {
@@ -110,6 +119,7 @@ async fn an_allow_is_applied_before_its_browser_frame_is_forwarded() {
 }
 
 /// A receiver that refuses the grant keeps the frame off the bus; a `stderr` frame names the reason in its place.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_refused_allow_withholds_the_frame_and_says_why() {
     if !isolated("sidecars::repl::ports_tests::a_refused_allow_withholds_the_frame_and_says_why", BODY) {

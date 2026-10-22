@@ -30,7 +30,7 @@ mod supervisor;
 #[cfg(test)]
 mod interrupt_tests;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod ports_tests;
 
 #[cfg(test)]
