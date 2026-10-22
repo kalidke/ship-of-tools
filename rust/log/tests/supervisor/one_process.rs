@@ -65,9 +65,16 @@ fn end_agent(pid: u32) {
     unsafe {
         libc::kill(pid as libc::pid_t, libc::SIGKILL);
     }
+    // SAFETY: plain Win32 calls on a handle this block opens and closes; it ends the process by that handle.
     #[cfg(windows)]
-    {
-        let _ = Command::new("taskkill").args(["/F", "/T", "/PID", &pid.to_string()]).output();
+    unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if !handle.is_null() {
+            TerminateProcess(handle, 1);
+            CloseHandle(handle);
+        }
     }
 }
 

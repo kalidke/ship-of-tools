@@ -599,7 +599,6 @@ async fn a_dead_row_is_never_restarted_by_a_wake() {
     let res = call(&mut row.conn, row.next_id, op::PTY_INPUT, quit).await;
     row.next_id += 1;
     assert_eq!(res.payload["ok"], true, "pty.input failed: {:?}", res.payload);
-    let deadline = Instant::now() + Duration::from_secs(30);
     // The watchdog restarts a stub that exits, so the stub is made to exit at every start until the row rests in a phase
     // other than ready: after the watchdog's restart budget, the sum of its backoffs (1 + 3 + 7 + 15 + 30 s) plus the bound.
     let deadline = Instant::now() + Duration::from_secs(56) + BOUND;
@@ -804,8 +803,7 @@ async fn a_restarted_daemon_leaves_other_text_in_the_prompt_and_looks_once() {
     row.env.kill_daemon_bounded().await;
 }
 
-/// Ends the row's supervisor alone, by pid (its leg and the agent live on), found by its `supervise <state_root>`
-/// command line.
+/// Ends the row's supervisor by pid (its agent ends with it), found by its `supervise <state_root>` command line.
 fn end_supervisor(env: &Env) {
     let root = env.state_root.to_string_lossy().to_string();
     let mut ended = 0;
@@ -821,16 +819,30 @@ fn end_supervisor(env: &Env) {
     assert_eq!(ended, 1, "expected one supervisor over {root}");
 }
 
-/// The row is not Ready for the restarted daemon's first ticks (its supervisor is gone and the new one's recovery is
-/// held open by `SOT_TEST_RECOVERY_DELAY_MS`): the boot look waits for the row, says so once, and then sends the left
-/// line its Enter once. One ping, the line typed once.
+/// An owed Enter belongs to the run whose box held the line. The agent dies with its supervisor, so the new run's box is
+/// fresh and owes nothing: the restarted daemon's boot look waits for the new run's Ready tick (held open by
+/// `SOT_TEST_RECOVERY_DELAY_MS`), says so once, then looks and sends no Enter and types the line again for no one (the
+/// mail was read). A daemon-only restart keeps the box and its owed Enter (`a_restarted_daemon_completes_a_wake_line_left_typed`).
 #[tokio::test]
-async fn a_restarted_daemon_looks_when_the_row_is_ready() {
+async fn a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_box_alone() {
     let _serial = SERIAL.lock().await;
     let row = start_with("cwrr", None, false, &["echo-after=5"], &[]).await;
     append_mail(&row.env, 1);
     wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
     read_mail(&row.env, 1);
+    row.env.kill_daemon_bounded().await;
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
+    end_supervisor(&row.env);
+    let marks_dir = marks(&row).to_string_lossy().to_string();
+    let done = marks(&row).join("done");
+    let _ = std::fs::remove_file(&done);
+    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[("SOT_TEST_WAKE_MARKS", marks_dir.as_str()), ("SOT_TEST_RECOVERY_DELAY_MS", "7000")]);
+    wait_for("the boot look", || done.exists()).await;
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 0, "the new run's box owed no Enter");
+    assert_eq!(others(&row.log), 0, "the wake line was typed again");
+    assert_eq!(daemon_log(&row.env).matches("boot look waits").count(), 1, "the wait should be logged once");
     row.env.kill_daemon_bounded().await;
     tokio::time::sleep(THREE_TICKS).await;
     assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
