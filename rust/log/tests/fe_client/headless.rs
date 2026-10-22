@@ -62,8 +62,6 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
 
     assert!(client.shutdown(Duration::from_secs(5)), "the worker must exit within the shutdown bound");
 
-    end_run_and_wait_ended(&conn, &voyage);
-
     // No resize ever: the capsule's own geometry is still what a fresh watcher adopts. And the one input landed: its
     // echo is on the screen.
     let mut after = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), "lu6c-headless-after".to_string())
@@ -84,6 +82,7 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
     );
     assert!(after.shutdown(Duration::from_secs(5)));
 
+    end_run_and_wait_ended(&conn, &voyage);
     let _ = command(&conn, "test-headless-a-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }

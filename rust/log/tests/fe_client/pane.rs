@@ -342,6 +342,7 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_leg_un
         poll_screen(&mut client, Duration::from_secs(30), |t| t.contains("SOT_FE_OLD_LEG")),
         "first-leg marker never reached the screen"
     );
+    wait_for_screen_write(&state_dir);
 
     // "The capsule is killed": hard-terminate the capsule process
     // directly (learned via the voyage pipe's own mgmt status, the
@@ -425,17 +426,7 @@ fn screen_restores_after_a_supervisor_restart() {
         "the marker never reached the screen"
     );
 
-    // The leg writes `<state_dir>/screen` at most every 5 s while output arrives: wait for a write after the marker.
-    let screen_file = state_dir.join("screen");
-    let marked_at = std::time::SystemTime::now();
-    poll_until(
-        || {
-            let modified = std::fs::metadata(&screen_file).and_then(|m| m.modified()).ok()?;
-            (modified >= marked_at).then_some(())
-        },
-        Duration::from_secs(30),
-        "the screen file to be written after the marker",
-    );
+    wait_for_screen_write(&state_dir);
 
     let pid = capsule_pid(&voyage);
     taskkill(pid);
@@ -524,6 +515,7 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
         Duration::from_secs(30),
         "the old leg's input to be fully recorded",
     );
+    wait_for_screen_write(&state_dir);
 
     let pid = capsule_pid(&voyage);
     taskkill(pid);

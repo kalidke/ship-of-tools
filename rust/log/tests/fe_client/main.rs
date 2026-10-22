@@ -281,6 +281,20 @@ fn taskkill(pid: u32) {
     assert_eq!(rc, 0, "kill(SIGKILL) failed for pid {pid}: {}", std::io::Error::last_os_error());
 }
 
+/// Waits for the leg to write `<state_dir>/screen` after now: it writes at most every 5 s while output arrives, so a
+/// leg killed sooner after its output leaves the old screen unsaved.
+fn wait_for_screen_write(state_dir: &Path) {
+    let after = std::time::SystemTime::now();
+    poll_until(
+        || {
+            let modified = std::fs::metadata(state_dir.join("screen")).and_then(|m| m.modified()).ok()?;
+            (modified >= after).then_some(())
+        },
+        Duration::from_secs(30),
+        "the screen file to be written after the marker",
+    );
+}
+
 fn screen_text(screen: &vt100_ctt::Screen) -> String {
     let (rows, cols) = screen.size();
     let mut text = String::new();
