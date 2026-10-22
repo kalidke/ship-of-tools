@@ -672,10 +672,13 @@ fn pid_reuse_needs_a_full_sequential_wrap_and_a_spent_knote_never_rearms() {
 /// why that case is tested on Linux and Windows only.
 #[test]
 fn an_agent_that_does_not_ignore_sighup_dies_with_its_killed_supervisor() {
+    // The run dir is short and under /tmp (a socket path's limit); the state dir is a separate temporary folder, as in
+    // every other supervisor test.
     let tmp = tempfile::Builder::new().prefix("sot-t").tempdir_in("/tmp").expect("a short, private run dir");
-    let state_dir = tmp.path().join("state");
+    let state = tempfile::tempdir().expect("a state folder");
+    let state_dir = state.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    let pid_file = tmp.path().join("agent.pid");
+    let pid_file = state.path().join("agent.pid");
     let script = format!("echo $$ > '{}'; exec sleep 60", pid_file.display());
     let mut supervisor = Command::new(env!("CARGO_BIN_EXE_sot-capsule"))
         .arg("supervise")
@@ -694,6 +697,9 @@ fn an_agent_that_does_not_ignore_sighup_dies_with_its_killed_supervisor() {
     let agent: u32 = loop {
         if let Some(pid) = std::fs::read_to_string(&pid_file).ok().and_then(|s| s.trim().parse().ok()) {
             break pid;
+        }
+        if let Ok(Some(status)) = supervisor.try_wait() {
+            panic!("the supervisor ended ({status}) before its agent recorded its pid");
         }
         assert!(Instant::now() < deadline, "the agent never recorded its pid");
         std::thread::sleep(Duration::from_millis(50));
