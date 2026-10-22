@@ -657,6 +657,11 @@ done
 }
 
 
+# A host name as hosts.toml spells one: `[a-z0-9][a-z0-9._-]*` (the Rust grammar, `is_plain_host_name`).
+function Test-SotPlainHostName([string]$Name) {
+    return [bool]($Name -cmatch '^[a-z0-9][a-z0-9._-]*$')
+}
+
 # Everything the default remote's dial is made of -- which host it is, its
 # socket, and whether it resolved at all -- in ONE function, called at
 # first launch and again on every converge (exit 76) right after the plan
@@ -671,6 +676,12 @@ $script:backendHost = if ($env:SOT_HOST_NAME) {
     $env:SOT_HOST
 } else {
     $plan.Hub
+}
+# The name becomes an argument of ssh, which reads one that begins with `-` as an option: only the grammar of a host
+# name in hosts.toml (the same one `SshRecipe::new` checks) reaches it.
+if ($script:backendHost -and -not (Test-SotPlainHostName $script:backendHost)) {
+    Write-SupLog "default remote: '$($script:backendHost)' is not a plain host name ([a-z0-9][a-z0-9._-]*) - continuing without it"
+    $script:backendHost = $null
 }
 # ADR 0042 L2b codex follow-up (design 3): the default remote is now
 # NONFATAL, same as every other host -- the local `--socket` connection
