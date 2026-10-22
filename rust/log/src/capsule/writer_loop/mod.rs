@@ -73,6 +73,8 @@ struct Leg<'t, P> {
     handshake_suppressed_matches: u64,
     /// Resize calls that reached the producer (`ExitSummary`).
     resize_os_calls: u64,
+    /// Tells the run's owner the agent started and wrote (`CapsuleConfig::signals`).
+    signals: Option<Arc<RunSignals>>,
     /// An output end before teardown that the producer's exit explained; `ended` records it.
     output_ended_early: Option<String>,
     /// The reader's byte budget; the loop releases what it handles.

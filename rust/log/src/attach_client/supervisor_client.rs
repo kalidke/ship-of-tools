@@ -29,7 +29,7 @@
 //! resolves via `PlatformEndpoint` rather than hard-coding
 //! `challenge_win`'s. The connect/send/read/error helpers this module and
 //! `supervisor/` both need (`connect_and_challenge`, `send_and_read`,
-//! `read_one_frame`, `err_state`) moved HERE from `supervisor/` this
+//! `err_state`) moved HERE from `supervisor/` this
 //! lane, alongside `state_dir_hash` (moved to `state_dir.rs`, a neutral
 //! pure function) — the dependency now points server (`supervisor/`) ->
 //! client-helpers (this module), the right way round: a supervisor-lane
@@ -546,7 +546,7 @@ pub(crate) fn connect_and_challenge<E: Endpoint>(
     }
 }
 
-/// The blocking read loop shared by [`read_one_frame`] and
+/// The blocking read loop shared by
 /// [`send_and_read`] — no deadline of its own.
 fn read_next_frame<C: Client>(conn: &C) -> crate::Result<DecodedFrame> {
     let mut splitter = wire::FrameSplitter::new();
@@ -594,15 +594,6 @@ pub(crate) fn send_and_read<C: Client>(
             }
         },
     );
-    result.unwrap_or_else(|| Err(err_state("timed out waiting for a reply")))
-}
-
-/// `pub(crate)`: `supervisor/journal/end_run.rs`'s own `end_run_over_mgmt_lane` (a
-/// Windows mechanism function this lane does not touch — LU3c's job)
-/// reads the mgmt-lane shutdown ack with this SAME primitive, so it
-/// needs crate visibility, not merely module-private.
-pub(crate) fn read_one_frame<C: Client>(conn: &C, deadline: Instant) -> crate::Result<DecodedFrame> {
-    let result = sot_platform::identity::deadline::run_with_deadline(deadline, || conn.cancel(), move || read_next_frame(conn));
     result.unwrap_or_else(|| Err(err_state("timed out waiting for a reply")))
 }
 

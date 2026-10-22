@@ -130,6 +130,9 @@ pub(super) fn eager_ground_check<P: Producer>(leg: &mut Leg<'_, P>) {
 fn handle_output<P: Producer>(bytes: Vec<u8>, leg: &mut Leg<'_, P>) -> Result<()> {
     leg.parser.process(&bytes);
     leg.output_budget.release(bytes.len() as u64);
+    if let Some(signals) = &leg.signals {
+        signals.output();
+    }
     if let Some(screen) = &mut leg.screen {
         screen.output_arrived();
     }

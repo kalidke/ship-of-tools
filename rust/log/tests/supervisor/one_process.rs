@@ -4,11 +4,12 @@
 use super::*;
 
 /// The agent: records its own pid in `pid_file`, then stays alive until the test or its parent ends it. On Unix the
-/// shell `exec`s into `sleep`, so the recorded pid is the process the supervisor started.
+/// shell ignores SIGHUP, so the terminal's hangup cannot end it, and `exec`s into `sleep`, so the recorded pid is the
+/// process the supervisor started: only the kernel's parent-death signal (Linux) can end it when the supervisor dies.
 fn agent_argv(pid_file: &Path) -> Vec<String> {
     #[cfg(unix)]
     {
-        vec!["/bin/sh".into(), "-c".into(), format!("echo $$ > '{}'; exec sleep 600", pid_file.display())]
+        vec!["/bin/sh".into(), "-c".into(), format!("trap '' HUP; echo $$ > '{}'; exec sleep 600", pid_file.display())]
     }
     #[cfg(windows)]
     {

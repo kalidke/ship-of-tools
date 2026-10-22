@@ -130,8 +130,7 @@ fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows:
         cols,
         rows,
         survival: Survival::Normal,
-        // No supervisor in this harness -- see `CapsuleConfig::parent_lease`'s own doc.
-        parent_lease: None,
+        signals: None,
     }
 }
 

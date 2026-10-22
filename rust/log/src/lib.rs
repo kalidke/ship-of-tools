@@ -48,11 +48,6 @@ pub enum Error {
     /// which, so this never claims to.
     #[error("supervisor lane refused: another lane protocol, or a supervisor from before the protocol-only gate")]
     VersionSkew,
-    /// The caller-supplied parent-death lease reported itself already broken, checked as the FIRST act after the
-    /// leg's writer fence is acquired. The fence has already been released by the time this error returns — the caller (a spawned child whose supervisor is
-    /// already gone) must exit without binding, never retry or repair.
-    #[error("parent-death lease broken; exiting without binding the leg")]
-    LeaseBroken,
     /// A ConPTY/job OPERATION failed (Windows-only: `conpty` module) — a
     /// spawn stage, or a later runtime call (`terminate`, `active_processes`,
     /// `resize`, ...). Carries WHICH operation and the underlying Win32

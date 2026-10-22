@@ -210,7 +210,12 @@ impl Producer for PtyProducer {
             clippy::disallowed_methods,
             reason = "the capsule starts the row's agent inside the capsule's own containment (ADR 0041, ADR 0043)"
         )]
-        let child = cmd.spawn().map_err(Error::Io)?;
+        let child = {
+            // The agent forks beside this process's own threads (the supervisor's lane), so no descriptor one of
+            // them is making may reach it half-made.
+            let _fork = sot_platform::host::fd::fork_guard();
+            cmd.spawn().map_err(Error::Io)?
+        };
         let pid = child.id() as libc::pid_t;
         // From here on this producer tracks the leader ITSELF, via raw
         // `waitid`/`waitpid` on `pid` — `Child`'s own `wait`/`try_wait`

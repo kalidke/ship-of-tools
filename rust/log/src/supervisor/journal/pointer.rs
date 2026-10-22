@@ -158,6 +158,26 @@ pub fn publish(state_dir: &Path, voyage_id: &str) -> Result<()> {
     result.map_err(crate::Error::from)
 }
 
+/// Rename the current pointer aside (evidence-preserving, no-replace) if one exists, then mint `new_voyage`: its
+/// folder bootstrapped and its id published as the pointer.
+pub fn reset(state_dir: &Path, new_voyage: &str) -> Result<()> {
+    let live = pointer_path(state_dir);
+    if live.exists() {
+        host::fsync_file(&live)?;
+        let mut nonce_bytes = [0u8; 8];
+        getrandom::fill(&mut nonce_bytes).map_err(std::io::Error::from)?;
+        let aside = state_dir.join(format!("{POINTER_FILE_NAME}.reset-{:016x}", u64::from_le_bytes(nonce_bytes)));
+        host::publish_noreplace(&live, &aside)?;
+    }
+    let voyages = state_dir.join("voyages");
+    std::fs::create_dir_all(&voyages)?;
+    let root = voyages.join(new_voyage);
+    if !root.exists() {
+        crate::capsule::bootstrap_voyage_folder(&root)?;
+    }
+    publish(state_dir, new_voyage)
+}
+
 #[cfg(test)]
 #[path = "pointer_tests.rs"]
 mod tests;

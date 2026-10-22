@@ -26,7 +26,7 @@
 use crate::lane::attach_proto::{
     Action as AttachAction, AttachProto, ConnId, InputOutcome, MgmtStatus, SentMarker,
 };
-use crate::capsule::producer::{ExitStatus, ParentLease, Producer};
+use crate::capsule::producer::{ExitStatus, Producer};
 use crate::capsule::producer::host_handshake::{self, HostHandshake};
 // The shared-deadline poll-join primitive and the pinned aggregate bound `lane/pipe_win/` uses for its own worker
 // joins: one mechanism, one constant.
@@ -166,11 +166,36 @@ pub struct CapsuleConfig {
     /// breakaway attempt is the real source). Transported verbatim in mgmt
     /// `status`.
     pub survival: Survival,
-    /// `Some(lease)` when a supervisor spawned this process and wants its
-    /// parent-death lease checked as the fence's first act: a per-platform
-    /// [`ParentLease`] `run` polls exactly once, right after the fence is
-    /// taken. `None` (the manual harness and most capsule tests) checks nothing.
-    pub parent_lease: Option<ParentLease>,
+    /// What the run tells its owner while it lives (`RunSignals`); `None` for a caller that asks nothing.
+    pub signals: Option<Arc<RunSignals>>,
+}
+
+/// What a run tells its owner while it lives: when the agent was started and whether it has written yet. The owner
+/// reads it to tell `starting` from `ready` (the supervisor's status).
+#[derive(Debug, Default)]
+pub struct RunSignals {
+    spawned_at: std::sync::OnceLock<Instant>,
+    output_seen: AtomicBool,
+}
+
+impl RunSignals {
+    /// When the agent was started, `None` until it was.
+    pub fn spawned_at(&self) -> Option<Instant> {
+        self.spawned_at.get().copied()
+    }
+
+    /// The agent has written something since it started.
+    pub fn output_seen(&self) -> bool {
+        self.output_seen.load(Ordering::Acquire)
+    }
+
+    fn spawned(&self, at: Instant) {
+        let _ = self.spawned_at.set(at);
+    }
+
+    fn output(&self) {
+        self.output_seen.store(true, Ordering::Release);
+    }
 }
 
 /// The caller-owned command surface `run` services, alongside the wire
