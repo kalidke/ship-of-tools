@@ -34,6 +34,17 @@ try {
         $root.FindAll({ param($n) ($n -is [System.Management.Automation.Language.IfStatementAst]) -and ($n.Clauses[0].Item1.Extent.Text -like $condText) }, $true)
     }
 
+    # ---- the default remote's host, from SOT_HOST_NAME or SOT_HOST, is a plain host name before it reaches ssh ----
+    $plainFn = $launchAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq 'Test-SotPlainHostName' }, $true)
+    Check 'launch-sot.ps1 defines Test-SotPlainHostName' ($null -ne $plainFn) 'function not found'
+    if ($plainFn) {
+        . ([scriptblock]::Create($plainFn.Extent.Text))
+        foreach ($ok in 'hub', 'box-1.lab', 'a_b') { Check "plain host name accepted: $ok" (Test-SotPlainHostName $ok) 'refused' }
+        foreach ($bad in '-oProxyCommand=calc', '', 'Upper', 'a b', '../x', 'a@b') { Check "not a plain host name refused: '$bad'" (-not (Test-SotPlainHostName $bad)) 'accepted' }
+    }
+    $dialFn = $launchAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq 'Update-SotRemoteDial' }, $true)
+    Check 'Update-SotRemoteDial asks Test-SotPlainHostName before the host reaches ssh' (($null -ne $dialFn) -and (@(Find-Calls $dialFn 'Test-SotPlainHostName').Count -ge 1)) 'no call'
+
     try {
     Write-Host "`n=== 9. InitialEnsureBeforeChecks: the first ensure precedes the -Local and nothing-reachable checks ===" -ForegroundColor Cyan
     $ensure9 = @($launchAst.FindAll({ param($n)
