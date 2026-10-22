@@ -199,6 +199,16 @@ fn spawn_settle_deadline() -> Duration {
 
 /// Waits under the caller's guard for a spawn to settle, polling until [`spawn_settle_deadline`] (timeout WARNS). BLOCKING.
 pub(super) fn settle_after_spawn(state_dir: &Path, workspace_id: &str) -> (&'static str, crate::rows::workspace::Observation) {
+    let settled = settle_probe(state_dir, workspace_id);
+    // Test seam: a settle that takes this many more milliseconds, so a test proves the restart budget does not depend on
+    // how long settles take. Inert unless named.
+    if let Some(ms) = std::env::var("SOT_TEST_SETTLE_DELAY_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
+    settled
+}
+
+fn settle_probe(state_dir: &Path, workspace_id: &str) -> (&'static str, crate::rows::workspace::Observation) {
     let settle = spawn_settle_deadline();
     let starting_phase = super::phase_str(sot_log::lane::wire::SupervisorPhase::Starting);
     let deadline = Instant::now() + settle;
