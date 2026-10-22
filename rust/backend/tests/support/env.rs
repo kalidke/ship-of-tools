@@ -296,7 +296,7 @@ impl Env {
 
     /// The daemon's own app-config dir for THIS env, per platform:
     /// Windows joins "config" onto its state root
-    /// (`app_config_dir`'s own Windows arm: `windows_state_root().join("config")`,
+    /// (`app_config_dir`'s own Windows arm: `sot_config_dir()`,
     /// i.e. `%LOCALAPPDATA%\sot\config`); everywhere else it is
     /// `$XDG_CONFIG_HOME/sot` directly, no "config" segment (that arm
     /// never joins "sot" onto the state root at all — a DIFFERENT root

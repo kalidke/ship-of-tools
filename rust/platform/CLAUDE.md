@@ -56,7 +56,7 @@ where each lives).
    level, the TCP owner tables.
 7. **Storage exhaustion is known by its native code.** ENOSPC and EDQUOT; on Windows ERROR_DISK_FULL,
    ERROR_HANDLE_DISK_FULL and ERROR_DISK_QUOTA_EXCEEDED, read from the `io::Error` an `Error::Io` carries, never from
-   text and never from a transport error (`storage_exhaustion`). `preflight_volume` and Windows `io_ctx` return such
+   text and never from a transport error (`native_storage_code`; the capsule reads its own error type through it). `preflight_volume` and Windows `io_ctx` return such
    an error as itself.
 8. **A volume is proved before a store opens on it.** `preflight_volume` refuses a root whose filesystem cannot do
    the operations the store uses (create, no-clobber rename, fsync), a network filesystem above all (NFS answers EINVAL
