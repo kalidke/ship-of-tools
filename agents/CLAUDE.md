@@ -76,8 +76,9 @@ of each.
    comm folder's `bin/`), into the one `--settings` JSON beside the auto-memory key. A plain `claude` reads none of it;
    a capsule leg, a reauth leg and a `ccb` session read all of it. Limits: `--add-dir` also lets the session read and
    write the layer folder, which the next install overwrites; a caller's own `--settings` drops the hooks (guarantee 1);
-   that Claude Code loads an added folder's `.claude/skills/` is Claude Code's behavior, read from its documentation
-   and unproven by any test here (the maintainer's done test, as for guarantee 6); a session started by hand outside
+   that Claude Code loads an added folder's `.claude/skills/` is Claude Code's behavior, which no test here proves (Claude
+   Code 2.1.308's own text names `--add-dir` as a source of skills, and no session was started to see it; the
+   maintainer's done test, as for guarantee 6); a session started by hand outside
    `ccb` has neither the skills nor the end-of-turn mail check, and reads mail with `comm-poll.sh`, which is not a
    skill.
 8. **An install removes only what an earlier installer placed.** The installer, `ShipTools.update_comm`, removes from
