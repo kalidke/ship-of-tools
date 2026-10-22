@@ -58,6 +58,7 @@ pub(super) fn lifecycle_begin_starting(
     cell: &SharedLifecycle,
     frame_tx: &broadcast::Sender<ReplFrameMsg>,
     workspace_id: &Option<String>,
+    _ports: &crate::sidecars::ports::PortSink,
 ) -> u64 {
     let my_gen = {
         let mut c = cell.lock().unwrap_or_else(|e| e.into_inner());

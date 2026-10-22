@@ -89,6 +89,20 @@ pub fn revoke_browser_ports(workspace: &str) {
     }
 }
 
+/// The receiver of the REPL's port announcements (`sidecars::ports`), which the daemon installs at its start.
+pub struct PagesGrants;
+
+impl crate::sidecars::ports::PortGrants for PagesGrants {
+    fn apply(&self, event: crate::sidecars::ports::PortEvent) -> Result<(), crate::sidecars::ports::PortRefused> {
+        use crate::sidecars::ports::PortEvent;
+        match event {
+            PortEvent::Allow { owner, port, .. } => record_browser_port(&owner, port),
+            PortEvent::End { owner, .. } => revoke_browser_ports(&owner),
+        }
+        Ok(())
+    }
+}
+
 /// The set of loopback ports `proxy.connect` will dial — the daemon's own
 /// served HTTP surface. Computed per request so a runtime-assigned port is
 /// honored without a restart.

@@ -76,6 +76,33 @@ fn browser_ports_record_revoke_and_allowlist() {
     revoke_browser_ports("wsCap-test");
 }
 
+/// An `Allow` from a generation below the one the table holds for its owner is refused and grants nothing.
+#[test]
+fn a_stale_generation_is_refused_by_the_table() {
+    use crate::sidecars::ports::{PortEvent, PortGrants, PortRefused};
+    let owner = "wsStale-test".to_string();
+    PagesGrants.apply(PortEvent::End { owner: owner.clone(), generation: 6 }).expect("the newer child's start");
+    let refused = PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 5, port: 46101 });
+    assert_eq!(refused, Err(PortRefused::Stale { current: 6 }));
+    assert!(!allowed_proxy_ports().contains(&46101), "a stale Allow grants nothing");
+    PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 6, port: 46102 }).expect("the current one");
+    assert!(allowed_proxy_ports().contains(&46102));
+    PagesGrants.apply(PortEvent::End { owner, generation: 6 }).expect("end");
+}
+
+/// An older child's `End` is refused and leaves its replacement's grant standing.
+#[test]
+fn an_older_childs_end_cannot_erase_its_replacements_grant() {
+    use crate::sidecars::ports::{PortEvent, PortGrants, PortRefused};
+    let owner = "wsOlderEnd-test".to_string();
+    PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 8, port: 46111 }).expect("allow");
+    let refused = PagesGrants.apply(PortEvent::End { owner: owner.clone(), generation: 7 });
+    assert_eq!(refused, Err(PortRefused::Stale { current: 8 }));
+    assert!(allowed_proxy_ports().contains(&46111), "the replacement's grant stands");
+    PagesGrants.apply(PortEvent::End { owner, generation: 8 }).expect("end");
+    assert!(!allowed_proxy_ports().contains(&46111));
+}
+
 /// ADR 0049, User isolation: the proxy's dial to a page port is not inherited by a child the daemon starts.
 #[cfg(windows)]
 #[tokio::test]

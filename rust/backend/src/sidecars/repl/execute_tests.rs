@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::sidecars::contract_tests::{depot_path, executable, isolated, within};
+use crate::sidecars::repl::{ExecAccum, EXEC_TEXT_CAP};
 
 fn scratch_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!("sot-repl-execute-{}", std::process::id()));
@@ -428,4 +429,49 @@ mod shell_table {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// A run whose child never answers ends at its `timeout_ms` (here the minimum, 1 s) with the outcome `timeout`, and a
+/// request below the minimum waits the minimum, not less.
+#[tokio::test]
+async fn a_run_the_child_never_answers_ends_at_its_timeout() {
+    let req: ReplExecuteReq = serde_json::from_value(json!({
+        "workspace_id": "ws", "input": { "kind": "eval", "code": "1" }, "timeout_ms": 10,
+    }))
+    .expect("request");
+    let (_silent, reply_rx) = tokio::sync::oneshot::channel();
+    let (elapsed_ms, outcome, res, ended) = await_exec_reply(&req, reply_rx).await;
+    assert_eq!((outcome, res, ended), ("timeout", None, None));
+    assert!((1_000..3_000).contains(&elapsed_ms), "waited {elapsed_ms} ms");
+}
+
+/// Text frames are kept until the stdout and stderr bytes reach `EXEC_TEXT_CAP`; the frame that crosses it is kept
+/// whole, later text frames are dropped and `truncated` says so, and value and done frames are always kept.
+#[test]
+fn a_collected_run_keeps_whole_the_frame_that_crosses_the_text_cap() {
+    let mut acc = ExecAccum::default();
+    let chunk = "x".repeat(EXEC_TEXT_CAP / 2 + 1);
+    acc.push(json!({ "kind": "stdout", "text": chunk }));
+    assert!(!acc.truncated);
+    acc.push(json!({ "kind": "stderr", "text": chunk }));
+    assert!(acc.truncated, "the second chunk crosses the cap");
+    acc.push(json!({ "kind": "stdout", "text": "dropped" }));
+    acc.push(json!({ "kind": "value", "text": "kept" }));
+    acc.push(json!({ "kind": "done" }));
+    let kinds: Vec<_> = acc.frames.iter().map(|f| f["kind"].as_str().unwrap().to_string()).collect();
+    assert_eq!(kinds, ["stdout", "stderr", "value", "done"]);
+    assert_eq!(acc.frames[1]["text"].as_str().unwrap().len(), chunk.len(), "the crossing frame is whole");
+}
+
+/// A `value` text or error message past `EXEC_FIELD_CAP` is cut on a character boundary and marked; one at the cap is
+/// left alone.
+#[test]
+fn a_field_past_its_cap_is_cut_and_marked() {
+    let mut at_cap = "a".repeat(EXEC_FIELD_CAP);
+    exec_truncate_field(&mut at_cap);
+    assert_eq!(at_cap.len(), EXEC_FIELD_CAP);
+    // A multibyte character straddling the cap is dropped whole.
+    let mut over = format!("{}é{}", "a".repeat(EXEC_FIELD_CAP - 1), "b".repeat(10));
+    exec_truncate_field(&mut over);
+    assert_eq!(over, format!("{}\n…[truncated]", "a".repeat(EXEC_FIELD_CAP - 1)));
 }

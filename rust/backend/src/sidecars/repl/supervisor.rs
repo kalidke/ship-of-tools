@@ -49,6 +49,7 @@ pub(super) async fn spawn_supervisor(
     workspace_id: Option<String>,
     lifecycle: SharedLifecycle,
     sig: &'static sot_containment::Signal,
+    ports: Option<Arc<dyn crate::sidecars::ports::PortGrants>>,
 ) -> Result<Supervisor> {
     let repl_project = Repl::repl_project();
     let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
@@ -118,7 +119,8 @@ pub(super) async fn spawn_supervisor(
     lifecycle.lock().unwrap_or_else(|e| e.into_inner()).start = Some(stderr_tail.start());
 
     // Child exists: open a new spawn generation (state -> Starting, announce).
-    let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
+    let ports = crate::sidecars::ports::PortSink::new(ports.or_else(crate::sidecars::ports::installed), &workspace_id);
+    let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id, &ports);
 
     let join = tokio::spawn(supervisor_task(
         contained, stdin, stdout, submit_rx, stop_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen, sig, tmp,

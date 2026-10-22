@@ -30,6 +30,9 @@ mod supervisor;
 #[cfg(test)]
 mod interrupt_tests;
 
+#[cfg(all(test, unix))]
+mod ports_tests;
+
 #[cfg(test)]
 mod project_tests;
 
@@ -39,6 +42,7 @@ mod restart_tests;
 #[cfg(test)]
 mod tree_argv_tests;
 
+use crate::sidecars::ports::PortGrants;
 use lifecycle::ReplLifecycle;
 use lifecycle::{LifecycleCell, SharedLifecycle};
 use supervisor::{spawn_supervisor, Supervisor};
@@ -200,6 +204,8 @@ struct ReplInner {
     /// `workspace.list` so a precompiling first boot renders as *starting*,
     /// not dead. See `ReplLifecycle`.
     lifecycle: SharedLifecycle,
+    /// The receiver of this REPL's port announcements, when a test gives one; else the installed one (`ports::installed`).
+    ports: Option<Arc<dyn PortGrants>>,
 }
 
 /// What the handle owns. `project` is the workspace directory, activated as the DEFAULT env for the persistent REPL
@@ -274,8 +280,16 @@ impl Repl {
                     notice: None,
                     start: None,
                 })),
+                ports: None,
             }),
         }
+    }
+
+    /// This REPL announces its children's ports to `ports` instead of the installed receiver.
+    #[cfg(test)]
+    pub(crate) fn with_ports(mut self, ports: Arc<dyn PortGrants>) -> Self {
+        Arc::get_mut(&mut self.inner).expect("a handle nobody has cloned").ports = Some(ports);
+        self
     }
 
     /// Current child lifecycle. `NotStarted` until the first eval forces a
@@ -447,6 +461,7 @@ impl Repl {
             self.inner.workspace_id.clone(),
             self.inner.lifecycle.clone(),
             self.inner.sig,
+            self.inner.ports.clone(),
         )
         .await
     }

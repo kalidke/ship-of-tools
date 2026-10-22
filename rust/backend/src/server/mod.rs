@@ -117,6 +117,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // `pluto.open`.
     let pluto = Pluto::new(Pluto::default_project_dir(), Pluto::default_start_script());
 
+    crate::sidecars::ports::install(std::sync::Arc::new(crate::pages::proxy::PagesGrants));
     start_page_servers().await;
 
     // Streamed REPL frame bus (Option B): every eval's frames are fanned out

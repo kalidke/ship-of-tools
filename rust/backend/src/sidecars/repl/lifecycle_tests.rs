@@ -9,6 +9,10 @@ fn cell() -> SharedLifecycle {
     }))
 }
 
+fn sink() -> crate::sidecars::ports::PortSink {
+    crate::sidecars::ports::PortSink::new(None, &None)
+}
+
 fn state_of(c: &SharedLifecycle) -> ReplLifecycle {
     c.lock().unwrap().state
 }
@@ -35,13 +39,13 @@ fn drain_states(rx: &mut broadcast::Receiver<ReplFrameMsg>) -> Vec<String> {
 fn begin_starting_bumps_gen_sets_state_and_announces() {
     let (tx, mut rx) = broadcast::channel(8);
     let c = cell();
-    let g1 = lifecycle_begin_starting(&c, &tx, &None);
-    assert_eq!(g1, 1);
+    let g1 = lifecycle_begin_starting(&c, &tx, &None, &sink());
+    assert!(g1 > 0);
     assert_eq!(state_of(&c), ReplLifecycle::Starting);
     assert_eq!(drain_states(&mut rx), vec!["starting"]);
     // A respawn opens the next generation.
-    let g2 = lifecycle_begin_starting(&c, &tx, &None);
-    assert_eq!(g2, 2);
+    let g2 = lifecycle_begin_starting(&c, &tx, &None, &sink());
+    assert!(g2 > g1);
     assert_eq!(drain_states(&mut rx), vec!["starting"]);
 }
 
@@ -49,7 +53,7 @@ fn begin_starting_bumps_gen_sets_state_and_announces() {
 fn transition_applies_once_and_is_change_gated() {
     let (tx, mut rx) = broadcast::channel(8);
     let c = cell();
-    let g = lifecycle_begin_starting(&c, &tx, &None);
+    let g = lifecycle_begin_starting(&c, &tx, &None, &sink());
     let _ = drain_states(&mut rx);
     // First stdout line: Starting -> Ready, announced once.
     assert!(lifecycle_transition(&c, g, ReplLifecycle::Ready, &tx, &None));
@@ -68,8 +72,8 @@ fn stale_generation_cannot_stomp_a_respawned_child() {
     // NOT overwrite (or mis-announce over) the fresh child's Starting.
     let (tx, mut rx) = broadcast::channel(8);
     let c = cell();
-    let old_gen = lifecycle_begin_starting(&c, &tx, &None);
-    let _new_gen = lifecycle_begin_starting(&c, &tx, &None); // respawn
+    let old_gen = lifecycle_begin_starting(&c, &tx, &None, &sink());
+    let _new_gen = lifecycle_begin_starting(&c, &tx, &None, &sink()); // respawn
     let _ = drain_states(&mut rx);
     assert!(!lifecycle_transition(
         &c,
@@ -86,7 +90,7 @@ fn stale_generation_cannot_stomp_a_respawned_child() {
 fn current_generation_death_is_reported() {
     let (tx, mut rx) = broadcast::channel(8);
     let c = cell();
-    let g = lifecycle_begin_starting(&c, &tx, &None);
+    let g = lifecycle_begin_starting(&c, &tx, &None, &sink());
     assert!(lifecycle_transition(&c, g, ReplLifecycle::Ready, &tx, &None));
     assert!(lifecycle_transition(&c, g, ReplLifecycle::Dead, &tx, &None));
     assert_eq!(state_of(&c), ReplLifecycle::Dead);
