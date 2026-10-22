@@ -74,9 +74,24 @@ platform. Owns: nothing at run time. Its crate keeps an edge to `sot-log` throug
 through it; a unit is written only where hosts.toml gives it. Rests on: wire, platform, containment. Owns: the hub's
 hosts.toml and the generated relay units. Does not: hold connections (fe-net and the daemon's link do).
 
-**containment.** The contract is drafted (pass 5b-1, landing pending): `rust/containment/CLAUDE.md`. Guarantees: a child started through `Signal` dies with its tree when its owner lets go or the signal fires (a process group on Unix, a job and a console group on Windows); the fire is permanent and a start racing it is never lost; every request is checked and none waits for a death; every wait has a bound on the OS clock; on Linux a guard subreaper ends every descendant within `DRAIN_BOUND` of the daemon's end. Rests on: platform (the descriptor sweep, the Windows job, the macOS birth lock) and the OS (setpgid/killpg, pidfd, jobs, PR_SET_CHILD_SUBREAPER); clippy's process-spawns group allows starts only through `Signal`. Owns: the registry of contained trees and the guard. Does not: decide when to end anything.
+**containment.** The contract is settled (pass 5b-1): `rust/containment/CLAUDE.md`, the crate `sot-containment`,
+which depends on platform alone. Guarantees, each with the limit the contract states: a child started through `Signal`
+is in its owner's kill domain (a process group on Unix, a job and a console group on Windows), and its tree is asked to
+end when its owner lets go or the signal fires; the fire is permanent and a start racing it is never lost; a request is
+checked and an observation fails closed; every wait is bounded on the OS clock, an output read included; on Linux the
+guard subreaper drains the daemon's children within `DRAIN_BOUND` (the drain is bounded, not every death; what it
+could not kill it logs). Starts are held by clippy's process-spawns group, with its named exceptions. Rests on:
+platform (the descriptor sweep, the Windows job, the macOS birth lock) and the OS. Owns: the registry of contained
+trees and the guard. Does not: decide when to end anything.
 
-**lifecycle.** The contract is drafted (pass 5b-1, landing pending): `rust/backend/src/lifecycle/CLAUDE.md`. Guarantees: a lease is granted only to a peer whose pid, creation time and boot the OS reported at accept; the start plan is a function of `held.json` and this boot alone; a close stops accepting before it touches a row and a backstop exits at `SHUTDOWN_BOUND`; every controlled end takes one terminal with fixed exit codes (0, 1, 2, 75, 78, 101; INT and TERM by the signal). Rests on: containment (it fires the signal), rows' end API, server's accept loop. Owns: `held.json`, the leases, the terminal. Does not: end rows itself (asks rows), contain a child.
+**lifecycle.** The contract is settled (pass 5b-1): `rust/backend/src/lifecycle/CLAUDE.md`, in the `sotd` binary.
+Guarantees, each with the limit the contract states: a lease is granted only to a peer whose pid, creation time and
+boot the OS reported at accept; `held.json` is the one record and a start's plan is a function of it and this boot
+alone; only the last lease's departure decides, the latest intent winning until a `Close` commits; a close stops
+accepting before it touches a row, ends rows only through rows' end API (a row not ended is counted), and ends within
+`SHUTDOWN_BOUND` plus the terminal's fire and folder waits; every controlled end takes one terminal with fixed exit
+codes (0, 1, 2, 75, 78, 101; INT and TERM by the signal). Rests on: containment, rows' end API, server's accept loop.
+Owns: `held.json`, the leases, the terminal. Does not: end rows itself, contain a child.
 
 **server.** Guarantees: one daemon per state root; a socket a live daemon answers on is never unlinked; a connection
 is admitted twice (OS peer at accept, hello at first frame) and nothing is served before; one writer per connection;
@@ -264,7 +279,8 @@ at its end and one round for its findings; a class of breaks stops it, and the s
 | 4 | Messaging (D1) | 6-12 | 120-240 | seven agent rounds: the pass 4.8 h (stopped at its boundary), then six short fixes of 1 to 45 min; about $93 for the agents; messaging 109/267 -> 94/124k, twice 20 -> 45 (the shell door's wrappers and generic names, two real pairs queued); comm shell 6,072 -> 2,571 lines, its shell tests 14,272 -> 3,850; about 160k tokens deleted, not D1's 300k (the PowerShell copies were already gone); the local gate 12 -> 6.6 min |
 | CI | Distribution's CI: the hosted run at each landing about seven minutes and the local gate near five; the slow proofs to a release-gate run made once per release | 0.5-1 | 10-20 | eight short agent rounds, about 30 agent minutes in all; the rest was hosted runs (nine per-landing, five release-gate) and waits; about $13 for the agents; the per-landing run 48 -> 7.2 min wall measured alone (longest job 6.9 min), the release-gate run 21.5 min; the local gate 12 min, of which the bash 3.2 suites, which messaging deletes, are the wall |
 | 5a | Platform and wire: their contracts; platform its own crate out of `sot-log`, its copies folded | 4-6 | 80-120 | 1.2 h wall in three agent rounds (the pass 25 min to a gate-ready head, the review round 6 min after an outside review, a landing fix 8 min), about 40 agent minutes; about $15 for the agent; platform 83/65/47/8 -> 79/80/48/0 (tests rose with the shared test helpers moved in; twice rose by one, generic names such as `context`), wire 42/14/3/2 -> 42/15/3/2; three hosted runs, the landing one 7.9 min |
-| 5b | Containment carved out of lifecycle; the lifecycle and topology contracts; topology out of `rust/protocol` | 4-6 | 80-120 | |
+| 5b-1 | Containment carved out of lifecycle into its own crate; lifecycle's contract (5b split by the load rule: 211k of code and tests) | 2-3 | 40-60 | 1.0 h wall in two agent rounds (the pass 23 min to a gate-ready head, the review round 5 min after an outside review), about 30 agent minutes; about $11 for the agent; lifecycle 42/67/39/15 -> 22/44/21/14, containment (new) 23/21/22/3; the landing run 12.2 min |
+| 5b-2 | Topology: its contract; its own crate out of `rust/protocol`, which ends wire's edge to `sot-log` | 2-3 | 40-60 | |
 | 5c | Server: its contract; the op table into the binary, every service a handler with an explicit context | 4-6 | 80-120 | |
 | 6 | Capsule (D2) | 10-20 | 200-400 | |
 | 7 | Frontend: State apart first, one short pass per cluster (the row record, focus and prompt, preview requests, the REPL and agent pane), each moving its fields into a type with private fields; then the five crate cuts (D4) as moves: app and render, chrome and input, navigation and session, agent pane and drawer, preview and control | 22-52 | 440-1,040 | |
@@ -310,6 +326,7 @@ and `rust/log/tests` (27 thousand lines) are assigned by file:
   hosted run takes about seven minutes, and the slow proofs run once per release (`release-gate.yml`, by hand). Pass 4
   landed 2026-10-21: messaging's contract is settled and comm is one implementation, in `sotd` (D1); live sessions keep
   the installed scripts until the 0.7.0 install. Pass 5a landed 2026-10-21: platform's and wire's contracts are
-  settled, and platform is its own crate, `sot-platform`, depending on nothing of ours. Pass 5b (containment,
-  lifecycle and topology) is next. Nothing is half-done on main.
+  settled, and platform is its own crate, `sot-platform`, depending on nothing of ours. Pass 5b-1 landed 2026-10-21:
+  containment's and lifecycle's contracts are settled, and containment is its own crate, `sot-containment`. Pass 5b-2
+  (topology) is next. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
