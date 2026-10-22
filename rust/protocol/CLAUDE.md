@@ -43,7 +43,15 @@ name is in this crate's one op table.
 7. **A frame write to a connection ends in an error rather than parking.** `reply::write_frame_to` fails after 10 s plus 1 s
    per MiB of blob (`write_frame_within` takes the bound), so a peer that stops draining cannot hold its writer; an
    over-cap envelope still fails as `EnvelopeTooLarge`, never as a timeout, so a caller can tell a refused frame from a
-   dead peer. Limit: the bound is per frame, and a frame cut by the timeout is moot (the caller drops the connection).
+   dead peer. Limits: the bound is per frame, and a frame cut by the timeout is moot (the caller drops the connection);
+   `reply::reject` writes one error frame with no deadline, as do the lease's malformed-line refusals that call it, so a
+   peer that never reads can fill its buffer; the bounded writer is the daemon's control loop and its handlers'.
+8. **The byte pipe ends with either side.** `pipe::pipe_bidirectional` copies both ways between a connection's halves
+   and an upstream, half-closes the other side as each copy ends, and returns when either direction closes; it decodes
+   no byte and owns no state past its call (it takes the halves by value and drops them at its return). It is here, not
+   in the server, so the services that hand a connection off (pages' `proxy.connect`, rows' `lane.connect`) and the
+   server take it from the wire without naming each other. Limit: it has no bound of its own (an idle pipe stays open
+   until a side closes).
 
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
@@ -64,8 +72,8 @@ serde, serde_json, tokio (the async codec), tracing (the pipe's close log), and 
 (`comm/lib/comm-lib-client.sh`) and `scripts/sot-lease.ps1` follow the lease and hello shapes and are owned by them.
 
 ## Does not
-Decide policy from the version string (only `is_release_build`). Admit a connection (server's hello gate). Hold a
-connection, a child or a socket. Interpret a payload's meaning (the op's handler does).
+Decide policy from the version string (only `is_release_build`). Admit a connection (server's hello gate). Own a
+connection's life (the pipe takes the halves it is given for the length of one call), a child or a socket. Interpret a payload's meaning (the op's handler does).
 
 ## Platforms
 Same on all three; the blocking codec is the one the ssh bridge and shell wrappers use.
@@ -80,6 +88,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 5 | release predicate | `version_app_version_tests.rs`: `the_bare_version_and_the_release_predicate_never_disagree`, `clean_on_tag_is_the_bare_version_only_from_ci` |
 | 6 | grammars | `annotation_tests.rs`, `physical_scale_tests.rs`, `page_url_tests.rs`, `video_path_tests.rs` |
 | 7 | a bounded frame write | `reply_tests.rs`: `write_frame_within_times_out_on_stuck_peer`, `write_timeout_is_not_confused_with_an_oversize_envelope`, `oversize_envelope_stays_downcastable_through_write_frame_within`, `write_frame_within_succeeds_on_healthy_peer`, `write_deadline_scales_with_blob_size` |
+| 8 | the byte pipe | `pipe_tests.rs`: `bytes_cross_both_ways_and_the_pipe_ends_when_the_client_closes`, `the_pipe_ends_when_the_upstream_closes_though_the_client_stays_open` |
 
 ## Files
 - `Cargo.toml`: the crate manifest; depends on platform alone of ours
