@@ -439,6 +439,7 @@ fn wait_for_exit_with_diagnostics(child: &mut Child, h: &str, timeout: Duration)
 }
 mod lifecycle;
 mod authority;
+mod one_process;
 mod spawn;
 
 
