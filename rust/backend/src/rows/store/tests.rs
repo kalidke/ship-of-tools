@@ -711,3 +711,15 @@ fn app_config_dir_windows_panics_when_localappdata_and_userprofile_are_both_unse
     std::env::remove_var("USERPROFILE");
     let _ = app_config_dir();
 }
+
+#[test]
+#[cfg(windows)]
+fn check_config_dir_refuses_a_windows_start_without_a_base_variable_with_the_state_root_message() {
+    let _guard = env_guarded();
+    std::env::remove_var("LOCALAPPDATA");
+    std::env::remove_var("USERPROFILE");
+    let refusal = check_config_dir().expect_err("a Windows start with neither variable set is refused at startup");
+    assert!(refusal.contains("cannot resolve the Windows state root"), "{refusal}");
+    std::env::set_var("LOCALAPPDATA", r"C:\Users\someone\AppData\Local");
+    assert_eq!(check_config_dir(), Ok(()));
+}
