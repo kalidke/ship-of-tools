@@ -24,22 +24,37 @@ use sot_protocol::{codec, op, Frame, ProxyConnectReq};
 use tokio::io::{AsyncBufRead, AsyncWrite};
 use tokio::net::TcpStream;
 
+use crate::sidecars::ports::{PortEvent, PortGrants, PortRefused};
+
 /// Loopback ports announced by REPL children via their `browser` frames
 /// (ADR 0032 `BrowserView` — `wglshow` and user-served dashboards), keyed by
-/// workspace so a dead child's grants die with it. This closes the last
+/// owner (the row's id) so a dead child's grants die with it. This closes the last
 /// configured-not-verified allowlist entry: the WGL/Bonito server binds
 /// lazily inside the user's REPL child where the daemon can't observe the
 /// bind, but the `BrowserView` URL it produces flows THROUGH the daemon as a
-/// repl frame on its way to the FE — the supervisor records the port off
-/// that frame (`sidecars/repl/supervisor.rs`), so the allowlist learns the ACTUAL bound port
+/// repl frame on its way to the FE — the supervisor announces the port off
+/// that frame (`PortGrants`, `sidecars/repl/supervisor.rs`), so the allowlist learns the ACTUAL bound port
 /// (ephemeral-fallback aware) with no protocol change and no trust in a
 /// static port number.
+///
+/// Each owner holds the newest child generation that has announced anything and that generation's ports: an event of
+/// a lower generation is refused (`PortRefused::Stale`), so an older child cannot grant or erase for its replacement,
+/// and an event of a higher one first drops what the older child held. An owner's entry stays, empty, after its
+/// `End`, to refuse the older child's late events; the table holds one per owner that has announced, until the
+/// daemon ends.
 ///
 /// Trust: the REPL child is the user's own arbitrary code, and the proxy
 /// client is the same authenticated user — user code authorizing a loopback
 /// port for the user's own browser adds no privilege over what either side
 /// can already do (same standing as `SOT_PROXY_EXTRA_PORTS`).
-static BROWSER_PORTS: RwLock<BTreeMap<String, BTreeSet<u16>>> = RwLock::new(BTreeMap::new());
+static BROWSER_PORTS: RwLock<BTreeMap<String, BrowserGrants>> = RwLock::new(BTreeMap::new());
+
+/// One owner's newest generation and its announced ports.
+#[derive(Default)]
+struct BrowserGrants {
+    generation: u64,
+    ports: BTreeSet<u16>,
+}
 
 /// Ports refused since they last passed the allowlist. The refusal is logged once per streak (a tab left open on a
 /// dead page retries every second or two, forever), and a streak ends when the port is served again.
@@ -61,30 +76,63 @@ fn refusal_starts_streak(port: u16, refused: bool) -> bool {
 /// one or two live served pages).
 const BROWSER_PORTS_PER_WS: usize = 16;
 
-/// Record a `browser`-frame loopback port for `workspace`. Called by the
-/// REPL supervisor when a BrowserView frame passes through it.
-pub fn record_browser_port(workspace: &str, port: u16) {
+/// Record a `browser`-frame loopback port for `owner`'s child of `generation`, or refuse it as stale.
+fn allow_browser_port(owner: &str, generation: u64, port: u16) -> Result<(), PortRefused> {
     let mut m = BROWSER_PORTS.write().unwrap_or_else(|p| p.into_inner());
-    let set = m.entry(workspace.to_string()).or_default();
-    if set.insert(port) {
-        while set.len() > BROWSER_PORTS_PER_WS {
+    let grants = m.entry(owner.to_string()).or_default();
+    if generation < grants.generation {
+        return Err(PortRefused::Stale { current: grants.generation });
+    }
+    if generation > grants.generation {
+        grants.ports.clear();
+        grants.generation = generation;
+    }
+    // Acknowledged only if it stays: the cap evicts the smallest, so a port below a full table's smallest would go at once.
+    if !grants.ports.contains(&port)
+        && grants.ports.len() >= BROWSER_PORTS_PER_WS
+        && grants.ports.first().is_some_and(|smallest| port < *smallest)
+    {
+        return Err(PortRefused::Failed(format!(
+            "the owner already holds {BROWSER_PORTS_PER_WS} granted ports, all above {port}"
+        )));
+    }
+    if grants.ports.insert(port) {
+        while grants.ports.len() > BROWSER_PORTS_PER_WS {
             // BTreeSet has no insertion order; evicting the smallest is an
             // arbitrary-but-deterministic backstop.
-            let evict = *set.iter().next().expect("non-empty set");
-            set.remove(&evict);
+            let evict = *grants.ports.iter().next().expect("non-empty set");
+            grants.ports.remove(&evict);
         }
-        tracing::info!(workspace, port, "proxy: browser-served port recorded (allowlisted)");
+        tracing::info!(owner, port, "proxy: browser-served port recorded (allowlisted)");
     }
+    Ok(())
 }
 
-/// Drop every announced port for `workspace`. Called when its REPL child
-/// dies (gen-guarded) and when a respawn begins — a freed port could be
-/// re-bound by any other process, so a dead child's grant must not outlive it.
-pub fn revoke_browser_ports(workspace: &str) {
+/// Drop every announced port for `owner` and keep its generation, or refuse the `End` as stale. Called when its REPL
+/// child dies (gen-guarded) and when a respawn begins — a freed port could be re-bound by any other process, so a
+/// dead child's grant must not outlive it.
+fn end_browser_ports(owner: &str, generation: u64) -> Result<(), PortRefused> {
     let mut m = BROWSER_PORTS.write().unwrap_or_else(|p| p.into_inner());
-    if let Some(set) = m.remove(workspace) {
-        if !set.is_empty() {
-            tracing::info!(workspace, ports = ?set, "proxy: browser-served ports revoked (REPL child gone)");
+    let grants = m.entry(owner.to_string()).or_default();
+    if generation < grants.generation {
+        return Err(PortRefused::Stale { current: grants.generation });
+    }
+    grants.generation = generation;
+    if !grants.ports.is_empty() {
+        tracing::info!(owner, ports = ?grants.ports, "proxy: browser-served ports revoked (REPL child gone)");
+        grants.ports.clear();
+    }
+    Ok(())
+}
+
+/// The receiver of the REPL's port announcements (`sidecars::ports`), which the daemon installs at its start.
+pub struct PagesGrants;
+
+impl PortGrants for PagesGrants {
+    fn apply(&self, event: PortEvent) -> Result<(), PortRefused> {
+        match event {
+            PortEvent::Allow { owner, generation, port } => allow_browser_port(&owner, generation, port),
+            PortEvent::End { owner, generation } => end_browser_ports(&owner, generation),
         }
     }
 }
@@ -128,8 +176,8 @@ pub fn allowed_proxy_ports() -> BTreeSet<u16> {
     ports.extend(crate::pages::site::pool_assigned_ports());
     {
         let m = BROWSER_PORTS.read().unwrap_or_else(|p| p.into_inner());
-        for set in m.values() {
-            ports.extend(set.iter().copied());
+        for grants in m.values() {
+            ports.extend(grants.ports.iter().copied());
         }
     }
     for tok in std::env::var("SOT_PROXY_EXTRA_PORTS")

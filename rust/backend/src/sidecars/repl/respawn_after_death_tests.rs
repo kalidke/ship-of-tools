@@ -219,3 +219,56 @@ async fn a_child_that_answers_then_exits_still_delivers_its_answer() {
     assert_eq!(payload.get("answered").and_then(Value::as_bool), Some(true));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A child that announces a browser page, reads nothing and then exits while a grandchild holds its pipes: a submission
+/// too large for the pipe blocks the write, and the child's exit must still end the supervisor, which revokes the grant,
+/// answers the run and retires the child's folder, within a bound.
+#[tokio::test]
+async fn a_blocked_stdin_write_hides_neither_the_childs_death_nor_its_grant() {
+    use crate::sidecars::ports::PortEvent;
+    use std::time::Duration;
+    let dir = scratch_dir("blocked-write");
+    let root = resource_root(&dir, "resources");
+    let log = dir.join("argv.log");
+    let julia = dir.join("julia");
+    let frame = r#"{"id":0,"kind":"evt","op":"repl.frame","payload":{"eval_id":7,"frame":{"kind":"browser","url":"http://127.0.0.1:45631/page"}}}"#;
+    write_stub(&julia, &log, &format!("printf '%s\\n' '{frame}'\nexec 3<&0\nsleep 30 &\nsleep 3\nexit 0"));
+    let _pin = pin_env(&julia, &root);
+
+    let (frame_tx, _frame_rx) = broadcast::channel(64);
+    let (_tx, bus) = broadcast::channel(1);
+    let recorder = super::ports_tests::Recorder::new(bus, None);
+    let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), sot_containment::process())
+        .with_ports(recorder.clone());
+
+    let _first = repl.execute("repl.eval", serde_json::json!({ "eval_id": 1, "code": "1" })).await.expect("starts the child");
+    let begun = std::time::Instant::now();
+    while recorder.allows().is_empty() {
+        assert!(begun.elapsed() < Duration::from_secs(30), "the page was never granted");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Four MiB: far past the pipe's buffer, and the child reads none of it.
+    let (reply, _collector) = repl
+        .execute("repl.eval", serde_json::json!({ "eval_id": 9, "code": "x".repeat(4 << 20) }))
+        .await
+        .expect("accepted");
+    let answered = tokio::time::timeout(Duration::from_secs(20), reply).await;
+    assert!(answered.is_ok(), "the run was not answered after its child exited");
+    let events = recorder.events();
+    let allowed = events.iter().position(|e| matches!(e, PortEvent::Allow { .. })).expect("a grant");
+    assert!(
+        events[allowed + 1..].iter().any(|e| matches!(e, PortEvent::End { .. })),
+        "the child's death did not end its grant: {events:?}"
+    );
+    let begun = std::time::Instant::now();
+    loop {
+        let done = repl.inner.slot.lock().await.current.as_ref().is_some_and(|s| s.is_done());
+        if done {
+            break;
+        }
+        assert!(begun.elapsed() < Duration::from_secs(20), "the supervisor never retired the child");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(repl.state(), ReplLifecycle::Dead);
+    let _ = std::fs::remove_dir_all(&dir);
+}

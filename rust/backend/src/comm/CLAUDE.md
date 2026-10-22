@@ -90,6 +90,8 @@ Waking:
   with its supervisor) has a fresh box and owes nothing, so a restarted daemon's boot look at a new run sends no Enter
   and types nothing; a daemon-only restart keeps the box and its owed Enter (WAKE-RESTART-LOOK, `comm_wake::a_restarted_daemon_completes_a_wake_line_left_typed`;
   `comm_wake::a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_box_alone`).
+  Each typing, the line or Enter alone, is one INFO log event: the handle, what was
+  sent, the cursor's row and the box's rows as the gate read them (escaped), and the outcome.
 - A busy session needs no typing: its end-of-turn check (the Stop hook, through `sotd comm unread`) does not let a turn
   end while unread mail waits, once per batch.
 - A session outside any row, every server session included, has a handle and an inbox and is never woken; it sees mail

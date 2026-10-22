@@ -67,6 +67,7 @@ pub(crate) fn unconfirmed(step: &'static str, e: HeadlessError) -> WakeOutcome {
 pub fn wake_if_free(
     state_dir: &Path,
     controller_id: &str,
+    handle: &str,
     line: &str,
     is_free: &dyn Fn(&[String], Option<(u16, u16)>, &str) -> Option<Prompt>,
     agent: &str,
@@ -108,12 +109,15 @@ pub fn wake_if_free(
         match live {
             Some(prompt) if Some(prompt) == first_prompt => {
                 mark("final-ok");
-                if prompt == Prompt::HoldsLine {
+                let read = typing_read(&client);
+                let (sent, out) = if prompt == Prompt::HoldsLine {
                     tracing::info!("comm wake: Enter for the wake line left in main's input box");
-                    Ok(wake_outcome(send_enter(&mut client, op_budget)))
+                    ("enter", wake_outcome(send_enter(&mut client, op_budget)))
                 } else {
-                    Ok(type_then_enter(&mut client, line, agent, op_budget))
-                }
+                    ("line and enter", type_then_enter(&mut client, line, agent, op_budget))
+                };
+                log_typing(handle, sent, &read, &out);
+                Ok(out)
             }
             _ => Ok(WakeOutcome::NotFree { row: cursor_row_trace(client.screen()) }),
         }
@@ -121,6 +125,21 @@ pub fn wake_if_free(
     client.shutdown(SHUTDOWN_WAIT);
     mark("done");
     out
+}
+
+/// What the gate read at the moment of typing: the cursor's row ([`cursor_row_trace`]) and the rows of the box around
+/// it, the row above through the row below, as [`free_test_lines`] gave them to the gate.
+fn typing_read(client: &Client) -> (String, Vec<String>) {
+    let lines = free_test_lines(client.screen());
+    let at = client.screen().cursor_position().0 as usize;
+    let rows = lines.get(at.saturating_sub(1)..(at + 2).min(lines.len())).unwrap_or_default().to_vec();
+    (cursor_row_trace(client.screen()), rows)
+}
+
+/// The one INFO event per typing: the row's handle, what was sent, what the gate read and the outcome. Screen text
+/// is logged as data (`{:?}` escapes it), never as part of the message.
+fn log_typing(handle: &str, sent: &str, read: &(String, Vec<String>), outcome: &WakeOutcome) {
+    tracing::info!(handle, sent, cursor_row = %read.0, box_rows = ?read.1, outcome = ?outcome, "comm wake: typed into the row");
 }
 
 /// Types `line`, pumps until the typed-line gate passes or `op_budget` has passed since the write returned, then

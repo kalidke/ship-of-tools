@@ -50,6 +50,11 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   daemon's port (`bind_proxy_listener`, `with_loopback_port`, `PageListener`, `armed_url`). A URL user code announced
   or `open_url` named keeps the daemon's number and is refused when that number is taken (`PageSource`; ADR 0035,
   PAGE-PORT update).
+- A loopback port a REPL child's `browser` frame announces is dialable through `proxy.connect` only after the REPL's
+  grant is applied and answered, for that child's life: the table holds, per row, the newest child generation that has
+  announced and its ports, refuses an event of an older generation (`PortRefused::Stale`) and drops an older child's
+  ports when a newer one's first event arrives; it keeps at most 16 ports a row and one empty entry per row until the
+  daemon ends (`PagesGrants`, which the server installs through `sidecars::ports::install`; sidecars' R6).
 - `.git` and `..` are never served, and a link is followed only when git tracks it, its target is written as an
   absolute real path under a mount folder (outside the repository; the home folder and the repository by folded names), and the file, reached by its written names with no symlink below the link, lies under `/mnt`, `/media` or `/Volumes`, outside the
   home folder, with no hidden part below that folder (`site/` `resolve_and_open`, `Bounds`).
@@ -61,7 +66,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 ## Connections
 
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `video.open`, `docs.open`,
-`quarto.open`, `quarto_render_error`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `record_browser_port`, `revoke_browser_ports`,
+`quarto.open`, `quarto_render_error`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `PagesGrants`,
 `is_servable_video`, `start_page_servers`, `remove_root`, `loopback_port_from_url`, `with_loopback_port`,
 `rust/protocol/src/page_url.rs`.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `sot_protocol::pipe::pipe_bidirectional`, `sot_protocol::reply::reject`,
@@ -82,7 +87,7 @@ Elsewhere: rust/frontend/src/pages.rs (the window's page proxy).
   It also holds `random_token`, the one minter of video tokens, site nonces and pool secrets.
 - `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open and its render-failure text.
 - `ops_error_tests.rs`: direct cross-platform tables for Quarto failure selection, bounded ERROR retention and transport guidance; one Unix real-handler flood stand-in through the shared `test_isolated::run_isolated` owner checks reply code, no blob, one render, partial-HTML removal and the real writer/decoder boundary.
-- `proxy.rs`: `proxy.connect`, the loopback allowlist, browser-port records.
+- `proxy.rs`: `proxy.connect`, the loopback allowlist, the browser-port table and its receiver (`PagesGrants`).
 - `site/`: the static-site server (own page).
 - `video.rs`: the video listener, its token grants and the request handler.
 

@@ -68,12 +68,16 @@ impl Fixture {
         fx
     }
 
-    /// How many children this REPL has started.
-    fn spawns(&self) -> u64 {
+    /// The generation of the child this REPL last started; it rises with each start.
+    fn generation(&self) -> u64 {
         self.repl.inner.lifecycle.lock().unwrap().gen
     }
 
     fn new(julia: bool) -> Self {
+        Self::with_ports(julia, None)
+    }
+
+    fn with_ports(julia: bool, ports: Option<Arc<dyn crate::sidecars::ports::PortGrants>>) -> Self {
         let owned = OwnedRoot::private();
         let root = owned.path();
         if julia {
@@ -84,7 +88,11 @@ impl Fixture {
         std::fs::create_dir(&first).expect("create first project");
         std::fs::create_dir(&second).expect("create second project");
         let (tx, frames) = broadcast::channel(256);
-        let repl = Repl::new(tx, Some("ws-restart".into()), first.clone(), owned.sig());
+        let repl = Repl::new(tx.clone(), Some("ws-restart".into()), first.clone(), owned.sig());
+        let repl = match ports {
+            Some(ports) => repl.with_ports(ports),
+            None => repl,
+        };
         Fixture {
             first,
             second,
@@ -281,7 +289,9 @@ async fn retired_generation_cannot_grant() {
     if !isolated("sidecars::repl::restart_tests::retired_generation_cannot_grant", BODY) {
         return;
     }
-    let fx = Fixture::new(false);
+    let (_tx, bus) = broadcast::channel(1);
+    let recorder = super::ports_tests::Recorder::new(bus, None);
+    let fx = Fixture::with_ports(false, Some(recorder.clone()));
     let stub = fx.root().join("julia");
     sot_platform::test_exec::write_executable(&stub, LATE_BROWSER_STUB.to_owned());
     let resources = fx.root().join("resources");
@@ -299,10 +309,7 @@ async fn retired_generation_cannot_grant() {
         .await
         .expect("restart");
     tokio::time::sleep(Duration::from_secs(4)).await;
-    assert!(
-        !crate::pages::proxy::allowed_proxy_ports().contains(&45611),
-        "a retired generation's browser port must not be granted"
-    );
+    assert!(recorder.allows().is_empty(), "a retired generation's browser port must not be granted: {:?}", recorder.allows());
     drop(held);
     fx.finish().await;
 }
@@ -316,17 +323,17 @@ async fn restart_timeout_retains_owner_and_starts_no_replacement() {
     }
     let fx = Fixture::idle();
     fx.repl.ensure_supervisor().await.expect("start");
-    assert_eq!(fx.spawns(), 1);
+    let first = fx.generation();
     let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
     *super::supervisor::seams::CLOSEOUT_GATE.lock().unwrap() = Some(gate.clone());
 
     let err = fx.repl.restart_with_project(&fx.second).await.expect_err("the join is delayed past the wait");
     assert!(err.to_string().contains("not finished"), "{err:#}");
-    assert_eq!(fx.spawns(), 1, "a timed-out retirement must start no replacement");
+    assert_eq!(fx.generation(), first, "a timed-out retirement must start no replacement");
 
     gate.add_permits(1);
     fx.repl.restart_with_project(&fx.second).await.expect("the retained owner is reconciled");
-    assert_eq!(fx.spawns(), 2, "the replacement starts once the retirement finished");
+    assert!(fx.generation() > first, "the replacement starts once the retirement finished");
     fx.finish().await;
 }
 
@@ -339,13 +346,14 @@ async fn cleanup_error_prevents_replacement() {
     }
     let fx = Fixture::idle();
     fx.repl.ensure_supervisor().await.expect("start");
+    let first = fx.generation();
     super::supervisor::seams::FAIL_RETIREMENT.store(true, std::sync::atomic::Ordering::SeqCst);
 
     let err = fx.repl.restart_with_project(&fx.second).await.expect_err("the retirement failed");
     assert!(err.to_string().contains("retirement failed"), "{err:#}");
-    assert_eq!(fx.spawns(), 1, "a failed retirement must start no replacement");
+    assert_eq!(fx.generation(), first, "a failed retirement must start no replacement");
 
     fx.repl.restart_with_project(&fx.second).await.expect("the failure was reported once");
-    assert_eq!(fx.spawns(), 2);
+    assert!(fx.generation() > first);
     fx.finish().await;
 }

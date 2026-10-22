@@ -1,4 +1,4 @@
-# rust/backend/src/sidecars: sidecars (contract, drafted)
+# rust/backend/src/sidecars: sidecars (contract)
 
 The helper processes the daemon relies on and speaks to over their own stdio: per row a Julia kernel (`Kernel`,
 kernel.rs; previews and project scans, never user code) and a Julia REPL (`Repl`, repl/; user code); per daemon one
@@ -7,9 +7,9 @@ Pluto (`Pluto`, pluto.rs) and one MathJax node child (`MathJax`, mathjax.rs); pe
 its own X display). Each child is owned by one daemon task from its spawn to its reap, and callers submit and wait at
 a stated bound; they never spawn, kill or retry. `ops.rs` holds the handlers of `kernel.request`, `math.render`,
 `pluto.open` and `monitor.*`; the server's op table calls them (`server/dispatch.rs`), as it calls the REPL's.
-Two passes write and prove this page: pass 8a the kernel, Pluto, MathJax, the monitor, the julia choice, `child/` and
-the ops (guarantees 1 to 18); pass 8b the REPL, whose guarantees (the section "The REPL") are drafted here from its
-interface and its earlier charter and are built and tested by that pass. Part of the sidecars' subsystem, beside this
+Two passes wrote and proved this page: pass 8a the kernel, Pluto, MathJax, the monitor, the julia choice, `child/` and
+the ops (guarantees 1 to 19); pass 8b the REPL (guarantees R1 to R7, the section "The REPL") and the channel that
+announces a browser page's port to pages. Part of the sidecars' subsystem, beside this
 folder: `julia/kernel`, `julia/plugins`, `julia/pluto`, `julia/repl`, `core/` and `rust/backend/sidecars/mathjax`.
 
 ## Guarantees
@@ -131,8 +131,8 @@ of each.
     roster is read once, so a change needs a restart; macOS and Windows daemons sample nothing of their own. The sampler
     script avoids here-documents because bash before 5.3 leaks the pipe behind one (`monitor.rs:36`); no test proves it
     (the source scan that did is deleted).
-14. **Each Julia child, and each command the updater runs, has a folder of its own, which its owner removes after
-    asking the child's tree to end.** `ChildTmp` makes it in this process's held folder (platform's `HeldDir`), names
+14. **Each Julia child, and each command the updater runs, has a folder of its own, which its owner asks to be
+    removed after asking the child's tree to end.** `ChildTmp` makes it in this process's held folder (platform's `HeldDir`), names
     it in the child's environment (`TMPDIR`; `TMP` and `TEMP` on Windows), and its owner's `retire` asks the child's
     tree to end, reaps the direct child, ends its display, then schedules the folder's removal on a thread nothing
     waits for and logs a failure. The held folder is made with the first child folder and removed with the last. A
@@ -148,8 +148,8 @@ of each.
     file system whose locks every client sees; a descendant that leaves the child's process group on Unix runs on
     without its folder, unless on Linux it holds the child's display (guarantee 15); a program that does not take its
     temporary folder from the environment (macOS's `mktemp` given no template) makes its files outside it.
-15. **On Linux each REPL and Pluto child has an X display of its own that only it opens, and ending it signals every
-    process that holds it.** `ChildTmp::for_user_code` starts an Xvfb (`Display::start`) on the lowest free display
+15. **On Linux each REPL and Pluto child whose display started has an X display of its own that only it opens, and
+    ending it signals every process that holds it.** `ChildTmp::for_user_code` starts an Xvfb (`Display::start`) on the lowest free display
     number, with a cookie in the child's folder that is the only way in (`-auth`, no TCP, no unix socket), which
     Pluto's notebook workers inherit. The display ends after the child's reap (`ChildTmp::retire`: a restart, a
     `--fresh`, the child's death, its row's end), at the `Signal`'s fire and with its owner's drop. Every end of a
@@ -171,7 +171,7 @@ of each.
     127.0.0.1. Pluto serves every path under its session secret (`base_url`), so nothing, not even its own files or
     `/ping`, answers without it; each notebook worker checks the Distributed cluster cookie it read from its stdin
     before it reads a message (`julia/pluto/session_options.jl`); a REPL's `wglshow` page sits behind its secret path
-    and its websocket behind its session id (`julia/repl/src/wgl.jl`; 8b). Limit: a process of the same account that
+    and its websocket behind its session id (`julia/repl/src/wgl.jl`). Limit: a process of the same account that
     reads the child's environment can read a secret; the guarantee is against another account and against a page that
     guesses.
 17. **A notebook is opened only inside a row's root, with Pluto's header on its first line, and with a path the
@@ -200,37 +200,92 @@ of each.
     kernel restarts; nothing discovers a user's packages as plugins (see the root CLAUDE.md); a plugin's own code is the
     plugin's.
 
-## The REPL (drafted; pass 8b builds and tests them)
-Written from `repl/mod.rs`, `repl/execute.rs` and the charter this page replaces, and narrowed to what the REPL's code
-does today; 8b proves or corrects each. It changes no REPL code in this pass.
-- One `julia` child per row, started by the first submission that needs one (an interrupt does not start one) and
-  replaced on the next such submission after its death (`Repl`'s slot serializes replacement and retires its
-  predecessor first), in the row's project, with its own temporary folder and, on Linux, its own display (guarantees
-  14, 15).
-- Only the enqueue is refused at once: a full queue is `repl_busy` (`ReplBusy`). Acquiring the slot and retiring a
-  predecessor can wait before that. `repl.execute` waits at most its `timeout_ms` (default 120 s, from 1 s to 30 min),
-  but the timeout begins after the submission and the child's start, and the spilling of figures follows it, so the
-  call can take longer; a child that has not said it is ready is named by how long it has been starting and its last
-  five stderr lines.
-- `repl.interrupt` waits `REPL_INTERRUPT_WAIT` (10 s) for the child's answer once its submission is queued, not
-  counting slot acquisition and settlement; a restart's `REPL_RESTART_WAIT` (5 s) bounds the join of the retired
-  supervisor, not the whole restart; a completed retirement's error is discarded when the slot settles, so a later
-  replacement can start (`restart_tests.rs:336`). The signal tests of `julia/repl` run only in the local gate and the
-  release gate (queue: CI-PRE-REPL-INTERRUPT; the cause is 8b's).
-- A `browser` frame's loopback port is allowlisted for the proxy and revoked at the child's death and at a respawn's
-  start (`record_browser_port`, `revoke_browser_ports`, called from `repl/supervisor.rs:392,533` and
-  `repl/lifecycle.rs:73`). At most 16 announced ports per row are kept, the smallest evicted first, possibly the newly
-  announced one (`pages/proxy.rs:69`, `proxy_tests.rs:70`).
-- Output reaches the window as `repl.frame`s. `EXEC_FIELD_CAP` caps selected fields of the collected report
-  (`repl/execute.rs:255`) and `EXEC_TEXT_CAP` is a threshold that accepts the whole frame that crosses it
-  (`repl/mod.rs:159`); streamed frames pass through without a cap (`repl/supervisor.rs:547`).
-- **The channel that replaces the pages calls (8b builds it).** It is a port-announcement capability injected into the
-  REPL (and usable by Pluto) with two events, `Allow { owner, generation, port }` and `End { owner, generation }`.
-  Pages owns the receiver and the grant table; the event type sits at a boundary sidecars can name without depending on
-  pages (the wire's crate or a small shared one). It must be reliable and ordered: today the grant is recorded before the
-  browser frame is forwarded (`repl/supervisor.rs:533`, `:547`), so `Allow` is applied and acknowledged before the
-  frame goes on, not sent and forgotten; a stale generation is refused, so an old child's `End` cannot erase its
-  replacement's grant; a receiver that has failed is visible to the sender as an error.
+## The REPL
+The REPL is guarantees R1 to R7 (pass 8b settled them against the code; the Tests table holds each one's test). What it
+shares with the other children is guarantees 10, 11, 12, 14, 15 and 16.
+
+R1. **At most one `julia` child per row handle is live at a time, started by the first submission that needs one and
+    replaced by the next after its death.** `repl.eval`, `repl.run_file` and `repl.execute` start it
+    (`Repl::ensure_supervisor`); `repl.interrupt` never does (`request_if_running`). The `Repl`'s slot serializes
+    replacement: what is dead or still retiring is retired and joined before the replacement opens, on every route to a
+    spawn, and a death respawn uses the project the last restart chose. The child runs in the row's project with its own
+    temporary folder and, on Linux, its own display when one started (guarantees 14, 15); the shim project and the julia
+    binary are resolved on every spawn attempt, so a repaired install is used by the next one. Its lifecycle is
+    `not_started`, `starting`, `ready`, `dead`, announced as a `lifecycle` frame, written under a spawn generation so a
+    retired child's late death never overwrites its replacement's state. The supervisor watches the child's exit, its
+    stdout and its escalation while a submission's bytes are still being written, so a child that reads nothing and
+    dies is seen to die (`a_blocked_stdin_write_hides_neither_the_childs_death_nor_its_grant`). Limits: the singleton
+    holds within R5's limit (a retirement that finished with an error is discarded, so a later restart can start another
+    child over a tree whose termination failed); a REPL that nobody submits to after its death stays `dead`; `ready` is
+    the child's first stdout line, whatever it holds, not its announcement; a child that writes nothing stays `starting`
+    (named by its age and last five stderr lines, never ended by the daemon).
+R2. **A caller's wait for the child's reply is bounded, and a full queue is refused at once.** Admission is the only
+    immediate refusal: 16 queued submissions per child (one more while a write is in progress), then `repl_busy`
+    (`ReplBusy`). `repl.execute` waits at most its `timeout_ms` (default 120 s, clamped to 1 s to 30 min) for the child's
+    answer and then answers `timeout`; `repl.interrupt` waits `REPL_INTERRUPT_WAIT` (10 s). That is the reply-wait
+    budget and nothing more: acquiring the slot, the spawn, a predecessor's retirement (`REPL_RESTART_WAIT`, 5 s, bounds
+    only the join) and the spilling of figures have no combined deadline, so the call can take longer.
+R3. **Every accepted run is closed out when its child ends, and its waiting reply is answered.** A restart, the
+    signal, the child's exit or a display's end (`ReplEnded`) answers each waiting request with the end and gives each
+    streamed run an `error` frame naming it and a `done`, after the `dead` announcement, including a submission that
+    arrived after the close began; the window's run is marked ended before its `done` is published (`numbers.rs`). A
+    caller's timeout is the end of its wait, not of the eval: the run goes on, its drawer run is closed by a synthetic
+    `done`, and the eval's own `done` follows when it ends, so such a run can show two (queue: TIMEOUT-DOUBLE-DONE). A
+    row's removal ends the REPL only when the last handle to the row is dropped: while a handler holds the workspace
+    (an `execute` waiting, or spilling figures) the child, its display and its grants stay (queue: ROW-END-REPL). Limits:
+    a run's frames are published on a bounded broadcast bus, so a subscriber that lags loses frames; `repl.execute`
+    collects its own frames loss-free.
+R4. **An interrupt signals only the eval the child runs, only while it runs, and an eval that never yields is
+    reached by the signal, not by the request.** The shim reads requests on the thread that evaluates, so a loop with no
+    safepoint cannot read `repl.interrupt`. When the child has said nothing for `QUIET` (1 s) with an interrupt
+    unanswered, `Escalation` sends one interrupt signal to the child (`Contained::interrupt`: to the process on Unix, to
+    the child's console process group on Windows, descendants included), which Julia raises at the next safepoint; a
+    forced request (`force: true`) sends them `BURST_GAP` (50 ms) apart for `FORCE_SPAN` (800 ms; 400 on macOS and
+    Windows), which Julia forces into code with no safepoint. Any line from the child restarts the quiet, one after a
+    signal ends the signals, and the eval's `done` ends the escalation. Never an idle REPL, an eval the request did not
+    name, or one after its `done`. The signals stop at `FORCE_SPAN` whether or not the child spoke; when they are over
+    and the quiet has passed with no answer the daemon answers the request itself, saying what is left (`--fresh`
+    restarts). Limits: this is an interrupt mechanism, not cancellation of every eval: C code, compiling and garbage
+    collection take the signal only when they return, forcing inside them can crash or hang the REPL, and on a loaded
+    Linux computer five signals count as two or three, so a forced interrupt may not stop the eval, which the answer
+    says. Queue item 20 (an interrupt never reaches an eval that does not yield) is met to those limits; nothing is
+    built for it in 8b. The run_shim signal tests of `julia/repl` (`interrupt_child.jl`) run only in the local gate and
+    the release gate (`SOT_REPL_SIGNAL_TESTS=1`), because the last of them fails on a loaded computer (queue:
+    CI-PRE-REPL-INTERRUPT).
+R5. **A retirement is checked, and an unfinished one stays owned.** A restart stops the old supervisor, which closes out
+    its work, asks for its tree's termination and confirms the direct child's reap; the owner joins it for at most
+    `REPL_RESTART_WAIT`. A timeout, or a failure the join reports, returns an error and starts no replacement while the
+    task has not finished; a retirement that finished with an error is reported once and then dropped, so the next
+    restart can start one. Limit: that dropped error is the exception to R1's singleton: the supervisor has finished and
+    released its tree, so a termination that really failed does not stop a later replacement (queue:
+    RETIREMENT-ERROR-DROPPED); the termination is requested of the tree, not confirmed for every descendant (containment's
+    guarantee).
+R6. **A browser page's loopback port is granted to the proxy before its frame is forwarded, for one child's life, and an
+    older child cannot grant or revoke for a newer one.** A `browser` frame is a child announcing a loopback server
+    (`wglshow`, a user's dashboard). The REPL applies `PortEvent::Allow { owner, generation, port }` through its
+    `PortGrants` capability and waits for the answer before it publishes the frame; `End { owner, generation }` goes
+    when the child's death is applied and when a respawn opens. `owner` is the row's id, `generation` is the child's
+    spawn generation, taken from one counter for the process so a row's later REPL handle starts above the last. A
+    receiver refuses a generation below the one it holds for the owner (`PortRefused::Stale`) and a port its cap of 16
+    per owner would evict at once; a refused or failed `Allow` withholds the frame and puts a `stderr` frame naming the
+    reason in its place, so the failure is seen at the run, never silent; an `End` that fails is logged, not retried.
+    Pages owns the receiver (`pages::proxy`), the table and the cap; sidecars owns the event type and the capability
+    and names nothing of pages. Limits: the daemon installs one receiver for the process (`sidecars::ports::install`,
+    at its start), and a REPL without one refuses every `Allow`; a port is granted for the child's life, not for the
+    page's, so a port the child freed and another process took stays dialable until the child ends; when the table is
+    full a larger port evicts the smallest granted one; the table keeps one empty entry per owner that has ever
+    announced, until the daemon ends.
+R7. **Output reaches the window as `repl.frame`s, and a collected run's text is capped.** Frames pass through as the
+    child wrote them, one per line off its stdout (guarantee 10 for its bytes), except that a `browser` frame whose grant
+    was refused is replaced by a `stderr` frame (R6). A `repl.execute` collector keeps every frame until the stdout and
+    stderr text it holds reaches `EXEC_TEXT_CAP` (256 KiB), keeps whole the frame that crosses it and drops later text
+    frames (`truncated`); value, image, error and done frames are always kept, with no count or aggregate bound. A `value`
+    text and the first `error` message are cut at `EXEC_FIELD_CAP` (64 KiB) with a marker, when the report is made, after
+    collection; other fields, streamed frames and images are not capped. Limits: the collector stays installed until the
+    run's `done` or response, so it goes on collecting after a timed-out caller has returned (queue: COLLECTOR-LIFETIME);
+    the 1 MiB envelope bounds a reply, and a run whose frames exceed it fails there.
+
+Item 41 (a row's REPL outlives a daemon restart) is not built and not ordered; the result file says what it would take.
 
 ## Owns
 - Per row a `Kernel` and a `Repl` handle (the row builds them lazily, `Workspace::kernel`, `Workspace::repl`); the
@@ -250,15 +305,16 @@ does today; 8b proves or corrects each. It changes no REPL code in this pass.
 `sot_config_dir`, `SSH_OPTS`), `sot_protocol` (`ChildLines`, the op names and payloads,
 `page_url::loopback_port_from_url`, `reply::HandlerOutput`), rows (`Workspaces::resolve`, `row_or_reply`,
 `capsule_guard`, for the REPL's ops), files (`canonicalize_within_any_workspace`, for `pluto.open`) and the server's
-`Session` (the revision a reply carries). The REPL's calls into pages are above.
+`Session` (the revision a reply carries). The REPL names no module of pages: its port announcements go through `ports::PortGrants`, which pages implements and the
+daemon installs (R6).
 
 ## Calls out
 `Kernel::request` (files' previews), `Kernel`, `KernelUnavailable`, `Repl` and `ReplFrameMsg` (rows, files, the server),
 the handlers in `ops.rs` and `repl/` (the server's op table), `Pluto::server_up` (rows' `workspace.list`),
 `bound_pluto_port` (pages' proxy), `julia::resolve_bin` (pages' quarto, the updater), `child::remove_own` and
 `child::sweep_gone` (lifecycle's terminal, the server's start), `child::last_lines` (pages' quarto), `MonitorHub` and
-`monitor.tick` (rows' registry, the server's tick bus). Two edges stay to undo for the package page's cut: sidecars
-into pages (the REPL's) and the server's `repl_numbers` handed to the REPL's handlers (8b).
+`monitor.tick` (rows' registry, the server's tick bus). One edge stays to undo for the package page's cut: the server's `repl_numbers` handed to the REPL's handlers.
+Pages depends on sidecars (`bound_pluto_port`) and implements `PortGrants`; sidecars does not name pages.
 
 ## Does not
 Run user code in the kernel. Serve a page to the browser (pages). Know a row beyond the workspace id its caller names
@@ -277,7 +333,9 @@ missing a render fails with that reason.
 - `julia.rs`: which julia runs. `kernel.rs`: the per-row kernel and its supervisor. `pluto.rs`: the per-daemon Pluto.
   `mathjax.rs`: the per-daemon MathJax child. `monitor.rs`: the host monitor. `ops.rs`: the handlers.
 - `child/`: what each child carries (`tmp.rs`, `stderr_tail.rs`, and `display/` on Linux with its `holders.rs`).
-- `repl/`: the per-row REPL (8b).
+- `repl/`: the per-row REPL (`mod.rs` the handle and slot, `supervisor.rs` the child's task, `lifecycle.rs`, `escalation.rs`,
+  `execute.rs` and `ops.rs` the handlers, `numbers.rs` a window's runs).
+- `ports.rs`: the port-announcement capability (`PortEvent`, `PortGrants`, `PortSink`) and its one installed receiver.
 - `contract_tests.rs`: the fixtures the tests share (the X11 probes, `executable`, `isolated`, `pin_env`, `within`) and
   the native observations of the private `Signal` and of the MathJax helper (it listens nowhere); no source-text
   assertions.
@@ -308,20 +366,55 @@ One per guarantee. Paths are under `rust/backend/src/sidecars/` unless they star
 | 7 | the proxy grant | `pluto_port_parse_tests.rs`: `death_releases_proxy_grant`, `inherited_stdout_does_not_keep_grant`, `nonloopback_ready_grants_nothing`; pages' side: `src/pages/proxy_tests.rs` `expired_pluto_grant_refuses_its_port` |
 | 8 | cancel and stall | `pluto_port_parse_tests.rs`: `blocked_write_death_releases_grant_and_closes_requests`, `flush_blocked_death_releases_grant_and_closes_requests`, `flush_error_releases_grant_and_closes_requests`, `signal_cancels_blocked_pluto_write`, `a_request_pushed_after_the_close_is_answered` |
 | 9 | MathJax's bounds | `mathjax_tests.rs`: `a_render_past_its_bound_is_an_error_and_ends_its_child`, `a_child_never_ready_is_ended_at_its_start_bound`, `a_mathjax_child_that_died_is_replaced_by_the_next_render`; `contract_tests.rs`: `a_slow_start_is_not_counted_against_the_first_render` |
-| 10 | output is bytes | `kernel_stream_tests.rs`: `a_kernel_reply_holding_an_invalid_byte_keeps_its_generation`, `a_kernel_stderr_line_holding_an_invalid_byte_keeps_its_generation`; `kernel_tests.rs`: `a_kernel_line_that_does_not_parse_is_logged_without_its_bytes`; `pluto_port_parse_tests.rs`: `a_pluto_line_holding_an_invalid_byte_keeps_the_server`; `mathjax_tests.rs`: `a_mathjax_line_that_does_not_parse_is_logged_without_its_bytes`; the REPL's: `repl/ops.rs` `a_repl_line_holding_an_invalid_byte_keeps_the_child` (8b) |
-| 11 | the stderr tail | `child/stderr_tail_tests.rs`: `a_child_s_last_lines_are_logged_at_warn`, `a_starting_child_is_named_with_its_age_and_last_lines`; `kernel_stream_tests.rs`: `a_kernel_that_fails_its_start_logs_its_stderr_at_warn`; `mathjax_tests.rs`: `a_mathjax_child_that_fails_its_start_logs_its_stderr_at_warn`; `pluto_port_parse_tests.rs`: `a_pluto_that_fails_its_boot_logs_its_stderr_at_warn`; `contract_tests.rs`: `a_repl_child_that_fails_its_start_logs_its_stderr_at_warn` (8b) |
-| 12 | the `Signal` ends every child | `kernel_tests.rs`: `shutdown_kills_the_kernel_child_and_never_respawns`, `blocked_kernel_write_does_not_outlive_shutdown`, `status_channel_reports_closed_once_every_kernel_handle_drops`; `pluto_port_parse_tests.rs`: `shutdown_kills_the_pluto_child_during_the_ready_wait`, `pluto_grandchild_dies_with_shutdown`, `dropping_the_handle_during_a_start_ends_the_child`; `contract_tests.rs`: `mathjax_uses_private_signal`, `repl_uses_private_signal` (8b), `mathjax_helper_tree_listens_nowhere`; `monitor_tests.rs`: `monitor_backoff_returns_on_shutdown` |
+| 10 | output is bytes | `kernel_stream_tests.rs`: `a_kernel_reply_holding_an_invalid_byte_keeps_its_generation`, `a_kernel_stderr_line_holding_an_invalid_byte_keeps_its_generation`; `kernel_tests.rs`: `a_kernel_line_that_does_not_parse_is_logged_without_its_bytes`; `pluto_port_parse_tests.rs`: `a_pluto_line_holding_an_invalid_byte_keeps_the_server`; `mathjax_tests.rs`: `a_mathjax_line_that_does_not_parse_is_logged_without_its_bytes`; the REPL's: `repl/ops_interrupt_tests.rs` `a_repl_line_holding_an_invalid_byte_keeps_the_child` |
+| 11 | the stderr tail | `child/stderr_tail_tests.rs`: `a_child_s_last_lines_are_logged_at_warn`, `a_starting_child_is_named_with_its_age_and_last_lines`; `kernel_stream_tests.rs`: `a_kernel_that_fails_its_start_logs_its_stderr_at_warn`; `mathjax_tests.rs`: `a_mathjax_child_that_fails_its_start_logs_its_stderr_at_warn`; `pluto_port_parse_tests.rs`: `a_pluto_that_fails_its_boot_logs_its_stderr_at_warn`; `contract_tests.rs`: `a_repl_child_that_fails_its_start_logs_its_stderr_at_warn` |
+| 12 | the `Signal` ends every child | `kernel_tests.rs`: `shutdown_kills_the_kernel_child_and_never_respawns`, `blocked_kernel_write_does_not_outlive_shutdown`, `status_channel_reports_closed_once_every_kernel_handle_drops`; `pluto_port_parse_tests.rs`: `shutdown_kills_the_pluto_child_during_the_ready_wait`, `pluto_grandchild_dies_with_shutdown`, `dropping_the_handle_during_a_start_ends_the_child`; `contract_tests.rs`: `mathjax_uses_private_signal`, `repl_uses_private_signal`, `mathjax_helper_tree_listens_nowhere`; `monitor_tests.rs`: `monitor_backoff_returns_on_shutdown` |
 | 13 | the sampler | `monitor_tests.rs`: `a_silent_sampler_is_restarted`, `a_sampler_that_prints_nothing_is_restarted`, `a_sampler_whose_lines_do_not_parse_is_restarted`, `a_remote_sampler_turns_ssh_sharing_off`, `a_process_name_with_any_bytes_keeps_its_host_sampled`, `a_process_name_with_a_newline_is_read_whole`, `only_the_hub_executes_the_monitor_roster`, `only_a_linux_daemon_samples_itself`, `a_box_with_no_hub_declaration_samples_itself`, `a_repeated_failure_reason_is_logged_once`, `query_picks_minute_tier_for_wide_window` |
 | 14 | the child's folder | `child/tmp_tests.rs`: `retire_removes_the_folder_after_the_reap`, `the_held_folder_comes_with_the_first_child_folder_and_goes_with_the_last`; `kernel_tests.rs`: `a_generation_removes_its_temporary_folder_after_the_reap`; `pluto_port_parse_tests.rs`: `a_killed_child_leaves_no_temp_files`; `tests/child_folders.rs` (the daemon's start and end) |
-| 15 | the display | `child/tmp_tests.rs`: `every_end_of_a_user_code_child_ends_the_processes_that_hold_its_display`; `child/display/tests.rs`: `a_display_opens_only_to_its_cookie_and_ends_with_its_owner`, `a_fired_signal_ends_a_display`, `a_display_whose_server_exits_is_seen_to_end`, `a_display_ends_every_process_that_holds_its_cookie`, `a_missing_display_names_its_reason_to_the_child`; `child/display/holders_tests.rs`: `a_holder_started_after_the_first_listing_still_ends`, `a_live_process_that_holds_no_cookie_is_not_signalled`; `pluto_port_parse_tests.rs`: `pluto_has_its_own_display_which_ends_with_it`, `a_pluto_whose_display_ends_ends_with_it`, `a_pluto_whose_display_ends_before_ready_is_not_served`; the REPL's (8b): `repl/project_tests.rs` `a_repl_child_has_its_own_display_which_ends_with_it`, `a_repl_whose_display_ends_ends_with_it` |
-| 16 | a secret before a page | `julia/pluto/test/runtests.jl`: the session secret, the cluster cookie, the stranger's call and `start.jl end to end` testsets; the REPL's `wglshow`: `julia/repl/test` (8b) |
+| 15 | the display | `child/tmp_tests.rs`: `every_end_of_a_user_code_child_ends_the_processes_that_hold_its_display`; `child/display/tests.rs`: `a_display_opens_only_to_its_cookie_and_ends_with_its_owner`, `a_fired_signal_ends_a_display`, `a_display_whose_server_exits_is_seen_to_end`, `a_display_ends_every_process_that_holds_its_cookie`, `a_missing_display_names_its_reason_to_the_child`; `child/display/holders_tests.rs`: `a_holder_started_after_the_first_listing_still_ends`, `a_live_process_that_holds_no_cookie_is_not_signalled`; `pluto_port_parse_tests.rs`: `pluto_has_its_own_display_which_ends_with_it`, `a_pluto_whose_display_ends_ends_with_it`, `a_pluto_whose_display_ends_before_ready_is_not_served`; the REPL's: `repl/project_tests.rs` `a_repl_child_has_its_own_display_which_ends_with_it`, `a_repl_whose_display_ends_ends_with_it` |
+| 16 | a secret before a page | `julia/pluto/test/runtests.jl`: the session secret, the cluster cookie, the stranger's call and `start.jl end to end` testsets; the REPL's `wglshow`: `julia/repl/test/runtests.jl` `wglshow serves its page only on the Bonito line it was built against`; Rust side `repl/project_tests.rs` `repl_page_secret_never_reaches_command_line` |
 | 17 | confined, flavored, carriable | `ops_tests.rs`: `pluto_open_outside_every_row_is_refused_and_starts_no_server`, `pluto_open_of_a_file_without_pluto_s_first_line_is_refused_and_starts_no_server`; `pluto_open_bound_tests.rs`: `a_path_with_a_control_character_is_refused_and_reaches_no_child`; `julia/pluto/test/runtests.jl`: `a path ending in a space opens that file, not its trimmed name` |
 | 18 | `math.render` | `ops_tests.rs`: `a_failed_math_render_answers_its_code_and_no_blob`; `a_math_render_answers_the_svg_as_a_blob_with_its_ex_height` (the real MathJax child; needs `npm ci`, as `mathjax_uses_private_signal` does) |
 | 19 | plugins and core | `core/test/runtests.jl:101` (the external-tool bound); the rest is held by reading the cited lines, no test |
+| R1 | one child, lazily, replaced | `repl/respawn_after_death_tests.rs`: `submit_after_instant_child_death_respawns`, `submit_survives_a_launcher_that_leaves_a_grandchild`, `spawn_failure_is_returned_immediately`, `repl_project_is_resolved_at_every_spawn`; `repl/restart_tests.rs`: `restart_reaps_before_replacement`, `selected_project_survives_death`; `repl/supervisor_interrupt_guard_tests.rs`: `request_if_running_never_spawns`; `repl/project_tests.rs`: `bare_workspace_is_active`, `repl_child_arguments_and_environment_match_selected_project`; `repl/lifecycle_tests.rs`: `begin_starting_bumps_gen_sets_state_and_announces`, `stale_generation_cannot_stomp_a_respawned_child`, `current_generation_death_is_reported`, `wire_words_match_protocol_vocabulary`; `tests/repl_windows.rs` (Linux only, a shell stand-in for julia: the ops and frames of two windows, not a Windows or real-julia test); `repl/respawn_after_death_tests.rs`: `a_blocked_stdin_write_hides_neither_the_childs_death_nor_its_grant` |
+| R2 | stated bounds, a full queue refused | `repl/ops_busy_tests.rs`: `a_full_queue_is_refused_at_once`, `an_unanswered_interrupt_ends_at_its_bound`; `repl/execute_tests.rs`: `a_run_behind_a_repl_still_starting_says_so`, `a_run_the_child_never_answers_ends_at_its_timeout` |
+| R3 | every run closed out once | `repl/ops_fresh_tests.rs`: `a_run_waiting_when_the_repl_dies_is_answered_died`, `a_run_waiting_when_fresh_restarts_the_repl_is_answered_and_closed`, `a_windows_run_is_named_running_from_its_write_until_its_end`; `repl/restart_tests.rs`: `channel_close_finishes_streamed_runs`, `a_submission_pushed_after_the_close_is_answered`; `repl/respawn_after_death_tests.rs`: `a_child_that_answers_then_exits_still_delivers_its_answer`; `repl/ops_interrupt_tests.rs`: `an_eval_whose_code_is_not_a_string_is_refused_before_it_is_accepted`; `repl/numbers_tests.rs`: `a_run_is_marked_ended_before_its_done_is_published` |
+| R4 | interrupt reaches only the running eval; non-yielding evals by signal | `repl/escalation_tests.rs`: all (`it_signals_only_the_running_eval_the_request_names`, `a_forced_request_for_the_same_eval_replaces_a_plain_escalation`, `a_forced_burst_ends_at_its_span_or_at_the_childs_first_line`, `each_answer_says_what_is_left`); `repl/interrupt_tests.rs`: `one_interrupt_stops_a_loop_with_a_safepoint`, `a_loop_with_no_safepoint_needs_the_force`, `an_interrupt_naming_another_eval_sends_no_signal`; `repl/ops_busy_tests.rs`: `an_interrupt_the_signal_does_not_stop_says_so`, `an_idle_repl_is_never_signalled`, `no_signal_follows_the_evals_done`; `julia/repl/test/interrupt_child.jl` (local gate and release gate) |
+| R5 | checked retirement | `repl/restart_tests.rs`: `restart_timeout_retains_owner_and_starts_no_replacement`, `cleanup_error_prevents_replacement` |
+| R6 | the port channel | `repl/ports_tests.rs`: `an_allow_is_applied_before_its_browser_frame_is_forwarded`, `a_refused_allow_withholds_the_frame_and_says_why`, `an_end_a_receiver_refuses_is_logged_and_changes_nothing`, `an_allow_the_cap_would_evict_at_once_is_refused` (pages), `a_repl_with_no_receiver_refuses_every_allow`, `a_new_repl_handle_starts_above_the_last_generation`; `repl/restart_tests.rs`: `retired_generation_cannot_grant`; pages' side, `src/pages/proxy_tests.rs`: `a_stale_generation_is_refused_by_the_table`, `an_older_childs_end_cannot_erase_its_replacements_grant`, `browser_ports_record_revoke_and_allowlist` |
+| R7 | output and its text cap | `repl/execute_tests.rs`: `repl_execute_reports_are_unchanged`, `a_collected_run_keeps_whole_the_frame_that_crosses_the_text_cap`, `a_field_past_its_cap_is_cut_and_marked`; `repl/numbers_tests.rs`: the window's-numbers tests |
 
 ## Sidecars queue
-Seen at pass 8a and its review round, handled at the sidecars' next pass; none is a defect seen in use. The REPL's are
-8b's. Each names the file, the scenario and the fix.
+Seen at pass 8a and its review round, handled at the sidecars' next pass; none is a defect seen in use. The REPL's follow the
+guarantees' table. Each names the file, the scenario and the fix.
+- CI-PRE-REPL-INTERRUPT, a partial diagnosis (8b): the testset "signals after a forced stop meet a child held still" in
+  `julia/repl/test/interrupt_child.jl` sends exactly five signals 50 ms apart and expects Julia to force the stop, with
+  its held-still window placed from the fifth. On Linux Julia counts a signal only when the eval's thread runs between
+  two; on Julia 1.12.7 with two cores shared with six busy loops 20 of the testset's 32 checks failed and the child
+  stayed silent until the test's 240 s timer (the file passes on an idle computer on 1.12.7 and 1.13.0), which fits
+  signals that merge and a loop never forced. The reproduction did not inspect the child's signal counts, so merging is
+  the likely cause, not a proven one. The daemon's `Escalation` is not the same sequence (it signals every 50 ms for
+  `FORCE_SPAN`, stopping then whether or not the child spoke, and then answers the failure), and forcing is not
+  guaranteed there either (R4). The first-testset failure on the pre-release leg (Julia 1.14.0-alpha1: one signal at a
+  loop with a safepoint, then a silent child) was not reproduced; that Julia was not obtainable here. Fix, not done:
+  drive the test's signals as `Escalation` does and place the held-still window from the child's first line, then return
+  the three testsets to CI.yml.
+- TIMEOUT-DOUBLE-DONE: `execute.rs:467` closes a timed-out run's drawer entry with a synthetic `done` and the shim's own
+  `done` follows (`ShipToolsRepl.jl:351`, forwarded by `supervisor.rs` `route_line`). Fix: one completion owner per run,
+  the supervisor, with the caller's timeout only ending its wait.
+- ROW-END-REPL: `rows/ops/destroy.rs:171` removes the registry entry and leaves children alive while a handler holds the
+  workspace (an `execute` waiting at `execute.rs:410`), so destroying that row does not answer the run or end its child,
+  display or grants. Fix: row end retires the REPL explicitly through rows' end API.
+- RETIREMENT-ERROR-DROPPED: `repl/mod.rs` `Slot::settle` drops a finished retirement's error, after which a restart
+  starts a child although `child/tmp.rs:104` kept the folder because termination failed. Fix: keep the failed tree owned
+  until it is confirmed gone (containment's), or refuse the replacement.
+- COLLECTOR-LIFETIME and COLLECTION-BOUND: `supervisor.rs` keeps a `repl.execute` collector until `done` or the response,
+  after its caller timed out, and `ExecAccum::push` bounds only text frames. Fix: drop the collector with its caller, and
+  bound the frame count and bytes of every kind.
+- READY-ANNOUNCEMENT: `supervisor.rs` flips `starting` to `ready` on the child's first stdout line, parsed or not. Fix:
+  flip on the parsed `repl.ready` (or the first parsed envelope).
+- END-NOT-RETRIED: a failed `End` (`ports.rs` `PortSink::end`) is logged and not retried; a receiver that refuses it
+  leaves the grant. Fix: the receiver's failure contract, when a receiver can fail.
 - `julia.rs:355` and `:84`: an empty or relative PATH entry can give a relative answer; a broken juliaup default falls
   through to PATH. Fix: refuse a non-absolute candidate; decide the default's fallthrough.
 - `kernel.rs:294`, `:643`: queued submissions at a generation's death get the generic error. Fix: drain the queue with

@@ -1,6 +1,7 @@
 //! The REPL child's lifecycle cell: states, spawn generations and the `lifecycle` frames announcing them.
 
 use super::*;
+use crate::sidecars::ports::{self, PortSink};
 
 /// Lifecycle of the persistent REPL child, tracked by the supervisor so the
 /// front-end can tell a *starting* (precompiling) REPL from a dead or silent
@@ -58,28 +59,24 @@ pub(super) fn lifecycle_begin_starting(
     cell: &SharedLifecycle,
     frame_tx: &broadcast::Sender<ReplFrameMsg>,
     workspace_id: &Option<String>,
+    ports: &PortSink,
 ) -> u64 {
     let my_gen = {
         let mut c = cell.lock().unwrap_or_else(|e| e.into_inner());
-        c.gen += 1;
+        // From the process's one counter, so a row's later handle opens above this one (`ports::next_generation`).
+        c.gen = ports::next_generation();
         c.state = ReplLifecycle::Starting;
         c.notice = None;
         c.gen
     };
     // A respawn takes ownership of the workspace's proxy grants: the OLD
-    // child's browser-served ports are revoked here, not only on its Dead
+    // child's browser-served ports end here, not only on its Dead
     // transition — a restart-raced stale supervisor's Dead is gen-rejected
-    // (below), so this is the path that reliably clears them.
-    crate::pages::proxy::revoke_browser_ports(browser_ports_key(workspace_id));
+    // (below), so this is the path that reliably clears them. The receiver
+    // also learns the new generation, so the old child's late events are stale.
+    ports.at(my_gen).end();
     emit_lifecycle(frame_tx, workspace_id, ReplLifecycle::Starting);
     my_gen
-}
-
-/// Key for the per-workspace browser-served-port grants (`crate::pages::proxy`).
-/// A REPL with no workspace id gets a fixed key so its grants are still
-/// tracked and revoked.
-pub(super) fn browser_ports_key(workspace_id: &Option<String>) -> &str {
-    workspace_id.as_deref().unwrap_or("<legacy>")
 }
 
 /// Apply a lifecycle transition IF `my_gen` is still the current spawn

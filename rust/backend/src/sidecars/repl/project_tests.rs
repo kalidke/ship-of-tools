@@ -676,6 +676,9 @@ async fn repl_page_secret_never_reaches_command_line() {
         return;
     }
     std::env::set_var("SOT_TEST_PAGE_SENTINEL", SENTINEL);
+    // The daemon installs the proxy's receiver at its start; here one that takes every grant.
+    let (_tx, bus) = broadcast::channel(1);
+    crate::sidecars::ports::install(super::ports_tests::Recorder::new(bus, None));
     let fixture = Fixture::with_read_depot(Some(crate::sidecars::contract_tests::read_depots()));
     add_wglmakie(&fixture).await;
 

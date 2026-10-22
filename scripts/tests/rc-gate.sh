@@ -60,14 +60,14 @@ envs() {
   local hm=$L/home
   # one home for every job, the runner's real one named only for the toolchains
   HE=(HOME="$hm" XDG_CONFIG_HOME="$hm/.config" XDG_STATE_HOME="$hm/.local/state" CLAUDE_CONFIG_DIR="$hm/.claude")
-  CE=(env -i "${HE[@]}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" PATH="$RCG_JULIA_DIR:${RCG_NODE_DIR:+$RCG_NODE_DIR:}$RCG_CARGO_DIR:/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
+  CE=(env -i "${HE[@]}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" PATH="$RCG_JULIA_DIR:${RCG_NODE_DIR:+$RCG_NODE_DIR:}$RCG_CARGO_DIR:${RCG_TOOLS:+$RCG_TOOLS:}/usr/bin:/bin" TMPDIR=/tmp CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
     XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
     ${CARGO_PROFILE_DEV_DEBUG:+CARGO_PROFILE_DEV_DEBUG="$CARGO_PROFILE_DEV_DEBUG"}
     ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
   # SOT_TEST_SOTD: the sotd the workspace build just made, so installer-apply.sh's real-sotd cases run in the gate.
   # SOTD_BIN: the same binary for the Julia jobs, whose install test runs the installed comm wrappers (sotd comm).
-  SE=(env -i "${HE[@]}" PATH="${RCG_NODE_DIR:+$RCG_NODE_DIR:}/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" SOT_TEST_SOTD="$CARGO_TARGET_DIR/debug/sotd" ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
-  JE=(env -i "${HE[@]}" PATH="$RCG_JULIA_DIR:/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" SOTD_BIN="$CARGO_TARGET_DIR/debug/sotd" SOT_REPL_SIGNAL_TESTS=1 ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
+  SE=(env -i "${HE[@]}" PATH="${RCG_NODE_DIR:+$RCG_NODE_DIR:}${RCG_TOOLS:+$RCG_TOOLS:}/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" SOT_TEST_SOTD="$CARGO_TARGET_DIR/debug/sotd" ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
+  JE=(env -i "${HE[@]}" PATH="$RCG_JULIA_DIR:${RCG_TOOLS:+$RCG_TOOLS:}/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" SOTD_BIN="$CARGO_TARGET_DIR/debug/sotd" SOT_REPL_SIGNAL_TESTS=1 ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
 }
 
 st() { echo "$1 start $(date +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg) cargo=$(pgrep -c cargo)" >> "$L/summary.txt"; }
@@ -468,6 +468,11 @@ JULIA_BIN=$(timeout 60 "$JULIA_BIN" --startup-file=no -e 'print(Base.julia_cmd()
   { echo "rc-gate: $(command -v julia) starts no Julia binary" >&2; exit 2; }
 NODE_BIN=$(command -v node) || { echo "rc-gate: node not found" >&2; exit 2; }
 [ -d "$D/rust/backend/sidecars/mathjax/node_modules" ] || { echo "rc-gate: run npm ci in rust/backend/sidecars/mathjax" >&2; exit 2; }
+# jq and yacc that scripts/tests/gate-tools.sh made, for a host that lacks them: the folder leads the gate's own PATH and
+# every inner environment's, when it exists; GATE_TOOLS_DIR names another. Nothing changes where it does not exist.
+RCG_TOOLS=${GATE_TOOLS_DIR:-/scratch/$(id -un)/gate-tools/bin}
+if [ -d "$RCG_TOOLS" ]; then PATH=$RCG_TOOLS:$PATH; else RCG_TOOLS=; fi
+export RCG_TOOLS
 command -v jq > /dev/null || { echo "rc-gate: jq not found" >&2; exit 2; }
 PATH=/usr/bin:/bin command -v Xvfb > /dev/null || { echo "rc-gate: Xvfb not found in /usr/bin or /bin (the sotd sidecar tests start it)" >&2; exit 2; }
 # The jobs get node and julia, each alone from a folder of its own (on the servers node's folder also holds real agent

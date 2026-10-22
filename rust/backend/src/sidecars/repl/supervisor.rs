@@ -10,8 +10,9 @@ use tokio::process::{ChildStdin, Command};
 
 use super::escalation::{Escalation, Next};
 use super::*;
-use super::lifecycle::{browser_ports_key, lifecycle_begin_starting, lifecycle_transition};
+use super::lifecycle::{lifecycle_begin_starting, lifecycle_transition};
 use crate::sidecars::child::StderrTail;
+use crate::sidecars::ports::PortSink;
 use crate::sidecars::WireRequest;
 use sot_protocol::child_lines::ChildLines;
 
@@ -49,6 +50,7 @@ pub(super) async fn spawn_supervisor(
     workspace_id: Option<String>,
     lifecycle: SharedLifecycle,
     sig: &'static sot_containment::Signal,
+    ports: Option<Arc<dyn crate::sidecars::ports::PortGrants>>,
 ) -> Result<Supervisor> {
     let repl_project = Repl::repl_project();
     let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
@@ -118,10 +120,12 @@ pub(super) async fn spawn_supervisor(
     lifecycle.lock().unwrap_or_else(|e| e.into_inner()).start = Some(stderr_tail.start());
 
     // Child exists: open a new spawn generation (state -> Starting, announce).
-    let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
+    let ports = PortSink::new(ports.or_else(crate::sidecars::ports::installed), &workspace_id);
+    let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id, &ports);
+    let ports = ports.at(my_gen);
 
     let join = tokio::spawn(supervisor_task(
-        contained, stdin, stdout, submit_rx, stop_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen, sig, tmp,
+        contained, stdin, stdout, submit_rx, stop_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen, sig, tmp, ports,
     ));
     Ok(Supervisor {
         tx: submit_tx,
@@ -169,7 +173,7 @@ pub(super) mod seams;
 #[allow(clippy::too_many_lines, reason = "the REPL supervisor task: one loop over the child's output and the submissions; predates the 100-line limit")]
 async fn supervisor_task(
     mut contained: sot_containment::Contained,
-    mut stdin: ChildStdin,
+    stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
     mut stop_rx: oneshot::Receiver<()>,
@@ -180,6 +184,7 @@ async fn supervisor_task(
     my_gen: u64,
     sig: &'static sot_containment::Signal,
     mut tmp: crate::sidecars::child::ChildTmp,
+    ports: PortSink,
 ) -> std::result::Result<(), String> {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight, each with its window's runs: an eval enters once written to the
@@ -193,6 +198,9 @@ async fn supervisor_task(
     // even when the shim emits no `done` frame (the missing-file res path).
     let mut collector_ids: HashMap<u64, u64> = HashMap::new();
     let mut next_id: u64 = 1;
+    let mut stdin = Some(stdin);
+    // The write of the last submission, while it has not finished: it owns the pipe meanwhile.
+    let mut writing: Option<std::pin::Pin<Box<dyn std::future::Future<Output = (ChildStdin, std::io::Result<()>)> + Send>>> = None;
     let mut stdout_lines = ChildLines::new(stdout);
     // The evals in flight in the order they were written to the child: the first is the one it runs (the shim holds
     // one eval at a time), so it is the only eval an interrupt signal can reach.
@@ -220,7 +228,7 @@ async fn supervisor_task(
             _ = tmp.display_ended() => {
                 break ReplEnded::DisplayEnded;
             }
-            sub = submit_rx.recv() => {
+            sub = submit_rx.recv(), if writing.is_none() => {
                 // Every sender is gone: the same closeout as a stop.
                 let Some(sub) = sub else {
                     break ReplEnded::Stopped;
@@ -247,31 +255,6 @@ async fn supervisor_task(
                     }
                 };
                 line.push('\n');
-                // The write and flush give way to a stop or the signal, so a
-                // child that reads nothing cannot hold the owner. The
-                // submission stays ours until it is written; a cancelled one
-                // is closed out with the rest and never resent.
-                let written = tokio::select! {
-                    biased;
-                    _ = sig.fired() => Err(ReplEnded::Stopped),
-                    stop = &mut stop_rx => Err(retired(stop)),
-                    _ = tmp.display_ended() => Err(ReplEnded::DisplayEnded),
-                    r = async {
-                        stdin.write_all(line.as_bytes()).await?;
-                        stdin.flush().await
-                    } => r.map_err(|e| {
-                        tracing::warn!(error = %e, "repl stdin");
-                        ReplEnded::Died
-                    }),
-                };
-                if let Err(end) = written {
-                    if let Some(reply) = sub.reply {
-                        let _ = reply.send(Err(anyhow::Error::new(end)));
-                    } else if let (Some(eid), Some(owner)) = (sub.payload.get("eval_id").and_then(Value::as_u64), sub.owner) {
-                        streaming.insert(eid, owner);
-                    }
-                    break end;
-                }
                 let eid = sub.payload.get("eval_id").and_then(Value::as_u64);
                 // `repl.execute` submissions carry a collector: tee this
                 // eval_id's frames into it loss-free (in addition to `pending`,
@@ -297,6 +280,28 @@ async fn supervisor_task(
                 }
                 if let Some(eid) = eid.filter(|e| streaming.contains_key(e) || collectors.contains_key(e)) {
                     in_order.push_back(eid);
+                }
+                // The submission is ours from here, so an end closes it out whether or not its bytes went; the
+                // write runs beside the loop's other arms, so a child that reads nothing hides neither its exit nor
+                // its output nor an escalation, and the owner's stop and the signal still end it.
+                let mut pipe = stdin.take().expect("one write at a time");
+                writing = Some(Box::pin(async move {
+                    let r = async {
+                        pipe.write_all(line.as_bytes()).await?;
+                        pipe.flush().await
+                    }
+                    .await;
+                    (pipe, r)
+                }));
+            }
+            (pipe, r) = async { writing.as_mut().expect("guarded").await }, if writing.is_some() => {
+                writing = None;
+                match r {
+                    Ok(()) => stdin = Some(pipe),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "repl stdin");
+                        break ReplEnded::Died;
+                    }
                 }
             }
             line = stdout_lines.next_line() => {
@@ -325,6 +330,7 @@ async fn supervisor_task(
                             &mut collector_ids,
                             &frame_tx,
                             &workspace_id,
+                            &ports,
                         );
                         in_order.retain(|e| streaming.contains_key(e) || collectors.contains_key(e));
                         escalation = escalation.and_then(|e| e.heard(&pending)).filter(|e| e.targets(in_order.front()));
@@ -389,7 +395,7 @@ async fn supervisor_task(
         &frame_tx,
         &workspace_id,
     ) {
-        crate::pages::proxy::revoke_browser_ports(browser_ports_key(&workspace_id));
+        ports.end();
         lifecycle.lock().unwrap_or_else(|e| e.into_inner()).notice = end.successor_notice();
     }
     for (_id, reply) in pending.drain() {
@@ -433,6 +439,7 @@ async fn supervisor_task(
     }
     // Retirement: request the tree's termination and check the direct
     // child's reap. The result is the owner's join value.
+    drop(writing);
     drop(stdin);
     #[cfg(test)]
     {
@@ -478,6 +485,7 @@ fn route_line(
     collector_ids: &mut HashMap<u64, u64>,
     frame_tx: &broadcast::Sender<ReplFrameMsg>,
     workspace_id: &Option<String>,
+    ports: &PortSink,
 ) {
     let env: WireEnvelope = match serde_json::from_str(line) {
         Ok(r) => r,
@@ -509,7 +517,7 @@ fn route_line(
                 return;
             }
         };
-        let frame = env
+        let mut frame = env
             .payload
             .get("frame")
             .cloned()
@@ -518,19 +526,27 @@ fn route_line(
         // A window's run ends with its `done`: it is marked ended, then the `done` goes on the bus (`end_then`).
         let owner = if is_done { streaming.remove(&eval_id) } else { None };
         // A `browser` frame (ADR 0032 BrowserView — wglshow / user-served
-        // dashboard) announces a live loopback server in this child. Record
-        // its port for the ADR-0035 proxy allowlist HERE, as the frame passes
-        // through on its way to the FE — so the port is authorized strictly
-        // before any browser can dial it, even when the child fell back to an
-        // ephemeral port (or an old shim serves a fixed one). Loopback-only
-        // by construction; revoked when this child dies or is respawned.
+        // dashboard) announces a live loopback server in this child. Its port
+        // is granted to the ADR-0035 proxy HERE, as the frame passes through
+        // on its way to the FE, and the grant is answered before the frame is
+        // forwarded — so the port is authorized strictly before any browser
+        // can dial it, even when the child fell back to an ephemeral port (or
+        // an old shim serves a fixed one). A refused grant withholds the frame
+        // and says why in its place. Loopback-only by construction; ended when
+        // this child dies or is respawned.
         if frame.get("kind").and_then(Value::as_str) == Some("browser") {
             if let Some(port) = frame
                 .get("url")
                 .and_then(Value::as_str)
                 .and_then(sot_protocol::page_url::loopback_port_from_url)
             {
-                crate::pages::proxy::record_browser_port(browser_ports_key(&workspace_id), port);
+                if let Err(refused) = ports.allow(port) {
+                    tracing::warn!(port, %refused, "browser port not granted; frame withheld");
+                    frame = serde_json::json!({
+                        "kind": "stderr",
+                        "text": format!("the page this run served on port {port} was not made reachable: {refused}\n"),
+                    });
+                }
             }
         }
         // Tee into a `repl.execute` collector, loss-free, before the frame goes

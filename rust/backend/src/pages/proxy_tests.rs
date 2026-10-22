@@ -51,29 +51,84 @@ fn extra_ports_env_widens_allowlist_and_ignores_garbage() {
     std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
 }
 
+/// The test's receiver calls: a child of generation 1 announces, and its end is generation 1's too.
+fn grant(owner: &str, port: u16) {
+    allow_browser_port(owner, 1, port).expect("a current generation");
+}
+
+fn end(owner: &str) {
+    end_browser_ports(owner, 1).expect("a current generation");
+}
+
 #[test]
 fn browser_ports_record_revoke_and_allowlist() {
     // Unique workspaces + high ports so parallel tests can't collide.
-    record_browser_port("wsA-test", 45911);
-    record_browser_port("wsA-test", 45912);
-    record_browser_port("wsB-test", 45913);
+    grant("wsA-test", 45911);
+    grant("wsA-test", 45912);
+    grant("wsB-test", 45913);
     let ports = allowed_proxy_ports();
     assert!(ports.contains(&45911) && ports.contains(&45912), "wsA announced");
     assert!(ports.contains(&45913), "wsB announced");
     // Revoking one workspace drops exactly its grants.
-    revoke_browser_ports("wsA-test");
+    end("wsA-test");
     let ports = allowed_proxy_ports();
     assert!(!ports.contains(&45911) && !ports.contains(&45912), "wsA revoked");
     assert!(ports.contains(&45913), "wsB survives wsA's revoke");
-    revoke_browser_ports("wsB-test");
+    end("wsB-test");
     assert!(!allowed_proxy_ports().contains(&45913));
     // Per-workspace cap: 20 inserts keep at most BROWSER_PORTS_PER_WS.
     for p in 0..20u16 {
-        record_browser_port("wsCap-test", 46000 + p);
+        grant("wsCap-test", 46000 + p);
     }
     let n = allowed_proxy_ports().iter().filter(|p| (46000..46020).contains(*p)).count();
     assert!(n <= BROWSER_PORTS_PER_WS, "cap enforced, kept {n}");
-    revoke_browser_ports("wsCap-test");
+    end("wsCap-test");
+}
+
+/// An `Allow` from a generation below the one the table holds for its owner is refused and grants nothing.
+#[test]
+fn a_stale_generation_is_refused_by_the_table() {
+    use crate::sidecars::ports::{PortEvent, PortGrants, PortRefused};
+    let owner = "wsStale-test".to_string();
+    PagesGrants.apply(PortEvent::End { owner: owner.clone(), generation: 6 }).expect("the newer child's start");
+    let refused = PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 5, port: 46101 });
+    assert_eq!(refused, Err(PortRefused::Stale { current: 6 }));
+    assert!(!allowed_proxy_ports().contains(&46101), "a stale Allow grants nothing");
+    PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 6, port: 46102 }).expect("the current one");
+    assert!(allowed_proxy_ports().contains(&46102));
+    PagesGrants.apply(PortEvent::End { owner, generation: 6 }).expect("end");
+}
+
+/// An `Allow` is acknowledged only if the port stays granted: with the owner's table full, a port the cap would evict
+/// at once (the smallest) is refused, and the ports already granted stand.
+#[test]
+fn an_allow_the_cap_would_evict_at_once_is_refused() {
+    use crate::sidecars::ports::{PortEvent, PortGrants, PortRefused};
+    let owner = "wsEvict-test".to_string();
+    for p in 0..BROWSER_PORTS_PER_WS as u16 {
+        PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 3, port: 47000 + p }).expect("room");
+    }
+    let refused = PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 3, port: 46999 });
+    assert!(matches!(refused, Err(PortRefused::Failed(_))), "{refused:?}");
+    assert!(!allowed_proxy_ports().contains(&46999));
+    assert!(allowed_proxy_ports().contains(&47000), "the granted ports stand");
+    // A larger port evicts the smallest and stays.
+    PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 3, port: 47100 }).expect("kept");
+    assert!(allowed_proxy_ports().contains(&47100) && !allowed_proxy_ports().contains(&47000));
+    PagesGrants.apply(PortEvent::End { owner, generation: 3 }).expect("end");
+}
+
+/// An older child's `End` is refused and leaves its replacement's grant standing.
+#[test]
+fn an_older_childs_end_cannot_erase_its_replacements_grant() {
+    use crate::sidecars::ports::{PortEvent, PortGrants, PortRefused};
+    let owner = "wsOlderEnd-test".to_string();
+    PagesGrants.apply(PortEvent::Allow { owner: owner.clone(), generation: 8, port: 46111 }).expect("allow");
+    let refused = PagesGrants.apply(PortEvent::End { owner: owner.clone(), generation: 7 });
+    assert_eq!(refused, Err(PortRefused::Stale { current: 8 }));
+    assert!(allowed_proxy_ports().contains(&46111), "the replacement's grant stands");
+    PagesGrants.apply(PortEvent::End { owner, generation: 8 }).expect("end");
+    assert!(!allowed_proxy_ports().contains(&46111));
 }
 
 /// ADR 0049, User isolation: the proxy's dial to a page port is not inherited by a child the daemon starts.

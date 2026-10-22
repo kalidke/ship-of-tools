@@ -7,6 +7,7 @@ pub(super) mod mathjax;
 pub(super) mod monitor;
 pub(super) mod ops;
 pub(super) mod pluto;
+pub mod ports;
 pub(super) mod repl;
 
 #[cfg(test)]
