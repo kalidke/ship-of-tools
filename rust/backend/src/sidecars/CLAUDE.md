@@ -190,9 +190,10 @@ of each.
     `rust/backend/sidecars/mathjax`) and node, and its test fails without them; the other MathJax unit tests use `sh`
     as node.
 
-19. **The kernel's plugins and core are held to what the code does today.** The kernel's project names the built-in
+19. **The kernel loads only the plugins its own project names, gives a file to the first that matches, and bounds the
+    external tools they run.** The kernel's project names the built-in
     `FileType` plugins as dependencies and `ShipToolsKernel.jl` imports them eagerly (`julia/kernel/Project.toml`,
-    `ShipToolsKernel.jl:9`); the one heavy plugin loads lazily, at most once per attempt (`preview.jl:29`, the
+    `ShipToolsKernel.jl:9`); the one heavy plugin loads lazily, attempted at most once per kernel (`preview.jl:29`, the
     `LAZY_PLUGIN_FOR_EXT` table); a file goes to the first `FileType` that matches (`core/src/ConceptExplorerCore.jl:169`);
     a preview answers a payload or an error, never an exception to the wire (`preview.jl:99`); an external tool a plugin
     runs has a wall-clock bound (`ConceptExplorerCore.jl:240`). Limits: a lazy load that failed is not retried until the

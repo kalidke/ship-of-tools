@@ -162,12 +162,16 @@ whose version differs from disk is refused; delete is a trash; the watcher never
 crosses a filesystem nor exceeds its budget. Rests on: containment (gio trash), sidecars (the kernel's previews).
 Owns: `.concept/`, `.sot-trash/`, the watches. Does not: interpret file content.
 
-**sidecars.** To the rest: per row a Julia kernel (previews, project scans) and a REPL (user code), per daemon Pluto
-and MathJax, per monitored host a sampler; a caller submits and waits at most a stated bound and never spawns or
-kills; a child's page server answers nothing without a secret. Inside: one task owns each child from spawn to reap;
-the kernel never loads the user's environment; each child has its own temporary folder, removed at its end; on Linux
-a user-code child has its own X display only it opens. Rests on: containment, platform (held folders), the julia
-resolver. Does not: serve pages to the browser (pages).
+**sidecars.** The contract is settled for every child but the REPL (pass 8a): `rust/backend/src/sidecars/CLAUDE.md`;
+the REPL's guarantees are drafted there for pass 8b, with the shape of the channel through which pages will learn its
+browser ports. To the rest: per row a Julia kernel (previews, project scans) and a REPL (user code), per daemon Pluto
+and MathJax, per monitored host a sampler; a caller waits at most a stated bound and never spawns or kills (Pluto's and
+MathJax's deadlines live in the caller's wait, so a caller that is cancelled leaves none; queued); the kernel starts
+without the user's startup files or default environment and is given its root as data, never as source; a child's
+page server answers nothing without a secret; each Julia child has its own temporary folder, removed after its tree is
+asked to end (the removal is attempted and logged; the death of descendants is not proven); on Linux a user-code child
+has its own X display only it opens. Rests on: containment, platform (held folders), the julia resolver. Does not:
+serve pages to the browser (pages).
 
 **pages.** Guarantees: every listener is loopback and the bound port is the one named; nothing served without a grant
 (token, nonce, secret then cookie); `.git` and `..` never served; a remote window's page rides its one link and ends
@@ -307,7 +311,7 @@ at its end and one round for its findings; a class of breaks stops it, and the s
 | 5c | Server: its contract; the op table into the binary, every service a handler with an explicit context | 4-6 | 80-120 | 0.9 h wall in two agent rounds (the pass 22 min to a gate-ready head, the review round 7 min after an outside review), about 29 agent minutes; about $7 for the agent; the op table was already one table and handlers already took explicit arguments, so the cut was the shared reply helpers and byte pump moved to wire, the server's submodules made private, pages and the updater given a closure instead of the roster; queue item 21 fixed on the real start path and the reaper fixed under event load, both red first; server 54/119/15/44 -> 52/118/14/45, wire 41/15/3/1 -> 43/17/4/1; the landing run 9.3 min |
 | 6 | Capsule (D2), in passes from the plan: 6a voyage out, 6b one process per row, 6c-1 the row socket and its frames, 6c-2 the single dial and the 0.7.0 retire, 6d the transport home and the contract | 10-20 | 200-400 | 6a: 1.4 h wall (07:43 to 09:10) in four agent rounds (the pass 34 min to a gate-ready head; one review round 8 min; two landing fixes, a test-only re-export the normal build could not see and two screen tests that read only the visible screen on Windows), about 45 agent minutes; about $35 for the agent; capsule 410/403/143/3 -> 341/345/135/3 (69k product and 58k tests deleted); the landing run 6.9 min |
 | 7 | Frontend: State apart first, one short pass per cluster (the row record, focus and prompt, preview requests, the REPL and agent pane), each moving its fields into a type with private fields; then the five crate cuts (D4) as moves: app and render, chrome and input, navigation and session, agent pane and drawer, preview and control | 22-52 | 440-1,040 | |
-| 8 | Sidecars (D3) | 4-8 | 80-160 | |
+| 8 | Sidecars (D3): 8a every child but the REPL, 8b the REPL and the pages channel | 4-8 | 80-160 | 8a: 2.6 h wall (08:49 to 11:25) in three agent rounds (the pass 28 min to a gate-ready head; one review round 20 min after an outside review that found two real defects, a workspace root interpolated into the kernel's Julia source and a line break splitting a Pluto command, both fixed red first, with the contract narrowed to the code; a 2-min tidy-up) and one landing fix (a test stand-in that read macOS's padded `wc` count), about 46 agent minutes; about $10 for the agent; sidecars 106/116/45/37 -> 106/120/45/37; twelve mechanism items queued; most of the wall was waits: a false local red from two gates sharing one build folder (queued GATE-TARGET-SHARED), and a hosted red in a capsule test race, fixed on main first by its own pass (c7c3d578b, 8 min, $0.33); three hosted runs, the landing one 6.9 min |
 | 9 | Pages and files | 3-5 | 60-100 | |
 | 10 | Agents: the launch recipe, launchers and skills | 2-4 | 40-80 | |
 | 11 | Release gate: the full hosted matrix once, install on every box, the maintainer's use, the tag (0.7.0); the installers' remaining proof is here: an rc9.15 box's old prelude handing off to the first candidate on a backend-only host with glibc 2.31, and the maintainer's use on the maintainer's own boxes | 3-6 | 60-120 | |
@@ -354,5 +358,9 @@ and `rust/log/tests` (27 thousand lines) are assigned by file:
   landed 2026-10-21: topology's contract is settled, topology is its own crate, `sot-topology`, and wire depends on
   platform alone. Pass 5c landed 2026-10-21: the server's contract is settled, and no service names the server's
   internals. Pass 6a landed 2026-10-22: the capsule's voyage record is gone and a leg keeps a bounded screen file.
-  Pass 6b (one process per row) is next; pass 8a (sidecars) runs beside the capsule series. Nothing is half-done on main.
+  Pass 8a landed 2026-10-22: the sidecars' contract is settled for every child but the REPL, whose guarantees are
+  drafted for pass 8b. Pass 6b (one process per row) was stopped at its clock on the rows boundary: an amendment to the
+  capsule plan (one restart budget, owned by rows; the supervisor says what happened by its exit code), then a short
+  pass 6b-0 that makes the rows integration suite read only the capsule surface that survives 6b, come before it
+  relaunches. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
