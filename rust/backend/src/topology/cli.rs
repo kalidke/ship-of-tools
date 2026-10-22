@@ -208,7 +208,10 @@ fn sync(hub: Option<String>) -> Result<(), String> {
 /// Replaces this box's copy with the fetched `text`, only when the copy is still the version `sync` read before it
 /// fetched (`read`, `None` for no file).
 fn publish_synced(dest: &std::path::Path, read: Option<&str>, text: &str) -> Result<(), String> {
-    let _ = read;
+    let _lock = crate::topology::store::lock_file(dest)?;
+    if std::fs::read_to_string(dest).ok().as_deref() != read {
+        return Err(format!("{} changed while it was fetched; nothing replaced, run sync again", dest.display()));
+    }
     crate::topology::store::write_atomic(dest, text)
 }
 

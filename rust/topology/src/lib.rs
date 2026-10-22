@@ -206,6 +206,10 @@ pub fn parse(text: &str) -> Result<Topology, String> {
             }
             Section::Monitor => {
                 let target = val.string().ok_or_else(|| format!("line {n}: `{key}` must be a quoted ssh target"))?;
+                // `seen` starts over at each header, so a second `[monitor]` header is checked against the labels so far.
+                if monitor.iter().any(|(label, _)| label == key) {
+                    return Err(format!("line {n}: monitor label `{key}` given twice"));
+                }
                 check_monitor_target(if target.is_empty() { key } else { target }).map_err(|e| format!("line {n}: {e}"))?;
                 monitor.push((key.to_string(), target.to_string()));
             }

@@ -37,6 +37,26 @@ struct Good {
     hash: String,
 }
 
+/// An edit's exclusion over hosts.toml, in this process and across processes; dropping it releases both.
+pub struct EditGuard<'a> {
+    _thread: std::sync::MutexGuard<'a, ()>,
+    _file: sot_platform::host::WriterLock,
+}
+
+/// The cross-process lock every writer of the file at `dest` takes: a file beside it, held until the guard drops (the
+/// kernel releases it with its holder). Fails closed after the platform's bounded retry.
+pub(crate) fn lock_file(dest: &Path) -> Result<sot_platform::host::WriterLock, String> {
+    let mut name = dest.as_os_str().to_os_string();
+    name.push(".lock");
+    let lock = PathBuf::from(name);
+    if let Some(dir) = lock.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    // The lock is taken on a file that exists; it stays, empty, beside hosts.toml.
+    std::fs::OpenOptions::new().create(true).append(true).open(&lock).map_err(|e| format!("{}: {e}", lock.display()))?;
+    sot_platform::host::lock_writer(&lock).map_err(|e| format!("{}: {e}", lock.display()))
+}
+
 pub struct TopologyStore {
     path: PathBuf,
     inner: Mutex<Option<Good>>,
@@ -72,9 +92,13 @@ impl TopologyStore {
         &self.path
     }
 
-    /// Serializes edits: an edit holds this from its first `refresh` to its write and its confirming `refresh`.
-    pub fn edit_lock(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.edit.lock().unwrap_or_else(|e| e.into_inner())
+    /// Serializes edits: an edit holds this from its first `refresh` to its write and its confirming `refresh`. The
+    /// in-process mutex orders this daemon's edits; the file lock beside hosts.toml orders them against every other
+    /// writer of the file (`sotd topology sync` on a shared home, another daemon on it).
+    pub fn edit_lock(&self) -> Result<EditGuard<'_>, String> {
+        let thread = self.edit.lock().unwrap_or_else(|e| e.into_inner());
+        let file = lock_file(&self.path)?;
+        Ok(EditGuard { _thread: thread, _file: file })
     }
 
     pub fn refresh(&self) -> Refreshed {
@@ -137,9 +161,14 @@ pub(crate) fn write_atomic(dest: &Path, text: &str) -> Result<(), String> {
     if let Some(dir) = dest.parent() {
         std::fs::create_dir_all(dir).map_err(io)?;
     }
-    let tmp = dest.with_extension("toml.tmp");
+    // A name of its own, so two writers never share a temporary file.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = dest.with_extension(format!("toml.tmp.{}.{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     std::fs::write(&tmp, text).map_err(io)?;
-    std::fs::rename(&tmp, dest).map_err(io)
+    std::fs::rename(&tmp, dest).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io(e)
+    })
 }
 
 #[cfg(test)]

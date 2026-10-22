@@ -61,34 +61,34 @@ pub async fn handle_topology_set(
         Err(e) => return Ok(refused(req_id, format!("topology.set payload: {e}"), "bad_request")),
     };
 
-    let _edit = store.edit_lock();
+    let _edit = match store.edit_lock() {
+        Ok(guard) => guard,
+        Err(e) => return Ok(refused(req_id, e, "io")),
+    };
     let before = store.refresh();
+    // A hand edit this read noticed is announced once, whatever becomes of the edit: nothing else will announce it,
+    // because later reads see the cached hash already updated.
+    let noticed = before.changed.then(|| before.hash.clone().unwrap_or_default());
+    let refuse = |error: String, code: &str| {
+        if let Some(hash) = &noticed {
+            let _ = topo_tx.send(TopologyChanged { hash: hash.clone() });
+        }
+        Ok(refused(req_id, error, code))
+    };
     if let Some(err) = before.error {
-        return Ok(refused(
-            req_id,
-            format!("the on-disk topology is currently invalid; fix it by hand first: {err}"),
-            "invalid",
-        ));
+        return refuse(format!("the on-disk topology is currently invalid; fix it by hand first: {err}"), "invalid");
     }
     let Some(topo) = before.topo else {
-        return Ok(refused(req_id, format!("no hosts.toml at {}", store.path().display()), "no_topology"));
+        return refuse(format!("no hosts.toml at {}", store.path().display()), "no_topology");
     };
 
     if !super::cli::self_is_hub(me, &topo.hub) {
-        return Ok(refused(
-            req_id,
-            format!("this daemon (`{me}`) is not the hub (`{}`); topology.set only applies on the hub", topo.hub),
-            "not_hub",
-        ));
+        return refuse(format!("this daemon (`{me}`) is not the hub (`{}`); topology.set only applies on the hub", topo.hub), "not_hub");
     }
 
     if let TopologyEdit::RemoveHost { name } = &req.edit {
         if hello_host.is_some_and(|h| h == name) {
-            return Ok(refused(
-                req_id,
-                format!("`{name}` is the host this connection declared as its own; it cannot remove itself"),
-                "remove_self",
-            ));
+            return refuse(format!("`{name}` is the host this connection declared as its own; it cannot remove itself"), "remove_self");
         }
     }
 
@@ -103,27 +103,23 @@ pub async fn handle_topology_set(
         _ => false,
     };
     if clears_own_daemon && has_running_rows(workspaces) {
-        return Ok(refused(
-            req_id,
-            format!("`{me}` has running capsule rows; stop them before removing or un-daemoning this host"),
-            "has_running_rows",
-        ));
+        return refuse(format!("`{me}` has running capsule rows; stop them before removing or un-daemoning this host"), "has_running_rows");
     }
 
     let candidate = match sot_topology::apply(&topo, &req.edit) {
         Ok(t) => t,
-        Err(e) => return Ok(refused(req_id, e, "invalid")),
+        Err(e) => return refuse(e, "invalid"),
     };
     let text = sot_topology::serialize(&candidate);
     // Re-validate through the ONE grammar (plan §B): this is what catches
     // things `apply` has no authority to special-case, e.g. clearing
     // `daemon` on the hub.
     if let Err(e) = sot_topology::parse(&text) {
-        return Ok(refused(req_id, e, "invalid"));
+        return refuse(e, "invalid");
     }
 
     if let Err(e) = crate::topology::store::write_atomic(store.path(), &text) {
-        return Ok(refused(req_id, e, "io"));
+        return refuse(e, "io");
     }
 
     // Same re-read path a hand edit takes: this is what fires
@@ -131,7 +127,7 @@ pub async fn handle_topology_set(
     // it.
     let after = store.refresh();
     let hash = after.hash.unwrap_or_default();
-    if after.changed {
+    if after.changed || noticed.is_some() {
         let _ = topo_tx.send(TopologyChanged { hash: hash.clone() });
     }
     Ok(vec![(
