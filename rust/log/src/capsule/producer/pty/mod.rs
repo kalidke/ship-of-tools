@@ -120,7 +120,7 @@ use crate::capsule::producer::{ExitStatus, Producer};
 use crate::{Error, Result};
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::sync::Mutex;
@@ -355,57 +355,9 @@ impl Drop for PtyProducer {
     }
 }
 
-/// The inherited parent-death lease's own capsule-side check (ADR 0043
-/// decision 15): the supervisor holds the pipe's WRITE end open and never
-/// writes; this capsule inherited the READ end at a fixed fd and polls it
-/// with exactly one non-blocking read. `EAGAIN`/`EWOULDBLOCK` (no data,
-/// write end still open) is the ONLY "alive" outcome; anything else — a
-/// graceful `Ok(0)` (write end closed), any other error, an fd that was
-/// never open at all (`EBADF`), or even a byte actually read (the
-/// supervisor's own contract says this never happens) — is broken, the
-/// same "an unopenable name is reported identically to an
-/// opened-but-broken one" contract [`crate::supervisor::lease_win::open`] documents for
-/// the Windows named-mutex sibling. `O_NONBLOCK` is set on the fd itself
-/// (not merely the read call): the fd is a dedicated inherited descriptor
-/// no other code touches, so mutating its flags carries no shared-state
-/// risk.
-pub fn parent_lease_fd_broken(fd: RawFd) -> bool {
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFL);
-        if flags < 0 {
-            return true; // not an open fd (EBADF), or another failure
-        }
-        if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
-            return true;
-        }
-        let mut byte = [0u8; 1];
-        let rc = libc::read(fd, byte.as_mut_ptr() as *mut libc::c_void, 1);
-        if rc < 0 {
-            // `EAGAIN` and `EWOULDBLOCK` are the SAME value on Linux (a
-            // single match arm covers both there, which is why this is
-            // written as one comparison rather than an `|`-pattern that
-            // would warn on the redundant second value on this target) —
-            // written this way rather than `cfg`-splitting the two names
-            // apart for a portability difference this crate's own other
-            // Unix code (`lane/socket_unix/`) doesn't bother distinguishing
-            // either.
-            return io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN);
-        }
-        // `rc == 0` (write end closed) or `rc > 0` (a byte actually read —
-        // the supervisor's own contract says it never writes, so this is
-        // an unexpected shape, not the one proven-alive signal) both fail
-        // closed as broken.
-        true
-    }
-}
-
 #[cfg(test)]
 #[path = "executable_is_resolvable_tests.rs"]
 mod executable_is_resolvable_tests;
-
-#[cfg(test)]
-#[path = "parent_lease_tests.rs"]
-mod parent_lease_tests;
 
 /// Direct, same-file tests against `PtyProducer` itself — these need `self.pid` and the `Producer`
 /// trait's own methods directly, without a whole `capsule::run` loop

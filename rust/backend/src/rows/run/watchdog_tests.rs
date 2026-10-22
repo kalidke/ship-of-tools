@@ -13,7 +13,9 @@ fn exit_codes_classify_as_the_supervisor_returns_them() {
     assert!(matches!(classify_exit_code(Some(0)), LegOutcome::Clean));
     assert!(matches!(classify_exit_code(Some(69)), LegOutcome::Terminal));
     assert!(matches!(classify_exit_code(Some(70)), LegOutcome::Contended));
-    for code in [Some(1), Some(2), Some(-1), None] {
+    assert!(matches!(classify_exit_code(Some(76)), LegOutcome::AgentEnded));
+    // 75, the agent could not be spawned, is a crash: restarted with the same argv.
+    for code in [Some(1), Some(2), Some(-1), Some(75), None] {
         assert!(matches!(classify_exit_code(code), LegOutcome::Crash));
     }
 }
@@ -26,5 +28,47 @@ fn restart_budget_numbers_match_adr_0041s_own_launcher_table() {
     assert_eq!(
         RESTART_BACKOFFS.map(|d| d.as_secs()),
         [1, 3, 7, 15, 30]
+    );
+}
+
+#[test]
+fn supervisors_that_never_reached_ready_are_a_count_not_a_rate() {
+    let mut budget = Budget::default();
+    let t0 = Instant::now();
+    // Hours between exits change nothing: five restarts, backing off 1, 3, 7, 15 and 30 s, then the give-up.
+    for (i, want) in RESTART_BACKOFFS.iter().enumerate() {
+        let now = t0 + std::time::Duration::from_secs(10_000 * (i as u64 + 1));
+        assert_eq!(budget.on_exit(false, now), Some(*want));
+        budget.restarted(now);
+    }
+    assert_eq!(budget.on_exit(false, t0 + std::time::Duration::from_secs(99_999)), None);
+}
+
+#[test]
+fn a_supervisor_that_reached_ready_resets_the_count_and_keeps_the_window() {
+    let mut budget = Budget::default();
+    let t0 = Instant::now();
+    for _ in 0..4 {
+        assert!(budget.on_exit(false, t0).is_some());
+        budget.restarted(t0);
+    }
+    // One that was observed ready: the count starts over, and its own restarts are judged by the window.
+    assert_eq!(budget.on_exit(true, t0), Some(RESTART_BACKOFFS[0]));
+    budget.restarted(t0);
+    for _ in 0..5 {
+        assert!(budget.on_exit(false, t0).is_some());
+        budget.restarted(t0);
+    }
+    assert!(budget.on_exit(false, t0).is_none(), "five never-ready restarts since the ready one");
+    let mut budget = Budget::default();
+    for i in 0..MAX_RESTARTS_PER_WINDOW {
+        let at = t0 + std::time::Duration::from_secs(i as u64);
+        assert!(budget.on_exit(true, at).is_some());
+        budget.restarted(at);
+    }
+    assert!(budget.on_exit(true, t0 + std::time::Duration::from_secs(10)).is_none(), "five ready restarts in the window");
+    assert!(
+        budget.on_exit(true, t0 + RESTART_WINDOW + std::time::Duration::from_secs(10)).is_some(),
+        "the window slid past them"
     );
 }

@@ -66,7 +66,6 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | removal of a row's state dir (close's tombstone, the start sweep) | disk rule | rows | `rust/backend/src/rows/state_folder.rs` `close_row_folder`, `sweep_state_folders`; the registries it asks `rust/backend/src/rows/store/mod.rs` `named_workspace_ids` |
 | `<sd>/supervisor.lock` | disk, lock | capsule | `rust/log/src/supervisor/journal/fence.rs` `lock_supervisor`; `rust/platform/src/host/lock.rs` `lock_supervisor` |
 | `<sd>/drawer.voyage` (pointer) | disk | capsule | `rust/log/src/supervisor/journal/pointer.rs` |
-| `<sd>/supervisor-journal/` | disk | capsule | `rust/log/src/supervisor/journal/mod.rs` `begin`, `finish` |
 | `<sd>/voyages/<id>/{writer.lock, leg, ended}` (the leg's fence, its number and its ending; no record) | disk, lock | capsule | `rust/log/src/capsule/fence.rs`; `rust/log/src/capsule/ended.rs`; names repeated `rust/backend/src/rows/run/end_run.rs` `absence_proof` |
 | `<sd>/screen` (the leg's latest screen, a vt100 checkpoint) | disk | capsule | `rust/log/src/capsule/screen.rs` |
 | `<sd>/row-scopes` and the row's systemd scope `sot-row-<hash>-<uuid>.scope` | disk, process | rows | `rust/backend/src/rows/spawn/row_scope.rs` `capture`, `listed`, `end`, `unit_name`; `rust/backend/src/rows/spawn/row_scope_aim.rs` `aim`, `v2_root` (shell twin of `v2_root`: `scripts/tests/rc-gate.sh` `R`) |
@@ -304,7 +303,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `SOT_TEST_MAIN_OUTCOME`, `SOT_TEST_GATES`, `SOT_TEST_RELEASE_BUILD`, `SOT_TEST_PROLOGUE_THREAD`: read only by a binary built with `daemon-lifetime-faults` (an installed binary reads none) | env | lifecycle | `rust/backend/src/main.rs` `injected_outcome`; `rust/backend/src/lifecycle/test_gates.rs`; `rust/backend/src/update.rs` `Updater::from_env` |
 | `SOT_TEST_*` seams read by production binaries: the connection read deadline | env | server | `rust/backend/src/server/conn.rs` `OVERRIDE_MS` |
 | `SOT_TEST_*` seams read by production binaries: the registry lock's timings | env | messaging | `rust/backend/src/comm/registry/lock.rs` |
-| `SOT_TEST_*` seams read by production binaries: the supervisor's recovery and journal-publish delays | env | capsule | `rust/log/src/supervisor/lifecycle.rs` `spawn_recovery`; `rust/log/src/supervisor/journal/mod.rs` `test_publish_delay` |
+| `SOT_TEST_*` seams read by production binaries: the supervisor's recovery delay and its held `end_run` request | env | capsule | `rust/log/src/supervisor/mod.rs` `drive` (`SOT_TEST_RECOVERY_DELAY_MS`); `rust/log/src/supervisor/authority.rs` (`SOT_TEST_END_RUN_HOLD_MS`) |
 | `SOT_TCP_PORT`, `SOT_REMOTE_REPO`, `SOT_REMOTE_SOCKET` (retired: only scripts and skills still name them) | env | distribution | `scripts/shutdown-sot.ps1`; `agents/claude/sot-setup/SKILL.md` |
 | fan-in `(HostKey, IncomingEvt)` and per-host `OutgoingReq` senders | bus | fe-net | `rust/frontend/src/main.rs` `main`; `rust/frontend/src/net/transport/event.rs` `IncomingEvt`; `rust/frontend/src/net/transport/request.rs` `OutgoingReq` |
 | `LinkGate` (one per host; the window's transport is its only writer) | state | topology | `rust/topology/src/ssh_bridge.rs` `LinkGate`; written `rust/frontend/src/net/transport/mod.rs` |

@@ -1,46 +1,80 @@
 # rust/log: capsule (charter)
 
 ## Idea
-A row's terminal lives in a capsule: one supervisor per state dir is the authority over its runs, one leg runs the
-agent on a real terminal and keeps its latest screen, and every viewer attaches through one client over typed lanes.
-No append-only record of the terminal is kept (decision D2, pass 6a). The crate is `sot-log`; it rests on
+A row's terminal lives in a capsule: one process per row, the supervisor, runs the agent on a real terminal, keeps
+its latest screen and serves the row's lanes, and every viewer attaches through one client over typed lanes. No
+append-only record of the terminal is kept (decision D2, passes 6a and 6b). The crate is `sot-log`; it rests on
 `sot-platform` (`../platform/CLAUDE.md`), which holds the machine facts, durable publication, locks and the peer
 challenge's OS steps, and re-exports none of it. The capsule's contract is written in pass 6d; this page says what is
-true after the voyage's removal.
+true after the merge of the leg into the supervisor.
 
 ## Owns
-- The leg's folder `<state_dir>/voyages/<id>/`: its `writer.lock` fence, `leg` (the number of the leg that last started
-  there) and `ended` (how the leg ended: whether an end was asked for, the producer's uptime and exit; `src/capsule/fence.rs`,
-  `src/capsule/ended.rs`). The folder holds no segments and no blobs.
-- The leg, `sot-capsule run`: the agent's kill domain, the terminal, the vt100 parser and the screen file
-  `<state_dir>/screen` (`src/capsule/`).
-- The supervisor, `sot-capsule supervise`: `supervisor.lock`, `drawer.voyage`, `supervisor-journal/` and the legs
-  (`src/supervisor/`).
-- The three lockstep lanes (management, attach, supervisor) and their per-platform transports (`src/lane/`).
+- Deviation, deferred to pass 6c: the SOM0 management lane is still live (`VoyageMgmtExchange` sends its `Status`,
+  and the attach server still accepts `Probe`, `Status` and `Shutdown`); pass 6b did not delete it. Limit: a screen
+  writer that timed out at a run's end (`ScreenFile::finish`) can still publish a stale snapshot over a later run's
+  `screen` (queue item SCREEN-WRITER-SPAN: one writer whose ownership spans runs).
+- The supervisor, `sot-capsule supervise`: `supervisor.lock`, the pointer `drawer.voyage` and the supervisor lane
+  (`src/supervisor/`). It runs the agent itself, from its main thread (`capsule::run`), and a second thread serves
+  the lane.
+- The agent's run: the terminal, the vt100 parser, the attach lane `voyage-<id>`, the screen file
+  `<state_dir>/screen` and the run's folder `<state_dir>/voyages/<id>/` with its `writer.lock`, `leg` (the number of
+  the run that last started there) and `ended` (how the run ended: whether an end was asked for, the producer's uptime
+  and exit; `src/capsule/fence.rs`, `src/capsule/ended.rs`). The folder holds no segments and no blobs.
+- The three lockstep lanes (management, attach, supervisor) and their per-platform transports (`src/lane/`). The
+  management lane is only the attach lane's identity exchange (`status`) and an end request nobody sends any more;
+  pass 6c replaces all three.
 - The attach client every viewer uses, and the daemon's supervisor-lane calls (`src/attach_client/`).
 
 ## Promises
-- The leg keeps `<state_dir>/screen`: the vt100 fork's checkpoint (format 2), handed every 5 s while the screen
+- One process per row: the agent is the supervisor's own child. The supervisor takes `supervisor.lock` (or adopts the
+  claim it was born holding) before it binds a lane or starts the agent, and a held fence exits 70 with nothing bound.
+- The agent dies with its supervisor. Linux: the agent forks from the supervisor's main thread, which lives as long as
+  the process, and the kernel's parent-death signal (`PR_SET_PDEATHSIG`) fires when it ends, so a SIGKILL of the
+  supervisor ends the agent (`tests/supervisor/one_process.rs`: the agent ignores SIGHUP, so only that signal can).
+  Unix: the supervisor also holds the terminal's master, so its end hangs up the agent's session. Windows: the ConPTY
+  agent runs in a kill-on-close job, so the last handle's close ends its tree. Limits: macOS has no parent-death
+  signal, so only the hangup ends the agent there: an agent that ignores SIGHUP can outlive a SIGKILLed supervisor
+  (queue item MACOS-AGENT-WATCH: a kqueue `NOTE_EXIT` watcher); the ordinary case, an agent that does not ignore SIGHUP,
+  is tested on macOS (`tests/macos_kernel_facts/kqueue.rs`), the SIGHUP-ignoring case on Linux and Windows only; a
+  descendant that leaves the session survives on Unix, and one in another job (Windows)
+  or session (Unix) is not the supervisor's to end.
+- Phases: `starting` (until the agent has written or lived two seconds), `ready`, `ending`, `ended_no_respawn` (the
+  agent is gone because an end was asked for; only a reset or a stop remains) and `terminal` (sticky). The supervisor
+  rests only after a requested end: an agent that cannot be started or ends by itself ends the supervisor with 75 or
+  76, so the daemon's watchdog is the one restart budget (rows' contract). A `--resume` over a run that was asked to
+  end (`ended.requested`) rests in `ended_no_respawn`; any other `--resume` starts a fresh agent, in a new run of the
+  same voyage. A stop is not an end of the run: it leaves no request, so the next start runs the agent again.
+- An operation is answered while its supervisor lives and kept in memory for its resubmits: the same id and the same
+  command answers from its record, another command under it is `id_conflict`, a command naming another voyage is
+  `stale_voyage`. `end_run` is admitted only while an agent runs and answers `record_verified` once it has ended, so a
+  `reset` sent after the answer is admitted; an acknowledged `end_run` is recorded as a requested end on the voyage
+  before the answer even when the agent ended first (`mark_end_requested`), so a resume rests; a failed attach
+  transport (`ExitKind::TransportFailed`) is not a requested end and ends the supervisor terminal; a supervisor that
+  goes terminal sends its running agent `Stop` first; `reset` only from `ended_no_respawn`; `stop` ends the agent and the
+  process (exit 0, or 69 when it was terminal). Nothing outlives the supervisor to reconcile: a crash loses operation
+  records, and a client that lost a reply reads status.
+- The supervisor keeps `<state_dir>/screen`: the vt100 fork's checkpoint (format 2), handed every 5 s while the screen
   changed (and at the agent's end) to one writer thread, which writes it through platform's `write_durable`. The slot
-  between them keeps only the newest snapshot, so a stalled or failing disk never reaches the output loop or the
-  management lane; a failed write is noted once per failing streak and the next pace hands over a fresh snapshot. The
-  leg's end waits for the writer at most 2 s. A leg starts its parser from the file, with a
-  `[restarted <UTC time>]` line below the retained content (on Windows both are scrolled into the history, because the
-  ConPTY host repaints the visible screen at start); a file that does not restore is removed and the screen starts
-  empty. Limits: the file can be 5 s old, a failing disk can leave it old for good, a supervisor `Stop` leaves a live
-  leg running with no flush, and scrollback in it is at most `CAPSULE_SCROLLBACK_ROWS` (200).
-- The leg writes `ended` before it acknowledges an end request (`requested`, durably) and again whole when the
-  producer is gone; a leg that crashed leaves no finished file, and a supervisor reads it as unstable. The startup
-  check does not respawn a leg over a `requested` file; a leg ended some other way is respawned.
+  between them keeps only the newest snapshot, so a stalled or failing disk never reaches the output loop; a failed
+  write is noted once per failing streak and the next pace hands over a fresh snapshot. The end waits for the writer at
+  most 2 s. A run starts its parser from the file, with a `[restarted <UTC time>]` line below the retained content (on
+  Windows both are scrolled into the history, because the ConPTY host repaints the visible screen); a file that does
+  not restore is removed and the screen starts empty. Limits: the file can be 5 s old, a failing disk can leave it old
+  for good, and scrollback in it is at most `CAPSULE_SCROLLBACK_ROWS` (200).
 - Input is written at most once: `input_recorded` means the bytes were written to the pty's master. The client reports
   an input whose acknowledgement was lost as delivery unknown and never sends it again.
-- One leg per voyage folder (`writer.lock`, taken by `fence::take_fence`); one authority per state dir
+- One run per voyage folder (`writer.lock`, taken by `fence::take_fence`); one authority per state dir
   (`supervisor.lock`, taken by `lock_supervisor`).
 - Attach is ground-gated (`writer_loop::output_path::ground_check`), so a viewer joins only at a parser ground
   boundary, after every byte the parser has seen was published.
-- `sot-capsule supervise` exits 0 (clean), 69 (`EXIT_TERMINAL`) or 70 (`EXIT_CONTENDED`, the fence was already held).
-  There is no storage hold and no exit 71: a failed write of the supervisor's own journal or pointer ends the operation
-  as any other failure does.
+- `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot serve the row), 70 (`EXIT_CONTENDED`, the
+  fence was already held), 75 (`EXIT_AGENT_NOT_STARTED`: the agent could not be spawned) or 76 (`EXIT_AGENT_ENDED`: it
+  started and ended by itself), the last two with no stop or end asked for (`tests/supervisor/spawn.rs`). A supervisor
+  killed has no code. Limits: a supervisor that fails to take over an inherited claim (a wrong or unlocked descriptor)
+  also exits 70, which does not prove another live authority; and on Unix an executable that passes preflight but fails
+  at exec can read as an aborted child, so 76 for a program that never started (the exec-error pipe is closed). There is
+  no storage hold and no exit 71. `--survival` and `--assume-no-rollback-target` are
+  accepted and ignored.
 - Only linux, macos and windows build.
 - A reply on a local connection is trusted only after the challenge in platform (`../platform/src/identity/`); the
   lanes' own request and reply bytes are `src/lane/exchange.rs`.
@@ -54,8 +88,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `Redial`, `STABLE`.
 
 ## Folders
-- `src/capsule/`: the leg, one producer under a live parser, its screen file and its ending.
-- `src/supervisor/`: the authority over a state dir's runs.
+- `src/capsule/`: a run, one producer under a live parser, its screen file and its ending.
+- `src/supervisor/`: the one process of a row: the fence, the pointer, the lane and the main thread's loop.
 - `src/lane/`: transport contract, client seam and the platform bridge for the lanes.
 - `src/attach_client/`: one client for every viewer of a capsule.
 - `../platform/`: the platform crate, whose charter is `../platform/CLAUDE.md`.
@@ -79,8 +113,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/test_foreign.rs`: `ForeignListener`, a socket another OS account (`nobody`) listens on, for the User isolation
   tests, and `elevation_or_skip`, the one rule for a test that needs root: it skips only when `sudo -n true` fails (a
   failure on CI), and every later helper failure fails the test (feature `test-support`, Unix).
-- `src/capsule/`: the leg's runtime, its screen and ended files, and the producers.
-- `src/supervisor/`: the supervisor, its journal, probe and authority.
+- `src/capsule/`: a run's runtime, its screen and ended files, and the producers.
+- `src/supervisor/`: the supervisor, its fence and pointer, and the lane's thread.
 - `src/lane/`: wire frames, transports and the attach protocol.
 - `src/attach_client/`: the attach client and its worker.
 - `src/lane/exchange.rs`, `src/lane/connect_own.rs`: the lanes' identity exchanges, and the connect that asks platform's account check.
@@ -89,8 +123,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/bin/`: `sot-capsule` and the two test-fixture helpers.
 
 ## Start here
-Read `src/supervisor/mod.rs` for the process chain and exit codes, then `src/capsule/writer_loop/mod.rs` (`run`) for
-the leg, `src/capsule/screen.rs` and `src/capsule/ended.rs` for the two files it leaves; for a lane, `src/lane/wire/`.
+Read `src/supervisor/mod.rs` for the process and its exit codes, then `src/capsule/writer_loop/mod.rs` (`run`) for
+a run, `src/capsule/screen.rs` and `src/capsule/ended.rs` for the two files it leaves; for a lane, `src/lane/wire/`.
 
 ## Rules
 - Modules are `pub` where integration tests or other crates reach them: those see only pub items.
@@ -102,9 +136,8 @@ the leg, `src/capsule/screen.rs` and `src/capsule/ended.rs` for the two files it
 - Named test reruns use `test_isolated`; direct fixtures retain child wait/status, termination, entry and separate output observations before raising failures. Regression proofs require observed prerequisites and the selected failure's exact cause; wrong-cause controls use the same verifier. Duration/deadline APIs share one wait implementation; byte output preserves valid text and escapes invalid UTF-8. Wrapped fixtures retain launcher status and both streams, validate the native role/PID witness against exact entry, and share direct fixtures' wait/drain/finalization implementation; ordinary direct fixtures still validate their spawned child PID.
 - Every Rust source-text scan reads through `test_scan`, and none cuts a file at its first `#[cfg(test)]` (`test_scan::tests::no_scan_cuts_a_file_at_its_first_cfg_test`).
 - Helper binaries `sot-pty-helper` and `sot-conpty-helper` are test fixtures and never ship.
-- Another crate can reach the processes this crate starts (the capsule's agent, the supervisor's legs) through its public items, as read on 2026-10-05: `capsule::run`, `capsule::producer::Producer::spawn`,
-  `capsule::producer::conpty::ConptySpawn::spawn`, `supervisor::supervise`,
-  `supervisor::probe::classify::probe_owned_spawn`, `supervisor::probe::ProbeOps::spawn` and, on
+- Another crate can reach the processes this crate starts (the capsule's agent) through its public items, as read on 2026-10-05: `capsule::run`, `capsule::producer::Producer::spawn`,
+  `capsule::producer::conpty::ConptySpawn::spawn`, `supervisor::supervise` and, on
   Unix, `host::process_tree::Launch::begin` (the native launcher). `rust/clippy.toml` lists none of them, so the lint
   does not see a call from another crate; today no other crate calls them but `src/bin/sot-capsule.rs`, which reaches
   them through `capsule::run` and `supervisor::supervise`, and the daemon-lifetime harness

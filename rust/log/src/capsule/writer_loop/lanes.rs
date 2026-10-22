@@ -241,7 +241,7 @@ pub(super) fn service_transport_events<'t, P: Producer>(mut leg: Leg<'t, P>) -> 
                 super::leg_note(format_args!(
                     "sot-capsule: transport reported a terminal failure, ending this run: {detail}"
                 ));
-                leg.shutdown_requested = true;
+                leg.transport_failed = true;
                 leg.shutdown_reason = Some("transport-accept-failed".to_string());
             }
         }

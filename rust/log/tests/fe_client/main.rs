@@ -407,7 +407,7 @@ fn query(conn: &Client, operation_id: &str) -> SupervisorOperationState {
 fn end_run_and_wait_ended(conn: &Client, voyage: &str) {
     let op_id = "test-teardown-end-run";
     let reply = command(conn, op_id, SupervisorOp::EndRun { reason: "test teardown".into(), voyage: voyage.to_string() });
-    assert_eq!(reply, SupervisorOperationState::RecordClosed);
+    assert_eq!(reply, SupervisorOperationState::RecordVerified);
     let final_state = poll_until(
         || match query(conn, op_id) {
             SupervisorOperationState::Accepted | SupervisorOperationState::RecordClosed => None,

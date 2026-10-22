@@ -61,6 +61,9 @@ pub(super) fn start<'t, P: Producer>(
     // process's own teardown happens to take afterward. Captured the instant a real spawn succeeds (not before the
     // attempt, which would count spawn latency as producer uptime).
     let spawned_at = Instant::now();
+    if let Some(signals) = &config.signals {
+        signals.spawned(spawned_at);
+    }
 
     let handshake = HostHandshake::new();
 
@@ -89,6 +92,7 @@ pub(super) fn start<'t, P: Producer>(
             splitters,
             pending_sends,
             shutdown_requested: false,
+            transport_failed: false,
             shutdown_reason: None,
             run_end_latched: false,
             wake_pending,
@@ -98,6 +102,7 @@ pub(super) fn start<'t, P: Producer>(
             dsr_answered: false,
             handshake_suppressed_matches: 0,
             resize_os_calls: 0,
+            signals: config.signals.clone(),
             // Set by the ONE rule in the main loop's arm and teardown Phase A's identical one: a terminal reader
             // event that arrived before `close_output_side` and that a confirmed producer exit explained. Stays
             // `None` on Linux and on Windows by those platforms' own contracts.
@@ -115,32 +120,13 @@ pub(super) fn start<'t, P: Producer>(
     )))
 }
 
-/// Takes the fence of the leg's folder, making the folder first if it is not there. The parent-death lease is checked
-/// once, as the fence's first act: a broken one releases the fence and ends the leg before it binds anything.
-///
-/// The lease's own open is deferred into the closure, so it happens at the exact point `take_fence` calls it, once.
-/// `NamedMutex` (Windows) folds an unopenable lease to broken, as `supervisor::lease_win::open` documents; `InheritedFd`
-/// (Unix) does one non-blocking read on the inherited descriptor: `EAGAIN` is alive, anything else (a missing
-/// descriptor included) is broken.
+/// Takes the fence of the leg's folder, making the folder first if it is not there.
 fn take_fence(config: &CapsuleConfig) -> Result<sot_platform::host::WriterLock> {
     let root = sot_platform::host::ensure_container(&config.voyage_root)?;
     if !root.exists() {
         fence::bootstrap(&root)?;
     }
-    let lease_broken_fn = {
-        let lease = config.parent_lease.clone();
-        move || match &lease {
-            None => false,
-            #[cfg(windows)]
-            Some(ParentLease::NamedMutex(name)) => {
-                crate::supervisor::lease_win::open(name).map(|c| c.is_broken()).unwrap_or(true)
-            }
-            #[cfg(unix)]
-            Some(ParentLease::InheritedFd(fd)) => crate::capsule::producer::pty::parent_lease_fd_broken(*fd),
-        }
-    };
-    let lease_broken: Option<&dyn Fn() -> bool> = config.parent_lease.is_some().then_some(&lease_broken_fn);
-    fence::take_fence(&root, lease_broken)
+    fence::take_fence(&root)
 }
 
 fn bind_transport(

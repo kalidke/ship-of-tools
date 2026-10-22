@@ -446,7 +446,7 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
     #[cfg(windows)]
     {
         let scrubbed = path_without(&["claude.exe", "claude.cmd", "claude"]);
-        env.spawn_sotd_with_env(&[("PATH", scrubbed.to_str().expect("scrubbed PATH is not UTF-8"))]);
+        env.spawn_sotd_with_env(&[("PATH", scrubbed.to_str().expect("scrubbed PATH is not UTF-8")), SHORT_BACKOFF]);
     }
     // Linux: `agent_argv`'s own resolution step means a genuinely absent
     // `claude` would refuse at the DAEMON level instead (never reaching
@@ -457,7 +457,7 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
     #[cfg(target_os = "linux")]
     let fake_claude_dir = env.seed_fake_unlaunchable_claude();
     #[cfg(target_os = "linux")]
-    env.spawn_sotd_with_prepended_path(&fake_claude_dir);
+    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[SHORT_BACKOFF]);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -487,11 +487,10 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
     // cycling Starting -> Terminal -> Starting forever, and never resting
     // at "ended_no_respawn" on the way (an agent that cannot start is not
     // an agent that was asked to end). The bound is the daemon watchdog's
-    // restart backoffs (1 + 3 + 7 + 15 + 30 s, `RESTART_BACKOFFS`, which
-    // this suite cannot import) plus the suite's own `BOUND`: whichever
-    // capsule ends the row, the one restart budget is the longest it can
-    // take.
-    let terminal_deadline = Instant::now() + Duration::from_secs(56) + BOUND;
+    // restart backoffs (shortened to 200 ms by `SHORT_BACKOFF`) and settles
+    // plus the suite's own `BOUND`: whichever capsule ends the row, the one
+    // restart budget is the longest it can take.
+    let terminal_deadline = Instant::now() + BUDGET_WAIT;
     loop {
         let id = next_id;
         next_id += 1;
@@ -512,6 +511,11 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+
+    // The row ended `terminal` because the watchdog's restart budget ran out, not because the supervisor gave up on its
+    // own: the budget's own line is in the daemon's log.
+    let log = env.daemon_log_since(0);
+    assert!(log.contains("restart budget exhausted"), "the daemon's log must hold the watchdog's budget line; got:\n{log}");
 
     // LU5a (ADR 0043 decision 25, Linux leg): the supervisor's own stderr
     // is the daemon's own log -- by the time this row is terminal, its
@@ -561,6 +565,108 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
         "the terminal row's supervisor lane to be silent after workspace.destroy",
     )
     .await;
+
+    env.kill_daemon_bounded().await;
+}
+
+/// The restart budget is a count, not a rate: an agent that cannot start ends the row `terminal` after five restarts of
+/// supervisors that never reached `ready`, however long each restart's settle takes. Each settle here takes four seconds
+/// longer (`SOT_TEST_SETTLE_DELAY_MS`), which a budget measured in a 60 s window cannot survive: the backoffs alone are
+/// 56 s.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unlaunchable_agent_ends_the_row_terminal_after_five_restarts_however_slow_the_settles() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("ulslow");
+    env.seed_default_capsule_toml("claude");
+    let fake_claude_dir = env.seed_fake_unlaunchable_claude();
+    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[("SOT_TEST_SETTLE_DELAY_MS", "3000"), SHORT_BACKOFF]);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let default_row = list_payload["workspaces"]
+        .as_array()
+        .expect("workspaces array")
+        .iter()
+        .find(|w| w["is_default"].as_bool() == Some(true))
+        .cloned()
+        .expect("a default workspace row");
+    let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
+    let default_target = default_row["session_name"].as_str().expect("session_name").to_string();
+
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": default_target });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+
+    // The short backoffs, six settles of 3 s (plus their own 2 s) and the suite's own bound.
+    let terminal_deadline = Instant::now() + Duration::from_secs(6 * 5 + 5) + BOUND;
+    loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, &default_workspace_id) {
+            if row["phase"].as_str() == Some("terminal") {
+                break;
+            }
+        }
+        assert!(Instant::now() < terminal_deadline, "the row never reached terminal: the budget is not a count");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let log = env.daemon_log_since(0);
+    assert!(log.contains("restart budget exhausted"), "the daemon's log must hold the watchdog's budget line; got:\n{log}");
+
+    env.kill_daemon_bounded().await;
+}
+
+/// Never reaching `ready` is what the budget counts, not how long a supervisor lived: each supervisor here is held in
+/// `starting` for three seconds (`SOT_TEST_RECOVERY_DELAY_MS`) before its agent, which cannot start, ends it, so it lives
+/// seconds, longer than any agent that cannot start, and never reaches `ready`. The row still ends `terminal` after five such
+/// restarts.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_slow_failing_supervisor_that_never_reaches_ready_still_counts_toward_terminal() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("ulslowstart");
+    env.seed_default_capsule_toml("claude");
+    let fake_claude_dir = env.seed_fake_unlaunchable_claude();
+    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[("SOT_TEST_RECOVERY_DELAY_MS", "3000"), SHORT_BACKOFF]);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let default_row = list_payload["workspaces"]
+        .as_array()
+        .expect("workspaces array")
+        .iter()
+        .find(|w| w["is_default"].as_bool() == Some(true))
+        .cloned()
+        .expect("a default workspace row");
+    let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
+    let default_target = default_row["session_name"].as_str().expect("session_name").to_string();
+
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": default_target });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+
+    // The short backoffs, six starts held for 3 s, their settles (2 s each) and the suite's own bound.
+    let terminal_deadline = Instant::now() + Duration::from_secs(6 * 3 + 6 * 2 + 5) + BOUND;
+    loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, &default_workspace_id) {
+            if row["phase"].as_str() == Some("terminal") {
+                break;
+            }
+        }
+        assert!(Instant::now() < terminal_deadline, "the row never reached terminal: a supervisor that lives long without reaching ready was not counted");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let log = env.daemon_log_since(0);
+    assert!(log.contains("restart budget exhausted"), "the daemon's log must hold the watchdog's budget line; got:\n{log}");
 
     env.kill_daemon_bounded().await;
 }

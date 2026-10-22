@@ -24,14 +24,10 @@ pub fn bootstrap(root: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// Takes the writer fence of the folder at `root`, then checks the parent-death lease once, as the fence's first act:
-/// `lease_broken` answering true releases the fence and returns [`Error::LeaseBroken`].
-pub(super) fn take_fence(root: &std::path::Path, lease_broken: Option<&dyn Fn() -> bool>) -> Result<WriterLock> {
+/// Takes the writer fence of the folder at `root` and checks that its volume can take a write.
+pub(super) fn take_fence(root: &std::path::Path) -> Result<WriterLock> {
     let root = std::fs::canonicalize(root)?;
     let lock = sot_platform::host::lock_writer(&root.join(WRITER_LOCK))?;
-    if lease_broken.is_some_and(|f| f()) {
-        return Err(Error::LeaseBroken);
-    }
     sot_platform::host::preflight_volume(&root)?;
     Ok(lock)
 }

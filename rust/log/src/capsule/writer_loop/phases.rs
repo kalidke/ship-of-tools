@@ -33,6 +33,9 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
         // it. The ack remains a courtesy -- serviced normally through
         // teardown (still tracked via `pending_sends`/the ack-grace window)
         // but never a precondition for STARTING it.
+        if leg.transport_failed {
+            break 'main ExitKind::TransportFailed;
+        }
         if leg.shutdown_requested || leg.run_end_latched {
             break 'main ExitKind::Requested;
         }
@@ -48,6 +51,10 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
             Ok(Command::Kill) => {
                 leg.shutdown_reason.get_or_insert_with(|| "operator_kill".to_string());
                 latch_run_end(&mut leg, "operator_kill".to_string())?;
+                break 'main ExitKind::Requested;
+            }
+            Ok(Command::Stop) => {
+                leg.shutdown_reason.get_or_insert_with(|| "supervisor_stop".to_string());
                 break 'main ExitKind::Requested;
             }
             Err(mpsc::TryRecvError::Empty) => {}

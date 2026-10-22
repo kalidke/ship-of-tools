@@ -24,7 +24,7 @@ use sot_platform::host::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
 use sot_log::lane::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[path = "../support/capsule_guard.rs"]
@@ -44,21 +44,6 @@ type Client = <PlatformEndpoint as Endpoint>::Client;
 const SHELL: &[&str] = &["cmd.exe"];
 #[cfg(target_os = "linux")]
 const SHELL: &[&str] = &["/bin/sh"];
-
-/// The one scripted producer that exits shortly after reaching Ready —
-/// `a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound`'s
-/// own leg. F5 (Codex review round): ~2s of life, not ~1 -- a loaded
-/// runner can miss the ONLY status poll that would ever observe Ready
-/// before a ~1s-lived leg self-exits, failing the test while the
-/// supervisor correctly reaches its anti-flap terminal state anyway
-/// (reproduced). ~2s is wide enough for the poll to observe Ready even
-/// under load, far shorter than `STABILITY_INTERVAL` (60s in
-/// `supervisor/`), so the leg is still unstable and three of them
-/// still trip the anti-flap bound.
-#[cfg(windows)]
-const SELF_EXITING_PRODUCER: &[&str] = &["cmd.exe", "/d", "/c", "ping -n 3 127.0.0.1 >nul & exit 1"];
-#[cfg(target_os = "linux")]
-const SELF_EXITING_PRODUCER: &[&str] = &["/bin/sh", "-c", "sleep 2; exit 1"];
 
 /// Points `SOT_RUNTIME_DIR` at a fresh, mode-0700 tempdir under `/tmp`
 /// for the lifetime of the returned guard, so this process's own socket
@@ -88,21 +73,6 @@ struct RuntimeDirGuard;
 #[cfg(windows)]
 fn isolated_runtime_dir() -> RuntimeDirGuard {
     RuntimeDirGuard
-}
-
-/// The voyage mgmt lane's own unchallenged connect, per platform — the
-/// one call `pipe_gone`-style checks need
-/// (`endrun_and_reset_without_a_running_supervisor` and
-/// `a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one`
-/// use it via [`sot_log::lane::transport::TransportError::is_endpoint_absent`]
-/// rather than a hand-rolled `NotFound` match).
-#[cfg(windows)]
-fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::lane::transport::TransportError> {
-    sot_log::lane::pipe_win::connect_voyage_pipe(voyage_id)
-}
-#[cfg(target_os = "linux")]
-fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::lane::transport::TransportError> {
-    sot_log::lane::socket_unix::connect_voyage_socket(voyage_id)
 }
 
 /// Real-process tests are SERIALIZED: each spawns a supervisor, a capsule
@@ -199,18 +169,6 @@ fn status(conn: &Lane) -> (Option<String>, Option<u64>, SupervisorPhase) {
     }
 }
 
-/// As [`status`], but never panics — `Err`'s own text names what went
-/// wrong. Used only where a connection MAY legitimately have stopped
-/// answering (a diagnostic best-effort, or a poll loop that itself
-/// decides what a failure means).
-fn try_status(conn: &Client) -> Result<(Option<String>, Option<u64>, SupervisorPhase), String> {
-    match request_for_test(conn, &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)) {
-        Ok(SupervisorReply::StatusOk { voyage, leg, phase, .. }) => Ok((voyage, leg, phase)),
-        Ok(other) => Err(format!("expected StatusOk, got {other:?}")),
-        Err(e) => Err(format!("{e}")),
-    }
-}
-
 /// The lane binds BEFORE any adopt or spawn (ADR 0041), so answering
 /// `status` does not by itself mean a leg is READY yet — poll for the
 /// phase itself, the observable fact, rather than assuming spawn
@@ -279,14 +237,9 @@ fn poll_to_terminal(
     )
 }
 
-/// Submits `end_run` and asserts its OWN reply is `record_closed` (B3:
-/// "the lane reply for an accepted EndRun is sent AT record_closed, not
-/// at admission") — proving the FIRST half of the "record_closed then
-/// record_verified" sequence directly, rather than silently accepting
-/// either as `poll_to_terminal` alone would (Codex review round 2: "the
-/// workflow's own description is unproved... never requires observing
-/// record_closed").
-fn end_run_and_expect_record_closed(conn: &Lane, operation_id: &str, reason: &str, voyage: String) {
+/// Submits `end_run` and asserts its own reply is `record_verified`: the reply is sent once the run has ended, so
+/// the supervisor rests in `ended_no_respawn` when the client reads it.
+fn end_run_and_expect_ended(conn: &Lane, operation_id: &str, reason: &str, voyage: String) {
     let reply = command(
         conn,
         operation_id,
@@ -295,11 +248,7 @@ fn end_run_and_expect_record_closed(conn: &Lane, operation_id: &str, reason: &st
             voyage,
         },
     );
-    assert_eq!(
-        reply,
-        SupervisorOperationState::RecordClosed,
-        "end_run's own command reply must arrive AT record_closed (ADR 0041:592)"
-    );
+    assert_eq!(reply, SupervisorOperationState::RecordVerified, "end_run's reply arrives when the run has ended");
 }
 
 /// Blocks on `conn.read` in a scoped thread so an EOF (or any other
@@ -405,40 +354,9 @@ fn direct_children_of(pid: u32) -> Vec<u32> {
         .collect()
 }
 
-/// As [`wait_for_exit`], but on timeout makes ONE best-effort attempt to
-/// reconnect and report whatever `status` still claims, so a future CI
-/// failure NAMES the stuck lifecycle state instead of just timing out
-/// (round-4 addendum on the flap test).
-///
-/// Takes `&mut Child` (Codex review round 3, N13), never an owned
-/// `Child` — an earlier version moved the child out of its own
-/// `CapsuleGuard` before calling this, so a `panic!` on timeout unwound
-/// past a bare `Child` with no guard left watching it: `Child`'s own
-/// `Drop` does not kill anything, only closes the handle, so the
-/// timed-out supervisor process leaked, orphaned, past every test that
-/// hit this exact path. Borrowing keeps the CALLER's `CapsuleGuard` in
-/// possession of the child throughout, so its `Drop` still runs
-/// (kill + wait) as the panic unwinds through it.
-fn wait_for_exit_with_diagnostics(child: &mut Child, h: &str, timeout: Duration) -> std::process::ExitStatus {
-    let started = Instant::now();
-    let deadline = started + timeout;
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            return status;
-        }
-        if Instant::now() >= deadline {
-            let diagnostic = connect_and_challenge_for_test(h).ok().and_then(|(conn, _)| try_status(&conn).ok());
-            panic!(
-                "timed out after {:?} waiting for the supervisor process to exit; last reachable \
-                 status (voyage, leg, phase): {diagnostic:?}",
-                started.elapsed()
-            );
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
 mod lifecycle;
 mod authority;
+mod one_process;
 mod spawn;
 
 
@@ -489,10 +407,8 @@ fn capsule_gone_within(state_dir: &Path, bound: Duration) -> bool {
     )
 }
 
-/// A red's cleanup, run on every path after the kill: ends a supervisor and a leg that outlived their test, over
-/// their own lanes. It never panics, so the assert that follows it still reports.
+/// A red's cleanup, run on every path after the kill: ends a supervisor that outlived its test, over its lane. It never panics, so the assert that follows it still reports.
 fn end_what_outlived(state_dir: &Path) {
-    use sot_log::lane::wire::{encode_mgmt_request, MgmtRequest};
     let voyage = recorded_voyage(state_dir);
     if state_dir.exists() && !fence_free(state_dir) {
         if let Ok((conn, _)) = connect_and_challenge_for_test(&state_dir_hash(state_dir)) {
@@ -506,17 +422,6 @@ fn end_what_outlived(state_dir: &Path) {
             ask("cleanup-stop", SupervisorOp::Stop);
         }
         free_within(|| fence_free(state_dir), Duration::from_secs(60));
-    }
-    if let Some(voyage) = voyage {
-        let lock = writer_lock_path(state_dir, &voyage);
-        if !writer_free(&lock) {
-            if let (Ok(mgmt), Ok(shutdown)) =
-                (connect_voyage_mgmt(&voyage), encode_mgmt_request(&MgmtRequest::Shutdown { reason: "test cleanup".into() }))
-            {
-                let _ = mgmt.write_all(&shutdown);
-            }
-            free_within(|| writer_free(&lock), Duration::from_secs(30));
-        }
     }
 }
 

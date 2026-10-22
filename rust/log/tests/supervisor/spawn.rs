@@ -28,7 +28,7 @@ fn start_reaches_ready_promptly() {
     println!("LU6b start_reaches_ready_promptly: spawn->Ready = {elapsed:?}");
     assert!(elapsed < Duration::from_secs(30), "expected Ready well within the generous 30s bound, took {elapsed:?}");
 
-    end_run_and_expect_record_closed(&conn, "start-reaches-ready-end", "cleanup", voyage);
+    end_run_and_expect_ended(&conn, "start-reaches-ready-end", "cleanup", voyage);
     let _ = command(&conn, "start-reaches-ready-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
@@ -79,115 +79,15 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
     );
 
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
-    end_run_and_expect_record_closed(&conn, "identity-equality-end", "cleanup", voyage);
+    end_run_and_expect_ended(&conn, "identity-equality-end", "cleanup", voyage);
     let _ = command(&conn, "identity-equality-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// ADR 0043 decision 33's retirement clause: a leg forks from the SUPERVISOR's own running
-/// image via `/proc/self/exe`, never a path string resolved fresh off
-/// disk at spawn time -- so an `sot-apply`-style rename of a new binary
-/// over the old launch path cannot make an already-running supervisor
-/// hand a freshly spawned leg the NEW build. Proven by launching a
-/// supervisor from a COPY of the built `sot-capsule`, renaming that copy
-/// away once a leg is up, then killing the leg so the supervisor's own
-/// anti-flap respawn fires a fresh spawn under the (now binary-less)
-/// launch path: the respawned leg's `/proc/<pid>/exe` -- the kernel's own
-/// live-mapping identity, immune to the very rename this test performs --
-/// must still match the SUPERVISOR's own (dev, ino), not whatever (or
-/// nothing) now sits at the renamed-away path.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_leg_spawned_after_the_binary_is_renamed_runs_the_supervisors_own_inode() {
-    use std::os::unix::fs::MetadataExt;
-
-    let _serial = serial();
-    let _runtime = isolated_runtime_dir();
-    let dir = tempfile::tempdir().unwrap();
-    let state_dir = dir.path().join("state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    let h = state_dir_hash(&state_dir);
-
-    // A COPY, launched from a path this test can rename out from under --
-    // the built binary itself (`capsule_exe()`) must stay put for every
-    // other test in this file.
-    let copy_path = dir.path().join("sot-capsule-copy");
-    sot_platform::test_exec::write_executable(&copy_path, std::fs::read(capsule_exe()).expect("read sot-capsule for a renameable launch path"));
-
-    let mut cmd = Command::new(&copy_path);
-    cmd.arg("supervise")
-        .arg(&state_dir)
-        .arg("--start")
-        .arg("--assume-no-rollback-target")
-        .arg("--")
-        .args(SHELL)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    let mut guard = CapsuleGuard::spawn(&mut cmd);
-    let supervisor_pid = guard.id();
-
-    let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
-
-    let original_leg_pid = poll_until(
-        || direct_children_of(supervisor_pid).into_iter().next(),
-        Duration::from_secs(10),
-        "the supervisor's own leg child pid to appear",
-    );
-
-    // The identity every leg spawn must actually run: the running
-    // supervisor's OWN loaded image, read through its own magic
-    // `/proc/<pid>/exe` link (a live-mapping identity, not a path
-    // lookup a rename can redirect).
-    let supervisor_exe = std::fs::metadata(format!("/proc/{supervisor_pid}/exe")).expect("stat the supervisor's own /proc/<pid>/exe");
-    let supervisor_identity = (supervisor_exe.dev(), supervisor_exe.ino());
-
-    // Displace the launch path -- exactly what an `sot-apply` rename-based
-    // install does. The already-running supervisor and its live leg are
-    // unaffected (their own mapped inodes stay open); only a fresh spawn
-    // that re-resolved a PATH would notice anything happened here.
-    std::fs::rename(&copy_path, dir.path().join("sot-capsule-copy.renamed-aside")).expect("rename the launch path away");
-
-    // Kill the LEG (not the supervisor authority) so its own anti-flap
-    // respawn -- one kill, well under `FLAP_THRESHOLD` -- fires a fresh
-    // spawn under the now binary-less launch path: exactly the spawn
-    // this decision protects.
-    unsafe {
-        libc::kill(original_leg_pid as libc::pid_t, libc::SIGKILL);
-    }
-
-    let respawned_leg_pid = poll_until(
-        || direct_children_of(supervisor_pid).into_iter().find(|&pid| pid != original_leg_pid),
-        Duration::from_secs(30),
-        "a respawned leg child pid to appear after the original was killed",
-    );
-    let respawned_exe = std::fs::metadata(format!("/proc/{respawned_leg_pid}/exe"))
-        .expect("stat the respawned leg's own /proc/<pid>/exe");
-    assert_eq!(
-        (respawned_exe.dev(), respawned_exe.ino()),
-        supervisor_identity,
-        "a leg spawned after the launch binary was renamed away must still run the supervisor's OWN inode"
-    );
-
-    // End the run FIRST -- `stop` alone ends only the authority (ADR
-    // 0041 Lifecycle: legs are deliberately outside its job), which would
-    // otherwise leak the respawned leg's own shell as an orphaned process
-    // once this test's tempdir goes away with no supervisor left to
-    // adopt it. Re-waits for Ready: the respawned leg's OWN pid appearing
-    // (already proven above) is not the same fact as the supervisor's
-    // phase having caught up to it -- `end_run` refuses a voyage with no
-    // leg it considers currently running.
-    wait_for_ready(&conn, Duration::from_secs(30));
-    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
-    let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
-    let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
-    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
-}
-
-/// `--first-leg-only <token>` keeps the token on the first leg this supervisor process spawns and strips it from
-/// every leg after a producer has run (`producer_ran`, set at Ready): the daemon passes a reauth's `--resume <id>` this
-/// way, so only the reauth's own leg resumes by id. The producer appends its own argv to a file and sleeps, so each
-/// leg's own line is unambiguous; the leg is killed directly, after Ready, for a fast respawn.
+/// `--first-leg-only <token>` keeps the token on the first run this supervisor process starts and strips it from every
+/// run after an agent has run: the daemon passes a reauth's `--resume <id>` this way, so only the reauth's own run
+/// resumes by id. The agent appends its own argv to a file and sleeps, so each run's own line is unambiguous; the run
+/// is ended after Ready and reset, for a fast second run.
 #[cfg(target_os = "linux")]
 #[test]
 fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_ran() {
@@ -219,7 +119,6 @@ fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     let mut guard = CapsuleGuard::spawn(&mut cmd);
-    let supervisor_pid = guard.id();
 
     let read_lines = |path: &Path| -> Option<Vec<String>> {
         std::fs::read_to_string(path).ok().map(|c| c.lines().map(str::to_string).collect())
@@ -232,32 +131,27 @@ fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_
     );
     assert_eq!(lines[0], "--resume", "the first leg must keep its first-leg-only token");
 
-    // Ready first: that is the producer having run, after which no leg carries the token.
+    // Ready first: that is the agent having run, after which no run carries the token.
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let _ = wait_for_ready(&conn, Duration::from_secs(30));
-    let original_leg_pid = poll_until(
-        || direct_children_of(supervisor_pid).into_iter().next(),
-        Duration::from_secs(10),
-        "the supervisor's own first leg child pid to appear",
-    );
-    unsafe {
-        libc::kill(original_leg_pid as libc::pid_t, libc::SIGKILL);
-    }
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
+    end_run_and_expect_ended(&conn, "end-before-reset", "test", voyage.clone());
     poll_until(
-        || direct_children_of(supervisor_pid).into_iter().find(|&pid| pid != original_leg_pid),
+        || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
         Duration::from_secs(30),
-        "a respawned leg child pid to appear after the original was killed",
+        "the supervisor to rest at EndedNoRespawn after its run was ended",
     );
+    assert_eq!(command(&conn, "reset-after-end", SupervisorOp::Reset { voyage: Some(voyage) }), SupervisorOperationState::Accepted);
+    let _ = poll_to_terminal(&conn, "reset-after-end", Duration::from_secs(30));
 
     let lines = poll_until(
         || read_lines(&log_path).filter(|l| l.len() >= 2),
         Duration::from_secs(30),
-        "the respawned leg to record its own argv",
+        "the run after the reset to record its own argv",
     );
-    assert_eq!(lines[1], "", "a leg after a producer ran must not carry the first-leg-only token");
+    assert_eq!(lines[1], "", "a run after an agent ran must not carry the first-leg-only token");
 
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
-    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
+    end_run_and_expect_ended(&conn, "cleanup-end", "cleanup", voyage);
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
@@ -290,23 +184,23 @@ fn persistent_client_survives_a_supervisor_restart_and_a_5s_idle_expiry() {
     assert_eq!(report.leg, Some(leg));
     assert_eq!(report.phase, SupervisorPhase::Ready);
 
-    // (a) Kill the supervisor only (the leg survives) and spawn a second one over the same state dir.
+    // (a) Kill the supervisor (its agent ends with it) and resume a second one over the same state dir.
     first_guard.child_mut().kill().unwrap();
     first_guard.child_mut().wait().unwrap();
 
-    let mut second_guard = spawn_supervisor(&state_dir, "--start", SHELL);
+    let mut second_guard = spawn_supervisor(&state_dir, "--resume", SHELL);
     // The old connection is now dead; give the new supervisor's lane a moment to bind.
     let raw_conn2 = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage2, leg2) = wait_for_ready(&raw_conn2, Duration::from_secs(30));
     drop(raw_conn2);
-    assert_eq!(voyage2, voyage, "the SAME voyage -- adopted, never re-minted");
-    assert_eq!(leg2, leg, "the SAME leg epoch -- adopted, never a fresh spawn");
+    assert_eq!(voyage2, voyage, "the SAME voyage -- resumed, never re-minted");
+    assert_eq!(leg2, leg + 1, "a fresh agent runs in the resumed voyage");
 
     let report2 = persistent
         .status()
         .expect("Persistent must transparently reconnect across a supervisor restart");
     assert_eq!(report2.voyage.as_deref(), Some(voyage.as_str()));
-    assert_eq!(report2.leg, Some(leg));
+    assert_eq!(report2.leg, Some(leg2));
     assert_eq!(report2.phase, SupervisorPhase::Ready);
 
     // (b) Idle expiry: let the same held connection sit past the supervisor's own 5s deadline, then ask again.
@@ -315,12 +209,12 @@ fn persistent_client_survives_a_supervisor_restart_and_a_5s_idle_expiry() {
         .status()
         .expect("Persistent must transparently reconnect across the supervisor's own 5s idle expiry");
     assert_eq!(report3.voyage.as_deref(), Some(voyage.as_str()));
-    assert_eq!(report3.leg, Some(leg));
+    assert_eq!(report3.leg, Some(leg2));
     assert_eq!(report3.phase, SupervisorPhase::Ready);
 
     // Clean up through the raw helper -- `Persistent`'s own internals are private.
     let conn3 = wait_for_lane(&h, Duration::from_secs(30));
-    end_run_and_expect_record_closed(&conn3, "cleanup-end", "cleanup", voyage);
+    end_run_and_expect_ended(&conn3, "cleanup-end", "cleanup", voyage);
     let _ = poll_to_terminal(&conn3, "cleanup-end", Duration::from_secs(60));
     let _ = command(&conn3, "cleanup-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut second_guard, Duration::from_secs(60));
@@ -363,7 +257,7 @@ fn a_cancel_landing_between_connect_and_publish_is_never_missed() {
 
     drop(persistent);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
+    end_run_and_expect_ended(&conn, "cleanup-end", "cleanup", voyage);
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
@@ -387,7 +281,7 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
     let mut first = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
-    end_run_and_expect_record_closed(&conn, "end-before-reauth", "test", voyage.clone());
+    end_run_and_expect_ended(&conn, "end-before-reauth", "test", voyage.clone());
     let _ = poll_to_terminal(&conn, "end-before-reauth", Duration::from_secs(60));
     let _ = command(&conn, "stop-before-reauth", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut first, Duration::from_secs(30));
@@ -411,7 +305,6 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     let mut guard = CapsuleGuard::spawn(&mut cmd);
-    let supervisor_pid = guard.id();
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     poll_until(
         || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
@@ -428,22 +321,22 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
     let lines = poll_until(|| read_lines(&log_path).filter(|l| !l.is_empty()), Duration::from_secs(30), "the reset's leg argv");
     assert_eq!(lines[0], "--resume", "the reauth's own leg (the reset's) must keep its first-leg-only token");
 
-    let reset_leg_pid = poll_until(
-        || direct_children_of(supervisor_pid).into_iter().next(),
-        Duration::from_secs(10),
-        "the reset's leg child pid",
+    end_run_and_expect_ended(&conn, "end-reauth-run", "test", new_voyage.clone());
+    poll_until(
+        || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
+        Duration::from_secs(30),
+        "EndedNoRespawn after the reset's run was ended",
     );
-    unsafe {
-        libc::kill(reset_leg_pid as libc::pid_t, libc::SIGKILL);
-    }
-    let lines = poll_until(|| read_lines(&log_path).filter(|l| l.len() >= 2), Duration::from_secs(30), "the respawned leg argv");
-    assert_eq!(lines[1], "", "a leg after the reauth's own leg reached Ready must not carry the token");
+    assert_eq!(command(&conn, "reset-after-end", SupervisorOp::Reset { voyage: Some(new_voyage.clone()) }), SupervisorOperationState::Accepted);
+    let _ = poll_to_terminal(&conn, "reset-after-end", Duration::from_secs(30));
+    let (current, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    assert_ne!(current, new_voyage);
+    let lines = poll_until(|| read_lines(&log_path).filter(|l| l.len() >= 2), Duration::from_secs(30), "the next run's argv");
+    assert_eq!(lines[1], "", "a run after the reauth's own run must not carry the token");
 
     // A later reset, after a producer ran, starts a leg without the token too (the reset site goes through
     // `leg_argv`, never the captured argv whole).
-    let (current, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
-    assert_eq!(current, new_voyage);
-    end_run_and_expect_record_closed(&conn, "end-before-second-reset", "test", current.clone());
+    end_run_and_expect_ended(&conn, "end-before-second-reset", "test", current.clone());
     let _ = poll_to_terminal(&conn, "end-before-second-reset", Duration::from_secs(60));
     poll_until(
         || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
@@ -456,22 +349,49 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
     let lines = poll_until(|| read_lines(&log_path).filter(|l| l.len() >= 3), Duration::from_secs(30), "the second reset's leg argv");
     assert_eq!(lines[2], "", "a reset after a producer ran must not carry the token");
 
-    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", last);
+    end_run_and_expect_ended(&conn, "cleanup-end", "cleanup", last);
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// A first-leg-only token is never an exemption: a producer
-/// that fails fast for a reason that has NOTHING to do with the stripped
-/// token (every leg dies the same way regardless) must still trip the
-/// anti-flap bound and end the supervisor Terminal -- exactly
-/// [`a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound`]
-/// above, with `--first-leg-only <token>` also configured, proving the
-/// flag does not disable the bound.
-#[cfg(target_os = "linux")]
+/// An agent that ends by itself, with no end asked for, ends the supervisor with 76: the daemon's watchdog restarts
+/// it, and the supervisor never rests at `EndedNoRespawn` over an end nobody requested.
 #[test]
-fn first_leg_only_does_not_exempt_a_real_crash_loop_from_the_anti_flap_bound() {
+fn an_agent_that_ends_by_itself_ends_the_supervisor_with_76() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    #[cfg(windows)]
+    let exits: &[&str] = &["cmd.exe", "/d", "/c", "exit 3"];
+    #[cfg(not(windows))]
+    let exits: &[&str] = &["/bin/sh", "-c", "exit 3"];
+    let mut guard = spawn_supervisor(&state_dir, "--start", exits);
+    let status = wait_for_exit(&mut guard, Duration::from_secs(30));
+    assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_AGENT_ENDED), "exit status: {status:?}");
+}
+
+/// An agent that cannot be started ends the supervisor with 75, never `terminal` (69): the watchdog's budget decides.
+#[test]
+fn an_agent_that_cannot_be_started_ends_the_supervisor_with_75() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let mut guard = spawn_supervisor(&state_dir, "--start", &["/nonexistent/agent"]);
+    let status = wait_for_exit(&mut guard, Duration::from_secs(30));
+    assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_AGENT_NOT_STARTED), "exit status: {status:?}");
+}
+
+/// A stop is not an end of the run: it leaves no request on the voyage, so the next start resumes the row with a new
+/// run in the same voyage.
+#[test]
+fn a_stop_leaves_no_end_request_so_the_next_start_runs_the_agent_again() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -479,35 +399,67 @@ fn first_leg_only_does_not_exempt_a_real_crash_loop_from_the_anti_flap_bound() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let mut cmd = Command::new(capsule_exe());
-    cmd.arg("supervise")
-        .arg(&state_dir)
-        .arg("--start")
-        .arg("--first-leg-only")
-        .arg("--resume")
-        .arg("--assume-no-rollback-target")
-        .arg("--")
-        .args(SELF_EXITING_PRODUCER)
-        .arg("--resume")
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    let mut guard = CapsuleGuard::spawn(&mut cmd);
-
+    let mut first = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    poll_until(
-        || {
-            let (_voyage, _leg, phase) = status(&conn);
-            (phase == SupervisorPhase::Ready).then_some(true)
-        },
-        Duration::from_secs(60),
-        "the leg to reach Ready at least once before its own timed self-exit",
-    );
+    let (voyage, leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    let _ = command(&conn, "stop", SupervisorOp::Stop);
+    let status = wait_for_exit(&mut first, Duration::from_secs(30));
+    assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_CLEAN), "exit status: {status:?}");
     drop(conn);
 
-    let status = wait_for_exit_with_diagnostics(guard.child_mut(), &h, Duration::from_secs(180));
-    assert_eq!(
-        status.code(),
-        Some(sot_log::supervisor::EXIT_TERMINAL),
-        "a producer that fails regardless of the token must still trip the anti-flap bound"
+    let mut second = spawn_supervisor(&state_dir, "--resume", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage_after, leg_after) = wait_for_ready(&conn, Duration::from_secs(90));
+    assert_eq!(voyage_after, voyage, "the same voyage");
+    assert_eq!(leg_after, leg + 1, "one new run");
+    end_run_and_expect_ended(&conn, "cleanup-end", "cleanup", voyage_after);
+    let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
+    let _ = wait_for_exit(&mut second, Duration::from_secs(30));
+}
+
+/// An `end_run` that was acknowledged is a requested end even when the agent exits on its own first: the request reaches
+/// the run only after the agent is gone (`SOT_TEST_END_RUN_HOLD_MS`), yet the voyage records it, so a stop and a resume
+/// rest and never start another run.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_end_run_the_agent_beat_is_still_a_requested_end_after_a_stop_and_a_resume() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+    let trigger = dir.path().join("exit-now");
+    let script = format!("while [ ! -e '{}' ]; do sleep 0.05; done", trigger.display());
+    let argv = ["/bin/sh", "-c", script.as_str()];
+
+    let mut first = spawn_supervisor_with_env(&state_dir, "--start", &argv, &[("SOT_TEST_END_RUN_HOLD_MS", "4000")]);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    let ender = {
+        let conn = wait_for_lane(&h, Duration::from_secs(30));
+        let voyage = voyage.clone();
+        std::thread::spawn(move || command(&conn, "end-beaten", SupervisorOp::EndRun { reason: "test".into(), voyage }))
+    };
+    // The request is admitted; the agent ends before the run is told.
+    poll_until(
+        || matches!(status(&conn), (_, _, SupervisorPhase::Ending)).then_some(()),
+        Duration::from_secs(30),
+        "the end_run to be admitted",
     );
+    std::fs::write(&trigger, b"").unwrap();
+    assert_eq!(ender.join().unwrap(), SupervisorOperationState::RecordVerified);
+    let _ = command(&conn, "stop-after-end", SupervisorOp::Stop);
+    let _ = wait_for_exit(&mut first, Duration::from_secs(30));
+    drop(conn);
+
+    let mut second = spawn_supervisor(&state_dir, "--resume", &argv);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    poll_until(
+        || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
+        Duration::from_secs(30),
+        "the resumed supervisor to rest: the acknowledged end was requested",
+    );
+    let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
+    let _ = wait_for_exit(&mut second, Duration::from_secs(30));
 }

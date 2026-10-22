@@ -23,7 +23,7 @@ use sot_log::lane::wire::{self, Survival};
 use std::collections::VecDeque;
 #[path = "../support/capsule_guard.rs"]
 mod capsule_guard;
-mod pdeathsig;
+
 
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -86,7 +86,7 @@ fn config(dir: &std::path::Path, voyage_id: &str, argv: Vec<String>, cols: u16, 
         rows,
         survival: Survival::Normal,
         // No supervisor in this end-to-end harness.
-        parent_lease: None,
+        signals: None,
     }
 }
 

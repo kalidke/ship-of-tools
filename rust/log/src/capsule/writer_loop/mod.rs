@@ -55,6 +55,8 @@ struct Leg<'t, P> {
     pending_sends: HashMap<(ConnId, u64), Option<SentMarker>>,
     /// Ends the main loop at its next check (shutdown ack written, or transport failed).
     shutdown_requested: bool,
+    /// The attach lane's transport failed for good: the run ends, not as a requested end.
+    transport_failed: bool,
     /// The reason `ended` records; the first one set wins.
     shutdown_reason: Option<String>,
     /// An end was asked for and `ended` says so; never unset.
@@ -73,6 +75,8 @@ struct Leg<'t, P> {
     handshake_suppressed_matches: u64,
     /// Resize calls that reached the producer (`ExitSummary`).
     resize_os_calls: u64,
+    /// Tells the run's owner the agent started and wrote (`CapsuleConfig::signals`).
+    signals: Option<Arc<RunSignals>>,
     /// An output end before teardown that the producer's exit explained; `ended` records it.
     output_ended_early: Option<String>,
     /// The reader's byte budget; the loop releases what it handles.

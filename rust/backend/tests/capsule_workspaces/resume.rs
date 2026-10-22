@@ -113,13 +113,13 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(30))).await;
 
-    let voyage_after = tokio::task::spawn_blocking({
+    let (voyage_after, leg_after) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            sot_log::attach_client::supervisor_client::query_status(&dir)
+            let report = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after the resume")
-                .0
-                .voyage
+                .0;
+            (report.voyage, report.leg)
         }
     })
     .await
@@ -128,6 +128,11 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
         voyage_after.as_deref(),
         Some(voyage_before.as_str()),
         "the resume must continue the row's own voyage, never mint another"
+    );
+    // The agent died with its supervisor, so the resume is a new run in that voyage.
+    assert!(
+        leg_after.expect("the resumed row has a leg") > leg_before,
+        "the resume must start a new run: leg {leg_after:?} after, {leg_before} before"
     );
 
     let _ = tokio::task::spawn_blocking({

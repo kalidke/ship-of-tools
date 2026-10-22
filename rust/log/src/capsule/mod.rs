@@ -26,7 +26,7 @@
 use crate::lane::attach_proto::{
     Action as AttachAction, AttachProto, ConnId, InputOutcome, MgmtStatus, SentMarker,
 };
-use crate::capsule::producer::{ExitStatus, ParentLease, Producer};
+use crate::capsule::producer::{ExitStatus, Producer};
 use crate::capsule::producer::host_handshake::{self, HostHandshake};
 // The shared-deadline poll-join primitive and the pinned aggregate bound `lane/pipe_win/` uses for its own worker
 // joins: one mechanism, one constant.
@@ -48,7 +48,7 @@ pub mod producer;
 mod screen;
 mod writer_loop;
 use output::*;
-pub use ended::{read as read_ended, Ended};
+pub use ended::{mark_requested as mark_end_requested, read as read_ended, Ended};
 pub use fence::{bootstrap as bootstrap_voyage_folder, read_leg_epoch, WRITER_LOCK};
 #[cfg(any(test, feature = "test-support"))]
 pub use screen::set_screen_hook_for_test;
@@ -166,11 +166,36 @@ pub struct CapsuleConfig {
     /// breakaway attempt is the real source). Transported verbatim in mgmt
     /// `status`.
     pub survival: Survival,
-    /// `Some(lease)` when a supervisor spawned this process and wants its
-    /// parent-death lease checked as the fence's first act: a per-platform
-    /// [`ParentLease`] `run` polls exactly once, right after the fence is
-    /// taken. `None` (the manual harness and most capsule tests) checks nothing.
-    pub parent_lease: Option<ParentLease>,
+    /// What the run tells its owner while it lives (`RunSignals`); `None` for a caller that asks nothing.
+    pub signals: Option<Arc<RunSignals>>,
+}
+
+/// What a run tells its owner while it lives: when the agent was started and whether it has written yet. The owner
+/// reads it to tell `starting` from `ready` (the supervisor's status).
+#[derive(Debug, Default)]
+pub struct RunSignals {
+    spawned_at: std::sync::OnceLock<Instant>,
+    output_seen: AtomicBool,
+}
+
+impl RunSignals {
+    /// When the agent was started, `None` until it was.
+    pub fn spawned_at(&self) -> Option<Instant> {
+        self.spawned_at.get().copied()
+    }
+
+    /// The agent has written something since it started.
+    pub fn output_seen(&self) -> bool {
+        self.output_seen.load(Ordering::Acquire)
+    }
+
+    fn spawned(&self, at: Instant) {
+        let _ = self.spawned_at.set(at);
+    }
+
+    fn output(&self) {
+        self.output_seen.store(true, Ordering::Release);
+    }
 }
 
 /// The caller-owned command surface `run` services, alongside the wire
@@ -192,6 +217,9 @@ pub enum Command {
     /// the wire's `Action::Shutdown`, which drives the identical
     /// `ExitKind::Requested` path).
     Kill,
+    /// The run ends because its supervisor is stopping, not because anyone ended the run: `ended` records no request,
+    /// so a `--resume` of the row starts the agent again.
+    Stop,
 }
 
 /// Why `run` returned. In-memory only — no frame field encodes this (ADR
@@ -209,6 +237,9 @@ pub enum ExitKind {
     /// for physical ack completion; the ack grace bounds the wait for a
     /// pending shutdown acknowledgement (ADR 0041 EndRun).
     Requested,
+    /// The attach lane's transport failed for good: nobody asked for this end, and the supervisor treats it as its own
+    /// failure. `ended` records no request.
+    TransportFailed,
     /// `P::spawn` failed, or the initial geometry was outside the
     /// budget — nothing ever ran. `producer_dead {spawn_failed:true}` was
     /// still committed and the segment still sealed.

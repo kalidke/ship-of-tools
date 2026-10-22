@@ -55,9 +55,7 @@ fn config(
         cols,
         rows,
         survival: Survival::Normal,
-        // No supervisor in this end-to-end harness -- see
-        // `CapsuleConfig::parent_lease`'s own doc.
-        parent_lease: None,
+        signals: None,
     }
 }
 

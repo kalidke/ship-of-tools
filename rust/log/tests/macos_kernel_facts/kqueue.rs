@@ -663,3 +663,55 @@ fn pid_reuse_needs_a_full_sequential_wrap_and_a_spent_knote_never_rearms() {
         descents.len()
     ));
 }
+
+/// The guarantee's ordinary case on macOS (`rust/log/CLAUDE.md`, "the agent dies with its supervisor"): there is no
+/// parent-death signal, so the agent ends with a SIGKILLed supervisor only through the terminal's hangup, and an agent
+/// that does not ignore SIGHUP does end. The supervisor is the real `sot-capsule supervise` this test spawned, killed
+/// through its own `Child`; the agent is only watched, through a kqueue `NOTE_EXIT` registered while it is alive, and
+/// never signaled. An agent that ignores SIGHUP may outlive its supervisor here (queue item MACOS-AGENT-WATCH), which is
+/// why that case is tested on Linux and Windows only.
+#[test]
+fn an_agent_that_does_not_ignore_sighup_dies_with_its_killed_supervisor() {
+    // The run dir is short and under /tmp (a socket path's limit); the state dir is a separate temporary folder, as in
+    // every other supervisor test.
+    let tmp = tempfile::Builder::new().prefix("sot-t").tempdir_in("/tmp").expect("a short, private run dir");
+    // Owner-only, as every runtime dir must be: the supervisor refuses any other (exit 69).
+    std::fs::set_permissions(tmp.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).expect("make the run dir private");
+    let state = tempfile::tempdir().expect("a state folder");
+    let state_dir = state.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let pid_file = state.path().join("agent.pid");
+    let script = format!("echo $$ > '{}'; exec sleep 60", pid_file.display());
+    let mut supervisor = Command::new(env!("CARGO_BIN_EXE_sot-capsule"))
+        .arg("supervise")
+        .arg(&state_dir)
+        .arg("--start")
+        .arg("--assume-no-rollback-target")
+        .arg("--")
+        .args(["/bin/sh", "-c", script.as_str()])
+        .env("SOT_RUNTIME_DIR", tmp.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn the supervisor");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let agent: u32 = loop {
+        if let Some(pid) = std::fs::read_to_string(&pid_file).ok().and_then(|s| s.trim().parse().ok()) {
+            break pid;
+        }
+        if let Ok(Some(status)) = supervisor.try_wait() {
+            panic!("the supervisor ended ({status}) before its agent recorded its pid");
+        }
+        assert!(Instant::now() < deadline, "the agent never recorded its pid");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let kq = new_kqueue();
+    let attach = attach_note_exit(kq.as_raw_fd(), agent);
+    assert!(attach.errno == 0 && attach.rc >= 0, "register NOTE_EXIT on the live agent: {}", attach.detail);
+
+    supervisor.kill().expect("kill the supervisor this test spawned");
+    supervisor.wait().expect("reap it");
+    let event = drain_one(kq.as_raw_fd(), Duration::from_secs(2));
+    assert!(event.rc >= 1 && event.fflags & (libc::NOTE_EXIT as u32) != 0, "the agent outlived its killed supervisor: {}", describe_event(&event));
+}

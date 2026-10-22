@@ -343,8 +343,13 @@ fn reconnect_after_the_leg_crashes_restores_the_screen_from_the_new_leg_under_a_
     );
     crash_leg(&mut client, &go);
 
-    // The supervisor respawns the leg; the client's own reconnect episode (ruling d) re-attaches, and the new leg's
-    // checkpoint starts from the screen file: the old marker above the restart line.
+    // The crash ends the supervisor and its agent; the daemon's watchdog resumes the row. The client's own reconnect
+    // episode (ruling d) re-attaches, and the new run's checkpoint starts from the screen file: the old marker above
+    // the restart line.
+    wait_for_exit(&mut guard, Duration::from_secs(30));
+    disarm_leg_crash();
+    let mut guard = spawn_supervisor(&state_dir, "--resume", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
     let restored = poll_until(
         || {
             client.pump();
@@ -357,7 +362,6 @@ fn reconnect_after_the_leg_crashes_restores_the_screen_from_the_new_leg_under_a_
     );
     let _ = restored;
     assert!(!client.is_dead());
-    disarm_leg_crash();
 
     drop(client);
     end_run_and_wait_ended(&conn, &voyage);
@@ -406,6 +410,10 @@ fn screen_restores_after_a_supervisor_restart() {
     );
     crash_leg(&mut client, &go);
     drop(client);
+    wait_for_exit(&mut guard, Duration::from_secs(30));
+    disarm_leg_crash();
+    let mut guard = spawn_supervisor(&state_dir, "--resume", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
 
     // A viewer that attaches only after the restart sees the old screen above the restart line, in that order.
     let (_woke2, wake2) = wake_flag();
@@ -430,7 +438,6 @@ fn screen_restores_after_a_supervisor_restart() {
         Duration::from_secs(120),
         "the restarted leg's screen: the marker above the restart line",
     );
-    disarm_leg_crash();
 
     drop(fresh);
     end_run_and_wait_ended(&conn, &voyage);

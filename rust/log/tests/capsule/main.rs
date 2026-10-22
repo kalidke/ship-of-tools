@@ -130,8 +130,7 @@ fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows:
         cols,
         rows,
         survival: Survival::Normal,
-        // No supervisor in this harness -- see `CapsuleConfig::parent_lease`'s own doc.
-        parent_lease: None,
+        signals: None,
     }
 }
 
@@ -432,3 +431,28 @@ mod unix_only;
 
 mod no_record;
 mod screen_io;
+
+/// A terminal failure of the attach lane's transport is not an end anyone asked for: `run` does not report `Requested`,
+/// and `ended` records no request, so the supervisor treats it as its own failure (terminal) and a resume starts again.
+#[test]
+fn a_transport_that_fails_for_good_is_not_a_requested_end() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(dir.path(), "fatal1", vec![SHELL_ARGV.to_string()], 80, 25);
+    let root = cfg.voyage_root.clone();
+    let (_tx, rx) = mpsc::channel();
+    let transport = TestTransport::new();
+    let injector = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut transport = transport;
+        capsule::run::<P>(cfg, rx, &mut transport)
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    injector.fatal("accept loop died");
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return within the teardown bound")
+        .unwrap();
+    assert_ne!(summary.exit_kind, ExitKind::Requested, "nobody asked for this end");
+    let ended = ended_of(&root);
+    assert!(ended.finished && !ended.requested, "{ended:?}");
+}

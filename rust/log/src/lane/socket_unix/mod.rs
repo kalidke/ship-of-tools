@@ -399,7 +399,6 @@ mod server;
 pub(crate) use client::connect_unix_socket_unchallenged;
 #[cfg(unix)]
 pub use client::connect_voyage_socket;
-pub(crate) use client::connect_voyage_socket_unchallenged;
 pub use client::SocketClient;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use client::SocketEndpoint;

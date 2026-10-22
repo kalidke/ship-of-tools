@@ -136,10 +136,10 @@ enum AuthorityAtRestart {
 /// poll could exit before a DELAYED terminal-mark regression ever showed
 /// up — the `Stopped` scenario's resume is a real process spawn with no
 /// fence contention at risk once it reports ready, so it gets no extra
-/// dwell). Finally asserts the voyage is UNCHANGED across the restart and,
-/// for [`AuthorityAtRestart::Alive`], the leg epoch too — the proof that
+/// dwell). Finally asserts the voyage is UNCHANGED across the restart and the
+/// leg epoch: unchanged for [`AuthorityAtRestart::Alive`] (the proof that
 /// whichever mechanism resumed the run ADOPTED it rather than spawning a
-/// fresh contender. Returns the new connection/
+/// fresh contender), one higher for [`AuthorityAtRestart::Stopped`]. Returns the new connection/
 /// next-id so a caller (today: only the `Stopped` scenario) can continue
 /// past this point on the SAME connection — the new daemon itself needs
 /// no return: `env` already owns it (`Env::spawn_sotd`, F4), so a later
@@ -257,12 +257,18 @@ async fn restart_daemon_and_prove_adoption(
         Some(voyage_before.as_str()),
         "the voyage changed across the daemon restart (authority={authority:?}) -- the row was reset, not resumed"
     );
-    if matches!(authority, AuthorityAtRestart::Alive) {
-        assert_eq!(
+    match authority {
+        AuthorityAtRestart::Alive => assert_eq!(
             after.leg,
             Some(leg_before),
             "the leg epoch changed across the daemon restart (authority={authority:?}) -- a fresh/competing leg was spawned, not adopted"
-        );
+        ),
+        // The stop ended the agent with its supervisor and asked for no end of the run: the resume is one new run.
+        AuthorityAtRestart::Stopped => assert_eq!(
+            after.leg,
+            Some(leg_before + 1),
+            "a stopped supervisor's resume must start exactly one new run in the same voyage (authority={authority:?})"
+        ),
     }
 
     (conn2, next_id2)

@@ -58,6 +58,16 @@ pub fn comm_isolation_dirs(tmp: &Path) -> (PathBuf, PathBuf) {
 /// ~= 9s worst case) but still a real bound, never "forever."
 pub const BOUND: Duration = Duration::from_secs(30);
 
+/// The daemon env that shortens the watchdog's restart backoffs to 200 ms (`SOT_TEST_BACKOFF_MS`): the restart budget is a
+/// count of supervisors that never reached `ready`, so a test that waits it out proves the same with short waits.
+#[allow(dead_code)] // only the suites that wait out the budget name it
+pub const SHORT_BACKOFF: (&str, &str) = ("SOT_TEST_BACKOFF_MS", "200");
+
+/// The longest the budget takes to end an unlaunchable row with `SHORT_BACKOFF`: five backoffs of 200 ms and six starts
+/// with their settles (2 s each), with slack.
+#[allow(dead_code)]
+pub const BUDGET_WAIT: Duration = Duration::from_secs(20 + 12);
+
 /// Pinned `SOT_SELF_HOST` for every `spawn_sotd` in this file — a fixed,
 /// known per-host registry dir name instead of whatever hostname the
 /// runner has (`host_name()`'s fallback).
