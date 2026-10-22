@@ -8,7 +8,7 @@ use super::*;
 
 pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut leg: Leg<'t, P>) -> Result<(Leg<'t, P>, ExitKind)> {
     // Main loop: natural-exit polled every iteration (bounded to one
-    // GROUP_COMMIT_WINDOW of latency, regardless of event volume); the
+    // LOOP_TICK of latency, regardless of event volume); the
     // caller's command channel is polled NON-BLOCKINGLY (rare traffic, and
     // this is the last point it is EVER polled — teardown never touches it
     // again, which is what makes admission revocation real). The wire
@@ -70,7 +70,7 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
         // of the NEXT iteration is guaranteed to find it). `Transport::
         // try_recv_event` itself is still never blocking (its own
         // contract, unchanged); this wait is what wakes early, not that
-        // drain. `GROUP_COMMIT_WINDOW` stays the bound on how long output
+        // drain. `LOOP_TICK` stays the bound on how long output
         // may batch under sustained load and the cadence when nothing is
         // pending; with output pending, `OUTPUT_IDLE` of quiet commits it.
         match leg.output_rx.recv_timeout(LOOP_TICK) {

@@ -492,7 +492,7 @@ fn full_socket_e2e_two_clients_and_mgmt() {
 /// quiet (`--script 1 --linger` writes one small script block, then sits
 /// forever with no further output — no `--drip` nudging the main loop the
 /// way `full_socket_e2e_two_clients_and_mgmt`'s own producer does) and the
-/// main loop has had nothing to do for well over `GROUP_COMMIT_WINDOW`
+/// main loop has had nothing to do for well over `LOOP_TICK`
 /// (50ms) — so it is genuinely parked in its own `output_rx.recv_timeout`
 /// tail wait, not mid-tick — a FRESH attach (connect, hello, attach,
 /// collect the checkpoint) over the REAL socket transport must complete
@@ -501,7 +501,7 @@ fn full_socket_e2e_two_clients_and_mgmt() {
 /// window before the loop's own tick would have found it), only reachable
 /// at all if `Transport::set_wake`'s callback (`PlatformTransport::bind`,
 /// via `SocketServer::set_wake`) actually wakes this loop on real
-/// transport activity rather than solely on its own group-commit cadence.
+/// transport activity rather than solely on its own tick.
 ///
 /// Codex round on #227 (P2 discharge): a SINGLE sample against a 200ms
 /// bound does not reliably fail the OLD code (measured ~91ms across
@@ -513,7 +513,7 @@ fn full_socket_e2e_two_clients_and_mgmt() {
 /// while an immediate, connection/frame-triggered wake lands every
 /// single trial near-instantly.
 #[test]
-fn an_attach_against_an_idle_capsule_is_not_group_commit_bound() {
+fn an_attach_against_an_idle_capsule_is_not_tick_bound() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -549,12 +549,12 @@ fn an_attach_against_an_idle_capsule_is_not_group_commit_bound() {
     setup.join(Duration::from_secs(10));
 
     const TRIALS: usize = 5;
-    const IDLE_BEFORE_ATTACH: Duration = Duration::from_millis(300); // > GROUP_COMMIT_WINDOW (50ms)
-    const TIGHT_BOUND: Duration = Duration::from_millis(50); // == GROUP_COMMIT_WINDOW
+    const IDLE_BEFORE_ATTACH: Duration = Duration::from_millis(300); // > LOOP_TICK (50ms)
+    const TIGHT_BOUND: Duration = Duration::from_millis(50); // == LOOP_TICK
     let mut elapsed_all = Vec::with_capacity(TRIALS);
     for i in 0..TRIALS {
         // Let the main loop go genuinely idle before each trial --
-        // comfortably longer than GROUP_COMMIT_WINDOW -- so it is parked
+        // comfortably longer than LOOP_TICK -- so it is parked
         // in its own tail wait when this trial's attach connects, not
         // mid-tick from the PREVIOUS trial's own teardown.
         std::thread::sleep(IDLE_BEFORE_ATTACH);
@@ -610,6 +610,6 @@ fn an_attach_against_an_idle_capsule_is_not_group_commit_bound() {
         "expected every one of {TRIALS} fresh attaches (connect+hello+attach+checkpoint) against an idle \
          capsule to complete in well under {TIGHT_BOUND:?} -- got {elapsed_all:?}. A single attach passing \
          this bound could be luck; ALL {TRIALS} passing is only possible if the main loop wakes on \
-         incoming connections/bytes immediately rather than waiting out its own group-commit cadence"
+         incoming connections/bytes immediately rather than waiting out its own tick"
     );
 }

@@ -69,8 +69,7 @@ fn extract_marker_numbers(text: &str) -> Vec<u64> {
 /// drained queue must reach the transport BEFORE any request replayed
 /// off that SAME completion (a `take`/`resize` that raced in behind the
 /// watcher's own still-outstanding attach reply) can publish fresh
-/// output via the loop's own `flush_output` (`capsule/writer_loop/output_path.rs`'s
-/// `CommitTake`/`ApplyResize` arms) — reproduced as "later Output ->
+/// output (the loop publishes output as it arrives) — reproduced as "later Output ->
 /// PenSnapshot -> Geometry -> older Output" before the fix in
 /// `lane/attach_proto/`'s `sent` (`CheckpointChunk` final-chunk arm), which
 /// now builds this watcher's own completion FIRST and replays a held
@@ -89,7 +88,7 @@ fn extract_marker_numbers(text: &str) -> Vec<u64> {
 /// `B` types SEQUENCE-NUMBERED markers (`"mN\r\n"`) continuously, starting
 /// only after A's checkpoint chunk is queued (so none is inside the
 /// checkpoint), and — critically — a background thread also WAITS for
-/// `B`'s OWN echo of each one (not merely its `input`'s WAL outcome, which
+/// `B`'s OWN echo of each one (not merely its `input`'s outcome, which
 /// is a SEPARATE, unrelated-in-time commit) before advancing to the next.
 /// Since `B` only ever SEES an echo once `output_committed` has actually
 /// run with it — the SAME call that, uniformly, also queues it for `A` —
@@ -176,12 +175,8 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
     // `witness_mode`: WITNESSED (the default, below) additionally WAITS
     // for B's OWN echo of each marker before sending the next -- the
     // deterministic proof this test's `cutoff` relies on, but slow
-    // enough that the capsule's own GROUP_COMMIT_WINDOW-paced periodic
-    // flush (capsule/writer_loop/output_path.rs's `flush_output`, independent of any client
-    // action) always catches up first, so nothing is left GENUINELY
-    // pending by the time a later action's own flush_output runs --
-    // proven not to reproduce the round-1 defect shape at all by an
-    // earlier version of this test, mutation-checked below. Once the
+    // enough that the capsule publishes each marker before the next is typed, so nothing is left in flight when a
+    // later action runs. Once the
     // main thread has WITNESSED enough markers (below), it flips
     // `witness_mode` to FAST: the typer keeps sending markers, paced
     // only by the wire's own lockstep (`InputRecorded`, itself far
@@ -192,7 +187,7 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
     let stop_typing = Arc::new(AtomicBool::new(false));
     let witness_mode = Arc::new(AtomicBool::new(true));
     let b_last_confirmed_echo = Arc::new(AtomicU64::new(0)); // 0 = none yet; markers are 1-based
-    // Highest marker number whose WAL commit (`InputRecorded` or a
+    // Highest marker number whose input outcome (`InputRecorded` or a
     // terminal refusal/unknown) has landed WHILE in fast mode -- a much
     // TIGHTER signal than the echo witness above (no PTY round trip
     // involved, just the wire's own ordered command reply), used to
@@ -286,20 +281,11 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
     assert!(cutoff >= 3, "expected B to have confirmed-echoed at least 3 markers before release: got {cutoff}");
 
     // Switch the typer to FAST mode (see its own doc) and wait for its
-    // WAL commit (NOT the slower echo witness -- no PTY round trip) to
+    // input outcome (NOT the slower echo witness -- no PTY round trip) to
     // confirm a few markers have actually been forwarded, THEN release A
-    // IMMEDIATELY, with no further sleep. This is deliberately a COUNT,
-    // not a fixed delay: the capsule's own 50ms GROUP_COMMIT_WINDOW
-    // periodic flush (`capsule/`) runs on its own clock the whole time
-    // this test executes regardless of what this thread does, so any
-    // fixed sleep comparable to or longer than it would let that
-    // ordinary cycle catch up and flush this burst on its own, before
-    // release ever gets a chance to -- exactly what an EARLIER version
-    // of this step (a flat 150ms sleep) did, silently defeating the very
-    // race this test exists to pin. Racing the release against a COUNT
-    // instead keeps this test's own margin as small as the WAL round
-    // trip itself allows, whatever that happens to be on the machine
-    // running it.
+    // IMMEDIATELY, with no further sleep. This is deliberately a COUNT, not a fixed delay: racing the release
+    // against a COUNT keeps this test's own margin as small as the outcome round trip itself allows, whatever that
+    // happens to be on the machine running it.
     witness_mode.store(false, Ordering::Relaxed);
     let fast_target = cutoff + 3;
     let fast_deadline = Instant::now() + Duration::from_secs(5);
@@ -308,13 +294,13 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
     }
     assert!(
         fast_wal_confirmed.load(Ordering::Relaxed) >= fast_target,
-        "expected at least 3 fast-mode markers to be WAL-confirmed before release: got {}",
+        "expected at least 3 fast-mode markers to be outcome-confirmed before release: got {}",
         fast_wal_confirmed.load(Ordering::Relaxed)
     );
 
     // Release A: its checkpoint chunk's completion fires, driving Done +
     // PenSnapshot + the whole drained queue BEFORE A's OWN held take
-    // replays into CommitTake, whose flush_output publishes MORE output
+    // replays into CommitTake, whose broadcast publishes MORE output
     // -- which must land LAST, not ahead of PenSnapshot or the queue.
     transport.set_hold_for(A, false);
     transport.release_held();
