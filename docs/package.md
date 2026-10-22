@@ -69,10 +69,17 @@ check, tested there); a child's output is read by lines lossily, so no byte ends
 `is_release_build`, never the version string; the shared grammars have one parser. Rests on: serde, the compiler and
 platform. Owns: nothing at run time.
 
-**topology.** The contract is drafted (pass 5b-2): `rust/topology/CLAUDE.md`, the crate `sot-topology`; the daemon's half stays in `sotd`. Guarantees: hosts.toml has one grammar and one writer (the hub's daemon); a host name outside
-`[a-z0-9][a-z0-9._-]*` never reaches ssh; every ssh turns sharing off; closing the link gate ends every login watched
-through it; a unit is written only where hosts.toml gives it. Rests on: wire, platform, containment. Owns: the hub's
-hosts.toml and the generated relay units. Does not: hold connections (fe-net and the daemon's link do).
+**topology.** The contract is settled (pass 5b-2): `rust/topology/CLAUDE.md`, the crate `sot-topology` (on wire,
+platform and the capsule's lane client); the daemon's half stays in `sotd` until 5c's op table. Guarantees, each with
+the limit the contract states: hosts.toml has one grammar and one search order, and its writers exclude one another
+through one lock, so neither `topology.set` nor `sync` replaces a newer version; a name that reaches ssh from the Rust
+tree is checked against `[a-z0-9][a-z0-9._-]*`, and no shell runs on this end; every ssh the Rust tree starts turns
+sharing off (the shell bridge is a named exception); a login the window or the lane client starts is admitted through
+the link gate, whose close ends the login a dial waits on (a parked spare ends when it is next used); a lane dial is
+bounded and typed; endpoints are derived by one function each; a unit sotd writes starts only where hosts.toml gives
+it; every `systemctl` call has a wait budget; `sotd stdio-bridge` adds nothing to the stream. Owns: the hub's
+hosts.toml and the generated relay units. Does not: hold the window's or the daemon's connections (fe-net and the
+daemon's link do).
 
 **containment.** The contract is settled (pass 5b-1): `rust/containment/CLAUDE.md`, the crate `sot-containment`,
 which depends on platform alone. Guarantees, each with the limit the contract states: a child started through `Signal`
@@ -282,7 +289,7 @@ at its end and one round for its findings; a class of breaks stops it, and the s
 | CI | Distribution's CI: the hosted run at each landing about seven minutes and the local gate near five; the slow proofs to a release-gate run made once per release | 0.5-1 | 10-20 | eight short agent rounds, about 30 agent minutes in all; the rest was hosted runs (nine per-landing, five release-gate) and waits; about $13 for the agents; the per-landing run 48 -> 7.2 min wall measured alone (longest job 6.9 min), the release-gate run 21.5 min; the local gate 12 min, of which the bash 3.2 suites, which messaging deletes, are the wall |
 | 5a | Platform and wire: their contracts; platform its own crate out of `sot-log`, its copies folded | 4-6 | 80-120 | 1.2 h wall in three agent rounds (the pass 25 min to a gate-ready head, the review round 6 min after an outside review, a landing fix 8 min), about 40 agent minutes; about $15 for the agent; platform 83/65/47/8 -> 79/80/48/0 (tests rose with the shared test helpers moved in; twice rose by one, generic names such as `context`), wire 42/14/3/2 -> 42/15/3/2; three hosted runs, the landing one 7.9 min |
 | 5b-1 | Containment carved out of lifecycle into its own crate; lifecycle's contract (5b split by the load rule: 211k of code and tests) | 2-3 | 40-60 | 1.0 h wall in two agent rounds (the pass 23 min to a gate-ready head, the review round 5 min after an outside review), about 30 agent minutes; about $11 for the agent; lifecycle 42/67/39/15 -> 22/44/21/14, containment (new) 23/21/22/3; the landing run 12.2 min |
-| 5b-2 | Topology: its contract; its own crate out of `rust/protocol`, which ends wire's edge to `sot-log` | 2-3 | 40-60 | |
+| 5b-2 | Topology: its contract; its own crate out of `rust/protocol`, which ends wire's edge to `sot-log` | 2-3 | 40-60 | 1.0 h wall in two agent rounds (the pass 21 min to a gate-ready head, the review round 5 min after an outside review), about 28 agent minutes; about $9 for the agent; seven defects fixed red first (unserialized `topology.set`, a sync that could overwrite a newer hub edit, three unchecked names reaching ssh or a socket path, a monitor label repeated across headers, a refused edit swallowing a hand edit); topology 50/52/35/26 -> 52/55/35/23, wire 42/15/3/2 -> 41/15/3/1; the landing run 6.9 min |
 | 5c | Server: its contract; the op table into the binary, every service a handler with an explicit context | 4-6 | 80-120 | |
 | 6 | Capsule (D2) | 10-20 | 200-400 | |
 | 7 | Frontend: State apart first, one short pass per cluster (the row record, focus and prompt, preview requests, the REPL and agent pane), each moving its fields into a type with private fields; then the five crate cuts (D4) as moves: app and render, chrome and input, navigation and session, agent pane and drawer, preview and control | 22-52 | 440-1,040 | |
@@ -330,5 +337,6 @@ and `rust/log/tests` (27 thousand lines) are assigned by file:
   the installed scripts until the 0.7.0 install. Pass 5a landed 2026-10-21: platform's and wire's contracts are
   settled, and platform is its own crate, `sot-platform`, depending on nothing of ours. Pass 5b-1 landed 2026-10-21:
   containment's and lifecycle's contracts are settled, and containment is its own crate, `sot-containment`. Pass 5b-2
-  (topology) is next. Nothing is half-done on main.
+  landed 2026-10-21: topology's contract is settled, topology is its own crate, `sot-topology`, and wire depends on
+  platform alone. Pass 5c (server and the op table) is next. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
