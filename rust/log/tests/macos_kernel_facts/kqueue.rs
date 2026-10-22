@@ -675,6 +675,8 @@ fn an_agent_that_does_not_ignore_sighup_dies_with_its_killed_supervisor() {
     // The run dir is short and under /tmp (a socket path's limit); the state dir is a separate temporary folder, as in
     // every other supervisor test.
     let tmp = tempfile::Builder::new().prefix("sot-t").tempdir_in("/tmp").expect("a short, private run dir");
+    // Owner-only, as every runtime dir must be: the supervisor refuses any other (exit 69).
+    std::fs::set_permissions(tmp.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).expect("make the run dir private");
     let state = tempfile::tempdir().expect("a state folder");
     let state_dir = state.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
