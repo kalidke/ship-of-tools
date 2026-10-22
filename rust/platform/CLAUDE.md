@@ -64,9 +64,9 @@ new Windows process whose Windows parent has exited, so a native parent walk alo
 Bash's `/proc/<pid>/winpid` carries the chain); a Windows console is cp437 unless the process sets UTF-8, so a prompt
 glyph read back through a pipe becomes `?` and a gate comparing a pane line to it never matches; an antivirus scanner
 or indexer can hold a freshly written or extracted file open for seconds, so every Windows rename and delete here
-retries within `RETRY_DEADLINE_MS` and the updater's extraction retries longer; the background service is the
-platform's own supervisor (systemd user unit, launchd agent, a Windows launch supervisor), and a child it starts is
-the service's, not the login session's.
+retries within `RETRY_DEADLINE_MS` and the updater's extraction retries longer; the background service on Linux is
+the user manager's unit (`deploy/sotd.service`), and the runtime base is stable only while that user manager runs (linger),
+so a boot without it binds sockets at `/tmp/sot-<uid>`.
 
 ## Owns
 The folders and host name above (`host/state_dir.rs`); durable publication, write and remove (`host/durable.rs`);
