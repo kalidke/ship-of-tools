@@ -186,3 +186,22 @@ fn concurrent_edits_each_land() {
     assert!(results.iter().all(|ok| *ok), "every edit is answered ok: {results:?}");
     assert!(missing.is_empty(), "an edit answered ok was lost: {missing:?}");
 }
+
+/// A hand edit the store notices while it answers a refused edit is still announced: nothing else will, because later
+/// reads see the cached hash already updated.
+#[tokio::test]
+async fn a_refused_edit_still_announces_the_hand_edit_it_noticed() {
+    let (_dir, store) = store_with("refused-notices", V2);
+    let workspaces = Workspaces::new();
+    let (tx, mut rx) = broadcast::channel::<TopologyChanged>(4);
+    store.refresh();
+    std::fs::write(store.path(), "hub = \"alpha\"\n\n[host.alpha]\ndaemon = true\n\n[host.delta]\n").unwrap();
+    let f = std::fs::File::open(store.path()).unwrap();
+    let _ = f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2));
+    let remove = json!({"edit": {"kind": "remove_host", "name": "nobody"}});
+    let out = handle_topology_set(1, remove, &store, &workspaces, "alpha", None, &tx).await.unwrap();
+    assert_eq!(out[0].0.payload.get("code").and_then(|v| v.as_str()), Some("invalid"));
+    let evt = rx.try_recv().expect("the noticed hand edit is announced although the edit was refused");
+    assert_eq!(evt.hash, sot_topology::hash_text(&std::fs::read_to_string(store.path()).unwrap()));
+    assert!(rx.try_recv().is_err(), "once");
+}

@@ -343,3 +343,10 @@ fn a_monitor_target_that_reads_as_an_ssh_option_is_refused() {
     // The forms a person writes still parse: a bare alias, user@host, an empty target (the label).
     assert!(apply(&t, &TopologyEdit::MonitorAdd { label: "extra".into(), target: "me@extra-box".into() }).is_ok());
 }
+
+#[test]
+fn a_monitor_label_repeated_under_a_second_header_is_refused() {
+    let text = "hub = \"alpha\"\n[host.alpha]\ndaemon = true\n[monitor]\nbox = \"a\"\n[monitor]\nbox = \"b\"\n";
+    let e = parse(text).unwrap_err();
+    assert!(e.contains("line 7") && e.contains("twice"), "{e}");
+}

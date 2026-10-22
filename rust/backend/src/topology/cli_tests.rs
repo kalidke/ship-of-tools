@@ -85,3 +85,25 @@ fn sync_refuses_a_hub_that_is_not_a_plain_host_name() {
     assert!(e.contains("not a plain host name"), "{e}");
     assert_eq!(resolve_hub(None, Some("hub-box.example"), dest).unwrap(), "hub-box.example");
 }
+
+/// On a shared home the hub's daemon writes the same file `sync` replaces. A copy that changed while `sync` fetched is a
+/// newer version than the one fetched, and it survives.
+#[test]
+fn sync_replaces_only_the_version_it_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("hosts.toml");
+    let read = "hub = \"a\"\n[host.a]\ndaemon = true\n";
+    let newer = "hub = \"a\"\n[host.a]\ndaemon = true\n[host.b]\n";
+    let fetched = "hub = \"a\"\n[host.a]\ndaemon = true\n[host.c]\n";
+    std::fs::write(&dest, read).unwrap();
+    std::fs::write(&dest, newer).unwrap();
+    let e = publish_synced(&dest, Some(read), fetched).unwrap_err();
+    assert!(e.contains("changed while"), "{e}");
+    assert_eq!(std::fs::read_to_string(&dest).unwrap(), newer, "the newer edit survives");
+    // A file that appeared after a read of no file is just as new.
+    let e = publish_synced(&dest, None, fetched).unwrap_err();
+    assert!(e.contains("changed while"), "{e}");
+    // The version that was read is replaced.
+    publish_synced(&dest, Some(newer), fetched).unwrap();
+    assert_eq!(std::fs::read_to_string(&dest).unwrap(), fetched);
+}

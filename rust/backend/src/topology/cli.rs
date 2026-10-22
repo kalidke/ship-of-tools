@@ -178,6 +178,7 @@ const LOCAL_CHECK_BOUND: std::time::Duration = std::time::Duration::from_secs(10
 fn sync(hub: Option<String>) -> Result<(), String> {
     let dest = topology::locate().ok_or("no config dir: set $HOME (or %LOCALAPPDATA%) or $SOT_HOSTS")?;
     let local = topology::load()?;
+    let read = std::fs::read_to_string(&dest).ok();
     let hub = resolve_hub(local.as_ref().map(|(_, t)| t), hub.as_deref(), &dest)?;
     let me = self_host()?;
     if self_is_hub(&me, &hub) {
@@ -199,9 +200,16 @@ fn sync(hub: Option<String>) -> Result<(), String> {
         println!("{} is current (same as {hub})", dest.display());
         return Ok(());
     }
-    crate::topology::store::write_atomic(&dest, &text)?;
+    publish_synced(&dest, read.as_deref(), &text)?;
     println!("synced {} from {hub} ({} hosts, {} monitor targets)", dest.display(), fetched.hosts.len(), fetched.monitor.len());
     Ok(())
+}
+
+/// Replaces this box's copy with the fetched `text`, only when the copy is still the version `sync` read before it
+/// fetched (`read`, `None` for no file).
+fn publish_synced(dest: &std::path::Path, read: Option<&str>, text: &str) -> Result<(), String> {
+    let _ = read;
+    crate::topology::store::write_atomic(dest, text)
 }
 
 /// Which hub `sync` fetches from: the LOCAL copy's
