@@ -45,8 +45,11 @@ pub enum OutstandingResolution {
 /// outstanding when the connection dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconnectResendDecision {
-    /// "Resends THE SAME KEY" under the freshly re-taken epoch.
+    /// Never produced: an input whose acknowledgement did not arrive may have run, so it is not sent again.
+    /// Kept so the callers' matches stay total.
     Resend { idem_key: [u8; 16] },
+    /// The same voyage: the unacknowledged input is dropped and reported as delivery unknown, never resent.
+    Unknown { canceled: OutstandingInput },
     /// The voyage UUID changed: "CANCELED and marked unknown, never
     /// replayed and never re-keyed." Carries the canceled tuple so the
     /// caller can surface it visibly rather than dropping it silently.
@@ -114,22 +117,24 @@ impl OutstandingSlot {
         }
     }
 
-    /// After a reconnect re-attaches and re-takes: resend under the SAME
-    /// key within the same voyage; cancel across a voyage change.
+    /// After a reconnect re-attaches and re-takes: an input still outstanding is dropped, never resent: its
+    /// acknowledgement was lost, so it may already have run. Within the same voyage it is reported as delivery
+    /// unknown; across a voyage change, as canceled.
     pub fn resend_after_reconnect(
         &mut self,
         new_voyage_uuid: &str,
         new_take_epoch: u64,
     ) -> ReconnectResendDecision {
-        let Some(o) = self.0.as_mut() else {
+        let Some(o) = self.0.as_ref() else {
             return ReconnectResendDecision::None;
         };
         if o.voyage_uuid != new_voyage_uuid {
             let canceled = self.0.take().expect("checked Some above");
             return ReconnectResendDecision::Cancel { canceled };
         }
-        o.take_epoch = new_take_epoch;
-        ReconnectResendDecision::Resend { idem_key: o.idem_key }
+        let _ = new_take_epoch;
+        let canceled = self.0.take().expect("checked Some above");
+        ReconnectResendDecision::Unknown { canceled }
     }
 
     /// A quit or cancel with a key outstanding "reports it rather than

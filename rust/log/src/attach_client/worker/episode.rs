@@ -3,7 +3,7 @@
 use super::*;
 use sot_platform::identity::challenge::PeerAuthOutcome;
 use crate::lane::client::Client;
-use crate::attach_client::rules::{self, FeDownBaseline, OutstandingSlot, QuitDispatcher, ReconnectDecision, ReconnectState, Role, TakeTransaction};
+use crate::attach_client::rules::{self, FeDownBaseline, OutstandingSlot, QuitDispatcher, ReconnectDecision, ReconnectState, TakeTransaction};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
 
@@ -330,26 +330,23 @@ pub(super) fn resume_outstanding_input<E: Endpoint>(
     voyage: &str,
     take_epoch: u64,
     outstanding: &mut OutstandingSlot,
-    take: &mut TakeTransaction,
-    take_intent: &mut TakeIntent,
-    voyage_conn: &E::Client,
-    controller_id: &str,
+    _take: &mut TakeTransaction,
+    _take_intent: &mut TakeIntent,
+    _voyage_conn: &E::Client,
+    _controller_id: &str,
     emit: &dyn Fn(WorkerEvent),
 ) {
-    // Ruling (c), Codex review round finding 6: resume any input
-    // left outstanding from a prior connection, within this same
-    // voyage -- kick off the SAME take-on-first-input transaction
-    // that a real keystroke would, so `resize` then the retained
-    // frame flow through the identical lockstep-respecting path.
+    // An input left outstanding by the prior connection may already have run: it is reported as delivery unknown
+    // and never sent again (the unused parameters are the resend's, kept for the callers).
     match outstanding.resend_after_reconnect(&voyage, take_epoch) {
         rules::ReconnectResendDecision::Resend { .. } => {
-            *take_intent = TakeIntent::ReconnectResend;
-            if take.role() == Role::Watching {
-                let actions = take.on_input_while_watching(&[]);
-                for action in actions {
-                    apply_single_take_action::<E>(action, &voyage_conn, &controller_id, &emit);
-                }
-            }
+            unreachable!("an unacknowledged input is never resent")
+        }
+        rules::ReconnectResendDecision::Unknown { canceled } => {
+            emit(WorkerEvent::Status(format!(
+                "input delivery unknown \u{2014} the connection dropped before it was acknowledged ({} byte(s) not sent again)",
+                canceled.bytes.len()
+            )));
         }
         rules::ReconnectResendDecision::Cancel { canceled } => {
             emit(WorkerEvent::Status(format!(
