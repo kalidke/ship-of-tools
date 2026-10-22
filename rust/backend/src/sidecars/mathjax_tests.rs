@@ -120,3 +120,37 @@ fn a_mathjax_line_that_does_not_parse_is_logged_without_its_bytes() {
     assert_eq!(logged.lines().filter(|l| l.contains("WARN")).count(), 1, "{logged}");
     assert!(!logged.contains("0123") && !logged.contains("41234"), "{logged}");
 }
+
+/// A child that exits after one answer is replaced by the next render, which is answered by the new one: the stand-in
+/// for node is `sh` running a script that answers one request and exits. The case that would break it: a handle that
+/// kept sending to the dead child's queue after its supervisor had ended.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_mathjax_child_that_died_is_replaced_by_the_next_render() {
+    use crate::sidecars::contract_tests::within;
+    use std::time::Duration;
+    let dir = tempfile::Builder::new().prefix("sot-mathjax-respawn-").tempdir().unwrap();
+    let script = dir.path().join("render.sh");
+    let starts = dir.path().join("starts");
+    std::fs::write(
+        &script,
+        format!(
+            "echo started >> '{}'\necho '{{\"ready\":true}}'\nread -r line\nid=$(echo \"$line\" | sed 's/.*\"id\":\\([0-9]*\\).*/\\1/')\necho \"{{\\\"id\\\":$id,\\\"svg\\\":\\\"<svg/>\\\",\\\"ex\\\":1.5}}\"\n",
+            starts.display()
+        ),
+    )
+    .unwrap();
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
+    let mathjax = MathJax {
+        inner: Arc::new(MathJaxInner { script_path: script, node_bin: "/bin/sh".to_string(), submit: Mutex::new(None), sig }),
+    };
+    let first = mathjax.render("x", false).await.expect("the first render");
+    assert_eq!(first.svg, b"<svg/>");
+    within(Duration::from_secs(10), "the answering child ended and its supervisor with it", || {
+        sig.live() == 0 && mathjax.inner.submit.try_lock().is_ok_and(|g| g.as_ref().is_some_and(|r| r.submit.is_closed()))
+    })
+    .await;
+    let second = mathjax.render("y", true).await.expect("the render after the death");
+    assert_eq!(second.svg, b"<svg/>");
+    assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 2, "a second child answered it");
+}

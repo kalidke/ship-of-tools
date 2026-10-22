@@ -51,28 +51,30 @@ pub async fn handle_kernel_request(
     let (_, rev) = session.snapshot().await;
     let payload = match result {
         Ok(v) => v,
-        // The kernel being unavailable (dead OR still starting) gets its own
-        // code + a "Julia kernel unavailable: <reason>" message so callers
-        // (Modules mode, any other kernel.request consumer) can distinguish
-        // it from a live request that failed for some other reason (bad op,
-        // a real wire/protocol error).
-        Err(e) => match e.downcast_ref::<crate::sidecars::kernel::KernelUnavailable>() {
-            Some(unavailable) => json!({
-                "error": format!("Julia kernel unavailable: {unavailable}"),
-                "code": "kernel_unavailable",
-                "kernel_op": req.kernel_op,
-            }),
-            None => json!({
-                "error": format!("{e:#}"),
-                "code": "kernel_request_failed",
-                "kernel_op": req.kernel_op,
-            }),
-        },
+        Err(e) => kernel_error_payload(&e, &req.kernel_op),
     };
     Ok(vec![(
         Frame::res(req_id, op::KERNEL_REQUEST, payload).with_rev(rev),
         None,
     )])
+}
+
+/// The payload of a `kernel.request` that failed. The kernel being unavailable (dead OR still starting) gets its own
+/// code + a "Julia kernel unavailable: <reason>" message so callers (Modules mode, any other kernel.request consumer)
+/// can distinguish it from a live request that failed for some other reason (bad op, a real wire/protocol error).
+fn kernel_error_payload(e: &anyhow::Error, kernel_op: &str) -> serde_json::Value {
+    match e.downcast_ref::<crate::sidecars::kernel::KernelUnavailable>() {
+        Some(unavailable) => json!({
+            "error": format!("Julia kernel unavailable: {unavailable}"),
+            "code": "kernel_unavailable",
+            "kernel_op": kernel_op,
+        }),
+        None => json!({
+            "error": format!("{e:#}"),
+            "code": "kernel_request_failed",
+            "kernel_op": kernel_op,
+        }),
+    }
 }
 
 pub async fn handle_math_render(
@@ -240,3 +242,7 @@ pub(crate) fn handle_monitor_history(req_id: u64, payload_json: serde_json::Valu
             )])
         })
 }
+
+#[cfg(test)]
+#[path = "ops_tests.rs"]
+mod tests;
