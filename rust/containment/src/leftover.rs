@@ -28,7 +28,10 @@ pub struct Leftover {
     file: Option<std::path::PathBuf>,
     state: std::cell::Cell<Seen>,
     #[cfg(target_os = "linux")]
-    identity: std::cell::RefCell<Option<std::os::fd::OwnedFd>>,
+    identity: std::cell::RefCell<Option<crate::watched::Watched>>,
+    /// The process was already gone when its identity was opened (`ESRCH`).
+    #[cfg(target_os = "linux")]
+    gone_at_open: std::cell::Cell<bool>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -56,19 +59,19 @@ impl Leftover {
             state: std::cell::Cell::new(Seen::Unchecked),
             #[cfg(target_os = "linux")]
             identity: std::cell::RefCell::new(None),
+            #[cfg(target_os = "linux")]
+            gone_at_open: std::cell::Cell::new(false),
         }
     }
 
-    /// Open the process as an identity while it is alive. A process already gone has none to open: it is seen gone.
+    /// Open the process as an identity while it is alive. Only `ESRCH` means it is already gone (seen gone); any other
+    /// refusal is no observation, and the test fails rather than read it as the process's end.
     #[cfg(target_os = "linux")]
     fn open_identity(&self, pid: i32) {
-        use std::os::fd::FromRawFd;
-        // SAFETY: pidfd_open takes a pid and flags and returns a descriptor or -1.
-        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-        if fd >= 0 {
-            // SAFETY: a fresh descriptor nothing else owns.
-            *self.identity.borrow_mut() =
-                Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) });
+        match crate::watched::Watched::try_open(pid) {
+            Ok(identity) => *self.identity.borrow_mut() = Some(identity),
+            Err(e) if e.raw_os_error() == Some(libc::ESRCH) => self.gone_at_open.set(true),
+            Err(e) => panic!("cannot observe pid {pid}: {e}"),
         }
     }
 
@@ -90,34 +93,12 @@ impl Leftover {
 
     /// Whether the process is gone, polled for up to 3 s. On Linux this reads the identity (a pidfd readable at
     /// the exit, reaped or not); a process whose pid was never readable, or that was gone before it could be
-    /// opened, counts as gone only in the second case.
+    /// opened (`ESRCH`), counts as gone only in the second case.
     pub fn gone(&self) -> bool {
         let gone = match self.pid() {
             None => false,
             #[cfg(target_os = "linux")]
-            Some(_) => self.identity.borrow().as_ref().map_or(true, |fd| {
-                use std::os::fd::AsRawFd;
-                let deadline = std::time::Instant::now() + Duration::from_secs(3);
-                loop {
-                    let left = deadline.saturating_duration_since(std::time::Instant::now());
-                    let mut pfd = libc::pollfd {
-                        fd: fd.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    };
-                    // SAFETY: one valid pollfd; a pidfd is readable once its process has exited.
-                    let rc =
-                        unsafe { libc::poll(&mut pfd, 1, left.as_millis() as libc::c_int) };
-                    // A child's SIGCHLD interrupts the wait: it goes on for what is left of the bound.
-                    if rc < 0
-                        && std::io::Error::last_os_error().kind()
-                            == std::io::ErrorKind::Interrupted
-                    {
-                        continue;
-                    }
-                    break rc > 0;
-                }
-            }),
+            Some(_) => self.gone_at_open.get() || self.identity.borrow().as_ref().is_some_and(|identity| identity.dead()),
             #[cfg(not(target_os = "linux"))]
             Some(pid) => gone(pid),
         };

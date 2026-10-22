@@ -8,15 +8,18 @@ pub struct Watched(std::os::fd::OwnedFd);
 #[cfg(target_os = "linux")]
 impl Watched {
     pub fn open(pid: u32) -> Self {
+        Self::try_open(pid as i32).unwrap_or_else(|e| panic!("cannot retain the ready fixture identity: {e}"))
+    }
+
+    /// The identity of `pid`, or the OS error (`ESRCH` is a process already gone; anything else is no observation).
+    pub fn try_open(pid: i32) -> std::io::Result<Self> {
         use std::os::fd::FromRawFd;
-        // SAFETY: open a retained identity of the still-ready fixture; the returned descriptor is owned here.
+        // SAFETY: open a retained identity; the returned descriptor is owned here.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
-        assert!(
-            fd >= 0,
-            "cannot retain the ready fixture identity: {}",
-            std::io::Error::last_os_error()
-        );
-        Self(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }))
     }
     /// Whether the process has ended, waiting up to 3 s. A signal that interrupts the wait is no answer (in a full run
     /// any child's SIGCHLD can land on this thread): the wait goes on for what is left of the bound.
