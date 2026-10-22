@@ -66,8 +66,6 @@ pub(crate) enum Opened {
     Starting(String),
 }
 
-/// How long one open waits for a server that is still starting before it answers `Opened::Starting`: a warm start is
-/// seconds and a cold precompile tens of seconds, so a stall is named within the `repl.execute` default wait.
 /// A notebook path the server's one-line protocol cannot carry: it holds a control character, and a line break would be
 /// read as two commands and answered twice. Refused before anything is submitted.
 #[derive(Debug)]
@@ -81,6 +79,8 @@ impl std::fmt::Display for PathRefused {
 
 impl std::error::Error for PathRefused {}
 
+/// How long one open waits for a server that is still starting before it answers `Opened::Starting`: a warm start is
+/// seconds and a cold precompile tens of seconds, so a stall is named within the `repl.execute` default wait.
 const PLUTO_START_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// How long one open may take, from its submission to its `URL` or `ERR` line (Pluto loads the notebook before it
