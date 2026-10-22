@@ -702,3 +702,8 @@ fn windows_short_name_keeps_the_cwd_key_when_available() {
     );
     println!("W1 P4 short-name PASS: OS comparison converges; original cwd key retained");
 }
+
+#[test]
+fn two_preparations_never_share_a_temporary_name() {
+    assert_ne!(trust_temp_name(".claude.json"), trust_temp_name(".claude.json"));
+}

@@ -6,32 +6,48 @@ use std::path::{Path, PathBuf};
 /// The layer's folder under the comm home, written by the installer (`ShipTools.update_comm`) and read by the recipe.
 pub(super) const LAYER_DIR: &str = "claude-layer";
 
-/// The hooks a leg carries: (Claude Code event, script in `<comm home>/bin`, tool matcher). Four are the work-state
-/// facts a row is reduced from; `comm-subagent-guard.sh` denies a subagent's Bash call that names a comm script.
+/// The hooks a leg carries: (Claude Code event, script in `<comm home>/bin`, tool matcher): the work-state facts a row is
+/// reduced from. The end-of-turn mail check (`comm-status-idle.sh` on Stop) and the subagent guard serve every joined
+/// session, so they stay in the user's own settings (`src/claude_hooks.jl`) and are not here.
 pub(super) const HOOKS: &[(&str, &str, Option<&str>)] = &[
     ("UserPromptSubmit", "comm-status-working.sh", None),
     ("PreToolUse", "comm-status-blocked.sh", Some("AskUserQuestion")),
-    ("PreToolUse", "comm-subagent-guard.sh", Some("Bash")),
-    ("Stop", "comm-status-idle.sh", None),
     ("PostToolUse", "comm-status-heartbeat.sh", None),
 ];
 
-/// The layer under `comm_home`, when it holds a skills folder: Claude Code loads `.claude/skills/` of an added folder.
+/// The skill the leg's prompt names: a layer without it cannot start the session.
+const BOOTSTRAP_SKILL: &str = "sot-session-start";
+
+/// A path made absolute against the working folder, as messaging's comm folder is: a relative one would mean another
+/// folder in the leg, whose working folder is the project's.
+fn absolute(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The layer under `comm_home` when it is ready: it holds the bootstrap skill, which `claude` loads from an added folder's
+/// `.claude/skills/`. Absolute.
 pub(super) fn layer_under(comm_home: &Path) -> Option<PathBuf> {
-    let layer = comm_home.join(LAYER_DIR);
-    layer.join(".claude").join("skills").is_dir().then_some(layer)
+    let layer = absolute(&comm_home.join(LAYER_DIR));
+    let skill = layer.join(".claude").join("skills").join(BOOTSTRAP_SKILL).join("SKILL.md");
+    skill.is_file().then_some(layer)
+}
+
+/// Whether a layer folder is there but not ready (an interrupted or partial install): the leg leaves it out and does not
+/// name the bootstrap skill, and says so.
+pub(super) fn is_partial(comm_home: &Path) -> bool {
+    comm_home.join(LAYER_DIR).exists() && layer_under(comm_home).is_none()
 }
 
 /// The one-token `--add-dir` flag for `layer`: the flag is variadic, and only the `=` form leaves the next argument
 /// (the prompt, when nothing else follows) alone.
 pub(super) fn add_dir_arg(layer: &Path) -> String {
-    format!("--add-dir={}", layer.display())
+    format!("--add-dir={}", absolute(layer).display())
 }
 
 /// A hook's command: its script under `comm_home` by absolute path, in single quotes so a path with a space or a quote
 /// reaches the shell whole. Forward slashes, which Git Bash on Windows reads.
 fn hook_command(comm_home: &Path, script: &str) -> String {
-    let home = comm_home.to_string_lossy().replace('\\', "/");
+    let home = absolute(comm_home).to_string_lossy().replace('\\', "/");
     let path = format!("{}/bin/{script}", home.trim_end_matches('/'));
     format!("'{}'", path.replace('\'', r"'\''"))
 }

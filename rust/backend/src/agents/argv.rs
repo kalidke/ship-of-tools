@@ -20,7 +20,7 @@ impl AgentEnv {
             path: std::env::var_os("PATH"),
             home: std::env::var_os("HOME").map(PathBuf::from),
             shell: std::env::var("SHELL").ok(),
-            comm_home: crate::comm::sot_comm_home(),
+            comm_home: crate::comm::home::comm_home(&crate::comm::Env::process()),
         }
     }
 }
@@ -78,8 +78,13 @@ fn caller_brought_settings(extra: &[String]) -> bool {
 }
 
 /// Whether the caller's `--setting-sources` leaves out `project`, which is where an added folder's skills come from.
-fn setting_sources_exclude_project(_extra: &[String]) -> bool {
-    false
+fn setting_sources_exclude_project(extra: &[String]) -> bool {
+    let value = extra.iter().enumerate().find_map(|(i, a)| match a.strip_prefix("--setting-sources") {
+        Some("") => extra.get(i + 1).map(String::as_str),
+        Some(rest) => rest.strip_prefix('='),
+        None => None,
+    });
+    value.is_some_and(|v| !v.split(',').any(|source| source.trim() == "project"))
 }
 
 /// The one shared builder for claude's launch flags (ADR 0046 decision
@@ -105,10 +110,19 @@ fn setting_sources_exclude_project(_extra: &[String]) -> bool {
 /// the one `--settings` (see `layer.rs`), so a plain `claude` has neither.
 fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>, comm_home: Option<&Path>) -> Vec<String> {
     let layer = comm_home.and_then(layer::layer_under);
+    if comm_home.is_some_and(layer::is_partial) {
+        tracing::warn!("the Claude layer is incomplete (no sot-session-start skill): the leg starts without it and without the bootstrap prompt");
+    }
+    if layer.is_some() && setting_sources_exclude_project(extra) {
+        tracing::warn!("--setting-sources leaves out `project`, where an added folder's skills come from: the layer's skills will not load");
+    }
     let mut argv = vec!["claude".to_string()];
     argv.extend(layer.as_deref().map(layer::add_dir_arg));
     argv.extend(["--permission-mode".to_string(), "auto".to_string()]);
     // See [`caller_brought_settings`] for why a caller's own wins.
+    if caller_brought_settings(extra) && layer.is_some() {
+        tracing::warn!("a caller's own --settings is passed as given: the leg carries no work-state hooks (the skills still load)");
+    }
     if !caller_brought_settings(extra) {
         // `account_home`, never `HOME`: this module's own resolver is what
         // `spawn_detached_supervisor` uses, and it reads `USERPROFILE` on
@@ -134,7 +148,9 @@ fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>, comm_home: Option<
         }
     }
     argv.extend(extra.iter().cloned());
-    argv.push("/sot-session-start".to_string());
+    if !comm_home.is_some_and(layer::is_partial) {
+        argv.push("/sot-session-start".to_string());
+    }
     argv
 }
 

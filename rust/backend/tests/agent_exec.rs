@@ -162,7 +162,9 @@ fn agent_exec_claude_carries_the_layer_when_installed() {
     assert!(!plain.iter().any(|a| a.starts_with("--add-dir") || a.contains("\"hooks\"")), "{plain:?}");
 
     let layer = comm.join("claude-layer");
-    std::fs::create_dir_all(layer.join(".claude").join("skills")).unwrap();
+    let bootstrap = layer.join(".claude").join("skills").join("sot-session-start");
+    std::fs::create_dir_all(&bootstrap).unwrap();
+    std::fs::write(bootstrap.join("SKILL.md"), "---\nname: sot-session-start\n---\n").unwrap();
     let with = argv_of(&comm);
     assert_eq!(with[0], format!("--add-dir={}", layer.display()), "{with:?}");
     assert_eq!(&with[1..3], ["--permission-mode", "auto"], "{with:?}");
