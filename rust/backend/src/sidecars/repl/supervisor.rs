@@ -10,8 +10,9 @@ use tokio::process::{ChildStdin, Command};
 
 use super::escalation::{Escalation, Next};
 use super::*;
-use super::lifecycle::{browser_ports_key, lifecycle_begin_starting, lifecycle_transition};
+use super::lifecycle::{lifecycle_begin_starting, lifecycle_transition};
 use crate::sidecars::child::StderrTail;
+use crate::sidecars::ports::PortSink;
 use crate::sidecars::WireRequest;
 use sot_protocol::child_lines::ChildLines;
 
@@ -119,11 +120,12 @@ pub(super) async fn spawn_supervisor(
     lifecycle.lock().unwrap_or_else(|e| e.into_inner()).start = Some(stderr_tail.start());
 
     // Child exists: open a new spawn generation (state -> Starting, announce).
-    let ports = crate::sidecars::ports::PortSink::new(ports.or_else(crate::sidecars::ports::installed), &workspace_id);
+    let ports = PortSink::new(ports.or_else(crate::sidecars::ports::installed), &workspace_id);
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id, &ports);
+    let ports = ports.at(my_gen);
 
     let join = tokio::spawn(supervisor_task(
-        contained, stdin, stdout, submit_rx, stop_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen, sig, tmp,
+        contained, stdin, stdout, submit_rx, stop_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen, sig, tmp, ports,
     ));
     Ok(Supervisor {
         tx: submit_tx,
@@ -182,6 +184,7 @@ async fn supervisor_task(
     my_gen: u64,
     sig: &'static sot_containment::Signal,
     mut tmp: crate::sidecars::child::ChildTmp,
+    ports: PortSink,
 ) -> std::result::Result<(), String> {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight, each with its window's runs: an eval enters once written to the
@@ -327,6 +330,7 @@ async fn supervisor_task(
                             &mut collector_ids,
                             &frame_tx,
                             &workspace_id,
+                            &ports,
                         );
                         in_order.retain(|e| streaming.contains_key(e) || collectors.contains_key(e));
                         escalation = escalation.and_then(|e| e.heard(&pending)).filter(|e| e.targets(in_order.front()));
@@ -391,7 +395,7 @@ async fn supervisor_task(
         &frame_tx,
         &workspace_id,
     ) {
-        crate::pages::proxy::revoke_browser_ports(browser_ports_key(&workspace_id));
+        ports.end();
         lifecycle.lock().unwrap_or_else(|e| e.into_inner()).notice = end.successor_notice();
     }
     for (_id, reply) in pending.drain() {
@@ -480,6 +484,7 @@ fn route_line(
     collector_ids: &mut HashMap<u64, u64>,
     frame_tx: &broadcast::Sender<ReplFrameMsg>,
     workspace_id: &Option<String>,
+    ports: &PortSink,
 ) {
     let env: WireEnvelope = match serde_json::from_str(line) {
         Ok(r) => r,
@@ -511,7 +516,7 @@ fn route_line(
                 return;
             }
         };
-        let frame = env
+        let mut frame = env
             .payload
             .get("frame")
             .cloned()
@@ -520,19 +525,27 @@ fn route_line(
         // A window's run ends with its `done`: it is marked ended, then the `done` goes on the bus (`end_then`).
         let owner = if is_done { streaming.remove(&eval_id) } else { None };
         // A `browser` frame (ADR 0032 BrowserView — wglshow / user-served
-        // dashboard) announces a live loopback server in this child. Record
-        // its port for the ADR-0035 proxy allowlist HERE, as the frame passes
-        // through on its way to the FE — so the port is authorized strictly
-        // before any browser can dial it, even when the child fell back to an
-        // ephemeral port (or an old shim serves a fixed one). Loopback-only
-        // by construction; revoked when this child dies or is respawned.
+        // dashboard) announces a live loopback server in this child. Its port
+        // is granted to the ADR-0035 proxy HERE, as the frame passes through
+        // on its way to the FE, and the grant is answered before the frame is
+        // forwarded — so the port is authorized strictly before any browser
+        // can dial it, even when the child fell back to an ephemeral port (or
+        // an old shim serves a fixed one). A refused grant withholds the frame
+        // and says why in its place. Loopback-only by construction; ended when
+        // this child dies or is respawned.
         if frame.get("kind").and_then(Value::as_str) == Some("browser") {
             if let Some(port) = frame
                 .get("url")
                 .and_then(Value::as_str)
                 .and_then(sot_protocol::page_url::loopback_port_from_url)
             {
-                crate::pages::proxy::record_browser_port(browser_ports_key(&workspace_id), port);
+                if let Err(refused) = ports.allow(port) {
+                    tracing::warn!(port, %refused, "browser port not granted; frame withheld");
+                    frame = serde_json::json!({
+                        "kind": "stderr",
+                        "text": format!("the page this run served on port {port} was not made reachable: {refused}\n"),
+                    });
+                }
             }
         }
         // Tee into a `repl.execute` collector, loss-free, before the frame goes

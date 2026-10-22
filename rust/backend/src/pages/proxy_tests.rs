@@ -51,29 +51,38 @@ fn extra_ports_env_widens_allowlist_and_ignores_garbage() {
     std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
 }
 
+/// The test's receiver calls: a child of generation 1 announces, and its end is generation 1's too.
+fn grant(owner: &str, port: u16) {
+    allow_browser_port(owner, 1, port).expect("a current generation");
+}
+
+fn end(owner: &str) {
+    end_browser_ports(owner, 1).expect("a current generation");
+}
+
 #[test]
 fn browser_ports_record_revoke_and_allowlist() {
     // Unique workspaces + high ports so parallel tests can't collide.
-    record_browser_port("wsA-test", 45911);
-    record_browser_port("wsA-test", 45912);
-    record_browser_port("wsB-test", 45913);
+    grant("wsA-test", 45911);
+    grant("wsA-test", 45912);
+    grant("wsB-test", 45913);
     let ports = allowed_proxy_ports();
     assert!(ports.contains(&45911) && ports.contains(&45912), "wsA announced");
     assert!(ports.contains(&45913), "wsB announced");
     // Revoking one workspace drops exactly its grants.
-    revoke_browser_ports("wsA-test");
+    end("wsA-test");
     let ports = allowed_proxy_ports();
     assert!(!ports.contains(&45911) && !ports.contains(&45912), "wsA revoked");
     assert!(ports.contains(&45913), "wsB survives wsA's revoke");
-    revoke_browser_ports("wsB-test");
+    end("wsB-test");
     assert!(!allowed_proxy_ports().contains(&45913));
     // Per-workspace cap: 20 inserts keep at most BROWSER_PORTS_PER_WS.
     for p in 0..20u16 {
-        record_browser_port("wsCap-test", 46000 + p);
+        grant("wsCap-test", 46000 + p);
     }
     let n = allowed_proxy_ports().iter().filter(|p| (46000..46020).contains(*p)).count();
     assert!(n <= BROWSER_PORTS_PER_WS, "cap enforced, kept {n}");
-    revoke_browser_ports("wsCap-test");
+    end("wsCap-test");
 }
 
 /// An `Allow` from a generation below the one the table holds for its owner is refused and grants nothing.

@@ -18,18 +18,18 @@ const BROWSER_STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do\n  printf '%s
 
 /// A receiver that keeps every event, says whether the frame was already on the bus when each arrived, and answers with
 /// `refuse` when set.
-struct Recorder {
+pub(super) struct Recorder {
     events: Mutex<Vec<(PortEvent, bool)>>,
     bus: Mutex<broadcast::Receiver<ReplFrameMsg>>,
     refuse: Option<PortRefused>,
 }
 
 impl Recorder {
-    fn new(bus: broadcast::Receiver<ReplFrameMsg>, refuse: Option<PortRefused>) -> Arc<Self> {
+    pub(super) fn new(bus: broadcast::Receiver<ReplFrameMsg>, refuse: Option<PortRefused>) -> Arc<Self> {
         Arc::new(Self { events: Mutex::new(Vec::new()), bus: Mutex::new(bus), refuse })
     }
 
-    fn allows(&self) -> Vec<(PortEvent, bool)> {
+    pub(super) fn allows(&self) -> Vec<(PortEvent, bool)> {
         self.events.lock().unwrap().iter().filter(|(e, _)| matches!(e, PortEvent::Allow { .. })).cloned().collect()
     }
 }

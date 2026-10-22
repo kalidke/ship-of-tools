@@ -37,6 +37,7 @@ fn route_line_drops_ready_sentinel() {
         &mut collector_ids,
         &frame_tx,
         &None,
+        &PortSink::new(None, &None),
     );
     assert!(
         pending.contains_key(&0),
@@ -66,7 +67,7 @@ fn a_line_that_does_not_parse_is_logged_without_its_bytes() {
             // A well-formed frame with no eval id.
             r#"{"v":1,"id":0,"kind":"evt","op":"repl.frame","payload":{"frame":{"kind":"browser","url":"http://127.0.0.1:41234/0123456789abcdef0123456789abcdef"}}}"#,
         ] {
-            route_line(line, &mut pending, &mut streaming, &mut collectors, &mut collector_ids, &frame_tx, &None);
+            route_line(line, &mut pending, &mut streaming, &mut collectors, &mut collector_ids, &frame_tx, &None, &PortSink::new(None, &None));
         }
     });
     assert_eq!(logged.lines().filter(|l| l.contains("WARN")).count(), 2, "{logged}");
