@@ -772,5 +772,12 @@ Base.flush(::CountingIO) = nothing
 
     include("shim_child.jl")
     include("stray_interrupt.jl")
-    include("interrupt_child.jl")
+    # The signal testsets race signals against a forced stop on the clock of the machine they run on, so a loaded hosted
+    # runner fails them by placement. They run at the release gate (release-gate.yml) and in the local gate (rc-gate.sh),
+    # which set SOT_REPL_SIGNAL_TESTS=1, and not in the per-landing CI.yml job.
+    if get(ENV, "SOT_REPL_SIGNAL_TESTS", "") == "1"
+        include("interrupt_child.jl")
+    else
+        @info "interrupt_child.jl skipped: SOT_REPL_SIGNAL_TESTS is not 1"
+    end
 end

@@ -362,6 +362,23 @@ jobs:
       - name: Prove the native launcher and the fence claim on real children
         run: cargo test -p sot-backend --locked --features daemon-lifetime-faults --test daemon_lifetime -- --test-threads=1
 
+  # The REPL's signal testsets (julia/repl/test/interrupt_child.jl): they race signals against a forced stop on the clock
+  # of the machine, so the per-landing CI.yml job skips them and the local gate and this run set the switch.
+  repl-signals-linux:
+    name: REPL signal tests (Linux, Julia 1.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v3
+      - name: Test ShipToolsRepl with the signal testsets
+        env:
+          SOT_REPL_SIGNAL_TESTS: "1"
+        run: julia --project=julia/repl -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
+
   # The ubuntu checks that take minutes: the L3 storage-exhaustion run, the gate's clippy and bash 3.2 jobs on a stand-in
   # workspace, the heartbeat suite and the hermetic comm and agents suites.
   checks-slow-linux:

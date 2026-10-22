@@ -67,7 +67,7 @@ envs() {
   # SOT_TEST_SOTD: the sotd the workspace build just made, so installer-apply.sh's real-sotd cases run in the gate.
   # SOTD_BIN: the same binary for the Julia jobs, whose install test runs the installed comm wrappers (sotd comm).
   SE=(env -i "${HE[@]}" PATH="${RCG_NODE_DIR:+$RCG_NODE_DIR:}/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" SOT_TEST_SOTD="$CARGO_TARGET_DIR/debug/sotd" ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"})
-  JE=(env -i "${HE[@]}" PATH="$RCG_JULIA_DIR:/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" SOTD_BIN="$CARGO_TARGET_DIR/debug/sotd" ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
+  JE=(env -i "${HE[@]}" PATH="$RCG_JULIA_DIR:/usr/bin:/bin" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" SOTD_BIN="$CARGO_TARGET_DIR/debug/sotd" SOT_REPL_SIGNAL_TESTS=1 ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"})
 }
 
 st() { echo "$1 start $(date +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg) cargo=$(pgrep -c cargo)" >> "$L/summary.txt"; }
