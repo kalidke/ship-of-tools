@@ -1,12 +1,26 @@
 use super::*;
 
-fn text_of(parser: &vt100_ctt::Parser) -> String {
-    let screen = parser.screen();
+/// The screen's text with its history, oldest page first: one rule on every system, since on Windows `restore`
+/// scrolls the retained screen and the restart line into the history.
+fn text_of(parser: &mut vt100_ctt::Parser) -> String {
+    let screen = parser.screen_mut();
+    screen.set_scrollback(usize::MAX);
+    let mut offset = screen.scrollback();
     let (rows, cols) = screen.size();
-    (0..rows)
-        .map(|r| (0..cols).filter_map(|c| screen.cell(r, c).map(|cell| cell.contents().to_string())).collect::<String>())
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = String::new();
+    loop {
+        screen.set_scrollback(offset);
+        for r in 0..rows {
+            out.extend((0..cols).filter_map(|c| screen.cell(r, c).map(|cell| cell.contents().to_string())));
+            out.push('\n');
+        }
+        if offset == 0 {
+            break;
+        }
+        offset = offset.saturating_sub(usize::from(rows));
+    }
+    screen.set_scrollback(0);
+    out
 }
 
 /// The screen a leg saved is the screen the next leg starts with, under a restart line.
@@ -23,7 +37,7 @@ fn a_saved_screen_restores_above_the_restart_line() {
 
     let mut next = vt100_ctt::Parser::new(24, 80, CAPSULE_SCROLLBACK_ROWS);
     assert!(restore(&path, &mut next, 24, 80, UNIX_EPOCH + Duration::from_secs(1_700_000_000)));
-    let text = text_of(&next);
+    let text = text_of(&mut next);
     let old = text.find("first leg output").expect("the old screen is there");
     let line = text.find("[restarted 2023-11-14 22:13:20 UTC]").expect("the restart line is there");
     assert!(old < line, "the restart line is below the old screen: {text:?}");
@@ -38,7 +52,7 @@ fn a_torn_screen_file_is_removed_and_the_screen_starts_empty() {
     let mut parser = vt100_ctt::Parser::new(24, 80, CAPSULE_SCROLLBACK_ROWS);
     assert!(!restore(&path, &mut parser, 24, 80, SystemTime::now()));
     assert!(!path.exists());
-    assert!(text_of(&parser).trim().is_empty());
+    assert!(text_of(&mut parser).trim().is_empty());
 }
 
 /// An agent that left its cursor at the top of the screen (or scrolling margins, or the alternate screen) does not
@@ -56,7 +70,7 @@ fn the_restart_line_never_overwrites_retained_content() {
 
     let mut next = vt100_ctt::Parser::new(10, 40, CAPSULE_SCROLLBACK_ROWS);
     assert!(restore(&path, &mut next, 10, 40, UNIX_EPOCH + Duration::from_secs(1_700_000_000)));
-    let text = text_of(&next);
+    let text = text_of(&mut next);
     for kept in ["top row", "second row", "third row"] {
         assert!(text.contains(kept), "{kept:?} was overwritten: {text:?}");
     }
