@@ -42,3 +42,32 @@ async fn a_second_daemon_on_a_live_socket_refuses_and_the_first_still_answers() 
     assert!(try_connect(&first.socket_path).await.is_some(), "the first daemon must still answer");
     first.kill_daemon_bounded().await;
 }
+
+/// Queue item 21 on the real start path: a successor meets a socket whose listener only completes the connect and
+/// never serves it (a copy of a dead predecessor's listener held by a child between its fork and its exec) while no
+/// daemon holds the state lock. It is not a live daemon: the successor starts, replaces the path and answers a hello.
+#[tokio::test]
+async fn a_start_against_a_listener_that_never_replies_binds_the_socket_and_answers() {
+    use tokio::io::AsyncWriteExt as _;
+    let env = Env::new("succ");
+    let stale = std::os::unix::net::UnixListener::bind(&env.socket_path).expect("bind the never-serving listener");
+    env.spawn_sotd();
+    let hello = sot_protocol::HelloReq::this_process("live-socket-test", "", Some("host-a".to_string())).expect("this process's account");
+    let answered = poll_until(
+        || async {
+            let stream = try_connect(&env.socket_path).await?;
+            let mut conn = tokio::io::BufReader::new(stream);
+            let frame = sot_protocol::Frame::req(1, sot_protocol::op::HELLO, serde_json::to_value(&hello).unwrap());
+            sot_protocol::codec::write_frame(&mut conn, &frame, None).await.ok()?;
+            conn.flush().await.ok()?;
+            let read = tokio::time::timeout(Duration::from_secs(2), sot_protocol::codec::read_frame(&mut conn)).await;
+            read.ok()?.ok().map(|(reply, _)| reply)
+        },
+        BOUND,
+        "the successor to answer a hello on the path a never-serving listener held",
+    )
+    .await;
+    assert!(answered.payload.get("error").is_none(), "hello refused: {:?}", answered.payload);
+    drop(stale);
+    env.kill_daemon_bounded().await;
+}
