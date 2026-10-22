@@ -5,7 +5,7 @@
 const VERSION = "four-numbers 2"
 
 # Path prefix -> subsystem; the longest prefix wins. Tests of the two integration folders are assigned by file below.
-const SUBSYSTEMS = ["topology", "wire", "server", "lifecycle", "rows", "agents", "platform", "capsule", "vt100",
+const SUBSYSTEMS = ["topology", "wire", "server", "lifecycle", "containment", "rows", "agents", "platform", "capsule", "vt100",
                     "messaging", "files", "sidecars", "pages", "fe-ui", "fe-net", "distribution", "records", "test-support"]
 const PREFIXES = [
     "rust/protocol/src/topology/" => "topology", "rust/backend/src/topology" => "topology",
@@ -18,7 +18,7 @@ const PREFIXES = [
     "rust/backend/src/lifecycle/" => "lifecycle", "rust/frontend/src/lease" => "lifecycle",
     "rust/backend/src/rows/" => "rows",
     "agents/" => "agents", "rust/backend/src/agents/" => "agents",
-    "rust/platform/" => "platform",
+    "rust/platform/" => "platform", "rust/containment/" => "containment",
     "rust/log/" => "capsule", "julia/sotlog/" => "capsule",
     "rust/vt100/" => "vt100",
     "comm/" => "messaging", "rust/backend/src/comm/" => "messaging",
@@ -45,7 +45,8 @@ const TEST_STEMS = Dict{String,Vector{String}}(
     "server" => ["daemon_lifetime", "admission", "control_session", "ping_reaper", "live_socket", "daemon_boot",
                  "daemon_stdout", "subcommand_help", "support_checks", "active_frontend", "stdio_bridge",
                  "status_integration"],
-    "lifecycle" => ["window_lease", "contained_job", "ancestors"],
+    "lifecycle" => ["window_lease", "ancestors"],
+    "containment" => ["contained_job"],
     "topology" => ["topology_set", "topology_sync", "relay_refresh"],
     "platform" => ["challenge_unix", "challenge_macos", "connect_own", "other_account", "winhandle_windows",
                    "macos_kernel_facts"],
@@ -61,7 +62,7 @@ const STEM_SUBSYSTEM = Dict(s => sub for (sub, v) in TEST_STEMS for s in v)
 const TEST_DIRS = ("rust/backend/tests/", "rust/log/tests/")
 
 # Rust crates by name as `use` paths spell them, to the folder of their source.
-const CRATE_DIR = Dict("sot_platform" => "rust/platform", "sot_protocol" => "rust/protocol", "sot_updater" => "rust/updater", "sot_log" => "rust/log",
+const CRATE_DIR = Dict("sot_platform" => "rust/platform", "sot_containment" => "rust/containment", "sot_protocol" => "rust/protocol", "sot_updater" => "rust/updater", "sot_log" => "rust/log",
                        "sot_backend" => "rust/backend", "sot_frontend" => "rust/frontend")
 const CODE_EXT = (".rs", ".jl", ".sh", ".ps1", ".ts", ".js", ".mjs", ".py")
 const GENERIC = Set(["main", "new", "run", "default", "fmt", "from", "drop", "clone", "eq", "hash", "parse", "usage",
