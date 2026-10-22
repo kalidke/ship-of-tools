@@ -20,14 +20,14 @@ const BOOTSTRAP_SKILL: &str = "sot-session-start";
 
 /// A path made absolute against the working folder, as messaging's comm folder is: a relative one would mean another
 /// folder in the leg, whose working folder is the project's.
-fn absolute(path: &Path) -> PathBuf {
+fn absolute_against_cwd(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// The layer under `comm_home` when it is ready: it holds the bootstrap skill, which `claude` loads from an added folder's
 /// `.claude/skills/`. Absolute.
 pub(super) fn layer_under(comm_home: &Path) -> Option<PathBuf> {
-    let layer = absolute(&comm_home.join(LAYER_DIR));
+    let layer = absolute_against_cwd(&comm_home.join(LAYER_DIR));
     let skill = layer.join(".claude").join("skills").join(BOOTSTRAP_SKILL).join("SKILL.md");
     skill.is_file().then_some(layer)
 }
@@ -41,13 +41,13 @@ pub(super) fn is_partial(comm_home: &Path) -> bool {
 /// The one-token `--add-dir` flag for `layer`: the flag is variadic, and only the `=` form leaves the next argument
 /// (the prompt, when nothing else follows) alone.
 pub(super) fn add_dir_arg(layer: &Path) -> String {
-    format!("--add-dir={}", absolute(layer).display())
+    format!("--add-dir={}", absolute_against_cwd(layer).display())
 }
 
 /// A hook's command: its script under `comm_home` by absolute path, in single quotes so a path with a space or a quote
 /// reaches the shell whole. Forward slashes, which Git Bash on Windows reads.
 fn hook_command(comm_home: &Path, script: &str) -> String {
-    let home = absolute(comm_home).to_string_lossy().replace('\\', "/");
+    let home = absolute_against_cwd(comm_home).to_string_lossy().replace('\\', "/");
     let path = format!("{}/bin/{script}", home.trim_end_matches('/'));
     format!("'{}'", path.replace('\'', r"'\''"))
 }
