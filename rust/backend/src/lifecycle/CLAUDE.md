@@ -13,34 +13,43 @@ of each.
 1. **A lease is granted only to a peer the OS named.** `Leases::grant` accepts a claim whose pid, creation time and boot
    equal what the OS reported at accept (`lease::claim`); a peer whose process the OS did not report, or a daemon whose
    own boot is unknown, is `Undetermined`; a different claim is `Foreign`; a phase other than open is `Closing`. A
-   grant whose record cannot be written is undone and refused `Undetermined`: a grant never outruns its record. Limit:
-   on Windows an empty boot on either side matches (the pipe client's pid and creation time are the proof there).
+   grant whose record cannot be written is undone and refused `Undetermined`: a grant never outruns its record. Limits:
+   while a startup Cleanup is still ending rows (its record only moves toward close) a grant is not persisted, so a
+   restart in that window does not see the holder; on Windows an empty boot on either side matches (the pipe client's pid and creation time are the proof there).
 2. **`held.json` is the one record, and a restart reads it alone.** It exists iff some field is non-empty or true, so
    one window's `Keep` or `Close` never deletes another holder's entry; it is written durably
-   (`sot_platform::host::write_durable`, `remove_durable`); its name and shape are `sot_protocol::ops::lease::
+   (`sot_platform::host::write_durable`, `remove_durable`; a Windows removal has no parent-directory sync, platform's
+   guarantee 2); its name and shape are `sot_protocol::ops::lease::
    HELD_RECORD_FILE` and `HeldRecord` (version 1; another version plans Cleanup). Every deadline in it is wall-clock unix
-   milliseconds, so a persisted handover survives a restart. Limit: a clock set backwards extends a persisted deadline
-   by the step.
-3. **Only the last lease's departure decides, and the latest intent wins.** A lease ends by `fe.leaving` or by its
+   milliseconds, so a persisted handover survives a restart. A write that follows an event that already happened (a
+   departure, an expiry, the close's first step) is logged when it fails and the event stands (`persist_or_log`), so
+   the record can lag the daemon's state until the next write. Limit: a clock set backwards extends a persisted
+   deadline by the step.
+3. **Only the last lease's departure decides, and the latest intent wins until a `Close` commits.** A lease ends by `fe.leaving` or by its
    connection's end (an end with no intent means `Close`). While another lease is held nothing is decided. The last one
    out: `Close` ends the sessions (`Leases::gone` fires and the daemon shuts down), `Keep` leaves them up with no bound,
    `Handover` leaves them up for `HANDOVER_BOUND` (the ticker turns an expired handover with no lease into a shutdown).
-   A later `fe.leaving` on a lease that already departed replaces its earlier intent. A lease's generation fences its own
+   A later `fe.leaving` on a lease that already departed replaces its earlier intent, unless a `Close` has already
+   committed: closing is irreversible, and a later `Keep` or `Handover` does not undo it. A lease's generation fences its own
    removal (an unknown or already-removed one decides nothing). A malformed lease line and a lane connection's end
    depart nothing. The lease ops and bounds are `sot_protocol::ops::lease`'s.
 4. **A start's plan is a function of the record and this boot alone.** `startup_plan` is Resume, Pending or Cleanup and
    never looks a process up, so a reused pid cannot resume or hold a row: an unreadable record, a closing record, a
    record of another boot (two non-empty, different boot ids) or an expired handover plans Cleanup; a handover not yet
-   expired or recorded holders plan Pending; otherwise Resume. Cleanup ends every row and resumes none
-   (`startup::cleanup`, through rows' end API), and claims the slugs of the rows it lists before any listener binds and
+   expired or recorded holders plan Pending; otherwise Resume. Cleanup asks rows to end every row and resumes none
+   (`startup::cleanup`, through rows' end API); a row that was not confirmed ended is counted in `not_ended` and
+   recorded, as the close counts it, and claims the slugs of the rows it lists before any listener binds and
    holds them until it ends (`Workspaces::claim_create`), so a same-label create is refused meanwhile and the Cleanup
    never ends a row a window created. The leases are built from the record, and a listed row's `forget` dropped, before
    any connection is accepted.
-5. **The close stops accepting before it touches a row, and ends within `SHUTDOWN_BOUND`.** The accept loop breaks on
+5. **The close stops accepting before it touches a row, and ends within `SHUTDOWN_BOUND` plus the terminal's waits.** The accept loop breaks on
    `Leases::gone` and drops the listener before `shutdown::run`; the close asks rows to end every row without resuming
    any (`rows::end::end_every`) by one deadline, counts each row not confirmed ended, writes the final record
-   (`not_ended` stays recorded until a window acknowledges it), and a backstop thread exits 1 at `SHUTDOWN_BOUND` through
-   the terminal. A close that finishes exits 0. The update restart exits 75 only while no shutdown has begun:
+   (`not_ended` stays recorded until a window acknowledges it), and a backstop thread calls the terminal with code 1 at `SHUTDOWN_BOUND` after the close decision (it is armed when
+   `shutdown::run` starts, after the listener's teardown in `server/listen.rs`, not at the decision itself). The
+   terminal then adds up to `FIRE_WAIT` and `FOLDERS_WAIT` (guarantee 6), so the process's exit is within
+   `SHUTDOWN_BOUND` + `FIRE_WAIT` + `FOLDERS_WAIT` (4 s over the bound) of the decision plus the listener teardown;
+   charging those waits inside the bound is queued. A close that finishes exits 0. The update restart exits 75 only while no shutdown has begun:
    `Leases::commit_update` moves the phase to `Updating` under the lease lock, so no close begins afterwards, and a close
    that began first refuses the update. Limit: a child creation stalled in the OS can delay the fire (containment's limit
    in guarantee 2), never the exit.
@@ -58,7 +67,9 @@ of each.
    only the controlled ends end children).
 7. **INT and TERM reach the terminal whatever the main runtime does.** They are caught on a thread of their own with a
    runtime of its own, unblocked whatever mask the daemon inherited and checked to be deliverable; a failed installation
-   refuses the boot (`signal_exit::install`). Unix only.
+   refuses the boot (`signal_exit::install`). Unix only; the integration cases of delivery to a real daemon are the
+   daemon-lifetime harness's, which runs on Linux, so delivery on macOS has no test of its own (registration failure is
+   a unit test that runs everywhere Unix).
 8. **The window never gives up an unanswered lease request while its sessions are meant to stay.** A `Keep` or a
    `Handover` still waiting on an unanswered request when its ack wait ends, or at a Ctrl+Q during that wait, stays open
    (`LeaveStep::Stay`; the frontend's `Leases::stay` decides under the lock `install` takes, so a grant that lands first
@@ -117,5 +128,5 @@ One per guarantee. Paths are under `rust/backend/` (`src/lifecycle/` unless they
 | 5 | the close and its bound | `lease_tests.rs`: `not_ended_survives_restart_until_acked`, `shutdown_keeps_an_unacked_loaded_count`, `close_during_startup_cleanup_writes_closing`; `src/update_tests.rs`: `a_committed_update_is_not_undone_by_a_later_close`; `tests/window_lease/lease.rs`: `create_during_shutdown_refused`, `shutdown_bound_is_end_to_end`, `never_run_rows_count_as_ended`, `shutdown_ends_a_child_that_left_the_agents_process_group`; `tests/daemon_lifetime/outcomes.rs`: `a_close_that_outlasts_its_bound_ends_with_1_and_takes_the_ephemeral_trees` |
 | 6 | one terminal | `shutdown_tests.rs`: `the_first_controlled_exit_decides_the_code`, `the_terminal_does_not_wait_for_a_stalled_creation`, `a_terminal_with_no_thread_to_fire_on_exits_without_the_fire`, `the_terminal_removes_the_folders_within_their_wait_before_it_exits`; `tests/daemon_lifetime/outcomes.rs`: `a_main_outcome_becomes_the_launched_status`, `early_commands_and_boot_refusals_keep_their_statuses`, `a_service_manager_counts_int_and_term_as_a_clean_stop` |
 | 7 | INT and TERM | `signal_exit.rs`: `an_installation_failure_is_a_concrete_failure_exit`; `tests/daemon_lifetime/outcomes.rs`: `int_and_term_end_a_stalled_daemon_whatever_mask_it_inherited` |
-| 8 | the window keeps an unanswered request | `lease_leave_tests.rs`: `leave_failure_table`, `second_close_during_handover_exits_zero_on_every_path`, `forced_exit_delivers_the_queued_close`; `lease_grant_tests.rs`: `an_unanswered_lease_is_named_and_held_until_its_answer`, `harness_never_leases`; `lease_delivery_tests.rs`: `frozen_worker_and_multiple_holders_share_one_deadline`, `held_book_does_not_extend_forced_delivery` |
+| 8 | the window keeps an unanswered request | `lease_leave_tests.rs`: `leave_failure_table`, `second_close_during_handover_exits_zero_on_every_path`, `forced_exit_delivers_the_queued_close`; `lease_grant_tests.rs`: `an_unanswered_lease_is_named_and_held_until_its_answer`, `harness_never_leases`; `scripts/sot-lease.ps1` (Windows: `Open-SotLease` keeps an unanswered request) is held by `scripts/tests/test-launcher-leases.ps1` case 11g (`an unanswered lease is kept`); `lease_delivery_tests.rs`: `frozen_worker_and_multiple_holders_share_one_deadline`, `held_book_does_not_extend_forced_delivery` |
 | 9 | the notice | `lease_grant_tests.rs`: `no_lease_status_line`; `lease_leave_tests.rs`: `mixed_outcomes_show_the_sum`, `not_ended_status_line` |

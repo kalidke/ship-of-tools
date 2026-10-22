@@ -11,11 +11,13 @@ pub mod guard;
 mod signal;
 
 #[cfg(all(feature = "test-support", unix))]
+#[path = "leftover_tests.rs"]
 pub mod leftover;
 #[cfg(all(feature = "test-support", unix))]
+#[path = "watched_tests.rs"]
 pub mod watched;
 #[cfg(all(feature = "test-support", windows))]
-#[path = "watched_windows.rs"]
+#[path = "watched_windows_tests.rs"]
 pub mod watched;
 
 #[cfg(unix)]

@@ -74,6 +74,12 @@ where each lives).
     is the weaker form: it creates the folder, follows a symlink and repairs the mode to 0700. On Windows
     `is_private_dir` is only `is_dir`; the account's profile folders are the protection. A refusal from the OS keeps
     the OS error as its source (`Error::Path`).
+12. **A job ends what is in it when its last handle closes (Windows).** `host::winjob::AnonymousJob` is an anonymous,
+    non-inheritable job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` alone and no breakaway permitted, so every process
+    started inside it stays inside and the kernel ends them all when the last handle closes, however the holder died.
+    Assigning a process, sequencing a termination and resuming a suspended start are the caller's (containment's and the
+    capsule's ConPTY leg). Limits: a process started through a broker (WMI, COM activation, a scheduled task, a service)
+    is outside the job.
 
 Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MSYS program that execs another is a
 new Windows process whose Windows parent has exited, so a native parent walk alone stops short of the session (Git
@@ -88,7 +94,7 @@ so a boot without it binds sockets at `/tmp/sot-<uid>`.
 The folders and host name above (`host/state_dir.rs`); durable publication, write and remove (`host/durable.rs`);
 kernel locks and held folders (`host/lock.rs`, `host/held_dir.rs`); descriptor birth and the native process-birth
 launcher (`host/fd.rs`, `host/process_tree/`, one native C file); the directory pin (`host/pinned_dir.rs`); the volume
-preflight; storage recognition; `Redial`; the Windows descriptors and SIDs (`host/winsec.rs`, `host/winhandle.rs`) and the anonymous kill-on-close job (`host/winjob.rs`: `AnonymousJob`, which containment's per-child tree and the capsule's ConPTY leg stand on; no breakaway, the last handle's close ends everything in it; it has no test of its own here, containment's `contain_job_permits_no_breakaway` and the capsule's `conpty` tests run it on the Windows runner);
+preflight; storage recognition; `Redial`; the Windows descriptors and SIDs (`host/winsec.rs`, `host/winhandle.rs`) and the anonymous kill-on-close job (`host/winjob.rs`, guarantee 12);
 the private-dir and socket-dir checks; the resource folder (`resource_dir`, `SOT_RESOURCE_ROOT`) and the verbatim-path
 strip; the peer challenge's OS steps, `PeerIdentity` and `PeerProcess`, the exchange trait and the deadline
 (`identity/`); the account (`os_account`) and loopback owner (`peer_owner`). The crate's `Error` is `Io`, `Path` (an OS error with what was being done) or `State`; the
@@ -144,3 +150,4 @@ support is its own crate. A test of a Windows or macOS arm runs on the hosted ru
 | 9 | redial | `host/redial_tests.rs`: `a_short_connection_keeps_the_doubling`, `a_connection_that_lasted_stable_starts_over`, `a_reset_starts_over` |
 | 10 | dir pin | `host/pinned_dir_tests.rs`: `a_fifo_fails_at_once_and_never_waits_for_a_writer` |
 | 11 | private dir | `host/state_dir_is_private_dir_tests.rs`; `host/paths_secure_private_dir_tests.rs`: `a_missing_parent_is_created_and_the_leaf_is_private`, `ensure_private_dir_makes_an_owner_only_folder_that_is_private` |
+| 12 | job ends at last close (Windows) | `rust/log/tests/conpty.rs`: `containment_kills_child_and_grandchild` (`:147`); `rust/log/tests/capsule/windows_only.rs`: `the_leg_job_refuses_a_breakaway` (`:540`); containment's `contain_tests.rs` `contain_job_permits_no_breakaway` reads the flags only |
