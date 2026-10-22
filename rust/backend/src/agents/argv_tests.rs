@@ -360,7 +360,9 @@ fn a_reauth_leg_resumes_by_id_and_never_continues() {
 fn comm_home_with_layer() -> (tempfile::TempDir, PathBuf) {
     let comm = tempfile::tempdir().expect("tempdir");
     let layer = comm.path().join(super::super::layer::LAYER_DIR);
-    std::fs::create_dir_all(layer.join(".claude").join("skills")).unwrap();
+    let bootstrap = layer.join(".claude").join("skills").join("sot-session-start");
+    std::fs::create_dir_all(&bootstrap).unwrap();
+    std::fs::write(bootstrap.join("SKILL.md"), "---\nname: sot-session-start\n---\n").unwrap();
     (comm, layer)
 }
 
@@ -416,7 +418,7 @@ fn the_layer_rides_the_recipe_and_a_plain_claude_has_none() {
     assert_eq!(argv.iter().filter(|a| *a == "--settings").count(), 1, "{argv:?}");
     let at = argv.iter().position(|a| a == "--settings").unwrap();
     let json: serde_json::Value = serde_json::from_str(&argv[at + 1]).unwrap();
-    assert_eq!(json["hooks"].as_object().unwrap().len(), 4, "{json}");
+    assert_eq!(json["hooks"].as_object().unwrap().len(), 3, "{json}");
     assert_eq!(argv.last().map(String::as_str), Some("/sot-session-start"));
     // A caller's own `--settings` wins outright: its hooks are not added beside it, the skills still load.
     let caller = claude_recipe(&["--settings".to_string(), "{\"a\":1}".to_string()], None, Some(comm.path()));
@@ -438,4 +440,20 @@ fn the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec() {
     for argv in the_three_legs(None) {
         assert!(!argv.iter().any(|a| a.starts_with("--add-dir") || a.contains("\"hooks\"")), "{argv:?}");
     }
+}
+
+#[test]
+fn a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it() {
+    let comm = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(comm.path().join(super::super::layer::LAYER_DIR).join(".claude").join("skills").join("sitrep")).unwrap();
+    let argv = claude_recipe(&[], None, Some(comm.path()));
+    assert_eq!(argv, vec!["claude", "--permission-mode", "auto"], "{argv:?}");
+}
+
+#[test]
+fn a_setting_sources_without_project_is_known_to_the_recipe() {
+    let extra = ["--setting-sources".to_string(), "user".to_string()];
+    assert!(setting_sources_exclude_project(&extra));
+    assert!(!setting_sources_exclude_project(&["--setting-sources=user,project".to_string()]));
+    assert!(!setting_sources_exclude_project(&["--continue".to_string()]));
 }

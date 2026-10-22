@@ -77,6 +77,11 @@ fn caller_brought_settings(extra: &[String]) -> bool {
         .any(|a| a == "--settings" || a.starts_with("--settings="))
 }
 
+/// Whether the caller's `--setting-sources` leaves out `project`, which is where an added folder's skills come from.
+fn setting_sources_exclude_project(_extra: &[String]) -> bool {
+    false
+}
+
 /// The one shared builder for claude's launch flags (ADR 0046 decision
 /// 4): a capsule spawn ([`claude_argv`], no extra flags: every leg starts
 /// a fresh conversation), a reauth leg ([`claude_resume_argv`],
