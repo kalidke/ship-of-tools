@@ -218,6 +218,9 @@ fn a_supervisor_reached_ready_only_if_the_cell_named_it_while_ready() {
     observe(&ws, phase_obs(Phase::Starting, a));
     assert!(!ws.reached_ready(Some(a)), "starting is not ready");
     observe(&ws, phase_obs(Phase::Ready, a));
+    assert!(!ws.reached_ready(Some(a)), "ready the moment it was adopted is a flash, not ready");
+    std::thread::sleep(crate::rows::workspace::READY_STABLE + std::time::Duration::from_millis(100));
+    observe(&ws, phase_obs(Phase::Ready, a));
     assert!(ws.reached_ready(Some(a)));
     assert!(!ws.reached_ready(Some(b)), "another supervisor is not the one observed");
     assert!(!ws.reached_ready(None), "a supervisor that died before any observation named it never reached ready");

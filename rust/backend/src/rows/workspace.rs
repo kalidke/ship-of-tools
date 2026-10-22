@@ -73,6 +73,11 @@ pub(crate) enum Observation {
 }
 
 /// One lock: a rejection check and the write it gates share one critical section.
+/// A supervisor counts as having reached `ready` only if the row's phase read `ready` while it held the cell at least this
+/// long after the cell adopted it (the supervisor's own `READY_AFTER`: it reports `ready` once its agent has written *or*
+/// lived this long), so an agent that prints its error and exits is not ready for having written it.
+pub(crate) const READY_STABLE: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct PhaseCell {
     phase: Phase,
@@ -80,7 +85,10 @@ pub(super) struct PhaseCell {
     voyage: Option<uuid::Uuid>,
     /// Reaching 2 sets `Unreachable` (unless already latched).
     consecutive_failures: u8,
-    /// This epoch's supervisor was observed `ready` at some round: the watchdog's budget counts the ones that never were.
+    /// When the cell adopted its supervisor.
+    adopted_at: Option<std::time::Instant>,
+    /// This epoch's supervisor was observed `ready` at least `READY_STABLE` after it was adopted: the watchdog's budget
+    /// counts the ones that never were.
     ready_seen: bool,
 }
 
@@ -190,11 +198,11 @@ impl Workspace {
     /// fresh — the only thing that clears a `Terminal` latch.
     pub(crate) fn begin_supervisor_epoch(&self, identity: SupervisorIdentity) {
         let mut cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
-        *cell = PhaseCell { supervisor: Some(identity), ..PhaseCell::default() };
+        *cell = PhaseCell { supervisor: Some(identity), adopted_at: Some(std::time::Instant::now()), ..PhaseCell::default() };
     }
 
-    /// Whether `supervisor` was observed `ready` while it was the cell's epoch: false for one that died before any
-    /// observation named it.
+    /// Whether `supervisor` was observed `ready` while it was the cell's epoch and had outlived `READY_STABLE`: false for
+    /// one that died before any observation named it, or flashed `ready` and was gone.
     pub(crate) fn reached_ready(&self, supervisor: Option<SupervisorIdentity>) -> bool {
         let cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
         supervisor.is_some() && cell.supervisor == supervisor && cell.ready_seen
@@ -258,7 +266,7 @@ impl Workspace {
                 // after the deadline is adopted by the next background
                 // poll instead of being rejected forever.
                 if cell.supervisor.is_none() {
-                    *cell = PhaseCell { supervisor: Some(supervisor), ..PhaseCell::default() };
+                    *cell = PhaseCell { supervisor: Some(supervisor), adopted_at: Some(std::time::Instant::now()), ..PhaseCell::default() };
                 }
                 if cell.supervisor != Some(supervisor) {
                     return false;
@@ -285,7 +293,7 @@ impl Workspace {
                     return false;
                 }
                 cell.phase = phase;
-                cell.ready_seen |= phase == Phase::Ready;
+                cell.ready_seen |= phase == Phase::Ready && cell.adopted_at.is_some_and(|at| at.elapsed() >= READY_STABLE);
                 if let Some(v) = voyage {
                     cell.voyage = Some(v);
                 }

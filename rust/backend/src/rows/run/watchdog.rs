@@ -30,16 +30,11 @@ pub const MAX_RESTARTS_PER_WINDOW: usize = 5;
 
 pub const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// A supervisor counts as having reached `ready` only if the row's phase read `ready` while it held the cell and it then
-/// outlived this (the supervisor's own `READY_AFTER`: it reports `ready` once its agent has written *or* lived this
-/// long), so an agent that prints its error and exits is not ready for having written it.
-const READY_STABLE: std::time::Duration = std::time::Duration::from_secs(2);
-
 /// The restart budget, one per watchdog. An agent that cannot start is a count, not a rate: consecutive restarts of
 /// supervisors that never reached `ready` are counted without a window, so how long each start, settle or life takes
 /// never decides it, and the count resets when one reaches `ready`. Rows knows `ready` by observation: the row's phase
-/// read `ready` while that supervisor was the cell's epoch and it outlived `READY_STABLE`; one that died before any
-/// observation named it never did. Restarts of supervisors that did
+/// read `ready` while that supervisor was the cell's epoch, `READY_STABLE` after the cell adopted it; one that died
+/// before any observation named it, or flashed `ready` and was gone, never did. Restarts of supervisors that did
 /// reach `ready` keep `MAX_RESTARTS_PER_WINDOW` within `RESTART_WINDOW`. Either way the exit after the fifth restart
 /// is the give-up.
 #[derive(Default)]
@@ -325,7 +320,6 @@ pub(super) fn install_watchdog(
         let mut current_identity = initial_identity;
         let mut leg_opt = Some(child);
         let mut budget = Budget::default();
-        let mut leg_started = Instant::now();
         loop {
             let outcome = match leg_opt.take() {
                 Some(c) => wait_and_classify(c, &workspace_id).await,
@@ -354,8 +348,7 @@ pub(super) fn install_watchdog(
                 }
                 LegOutcome::Crash | LegOutcome::AgentEnded => {
                     // Decided before taking the guard -- giving up needs no recheck (R4a).
-                    let reached_ready = leg_started.elapsed() >= READY_STABLE
-                        && workspaces.resolve(Some(&workspace_id)).is_some_and(|ws| ws.reached_ready(current_identity));
+                    let reached_ready = workspaces.resolve(Some(&workspace_id)).is_some_and(|ws| ws.reached_ready(current_identity));
                     let Some(backoff) = budget.on_exit(reached_ready, Instant::now()) else {
                         tracing::error!(
                             workspace_id = %workspace_id, window = ?RESTART_WINDOW, max = MAX_RESTARTS_PER_WINDOW,
@@ -464,7 +457,6 @@ pub(super) fn install_watchdog(
                             return;
                         }
                         Ok(Ok((Spawn::Started(child), permit))) => {
-                            leg_started = Instant::now();
                             // Settle BEFORE this guard drops — the
                             // SAME shared wait `spawn_and_watch`
                             // itself uses; see `settle_after_spawn`'s
