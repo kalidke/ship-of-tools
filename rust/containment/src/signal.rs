@@ -260,37 +260,43 @@ impl Signal {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        let deadline = std::time::Instant::now() + within;
         let mut child = self.spawn_std(cmd)?;
         let stdout = read_to_end_on_a_thread(child.stdout.take());
         let stderr = read_to_end_on_a_thread(child.stderr.take());
         let status = child.wait_within(within);
-        let (stdout, stderr) = (stdout.join(), stderr.join());
         let status = status?.ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::TimedOut, format!("did not exit within {within:?}"))
         })?;
-        Ok(std::process::Output {
-            status,
-            stdout: joined(stdout)?,
-            stderr: joined(stderr)?,
-        })
+        // The readers share the call's deadline (with a short floor for the EOF of a leader that ended at the bound). A
+        // process that left the tree and keeps a pipe open is left holding it: its reader ends with it.
+        let collect = |reader: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>| {
+            let left = deadline.saturating_duration_since(std::time::Instant::now()).max(std::time::Duration::from_millis(250));
+            reader.recv_timeout(left).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("an output pipe was still open {within:?} after the start: a process outside the tree holds it"),
+                )
+            })?
+        };
+        Ok(std::process::Output { status, stdout: collect(stdout)?, stderr: collect(stderr)? })
     }
 }
 
-/// `pipe` read to its end on a thread of its own.
+/// `pipe` read to its end on a thread of its own, its result sent to the returned receiver.
 fn read_to_end_on_a_thread<R: std::io::Read + Send + 'static>(
     pipe: Option<R>,
-) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>> {
+) -> std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>> {
+    let (sent, received) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        if let Some(mut pipe) = pipe {
-            pipe.read_to_end(&mut bytes)?;
-        }
-        Ok(bytes)
-    })
-}
-
-fn joined(read: std::thread::Result<std::io::Result<Vec<u8>>>) -> std::io::Result<Vec<u8>> {
-    read.map_err(|_| std::io::Error::other("a pipe reader panicked"))?
+        let read = match pipe {
+            Some(mut pipe) => pipe.read_to_end(&mut bytes).map(|_| bytes),
+            None => Ok(bytes),
+        };
+        let _ = sent.send(read);
+    });
+    received
 }
 
 /// Immediately owns a created child before adoption, including unwind of the post-create hook.
