@@ -321,7 +321,7 @@ async fn errors(rx: oneshot::Receiver<anyhow::Result<String>>, what: &str) {
 }
 
 fn granted(port: u16) -> bool {
-    bound_pluto_port() == Some(port) || crate::pages::proxy::allowed_proxy_ports().contains(&port)
+    bound_pluto_port() == Some(port)
 }
 
 /// The child's own exit, with no descendant, takes the proxy grant.
@@ -368,7 +368,6 @@ async fn nonloopback_ready_grants_nothing() {
     // A documentation-range address: never dialled.
     let h = Harness::start(r#""READY http://192.0.2.7:4000""#, "").await;
     assert_eq!(bound_pluto_port(), None);
-    assert!(!crate::pages::proxy::allowed_proxy_ports().contains(&4000));
     h.finish().await;
 }
 

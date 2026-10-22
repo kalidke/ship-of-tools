@@ -292,10 +292,20 @@ fn arm_leg_crash(dir: &Path) -> PathBuf {
 }
 
 /// Crashes the leg: the file armed by `arm_leg_crash` appears, and one more command makes the screen change, so the
-/// leg saves it (marker included) and exits.
+/// leg saves it (marker included) and exits. Returns only once the leg has taken the trigger (it removes the file just
+/// before it aborts), pumping the client so the queued command is sent: a caller that drops its client at once would
+/// otherwise shut the worker down with the command still queued.
 fn crash_leg(client: &mut FeAttachClient, go: &Path) {
     std::fs::write(go, b"").unwrap();
     client.send_input(b"echo SOT_FE_CRASH_TRIGGER\r\n");
+    poll_until(
+        || {
+            client.pump();
+            (!go.exists()).then_some(())
+        },
+        Duration::from_secs(30),
+        "the leg to take the crash trigger (30 s)",
+    );
 }
 
 /// Waits until the screen file the leg keeps decodes to a screen that shows `marker`: the saved screen is what a

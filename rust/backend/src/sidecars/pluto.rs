@@ -66,6 +66,19 @@ pub(crate) enum Opened {
     Starting(String),
 }
 
+/// A notebook path the server's one-line protocol cannot carry: it holds a control character, and a line break would be
+/// read as two commands and answered twice. Refused before anything is submitted.
+#[derive(Debug)]
+pub(crate) struct PathRefused(pub String);
+
+impl std::fmt::Display for PathRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "pluto: the path holds a control character: {:?}", self.0)
+    }
+}
+
+impl std::error::Error for PathRefused {}
+
 /// How long one open waits for a server that is still starting before it answers `Opened::Starting`: a warm start is
 /// seconds and a cold precompile tens of seconds, so a stall is named within the `repl.execute` default wait.
 const PLUTO_START_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
@@ -114,6 +127,10 @@ impl Pluto {
             .to_str()
             .ok_or_else(|| anyhow!("pluto: path not utf-8: {}", abs_path.display()))?
             .to_string();
+        // Before anything starts or is submitted: the protocol is one command per line.
+        if path_str.chars().any(char::is_control) {
+            return Err(PathRefused(path_str).into());
+        }
         let (tx, mut ready, start) = self.ensure_supervisor().await?;
         let state = tokio::time::timeout(PLUTO_START_WAIT, ready.wait_for(|state| *state != Ready::Starting)).await;
         match state.map(|state| state.map(|state| state.clone())) {

@@ -381,10 +381,8 @@ async fn run_one_generation(
         Some(s) => s,
         None => return (None, format!("project_root not utf-8: {}", project_root.display())),
     };
-    let escaped = project_root_str.replace('\\', "\\\\").replace('"', "\\\"");
-    let julia_src = format!(
-        "using ShipToolsKernel; ShipToolsKernel.serve(stdin, stdout; project_root=\"{escaped}\")"
-    );
+    // The root is data: it reaches the child as an environment variable, never as text of the Julia source it runs.
+    let julia_src = "using ShipToolsKernel; ShipToolsKernel.serve(stdin, stdout; project_root=ENV[\"SOT_KERNEL_PROJECT_ROOT\"])";
 
     tracing::info!(julia_bin = %julia_bin, source, "spawning kernel");
 
@@ -394,10 +392,12 @@ async fn run_one_generation(
     };
     let mut cmd = Command::new(&julia_bin);
     tmp.apply(&mut cmd);
+    // The load path is the project and the standard library: the user's default environment (`@v#.#`) is not in it.
+    cmd.env("JULIA_LOAD_PATH", "@:@stdlib").env("SOT_KERNEL_PROJECT_ROOT", project_root_str);
     cmd.arg(format!("--project={}", kernel_project.display()))
         .arg("--startup-file=no")
         .arg("-e")
-        .arg(&julia_src)
+        .arg(julia_src)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -725,3 +725,8 @@ mod deadline_tests;
 #[cfg(all(test, unix))]
 #[path = "kernel_stream_tests.rs"]
 mod stream_tests;
+
+/// The root and the load path the kernel's child is given, seen by a real julia.
+#[cfg(all(test, unix))]
+#[path = "kernel_root_tests.rs"]
+mod root_tests;

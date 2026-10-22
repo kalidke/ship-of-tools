@@ -37,7 +37,7 @@ pub(crate) struct ChildTmp {
     /// The display of a child that runs user code (Linux; `for_user_code`), whose cookie is a file in `dir`. Ended
     /// after the child and before the folder; dropped, its server's group is ended with it.
     #[cfg(target_os = "linux")]
-    display: Option<crate::sidecars::display::Display>,
+    display: Option<super::display::Display>,
     dir: tempfile::TempDir,
     /// The folder's count in this process's held folder; dropped after `dir`.
     held: InHeld,
@@ -56,14 +56,14 @@ impl ChildTmp {
     }
 
     /// As [`new`](Self::new), for a child that runs user code (the REPL, Pluto): on Linux it also starts the child's
-    /// own display under `sig` ([`Display`](crate::sidecars::display::Display)). On macOS and Windows GLMakie draws
+    /// own display under `sig` ([`Display`](super::display::Display)). On macOS and Windows GLMakie draws
     /// through the system's own windowing, and nothing is started.
     pub(crate) async fn for_user_code(sig: &'static Signal) -> std::io::Result<Self> {
         #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
         let mut tmp = Self::new()?;
         #[cfg(target_os = "linux")]
         {
-            tmp.display = Some(crate::sidecars::display::Display::start(tmp.dir.path(), sig).await);
+            tmp.display = Some(super::display::Display::start(tmp.dir.path(), sig).await);
         }
         #[cfg(not(target_os = "linux"))]
         let _ = sig;
@@ -81,7 +81,7 @@ impl ChildTmp {
         }
     }
 
-    /// Returns once the child's display has ended under it ([`Display::ended`](crate::sidecars::display::Display::ended));
+    /// Returns once the child's display has ended under it ([`Display::ended`](super::display::Display::ended));
     /// never for a child with no display. Its owner then ends the child with [`retire`](Self::retire), naming that end.
     pub(crate) async fn display_ended(&mut self) {
         #[cfg(target_os = "linux")]

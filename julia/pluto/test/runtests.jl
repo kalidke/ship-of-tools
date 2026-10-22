@@ -228,7 +228,7 @@ end
     end
 end
 
-# Linux: the display the daemon gives the server (rust/backend/src/sidecars/display) reaches a notebook's worker, which
+# Linux: the display the daemon gives the server (rust/backend/src/sidecars/child/display) reaches a notebook's worker, which
 # inherits the server's environment: it names the server's DISPLAY and XAUTHORITY, and an X client in it connects with
 # the cookie and not without. The server here is started as display/mod.rs starts it (an Xvfb that only its cookie
 # opens); an X connection stands in for a GLMakie figure, which needs the same connection and a GPU-less render of it
@@ -305,6 +305,16 @@ end
         flush(child)
         url = line_with("URL ")
         @test url !== nothing
+        if !Sys.iswindows()   # Windows drops a trailing space from a file name
+            @testset "a path ending in a space opens that file, not its trimmed name" begin
+                spaced = joinpath(dir, "spaced.jl ")
+                Pluto.save_notebook(Pluto.Notebook([Pluto.Cell("y = 1")], spaced))
+                write(child, "OPEN $spaced\n")
+                flush(child)
+                reply = line_with(r"^(URL|ERR) ")
+                @test reply !== nothing && startswith(reply, "URL ")
+            end
+        end
         secret = match(r"secret=([0-9a-f]{32})&", url).captures[1]
         id = match(r"&id=([0-9a-f-]+)", url).captures[1]
         base = "http://127.0.0.1:$port"

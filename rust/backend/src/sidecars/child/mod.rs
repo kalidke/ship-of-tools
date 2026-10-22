@@ -1,5 +1,7 @@
 //! What each child the daemon starts carries with it.
 
+#[cfg(target_os = "linux")]
+mod display;
 mod stderr_tail;
 mod tmp;
 

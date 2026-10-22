@@ -1,4 +1,4 @@
-use super::Pluto;
+use super::{Opened, PathRefused, Pluto};
 use crate::sidecars::contract_tests::{isolated, pin_env, within};
 use std::time::Duration;
 
@@ -206,5 +206,39 @@ async fn an_open_behind_a_server_still_starting_says_so_and_the_next_joins_it() 
     assert_eq!(url, super::Opened::Url("http://pluto.invalid/edit".to_string()));
     let started = std::fs::read_to_string(&starts).unwrap();
     assert_eq!(started.lines().count(), 1, "the next open started a second server: {started:?}");
+    drop(pluto);
+}
+
+/// A path holding a control character is refused before anything is submitted, with a typed error, and the server's
+/// one-line-per-command protocol stays in step: the stand-in logs every line it reads and answers each with one URL.
+/// The case that would break it: a path with a line break sent verbatim, which the child reads as two commands and
+/// answers twice, so a later caller takes an earlier caller's reply.
+#[tokio::test]
+async fn a_path_with_a_control_character_is_refused_and_reaches_no_child() {
+    let name = "sidecars::pluto::open_bound_tests::a_path_with_a_control_character_is_refused_and_reaches_no_child";
+    if !isolated(name, Duration::from_secs(60)) {
+        return;
+    }
+    let dir = tempfile::Builder::new().prefix("sot-pluto-ctl-").tempdir().unwrap();
+    let (stub, got) = (dir.path().join("stub-julia"), dir.path().join("got"));
+    sot_platform::test_exec::write_executable(
+        &stub,
+        format!(
+            "#!/bin/sh\necho 'READY http://pluto.invalid/'\nn=0\nwhile read l; do n=$((n+1)); echo \"$l\" >> '{}'; echo \"URL http://pluto.invalid/$n\"; done\n",
+            got.display()
+        ),
+    );
+    let script = dir.path().join("start.jl");
+    std::fs::write(&script, "").unwrap();
+    let _pin = pin_env(&stub, dir.path());
+    let pluto = Pluto::new(dir.path().to_path_buf(), script);
+    for bad in ["a\nOPEN /etc/passwd", "a\rb", "a\u{7f}b", "a\u{0}b"] {
+        let err = pluto.open_notebook(&dir.path().join(bad)).await.expect_err("a path with a control character");
+        assert!(err.is::<PathRefused>(), "{bad:?}: {err:#}");
+    }
+    assert!(!pluto.server_up().await, "a refused path starts no server");
+    assert!(!got.exists(), "nothing reached the child");
+    let opened = pluto.open_notebook(&dir.path().join("a.jl")).await.expect("an ordinary open");
+    assert!(matches!(opened, Opened::Url(url) if url == "http://pluto.invalid/1"), "one command, one reply");
     drop(pluto);
 }
