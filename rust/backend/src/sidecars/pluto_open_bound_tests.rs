@@ -224,8 +224,7 @@ async fn a_path_with_a_control_character_is_refused_and_reaches_no_child() {
     sot_platform::test_exec::write_executable(
         &stub,
         format!(
-            "#!/bin/sh\necho 'READY http://pluto.invalid/'\nwhile read l; do echo \"$l\" >> '{}'; echo \"URL http://pluto.invalid/$(wc -l < '{}')\"; done\n",
-            got.display(),
+            "#!/bin/sh\necho 'READY http://pluto.invalid/'\nn=0\nwhile read l; do n=$((n+1)); echo \"$l\" >> '{}'; echo \"URL http://pluto.invalid/$n\"; done\n",
             got.display()
         ),
     );
