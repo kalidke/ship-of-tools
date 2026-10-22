@@ -116,17 +116,36 @@ fn nobody_listens(
 #[cfg(unix)]
 const REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Whether the listener behind a connection replies: one `ping`, which a daemon refuses a first frame as, then a read
-/// of its refusal within `REPLY_BOUND`.
+/// Whether the listener behind a connection replies: one `ping`, which a daemon refuses a first frame as, then a frame
+/// back before `REPLY_BOUND` has passed in all (one absolute deadline, so a listener that trickles a byte before each
+/// read gains nothing).
 #[cfg(unix)]
 fn replies(client: sot_log::lane::socket_unix::SocketClient) -> bool {
+    use std::io::Read as _;
     let mut stream = client.into_stream();
-    if stream.set_read_timeout(Some(REPLY_BOUND)).is_err() || stream.set_write_timeout(Some(REPLY_BOUND)).is_err() {
+    let deadline = std::time::Instant::now() + REPLY_BOUND;
+    if stream.set_write_timeout(Some(REPLY_BOUND)).is_err() {
         return false;
     }
     let probe = Frame::req(0, op::PING, serde_json::Value::Null);
-    codec::write_frame_blocking(&mut stream, &probe).is_ok()
-        && codec::read_frame_blocking(&mut std::io::BufReader::new(stream)).is_ok()
+    if codec::write_frame_blocking(&mut stream, &probe).is_err() {
+        return false;
+    }
+    let mut line = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while !line.contains(&b'\n') && line.len() <= codec::MAX_ENVELOPE_BYTES {
+        let Some(left) = deadline.checked_duration_since(std::time::Instant::now()).filter(|d| !d.is_zero()) else {
+            return false;
+        };
+        if stream.set_read_timeout(Some(left)).is_err() {
+            return false;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => return false,
+            Ok(n) => line.extend_from_slice(&chunk[..n]),
+        }
+    }
+    line.iter().position(|b| *b == b'\n').is_some_and(|end| serde_json::from_slice::<Frame>(&line[..end]).is_ok())
 }
 
 /// Whether a daemon answers on the session socket: on Unix a socket whose listener replies to a probe frame, or one
@@ -153,12 +172,13 @@ fn socket_answers(path: &std::path::Path) -> bool {
     }
 }
 
-/// Refuses when a daemon still answers on the socket at `path`. Unlinking
-/// a live daemon's socket leaves it running on a deleted file that no
-/// client can reach until it restarts. The probe is `connect_own`, bounded by `CONNECT_BOUND`, so another account's
-/// listener and a listener with a full backlog refuse the start within that bound instead of hanging it. Only a
-/// socket nobody answers on (ECONNREFUSED), or none at all, is stale (`nobody_listens`); any other result refuses too,
-/// because it cannot tell.
+/// Refuses when a daemon still answers on the socket at `path`. Unlinking a live daemon's socket leaves it running on
+/// a deleted file that no client can reach until it restarts. The probe is `connect_own`, bounded by `CONNECT_BOUND`,
+/// then one frame and a reply (`replies`): a listener that replies refuses the start, and so does one the connect
+/// cannot tell (another account's, or a full backlog, within that bound). Only a socket nobody listens on
+/// (`ConnectionRefused`, or none at all) or a listener that completes the connect and never replies is not a daemon:
+/// the second is a copy of a dead predecessor's listener (queue item 21), and a live daemon that is only slow to reply
+/// is fenced by its state lock, which a start takes before it reaches here (`take_daemon_lock`).
 #[cfg(unix)]
 pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
     let attempt = sot_log::lane::connect_own::connect_own(path);
@@ -166,11 +186,17 @@ pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
         return Ok(());
     }
     match attempt {
-        Ok(_) => anyhow::bail!(
-            "another daemon is already listening on {}; refusing to start on its socket \
-             (stop that daemon first, or pass a different --socket)",
-            path.display()
-        ),
+        Ok(client) => {
+            if replies(client) {
+                anyhow::bail!(
+                    "another daemon is already listening on {}; refusing to start on its socket \
+                     (stop that daemon first, or pass a different --socket)",
+                    path.display()
+                );
+            }
+            tracing::warn!(socket = %path.display(), "a listener on the socket never replied; starting over it");
+            Ok(())
+        }
         Err(e) => anyhow::bail!(
             "cannot tell whether a daemon is listening on {}: {e}; refusing to unlink its socket",
             path.display()

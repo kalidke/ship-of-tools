@@ -72,7 +72,14 @@ fn the_start_probes_tell_missing_and_stale_from_live() {
         "a missing socket is not a listener"
     );
     assert!(!socket_answers(&path));
-    let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut first = std::io::BufReader::new(stream.try_clone().expect("clone"));
+        let frame = sot_protocol::codec::read_frame_blocking(&mut first).expect("the probe's frame");
+        let refusal = Frame::res(frame.id, &frame.op, serde_json::json!({ "code": "unauthenticated" }));
+        sot_protocol::codec::write_frame_blocking(&mut stream, &refusal).expect("reply");
+    });
     let refusal = refuse_live_socket(&path)
         .expect_err("a live listener refuses the start")
         .to_string();
@@ -80,6 +87,7 @@ fn the_start_probes_tell_missing_and_stale_from_live() {
         refusal.contains("another daemon is already listening on"),
         "{refusal}"
     );
+    server.join().expect("the replying listener");
     let stale = dir.path().join("t.sock");
     let socket = unlistened_socket(&stale);
     assert!(
@@ -108,6 +116,16 @@ fn the_lock_probe_reads_a_listener_that_never_replies_as_not_answering() {
         !socket_answers(&path),
         "a listener that never serves its connections is not a daemon that answers"
     );
+}
+
+/// The start path's refusal agrees with the lock's probe: a listener that never replies does not refuse a start (the
+/// state lock fences a live daemon), where one that replies does (`the_start_probes_tell_missing_and_stale_from_live`).
+#[cfg(unix)]
+#[test]
+fn the_start_refusal_reads_a_listener_that_never_replies_as_no_daemon() {
+    let (_dir, path) = probe_socket_path();
+    let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+    assert!(refuse_live_socket(&path).is_ok(), "a listener that never serves is not a daemon");
 }
 
 /// The other side of queue item 21: a listener that serves the probe, here with the refusal a daemon gives a first
