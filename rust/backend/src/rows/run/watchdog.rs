@@ -6,7 +6,7 @@ use super::start::settle_after_spawn;
 use super::UNREACHABLE_PHASE;
 use crate::rows::spawn::detach::{spawn_detached_supervisor, Spawn, SupervisorChild};
 use crate::rows::Workspaces;
-use sot_log::supervisor::{StartMode, EXIT_CLEAN, EXIT_CONTENDED, EXIT_TERMINAL};
+use sot_log::supervisor::{StartMode, EXIT_AGENT_ENDED, EXIT_CLEAN, EXIT_CONTENDED, EXIT_TERMINAL};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -38,22 +38,11 @@ enum LegOutcome {
     /// restarted — the lane (or its absence) already says
     /// everything a client needs.
     Clean,
-    /// Exit 69 (`EXIT_TERMINAL`): terminal, UNCONDITIONALLY — never
-    /// restarted, regardless of whether the lane still answers. Rule
-    /// F: the OLD "does the lane still answer" discriminator (a
-    /// dropped `ForeignFence` outcome) tried to tell apart "lost the
-    /// race for `supervisor.lock`" from "a genuinely exhausted
-    /// producer", but `sot-capsule supervise` already runs its OWN
-    /// internal flap/retry budget (`FLAP_THRESHOLD`,
-    /// `respawn_or_terminal` in `rust/log/src/supervisor/`) before
-    /// it ever chooses to exit 69 — so a second restart layer on top,
-    /// here, is always redundant at best. At worst it actively hid a
-    /// real failure: a producer that will NEVER recover (e.g.
-    /// `claude` missing from the daemon's PATH) burned the WHOLE
-    /// daemon-side restart budget (`MAX_RESTARTS_PER_WINDOW` attempts
-    /// against `RESTART_WINDOW`) before finally reaching this same
-    /// terminal mark anyway — "the supervisor's own three legs, not a
-    /// rolling restart loop."
+    /// Exit 69 (`EXIT_TERMINAL`): the supervisor cannot serve the row (its folders, its lane, the run's own failure, a
+    /// reset that failed), terminal UNCONDITIONALLY -- never restarted, regardless of whether the lane still answers.
+    /// The supervisor does not retry the agent itself: an agent that cannot run reaches this watchdog as 75 or 76, and
+    /// this watchdog's budget (`MAX_RESTARTS_PER_WINDOW` within `RESTART_WINDOW`) is the one restart budget, ending in
+    /// the same terminal mark.
     Terminal,
     /// Exit 70 (`EXIT_CONTENDED`): the authority fence was already
     /// held by a LIVE supervisor when this leg tried to acquire it —
@@ -67,7 +56,11 @@ enum LegOutcome {
     /// [`resume_if_absent`]/[`ensure_started`] to find and resume
     /// under the row's guard, same as any other quiet lane.
     Contended,
-    /// Anything else: a genuine crash needing the restart sequence.
+    /// Exit 76 (`EXIT_AGENT_ENDED`): the agent started and ended by itself, with no end asked for. Restarted like a
+    /// crash, within the same budget; kept apart so the log names it.
+    AgentEnded,
+    /// Anything else, 75 (`EXIT_AGENT_NOT_STARTED`: the agent could not be spawned) and a killed supervisor included:
+    /// a genuine crash needing the restart sequence, with the same argv.
     Crash,
 }
 
@@ -78,6 +71,7 @@ fn classify_exit_code(code: Option<i32>) -> LegOutcome {
         Some(EXIT_CLEAN) => LegOutcome::Clean,
         Some(EXIT_TERMINAL) => LegOutcome::Terminal,
         Some(EXIT_CONTENDED) => LegOutcome::Contended,
+        Some(EXIT_AGENT_ENDED) => LegOutcome::AgentEnded,
         _ => LegOutcome::Crash,
     }
 }
@@ -291,6 +285,7 @@ pub(super) fn install_watchdog(
                 // same budget.
                 None => LegOutcome::Crash,
             };
+            let agent_ended = matches!(outcome, LegOutcome::AgentEnded);
             match outcome {
                 LegOutcome::Clean => return,
                 LegOutcome::Terminal => {
@@ -308,7 +303,7 @@ pub(super) fn install_watchdog(
                     );
                     return;
                 }
-                LegOutcome::Crash => {
+                LegOutcome::Crash | LegOutcome::AgentEnded => {
                     // Decided before taking the guard -- giving up needs no recheck (R4a).
                     let now = Instant::now();
                     restart_times.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
@@ -317,7 +312,19 @@ pub(super) fn install_watchdog(
                             workspace_id = %workspace_id, window = ?RESTART_WINDOW, max = MAX_RESTARTS_PER_WINDOW,
                             "capsule supervisor watchdog: restart budget exhausted -- giving up, marking terminal"
                         );
-                        observe_terminal(&workspaces, &workspace_id, current_identity);
+                        // The same recheck as a restart's, under the guard: nothing else has started the row since.
+                        let _held = capsule_guard.lock().await;
+                        let may_act = {
+                            let dir = state_dir.clone();
+                            let wsid = workspace_id.clone();
+                            let workspaces = workspaces.clone();
+                            tokio::task::spawn_blocking(move || watchdog_may_act(&wsid, &dir, &workspaces)).await.unwrap_or(false)
+                        };
+                        if may_act {
+                            if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
+                                ws.latch_terminal();
+                            }
+                        }
                         return;
                     }
                     wait_for_test_watchdog_restart_barrier().await;
@@ -336,6 +343,7 @@ pub(super) fn install_watchdog(
                     let backoff = RESTART_BACKOFFS[restart_times.len().min(RESTART_BACKOFFS.len() - 1)];
                     tracing::warn!(
                         workspace_id = %workspace_id, backoff = ?backoff, attempt = restart_times.len() + 1,
+                        agent_ended,
                         "capsule supervisor watchdog: crashed, restarting with --resume"
                     );
                     tokio::time::sleep(backoff).await;

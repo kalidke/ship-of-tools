@@ -13,7 +13,9 @@ fn exit_codes_classify_as_the_supervisor_returns_them() {
     assert!(matches!(classify_exit_code(Some(0)), LegOutcome::Clean));
     assert!(matches!(classify_exit_code(Some(69)), LegOutcome::Terminal));
     assert!(matches!(classify_exit_code(Some(70)), LegOutcome::Contended));
-    for code in [Some(1), Some(2), Some(-1), None] {
+    assert!(matches!(classify_exit_code(Some(76)), LegOutcome::AgentEnded));
+    // 75, the agent could not be spawned, is a crash: restarted with the same argv.
+    for code in [Some(1), Some(2), Some(-1), Some(75), None] {
         assert!(matches!(classify_exit_code(code), LegOutcome::Crash));
     }
 }

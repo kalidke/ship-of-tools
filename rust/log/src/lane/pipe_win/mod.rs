@@ -413,7 +413,6 @@ mod slot;
 
 use accept::*;
 pub(crate) use client::connect_pipe_path_unchallenged;
-pub(crate) use client::connect_voyage_pipe_unchallenged;
 pub use client::{connect_voyage_pipe, PipeClient, PipeEndpoint};
 use conn::*;
 use registry::*;

@@ -21,18 +21,12 @@ pub enum EndRunOutcome {
     /// the leg's own end-marker alone, NEVER via `verify_voyage`, so
     /// this must not be reported as `RecordVerified`/`RecordClosed`.
     AlreadyEnded,
-    /// The authority had already reached `Terminal` before this call
-    /// ever reached it — its own internal flap/retry budget exhausted
-    /// (`FLAP_THRESHOLD`, `rust/log/src/supervisor/`), most often an
-    /// agent argv that can never launch (e.g. `claude` missing from
-    /// PATH). A `Terminal` authority admits no fresh `EndRun` anyway
-    /// (`supervisor/authority/mod.rs`'s `handle_command` gates `EndRun` on
-    /// `Lifecycle::Ready`) — so this sends `stop` instead (admitted
-    /// unconditionally, regardless of lifecycle: `SupervisorOp::Stop`'s
-    /// own admission has no lifecycle gate) and waits for its confirmed
-    /// exit. Without this arm the row was UNENDABLE: `workspace.destroy`
-    /// kept reporting `NotEnded` forever, because nothing ever told the
-    /// stuck authority to stop.
+    /// The authority had already reached `Terminal` before this call ever reached it: its own failure to serve the
+    /// row (its folders, its lane, the run's failure), or the watchdog's restart budget exhausted over an agent that
+    /// can never launch (e.g. `claude` missing from PATH). A `Terminal` authority admits no fresh `EndRun`, so this
+    /// sends `stop` instead (admitted unconditionally, whatever the phase) and waits for its confirmed exit. Without
+    /// this arm the row was UNENDABLE: `workspace.destroy` kept reporting `NotEnded` forever, because nothing ever told
+    /// the stuck authority to stop.
     ///
     /// `Terminal` alone does NOT prove the leg died (Codex review,
     /// 2026-09-11: watchdog restart-budget exhaustion, a failed

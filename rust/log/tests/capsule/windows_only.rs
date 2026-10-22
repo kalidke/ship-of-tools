@@ -476,7 +476,7 @@ fn release_and_read_reply(helper: &mut std::process::Child) -> String {
     })
 }
 
-/// ADR 0043 decision 32 as amended 2026-10-03: the leg job
+/// ADR 0043 decision 32 as amended 2026-10-03: the agent job
 /// (`AnonymousJob::create`, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` alone)
 /// refuses a breakaway. The helper is assigned to the job, released, and
 /// asked to spawn a breakaway child; `CreateProcess` must fail with
@@ -485,7 +485,7 @@ fn release_and_read_reply(helper: &mut std::process::Child) -> String {
 /// outlive the row.
 #[test]
 #[cfg(windows)]
-fn the_leg_job_refuses_a_breakaway() {
+fn the_agent_job_refuses_a_breakaway() {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;

@@ -191,6 +191,15 @@ impl Workspace {
         *cell = PhaseCell { supervisor: Some(identity), ..PhaseCell::default() };
     }
 
+    /// The watchdog's give-up, under the row's guard: the restart budget is spent, so the row is `terminal` whatever
+    /// supervisor its cell was last claimed by. A supervisor that exits before it answers its lane is never learned, so
+    /// no observation could name it and the cell keeps an earlier, dead one. A start's `begin_supervisor_epoch` clears it.
+    pub(crate) fn latch_terminal(&self) {
+        let mut cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
+        cell.phase = Phase::Terminal;
+        cell.consecutive_failures = 0;
+    }
+
     /// Whether a watchdog currently owns this row's restarts — see the
     /// field's own doc. Read by [`crate::rows::run::activation::
     /// resume_locked`] before ever spawning a resume.

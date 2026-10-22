@@ -84,10 +84,10 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// `--first-leg-only <token>` keeps the token on the first leg this supervisor process spawns and strips it from
-/// every leg after a producer has run (`producer_ran`, set at Ready): the daemon passes a reauth's `--resume <id>` this
-/// way, so only the reauth's own leg resumes by id. The producer appends its own argv to a file and sleeps, so each
-/// leg's own line is unambiguous; the leg is killed directly, after Ready, for a fast respawn.
+/// `--first-leg-only <token>` keeps the token on the first run this supervisor process starts and strips it from every
+/// run after an agent has run: the daemon passes a reauth's `--resume <id>` this way, so only the reauth's own run
+/// resumes by id. The agent appends its own argv to a file and sleeps, so each run's own line is unambiguous; the run
+/// is ended after Ready and reset, for a fast second run.
 #[cfg(target_os = "linux")]
 #[test]
 fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_ran() {
@@ -119,7 +119,6 @@ fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     let mut guard = CapsuleGuard::spawn(&mut cmd);
-    let supervisor_pid = guard.id();
 
     let read_lines = |path: &Path| -> Option<Vec<String>> {
         std::fs::read_to_string(path).ok().map(|c| c.lines().map(str::to_string).collect())
@@ -135,21 +134,14 @@ fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_
     // Ready first: that is the agent having run, after which no run carries the token.
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
-    let original_agent_pid = poll_until(
-        || direct_children_of(supervisor_pid).into_iter().next(),
-        Duration::from_secs(10),
-        "the supervisor's own agent child pid to appear",
-    );
-    unsafe {
-        libc::kill(original_agent_pid as libc::pid_t, libc::SIGKILL);
-    }
+    end_run_and_expect_ended(&conn, "end-before-reset", "test", voyage.clone());
     poll_until(
         || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
         Duration::from_secs(30),
-        "the supervisor to rest at EndedNoRespawn after its agent was killed",
+        "the supervisor to rest at EndedNoRespawn after its run was ended",
     );
-    assert_eq!(command(&conn, "reset-after-kill", SupervisorOp::Reset { voyage: Some(voyage) }), SupervisorOperationState::Accepted);
-    let _ = poll_to_terminal(&conn, "reset-after-kill", Duration::from_secs(30));
+    assert_eq!(command(&conn, "reset-after-end", SupervisorOp::Reset { voyage: Some(voyage) }), SupervisorOperationState::Accepted);
+    let _ = poll_to_terminal(&conn, "reset-after-end", Duration::from_secs(30));
 
     let lines = poll_until(
         || read_lines(&log_path).filter(|l| l.len() >= 2),
@@ -313,7 +305,6 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     let mut guard = CapsuleGuard::spawn(&mut cmd);
-    let supervisor_pid = guard.id();
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     poll_until(
         || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
@@ -330,21 +321,14 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
     let lines = poll_until(|| read_lines(&log_path).filter(|l| !l.is_empty()), Duration::from_secs(30), "the reset's leg argv");
     assert_eq!(lines[0], "--resume", "the reauth's own leg (the reset's) must keep its first-leg-only token");
 
-    let reset_agent_pid = poll_until(
-        || direct_children_of(supervisor_pid).into_iter().next(),
-        Duration::from_secs(10),
-        "the reset's agent child pid",
-    );
-    unsafe {
-        libc::kill(reset_agent_pid as libc::pid_t, libc::SIGKILL);
-    }
+    end_run_and_expect_ended(&conn, "end-reauth-run", "test", new_voyage.clone());
     poll_until(
         || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
         Duration::from_secs(30),
-        "EndedNoRespawn after the reset's agent was killed",
+        "EndedNoRespawn after the reset's run was ended",
     );
-    assert_eq!(command(&conn, "reset-after-kill", SupervisorOp::Reset { voyage: Some(new_voyage.clone()) }), SupervisorOperationState::Accepted);
-    let _ = poll_to_terminal(&conn, "reset-after-kill", Duration::from_secs(30));
+    assert_eq!(command(&conn, "reset-after-end", SupervisorOp::Reset { voyage: Some(new_voyage.clone()) }), SupervisorOperationState::Accepted);
+    let _ = poll_to_terminal(&conn, "reset-after-end", Duration::from_secs(30));
     let (current, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
     assert_ne!(current, new_voyage);
     let lines = poll_until(|| read_lines(&log_path).filter(|l| l.len() >= 2), Duration::from_secs(30), "the next run's argv");
@@ -369,4 +353,62 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
+}
+
+/// An agent that ends by itself, with no end asked for, ends the supervisor with 76: the daemon's watchdog restarts
+/// it, and the supervisor never rests at `EndedNoRespawn` over an end nobody requested.
+#[test]
+fn an_agent_that_ends_by_itself_ends_the_supervisor_with_76() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let mut guard = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "exit 3"]);
+    let status = wait_for_exit(&mut guard, Duration::from_secs(30));
+    assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_AGENT_ENDED), "exit status: {status:?}");
+}
+
+/// An agent that cannot be started ends the supervisor with 75, never `terminal` (69): the watchdog's budget decides.
+#[test]
+fn an_agent_that_cannot_be_started_ends_the_supervisor_with_75() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let mut guard = spawn_supervisor(&state_dir, "--start", &["/nonexistent/agent"]);
+    let status = wait_for_exit(&mut guard, Duration::from_secs(30));
+    assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_AGENT_NOT_STARTED), "exit status: {status:?}");
+}
+
+/// A stop is not an end of the run: it leaves no request on the voyage, so the next start resumes the row with a new
+/// run in the same voyage.
+#[test]
+fn a_stop_leaves_no_end_request_so_the_next_start_runs_the_agent_again() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let mut first = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    let _ = command(&conn, "stop", SupervisorOp::Stop);
+    let status = wait_for_exit(&mut first, Duration::from_secs(30));
+    assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_CLEAN), "exit status: {status:?}");
+    drop(conn);
+
+    let mut second = spawn_supervisor(&state_dir, "--resume", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage_after, leg_after) = wait_for_ready(&conn, Duration::from_secs(90));
+    assert_eq!(voyage_after, voyage, "the same voyage");
+    assert_eq!(leg_after, leg + 1, "one new run");
+    end_run_and_expect_ended(&conn, "cleanup-end", "cleanup", voyage_after);
+    let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
+    let _ = wait_for_exit(&mut second, Duration::from_secs(30));
 }

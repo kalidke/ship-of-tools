@@ -217,6 +217,9 @@ pub enum Command {
     /// the wire's `Action::Shutdown`, which drives the identical
     /// `ExitKind::Requested` path).
     Kill,
+    /// The run ends because its supervisor is stopping, not because anyone ended the run: `ended` records no request,
+    /// so a `--resume` of the row starts the agent again.
+    Stop,
 }
 
 /// Why `run` returned. In-memory only — no frame field encodes this (ADR

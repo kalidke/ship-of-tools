@@ -7,8 +7,9 @@
 //! # Phases
 //!
 //! `starting` (until the agent has written or lived two seconds), `ready`, `ending` (an `end_run` asked, the run
-//! ending), `ended_no_respawn` (the agent is gone; only a reset or a stop remains) and `terminal` (sticky). The
-//! supervisor never starts the agent a second time on its own: the daemon's watchdog is the one restart budget.
+//! ending), `ended_no_respawn` (the agent is gone because an end was asked for; only a reset or a stop remains) and
+//! `terminal` (sticky). The supervisor never starts the agent a second time on its own: an agent that ends unasked
+//! ends the supervisor with a code the daemon's watchdog reads, and the watchdog's budget is the one restart budget.
 //!
 //! # Threads
 //!
@@ -19,7 +20,8 @@
 //! # Exit codes
 //!
 //! `0` after a stop; `69` when terminal; `70` when the fence is held by a live supervisor, which a launcher answers
-//! by looking for that supervisor, never by starting a third.
+//! by looking for that supervisor, never by starting a third; `75` when the agent could not be started and `76` when
+//! it started and ended by itself, neither asked to stop (the launcher restarts, within its budget).
 
 #![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 
@@ -75,10 +77,14 @@ const TERMINAL_EXIT_GRACE: Duration = Duration::from_secs(2);
 const STOP_REPLY_BOUND: Duration = Duration::from_secs(3);
 
 /// The launcher's contract: `0` clean end, do not restart; `69` terminal, do not restart, surface it; `70` the
-/// fence was already held by a live supervisor, so look for it and never start a third; anything else is a crash.
+/// fence was already held by a live supervisor, so look for it and never start a third; `75` the agent could not be
+/// started, restart with the same argv; `76` the agent started and ended by itself, restart without the arguments
+/// meant for the first run only; anything else is a crash, restarted with the same argv.
 pub const EXIT_CLEAN: i32 = 0;
 pub const EXIT_TERMINAL: i32 = 69;
 pub const EXIT_CONTENDED: i32 = 70;
+pub const EXIT_AGENT_NOT_STARTED: i32 = 75;
+pub const EXIT_AGENT_ENDED: i32 = 76;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartMode {
@@ -194,6 +200,11 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
 
 /// The main thread's life: discover the voyage, run the agent, and after each run wait for what a client asks.
 fn drive(config: &SuperviseConfig, shared: &Shared) -> i32 {
+    // Test seam: holds the supervisor in `starting` for the named milliseconds, before it has a voyage, so a test can
+    // prove a caller waits for a row to rest rather than deciding from a snapshot mid-start. Inert unless named.
+    if let Ok(ms) = std::env::var("SOT_TEST_RECOVERY_DELAY_MS").unwrap_or_default().parse::<u64>() {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
     let mut voyage = match discover_or_mint_voyage(&config.state_dir, config.mode) {
         Ok(v) => v,
         Err(e) => {
@@ -218,6 +229,10 @@ fn drive(config: &SuperviseConfig, shared: &Shared) -> i32 {
                 agent_ran |= started;
                 shared.run_ended();
             }
+            // Nobody asked for this end: the supervisor ends with the code the daemon's watchdog restarts on, unless a
+            // stop is already on its way.
+            RunEnd::Unasked(_) if shared.stop_asked() => return finish(shared),
+            RunEnd::Unasked(code) => return code,
             RunEnd::Failed(detail) => shared.terminal(detail),
         }
         match shared.wait_after_run() {
@@ -256,8 +271,11 @@ fn finish(shared: &Shared) -> i32 {
 enum RunEnd {
     /// A stop was asked before the agent started.
     NotStarted,
-    /// The run is over; `started` says the agent was started at all.
+    /// The run is over because an end was asked for (or a resume rests over one); `started` says the agent was started
+    /// at all.
     Ended { started: bool },
+    /// The agent could not be started or ended by itself, with no end asked for: the exit code to leave with.
+    Unasked(i32),
     Failed(String),
 }
 
@@ -284,10 +302,18 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, voyage: &str, agent_ran:
     drop(transport);
     match result {
         Ok(summary) => match summary.exit_kind {
-            ExitKind::SpawnFailed => RunEnd::Failed("the agent could not be started".into()),
+            ExitKind::SpawnFailed if shared.end_asked() => RunEnd::Ended { started: false },
+            ExitKind::SpawnFailed => {
+                note(format_args!("the agent could not be started"));
+                RunEnd::Unasked(EXIT_AGENT_NOT_STARTED)
+            }
             ExitKind::ProducerExited | ExitKind::Requested => {
                 note(format_args!("the agent ended: {:?} ({:?})", summary.exit_code, summary.exit_kind));
-                RunEnd::Ended { started: signals.spawned_at().is_some() }
+                if summary.exit_kind == ExitKind::ProducerExited && !shared.end_asked() {
+                    RunEnd::Unasked(EXIT_AGENT_ENDED)
+                } else {
+                    RunEnd::Ended { started: signals.spawned_at().is_some() }
+                }
             }
         },
         Err(e) => RunEnd::Failed(bounded_detail(format!("the run failed: {e}"))),

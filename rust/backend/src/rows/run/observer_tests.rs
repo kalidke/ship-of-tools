@@ -191,6 +191,23 @@ fn terminal_unclaimed_is_refused_by_a_claimed_cell() {
     assert_eq!(ws.phase(), Phase::Ready);
 }
 
+/// The watchdog's give-up, with its restart budget spent, latches a cell claimed by an earlier supervisor (the last
+/// one died before it answered, so no observation can name it); the next start's epoch clears the latch.
+#[test]
+fn the_watchdogs_give_up_latches_a_claimed_cell_and_a_later_start_clears_it() {
+    let a = identity(1, 100);
+    let ws = seeded_capsule_row(a);
+    observe(&ws, phase_obs(Phase::Ready, a));
+    ws.latch_terminal();
+    assert_eq!(ws.phase(), Phase::Terminal);
+    assert_eq!(ws.current_supervisor(), Some(a));
+
+    let b = identity(2, 200);
+    ws.begin_supervisor_epoch(b);
+    observe(&ws, phase_obs(Phase::Ready, b));
+    assert_eq!(ws.phase(), Phase::Ready);
+}
+
 /// `activation_error` is retained until the next attempt; orthogonal to phase.
 #[test]
 fn activation_error_is_independent_of_phase_and_clears_on_the_next_attempt() {

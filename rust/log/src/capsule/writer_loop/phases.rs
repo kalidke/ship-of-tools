@@ -50,6 +50,10 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
                 latch_run_end(&mut leg, "operator_kill".to_string())?;
                 break 'main ExitKind::Requested;
             }
+            Ok(Command::Stop) => {
+                leg.shutdown_reason.get_or_insert_with(|| "supervisor_stop".to_string());
+                break 'main ExitKind::Requested;
+            }
             Err(mpsc::TryRecvError::Empty) => {}
             // The caller dropped its `Sender` — NOT a kill (ADR: no
             // channel-disconnect-as-kill, "no exit code, no FE event, no

@@ -180,6 +180,16 @@ impl Shared {
         }
     }
 
+    /// An `end_run` is in flight or a stop was asked: the run's end is not the agent's own.
+    pub(super) fn end_asked(&self) -> bool {
+        let inner = self.lock();
+        inner.ending.is_some() || inner.stop.is_some()
+    }
+
+    pub(super) fn stop_asked(&self) -> bool {
+        self.lock().stop.is_some()
+    }
+
     pub(super) fn is_terminal(&self) -> bool {
         self.lock().phase == SupervisorPhase::Terminal
     }
@@ -306,7 +316,7 @@ impl Shared {
                 if inner.stop.is_none() {
                     inner.stop = Some(StopRequest { primary_conn: conn, delivered: false });
                     if let Some(run) = &inner.run {
-                        let _ = run.kill.send(Command::Kill);
+                        let _ = run.kill.send(Command::Stop);
                     }
                 }
                 inner.operations.insert(operation_id, Operation { op, state: SupervisorOperationState::Stopping });
