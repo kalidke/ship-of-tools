@@ -30,51 +30,64 @@ fn read_pid(pid_file: &Path) -> u32 {
     )
 }
 
-/// The agent is gone: no such process, or one that is only a zombie awaiting a reaper.
-#[cfg(target_os = "linux")]
-fn process_gone(pid: u32) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Err(_) => true,
-        Ok(stat) => stat.rfind(')').is_some_and(|close| stat[close + 1..].split_whitespace().next() == Some("Z")),
+/// Watches the agent's death without signaling it. Opened while the agent is alive, before anything is done to its
+/// supervisor, so the handle names that process and no later one that reuses its pid: a pidfd on Linux (its parent
+/// checked to be the supervisor this test spawned, after it is open), a process handle on Windows. The test never
+/// ends the agent: a red leaves it to its dying supervisor and the guard's own cleanup of the capsule it started.
+struct AgentWatch {
+    #[cfg(target_os = "linux")]
+    fd: std::os::fd::OwnedFd,
+    #[cfg(windows)]
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+impl AgentWatch {
+    /// `supervisor` is the pid of the supervisor this test spawned; the agent must be its own child.
+    fn open(agent: u32, supervisor: u32) -> AgentWatch {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd as _;
+            let fd = sot_platform::identity::challenge_unix::pidfd_open(agent).expect("open a pidfd for the live agent");
+            let stat = std::fs::read_to_string(format!("/proc/{agent}/stat")).expect("the agent is alive after its pidfd opened");
+            let parent = stat.rfind(')').and_then(|close| stat[close + 1..].split_whitespace().nth(1).map(str::to_string));
+            assert_eq!(parent.as_deref(), Some(supervisor.to_string().as_str()), "the pidfd names the supervisor's own child");
+            let _ = fd.as_raw_fd();
+            AgentWatch { fd }
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+            use windows_sys::Win32::System::Threading::OpenProcess;
+            let _ = supervisor;
+            // SAFETY: a plain Win32 call; the handle is closed in `Drop`.
+            let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, agent) };
+            assert!(!handle.is_null(), "open a handle for the live agent");
+            AgentWatch { handle }
+        }
+    }
+
+    /// Whether the agent has ended within `bound`.
+    fn ended_within(&self, bound: Duration) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd as _;
+            sot_platform::identity::challenge_unix::poll_pidfd_readable(self.fd.as_raw_fd(), bound).expect("poll the agent's pidfd")
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+            // SAFETY: a plain Win32 wait on a handle this value owns.
+            unsafe { WaitForSingleObject(self.handle, bound.as_millis() as u32) == WAIT_OBJECT_0 }
+        }
     }
 }
 
 #[cfg(windows)]
-fn process_gone(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    const STILL_ACTIVE: u32 = 259;
-    // SAFETY: plain Win32 calls on a handle this function opens and closes.
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return true;
-        }
-        let mut code = 0u32;
-        let ok = GetExitCodeProcess(handle, &mut code);
-        CloseHandle(handle);
-        ok != 0 && code != STILL_ACTIVE
-    }
-}
-
-/// Ends an agent the test's own supervisor started, after a red left it running. Only ever a pid the agent itself
-/// recorded.
-fn end_agent(pid: u32) {
-    #[cfg(unix)]
-    // SAFETY: SIGKILL to the agent this test started through its own supervisor, a plain syscall.
-    unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGKILL);
-    }
-    // SAFETY: plain Win32 calls on a handle this block opens and closes; it ends the process by that handle.
-    #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
-        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if !handle.is_null() {
-            TerminateProcess(handle, 1);
-            CloseHandle(handle);
-        }
+impl Drop for AgentWatch {
+    fn drop(&mut self) {
+        // SAFETY: closes the handle `open` returned, once.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
     }
 }
 
@@ -105,7 +118,6 @@ fn one_process_per_row() {
         .ok()
         .and_then(|stat| stat.rfind(')').map(|close| stat[close + 1..].split_whitespace().nth(1).map(str::to_string)))
         .flatten();
-    end_agent(agent);
     assert_eq!(
         parent_of_agent.as_deref(),
         Some(guard.id().to_string().as_str()),
@@ -118,7 +130,8 @@ fn one_process_per_row() {
 }
 
 /// The agent ends within two seconds of its supervisor being killed outright: SIGKILL on Unix, TerminateProcess on
-/// Windows, delivered by the test to the supervisor it started.
+/// Windows, delivered through the `Child` handle of the supervisor the test started; the agent is only watched, never
+/// signaled.
 #[test]
 fn the_agent_dies_with_its_supervisor() {
     let _serial = serial();
@@ -134,15 +147,12 @@ fn the_agent_dies_with_its_supervisor() {
     let conn = wait_for_lane(&state_dir_hash(&state_dir), Duration::from_secs(30));
     wait_for_ready(&conn, Duration::from_secs(90));
     drop(conn);
+    let watch = AgentWatch::open(agent, guard.id());
 
     guard.child_mut().kill().expect("kill the supervisor this test started");
     let killed = Instant::now();
-    let gone = free_within(|| process_gone(agent), Duration::from_secs(2));
-    let took = killed.elapsed();
-    if !gone {
-        end_agent(agent);
-    }
-    assert!(gone, "the agent {agent} outlived its killed supervisor by {took:?}");
+    let gone = watch.ended_within(Duration::from_secs(2));
+    assert!(gone, "the agent outlived its killed supervisor by {:?}", killed.elapsed());
 }
 
 /// A reset is admitted the instant an `end_run` has answered: the answer means the run has ended, so the next

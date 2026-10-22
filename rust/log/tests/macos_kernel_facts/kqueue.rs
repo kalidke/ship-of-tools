@@ -663,3 +663,46 @@ fn pid_reuse_needs_a_full_sequential_wrap_and_a_spent_knote_never_rearms() {
         descents.len()
     ));
 }
+
+/// The guarantee's ordinary case on macOS (`rust/log/CLAUDE.md`, "the agent dies with its supervisor"): there is no
+/// parent-death signal, so the agent ends with a SIGKILLed supervisor only through the terminal's hangup, and an agent
+/// that does not ignore SIGHUP does end. The supervisor is the real `sot-capsule supervise` this test spawned, killed
+/// through its own `Child`; the agent is only watched, through a kqueue `NOTE_EXIT` registered while it is alive, and
+/// never signaled. An agent that ignores SIGHUP may outlive its supervisor here (queue item MACOS-AGENT-WATCH), which is
+/// why that case is tested on Linux and Windows only.
+#[test]
+fn an_agent_that_does_not_ignore_sighup_dies_with_its_killed_supervisor() {
+    let tmp = tempfile::Builder::new().prefix("sot-t").tempdir_in("/tmp").expect("a short, private run dir");
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let pid_file = tmp.path().join("agent.pid");
+    let script = format!("echo $$ > '{}'; exec sleep 60", pid_file.display());
+    let mut supervisor = Command::new(env!("CARGO_BIN_EXE_sot-capsule"))
+        .arg("supervise")
+        .arg(&state_dir)
+        .arg("--start")
+        .arg("--")
+        .args(["/bin/sh", "-c", script.as_str()])
+        .env("SOT_RUNTIME_DIR", tmp.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the supervisor");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let agent: u32 = loop {
+        if let Some(pid) = std::fs::read_to_string(&pid_file).ok().and_then(|s| s.trim().parse().ok()) {
+            break pid;
+        }
+        assert!(Instant::now() < deadline, "the agent never recorded its pid");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let kq = new_kqueue();
+    let attach = attach_note_exit(kq.as_raw_fd(), agent);
+    assert!(attach.errno == 0 && attach.rc >= 0, "register NOTE_EXIT on the live agent: {}", attach.detail);
+
+    supervisor.kill().expect("kill the supervisor this test spawned");
+    supervisor.wait().expect("reap it");
+    let event = drain_one(kq.as_raw_fd(), Duration::from_secs(2));
+    assert!(event.rc >= 1 && event.fflags & (libc::NOTE_EXIT as u32) != 0, "the agent outlived its killed supervisor: {}", describe_event(&event));
+}
