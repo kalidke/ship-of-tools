@@ -16,7 +16,7 @@ mod support;
 use support::*;
 
 use sot_log::attach_client::client::FeAttachClient;
-use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
+use sot_topology::lane_client::{DaemonLaneEndpoint, LaneDial};
 use sot_protocol::{codec, op, Frame, HelloReq};
 
 use std::io::{BufReader, Write};
@@ -269,8 +269,8 @@ fn bridge_hello_dial(mut cmd: Command, hello: &Frame, guard: &ParentSshEnvironme
 }
 
 fn private_ssh_command(remote: &str) -> Command {
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap();
-    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap();
+    let gate = sot_topology::ssh_bridge::LinkGate::default();
     let command = gate.command(&recipe).expect("up gate");
     let mut args: Vec<_> = command.get_args().map(|arg| arg.to_owned()).collect();
     args.pop().expect("remote command");
@@ -311,7 +311,7 @@ fn private_ssh_endpoint(remote: &str, dir: &Path, guard: std::sync::Arc<ParentSs
     let script = format!("#!/usr/bin/env python3\nimport os, sys\nos.execvp('ssh', ['ssh'] + sys.argv[1:-1] + [{remote:?}])\n");
     sot_platform::test_exec::write_executable(&wrapper, script);
     guard.observe("after preparing private ssh endpoint");
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap();
     DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(std::sync::Arc::new(move |command| {
         guard.observe("at endpoint spawn");
         let spawned = Command::new(&wrapper).args(command.get_args())

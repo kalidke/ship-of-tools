@@ -6,7 +6,7 @@ use std::time::Duration;
 use super::lane_child::tests::spawn_stub_child;
 
 fn spare_endpoint() -> DaemonLaneEndpoint {
-    let recipe = crate::topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
+    let recipe = crate::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
     DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None)
 }
 
@@ -327,7 +327,7 @@ fn a_spare_handshake_in_flight_ends_when_its_link_closes() {
     gate.set_up(false);
     std::thread::sleep(Duration::from_secs(1));
     gate.set_up(true);
-    let (result, at) = ended.recv_timeout(crate::topology::ssh_bridge::SSH_LOGIN_BOUND + Duration::from_secs(30)).expect("the dial ended");
+    let (result, at) = ended.recv_timeout(crate::ssh_bridge::SSH_LOGIN_BOUND + Duration::from_secs(30)).expect("the dial ended");
     dial.join().unwrap();
     let after = at.duration_since(closed);
     println!("spare handshake in flight at a link close: result={result:?} after_close_ms={}", after.as_millis());

@@ -7,7 +7,7 @@ use std::time::Duration;
 /// This box's own daemon's endpoint when one is there to ask: a socket that exists (Unix), a pipe this account
 /// serves (Windows). The shell's choice of "the daemon that owns this folder" starts here.
 pub(crate) fn own_daemon(env: &crate::comm::Env) -> Option<String> {
-    let ep = sot_protocol::topology::endpoint::local_endpoint_in(env);
+    let ep = sot_topology::endpoint::local_endpoint_in(env);
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt;
@@ -27,9 +27,9 @@ pub(crate) fn own_daemon(env: &crate::comm::Env) -> Option<String> {
 /// this box's own endpoint where no topology was ever declared. `Err` is the topology's own words.
 pub(crate) fn relay_endpoint(env: &crate::comm::Env) -> Result<String, String> {
     let me = sot_platform::host::state_dir::host_name_in(env)?;
-    match sot_protocol::topology::load_in(env)? {
-        Some((_, t)) => sot_protocol::topology::relay_endpoint(&t, &me),
-        None => Ok(sot_protocol::topology::endpoint::local_endpoint_in(env)),
+    match sot_topology::load_in(env)? {
+        Some((_, t)) => sot_topology::relay_endpoint(&t, &me),
+        None => Ok(sot_topology::endpoint::local_endpoint_in(env)),
     }
 }
 

@@ -158,7 +158,7 @@ fn the_unit_is_pinned_before_any_reload() {
     }
 
     {
-        use sot_protocol::topology::relay_units::{host_pin, install_pin};
+        use sot_topology::relay_units::{host_pin, install_pin};
         let dir = tempfile::tempdir().unwrap();
         let (rel, text) = install_pin("me");
         let pin = dir.path().join(rel);

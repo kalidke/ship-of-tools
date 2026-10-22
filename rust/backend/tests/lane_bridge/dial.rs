@@ -366,7 +366,7 @@ while True:
 
 fn stub_endpoint(path: PathBuf, guard: Arc<ParentSshEnvironment>) -> DaemonLaneEndpoint {
     guard.observe("after preparing endpoint");
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
     DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |command| {
         guard.observe("at spawn");
         let spawned = std::process::Command::new(&path).args(command.get_args())
@@ -566,7 +566,7 @@ fn a_failed_supervisor_handshake_drops_the_spare() {
 }
 
 // Status travels over the retained, challenged supervisor connection; the wire supplies the Ready voyage.
-fn ready_voyage(endpoint: &DaemonLaneEndpoint, supervisor: &sot_protocol::topology::lane_client::DaemonLaneClient) -> String {
+fn ready_voyage(endpoint: &DaemonLaneEndpoint, supervisor: &sot_topology::lane_client::DaemonLaneClient) -> String {
     use sot_log::lane::exchange::{SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
     use sot_platform::identity::exchange::{IdentityExchange, ExchangeDecode};
     use sot_platform::identity::challenge::ChallengeOutcome;
@@ -613,8 +613,8 @@ async fn an_expired_spare_uses_a_fresh_voyage_login() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let admitted = attempts.clone();
     let path = dir.path().join("ssh");
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
-    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
+    let gate = sot_topology::ssh_bridge::LinkGate::default();
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None).with_test_ssh_spawner(Arc::new(move |command| {
         spawn_guard.observe("at spawn");
         admitted.fetch_add(1, Ordering::SeqCst);
@@ -704,7 +704,7 @@ sys.stdin.buffer.read()
     sot_platform::test_exec::write_executable(&path, script);
     guard.observe("after preparing rendezvous fixture");
     let slots = Arc::new(AtomicUsize::new(0));
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
     DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |command| {
         guard.observe("at spawn");
         let spawned = std::process::Command::new("python3").arg("-u").arg(&path).arg(slots.fetch_add(1, Ordering::SeqCst).to_string()).args(command.get_args())

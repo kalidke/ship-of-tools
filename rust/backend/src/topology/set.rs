@@ -8,14 +8,15 @@
 // hub — its own file is a `topology sync` CACHE, never writable. The hub
 // re-reads its file on every call (`TopologyStore::refresh`, on-demand,
 // never a watcher), applies the edit, re-validates the result through the
-// ONE grammar (`sot_protocol::topology::parse`), writes tmp+rename, and
+// ONE grammar (`sot_topology::parse`), writes tmp+rename, and
 // broadcasts `topology.changed` through the SAME re-read path a hand edit
 // on disk would take — one code path either way.
 
 use anyhow::Result;
 use serde_json::json;
-use sot_protocol::topology::TopologyEdit;
-use sot_protocol::{op, Frame, TopologySetRes};
+use sot_topology::TopologyEdit;
+use sot_protocol::{op, Frame};
+use sot_topology::TopologySetRes;
 use tokio::sync::broadcast;
 
 use crate::server::reply::HandlerOutput;
@@ -55,7 +56,7 @@ pub async fn handle_topology_set(
     hello_host: Option<&str>,
     topo_tx: &broadcast::Sender<TopologyChanged>,
 ) -> Result<HandlerOutput> {
-    let req: sot_protocol::TopologySetReq = match serde_json::from_value(payload_json) {
+    let req: sot_topology::TopologySetReq = match serde_json::from_value(payload_json) {
         Ok(r) => r,
         Err(e) => return Ok(refused(req_id, format!("topology.set payload: {e}"), "bad_request")),
     };
@@ -108,15 +109,15 @@ pub async fn handle_topology_set(
         ));
     }
 
-    let candidate = match sot_protocol::topology::apply(&topo, &req.edit) {
+    let candidate = match sot_topology::apply(&topo, &req.edit) {
         Ok(t) => t,
         Err(e) => return Ok(refused(req_id, e, "invalid")),
     };
-    let text = sot_protocol::topology::serialize(&candidate);
+    let text = sot_topology::serialize(&candidate);
     // Re-validate through the ONE grammar (plan §B): this is what catches
     // things `apply` has no authority to special-case, e.g. clearing
     // `daemon` on the hub.
-    if let Err(e) = sot_protocol::topology::parse(&text) {
+    if let Err(e) = sot_topology::parse(&text) {
         return Ok(refused(req_id, e, "invalid"));
     }
 

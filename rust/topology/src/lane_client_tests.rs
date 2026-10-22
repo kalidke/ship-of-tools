@@ -71,8 +71,8 @@ where
 /// accepting daemon does. Returns both frames as sent.
 fn serve_hello(conn: &mut Stream) -> (Frame, Frame) {
     let mut reader = std::io::BufReader::new(&*conn);
-    let hello = crate::codec::read_frame_blocking(&mut reader).expect("the dial's hello");
-    let request = crate::codec::read_frame_blocking(&mut reader).expect("the dial's lane.connect");
+    let hello = sot_protocol::codec::read_frame_blocking(&mut reader).expect("the dial's hello");
+    let request = sot_protocol::codec::read_frame_blocking(&mut reader).expect("the dial's lane.connect");
     let ok = serde_json::json!({ "session_id": "s", "revision": 0, "snapshot_pending": false });
     let mut line = serde_json::to_vec(&Frame::res(hello.id, op::HELLO, ok)).unwrap();
     line.push(b'\n');
@@ -82,7 +82,7 @@ fn serve_hello(conn: &mut Stream) -> (Frame, Frame) {
 
 fn respond_with(mut conn: Stream, payload: serde_json::Value) {
     serve_hello(&mut conn);
-    let res = crate::Frame::res(1, op::LANE_CONNECT, payload);
+    let res = sot_protocol::Frame::res(1, op::LANE_CONNECT, payload);
     let mut line = serde_json::to_vec(&res).unwrap();
     line.push(b'\n');
     conn.write_all(&line).unwrap();
@@ -134,15 +134,15 @@ fn the_dial_says_a_handoff_hello_first_in_the_same_write() {
     drop(client);
     let (hello, request) = within(BOUND, "the fake daemon", move || handle.join()).unwrap();
     assert_eq!((hello.kind, hello.op.as_str()), (Kind::Req, op::HELLO));
-    let hello: crate::HelloReq = serde_json::from_value(hello.payload).expect("a HelloReq");
-    assert_eq!(hello.role, crate::HANDOFF_ROLE);
-    assert_eq!(hello.protocol, crate::PROTOCOL_VERSION);
+    let hello: sot_protocol::HelloReq = serde_json::from_value(hello.payload).expect("a HelloReq");
+    assert_eq!(hello.role, sot_protocol::HANDOFF_ROLE);
+    assert_eq!(hello.protocol, sot_protocol::PROTOCOL_VERSION);
     assert_eq!(hello.os_user, sot_platform::identity::os_account::own_account_id());
     assert_eq!(request.op, op::LANE_CONNECT);
 }
 
 fn respond_with_ok_lane(conn: &mut Stream) {
-    let res = crate::Frame::res(2, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 1u32, "created": 1u64 }));
+    let res = sot_protocol::Frame::res(2, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 1u32, "created": 1u64 }));
     let mut line = serde_json::to_vec(&res).unwrap();
     line.push(b'\n');
     conn.write_all(&line).unwrap();
@@ -158,8 +158,8 @@ fn a_refused_hello_is_refused_with_its_code_and_message() {
         let handle = std::thread::spawn(move || {
             let mut conn = daemon.accept();
             let mut reader = std::io::BufReader::new(&conn);
-            let hello = crate::codec::read_frame_blocking(&mut reader).expect("the dial's hello");
-            let refusal = crate::Frame::res(hello.id, op::HELLO, serde_json::json!({ "error": "no thanks", "code": code }));
+            let hello = sot_protocol::codec::read_frame_blocking(&mut reader).expect("the dial's hello");
+            let refusal = sot_protocol::Frame::res(hello.id, op::HELLO, serde_json::json!({ "error": "no thanks", "code": code }));
             let mut line = serde_json::to_vec(&refusal).unwrap();
             line.push(b'\n');
             conn.write_all(&line).unwrap();
@@ -177,9 +177,9 @@ fn a_refused_hello_is_refused_with_its_code_and_message() {
 /// down fails at once with `LinkDown` and starts no child.
 #[test]
 fn an_ssh_dial_with_a_down_gate_is_link_down_at_once() {
-    let gate = crate::topology::ssh_bridge::LinkGate::default();
+    let gate = crate::ssh_bridge::LinkGate::default();
     gate.set_up(false);
-    let recipe = crate::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+    let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate), None);
     let t0 = Instant::now();
     let result = endpoint.dial("row", "supervisor", None);
@@ -192,7 +192,7 @@ fn an_ssh_dial_with_a_down_gate_is_link_down_at_once() {
 #[test]
 fn a_relay_dial_waits_for_its_gate_then_uses_the_local_connector() {
     let daemon = FakeDaemon::new();
-    let gate = crate::topology::ssh_bridge::LinkGate::default();
+    let gate = crate::ssh_bridge::LinkGate::default();
     gate.set_up(false);
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Relay(daemon.path.clone(), gate.clone()), None);
     assert!(!endpoint.link_up());
@@ -317,7 +317,7 @@ fn cancel_unblocks_a_pending_read() {
     let handle = std::thread::spawn(move || {
         let mut conn = daemon.accept();
         serve_hello(&mut conn);
-        let res = crate::Frame::res(1, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 4242u32, "created": 99u64 }));
+        let res = sot_protocol::Frame::res(1, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 4242u32, "created": 99u64 }));
         let mut line = serde_json::to_vec(&res).unwrap();
         line.push(b'\n');
         conn.write_all(&line).unwrap();
@@ -363,7 +363,7 @@ fn a_wire_identity_that_differs_from_the_reported_peer_is_foreign() {
     let handle = std::thread::spawn(move || {
         let mut conn = daemon.accept();
         serve_hello(&mut conn);
-        let res = crate::Frame::res(1, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 111u32, "created": 1u64 }));
+        let res = sot_protocol::Frame::res(1, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 111u32, "created": 1u64 }));
         let mut line = serde_json::to_vec(&res).unwrap();
         line.push(b'\n');
         conn.write_all(&line).unwrap();
@@ -414,7 +414,7 @@ fn a_local_dial_starts_no_ssh_child() {
 #[cfg(unix)]
 #[test]
 fn a_socket_another_account_listens_on_is_refused_by_the_lane_dial() {
-    if !sot_platform::test_isolated::run_isolated("topology::lane_client::tests::a_socket_another_account_listens_on_is_refused_by_the_lane_dial") {
+    if !sot_platform::test_isolated::run_isolated("lane_client::tests::a_socket_another_account_listens_on_is_refused_by_the_lane_dial") {
         return;
     }
     let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
@@ -442,7 +442,7 @@ fn a_socket_another_account_listens_on_is_refused_by_the_lane_dial() {
 #[test]
 fn a_full_foreign_backlog_ends_the_lane_dial_within_its_bound() {
     if !sot_platform::test_isolated::run_isolated(
-        "topology::lane_client::tests::a_full_foreign_backlog_ends_the_lane_dial_within_its_bound",
+        "lane_client::tests::a_full_foreign_backlog_ends_the_lane_dial_within_its_bound",
     ) {
         return;
     }
@@ -529,11 +529,11 @@ fn a_burst_of_ssh_logins_slower_than_the_local_bound_all_answer() {
     let lane = serde_json::to_string(&Frame::res(2, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 41, "created": 7 }))).unwrap();
     // The slow login holds no pipe of the dial's, so a killed stand-in leaves nothing open behind it.
     let login = format!("sleep 3 </dev/null >/dev/null 2>&1; read a; read b; printf '%s\\n' '{hello}' '{lane}'; exec cat >/dev/null");
-    let gate = crate::topology::ssh_bridge::LinkGate::default();
+    let gate = crate::ssh_bridge::LinkGate::default();
     let started = Instant::now();
     let dials: Vec<_> = (0..8)
         .map(|i| {
-            let recipe = crate::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", login.as_str()]);
+            let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", login.as_str()]);
             let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None);
             std::thread::spawn(move || endpoint.dial(&format!("row-{i}"), "voyage", Some("v".to_string())).map(|c| (c.peer.pid, c.peer.created)))
         })
@@ -623,7 +623,7 @@ pub(super) fn silent_login() -> std::io::Result<std::process::Child> {
 fn dial_across_a_link_close(
     endpoint: DaemonLaneEndpoint,
     kind: &'static str,
-    gate: &crate::topology::ssh_bridge::LinkGate,
+    gate: &crate::ssh_bridge::LinkGate,
     admitted: std::sync::mpsc::Receiver<()>,
 ) -> (Result<(), TransportError>, Duration) {
     let (sent, ended) = std::sync::mpsc::channel();
@@ -636,7 +636,7 @@ fn dial_across_a_link_close(
     gate.set_up(false);
     std::thread::sleep(Duration::from_secs(1));
     gate.set_up(true);
-    let (result, at) = ended.recv_timeout(crate::topology::ssh_bridge::SSH_LOGIN_BOUND + BOUND).expect("the dial ended");
+    let (result, at) = ended.recv_timeout(crate::ssh_bridge::SSH_LOGIN_BOUND + BOUND).expect("the dial ended");
     within(BOUND, "the dial thread", move || dial.join()).unwrap();
     (result, at.duration_since(closed))
 }
@@ -653,9 +653,9 @@ fn assert_ended_by_the_close(route: &str, (result, after): (Result<(), Transport
 
 #[test]
 fn an_ssh_login_in_flight_ends_when_its_link_closes() {
-    let gate = crate::topology::ssh_bridge::LinkGate::default();
+    let gate = crate::ssh_bridge::LinkGate::default();
     let (started, admitted) = std::sync::mpsc::channel();
-    let recipe = crate::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+    let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None).with_test_ssh_spawner(std::sync::Arc::new(move |_| {
         let login = silent_login();
         let _ = started.send(());
@@ -667,7 +667,7 @@ fn an_ssh_login_in_flight_ends_when_its_link_closes() {
 #[test]
 fn a_relay_login_in_flight_ends_when_its_link_closes() {
     let daemon = FakeDaemon::new();
-    let gate = crate::topology::ssh_bridge::LinkGate::default();
+    let gate = crate::ssh_bridge::LinkGate::default();
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Relay(daemon.path.clone(), gate.clone()), None);
     let (started, admitted) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
@@ -676,7 +676,7 @@ fn a_relay_login_in_flight_ends_when_its_link_closes() {
     let relay = std::thread::spawn(move || {
         let conn = daemon.accept();
         started.send(()).unwrap();
-        let _ = released.recv_timeout(crate::topology::ssh_bridge::SSH_LOGIN_BOUND + BOUND);
+        let _ = released.recv_timeout(crate::ssh_bridge::SSH_LOGIN_BOUND + BOUND);
         drop(conn);
     });
     let ended = dial_across_a_link_close(endpoint, "supervisor", &gate, admitted);

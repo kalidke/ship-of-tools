@@ -67,22 +67,22 @@ pub(crate) type PendingTransport = (
 pub(crate) fn lane_dial(
     config: &crate::net::transport::TransportConfig,
     resolved: ResolvedDial,
-    gate: &sot_protocol::topology::ssh_bridge::LinkGate,
-) -> Option<(sot_protocol::topology::lane_client::LaneDial, Option<String>)> {
+    gate: &sot_topology::ssh_bridge::LinkGate,
+) -> Option<(sot_topology::lane_client::LaneDial, Option<String>)> {
     match resolved {
         ResolvedDial::Local => match &config.dial {
             crate::net::transport::Dial::Pipe(path) => Some((
-                sot_protocol::topology::lane_client::LaneDial::Local(path.clone()),
+                sot_topology::lane_client::LaneDial::Local(path.clone()),
                 config.token.clone(),
             )),
             crate::net::transport::Dial::Relay(_) | crate::net::transport::Dial::Ssh(_) => None,
         },
         ResolvedDial::Relay(path) => Some((
-            sot_protocol::topology::lane_client::LaneDial::Relay(path, gate.clone()),
+            sot_topology::lane_client::LaneDial::Relay(path, gate.clone()),
             config.token.clone(),
         )),
         ResolvedDial::Ssh(recipe) => Some((
-            sot_protocol::topology::lane_client::LaneDial::Ssh(recipe, gate.clone()),
+            sot_topology::lane_client::LaneDial::Ssh(recipe, gate.clone()),
             config.token.clone(),
         )),
     }
@@ -112,11 +112,11 @@ pub(crate) struct HostTable {
     /// lane dials the SAME endpoint, never a second independent guess.
     /// Absent for a host that hasn't connected yet.
     pub(crate) host_resolved_dial: HashMap<crate::net::dial::HostKey, ResolvedDial>,
-    /// One link gate per host (`sot_protocol::topology::ssh_bridge::LinkGate`): the
+    /// One link gate per host (`sot_topology::ssh_bridge::LinkGate`): the
     /// host's control transport writes it, and every other site that starts
     /// an ssh login to the host (lane dials, the page proxy) asks it.
     /// Always taken through `entry().or_default()`, so there is exactly one.
-    pub(crate) link_gates: HashMap<crate::net::dial::HostKey, sot_protocol::topology::ssh_bridge::LinkGate>,
+    pub(crate) link_gates: HashMap<crate::net::dial::HostKey, sot_topology::ssh_bridge::LinkGate>,
     /// ADR 0046 decision 1 (revised): the daemon's own declared identity
     /// for each dial — `HostKey` stays the stable dial label. Read by
     /// `host_label` (display: Hosts mode, Sessions labels, the status

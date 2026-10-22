@@ -4,6 +4,7 @@ members = [
     "platform",
     "containment",
     "protocol",
+    "topology",
     "backend",
     "frontend",
     "updater",

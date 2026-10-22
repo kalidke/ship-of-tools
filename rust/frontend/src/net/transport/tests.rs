@@ -14,7 +14,7 @@ fn a_down_ssh_host_costs_the_hub_at_most_two_logins_a_minute() {
         }
         n
     };
-    let ssh = Dial::Ssh(sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", Some("gamma")).unwrap());
+    let ssh = Dial::Ssh(sot_topology::ssh_bridge::SshRecipe::new("hub", Some("gamma")).unwrap());
     let n = count(&ssh);
     assert!(n <= 130, "{n} logins per hour on the hub for one down host");
     let n = count(&Dial::Relay(std::path::PathBuf::from(
@@ -81,7 +81,7 @@ fn a_daemon_that_answers_the_hello_and_drops_is_redialed_on_the_doubling_wait() 
         out_rx,
         NoWindow,
         Arc::new(tokio::sync::Notify::new()),
-        sot_protocol::topology::ssh_bridge::LinkGate::default(),
+        sot_topology::ssh_bridge::LinkGate::default(),
         crate::lease::Leases::new(true, Vec::new()),
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -154,7 +154,7 @@ fn a_refusal_and_then_a_failed_dial_are_told_apart() {
         out_rx,
         NoWindow,
         Arc::new(tokio::sync::Notify::new()),
-        sot_protocol::topology::ssh_bridge::LinkGate::default(),
+        sot_topology::ssh_bridge::LinkGate::default(),
         crate::lease::Leases::new(true, Vec::new()),
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -192,7 +192,7 @@ async fn run_against_fake_daemon(
     hello_reply: serde_json::Value,
     early: Vec<(usize, Frame)>,
     answered: usize,
-    gate: sot_protocol::topology::ssh_bridge::LinkGate,
+    gate: sot_topology::ssh_bridge::LinkGate,
 ) -> (
     tokio::task::JoinHandle<Result<()>>,
     tokio::task::JoinHandle<()>,
@@ -217,7 +217,7 @@ async fn run_against_fake_daemon_counting(
     hello_reply: serde_json::Value,
     early: Vec<(usize, Frame)>,
     answered: usize,
-    gate: sot_protocol::topology::ssh_bridge::LinkGate,
+    gate: sot_topology::ssh_bridge::LinkGate,
     window: CountingWindow,
 ) -> (
     tokio::task::JoinHandle<Result<()>>,
@@ -273,7 +273,7 @@ fn hello_ok() -> serde_json::Value {
 /// Every event of a session against the fake daemon, as text, once the daemon has answered `answered` requests and
 /// then closed: the session's end included.
 async fn events_until_the_daemon_closes(host: &str, hello_reply: serde_json::Value, early: Vec<(usize, Frame)>) -> Vec<String> {
-    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let gate = sot_topology::ssh_bridge::LinkGate::default();
     let (session, daemon, evt_rx, hold) = run_against_fake_daemon(host, hello_reply, early, 3, gate).await;
     drop(hold);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), daemon).await.expect("the fake daemon ends");
@@ -336,7 +336,7 @@ async fn the_preamble_wakes_the_window_for_each_frame_and_each_reply() {
         (0, Frame::evt(op::REPL_FRAME, serde_json::json!({ "eval_id": 5, "frame": { "kind": "stdout", "text": "early" } }))),
     ]] {
         let window = CountingWindow::default();
-        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+        let gate = sot_topology::ssh_bridge::LinkGate::default();
         let (session, daemon, _evt_rx, hold) =
             run_against_fake_daemon_counting("preamble-wakes", hello_ok(), early, 3, gate, window.clone()).await;
         drop(hold);
@@ -350,7 +350,7 @@ async fn the_preamble_wakes_the_window_for_each_frame_and_each_reply() {
 #[tokio::test]
 async fn the_gate_is_up_after_the_hello_reply_and_down_when_the_session_ends() {
     let _env = crate::net::state::test_env::set_test_env();
-    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let gate = sot_topology::ssh_bridge::LinkGate::default();
     gate.set_up(false);
     let (session, daemon, evt_rx, hold) =
         run_against_fake_daemon("gate-test-up-down", hello_ok(), Vec::new(), 3, gate.clone()).await;
@@ -373,7 +373,7 @@ async fn the_gate_is_up_after_the_hello_reply_and_down_when_the_session_ends() {
 #[tokio::test]
 async fn a_protocol_mismatch_reply_leaves_the_gate_up() {
     let _env = crate::net::state::test_env::set_test_env();
-    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let gate = sot_topology::ssh_bridge::LinkGate::default();
     gate.set_up(false);
     let reply = serde_json::json!({ "error": "protocol skew", "code": "protocol_mismatch" });
     let (session, _daemon, _evt_rx, _hold) =
@@ -394,7 +394,7 @@ async fn a_refused_hello_is_shown_whatever_its_code() {
         ("unauthenticated", "send a hello first"),
         ("protocol_mismatch", "protocol mismatch: update the older side"),
     ] {
-        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+        let gate = sot_topology::ssh_bridge::LinkGate::default();
         let reply = serde_json::json!({ "error": error, "code": code });
         let (session, _daemon, evt_rx, _hold) =
             run_against_fake_daemon("hello-refused", reply, Vec::new(), 1, gate).await;
@@ -418,7 +418,7 @@ async fn a_refused_hello_is_shown_whatever_its_code() {
 #[tokio::test]
 async fn a_tree_root_error_reply_does_not_end_the_session() {
     let _env = crate::net::state::test_env::set_test_env();
-    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let gate = sot_topology::ssh_bridge::LinkGate::default();
     let (session, _daemon, _evt_rx, _hold) =
         run_against_fake_daemon("gate-test-tree-root", hello_ok(), Vec::new(), 3, gate.clone()).await;
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -439,7 +439,7 @@ async fn a_daemon_that_falls_silent_during_connect_ends_the_attempt_naming_the_s
     // `CONNECT_REPLY_BOUND`, at the 30 s the fe-net charter promises.
     let bound = std::time::Duration::from_secs(30);
     for (answered, step) in [(0, "hello"), (1, "tree.root"), (2, "preview.get")] {
-        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+        let gate = sot_topology::ssh_bridge::LinkGate::default();
         let started = tokio::time::Instant::now();
         let (session, _daemon, evt_rx, _hold) =
             run_against_fake_daemon("connect-silent", hello_ok(), Vec::new(), answered, gate.clone()).await;

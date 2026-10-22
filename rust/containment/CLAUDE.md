@@ -82,7 +82,7 @@ of each.
    `#[allow(clippy::disallowed_methods, reason = "...")]` that says why it stands, and rust.yml's "Disallowed methods"
    step fails any other. The starts outside `Signal` that stand today: the durable parent (`rows/spawn/durable/proxy.rs`),
    the Windows capsule supervisors (`rows/spawn/detach.rs`), the installer's steps (`install/cmd.rs`), the capsule's
-   ConPTY (`rust/log/src/capsule/producer/conpty/mod.rs`), the topology's ssh (`rust/protocol/src/topology/
+   ConPTY (`rust/log/src/capsule/producer/conpty/mod.rs`), the topology's ssh (`rust/topology/src/
    ssh_bridge.rs`), the window's updater and browser opener (`rust/frontend/src/selfupdate.rs`, `browser_open.rs`) and
    its drawer shell (`ui/drawer/terminal/pty.rs`), and the native launcher's fork in C
    (`rust/platform/src/host/process_tree/native_birth.c`), which no Rust lint sees. Not held either: libc's and

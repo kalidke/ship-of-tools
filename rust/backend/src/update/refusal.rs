@@ -9,9 +9,9 @@ use sot_updater::{ReleaseIdentity, UnreadableInstall};
 /// own: on a shared home it is a guest of the prefix, and a pointer it arms is prepared without the Julia environments
 /// the host that does run the daemon needs. A host the topology does not name (or no topology) is not taken for one.
 pub(super) fn host_runs_no_sotd() -> bool {
-    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
+    let topo = sot_topology::load().ok().flatten().map(|(_, t)| t);
     let me = crate::comm::mail::filer::comm_self_host();
-    topo.is_some_and(|t| sot_protocol::topology::runs_no_sotd(&t, &me))
+    topo.is_some_and(|t| sot_topology::runs_no_sotd(&t, &me))
 }
 
 /// Why this daemon arms nothing into the install it runs from, or `None` when it may: this host runs no sotd

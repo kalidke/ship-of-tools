@@ -396,7 +396,7 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
 ///    change without a reinstall (D9, dev/output/topology-plan.md §D); a
 ///    `frontend` entry takes `recorded_daemon`, because only an install
 ///    from rc9.12 on gives it a daemon of its own
-///    (`sot_protocol::topology::runs_backend`, the one rule);
+///    (`sot_topology::runs_backend`, the one rule);
 /// 2. else `recorded_daemon` — what THIS install was actually given at
 ///    install time (the list, or the flags), persisted for exactly a
 ///    listless box the topology can't answer for;
@@ -407,17 +407,17 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
 /// (`scripts/tests/installer-state.sh`'s `installer_running_daemon_decision`
 /// is the same split, for the same reason).
 fn backend_role_from_topology(
-    topo: Option<&sot_protocol::topology::Topology>,
+    topo: Option<&sot_topology::Topology>,
     me: &str,
     recorded_daemon: Option<bool>,
 ) -> bool {
-    sot_protocol::topology::runs_backend(topo, me, recorded_daemon)
+    sot_topology::runs_backend(topo, me, recorded_daemon)
 }
 
 /// Does THIS box want a backend prepared for the staged release? Used to be
 /// `install.role != "remote"` — install.json no longer records a role (plan
 /// step 6, dev/output/topology-plan.md §D); the declared topology is now
-/// asked first, in-process (`sot_protocol::topology`, read directly here —
+/// asked first, in-process (`sot_topology`, read directly here —
 /// no subprocess, unlike the installer's own `sotd topology status`), and
 /// `install.daemon` — what THIS install was actually given, whether from the
 /// topology or the flags, at install time — is the fallback for a listless
@@ -429,7 +429,7 @@ fn backend_role_wanted(install: &InstallManifest) -> bool {
 
 /// [`backend_role_wanted`] for a caller that has read the record's `daemon` bit itself (or could not read the record).
 fn backend_role_recorded(recorded_daemon: Option<bool>) -> bool {
-    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
+    let topo = sot_topology::load().ok().flatten().map(|(_, t)| t);
     let me = crate::comm::mail::filer::comm_self_host();
     backend_role_from_topology(topo.as_ref(), &me, recorded_daemon)
 }

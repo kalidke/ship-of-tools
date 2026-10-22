@@ -13,13 +13,13 @@ use crate::install::options::RoleFlag;
 fn the_role_is_declared() {
     {
         let hosts = "hub = \"h\"\n[host.h]\ndaemon = true\n[host.d]\ndaemon = true\n[host.f]\nfrontend = true\n[host.df]\ndaemon = true\nfrontend = true\n[host.s]\n";
-        let topo = sot_protocol::topology::parse(hosts).unwrap();
-        let table = sot_protocol::topology::status_table(&topo);
-        let pinned = sot_protocol::topology::sotd_hosts(&topo);
+        let topo = sot_topology::parse(hosts).unwrap();
+        let table = sot_topology::status_table(&topo);
+        let pinned = sot_topology::sotd_hosts(&topo);
         for h in ["h", "d", "f", "df", "s"] {
             let role = from_status(&table, h).unwrap();
             assert_eq!(role.daemon, pinned.contains(&h), "{h}: {role:?}, the pin names {pinned:?}");
-            assert_eq!(role.daemon, sot_protocol::topology::runs_backend(Some(&topo), h, None), "{h}");
+            assert_eq!(role.daemon, sot_topology::runs_backend(Some(&topo), h, None), "{h}");
             assert_eq!(role.frontend, h == "f" || h == "df");
         }
         assert_eq!(from_status(&table, "absent"), None);

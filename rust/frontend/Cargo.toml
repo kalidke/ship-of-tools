@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 sot-protocol = { path = "../protocol" }
+sot-topology = { path = "../topology" }
 sot-updater = { path = "../updater" }
 # The per-machine state-dir resolution rule lives in platform (`state_dir::sot_state_dir`); this crate calls it directly.
 sot-platform = { path = "../platform" }
@@ -132,7 +133,7 @@ test-mac-redraw-mutation = ["test-window-progress"]
 # The window_close target reuses the in-memory startup seam of the progress target.
 test-window-close = ["test-window-progress", "windows-sys/Win32_System_EventLog"]
 # The pane_timing target reuses the progress target's in-memory startup and the protocol's test-only ssh fixture command.
-test-pane-timing = ["test-window-progress", "sot-protocol/test-handshake-bound"]
+test-pane-timing = ["test-window-progress", "sot-topology/test-handshake-bound"]
 
 [[test]]
 name = "window_minimized"

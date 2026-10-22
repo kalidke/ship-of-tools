@@ -38,7 +38,7 @@ _sot_windows_local_pipe() {
     printf '%s\n' "$raw"
 }
 
-# _sot_is_plain_host_name — the shell twin of `sot_protocol`'s Rust grammar
+# _sot_is_plain_host_name — the shell twin of `sot_topology`'s Rust grammar
 # (`topology::endpoint::is_plain_host_name` / `ssh_bridge::SshRecipe::new`): first
 # character an ASCII lowercase letter or digit, the rest lowercase
 # letters, digits, `.`, `_`, `-`. Two implementations of one grammar, not
@@ -210,8 +210,8 @@ _sot_ssh_sharing_ok() {
 # replies → stdout. The one child every `ssh:` scheme switch spawns
 # (C10): `ssh <target> '<PATH prelude>; sotd stdio-bridge
 # [--host <host>]'`, the option set and prelude literally the ones the
-# hub's own relay unit runs (`rust/protocol/src/topology/mod.rs`) and C3
-# spawns identically from Rust (`rust/protocol/src/topology/ssh_bridge.rs`) -- kept
+# hub's own relay unit runs (`rust/topology/src/lib.rs`) and C3
+# spawns identically from Rust (`rust/topology/src/ssh_bridge.rs`) -- kept
 # as this file's own implementation, not shared code, because shell
 # cannot call into that crate. The connection-sharing trio is part of THIS
 # helper, not an optional extra: without it "one authentication per host"

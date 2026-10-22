@@ -1,8 +1,8 @@
 use super::*;
 use sot_updater::identity::DEFAULT_REPO;
 
-fn topo(text: &str) -> sot_protocol::topology::Topology {
-    sot_protocol::topology::parse(text).expect("fixture must parse")
+fn topo(text: &str) -> sot_topology::Topology {
+    sot_topology::parse(text).expect("fixture must parse")
 }
 
 // The regression this pins: `install.role != "remote"` used to decide

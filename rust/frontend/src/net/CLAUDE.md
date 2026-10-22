@@ -15,7 +15,7 @@ through the channel types below.
   (daemon to UI).
 - The reconnect memory, `session-<host>.json` (`state::state_path`, `load`, `save`), and the throttle that writes it
   (`StateSaveGate`, `SessionState`).
-- The only writes of `sot_protocol::topology::ssh_bridge::LinkGate`: up at any hello reply (`read_hello`), down when the session
+- The only writes of `sot_topology::ssh_bridge::LinkGate`: up at any hello reply (`read_hello`), down when the session
   ends (`run_protocol`).
 - The window's identity (`identity::FrontendIdentity`, `identity::frontend_identity`) and the per-host helpers
   (`hosts::resolve_default_host`, `hosts::lane_dial`) live here; the per-host table is `hosts::HostTable`, held by the
@@ -48,7 +48,7 @@ through the channel types below.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `OutgoingReq`, `IncomingEvt`,
-`HostTable`, `lane_dial`, `ResolvedDial`, Dial::Relay, ResolvedDial::Relay. Uses: sot_protocol::topology::relay_host_for_path, `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`,
+`HostTable`, `lane_dial`, `ResolvedDial`, Dial::Relay, ResolvedDial::Relay. Uses: sot_topology::relay_host_for_path, `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`,
 `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
 `SshRecipe::new`, `is_plain_host_name`, `LinkGate`, `Redial`, `STABLE`, `Leases::before_data_connection`, `sot_state_dir`,
 `sot_config_dir`, `host_name`, `state_dir_hash`, `tree.root`, `tree.children`, `directory.list`, `nav.toggle_hidden`,

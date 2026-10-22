@@ -280,7 +280,7 @@ async fn topology_set_writes_the_real_file_and_broadcasts_over_the_real_wire() {
     // The file on disk is the real, freshly written copy.
     let on_disk = std::fs::read_to_string(&env.hosts_toml).expect("read hosts.toml");
     assert!(on_disk.contains("[host.gamma]"), "{on_disk}");
-    assert_eq!(sot_protocol::topology::hash_text(&on_disk), hash);
+    assert_eq!(sot_topology::hash_text(&on_disk), hash);
 
     // A SEPARATE connection (never sent the edit) sees the broadcast.
     let (frame, _blob) = tokio::time::timeout(BOUND, codec::read_frame(&mut watcher))

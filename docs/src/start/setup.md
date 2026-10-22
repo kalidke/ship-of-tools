@@ -80,7 +80,7 @@ is nothing else to fill in by hand.
 ### `hosts.toml` — the declared topology
 
 One section per host, in a deliberately simple `key = value` format so it
-needs no TOML library. `sot_protocol::topology` (Rust) is the one parser;
+needs no TOML library. `sot_topology` (Rust) is the one parser;
 `sotd topology plan|status|sync|relay-endpoint` is the one way anything
 reads it — see [Configuration Files](../ref/config.md) for the full
 grammar. The in-app Hosts mode (hotkey `h`) lists every dialable host with

@@ -134,7 +134,7 @@ pub fn is_plain_host_name(s: &str) -> bool {
 /// this function and the shell's `sot_daemon_endpoint` take that step
 /// (`scripts/restart-backend.sh` passes the variable to the daemon as
 /// `--label`); else
-/// `session_socket_path(`[`crate::local_daemon_label`]`())`, byte-for-byte
+/// `session_socket_path(`[`crate::endpoint::local_daemon_label`]`())`, byte-for-byte
 /// what this returned before the overrides existed. **Never** the literal
 /// `sot` as a default — on Windows the daemon's label is `local`, and
 /// `sot` derives a pipe nothing listens on.
@@ -148,7 +148,7 @@ pub fn local_endpoint_in(env: &sot_platform::host::env::Env) -> String {
         .get_nonempty("SOT_SOCKET")
         .map(PathBuf::from)
         .or_else(|| env.get_nonempty("SOT_BACKEND_LABEL").map(|label| session_socket_path_in(&label.to_string_lossy(), env)))
-        .unwrap_or_else(|| session_socket_path_in(crate::local_daemon_label(), env));
+        .unwrap_or_else(|| session_socket_path_in(crate::endpoint::local_daemon_label(), env));
     if cfg!(windows) { format!("pipe:{}", p.display()) } else { format!("unix:{}", p.display()) }
 }
 

@@ -22,7 +22,7 @@
 //     install.json no longer records a role (plan step 6, dev/output/
 //     topology-plan.md §D), so this reads the same declared topology the
 //     installer and `sot-backend`'s own `update::backend_role_from_topology`
-//     do, through `sot_protocol::topology::runs_backend`: a `frontend` entry
+//     do, through `sot_topology::runs_backend`: a `frontend` entry
 //     stays out only where its install records a daemon (installs from
 //     rc9.12 on); an older one runs none, and the window is its only updater;
 //   - the topology names this machine with neither `daemon` nor `frontend`:
@@ -142,7 +142,7 @@ pub fn spawn_startup_selfcheck() {
 /// install.json's own recorded `daemon` bit (if any), does the backend on
 /// this machine own the update pipeline? Priority order, the rule
 /// `sot-backend`'s `update::backend_role_from_topology` asks too
-/// (`sot_protocol::topology::runs_backend`):
+/// (`sot_topology::runs_backend`):
 /// 1. the declared topology, when it names this host — canonical, can
 ///    change without a reinstall; a `frontend` entry takes `recorded_daemon`,
 ///    because only an install from rc9.12 on runs a daemon of its own;
@@ -151,27 +151,27 @@ pub fn spawn_startup_selfcheck() {
 ///    real shape: a frontend-only-over-ssh install with no hosts.toml);
 /// 3. else `true` — the old default for every role but `remote`.
 fn backend_owns_updates(
-    topo: Option<&sot_protocol::topology::Topology>,
+    topo: Option<&sot_topology::Topology>,
     me: &str,
     recorded_daemon: Option<bool>,
 ) -> bool {
-    sot_protocol::topology::runs_backend(topo, me, recorded_daemon)
+    sot_topology::runs_backend(topo, me, recorded_daemon)
 }
 
 /// Does the declared topology name this machine with neither `daemon` nor `frontend`? It runs no sotd and no window of
 /// its own, so on a shared home the install is another machine's; a machine the topology does not name is not taken
 /// for one.
 fn runs_no_sotd_here() -> bool {
-    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
+    let topo = sot_topology::load().ok().flatten().map(|(_, t)| t);
     let me = sot_platform::host::state_dir::host_name().unwrap_or_default();
-    topo.is_some_and(|t| sot_protocol::topology::runs_no_sotd(&t, &me))
+    topo.is_some_and(|t| sot_topology::runs_no_sotd(&t, &me))
 }
 
 /// Does the backend on THIS machine own the update pipeline, so the FE
 /// should stay out of it? See `backend_owns_updates` for the decision and
 /// `spawn_startup_selfcheck`'s doc comment for the guard order this sits in.
 fn backend_owns_updates_here(install: &InstallManifest) -> bool {
-    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
+    let topo = sot_topology::load().ok().flatten().map(|(_, t)| t);
     let me = sot_platform::host::state_dir::host_name().unwrap_or_default();
     backend_owns_updates(topo.as_ref(), &me, install.daemon)
 }

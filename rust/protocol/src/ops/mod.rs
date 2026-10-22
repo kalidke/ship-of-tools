@@ -413,8 +413,8 @@ pub mod op {
     /// dead.
     pub const PING: &str = "ping";
     /// Topology plan §B "Editing the master list": edit the declared
-    /// topology (`hosts.toml`, grammar v2). Payload `TopologySetReq {
-    /// edit: topology::TopologyEdit }` (add/remove a host, flip one of its
+    /// topology (`hosts.toml`, grammar v2). Payload `sot_topology::TopologySetReq {
+    /// edit: TopologyEdit }` (add/remove a host, flip one of its
     /// flags, add/remove a `[monitor]` label). Authorisation is the dial
     /// itself — whoever can reach this daemon's socket may send this op;
     /// no second credential (the 0700 socket and ssh identity already gate
@@ -424,7 +424,7 @@ pub mod op {
     /// writable). The hub daemon re-reads its file from disk (picking up
     /// any hand edit since the last op — same on-demand-refresh path
     /// `version.query` uses), applies the edit, validates the result by
-    /// re-parsing it with [`crate::topology::parse`] (the one grammar —
+    /// re-parsing it with `sot_topology::parse` (the one grammar —
     /// this is what catches "cleared `daemon` on the hub" and similar
     /// structural nonsense generically), and writes tmp+rename. Refused
     /// (standard error payload, `code` named): `not_hub`; removing the
@@ -435,8 +435,8 @@ pub mod op {
     /// only (a star: the hub cannot see another daemon's rows, so a
     /// non-hub box's `sotd topology set` CLI does that check locally,
     /// against ITS OWN daemon, before ever dialing the hub); `invalid`
-    /// (the structural [`crate::topology::apply`] step or the final
-    /// re-parse rejected it). On success, answers `TopologySetRes { ok:
+    /// (the structural `sot_topology::apply` step or the final
+    /// re-parse rejected it). On success, answers `sot_topology::TopologySetRes { ok:
     /// true, hash }` and broadcasts [`TOPOLOGY_CHANGED`] to every attached
     /// client — the SAME broadcast a picked-up hand edit fires, so both
     /// routes are one code path.

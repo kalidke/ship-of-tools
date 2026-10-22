@@ -415,7 +415,7 @@ fn ask_role(me: &str) -> Result<RoleFlag, Stop> {
                 return Err(Stop::new(1, "backend host is required for the remote layout"));
             }
             let mut ssh = Command::new("ssh");
-            ssh.args(sot_protocol::topology::ssh_bridge::SSH_OPTS).args(["-n", &alias, "true"]);
+            ssh.args(sot_topology::ssh_bridge::SSH_OPTS).args(["-n", &alias, "true"]);
             let ran = cmd::output_within(&mut ssh, std::time::Duration::from_secs(30));
             match ran.code {
                 Some(0) => Ok(RoleFlag::Remote(alias)),

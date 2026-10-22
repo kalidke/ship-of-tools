@@ -160,7 +160,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // the same way when it notices a hand edit nobody else already announced
     // — never a file watcher (the file can live on a network filesystem).
     let topology_store = std::sync::Arc::new(crate::topology::store::TopologyStore::new(
-        sot_protocol::topology::locate().unwrap_or_else(|| PathBuf::from("hosts.toml")),
+        sot_topology::locate().unwrap_or_else(|| PathBuf::from("hosts.toml")),
     ));
     let (topo_changed_tx, _topo_changed_rx) = broadcast::channel::<crate::topology::store::TopologyChanged>(16);
 

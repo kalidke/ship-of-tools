@@ -266,7 +266,7 @@ SSH" variant.)
 
 ## 7. Configure hosts.toml + settings.toml (from the Q&A)
 
-**hosts.toml** — the declared topology (grammar: `rust/protocol/src/topology/mod.rs`,
+**hosts.toml** — the declared topology (grammar: `rust/topology/src/lib.rs`,
 template: `.sot/hosts.toml.example`). The hub's own copy is canonical; a frontend
 box fetches it with `sotd topology sync --hub <ssh-alias>` (the launcher runs
 that at every launch), so write nothing by hand there. Search order: `$SOT_HOSTS`,

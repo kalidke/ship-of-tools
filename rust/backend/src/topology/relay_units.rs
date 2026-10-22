@@ -1,9 +1,9 @@
 //! `sotd topology apply`, `refresh` and `pin`: the systemd --user files sotd writes into the user's systemd folder,
 //! converged with hosts.toml (the hub's relay units and drop-ins, and the host pins); their text comes from
-//! `sot_protocol::topology`.
+//! `sot_topology`.
 
 use super::cli::self_host;
-use sot_protocol::topology::{self, Topology};
+use sot_topology::{self as topology, Topology};
 use std::path::{Path, PathBuf};
 
 /// `sotd topology apply` (plan §C, §F step 5): on the hub, converge the

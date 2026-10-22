@@ -52,7 +52,7 @@ use sot_protocol::{codec, Frame};
 // NTFS-only preflight is unrelated and unchanged), so an unguarded import
 // here would warn unused on that leg.
 #[cfg(target_os = "linux")]
-use sot_protocol::slug;
+use sot_topology::endpoint::slug;
 
 // ADR 0045 lane B4b: `Env`, the wire-protocol round-trip helpers
 // (`connect_and_hello`, `call`, `poll_until`, `poll_for_phase`), `find_row`,

@@ -6,7 +6,7 @@
 //! used by every Rust site that spawns one:
 //!
 //! - the frontend's control connection (`rust/frontend/src/net/transport/mod.rs`);
-//! - its per-host lane attach (`crate::topology::lane_client`, this crate);
+//! - its per-host lane attach (`crate::lane_client`, this crate);
 //! - its per-browser-connection page-proxy leg
 //!   (`rust/frontend/src/pages.rs`).
 //!
@@ -17,7 +17,7 @@
 
 use std::process::Stdio;
 
-use crate::topology::endpoint::is_plain_host_name;
+use crate::endpoint::is_plain_host_name;
 
 /// Where an ssh child should connect, and — when that target is a hub
 /// relaying on another daemon's behalf — which daemon. `target` is an ssh
@@ -101,7 +101,7 @@ impl std::fmt::Display for SshRecipe {
 /// identical string on its own side).
 pub const PATH_PRELUDE: &str = r#"export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH""#;
 
-/// `ssh`'s own option set: the relay unit's `ExecStart` options (`crate::topology`), sharing off included
+/// `ssh`'s own option set: the relay unit's `ExecStart` options (`crate::relay_units`), sharing off included
 /// (`ControlMaster=no`, `ControlPath=none`, `ControlPersist=no`, so no master forks away from the tree the daemon
 /// kills), plus `ConnectTimeout=10`, the bridge's own bound on a dead hub. The daemon's monitor starts its sampler's ssh
 /// from the same list.

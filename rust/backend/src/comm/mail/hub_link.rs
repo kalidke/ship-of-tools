@@ -55,7 +55,7 @@ pub async fn run() {
 /// Keep the link up until `sig` fires; it never reconnects after.
 async fn hold_link(
     env: &crate::comm::Env,
-    recipe: &sot_protocol::topology::ssh_bridge::SshRecipe,
+    recipe: &sot_topology::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
     sig: &'static sot_containment::Signal,
@@ -82,30 +82,30 @@ async fn hold_link(
 
 /// The ssh child's recipe, or `None` when this box has no link to hold: no
 /// topology, or `link_target` names none.
-fn recipe_for(env: &crate::comm::Env, self_host: &str) -> Result<Option<sot_protocol::topology::ssh_bridge::SshRecipe>, String> {
-    let Some((_, topo)) = sot_protocol::topology::load_in(env)? else {
+fn recipe_for(env: &crate::comm::Env, self_host: &str) -> Result<Option<sot_topology::ssh_bridge::SshRecipe>, String> {
+    let Some((_, topo)) = sot_topology::load_in(env)? else {
         return Ok(None);
     };
     match link_target(&topo, self_host)? {
-        Some(target) => sot_protocol::topology::ssh_bridge::SshRecipe::new(&target, None).map(Some),
+        Some(target) => sot_topology::ssh_bridge::SshRecipe::new(&target, None).map(Some),
         None => Ok(None),
     }
 }
 
 /// The one rule for which box holds a link: the ssh target of the link `host` holds, or `None` when it holds none (it
 /// is the hub, or its relay endpoint is not an `ssh:` one).
-fn link_target(topo: &sot_protocol::topology::Topology, host: &str) -> Result<Option<String>, String> {
+fn link_target(topo: &sot_topology::Topology, host: &str) -> Result<Option<String>, String> {
     if host.is_empty() || topo.hub == host {
         return Ok(None);
     }
-    Ok(sot_protocol::topology::relay_endpoint(topo, host)?.strip_prefix("ssh:").map(str::to_string))
+    Ok(sot_topology::relay_endpoint(topo, host)?.strip_prefix("ssh:").map(str::to_string))
 }
 
 /// On the topology's hub, the boxes that hold a link by `link_target` but have none among `attached`; empty on any
 /// other daemon, or with no topology.
 pub(crate) fn unlinked(env: &crate::comm::Env, attached: &[String]) -> Vec<String> {
     let self_host = crate::comm::mail::filer::comm_self_host_in(env);
-    let Ok(Some((_, topo))) = sot_protocol::topology::load_in(env) else {
+    let Ok(Some((_, topo))) = sot_topology::load_in(env) else {
         return Vec::new();
     };
     if self_host.is_empty() || topo.hub != self_host {
@@ -119,14 +119,14 @@ pub(crate) fn unlinked(env: &crate::comm::Env, attached: &[String]) -> Vec<Strin
 }
 
 /// The ssh command, for the signal to start. Tests swap the program for a stub, nothing else.
-fn spawn_link(recipe: &sot_protocol::topology::ssh_bridge::SshRecipe) -> Result<tokio::process::Command, String> {
+fn spawn_link(recipe: &sot_topology::ssh_bridge::SshRecipe) -> Result<tokio::process::Command, String> {
     #[cfg(test)]
     if let Some(program) = tests::STUB_PROGRAM.with_borrow(Clone::clone) {
         let mut cmd = tokio::process::Command::new(program);
         cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
         return Ok(cmd);
     }
-    sot_protocol::topology::ssh_bridge::LinkGate::default()
+    sot_topology::ssh_bridge::LinkGate::default()
         .command(recipe)
         .map(tokio::process::Command::from)
         .map_err(|e| format!("spawn {recipe}: {e}"))
@@ -136,7 +136,7 @@ fn spawn_link(recipe: &sot_protocol::topology::ssh_bridge::SshRecipe) -> Result<
 /// started die with `contained`.
 async fn link_once(
     env: &crate::comm::Env,
-    recipe: &sot_protocol::topology::ssh_bridge::SshRecipe,
+    recipe: &sot_topology::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
     sig: &'static sot_containment::Signal,
@@ -169,7 +169,7 @@ async fn link_once(
     };
     // A silent hub leaves ssh up: its last line is stale then, not the diagnosis.
     if result.as_ref().is_err_and(|why| *why != silent()) {
-        if let Some(line) = sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
+        if let Some(line) = sot_topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
             return Err(format!("{}: {line}", result.unwrap_err()));
         }
     }

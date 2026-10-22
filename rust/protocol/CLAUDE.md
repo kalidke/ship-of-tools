@@ -4,10 +4,10 @@ The wire is what the window, the daemon, the shell clients and the daemon's othe
 codec and size cap, every op's payload, the protocol integer and the product version. It does not own the capsule's
 lane frames (`rust/log/src/lane/`, `lane/exchange.rs`: capsule's) or the sidecars' own protocols (the kernel's and the
 REPL's JSON lines: sidecars'). The crate (`sot-protocol`) is shared by the window and the
-daemon and owns no runtime state. Until pass 5b moves it out, `src/topology/` (hosts.toml, endpoints, the ssh recipe
-and the lane client) lives beside the wire; it is topology's contract (`src/topology/CLAUDE.md`), not this page's, and
-it is the only part of this crate that depends on sot-log. The wire's own modules depend on platform only, for the
-host name and the OS account a hello declares.
+daemon and owns no runtime state. It depends on platform only, for the host name and the OS account a hello
+declares. Topology (hosts.toml, endpoints, the ssh recipe and the lane client) is the crate `sot-topology`, which
+depends on this one; the payload of op `topology.set` is topology's (`sot_topology::TopologySetReq`), and only the op's
+name is in this crate's one op table.
 
 ## Guarantees
 1. **An envelope is at most 1 MiB in every reader and writer.** `MAX_ENVELOPE_BYTES`, its newline not counted;
@@ -74,7 +74,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 6 | grammars | `annotation_tests.rs`, `physical_scale_tests.rs`, `page_url_tests.rs`, `video_path_tests.rs` |
 
 ## Files
-- `Cargo.toml`: the crate manifest; `test-handshake-bound` is enabled only by test-fixture features (the backend's dev-dependencies and the frontend's `test-pane-timing`), for the lane client's handshake bound and the ssh recipe's fixture command
+- `Cargo.toml`: the crate manifest; depends on platform alone
 - `build.rs`: stamps the git-derived build inputs of the product version
 - `src/annotation.rs`: split_frontmatter and synced_against, the shared annotation header grammar and its fixtures.
 - `src/child_lines.rs`: `ChildLines` and `blocking_child_lines`, a child's output line by line, decoded lossily.
@@ -85,7 +85,6 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 - `src/physical_scale.rs`: PhysicalScale, ScaleAxis and parse_physical_scale, shared by preview reads, writes and display.
 - `src/page_url.rs`: the loopback page-URL grammar, one parser for the daemon's proxy allowlist and the window's page proxy, and the port rewrite the window's page proxy opens
 - `src/video_path.rs`: video_mime, the five ASCII-insensitive dotted suffixes, and Rust consumer fixtures matching the executed Julia matches corpus.
-- `src/topology/`: the topology, endpoint, ssh bridge and lane client modules
 - `src/version.rs`: the product version string and `is_release_build`
 
 ## Start here

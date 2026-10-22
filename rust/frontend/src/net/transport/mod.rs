@@ -5,7 +5,7 @@
 // dev/output/c3-second-connection-amendment.md):
 //   - Reaching a daemon that is not on this box means spawning
 //     `ssh <target> '<PATH prelude>; sotd stdio-bridge [--host <host>]'`
-//     (`sot_protocol::topology::ssh_bridge`) and speaking the protocol over its piped
+//     (`sot_topology::ssh_bridge`) and speaking the protocol over its piped
 //     stdin/stdout — never a port, on either box: the daemon has had no TCP
 //     listener since 0.4.0. A dead login or a dead `sotd` on the far end is
 //     the child exiting before the first frame; its last stderr line IS the
@@ -119,7 +119,7 @@ pub enum Dial {
     Pipe(PathBuf),
     /// A generated hub relay, remote for policy; its link gate precedes the existing protected local connector.
     Relay(PathBuf),
-    Ssh(sot_protocol::topology::ssh_bridge::SshRecipe),
+    Ssh(sot_topology::ssh_bridge::SshRecipe),
 }
 
 #[derive(Debug, Clone)]
@@ -147,7 +147,7 @@ pub enum ResolvedDial {
     Local,
     /// The exact generated relay path selected by the control connection; never a local lease target.
     Relay(PathBuf),
-    Ssh(sot_protocol::topology::ssh_bridge::SshRecipe),
+    Ssh(sot_topology::ssh_bridge::SshRecipe),
 }
 
 /// Create the outgoing-request channel paired with the transport task. The
@@ -183,7 +183,7 @@ pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
     out_rx: UnboundedReceiver<OutgoingReq>,
     window: Wn,
     reconnect_now: Arc<tokio::sync::Notify>,
-    gate: sot_protocol::topology::ssh_bridge::LinkGate,
+    gate: sot_topology::ssh_bridge::LinkGate,
     leases: Arc<crate::lease::Leases>,
 ) {
     rt.spawn(async move {
@@ -266,7 +266,7 @@ async fn connect_and_run<Wn: Redraw>(
     evt_tx: StdSender<(HostKey, IncomingEvt)>,
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
     window: Wn,
-    gate: &sot_protocol::topology::ssh_bridge::LinkGate,
+    gate: &sot_topology::ssh_bridge::LinkGate,
     leases: &crate::lease::Leases,
 ) -> Result<()> {
     match &config.dial {
@@ -329,7 +329,7 @@ async fn connect_and_run<Wn: Redraw>(
         }
         Dial::Ssh(recipe) => {
             #[allow(clippy::disallowed_methods, reason = "the window's control ssh, owned by the window")]
-            let mut child = sot_protocol::topology::ssh_bridge::LinkGate::probe(recipe)
+            let mut child = sot_topology::ssh_bridge::LinkGate::probe(recipe)
                 .with_context(|| format!("spawn ssh {recipe}"))?;
             let stdin = child.stdin.take().expect("spawned with a piped stdin");
             let stdout = child.stdout.take().expect("spawned with a piped stdout");
@@ -356,7 +356,7 @@ async fn connect_and_run<Wn: Redraw>(
             // stderr read below, ending the ssh login this attempt owns before the
             // reconnect loop's next attempt spawns a fresh one.
             if let Err(e) = &result {
-                if let Some(line) = sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
+                if let Some(line) = sot_topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
                     return Err(anyhow::anyhow!("{e:#} (ssh: {line})"));
                 }
             }
@@ -453,7 +453,7 @@ async fn run_protocol<R, W, Wn>(
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
     window: &Wn,
     resolved: ResolvedDial,
-    gate: Option<&sot_protocol::topology::ssh_bridge::LinkGate>,
+    gate: Option<&sot_topology::ssh_bridge::LinkGate>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -488,7 +488,7 @@ async fn run_session<R, W, Wn>(
     // arms only when NOT `Local` — keyed on the transport that CONNECTED,
     // not the CLI shape.
     resolved: ResolvedDial,
-    gate: Option<&sot_protocol::topology::ssh_bridge::LinkGate>,
+    gate: Option<&sot_topology::ssh_bridge::LinkGate>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,

@@ -211,7 +211,7 @@ pub(crate) fn self_slot(_env: &Env, args: &[String]) -> Out {
 pub(crate) fn slug(_env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
     match args {
-        [label] => o.out(sot_protocol::topology::endpoint::slug(label)),
+        [label] => o.out(sot_topology::endpoint::slug(label)),
         _ => return usage(o, "slug <label>"),
     }
     o

@@ -1,0 +1,30 @@
+[package]
+name = "sot-topology"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+# Test-only lane-client fixtures. Enabled only by sot-backend and sot-frontend dev-dependencies; no shipped binary carries it.
+test-handshake-bound = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+# Wire: the frames, ops and codec the lane dial speaks.
+sot-protocol = { path = "../protocol" }
+# Platform: the host name, config and runtime folders, the descriptor sweep and the peer identity.
+sot-platform = { path = "../platform" }
+# The capsule's lane client trait and local connectors, which the lane dial implements.
+sot-log = { path = "../log" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+sot-platform = { path = "../platform", features = ["test-support"] }
+sot-log = { path = "../log", features = ["test-support"] }
+# The lane client's tests dial a fake daemon on a local socket or pipe, the one transport it has.
+interprocess = { workspace = true }
+# The descriptor test clears a pipe's close-on-exec flag, which std has no call for.
+libc = { workspace = true }

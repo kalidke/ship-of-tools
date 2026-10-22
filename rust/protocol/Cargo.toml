@@ -5,10 +5,6 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
-[features]
-# Test-only lane-client fixtures. Enabled only by sot-backend dev-dependencies; no shipped binary carries it.
-test-handshake-bound = []
-
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -16,15 +12,8 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 # Platform: the host name and OS account a hello declares, the runtime folder a session socket lives in.
 sot-platform = { path = "../platform" }
-# Topology's lane client only (leaves with pass 5b); the wire's own modules do not use it.
-sot-log = { path = "../log" }
 
 [dev-dependencies]
 # The shell hello test runs the shell client in a scratch home of its own.
 tempfile = { workspace = true }
 sot-platform = { path = "../platform", features = ["test-support"] }
-sot-log = { path = "../log", features = ["test-support"] }
-# The lane client's tests dial a fake daemon on a local socket or pipe, the one transport it has.
-interprocess = { workspace = true }
-# The descriptor test clears a pipe's close-on-exec flag, which std has no call for.
-libc = { workspace = true }

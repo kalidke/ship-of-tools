@@ -90,7 +90,7 @@ pub fn run(args: &[String]) -> i32 {
         [] => crate::paths::session_socket_path(crate::paths::local_daemon_label()),
         // The hub's own relay socket for `<name>`, derived on the hub —
         // never carried over the wire.
-        [flag, host] if flag == "--host" => sot_protocol::topology::relay_socket_path(host),
+        [flag, host] if flag == "--host" => sot_topology::relay_socket_path(host),
         // A local endpoint a caller on this box already holds: the same connect below, so it reaches only
         // what this OS account serves (ADR 0049, User isolation).
         [flag, endpoint] if flag == "--endpoint" => match local_endpoint(endpoint) {

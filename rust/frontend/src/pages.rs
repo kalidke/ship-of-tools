@@ -28,7 +28,7 @@
 
 use std::net::TcpListener as StdTcpListener;
 
-use sot_protocol::topology::ssh_bridge::{LinkGate, LinkWatch, SpawnError, SshRecipe};
+use sot_topology::ssh_bridge::{LinkGate, LinkWatch, SpawnError, SshRecipe};
 use sot_protocol::{codec, op, Frame, HelloReq, ProxyConnectReq, HANDOFF_ROLE};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -242,7 +242,7 @@ async fn pipe_child(
     // login. The child's last stderr line is added after the error's own words when it died
     // before or during the splice: the daemon's answer (a refused hello) stays first.
     match result {
-        Err(e) => match sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
+        Err(e) => match sot_topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
             Some(line) => Err(anyhow::anyhow!("{e:#}: {line}")),
             None => Err(e),
         },

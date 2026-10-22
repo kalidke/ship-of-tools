@@ -96,7 +96,7 @@ pub(crate) async fn file_comm(env: Env, req: CommFileReq) -> Result<std::result:
     tokio::task::spawn_blocking(move || {
         let home = crate::comm::sot_comm_home_in(&env);
         let self_host = comm_self_host_in(&env);
-        let topology = sot_protocol::topology::load_in(&env);
+        let topology = sot_topology::load_in(&env);
         // Recomputed at every filing: a remount changes it under a running daemon.
         let own = home
             .as_deref()
@@ -115,7 +115,7 @@ pub(crate) async fn file_comm(env: Env, req: CommFileReq) -> Result<std::result:
         let forward = |fwd: &CommFileReq| {
             let within = crate::comm::mail::inbox::inbox_lock_wait(&env) + COMM_FORWARD_SLACK;
             let endpoint = match &topology {
-                Ok(Some((_, t))) => sot_protocol::topology::relay_endpoint(t, &self_host),
+                Ok(Some((_, t))) => sot_topology::relay_endpoint(t, &self_host),
                 Ok(None) => Err("no hosts.toml names a hub".to_string()),
                 Err(e) => return Err(crate::comm::mail::inbox::refusal::hosts_toml_unreadable(e)),
             };
@@ -158,7 +158,7 @@ pub(crate) fn comm_self_host_in(env: &Env) -> String {
 /// The topology's half of "this daemon is its comm folder's hub": no topology
 /// file loads, or it names this host as hub. An unreadable file names no one.
 pub(crate) fn comm_topology_hub(
-    topology: &std::result::Result<Option<(std::path::PathBuf, sot_protocol::topology::Topology)>, String>,
+    topology: &std::result::Result<Option<(std::path::PathBuf, sot_topology::Topology)>, String>,
     self_host: &str,
 ) -> bool {
     match topology {

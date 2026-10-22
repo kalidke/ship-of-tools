@@ -1,7 +1,7 @@
 //! ADR 0045 decision 3: `DaemonLaneEndpoint`, the attach client's own
 //! `sot_log::lane::client::Endpoint` for the lane bridge — a capsule row's
 //! supervisor or voyage lane, piped through the row's OWN daemon
-//! (`lane.connect`, `crate::ops::LANE_CONNECT`) instead of a loopback
+//! (`lane.connect`, `sot_protocol::ops::LANE_CONNECT`) instead of a loopback
 //! named pipe or Unix socket the platform endpoints dial directly. Lives
 //! in `sot-protocol`, not `sot-log`, because it is a WIRE CLIENT of this
 //! crate's own `LaneConnectReq`/`LaneConnectRes` — `sot-log` has no
@@ -11,7 +11,7 @@
 //!
 //! A `lane.connect` dial gets its OWN peer-identity report for free: the
 //! daemon it asked ran steps 1-3 of the challenge on ITS dial and
-//! returned the observed `(pid, created)` in [`crate::ops::
+//! returned the observed `(pid, created)` in [`sot_protocol::ops::
 //! LaneConnectRes`]. [`DaemonLaneEndpoint::authenticate_server`] simply
 //! hands that report back — no OS-level check of its own is possible
 //! from here, reaching the peer only through a bridged pipe.
@@ -72,7 +72,7 @@ use sot_platform::identity::peer::PeerIdentity;
 use sot_platform::identity::exchange::IdentityExchange;
 use sot_log::lane::transport::{TransportError, CONNECT_BOUND};
 
-use crate::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
+use sot_protocol::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
 
 /// How to reach a row's daemon — a local Unix socket / Windows named
 /// pipe (`Local`, matching the platform endpoints' own transport for
@@ -84,10 +84,10 @@ use crate::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
 pub enum LaneDial {
     Local(PathBuf),
     /// A generated hub relay, remote for policy; its link gate precedes the existing protected local connector.
-    Relay(PathBuf, crate::topology::ssh_bridge::LinkGate),
+    Relay(PathBuf, crate::ssh_bridge::LinkGate),
     /// The recipe and its host's link gate: a down gate makes the dial
     /// fail with `TransportError::LinkDown` and start no ssh.
-    Ssh(crate::topology::ssh_bridge::SshRecipe, crate::topology::ssh_bridge::LinkGate),
+    Ssh(crate::ssh_bridge::SshRecipe, crate::ssh_bridge::LinkGate),
 }
 
 /// An `Endpoint` value naming one daemon connection, never a row. `token`
@@ -107,7 +107,7 @@ pub enum LaneDial {
 /// Select another route by constructing another endpoint:
 ///
 /// ```no_run
-/// use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
+/// use sot_topology::lane_client::{DaemonLaneEndpoint, LaneDial};
 /// use sot_log::lane::client::Endpoint;
 /// fn dial(route: LaneDial) {
 ///     let ep = DaemonLaneEndpoint::new(route, None);
@@ -118,7 +118,7 @@ pub enum LaneDial {
 /// The route is fixed at construction:
 ///
 /// ```compile_fail,E0616
-/// use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
+/// use sot_topology::lane_client::{DaemonLaneEndpoint, LaneDial};
 /// fn retarget(mut ep: DaemonLaneEndpoint, route: LaneDial) {
 ///     ep.dial = route;
 /// }
@@ -136,7 +136,7 @@ pub struct DaemonLaneEndpoint {
 enum VoyageSpare {
     Unused,
     /// The parked login, and its gate's watch since before it started.
-    Parked(BridgedClient, crate::topology::ssh_bridge::LinkWatch),
+    Parked(BridgedClient, crate::ssh_bridge::LinkWatch),
     Spent,
 }
 
@@ -296,7 +296,7 @@ impl Endpoint for DaemonLaneEndpoint {
     }
 }
 
-/// The standard error payload `crate::ops::LaneConnectReq`'s own doc
+/// The standard error payload `sot_protocol::ops::LaneConnectReq`'s own doc
 /// promises on refusal, `{error, code}` (plus `kind` for `lane_absent`).
 /// `code` is optional at the TYPE level only to catch a daemon that
 /// predates the lane bridge entirely: an old daemon's "unknown op"
@@ -425,8 +425,8 @@ fn run_handshake(stream: &LaneStream, hello: &Frame, req: &Frame, deadline: Inst
         use std::io::Write as _;
         let unreachable = |e: &dyn std::fmt::Display| TransportError::Unreachable(std::io::Error::other(e.to_string()));
         let mut both = Vec::new();
-        crate::codec::write_frame_blocking(&mut both, hello).map_err(|e| unreachable(&e))?;
-        crate::codec::write_frame_blocking(&mut both, req).map_err(|e| unreachable(&e))?;
+        sot_protocol::codec::write_frame_blocking(&mut both, hello).map_err(|e| unreachable(&e))?;
+        sot_protocol::codec::write_frame_blocking(&mut both, req).map_err(|e| unreachable(&e))?;
         ClientIo(stream).write_all(&both).map_err(TransportError::Unreachable)?;
         let mut r = std::io::BufReader::new(ClientIo(stream));
         let hello_reply = read_reply(stream, &mut r)?;
@@ -451,7 +451,7 @@ fn run_handshake(stream: &LaneStream, hello: &Frame, req: &Frame, deadline: Inst
 /// already (`diagnose`); a read that ended before a whole frame (the child's stdout closed, an over-long or unparsable
 /// line) went through no client error, so the line is added here. The error's whole chain is kept (`{:#}`).
 fn read_reply(stream: &LaneStream, r: &mut std::io::BufReader<ClientIo<'_>>) -> Result<Frame, TransportError> {
-    crate::codec::read_frame_blocking(r).map_err(|e| {
+    sot_protocol::codec::read_frame_blocking(r).map_err(|e| {
         let text = std::io::Error::other(format!("{e:#}"));
         if e.downcast_ref::<std::io::Error>().is_some() {
             TransportError::Unreachable(text)
@@ -475,7 +475,7 @@ fn with_ssh_line(stream: &LaneStream, e: std::io::Error) -> std::io::Error {
 /// The handshake over a connected stream: the hello and the `lane.connect` request, the replies classified, and the
 /// client that holds the stream and the peer the daemon reported. A login its host's link gate watches (`link`) ends
 /// when the gate closes before its reply: the stream's cancel ends the handshake, and the dial is `LinkDown`.
-fn handshake(stream: LaneStream, hello: &Frame, req: &Frame, bound: std::time::Duration, link: Option<crate::topology::ssh_bridge::LinkWatch>) -> Result<DaemonLaneClient, TransportError> {
+fn handshake(stream: LaneStream, hello: &Frame, req: &Frame, bound: std::time::Duration, link: Option<crate::ssh_bridge::LinkWatch>) -> Result<DaemonLaneClient, TransportError> {
     let deadline = Instant::now() + bound;
     let (pid, created) = match link {
         None => run_handshake(&stream, hello, req, deadline)?,
@@ -512,23 +512,23 @@ impl DaemonLaneEndpoint {
         self
     }
 
-    fn spawn_ssh(&self, recipe: &crate::topology::ssh_bridge::SshRecipe, gate: &crate::topology::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
+    fn spawn_ssh(&self, recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
         #[cfg(any(test, feature = "test-handshake-bound"))]
         if let Some(spawn) = &self.test_ssh_spawner {
             let command = gate.command(recipe).map_err(|error| match error {
-                crate::topology::ssh_bridge::SpawnError::LinkDown => TransportError::LinkDown,
-                crate::topology::ssh_bridge::SpawnError::Io(error) => TransportError::Unreachable(error),
+                crate::ssh_bridge::SpawnError::LinkDown => TransportError::LinkDown,
+                crate::ssh_bridge::SpawnError::Io(error) => TransportError::Unreachable(error),
             })?;
             return match gate.admit(command, |command| spawn(command)) {
                 Ok(child) => BridgedClient::wrap(child).map_err(TransportError::Unreachable),
-                Err(crate::topology::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
-                Err(crate::topology::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
+                Err(crate::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
+                Err(crate::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
             };
         }
         BridgedClient::spawn(recipe, gate)
     }
 
-    fn ssh_client(&self, kind: &str, recipe: &crate::topology::ssh_bridge::SshRecipe, gate: &crate::topology::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
+    fn ssh_client(&self, kind: &str, recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
         let client = self.spawn_ssh(recipe, gate)?;
         if kind == "supervisor" {
             self.start_spare(|| self.spawn_ssh(recipe, gate));
@@ -549,7 +549,7 @@ impl DaemonLaneEndpoint {
         }
     }
 
-    fn take_spare(&self) -> Option<(BridgedClient, crate::topology::ssh_bridge::LinkWatch)> {
+    fn take_spare(&self) -> Option<(BridgedClient, crate::ssh_bridge::LinkWatch)> {
         let previous = {
             let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::replace(&mut *state, VoyageSpare::Spent)
@@ -569,7 +569,7 @@ impl DaemonLaneEndpoint {
             voyage_id,
             token: self.token.clone(),
         };
-        let hello = crate::HelloReq::this_process("sot-lane-dial", crate::HANDOFF_ROLE, sot_platform::host::state_dir::host_name().ok())
+        let hello = sot_protocol::HelloReq::this_process("sot-lane-dial", sot_protocol::HANDOFF_ROLE, sot_platform::host::state_dir::host_name().ok())
             .map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))?;
         let hello = Frame::req(1, op::HELLO, serde_json::to_value(&hello).expect("HelloReq always serializes"));
         let frame = Frame::req(2, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
@@ -582,7 +582,7 @@ impl DaemonLaneEndpoint {
         };
         // An ssh or relay route's handshake holds a whole ssh login; a local route's only the two replies.
         let production = match &self.dial {
-            LaneDial::Ssh(..) | LaneDial::Relay(..) => crate::topology::ssh_bridge::SSH_LOGIN_BOUND,
+            LaneDial::Ssh(..) | LaneDial::Relay(..) => crate::ssh_bridge::SSH_LOGIN_BOUND,
             LaneDial::Local(_) => CONNECT_BOUND,
         };
         #[cfg(any(test, feature = "test-handshake-bound"))]

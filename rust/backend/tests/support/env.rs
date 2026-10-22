@@ -360,7 +360,7 @@ impl Env {
 
     /// [`seed_capsule_toml`] specialized to the DEFAULT row: slug
     /// computed the same way the daemon computes it (`--project-root`'s
-    /// own basename run through `sot_protocol::slug`; no `--label` is
+    /// own basename run through `sot_topology::endpoint::slug`; no `--label` is
     /// ever passed in this file) so `rows/anchor.rs`'s own boot seed resolves
     /// THIS pre-written row as "the existing default" rather than
     /// minting a fresh one. Before the 2026-09-04 amendment this is what
@@ -374,7 +374,7 @@ impl Env {
     /// which deliberately seeds a REAL (if unlaunchable) agent to
     /// reproduce a row that is NOT the inert anchor.
     pub fn seed_default_capsule_toml(&self, agent: &str) {
-        let slug = sot_protocol::slug(
+        let slug = sot_topology::endpoint::slug(
             self.daemon_project_root
                 .file_name()
                 .and_then(|n| n.to_str())

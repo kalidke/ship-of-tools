@@ -11,7 +11,7 @@ fn resolve_proxy_target_dials_a_non_default_hosts_own_resolved_address() {
     let host = "gpu-box".to_string();
     let mut proxy_capable_hosts = std::collections::HashSet::new();
     proxy_capable_hosts.insert(host.clone());
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", Some(&host)).unwrap();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("hub", Some(&host)).unwrap();
     let mut host_resolved_dial = HashMap::new();
     host_resolved_dial.insert(host.clone(), ResolvedDial::Ssh(recipe.clone()));
     let mut host_transports = HashMap::new();
@@ -19,7 +19,7 @@ fn resolve_proxy_target_dials_a_non_default_hosts_own_resolved_address() {
         host.clone(),
         crate::net::transport::TransportConfig {
             dial: crate::net::transport::Dial::Ssh(
-                sot_protocol::topology::ssh_bridge::SshRecipe::new("ignored", None).unwrap(),
+                sot_topology::ssh_bridge::SshRecipe::new("ignored", None).unwrap(),
             ),
             token: Some("tok-gpu".to_string()),
         },
@@ -41,7 +41,7 @@ fn resolve_proxy_target_still_dials_the_default_host() {
     let host = "hub".to_string();
     let mut proxy_capable_hosts = std::collections::HashSet::new();
     proxy_capable_hosts.insert(host.clone());
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let mut host_resolved_dial = HashMap::new();
     host_resolved_dial.insert(host.clone(), ResolvedDial::Ssh(recipe.clone()));
     let host_transports = HashMap::new();

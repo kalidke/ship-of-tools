@@ -127,8 +127,8 @@ pub fn own_label(tag: &str) -> String {
 /// `\\.\pipe\sot-<user>-<label>`, which no runtime folder moves, so the label alone keeps a test off that daemon.
 #[allow(dead_code)] // only some suites start a daemon by label
 pub fn label_endpoint(label: &str) -> PathBuf {
-    let endpoint = sot_protocol::session_socket_path(label);
-    let own_daemon = sot_protocol::session_socket_path(sot_protocol::local_daemon_label());
+    let endpoint = sot_topology::endpoint::session_socket_path(label);
+    let own_daemon = sot_topology::endpoint::session_socket_path(sot_topology::endpoint::local_daemon_label());
     assert_ne!(
         endpoint, own_daemon,
         "label {label:?} derives this box's own daemon's endpoint; a test starts its daemon at a label of its own (own_label)"

@@ -145,7 +145,7 @@ fn load_launch_inputs(
     // `selfupdate.rs::backend_owns_updates_here` uses — pure file read,
     // no daemon round trip, `None` when no `hosts.toml` declares one.
     let monitor_hub: Option<String> =
-        sot_protocol::topology::load().ok().flatten().map(|(_, t)| t.hub);
+        sot_topology::load().ok().flatten().map(|(_, t)| t.hub);
     // Restore previous window geometry on launch. Saved in logical
     // pixels so cross-DPR launches behave sensibly. Defaults are
     // ~50% bigger than the spike's original 1024×700.
@@ -175,7 +175,7 @@ fn load_keybindings() -> KeyBindings {
 #[derive(Clone)]
 pub(in crate::ui) struct NativeStartupInputs {
     pub(in crate::ui) resume: crate::ui::persist::resume::GlobalState,
-    pub(in crate::ui) topology: Option<sot_protocol::topology::Topology>,
+    pub(in crate::ui) topology: Option<sot_topology::Topology>,
     pub(in crate::ui) settings: Settings,
     pub(in crate::ui) keybindings: KeyBindings,
     pub(in crate::ui) ledger: Arc<std::sync::Mutex<NativeProgressLedger>>,

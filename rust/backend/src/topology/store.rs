@@ -1,5 +1,5 @@
 // topology/store.rs — the daemon's live view of the declared topology file
-// (`sot_protocol::topology`, grammar v2). ON-DEMAND re-read (mtime+size),
+// (`sot_topology`, grammar v2). ON-DEMAND re-read (mtime+size),
 // never a file watcher: plan §B "Editing the master list" is explicit that
 // `notify` misses writes on a network filesystem, exactly the reason
 // `topology/mod.rs`'s own BOM-incident note already learned the hard way once
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use sot_protocol::topology::{self, Topology};
+use sot_topology::{self as topology, Topology};
 
 /// `topology.changed` broadcast payload (mirrors `WorkspaceChanged`): one
 /// per successful topology write, whether from `topology.set` or a

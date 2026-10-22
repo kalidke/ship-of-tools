@@ -76,7 +76,7 @@ fn runtime_root() -> &'static Path {
         // Every endpoint here is a sibling in one sessions dir; derive it
         // rather than spelling the layout out a second time.
         let sessions =
-            sot_protocol::session_socket_path(sot_protocol::local_daemon_label()).parent().expect("a socket has a parent").to_path_buf();
+            sot_topology::endpoint::session_socket_path(sot_topology::endpoint::local_daemon_label()).parent().expect("a socket has a parent").to_path_buf();
         create_private_under(tmp.path(), &sessions);
         tmp
     });
@@ -214,7 +214,7 @@ fn round_trip(socket: &Path, args: &[&str]) {
 fn no_argument_reaches_this_boxs_own_endpoint() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     runtime_root();
-    let socket = sot_protocol::session_socket_path(sot_protocol::local_daemon_label());
+    let socket = sot_topology::endpoint::session_socket_path(sot_topology::endpoint::local_daemon_label());
     round_trip(&socket, &[]);
 }
 
@@ -222,7 +222,7 @@ fn no_argument_reaches_this_boxs_own_endpoint() {
 fn dash_dash_host_reaches_the_hubs_relay_socket_for_that_host() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     runtime_root();
-    let socket = sot_protocol::topology::relay_socket_path("bridge-host");
+    let socket = sot_topology::relay_socket_path("bridge-host");
     round_trip(&socket, &["--host", "bridge-host"]);
 }
 
@@ -376,7 +376,7 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
     // The daemon MUST run at this box's own label — a no-argument bridge
     // never accepts a caller-supplied one, so this is the only label that
     // reaches it, exactly as the hub's own relay unit runs it.
-    let label = sot_protocol::local_daemon_label();
+    let label = sot_topology::endpoint::local_daemon_label();
     runtime_root();
 
     let hosts_toml = env._tmp.path().join("hosts.toml");
@@ -407,7 +407,7 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
         .expect("spawn sotd");
     env.daemon.borrow_mut().replace(daemon);
 
-    let socket = sot_protocol::session_socket_path(label);
+    let socket = sot_topology::endpoint::session_socket_path(label);
     let deadline = Instant::now() + BOUND;
     while UnixStream::connect(&socket).is_err() {
         // A daemon that has exited will never bind, however slow the
@@ -470,7 +470,7 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
 fn lease_through_stdio_bridge_refused() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let env = Env::new("bridge-lease");
-    let label = sot_protocol::local_daemon_label();
+    let label = sot_topology::endpoint::local_daemon_label();
     runtime_root();
     let hosts_toml = env._tmp.path().join("hosts.toml");
     std::fs::write(&hosts_toml, format!("hub = \"{TEST_STATE_HOST}\"\n\n[host.{TEST_STATE_HOST}]\ndaemon = true\n")).expect("write hosts.toml");
@@ -496,7 +496,7 @@ fn lease_through_stdio_bridge_refused() {
         .spawn()
         .expect("spawn sotd");
     env.daemon.borrow_mut().replace(daemon);
-    let socket = sot_protocol::session_socket_path(label);
+    let socket = sot_topology::endpoint::session_socket_path(label);
     let deadline = Instant::now() + BOUND;
     while UnixStream::connect(&socket).is_err() {
         let exited = env.daemon.borrow_mut().as_mut().expect("the daemon is tracked").try_wait().expect("try_wait the daemon");

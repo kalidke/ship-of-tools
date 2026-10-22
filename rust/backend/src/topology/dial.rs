@@ -19,7 +19,7 @@ enum Conn {
     #[cfg(windows)]
     Pipe(std::sync::Arc<sot_log::lane::pipe_win::PipeClient>),
     /// An `ssh:` endpoint's connection IS the spawned child (C2/C3,
-    /// `sot_protocol::topology::ssh_bridge`) -- there is no separate "connect" step
+    /// `sot_topology::ssh_bridge`) -- there is no separate "connect" step
     /// the way a socket has one, so this variant holds the not-yet-split
     /// [`ContainedStd`](sot_containment::ContainedStd) rather than a stream.
     Bridged(sot_containment::ContainedStd),
@@ -234,8 +234,8 @@ fn connect(endpoint: &str, sig: &'static sot_containment::Signal) -> Result<Conn
             Some((t, h)) => (t, Some(h)),
             None => (rest, None),
         };
-        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new(target, host).map_err(|e| format!("{endpoint}: {e}"))?;
-        let mut cmd = sot_protocol::topology::ssh_bridge::LinkGate::default().command(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
+        let recipe = sot_topology::ssh_bridge::SshRecipe::new(target, host).map_err(|e| format!("{endpoint}: {e}"))?;
+        let mut cmd = sot_topology::ssh_bridge::LinkGate::default().command(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
         let child = sig.spawn_std(&mut cmd).map_err(|e| format!("{endpoint}: {e}"))?;
         return Ok(Conn::Bridged(child));
     }

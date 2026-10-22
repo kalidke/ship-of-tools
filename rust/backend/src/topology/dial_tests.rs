@@ -60,7 +60,7 @@ pub(crate) fn wait_for_marker(marker: &std::path::Path) -> bool {
 }
 
 /// BLOCKER 2, as amended by round-2 item 4: `connect` must dispatch
-/// `ssh:` through `sot_protocol::topology::ssh_bridge`, and `split()` must hand
+/// `ssh:` through `sot_topology::ssh_bridge`, and `split()` must hand
 /// `dial_and_call` a `ChildGuard` for that arm so an early return
 /// cannot leak the spawned process -- proved here against a STUB
 /// `ssh` put FIRST on `PATH`, never the real one. The original

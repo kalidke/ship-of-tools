@@ -12,9 +12,6 @@ pub mod ir;
 pub mod ops;
 pub mod page_url;
 pub mod physical_scale;
-// The declared topology (`hosts.toml`, grammar v2): the ONE parser and the
-// ONE search rule for the daemon, `sotd topology`, and the frontend.
-pub mod topology;
 pub mod video_path;
 
 pub use codec::{read_frame, write_frame};
@@ -37,14 +34,13 @@ pub use ops::{
     PtyScreenReq, PtyScreenRes, PtyScrollReq, PtyWriteReq, QuartoOpenReq, QuartoOpenRes,
     ReplErrorOut, ReplEvalReq, ReplEvalRes, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes,
     ReplFrame, ReplFrameEvt, ReplRunFileReq, ReplRunFileRes, ReplValueOut, StackFrame,
-    ToggleHiddenReq, ToggleHiddenRes, TopologySetReq, TopologySetRes, TreeChildrenReq, TreeChildrenRes, TreeRootReq, TreeRootRes,
+    ToggleHiddenReq, ToggleHiddenRes, TreeChildrenReq, TreeChildrenRes, TreeRootReq, TreeRootRes,
     UpdateApplyReq, UpdateApplyRes, UpdateCheckReq, UpdateCheckRes, VersionQueryReq,
     VersionQueryRes, VideoOpenReq, VideoOpenRes, WorkspaceActivateReq, WorkspaceActivateRes,
     WorkspaceCreateReq, WorkspaceCreateRes, WorkspaceDestroyReq, WorkspaceDestroyRes,
     WorkspaceListEntry, WorkspaceListReq, WorkspaceListRes, WorkspaceReauthReq,
     WorkspaceReauthRes,
 };
-pub use topology::endpoint::{local_daemon_label, session_socket_path, slug};
 
 use serde::{Deserialize, Serialize};
 

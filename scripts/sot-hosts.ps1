@@ -3,7 +3,7 @@
 # `dial` line names.
 #
 # The old hosts.toml TOML parsing (Read-SotHosts / Get-TunnelPlan) is
-# DELETED -- `sot_protocol::topology` (Rust) is the one parser for that
+# DELETED -- `sot_topology` (Rust) is the one parser for that
 # file now, and `sotd topology plan --self <host>` is the one way anything
 # reads it. This file is a reader of THAT command's plain-line stdout,
 # nothing else -- no TOML, no `.sot\hosts.toml` path knowledge here at all.
@@ -12,7 +12,7 @@
 # it shells out to (no ssh, no other side effects) -- easy to fake in a
 # test by pointing -SotdPath at a stub script that prints fixed lines.
 #
-# Contract (rust/protocol/src/topology/mod.rs's `plan` doc comment -- read it
+# Contract (rust/topology/src/lib.rs's `plan` doc comment -- read it
 # there before changing this; a reviewer may still adjust the format, so
 # this parses it in ONE place and nowhere else): one fact per line, first
 # word a keyword, then either one value (self/hub/relay-endpoint) or a host
@@ -136,7 +136,7 @@ function Invoke-SotTopologySync {
     return $result
 }
 
-# The tree's one ssh option set (rust/protocol/src/topology/ssh_bridge.rs SSH_OPTS): BatchMode never prompts,
+# The tree's one ssh option set (rust/topology/src/ssh_bridge.rs SSH_OPTS): BatchMode never prompts,
 # ConnectTimeout bounds the connect and the server's banner, ServerAlive ends a link that stops answering, and no
 # multiplexing master can keep the call's pipes open. Every script ssh call passes it and runs under Invoke-SotWithin.
 $SotSshOpts = @('-T', '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',

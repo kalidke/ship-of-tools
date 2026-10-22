@@ -27,7 +27,7 @@ async fn shutdown_kills_the_link_child_and_never_reconnects() {
     );
     STUB_PROGRAM.set(Some(stub.to_string_lossy().into_owned()));
     let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let task = tokio::spawn(async move { hold_link(&Env::empty(), &recipe, "self", "sotd-self", sig).await });
     let began = Instant::now();
     // Spawn completes before the stub's first line has run; fire only once
@@ -330,7 +330,7 @@ async fn a_failed_link_names_an_ssh_line_that_is_not_utf8() {
     sot_platform::test_exec::write_executable(&stub, "#!/bin/sh\nprintf 'Permission denied \\351 (publickey).\\n' >&2\nexit 255\n".to_string());
     STUB_PROGRAM.set(Some(stub.to_string_lossy().into_owned()));
     let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let ended = tokio::time::timeout(Duration::from_secs(30), link_once(&Env::empty(), &recipe, "self", "sotd-self", sig)).await;
     STUB_PROGRAM.set(None);
     let why = ended.expect("the link ends when its ssh exits").expect_err("a stub that exits fails the link");
@@ -345,7 +345,7 @@ async fn a_silent_hub_ends_the_link_without_a_stale_ssh_line() {
     let dir = tempfile::tempdir().unwrap();
     STUB_PROGRAM.set(Some(silent_hub_ssh(dir.path())));
     let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let link = tokio::spawn(async move { link_once(&Env::empty(), &recipe, "self", "sotd-self", sig).await });
     // A running blocking task holds the paused clock, so the link has the stub's warning and reply before it waits.
     let said = dir.path().join("said");
@@ -370,7 +370,7 @@ async fn a_link_cut_for_silence_is_dialled_again() {
     let dir = tempfile::tempdir().unwrap();
     STUB_PROGRAM.set(Some(silent_hub_ssh(dir.path())));
     let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let task = tokio::spawn(async move { hold_link(&Env::empty(), &recipe, "self", "sotd-self", sig).await });
     // Each link is one process group. The paused clock runs the 90 s cut and the redial in a moment of real time.
     let (began, mut seen) = (Instant::now(), Vec::new());

@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use sot_protocol::ops::{ClientVersion, WorkspaceListEntry};
-use sot_protocol::topology::{self, HostDecl, Topology};
+use sot_topology::{self as topology, HostDecl, Topology};
 
 /// Hard per-host bound (item 4): one dead host must never hang the whole
 /// command. Generous for a loopback or already-tunnelled socket, short

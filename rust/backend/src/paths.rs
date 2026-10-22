@@ -67,7 +67,7 @@ impl Drop for EnvGuard {
 ///
 /// ADR 0042 L2b: `slug`, `session_socket_path` and the private-runtime-dir
 /// resolution it needs (`runtime_sot_dir`, `is_private_dir`, `current_uid`)
-/// moved to `sot_protocol::topology::endpoint` — the ONE derivation of a
+/// moved to `sot_topology::endpoint` — the ONE derivation of a
 /// daemon's per-user endpoint, so the frontend can call the exact same
 /// function for its implicit "local" connection (`hosts::resolve_connections`)
 /// instead of guessing. Re-exported here (except `is_private_dir`, which
@@ -78,7 +78,7 @@ impl Drop for EnvGuard {
 /// `secure_socket_dir` below that still need the shared helpers, keep
 /// working unchanged. See that module for the Windows named-pipe branch and
 /// the moved doc comments/tests.
-pub use sot_protocol::{local_daemon_label, session_socket_path, slug};
+pub use sot_topology::endpoint::{local_daemon_label, session_socket_path, slug};
 
 /// Strict allowlist for names (security review): `1..=64` ASCII alphanumerics, `.`, `_`, `-` only — no shell
 /// metacharacters, no `|`, no whitespace/control bytes.
@@ -89,7 +89,7 @@ pub(crate) fn valid_name(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-/// `is_private_dir`'s own tests moved to `sot_protocol::topology::endpoint`
+/// `is_private_dir`'s own tests moved to `sot_topology::endpoint`
 /// with the function (ADR 0042 L2b) — see that module's
 /// `is_private_dir_tests`. `secure_private_dir`'s tests (below) still
 /// exercise `current_uid` (re-exported above) directly.

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn lane_dial_matches_the_resolved_control_transport_selection() {
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let pipe_config = crate::net::transport::TransportConfig {
         dial: crate::net::transport::Dial::Pipe(std::path::PathBuf::from("/tmp/sock")),
         token: Some("tok".to_string()),
@@ -10,13 +10,13 @@ fn lane_dial_matches_the_resolved_control_transport_selection() {
     // A pipe-configured host whose control connection resolved LOCAL —
     // the lane dial follows.
     match lane_dial(&pipe_config, ResolvedDial::Local, &Default::default()) {
-        Some((sot_protocol::topology::lane_client::LaneDial::Local(path), token)) => {
+        Some((sot_topology::lane_client::LaneDial::Local(path), token)) => {
             assert_eq!(path, std::path::PathBuf::from("/tmp/sock"));
             assert_eq!(token.as_deref(), Some("tok"));
         }
         Some((
-            sot_protocol::topology::lane_client::LaneDial::Ssh(..)
-            | sot_protocol::topology::lane_client::LaneDial::Relay(..),
+            sot_topology::lane_client::LaneDial::Ssh(..)
+            | sot_topology::lane_client::LaneDial::Relay(..),
             _,
         )) => {
             panic!("must follow the resolved Local selection, not guess ssh")
@@ -31,13 +31,13 @@ fn lane_dial_matches_the_resolved_control_transport_selection() {
         token: Some("tok".to_string()),
     };
     match lane_dial(&ssh_config, ResolvedDial::Ssh(recipe.clone()), &Default::default()) {
-        Some((sot_protocol::topology::lane_client::LaneDial::Ssh(got, _), token)) => {
+        Some((sot_topology::lane_client::LaneDial::Ssh(got, _), token)) => {
             assert_eq!(got, recipe);
             assert_eq!(token.as_deref(), Some("tok"));
         }
         Some((
-            sot_protocol::topology::lane_client::LaneDial::Local(_)
-            | sot_protocol::topology::lane_client::LaneDial::Relay(..),
+            sot_topology::lane_client::LaneDial::Local(_)
+            | sot_topology::lane_client::LaneDial::Relay(..),
             _,
         )) => {
             panic!("must follow the resolved Ssh selection, not guess local")
@@ -56,7 +56,7 @@ fn lane_dial_matches_the_resolved_control_transport_selection() {
         ResolvedDial::Relay(relay_path.clone()),
         &Default::default(),
     ) {
-        Some((sot_protocol::topology::lane_client::LaneDial::Relay(got, _), token)) => {
+        Some((sot_topology::lane_client::LaneDial::Relay(got, _), token)) => {
             assert_eq!(got, relay_path);
             assert_eq!(token.as_deref(), Some("tok"));
         }

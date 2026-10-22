@@ -48,6 +48,6 @@ fn derive_prints_the_three_lines_the_spawn_reads() {
     assert_eq!((o.code, o.stdout.as_str()), (0, "repo-u-box1\nu\nrepo-box1\n"), "{}", o.stderr);
     assert!(t.agents().get("repo-u-box1").is_none(), "a derive alone writes nothing");
     assert_eq!(self_slot(&t.env, &args(&["box1", "ws/1"])).stdout, "box1__ws_1.txt");
-    assert_eq!(slug(&t.env, &args(&["My Row"])).stdout, format!("{}\n", sot_protocol::topology::endpoint::slug("My Row")));
+    assert_eq!(slug(&t.env, &args(&["My Row"])).stdout, format!("{}\n", sot_topology::endpoint::slug("My Row")));
     assert_eq!(routable(&t.env, &args(&["", "/r"])).code, 1);
 }

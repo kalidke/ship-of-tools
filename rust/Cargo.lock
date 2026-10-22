@@ -3860,6 +3860,7 @@ dependencies = [
  "sot-log",
  "sot-platform",
  "sot-protocol",
+ "sot-topology",
  "sot-updater",
  "tempfile",
  "tokio",
@@ -3912,6 +3913,7 @@ dependencies = [
  "sot-log",
  "sot-platform",
  "sot-protocol",
+ "sot-topology",
  "sot-updater",
  "tiny-skia",
  "tokio",
@@ -3979,12 +3981,24 @@ name = "sot-protocol"
 version = "0.7.0-dev"
 dependencies = [
  "anyhow",
+ "serde",
+ "serde_json",
+ "sot-platform",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "sot-topology"
+version = "0.7.0-dev"
+dependencies = [
  "interprocess",
  "libc",
  "serde",
  "serde_json",
  "sot-log",
  "sot-platform",
+ "sot-protocol",
  "tempfile",
  "tokio",
 ]

@@ -650,7 +650,7 @@ fn sampler_command(host: &MonitorHost, interval: &str) -> Command {
     } else {
         let alias = host.ssh_alias.as_deref().unwrap_or(&host.name);
         let mut c = Command::new("ssh");
-        c.args(sot_protocol::topology::ssh_bridge::SSH_OPTS).arg(alias).args(["bash", "-s", "0", interval]);
+        c.args(sot_topology::ssh_bridge::SSH_OPTS).arg(alias).args(["bash", "-s", "0", interval]);
         c
     }
 }
@@ -678,7 +678,7 @@ async fn spawn_source(
 // ─── Config: sampling targets from the declared topology ─────────────────
 
 /// The sampling roster: the `[monitor]` table of `hosts.toml`, read through
-/// the ONE parser (`sot_protocol::topology`; search order documented
+/// the ONE parser (`sot_topology`; search order documented
 /// there). Each entry is `<label> = "<ssh target>"`; an empty target means
 /// the label. The entry whose label or target equals this box's
 /// `host_name()` is sampled locally (no ssh), so one file serves whichever
@@ -696,7 +696,7 @@ async fn spawn_source(
 /// other daemon samples the host it runs on (on Linux) and nothing else — it is not
 /// the monitoring authority, and asking it to ssh targets it may not
 /// resolve produced a partial record that looked like a whole one.
-fn sampling_roster(topo: &sot_protocol::topology::Topology, local: &str) -> Vec<MonitorHost> {
+fn sampling_roster(topo: &sot_topology::Topology, local: &str) -> Vec<MonitorHost> {
     if topo.hub == local {
         monitor_hosts(topo.monitor_targets(), local)
     } else {
@@ -706,7 +706,7 @@ fn sampling_roster(topo: &sot_protocol::topology::Topology, local: &str) -> Vec<
 
 pub fn load_hosts() -> Vec<MonitorHost> {
     let local = sot_platform::host::state_dir::host_name().unwrap_or_else(|_| "local".to_string());
-    let hosts = match sot_protocol::topology::load() {
+    let hosts = match sot_topology::load() {
         Ok(Some((path, topo))) => {
             let hosts = sampling_roster(&topo, &local);
             if topo.hub == local {

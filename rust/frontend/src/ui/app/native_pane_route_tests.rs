@@ -2,7 +2,7 @@
 
 use super::native_pane_daemon_tests::{reap, Control, Daemon};
 use anyhow::{ensure, Context, Result};
-use sot_protocol::topology::ssh_bridge::{LinkGate, SshRecipe};
+use sot_topology::ssh_bridge::{LinkGate, SshRecipe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -112,7 +112,7 @@ pub(super) fn preflight(route: &Route, daemon: &Daemon) -> Result<()> {
 /// One headless attach over the route's recipe: waits for the checkpoint and returns the screen's text.
 fn attach_and_read(route: &Route, session: &str) -> Result<String> {
     use sot_log::attach_client::client::FeAttachClient;
-    use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
+    use sot_topology::lane_client::{DaemonLaneEndpoint, LaneDial};
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(route.recipe(), LinkGate::default()), None);
     let mut client = FeAttachClient::attach(endpoint, session.to_string(), 80, 24, "t3-preflight".into(), "t3-preflight".into(), None, Box::new(|| {}))
         .map_err(|e| anyhow::anyhow!("preflight attach: {e}"))?;
@@ -168,7 +168,7 @@ impl Relay {
 #[cfg(unix)]
 mod unix {
     use super::*;
-    use sot_protocol::topology::ssh_bridge::SSH_OPTS;
+    use sot_topology::ssh_bridge::SSH_OPTS;
     use std::os::fd::OwnedFd;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;

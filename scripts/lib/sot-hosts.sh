@@ -4,7 +4,7 @@
 # line names) and scripts/tests/test-topology-plan.sh.
 #
 # The old hosts.toml TOML parsing (sot_hosts_default_host / sot_hosts_table
-# / sot_tunnel_plan) is DELETED -- `sot_protocol::topology` (Rust) is the
+# / sot_tunnel_plan) is DELETED -- `sot_topology` (Rust) is the
 # one parser for that file now, and `sotd topology plan [--self <host>]`
 # is the one way anything reads it. This file is a reader of THAT
 # command's plain-line stdout, nothing else -- no TOML, no `.sot/hosts.toml`
@@ -16,7 +16,7 @@
 # out to (no ssh, no other side effects) -- easy to fake in a test by
 # pointing it at a stub script that prints fixed lines.
 #
-# Contract (rust/protocol/src/topology/mod.rs's `plan` doc comment -- read it
+# Contract (rust/topology/src/lib.rs's `plan` doc comment -- read it
 # there before changing this; a reviewer may still adjust the format, so
 # this parses it in ONE function and nowhere else): one fact per line,
 # first word a keyword, then either one value (self/hub/relay-endpoint) or

@@ -6,7 +6,7 @@
 //! layout instead of guessing from XDG env vars (Codex review, MUST-FIX 10):
 //! the updates root, the checkout, and the bin dir all hang off `prefix`.
 //! No role: the installer derives what to run from the declared topology
-//! (`sot_protocol::topology`) or, listless, its own flags (plan step 6,
+//! (`sot_topology`) or, listless, its own flags (plan step 6,
 //! dev/output/topology-plan.md §D). `daemon`/`frontend` here are NOT that
 //! role reborn — they record WHAT THIS INSTALL ACTUALLY INSTALLED (whichever
 //! source decided it at install time), a plain fact about the install, not

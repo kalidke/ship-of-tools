@@ -30,7 +30,7 @@ fn hub() -> TempDir {
         std::fs::create_dir_all(d).unwrap();
     }
     sot_platform::test_exec::write_executable(&ctl, FAKE_SYSTEMCTL);
-    std::fs::write(t.path().join("bin/show-ok"), format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} ; }}\nLoadState=loaded\n", sot_protocol::topology::relay_units::relay_command_line())).unwrap();
+    std::fs::write(t.path().join("bin/show-ok"), format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} ; }}\nLoadState=loaded\n", sot_topology::relay_units::relay_command_line())).unwrap();
     std::fs::write(t.path().join("hosts.toml"), "hub = \"hub-box\"\n[host.hub-box]\ndaemon = true\n[host.remote-a]\ndaemon = true\n").unwrap();
     t
 }
@@ -170,7 +170,7 @@ fn refresh_reports_a_command_overridden_elsewhere() {
 #[test]
 fn refresh_reports_a_second_command_appended_elsewhere() {
     let t = hub();
-    let ours = format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} ; }}", sot_protocol::topology::relay_units::relay_command_line());
+    let ours = format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} ; }}", sot_topology::relay_units::relay_command_line());
     let old = "ExecStart={ path=/usr/bin/ssh ; argv[]=/usr/bin/ssh -T x sotd stdio-bridge --label local ; }";
     std::fs::write(t.path().join("bin/show-out"), format!("{ours}\n{old}\nLoadState=bad-setting\n")).unwrap();
     let ran = refresh(&t);

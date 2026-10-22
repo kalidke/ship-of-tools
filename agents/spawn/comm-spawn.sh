@@ -562,7 +562,7 @@ fi
 # create must not bypass the guard silently.
 #
 # Compared by NORMALIZED SLUG (`sotd comm slug` — a verified
-# mirror of `sot_protocol::slug`), not the raw label
+# mirror of `sot_topology::endpoint::slug`), not the raw label
 # string: workspace.create refreshes by slug, so two labels that only
 # differ by case, or by a dot vs underscore, resolve to the SAME
 # workspace and must be caught too, not just a byte-identical match.

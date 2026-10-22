@@ -173,12 +173,12 @@ fn resolve_connections_no_dial_no_cli_is_empty() {
 /// the dial label, while this computer's own endpoint and other local sockets stay leased.
 #[test]
 fn hub_relay_is_remote_at_every_consumer() {
-    let topo = sot_protocol::topology::parse(
+    let topo = sot_topology::parse(
         "hub = \"alpha\"\n[host.alpha]\ndaemon = true\n[host.beta]\ndaemon = true\n[host.gamma]\ndaemon = true\nfrontend = true\n",
     )
     .unwrap();
-    let plan = sot_protocol::topology::dial_endpoints(&topo, "alpha");
-    let beta_relay = sot_protocol::topology::relay_socket_path("beta");
+    let plan = sot_topology::dial_endpoints(&topo, "alpha");
+    let beta_relay = sot_topology::relay_socket_path("beta");
     let mut conns = Vec::new();
     for (host, endpoint) in &plan {
         conns.push(

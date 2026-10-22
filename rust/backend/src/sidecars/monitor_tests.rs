@@ -335,7 +335,7 @@
         assert_eq!(cmd.as_std().get_program(), "ssh");
         let args: Vec<String> = cmd.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         let want: Vec<String> =
-            sot_protocol::topology::ssh_bridge::SSH_OPTS.iter().copied().chain(["h-alias", "bash", "-s", "0", "1"]).map(String::from).collect();
+            sot_topology::ssh_bridge::SSH_OPTS.iter().copied().chain(["h-alias", "bash", "-s", "0", "1"]).map(String::from).collect();
         assert_eq!(args, want);
     }
 
@@ -463,7 +463,7 @@ mod config_tests {
     #[test]
     fn monitor_targets_match_the_old_parser() {
         let text = "hub = \"alpha\"\n[host.alpha]\ndaemon = true\n[monitor]\nalpha = \"alpha\"\nbeta = \"\"\ngpu = \"someone@gpu\"\n";
-        let topo = sot_protocol::topology::parse(text).unwrap();
+        let topo = sot_topology::parse(text).unwrap();
         let hosts = monitor_hosts(topo.monitor_targets(), "alpha");
         assert_eq!(hosts.len(), 3);
         assert!(hosts[0].local && hosts[0].ssh_alias.is_none() && hosts[0].name == "alpha");
@@ -498,7 +498,7 @@ mod config_tests {
     #[test]
     fn only_the_hub_executes_the_monitor_roster() {
         let text = "hub = \"alpha\"\n[host.alpha]\ndaemon = true\n[monitor]\nalpha = \"alpha\"\nbeta = \"\"\ngpu = \"someone@gpu\"\n";
-        let topo = sot_protocol::topology::parse(text).unwrap();
+        let topo = sot_topology::parse(text).unwrap();
 
         let hosts = sampling_roster(&topo, "alpha");
         assert_eq!(hosts.len(), 3);

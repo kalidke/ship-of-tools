@@ -452,24 +452,6 @@ pub struct VersionQueryRes {
     pub disconnected: Vec<DisconnectedBox>,
 }
 
-/// `topology.set` request (plan §B "Editing the master list") — one edit,
-/// applied atomically. See [`op::TOPOLOGY_SET`] for the full authority/
-/// refusal contract.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TopologySetReq {
-    pub edit: crate::topology::TopologyEdit,
-}
-
-/// `topology.set` response on success. `hash` is the new file's
-/// `hash_text` — the same value [`op::TOPOLOGY_CHANGED`] broadcasts and
-/// `version.query`'s `hosts_toml_hash` reports, so a caller can confirm
-/// its own edit landed without a follow-up query.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TopologySetRes {
-    pub ok: bool,
-    pub hash: String,
-}
-
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;

@@ -79,9 +79,9 @@ async fn a_silent_daemon_ends_the_proxy_handshake_naming_the_step() {
 #[tokio::test]
 async fn a_down_gate_closes_every_browser_connection_without_a_spawn() {
     use tokio::io::AsyncReadExt;
-    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let gate = sot_topology::ssh_bridge::LinkGate::default();
     gate.set_up(false);
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
     for _ in 0..5 {
@@ -324,7 +324,7 @@ async fn a_relay_page_dial_splices_after_handoff_and_reports_bad_port() {
             let _ = rd.read_to_end(&mut rest).await;
         });
         let (browser, mut client) = browser_pair().await;
-        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+        let gate = sot_topology::ssh_bridge::LinkGate::default();
         gate.set_up(true);
         let dial = tokio::spawn(async move {
             super::pipe_one(browser, &super::PageDial::Relay(path), &gate, 7000, None).await
@@ -365,7 +365,7 @@ async fn a_relay_page_dial_splices_after_handoff_and_reports_bad_port() {
 async fn a_down_gate_makes_no_relay_connection() {
     let path = relay_stand_in_path("down");
     let listener = tokio::net::UnixListener::bind(&path).unwrap();
-    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let gate = sot_topology::ssh_bridge::LinkGate::default();
     gate.set_up(false);
     for _ in 0..3 {
         let (browser, _client) = browser_pair().await;
@@ -399,7 +399,7 @@ async fn a_page_login_in_flight_ends_when_the_link_closes() {
     use std::time::Duration;
     let path = relay_stand_in_path("close");
     let listener = tokio::net::UnixListener::bind(&path).unwrap();
-    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let gate = sot_topology::ssh_bridge::LinkGate::default();
     let (browser, _client) = browser_pair().await;
     let dial = {
         let (gate, path) = (gate.clone(), path.clone());
@@ -429,8 +429,8 @@ async fn a_page_login_in_flight_ends_when_the_link_closes() {
 #[tokio::test]
 async fn an_ssh_page_login_in_flight_ends_when_the_link_closes() {
     use std::time::Duration;
-    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", "cat >/dev/null"]);
+    let gate = sot_topology::ssh_bridge::LinkGate::default();
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", "cat >/dev/null"]);
     let (browser, _client) = browser_pair().await;
     let dial = {
         let gate = gate.clone();
@@ -529,7 +529,7 @@ fn the_manager_dials_the_daemons_port_not_the_listeners() {
     listener.set_nonblocking(true).unwrap();
     let local = listener.local_addr().unwrap().port();
     assert_ne!(local, daemon_port);
-    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+    let gate = sot_topology::ssh_bridge::LinkGate::default();
     gate.set_up(true);
     let asked = rt.block_on(async {
         let relay = tokio::net::UnixListener::bind(&path).unwrap();

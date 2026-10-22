@@ -281,8 +281,8 @@ async fn a_committed_update_is_not_undone_by_a_later_close() {
     assert!(!leases.commit_update(), "a second update committed");
 }
 
-fn topo(text: &str) -> sot_protocol::topology::Topology {
-    sot_protocol::topology::parse(text).expect("fixture must parse")
+fn topo(text: &str) -> sot_topology::Topology {
+    sot_topology::parse(text).expect("fixture must parse")
 }
 
 // The regression this pins: `install.role != "remote"` used to decide

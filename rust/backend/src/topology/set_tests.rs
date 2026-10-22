@@ -39,7 +39,7 @@ async fn add_flag_remove_each_land_atomically_and_broadcast() {
     let evt = rx.try_recv().expect("topology.changed on add");
     let text_after_add = std::fs::read_to_string(store.path()).unwrap();
     assert!(text_after_add.contains("[host.gamma]"));
-    assert_eq!(sot_protocol::topology::hash_text(&text_after_add), evt.hash);
+    assert_eq!(sot_topology::hash_text(&text_after_add), evt.hash);
 
     let flag = json!({"edit": {"kind": "set_flag", "name": "beta", "key": "frontend", "value": true}});
     let out = handle_topology_set(2, flag, &store, &workspaces, "alpha", None, &tx).await.unwrap();

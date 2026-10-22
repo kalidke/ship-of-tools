@@ -4,7 +4,7 @@ Three TOML files, each read by a different piece and none of them by more than
 one parser: `settings.toml` (layout + terminal, read by the frontend,
 first file found wins), `hosts.toml` (the declared topology —
 hub, daemon and frontend hosts, monitor targets — read ONLY by
-`sot_protocol::topology`/`sotd topology`; the frontend reads no config
+`sot_topology`/`sotd topology`; the frontend reads no config
 file for hosts at all, see below), and `keybindings.toml` (chords, read by
 the frontend, same discovery). Keybindings have their own page —
 [Keybindings](keybindings.md) — so this page covers `settings.toml` and
@@ -132,7 +132,7 @@ fullscreen_vsync_pin = false    # default false | true on a VRR/OLED panel
 
 The declared topology: which host is the relay hub, which hosts run a
 daemon, which run a frontend, and which hosts a `Ctrl+M` monitor drawer
-samples. `sot_protocol::topology` (Rust) is the **one parser** for this
+samples. `sot_topology` (Rust) is the **one parser** for this
 file — the daemon's `sotd topology plan|status|sync|relay-endpoint` CLI is
 the one way anything reads it. Neither the frontend nor the PowerShell
 launcher parses `hosts.toml` itself any more: the launcher runs
@@ -141,7 +141,7 @@ launcher parses `hosts.toml` itself any more: the launcher runs
 frontend spawns itself, or a local socket/pipe);
 the frontend reads no config file for hosts at all
 (see `--dial` under [CLI flags](../start/setup.md), and
-`rust/protocol/src/topology/mod.rs`'s `plan` doc comment for the exact
+`rust/topology/src/lib.rs`'s `plan` doc comment for the exact
 line-oriented contract).
 
 The format is deliberately simple — a section per host, scalar
@@ -238,7 +238,7 @@ host-c = "host-c"
 ```
 
 `sotd topology plan --self laptop` on the laptop above renders as (see
-`rust/protocol/src/topology/mod.rs`'s `plan` doc comment for the exact grammar):
+`rust/topology/src/lib.rs`'s `plan` doc comment for the exact grammar):
 
 ```text
 self laptop

@@ -1,11 +1,11 @@
 //! `sotd topology <plan|status|relay-endpoint|relay-sockets|sync|apply|refresh|pin|set>` — what a box
-//! derives from the declared topology (`sot_protocol::topology`, the one
+//! derives from the declared topology (`sot_topology`, the one
 //! parser). A pure query arm of `main` (no startup side effects). Output is
 //! line-oriented so a shell or PowerShell launcher reads it with `split`;
 //! the `plan` line set is documented on `topology::plan` and nowhere else.
 
 use super::relay_units::{apply, pin_daemon, refresh_cmd};
-use sot_protocol::topology::{self, Topology};
+use sot_topology::{self as topology, Topology};
 
 pub(crate) const USAGE: &str = "\
 Usage: sotd topology <subcommand>

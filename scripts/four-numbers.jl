@@ -8,7 +8,7 @@ const VERSION = "four-numbers 2"
 const SUBSYSTEMS = ["topology", "wire", "server", "lifecycle", "containment", "rows", "agents", "platform", "capsule", "vt100",
                     "messaging", "files", "sidecars", "pages", "fe-ui", "fe-net", "distribution", "records", "test-support"]
 const PREFIXES = [
-    "rust/protocol/src/topology/" => "topology", "rust/backend/src/topology" => "topology",
+    "rust/topology/" => "topology", "rust/backend/src/topology" => "topology",
     "rust/protocol/" => "wire",
     "rust/backend/src/daemon_log" => "server", "rust/backend/src/paths.rs" => "server",
     "rust/frontend/build.rs" => "fe-ui",
@@ -62,7 +62,7 @@ const STEM_SUBSYSTEM = Dict(s => sub for (sub, v) in TEST_STEMS for s in v)
 const TEST_DIRS = ("rust/backend/tests/", "rust/log/tests/")
 
 # Rust crates by name as `use` paths spell them, to the folder of their source.
-const CRATE_DIR = Dict("sot_platform" => "rust/platform", "sot_containment" => "rust/containment", "sot_protocol" => "rust/protocol", "sot_updater" => "rust/updater", "sot_log" => "rust/log",
+const CRATE_DIR = Dict("sot_platform" => "rust/platform", "sot_containment" => "rust/containment", "sot_protocol" => "rust/protocol", "sot_topology" => "rust/topology", "sot_updater" => "rust/updater", "sot_log" => "rust/log",
                        "sot_backend" => "rust/backend", "sot_frontend" => "rust/frontend")
 const CODE_EXT = (".rs", ".jl", ".sh", ".ps1", ".ts", ".js", ".mjs", ".py")
 const GENERIC = Set(["main", "new", "run", "default", "fmt", "from", "drop", "clone", "eq", "hash", "parse", "usage",

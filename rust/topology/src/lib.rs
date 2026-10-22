@@ -520,6 +520,25 @@ pub enum TopologyEdit {
     },
 }
 
+/// `topology.set` request (plan §B "Editing the master list") — one edit,
+/// applied atomically. See `sot_protocol::op::TOPOLOGY_SET` for the full
+/// authority/refusal contract. The payload lives here, with the edit it
+/// carries; the op's name stays in the wire's one op table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopologySetReq {
+    pub edit: TopologyEdit,
+}
+
+/// `topology.set` response on success. `hash` is the new file's
+/// `hash_text` — the same value `op::TOPOLOGY_CHANGED` broadcasts and
+/// `version.query`'s `hosts_toml_hash` reports, so a caller can confirm
+/// its own edit landed without a follow-up query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopologySetRes {
+    pub ok: bool,
+    pub hash: String,
+}
+
 /// Apply one edit to `topo`, producing a candidate. Structural checks only
 /// — a plain host name, no duplicate host/label, the edited host/label
 /// must exist, and the hub is never removed here (the hub daemon does the

@@ -2,19 +2,19 @@
 // plan, lane D). Replaces the old `hosts.rs` (ADR 0015 registry format,
 // ADR 0042 L2a targeting model): that module read `.sot/hosts.toml` (or one
 // of four fallback paths) and parsed it itself — a SECOND parser for the
-// same file `sot_protocol::topology` now owns as the one grammar-v2 reader
+// same file `sot_topology` now owns as the one grammar-v2 reader
 // (module doc there). The frontend reads no config file for hosts at all:
 // `sotd topology plan --self <host>` computes the dial set, and the
 // launcher hands it over as repeated `--dial <host>=<endpoint>` flags
 // (scripts/launch-sot.ps1 / relaunch-sot.ps1 / scripts/sot-hosts.ps1).
 //
 // `<endpoint>` carries the same `unix:`/`pipe:`/`ssh:` scheme
-// `sot_protocol::topology::endpoint::local_endpoint`/`relay_endpoint` already speak —
+// `sot_topology::endpoint::local_endpoint`/`relay_endpoint` already speak —
 // a path after `unix:`/`pipe:`, `<target>[/<host>]` after `ssh:` (C3 as
 // amended, isolation-plan.md §3).
 //
 // We don't manage tunnels from Rust — reaching a daemon that isn't this
-// box's own means spawning an ssh child directly (`sot_protocol::topology::
+// box's own means spawning an ssh child directly (`sot_topology::
 // ssh_bridge`), never a forward to dial afterward. A host with no reachable
 // endpoint just isn't in the list; there is nothing here to mark
 // "unreachable but configured" the way hosts.toml entries with no
@@ -22,7 +22,7 @@
 // the caller's own choice, not a parse failure.
 
 use std::path::PathBuf;
-use sot_protocol::topology::endpoint::is_plain_host_name;
+use sot_topology::endpoint::is_plain_host_name;
 
 /// A dialed host's name — identifies which daemon connection owns a
 /// workspace, a Sessions-tree host node, or an `IncomingEvt`. A plain
@@ -69,7 +69,7 @@ pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::net::transport::Tran
         // Unix parsing classifies a generated hub-relay path once; everything else keeps the local socket's policy.
         let path = PathBuf::from(path);
         let relay = endpoint.starts_with("unix:")
-            && sot_protocol::topology::relay_host_for_path(&path).is_some();
+            && sot_topology::relay_host_for_path(&path).is_some();
         crate::net::transport::TransportConfig {
             dial: if relay {
                 crate::net::transport::Dial::Relay(path)
@@ -89,7 +89,7 @@ pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::net::transport::Tran
             Some((t, h)) => (t, Some(h)),
             None => (rest, None),
         };
-        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new(target, ssh_host)
+        let recipe = sot_topology::ssh_bridge::SshRecipe::new(target, ssh_host)
             .map_err(|e| format!("`--dial {arg}`: {e}"))?;
         crate::net::transport::TransportConfig {
             dial: crate::net::transport::Dial::Ssh(recipe),
