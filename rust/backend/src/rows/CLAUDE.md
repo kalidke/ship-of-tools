@@ -40,8 +40,8 @@ Supervisor:
   (`spawn/durable/`), so neither the daemon's death nor a second birth takes an accepted birth's fence.
 - The watchdog's restart budget is the one restart budget for a row's agent: the supervisor never starts the agent a
   second time on its own. An agent that cannot start is a count, not a rate: after five consecutive restarts of
-  supervisors that never reached `ready` (the row's phase never read `ready` while that supervisor held the cell; one that
-  died before any observation named it never did) the next exit marks the row `terminal`,
+  supervisors that never reached `ready` (the row's phase never read `ready` while that supervisor held the cell and it lived two seconds more; one
+  that died before any observation named it, or flashed ready and was gone, never did) the next exit marks the row `terminal`,
   however long the starts and settles take, and the count resets when one reaches `ready`; restarts of supervisors that
   did reach `ready` keep five within 60 s (`RESTART_BACKOFFS` 1, 3, 7, 15, 30 s either way). The watchdog reads the
   supervisor's exit: 0 ends it, 69 marks the row `terminal`, 70 leaves the row to the next attach, and every other end
