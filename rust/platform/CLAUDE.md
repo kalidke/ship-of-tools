@@ -88,7 +88,7 @@ so a boot without it binds sockets at `/tmp/sot-<uid>`.
 The folders and host name above (`host/state_dir.rs`); durable publication, write and remove (`host/durable.rs`);
 kernel locks and held folders (`host/lock.rs`, `host/held_dir.rs`); descriptor birth and the native process-birth
 launcher (`host/fd.rs`, `host/process_tree/`, one native C file); the directory pin (`host/pinned_dir.rs`); the volume
-preflight; storage recognition; `Redial`; the Windows descriptors and SIDs (`host/winsec.rs`, `host/winhandle.rs`);
+preflight; storage recognition; `Redial`; the Windows descriptors and SIDs (`host/winsec.rs`, `host/winhandle.rs`) and the anonymous kill-on-close job (`host/winjob.rs`: `AnonymousJob`, which containment's per-child tree and the capsule's ConPTY leg stand on; no breakaway, the last handle's close ends everything in it; it has no test of its own here, containment's `contain_job_permits_no_breakaway` and the capsule's `conpty` tests run it on the Windows runner);
 the private-dir and socket-dir checks; the resource folder (`resource_dir`, `SOT_RESOURCE_ROOT`) and the verbatim-path
 strip; the peer challenge's OS steps, `PeerIdentity` and `PeerProcess`, the exchange trait and the deadline
 (`identity/`); the account (`os_account`) and loopback owner (`peer_owner`). The crate's `Error` is `Io`, `Path` (an OS error with what was being done) or `State`; the
@@ -110,7 +110,7 @@ gethostname, sha2, thiserror, getrandom.
 Everything above; each name is a path under `sot_platform::`: `host::state_dir::{sot_state_dir, sot_config_dir,
 runtime_sot_dir, host_name, kernel_host_name, state_dir_hash, is_private_dir}`, `host::{publish_noreplace,
 write_durable, remove_durable, lock_writer, lock_supervisor, try_lock_daemon, HeldDir, remove_ended, preflight_volume,
-storage_exhaustion, dir_identity, inherit_none, harden_own_stdio}`, `host::fd::*`, `host::process_tree::*`,
+storage_exhaustion, dir_identity, inherit_none, harden_own_stdio}`, `host::fd::*`, `host::winjob::{AnonymousJob, JobError}` (Windows), `host::process_tree::*`,
 `host::redial::{Redial, STABLE}`, `host::env::Env`, `identity::challenge::*`, `identity::exchange::{IdentityExchange,
 ExchangeDecode}`, `identity::deadline::run_with_deadline`, `identity::os_account::own_account_id`,
 `identity::peer_owner::serve_own`, and the shell and script twins (`sot_host`, `check_remote_fs`) which follow these

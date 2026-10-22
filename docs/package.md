@@ -30,8 +30,8 @@ page, every contract and one subsystem whole; that leaves room for about 200 tho
 | platform | one answer per machine fact; durable publish, kernel locks, close-on-exec births, the peer challenge | 82 | 69 | 43 | 8 | yes |
 | wire | every byte between our programs: one frame codec, one op table, one protocol integer | 42 | 15 | 3 | 2 | yes |
 | topology | hosts.toml read one way; one ssh recipe; a link gate that ends logins on close | 50 | 54 | 31 | 23 | yes |
-| containment (now in lifecycle) | every child in a kill domain its owner ends; every wait bounded | | | | | yes |
-| lifecycle | the last window's lease decides whether rows end; every daemon end is bounded and fires the child signal | 45 | 70 | 37 | 18 | yes |
+| containment | every child in a kill domain its owner ends; every wait bounded | 26 | 18 | 27 | 3 | yes |
+| lifecycle | the last window's lease decides whether rows end; every daemon end is bounded and fires the child signal | 22 | 44 | 21 | 14 | yes |
 | server | one listener; nothing served before the OS peer check and an admitted hello; one writer per connection | 52 | 121 | 14 | 42 | yes |
 | rows | a row's id survives restarts; one guard per row; no second supervisor over a live one | 128 | 145 | 38 | 41 | no |
 | capsule | a row's terminal outlives the window and the daemon; every viewer attaches through one client | 414 | 469 | 140 | 2 | no (4x) |
@@ -74,18 +74,9 @@ platform. Owns: nothing at run time. Its crate keeps an edge to `sot-log` throug
 through it; a unit is written only where hosts.toml gives it. Rests on: wire, platform, containment. Owns: the hub's
 hosts.toml and the generated relay units. Does not: hold connections (fe-net and the daemon's link do).
 
-**containment (carved out of lifecycle).** Guarantees: every child the daemon starts runs in its own process group
-(Unix) or job (Windows) that its owner's release or the process-wide signal kills; the signal, once fired, is
-permanent and refuses new starts; every wait has a bound on the OS clock; on Linux a guard subreaper ends every
-descendant within `DRAIN_BOUND` of the daemon's end. Rests on: setpgid/killpg, Windows jobs, PR_SET_CHILD_SUBREAPER;
-the compiler (clippy's process-spawns group allows starts only through `Signal`). Owns: the registry of contained
-trees. Does not: decide when to end anything.
+**containment.** The contract is settled (pass 5b-1): `rust/containment/CLAUDE.md`. Guarantees: a child started through `Signal` dies with its tree when its owner lets go or the signal fires (a process group on Unix, a job and a console group on Windows); the fire is permanent and a start racing it is never lost; every request is checked and none waits for a death; every wait has a bound on the OS clock; on Linux a guard subreaper ends every descendant within `DRAIN_BOUND` of the daemon's end. Rests on: platform (the descriptor sweep, the Windows job, the macOS birth lock) and the OS (setpgid/killpg, pidfd, jobs, PR_SET_CHILD_SUBREAPER); clippy's process-spawns group allows starts only through `Signal`. Owns: the registry of contained trees and the guard. Does not: decide when to end anything.
 
-**lifecycle.** Guarantees: a lease is granted only to a peer whose pid, creation time and boot the OS reported at
-accept; the start plan is a function of `held.json` and this boot alone; a close stops accepting before it touches a
-row, and a backstop exits at `SHUTDOWN_BOUND`; every controlled end takes one terminal with fixed exit codes (0, 1, 2,
-75, 78, 101; INT and TERM by the signal). Rests on: containment, rows' end API, server's accept loop. Owns:
-`held.json`, the leases. Does not: end rows itself (asks rows).
+**lifecycle.** The contract is settled (pass 5b-1): `rust/backend/src/lifecycle/CLAUDE.md`. Guarantees: a lease is granted only to a peer whose pid, creation time and boot the OS reported at accept; the start plan is a function of `held.json` and this boot alone; a close stops accepting before it touches a row and a backstop exits at `SHUTDOWN_BOUND`; every controlled end takes one terminal with fixed exit codes (0, 1, 2, 75, 78, 101; INT and TERM by the signal). Rests on: containment (it fires the signal), rows' end API, server's accept loop. Owns: `held.json`, the leases, the terminal. Does not: end rows itself (asks rows), contain a child.
 
 **server.** Guarantees: one daemon per state root; a socket a live daemon answers on is never unlinked; a connection
 is admitted twice (OS peer at accept, hello at first frame) and nothing is served before; one writer per connection;
