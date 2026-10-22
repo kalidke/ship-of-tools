@@ -51,16 +51,23 @@ The design records (51 ADRs and their index) and the old folder pages live in `d
 
 ## Draft contracts, one paragraph each
 
-**platform.** Guarantees: `host_name` errs, never guesses; a publish is no-clobber and fsynced to the parent; a kernel
-lock dies with its holder and no exec'd child holds it; a descriptor the lanes or the capsule make is born
-close-on-exec (macOS under a birth lock); a local reply is trusted only after the challenge; storage exhaustion is
-known by native code only. Rests on: the OS (renameat2/renamex_np/MoveFileEx, flock/LockFileEx, O_CLOEXEC). Owns no
-runtime state. Does not: start processes for anyone but the native launcher it hands out.
+**platform.** The contract is settled (pass 5a): `rust/platform/CLAUDE.md`. Platform is the crate `sot-platform`,
+which depends on nothing of ours, and every other crate depends on it. Guarantees, each with the limit the contract
+states: a machine fact (state folder, config folder, host name) has one answer, and `host_name` errs, never guesses; a
+publication is durable and never clobbers (the caller flushes its source); a lock is the kernel's; a held folder stays
+while its maker lives; a descriptor is born close-on-exec (macOS under a birth lock); a local reply is trusted only
+after the challenge; storage exhaustion is known by its native code; a volume is proved before a store opens on it; a
+restart is paced; a directory pin opens only a directory, and private means private (both on Unix; on Windows each is
+a stated gap). Rests on: the OS. Owns no runtime state. Does not: start processes for anyone but the native launcher it
+hands out.
 
-**wire.** Guarantees: an envelope is at most 1 MiB in every reader and writer; a blob is exactly its declared length;
-a payload grows only by defaulted fields, else the protocol integer rises and hello refuses the mismatch; a child's
-output is read by lines lossily, so no byte ends a reader. Rests on: serde and the compiler. Owns: nothing at run
-time. Does not: decide policy from the version string (only `is_release_build`).
+**wire.** The contract is settled (pass 5a): `rust/protocol/CLAUDE.md`, the frames and payloads between our programs
+(the lanes' frames are the capsule's, the sidecars' protocols the sidecars'). Guarantees: an envelope is at most 1 MiB
+in every reader and writer; a blob is exactly its declared length, and the writer refuses a mismatch before a byte; a
+payload grows only by defaulted fields, else the protocol integer rises and hello refuses the mismatch (the server's
+check, tested there); a child's output is read by lines lossily, so no byte ends a reader; policy asks
+`is_release_build`, never the version string; the shared grammars have one parser. Rests on: serde, the compiler and
+platform. Owns: nothing at run time. Its crate keeps an edge to `sot-log` through topology's lane client until pass 5b.
 
 **topology.** Guarantees: hosts.toml has one grammar and one writer (the hub's daemon); a host name outside
 `[a-z0-9][a-z0-9._-]*` never reaches ssh; every ssh turns sharing off; closing the link gate ends every login watched
@@ -265,7 +272,7 @@ at its end and one round for its findings; a class of breaks stops it, and the s
 | 3 | Rows, with work-state and how a row's state is shown | 4-8 | 80-160 | 4.2 h wall in two runs (the pass 3.7 h, its scan follow-up 0.5 h); about $78 for the pass's agent; rows 150/163 -> 162/182k (work-state moved in), messaging 117/285 -> 109/267k |
 | 4 | Messaging (D1) | 6-12 | 120-240 | seven agent rounds: the pass 4.8 h (stopped at its boundary), then six short fixes of 1 to 45 min; about $93 for the agents; messaging 109/267 -> 94/124k, twice 20 -> 45 (the shell door's wrappers and generic names, two real pairs queued); comm shell 6,072 -> 2,571 lines, its shell tests 14,272 -> 3,850; about 160k tokens deleted, not D1's 300k (the PowerShell copies were already gone); the local gate 12 -> 6.6 min |
 | CI | Distribution's CI: the hosted run at each landing about seven minutes and the local gate near five; the slow proofs to a release-gate run made once per release | 0.5-1 | 10-20 | eight short agent rounds, about 30 agent minutes in all; the rest was hosted runs (nine per-landing, five release-gate) and waits; about $13 for the agents; the per-landing run 48 -> 7.2 min wall measured alone (longest job 6.9 min), the release-gate run 21.5 min; the local gate 12 min, of which the bash 3.2 suites, which messaging deletes, are the wall |
-| 5a | Platform and wire: their contracts; platform its own crate out of `sot-log`, its copies folded | 4-6 | 80-120 | |
+| 5a | Platform and wire: their contracts; platform its own crate out of `sot-log`, its copies folded | 4-6 | 80-120 | 1.2 h wall in three agent rounds (the pass 25 min to a gate-ready head, the review round 6 min after an outside review, a landing fix 8 min), about 40 agent minutes; about $15 for the agent; platform 83/65/47/8 -> 79/80/48/0 (tests rose with the shared test helpers moved in; twice rose by one, generic names such as `context`), wire 42/14/3/2 -> 42/15/3/2; three hosted runs, the landing one 7.9 min |
 | 5b | Containment carved out of lifecycle; the lifecycle and topology contracts; topology out of `rust/protocol` | 4-6 | 80-120 | |
 | 5c | Server: its contract; the op table into the binary, every service a handler with an explicit context | 4-6 | 80-120 | |
 | 6 | Capsule (D2) | 10-20 | 200-400 | |
@@ -311,5 +318,7 @@ and `rust/log/tests` (27 thousand lines) are assigned by file:
   Pass 3 landed 2026-10-21: rows' contract is settled, with work-state. The CI pass landed 2026-10-21: a landing's
   hosted run takes about seven minutes, and the slow proofs run once per release (`release-gate.yml`, by hand). Pass 4
   landed 2026-10-21: messaging's contract is settled and comm is one implementation, in `sotd` (D1); live sessions keep
-  the installed scripts until the 0.7.0 install. Pass 5a (platform and wire) is next. Nothing is half-done on main.
+  the installed scripts until the 0.7.0 install. Pass 5a landed 2026-10-21: platform's and wire's contracts are
+  settled, and platform is its own crate, `sot-platform`, depending on nothing of ours. Pass 5b (containment,
+  lifecycle and topology) is next. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
