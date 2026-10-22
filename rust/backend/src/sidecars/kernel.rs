@@ -725,3 +725,8 @@ mod deadline_tests;
 #[cfg(all(test, unix))]
 #[path = "kernel_stream_tests.rs"]
 mod stream_tests;
+
+/// The root and the load path the kernel's child is given, seen by a real julia.
+#[cfg(all(test, unix))]
+#[path = "kernel_root_tests.rs"]
+mod root_tests;

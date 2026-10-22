@@ -68,6 +68,20 @@ pub(crate) enum Opened {
 
 /// How long one open waits for a server that is still starting before it answers `Opened::Starting`: a warm start is
 /// seconds and a cold precompile tens of seconds, so a stall is named within the `repl.execute` default wait.
+/// A notebook path the server's one-line protocol cannot carry: it holds a control character, and a line break would be
+/// read as two commands and answered twice. Refused before anything is submitted.
+#[derive(Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct PathRefused(pub String);
+
+impl std::fmt::Display for PathRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "pluto: the path holds a control character: {:?}", self.0)
+    }
+}
+
+impl std::error::Error for PathRefused {}
+
 const PLUTO_START_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// How long one open may take, from its submission to its `URL` or `ERR` line (Pluto loads the notebook before it
