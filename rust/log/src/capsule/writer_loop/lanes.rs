@@ -149,25 +149,46 @@ fn apply_resize<P: Producer>(
     queue: &mut VecDeque<AttachAction>,
     leg: &mut Leg<'_, P>,
 ) {
-    // ADR 0041: resize (driver-only) is one `ResizePseudoConsole` call (skipped if out of budget), the parser's
-    // geometry updated only on success, and the outcome reported back.
-    let in_budget = (MIN_COLS..=MAX_COLS).contains(&cols) && (MIN_ROWS..=MAX_ROWS).contains(&rows);
-    let ok = if !in_budget {
-        false
-    } else {
-        leg.resize_os_calls += 1;
-        match leg.producer.resize(cols, rows) {
-            Ok(()) => {
-                leg.parser.screen_mut().set_size(rows, cols);
-                if let Some(screen) = &mut leg.screen {
-                    screen.output_arrived();
-                }
-                true
-            }
-            Err(_) => false,
-        }
-    };
+    let ok = resize_terminal(cols, rows, leg);
     queue.extend(leg.attach_proto.resize_outcome(conn, ok, cols, rows, request_id, Instant::now()));
+}
+
+/// ADR 0041: resize (driver-only) is one `ResizePseudoConsole` call (skipped if out of budget), the parser's
+/// geometry updated only on success; whether it was done.
+pub(super) fn resize_terminal<P: Producer>(cols: u16, rows: u16, leg: &mut Leg<'_, P>) -> bool {
+    let in_budget = (MIN_COLS..=MAX_COLS).contains(&cols) && (MIN_ROWS..=MAX_ROWS).contains(&rows);
+    if !in_budget {
+        return false;
+    }
+    leg.resize_os_calls += 1;
+    match leg.producer.resize(cols, rows) {
+        Ok(()) => {
+            leg.parser.screen_mut().set_size(rows, cols);
+            if let Some(screen) = &mut leg.screen {
+                screen.output_arrived();
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// The row socket's side of one pass: waiting attaches get the screen at a ground state, typed input is written to
+/// the terminal and answered, a resize is applied.
+pub(super) fn service_row<P: Producer>(leg: &mut Leg<'_, P>) {
+    let Some(row) = leg.row.clone() else { return };
+    row.tick(&leg.parser);
+    for request in row.take_requests() {
+        match request {
+            crate::row::RowRequest::Input { bytes, reply } => {
+                let written = leg.producer.input().write_all(&bytes).map(|()| bytes.len()).map_err(|e| e.to_string());
+                let _ = reply.send(written);
+            }
+            crate::row::RowRequest::Resize { cols, rows } => {
+                resize_terminal(cols, rows, leg);
+            }
+        }
+    }
 }
 
 

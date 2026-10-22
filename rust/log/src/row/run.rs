@@ -37,6 +37,7 @@ struct Conn {
 struct Inner {
     run: String,
     phase: String,
+    phase_source: Option<Arc<dyn Fn() -> String + Send + Sync>>,
     conns: HashMap<ConnId, Conn>,
     next_conn: ConnId,
     driver: Option<ConnId>,
@@ -58,6 +59,7 @@ impl RowRun {
             inner: Mutex::new(Inner {
                 run: run.into(),
                 phase: phase.to_string(),
+                phase_source: None,
                 conns: HashMap::new(),
                 next_conn: 1,
                 driver: None,
@@ -77,7 +79,16 @@ impl RowRun {
     }
 
     pub fn phase(&self) -> String {
-        self.lock().phase.clone()
+        let source = self.lock().phase_source.clone();
+        match source {
+            Some(f) => f(),
+            None => self.lock().phase.clone(),
+        }
+    }
+
+    /// Where a hello reads the phase from, so the row reports the one answer the supervisor's status gives.
+    pub fn set_phase_source(&self, source: Box<dyn Fn() -> String + Send + Sync>) {
+        self.lock().phase_source = Some(Arc::from(source));
     }
 
     pub fn set_phase(&self, phase: &str) {
@@ -289,4 +300,10 @@ impl Inner {
 pub fn self_identity() -> crate::Result<(u32, u64)> {
     let status = crate::capsule::self_status(crate::lane::wire::Survival::Normal)?;
     Ok((status.pid, status.created))
+}
+
+impl std::fmt::Debug for RowRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RowRun").finish_non_exhaustive()
+    }
 }

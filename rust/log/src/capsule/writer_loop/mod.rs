@@ -77,6 +77,8 @@ struct Leg<'t, P> {
     resize_os_calls: u64,
     /// Tells the run's owner the agent started and wrote (`CapsuleConfig::signals`).
     signals: Option<Arc<RunSignals>>,
+    /// The row socket's fan-out, when the owner serves one: fed every committed chunk, and asked for its requests every pass.
+    row: Option<Arc<crate::row::RowRun>>,
     /// An output end before teardown that the producer's exit explained; `ended` records it.
     output_ended_early: Option<String>,
     /// The reader's byte budget; the loop releases what it handles.

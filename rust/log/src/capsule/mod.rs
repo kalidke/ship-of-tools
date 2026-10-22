@@ -176,9 +176,20 @@ pub struct CapsuleConfig {
 pub struct RunSignals {
     spawned_at: std::sync::OnceLock<Instant>,
     output_seen: AtomicBool,
+    /// The row socket's fan-out for this run, when the owner serves one: the run feeds it and services its requests.
+    row: std::sync::OnceLock<Arc<crate::row::RowRun>>,
 }
 
 impl RunSignals {
+    /// Names the row socket's fan-out this run feeds. Set once, before the run starts.
+    pub fn attach_row(&self, row: Arc<crate::row::RowRun>) {
+        let _ = self.row.set(row);
+    }
+
+    pub(crate) fn row(&self) -> Option<Arc<crate::row::RowRun>> {
+        self.row.get().cloned()
+    }
+
     /// When the agent was started, `None` until it was.
     pub fn spawned_at(&self) -> Option<Instant> {
         self.spawned_at.get().copied()
