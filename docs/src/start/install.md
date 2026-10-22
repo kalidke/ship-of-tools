@@ -178,7 +178,7 @@ installs the agent integration:
 | `~/.sot-comm/` | the session messaging scripts (`bin/`) and their runtime state |
 | `~/.local/bin/` | `ccb` (Claude Code launcher), `ccx` (Codex launcher), `sot-fe`, `show-result`, `sot-gh-auth` |
 | `~/.sot-comm/claude-layer/` | the Claude Code skills (under `.claude/skills/`): `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `sot-install`, `sot-setup`, `sot-statusline-setup`, `sot-gh-auth`. A session Ship of Tools starts (a row or `ccb`) adds this folder to itself and carries the work-state hooks in its own launch settings; a plain `claude` loads none of it |
-| `~/.claude/settings.json`, `~/.claude-auth/<name>/settings.json` | nothing is written. An install removes the hook entries an earlier release merged in (each calls a `comm-*.sh` script under `~/.sot-comm/bin`), one at a time, and keeps every other hook; a link is followed and its target rewritten once, and a file with none of them is not rewritten |
+| `~/.claude/settings.json`, `~/.claude-auth/<name>/settings.json` | two hook entries, merged in without removing yours: `Stop` (the end-of-turn mail check) and `PreToolUse` on `Bash` (the subagent mail guard), each calling a script under `~/.sot-comm/bin`. The work-state hooks an earlier release merged in are removed, but only a command that is exactly one that release wrote; every other hook, a compound command of yours included, stays. A link is followed and its target written once; an account folder with no `settings.json` is skipped |
 | `~/.codex/skills/` | the Codex skills `sot-comm` and `sot-session-start` |
 | `~/.codex/AGENTS.md` | the repo's `AGENTS.md`, installed when none is there and replaced only while the installed file holds "Codex sessions in Ship of Tools"; any other file there is left alone and a warning says to merge by hand |
 | `~/.agents/plugins/sot-comm/`, `~/.agents/plugins/marketplace.json` | the Codex work-state hook plugin; written whether or not Codex is installed, and registered with `codex plugin add sot-comm@sot-local` when it is |
@@ -187,8 +187,8 @@ installs the agent integration:
 those are set; `~/.sot-comm` follows `SOT_COMM_HOME`. The other paths do not
 move: `~/.local/bin`, `~/.agents/plugins`, `~/.claude-auth` and everything in
 the first table are always written in your home directory. The install ends by
-naming every Claude settings file it could not remove the old hooks from, with
-the reason (a file made read-only, one that could not be read or parsed).
+naming every Claude settings file it could not bring up to date, with the
+reason (a file made read-only, one that could not be read or parsed).
 Setting those three variables is therefore not an isolated try-out; for that,
 install under a separate user account or in a virtual machine.
 
@@ -196,15 +196,14 @@ The Claude skills and the work-state hooks exist only in a session Ship of Tools
 starts: a row, or `ccb`. That session adds `~/.sot-comm/claude-layer` to itself
 (`--add-dir`) and carries the hooks in its own launch settings, so a `claude`
 you start yourself in a terminal loads none of them, and neither your skills
-folder nor your `settings.json` holds one. The first install of this release
-removes, once, the skills an earlier release put in `~/.claude/skills` (the
-exact names listed above, and the retired `sot-be-session-start` and
-`sot-fe-session-start`; the folder's `.sot-skills-moved` file names what it
-removed, and after it a skill of yours under one of those names is left alone).
-The hooks still do nothing in a session that has not joined the Ship of Tools
-session registry, and `SOT_COMM_HOOKS=off` turns the Claude Code work-state
-hooks off entirely. A session you start by hand reads mail with `comm-poll.sh`,
-which is not a skill; it has no end-of-turn mail check.
+folder nor your `settings.json` holds a skill or a work-state hook. An install
+removes the skills an earlier release put in a Claude skills folder (`~/.claude`,
+`$CLAUDE_CONFIG_DIR`, each `~/.claude-auth/<name>`) only where the folder is
+byte for byte a version this repository shipped, and says so about any other
+folder of the same name, which stays; a skills folder that is a link is never
+touched. The two mail hooks remain in your settings and do nothing in a session
+that has not joined the Ship of Tools session registry; `SOT_COMM_HOOKS=off`
+turns the Claude Code hooks off entirely.
 
 Nothing the installer writes for Claude lands in a folder of yours any more, so
 no skill of yours is overwritten. The Codex skills are still written into
@@ -272,9 +271,9 @@ them.
 
 Then, by hand:
 
-- only if an earlier release was installed here and this one never was: remove
-  the skills it put in `~/.claude/skills` (the names in the table above) and the
-  hook entries that call `~/.sot-comm/bin/comm-*.sh` from
+- if an earlier release was installed here and this one never was, remove the
+  skills it put in `~/.claude/skills` (the names in the table above);
+- remove the hook entries that call `~/.sot-comm/bin/comm-*.sh` from
   `~/.claude/settings.json` (even when `CLAUDE_CONFIG_DIR` is set), from
   `$CLAUDE_CONFIG_DIR/settings.json` when it is set, and from each
   `~/.claude-auth/<name>/settings.json`; where one of these is a link, edit the

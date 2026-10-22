@@ -2,8 +2,8 @@
 # comm-status-working.sh — Claude Code `UserPromptSubmit` hook: tell
 # comm-status.sh a turn is starting, and WHO started it.
 #
-# Wired as a global UserPromptSubmit hook in ~/.claude/settings.json (see src/claude_hooks.jl
-# / update_comm). It fires the INSTANT a turn starts — automatic, deterministic,
+# Carried by a row's leg (and a `ccb` session) in its own `--settings`, built by the daemon's launch
+# recipe (rust/backend/src/agents/layer.rs); no settings.json holds it. It fires the INSTANT a turn starts — automatic, deterministic,
 # zero model cooperation. This is the event-driven work-state signal that
 # replaces pane-scraping: a turn starting IS the agent beginning to work, known
 # the moment it happens rather than guessed from the screen 2 seconds later.

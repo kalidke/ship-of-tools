@@ -118,7 +118,8 @@ overrides the shared one; to use the shared one instead, remove the
 account's own copy. The Ship of Tools skills and work-state hooks are not in
 any of these folders: a session Ship of Tools starts carries them itself (the
 skills from `~/.sot-comm/claude-layer`, the hooks in its own launch settings),
-whichever account it runs as. User-scope MCP servers live with the per-account
+whichever account it runs as. The two mail hooks are the exception: every install
+and update merges them into an account's own `settings.json`. User-scope MCP servers live with the per-account
 state, so add them separately for each account you want to use them from.
 
 On Windows, a symlink needs Developer Mode or the symlink privilege, and a standard desktop user has

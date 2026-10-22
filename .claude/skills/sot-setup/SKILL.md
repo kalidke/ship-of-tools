@@ -326,7 +326,7 @@ Like every comm install it stops without jq (§1):
 ```sh
 if command -v jq >/dev/null; then
   bash "$REPO/comm/tests/stage-bin.sh" ~/.sot-comm/bin
-  for d in comm/adapters/claude/sot-comm agents/claude/sot-install; do
+  for d in comm/adapters/claude/sot-comm comm/adapters/claude/sot-session-start agents/claude/sot-install; do
     mkdir -p ~/.sot-comm/claude-layer/.claude/skills/"$(basename "$d")"
     cp -f "$REPO/$d/SKILL.md" ~/.sot-comm/claude-layer/.claude/skills/"$(basename "$d")"/SKILL.md
   done

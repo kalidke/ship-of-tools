@@ -18,8 +18,8 @@ of each.
    leg (`claude_argv`), the reauth leg (`claude_resume_argv`) and `sotd agent-exec claude` (`agent_exec_argv`, which
    `ccb` execs) all call it, and `--dangerously-skip-permissions` is in none of them. Limits: a caller's own flags pass
    through verbatim, so `ccb --dangerously-skip-permissions` is the caller's choice, not the recipe's; a caller's own
-   `--settings` replaces the recipe's (the recipe adds neither the auto-memory key nor the layer's hooks then; the
-   layer's skills still load); on Windows the argv keeps the literal name `claude`, found by the daemon's own `PATH`;
+   `--settings` replaces the recipe's (the recipe adds neither the auto-memory key nor the layer's hooks then, and
+   logs it; the layer's skills still load); on Windows the argv keeps the literal name `claude`, found by the daemon's own `PATH`;
    `agent-exec` is Unix only; `"none"` is the bare platform shell and every other kind is refused, never substituted.
 2. **A leg starts a fresh conversation unless a reauth or a person resumes one.** The capsule recipes carry no resume
    token. The reauth leg carries `--resume <id>`, handed to the supervisor as `--first-leg-only`, so no later leg or
@@ -38,12 +38,12 @@ of each.
    `SOT_SOCKET` (Unix, the daemon's own listener, once it is set), `SOT_WORKSPACE`, `SOT_WORKSPACE_ID`,
    `SOT_WORKSPACE_ROOT`, `SOT_MANUAL` (when the manual's checkout is found), `SOT_AGENT_KIND`, `SOT_COMM_HOME` and
    `SOT_COMM_SELF_FILE` (the row's pinned self file, so a capsule never falls to the shared no-pane slot),
-   `SOTD_BIN` (this daemon's own start path), `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1` and
+   `SOTD_BIN` (this daemon's own start path, made absolute; a path is not checked to run, only a bare name is looked up), `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1` and
    `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, and the `PATH` addition of guarantee 3. The spawn removes
    `NESTING_ENV_VARS_TO_SCRUB` from the daemon's own environment first (`CLAUDECODE` and the other markers that make a
    fresh `claude` think it is nested, and `NO_COLOR`), then applies the row's pairs, then the account's, so an account's
    `CLAUDE_CONFIG_DIR` wins. `sotd agent-exec` scrubs the same list and adds only the `PATH` rule. Limits: comm home and
-   self file are absent when no comm home resolves; `SOTD_BIN` is absent when the start path names nothing runnable; a
+   self file are absent when no comm home resolves; `SOTD_BIN` is absent only when a bare start name is found nowhere (queue: the runnable check for an explicit path); a
    leg started by `agent-exec` carries none of the `SOT_*` row variables, since it runs in a shell that already has its
    own.
 5. **An account is a folder, discovered each time, and a named one never falls back to the default.** `discover_accounts`
@@ -64,33 +64,44 @@ of each.
    folder in the effective child's `.claude.json` (the named `CLAUDE_CONFIG_DIR`'s, else the inherited one, else the
    home-level file) only when the OS-resolved folder lies under the OS-resolved prefix; the key keeps the child
    cwd's own spelling (forward slashes on Windows); an entry already accepted is not rewritten; other keys and other
-   projects are preserved; a file it cannot read or parse is refused, never clobbered. Outside the prefix, with no
+   projects are preserved; this daemon's preparations are serialized and each publishes through a temporary name of its
+   own; a file it cannot read or parse is refused, never clobbered. Outside the prefix, with no
    declaration, and on a failed preparation the outcome is logged and the agent still starts. Limits: preparation is
-   proved, claude's consumption of it and its no-dialog behavior are the maintainer's done test; a concurrent external
-   edit of the file is the writer's stated limit; a `CLAUDE_CONFIG_DIR` that is relative or not UTF-8 records nothing.
-7. **A skill and a comm hook exist only where a leg of the recipe runs.** The installer puts every Claude skill under
-   `<comm home>/claude-layer/.claude/skills/` and writes no hook into any settings file. When that folder exists,
-   `claude_recipe` adds `--add-dir=<layer>` (one token, so the variadic flag cannot take the next argument) and a
-   `hooks` key, built from `HOOKS` in `layer.rs` (the work-state hooks `comm-status-working.sh`,
-   `comm-status-blocked.sh`, `comm-status-idle.sh`, `comm-status-heartbeat.sh` and `comm-subagent-guard.sh` from the
-   comm folder's `bin/`), into the one `--settings` JSON beside the auto-memory key. A plain `claude` reads none of it;
-   a capsule leg, a reauth leg and a `ccb` session read all of it. Limits: `--add-dir` also lets the session read and
-   write the layer folder, which the next install overwrites; a caller's own `--settings` drops the hooks (guarantee 1);
-   that Claude Code loads an added folder's `.claude/skills/` is Claude Code's behavior, which no test here proves (Claude
-   Code 2.1.308's own text names `--add-dir` as a source of skills, and no session was started to see it; the
-   maintainer's done test, as for guarantee 6); a session started by hand outside
-   `ccb` has neither the skills nor the end-of-turn mail check, and reads mail with `comm-poll.sh`, which is not a
-   skill.
-8. **An install removes only what an earlier installer placed.** The installer, `ShipTools.update_comm`, removes from
-   each Claude settings file (the install's own, `~/.claude`, each `~/.claude-auth/<name>`) every hook command that runs
-   an installed comm script (`comm-status-*`, `comm-subagent-guard` and the two retired reminders under
-   `.sot-comm/bin/`), one command at a time, dropping a group or an event only when it is left empty; every other hook
-   is kept, a person's own script included. From the Claude skills folder it removes once the directories an earlier
-   installer shipped, by exact name (`LEGACY_PLACED_SKILLS`, never a glob) and records the names it removed in the
-   marker `.sot-skills-moved`; a folder that holds the marker is not touched again, so a skill a person makes later
-   under a shipped name is kept. Limits: an earlier install overwrote a same-named skill of a person's without a backup,
-   so that copy is the installer's now; a settings file that does not parse is left alone and named; a hook of a
-   person's that runs an installed comm script is indistinguishable from the installer's and is removed.
+   proved, claude's consumption of it and its no-dialog behavior are the maintainer's done test; a concurrent edit of the file by another process (claude's own) is the writer's stated limit; a `CLAUDE_CONFIG_DIR` that is relative or not UTF-8 records nothing.
+7. **A skill and a work-state hook exist only where a leg of the recipe runs.** The installer puts every Claude skill
+   under `<comm home>/claude-layer/.claude/skills/`. The layer is ready when it holds `sot-session-start`'s
+   `SKILL.md`; then `claude_recipe` adds `--add-dir=<layer>` (one token, so the variadic flag cannot take the next
+   argument, and an absolute path, since the leg's working folder is the project's) and a `hooks` key, built from `HOOKS`
+   in `layer.rs` (`comm-status-working.sh`, `comm-status-blocked.sh`, `comm-status-heartbeat.sh` from the comm folder's
+   `bin/`, by quoted absolute path), into the one `--settings` JSON beside the auto-memory key. A layer folder that is
+   there but not ready is left out with a warning in the daemon's log, and the leg does not name `/sot-session-start`;
+   a box with no layer folder at all (the installer has not run) still names it. A plain `claude` reads none of it; a
+   capsule leg, a reauth leg and a `ccb` session read all of it. The end-of-turn mail check (`comm-status-idle.sh` on
+   Stop) and the subagent guard serve every joined session, so they stay in the user's own settings, written by the
+   installer as before, and gate themselves on a joined identity (messaging's contract); the work-state part of the Stop
+   script is not separable from its mail check, so a joined session outside a row still runs it (queue). Limits: `--add-dir`
+   also lets the session read and write the layer folder, which the next install overwrites; a caller's own `--settings`
+   replaces the recipe's, so that leg carries no work-state hooks (logged; its skills still load); a caller's
+   `--setting-sources` without `project` keeps an added folder's skills from loading (logged, and the recipe appends the
+   prompt anyway); that Claude Code loads an added folder's `.claude/skills/` is Claude Code's behavior, which no test
+   here proves (Claude Code 2.1.308's own text names `--add-dir` as a source of skills, and no session was started to see
+   it; the maintainer's done test, as for guarantee 6); the tracked project-local skills of a checkout (`.claude/skills/`)
+   load in any session that opens it, row or not, and are not the layer's; the tests prove the argv, the JSON and the
+   installed files, not that a shell runs a hook command (the quoting is POSIX and Git Bash's).
+8. **An install removes only exact copies of what an earlier installer placed.** The installer, `ShipTools.update_comm`,
+   visits every Claude configuration folder (the install's own, `~/.claude`, each `~/.claude-auth/<name>`). In a skills
+   folder it removes a skill directory only when its contents hash to a version of that skill the repo shipped
+   (`comm/legacy-skills.txt`, 279 versions from `git log` of `agents/claude/`, `comm/adapters/claude/` and
+   `.claude/skills/`, made by `scripts/legacy-skill-hashes.sh`; the list is frozen history), warns about any other
+   directory of such a name and leaves it; a skills folder that is itself a link is never acted through, and a link inside
+   a skill is never followed. From each settings file it removes a hook command only when it equals exactly one an earlier
+   installer wrote (`_EARLIER_HOOK_COMMANDS`: the comm scripts under `$HOME/.sot-comm/bin/`, both slash forms) and is not
+   one of the two current hooks, one command at a time, dropping a group or an event only when it is left empty; a
+   compound command, a command that merely names the path and a script no installer wired are a person's and stay. The
+   rules are idempotent and keep no marker. The move and the retirement run only after the layer holds every skill.
+   Limits: a version of a skill shipped from a path the history above does not cover is kept (with a warning); a copy
+   made on Windows with CRLF checkout hashes differently and is kept; a settings file that does not parse is left alone and
+   named in the install's closing warning, which then says the settings were not brought up to date.
 9. **The shell tools reach the daemon only through the wire.** Pass 10b settles it, with the launchers and the row CLIs
    below.
 
@@ -172,16 +183,26 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | guarantee | test |
 |---|---|
 | 1 | `argv::tests::every_claude_leg_runs_auto_mode_and_never_skips_permissions` |
-| 2 | `argv::tests::agent_argv_claude_starts_a_fresh_conversation`, `a_reauth_leg_resumes_by_id_and_never_continues`, `agent_exec_argv_claude_never_adds_continue` |
+| 2 | `argv::tests::agent_argv_claude_starts_a_fresh_conversation`, `a_reauth_leg_resumes_by_id_and_never_continues`, `agent_exec_argv_claude_never_adds_continue`; the supervisor's stripping of a resume on later legs, `rust/log/src/supervisor/transitions_tests.rs` |
 | 3 | `argv::tests::resolve_claude_*`, `resolve_ccx_*`; `env::tests::agent_env_prepends_local_bin_to_path_once`; `tests/agent_exec.rs` |
 | 4 | `env::tests::capsule_supervisor_env_*`, `nesting_env_scrub_list_matches_ccb`; `tests/agent_exec.rs` |
 | 5 | `accounts::tests::*`, `account_links::tests::*` |
-| 6 | `folder_trust::tests::*`, `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*`, `env::trust_config_controls::*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
-| 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `layer::tests::*`; `tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `test/skills_tests.jl`, `test/claude_hooks_tests.jl` |
-| 8 | `test/claude_hooks_tests.jl` (retirement), `test/skills_tests.jl` (the one-time move) |
+| 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*`, `env::trust_config_controls::*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
+| 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `layer::tests::*`; `tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
+| 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement) |
 | 9 | pass 10b |
 
 ## Queue
+- A caller's own `--settings` carries no work-state hooks; merging the recipe's hooks into a JSON value the caller gives
+  (a file path would need reading) is the fix.
+- The Stop script `comm-status-idle.sh` does the mail check and the work-state stamping, audits and nudges in one
+  574-line flow, and every joined session runs it. Splitting the mail check from the work-state part is messaging's and
+  rows' pass; the layer then carries the work-state half.
+- `SOTD_BIN`: check that an explicit start path runs, as a bare name is checked (`env.rs`, `sotd_bin_value`).
+- The Windows skill-folder hash: a CRLF checkout's copies differ from the list and are kept.
+- The auto-memory flag (`memory.rs`, `--settings` key `autoMemoryDirectory`) has no guarantee of its own in this page;
+  it is owned policy of the recipe and is proved by `memory::tests::*`.
+- A shell test of the hook command's quoting under Git Bash and macOS's shell (hosted run).
 - 5 REMOTE-TOOL: a feature; left.
 - 51 CLAUDE-MD-STUB: needs a Windows box with a logged-in account and a real `claude -p`; left.
 - Codex: its skills and plugin still install into the global `$CODEX_HOME` and `~/.agents`, outside any row. The same
