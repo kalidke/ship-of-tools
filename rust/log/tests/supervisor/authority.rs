@@ -275,8 +275,7 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     // compares digests (those exist only for the WIRE's own
     // idempotent-resubmit check, never exercised here);
     // `ActiveRecord::validate` only checks the field's SHAPE (64
-    // lowercase hex chars) — the same `"0".repeat(64)` placeholder
-    // `sot-fault-writer.rs`'s own fixture uses for an unchecked digest.
+    // lowercase hex chars) — hence the `"0".repeat(64)` placeholder.
     let op_id = "op-recover";
     let record = journal::ActiveRecord {
         operation_id: op_id.to_string(),
