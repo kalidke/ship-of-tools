@@ -51,11 +51,14 @@ fn code(payload: &Value) -> Option<&str> {
     payload.get("code").and_then(Value::as_str)
 }
 
-/// Writes every frame in one write, as a client that pipelines its hello with its next frame does.
+/// Writes every frame in one write (the envelope lines, whatever their payloads declare), as a client that pipelines its hello with its next frame does.
 async fn write_together(conn: &mut Conn, frames: &[Frame]) {
     let mut bytes = Vec::new();
     for f in frames {
-        codec::write_frame(&mut bytes, f, None).await.expect("encode a frame");
+        // The envelope line itself, not `codec::write_frame`: that refuses a frame declaring a blob it is not given, and a
+        // hostile peer's first frame is exactly that.
+        bytes.extend(serde_json::to_vec(f).expect("encode a frame"));
+        bytes.push(b'\n');
     }
     tokio::io::AsyncWriteExt::write_all(conn, &bytes).await.expect("write the frames");
     tokio::io::AsyncWriteExt::flush(conn).await.expect("flush the frames");
