@@ -291,7 +291,20 @@ impl Shared {
                 inner.phase = SupervisorPhase::Ending;
                 inner.ending = Some(Ending { operation_id: operation_id.clone(), conn });
                 if let Some(run) = &inner.run {
-                    let _ = run.kill.send(Command::Kill);
+                    let kill = run.kill.clone();
+                    // Test seam: the run learns of the request this many milliseconds after it was admitted, so a test
+                    // can end the agent in between. Inert unless named.
+                    match std::env::var("SOT_TEST_END_RUN_HOLD_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
+                        Some(ms) => {
+                            std::thread::spawn(move || {
+                                std::thread::sleep(Duration::from_millis(ms));
+                                let _ = kill.send(Command::Kill);
+                            });
+                        }
+                        None => {
+                            let _ = kill.send(Command::Kill);
+                        }
+                    }
                 }
                 inner.operations.insert(operation_id, Operation { op, state: SupervisorOperationState::Accepted });
                 Ok(None)
@@ -590,3 +603,7 @@ pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
 pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
     Ok((std::process::id(), u64::from(sot_platform::identity::challenge_macos::self_pidversion()?)))
 }
+
+#[cfg(test)]
+#[path = "authority_tests.rs"]
+mod tests;

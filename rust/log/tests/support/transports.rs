@@ -118,6 +118,12 @@ impl TestTransport {
             wake();
         }
     }
+    /// A terminal failure of the transport itself (its accept loop died for good).
+    #[allow(dead_code)] // only the capsule suite injects it
+    pub fn fatal(&self, detail: &str) {
+        let _ = self.events_tx.send(TransportEvent::TransportFatal(detail.to_string()));
+        self.ping_wake();
+    }
     pub fn open(&self, conn: ConnId) {
         let _ = self.events_tx.send(TransportEvent::ConnectionOpened(conn));
         self.ping_wake();

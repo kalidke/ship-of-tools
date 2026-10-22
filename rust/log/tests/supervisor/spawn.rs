@@ -412,3 +412,50 @@ fn a_stop_leaves_no_end_request_so_the_next_start_runs_the_agent_again() {
     let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut second, Duration::from_secs(30));
 }
+
+/// An `end_run` that was acknowledged is a requested end even when the agent exits on its own first: the request reaches
+/// the run only after the agent is gone (`SOT_TEST_END_RUN_HOLD_MS`), yet the voyage records it, so a stop and a resume
+/// rest and never start another run.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_end_run_the_agent_beat_is_still_a_requested_end_after_a_stop_and_a_resume() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+    let trigger = dir.path().join("exit-now");
+    let script = format!("while [ ! -e '{}' ]; do sleep 0.05; done", trigger.display());
+    let argv = ["/bin/sh", "-c", script.as_str()];
+
+    let mut first = spawn_supervisor_with_env(&state_dir, "--start", &argv, &[("SOT_TEST_END_RUN_HOLD_MS", "4000")]);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    let ender = {
+        let conn = wait_for_lane(&h, Duration::from_secs(30));
+        let voyage = voyage.clone();
+        std::thread::spawn(move || command(&conn, "end-beaten", SupervisorOp::EndRun { reason: "test".into(), voyage }))
+    };
+    // The request is admitted; the agent ends before the run is told.
+    poll_until(
+        || matches!(status(&conn), (_, _, SupervisorPhase::Ending)).then_some(()),
+        Duration::from_secs(30),
+        "the end_run to be admitted",
+    );
+    std::fs::write(&trigger, b"").unwrap();
+    assert_eq!(ender.join().unwrap(), SupervisorOperationState::RecordVerified);
+    let _ = command(&conn, "stop-after-end", SupervisorOp::Stop);
+    let _ = wait_for_exit(&mut first, Duration::from_secs(30));
+    drop(conn);
+
+    let mut second = spawn_supervisor(&state_dir, "--resume", &argv);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    poll_until(
+        || matches!(status(&conn), (_, _, SupervisorPhase::EndedNoRespawn)).then_some(()),
+        Duration::from_secs(30),
+        "the resumed supervisor to rest: the acknowledged end was requested",
+    );
+    let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
+    let _ = wait_for_exit(&mut second, Duration::from_secs(30));
+}
