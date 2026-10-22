@@ -46,8 +46,9 @@ agents to use separate `julia` processes for parallel runs.
 ## Capsules: what a session survives
 
 Each session's agent runs in a **capsule**: a small supervisor process
-(`sot-capsule`) that owns the agent's terminal and records the session to disk
-(its *voyage*). The frontend attaches to the capsule to draw the pane; the
+(`sot-capsule`) that owns the agent's terminal and keeps its latest screen on
+disk, so a restarted capsule shows the old screen above a restart line. The
+frontend attaches to the capsule to draw the pane; the
 daemon starts capsules and lists them, but does not hold them up.
 
 | What goes away | What happens to the session |
@@ -72,14 +73,13 @@ degraded mode that shares the daemon's lifetime, and the daemon log says why.
 ## Where the state lives
 
 The daemon's state root is `${XDG_STATE_HOME:-~/.local/state}/sot`: the
-capsule records and the daemon's own `sotd.log`. It must be a **local, durable
+capsule folders and the daemon's own `sotd.log`. It must be a **local, durable
 filesystem** — the daemon refuses to start a capsule on a network or volatile
-filesystem rather than risk the record. On a home directory shared across
+filesystem rather than risk the screen file and the capsule's lock. On a home directory shared across
 servers, give each host its own local state root (see
 [Troubleshooting](../guide/troubleshooting.md#A-session-will-not-start-on-a-shared-home)).
 
-Closing a session from the session list ends its capsule and removes its folder under `workspaces/`, with the terminal
-recording (its voyage). The conversation itself lives with the agent, so it stays resumable with `/resume` in the same
+Closing a session from the session list ends its capsule and removes its folder under `workspaces/`, with the saved screen. The conversation itself lives with the agent, so it stays resumable with `/resume` in the same
 project folder. The default row only ends its run and keeps its folder, and a session ended by closing the window keeps
 its folder for now. When the daemon starts, it removes the leftovers of closed sessions, and a folder that no
 registry names, if nothing runs in it and nothing in it was written for 24 hours; it skips that second part when it
