@@ -600,9 +600,9 @@ async fn a_dead_row_is_never_restarted_by_a_wake() {
     row.next_id += 1;
     assert_eq!(res.payload["ok"], true, "pty.input failed: {:?}", res.payload);
     let deadline = Instant::now() + Duration::from_secs(30);
-    // The supervisor respawns a stub that exits, so the stub is made to exit
-    // at every start until the row rests in a phase other than ready.
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // The watchdog restarts a stub that exits, so the stub is made to exit at every start until the row rests in a phase
+    // other than ready: after the watchdog's restart budget, the sum of its backoffs (1 + 3 + 7 + 15 + 30 s) plus the bound.
+    let deadline = Instant::now() + Duration::from_secs(56) + BOUND;
     let before = loop {
         let phase = phase_of_row(&mut row, &ws).await;
         if phase == "terminal" || phase == "ended_no_respawn" {

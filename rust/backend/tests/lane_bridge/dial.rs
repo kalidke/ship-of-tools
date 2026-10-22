@@ -210,13 +210,19 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
 
     // Functional recovery, not merely a resumed process: a fresh input
     // through the SAME client lands, and the leg identity is unchanged.
-    client.send_input(b"echo lb3-resumed\r");
-    let input_deadline = Instant::now() + Duration::from_secs(30);
+    // The agent died with its supervisor, so the resume is a new run: an input typed before the client has re-attached to
+    // it is never resent (it is reported delivery unknown), so the input is typed again until the new run echoes it.
+    let input_deadline = Instant::now() + Duration::from_secs(60);
+    let mut last_typed: Option<Instant> = None;
     loop {
         client.pump();
         assert!(!client.is_dead(), "died while resuming: {}", client.status_line());
         if screen_text(&client).contains("lb3-resumed") {
             break;
+        }
+        if client.status_line() == "attached" && last_typed.is_none_or(|at| at.elapsed() >= Duration::from_secs(3)) {
+            client.send_input(b"echo lb3-resumed\r");
+            last_typed = Some(Instant::now());
         }
         assert!(Instant::now() < input_deadline, "resumed client's own input never echoed");
         tokio::time::sleep(Duration::from_millis(100)).await;
