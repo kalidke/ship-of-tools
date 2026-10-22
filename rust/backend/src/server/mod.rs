@@ -37,15 +37,19 @@ use crate::Opts;
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::task::JoinSet;
 
-pub(super) mod conn;
+// Private: a service reaches the server through its handler's arguments, so a module that names `crate::server::`
+// outside this folder does not compile. The two items the binary's entry needs are re-exported below.
+mod conn;
 mod dispatch;
 mod events;
-pub(super) mod hello;
-pub(crate) mod pipe;
-pub(crate) mod listen;
-pub(super) mod reply;
+mod hello;
+mod listen;
+mod reply;
 
-use reply::write_frame_to;
+#[cfg(unix)]
+pub(crate) use listen::refuse_live_socket;
+
+use sot_protocol::reply::write_frame_to;
 use listen::{run_local, take_daemon_lock};
 use crate::rows::anchor::seed_default_row;
 

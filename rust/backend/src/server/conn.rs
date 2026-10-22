@@ -8,7 +8,8 @@ use super::events::{
     write_preview_changed, write_repl_frame, write_topology_changed, write_workspace_changed,
 };
 use super::hello::{admit_hello, handle_hello, parse_first_frame, register_hello, Admitted, HelloRefusal};
-use super::reply::{finish_dispatch, write_reply, HandlerOutput, Jobs, OutTx, OFFLOOP_CONCURRENCY};
+use super::reply::{finish_dispatch, write_reply, Jobs, OutTx, OFFLOOP_CONCURRENCY};
+use sot_protocol::reply::HandlerOutput;
 use super::*;
 use sot_protocol::HANDOFF_ROLE;
 
@@ -244,7 +245,7 @@ where
         }
         _ => {
             let message = "a handoff connection's next frame is proxy.connect, lane.connect or fe.lease";
-            crate::server::pipe::reject(&mut tx, next.id, &next.op, "bad_request", message).await
+            sot_protocol::reply::reject(&mut tx, next.id, &next.op, "bad_request", message).await
         }
     }
 }

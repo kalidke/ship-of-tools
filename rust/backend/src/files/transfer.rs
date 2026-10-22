@@ -10,7 +10,7 @@ use sot_protocol::FileDownloadReq;
 use sot_protocol::FileUploadAck;
 use sot_protocol::FileUploadReq;
 use sot_protocol::Frame;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 
 /// `file.download` — stream a backend-host file to the frontend in <=1 MiB
 /// `FileChunk` frames (bytes as each frame's trailing blob), all sharing
@@ -43,7 +43,7 @@ where
                 op::FILE_DOWNLOAD,
                 json!({ "error": format!("file.download payload: {e}"), "code": "bad_request" }),
             );
-            crate::server::reply::write_frame_to(tx, &f, None).await?;
+            sot_protocol::reply::write_frame_to(tx, &f, None).await?;
             return Ok(());
         }
     };
@@ -58,7 +58,7 @@ where
                 op::FILE_DOWNLOAD,
                 json!({ "error": format!("no such file: {}", req.path), "code": "io_error" }),
             );
-            crate::server::reply::write_frame_to(tx, &f, None).await?;
+            sot_protocol::reply::write_frame_to(tx, &f, None).await?;
             return Ok(());
         }
     };
@@ -70,7 +70,7 @@ where
                 op::FILE_DOWNLOAD,
                 json!({ "error": format!("open failed: {e}"), "code": "io_error" }),
             );
-            crate::server::reply::write_frame_to(tx, &f, None).await?;
+            sot_protocol::reply::write_frame_to(tx, &f, None).await?;
             return Ok(());
         }
     };
@@ -94,7 +94,7 @@ where
             },
         };
         let frame = Frame::res(req_id, op::FILE_DOWNLOAD, serde_json::to_value(&chunk)?);
-        crate::server::reply::write_frame_to(tx, &frame, Some(&buf[..n])).await?;
+        sot_protocol::reply::write_frame_to(tx, &frame, Some(&buf[..n])).await?;
         offset += n as u64;
         if eof {
             break;

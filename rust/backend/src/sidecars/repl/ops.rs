@@ -7,7 +7,7 @@ use sot_protocol::Frame;
 use crate::session::Session;
 use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use super::numbers::CallerNumbers;
 
 /// Numbers a run and announces it to every window (ADR 0033, the one-numberer amendment): the daemon's number goes in

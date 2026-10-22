@@ -224,7 +224,8 @@ where
     pipe_bidirectional(rx, tx, upstream, &format!("port {}", req.port)).await
 }
 
-use crate::server::pipe::{pipe_bidirectional, reject};
+use sot_protocol::pipe::pipe_bidirectional;
+use sot_protocol::reply::reject;
 
 #[cfg(test)]
 #[path = "proxy_tests.rs"]

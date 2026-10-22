@@ -1,8 +1,6 @@
-//! After a connect frame is answered, a connection is a raw byte pipe copied both ways until either side
-//! closes; a refused connect gets one error frame.
+//! After a connect frame is answered, a connection is a raw byte pipe copied both ways until either side closes.
 
 use anyhow::Result;
-use sot_protocol::{codec, Frame};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 /// The post-handshake body shared by every daemon-side pipe: once a
@@ -16,7 +14,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 /// own port, `lane.connect`'s target+lane) — the caller's concern, not
 /// this function's. Returns once either direction closes; the daemon
 /// never decodes a byte after the handshake.
-pub(crate) async fn pipe_bidirectional<R, W, U>(mut rx: R, mut tx: W, upstream: U, what: &str) -> Result<()>
+pub async fn pipe_bidirectional<R, W, U>(mut rx: R, mut tx: W, upstream: U, what: &str) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -49,15 +47,4 @@ where
         r = up_to_client => tracing::debug!(what, ?r, "pipe: upstream→client closed first"),
     }
     Ok(())
-}
-
-/// Write a rejection frame (standard error payload, `op` naming which
-/// connect verb refused) and return; the caller closes the connection.
-pub(crate) async fn reject<W>(tx: &mut W, id: u64, op: &str, code: &str, msg: &str) -> Result<()>
-where
-    W: AsyncWrite + Unpin,
-{
-    let payload = serde_json::json!({ "error": msg, "code": code });
-    let f = Frame::res(id, op, payload);
-    codec::write_frame(tx, &f, None).await // flushes internally
 }

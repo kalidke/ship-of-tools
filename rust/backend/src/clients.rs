@@ -41,7 +41,7 @@ use sot_protocol::FeCommandSendRes;
 use sot_protocol::Frame;
 use tokio::sync::broadcast;
 
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

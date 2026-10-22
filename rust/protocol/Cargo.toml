@@ -10,6 +10,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+# The byte pipe logs which side closed first.
+tracing = { workspace = true }
 # Platform: the host name and OS account a hello declares, the runtime folder a session socket lives in.
 sot-platform = { path = "../platform" }
 

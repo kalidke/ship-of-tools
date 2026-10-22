@@ -15,7 +15,7 @@ use sot_protocol::TreeRootRes;
 use crate::session::Session;
 use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 
 pub async fn handle_tree_root(
     req_id: u64,

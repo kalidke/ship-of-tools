@@ -11,7 +11,7 @@ use sot_protocol::PreviewGetReq;
 use sot_protocol::PreviewGetRes;
 
 use crate::files::tree::mime_for_path;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use crate::sidecars::kernel::Kernel;
 use crate::session::Session;
 use crate::rows::Workspace;

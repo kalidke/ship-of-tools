@@ -1,6 +1,6 @@
 //! accounts.list (the accounts this daemon's home holds, discovered fresh on every call) and `sotd agent-exec`.
 
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use anyhow::Result;
 use sot_protocol::op;
 use sot_protocol::Frame;

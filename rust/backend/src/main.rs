@@ -340,10 +340,10 @@ fn main() -> Result<()> {
     let opts = parse_args().context("parsing command-line arguments")?;
 
     // A second daemon pointed at a live daemon's socket refuses here,
-    // before any startup side effect (`server::listen::refuse_live_socket`).
+    // before any startup side effect (`server::refuse_live_socket`).
     #[cfg(unix)]
     if let Some(path) = opts.socket.as_deref() {
-        server::listen::refuse_live_socket(path)?;
+        server::refuse_live_socket(path)?;
     }
 
     // Finding 1, v0.6.5 macOS field report: refuse to serve a capsule row

@@ -569,7 +569,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let Ok(req) = serde_json::from_value::<FeLeaseReq>(first.payload.clone()) else {
-        return crate::server::pipe::reject(&mut tx, first.id, op::FE_LEASE, "bad_request", "malformed fe.lease").await;
+        return sot_protocol::reply::reject(&mut tx, first.id, op::FE_LEASE, "bad_request", "malformed fe.lease").await;
     };
     let (outcome, gen) = leases.grant(&req, peer.as_ref());
     let granted = gen.is_some();
@@ -589,7 +589,7 @@ where
             let bytes = match read_line(&mut rx).await {
                 Ok(Line::Complete(bytes)) => bytes,
                 Ok(Line::OverCap) => {
-                    crate::server::pipe::reject(&mut tx, 0, op::FE_LEASE, "bad_request", "line over the lease cap").await?;
+                    sot_protocol::reply::reject(&mut tx, 0, op::FE_LEASE, "bad_request", "line over the lease cap").await?;
                     continue;
                 }
                 Ok(Line::End) => break,
@@ -601,14 +601,14 @@ where
             let frame = match serde_json::from_slice::<Frame>(&bytes) {
                 Ok(frame) if frame.kind == Kind::Req => frame,
                 _ => {
-                    crate::server::pipe::reject(&mut tx, 0, op::FE_LEASE, "bad_request", "not a request").await?;
+                    sot_protocol::reply::reject(&mut tx, 0, op::FE_LEASE, "bad_request", "not a request").await?;
                     continue;
                 }
             };
             match frame.op.as_str() {
                 op::FE_LEAVING => {
                     let Ok(leaving) = serde_json::from_value::<FeLeavingReq>(frame.payload.clone()) else {
-                        crate::server::pipe::reject(&mut tx, frame.id, op::FE_LEAVING, "bad_request", "malformed fe.leaving").await?;
+                        sot_protocol::reply::reject(&mut tx, frame.id, op::FE_LEAVING, "bad_request", "malformed fe.leaving").await?;
                         continue;
                     };
                     // The first departs the lease; each later one replaces
@@ -625,7 +625,7 @@ where
                 }
                 op::FE_NOTICE_SEEN => {
                     let Ok(seen) = serde_json::from_value::<FeNoticeSeenReq>(frame.payload.clone()) else {
-                        crate::server::pipe::reject(&mut tx, frame.id, op::FE_NOTICE_SEEN, "bad_request", "malformed fe.notice_seen").await?;
+                        sot_protocol::reply::reject(&mut tx, frame.id, op::FE_NOTICE_SEEN, "bad_request", "malformed fe.notice_seen").await?;
                         continue;
                     };
                     if let Err(e) = leases.notice_seen(seen.not_ended) {
@@ -634,7 +634,7 @@ where
                     reply(&mut tx, frame.id, op::FE_NOTICE_SEEN, &FeNoticeSeenRes {}).await?;
                 }
                 other => {
-                    crate::server::pipe::reject(&mut tx, frame.id, other, "bad_request", "not a lease request").await?;
+                    sot_protocol::reply::reject(&mut tx, frame.id, other, "bad_request", "not a lease request").await?;
                 }
             }
         }
@@ -682,7 +682,7 @@ where
 
 async fn reply<W: AsyncWrite + Unpin>(tx: &mut W, id: u64, op: &str, res: &impl Serialize) -> anyhow::Result<()> {
     let frame = Frame::res(id, op, serde_json::to_value(res)?);
-    crate::server::reply::write_frame_within(tx, &frame, None, bounds::LEASE_REPLY_WAIT).await
+    sot_protocol::reply::write_frame_within(tx, &frame, None, bounds::LEASE_REPLY_WAIT).await
 }
 
 /// `Ok(None)` when there is no record; `Err` when it cannot be read,

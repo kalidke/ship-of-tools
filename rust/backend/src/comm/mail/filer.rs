@@ -10,7 +10,7 @@ use sot_protocol::CommFileRes;
 use sot_protocol::Frame;
 use crate::comm::registry::registry::{iso8601_utc_from_secs, read_registry_fresh, unix_now_secs};
 use crate::paths::valid_name;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 
 /// File one frame into THIS daemon's comm folder (`comm.file`, 0031 B1): the
 /// hub files for its own home, and a guest on the hub's folder files only on

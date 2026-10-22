@@ -28,7 +28,7 @@ use crate::sidecars::kernel::Kernel;
 use crate::paths::slug;
 use crate::sidecars::repl::{Repl, ReplFrameMsg};
 use crate::files::watcher::{PreviewChanged, Watcher};
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 
 pub(crate) use run::resume::resume_all;
 pub(crate) use spawn::state_root::STATE_ROOT_HINT;

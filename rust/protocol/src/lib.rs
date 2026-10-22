@@ -11,7 +11,9 @@ pub mod codec;
 pub mod ir;
 pub mod ops;
 pub mod page_url;
+pub mod pipe;
 pub mod physical_scale;
+pub mod reply;
 pub mod video_path;
 
 pub use codec::{read_frame, write_frame};

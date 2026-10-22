@@ -14,7 +14,7 @@ use tokio::sync::broadcast;
 use crate::sidecars::repl::ReplFrameMsg;
 use crate::session::Session;
 use crate::rows::Workspaces;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 
 const EXEC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const EXEC_MIN_TIMEOUT_MS: u64 = 1_000;

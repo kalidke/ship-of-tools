@@ -12,7 +12,7 @@ use crate::rows::WorkspaceChanged;
 use crate::rows::Workspaces;
 use tokio::sync::broadcast;
 use crate::paths::valid_name;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 
 /// `agent.join` (ADR 0046 decision 1): a session inside `req.workspace_id`
 /// declares its sot-comm handle to this daemon — the row's bound handle from

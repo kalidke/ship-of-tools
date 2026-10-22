@@ -13,7 +13,7 @@ use sot_protocol::Frame;
 use crate::session::Session;
 use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 
 pub async fn handle_concept_read(
     req_id: u64,

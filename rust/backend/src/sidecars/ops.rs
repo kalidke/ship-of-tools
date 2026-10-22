@@ -20,7 +20,7 @@ use crate::sidecars::pluto::Pluto;
 use crate::session::Session;
 use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use crate::files::confine::canonicalize_within_any_workspace;
 
 pub async fn handle_kernel_request(

@@ -5,7 +5,7 @@ use anyhow::Result;
 use serde_json::json;
 use sot_protocol::op;
 use sot_protocol::Frame;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use crate::rows::run::end::{CapsuleDestroyOutcome, ALREADY_REMOVED, capsule_end_not_reached_payload, default_row_end_response, destroy_capsule_workspace, remove_row_files};
 use crate::rows::anchor::end_default_row_run;
 use crate::rows::state_folder::close_row_folder;

@@ -285,7 +285,7 @@ exit 1
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let mut sink = Vec::new();
-            if let Err(error) = crate::server::reply::write_frame_to(&mut sink, frame, None).await {
+            if let Err(error) = sot_protocol::reply::write_frame_to(&mut sink, frame, None).await {
                 let typed = error.downcast_ref::<codec::EnvelopeTooLarge>().expect("typed writer cap rejection");
                 assert_eq!(typed.len, json_bytes);
                 assert!(json_bytes > codec::MAX_ENVELOPE_BYTES && sink.is_empty());
@@ -295,7 +295,7 @@ exit 1
             assert!(json_bytes <= codec::MAX_ENVELOPE_BYTES);
             assert_flood(frame.payload["error"].as_str().unwrap());
             let next = Frame::res(REQUEST_ID + 1, "ping", serde_json::json!({"ok": true}));
-            crate::server::reply::write_frame_to(&mut sink, &next, None).await.unwrap();
+            sot_protocol::reply::write_frame_to(&mut sink, &next, None).await.unwrap();
             let mut reader = std::io::Cursor::new(sink);
             for expected in [frame, &next] {
                 let (actual, blob) = codec::read_frame(&mut reader).await.unwrap();

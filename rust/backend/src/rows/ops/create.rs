@@ -6,7 +6,7 @@ use serde_json::json;
 use sot_protocol::op;
 use sot_protocol::Frame;
 use crate::paths::valid_name;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use crate::session::Session;
 use crate::rows::WorkspaceChanged;
 use crate::rows::Workspaces;

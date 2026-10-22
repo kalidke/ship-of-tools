@@ -19,7 +19,7 @@ use sot_protocol::{op, Frame};
 use sot_topology::TopologySetRes;
 use tokio::sync::broadcast;
 
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use crate::topology::store::{TopologyChanged, TopologyStore};
 use crate::rows::workspace::Phase;
 use crate::rows::Workspaces;

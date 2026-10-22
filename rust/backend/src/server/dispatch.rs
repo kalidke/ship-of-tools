@@ -6,7 +6,8 @@ use crate::rows::ops::pty::handle_pty_open;
 use crate::rows::reauth::answer_workspace_reauth;
 use crate::sidecars::ops::{handle_monitor_history, handle_monitor_subscribe, handle_monitor_unsubscribe};
 use crate::topology::store::{TopologyChanged, TopologyStore};
-use super::reply::{canonicalize_workspace_id, finish_dispatch, spawn_job, write_reply, HandlerOutput, OutTx};
+use super::reply::{canonicalize_workspace_id, finish_dispatch, spawn_job, write_reply, OutTx};
+use sot_protocol::reply::HandlerOutput;
 use super::*;
 
 /// Where a request op runs. Off the loop is the default: while an inline op runs, the loop reads nothing else,
@@ -235,8 +236,11 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::DOCS_OPEN => {
             // A window's pages (ADR 0029): owned by the window, so its redials keep them, and a full pool may take a
             // port only from a window the roster lists as away.
-            crate::pages::ops::handle_docs_open(req_id, payload, session, shared.site_owner, workspaces, clients)
-                .await
+            let roster = clients.clone();
+            crate::pages::ops::handle_docs_open(
+                req_id, payload, session, shared.site_owner, workspaces, move || roster.away_sites(),
+            )
+            .await
         }
         op::QUARTO_OPEN => crate::pages::ops::handle_quarto_open(req_id, payload, session).await,
         op::FILE_UPLOAD => crate::files::transfer::handle_file_upload(req_id, payload).await,

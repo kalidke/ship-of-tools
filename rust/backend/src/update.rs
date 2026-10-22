@@ -35,7 +35,7 @@ mod refusal;
 pub(crate) use cli::{run, USAGE};
 use refusal::{apply_refusal, arm_refusal, host_runs_no_sotd};
 
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use crate::lifecycle::lease::Leases;
 use crate::sidecars::julia::JuliaError;
 

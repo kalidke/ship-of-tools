@@ -209,7 +209,7 @@ where
     let req: LaneConnectReq = match serde_json::from_value(frame.payload) {
         Ok(r) => r,
         Err(e) => {
-            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "bad_request", &format!("{e}")).await;
+            return sot_protocol::reply::reject(&mut tx, id, op::LANE_CONNECT, "bad_request", &format!("{e}")).await;
         }
     };
 
@@ -217,16 +217,16 @@ where
         ("supervisor", _) => Lane::Supervisor,
         ("voyage", Some(voyage_id)) => Lane::Voyage(voyage_id),
         _ => {
-            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "bad_lane", "lane must be \"supervisor\" or \"voyage\" (voyage requires voyage_id)").await;
+            return sot_protocol::reply::reject(&mut tx, id, op::LANE_CONNECT, "bad_lane", "lane must be \"supervisor\" or \"voyage\" (voyage requires voyage_id)").await;
         }
     };
 
     let Some(ws) = workspaces.workspace_for_tmux(&req.target) else {
-        return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "unknown_workspace", &format!("no workspace targets {:?}", req.target)).await;
+        return sot_protocol::reply::reject(&mut tx, id, op::LANE_CONNECT, "unknown_workspace", &format!("no workspace targets {:?}", req.target)).await;
     };
 
     let Some(root) = sot_platform::host::state_dir::sot_state_dir() else {
-        return crate::server::pipe::reject(
+        return sot_protocol::reply::reject(
             &mut tx,
             id,
             op::LANE_CONNECT,
@@ -265,16 +265,16 @@ where
             return reject_lane_absent(&mut tx, id, &kind, &detail).await;
         }
         Err(DialFail::VoyageMismatch) => {
-            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "voyage_mismatch", "voyage_id is not this row's own current voyage").await;
+            return sot_protocol::reply::reject(&mut tx, id, op::LANE_CONNECT, "voyage_mismatch", "voyage_id is not this row's own current voyage").await;
         }
         Err(DialFail::Foreign) => {
-            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "foreign", "the peer behind this lane failed identity authentication").await;
+            return sot_protocol::reply::reject(&mut tx, id, op::LANE_CONNECT, "foreign", "the peer behind this lane failed identity authentication").await;
         }
         Err(DialFail::Undetermined) => {
-            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "undetermined", "peer identity authentication could not be completed").await;
+            return sot_protocol::reply::reject(&mut tx, id, op::LANE_CONNECT, "undetermined", "peer identity authentication could not be completed").await;
         }
         Err(DialFail::Other(detail)) => {
-            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "dial_failed", &detail).await;
+            return sot_protocol::reply::reject(&mut tx, id, op::LANE_CONNECT, "dial_failed", &detail).await;
         }
     };
 
@@ -311,7 +311,7 @@ where
 
 /// Convert the blocking client this dial produced into an async duplex
 /// stream on the daemon's own Tokio runtime, then hand off to
-/// [`crate::server::pipe::pipe_bidirectional`] — the SAME pipe body
+/// [`sot_protocol::pipe::pipe_bidirectional`] — the SAME pipe body
 /// `proxy.connect` uses, generic over the upstream type. `cfg(unix)`,
 /// not `cfg(target_os = "linux")`: `socket_unix::SocketClient` is one
 /// implementation for every Unix (`client.rs`'s own `PlatformEndpoint`
@@ -326,7 +326,7 @@ where
     let std_stream = conn.into_stream();
     std_stream.set_nonblocking(true)?;
     let upstream = tokio::net::UnixStream::from_std(std_stream)?;
-    crate::server::pipe::pipe_bidirectional(rx, tx, upstream, what).await
+    sot_protocol::pipe::pipe_bidirectional(rx, tx, upstream, what).await
 }
 
 /// Windows twin of the Unix `pipe_upstream` above: the pipe handle was
@@ -344,5 +344,5 @@ where
     use std::os::windows::io::IntoRawHandle;
     let owned = conn.into_handle();
     let upstream = unsafe { tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(owned.into_raw_handle())? };
-    crate::server::pipe::pipe_bidirectional(rx, tx, upstream, what).await
+    sot_protocol::pipe::pipe_bidirectional(rx, tx, upstream, what).await
 }

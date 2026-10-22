@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWrite;
 
 use crate::agents::accounts::DiscoveredAccount;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use crate::rows::Workspaces;
 
 /// The reply code an accepted reauth answers with, before anything is
@@ -137,7 +137,7 @@ where
     F: FnOnce(ReauthRestart),
 {
     for (frame, blob) in out {
-        if let Err(e) = crate::server::reply::write_frame_to(tx, frame, blob.as_deref()).await {
+        if let Err(e) = sot_protocol::reply::write_frame_to(tx, frame, blob.as_deref()).await {
             if let Some(plan) = restart {
                 plan.rollback();
             }

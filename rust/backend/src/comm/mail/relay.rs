@@ -11,7 +11,7 @@ use sot_protocol::Frame;
 use crate::comm::mail::bus::AgentMessage;
 use tokio::sync::broadcast;
 use crate::comm::registry::registry::iso8601_utc_now;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 
 /// `agent.send`: publish one UI notification onto the agent bus, which every connection writes as an
 /// `agent.message` evt, and answer `ok`. The answer says the daemon published it, never that anyone read it or that

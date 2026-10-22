@@ -15,7 +15,7 @@ use sot_protocol::VideoOpenReq;
 use sot_protocol::VideoOpenRes;
 
 use crate::files::confine::canonicalize_and_workspace_root;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use crate::session::Session;
 use crate::rows::Workspaces;
 
@@ -170,7 +170,7 @@ pub async fn handle_docs_open(
     session: &Session,
     owner: u64,
     workspaces: &Workspaces,
-    clients: &crate::clients::Clients,
+    away_sites: impl FnOnce() -> Vec<u64> + Send,
 ) -> Result<HandlerOutput> {
     let req: DocsOpenReq = serde_json::from_value(payload_json).context("docs.open payload")?;
     tracing::info!(path = %req.path, "docs.open");
@@ -290,7 +290,7 @@ pub async fn handle_docs_open(
     let mut pool_port: Option<(u16, String)> = None;
     let mut site = Some(site);
     if root_relative {
-        match crate::pages::site::assign_pool_port(owner, site.take().expect("site"), || clients.away_sites()) {
+        match crate::pages::site::assign_pool_port(owner, site.take().expect("site"), away_sites) {
             Some(assigned) => pool_port = Some(assigned),
             None => {
                 return Ok(err(

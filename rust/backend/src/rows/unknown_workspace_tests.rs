@@ -1,7 +1,7 @@
 use serde_json::json;
 use sot_protocol::Kind;
 
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use crate::session::Session;
 
 use super::Workspaces;

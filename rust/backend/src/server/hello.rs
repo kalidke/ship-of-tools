@@ -2,7 +2,7 @@
 //! and the roster entry (`register_hello`).
 
 use super::*;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use sot_protocol::{HelloReq, HelloRes};
 
 /// Outcome of the FE↔BE protocol handshake gate (ADR 0030 §2).

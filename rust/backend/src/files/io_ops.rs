@@ -19,7 +19,7 @@ use crate::files::io::WriteResult;
 use crate::session::Session;
 use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 
 /// Read a source file's full text for the in-frontend editor. Unlike
 /// `preview.get` (kernel-rendered), this is raw backend byte IO — no kernel

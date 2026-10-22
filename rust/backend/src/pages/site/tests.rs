@@ -294,7 +294,7 @@ mod persistent_tests {
         let upstream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
         let (window, daemon) = tokio::io::duplex(64 * 1024);
         let (rd, wr) = tokio::io::split(daemon);
-        tokio::spawn(crate::server::pipe::pipe_bidirectional(rd, wr, upstream, "page login"));
+        tokio::spawn(sot_protocol::pipe::pipe_bidirectional(rd, wr, upstream, "page login"));
         Some(BufReader::new(window))
     }
 

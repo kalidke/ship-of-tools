@@ -6,7 +6,7 @@ use anyhow::Result;
 use serde_json::json;
 use sot_protocol::op;
 use sot_protocol::Frame;
-use crate::server::reply::HandlerOutput;
+use sot_protocol::reply::HandlerOutput;
 use crate::comm::registry::registry::read_comm_agents;
 use crate::rows::handle::bound_handle;
 use crate::rows::work_state::{read_clear, shown_of};
