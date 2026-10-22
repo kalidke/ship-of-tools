@@ -20,7 +20,7 @@ const EXEC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const EXEC_MIN_TIMEOUT_MS: u64 = 1_000;
 const EXEC_MAX_TIMEOUT_MS: u64 = 1_800_000;
 /// Per-field inline cap for `value` / `error` text — stdout/stderr are already
-/// bounded by `EXEC_TEXT_CAP` in the collector; this guards against one giant
+/// capped by `EXEC_TEXT_CAP` in the collector; this guards against one giant
 /// `show` repr blowing the 1 MiB envelope.
 const EXEC_FIELD_CAP: usize = 64 * 1024;
 

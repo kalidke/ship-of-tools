@@ -149,7 +149,7 @@ pub const EXEC_TEXT_CAP: usize = 256 * 1024;
 /// Loss-free per-run frame sink for `repl.execute`. The supervisor tees each
 /// frame for a collected eval_id in here (in addition to the best-effort
 /// broadcast bus), so a slow consumer can never `Lagged`-drop a frame the way
-/// the shared 256-slot `broadcast` would. Bounded by `EXEC_TEXT_CAP`.
+/// the shared 256-slot `broadcast` would. Its stdout and stderr text is capped by `EXEC_TEXT_CAP`; other frames are not.
 #[derive(Default)]
 pub struct ExecAccum {
     pub frames: Vec<serde_json::Value>,
@@ -476,8 +476,10 @@ impl Repl {
     /// sender exist and whether or not Julia ever reads its stdin: it closes
     /// out its work, requests the tree's termination and confirms the direct
     /// child reaped, and this method joins it (at most `REPL_RESTART_WAIT`)
-    /// before the new child starts. A retirement error or timeout is returned,
-    /// the retiring supervisor stays owned and no replacement starts. The
+    /// before the new child starts. A timeout is returned and the retiring
+    /// supervisor stays owned, so no replacement starts while it runs; a
+    /// retirement that finished with an error is returned once and then
+    /// dropped (R5's limit), after which a restart can start a child. The
     /// selected project is kept for every later spawn, a death respawn
     /// included.
     pub async fn restart_with_project(&self, user_project: &Path) -> Result<()> {
