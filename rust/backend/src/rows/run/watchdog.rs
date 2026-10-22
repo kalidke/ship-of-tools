@@ -30,6 +30,50 @@ pub const MAX_RESTARTS_PER_WINDOW: usize = 5;
 
 pub const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// A supervisor that lived this long reached `ready` (the supervisor reports `ready` once its agent has written or lived
+/// two seconds; this leaves room for the start itself).
+const READY_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The restart budget, one per watchdog. An agent that cannot start is a count, not a rate: consecutive restarts of
+/// supervisors that never reached `ready` (`READY_LIFETIME`) are counted without a window, so how long each start and
+/// settle takes never decides it, and the count resets when one reaches `ready`. Restarts of supervisors that did
+/// reach `ready` keep `MAX_RESTARTS_PER_WINDOW` within `RESTART_WINDOW`. Either way the exit after the fifth restart
+/// is the give-up.
+#[derive(Default)]
+struct Budget {
+    never_ready: usize,
+    ready_restarts: Vec<Instant>,
+    last_exit_was_ready: bool,
+}
+
+impl Budget {
+    /// Judges an exit of a supervisor that lived `lived`: the backoff before its restart, `None` when the budget is spent.
+    fn on_exit(&mut self, lived: std::time::Duration, now: Instant) -> Option<std::time::Duration> {
+        self.last_exit_was_ready = lived >= READY_LIFETIME;
+        let restarts = if self.last_exit_was_ready {
+            self.never_ready = 0;
+            self.ready_restarts.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
+            self.ready_restarts.len()
+        } else {
+            self.never_ready += 1;
+            self.never_ready - 1
+        };
+        (restarts < MAX_RESTARTS_PER_WINDOW).then(|| RESTART_BACKOFFS[restarts.min(RESTART_BACKOFFS.len() - 1)])
+    }
+
+    /// The restart judged by the last exit began.
+    fn restarted(&mut self, now: Instant) {
+        if self.last_exit_was_ready {
+            self.ready_restarts.push(now);
+        }
+    }
+
+    /// The restart's ordinal, for the log.
+    fn attempt(&self) -> usize {
+        if self.last_exit_was_ready { self.ready_restarts.len() + 1 } else { self.never_ready }
+    }
+}
+
 /// What one leg's exit means for the watchdog's own decision —
 /// ADR 0042 L1a, Codex review finding 6; rule F (shrink round)
 /// simplified this from three outcomes to two.
@@ -276,7 +320,8 @@ pub(super) fn install_watchdog(
         // when its lane never answered.
         let mut current_identity = initial_identity;
         let mut leg_opt = Some(child);
-        let mut restart_times: Vec<Instant> = Vec::new();
+        let mut budget = Budget::default();
+        let mut leg_started = Instant::now();
         loop {
             let outcome = match leg_opt.take() {
                 Some(c) => wait_and_classify(c, &workspace_id).await,
@@ -305,9 +350,7 @@ pub(super) fn install_watchdog(
                 }
                 LegOutcome::Crash | LegOutcome::AgentEnded => {
                     // Decided before taking the guard -- giving up needs no recheck (R4a).
-                    let now = Instant::now();
-                    restart_times.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
-                    if restart_times.len() >= MAX_RESTARTS_PER_WINDOW {
+                    let Some(backoff) = budget.on_exit(leg_started.elapsed(), Instant::now()) else {
                         tracing::error!(
                             workspace_id = %workspace_id, window = ?RESTART_WINDOW, max = MAX_RESTARTS_PER_WINDOW,
                             "capsule supervisor watchdog: restart budget exhausted -- giving up, marking terminal"
@@ -326,7 +369,7 @@ pub(super) fn install_watchdog(
                             }
                         }
                         return;
-                    }
+                    };
                     wait_for_test_watchdog_restart_barrier().await;
                     let _held = capsule_guard.lock().await;
                     let may_act = {
@@ -340,14 +383,13 @@ pub(super) fn install_watchdog(
                     if !may_act {
                         return;
                     }
-                    let backoff = RESTART_BACKOFFS[restart_times.len().min(RESTART_BACKOFFS.len() - 1)];
                     tracing::warn!(
-                        workspace_id = %workspace_id, backoff = ?backoff, attempt = restart_times.len() + 1,
+                        workspace_id = %workspace_id, backoff = ?backoff, attempt = budget.attempt(),
                         agent_ended,
                         "capsule supervisor watchdog: crashed, restarting with --resume"
                     );
                     tokio::time::sleep(backoff).await;
-                    restart_times.push(Instant::now());
+                    budget.restarted(Instant::now());
                     // The run gate, asked after the backoff so a
                     // closing or held-back gate is read as it is now.
                     // Held through this leg's settle below.
@@ -442,6 +484,7 @@ pub(super) fn install_watchdog(
                                 observe_with_adoption(&ws, observation);
                             }
                             drop(permit);
+                            leg_started = Instant::now();
                             leg_opt = Some(child);
                         }
                         Ok(Err(e)) if e.kind() == ErrorKind::Unsupported => {

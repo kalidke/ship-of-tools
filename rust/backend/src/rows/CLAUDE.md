@@ -38,13 +38,19 @@ Supervisor:
   which claims the row's authority fence (`supervisor.lock`) before it forks; a claimed fence forks nothing, and the
   start is told the authority is pending (`run::admission`), never success. On Unix the durable parent holds the claim
   (`spawn/durable/`), so neither the daemon's death nor a second birth takes an accepted birth's fence.
-- The watchdog's restart budget (5 restarts in 60 s, then `terminal`) is the one restart budget for a row's agent: the
-  supervisor never starts the agent a second time on its own. The watchdog reads the supervisor's exit: 0 ends it, 69
-  marks the row `terminal`, 70 leaves the row to the next attach, and every other end restarts it with `--resume`
-  within the budget: 75 (the agent could not be spawned), 76 (it started and ended by itself) and a killed supervisor
-  (no code), which takes its agent with it. Limit, accepted for pass 6b and closed by pass 6c-1 with a guarantee and its
-  red test: a supervisor found alive at boot has no watchdog (`resume_all` adopts it and never watches it), so after
-  its agent ends by itself the row stays `unreachable` until it is selected, whose attach restarts it.
+- The watchdog's restart budget is the one restart budget for a row's agent: the supervisor never starts the agent a
+  second time on its own. An agent that cannot start is a count, not a rate: after five consecutive restarts of
+  supervisors that never reached `ready` (none lived `READY_LIFETIME`, 5 s) the next exit marks the row `terminal`,
+  however long the starts and settles take, and the count resets when one reaches `ready`; restarts of supervisors that
+  did reach `ready` keep five within 60 s (`RESTART_BACKOFFS` 1, 3, 7, 15, 30 s either way). The watchdog reads the
+  supervisor's exit: 0 ends it, 69 marks the row `terminal`, 70 leaves the row to the next attach, and every other end
+  restarts it with `--resume` within the budget: 75 (the agent could not be spawned), 76 (it started and ended by
+  itself) and a killed supervisor (no code), which takes its agent with it. 75 and 76 are one path for the restart and
+  differ only in the log; a restart spawns the row's own recipe, never a reauth's `--resume`. The give-up latches
+  `terminal` under the row's guard, whichever supervisor the cell was last claimed by. Limit, accepted for pass 6b and
+  closed by pass 6c-1 with a guarantee and its red test: a supervisor found alive at boot has no watchdog (`resume_all`
+  adopts it and never watches it), so after its agent ends by itself the row stays `unreachable` until it is selected,
+  whose attach restarts it.
 - No start begins once the close has begun: `Workspaces::begin_start` refuses after `close_gate_and_settle`, which waits
   for the starts already admitted (`gate.rs`).
 - A row's phase follows its current supervisor. The phase cell changes only through
