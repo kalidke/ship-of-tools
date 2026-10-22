@@ -513,6 +513,11 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
+    // The row ended `terminal` because the watchdog's restart budget ran out, not because the supervisor gave up on its
+    // own: the budget's own line is in the daemon's log.
+    let log = env.daemon_log_since(0);
+    assert!(log.contains("restart budget exhausted"), "the daemon's log must hold the watchdog's budget line; got:\n{log}");
+
     // LU5a (ADR 0043 decision 25, Linux leg): the supervisor's own stderr
     // is the daemon's own log -- by the time this row is terminal, its
     // supervisor has necessarily written at least one diagnostic line
