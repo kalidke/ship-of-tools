@@ -76,3 +76,12 @@ fn resolve_hub_falls_back_to_the_flag_only_with_no_local_copy() {
     let e = resolve_hub(None, None, dest).unwrap_err();
     assert!(e.contains("/nowhere/hosts.toml") && e.contains("pass --hub <alias>"), "{e}");
 }
+
+#[test]
+fn sync_refuses_a_hub_that_is_not_a_plain_host_name() {
+    // `--hub` becomes an argument of ssh, which reads a leading `-` as an option.
+    let dest = std::path::Path::new("/nowhere/hosts.toml");
+    let e = resolve_hub(None, Some("-oProxyCommand=touch-x"), dest).unwrap_err();
+    assert!(e.contains("not a plain host name"), "{e}");
+    assert_eq!(resolve_hub(None, Some("hub-box.example"), dest).unwrap(), "hub-box.example");
+}

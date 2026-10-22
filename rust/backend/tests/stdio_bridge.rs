@@ -319,6 +319,20 @@ fn dash_dash_endpoint_refuses_the_other_platforms_scheme() {
     assert!(stdout.is_empty(), "a refusal writes nothing to stdout: {said}");
 }
 
+/// The relay socket's path is derived from the host name, so a name outside the plain host-name grammar is refused
+/// before any path is built (topology's contract, guarantee 9).
+#[test]
+fn stdio_bridge_refuses_a_host_outside_the_grammar() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    runtime_root();
+    let (status, stdout, stderr) = run_bridge(&["--host", "../escape"]);
+    let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
+    assert!(!status.success(), "a host outside the grammar is refused: {said}");
+    assert!(stdout.is_empty(), "a refusal writes nothing to stdout: {said}");
+    assert_eq!(stderr.lines().count(), 1, "one line names the refusal: {said}");
+    assert!(stderr.contains("not a plain host name"), "the line names the grammar: {said}");
+}
+
 #[test]
 fn a_third_form_is_a_usage_error() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());

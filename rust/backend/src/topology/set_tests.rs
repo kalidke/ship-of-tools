@@ -154,3 +154,35 @@ async fn malformed_file_on_disk_is_refused_without_losing_previous_content() {
     // never overwritten by a refused request.
     assert!(std::fs::read_to_string(store.path()).unwrap().contains("colour"));
 }
+
+/// Edits arrive on several connections at once. Each reads the file, applies its edit and writes the result, so
+/// without one lock around the three an edit made from the same read as another is lost, or two share a temporary file.
+#[test]
+fn concurrent_edits_each_land() {
+    let (_dir, store) = store_with("concurrent", V2);
+    let workspaces = std::sync::Arc::new(Workspaces::new());
+    let store = std::sync::Arc::new(store);
+    let (tx, _rx) = broadcast::channel::<TopologyChanged>(64);
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(8).build().unwrap();
+    let names: Vec<String> = (0..24).map(|i| format!("host{i}")).collect();
+    let results: Vec<bool> = runtime.block_on(async {
+        let mut tasks = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            let (store, workspaces, tx) = (store.clone(), workspaces.clone(), tx.clone());
+            let add = json!({"edit": {"kind": "add_host", "name": name, "daemon": true}});
+            tasks.push(tokio::spawn(async move {
+                let out = handle_topology_set(i as u64, add, &store, &workspaces, "alpha", None, &tx).await.unwrap();
+                out[0].0.payload.get("ok").and_then(|v| v.as_bool()) == Some(true)
+            }));
+        }
+        let mut done = Vec::new();
+        for task in tasks {
+            done.push(task.await.unwrap());
+        }
+        done
+    });
+    let text = std::fs::read_to_string(store.path()).unwrap();
+    let missing: Vec<&String> = names.iter().filter(|n| !text.contains(&format!("[host.{n}]"))).collect();
+    assert!(results.iter().all(|ok| *ok), "every edit is answered ok: {results:?}");
+    assert!(missing.is_empty(), "an edit answered ok was lost: {missing:?}");
+}

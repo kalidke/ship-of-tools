@@ -329,3 +329,17 @@ fn a_frontend_entry_runs_a_backend_and_an_unnamed_host_takes_its_record() {
         assert_eq!(runs_backend(Some(&t), &h.name, None), sotd_hosts(&t).contains(&h.name.as_str()), "{}", h.name);
     }
 }
+
+#[test]
+fn a_monitor_target_that_reads_as_an_ssh_option_is_refused() {
+    // ssh reads an argument that begins with `-` as an option (`-oProxyCommand=...` runs a command on this box), so a
+    // target that does is refused where the grammar reads it and where an edit adds it.
+    let text = "hub = \"alpha\"\n[host.alpha]\ndaemon = true\n[monitor]\nbox = \"-oProxyCommand=touch-x\"\n";
+    let e = parse(text).unwrap_err();
+    assert!(e.contains("line 5") && e.contains("ssh option"), "{e}");
+    let t = parse(V2).unwrap();
+    let e = apply(&t, &TopologyEdit::MonitorAdd { label: "extra".into(), target: "-oProxyCommand=touch-x".into() }).unwrap_err();
+    assert!(e.contains("ssh option"), "{e}");
+    // The forms a person writes still parse: a bare alias, user@host, an empty target (the label).
+    assert!(apply(&t, &TopologyEdit::MonitorAdd { label: "extra".into(), target: "me@extra-box".into() }).is_ok());
+}
