@@ -31,8 +31,8 @@ Guarantees, each with the mechanism it rests on:
   `tests/user-manager-tests.sh` (the five tests that need a user manager, each by name with
   `SOT_TEST_REQUIRE_USER_MANAGER=1`, in a test container that keeps it). Each writes a `summary.txt` naming the head and
   tree it ran and ending `ALLDONE` or `ALLDONE FAILED`. The maintainer's word is given on a commit both passed. The
-  local gate needs `jq`, a yacc (bash32.sh's build) and `Xvfb`; a host without the first two runs `tests/gate-tools.sh`, which
-  puts a checked jq and a built byacc in `/scratch/<user>/gate-tools/bin` (`GATE_TOOLS_DIR` names another), and the gate
+  local gate needs `jq`, a yacc (bash32.sh's build), a git of 2.28 or later (`init -b`) and `Xvfb`; a host without them runs `tests/gate-tools.sh`, which
+  puts a checked jq, a built byacc and a built git in `/scratch/<user>/gate-tools/bin` (`GATE_TOOLS_DIR` names another), and the gate
   puts that folder first on every PATH it uses when it exists. The
   local gate holds to five minutes on descent (`under-bash` aside, which leaves with the shell twins under messaging's
   decision D1): the sotd unit binary runs in the cuts `.github/test-shards.txt` gives the hosted shards, and the tests
