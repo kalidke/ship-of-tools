@@ -34,6 +34,10 @@ impl Recorder {
         Arc::new(Self { events: Mutex::new(Vec::new()), bus: Mutex::new(bus), refuse })
     }
 
+    pub(super) fn events(&self) -> Vec<PortEvent> {
+        self.events.lock().unwrap().iter().map(|(e, _)| e.clone()).collect()
+    }
+
     pub(super) fn allows(&self) -> Vec<(PortEvent, bool)> {
         self.events.lock().unwrap().iter().filter(|(e, _)| matches!(e, PortEvent::Allow { .. })).cloned().collect()
     }
