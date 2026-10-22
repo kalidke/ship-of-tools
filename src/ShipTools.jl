@@ -4,15 +4,20 @@
 # scripts to ~/.sot-comm/bin, the Claude skills into the Claude layer
 # (~/.sot-comm/claude-layer, which only a leg of the launch recipe adds, so a plain
 # `claude` loads none of them), and each per-CLI adapter's other parts to that CLI's
-# dir ($CODEX_HOME/skills, ~/.local/bin, plugins). The work-state hooks are no
-# longer written into any settings.json: a row's leg carries them in its own
-# `--settings` (`rust/backend/src/agents/layer.rs`). What an earlier install put in
-# the user's own folders is removed: its comm hooks from every Claude account's
-# settings.json (`_retire_claude_hooks`, which finds each real file once through
-# `_claude_settings_targets`) and, once, the skills it shipped from the Claude skills
-# folder (`_move_placed_skills!`). Named accounts share the default skills folder by a
-# SYMLINK the daemon creates at spawn
-# (`rust/backend/src/agents/accounts.rs::ensure_account_links`).
+# dir ($CODEX_HOME/skills, ~/.local/bin, plugins). The work-state hooks are not
+# written into any settings.json: a row's leg carries them in its own `--settings`
+# (`rust/backend/src/agents/layer.rs`). Two hooks serve every joined session and stay
+# in every Claude account's settings.json (`_COMM_STATE_HOOKS`: the end-of-turn mail
+# check and the subagent guard), merged by NON-clobbering jq edits
+# (`_add_comm_hook!`) that add one entry per event only if absent and keep every other
+# hook (the install stops before them without jq); a file that won't parse is left
+# untouched and the exact JSON to add by hand is printed. What an earlier install put
+# in the user's own folders is removed only where it is an exact copy: the comm hooks
+# it wrote by exact command (`_remove_stale_comm_hooks!`) and the skills it shipped by
+# exact content (`_retire_placed_skills!`, against comm/legacy-skills.txt). A named
+# account shares the default skills folder by a SYMLINK the daemon creates at spawn
+# (`rust/backend/src/agents/accounts.rs::ensure_account_links`); a link is never acted
+# through. Settings files are found once each by `_claude_settings_targets`.
 # See comm/PROTOCOL.md for the wire contract.
 #
 
