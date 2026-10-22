@@ -69,3 +69,16 @@ fn ensure_private_dir_makes_an_owner_only_folder_that_is_private() {
     assert_eq!(std::fs::metadata(&leaf).unwrap().permissions().mode() & 0o777, 0o700);
     assert!(crate::host::state_dir::is_private_dir(&leaf));
 }
+
+/// A private-folder refusal that comes from the OS keeps the OS's own error (its kind and raw code) for the caller.
+#[test]
+fn a_private_dir_error_from_the_os_keeps_its_native_code() {
+    use std::error::Error as _;
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("file");
+    std::fs::write(&file, b"x").unwrap();
+    let err = super::secure_private_dir(&file.join("below")).unwrap_err();
+    let source = err.source().and_then(|s| s.downcast_ref::<std::io::Error>()).expect("the OS error is the source");
+    assert_eq!(source.raw_os_error(), Some(libc::ENOTDIR), "{err}");
+    assert!(err.to_string().contains("below"), "the path stays in the text: {err}");
+}
