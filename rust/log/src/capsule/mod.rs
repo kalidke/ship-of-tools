@@ -55,6 +55,9 @@ pub use writer_loop::run;
 
 const READ_CHUNK: usize = 8192;
 
+/// How long the leg's end waits for the screen writer: a stalled disk never holds the end of a leg longer.
+const SCREEN_FINISH_BOUND: Duration = Duration::from_secs(2);
+
 /// One diagnostic line, as one write that never panics: `eprintln!` panics when stderr cannot take the line, and a
 /// full volume under the leg's log would then turn a diagnostic into a crash of the leg.
 fn leg_note(args: std::fmt::Arguments<'_>) {

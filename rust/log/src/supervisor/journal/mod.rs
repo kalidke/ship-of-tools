@@ -187,15 +187,9 @@ pub enum ActiveOp {
         /// The voyage this `end_run` targeted (voyage-fenced at
         /// admission).
         voyage: String,
-        /// The leg epoch this operation targeted, if known at admission
-        /// time — recovery's own "reads the DURABLE MARKER ... a marker
-        /// in the leg's own epoch means ACCEPTED" needs this to know
-        /// WHICH epoch to ask [`crate::store::verify::leg_carries_run_end_marker`]
-        /// about (a marker "governs only its OWN epoch"). `None` is a
-        /// real, recoverable case (recovery falls back to the CURRENT
-        /// voyage's latest leg) — never confused with "this was actually
-        /// a `stop`", which the tagged shape makes structurally
-        /// impossible.
+        /// The leg number this operation targeted, if known at admission time. Recovery reads the voyage folder's
+        /// `ended` file, which holds the last leg's ending only, so the number is kept for the record's shape and
+        /// read nowhere (the journal goes with the supervisor's new core).
         #[serde(skip_serializing_if = "Option::is_none")]
         epoch: Option<u64>,
     },

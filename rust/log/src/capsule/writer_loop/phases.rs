@@ -368,7 +368,7 @@ pub(super) fn finish_run<P: Producer>(exit_kind: ExitKind, producer_uptime_ms: u
 
     // The last screen, at the agent's end; a failed write is noted, never fatal.
     if let Some(screen) = &mut leg.screen {
-        screen.flush(&leg.parser, Instant::now());
+        screen.finish(&leg.parser, Instant::now(), SCREEN_FINISH_BOUND);
     }
 
     // What the supervisor reads: whether an end was asked for (`shutdown_reason` is the mgmt `shutdown` reason, ADR

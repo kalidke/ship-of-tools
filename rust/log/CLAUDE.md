@@ -20,17 +20,20 @@ true after the voyage's removal.
 - The attach client every viewer uses, and the daemon's supervisor-lane calls (`src/attach_client/`).
 
 ## Promises
-- The leg keeps `<state_dir>/screen`: the vt100 fork's checkpoint (format 2), written through platform's
-  `write_durable` at most every 5 s while the screen changed and at the agent's end; a failed write is noted once per
-  failing streak and tried again at the next pace, and never reaches the output path. A leg starts its parser from the
-  file, under a `[restarted <UTC time>]` line; a file that does not restore is removed and the screen starts empty.
-  Limit: the file can be 5 s old, and the scrollback in it is at most `CAPSULE_SCROLLBACK_ROWS` (200).
+- The leg keeps `<state_dir>/screen`: the vt100 fork's checkpoint (format 2), handed every 5 s while the screen
+  changed (and at the agent's end) to one writer thread, which writes it through platform's `write_durable`. The slot
+  between them keeps only the newest snapshot, so a stalled or failing disk never reaches the output loop or the
+  management lane; a failed write is noted once per failing streak and the next pace hands over a fresh snapshot. The
+  leg's end waits for the writer at most 2 s. A leg starts its parser from the file, with a
+  `[restarted <UTC time>]` line below the retained content (on Windows both are scrolled into the history, because the
+  ConPTY host repaints the visible screen at start); a file that does not restore is removed and the screen starts
+  empty. Limits: the file can be 5 s old, a failing disk can leave it old for good, a supervisor `Stop` leaves a live
+  leg running with no flush, and scrollback in it is at most `CAPSULE_SCROLLBACK_ROWS` (200).
 - The leg writes `ended` before it acknowledges an end request (`requested`, durably) and again whole when the
-  producer is gone; a leg that crashed leaves neither a finished file nor a stable uptime, and a supervisor reads it as
-  unstable. A supervisor never respawns over `requested`.
-- Input is written once or reported unknown: `input_recorded` means the bytes were written to the pty's master, and
-  nothing is kept to resend them (the client's same-key resend after a reconnect can write twice until the row socket
-  pass).
+  producer is gone; a leg that crashed leaves no finished file, and a supervisor reads it as unstable. The startup
+  check does not respawn a leg over a `requested` file; a leg ended some other way is respawned.
+- Input is written at most once: `input_recorded` means the bytes were written to the pty's master. The client reports
+  an input whose acknowledgement was lost as delivery unknown and never sends it again.
 - One leg per voyage folder (`writer.lock`, taken by `fence::take_fence`); one authority per state dir
   (`supervisor.lock`, taken by `lock_supervisor`).
 - Attach is ground-gated (`writer_loop::output_path::ground_check`), so a viewer joins only at a parser ground

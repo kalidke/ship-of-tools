@@ -113,10 +113,6 @@ struct FakeProducer {
 impl sot_log::capsule::producer::Producer for FakeProducer {
     type Output = FakeOutput;
 
-    fn pre_spawn_detail() -> serde_json::Value {
-        serde_json::json!({})
-    }
-
     fn spawn(_argv: &[String], _cols: u16, _rows: u16) -> sot_log::Result<Self> {
         let script = FAKE_SCRIPT.lock().unwrap().take().expect("no fake script armed");
         let state = Arc::new(FakeState {

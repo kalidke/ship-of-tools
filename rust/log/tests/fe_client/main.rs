@@ -281,18 +281,62 @@ fn taskkill(pid: u32) {
     assert_eq!(rc, 0, "kill(SIGKILL) failed for pid {pid}: {}", std::io::Error::last_os_error());
 }
 
-/// Waits for the leg to write `<state_dir>/screen` after now: it writes at most every 5 s while output arrives, so a
-/// leg killed sooner after its output leaves the old screen unsaved.
-fn wait_for_screen_write(state_dir: &Path) {
-    let after = std::time::SystemTime::now();
+/// Arms the next legs to be crashable by this test: the leg exits abruptly right after the next screen save once the
+/// returned file exists (`SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN`, a seam of the leg's screen writer), saving at a short
+/// pace. Set before the supervisor is spawned: the leg inherits it. The test never aims at a pid.
+fn arm_leg_crash(dir: &Path) -> PathBuf {
+    let go = dir.join("crash-go");
+    std::env::set_var("SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN", &go);
+    std::env::set_var("SOT_TEST_SCREEN_PACE_MS", "300");
+    go
+}
+
+/// Crashes the leg: the file armed by `arm_leg_crash` appears, and one more command makes the screen change, so the
+/// leg saves it (marker included) and exits.
+fn crash_leg(client: &mut FeAttachClient, go: &Path) {
+    std::fs::write(go, b"").unwrap();
+    client.send_input(b"echo SOT_FE_CRASH_TRIGGER\r\n");
+}
+
+/// Waits until the screen file the leg keeps decodes to a screen that shows `marker`: the saved screen is what a
+/// restarted leg shows, whenever the leg got to write it.
+fn wait_for_saved_marker(state_dir: &Path, marker: &str) {
     poll_until(
         || {
-            let modified = std::fs::metadata(state_dir.join("screen")).and_then(|m| m.modified()).ok()?;
-            (modified >= after).then_some(())
+            let bytes = std::fs::read(state_dir.join("screen")).ok()?;
+            let mut parser = vt100_ctt::Parser::new(24, 80, 200);
+            parser.restore_screen(&bytes).ok()?;
+            screen_text(parser.screen()).contains(marker).then_some(())
         },
         Duration::from_secs(30),
-        "the screen file to be written after the marker",
+        "the saved screen to show the marker",
     );
+}
+
+/// Disarms what `arm_leg_crash` set, once the restarted leg is running.
+fn disarm_leg_crash() {
+    std::env::remove_var("SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN");
+    std::env::remove_var("SOT_TEST_SCREEN_PACE_MS");
+}
+
+/// The screen's text with its history: the pages from the oldest down, so a retained line is found wherever the
+/// agent's start left it (the Windows ConPTY host repaints the visible screen).
+fn screen_and_history(client: &mut FeAttachClient) -> String {
+    let screen = client.screen_mut();
+    screen.set_scrollback(usize::MAX);
+    let mut offset = screen.scrollback();
+    let (rows, _) = screen.size();
+    let mut out = String::new();
+    loop {
+        screen.set_scrollback(offset);
+        out.push_str(&screen_text(screen));
+        if offset == 0 {
+            break;
+        }
+        offset = offset.saturating_sub(usize::from(rows));
+    }
+    screen.set_scrollback(0);
+    out
 }
 
 fn screen_text(screen: &vt100_ctt::Screen) -> String {

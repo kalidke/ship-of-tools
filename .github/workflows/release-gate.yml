@@ -725,8 +725,7 @@ jobs:
         run: cargo test -p sot-log --test supervisor -- --nocapture
       # --test fe_client: ADR 0041 step 6 U3, the FE attach-only
       # client -- attach as a watcher and receive the checkpoint;
-      # take-on-first-input's resize-before-flush ordering (proven via
-      # the sealed voyage record); end_run from the quit dispatcher
+      # take-on-first-input (the echo of the first input reaching the screen); end_run from the quit dispatcher
       # reaching record_closed; and reconnect after the capsule is
       # killed and a fresh supervisor takes over restoring the screen
       # from the new checkpoint -- the last of which spawns a SECOND

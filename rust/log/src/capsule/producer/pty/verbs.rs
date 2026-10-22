@@ -6,12 +6,6 @@ use super::*;
 impl Producer for PtyProducer {
     type Output = File;
 
-    fn pre_spawn_detail() -> serde_json::Value {
-        // Decision 11: Unix contributes nothing to `producer_spawn.detail`
-        // (Windows's `spawning_process_was_jobbed` has no Unix analogue).
-        json!({})
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "spawns the pty child at the given size; predates the 100-line limit"

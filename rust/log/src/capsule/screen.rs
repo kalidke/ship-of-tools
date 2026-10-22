@@ -16,18 +16,40 @@ pub fn set_screen_hook_for_test(write: WriteFn, pace: Duration) {
     *HOOK.lock().unwrap() = Some((write, pace));
 }
 
-/// Writes `<state_dir>/screen` from the leg's own parser. A failed write is noted and tried again at the next
-/// pace; it never reaches the output path.
+/// Test seam (feature `test-support`): with `SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN` naming a file, the leg exits abruptly
+/// (as a crash does) right after the next screen save that finds the file, removing it first: a test crashes the leg
+/// it spawned without aiming at its pid. `SOT_TEST_SCREEN_PACE_MS` shortens the pace.
+#[cfg(feature = "test-support")]
+fn crash_if_asked() {
+    if let Some(go) = std::env::var_os("SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN") {
+        if std::fs::remove_file(&go).is_ok() {
+            std::process::abort();
+        }
+    }
+}
+
+/// The newest snapshot waiting for the writer thread, and whether the thread should end.
+struct Slot {
+    latest: Option<Vec<u8>>,
+    closing: bool,
+}
+
+struct Shared {
+    slot: Mutex<Slot>,
+    wake: Condvar,
+    /// The last write failed: the next pace takes a fresh snapshot and tries again.
+    failed: AtomicBool,
+}
+
+/// Keeps `<state_dir>/screen` from the leg's own parser. The leg hands the newest snapshot to one writer thread
+/// through a slot that keeps only the newest, so a stalled or failing disk never reaches the output loop; a failed
+/// write is noted once per failing streak and tried again at the next pace.
 pub(super) struct ScreenFile {
-    path: PathBuf,
-    write: WriteFn,
     pace: Duration,
     last_write: Instant,
     dirty: bool,
-    /// The last write failed; the failure was noted once for the streak.
-    failing: bool,
-    /// Failures noted so far (a test reads it).
-    pub(super) notes: u32,
+    shared: Arc<Shared>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ScreenFile {
@@ -41,57 +63,113 @@ impl ScreenFile {
         Self::with_writer(path, now, Box::new(|p, b| sot_platform::host::write_durable(p, b)))
     }
 
-    pub(super) fn with_writer(path: PathBuf, now: Instant, write: WriteFn) -> Self {
-        Self { path, write, pace: SCREEN_PACE, last_write: now, dirty: false, failing: false, notes: 0 }
+    pub(super) fn with_writer(path: PathBuf, now: Instant, mut write: WriteFn) -> Self {
+        let shared = Arc::new(Shared {
+            slot: Mutex::new(Slot { latest: None, closing: false }),
+            wake: Condvar::new(),
+            failed: AtomicBool::new(false),
+        });
+        let thread = {
+            let shared = Arc::clone(&shared);
+            std::thread::spawn(move || {
+                let mut failing = false;
+                loop {
+                    let bytes = {
+                        let mut slot = shared.slot.lock().unwrap();
+                        loop {
+                            if let Some(bytes) = slot.latest.take() {
+                                break bytes;
+                            }
+                            if slot.closing {
+                                return;
+                            }
+                            slot = shared.wake.wait(slot).unwrap();
+                        }
+                    };
+                    match write(&path, &bytes) {
+                        Ok(()) => {
+                            #[cfg(feature = "test-support")]
+                            crash_if_asked();
+                            failing = false;
+                            shared.failed.store(false, Ordering::SeqCst);
+                        }
+                        Err(e) => {
+                            shared.failed.store(true, Ordering::SeqCst);
+                            if !failing {
+                                failing = true;
+                                leg_note(format_args!(
+                                    "sot-capsule: the screen file {path:?} could not be written ({e}); trying again at the next pace"
+                                ));
+                            }
+                        }
+                    }
+                }
+            })
+        };
+        #[allow(unused_mut)]
+        let mut pace = SCREEN_PACE;
+        #[cfg(feature = "test-support")]
+        if let Some(ms) = std::env::var("SOT_TEST_SCREEN_PACE_MS").ok().and_then(|v| v.parse().ok()) {
+            pace = Duration::from_millis(ms);
+        }
+        Self { pace, last_write: now, dirty: false, shared, thread: Some(thread) }
     }
 
-    /// The screen changed since the last write.
+    /// The screen changed since the last snapshot was handed over.
     pub(super) fn output_arrived(&mut self) {
         self.dirty = true;
     }
 
-    /// Writes the screen when it changed and the pace has passed.
+    /// Hands the screen to the writer when it changed and the pace has passed; a failed write marks it changed again.
     pub(super) fn tick(&mut self, parser: &vt100_ctt::Parser, now: Instant) {
+        if self.shared.failed.swap(false, Ordering::SeqCst) {
+            self.dirty = true;
+        }
         if self.dirty && now.duration_since(self.last_write) >= self.pace {
-            self.save(parser, now);
+            self.hand_over(parser, now);
         }
     }
 
-    /// Writes the screen now if it changed: the agent's end and stop.
-    pub(super) fn flush(&mut self, parser: &vt100_ctt::Parser, now: Instant) {
+    /// The agent's end: hands over the screen if it changed, then waits for the writer, at most `bound`.
+    pub(super) fn finish(&mut self, parser: &vt100_ctt::Parser, now: Instant, bound: Duration) {
         if self.dirty {
-            self.save(parser, now);
+            self.hand_over(parser, now);
+        }
+        self.shared.slot.lock().unwrap().closing = true;
+        self.shared.wake.notify_all();
+        if let Some(thread) = self.thread.take() {
+            // A writer still stalled at the bound is left behind: the leg's end never waits on a disk.
+            crate::lane::transport::join_within(thread, Instant::now() + bound);
         }
     }
 
-    fn save(&mut self, parser: &vt100_ctt::Parser, now: Instant) {
+    fn hand_over(&mut self, parser: &vt100_ctt::Parser, now: Instant) {
         self.last_write = now;
-        let result = match parser.screen().checkpoint() {
-            Ok(bytes) => (self.write)(&self.path, &bytes),
-            Err(e) => Err(std::io::Error::other(e.to_string())),
-        };
-        match result {
-            Ok(()) => {
+        match parser.screen().checkpoint() {
+            Ok(bytes) => {
+                self.shared.slot.lock().unwrap().latest = Some(bytes);
+                self.shared.wake.notify_all();
                 self.dirty = false;
-                self.failing = false;
             }
-            Err(e) => {
-                if !self.failing {
-                    self.failing = true;
-                    self.notes += 1;
-                    leg_note(format_args!(
-                        "sot-capsule: the screen file {:?} could not be written ({e}); trying again at the next pace",
-                        self.path
-                    ));
-                }
-            }
+            Err(e) => leg_note(format_args!("sot-capsule: the screen cannot be checkpointed ({e})")),
         }
     }
 }
 
-/// Restores the screen the file at `path` holds into `parser`, then sets its geometry, and writes the restart line
-/// below it. A missing file leaves the parser as it is; one that does not restore (torn, another format version) is
-/// removed and the screen starts empty. Returns whether a screen was restored.
+impl Drop for ScreenFile {
+    fn drop(&mut self) {
+        self.shared.slot.lock().unwrap().closing = true;
+        self.shared.wake.notify_all();
+    }
+}
+
+/// Restores the screen the file at `path` holds into `parser`, then sets its geometry and writes the restart line
+/// below the retained content: out of the alternate screen, scrolling margins reset, the cursor on the last row. A
+/// missing file leaves the parser as it is; one that does not restore (torn, another format version) is removed and
+/// the screen starts empty. Returns whether a screen was restored.
+///
+/// On Windows the ConPTY host repaints (clears) the visible screen when the agent starts, so the retained screen and
+/// the restart line are scrolled into the history first, where the repaint leaves them.
 pub(super) fn restore(path: &std::path::Path, parser: &mut vt100_ctt::Parser, rows: u16, cols: u16, at: SystemTime) -> bool {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -107,7 +185,22 @@ pub(super) fn restore(path: &std::path::Path, parser: &mut vt100_ctt::Parser, ro
         return false;
     }
     parser.screen_mut().set_size(rows, cols);
-    parser.process(format!("\x1b[0m\r\n[restarted {}]\r\n", utc_stamp(at)).as_bytes());
+    // Below the last row that holds anything; on a full screen the line scrolls the top row into the history.
+    let screen = parser.screen();
+    let used = (0..rows).rev().find(|&r| (0..cols).any(|c| screen.cell(r, c).is_some_and(|cell| !cell.contents().trim().is_empty())));
+    let stamp = utc_stamp(at);
+    match used {
+        Some(r) if r + 1 >= rows => {
+            parser.process(format!("\x1b[?1049l\x1b[0m\x1b[r\x1b[{rows};1H\r\n[restarted {stamp}]\r\n").as_bytes());
+        }
+        _ => {
+            let row = used.map_or(1, |r| r + 2);
+            parser.process(format!("\x1b[?1049l\x1b[0m\x1b[r\x1b[{row};1H[restarted {stamp}]\r\n").as_bytes());
+        }
+    }
+    if cfg!(windows) {
+        parser.process("\r\n".repeat(usize::from(rows)).as_bytes());
+    }
     true
 }
 

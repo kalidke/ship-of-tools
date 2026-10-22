@@ -19,7 +19,7 @@ fn a_saved_screen_restores_above_the_restart_line() {
     let mut parser = vt100_ctt::Parser::new(24, 80, CAPSULE_SCROLLBACK_ROWS);
     parser.process(b"first leg output\r\n");
     file.output_arrived();
-    file.flush(&parser, t0);
+    file.finish(&parser, t0, Duration::from_secs(5));
 
     let mut next = vt100_ctt::Parser::new(24, 80, CAPSULE_SCROLLBACK_ROWS);
     assert!(restore(&path, &mut next, 24, 80, UNIX_EPOCH + Duration::from_secs(1_700_000_000)));
@@ -52,7 +52,7 @@ fn the_restart_line_never_overwrites_retained_content() {
     let mut parser = vt100_ctt::Parser::new(10, 40, CAPSULE_SCROLLBACK_ROWS);
     parser.process(b"top row\r\nsecond row\r\nthird row\x1b[3;5r\x1b[H");
     file.output_arrived();
-    file.flush(&parser, t0);
+    file.finish(&parser, t0, Duration::from_secs(5));
 
     let mut next = vt100_ctt::Parser::new(10, 40, CAPSULE_SCROLLBACK_ROWS);
     assert!(restore(&path, &mut next, 10, 40, UNIX_EPOCH + Duration::from_secs(1_700_000_000)));

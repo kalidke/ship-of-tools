@@ -307,17 +307,18 @@ fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_leg_under_a_restart_line() {
+fn reconnect_after_the_leg_crashes_restores_the_screen_from_the_new_leg_under_a_restart_line() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
+    let go = arm_leg_crash(dir.path());
 
-    let mut guard1 = spawn_supervisor(&state_dir, "--start", SHELL);
-    let conn1 = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage, _leg) = wait_for_ready(&conn1, Duration::from_secs(90));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
     let (_woke, wake) = wake_flag();
     let mut client = FeAttachClient::attach(
@@ -333,62 +334,39 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_leg_un
     .expect("attach");
     assert!(
         poll_screen(&mut client, Duration::from_secs(30), |t| t.trim().chars().any(|c| !c.is_whitespace())),
-        "no checkpoint content ever reached the client's screen before the kill"
+        "no checkpoint content ever reached the client's screen before the crash"
     );
-    // A distinctive marker in the FIRST leg's screen: the screen file carries it to the next leg, and the later
-    // assertion tells the restored screen (marker above a restart line) from a genuinely fresh one.
     client.send_input(b"echo SOT_FE_OLD_LEG\r\n");
     assert!(
         poll_screen(&mut client, Duration::from_secs(30), |t| t.contains("SOT_FE_OLD_LEG")),
         "first-leg marker never reached the screen"
     );
-    wait_for_screen_write(&state_dir);
+    crash_leg(&mut client, &go);
 
-    // "The capsule is killed": hard-terminate the capsule process
-    // directly (learned via the voyage pipe's own mgmt status, the
-    // honest hard-termination fallback the ADR itself names), then kill
-    // the now-orphaned supervisor too so what comes next is genuinely a
-    // FRESH supervisor process, not the same one respawning its own
-    // child.
-    let pid = capsule_pid(&voyage);
-    taskkill(pid);
-    let _ = guard1.child_mut().kill();
-    let _ = guard1.child_mut().wait();
-
-    // A fresh supervisor, `--resume` against the SAME state dir: no live
-    // capsule survives to adopt, so it spawns a fresh leg under the SAME
-    // (already-published, unchanged) voyage pointer.
-    let mut guard2 = spawn_supervisor(&state_dir, "--resume", SHELL);
-    let conn2 = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage2, _leg2) = wait_for_ready(&conn2, Duration::from_secs(90));
-    assert_eq!(voyage2, voyage, "a fresh spawn under --resume must keep the SAME voyage pointer");
-
-    // The client's own reconnect episode (ruling d) notices the dropped
-    // attach connection, re-reads the pointer, reconnects the
-    // supervisor lane, and re-attaches -- restoring the screen from the
-    // NEW leg's checkpoint, which starts from the screen file: the old
-    // marker above the restart line. Bounded generously: real backoff (250ms
-    // doubling to 4s) plus a real second capsule spawn both cost real
-    // wall time here.
-    let fresh = poll_screen(&mut client, Duration::from_secs(120), |t| {
-        t.contains("SOT_FE_OLD_LEG") && t.contains("restarted")
-    });
-    assert!(
-        fresh,
-        "the client never restored a fresh checkpoint after reconnect (dead={}, status={})",
-        client.is_dead(),
-        client.status_line()
+    // The supervisor respawns the leg; the client's own reconnect episode (ruling d) re-attaches, and the new leg's
+    // checkpoint starts from the screen file: the old marker above the restart line.
+    let restored = poll_until(
+        || {
+            client.pump();
+            let text = screen_and_history(&mut client);
+            let (old, line) = (text.find("SOT_FE_OLD_LEG")?, text.find("[restarted ")?);
+            (old < line).then_some(())
+        },
+        Duration::from_secs(120),
+        "the restarted leg's screen: the old marker above the restart line",
     );
+    let _ = restored;
     assert!(!client.is_dead());
+    disarm_leg_crash();
 
     drop(client);
-    end_run_and_wait_ended(&conn2, &voyage2);
-    let _ = command(&conn2, "test-d-stop", SupervisorOp::Stop);
-    wait_for_exit(&mut guard2, Duration::from_secs(30));
+    end_run_and_wait_ended(&conn, &voyage);
+    let _ = command(&conn, "test-d-stop", SupervisorOp::Stop);
+    wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 // -----------------------------------------------------------------------
-// D2: the last screen survives a supervisor restart (the leg writes `screen`, the next leg restores it)
+// D2: the last screen survives a crash of the leg (the leg writes `screen`, the next leg restores it)
 // -----------------------------------------------------------------------
 
 #[test]
@@ -399,10 +377,11 @@ fn screen_restores_after_a_supervisor_restart() {
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
+    let go = arm_leg_crash(dir.path());
 
-    let mut guard1 = spawn_supervisor(&state_dir, "--start", SHELL);
-    let conn1 = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage, _leg) = wait_for_ready(&conn1, Duration::from_secs(90));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
     let (_woke, wake) = wake_flag();
     let mut client = FeAttachClient::attach(
@@ -418,27 +397,17 @@ fn screen_restores_after_a_supervisor_restart() {
     .expect("attach");
     assert!(
         poll_screen(&mut client, Duration::from_secs(30), |t| t.trim().chars().any(|c| !c.is_whitespace())),
-        "no checkpoint content ever reached the client's screen before the kill"
+        "no checkpoint content ever reached the client's screen before the crash"
     );
     client.send_input(b"echo SOT_FE_RESTORE_MARK\r\n");
     assert!(
         poll_screen(&mut client, Duration::from_secs(30), |t| t.contains("SOT_FE_RESTORE_MARK")),
         "the marker never reached the screen"
     );
-
-    wait_for_screen_write(&state_dir);
-
-    let pid = capsule_pid(&voyage);
-    taskkill(pid);
+    crash_leg(&mut client, &go);
     drop(client);
-    let _ = guard1.child_mut().kill();
-    let _ = guard1.child_mut().wait();
 
-    let mut guard2 = spawn_supervisor(&state_dir, "--resume", SHELL);
-    let conn2 = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage2, _leg2) = wait_for_ready(&conn2, Duration::from_secs(90));
-
-    // A viewer that attaches only now sees the old screen above the restart line.
+    // A viewer that attaches only after the restart sees the old screen above the restart line, in that order.
     let (_woke2, wake2) = wake_flag();
     let mut fresh = FeAttachClient::attach(
         PlatformEndpoint::default(),
@@ -451,20 +420,22 @@ fn screen_restores_after_a_supervisor_restart() {
         wake2,
     )
     .expect("attach after the restart");
-    let restored = poll_screen(&mut fresh, Duration::from_secs(60), |t| {
-        t.contains("SOT_FE_RESTORE_MARK") && t.contains("restarted")
-    });
-    assert!(
-        restored,
-        "the restarted leg did not show the old screen above its restart line (dead={}, status={})",
-        fresh.is_dead(),
-        fresh.status_line()
+    poll_until(
+        || {
+            fresh.pump();
+            let text = screen_and_history(&mut fresh);
+            let (mark, line) = (text.find("SOT_FE_RESTORE_MARK")?, text.find("[restarted ")?);
+            (mark < line).then_some(())
+        },
+        Duration::from_secs(120),
+        "the restarted leg's screen: the marker above the restart line",
     );
+    disarm_leg_crash();
 
     drop(fresh);
-    end_run_and_wait_ended(&conn2, &voyage2);
-    let _ = command(&conn2, "test-restore-stop", SupervisorOp::Stop);
-    wait_for_exit(&mut guard2, Duration::from_secs(30));
+    end_run_and_wait_ended(&conn, &voyage);
+    let _ = command(&conn, "test-restore-stop", SupervisorOp::Stop);
+    wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// Keys typed while an ATTACHED pane re-attaches are never delivered once it
@@ -480,6 +451,7 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
+    std::env::set_var("SOT_TEST_SCREEN_PACE_MS", "300");
 
     let mut guard1 = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn1 = wait_for_lane(&h, Duration::from_secs(30));
@@ -515,7 +487,7 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
         Duration::from_secs(30),
         "the old leg's input to be fully recorded",
     );
-    wait_for_screen_write(&state_dir);
+    wait_for_saved_marker(&state_dir, "SOT_FE_OLD_LEG");
 
     let pid = capsule_pid(&voyage);
     taskkill(pid);
@@ -523,6 +495,7 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
     let _ = guard1.child_mut().wait();
 
     let mut guard2 = spawn_supervisor(&state_dir, "--resume", SHELL);
+    std::env::remove_var("SOT_TEST_SCREEN_PACE_MS");
     let conn2 = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage2, _leg2) = wait_for_ready(&conn2, Duration::from_secs(90));
     assert_eq!(voyage2, voyage, "a fresh spawn under --resume must keep the SAME voyage pointer");
@@ -544,7 +517,7 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
     poll_until(
         || {
             client.pump();
-            let restarted = screen_text(client.screen()).contains("restarted");
+            let restarted = screen_and_history(&mut client).contains("restarted");
             (restarted && client.status_line() == "attached").then_some(())
         },
         Duration::from_secs(120),

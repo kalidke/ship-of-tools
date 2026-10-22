@@ -43,8 +43,13 @@ pub(super) fn start<'t, P: Producer>(
     // double it. A screen file a former leg left starts it, under a restart line.
     let mut parser = vt100_ctt::Parser::new(config.rows, config.cols, CAPSULE_SCROLLBACK_ROWS);
     let screen = config.screen_path.clone().map(|path| {
-        screen::restore(&path, &mut parser, config.rows, config.cols, SystemTime::now());
-        ScreenFile::new(path, Instant::now())
+        let restored = screen::restore(&path, &mut parser, config.rows, config.cols, SystemTime::now());
+        let mut file = ScreenFile::new(path, Instant::now());
+        if restored {
+            // The restart line changed the screen: a producer that stays silent still saves it.
+            file.output_arrived();
+        }
+        file
     });
 
     let spawn_result = spawn_producer::<P>(config);

@@ -26,3 +26,11 @@ fn each_leg_gets_the_next_number() {
     assert_eq!(super::fence::next_leg_epoch(dir.path()).unwrap(), 2);
     assert_eq!(super::fence::read_leg_epoch(dir.path()), Some(2));
 }
+
+#[test]
+fn a_failed_write_leaves_no_ending_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("no-such-folder");
+    assert!(write(&missing, &Ended { requested: true, ..Ended::default() }).is_err());
+    assert_eq!(read(&missing).unwrap(), None);
+}
