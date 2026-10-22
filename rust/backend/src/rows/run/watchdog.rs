@@ -30,13 +30,10 @@ pub const MAX_RESTARTS_PER_WINDOW: usize = 5;
 
 pub const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// A supervisor that lived this long reached `ready` (the supervisor reports `ready` once its agent has written or lived
-/// two seconds; this leaves room for the start itself).
-const READY_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// The restart budget, one per watchdog. An agent that cannot start is a count, not a rate: consecutive restarts of
-/// supervisors that never reached `ready` (`READY_LIFETIME`) are counted without a window, so how long each start and
-/// settle takes never decides it, and the count resets when one reaches `ready`. Restarts of supervisors that did
+/// supervisors that never reached `ready` are counted without a window, so how long each start, settle or life takes
+/// never decides it, and the count resets when one reaches `ready`. Rows knows `ready` by observation: the row's phase
+/// read `ready` while that supervisor was the cell's epoch; one that died before any observation named it never did. Restarts of supervisors that did
 /// reach `ready` keep `MAX_RESTARTS_PER_WINDOW` within `RESTART_WINDOW`. Either way the exit after the fifth restart
 /// is the give-up.
 #[derive(Default)]
@@ -47,9 +44,10 @@ struct Budget {
 }
 
 impl Budget {
-    /// Judges an exit of a supervisor that lived `lived`: the backoff before its restart, `None` when the budget is spent.
-    fn on_exit(&mut self, lived: std::time::Duration, now: Instant) -> Option<std::time::Duration> {
-        self.last_exit_was_ready = lived >= READY_LIFETIME;
+    /// Judges an exit of a supervisor that was (or never was) observed `ready`: the backoff before its restart, `None`
+    /// when the budget is spent.
+    fn on_exit(&mut self, reached_ready: bool, now: Instant) -> Option<std::time::Duration> {
+        self.last_exit_was_ready = reached_ready;
         let restarts = if self.last_exit_was_ready {
             self.never_ready = 0;
             self.ready_restarts.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
@@ -321,7 +319,6 @@ pub(super) fn install_watchdog(
         let mut current_identity = initial_identity;
         let mut leg_opt = Some(child);
         let mut budget = Budget::default();
-        let mut leg_started = Instant::now();
         loop {
             let outcome = match leg_opt.take() {
                 Some(c) => wait_and_classify(c, &workspace_id).await,
@@ -350,7 +347,8 @@ pub(super) fn install_watchdog(
                 }
                 LegOutcome::Crash | LegOutcome::AgentEnded => {
                     // Decided before taking the guard -- giving up needs no recheck (R4a).
-                    let Some(backoff) = budget.on_exit(leg_started.elapsed(), Instant::now()) else {
+                    let reached_ready = workspaces.resolve(Some(&workspace_id)).is_some_and(|ws| ws.reached_ready(current_identity));
+                    let Some(backoff) = budget.on_exit(reached_ready, Instant::now()) else {
                         tracing::error!(
                             workspace_id = %workspace_id, window = ?RESTART_WINDOW, max = MAX_RESTARTS_PER_WINDOW,
                             "capsule supervisor watchdog: restart budget exhausted -- giving up, marking terminal"
@@ -484,7 +482,6 @@ pub(super) fn install_watchdog(
                                 observe_with_adoption(&ws, observation);
                             }
                             drop(permit);
-                            leg_started = Instant::now();
                             leg_opt = Some(child);
                         }
                         Ok(Err(e)) if e.kind() == ErrorKind::Unsupported => {

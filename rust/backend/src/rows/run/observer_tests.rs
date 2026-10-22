@@ -208,6 +208,23 @@ fn the_watchdogs_give_up_latches_a_claimed_cell_and_a_later_start_clears_it() {
     assert_eq!(ws.phase(), Phase::Ready);
 }
 
+/// The budget counts supervisors never observed `ready`: only the supervisor that held the cell while its phase read
+/// `ready` reached it, and one the cell never named did not.
+#[test]
+fn a_supervisor_reached_ready_only_if_the_cell_named_it_while_ready() {
+    let a = identity(1, 100);
+    let b = identity(2, 200);
+    let ws = seeded_capsule_row(a);
+    observe(&ws, phase_obs(Phase::Starting, a));
+    assert!(!ws.reached_ready(Some(a)), "starting is not ready");
+    observe(&ws, phase_obs(Phase::Ready, a));
+    assert!(ws.reached_ready(Some(a)));
+    assert!(!ws.reached_ready(Some(b)), "another supervisor is not the one observed");
+    assert!(!ws.reached_ready(None), "a supervisor that died before any observation named it never reached ready");
+    ws.begin_supervisor_epoch(b);
+    assert!(!ws.reached_ready(Some(b)), "a new epoch starts unready");
+}
+
 /// `activation_error` is retained until the next attempt; orthogonal to phase.
 #[test]
 fn activation_error_is_independent_of_phase_and_clears_on_the_next_attempt() {

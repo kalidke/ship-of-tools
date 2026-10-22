@@ -80,6 +80,8 @@ pub(super) struct PhaseCell {
     voyage: Option<uuid::Uuid>,
     /// Reaching 2 sets `Unreachable` (unless already latched).
     consecutive_failures: u8,
+    /// This epoch's supervisor was observed `ready` at some round: the watchdog's budget counts the ones that never were.
+    ready_seen: bool,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -191,6 +193,13 @@ impl Workspace {
         *cell = PhaseCell { supervisor: Some(identity), ..PhaseCell::default() };
     }
 
+    /// Whether `supervisor` was observed `ready` while it was the cell's epoch: false for one that died before any
+    /// observation named it.
+    pub(crate) fn reached_ready(&self, supervisor: Option<SupervisorIdentity>) -> bool {
+        let cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
+        supervisor.is_some() && cell.supervisor == supervisor && cell.ready_seen
+    }
+
     /// The watchdog's give-up, under the row's guard: the restart budget is spent, so the row is `terminal` whatever
     /// supervisor its cell was last claimed by. A supervisor that exits before it answers its lane is never learned, so
     /// no observation could name it and the cell keeps an earlier, dead one. A start's `begin_supervisor_epoch` clears it.
@@ -276,6 +285,7 @@ impl Workspace {
                     return false;
                 }
                 cell.phase = phase;
+                cell.ready_seen |= phase == Phase::Ready;
                 if let Some(v) = voyage {
                     cell.voyage = Some(v);
                 }
