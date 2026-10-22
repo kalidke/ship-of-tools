@@ -109,10 +109,7 @@ const FOLDERS_WAIT: Duration = Duration::from_secs(2);
 /// and the exit, the backstop's included, does not depend on it. It waits no longer than [`FOLDERS_WAIT`] for the
 /// folders (`sidecars::child::remove_own`), whose rest the next start removes.
 pub(crate) fn exit(code: i32) -> ! {
-    terminal(sot_containment::process(), code, |code| {
-        crate::sidecars::child::remove_own(FOLDERS_WAIT);
-        std::process::exit(code)
-    })
+    terminal(sot_containment::process(), code, crate::sidecars::child::remove_own, |code| std::process::exit(code))
 }
 
 /// [`exit`] for a caught INT or TERM: the same terminal (its claim and its fire) and the same removal of the children's
@@ -121,8 +118,7 @@ pub(crate) fn exit(code: i32) -> ! {
 /// the signal). If the raise returns, the exit is 128 + n.
 #[cfg(unix)]
 pub(crate) fn exit_by_signal(signum: i32) -> ! {
-    terminal(sot_containment::process(), 128 + signum, |code| {
-        crate::sidecars::child::remove_own(FOLDERS_WAIT);
+    terminal(sot_containment::process(), 128 + signum, crate::sidecars::child::remove_own, |code| {
         // SAFETY: the default action restored for one valid signal, the signal unblocked in this thread, then raised at
         // this thread; no handler runs.
         unsafe {
@@ -137,13 +133,15 @@ pub(crate) fn exit_by_signal(signum: i32) -> ! {
     })
 }
 
-/// The terminal body: claim the exit, fire `signal` on a thread of its own, wait at most [`FIRE_WAIT`] for it, then hand
-/// `code` to `terminate`. Two controlled ends can arrive together (the backstop and a close that finishes at the bound):
-/// the first to arrive claims the exit and its code stands; the other waits for the process to end under it. A test
-/// supplies a private signal and a callback.
+/// The terminal body: claim the exit, fire `signal` on a thread of its own, wait at most [`FIRE_WAIT`] for it, hand
+/// [`FOLDERS_WAIT`] to `remove_folders` (the children's temporary folders), then hand `code` to `terminate`. Two
+/// controlled ends can arrive together (the backstop and a close that finishes at the bound): the first to arrive claims
+/// the exit and its code stands; the other waits for the process to end under it. A test supplies a private signal and
+/// callbacks.
 pub(super) fn terminal<T>(
     signal: &'static sot_containment::Signal,
     code: i32,
+    remove_folders: impl FnOnce(Duration),
     terminate: impl FnOnce(i32) -> T,
 ) -> T {
     if !signal.claim_exit() {
@@ -165,6 +163,7 @@ pub(super) fn terminal<T>(
         Err(error) => {
             tracing::error!(%error, "terminal child fire: no thread to run it on; exiting with {code} without it");
             eprintln!("sotd: terminal child fire: no thread to run it on ({error}); exiting with {code} without it");
+            remove_folders(FOLDERS_WAIT);
             return terminate(code);
         }
     };
@@ -179,6 +178,7 @@ pub(super) fn terminal<T>(
             eprintln!("sotd: terminal child fire still running after {FIRE_WAIT:?}: exiting with {code} regardless");
         }
     }
+    remove_folders(FOLDERS_WAIT);
     terminate(code)
 }
 

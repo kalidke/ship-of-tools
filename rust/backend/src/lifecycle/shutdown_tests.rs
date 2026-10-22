@@ -26,7 +26,7 @@ fn the_terminal_does_not_wait_for_a_stalled_creation() {
         .recv_timeout(Duration::from_secs(10))
         .expect("the creation did not stall");
     let began = std::time::Instant::now();
-    let code = terminal(signal, 7, |code| code);
+    let code = terminal(signal, 7, |_| {}, |code| code);
     let waited = began.elapsed();
     released.wait();
     creation.join().unwrap();
@@ -94,7 +94,7 @@ fn a_terminal_with_no_thread_to_fire_on_exits_without_the_fire() {
         "setup: a thread can still be started (a privileged account?)"
     );
     let began = std::time::Instant::now();
-    let code = terminal(signal, 7, |code| code);
+    let code = terminal(signal, 7, |_| {}, |code| code);
     let waited = began.elapsed();
     // SAFETY: restoring the limit read above.
     unsafe { libc::setrlimit(libc::RLIMIT_NPROC, &saved) };
@@ -117,7 +117,7 @@ fn the_first_controlled_exit_decides_the_code() {
     let (first_in, first_inside) = std::sync::mpsc::channel();
     let record = handed.clone();
     let first = std::thread::spawn(move || {
-        terminal(signal, 1, |code| {
+        terminal(signal, 1, |_| {}, |code| {
             record.lock().unwrap().push(code);
             first_in.send(()).unwrap();
             // The first exit is still on its way out when the second arrives.
@@ -129,7 +129,7 @@ fn the_first_controlled_exit_decides_the_code() {
         .expect("the first exit did not reach its end");
     let record = handed.clone();
     let _second = std::thread::spawn(move || {
-        terminal(signal, 0, |code| record.lock().unwrap().push(code))
+        terminal(signal, 0, |_| {}, |code| record.lock().unwrap().push(code))
     });
     std::thread::sleep(Duration::from_millis(1000));
     first.join().unwrap();
@@ -137,5 +137,29 @@ fn the_first_controlled_exit_decides_the_code() {
         *handed.lock().unwrap(),
         vec![1],
         "the second controlled exit reached the process exit"
+    );
+}
+
+/// The terminal fires before it removes the children's folders, hands that removal no more than `FOLDERS_WAIT`, and
+/// removes them before the exit takes the code.
+#[test]
+fn the_terminal_removes_the_folders_within_their_wait_before_it_exits() {
+    use sot_containment::Signal;
+    let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+    let steps = std::sync::Mutex::new(Vec::new());
+    let code = terminal(
+        signal,
+        3,
+        |wait| steps.lock().unwrap().push(("folders", wait, signal.is_fired())),
+        |code| {
+            steps.lock().unwrap().push(("exit", Duration::ZERO, signal.is_fired()));
+            code
+        },
+    );
+    assert_eq!(code, 3);
+    assert_eq!(
+        *steps.lock().unwrap(),
+        vec![("folders", FOLDERS_WAIT, true), ("exit", Duration::ZERO, true)],
+        "the folders were not removed after the fire, within their wait, and before the exit"
     );
 }

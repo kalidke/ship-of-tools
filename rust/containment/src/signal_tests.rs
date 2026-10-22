@@ -448,3 +448,70 @@ fn wait_within_ends_a_child_past_its_bound() {
     drop(c);
     assert!(signal.held_groups().is_empty());
 }
+
+/// A `ContainedStd` dropped by its owner takes its tree with it: the descendant it started is gone, though nothing
+/// waited, killed or fired.
+#[test]
+fn a_dropped_child_takes_its_tree() {
+    use std::io::BufRead;
+    let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+    let mut cmd = std::process::Command::new("sh");
+    cmd.args(["-c", "sleep 3301 >/dev/null 2>&1 & echo $!; exec sleep 3301"])
+        .stdout(std::process::Stdio::piped());
+    let mut c = signal.spawn_std(&mut cmd).expect("spawn_std");
+    let mut line = String::new();
+    std::io::BufReader::new(c.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let descendant = Leftover::of_pid(line.trim().parse().expect("descendant pid"));
+    assert_eq!(signal.held_groups().len(), 1);
+    drop(c);
+    assert!(descendant.gone(), "the dropped child's descendant survived");
+    assert!(signal.held_groups().is_empty(), "a dropped child's tree is still held");
+}
+
+/// An interrupt goes to the leader alone: the leader's handler runs and the descendant, which would die of the same
+/// signal if it were sent it, still lives until the leader's tree is taken.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_interrupt_reaches_the_leader_alone() {
+    let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+    let mut cmd = tokio::process::Command::new("perl");
+    cmd.args([
+        "-e",
+        "$|=1; $SIG{INT}=sub{exit 7}; my $p=fork; exec 'sleep','3302' if !$p; print \"$p\\n\"; sleep 100",
+    ])
+    .stdout(std::process::Stdio::piped());
+    let mut contained = signal.spawn(&mut cmd).expect("spawn");
+    let mut line = String::new();
+    tokio::io::AsyncBufReadExt::read_line(
+        &mut tokio::io::BufReader::new(contained.stdout.take().unwrap()),
+        &mut line,
+    )
+    .await
+    .unwrap();
+    let descendant = Leftover::of_pid(line.trim().parse().expect("descendant pid"));
+    contained.interrupt().expect("interrupt");
+    tokio::time::timeout(Duration::from_secs(10), contained.wait_until_exited())
+        .await
+        .expect("the interrupted leader did not exit")
+        .expect("observe");
+    // SAFETY: signal 0 only probes the descendant this test started.
+    let alive = unsafe { libc::kill(descendant.pid().expect("pid"), 0) } == 0;
+    assert!(alive, "the interrupt reached the descendant");
+    let status = contained.wait().await.expect("wait");
+    assert_eq!(status.code(), Some(7), "the leader's handler did not run");
+    assert!(descendant.gone(), "the descendant survived the wait");
+}
+
+/// A child already reaped is not asked: a signal to its freed pid would be an error (or reach a stranger), so an
+/// `Ok` after the reap is no signal sent.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_reaped_child_is_not_interrupted() {
+    let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+    let mut cmd = tokio::process::Command::new("true");
+    let mut contained = signal.spawn(&mut cmd).expect("spawn");
+    contained.wait().await.expect("wait");
+    contained.interrupt().expect("a reaped child was asked to interrupt");
+}

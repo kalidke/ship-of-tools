@@ -178,7 +178,7 @@ mod unix {
             let log = sot_log::test_log::capture();
             tracing::error!(%error, "signal watcher installation failed");
             let observed =
-                shutdown::terminal(signal, 1, |code| (code, signal.is_fired(), log.text()));
+                shutdown::terminal(signal, 1, |_| {}, |code| (code, signal.is_fired(), log.text()));
             assert_eq!(observed.0, 1);
             assert!(observed.1);
             assert!(
