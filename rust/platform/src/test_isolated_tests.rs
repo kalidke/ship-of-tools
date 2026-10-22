@@ -614,3 +614,20 @@ fn run_isolated_until_reports_successful_parent_false() {
     }
     assert!(!child_body, "successful ISO parent must be false");
 }
+
+/// Queue item 26: a record a test checked, or dropped, never stays in the temporary folder.
+#[test]
+fn a_checked_or_dropped_entry_leaves_no_record_in_the_temporary_folder() {
+    let (_command, checked) = test_command("test_isolated::tests::a_checked_or_dropped_entry_leaves_no_record_in_the_temporary_folder");
+    let path = checked.path.clone();
+    std::fs::write(&path, format!("{} 7\n", checked.name)).unwrap();
+    checked.assert_once(7);
+    assert!(!path.exists(), "a checked entry left {path:?}");
+
+    let (_command, dropped) = test_command("test_isolated::tests::no_such_body");
+    let path = dropped.path.clone();
+    std::fs::write(&path, "x 1\n").unwrap();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(dropped)));
+    assert!(outcome.is_err(), "an unchecked entry must fail the test that dropped it");
+    assert!(!path.exists(), "a dropped entry left {path:?}");
+}

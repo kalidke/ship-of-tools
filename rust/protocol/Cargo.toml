@@ -14,14 +14,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
-# L1-unix LU1b (ADR 0043 decision 1): `session_socket`'s own
-# `runtime_sot_dir`/`is_private_dir`/`current_uid` moved DOWN into
-# `sot-log`'s `state_dir` module (the Unix socket transport needs the
-# identical derivation) and are re-exported from there -- `sot-log` has no
-# dependency on this crate, so this edge is one-directional. This also
-# retires this crate's own direct `libc` dependency (its only call,
-# `getuid()`, moved with `current_uid`).
+# Platform: the host name and OS account a hello declares, the runtime folder a session socket lives in.
 sot-platform = { path = "../platform" }
+# Topology's lane client only (leaves with pass 5b); the wire's own modules do not use it.
 sot-log = { path = "../log" }
 
 [dev-dependencies]

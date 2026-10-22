@@ -3985,7 +3985,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "sot-log",
  "sot-platform",
  "tokio",
  "tracing",

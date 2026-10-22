@@ -12,10 +12,8 @@ gethostname = "0.5"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-# `host::HeldDir` and `host::remove_ended`: the release check's scratch folder (`fetch::latest`). Every binary that
-# embeds this crate already links sot-log.
+# `host::HeldDir` and `host::remove_ended`: the release check's scratch folder (`fetch::latest`).
 sot-platform = { path = "../platform" }
-sot-log = { path = "../log" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
@@ -26,6 +24,5 @@ libc = { workspace = true }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
-# `test_exec::write_executable`, the one way a test writes a program it runs.
+# `test_isolated` and `test_wait`: the one way a test re-runs its binary and bounds a wait.
 sot-platform = { path = "../platform", features = ["test-support"] }
-sot-log = { path = "../log", features = ["test-support"] }

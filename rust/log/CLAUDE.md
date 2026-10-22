@@ -3,8 +3,8 @@
 ## Idea
 A row's terminal lives in a capsule: one supervisor per state dir is the authority over its runs, one leg records the
 agent's terminal into an append-only voyage that is read forever, and every viewer attaches through one client over typed
-lanes. The crate is `sot-log`, the workspace's bottom crate, so it also carries the platform subsystem (`src/host/`,
-`src/identity/`) that the daemon, frontend and protocol use for things that are not capsules.
+lanes. The crate is `sot-log`; it rests on `sot-platform` (`../platform/CLAUDE.md`), which holds the machine facts, durable
+publication, locks and the peer challenge's OS steps, and re-exports none of it.
 
 ## Owns
 - The voyage store `<state_dir>/voyages/<id>/` with its `writer.lock`, segments and blobs (`src/store/`).
@@ -26,8 +26,8 @@ lanes. The crate is `sot-log`, the workspace's bottom crate, so it also carries 
   only at a parser ground boundary.
 - `sot-capsule supervise` exits 0 (clean), 69 (`EXIT_TERMINAL`) or 70 (`EXIT_CONTENDED`, the fence was already held).
 - Storage exhaustion never ends a row: the leg exits 71, and its supervisor holds without charging its crash counter, probes the state root with a real durable write, and resumes the same voyage when a probe succeeds (`supervisor/storage/`).
-- Only linux, macos and windows build: `host::durable::rename_noreplace_raw` has exactly those three arms.
-- A reply on a local connection is trusted only after the challenge in `src/identity/`.
+- Only linux, macos and windows build: platform's `rename_noreplace_raw` has exactly those three arms.
+- A reply on a local connection is trusted only after the challenge in platform (`../platform/src/identity/`); the lanes' own request and reply bytes are `src/lane/exchange.rs`.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot-capsule supervise`,
@@ -43,9 +43,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/supervisor/`: the authority over a state dir's runs.
 - `src/lane/`: transport contract, client seam and the platform bridge for the lanes.
 - `src/attach_client/`: one client for every viewer of a capsule.
-- `src/host/`: platform subsystem's folder: dirs, host name, durable publish, locks; the platform charter is
-  `src/host/CLAUDE.md`.
-- `src/identity/`: platform subsystem's peer challenge, covered by the same charter.
+- `../platform/`: the platform crate, whose charter is `../platform/CLAUDE.md`.
 - `src/bin/`: the sot-log crate's binaries.
 - `tests/`: integration and whole-process tests (its page maps each file).
 - `claude-sdk-helper/`: the Node helper behind the dormant Claude producer.
@@ -54,10 +52,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 - `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and brings
-  `test_log`, `test_copy`, `test_exec`, `test_scan`, `test_isolated`, `test_wait` and, on Unix, `test_foreign` (the backend, frontend
-  and updater turn it on in their dev-dependencies).
-- `build.rs`: stamps the lane build id (`SOT_LOG_BUILD_SHA`) from the full git sha, or `SOT_BUILD_ID`, and compiles the
-  native launcher (`src/host/process_tree/native_birth.c`) for the Unix targets.
+  `test_log`, `test_copy`, `test_exec`, `test_scan` and, on Unix, `test_foreign`, and turns on platform's `test_isolated` and `test_wait` (the
+  backend, frontend and updater turn it on in their dev-dependencies, and platform's own beside it).
+- `build.rs`: stamps the lane build id (`SOT_LOG_BUILD_SHA`) from the full git sha, or `SOT_BUILD_ID`.
 - `claude-sdk-helper/`: the Node helper that drives one Claude Agent SDK session.
 - `tests/`: integration and whole-process tests.
 - `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`) and `Error`/`Result`.
@@ -77,9 +74,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/supervisor/`: the supervisor, its journal, probe and authority.
 - `src/lane/`: wire frames, transports and the attach protocol.
 - `src/attach_client/`: the attach client and its worker.
-- `src/identity/`: the peer challenge and identity exchange.
+- `src/lane/exchange.rs`, `src/lane/connect_own.rs`: the lanes' identity exchanges, and the connect that asks platform's account check.
+- `src/storage.rs`: `storage_exhaustion`, the capsule's reading of platform's storage table.
 - `src/test_scan.rs`: the source scans' one walker, `rust_sources()` (every workspace member's `src/` and `tests/`), and its production view `production_sources()` with `without_test_modules`, and `enclosing` and `is_ident` (the `fn` or `struct` a match lies in, and the identifier test at its edges) (feature `test-support`).
-- `src/host/`: per-machine facts and platform primitives.
 - `src/bin/`: `sot-capsule`, `sot-log` and the three test-fixture binaries.
 
 ## Start here
