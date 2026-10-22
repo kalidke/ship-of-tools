@@ -21,6 +21,8 @@ const CODEX_LAUNCHER_SRC = joinpath(REPO_ROOT, "agents", "codex", "bin")
 const CODEX_HOOKS_JSON_SRC = joinpath(CODEX_ADAPTER_SRC, "hooks.json")
 # The sot-comm plugin folder (its .codex-plugin/plugin.json manifest).
 const CODEX_PLUGIN_SRC = joinpath(CODEX_ADAPTER_SRC, "plugin")
+# Every version of a Claude skill the repo ever shipped, one `<name> <hash>` per line (scripts/legacy-skill-hashes.sh).
+const LEGACY_SKILL_HASHES = joinpath(COMM_SRC, "legacy-skills.txt")
 # The one file name no install ever copies, from any source folder.
 const NEVER_INSTALLED = "CLAUDE.md"
 # The conventions file that also installs as $CODEX_HOME/AGENTS.md.

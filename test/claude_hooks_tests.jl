@@ -1,16 +1,10 @@
-# Tests for src/claude_hooks.jl: Claude settings targets and the retirement of the comm hooks (calls jq).
+# Tests for src/claude_hooks.jl: Claude settings targets and hook merging (calls jq).
 
 # jq's raw output, one string per line. On Windows jq writes CRLF line endings (its text mode), so there the one CR
 # before each LF is the line ending; any other CR is data and stays.
 jq_lines(cmd::Cmd) = [Sys.iswindows() ? chopsuffix(l, "\r") : l for l in split(read(cmd, String), '\n'; keepempty = false)]
-# Every hook command of settings file `f`, over all events.
-every_cmd(f) = jq_lines(`jq -r "[(.hooks // {})[] | .[] | (.hooks // [])[] | .command] | .[]" $f`)
-
-# The hooks of an earlier install, with a person's own beside them.
-const OLD_HOOKS = """{"model":"own","hooks":{
-    "Stop":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-idle.sh"},{"type":"command","command":"/usr/local/bin/user-stop.sh"}]}],
-    "UserPromptSubmit":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-working.sh"}]}],
-    "Notification":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-blocked.sh"}]}]}}"""
+# The hook commands settings file `f` runs for event `ev`.
+cmds(f, ev) = jq_lines(`jq -r --arg e $ev "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command" $f`)
 
 @testset "accounts: an account with no settings.json is left for the daemon's link" begin
     # A named account shares the default `~/.claude` folder by SYMLINK,
@@ -46,13 +40,14 @@ end
         mkpath(dirname(bad)); write(bad, "{}")                   # not an account name
         write(joinpath(auth, "notadir"), "")                     # a stray file
 
-        unretired = String[]
-        @test ShipTools._claude_settings_targets(home, joinpath(home, ".claude"); unretired = unretired) ==
+        @test_logs (:info, r"no settings.json in this Claude account folder") match_mode = :any ShipTools._claude_settings_targets(home, joinpath(home, ".claude"))
+        @test ShipTools._claude_settings_targets(home, joinpath(home, ".claude")) ==
               [realpath(default), realpath(a)]
-        # Only the dangling link is a problem; a folder with no settings.json has nothing to retire.
-        @test length(unretired) == 1 && occursin(d, only(unretired))
-        # An install run from inside an account folder with no settings.json finds the same files.
-        @test ShipTools._claude_settings_targets(home, joinpath(auth, "c")) == [realpath(default), realpath(a)]
+        # An install run from inside an account folder with no settings.json
+        # never creates one there; the default takes the hooks.
+        own = joinpath(auth, "c")
+        @test ShipTools._claude_settings_targets(home, own) ==
+              [realpath(default), realpath(a)]
         # Nothing was created through the dangling link.
         @test islink(d) && !ispath(joinpath(home, "missing.json"))
 
@@ -66,63 +61,87 @@ end
     end
 end
 
-@testset "_retire_claude_hooks: the comm hooks leave every account's real settings.json, links stay links" begin
-    # Each real file is rewritten once, links resolved, a person's own hooks and settings kept, a re-run byte-identical.
-    # The default here is itself a link to a file outside every claude dir: a copy-then-rename onto the LINK path would
-    # replace the link with a plain copy, so this also proves a link stays a link.
+@testset "_install_claude_hooks: comm hooks land in every account's real settings.json" begin
+    # The comm hooks go into EVERY Claude account's
+    # settings.json, links resolved, each real file written once, the
+    # user's own hooks and settings kept, a re-run byte-identical. The
+    # default here is itself a link to a file outside every claude dir:
+    # a copy-then-rename onto the LINK path would replace the link with
+    # a plain copy, so this also proves a link stays a link.
     mktempdir() do home
         shared = joinpath(home, "dotfiles", "claude-settings.json")
-        mkpath(dirname(shared)); write(shared, OLD_HOOKS)
+        mkpath(dirname(shared))
+        write(shared, """{"model":"shared","hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/user-shared.sh"}]}]}}""")
         default = joinpath(home, ".claude", "settings.json")
         mkpath(dirname(default)); symlink(shared, default)
         auth = joinpath(home, ".claude-auth")
         a = joinpath(auth, "a", "settings.json")
-        mkpath(dirname(a)); write(a, OLD_HOOKS)
+        mkpath(dirname(a))
+        write(a, """{"model":"own","hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/user-a.sh"}]}],"Notification":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-blocked.sh"}]}]}}""")
         b = joinpath(auth, "b", "settings.json")
         mkpath(dirname(b)); symlink(default, b)
         c = joinpath(auth, "c"); mkpath(c)
         in_home(home) do
-            ShipTools._retire_claude_hooks(ShipTools.claude_home())
-            for f in (shared, a)
-                @test every_cmd(f) == ["/usr/local/bin/user-stop.sh"]
-                @test jq_lines(`jq -r .model $f`) == ["own"]
-                @test jq_lines(`jq -r '.hooks | keys[]' $f`) == ["Stop"]
+            ShipTools._install_claude_hooks(ShipTools.claude_home())
+
+            # Each real file holds each comm hook exactly once.
+            for f in (shared, a), (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                @test count(==(ShipTools._hook_command(script)), cmds(f, ev)) == 1
             end
+            # The user's own hooks and settings survive; the retired comm
+            # hook in the account's own file is gone.
+            @test "/usr/local/bin/user-shared.sh" in cmds(shared, "Stop")
+            @test "/usr/local/bin/user-a.sh" in cmds(a, "Stop")
+            @test jq_lines(`jq -r .model $shared`) == ["shared"]
+            @test jq_lines(`jq -r .model $a`) == ["own"]
+            @test isempty(cmds(a, "Notification"))
+            # Links stay links, to the same targets; the empty account stays empty.
             @test islink(default) && readlink(default) == shared
             @test islink(b) && readlink(b) == default
             @test isempty(readdir(c))
 
             # A re-run changes nothing.
             before = Dict(f => read(f) for f in (shared, a))
-            ShipTools._retire_claude_hooks(ShipTools.claude_home())
+            ShipTools._install_claude_hooks(ShipTools.claude_home())
             for f in (shared, a)
                 @test read(f) == before[f]
             end
+            @test islink(default) && readlink(default) == shared
+            @test islink(b) && readlink(b) == default
         end
     end
 end
 
-@testset "_retire_claude_hooks: a settings.json with no comm hook is not rewritten, whatever its layout" begin
+@testset "_install_claude_hooks: a linked settings.json stays a link" begin
     mktempdir() do home
-        f = joinpath(home, ".claude", "settings.json")
-        mkpath(dirname(f))
-        text = """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/user.sh"}]}]},   "model":"x"}"""
-        write(f, text)
+        target = joinpath(home, "elsewhere", "settings.json")
+        mkpath(dirname(target))
+        write(target, """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/user.sh"}]}]}}""")
+        link = joinpath(home, ".claude", "settings.json")
+        mkpath(dirname(link)); symlink(target, link)
         in_home(home) do
-            ShipTools._retire_claude_hooks(ShipTools.claude_home())
-            @test read(f, String) == text
+            ShipTools._install_claude_hooks(ShipTools.claude_home())
+            @test islink(link) && readlink(link) == target
+            for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                @test count(==(ShipTools._hook_command(script)), cmds(target, ev)) == 1
+            end
+            @test "/usr/local/bin/user.sh" in cmds(target, "Stop")
         end
     end
 end
 
-@testset "_retire_claude_hooks: never creates a settings.json" begin
+@testset "_install_claude_hooks: never creates a settings.json in an account folder" begin
     mktempdir() do home
         mkpath(joinpath(home, ".claude"))
         c = joinpath(home, ".claude-auth", "c"); mkpath(c)
         in_home(home) do
-            ShipTools._retire_claude_hooks(c)
+            ShipTools._install_claude_hooks(c)
             @test isempty(readdir(c))
-            @test isempty(readdir(joinpath(home, ".claude")))
+            f = joinpath(home, ".claude", "settings.json")
+            @test isfile(f)
+            for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                @test count(==(ShipTools._hook_command(script)), cmds(f, ev)) == 1
+            end
         end
     end
 end
@@ -150,20 +169,22 @@ end
     end
 end
 
-@testset "_retire_claude_hooks: a rewrite keeps the file's mode and a re-run does not rewrite" begin
+@testset "_install_claude_hooks: a rewrite keeps the file's mode and a re-run does not rewrite" begin
     if Sys.iswindows()
         @test_skip false
     else
         mktempdir() do home
             f = joinpath(home, ".claude", "settings.json")
-            mkpath(dirname(f)); write(f, OLD_HOOKS)
+            mkpath(dirname(f)); write(f, "{}")
             chmod(f, 0o604)  # a mode no umask produces
             in_home(home) do
-                ShipTools._retire_claude_hooks(joinpath(home, ".claude"))
+                ShipTools._install_claude_hooks(joinpath(home, ".claude"))
                 @test filemode(f) & 0o777 == 0o604
-                @test every_cmd(f) == ["/usr/local/bin/user-stop.sh"]
+                for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                    @test count(==(ShipTools._hook_command(script)), cmds(f, ev)) == 1
+                end
                 ino1 = stat(f).inode
-                ShipTools._retire_claude_hooks(joinpath(home, ".claude"))
+                ShipTools._install_claude_hooks(joinpath(home, ".claude"))
                 @test stat(f).inode == ino1
                 @test filemode(f) & 0o777 == 0o604
             end
@@ -188,22 +209,24 @@ end
     end
 end
 
-@testset "_retire_claude_hooks: a relative, linked or bare config dir finds the same files and creates nothing" begin
+@testset "_install_claude_hooks: nothing is created in .claude-auth through a relative, linked or bare config dir" begin
     mktempdir() do home
         default = joinpath(home, ".claude", "settings.json")
-        mkpath(dirname(default)); write(default, OLD_HOOKS)
+        mkpath(dirname(default)); write(default, "{}")
         auth = joinpath(home, ".claude-auth")
         c = joinpath(auth, "c"); mkpath(c)
         symlink(c, joinpath(home, "alias"))
         in_home(home) do
             cd(home) do
-                ShipTools._retire_claude_hooks(joinpath(".claude-auth", "c"))
+                ShipTools._install_claude_hooks(joinpath(".claude-auth", "c"))
             end
-            ShipTools._retire_claude_hooks(joinpath(home, "alias"))
-            ShipTools._retire_claude_hooks(auth)
+            ShipTools._install_claude_hooks(joinpath(home, "alias"))
+            ShipTools._install_claude_hooks(auth)
             @test isempty(readdir(c))
             @test !ispath(joinpath(auth, "settings.json"))
-            @test every_cmd(default) == ["/usr/local/bin/user-stop.sh"]
+            for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                @test count(==(ShipTools._hook_command(script)), cmds(default, ev)) == 1
+            end
         end
     end
 end
@@ -232,40 +255,57 @@ end
     end
 end
 
-@testset "_retire_claude_hooks: a file that cannot be rewritten is named, and the other files are done" begin
+@testset "_install_claude_hooks: a merge that throws fails the install, after the other files are done" begin
     mktempdir() do home
         a = joinpath(home, ".claude-auth", "a", "settings.json")
-        mkpath(dirname(a)); write(a, OLD_HOOKS)
+        mkpath(dirname(a)); write(a, "{}")
         ro = joinpath(home, "ro"); mkpath(ro)
-        stuck = joinpath(ro, "settings.json"); write(stuck, OLD_HOOKS)
-        chmod(stuck, 0o444)   # the staging file takes this mode, so jq cannot write it
+        chmod(ro, 0o555)
         try
-            restrained = try open(stuck, "a") do _ end; false catch; true end
+            restrained = try touch(joinpath(ro, "probe")); rm(joinpath(ro, "probe")); false catch; true end
             if !restrained
                 @test_skip false
             else
                 in_home(home) do
-                    unretired = String[]
-                    ShipTools._retire_claude_hooks(ro; unretired = unretired)
-                    @test every_cmd(a) == ["/usr/local/bin/user-stop.sh"]
-                    @test length(unretired) == 1 && occursin(realpath(stuck), only(unretired))
-                    @test read(stuck, String) == OLD_HOOKS
-                    @test sort(readdir(ro)) == ["settings.json"]   # no staging file left
+                    @test_throws ErrorException ShipTools._install_claude_hooks(ro)
+                    for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                        @test count(==(ShipTools._hook_command(script)), cmds(a, ev)) == 1
+                    end
+                    @test !ispath(joinpath(ro, "settings.json"))
                 end
             end
         finally
-            chmod(stuck, 0o644)
+            chmod(ro, 0o755)
         end
     end
 end
 
-@testset "install: the closing summary names every settings file the old hooks could not be removed from" begin
+@testset "_install_claude_hooks: an account folder that is a link counts as inside .claude-auth" begin
+    mktempdir() do home
+        default = joinpath(home, ".claude", "settings.json")
+        mkpath(dirname(default)); write(default, "{}")
+        elsewhere = joinpath(home, "disk", "team")
+        mkpath(elsewhere)
+        mkpath(joinpath(home, ".claude-auth"))
+        team = joinpath(home, ".claude-auth", "team")
+        symlink(elsewhere, team)
+        in_home(home) do
+            ShipTools._install_claude_hooks(team)
+            @test isempty(readdir(elsewhere))
+            for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                @test count(==(ShipTools._hook_command(script)), cmds(default, ev)) == 1
+            end
+        end
+    end
+end
+
+@testset "install: the closing summary names every settings file left without the hooks" begin
     mktempdir() do home
         default = joinpath(home, ".claude", "settings.json")
         mkpath(dirname(default)); write(default, "{}")
         lockd = joinpath(home, ".claude-auth", "lockd", "settings.json")
         mkpath(dirname(lockd))
-        write(lockd, OLD_HOOKS)
+        write(lockd, "{}")
         chmod(lockd, 0o444)
         empty = joinpath(home, ".claude-auth", "empty")
         mkpath(empty)
@@ -279,15 +319,15 @@ end
                     Base.CoreLogging.with_logger(logger) do
                         ShipTools.update_comm(clis = [:claude])
                     end
-                    summaries = filter(r -> occursin("may still be in these Claude settings", string(r.message)), logger.logs)
+                    summaries = filter(r -> occursin("were NOT brought up to date", string(r.message)), logger.logs)
                     @test length(summaries) == 1
                     msg = string(only(summaries).message)
-                    # A file the install could not rewrite is named by the real path it writes (links and short names
-                    # resolved); a folder with no settings.json has nothing to retire and is not named.
+                    # A file the install could not merge is named by the real path it writes (links and short names
+                    # resolved); a folder with no settings.json is named as found.
                     @test occursin(realpath(lockd), msg)
-                    @test !occursin(empty, msg)
+                    @test occursin(empty, msg)
                     @test !occursin(realpath(default), msg)
-                    @test read(lockd, String) == OLD_HOOKS   # left exactly as it was
+                    @test read(lockd, String) == "{}"   # left exactly as it was
                 end
             end
         finally
@@ -314,7 +354,7 @@ end
                     Base.CoreLogging.with_logger(logger) do
                         @test (ShipTools.update_comm(clis = [:claude]); true)   # does not throw
                     end
-                    summaries = filter(r -> occursin("may still be in these Claude settings", string(r.message)), logger.logs)
+                    summaries = filter(r -> occursin("were NOT brought up to date", string(r.message)), logger.logs)
                     @test length(summaries) == 1
                     @test occursin(realpath(acct), string(only(summaries).message))
                 end
@@ -326,13 +366,27 @@ end
     end
 end
 
-@testset "_retire_comm_hooks!: an empty or whitespace-only settings.json is left as it is, an unreadable one is skipped" begin
+@testset "_add_comm_hook!: an empty or whitespace-only settings.json gets the hooks, an unreadable one is skipped" begin
     for (name, text) in (("0-byte", ""), ("whitespace-only", " \n\t\n"))
         mktempdir() do dir
             f = joinpath(dir, "settings.json")
             write(f, text)
-            @test ShipTools._retire_comm_hooks!(f)
+            logger = Test.TestLogger()
+            Base.CoreLogging.with_logger(logger) do
+                @test ShipTools._remove_stale_comm_hooks!(f)
+            end
+            @test isempty(filter(r -> occursin("Retired", string(r.message)), logger.logs))   # nothing was retired
             @test read(f, String) == text
+            for (ev, script, m) in ShipTools._COMM_STATE_HOOKS
+                @test ShipTools._add_comm_hook!(ev, script, f; matcher = m)
+                @test count(==(ShipTools._hook_command(script)), cmds(f, ev)) == 1
+            end
+            # A re-run adds nothing.
+            before = read(f, String)
+            for (ev, script, m) in ShipTools._COMM_STATE_HOOKS
+                @test ShipTools._add_comm_hook!(ev, script, f; matcher = m)
+            end
+            @test read(f, String) == before
         end
     end
     mktempdir() do dir
@@ -344,8 +398,9 @@ end
             if !restrained
                 @test_skip false
             else
-                @test_logs (:warn, r"could not remove the comm hooks") match_mode = :any begin
-                    @test !ShipTools._retire_comm_hooks!(f)
+                ev, script, m = first(ShipTools._COMM_STATE_HOOKS)
+                @test_logs (:warn, r"could not parse settings.json") match_mode = :any begin
+                    @test !ShipTools._add_comm_hook!(ev, script, f; matcher = m)
                 end
                 @test isempty(filter(n -> n != "settings.json", readdir(dir)))   # no staging file left
             end
@@ -361,8 +416,9 @@ end
         mktempdir() do dir
             f = joinpath(dir, "settings.json")
             write(f, text)
+            ev, script, m = first(ShipTools._COMM_STATE_HOOKS)
             @test_logs (:warn, r"could not") match_mode = :any begin
-                @test !ShipTools._retire_comm_hooks!(f)
+                @test !ShipTools._add_comm_hook!(ev, script, f; matcher = m)
             end
             @test read(f, String) == text
             @test isempty(filter(n -> n != "settings.json", readdir(dir)))
@@ -370,49 +426,76 @@ end
     end
 end
 
-@testset "_retire_comm_hooks!: every comm hook goes, whatever its event, matcher or quoting" begin
+@testset "_remove_stale_comm_hooks!: no hook raises a dialog on a Claude row" begin
+    # PermissionRequest fires when a request is queued, not when its dialog shows (ADR 0044, dialog amendment), so
+    # neither it nor PostToolUseFailure is wired, and an install strips the wiring an earlier build added.
+    events = [e for (e, _, _) in ShipTools._COMM_STATE_HOOKS]
+    @test !any(in(("PermissionRequest", "PostToolUseFailure", "Notification")), events)
+    # The work-state hooks are the row layer's, not the user's settings'.
+    @test !any(t -> t[2] in ("comm-status-heartbeat.sh", "comm-status-working.sh", "comm-status-blocked.sh"), ShipTools._COMM_STATE_HOOKS)
     mktempdir() do dir
         settings = joinpath(dir, "settings.json")
         write(settings, """{"hooks":{
           "PermissionRequest":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-dialog.sh"}]}],
           "PostToolUseFailure":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-heartbeat.sh"}]}],
-          "PreToolUse":[
-            {"matcher":"Bash","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-subagent-guard.sh"}]},
-            {"matcher":"Edit","hooks":[{"type":"command","command":"'/home/x/.sot-comm/bin/comm-subagent-guard.sh'"}]},
-            {"matcher":"Bash","hooks":[{"type":"command","command":"/usr/local/bin/mine.sh"}]}],
           "PostToolUse":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-heartbeat.sh"}]}]}}""")
-        @test ShipTools._retire_comm_hooks!(settings)
-        @test jq_lines(`jq -r '.hooks | keys[]' $settings`) == ["PreToolUse"]
-        @test every_cmd(settings) == ["/usr/local/bin/mine.sh"]
+        ShipTools._remove_stale_comm_hooks!(settings)
+        @test jq_lines(`jq -r '.hooks | length' $settings`) == ["0"]
     end
 end
 
-@testset "_retire_comm_hooks!: the retired reminder hooks go, a person's hooks stay" begin
+@testset "the subagent guard: wired to Bash, kept there, stripped from any other matcher" begin
+    @test ("PreToolUse", "comm-subagent-guard.sh", "Bash") in ShipTools._COMM_STATE_HOOKS
     mktempdir() do dir
         settings = joinpath(dir, "settings.json")
-        write(settings, """{"hooks":{
-          "SessionStart":[
-            {"matcher":"compact","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-postcompact-reminder.sh"}]},
-            {"matcher":"clear","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-postclear-reminder.sh"}]},
-            {"matcher":"startup","hooks":[{"type":"command","command":"/usr/local/bin/mine.sh"}]}],
-          "Stop":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-idle.sh"}]}],
-          "Notification":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-blocked.sh"}]}],
-          "PostToolUse":[{"hooks":[{"type":"command","command":"/usr/local/bin/other.sh"}]}]}}""")
-        @test ShipTools._retire_comm_hooks!(settings)
-        @test sort(every_cmd(settings)) == ["/usr/local/bin/mine.sh", "/usr/local/bin/other.sh"]
-        @test jq_lines(`jq -r '.hooks | keys[]' $settings`) == ["PostToolUse", "SessionStart"]
+        write(settings, """{"hooks":{"PreToolUse":[
+          {"matcher":"Bash","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-subagent-guard.sh"}]},
+          {"matcher":"Edit","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-subagent-guard.sh"}]}]}}""")
+        @test ShipTools._remove_stale_comm_hooks!(settings)
+        @test jq_lines(`jq -r '.hooks.PreToolUse[] | .matcher' $settings`) == ["Bash"]
+        @test ShipTools._add_comm_hook!("PreToolUse", "comm-subagent-guard.sh", settings; matcher = "Bash")
+        @test jq_lines(`jq -r '.hooks.PreToolUse[] | .matcher' $settings`) == ["Bash"]
+    end
+end
+
+@testset "_remove_stale_comm_hooks!: retired reminder hooks go, others stay" begin
+    # The post-compact and post-clear reminder scripts are deleted, so an
+    # install must also drop their settings entries, or settings.json keeps
+    # two hooks pointing at files that no longer exist.
+    mktempdir() do dir
+        settings = joinpath(dir, "settings.json")
+        open(settings, "w") do io
+            write(io, """{"hooks":{
+              "SessionStart":[
+                {"matcher":"compact","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-postcompact-reminder.sh"}]},
+                {"matcher":"clear","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-postclear-reminder.sh"}]},
+                {"matcher":"startup","hooks":[{"type":"command","command":"/usr/local/bin/mine.sh"}]}],
+              "Stop":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-idle.sh"}]}],
+              "Notification":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-blocked.sh"}]}],
+              "PostToolUse":[{"hooks":[{"type":"command","command":"/usr/local/bin/other.sh"}]}]}}""")
+        end
+        ShipTools._remove_stale_comm_hooks!(settings)
+        txt = read(settings, String)
+        @test !occursin("comm-postcompact-reminder", txt)
+        @test !occursin("comm-postclear-reminder", txt)
+        @test occursin("comm-status-idle", txt)
+        @test occursin("/usr/local/bin/mine.sh", txt)
+        @test occursin("/usr/local/bin/other.sh", txt)
+        @test occursin("\"Stop\"", txt)
+        @test !occursin("\"Notification\"", txt)
     end
     mktempdir() do dir
         settings = joinpath(dir, "settings.json")
         write(settings, """{"hooks":{"Notification":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-blocked.sh"},{"type":"command","command":"/usr/local/bin/mine.sh"}]}]}}""")
-        @test ShipTools._retire_comm_hooks!(settings)
-        @test jq_lines(`jq -r '.hooks.Notification[].hooks[].command' $settings`) == ["/usr/local/bin/mine.sh"]
+        ShipTools._remove_stale_comm_hooks!(settings)
+        got = jq_lines(`jq -r '.hooks.Notification[].hooks[].command' $settings`)
+        @test got == ["/usr/local/bin/mine.sh"]
     end
     mktempdir() do dir
         settings = joinpath(dir, "settings.json")
         write(settings, """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/comm-status-report.sh"}]}]}}""")
-        before = read(settings, String)
-        @test ShipTools._retire_comm_hooks!(settings)
-        @test read(settings, String) == before
+        ShipTools._remove_stale_comm_hooks!(settings)
+        got = jq_lines(`jq -r '.hooks.Stop[].hooks[].command' $settings`)
+        @test got == ["/usr/local/bin/comm-status-report.sh"]
     end
 end

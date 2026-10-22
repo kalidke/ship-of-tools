@@ -105,16 +105,6 @@ function _prune_deprecated_skills!(skillsroot::AbstractString)
     end
 end
 
-# Every skill an earlier installer placed straight into a Claude skills folder: the names it shipped, and the retired ones.
-# Exact names, never a glob. An earlier install overwrote a same-named skill of a person's without a backup, so a folder
-# of one of these names is the installer's. Never extended: from this release a skill goes only to the Claude layer.
-const LEGACY_PLACED_SKILLS = ["julia-repl", "project-log", "reauth", "show-result", "sitrep", "sot-comm",
-                              "sot-gh-auth", "sot-install", "sot-session-start", "sot-setup", "sot-status",
-                              "sot-statusline-setup", "worktree", COMM_DEPRECATED_SKILLS...]
-
-# The file in a skills folder that says the one-time move below has been made, and lists what it removed.
-const SKILLS_MOVED_MARKER = ".sot-skills-moved"
-
 """
     _prune_layer_skills!(layerskills, srcdirs)
 
@@ -133,34 +123,72 @@ function _prune_layer_skills!(layerskills::AbstractString, srcdirs)
 end
 
 """
-    _move_placed_skills!(skillsroot)
+    _legacy_skill_hashes() -> Dict{String,Set{String}}
 
-The one-time move of the skills out of a Claude skills folder: remove each [`LEGACY_PLACED_SKILLS`] directory an earlier
-install put there (a link of that name is a person's own and stays), and write the names removed to
-[`SKILLS_MOVED_MARKER`]. A folder that holds the marker is never touched again, so a skill a person makes later under a
-shipped name is theirs; a folder with none of the names gets no marker. A directory that cannot be removed is warned
-about and named in the error, and the marker is not written, so the next install tries again.
+The skills an earlier installer placed straight into a Claude skills folder: each name with the hash of every version the
+repo ever shipped (`comm/legacy-skills.txt`, made by `scripts/legacy-skill-hashes.sh`; frozen history).
 """
-function _move_placed_skills!(skillsroot::AbstractString)
-    isdir(skillsroot) || return nothing
-    marker = joinpath(skillsroot, SKILLS_MOVED_MARKER)
-    ispath(marker) && return nothing
-    removed = String[]
-    stuck = String[]
-    for name in LEGACY_PLACED_SKILLS
-        dst = joinpath(skillsroot, name)
-        (isdir(dst) && !islink(dst)) || continue
-        try
-            rm(dst; recursive = true)
-            push!(removed, name)
-        catch err
-            @warn "could not remove a skill an earlier install placed here" dir = dst error = err
-            push!(stuck, name)
+function _legacy_skill_hashes()
+    known = Dict{String,Set{String}}()
+    for line in eachline(LEGACY_SKILL_HASHES)
+        name, hash = split(line, ' ')
+        push!(get!(known, String(name), Set{String}()), String(hash))
+    end
+    return known
+end
+
+# SHA is a standard library the package does not list as a dependency (a stale manifest would then need resolving), so
+# it is found by its identity at the first use.
+const _SHA_ID = Base.PkgId(Base.UUID("ea8e919c-243c-51af-8825-aaa63cd721ce"), "SHA")
+
+"""
+    _skill_folder_hash(dir) -> Union{Nothing,String}
+
+The hash `scripts/legacy-skill-hashes.sh` gives a skill folder: sha256 of its sorted manifest, one line
+`<path>\t<git blob sha1>` per file. `nothing` for a folder with no file or with any link in it: that is not a copy an
+installer made.
+"""
+function _skill_folder_hash(dir::AbstractString)
+    SHA = Base.require(_SHA_ID)
+    lines = String[]
+    for (root, dirs, files) in walkdir(dir)
+        any(d -> islink(joinpath(root, d)), dirs) && return nothing
+        for f in files
+            path = joinpath(root, f)
+            islink(path) && return nothing
+            f == NEVER_INSTALLED && continue
+            data = read(path)
+            blob = Base.invokelatest(SHA.sha1, vcat(Vector{UInt8}("blob $(length(data))\0"), data))
+            push!(lines, replace(relpath(path, dir), '\\' => '/') * "\t" * bytes2hex(blob))
         end
     end
-    isempty(stuck) || error("could not remove the earlier copies of: " * join(stuck, ", "))
-    isempty(removed) && return nothing
-    write(marker, join(removed, "\n") * "\n")
-    @info "Moved the skills of an earlier install out of the Claude skills folder; a row loads them from the layer" dir = skillsroot removed = removed
+    isempty(lines) && return nothing
+    return bytes2hex(Base.invokelatest(SHA.sha256, join(sort(lines), "\n")))
+end
+
+"""
+    _retire_placed_skills!(skillsroot; known = _legacy_skill_hashes())
+
+Remove from a Claude skills folder the skills an earlier install put there, and nothing else. A folder goes only when its
+contents hash to a version the repo shipped of the skill of that name; any other folder of such a name is a person's own
+and stays, with a warning. A skills folder that is itself a link is never acted through (its target is somebody's
+dotfiles), and a link inside it is never removed. The rule holds on every run, so it keeps no marker.
+"""
+function _retire_placed_skills!(skillsroot::AbstractString; known = _legacy_skill_hashes())
+    if islink(skillsroot)
+        @warn "this Claude skills folder is a symbolic link: skills an earlier install placed in it were left where they are" dir = skillsroot
+        return nothing
+    end
+    isdir(skillsroot) || return nothing
+    for name in sort!(collect(keys(known)))
+        dst = joinpath(skillsroot, name)
+        (isdir(dst) && !islink(dst)) || continue
+        if _skill_folder_hash(dst) in known[name]
+            rm(dst; recursive = true)
+            @info "Removed a skill an earlier install placed here; a row loads it from the Claude layer" dir = dst
+        else
+            @warn "a skill of this name is not a copy of one this installer shipped: left in place" dir = dst
+        end
+    end
     return nothing
 end

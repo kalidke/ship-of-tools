@@ -59,12 +59,14 @@ end
             place_shipped_copy(d, "sitrep")
             mkpath(joinpath(d, "mine")); write(joinpath(d, "mine", "SKILL.md"), "MINE")
         end
-        in_home(home, "CLAUDE_CONFIG_DIR" => joinpath(home, "cfg")) do
+        in_home(home) do
+          withenv("CLAUDE_CONFIG_DIR" => joinpath(home, "cfg")) do
             ShipTools.update_comm(clis = [:claude])
             for d in (default, acct, elsewhere)
                 @test !ispath(joinpath(d, "sitrep"))
                 @test read(joinpath(d, "mine", "SKILL.md"), String) == "MINE"
             end
+          end
         end
     end
 end
