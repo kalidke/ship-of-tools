@@ -624,9 +624,10 @@ impl Env {
 /// live daemon process a panic could leave running. THEN: kill the
 /// tracked daemon `Child` (so its own crash-restart policy can't spawn a
 /// fresh contender into a state dir this impl is about to sweep), THEN
-/// sweep this env's own capsule processes by pid
+/// sweep this env's own capsule processes
 /// ([`try_own_capsule_pids`], listed by argv naming this env's own state
-/// root — never a pattern kill), THEN kill this env's own ISOLATED tmux
+/// root, each ended through a handle opened first — never a pattern kill
+/// or a bare pid), THEN kill this env's own ISOLATED tmux
 /// server (F3) — in that exact order, on EVERY exit path including a
 /// panic, which a per-test teardown call can never guarantee.
 /// `_tmp`/`_runtime_tmp`'s own `Drop` (temp dir removal, the final step)
@@ -661,55 +662,40 @@ impl Drop for Env {
             end_daemon(&mut child);
         }
 
-        // (2, Windows) the counterpart of the Linux leg sweep below: a
-        // capsule outlives a killed daemon BY DESIGN (it breaks away from
-        // the daemon's job), so without this a test's supervisors, `run`
-        // legs and the agent trees under them stay alive after the test
-        // ends. Supervisors first so no NEW leg appears after a pass's
-        // own kill; `taskkill /T` takes each one's whole tree (the agent,
-        // its cmd.exe and conhost.exe). Repeated until a pass finds none
-        // or 5 s pass. Best-effort: never panics.
-        #[cfg(windows)]
+        // (2) sweep this env's own capsule processes, REPEATED until a
+        // pass finds none or 2 s (5 s on Windows) pass. A capsule outlives a
+        // killed daemon BY DESIGN (it breaks away from the daemon's job),
+        // so without this a test's processes stay alive after the test
+        // ends. Each is ended through a handle opened before its identity
+        // is read again (`kill_verified`, `kill_by_handle`), never by a
+        // bare discovered pid. Supervisors come first in the listing, so a
+        // supervisor ended on this pass cannot start anything after it.
+        // Best-effort: never panics, but every failure and every process
+        // left behind is named on stderr before the folders go.
+        #[cfg(any(windows, target_os = "linux"))]
         {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + if cfg!(windows) { Duration::from_secs(5) } else { Duration::from_secs(2) };
             loop {
-                // A listing that cannot answer ends the sweep: a Drop cannot fail, and the next check that asks
-                // fails with the listing's account.
-                let Ok(pids) = try_own_capsule_pids(&self.state_root) else {
-                    break;
+                let pids = match try_own_capsule_pids(&self.state_root) {
+                    Ok(pids) => pids,
+                    Err(error) => {
+                        eprintln!("Env::drop: cannot list the capsule processes over {:?}: {error}", self.state_root);
+                        break;
+                    }
                 };
-                if pids.is_empty() || Instant::now() >= deadline {
+                if pids.is_empty() {
                     break;
                 }
-                for pid in pids {
-                    let _ = sot_platform::test_wait::try_run_within(
-                        Command::new("taskkill").args(["/F", "/T", "/PID"]).arg(pid.to_string()),
-                        BOUND,
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(200));
-            }
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            // (2) sweep this env's own capsule processes by pid, REPEATED
-            // until a pass finds none or 2 s pass: supervisors come first in
-            // the listing, so a supervisor killed on this pass cannot start
-            // anything after it, and what an earlier pass's supervisor left
-            // is caught by the next listing. A listing that cannot answer
-            // ends the sweep: a Drop cannot fail, and the next check that
-            // asks fails with the listing's account.
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                let Ok(pids) = try_own_capsule_pids(&self.state_root) else {
-                    break;
-                };
-                if pids.is_empty() || Instant::now() >= deadline {
+                if Instant::now() >= deadline {
+                    eprintln!("Env::drop: leaves capsule processes {pids:?} over {:?}", self.state_root);
                     break;
                 }
-                for pid in pids {
-                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                #[cfg(target_os = "linux")]
+                let ended = kill_verified(&RealProcFs, &pids, &sot_capsule_exe(), &self.state_root);
+                #[cfg(windows)]
+                let ended = kill_by_handle(&self.state_root, &pids);
+                if let Err(error) = ended {
+                    eprintln!("Env::drop: could not end capsule processes {pids:?}: {error}");
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }

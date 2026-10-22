@@ -2,37 +2,84 @@
 
 use super::*;
 
-/// The pids of every `sot-capsule` process this test build's own executable started over `state_root`, each with
-/// whether it is the supervisor (`supervise`), listed from `/proc`: a process whose argv is `<exe or its file name>
-/// <subcommand> <a path under state_root>` (argv[0] is the full path when `systemd-run` execs the supervisor, a scoped
-/// launch, and only the file name when the durable parent's native launcher does). Supervisors first, then any other
-/// process. `Err`, with the account, whenever `/proc` could not be read: a listing that fails must never read as "no
-/// capsule is running". Never panics, so [`Env`]'s `Drop` can call it; [`own_capsule_pids`] is its panicking form.
+/// The reads a capsule listing makes of `/proc`, behind a trait so a test can make each of them answer or fail
+/// deterministically.
 #[cfg(target_os = "linux")]
-fn try_own_capsule_procs(state_root: &Path) -> Result<Vec<(bool, u32)>, String> {
+pub trait ProcFs {
+    /// Every pid `/proc` lists; an entry that cannot be read is an `Err`, never skipped.
+    fn pids(&self) -> std::io::Result<Vec<u32>>;
+    /// `/proc/<pid>/cmdline`, NUL-separated.
+    fn cmdline(&self, pid: u32) -> std::io::Result<Vec<u8>>;
+}
+
+/// The real `/proc`.
+#[cfg(target_os = "linux")]
+pub struct RealProcFs;
+
+#[cfg(target_os = "linux")]
+impl ProcFs for RealProcFs {
+    fn pids(&self) -> std::io::Result<Vec<u32>> {
+        let mut pids = Vec::new();
+        for entry in std::fs::read_dir("/proc")? {
+            if let Some(pid) = entry?.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) {
+                pids.push(pid);
+            }
+        }
+        Ok(pids)
+    }
+
+    fn cmdline(&self, pid: u32) -> std::io::Result<Vec<u8>> {
+        std::fs::read(format!("/proc/{pid}/cmdline"))
+    }
+}
+
+/// Whether a read failed because the process is gone (it ended between the listing and the read), the one failure a
+/// listing treats as the process's absence. Any other failure (permission, I/O) is not evidence of absence.
+#[cfg(target_os = "linux")]
+fn is_gone_error(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+}
+
+/// Whether `cmdline` is a capsule of this test build over `state_root`: `Some(true)` for a supervisor, `Some(false)`
+/// for any other subcommand, `None` when it is not one of ours. The command line is `<exe or its file name>
+/// <subcommand> <a path under state_root>` (argv[0] is the full path when `systemd-run` execs the supervisor, a scoped
+/// launch, and only the file name when the durable parent's native launcher does).
+#[cfg(target_os = "linux")]
+fn capsule_kind(cmdline: &[u8], exe: &Path, state_root: &Path) -> Option<bool> {
     use std::os::unix::ffi::OsStrExt;
-    let exe = sot_capsule_exe();
     let name = exe.file_name().map(std::ffi::OsStr::to_os_string).unwrap_or_default();
-    let entries = std::fs::read_dir("/proc").map_err(|error| format!("read /proc for the capsule process list: {error}"))?;
+    let mut argv = cmdline.split(|b| *b == 0).map(std::ffi::OsStr::from_bytes);
+    let (argv0, sub, root) = (argv.next()?, argv.next()?, argv.next()?);
+    ((argv0 == exe.as_os_str() || argv0 == name.as_os_str()) && Path::new(root).starts_with(state_root))
+        .then_some(sub == "supervise")
+}
+
+/// The pids of every `sot-capsule` process of `exe` over `state_root`, each with whether it is the supervisor,
+/// supervisors first. `Err`, with the account, whenever a read failed for any reason but the process being gone: a
+/// listing that fails must never read as "no capsule is running".
+#[cfg(target_os = "linux")]
+pub fn select_capsule_procs(fs: &dyn ProcFs, exe: &Path, state_root: &Path) -> Result<Vec<(bool, u32)>, String> {
     let mut found: Vec<(bool, u32)> = Vec::new();
-    for entry in entries.flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
-            continue;
-        };
-        // A process that ended between the listing and the read is not one to kill.
-        let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
-            continue;
-        };
-        let mut argv = cmdline.split(|b| *b == 0).map(|a| std::ffi::OsStr::from_bytes(a));
-        let (Some(argv0), Some(sub), Some(root)) = (argv.next(), argv.next(), argv.next()) else {
-            continue;
-        };
-        if (argv0 == exe.as_os_str() || argv0 == name.as_os_str()) && Path::new(root).starts_with(state_root) {
-            found.push((sub != "supervise", pid));
+    for pid in fs.pids().map_err(|error| format!("list /proc for the capsule process list: {error}"))? {
+        match fs.cmdline(pid) {
+            Ok(cmdline) => {
+                if let Some(supervisor) = capsule_kind(&cmdline, exe, state_root) {
+                    found.push((!supervisor, pid));
+                }
+            }
+            Err(error) if is_gone_error(&error) => {}
+            Err(error) => return Err(format!("read /proc/{pid}/cmdline for the capsule process list: {error}")),
         }
     }
     found.sort();
     Ok(found)
+}
+
+/// [`select_capsule_procs`] over the real `/proc` and this build's own `sot-capsule`. Never panics, so [`Env`]'s
+/// `Drop` can call it; [`own_capsule_pids`] is its panicking form.
+#[cfg(target_os = "linux")]
+fn try_own_capsule_procs(state_root: &Path) -> Result<Vec<(bool, u32)>, String> {
+    select_capsule_procs(&RealProcFs, &sot_capsule_exe(), state_root)
 }
 
 /// Windows: the pids of every `sot-capsule.exe` this test build's own
@@ -147,33 +194,6 @@ pub fn path_without(names: &[&str]) -> std::ffi::OsString {
     std::env::join_paths(kept).expect("rejoin scrubbed PATH")
 }
 
-/// Whether `pid` is gone: no `/proc/<pid>`, or a zombie (dead, only unreaped), which holds no command line and which a
-/// listing by argv never shows.
-#[cfg(target_os = "linux")]
-fn pid_is_gone(pid: u32) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Err(_) => true,
-        // The state letter follows the last `)` of the command name.
-        Ok(stat) => stat.rsplit_once(')').is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')),
-    }
-}
-
-/// Polls every 50 ms until `pid` is gone; `false` when it still lives after `timeout`.
-#[cfg(target_os = "linux")]
-#[allow(dead_code)]
-pub fn poll_until_pid_gone(pid: u32, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if pid_is_gone(pid) {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 /// How many supervisors [`own_supervisor_pids`] lists, `Err` with the listing's account when it could not answer: a
 /// sampler's query failure must fail the test, never count as "zero processes". Never panics.
 #[cfg(target_os = "linux")]
@@ -194,19 +214,6 @@ pub fn poll_until_no_capsule_pids(state_root: &Path, timeout: Duration) -> Vec<u
             return left;
         }
         std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// SIGKILL each of `pids` by number, then poll each gone within `BOUND`. A pid is the test's own spawn by the listing
-/// it came from ([`own_capsule_pids`]), never by a pattern.
-#[cfg(target_os = "linux")]
-#[allow(dead_code)]
-pub fn kill_pids_and_wait(pids: &[u32]) {
-    for pid in pids {
-        unsafe { libc::kill(*pid as libc::pid_t, libc::SIGKILL) };
-    }
-    for pid in pids {
-        assert!(poll_until_pid_gone(*pid, BOUND), "capsule process {pid} still lives after SIGKILL");
     }
 }
 
@@ -367,19 +374,120 @@ pub fn stop_user_service(unit: &str, daemon_pid: u32) {
     }
 }
 
-/// SIGKILL this env's own supervisor by pid ([`own_supervisor_pids`]), then poll it gone: simulates the authority
-/// crashing outright (never a graceful `stop`, which would publish its own end-of-authority state cleanly).
+/// SIGKILL each of `pids`, each through a pidfd opened BEFORE its identity is read again: from the open until the
+/// descriptor closes the pid names that one process, so a pid the kernel has reused for another process is never
+/// signaled. A process whose command line no longer names a capsule of `exe` over `state_root` is not ours and is left
+/// alone; one that is gone counts as gone. Then waits, bounded, for each signaled process to end. `Err` for any failure
+/// other than the process being gone.
+#[cfg(target_os = "linux")]
+pub fn kill_verified(fs: &dyn ProcFs, pids: &[u32], exe: &Path, state_root: &Path) -> Result<(), String> {
+    use sot_platform::identity::challenge_unix::{pidfd_open, poll_pidfd_readable};
+    use std::os::fd::AsRawFd;
+    let mut held = Vec::new();
+    for &pid in pids {
+        let fd = match pidfd_open(pid) {
+            Ok(fd) => fd,
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => continue,
+            Err(error) => return Err(format!("pidfd_open({pid}): {error}")),
+        };
+        match fs.cmdline(pid) {
+            Ok(cmdline) if capsule_kind(&cmdline, exe, state_root).is_some() => {}
+            Ok(_) => continue,
+            Err(error) if is_gone_error(&error) => continue,
+            Err(error) => return Err(format!("read /proc/{pid}/cmdline after opening its pidfd: {error}")),
+        }
+        // SAFETY: pidfd_send_signal takes a pidfd, a signal number, a null siginfo and flags 0.
+        let rc = unsafe { libc::syscall(libc::SYS_pidfd_send_signal, fd.as_raw_fd(), libc::SIGKILL, std::ptr::null::<libc::c_void>(), 0) };
+        if rc < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                continue;
+            }
+            return Err(format!("pidfd_send_signal({pid}): {error}"));
+        }
+        held.push((pid, fd));
+    }
+    for (pid, fd) in held {
+        match poll_pidfd_readable(fd.as_raw_fd(), BOUND) {
+            Ok(true) => {}
+            Ok(false) => return Err(format!("capsule process {pid} still lives {BOUND:?} after SIGKILL")),
+            Err(error) => return Err(format!("wait for capsule process {pid} to end: {error}")),
+        }
+    }
+    Ok(())
+}
+
+/// [`kill_verified`] over this build's own `sot-capsule` and the real `/proc`, failing the test on any `Err`.
+#[cfg(target_os = "linux")]
+fn kill_own(pids: &[u32], state_root: &Path) {
+    kill_verified(&RealProcFs, pids, &sot_capsule_exe(), state_root).unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// SIGKILL this env's own supervisor ([`own_supervisor_pids`], through [`kill_verified`]) and wait it gone: simulates
+/// the authority crashing outright (never a graceful `stop`, which would publish its own end-of-authority state
+/// cleanly). A test that kills a supervisor expects one: finding none fails it.
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 pub fn kill_supervisor(state_root: &Path) {
-    kill_pids_and_wait(&own_supervisor_pids(state_root));
+    let supervisors = own_supervisor_pids(state_root);
+    assert!(!supervisors.is_empty(), "no supervisor of {state_root:?} to kill");
+    kill_own(&supervisors, state_root);
 }
 
-/// SIGKILL every process this env's capsule has left by pid, the supervisor first and gone before the rest so it
-/// starts nothing after, then poll each gone: the row's whole capsule crashing.
+/// SIGKILL every process this env's capsule has: the supervisor first and gone before the rest is listed again, so it
+/// starts nothing after: the row's whole capsule crashing. A capsule that has no process fails the test.
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 pub fn kill_capsule(state_root: &Path) {
-    kill_supervisor(state_root);
-    kill_pids_and_wait(&own_capsule_pids(state_root));
+    assert!(!own_capsule_pids(state_root).is_empty(), "no capsule process of {state_root:?} to kill");
+    let supervisors = own_supervisor_pids(state_root);
+    if !supervisors.is_empty() {
+        kill_own(&supervisors, state_root);
+    }
+    kill_own(&own_capsule_pids(state_root), state_root);
+}
+
+/// Windows: end each of `pids` by a process handle opened first, then re-list: while the handle is open the pid names
+/// that one process, so a pid still listed afterward is the capsule the listing found and one not listed is left
+/// alone. Waits, bounded, for each to end. `Err` for any failure other than the process being gone (`OpenProcess`
+/// answers 87, invalid parameter, for a pid that no longer exists).
+#[cfg(windows)]
+pub fn kill_by_handle(state_root: &Path, pids: &[u32]) -> Result<(), String> {
+    use sot_platform::identity::challenge_win::{terminate_handle, wait_handle};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE};
+    let mut held: Vec<(u32, HANDLE)> = Vec::new();
+    let close = |held: &[(u32, HANDLE)]| {
+        for (_, handle) in held {
+            unsafe { CloseHandle(*handle) };
+        }
+    };
+    for &pid in pids {
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
+        if handle.is_null() {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(87) {
+                continue;
+            }
+            close(&held);
+            return Err(format!("OpenProcess({pid}): {error}"));
+        }
+        held.push((pid, handle));
+    }
+    let result = (|| {
+        let still = try_own_capsule_pids(state_root)?;
+        for (pid, handle) in &held {
+            if still.contains(pid) {
+                terminate_handle(*handle).map_err(|error| format!("TerminateProcess({pid}): {error}"))?;
+            }
+        }
+        for (pid, handle) in &held {
+            if still.contains(pid) && !wait_handle(*handle, BOUND).map_err(|error| format!("wait for {pid}: {error}"))? {
+                return Err(format!("capsule process {pid} still lives {BOUND:?} after TerminateProcess"));
+            }
+        }
+        Ok(())
+    })();
+    close(&held);
+    result
 }

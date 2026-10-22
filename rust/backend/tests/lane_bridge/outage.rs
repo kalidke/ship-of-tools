@@ -229,7 +229,8 @@ async fn a_terminal_row_is_terminal_after_the_window() {
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
 
-    let terminal_deadline = Instant::now() + BOUND;
+    // The daemon watchdog's restart backoffs (1 + 3 + 7 + 15 + 30 s) plus the suite's own `BOUND`.
+    let terminal_deadline = Instant::now() + Duration::from_secs(56) + BOUND;
     loop {
         let id = next_id;
         next_id += 1;

@@ -496,7 +496,9 @@ async fn lane_connect_refusals() {
     next_id2 += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
 
-    let terminal_deadline = Instant::now() + BOUND;
+    // The daemon watchdog's restart backoffs (1 + 3 + 7 + 15 + 30 s) plus the suite's own `BOUND`: the longest the one
+    // restart budget can take to end the row, whichever capsule runs it.
+    let terminal_deadline = Instant::now() + Duration::from_secs(56) + BOUND;
     loop {
         let id = next_id2;
         next_id2 += 1;

@@ -164,7 +164,7 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
     let env = Env::new("lb3");
     env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-    let (_workspace_id, target) = create_ready_capsule_row(&env, &mut conn, &mut next_id, "lb3-workspace").await;
+    let (workspace_id, target) = create_ready_capsule_row(&env, &mut conn, &mut next_id, "lb3-workspace").await;
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
@@ -221,7 +221,18 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
         assert!(Instant::now() < input_deadline, "resumed client's own input never echoed");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(client.notice().map(|s| s.to_string()), leg_notice, "notice() must still name the SAME leg after a lane-only drop");
+    // The notice names the process the attach lane is served from, which after the kill is whichever process the row
+    // answers from now: the surviving leg (the same notice as before) or the resumed supervisor (its own creation
+    // identity, as its SOSV status reports it).
+    let answering = sot_log::attach_client::supervisor_client::query_status(&env.state_root.join("sot").join("workspaces").join(&workspace_id))
+        .expect("query_status after the resume")
+        .0;
+    let notice = client.notice().map(|s| s.to_string());
+    assert!(
+        notice == leg_notice || notice.as_deref().is_some_and(|n| n.contains(&answering.created.to_string())),
+        "notice() must name the process the row now answers from (created {}): {notice:?}, before the drop {leg_notice:?}",
+        answering.created
+    );
     assert!(!client.is_dead(), "the client must never have gone terminal across the drop");
 
     drop(client);

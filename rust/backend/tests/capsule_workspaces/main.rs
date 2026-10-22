@@ -110,11 +110,12 @@ enum AuthorityAtRestart {
     /// still-answering lane rather than racing a competing `--resume`
     /// into its fence.
     Alive,
-    /// The authority is explicitly stopped first
-    /// (`sot_log::attach_client::supervisor_client::stop`) — its capsule leg
-    /// deliberately survives (ADR 0041 Lifecycle: legs are outside the
-    /// supervisor's own job). Proves `sot-capsule`'s OWN leg-adoption of
-    /// a still-alive orphaned leg behind a genuinely DEAD lane.
+    /// The supervisor is explicitly stopped first
+    /// (`sot_log::attach_client::supervisor_client::stop`). A stop is not an
+    /// end of the run: the next start resumes the row, in the same voyage,
+    /// behind a genuinely DEAD lane. Whether that resume adopts a surviving
+    /// run or starts a new one is the capsule's, so only the voyage is
+    /// asserted, not the leg epoch.
     Stopped,
 }
 
@@ -135,9 +136,10 @@ enum AuthorityAtRestart {
 /// poll could exit before a DELAYED terminal-mark regression ever showed
 /// up — the `Stopped` scenario's resume is a real process spawn with no
 /// fence contention at risk once it reports ready, so it gets no extra
-/// dwell). Finally asserts the leg epoch is UNCHANGED across the restart
-/// — the proof that whichever mechanism resumed the run ADOPTED it
-/// rather than spawning a fresh contender. Returns the new connection/
+/// dwell). Finally asserts the voyage is UNCHANGED across the restart and,
+/// for [`AuthorityAtRestart::Alive`], the leg epoch too — the proof that
+/// whichever mechanism resumed the run ADOPTED it rather than spawning a
+/// fresh contender. Returns the new connection/
 /// next-id so a caller (today: only the `Stopped` scenario) can continue
 /// past this point on the SAME connection — the new daemon itself needs
 /// no return: `env` already owns it (`Env::spawn_sotd`, F4), so a later
@@ -151,6 +153,18 @@ async fn restart_daemon_and_prove_adoption(
     leg_before: u64,
     authority: AuthorityAtRestart,
 ) -> (Conn, u64) {
+    let voyage_before = tokio::task::spawn_blocking({
+        let dir = state_dir_path.to_path_buf();
+        move || {
+            sot_log::attach_client::supervisor_client::query_status(&dir)
+                .expect("query_status before the daemon restart")
+                .0
+                .voyage
+        }
+    })
+    .await
+    .unwrap()
+    .expect("a ready capsule has a voyage");
     if matches!(authority, AuthorityAtRestart::Stopped) {
         tokio::task::spawn_blocking({
             let dir = state_dir_path.to_path_buf();
@@ -228,22 +242,28 @@ async fn restart_daemon_and_prove_adoption(
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let leg_after = tokio::task::spawn_blocking({
+    let after = tokio::task::spawn_blocking({
         let dir = state_dir_path.to_path_buf();
         move || {
             sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after restart")
                 .0
-                .leg
         }
     })
     .await
     .unwrap();
     assert_eq!(
-        leg_after,
-        Some(leg_before),
-        "the leg epoch changed across the daemon restart (authority={authority:?}) -- a fresh/competing leg was spawned, not adopted"
+        after.voyage.as_deref(),
+        Some(voyage_before.as_str()),
+        "the voyage changed across the daemon restart (authority={authority:?}) -- the row was reset, not resumed"
     );
+    if matches!(authority, AuthorityAtRestart::Alive) {
+        assert_eq!(
+            after.leg,
+            Some(leg_before),
+            "the leg epoch changed across the daemon restart (authority={authority:?}) -- a fresh/competing leg was spawned, not adopted"
+        );
+    }
 
     (conn2, next_id2)
 }
