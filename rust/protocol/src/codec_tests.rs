@@ -226,3 +226,31 @@ async fn an_envelope_at_the_cap_is_written_and_read_by_both_pairs() {
     super::write_frame_blocking(&mut blocking, &frame).expect("the blocking writer takes it too");
     super::read_frame_blocking(&mut std::io::Cursor::new(blocking)).expect("read_frame_blocking reads it");
 }
+
+// Wire guarantee 2, the writer's half: a frame whose payload declares a blob of one length, written with a blob of
+// another (or with a blob it does not declare, or none it does), would make a reader take the next envelope for blob
+// bytes. The writer refuses before a byte is written.
+#[tokio::test]
+async fn a_blob_of_another_length_than_the_payload_declares_is_refused_before_any_byte_is_written() {
+    let declared = |len: u64| serde_json::json!({"offset": 0, "total": len, "eof": true, "blob": {"len": len, "mime": "x/y"}});
+    let cases: [(&str, serde_json::Value, Option<&[u8]>); 4] = [
+        ("shorter blob", declared(5), Some(b"abc")),
+        ("longer blob", declared(2), Some(b"abcdef")),
+        ("declared blob, none given", declared(5), None),
+        ("blob the payload does not declare", serde_json::json!({"done": true}), Some(b"abc")),
+    ];
+    for (what, payload, blob) in cases {
+        let mut wire: Vec<u8> = Vec::new();
+        let result = write_frame(&mut wire, &Frame::res(1, "file.download", payload), blob).await;
+        assert!(result.is_err(), "{what}: a mismatched blob was written");
+        assert!(wire.is_empty(), "{what}: {} bytes reached the wire", wire.len());
+    }
+}
+
+// The reader reserves from the declared length only up to a small bound, never a whole envelope's size on a peer's word.
+#[test]
+fn a_declared_blob_length_reserves_at_most_a_small_bound() {
+    assert_eq!(super::blob_reserve(10), 10);
+    assert_eq!(super::blob_reserve(u64::MAX), super::BLOB_RESERVE_BOUND);
+    assert!(super::BLOB_RESERVE_BOUND <= 64 * 1024);
+}
