@@ -424,6 +424,96 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkp
     wait_for_exit(&mut guard2, Duration::from_secs(30));
 }
 
+// -----------------------------------------------------------------------
+// D2: the last screen survives a supervisor restart (the leg writes `screen`, the next leg restores it)
+// -----------------------------------------------------------------------
+
+#[test]
+fn screen_restores_after_a_supervisor_restart() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let mut guard1 = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn1 = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn1, Duration::from_secs(90));
+
+    let (_woke, wake) = wake_flag();
+    let mut client = FeAttachClient::attach(
+        PlatformEndpoint::default(),
+        h.clone(),
+        80,
+        24,
+        "fe-client-screen-restore".to_string(),
+        "test-handle".to_string(),
+        None,
+        wake,
+    )
+    .expect("attach");
+    assert!(
+        poll_screen(&mut client, Duration::from_secs(30), |t| t.trim().chars().any(|c| !c.is_whitespace())),
+        "no checkpoint content ever reached the client's screen before the kill"
+    );
+    client.send_input(b"echo SOT_FE_RESTORE_MARK\r\n");
+    assert!(
+        poll_screen(&mut client, Duration::from_secs(30), |t| t.contains("SOT_FE_RESTORE_MARK")),
+        "the marker never reached the screen"
+    );
+
+    // The leg writes `<state_dir>/screen` at most every 5 s while output arrives: wait for a write after the marker.
+    let screen_file = state_dir.join("screen");
+    let marked_at = std::time::SystemTime::now();
+    poll_until(
+        || {
+            let modified = std::fs::metadata(&screen_file).and_then(|m| m.modified()).ok()?;
+            (modified >= marked_at).then_some(())
+        },
+        Duration::from_secs(30),
+        "the screen file to be written after the marker",
+    );
+
+    let pid = capsule_pid(&voyage);
+    taskkill(pid);
+    drop(client);
+    let _ = guard1.child_mut().kill();
+    let _ = guard1.child_mut().wait();
+
+    let mut guard2 = spawn_supervisor(&state_dir, "--resume", SHELL);
+    let conn2 = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage2, _leg2) = wait_for_ready(&conn2, Duration::from_secs(90));
+
+    // A viewer that attaches only now sees the old screen above the restart line.
+    let (_woke2, wake2) = wake_flag();
+    let mut fresh = FeAttachClient::attach(
+        PlatformEndpoint::default(),
+        h.clone(),
+        80,
+        24,
+        "fe-client-screen-restore-2".to_string(),
+        "test-handle".to_string(),
+        None,
+        wake2,
+    )
+    .expect("attach after the restart");
+    let restored = poll_screen(&mut fresh, Duration::from_secs(60), |t| {
+        t.contains("SOT_FE_RESTORE_MARK") && t.contains("restarted")
+    });
+    assert!(
+        restored,
+        "the restarted leg did not show the old screen above its restart line (dead={}, status={})",
+        fresh.is_dead(),
+        fresh.status_line()
+    );
+
+    drop(fresh);
+    end_run_and_wait_verified(&conn2, &voyage2);
+    let _ = command(&conn2, "test-restore-stop", SupervisorOp::Stop);
+    wait_for_exit(&mut guard2, Duration::from_secs(30));
+}
+
 /// Keys typed while an ATTACHED pane re-attaches are never delivered once it
 /// attaches, even into a restarted session: only a key typed after the pane
 /// reports attached reaches the capsule. The new capsule is frozen so the

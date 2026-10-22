@@ -144,6 +144,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod frame;
 mod output;
 pub mod producer;
+mod screen;
 mod writer_loop;
 use frame::*;
 use output::*;
