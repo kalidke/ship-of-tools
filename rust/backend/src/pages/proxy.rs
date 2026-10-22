@@ -87,6 +87,15 @@ fn allow_browser_port(owner: &str, generation: u64, port: u16) -> Result<(), Por
         grants.ports.clear();
         grants.generation = generation;
     }
+    // Acknowledged only if it stays: the cap evicts the smallest, so a port below a full table's smallest would go at once.
+    if !grants.ports.contains(&port)
+        && grants.ports.len() >= BROWSER_PORTS_PER_WS
+        && grants.ports.first().is_some_and(|smallest| port < *smallest)
+    {
+        return Err(PortRefused::Failed(format!(
+            "the owner already holds {BROWSER_PORTS_PER_WS} granted ports, all above {port}"
+        )));
+    }
     if grants.ports.insert(port) {
         while grants.ports.len() > BROWSER_PORTS_PER_WS {
             // BTreeSet has no insertion order; evicting the smallest is an

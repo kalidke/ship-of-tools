@@ -58,6 +58,18 @@ pub async fn handle_repl_eval(
         Ok(ws) => ws,
         Err(reply) => return Ok(reply),
     };
+    // The shim reads `code` as a string, and a request it cannot read is answered with a response a streamed run drops,
+    // which would leave the run open: refused here, before anything is announced or queued.
+    if payload_json.get("code").and_then(|v| v.as_str()).is_none() {
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::REPL_EVAL,
+                json!({ "error": "repl.eval needs `code` as a string", "code": "repl_eval_failed" }),
+            ),
+            None,
+        )]);
+    }
     let repl = ws.repl(workspaces.repl_frame_tx());
     let mut forwarded = payload_json.clone();
     let display = super::execute::code_display(payload_json.get("code").and_then(|v| v.as_str()).unwrap_or(""));
