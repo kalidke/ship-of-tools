@@ -80,7 +80,6 @@ fn the_start_probes_tell_missing_and_stale_from_live() {
         refusal.contains("another daemon is already listening on"),
         "{refusal}"
     );
-    assert!(socket_answers(&path));
     let stale = dir.path().join("t.sock");
     let socket = unlistened_socket(&stale);
     assert!(

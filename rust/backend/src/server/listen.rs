@@ -110,12 +110,36 @@ fn nobody_listens(
     )
 }
 
-/// Whether a daemon answers on the session socket: on Unix a socket something listens on (this account's, another
-/// account's or one with a full backlog; `nobody_listens` is the rest), on Windows a client open of the pipe name
-/// succeeds. The Unix probe is `connect_own`, bounded by `CONNECT_BOUND` and writing nothing.
+/// How long the lock's probe waits for a listener's reply to its one frame. A daemon answers a first frame that is not
+/// a hello at once; a listener that does not is a copy of one (a child between its fork and its exec holds one) or a
+/// daemon too busy to accept, which the lock's own wait covers either way.
+#[cfg(unix)]
+const REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether the listener behind a connection replies: one `ping`, which a daemon refuses a first frame as, then a read
+/// of its refusal within `REPLY_BOUND`.
+#[cfg(unix)]
+fn replies(client: sot_log::lane::socket_unix::SocketClient) -> bool {
+    let mut stream = client.into_stream();
+    if stream.set_read_timeout(Some(REPLY_BOUND)).is_err() || stream.set_write_timeout(Some(REPLY_BOUND)).is_err() {
+        return false;
+    }
+    let probe = Frame::req(0, op::PING, serde_json::Value::Null);
+    codec::write_frame_blocking(&mut stream, &probe).is_ok()
+        && codec::read_frame_blocking(&mut std::io::BufReader::new(stream)).is_ok()
+}
+
+/// Whether a daemon answers on the session socket: on Unix a socket whose listener replies to a probe frame, or one
+/// that something listens on and the connect cannot tell (another account's, or one with a full backlog;
+/// `nobody_listens` is the rest), on Windows a client open of the pipe name succeeds. The Unix probe is `connect_own`,
+/// bounded by `CONNECT_BOUND`, then one frame and a reply bounded by `REPLY_BOUND`: a listener that completes the
+/// connect and never replies is waited on by the lock, never read as a live daemon.
 fn socket_answers(path: &std::path::Path) -> bool {
     #[cfg(unix)]
-    return !nobody_listens(&sot_log::lane::connect_own::connect_own(path));
+    return match sot_log::lane::connect_own::connect_own(path) {
+        Ok(client) => replies(client),
+        other => !nobody_listens(&other),
+    };
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
