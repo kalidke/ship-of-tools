@@ -1,18 +1,23 @@
 name: CI
 on:
-  # Pushes to main (and runs by hand) only -- not tags, not pull requests
-  # (decided 2026-09-08: not the per-PR workflow; see rust.yml).
+  # Pushes to main and to pass/** and fix/** branches (and runs by hand) -- not tags, not pull
+  # requests (decided 2026-09-08: not the per-PR workflow; see rust.yml). A Julia change meets its
+  # Julia jobs on its branch, never first on main.
   # Path-filtered to the Julia packages, the docs and comm/ (the
   # installer reads every comm folder it installs), so a Rust-only change never
   # spends five Julia jobs.
   push:
     branches:
       - main
+      - "pass/**"
+      - "fix/**"
     paths:
       - "agents/**"
       - "comm/**"
       - "core/**"
       - "julia/**"
+      - "rust/backend/src/sidecars/**"
+      - "rust/backend/sidecars/**"
       - "docs/**"
       - "src/**"
       - "test/**"
@@ -31,7 +36,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     # A pre-release Julia warns and never gates a cut: no lab box runs one, and an alpha can break what a release passes.
     continue-on-error: ${{ matrix.version == 'pre' }}
-    timeout-minutes: 60
+    # Bounds so a hung step fails within minutes, not at the job's old 60. Figures: the longest job and step
+    # of two main runs, with margin (a job 6.3 to 8.9 minutes, a step 2.9 to 7.1, the docs step 5.8).
+    timeout-minutes: 15
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
       contents: read
@@ -62,9 +69,11 @@ jobs:
         with:
           workspaces: rust
       - name: Build the daemon the comm wrappers run
+        timeout-minutes: 5
         run: cargo build -p sot-backend --bin sotd --locked
         working-directory: rust
       - uses: julia-actions/julia-runtest@v1
+        timeout-minutes: 12
         env:
           SOTD_BIN: ${{ github.workspace }}/rust/target/debug/sotd
       - uses: julia-actions/julia-processcoverage@v1
@@ -79,7 +88,7 @@ jobs:
   pluto-workers:
     name: Pluto workers - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 12
     permissions:
       actions: write
       contents: read
@@ -97,15 +106,17 @@ jobs:
           version: '1.12'
       - uses: julia-actions/cache@v3
       - name: Instantiate julia/pluto
+        timeout-minutes: 5
         run: julia --project=julia/pluto -e 'using Pkg; Pkg.instantiate()'
       - name: Test Pluto's notebook workers
+        timeout-minutes: 5
         run: julia --project=julia/pluto julia/pluto/test/runtests.jl
   # ADR 0049, User isolation: wglshow's page carries its assets inside it, so its port answers nothing without a
   # secret, and serving it opens one listener. It needs Bonito, so it has an environment of its own.
   wglshow-pages:
     name: wglshow pages - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 12
     permissions:
       actions: write
       contents: read
@@ -123,8 +134,10 @@ jobs:
           version: '1.12'
       - uses: julia-actions/cache@v3
       - name: Instantiate the wglshow page test
+        timeout-minutes: 5
         run: julia --project=julia/repl/test/bonito -e 'using Pkg; Pkg.instantiate()'
       - name: Test wglshow's page
+        timeout-minutes: 5
         run: julia --project=julia/repl/test/bonito julia/repl/test/bonito/runtests.jl
   # The real Julia suites live in sub-package environments (the root package
   # is just the ShipTools umbrella/installer). Run each with Pkg.test so CI
@@ -136,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     # As in `test`: the pre-release leg warns and never gates a cut.
     continue-on-error: ${{ matrix.version == 'pre' }}
-    timeout-minutes: 60
+    timeout-minutes: 12
     permissions:
       actions: write # julia-actions/cache proactive cleanup
       contents: read
@@ -157,16 +170,22 @@ jobs:
       # gracefully when the tools are absent — install them so CI runs the
       # real code paths instead of the skips.
       - name: Install preview tool dependencies
+        timeout-minutes: 5
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript poppler-utils ffmpeg
       - name: Test ConceptExplorerCore
+        timeout-minutes: 5
         run: julia --project=core -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
       - name: Test ShipToolsKernel
+        timeout-minutes: 5
         run: julia --project=julia/kernel -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
       - name: Test ShipToolsRepl
+        timeout-minutes: 5
         run: julia --project=julia/repl -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
       - name: Test ShipToolsPDFFile
+        timeout-minutes: 5
         run: julia --project=julia/plugins/pdf-file -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
       - name: Test ShipToolsVideoFile
+        timeout-minutes: 5
         run: julia --project=julia/plugins/video-file -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
       - uses: julia-actions/julia-processcoverage@v1
         with:
@@ -180,7 +199,7 @@ jobs:
     name: Documentation
     runs-on: ubuntu-latest
     # Usually 2 to 10 minutes; makedocs runs the doctests.
-    timeout-minutes: 30
+    timeout-minutes: 12
     concurrency:
       # Serialize only the DEPLOYING build (main -> gh-pages). A PR/branch
       # docs build deploys nothing, and one repo-wide group made GitHub
@@ -205,6 +224,7 @@ jobs:
       # single-package template step ran doctest(ShipTools), which walks all of
       # docs/src and dies on the `CurrentModule = ConceptExplorerCore` pages.
       - uses: julia-actions/julia-docdeploy@v1
+        timeout-minutes: 10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
