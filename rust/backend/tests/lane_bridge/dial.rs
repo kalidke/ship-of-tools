@@ -227,16 +227,15 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
         assert!(Instant::now() < input_deadline, "resumed client's own input never echoed");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // The notice names the process the attach lane is served from, which after the kill is whichever process the row
-    // answers from now: the surviving leg (the same notice as before) or the resumed supervisor (its own creation
-    // identity, as its SOSV status reports it).
+    // The notice names the process the attach lane is served from. The supervisor is the one process of the row, so after
+    // the kill it names the resumed supervisor (its creation identity, as its SOSV status reports it), never the dead one.
     let answering = sot_log::attach_client::supervisor_client::query_status(&env.state_root.join("sot").join("workspaces").join(&workspace_id))
         .expect("query_status after the resume")
         .0;
     let notice = client.notice().map(|s| s.to_string());
     assert!(
-        notice == leg_notice || notice.as_deref().is_some_and(|n| n.contains(&answering.created.to_string())),
-        "notice() must name the process the row now answers from (created {}): {notice:?}, before the drop {leg_notice:?}",
+        notice != leg_notice && notice.as_deref().is_some_and(|n| n.contains(&answering.created.to_string())),
+        "notice() must name the resumed supervisor (created {}): {notice:?}, before the drop {leg_notice:?}",
         answering.created
     );
     assert!(!client.is_dead(), "the client must never have gone terminal across the drop");

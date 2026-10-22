@@ -47,7 +47,12 @@ Supervisor:
   supervisor's exit: 0 ends it, 69 marks the row `terminal`, 70 leaves the row to the next attach, and every other end
   restarts it with `--resume` within the budget: 75 (the agent could not be spawned), 76 (it started and ended by
   itself) and a killed supervisor (no code), which takes its agent with it. 75 and 76 are one path for the restart and
-  differ only in the log; a restart spawns the row's own recipe, never a reauth's `--resume`. The give-up latches
+  differ only in the log; a restart spawns the row's own recipe, never a reauth's `--resume`. Limits: readiness is a heuristic (the row's phase read `ready` two seconds after adoption; a delayed observation, or a
+  supervisor that died before settling and was never named, reads never-ready, and a flash read late can read ready), and
+  the watchdog's identity for a supervisor comes only from its settle and is not refreshed by a later observation or
+  cleared by a failed spawn (queue item RUN-IDENTITY-READY, pass 6c-1: each run gets an identity on the row socket);
+  a replacement's exit 69 before it answered is latched only by a give-up, not by `TerminalUnclaimed`, which a claimed
+  cell refuses. The give-up latches
   `terminal` under the row's guard, whichever supervisor the cell was last claimed by. Limit, accepted for pass 6b and
   closed by pass 6c-1 with a guarantee and its red test: a supervisor found alive at boot has no watchdog (`resume_all`
   adopts it and never watches it), so after its agent ends by itself the row stays `unreachable` until it is selected,

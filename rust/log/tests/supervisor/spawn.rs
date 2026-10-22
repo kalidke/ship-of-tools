@@ -365,7 +365,11 @@ fn an_agent_that_ends_by_itself_ends_the_supervisor_with_76() {
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
-    let mut guard = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "exit 3"]);
+    #[cfg(windows)]
+    let exits: &[&str] = &["cmd.exe", "/d", "/c", "exit 3"];
+    #[cfg(not(windows))]
+    let exits: &[&str] = &["/bin/sh", "-c", "exit 3"];
+    let mut guard = spawn_supervisor(&state_dir, "--start", exits);
     let status = wait_for_exit(&mut guard, Duration::from_secs(30));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_AGENT_ENDED), "exit status: {status:?}");
 }

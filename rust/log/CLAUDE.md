@@ -9,6 +9,10 @@ challenge's OS steps, and re-exports none of it. The capsule's contract is writt
 true after the merge of the leg into the supervisor.
 
 ## Owns
+- Deviation, deferred to pass 6c: the SOM0 management lane is still live (`VoyageMgmtExchange` sends its `Status`,
+  and the attach server still accepts `Probe`, `Status` and `Shutdown`); pass 6b did not delete it. Limit: a screen
+  writer that timed out at a run's end (`ScreenFile::finish`) can still publish a stale snapshot over a later run's
+  `screen` (queue item SCREEN-WRITER-SPAN: one writer whose ownership spans runs).
 - The supervisor, `sot-capsule supervise`: `supervisor.lock`, the pointer `drawer.voyage` and the supervisor lane
   (`src/supervisor/`). It runs the agent itself, from its main thread (`capsule::run`), and a second thread serves
   the lane.
@@ -28,8 +32,11 @@ true after the merge of the leg into the supervisor.
   the process, and the kernel's parent-death signal (`PR_SET_PDEATHSIG`) fires when it ends, so a SIGKILL of the
   supervisor ends the agent (`tests/supervisor/one_process.rs`: the agent ignores SIGHUP, so only that signal can).
   Unix: the supervisor also holds the terminal's master, so its end hangs up the agent's session. Windows: the ConPTY
-  agent runs in a kill-on-close job, so the last handle's close ends its tree. Limits: on macOS only the hangup ends
-  the agent, so a descendant that leaves the session and ignores SIGHUP survives; a descendant in another job (Windows)
+  agent runs in a kill-on-close job, so the last handle's close ends its tree. Limits: macOS has no parent-death
+  signal, so only the hangup ends the agent there: an agent that ignores SIGHUP can outlive a SIGKILLed supervisor
+  (queue item MACOS-AGENT-WATCH: a kqueue `NOTE_EXIT` watcher); the ordinary case, an agent that does not ignore SIGHUP,
+  is tested on macOS (`tests/macos_kernel_facts/kqueue.rs`), the SIGHUP-ignoring case on Linux and Windows only; a
+  descendant that leaves the session survives on Unix, and one in another job (Windows)
   or session (Unix) is not the supervisor's to end.
 - Phases: `starting` (until the agent has written or lived two seconds), `ready`, `ending`, `ended_no_respawn` (the
   agent is gone because an end was asked for; only a reset or a stop remains) and `terminal` (sticky). The supervisor
@@ -40,7 +47,10 @@ true after the merge of the leg into the supervisor.
 - An operation is answered while its supervisor lives and kept in memory for its resubmits: the same id and the same
   command answers from its record, another command under it is `id_conflict`, a command naming another voyage is
   `stale_voyage`. `end_run` is admitted only while an agent runs and answers `record_verified` once it has ended, so a
-  `reset` sent after the answer is admitted; `reset` only from `ended_no_respawn`; `stop` ends the agent and the
+  `reset` sent after the answer is admitted; an acknowledged `end_run` is recorded as a requested end on the voyage
+  before the answer even when the agent ended first (`mark_end_requested`), so a resume rests; a failed attach
+  transport (`ExitKind::TransportFailed`) is not a requested end and ends the supervisor terminal; a supervisor that
+  goes terminal sends its running agent `Stop` first; `reset` only from `ended_no_respawn`; `stop` ends the agent and the
   process (exit 0, or 69 when it was terminal). Nothing outlives the supervisor to reconcile: a crash loses operation
   records, and a client that lost a reply reads status.
 - The supervisor keeps `<state_dir>/screen`: the vt100 fork's checkpoint (format 2), handed every 5 s while the screen
@@ -60,7 +70,10 @@ true after the merge of the leg into the supervisor.
 - `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot serve the row), 70 (`EXIT_CONTENDED`, the
   fence was already held), 75 (`EXIT_AGENT_NOT_STARTED`: the agent could not be spawned) or 76 (`EXIT_AGENT_ENDED`: it
   started and ended by itself), the last two with no stop or end asked for (`tests/supervisor/spawn.rs`). A supervisor
-  killed has no code. There is no storage hold and no exit 71. `--survival` and `--assume-no-rollback-target` are
+  killed has no code. Limits: a supervisor that fails to take over an inherited claim (a wrong or unlocked descriptor)
+  also exits 70, which does not prove another live authority; and on Unix an executable that passes preflight but fails
+  at exec can read as an aborted child, so 76 for a program that never started (the exec-error pipe is closed). There is
+  no storage hold and no exit 71. `--survival` and `--assume-no-rollback-target` are
   accepted and ignored.
 - Only linux, macos and windows build.
 - A reply on a local connection is trusted only after the challenge in platform (`../platform/src/identity/`); the

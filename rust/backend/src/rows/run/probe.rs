@@ -154,8 +154,8 @@ fn note_version_skew(state_dir: &Path) {
         tracing::warn!(
             state_dir = ?state_dir,
             "the row's supervisor refused this client (another lane protocol, or a supervisor from before \
-             the protocol-only gate); end the row and recreate it, or kill only its `sot-capsule supervise` \
-             process and attach the row again (the run leg and its agent survive and are adopted)"
+             the protocol-only gate); end the row and recreate it. Killing its `sot-capsule supervise` process \
+             ends its agent with it; attaching the row again then resumes the row in a new run"
         );
     }
 }
