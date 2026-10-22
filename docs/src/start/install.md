@@ -116,7 +116,7 @@ checkout (`julia/kernel`, `julia/repl`, `julia/pluto`). `--backend <ssh-alias>`
 is a frontend-only install and uses Julia locally only to install the agent
 skills; install the remote machine as a backend role. Julia runs the
 installer's comm step on every role, which is why it is needed here too; the
-skills and hooks it installs are inert unless a session runs on this
+skills it installs load only in a session Ship of Tools starts on this
 machine.
 
 Connection behaviour is role-specific:
@@ -177,9 +177,8 @@ installs the agent integration:
 |------|------|
 | `~/.sot-comm/` | the session messaging scripts (`bin/`) and their runtime state |
 | `~/.local/bin/` | `ccb` (Claude Code launcher), `ccx` (Codex launcher), `sot-fe`, `show-result`, `sot-gh-auth` |
-| `~/.claude/skills/` | the Claude Code skills: `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `sot-install`, `sot-setup`, `sot-statusline-setup`, `sot-gh-auth` |
-| `~/.claude/settings.json` | hook entries for `UserPromptSubmit`, `PreToolUse` (on `AskUserQuestion`), `PostToolUse` and `Stop`, each calling a `comm-*.sh` script in `~/.sot-comm/bin`; merged in without removing existing hooks |
-| `~/.claude-auth/<name>/settings.json` | the same hook entries, merged the same way into each Claude account that has a `settings.json`; a link is followed and its target written once, and an account folder with none is skipped and none is created there (the backend links the shared one in at the account's first spawn, or on Windows without symlinks copies it once, and that copy then gets the hooks like any account's own) |
+| `~/.sot-comm/claude-layer/` | the Claude Code skills (under `.claude/skills/`): `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `sot-install`, `sot-setup`, `sot-statusline-setup`, `sot-gh-auth`. A session Ship of Tools starts (a row or `ccb`) adds this folder to itself and carries the work-state hooks in its own launch settings; a plain `claude` loads none of it |
+| `~/.claude/settings.json`, `~/.claude-auth/<name>/settings.json` | nothing is written. An install removes the hook entries an earlier release merged in (each calls a `comm-*.sh` script under `~/.sot-comm/bin`), one at a time, and keeps every other hook; a link is followed and its target rewritten once, and a file with none of them is not rewritten |
 | `~/.codex/skills/` | the Codex skills `sot-comm` and `sot-session-start` |
 | `~/.codex/AGENTS.md` | the repo's `AGENTS.md`, installed when none is there and replaced only while the installed file holds "Codex sessions in Ship of Tools"; any other file there is left alone and a warning says to merge by hand |
 | `~/.agents/plugins/sot-comm/`, `~/.agents/plugins/marketplace.json` | the Codex work-state hook plugin; written whether or not Codex is installed, and registered with `codex plugin add sot-comm@sot-local` when it is |
@@ -187,35 +186,31 @@ installs the agent integration:
 `~/.claude` and `~/.codex` follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when
 those are set; `~/.sot-comm` follows `SOT_COMM_HOME`. The other paths do not
 move: `~/.local/bin`, `~/.agents/plugins`, `~/.claude-auth` and everything in
-the first table are always written in your home directory, and an existing
-`~/.claude/settings.json` gets the hooks even when `CLAUDE_CONFIG_DIR` points
-elsewhere. If `CLAUDE_CONFIG_DIR` names an account folder under
-`~/.claude-auth` that has no `settings.json`, none is created there; the hooks
-go into `~/.claude/settings.json` (created if missing), which the backend links
-into the account (on Windows without symlinks, copies in once). The install ends by naming every Claude settings file it
-left without the hooks, with the reason (an account with no `settings.json`, a
-file made read-only, one that could not be read or parsed). Setting those three
-variables is therefore not an isolated try-out; for that, install under a separate user
-account or in a virtual machine.
+the first table are always written in your home directory. The install ends by
+naming every Claude settings file it could not remove the old hooks from, with
+the reason (a file made read-only, one that could not be read or parsed).
+Setting those three variables is therefore not an isolated try-out; for that,
+install under a separate user account or in a virtual machine.
 
-The hooks do nothing in an agent session that has not joined the Ship of
-Tools session registry. Each hook first looks the session up in the session registry
-(`~/.sot-comm/registry.json`) and exits without writing anything when it is not
-there, which is the case for a `claude` or `codex` you start yourself in a
-terminal. Setting `SOT_COMM_HOOKS=off` turns the Claude Code work-state hooks
-off entirely.
+The Claude skills and the work-state hooks exist only in a session Ship of Tools
+starts: a row, or `ccb`. That session adds `~/.sot-comm/claude-layer` to itself
+(`--add-dir`) and carries the hooks in its own launch settings, so a `claude`
+you start yourself in a terminal loads none of them, and neither your skills
+folder nor your `settings.json` holds one. The first install of this release
+removes, once, the skills an earlier release put in `~/.claude/skills` (the
+exact names listed above, and the retired `sot-be-session-start` and
+`sot-fe-session-start`; the folder's `.sot-skills-moved` file names what it
+removed, and after it a skill of yours under one of those names is left alone).
+The hooks still do nothing in a session that has not joined the Ship of Tools
+session registry, and `SOT_COMM_HOOKS=off` turns the Claude Code work-state
+hooks off entirely. A session you start by hand reads mail with `comm-poll.sh`,
+which is not a skill; it has no end-of-turn mail check.
 
-The skills are likewise available in a plain terminal `claude`, but their
-commands need a Ship of Tools session: `julia-repl` and `show-result` reach
-`sot-fe`, which has nothing to talk to outside one.
-
-A skill directory with the same name as one of the skills above is
-overwritten: each shipped file replaces the file of the same name, and any
-other file in that directory is deleted. No backup is made. Every re-run of
-the installer, including each update, repeats this.
-The five skills without an `sot-` prefix are the likeliest to collide with
-one of your own: `julia-repl`, `show-result`, `sitrep`, `worktree` and
-`project-log`.
+Nothing the installer writes for Claude lands in a folder of yours any more, so
+no skill of yours is overwritten. The Codex skills are still written into
+`~/.codex/skills`: a skill directory there with the same name as one of them is
+overwritten, each shipped file replacing the file of the same name and any other
+file in that directory deleted, with no backup.
 
 The installer itself edits no shell profile. If no Julia 1.12 or newer is
 found and juliaup is not installed, it runs the juliaup installer, which adds
@@ -265,8 +260,6 @@ rm -f ~/.local/bin/sot-launch ~/.local/bin/ccb ~/.local/bin/ccx ~/.local/bin/sot
       ~/.local/bin/show-result ~/.local/bin/sot-gh-auth
 rm -f ~/.local/share/applications/ship-of-tools.desktop \
       ~/.local/share/icons/hicolor/256x256/apps/ship-of-tools.png
-rm -rf ~/.claude/skills/{julia-repl,show-result,sot-comm,sot-session-start,sot-status,\
-sitrep,worktree,project-log,sot-install,sot-setup,sot-statusline-setup,sot-gh-auth}
 rm -rf ~/.codex/skills/{sot-comm,sot-session-start}
 rm -rf ~/.agents/plugins/sot-comm
 ```
@@ -279,7 +272,9 @@ them.
 
 Then, by hand:
 
-- remove the hook entries that call `~/.sot-comm/bin/comm-*.sh` from
+- only if an earlier release was installed here and this one never was: remove
+  the skills it put in `~/.claude/skills` (the names in the table above) and the
+  hook entries that call `~/.sot-comm/bin/comm-*.sh` from
   `~/.claude/settings.json` (even when `CLAUDE_CONFIG_DIR` is set), from
   `$CLAUDE_CONFIG_DIR/settings.json` when it is set, and from each
   `~/.claude-auth/<name>/settings.json`; where one of these is a link, edit the

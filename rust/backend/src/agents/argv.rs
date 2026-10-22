@@ -1,6 +1,7 @@
 // argv.rs — the agent launch recipe: argv per agent kind, resolved to absolute paths on Unix.
 
 use std::path::{Path, PathBuf};
+use super::layer;
 use super::memory::auto_memory_settings;
 
 /// The process environment this module reads: the one place `PATH`, `HOME` and `SHELL` are read. The `_in` functions
@@ -93,12 +94,15 @@ fn caller_brought_settings(extra: &[String]) -> bool {
 /// below, keeps the literal name); `"codex"` has its own, much smaller,
 /// recipe ([`codex_argv`]) rather than sharing this one — its flag shape
 /// (no skill argv) is unrelated to claude's.
+///
+/// `comm_home` is where the Claude layer lives: when it holds one, the leg
+/// carries `--add-dir=<layer>` (the skills) and the work-state hooks inside
+/// the one `--settings` (see `layer.rs`), so a plain `claude` has neither.
 fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>, comm_home: Option<&Path>) -> Vec<String> {
-    let mut argv = vec![
-        "claude".to_string(),
-        "--permission-mode".to_string(),
-        "auto".to_string(),
-    ];
+    let layer = comm_home.and_then(layer::installed);
+    let mut argv = vec!["claude".to_string()];
+    argv.extend(layer.as_deref().map(layer::add_dir_arg));
+    argv.extend(["--permission-mode".to_string(), "auto".to_string()]);
     // See [`caller_brought_settings`] for why a caller's own wins.
     if !caller_brought_settings(extra) {
         // `account_home`, never `HOME`: this module's own resolver is what
@@ -113,12 +117,13 @@ fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>, comm_home: Option<
         let child_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from);
-        if let Some(json) = memory_cwd
+        let memory = memory_cwd
             .zip(crate::agents::accounts::account_home())
             .and_then(|(cwd, home)| {
                 auto_memory_settings(&home, cwd, child_config_dir.as_deref())
-            })
-        {
+            });
+        let hooks = comm_home.filter(|_| layer.is_some()).map(layer::hooks_settings);
+        if let Some(json) = layer::merged_settings(memory, hooks) {
             argv.push("--settings".to_string());
             argv.push(json);
         }

@@ -30,8 +30,10 @@ to pin one).
   **ffmpeg** (the poster frame of a video preview).
 
 !!! warning "Try it in a VM or a separate account"
-    The installer changes your own agent setup (skills and hooks into your
-    global `~/.claude` and `~/.codex`), and there is no isolated mode yet. See
+    The installer changes your own agent setup (the Codex skills and plugin
+    into your global `~/.codex` and `~/.agents`, and it removes the Claude
+    skills and hooks an earlier release put in `~/.claude`), and there is no
+    isolated mode yet. See
     [What the installer changes](@ref install-footprint).
 
 ## 1. Install

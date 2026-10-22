@@ -115,9 +115,10 @@ from `~/.claude`, so the account starts with the same instructions, hooks,
 and history as the default login. An entry already present in the account
 folder — created by you, or from an earlier session — is kept as is and
 overrides the shared one; to use the shared one instead, remove the
-account's own copy. The comm hooks are the one exception: every install and
-update also merges them into an account's own `settings.json`, so a session in
-that account still reports its work state. User-scope MCP servers live with the per-account
+account's own copy. The Ship of Tools skills and work-state hooks are not in
+any of these folders: a session Ship of Tools starts carries them itself (the
+skills from `~/.sot-comm/claude-layer`, the hooks in its own launch settings),
+whichever account it runs as. User-scope MCP servers live with the per-account
 state, so add them separately for each account you want to use them from.
 
 On Windows, a symlink needs Developer Mode or the symlink privilege, and a standard desktop user has

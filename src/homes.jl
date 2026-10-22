@@ -23,3 +23,11 @@ codex_home() = _env_dir("CODEX_HOME", joinpath(homedir(), ".codex"))
 
 "Resolved runtime home for the DEFAULT claude account (honors `\$CLAUDE_CONFIG_DIR`)."
 claude_home() = _env_dir("CLAUDE_CONFIG_DIR", joinpath(homedir(), ".claude"))
+
+# The Claude layer: the one folder the Claude skills live in. A leg of the launch recipe adds it with `--add-dir`
+# (Claude Code loads `.claude/skills/` of an added folder), so a plain `claude` never sees them. The recipe reads this
+# name from `rust/backend/src/agents/layer.rs` (`LAYER_DIR`).
+"The Claude layer folder, under the comm home."
+claude_layer() = joinpath(comm_home(), "claude-layer")
+"The folder the Claude layer's skills install into."
+claude_layer_skills() = joinpath(claude_layer(), ".claude", "skills")

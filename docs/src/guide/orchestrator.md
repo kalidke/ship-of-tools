@@ -17,7 +17,9 @@ You start and switch them from [Sessions mode](modes.md). A dedicated
 ## What Ship of Tools adds to the agent
 
 The installer gives each agent CLI a set of skills and hooks (listed under
-[What the installer changes](@ref install-footprint)):
+[What the installer changes](@ref install-footprint)). For Claude Code they
+exist only in a session Ship of Tools starts, a row or `ccb`: a `claude` you
+start yourself in a terminal loads none of them.
 
 - **Skills** that call small command-line tools: `julia-repl` runs code in the
   session's REPL ([How agents use the REPL](@ref agents-repl)), `show-result`

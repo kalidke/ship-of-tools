@@ -175,7 +175,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 3 | `argv::tests::resolve_claude_*`, `resolve_ccx_*`; `env::tests::agent_env_prepends_local_bin_to_path_once`; `tests/agent_exec.rs` |
 | 4 | `env::tests::capsule_supervisor_env_*`, `nesting_env_scrub_list_matches_ccb`; `tests/agent_exec.rs` |
 | 5 | `accounts::tests::*`, `account_links::tests::*` |
-| 6 | `folder_trust::tests::*`, `trust_declaration::tests::*`, `env::tests::trust_*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
+| 6 | `folder_trust::tests::*`, `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*`, `env::trust_config_controls::*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
 | 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `layer::tests::*`; `tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `test/skills_tests.jl`, `test/claude_hooks_tests.jl` |
 | 8 | `test/claude_hooks_tests.jl` (retirement), `test/skills_tests.jl` (the one-time move) |
 | 9 | pass 10b |

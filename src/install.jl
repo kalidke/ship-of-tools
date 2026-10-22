@@ -38,7 +38,7 @@ exist. Installs the files of every folder listed in
 comm/bin-folders.txt into `\$SOT_COMM_HOME/bin` (default `~/.sot-comm/bin`),
 each part inside the file that sources it (`_comm_bin_text`),
 whatever `clis`, and installs the adapter for each CLI in `clis`
-(`:claude` skills/hooks, `:codex` skills/hooks/plugin). Idempotent — safe to
+(`:claude` skills into the Claude layer and the retirement of earlier hooks and skills, `:codex` skills/hooks/plugin). Idempotent — safe to
 re-run to update an existing install. Without jq on PATH it stops before it
 changes anything, with one line naming the command that installs jq
 (`_jq_install_command`).
@@ -69,16 +69,16 @@ function install_comm(; clis = [:claude, :codex])
     prev_manifest = _read_comm_manifest(bin)
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
 
-    unhooked = String[]
+    unretired = String[]
     for cli in clis
         _stage!(problems, "adapter $cli") do
-            _install_adapter(Symbol(cli); unhooked = unhooked)
+            _install_adapter(Symbol(cli); unretired = unretired)
         end
     end
-    # Never silent about an account the hooks did not reach (each line was
-    # also warned where it happened; this is the one place they are listed).
-    isempty(unhooked) || @warn "The comm hooks are NOT in these Claude settings — a session there does not report its work state:\n  " *
-                               join(unhooked, "\n  ")
+    # Never silent about a settings file the old hooks could not be removed from (each line was also warned where it
+    # happened; this is the one place they are listed).
+    isempty(unretired) || @warn "The comm hooks of an earlier install may still be in these Claude settings; a plain `claude` there runs them, and they do nothing outside a row:\n  " *
+                                join(unretired, "\n  ")
     isempty(problems) ||
         error("sot-comm install INCOMPLETE — " * join(problems, "; ") *
               "; no version stamp written, `sot-fe version` reports this install as unknown")

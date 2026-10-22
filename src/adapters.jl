@@ -1,25 +1,33 @@
 # The per-CLI adapter install: what the Claude and Codex arms copy and wire.
 
-function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
+function _install_adapter(cli::Symbol; unretired::Vector{String} = String[])
     problems = String[]
     if cli === :claude
+        # The skills go to the Claude layer, which only a leg of the launch recipe adds (`--add-dir`), and the work-state
+        # hooks ride that leg's `--settings` (`rust/backend/src/agents/layer.rs`): so a plain `claude` loads neither.
+        # What an earlier install put in the user's own folders is removed only after the layer holds every skill.
         for srcdir in CLAUDE_SKILL_SRCS
             _stage!(problems, "claude skills") do
-                _install_skills(srcdir, joinpath(claude_home(), "skills"))
+                _install_skills(srcdir, claude_layer_skills())
             end
+        end
+        isempty(problems) && _stage!(problems, "claude layer") do
+            _prune_layer_skills!(claude_layer_skills(), CLAUDE_SKILL_SRCS)
         end
         _stage!(problems, "claude launchers") do
             _install_launchers(CLAUDE_LAUNCHER_SRC)
         end
-        _stage!(problems, "claude hooks") do
-            _install_claude_hooks(claude_home(); unhooked = unhooked)
+        if isempty(problems)
+            # A named account shares the default skills folder by the symlink the daemon makes at spawn
+            # (`rust/backend/src/agents/accounts.rs::ensure_account_links`), so the one move covers every account;
+            # the hooks are in each account's own settings.json when it has a real one of its own.
+            _stage!(problems, "claude skills move") do
+                _move_placed_skills!(joinpath(claude_home(), "skills"))
+            end
+            _stage!(problems, "claude hooks") do
+                _retire_claude_hooks(claude_home(); unretired = unretired)
+            end
         end
-        # Named accounts get skills via the shared-folder symlink the
-        # daemon creates at spawn (`rust/backend/src/agents/accounts.rs::
-        # ensure_account_links`); the hooks are merged into every
-        # account's own settings.json by `_install_claude_hooks` itself,
-        # since an account with a real settings.json never sees the
-        # shared one.
     elseif cli === :codex
         # ADR 0031 — codex adapter: ccx launcher, and the hooks.json plugin
         # payload (state-nav wiring).

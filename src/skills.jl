@@ -104,3 +104,63 @@ function _prune_deprecated_skills!(skillsroot::AbstractString)
         @info "Pruned deprecated skill" dir = dst
     end
 end
+
+# Every skill an earlier installer placed straight into a Claude skills folder: the names it shipped, and the retired ones.
+# Exact names, never a glob. An earlier install overwrote a same-named skill of a person's without a backup, so a folder
+# of one of these names is the installer's. Never extended: from this release a skill goes only to the Claude layer.
+const LEGACY_PLACED_SKILLS = ["julia-repl", "project-log", "reauth", "show-result", "sitrep", "sot-comm",
+                              "sot-gh-auth", "sot-install", "sot-session-start", "sot-setup", "sot-status",
+                              "sot-statusline-setup", "worktree", COMM_DEPRECATED_SKILLS...]
+
+# The file in a skills folder that says the one-time move below has been made, and lists what it removed.
+const SKILLS_MOVED_MARKER = ".sot-skills-moved"
+
+"""
+    _prune_layer_skills!(layerskills, srcdirs)
+
+The layer is the installer's alone, so a skill directory in it that no source folder in `srcdirs` ships any more goes:
+a retired skill must not stay loadable in a row. Called only after every skill installed.
+"""
+function _prune_layer_skills!(layerskills::AbstractString, srcdirs)
+    isdir(layerskills) || return nothing
+    shipped = Set(n for src in srcdirs for n in readdir(src) if isfile(joinpath(src, n, "SKILL.md")))
+    for name in readdir(layerskills)
+        name in shipped && continue
+        rm(joinpath(layerskills, name); recursive = true, force = true)
+        @info "Pruned a skill the release no longer ships from the Claude layer" skill = name
+    end
+    return nothing
+end
+
+"""
+    _move_placed_skills!(skillsroot)
+
+The one-time move of the skills out of a Claude skills folder: remove each [`LEGACY_PLACED_SKILLS`] directory an earlier
+install put there (a link of that name is a person's own and stays), and write the names removed to
+[`SKILLS_MOVED_MARKER`]. A folder that holds the marker is never touched again, so a skill a person makes later under a
+shipped name is theirs; a folder with none of the names gets no marker. A directory that cannot be removed is warned
+about and named in the error, and the marker is not written, so the next install tries again.
+"""
+function _move_placed_skills!(skillsroot::AbstractString)
+    isdir(skillsroot) || return nothing
+    marker = joinpath(skillsroot, SKILLS_MOVED_MARKER)
+    ispath(marker) && return nothing
+    removed = String[]
+    stuck = String[]
+    for name in LEGACY_PLACED_SKILLS
+        dst = joinpath(skillsroot, name)
+        (isdir(dst) && !islink(dst)) || continue
+        try
+            rm(dst; recursive = true)
+            push!(removed, name)
+        catch err
+            @warn "could not remove a skill an earlier install placed here" dir = dst error = err
+            push!(stuck, name)
+        end
+    end
+    isempty(stuck) || error("could not remove the earlier copies of: " * join(stuck, ", "))
+    isempty(removed) && return nothing
+    write(marker, join(removed, "\n") * "\n")
+    @info "Moved the skills of an earlier install out of the Claude skills folder; a row loads them from the layer" dir = skillsroot removed = removed
+    return nothing
+end

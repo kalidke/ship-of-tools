@@ -89,10 +89,11 @@ Waking:
   main's box holds just that line. Each typing, the line or Enter alone, is one INFO log event: the handle, what was
   sent, the cursor's row and the box's rows as the gate read them (escaped), and the outcome.
 - A busy session needs no typing: its end-of-turn check (the Stop hook, through `sotd comm unread`) does not let a turn
-  end while unread mail waits, once per batch.
-- A session outside any row, every server session included, has a handle and an inbox and is never woken; it sees mail
-  at its next turn, and after ten idle minutes a send to it fails as "no live session". No per-session watcher,
-  listener, bridge or Monitor exists.
+  end while unread mail waits, once per batch. The hook rides the launch recipe (agents' contract, guarantee 7), so a
+  row and a `ccb` session have it and a `claude` started by hand does not.
+- A session outside any row, every server session included, has a handle and an inbox and is never woken; one started
+  by `ccb` sees mail at its next turn, one started by hand at its next `comm-poll.sh`, and after ten idle minutes a send
+  to it fails as "no live session". No per-session watcher, listener, bridge or Monitor exists.
 
 Isolation:
 - Users on one computer never see each other. Everything messaging writes is its user's alone: the comm folder's

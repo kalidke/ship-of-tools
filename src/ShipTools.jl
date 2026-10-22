@@ -1,28 +1,19 @@
 # ShipTools — install/update sot-comm, the session-to-session messaging system.
 #
 # Source of truth: comm/ in the repo. install_comm copies the CLI-agnostic core
-# scripts to ~/.sot-comm/bin and each per-CLI adapter to that CLI's dir
-# (~/.claude/skills, $CODEX_HOME/skills, ~/.local/bin, hooks/plugins).
-# Named accounts: a `~/.claude-auth/<name>` account folder
-# gets skills and everything else the default `~/.claude` folder carries
-# except the login via a SYMLINK the daemon creates at spawn
-# (`rust/backend/src/agents/accounts.rs::ensure_account_links`). The one thing the
-# installer itself writes under `.claude-auth` is the comm hooks: an account
-# holding a REAL settings.json of its own never sees the shared one, so the
-# hooks are merged into every account's settings.json that exists, each
-# real file once (`_claude_settings_targets`).
+# scripts to ~/.sot-comm/bin, the Claude skills into the Claude layer
+# (~/.sot-comm/claude-layer, which only a leg of the launch recipe adds, so a plain
+# `claude` loads none of them), and each per-CLI adapter's other parts to that CLI's
+# dir ($CODEX_HOME/skills, ~/.local/bin, plugins). The work-state hooks are no
+# longer written into any settings.json: a row's leg carries them in its own
+# `--settings` (`rust/backend/src/agents/layer.rs`). What an earlier install put in
+# the user's own folders is removed: its comm hooks from every Claude account's
+# settings.json (`_retire_claude_hooks`, which finds each real file once through
+# `_claude_settings_targets`) and, once, the skills it shipped from the Claude skills
+# folder (`_move_placed_skills!`). Named accounts share the default skills folder by a
+# SYMLINK the daemon creates at spawn
+# (`rust/backend/src/agents/accounts.rs::ensure_account_links`).
 # See comm/PROTOCOL.md for the wire contract.
-#
-# The Claude adapter additionally installs the work-state hooks listed in
-# `_COMM_STATE_HOOKS` (each shells out to a comm-status-*.sh script) so an
-# agent's state in the state-nav is event-driven — instant and automatic, no
-# model cooperation. Wiring them touches every Claude account's
-# settings.json, but via NON-clobbering jq merges (_add_comm_hook!) that add
-# one entry per event only if absent and preserve every existing hook (the
-# install stops before them without jq); a file that won't parse is left
-# untouched and the exact JSON to add by hand is printed (a missing file is
-# created fresh in the install's own Claude dir only, since there is nothing
-# there to preserve).
 #
 
 module ShipTools

@@ -310,7 +310,7 @@ never hand-writes or regenerates the scripts here.
 
 Install the comm scripts + Claude skill adapters (idempotent), then join:
 ```sh
-julia --project=. -e 'using ShipTools; ShipTools.update_comm()'   # from $REPO; copies to ~/.sot-comm/bin + ~/.claude/skills
+julia --project=. -e 'using ShipTools; ShipTools.update_comm()'   # from $REPO; copies to ~/.sot-comm/bin + ~/.sot-comm/claude-layer (the skills)
 ~/.sot-comm/bin/comm-join.sh                             # registers this session's derived handle (folder + box name)
 ~/.sot-comm/bin/comm-list.sh                             # verify the handle shows up
 ```
@@ -327,8 +327,8 @@ Like every comm install it stops without jq (§1):
 if command -v jq >/dev/null; then
   bash "$REPO/comm/tests/stage-bin.sh" ~/.sot-comm/bin
   for d in comm/adapters/claude/sot-comm agents/claude/sot-install; do
-    mkdir -p ~/.claude/skills/"$(basename "$d")"
-    cp -f "$REPO/$d/SKILL.md" ~/.claude/skills/"$(basename "$d")"/SKILL.md
+    mkdir -p ~/.sot-comm/claude-layer/.claude/skills/"$(basename "$d")"
+    cp -f "$REPO/$d/SKILL.md" ~/.sot-comm/claude-layer/.claude/skills/"$(basename "$d")"/SKILL.md
   done
 else
   echo "sot-comm needs jq, which is not on PATH: install it (§1), then run this again" >&2
