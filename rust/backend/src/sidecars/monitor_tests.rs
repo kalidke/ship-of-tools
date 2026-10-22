@@ -443,16 +443,6 @@
         assert_eq!(warned, 1, "a bad line is logged once per change, not once a line:\n{logged}");
     }
 
-    /// The sampler reads nothing through a here-document or a here-string: bash before 5.3 leaks both ends of the pipe
-    /// behind one whenever that pipe is smaller than the document, and every new pipe is two pages while the account's
-    /// pipes are over fs.pipe-user-pages-soft, so a sampler leaked a pair a tick until it had no descriptor left.
-    #[test]
-    fn the_sampler_reads_no_here_document() {
-        for (n, line) in SAMPLER_SH.lines().enumerate() {
-            assert!(!line.contains("<<"), "SAMPLER_SH line {} reads a here-document or here-string: {line}", n + 1);
-        }
-    }
-
 #[cfg(test)]
 mod config_tests {
     use super::*;

@@ -52,8 +52,8 @@ edit_url(nb) = "http://$(HOST):$(PORT)$(session.options.server.base_url)edit?sec
 # Service loop: read OPEN <abspath> requests on stdin, write URL <url> or
 # ERR <msg> on stdout. Stays alive until stdin closes.
 for line in eachline(stdin)
-    line = strip(line)
-    isempty(line) && continue
+    # `eachline` has taken the line end; a path may end in a space, so nothing else is trimmed.
+    isempty(strip(line)) && continue
     if startswith(line, "OPEN ")
         path = String(line[6:end])
         try

@@ -71,7 +71,6 @@ pub(crate) enum Opened {
 /// A notebook path the server's one-line protocol cannot carry: it holds a control character, and a line break would be
 /// read as two commands and answered twice. Refused before anything is submitted.
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct PathRefused(pub String);
 
 impl std::fmt::Display for PathRefused {
@@ -128,6 +127,10 @@ impl Pluto {
             .to_str()
             .ok_or_else(|| anyhow!("pluto: path not utf-8: {}", abs_path.display()))?
             .to_string();
+        // Before anything starts or is submitted: the protocol is one command per line.
+        if path_str.chars().any(char::is_control) {
+            return Err(PathRefused(path_str).into());
+        }
         let (tx, mut ready, start) = self.ensure_supervisor().await?;
         let state = tokio::time::timeout(PLUTO_START_WAIT, ready.wait_for(|state| *state != Ready::Starting)).await;
         match state.map(|state| state.map(|state| state.clone())) {

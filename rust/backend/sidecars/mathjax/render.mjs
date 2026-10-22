@@ -76,10 +76,7 @@ function handleLine(line) {
     if (svgStart >= 0 && svgEnd > svgStart) {
       html = html.slice(svgStart, svgEnd + "</svg>".length);
     }
-    // MathJax SVG uses ex-units; tell the caller the conversion factor so
-    // it can size the output relative to surrounding text. Best-effort:
-    // pulled from the root style attribute when present.
-    const exMatch = html.match(/style="vertical-align: -?[\d.]+ex.*?"/);
+    // `ex` is a fixed factor, not measured from the SVG.
     process.stdout.write(JSON.stringify({ id, svg: html, ex: 8 }) + "\n");
   } catch (e) {
     process.stdout.write(JSON.stringify({ id, error: `mathjax: ${e.message}` }) + "\n");
