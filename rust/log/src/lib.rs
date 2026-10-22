@@ -1,19 +1,12 @@
-//! Ship's Log voyage store — frame codec + segment format.
-//!
-//! ADR 0039 is the normative contract; this crate implements it. The bytes
-//! this crate writes are read forever, so behavior here favors refusing
-//! loudly over guessing: only a *provably* torn tail is ever discarded, and
-//! every other defect halts. Nothing is ever deleted (v1 has no GC, no
-//! retention deletion, no forks, no packs — those return through the
-//! `codec_id` / `required_features` / version seams).
+//! The capsule: a row's terminal outlives the window and the daemon (decision D2). One supervisor per state dir is
+//! the authority over its runs, one leg runs the agent on a real terminal and keeps its screen, and every viewer
+//! attaches through one client over typed lanes. No append-only record of the terminal is kept.
 
 pub mod attach_client;
 pub mod capsule;
-pub mod claude;
 pub mod lane;
 pub mod secret;
 pub mod storage;
-pub mod store;
 pub mod supervisor;
 #[cfg(all(unix, feature = "native-barrier"))]
 pub mod test_barrier;
@@ -27,26 +20,14 @@ pub mod test_copy;
 pub mod test_foreign;
 
 pub use storage::storage_exhaustion;
-pub use store::envelope::*;
-pub use store::record::{RecordKind, TailClass, CODEC_JSON, MAGIC, PRELUDE_LEN, RECORD_MAX_BODY};
-pub use store::segment::{SegmentIdentity, SegmentReader, SegmentState, SegmentWriter};
 
-/// Errors are split by what the caller may do about them: `TornTail` is the
-/// ONLY recoverable corruption (ADR 0039 tail rule); everything else under
-/// `Corrupt` requires an operator.
+/// Errors are split by what the caller may do about them.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
-    /// Provably incomplete final record of an unsealed file (tail rule cases
-    /// a/b). Recovery may truncate exactly this.
-    #[error("torn tail at offset {offset}: {what}")]
-    TornTail { offset: u64, what: &'static str },
-    /// Any other defect: loud, never auto-repaired.
-    #[error("corrupt at offset {offset}: {what}")]
-    Corrupt { offset: u64, what: String },
     #[error("schema: {0}")]
     Schema(String),
     #[error("state: {0}")]
@@ -67,20 +48,11 @@ pub enum Error {
     /// which, so this never claims to.
     #[error("supervisor lane refused: another lane protocol, or a supervisor from before the protocol-only gate")]
     VersionSkew,
-    /// U1a (ADR 0041 Lifecycle "Discovery, and the two windows"):
-    /// `VoyageStore::open_for_writing_with_lease`'s caller-supplied
-    /// parent-death lease reported itself already broken, checked as the
-    /// FIRST act after the writer fence is acquired and before any history
-    /// traversal. The fence has already been released by the time this
-    /// error returns — the caller (a spawned child whose supervisor is
+    /// The caller-supplied parent-death lease reported itself already broken, checked as the FIRST act after the
+    /// leg's writer fence is acquired. The fence has already been released by the time this error returns — the caller (a spawned child whose supervisor is
     /// already gone) must exit without binding, never retry or repair.
-    #[error("parent-death lease broken; exiting without binding the voyage")]
+    #[error("parent-death lease broken; exiting without binding the leg")]
     LeaseBroken,
-    /// The voyage store requires OS durability primitives this platform
-    /// lacks (Windows, Linux and macOS have real arms; any other Unix
-    /// fails closed).
-    #[error("unsupported on this platform: {0}")]
-    Unsupported(&'static str),
     /// A ConPTY/job OPERATION failed (Windows-only: `conpty` module) — a
     /// spawn stage, or a later runtime call (`terminate`, `active_processes`,
     /// `resize`, ...). Carries WHICH operation and the underlying Win32

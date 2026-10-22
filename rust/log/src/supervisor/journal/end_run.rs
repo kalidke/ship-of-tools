@@ -1,6 +1,6 @@
 //! EndRun over the voyage's own mgmt lane, and its reconciliation via the leg's durable marker.
 
-use crate::store::voyage::{SEG_DIR, WRITER_LOCK};
+use crate::capsule::WRITER_LOCK;
 use crate::supervisor::*;
 
 // ---------------------------------------------------------------------
@@ -246,25 +246,21 @@ fn reconcile_via_marker(
     epoch: Option<u64>,
     on_closed: Option<&mpsc::Sender<EndingProgress>>,
 ) -> crate::Result<EndRunReconciliation> {
-    let seg_dir = voyage_root_path(state_dir, voyage_id).join(SEG_DIR);
-    let epoch = match epoch {
-        Some(e) => e,
-        None => match recovery::latest_leg_state(&seg_dir).map_err(crate::Error::Io)? {
-            LatestLegState::Sealed { epoch } | LatestLegState::Unsealed { epoch } => epoch,
-            LatestLegState::NoLeg => {
-                if let Some(op_id) = op_id {
-                    journal::finish(
-                        state_dir,
-                        op_id,
-                        &journal::TerminalRecord::Failed { detail: bounded_detail("no leg exists for this voyage") },
-                    )?;
-                }
-                return Ok(EndRunReconciliation::PreBarrierFailed);
-            }
-        },
+    // The leg's own `ended` file is the durable marker: it said an end was asked for before anything acknowledged it.
+    // `epoch` is not read: a folder holds one leg's `ended`, the last leg's.
+    let _ = epoch;
+    let ended = crate::capsule::read_ended(&voyage_root_path(state_dir, voyage_id))?;
+    let Some(ended) = ended else {
+        if let Some(op_id) = op_id {
+            journal::finish(
+                state_dir,
+                op_id,
+                &journal::TerminalRecord::Failed { detail: bounded_detail("no leg ended in this voyage") },
+            )?;
+        }
+        return Ok(EndRunReconciliation::PreBarrierFailed);
     };
-    let marked = verify::leg_carries_run_end_marker(&seg_dir, voyage_id, epoch)?;
-    if !marked {
+    if !ended.requested {
         if let Some(op_id) = op_id {
             journal::finish(state_dir, op_id, &journal::TerminalRecord::Failed { detail: bounded_detail("record_append") })?;
         }
@@ -276,22 +272,11 @@ fn reconcile_via_marker(
     if let Some(tx) = on_closed {
         let _ = tx.send(EndingProgress::RecordClosed);
     }
-    let root = voyage_root_path(state_dir, voyage_id);
-    match verify::verify_voyage(&root, voyage_id) {
-        Ok(()) => {
-            if let Some(op_id) = op_id {
-                journal::finish(state_dir, op_id, &journal::TerminalRecord::RecordVerified)?;
-            }
-            Ok(EndRunReconciliation::Ended)
-        }
-        Err(e) => {
-            let detail = bounded_detail(format!("verify_voyage: {e}"));
-            if let Some(op_id) = op_id {
-                journal::finish(state_dir, op_id, &journal::TerminalRecord::Failed { detail: detail.clone() })?;
-            }
-            Err(err_state(detail)) // sticky Terminal — B4
-        }
+    // Nothing is left to verify: no record was kept. The wire still says `record_verified` once the end is final.
+    if let Some(op_id) = op_id {
+        journal::finish(state_dir, op_id, &journal::TerminalRecord::RecordVerified)?;
     }
+    Ok(EndRunReconciliation::Ended)
 }
 
 #[cfg(test)]

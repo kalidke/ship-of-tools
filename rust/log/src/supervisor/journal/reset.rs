@@ -35,7 +35,7 @@ pub(in crate::supervisor) fn reset_pointer(state_dir: &Path, new_voyage: &str, a
     })?;
     let root = voyage_root_path(state_dir, new_voyage);
     if !root.exists() {
-        VoyageStore::bootstrap(&root, new_voyage, RetentionClass::Archive)
+        crate::capsule::bootstrap_voyage_folder(&root)
             .map_err(|e| state_unless_full(e, |e| format!("reset_pointer: bootstrapping {root:?}: {e}")))?;
     }
     pointer::publish(state_dir, new_voyage).map_err(|e| {

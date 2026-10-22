@@ -182,39 +182,10 @@ async fn a_daemon_outage_past_the_window_keeps_retrying() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let voyage = tokio::task::spawn_blocking({
-        let d = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&d).expect("query_status").0.voyage
-    })
-    .await
-    .unwrap()
-    .expect("a ready row has a voyage");
-    let outcome = tokio::task::spawn_blocking({
-        let d = state_dir.clone();
-        let v = voyage.clone();
-        move || sot_log::attach_client::supervisor_client::end_run(&d, &v, "lane bridge test teardown")
-    })
-    .await
-    .unwrap()
-    .expect("end_run");
-    assert!(
-        matches!(
-            outcome,
-            sot_log::attach_client::supervisor_client::EndRunOutcome::RecordVerified | sot_log::attach_client::supervisor_client::EndRunOutcome::RecordClosed
-        ),
-        "end_run did not verify: {outcome:?}"
-    );
-
-    let frames = sealed_frames(&state_dir, &voyage);
-    let recorded_once = frames
-        .iter()
-        .filter(|f| {
-            f.class == sot_log::store::envelope::Class::Input
-                && f.source.actor.controller_id.as_deref() == Some("test-fe")
-                && f.payload.as_ref().and_then(|p| p.get("length")?.as_u64()).map(|l| l as usize) == Some(marker.len())
-        })
-        .count();
-    assert_eq!(recorded_once, 1, "the pre-cut input must resolve Recorded exactly once in the sealed record");
+    // The pre-cut input resolved Recorded exactly once: a shell shows `echo lb5pre` and its output `lb5pre`, so once
+    // is two occurrences on the screen, and a resend after the cut (a double write) four.
+    let text = screen_text(&client);
+    assert_eq!(text.matches("lb5pre").count(), 2, "the pre-cut input must reach the shell exactly once: {text:?}");
 
     drop(client);
     env.kill_daemon_bounded().await;

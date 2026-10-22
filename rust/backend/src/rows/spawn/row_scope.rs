@@ -6,7 +6,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The cgroup fence's own `QUIESCENCE_TIMEOUT` (`sot_log::claude`).
+/// How long a row's scope may take to read empty after its kill: the cgroup fence's quiescence bound.
 pub(crate) const SCOPE_EMPTY_BOUND: Duration = Duration::from_secs(10);
 /// The row's remembered scopes, one cgroup rel per line, in its state
 /// dir. Written at capture, before any stop or kill, and removed only

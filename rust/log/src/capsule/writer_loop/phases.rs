@@ -3,7 +3,7 @@ use super::lanes::{
     drain_pending_sends_only, execute_actions, execute_teardown_actions, service_transport_events,
     service_transport_events_teardown,
 };
-use super::output_path::{eager_ground_check, flush_output, maybe_rotate, pace_output};
+use super::output_path::{eager_ground_check, pace_output};
 use super::*;
 
 pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut leg: Leg<'t, P>) -> Result<(Leg<'t, P>, ExitKind)> {
@@ -21,7 +21,7 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
         }
         leg = service_transport_events(leg)?;
         leg = execute_actions(leg.attach_proto.tick(Instant::now()), leg)?;
-        eager_ground_check(&mut leg)?;
+        eager_ground_check(&mut leg);
         // ADR 0041 EndRun step 2: the
         // LATCH drives teardown, not the ack -- "ack completion only
         // ACCELERATES teardown". `shutdown_requested` alone (the OLD,
@@ -47,13 +47,7 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
             // this Kill still writes only one marker.
             Ok(Command::Kill) => {
                 leg.shutdown_reason.get_or_insert_with(|| "operator_kill".to_string());
-                commit_run_end_marker(
-                    &mut leg.ctx,
-                    &mut leg.w,
-                    &mut leg.frames_written,
-                    &mut leg.run_end_latched,
-                    "operator_kill".to_string(),
-                )?;
+                latch_run_end(&mut leg, "operator_kill".to_string())?;
                 break 'main ExitKind::Requested;
             }
             Err(mpsc::TryRecvError::Empty) => {}
@@ -79,16 +73,9 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
         // drain. `GROUP_COMMIT_WINDOW` stays the bound on how long output
         // may batch under sustained load and the cadence when nothing is
         // pending; with output pending, `OUTPUT_IDLE` of quiet commits it.
-        match leg.output_rx.recv_timeout(output_wait(
-            leg.pending_bytes,
-            leg.last_commit.elapsed(),
-            leg.last_output.elapsed(),
-            leg.last_fsync.elapsed(),
-        )) {
+        match leg.output_rx.recv_timeout(LOOP_TICK) {
             Ok(ReaderEvent::Output(bytes)) => {
-                leg.last_output = Instant::now();
                 pace_output(bytes, &mut leg)?;
-                leg = maybe_rotate(leg)?;
             }
             Ok(ReaderEvent::TransportActivity) => {
                 leg.wake_pending.store(false, Ordering::Release);
@@ -133,11 +120,10 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
                 ));
             }
         }
-        // checked here, after the match rather
-        // than only inside its `Timeout` arm, so a transport wake (or any
-        // other non-`Timeout` result) can never starve this deadline.
-        if should_flush_output(leg.last_commit.elapsed(), leg.pending_bytes, leg.last_output.elapsed(), leg.last_fsync.elapsed()) {
-            flush_output(&mut leg)?;
+        // Checked here, after the match rather than only inside its `Timeout` arm, so a transport wake (or any other
+        // non-`Timeout` result) can never starve the screen file's pace.
+        if let Some(screen) = &mut leg.screen {
+            screen.tick(&leg.parser, Instant::now());
         }
     };
     Ok((leg, exit_kind))
@@ -158,7 +144,7 @@ pub(super) fn reap_domain<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<Leg<'t
     loop {
         service_transport_events_teardown(&mut leg)?;
         execute_teardown_actions(leg.attach_proto.tick(Instant::now()), &mut leg)?;
-        eager_ground_check(&mut leg)?;
+        eager_ground_check(&mut leg);
         if leg.producer.domain_is_empty()? {
             break;
         }
@@ -170,7 +156,6 @@ pub(super) fn reap_domain<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<Leg<'t
         match leg.output_rx.recv_timeout(TEARDOWN_REAP_POLL) {
             Ok(ReaderEvent::Output(bytes)) => {
                 pace_output(bytes, &mut leg)?;
-                leg = maybe_rotate(leg)?;
             }
             Ok(ReaderEvent::TransportActivity) => {
                 // Switch-latency Phase 1 (c): same wake, same channel, as
@@ -213,7 +198,6 @@ pub(super) fn reap_domain<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<Leg<'t
             }
         }
     }
-    flush_output(&mut leg)?;
     Ok(leg)
 }
 
@@ -240,7 +224,7 @@ pub(super) fn drain_output<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<(Leg<
         loop {
             service_transport_events_teardown(&mut leg)?;
             execute_teardown_actions(leg.attach_proto.tick(Instant::now()), &mut leg)?;
-            eager_ground_check(&mut leg)?;
+            eager_ground_check(&mut leg);
             // checked here, unconditionally, every
             // iteration — mirroring Phase A's `reap_deadline` just above and
             // the main loop's own commit-deadline fix — rather than only
@@ -254,7 +238,6 @@ pub(super) fn drain_output<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<(Leg<
             match leg.output_rx.recv_timeout(TEARDOWN_DRAIN_POLL) {
                 Ok(ReaderEvent::Output(bytes)) => {
                     pace_output(bytes, &mut leg)?;
-                    leg = maybe_rotate(leg)?;
                 }
                 Ok(ReaderEvent::TransportActivity) => {
                     // Switch-latency Phase 1 (c): same wake as both other
@@ -292,7 +275,6 @@ pub(super) fn drain_output<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<(Leg<
         service_transport_events_teardown(&mut leg)?;
         execute_teardown_actions(leg.attach_proto.tick(Instant::now()), &mut leg)?;
     }
-    flush_output(&mut leg)?;
     Ok((leg, closer_handle))
 }
 
@@ -372,15 +354,11 @@ pub(super) fn join_workers<P: Producer>(
     Ok(())
 }
 
-pub(super) fn seal_run<P: Producer>(exit_kind: ExitKind, producer_uptime_ms: u64, mut leg: Leg<'_, P>) -> Result<ExitSummary> {
-    // Step 5: the producer's own exit status, raw and unsigned end-to-end
-    // for the Windows `Code` case (a Unix-style `i32` cast
-    // would turn a high-bit NTSTATUS-shaped code negative for no reason).
-    // `wait()` first establishes the honesty-bound precondition
-    // `exit_status_after_confirmed_exit`'s own doc requires —
-    // `domain_is_empty` above already proved the process isn't running,
-    // but this satisfies the bound by the letter of its doc, not just by
-    // inference.
+pub(super) fn finish_run<P: Producer>(exit_kind: ExitKind, producer_uptime_ms: u64, mut leg: Leg<'_, P>) -> Result<ExitSummary> {
+    // The producer's own exit status, raw and unsigned end to end for the Windows `Code` case (a Unix-style `i32` cast
+    // would turn a high-bit NTSTATUS-shaped code negative for no reason). `wait()` first establishes the honesty-bound
+    // precondition `exit_status_after_confirmed_exit`'s own doc requires: `domain_is_empty` above already proved the
+    // process isn't running, but this satisfies the bound by the letter of its doc, not just by inference.
     if !leg.producer.wait(Duration::from_secs(5))? {
         return Err(Error::State(
             "capsule_win: producer did not signal after its domain reaped to empty".into(),
@@ -388,55 +366,47 @@ pub(super) fn seal_run<P: Producer>(exit_kind: ExitKind, producer_uptime_ms: u64
     }
     let exit_status = leg.producer.exit_status_after_confirmed_exit()?;
 
-    // The mgmt `shutdown` reason, if that is what drove this EndRun (ADR
-    // 0041: "the reason string is recorded in producer_dead's detail").
-    // `producer_uptime_ms` (captured well above, at the exit_kind
-    // boundary -- NOT recomputed here, past all the teardown machinery
-    // this point sits after) is an ADDITIVE, free-form diagnostic field
-    // -- like `reason` already is -- not a registered ADR 0039 feature:
-    // it changes no authority, so no segment needs to declare anything
-    // to carry it, and an older reader simply ignores an unknown plain
-    // JSON field, exactly as `detail` has always allowed.
-    //
-    // ADR 0043 decision 13: `Code(c)` writes the SAME `exit_code` (u32)
-    // field this crate has always written (Windows never reaches the
-    // other arm); `Signal(n)` is the additive Unix shape, `signal` (i32),
-    // unreachable here.
-    let mut detail = json!({ "producer_uptime_ms": producer_uptime_ms });
-    match exit_status {
-        ExitStatus::Code(c) => detail["exit_code"] = json!(c),
-        ExitStatus::Signal(n) => detail["signal"] = json!(n),
+    // The last screen, at the agent's end; a failed write is noted, never fatal.
+    if let Some(screen) = &mut leg.screen {
+        screen.flush(&leg.parser, Instant::now());
     }
-    if let Some(reason) = &leg.shutdown_reason {
-        detail["reason"] = json!(reason);
-    }
-    // ADR 0043 decision 12, as amended: the output side ended before
-    // teardown closed it AND the producer's own exit explained it inside
-    // `READER_END_EXIT_GRACE` -- the one case the pre-close rule now admits,
-    // and it is admitted RECORDED, never silently. Additive and free-form
-    // exactly like `reason` above, absent unless that case occurred: on
-    // macOS it is the kernel's revoke on the session leader's exit (where
-    // the producer's last undrained output can be lost with it, which is
-    // precisely why the record says so); on Linux and Windows the arms that
-    // set it are unreachable, so no record written there ever carries it.
-    if let Some(how) = &leg.output_ended_early {
-        detail["output_ended_early"] = json!(how);
-    }
-    let f = leg.ctx.capsule_frame(Class::Lifecycle, json!({"kind": "producer_dead", "detail": detail}));
-    leg.w.append(&f, Commit::Immediate)?;
-    leg.frames_written += 1;
 
-    let digest = leg.w.seal(None)?;
-    leg.store.advance_chain(digest);
-    leg.segments_sealed += 1;
+    // What the supervisor reads: whether an end was asked for (`shutdown_reason` is the mgmt `shutdown` reason, ADR
+    // 0041), how long the producer lived (`producer_uptime_ms` was captured when the main loop concluded, NOT here,
+    // past all the teardown machinery this point sits after), and how it exited. A write that fails ends the leg
+    // with an error and no file: the supervisor then reads the leg as crashed and unstable, which is what it was.
+    let mut ended = Ended {
+        finished: true,
+        requested: leg.run_end_latched,
+        uptime_ms: Some(producer_uptime_ms),
+        reason: leg.shutdown_reason.clone(),
+        output_ended_early: leg.output_ended_early.clone(),
+        ..Ended::default()
+    };
+    match exit_status {
+        ExitStatus::Code(c) => ended.exit_code = Some(c),
+        ExitStatus::Signal(n) => ended.signal = Some(n),
+    }
+    ended::write(&leg.voyage_root, &ended)?;
 
     Ok(ExitSummary {
         exit_code: Some(exit_status),
         exit_kind,
-        frames_written: leg.frames_written,
-        segments_sealed: leg.segments_sealed,
         handshake_answered: leg.dsr_answered,
         handshake_suppressed_matches: leg.handshake_suppressed_matches,
         resize_os_calls: leg.resize_os_calls,
     })
+}
+
+/// An end was asked for: say so in `ended`, durably, before anything acknowledges it, and latch. Idempotent past the
+/// first: the first request wins and a concurrent later one writes nothing. Shared by both action executors (a
+/// `shutdown` arriving during the final teardown poll latches exactly as one arriving mid-run) and the caller's
+/// `Kill`. A write that fails propagates with the latch unset: no ack ever reached (it follows this call in the same
+/// action batch), so nothing was promised.
+pub(super) fn latch_run_end<P: Producer>(leg: &mut Leg<'_, P>, reason: String) -> Result<()> {
+    if !leg.run_end_latched {
+        ended::write(&leg.voyage_root, &Ended { requested: true, reason: Some(reason), ..Ended::default() })?;
+        leg.run_end_latched = true;
+    }
+    Ok(())
 }

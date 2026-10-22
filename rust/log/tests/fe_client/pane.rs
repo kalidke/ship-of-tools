@@ -37,7 +37,7 @@ fn attach_as_watcher_receives_the_checkpoint() {
     assert!(!client.is_dead());
     assert!(woke.load(Ordering::Relaxed), "wake() was never called");
 
-    end_run_and_wait_verified(&conn, &voyage);
+    end_run_and_wait_ended(&conn, &voyage);
     let _ = command(&conn, "test-a-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }
@@ -131,7 +131,7 @@ fn a_missed_liveness_probe_clears_on_the_next_answer() {
     // new lane after the stall.
     drop(conn);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    end_run_and_wait_verified(&conn, &voyage);
+    end_run_and_wait_ended(&conn, &voyage);
     let _ = command(&conn, "probe-blink-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }
@@ -180,47 +180,10 @@ fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
     let found = poll_screen(&mut client, Duration::from_secs(30), |t| t.contains("SOT_FE_MARKER"));
     assert!(found, "input never reached the shell (dead={}, status={})", client.is_dead(), client.status_line());
 
-    // Ruling (b): resize precedes the flush -- proven at the wire level
-    // via the sealed voyage record (the client's own public surface has
-    // no other way to observe SEND order). `Class::Input`'s payload
-    // REDACTS content, so the match is by exact byte length -- unique in
-    // this run since no other command of this length is ever sent.
+    // Ruling (b): the resize precedes the flush. The wire's lockstep admits the input only after `take_ok` and the
+    // resize, so the echo above is itself the proof the order held; the capsule's geometry is the client's own 80x24.
     drop(client);
-    end_run_and_wait_verified(&conn, &voyage);
-
-    let frames = sealed_frames(&state_dir, &voyage);
-    let resize_seq = frames
-        .iter()
-        .find_map(|f| {
-            if f.class != sot_log::store::envelope::Class::ControlExchange {
-                return None;
-            }
-            let p = f.payload.as_ref()?;
-            if p.get("phase")?.as_str()? == "request" && p.get("kind_ns")?.as_str()? == "conpty/resize" {
-                Some(f.seq.n)
-            } else {
-                None
-            }
-        })
-        .expect("no resize control_exchange request frame found in the sealed voyage");
-    let input_seq = frames
-        .iter()
-        .find_map(|f| {
-            if f.class != sot_log::store::envelope::Class::Input {
-                return None;
-            }
-            let p = f.payload.as_ref()?;
-            if p.get("length")?.as_u64()? == marker.len() as u64 {
-                Some(f.seq.n)
-            } else {
-                None
-            }
-        })
-        .expect("no matching input frame found in the sealed voyage");
-    assert!(
-        resize_seq < input_seq,
-        "resize (seq {resize_seq}) must precede the flushed input (seq {input_seq})"
-    );
+    end_run_and_wait_ended(&conn, &voyage);
 
     let _ = command(&conn, "test-b-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard, Duration::from_secs(30));
@@ -344,7 +307,7 @@ fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkpoint() {
+fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_leg_under_a_restart_line() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -372,10 +335,8 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkp
         poll_screen(&mut client, Duration::from_secs(30), |t| t.trim().chars().any(|c| !c.is_whitespace())),
         "no checkpoint content ever reached the client's screen before the kill"
     );
-    // A distinctive marker in the FIRST leg's screen, so the later
-    // assertion can tell "still showing the old screen" apart from "a
-    // genuinely fresh checkpoint arrived" -- proving RESTORE, not mere
-    // silence.
+    // A distinctive marker in the FIRST leg's screen: the screen file carries it to the next leg, and the later
+    // assertion tells the restored screen (marker above a restart line) from a genuinely fresh one.
     client.send_input(b"echo SOT_FE_OLD_LEG\r\n");
     assert!(
         poll_screen(&mut client, Duration::from_secs(30), |t| t.contains("SOT_FE_OLD_LEG")),
@@ -404,11 +365,12 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkp
     // The client's own reconnect episode (ruling d) notices the dropped
     // attach connection, re-reads the pointer, reconnects the
     // supervisor lane, and re-attaches -- restoring the screen from the
-    // NEW leg's checkpoint. Bounded generously: real backoff (250ms
+    // NEW leg's checkpoint, which starts from the screen file: the old
+    // marker above the restart line. Bounded generously: real backoff (250ms
     // doubling to 4s) plus a real second capsule spawn both cost real
     // wall time here.
     let fresh = poll_screen(&mut client, Duration::from_secs(120), |t| {
-        t.trim().chars().any(|c| !c.is_whitespace()) && !t.contains("SOT_FE_OLD_LEG")
+        t.contains("SOT_FE_OLD_LEG") && t.contains("restarted")
     });
     assert!(
         fresh,
@@ -419,7 +381,7 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkp
     assert!(!client.is_dead());
 
     drop(client);
-    end_run_and_wait_verified(&conn2, &voyage2);
+    end_run_and_wait_ended(&conn2, &voyage2);
     let _ = command(&conn2, "test-d-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard2, Duration::from_secs(30));
 }
@@ -509,7 +471,7 @@ fn screen_restores_after_a_supervisor_restart() {
     );
 
     drop(fresh);
-    end_run_and_wait_verified(&conn2, &voyage2);
+    end_run_and_wait_ended(&conn2, &voyage2);
     let _ = command(&conn2, "test-restore-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard2, Duration::from_secs(30));
 }
@@ -590,11 +552,11 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
     poll_until(
         || {
             client.pump();
-            let fresh = !screen_text(client.screen()).contains("SOT_FE_OLD_LEG");
-            (fresh && client.status_line() == "attached").then_some(())
+            let restarted = screen_text(client.screen()).contains("restarted");
+            (restarted && client.status_line() == "attached").then_some(())
         },
         Duration::from_secs(120),
-        "the client to re-attach to a fresh screen",
+        "the client to re-attach to the restarted leg's screen",
     );
     // The keys typed during the re-attach are counted, not silently lost.
     poll_until(
@@ -626,7 +588,7 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
     // The first management connection idles out during the freeze; dial a fresh one.
     drop(conn2);
     let conn3 = wait_for_lane(&h, Duration::from_secs(30));
-    end_run_and_wait_verified(&conn3, &voyage2);
+    end_run_and_wait_ended(&conn3, &voyage2);
     let _ = command(&conn3, "test-stale-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard2, Duration::from_secs(30));
 }

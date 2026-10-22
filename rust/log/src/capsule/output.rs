@@ -1,35 +1,12 @@
-//! Commit pacing and the bounded output budget between the reader thread and the writer loop.
+//! The loop's tick and pacer, and the bounded output budget between the reader thread and the writer loop.
 use super::*;
 
-const GROUP_COMMIT_WINDOW: Duration = Duration::from_millis(50);
-pub(super) const GROUP_COMMIT_BYTES: usize = 256 * 1024;
-/// The producer quiet this long with output pending means commit now.
-const OUTPUT_IDLE: Duration = Duration::from_millis(2);
-/// No idle commit sooner than this after the last fsync `flush_output` made (at most 100 idle commits/s).
-const MIN_COMMIT_GAP: Duration = Duration::from_millis(10);
-
-/// Whether the main loop commits pending output now: always at the group
-/// window, and earlier when the producer has gone idle with output pending
-/// and the last fsync is at least [`MIN_COMMIT_GAP`] old.
-pub(super) fn should_flush_output(
-    since_commit: Duration,
-    pending_bytes: usize,
-    since_output: Duration,
-    since_fsync: Duration,
-) -> bool {
-    since_commit >= GROUP_COMMIT_WINDOW
-        || (pending_bytes > 0 && since_output >= OUTPUT_IDLE && since_fsync >= MIN_COMMIT_GAP)
-}
-
-/// How long the main loop may wait before the earliest commit `should_flush_output` allows.
-pub(super) fn output_wait(pending_bytes: usize, since_commit: Duration, since_output: Duration, since_fsync: Duration) -> Duration {
-    if pending_bytes == 0 {
-        return GROUP_COMMIT_WINDOW;
-    }
-    GROUP_COMMIT_WINDOW
-        .saturating_sub(since_commit)
-        .min(OUTPUT_IDLE.saturating_sub(since_output).max(MIN_COMMIT_GAP.saturating_sub(since_fsync)))
-}
+/// The loop's wait on its channel when nothing is due: the longest a ready connection, a command or an exit waits for
+/// the loop to look at it when no wake arrives.
+pub(super) const LOOP_TICK: Duration = Duration::from_millis(50);
+/// Output handled between two scheduling yields: the loop sleeps a millisecond each time this much has passed (the
+/// loop-fairness pacer, `pace_output`).
+pub(super) const PACE_BYTES: usize = 256 * 1024;
 
 /// The output channel's byte budget (ADR 0041 budget table: "producer
 /// channel 8 MiB bounded"). Bounds OUTSTANDING bytes only — chunks the
@@ -146,14 +123,6 @@ impl Drop for BudgetCancelGuard {
 /// on unchanged code. The flood test keeps the properties that are always
 /// true (no deadlock, verify-green, bookkeeping live); the bound itself is
 /// a plain condvar protocol, provable right at the primitive.
-// These unit tests open a real store, so they run wherever the store has a
-// real rename arm. That was Linux and Windows only until M1 gave `host`
-// its `renamex_np` arm; macOS is now a third, and the gate says so. Every
-// OTHER Unix still hits `host`'s fail-closed arm, which is why this is
-// three named targets and not bare `any(unix, windows)`. Nothing in this
-// module reads `/proc`, opens a pidfd or expects PDEATHSIG — it is a
-// condvar protocol and a run-end marker — so no test inside needed a
-// narrower gate of its own before this one widened.
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "output_tests.rs"]

@@ -1,18 +1,19 @@
 use super::*;
 
-/// A reset that fails with storage exhaustion writes no `Failed` record:
-/// its operation stays active for startup recovery to finish. Any other
-/// failure still writes `Failed` and is fatal.
+/// A reset that fails writes a `Failed` record and is fatal, storage exhaustion included: no storage wait exists.
 #[test]
-fn a_storage_reset_failure_records_nothing() {
+fn a_reset_failure_records_failed_and_is_fatal() {
     #[cfg(unix)]
     let full = std::io::Error::from_raw_os_error(libc::ENOSPC);
     #[cfg(windows)]
     let full = std::io::Error::from_raw_os_error(112);
     let dir = tempfile::tempdir().unwrap();
     let result = reset_failure(dir.path(), "op-full", crate::Error::Io(full));
-    assert!(matches!(result, ResetWorkerResult::Storage(_)));
-    assert_eq!(journal::read_terminal(dir.path(), "op-full").unwrap(), None, "no terminal record for storage");
+    assert!(matches!(result, ResetWorkerResult::Fatal(_)));
+    assert!(matches!(
+        journal::read_terminal(dir.path(), "op-full").unwrap(),
+        Some(journal::TerminalRecord::Failed { .. })
+    ));
 
     let result = reset_failure(dir.path(), "op-state", crate::Error::State("pointer unreadable".into()));
     assert!(matches!(result, ResetWorkerResult::Fatal(_)));

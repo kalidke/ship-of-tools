@@ -41,7 +41,7 @@ Guarantees, each with the mechanism it rests on:
   exactly one shard (`tests/shards.py check`), in five to seven minutes. release-gate.yml, dispatched by hand at the
   release gate (pass 11 and before each final release), never on a tag, holds the rest: the `gate-*` shards (the tests
   that sleep, the WGL page test with its depot), the native window proofs (minimized, closed, pane timing), the daemon
-  lifetime harness, the hermetic comm and agents suites, the storage-exhaustion run, the gate's own parity tests, the
+  lifetime harness, the hermetic comm and agents suites, the gate's own parity tests, the
   launcher's suites on Windows, the Windows ignored-containment and ConPTY runs, and the shell suites under bash 3.2
   (Linux and macOS; they leave with the shell twins under D1). No cut reads either.
 - A release's artifacts are CI's build of its tag. release.yml sets `SOT_BUILD_ORIGIN=ci` exactly when the ref is a tag,

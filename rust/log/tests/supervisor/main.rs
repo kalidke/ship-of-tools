@@ -454,7 +454,7 @@ fn recorded_voyage(state_dir: &Path) -> Option<String> {
 }
 
 fn writer_lock_path(state_dir: &Path, voyage: &str) -> PathBuf {
-    sot_log::supervisor::voyage_root_path(state_dir, voyage).join(sot_log::store::voyage::WRITER_LOCK)
+    sot_log::supervisor::voyage_root_path(state_dir, voyage).join(sot_log::capsule::WRITER_LOCK)
 }
 
 /// Each probe takes its lock and drops it before returning: locks conflict between two opens in one process, so

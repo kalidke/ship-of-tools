@@ -177,7 +177,6 @@ fn reset_refusal_detail(lifecycle: &Lifecycle) -> &'static str {
         Lifecycle::Resetting { .. } => "a reset is already in progress",
         Lifecycle::EndedNoRespawn => "reset is admissible here — this refusal should be unreachable",
         Lifecycle::Terminal { .. } => "the authority is in a terminal state",
-        Lifecycle::StorageFull(_) => "the authority is waiting for storage",
     }
 }
 

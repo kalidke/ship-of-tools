@@ -2,9 +2,8 @@
 
     use super::*;
 
-/// Test 2: spawn failure (a nonexistent executable) is compensated, not
-/// escaped unsealed (the Linux capsule's own known gap, deliberately not
-/// inherited here), and `producer_dead` is still the last frame recorded.
+/// Test 2: spawn failure (a nonexistent executable) is compensated, not escaped with nothing for the supervisor to
+/// read: `ended` is still left, finished, naming the failure.
 #[test]
 fn spawn_failure_is_compensated() {
     let _serial = serial();
@@ -17,20 +16,13 @@ fn spawn_failure_is_compensated() {
     let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
     assert_eq!(summary.exit_code, None);
-    assert_eq!(summary.segments_sealed, 1);
-    verify_voyage(&root, "fail1").unwrap();
-
-    let frames = sealed_frames(&root, "fail1");
-    let dead = assert_producer_dead_is_last(&frames);
-    assert_eq!(dead["spawn_failed"], true);
-    assert!(dead["exit_code"].is_null());
+    let ended = ended_of(&root);
+    assert!(ended.finished && ended.exit_code.is_none());
+    assert!(ended.reason.as_deref().is_some_and(|r| r.starts_with("spawn_failed")), "{ended:?}");
 }
 
 
-/// Test 4: resize is an ordered request+outcome exchange (no response
-/// phase — ADR 0041), rejecting out-of-budget requests rather than
-/// clamping them, with the outcome's `target` naming ITS OWN request (not
-/// just some real request — review finding), and `ResizePseudoConsole`
+/// Test 4: resize rejects out-of-budget requests rather than clamping them, and `ResizePseudoConsole` is
 /// actually invoked exactly once (the in-budget request only — review
 /// finding: the disposition string alone doesn't prove the OS call was
 /// really gated). Step 5 deletes `Command::Resize` (ADR 0041 spec gate: the
@@ -38,12 +30,11 @@ fn spawn_failure_is_compensated() {
 /// driver would: hello -> attach -> wait for the attach checkpoint -> take
 /// -> three `resize` wire frames -> `resize_ok`/`resize_refused` replies.
 #[test]
-fn resize_ordered_exchange_commits_and_rejects() {
+fn resize_commits_and_rejects() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv = vec![SHELL_ARGV.to_string()];
     let cfg = config(dir.path(), "resize1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
     let transport = TestTransport::new();
     let (tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
@@ -92,36 +83,10 @@ fn resize_ordered_exchange_commits_and_rejects() {
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
     assert_eq!(summary.resize_os_calls, 1, "expected exactly one ResizePseudoConsole call (the valid request only)");
-    verify_voyage(&root, "resize1").unwrap();
-
-    let frames = sealed_frames(&root, "resize1");
-    let phase_is = |f: &&Envelope, phase: &str| {
-        f.class == Class::ControlExchange
-            && f.payload.as_ref().unwrap()["kind_ns"] == "conpty/resize"
-            && f.payload.as_ref().unwrap()["phase"] == phase
-    };
-    let requests: Vec<&Envelope> = frames.iter().filter(|f| phase_is(f, "request")).collect();
-    let outcomes: Vec<&Envelope> = frames.iter().filter(|f| phase_is(f, "outcome")).collect();
-    assert_eq!(requests.len(), 3, "expected 3 resize requests, got {}", requests.len());
-    assert_eq!(outcomes.len(), 3, "expected 3 resize outcomes, got {}", outcomes.len());
-    assert_eq!(outcomes[0].payload.as_ref().unwrap()["body"]["disposition"], "ok");
-    assert_eq!(outcomes[1].payload.as_ref().unwrap()["body"]["disposition"], "failed");
-    assert_eq!(outcomes[2].payload.as_ref().unwrap()["body"]["disposition"], "failed");
-
-    // Each outcome must target its OWN request (by emission order, since
-    // request[i] and outcome[i] commit as one uninterrupted pair) — not
-    // just "some" real request, which the previous version's `.any(...)`
-    // would have let a misattribution bug slip through undetected.
-    for (req, outcome) in requests.iter().zip(outcomes.iter()) {
-        let target = outcome.payload.as_ref().unwrap()["target"].as_str().unwrap().to_string();
-        let expected = format!("{}:{}", req.seq.epoch, req.seq.n);
-        assert_eq!(target, expected, "outcome does not target its own request");
-    }
 }
 
 /// Test 5: flood. A producer emits well beyond the 8 MiB output budget;
-/// the run must drain it all to a sealed, verify-green voyage without
-/// deadlocking. Whether the budget ever actually BLOCKED during the flood
+/// the run must drain it all and finish without deadlocking. Whether the budget ever actually BLOCKED during the flood
 /// is deliberately NOT asserted here — engagement depends on conhost's
 /// burst pacing on the runner, which nothing here controls (a runner-image
 /// change turned exactly that assertion red on unchanged code); the
@@ -131,7 +96,7 @@ fn resize_ordered_exchange_commits_and_rejects() {
 /// this test must fail loud within its own bound rather than consume the
 /// whole CI job's timeout.
 #[test]
-fn flood_drains_to_a_sealed_voyage_without_deadlock() {
+fn flood_drains_without_deadlock() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let helper = HELPER_EXE.to_string();
@@ -151,37 +116,16 @@ fn flood_drains_to_a_sealed_voyage_without_deadlock() {
     eprintln!("capsule_win flood finding: {total} bytes in {:?}", start.elapsed());
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
     assert_eq!(summary.exit_code, Some(ExitStatus::Code(0)));
-    verify_voyage(&root, "flood1").unwrap();
-
-    // The right side of the transform boundary (review finding): hOutput
-    // is conhost's own rendered VT stream, not a byte-for-byte copy of
-    // what the child wrote to its own stdout — startup sequences and
-    // line-wrap/scroll handling can legitimately change the total length,
-    // so exact equality against `total` proves nothing; the half-of-total
-    // bound below is the honest platform-behavior assertion.
-
-    let frames = sealed_frames(&root, "flood1");
-    let mut total_decoded = 0usize;
-    for f in &frames {
-        if f.class == Class::Producer {
-            let b64 = f.payload.as_ref().unwrap()["bytes_b64"].as_str().unwrap();
-            total_decoded += decode_b64(b64).len();
-        }
-    }
-    assert!(
-        total_decoded > total / 2,
-        "captured far less output than the flood emitted: {total_decoded} of {total}"
-    );
+    assert!(ended_of(&root).finished);
 }
 
 /// Test 6: a high-bit (NTSTATUS-shaped) exit code is preserved raw and
-/// unsigned all the way through `ExitSummary` AND the sealed
-/// `producer_dead` frame's JSON — the review finding that a `u32`-to-`i32`
+/// unsigned all the way through `ExitSummary` AND the `ended` file — the review finding that a `u32`-to-`i32`
 /// cast anywhere in this path would turn it negative for no reason. Same
 /// value `tests/conpty.rs` pins at the primitives layer; this proves the
 /// capsule runtime doesn't reintroduce the cast above it.
 #[test]
-fn exit_code_high_bit_status_preserved_through_producer_dead() {
+fn exit_code_high_bit_status_preserved_through_ended() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv =
@@ -192,10 +136,7 @@ fn exit_code_high_bit_status_preserved_through_producer_dead() {
     let mut transport = no_transport();
     let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
     assert_eq!(summary.exit_code, Some(ExitStatus::Code(0xC000_0005)));
-    verify_voyage(&root, "exitcode1").unwrap();
-    let frames = sealed_frames(&root, "exitcode1");
-    let dead = assert_producer_dead_is_last(&frames);
-    assert_eq!(dead["exit_code"], 0xC000_0005u32);
+    assert_eq!(ended_of(&root).exit_code, Some(0xC000_0005u32));
 }
 
 
@@ -214,8 +155,8 @@ fn exit_code_high_bit_status_preserved_through_producer_dead() {
 /// likely some ConPTY read lands inside one of those sequence classes
 /// somewhere across the run — but likely is not proof, and round-2 review
 /// correctly called out that this test used to just assert probability in
-/// prose and stop there. It no longer does: below, replaying the sealed
-/// voyage's own `Class::Producer` frames one at a time (each one IS a real
+/// prose and stop there. It no longer does: below, replaying the output
+/// frames of a connection attached from the start one at a time (each one IS a real
 /// reader-chunk boundary — see that assertion's own comment) and checking
 /// `Parser::is_ground()` after each PROVES at least one interior cut
 /// actually happened this run, failing loudly if it somehow didn't rather
@@ -242,8 +183,8 @@ fn exit_code_high_bit_status_preserved_through_producer_dead() {
 ///    `Screen::contents()` strings — which cannot see cursor position,
 ///    attributes, or mode bits that aren't in the current viewport — this
 ///    compares raw bytes twice: the exact tail-byte-equality of what this
-///    connection received against the voyage's own recorded producer
-///    bytes, and the wire checkpoint against an independently computed
+///    connection received against the stream of a connection attached
+///    from the start, and the wire checkpoint against an independently computed
 ///    `Screen::checkpoint()` of the exact same prefix. Checkpoint bytes are
 ///    a pure function of screen state (magic/version/geometry/modes/attrs/
 ///    grid — see `vt100_ctt::Screen::checkpoint`), so two parsers fed
@@ -267,7 +208,6 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     let argv = vec![helper, "--script".to_string(), "1000".to_string(), "--linger".to_string()];
     let (rows, cols) = (25u16, 80u16);
     let cfg = config(dir.path(), "midattach1", argv, cols, rows);
-    let root = cfg.voyage_root.clone();
     let transport = TestTransport::new();
     let (tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
@@ -275,6 +215,19 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
         let mut t = run_transport;
         capsule::run::<P>(cfg, rx, &mut t)
     });
+
+    // The reference stream: a connection attached at the very start, never held, sees the checkpoint of the nearly
+    // empty first screen and then every output byte in order. It stands where the voyage's own record stood as the
+    // from-scratch reference.
+    const EARLY: ConnId = 2;
+    transport.open(EARLY);
+    transport.feed(EARLY, frame::hello());
+    let mut early_watcher = FrameWatcher::new(&transport);
+    early_watcher.wait_for("early hello_ok", EARLY, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+    });
+    transport.feed(EARLY, frame::attach("early"));
+    let early_checkpoint = early_watcher.collect_checkpoint("early checkpoint", EARLY, Duration::from_secs(10));
 
     // Attach WHILE the producer is still actively emitting -- no attempt to
     // engineer a precise cut point; is_ground's own unit tests already
@@ -339,7 +292,6 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     let summary = wait_for_join(handle, Duration::from_secs(30))
         .expect("run did not return within the teardown bound")
         .unwrap();
-    verify_voyage(&root, "midattach1").unwrap();
 
     // Every `output` frame this connection ever received, in arrival order
     // (the FrameWatcher's cursor already sits right after the checkpoint).
@@ -359,42 +311,36 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     assert!(!post_watermark.is_empty(), "expected at least some post-watermark output");
     let suffix: Vec<u8> = post_watermark.into_iter().flatten().collect();
 
-    // The full, from-scratch reference: every producer byte the voyage
-    // ever recorded, in order.
-    let frames = sealed_frames(&root, "midattach1");
-    let mut total = Vec::new();
-    for f in &frames {
-        if f.class == Class::Producer {
-            let b64 = f.payload.as_ref().unwrap()["bytes_b64"].as_str().unwrap();
-            total.extend(decode_b64(b64));
-        }
-    }
-
-    // Round-2 review, finding 8: PROVE an interior CSI/OSC/DCS/UTF-8 cut
-    // actually occurred, rather than asserting repetition makes one "all
-    // but certain". Each `Class::Producer` frame in the sealed voyage IS
-    // exactly one real ConPTY-read chunk (`handle_output` appends one
-    // frame per `ReaderEvent::Output`, unmodified) -- so replaying those
-    // frames one at a time into a fresh parser and checking
-    // `Parser::is_ground()` after each one finds every point a REAL read
-    // boundary fell in this run. `is_ground() == false` right after a
-    // frame means that frame's own end sits strictly inside an
-    // unterminated CSI/OSC/DCS/UTF-8 sequence -- the escape/multibyte
-    // parser has consumed a partial sequence and is still waiting for the
-    // rest, which only an interior cut produces. This does not touch the
-    // checkpoint's own cut point (which `ground_reached` guarantees is
-    // ALWAYS ground-safe, by design, so it can never itself be mid-
-    // sequence) -- it is an independent, run-wide proof that at least one
-    // real reader-chunk boundary landed inside one of these classes
-    // somewhere in the run.
-    let mut fragmentation_probe = vt100_ctt::Parser::new(rows, cols, 0);
-    let mut interior_cut_found = false;
-    for f in &frames {
-        if f.class != Class::Producer {
+    // The full reference: the early connection's checkpoint, then every output frame it ever received, in order. Each
+    // frame IS exactly one real ConPTY-read chunk (`handle_output` publishes one frame per `ReaderEvent::Output`,
+    // unmodified).
+    let mut early_frames: Vec<Vec<u8>> = Vec::new();
+    for (c, bytes) in transport.sent_frames() {
+        if c != EARLY {
             continue;
         }
-        let b64 = f.payload.as_ref().unwrap()["bytes_b64"].as_str().unwrap();
-        fragmentation_probe.process(&decode_b64(b64));
+        let mut s = wire::FrameSplitter::new();
+        let (decoded, _) = s.feed(&bytes);
+        for f in decoded {
+            if let wire::DecodedFrame::AttachServer(wire::AttachServer::Output { bytes }) = f {
+                early_frames.push(bytes);
+            }
+        }
+    }
+    let total: Vec<u8> = early_frames.iter().flatten().copied().collect();
+
+    // Round-2 review, finding 8: PROVE an interior CSI/OSC/DCS/UTF-8 cut actually occurred, rather than asserting
+    // repetition makes one "all but certain". Replaying the frames one at a time into a fresh parser restored from
+    // the early checkpoint and checking `Parser::is_ground()` after each one finds every point a REAL read boundary
+    // fell in this run: `is_ground() == false` right after a frame means that frame's own end sits strictly inside an
+    // unterminated sequence, which only an interior cut produces. This does not touch the attach checkpoint's own
+    // cut point (which `ground_reached` guarantees is ALWAYS ground-safe) -- it is an independent, run-wide proof that
+    // at least one real reader-chunk boundary landed inside one of these classes somewhere in the run.
+    let mut fragmentation_probe = vt100_ctt::Parser::new(rows, cols, 0);
+    fragmentation_probe.restore_screen(&early_checkpoint).expect("the early checkpoint must decode");
+    let mut interior_cut_found = false;
+    for frame in &early_frames {
+        fragmentation_probe.process(frame);
         if !fragmentation_probe.is_ground() {
             interior_cut_found = true;
             break;
@@ -420,15 +366,15 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     }
 
     // Finding 13, part 1: the post-watermark stream this connection
-    // received must be the EXACT byte-for-byte tail of the voyage's total
-    // producer bytes -- proves nothing was dropped, duplicated, or
+    // received must be the EXACT byte-for-byte tail of the reference
+    // connection's total output -- proves nothing was dropped, duplicated, or
     // reordered across the watermark boundary.
-    assert!(suffix.len() <= total.len(), "received more post-watermark bytes than the voyage ever recorded");
+    assert!(suffix.len() <= total.len(), "received more post-watermark bytes than the reference connection ever saw");
     let split = total.len() - suffix.len();
     assert_eq!(
         &total[split..],
         suffix.as_slice(),
-        "post-watermark output must be the exact byte-for-byte tail of the voyage"
+        "post-watermark output must be the exact byte-for-byte tail of the reference stream"
     );
     let prefix = &total[..split];
 
@@ -442,6 +388,7 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     // divergence in what was actually recorded.
     let mut reference_at_watermark =
         vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
+    reference_at_watermark.restore_screen(&early_checkpoint).expect("the early checkpoint must decode");
     reference_at_watermark.process(prefix);
     let reference_checkpoint = reference_at_watermark
         .screen()
@@ -472,7 +419,7 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     // And the full round trip, at the same checkpoint-byte granularity: a
     // fresh parser restored from the wire checkpoint and replayed with the
     // exact suffix must reach a state whose OWN checkpoint is
-    // byte-identical to a from-scratch parser's, fed the entire voyage --
+    // byte-identical to a from-scratch parser's, fed the entire reference stream --
     // both at the SAME scrollback capacity as the capsule's own parser,
     // for the same reason as above.
     let mut restored = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
@@ -482,6 +429,7 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     restored.process(&suffix);
 
     let mut reference = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
+    reference.restore_screen(&early_checkpoint).expect("the early checkpoint must decode");
     reference.process(&total);
 
     assert_eq!(

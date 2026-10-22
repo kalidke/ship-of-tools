@@ -49,12 +49,9 @@
 mod transports;
 
 use sot_log::lane::attach_proto::ConnId;
-use sot_log::capsule::{self, CapsuleConfig, Command, ExitKind};
+use sot_log::capsule::{self, CapsuleConfig, Command, Ended, ExitKind};
 use sot_log::capsule::producer::ExitStatus;
-use sot_log::store::segment::{RetentionClass, SegmentReader};
-use sot_log::store::verify::{leg_carries_run_end_marker, verify_voyage};
 use sot_log::lane::wire::{self, Survival};
-use sot_log::{Class, Envelope, RefKind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
@@ -128,18 +125,12 @@ fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows:
     CapsuleConfig {
         voyage_root: dir.join(name),
         voyage_id: name.to_string(),
-        retention: RetentionClass::Discard,
-        producer_kind: "test-shell".into(),
+        screen_path: Some(dir.join(format!("{name}.screen"))),
         argv,
         cols,
         rows,
         survival: Survival::Normal,
-        // Codex round-1 Major 9: typed evidence, not `None` -- a test
-        // asserts "nothing to protect" the same way a real first-install
-        // transaction would (see `rollout::RolloutEvidence`'s own doc).
-        rollout_evidence: sot_log::store::rollout::RolloutEvidence::NoRollbackTarget,
-        // No supervisor in this harness -- see
-        // `CapsuleConfig::parent_lease`'s own doc.
+        // No supervisor in this harness -- see `CapsuleConfig::parent_lease`'s own doc.
         parent_lease: None,
     }
 }
@@ -291,55 +282,28 @@ impl<'a> FrameWatcher<'a> {
     }
 }
 
-/// Every sealed frame across every `.sotseg` in `root/seg`, in segment
-/// order.
-fn sealed_frames(root: &std::path::Path, voyage: &str) -> Vec<Envelope> {
-    let seg_dir = root.join("seg");
-    let mut out = Vec::new();
-    let mut names: Vec<String> = std::fs::read_dir(&seg_dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    for n in names {
-        if n.ends_with(".sotseg") {
-            let r = SegmentReader::read(&seg_dir.join(&n), true).unwrap();
-            assert_eq!(r.header.voyage_id, voyage);
-            out.extend(r.frames);
-        }
-    }
-    out
+/// The `ended` file the leg left in the folder at `root`.
+fn ended_of(root: &std::path::Path) -> Ended {
+    capsule::read_ended(root).unwrap().expect("the leg left no ended file")
 }
 
-/// Test-only base64 decoder for the encoder in `src/capsule/frame.rs`
-/// (`base64_engine`).
-fn decode_b64(s: &str) -> Vec<u8> {
-    let val = |c: u8| -> u32 {
-        match c {
-            b'A'..=b'Z' => (c - b'A') as u32,
-            b'a'..=b'z' => (c - b'a' + 26) as u32,
-            b'0'..=b'9' => (c - b'0' + 52) as u32,
-            b'+' => 62,
-            b'/' => 63,
-            _ => 0,
-        }
-    };
-    let bytes: Vec<u8> = s.bytes().filter(|&c| c != b'=').collect();
-    let mut out = Vec::new();
-    for chunk in bytes.chunks(4) {
-        let mut n = 0u32;
-        for (i, &c) in chunk.iter().enumerate() {
-            n |= val(c) << (18 - 6 * i);
-        }
-        out.push((n >> 16) as u8);
-        if chunk.len() > 2 {
-            out.push((n >> 8) as u8);
-        }
-        if chunk.len() > 3 {
-            out.push(n as u8);
-        }
-    }
-    out
+/// Whether the leg's `ended` file says an end was asked for (written when the request is processed, while the leg runs).
+fn end_asked_for(root: &std::path::Path) -> bool {
+    capsule::read_ended(root).ok().flatten().is_some_and(|e| e.requested)
+}
+
+/// What the screen file the leg left for `name` shows, as text: the saved screen restored into a parser, rows joined
+/// by newlines.
+fn saved_screen_text(dir: &std::path::Path, name: &str) -> String {
+    let bytes = std::fs::read(dir.join(format!("{name}.screen"))).expect("the leg left no screen file");
+    let mut parser = vt100_ctt::Parser::new(25, 80, capsule::CAPSULE_SCROLLBACK_ROWS);
+    parser.restore_screen(&bytes).expect("the screen file restores");
+    let screen = parser.screen();
+    let (rows, cols) = screen.size();
+    (0..rows)
+        .map(|r| (0..cols).filter_map(|c| screen.cell(r, c).map(|cell| cell.contents().to_string())).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Bounded join: `run` blocks until the run ends, and a bug in the
@@ -358,31 +322,11 @@ fn wait_for_join<T: Send + 'static>(handle: std::thread::JoinHandle<T>, timeout:
     Some(handle.join().unwrap())
 }
 
-/// `producer_dead` must be the LAST frame ever appended to the last
-/// segment before it was sealed — the order the verifier itself does not
-/// enforce (review finding). Returns its `detail` payload for further
-/// assertions.
-fn assert_producer_dead_is_last(frames: &[Envelope]) -> serde_json::Value {
-    let last = frames.last().expect("no frames at all");
-    assert_eq!(last.class, Class::Lifecycle, "producer_dead is not the last frame in the segment");
-    let payload = last.payload.as_ref().unwrap();
-    assert_eq!(payload["kind"], "producer_dead", "last frame is not producer_dead: {payload:?}");
-    payload["detail"].clone()
-}
-
-/// Test 1: E2E. A one-shot shell command (`cmd.exe /d /c echo <marker>`
-/// on Windows, `/bin/sh -c 'echo <marker>'` on Unix — see
-/// `shell_command`'s own doc) runs to completion (a natural producer exit
-/// — no `Kill` ever sent); the resulting voyage
-/// verifies, carries the marker in its producer frames, never carries a
-/// turn frame (raw terminal), and ends with `producer_dead`. The
-/// host-handshake exchange is a BIJECTION, not membership (review
-/// finding): at most one request, matched by exactly one response and
-/// exactly one outcome, linked correctly — but tolerating zero, since DA1
-/// presence is host/build-version-dependent (same reasoning as
-/// `tests/conpty.rs`'s own DA1-presence finding).
+/// Test 1: E2E. A one-shot shell command (`cmd.exe /d /c echo <marker>` on Windows, `/bin/sh -c 'echo <marker>'` on
+/// Unix — see `shell_command`'s own doc) runs to completion (a natural producer exit — no `Kill` ever sent); the leg
+/// leaves a finished `ended` file that asked for nothing, and its screen file shows the marker.
 #[test]
-fn e2e_records_and_verifies() {
+fn e2e_runs_and_leaves_its_ending_and_its_screen() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let marker = "SOT_CAPSULE_WIN_E2E_9f31";
@@ -394,62 +338,17 @@ fn e2e_records_and_verifies() {
     let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
     assert_eq!(summary.exit_code, Some(ExitStatus::Code(0)));
-    assert_eq!(summary.segments_sealed, 1);
-    verify_voyage(&root, "e2e1").unwrap();
 
-    let frames = sealed_frames(&root, "e2e1");
-    let mut all = Vec::new();
-    for f in &frames {
-        if f.class == Class::Producer {
-            let b64 = f.payload.as_ref().unwrap()["bytes_b64"].as_str().unwrap();
-            all.extend(decode_b64(b64));
-        }
-    }
-    let text = String::from_utf8_lossy(&all);
+    let ended = ended_of(&root);
+    assert!(ended.finished && !ended.requested, "a natural exit asks for nothing: {ended:?}");
+    assert_eq!(ended.exit_code, Some(0));
+    assert!(ended.uptime_ms.is_some());
+    let text = saved_screen_text(dir.path(), "e2e1");
     assert!(text.contains(marker), "got: {text:?}");
-    assert!(frames.iter().all(|f| f.class != Class::TurnOpen && f.class != Class::TurnClose));
-    let dead = assert_producer_dead_is_last(&frames);
-    assert_eq!(dead["exit_code"], 0);
-
-    let phase_is = |f: &&Envelope, kind_ns: &str, phase: &str| {
-        f.class == Class::ControlExchange
-            && f.payload.as_ref().unwrap()["kind_ns"] == kind_ns
-            && f.payload.as_ref().unwrap()["phase"] == phase
-    };
-    let hh_reqs: Vec<&Envelope> =
-        frames.iter().filter(|f| phase_is(f, "conpty/host-handshake", "request")).collect();
-    let hh_resps: Vec<&Envelope> =
-        frames.iter().filter(|f| phase_is(f, "conpty/host-handshake", "response")).collect();
-    let hh_outcomes: Vec<&Envelope> =
-        frames.iter().filter(|f| phase_is(f, "conpty/host-handshake", "outcome")).collect();
-    eprintln!(
-        "capsule_win e2e finding: host-handshake requests={}, responses={}, outcomes={}",
-        hh_reqs.len(),
-        hh_resps.len(),
-        hh_outcomes.len()
-    );
-    assert!(hh_reqs.len() <= 1, "ADR 0041's model answers the handshake at most once per run");
-    assert_eq!(hh_reqs.len(), hh_resps.len(), "bijection: every request has exactly one response");
-    assert_eq!(hh_resps.len(), hh_outcomes.len(), "bijection: every response has exactly one outcome");
-    assert_eq!(summary.handshake_answered, !hh_reqs.is_empty());
-    if let Some(&req) = hh_reqs.first() {
-        let resp = hh_resps[0];
-        let outcome = hh_outcomes[0];
-        let responds_to = resp
-            .refs
-            .iter()
-            .find(|r| r.kind == RefKind::RespondsTo)
-            .map(|r| r.frame)
-            .expect("host-handshake response missing responds_to");
-        assert_eq!(responds_to, req.seq, "response must respond to ITS OWN request");
-        let target = outcome.payload.as_ref().unwrap()["target"].as_str().unwrap().to_string();
-        assert_eq!(target, format!("{}:{}", req.seq.epoch, req.seq.n), "outcome must target ITS OWN request");
-        assert_eq!(outcome.payload.as_ref().unwrap()["body"]["disposition"], "ok");
-    }
 }
 
-/// Test 2b: an out-of-budget INITIAL geometry is treated the same way —
-/// "Initial geometry is validated by the same rule" a resize is (ADR 0041).
+/// Test 2b: an out-of-budget INITIAL geometry is treated like a spawn failure: "Initial geometry is validated by the
+/// same rule" a resize is (ADR 0041). Nothing ran, and `ended` says so.
 #[test]
 fn spawn_failure_from_out_of_budget_initial_geometry() {
     let _serial = serial();
@@ -461,40 +360,15 @@ fn spawn_failure_from_out_of_budget_initial_geometry() {
     let mut transport = no_transport();
     let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
-    verify_voyage(&root, "fail2").unwrap();
-    let frames = sealed_frames(&root, "fail2");
-    let dead = assert_producer_dead_is_last(&frames);
-    assert_eq!(dead["spawn_failed"], true);
+    let ended = ended_of(&root);
+    assert!(ended.finished && !ended.requested);
+    assert!(ended.reason.as_deref().is_some_and(|r| r.starts_with("spawn_failed")), "{ended:?}");
 }
 
-/// ADR 0041 "Upgrade and version skew" reader-first rollout gate (step 6
-/// U1b, `rollout::gate`): `run` refuses BEFORE opening any segment —
-/// and therefore before ever spawning the producer, unlike every OTHER
-/// refusal above, which still bootstraps a voyage and seals a
-/// `producer_dead` — when the configured installed rollback target's
-/// reader cannot decode a segment declaring the EndRun-marker feature.
+/// Test 3: a requested kill (`Command::Kill`) tears down a still-running producer through the ONE orchestrator, and
+/// the leg's `ended` says the end was asked for, with the exit status `run` itself observed.
 #[test]
-fn refuses_when_the_installed_rollback_target_cannot_read_the_marker() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let argv = shell_command("exit 0");
-    let mut cfg = config(dir.path(), "rolloutgate1", argv, 80, 25);
-    cfg.rollout_evidence = sot_log::store::rollout::RolloutEvidence::Installed {
-        release: "0.5.9".to_string(),
-        target: "rolloutgate1-target".to_string(),
-        reader_features: vec!["sot.producer.json-f64-v1".to_string()],
-    };
-    let (_tx, rx) = mpsc::channel();
-    let mut transport = no_transport();
-    let err = capsule::run::<P>(cfg, rx, &mut transport).unwrap_err();
-    assert!(format!("{err}").contains("cannot decode"), "got: {err}");
-}
-
-/// Test 3: a requested kill (`Command::Kill`) tears down a still-running
-/// producer through the ONE orchestrator and still seals a verifiable
-/// voyage, with a real (job-imposed) exit code recorded as the last frame.
-#[test]
-fn requested_kill_tears_down_and_seals() {
+fn requested_kill_tears_down_and_says_so() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv = vec![SHELL_ARGV.to_string()]; // bare interactive shell — stays open until killed
@@ -511,26 +385,24 @@ fn requested_kill_tears_down_and_seals() {
         .expect("run did not return within the teardown bound")
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
-    verify_voyage(&root, "kill1").unwrap();
 
-    let frames = sealed_frames(&root, "kill1");
-    let dead = assert_producer_dead_is_last(&frames);
-    // A job-imposed exit code on Windows, a `killpg(SIGKILL)`-imposed
-    // signal on Unix (ADR 0043 decision 13: the two are mutually
-    // exclusive additive fields) -- either way, the durable record must
-    // match what `run` itself observed.
+    let ended = ended_of(&root);
+    assert!(ended.finished && ended.requested, "{ended:?}");
+    assert_eq!(ended.reason.as_deref(), Some("operator_kill"));
+    // A job-imposed exit code on Windows, a `killpg(SIGKILL)`-imposed signal on Unix (ADR 0043 decision 13: the two
+    // are mutually exclusive additive fields) -- either way, the file matches what `run` itself observed.
     match summary.exit_code.expect("a real exit status") {
-        ExitStatus::Code(code) => assert_eq!(dead["exit_code"], code),
+        ExitStatus::Code(code) => assert_eq!(ended.exit_code, Some(code)),
         ExitStatus::Signal(n) => {
-            assert_eq!(dead["signal"], n);
-            assert!(dead.get("exit_code").is_none(), "a signal death must never also carry an exit_code key");
+            assert_eq!(ended.signal, Some(n));
+            assert_eq!(ended.exit_code, None, "a signal death must never also carry an exit code");
         }
     }
 }
 
 mod attach;
 mod shutdown;
-mod commit;
+mod v3_order;
 mod output_end;
 
 // ---------------------------------------------------------------------

@@ -12,9 +12,7 @@
 //!
 //! One case per acceptance-matrix row named in the U3 unit: attach as a
 //! watcher and receive the checkpoint; first input takes the pen and the
-//! resize precedes the flush (proven at the wire level, via the sealed
-//! voyage record — the client's own black-box surface has no other way to
-//! observe SEND order); `end_run` from the quit dispatcher gets
+//! resize precedes the flush (proven by the echo of the first input reaching the screen); `end_run` from the quit dispatcher gets
 //! `record_closed`; reconnect after the capsule is killed and a fresh
 //! supervisor takes over restores the screen from the new checkpoint.
 //!
@@ -27,7 +25,6 @@
 
 use sot_log::lane::client::{Endpoint, PlatformEndpoint};
 use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
-use sot_log::store::segment::SegmentReader;
 use sot_platform::host::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
 use sot_log::lane::wire::{
@@ -323,29 +320,6 @@ fn poll_screen(client: &mut FeAttachClient, timeout: Duration, pred: impl Fn(&st
     }
 }
 
-/// Every sealed frame across every `.sotseg` under a real
-/// supervisor-owned voyage — `state_dir/voyages/<voyage>/seg`
-/// (`supervisor::voyage_root_path`'s own convention; not the bespoke
-/// per-test root `tests/e2e_pipe.rs`'s own harness uses, since THIS file
-/// goes through the real supervisor rather than configuring
-/// `capsule::CapsuleConfig` directly).
-fn sealed_frames(state_dir: &Path, voyage: &str) -> Vec<sot_log::store::envelope::Envelope> {
-    let seg_dir = state_dir.join("voyages").join(voyage).join("seg");
-    let mut out = Vec::new();
-    let mut names: Vec<String> = std::fs::read_dir(&seg_dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    for n in names {
-        if n.ends_with(".sotseg") {
-            let r = SegmentReader::read(&seg_dir.join(&n), true).unwrap();
-            out.extend(r.frames);
-        }
-    }
-    out
-}
-
 fn query(conn: &Client, operation_id: &str) -> SupervisorOperationState {
     match request_for_test(
         conn,
@@ -359,13 +333,10 @@ fn query(conn: &Client, operation_id: &str) -> SupervisorOperationState {
     }
 }
 
-/// Ends the run cleanly (mirrors `tests/supervisor/`'s own
-/// `end_run_and_expect_record_closed` + `poll_to_terminal` composition)
-/// so the voyage is durably SEALED before `sealed_frames` reads it — an
-/// in-progress segment's frames are written with `Commit::Immediate` but
-/// this file only ever reads the same way every other test in this crate
-/// does: after a clean shutdown.
-fn end_run_and_wait_verified(conn: &Client, voyage: &str) {
+/// Ends the run cleanly (mirrors `tests/supervisor/`'s own `end_run_and_expect_record_closed` + `poll_to_terminal`
+/// composition): `record_closed`, then `record_verified`, the wire's names for the end being acknowledged and then
+/// final. No record is kept, so nothing is read back.
+fn end_run_and_wait_ended(conn: &Client, voyage: &str) {
     let op_id = "test-teardown-end-run";
     let reply = command(conn, op_id, SupervisorOp::EndRun { reason: "test teardown".into(), voyage: voyage.to_string() });
     assert_eq!(reply, SupervisorOperationState::RecordClosed);

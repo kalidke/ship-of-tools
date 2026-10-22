@@ -1,4 +1,4 @@
-//! The loop's output path: the reader thread, recording and pacing output, the commit watermark and segment rotation. The byte budget and the commit-timing rules are capsule/output.rs.
+//! The loop's output path: the reader thread, handling and pacing output, and the ground gate. The byte budget is capsule/output.rs.
 use super::lanes::execute_light_actions;
 use super::*;
 
@@ -88,159 +88,63 @@ pub(super) fn spawn_reader<P: Producer>(
     })
 }
 
-pub(super) fn flush_output<P: Producer>(leg: &mut Leg<'_, P>) -> Result<()> {
-    if leg.pending_bytes > 0 {
-        leg.w.commit()?; // the watermark: fsync BEFORE anything is published
-        leg.last_fsync = Instant::now();
-        execute_light_actions(leg.attach_proto.output_committed(&leg.pending_output, Instant::now()), leg);
-        leg.pending_output.clear();
-        leg.pending_bytes = 0;
-    } else if leg.w.has_unsynced() {
-        // A Buffered input-WAL record with no output behind it: commit it
-        // by the next group-commit check (ADR 0039 Durability invariants);
-        // nothing is published, so no `output_committed`.
-        leg.w.commit()?;
-        leg.last_fsync = Instant::now();
-    }
-    leg.last_commit = Instant::now();
-    // ADR 0041: attach is GROUND-GATED; the watermark barrier
-    // (force pending commit -> publish to EXISTING subscribers ->
-    // checkpoint -> subscribe) is exactly this ordering -- publish
-    // above already ran, so a ground boundary found HERE is the
-    // single loop step the barrier requires.
+/// Evaluates the ground gate: a pending attach is promoted at a parser ground boundary, after every byte the parser
+/// has seen was published (`handle_output` publishes before it asks), so the checkpoint and the bytes after it
+/// agree on where they meet.
+pub(super) fn ground_check<P: Producer>(leg: &mut Leg<'_, P>) {
     if leg.parser.is_ground() {
         execute_light_actions(leg.attach_proto.ground_reached(Instant::now()), leg);
     }
-    Ok(())
 }
 
-pub(super) fn maybe_rotate<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<Leg<'t, P>> {
-    if leg.seg_bytes >= SEGMENT_MAX_BYTES {
-        flush_output(&mut leg)?;
-        let digest = leg.w.seal(None)?;
-        leg.store.advance_chain(digest);
-        leg.segments_sealed += 1;
-        leg.w = leg.store.open_segment_with_features(wall_ms(), leg.segment_features.clone())?;
-        leg.seg_bytes = 0;
-    }
-    Ok(leg)
-}
-
-/// Bounds consecutive output work to one `GROUP_COMMIT_BYTES` worth
-/// (the SAME threshold the writer already paces its own fsyncs by)
-/// before yielding this thread -- the loop-fairness fix above. Takes
-/// `bytes` itself (not a pre-computed length) so every call site reads
-/// as "handle this chunk, paced" in one line: `.len()` borrows before
-/// `handle_output` moves it.
-/// Offers a scheduling window to another ready thread every
-/// `GROUP_COMMIT_BYTES` worth of output -- a timed sleep (see
-/// the doc above `bytes_since_yield`), not a bound: it may do nothing.
+/// Handles one chunk of output, and offers a scheduling window to another ready thread every `PACE_BYTES` worth of
+/// output: a timed sleep (see the doc at `bytes_since_yield`'s initialization in `start`), not a bound.
 pub(super) fn pace_output<P: Producer>(bytes: Vec<u8>, leg: &mut Leg<'_, P>) -> Result<()> {
     leg.bytes_since_yield += bytes.len();
     handle_output(bytes, leg)?;
-    if leg.bytes_since_yield >= GROUP_COMMIT_BYTES {
+    if leg.bytes_since_yield >= PACE_BYTES {
         std::thread::sleep(Duration::from_millis(1));
         leg.bytes_since_yield = 0;
     }
     Ok(())
 }
 
-/// Attaching to an idle session (real CI failure, windows-latest
-/// only): `ground_reached` was previously fed ONLY from
-/// `flush_output`, itself reached only by fresh output crossing the
-/// group-commit threshold, or a periodic idle check gated behind the
-/// OUTPUT CHANNEL's own `recv_timeout` cadence — never directly by
-/// admission, and never by `tick`, the one hook this loop already
-/// calls unconditionally every iteration. An attach landing on an
-/// ALREADY-idle, already-at-ground session (a shell sitting at its
-/// prompt — the ordinary case, exercised once the fidelity test's
-/// producer goes silent after `--linger`) depended entirely on that
-/// separate cadence happening to notice, which is exactly the kind of
-/// dependency `pace_output`'s own history above already proved
-/// fragile on a loaded windows-latest runner: the attach pended for
-/// the full 5 s `GroundTimeout` and was refused instead of completing
-/// on the very next iteration.
+/// Attaching to an idle session (real CI failure, windows-latest only): the ground gate was fed only by fresh output,
+/// so an attach landing on an already-idle, already-at-ground session (a shell sitting at its prompt, the ordinary
+/// case) pended for the full 5 s `GroundTimeout` and was refused instead of completing on the very next iteration.
 ///
-/// Called every iteration, right after `tick`, so it runs in the SAME
-/// iteration an attach was just admitted in (a) and on every
-/// subsequent iteration while one still pends (b) — no separate
-/// cadence to depend on. Scoped behind `ground_gate_pending()` (a
-/// cheap check) so the vastly more common "nothing pending" iteration
-/// pays nothing beyond it. Watermark semantics stay exact: with no
-/// pending uncommitted bytes, NOW already is a valid commit boundary
-/// (`flush_output` skips the commit but still evaluates ground); with
-/// some pending, `flush_output` forces the SAME commit-then-check
-/// barrier it always runs, just immediately rather than waiting for
-/// the group-commit threshold or the idle timer to get to it.
-pub(super) fn eager_ground_check<P: Producer>(leg: &mut Leg<'_, P>) -> Result<()> {
+/// Called every iteration, right after `tick`, so it runs in the SAME iteration an attach was just admitted in and on
+/// every subsequent iteration while one still pends. Scoped behind `ground_gate_pending()` (a cheap check) so the
+/// vastly more common "nothing pending" iteration pays nothing beyond it. Every byte the parser has seen was already
+/// published, so NOW is a valid boundary whenever the parser is at ground.
+pub(super) fn eager_ground_check<P: Producer>(leg: &mut Leg<'_, P>) {
     if leg.attach_proto.ground_gate_pending() {
-        flush_output(leg)?;
+        ground_check(leg);
     }
-    Ok(())
 }
 
-// One producer-output handler, used identically pre-teardown AND
-// during BOTH teardown phases — so "the handshake keeps answering
-// through the drain" (ADR 0041) can't be missed by one call site and
-// not the other. Feeds the live parser, answers the FIRST DA1 query
-// ever seen (recording request -> response -> outcome), records the
-// raw producer frame, and tracks the group-commit/echo state.
+// One producer-output handler, used identically pre-teardown AND during BOTH teardown phases, so "the handshake
+// keeps answering through the drain" (ADR 0041) can't be missed by one call site and not the other. Feeds the live
+// parser, publishes the bytes to the attached viewers, answers the FIRST DA1 query ever seen, and marks the screen
+// file's content changed.
 fn handle_output<P: Producer>(bytes: Vec<u8>, leg: &mut Leg<'_, P>) -> Result<()> {
     leg.parser.process(&bytes);
-
-    use base64_engine::encode_b64;
-    let f = leg.ctx.producer_frame(json!({"bytes_b64": encode_b64(&bytes)}));
-    leg.w.append(&f, Commit::Buffered)?;
-    leg.frames_written += 1;
-    leg.seg_bytes += bytes.len() as u64 + 128;
     leg.output_budget.release(bytes.len() as u64);
-    leg.pending_output.extend_from_slice(&bytes);
-    leg.pending_bytes += bytes.len();
-    if leg.pending_bytes >= GROUP_COMMIT_BYTES {
-        flush_output(leg)?;
+    if let Some(screen) = &mut leg.screen {
+        screen.output_arrived();
     }
+    execute_light_actions(leg.attach_proto.output_committed(&bytes, Instant::now()), leg);
+    ground_check(leg);
 
     let matches = leg.handshake.feed(&bytes);
     if matches > 0 {
         if !leg.dsr_answered {
             leg.dsr_answered = true;
-            // Query exchange, ADR 0041's own phrase and shape:
-            // request -> response (only on a successful write) ->
-            // outcome (always, reflecting whether it was).
-            let req = leg.ctx.capsule_frame(
-                Class::ControlExchange,
-                json!({"phase": "request", "kind_ns": "conpty/host-handshake",
-                       "to": {"kind": "producer"}, "body": {"query": "da1"}}),
-            );
-            let req_seq = req.seq;
-            leg.w.append(&req, Commit::Immediate)?;
-            leg.frames_written += 1;
-
-            let write_result = leg.producer.input().write_all(host_handshake::DA1_REPLY);
-            if write_result.is_ok() {
-                let mut resp = leg.ctx.capsule_frame(
-                    Class::ControlExchange,
-                    json!({"phase": "response", "kind_ns": "conpty/host-handshake",
-                           "body": {"query": "da1"}}),
-                );
-                resp.refs = vec![FrameRef { kind: RefKind::RespondsTo, frame: req_seq }];
-                leg.w.append(&resp, Commit::Immediate)?;
-                leg.frames_written += 1;
+            // Answer the query: a failed write is noted, never fatal (the producer may be gone already).
+            if let Err(e) = leg.producer.input().write_all(host_handshake::DA1_REPLY) {
+                leg_note(format_args!("sot-capsule: the host handshake reply was not written: {e}"));
             }
-            let outcome_body = match &write_result {
-                Ok(()) => json!({"disposition": "ok"}),
-                Err(e) => json!({"disposition": "failed", "reason": e.to_string()}),
-            };
-            let out = leg.ctx.capsule_frame(
-                Class::ControlExchange,
-                json!({"phase": "outcome", "kind_ns": "conpty/host-handshake", "scope": "pty",
-                       "target": format!("{}:{}", req_seq.epoch, req_seq.n), "body": outcome_body}),
-            );
-            leg.w.append(&out, Commit::Immediate)?;
-            leg.frames_written += 1;
-
-            // Any FURTHER matches in this SAME chunk are already
-            // "later" than the one just answered.
+            // Any FURTHER matches in this SAME chunk are already "later" than the one just answered.
             leg.handshake_suppressed_matches += (matches - 1) as u64;
         } else {
             leg.handshake_suppressed_matches += matches as u64;

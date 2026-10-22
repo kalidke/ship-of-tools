@@ -17,12 +17,9 @@
 
 use sot_log::capsule::{self, CapsuleConfig, ExitKind};
 use sot_log::capsule::producer::pty::PtyProducer;
-use sot_log::store::segment::{RetentionClass, SegmentReader};
 use sot_log::lane::platform_transport::PlatformTransport;
 use sot_log::lane::socket_unix::{connect_voyage_socket, SocketClient};
-use sot_log::store::verify::verify_voyage;
 use sot_log::lane::wire::{self, Survival};
-use sot_log::{Class, Envelope, RefKind};
 use std::collections::VecDeque;
 #[path = "../support/capsule_guard.rs"]
 mod capsule_guard;
@@ -83,15 +80,11 @@ fn config(dir: &std::path::Path, voyage_id: &str, argv: Vec<String>, cols: u16, 
     CapsuleConfig {
         voyage_root: dir.join(voyage_id),
         voyage_id: voyage_id.to_string(),
-        retention: RetentionClass::Discard,
-        producer_kind: "test-shell".into(),
+        screen_path: None,
         argv,
         cols,
         rows,
         survival: Survival::Normal,
-        // Codex round-1 Major 9 (same reasoning as `tests/e2e_pipe.rs`'s
-        // identical field): typed evidence, not `None`.
-        rollout_evidence: sot_log::store::rollout::RolloutEvidence::NoRollbackTarget,
         // No supervisor in this end-to-end harness.
         parent_lease: None,
     }
@@ -170,26 +163,6 @@ fn wait_for_endpoint<T, E: std::fmt::Display>(connect: impl Fn() -> Result<T, E>
             }
         }
     }
-}
-
-/// Every sealed frame across every `.sotseg` in `root/seg`, in segment
-/// order — identical to `tests/e2e_pipe.rs`'s own helper of the same name.
-fn sealed_frames(root: &std::path::Path, voyage: &str) -> Vec<Envelope> {
-    let seg_dir = root.join("seg");
-    let mut out = Vec::new();
-    let mut names: Vec<String> = std::fs::read_dir(&seg_dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    for n in names {
-        if n.ends_with(".sotseg") {
-            let r = SegmentReader::read(&seg_dir.join(&n), true).unwrap();
-            assert_eq!(r.header.voyage_id, voyage);
-            out.extend(r.frames);
-        }
-    }
-    out
 }
 
 /// A real-socket frame reader — the socket analog of `tests/e2e_pipe.rs`'s
@@ -505,28 +478,10 @@ fn full_socket_e2e_two_clients_and_mgmt() {
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested, "expected the mgmt shutdown to end the run as Requested");
 
-    verify_voyage(&root, &voyage_id).unwrap();
-
-    // The sealed voyage must show the input recorded (length only -- its
-    // content is redacted by design) EXACTLY once, and a `forwarded` fact
-    // correlated to THAT exact input's own sequence via `CausedBy`.
-    let frames = sealed_frames(&root, &voyage_id);
-    let hex: String = idem_key.iter().map(|b| format!("{b:02x}")).collect();
-    let input_frames: Vec<&Envelope> = frames
-        .iter()
-        .filter(|f| f.class == Class::Input && f.payload.as_ref().unwrap()["idem_key"] == hex)
-        .collect();
-    assert_eq!(input_frames.len(), 1, "expected EXACTLY ONE Input frame for this idem_key, found {}", input_frames.len());
-    let input_frame = input_frames[0];
-    assert_eq!(input_frame.payload.as_ref().unwrap()["length"], payload.len());
-    let input_seq = input_frame.seq;
-    let forwarded = frames.iter().any(|f| {
-        f.class == Class::Lifecycle
-            && f.payload.as_ref().unwrap()["kind"] == "input_fact"
-            && f.payload.as_ref().unwrap()["fact"]["fact"] == "forwarded"
-            && f.refs.iter().any(|r| r.kind == RefKind::CausedBy && r.frame == input_seq)
-    });
-    assert!(forwarded, "expected a forwarded input_fact CAUSED BY (correlated to) this exact input's own sequence");
+    // The leg's own file says the end was asked for, and by whom: the mgmt `shutdown`'s reason.
+    let ended = sot_log::capsule::read_ended(&root).unwrap().expect("the leg left no ended file");
+    assert!(ended.finished && ended.requested, "{ended:?}");
+    assert_eq!(ended.reason.as_deref(), Some("e2e test done"));
 
     watcher.join(Duration::from_secs(10));
     driver.join(Duration::from_secs(10));
@@ -566,7 +521,6 @@ fn an_attach_against_an_idle_capsule_is_not_group_commit_bound() {
     let argv = vec![helper, "--script".to_string(), "1".to_string(), "--linger".to_string()];
     let voyage_id = fresh_voyage_id();
     let cfg = config(dir.path(), &voyage_id, argv, 80, 25);
-    let root = cfg.voyage_root.clone();
 
     let mut transport = PlatformTransport::new(8);
     let (_cmd_tx, cmd_rx) = mpsc::channel();
@@ -645,7 +599,6 @@ fn an_attach_against_an_idle_capsule_is_not_group_commit_bound() {
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested, "expected the mgmt shutdown to end the run as Requested");
 
-    verify_voyage(&root, &voyage_id).unwrap();
     drop(mgmt_client);
 
     println!(

@@ -38,3 +38,44 @@ fn a_full_volume_never_stops_output() {
     file.tick(&parser, t0 + SCREEN_PACE * 5 + Duration::from_millis(10));
     assert_eq!(*calls.lock().unwrap(), 5, "inside the pace nothing is written");
 }
+
+fn text_of(parser: &vt100_ctt::Parser) -> String {
+    let screen = parser.screen();
+    let (rows, cols) = screen.size();
+    (0..rows)
+        .map(|r| (0..cols).filter_map(|c| screen.cell(r, c).map(|cell| cell.contents().to_string())).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The screen a leg saved is the screen the next leg starts with, under a restart line.
+#[test]
+fn a_saved_screen_restores_above_the_restart_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("screen");
+    let t0 = Instant::now();
+    let mut file = ScreenFile::new(path.clone(), t0);
+    let mut parser = vt100_ctt::Parser::new(24, 80, CAPSULE_SCROLLBACK_ROWS);
+    parser.process(b"first leg output\r\n");
+    file.output_arrived();
+    file.flush(&parser, t0);
+
+    let mut next = vt100_ctt::Parser::new(24, 80, CAPSULE_SCROLLBACK_ROWS);
+    assert!(restore(&path, &mut next, 24, 80, UNIX_EPOCH + Duration::from_secs(1_700_000_000)));
+    let text = text_of(&next);
+    let old = text.find("first leg output").expect("the old screen is there");
+    let line = text.find("[restarted 2023-11-14 22:13:20 UTC]").expect("the restart line is there");
+    assert!(old < line, "the restart line is below the old screen: {text:?}");
+}
+
+/// A screen file that does not restore is removed and the screen starts empty.
+#[test]
+fn a_torn_screen_file_is_removed_and_the_screen_starts_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("screen");
+    std::fs::write(&path, b"not a checkpoint").unwrap();
+    let mut parser = vt100_ctt::Parser::new(24, 80, CAPSULE_SCROLLBACK_ROWS);
+    assert!(!restore(&path, &mut parser, 24, 80, SystemTime::now()));
+    assert!(!path.exists());
+    assert!(text_of(&parser).trim().is_empty());
+}

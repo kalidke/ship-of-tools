@@ -255,7 +255,7 @@ jobs:
         working-directory: .
 
   # The ubuntu checks at each landing: the clippy gates, the selected-body proofs (all of them on this leg), the gate scripts'
-  # own tests and the installer suites. The slow ones (storage exhaustion, the gate's clippy and bash 3.2 jobs, the comm and
+  # own tests and the installer suites. The slow ones (the gate's clippy and bash 3.2 jobs, the comm and
   # agents suites) run in release-gate.yml. The shell steps set their own working directory.
   checks-linux:
     name: checks (ubuntu-latest)
@@ -388,32 +388,3 @@ jobs:
         timeout-minutes: 5
         run: bash scripts/tests/test-release-cut.sh
         working-directory: .
-
-
-  p2-e2e:
-    name: P2 e2e (real helper, offline)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: rust/log/claude-sdk-helper/package-lock.json
-      - name: Install helper deps
-        working-directory: rust/log/claude-sdk-helper
-        run: npm ci
-      - name: Test helper
-        working-directory: rust/log/claude-sdk-helper
-        run: npm test
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Run P2 e2e test
-        working-directory: rust
-        env:
-          SOT_HELPER_E2E: "1"
-        run: cargo test -p sot-log --test claude_e2e -- --nocapture
-

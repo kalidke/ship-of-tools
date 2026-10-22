@@ -246,8 +246,6 @@ use crate::storage_exhaustion;
 use sot_platform::identity::challenge::ChallengeOutcome;
 use crate::lane::attach_proto::ConnId;
 use crate::lane::client::{Endpoint, PlatformEndpoint};
-use crate::store::recovery::{self, LatestLegState};
-use crate::store::segment::RetentionClass;
 use crate::supervisor::journal::pointer::{self, PointerState};
 use crate::supervisor::probe::classify::{self, ProbeOutcome};
 use crate::supervisor::probe::leg_process::LegProcess;
@@ -268,8 +266,6 @@ use crate::lane::wire::{
     self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
     SupervisorRequest, Survival,
 };
-use crate::store::verify;
-use crate::store::voyage::VoyageStore;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Write as _;
@@ -293,7 +289,6 @@ mod lifecycle;
 mod main_loop;
 mod oneshot;
 pub mod probe;
-mod storage;
 mod transitions;
 use authority::lane::*;
 use authority::*;
@@ -495,7 +490,6 @@ pub struct SuperviseConfig {
     pub producer_argv: Vec<String>,
     pub cols: u16,
     pub rows: u16,
-    pub assume_no_rollback_target: bool,
     /// ADR 0042 slice L1a: the spawner's own
     /// breakaway outcome, supplied here rather than inferred (ADR 0041
     /// decision 11: "Survival is supplied, never inferred... Deriving it
@@ -538,14 +532,6 @@ pub fn supervise(config: SuperviseConfig) -> i32 {
         note(format_args!(
             "could not harden inherited stdin/stdout ({e}); continuing"
         ));
-    }
-    if !config.assume_no_rollback_target {
-        note(format_args!(
-            "no rollout evidence available — this build cannot open a feature-bearing segment \
-             until U4's release-apply transaction supplies real evidence (ADR 0041 \"Upgrade and \
-             version skew\"). Pass --assume-no-rollback-target to override for pre-U4 operation."
-        ));
-        return EXIT_TERMINAL;
     }
     match supervise_inner(config) {
         Ok(code) => code,

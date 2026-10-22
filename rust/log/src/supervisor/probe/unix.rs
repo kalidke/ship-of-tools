@@ -15,7 +15,7 @@ use sot_platform::identity::challenge_unix;
 use crate::capsule::producer::ExitStatus;
 use crate::supervisor::probe::leg_process::LegProcess;
 use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
-use crate::store::voyage::WRITER_LOCK;
+use crate::capsule::WRITER_LOCK;
 use std::cell::Cell;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;

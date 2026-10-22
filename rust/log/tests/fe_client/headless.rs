@@ -12,10 +12,8 @@ use super::*;
 /// headless`, which has no dependency on this crate's test harness): a
 /// headless attach adopts the CAPSULE's own geometry (never the
 /// placeholder it was constructed with), delivers one input frame, and
-/// sends NO resize — proven at the wire level via the sealed voyage
-/// record, the same way `first_input_takes_the_pen_and_resize_precedes_
-/// the_flush` above proves resize DOES precede the flush for an ordinary
-/// client.
+/// sends NO resize — proven by the geometry a fresh watcher still adopts
+/// afterwards.
 #[test]
 fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
     let _serial = serial();
@@ -64,31 +62,27 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
 
     assert!(client.shutdown(Duration::from_secs(5)), "the worker must exit within the shutdown bound");
 
-    end_run_and_wait_verified(&conn, &voyage);
+    end_run_and_wait_ended(&conn, &voyage);
 
-    let frames = sealed_frames(&state_dir, &voyage);
-    let resize_from_headless = frames.iter().any(|f| {
-        if f.class != sot_log::store::envelope::Class::ControlExchange {
-            return false;
-        }
-        let Some(p) = f.payload.as_ref() else { return false };
-        p.get("phase").and_then(|v| v.as_str()) == Some("request")
-            && p.get("kind_ns").and_then(|v| v.as_str()) == Some("conpty/resize")
-    });
-    assert!(!resize_from_headless, "a headless client must send NO resize, ever — found one in the sealed record");
-
-    let input_frame = frames
-        .iter()
-        .find(|f| {
-            f.class == sot_log::store::envelope::Class::Input
-                && f.source.actor.controller_id.as_deref() == Some("lu6c-headless-test")
-        })
-        .expect("no input frame attributed to the headless controller_id in the sealed record");
-    assert_eq!(
-        input_frame.payload.as_ref().and_then(|p| p.get("length")).and_then(|v| v.as_u64()),
-        Some(marker.len() as u64),
-        "the sealed input frame's length must match the whole payload"
+    // No resize ever: the capsule's own geometry is still what a fresh watcher adopts. And the one input landed: its
+    // echo is on the screen.
+    let mut after = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), "lu6c-headless-after".to_string())
+        .expect("attach_headless after");
+    poll_until(
+        || {
+            after.pump();
+            after.is_checkpointed().then_some(())
+        },
+        Duration::from_secs(30),
+        "the second watcher's checkpoint",
     );
+    let (rows, cols) = after.screen().size();
+    assert_eq!((cols, rows), (120, 40), "a headless client must send NO resize, ever");
+    assert!(
+        screen_text(after.screen()).contains("SOT_LU6C_HEADLESS_MARKER"),
+        "the headless input never reached the shell"
+    );
+    assert!(after.shutdown(Duration::from_secs(5)));
 
     let _ = command(&conn, "test-headless-a-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard, Duration::from_secs(30));
@@ -151,7 +145,7 @@ fn headless_screen_read_never_takes_the_pen() {
     assert!(found, "the pen was not free after the headless screen read (dead={}, status={})", client.is_dead(), client.status_line());
 
     drop(client);
-    end_run_and_wait_verified(&conn, &voyage);
+    end_run_and_wait_ended(&conn, &voyage);
     let _ = command(&conn, "test-headless-b-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }
@@ -212,9 +206,9 @@ fn headless_attach_against_a_pointerless_state_dir_waits_and_shutdown_closes_the
 /// own take-epoch lattice — any `take` succeeds and demotes whoever held
 /// the pen) — the headless write is delivered, driver-A's NEXT input sees
 /// `input_refused_stale` and its own worker retakes AUTOMATICALLY and
-/// invisibly to this test (ruling (c)), and the sealed record shows
-/// EXACTLY ONE input frame per controller — no duplication, no silently
-/// dropped keystroke on either side.
+/// invisibly to this test (ruling (c)), and each marker reaches the shell
+/// EXACTLY ONCE — no duplication, no silently dropped keystroke on either
+/// side.
 #[test]
 fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input() {
     let _serial = serial();
@@ -287,48 +281,26 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
     );
 
     drop(driver_a);
-    end_run_and_wait_verified(&conn, &voyage);
 
-    // 4. The sealed record: exactly ONE input frame per controller_id —
-    // the headless write was not duplicated, and driver_a's two inputs
-    // (before and after the demotion) were not merged, dropped, or
-    // multiplied by the automatic retake.
-    let frames = sealed_frames(&state_dir, &voyage);
-    let count_for = |cid: &str| {
-        frames
-            .iter()
-            .filter(|f| {
-                f.class == sot_log::store::envelope::Class::Input
-                    && f.source.actor.controller_id.as_deref() == Some(cid)
-            })
-            .count()
-    };
-    assert_eq!(count_for("lu6c-headless-b"), 1, "the headless write must appear EXACTLY once in the sealed record");
-    // `capsule/frame.rs`'s own `run_input_wal` commits a durable `Class::Input`
-    // frame on EVERY fresh idem_key BEFORE deciding stale-or-not ("input is
-    // durably logged before the producer sees it", ADR 0039) — so
-    // driver_a's post-demotion keystroke is not a single logged attempt:
-    // its own worker's automatic retake (ruling (c)) mints a NEW idem_key,
-    // which is a SECOND durably-logged `Class::Input` frame. Three, not
-    // two: A1 (clean) + A2RETAKE's own refused-stale attempt + A2RETAKE's
-    // successful retry. What must NEVER happen — a drop (fewer than 3) or
-    // an actual double-FORWARD of the same bytes to the pty — is what the
-    // `refused_stale_epoch` lifecycle fact below independently confirms:
-    // exactly one of these three is refused.
-    assert_eq!(
-        count_for("lu6c-driver-a"), 3,
-        "driver_a's record: A1 (clean) + A2RETAKE's refused-stale attempt + A2RETAKE's successful retry"
+    // 4. Each marker was delivered exactly once: a shell shows `echo X` and its output `X`, so a marker reaching it
+    // once is on the screen twice, and a double forward (the headless write duplicated, or driver_a's refused attempt
+    // and its retry both written) four times.
+    let mut reader = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), "lu6c-headless-reader".to_string())
+        .expect("attach_headless reader");
+    poll_until(
+        || {
+            reader.pump();
+            reader.is_checkpointed().then_some(())
+        },
+        Duration::from_secs(30),
+        "the reader's checkpoint",
     );
-    let refused_stale_count = frames
-        .iter()
-        .filter(|f| {
-            f.class == sot_log::store::envelope::Class::Lifecycle
-                && f.source.actor.controller_id.as_deref() == Some("lu6c-driver-a")
-                && f.payload.as_ref().and_then(|p| p.get("fact")?.get("fact")?.as_str()) == Some("refused_stale_epoch")
-        })
-        .count();
-    assert_eq!(refused_stale_count, 1, "exactly ONE of driver_a's attempts must be the refused-stale one the demotion causes");
+    let text = screen_text(reader.screen());
+    assert!(reader.shutdown(Duration::from_secs(5)));
+    assert_eq!(text.matches("HEADLESSB").count(), 2, "the headless write must reach the shell EXACTLY once: {text:?}");
+    assert_eq!(text.matches("A2RETAKE").count(), 2, "driver_a's retaken keystroke must reach the shell EXACTLY once: {text:?}");
 
+    end_run_and_wait_ended(&conn, &voyage);
     let _ = command(&conn, "test-headless-c-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }
@@ -342,8 +314,8 @@ const SWEEP_ROWS: usize = 20;
 /// its whole ring), and three sweeps of one read each. Every read stays inside the tick's 3 s budget; nothing is
 /// written to this process's stderr (the daemon's own log, `sotd.log`, takes its stderr; checked only with
 /// `--nocapture`, see the sink probe) or its tracing, nor to any
-/// capsule's stderr (a supervisor's notes reach `sotd.log` too); no capsule's geometry changes; and no sealed record
-/// holds a frame from the reads (no take, no resize, no input, nothing attributed to the watcher). The per-read and
+/// capsule's stderr (a supervisor's notes reach `sotd.log` too); no capsule's geometry changes; and no screen changes
+/// from the reads (no input reached any shell). The per-read and
 /// per-sweep times are printed (run with `--nocapture`), not asserted: a clock bound fails on a loaded box for a
 /// reason the reads do not own. Unix: the tick runs only there.
 #[cfg(unix)]
@@ -357,7 +329,7 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
     let watcher_id = "dialog-tick-watcher";
     let fill = "i=0; while [ $i -lt 400 ]; do echo scrollback line $i; i=$((i+1)); done; exec sleep 600";
 
-    struct Row { state_dir: PathBuf, h: String, conn: Client, voyage: String, guard: CapsuleGuard, err: PathBuf }
+    struct Row { h: String, conn: Client, voyage: String, guard: CapsuleGuard, err: PathBuf }
     let mut rows = Vec::new();
     for n in 0..SWEEP_ROWS {
         let state_dir = dir.path().join(format!("state-{n}"));
@@ -372,7 +344,7 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
         let h = state_dir_hash(&state_dir);
         let conn = wait_for_lane(&h, Duration::from_secs(30));
         let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
-        rows.push(Row { state_dir, h, conn, voyage, guard, err });
+        rows.push(Row { h, conn, voyage, guard, err });
     }
     let read = |h: &str| {
         let started = Instant::now();
@@ -398,6 +370,7 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
+    let texts_before: Vec<String> = rows.iter().map(|row| read(&row.h).2).collect();
     let err_len = |r: &Row| std::fs::metadata(&r.err).unwrap().len();
     let capsule_err_before: Vec<u64> = rows.iter().map(err_len).collect();
     let traced_before = log.text().len();
@@ -434,18 +407,8 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
     for (n, mut row) in rows.into_iter().enumerate() {
         // A fresh lane connection: the one held since the start may have been closed while the sweeps ran.
         row.conn = wait_for_lane(&row.h, Duration::from_secs(30));
-        end_run_and_wait_verified(&row.conn, &row.voyage);
-        let frames = sealed_frames(&row.state_dir, &row.voyage);
-        let touched: Vec<_> = frames.iter().filter(|f| {
-            let p = f.payload.as_ref();
-            let field = |k: &str| p.and_then(|p| p.get(k)).and_then(|v| v.as_str()).map(str::to_string);
-            f.source.actor.controller_id.as_deref() == Some(watcher_id)
-                || f.class == sot_log::store::envelope::Class::Input
-                // The start preamble's null-holder revoke is every capsule's; a take names its holder.
-                || (field("kind").as_deref() == Some("take_state") && p.and_then(|p| p.pointer("/take/holder")).is_some_and(|h| !h.is_null()))
-                || field("kind_ns").as_deref() == Some("conpty/resize")
-        }).map(|f| (f.class, f.source.actor.controller_id.clone(), f.payload.clone())).collect();
-        assert!(touched.is_empty(), "capsule {n}: the reads wrote a frame: {touched:?}");
+        assert_eq!(read(&row.h).2, texts_before[n], "capsule {n}: the reads changed its screen");
+        end_run_and_wait_ended(&row.conn, &row.voyage);
         let _ = command(&row.conn, &format!("test-headless-sweep-stop-{n}"), SupervisorOp::Stop);
         wait_for_exit(&mut row.guard, Duration::from_secs(30));
     }

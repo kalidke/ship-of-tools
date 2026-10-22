@@ -21,10 +21,7 @@ use sot_log::capsule::{self, CapsuleConfig, ExitKind};
 use sot_log::lane::platform_transport::PlatformTransport;
 use sot_log::capsule::producer::conpty::producer::ConptyProducer;
 use sot_log::lane::pipe_win::{connect_voyage_pipe, PipeClient};
-use sot_log::store::segment::{RetentionClass, SegmentReader};
-use sot_log::store::verify::verify_voyage;
 use sot_log::lane::wire::{self, Survival};
-use sot_log::{Class, Envelope, RefKind};
 use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -53,16 +50,11 @@ fn config(
     CapsuleConfig {
         voyage_root: dir.join(voyage_id),
         voyage_id: voyage_id.to_string(),
-        retention: RetentionClass::Discard,
-        producer_kind: "test-shell".into(),
+        screen_path: None,
         argv,
         cols,
         rows,
         survival: Survival::Normal,
-        // Codex round-1 Major 9: typed evidence, not `None` -- a test
-        // asserts "nothing to protect" the same way a real first-install
-        // transaction would (see `rollout::RolloutEvidence`'s own doc).
-        rollout_evidence: sot_log::store::rollout::RolloutEvidence::NoRollbackTarget,
         // No supervisor in this end-to-end harness -- see
         // `CapsuleConfig::parent_lease`'s own doc.
         parent_lease: None,
@@ -163,27 +155,6 @@ fn wait_for_endpoint<T, E: std::fmt::Display>(connect: impl Fn() -> Result<T, E>
             }
         }
     }
-}
-
-/// Every sealed frame across every `.sotseg` in `root/seg`, in segment
-/// order — identical to `tests/capsule/main.rs`'s own helper of the same
-/// name.
-fn sealed_frames(root: &std::path::Path, voyage: &str) -> Vec<Envelope> {
-    let seg_dir = root.join("seg");
-    let mut out = Vec::new();
-    let mut names: Vec<String> = std::fs::read_dir(&seg_dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    for n in names {
-        if n.ends_with(".sotseg") {
-            let r = SegmentReader::read(&seg_dir.join(&n), true).unwrap();
-            assert_eq!(r.header.voyage_id, voyage);
-            out.extend(r.frames);
-        }
-    }
-    out
 }
 
 /// A real-pipe frame reader: spawns a background thread reading from a
@@ -647,45 +618,10 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
         "expected the mgmt shutdown to end the run as Requested"
     );
 
-    verify_voyage(&root, &voyage_id).unwrap();
-
-    // The sealed voyage must show the input recorded (length only — its
-    // content is redacted by design) EXACTLY once, and a `forwarded` fact
-    // correlated to THAT exact input's own sequence via `CausedBy` —
-    // finding 8 (round-2 e2e review): a bare `.find()` claiming "exactly
-    // one" without checking it, and "any forwarded fact exists somewhere"
-    // without correlating it to the recorded input's sequence, would both
-    // still pass a wrong voyage.
-    let frames = sealed_frames(&root, &voyage_id);
-    let hex: String = idem_key.iter().map(|b| format!("{b:02x}")).collect();
-    let input_frames: Vec<&Envelope> = frames
-        .iter()
-        .filter(|f| f.class == Class::Input && f.payload.as_ref().unwrap()["idem_key"] == hex)
-        .collect();
-    assert_eq!(
-        input_frames.len(),
-        1,
-        "expected EXACTLY ONE Input frame for this idem_key, found {}",
-        input_frames.len()
-    );
-    let input_frame = input_frames[0];
-    assert_eq!(
-        input_frame.payload.as_ref().unwrap()["length"],
-        payload.len()
-    );
-    let input_seq = input_frame.seq;
-    let forwarded = frames.iter().any(|f| {
-        f.class == Class::Lifecycle
-            && f.payload.as_ref().unwrap()["kind"] == "input_fact"
-            && f.payload.as_ref().unwrap()["fact"]["fact"] == "forwarded"
-            && f.refs
-                .iter()
-                .any(|r| r.kind == RefKind::CausedBy && r.frame == input_seq)
-    });
-    assert!(
-        forwarded,
-        "expected a forwarded input_fact CAUSED BY (correlated to) this exact input's own sequence"
-    );
+    // The leg's own file says the end was asked for, and by whom: the mgmt `shutdown`'s reason.
+    let ended = sot_log::capsule::read_ended(&root).unwrap().expect("the leg left no ended file");
+    assert!(ended.finished && ended.requested, "{ended:?}");
+    assert_eq!(ended.reason.as_deref(), Some("e2e test done"));
 
     watcher.join(Duration::from_secs(10));
     driver.join(Duration::from_secs(10));

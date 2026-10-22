@@ -15,28 +15,6 @@ fn await_one_waiter(budget: &OutputBudget) {
     }
 }
 
-#[test]
-fn idle_output_commits_early_but_never_faster_than_the_fsync_gap() {
-    let ms = Duration::from_millis;
-    // flush: the window elapsed; or pending, output 2 ms quiet, last fsync >= 10 ms ago.
-    assert!(should_flush_output(ms(50), 0, ms(0), ms(0)));
-    assert!(should_flush_output(ms(5), 10, ms(2), ms(10)));
-    // no flush: output under 2 ms ago; nothing pending before the window; fsync too recent.
-    assert!(!should_flush_output(ms(5), 10, ms(1), ms(40)));
-    assert!(!should_flush_output(ms(5), 0, ms(40), ms(40)));
-    assert!(!should_flush_output(ms(5), 10, ms(40), ms(9)));
-}
-
-#[test]
-fn output_wait_targets_the_earliest_allowed_commit() {
-    let ms = Duration::from_millis;
-    assert_eq!(output_wait(0, ms(5), ms(5), ms(5)), ms(50));
-    assert_eq!(output_wait(10, ms(5), ms(0), ms(100)), ms(2));
-    assert_eq!(output_wait(10, ms(5), ms(1), ms(3)), ms(7));
-    assert!(output_wait(10, ms(49), ms(0), ms(0)) <= ms(1));
-    assert_eq!(output_wait(10, ms(5), ms(5), ms(20)), ms(0));
-}
-
 /// A reserve that finds the budget full parks in the condvar wait
 /// (proven by the waiter witness, not scheduling luck) and completes
 /// exactly when room is released — so a lost `notify_all` cannot

@@ -62,8 +62,8 @@ async fn a_busy_pane_over_a_slow_link_converges() {
     .await
     .unwrap()
     .expect("a ready row has a voyage");
-    let seg_dir = state_dir.join("voyages").join(&voyage).join("seg");
-    let initial_bytes = dir_bytes(&seg_dir);
+    let _ = voyage;
+    let initial_screen = screen_modified(&state_dir);
 
     // `lane/attach_proto/`'s own `WATCHER_LIVE_QUEUE_BUDGET_BYTES` (4 MiB)
     // eviction exists and is wired (confirmed by reading that source: it
@@ -78,7 +78,7 @@ async fn a_busy_pane_over_a_slow_link_converges() {
     // connection above). A genuinely STALLED reader is already covered by
     // [`a_blackhole_is_unreachable_and_retried`] and the `cut()` cases;
     // this test verifies decision 11's actually-observable core claim for
-    // a merely slow one instead: recording never blocks on it, and the
+    // a merely slow one instead: output handling never blocks on it, and the
     // client stays alive and converges once the flood ends.
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
@@ -86,8 +86,11 @@ async fn a_busy_pane_over_a_slow_link_converges() {
         assert!(!client.is_dead(), "must not go terminal under a busy pane over a slow link: {}", client.status_line());
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let grown_bytes = dir_bytes(&seg_dir);
-    assert!(grown_bytes > initial_bytes, "the record must keep growing under the flood: {initial_bytes} -> {grown_bytes}");
+    let kept_screen = screen_modified(&state_dir);
+    assert!(
+        kept_screen.is_some() && kept_screen > initial_screen,
+        "the capsule must keep handling the flood and keep its screen file: {initial_screen:?} -> {kept_screen:?}"
+    );
 
     relay.throttle(0);
     client.send_input(&[0x03]);
@@ -206,61 +209,14 @@ async fn headless_write_while_a_bridged_client_is_driving_demotes_it_without_dup
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
+    // Each marker reached the shell exactly once: a shell shows `echo X` and its output `X`, so once is two
+    // occurrences on the screen, and a double forward (the headless write duplicated, or the driver's refused attempt
+    // and its retry both written) four.
+    let text = screen_text(&driver);
+    assert_eq!(text.matches("HEADLESSB").count(), 2, "the headless write must reach the shell exactly once: {text:?}");
+    assert_eq!(text.matches("A2RETAKE").count(), 2, "the driver's retaken keystroke must reach the shell exactly once: {text:?}");
+
     drop(driver);
-
-    let voyage = tokio::task::spawn_blocking({
-        let d = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&d).expect("query_status").0.voyage
-    })
-    .await
-    .unwrap()
-    .expect("a ready row has a voyage");
-    let outcome = tokio::task::spawn_blocking({
-        let d = state_dir.clone();
-        let v = voyage.clone();
-        move || sot_log::attach_client::supervisor_client::end_run(&d, &v, "lane bridge test teardown")
-    })
-    .await
-    .unwrap()
-    .expect("end_run");
-    assert!(
-        matches!(
-            outcome,
-            sot_log::attach_client::supervisor_client::EndRunOutcome::RecordVerified | sot_log::attach_client::supervisor_client::EndRunOutcome::RecordClosed
-        ),
-        "end_run did not verify: {outcome:?}"
-    );
-
-    let frames = sealed_frames(&state_dir, &voyage);
-    let count_for = |cid: &str| {
-        frames.iter().filter(|f| f.class == sot_log::store::envelope::Class::Input && f.source.actor.controller_id.as_deref() == Some(cid)).count()
-    };
-    // TWO frames, not one: write_and_enter writes text and Enter as separate
-    // wire ops, each its own sealed frame -- pinned by LENGTH, not just
-    // count, so "text twice" or "Enter twice" (same total of 2) still fails.
-    let headless_len = |want: usize| {
-        frames
-            .iter()
-            .filter(|f| {
-                f.class == sot_log::store::envelope::Class::Input
-                    && f.source.actor.controller_id.as_deref() == Some("lb8-headless")
-                    && f.payload.as_ref().and_then(|p| p.get("length")?.as_u64()).map(|l| l as usize) == Some(want)
-            })
-            .count()
-    };
-    assert_eq!(headless_len(headless_text.len()), 1, "exactly one headless frame must carry the text's own length");
-    assert_eq!(headless_len(1), 1, "exactly one headless frame must carry length 1, the lone Enter byte");
-    assert_eq!(count_for("lb8-headless"), 2, "the headless write must appear as exactly two frames (text, then Enter), never duplicated");
-    assert_eq!(count_for("lb8-driver"), 3, "the driver's record: A1 (clean) + A2RETAKE's refused-stale attempt + A2RETAKE's successful retry");
-    let refused_stale_count = frames
-        .iter()
-        .filter(|f| {
-            f.class == sot_log::store::envelope::Class::Lifecycle
-                && f.source.actor.controller_id.as_deref() == Some("lb8-driver")
-                && f.payload.as_ref().and_then(|p| p.get("fact")?.get("fact")?.as_str()) == Some("refused_stale_epoch")
-        })
-        .count();
-    assert_eq!(refused_stale_count, 1, "exactly ONE of the driver's attempts must be the refused-stale one the demotion causes");
 
     env.kill_daemon_bounded().await;
 }

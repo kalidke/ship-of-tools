@@ -53,7 +53,7 @@ LNT=(timeout -k 10 2400)
 # host. So it has an end of its own, inside the 75 min rust.yml gives its job.
 LTO=(timeout -k 10 3600)
 SPLIT=(capsule_workspaces comm_wake lane_bridge fe_client)
-JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/video-file julia/sotlog)
+JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/video-file)
 
 envs() {
   D=$RCG_D L=$RCG_L

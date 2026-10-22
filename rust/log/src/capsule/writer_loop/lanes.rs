@@ -1,19 +1,13 @@
 //! The leg's side of its lanes: transport events in through AttachProto and its actions carried out, in the main loop and through teardown.
-use super::output_path::{flush_output, maybe_rotate};
+use super::phases::latch_run_end;
 use super::*;
 use crate::lane::attach_proto::RequestId;
 
-// THIS module decides nothing; `attach_proto::AttachProto` does (see
-// its module doc). `execute_light_actions` runs the action kinds that
-// `output_committed`/`ground_reached`/`checkpoint_ready` can ever
-// produce (proven by `attach_proto`'s own implementation: never
-// `CommitTake`/`ForwardInput`/`ApplyResize`/`Shutdown`) -- kept SEPARATE
-// from the full `execute_actions` below: `flush_output` runs actions too
-// and is itself called FROM `execute_actions`'s `CommitTake`/`ApplyResize`
-// arms. `execute_light_actions` calls nothing else here; `flush_output`
-// calls only `execute_light_actions`; `execute_actions` calls
-// `flush_output`, `maybe_rotate`, and (for its own light-kind actions)
-// `execute_light_actions` -- all strictly "downward", never back.
+// THIS module decides nothing; `attach_proto::AttachProto` does (see its module doc). `execute_light_actions` runs the
+// action kinds that `output_committed`/`ground_reached`/`checkpoint_ready` can ever produce (proven by `attach_proto`'s
+// own implementation: never `CommitTake`/`ForwardInput`/`ApplyResize`/`Shutdown`), kept SEPARATE from the full
+// `execute_actions` below: `handle_output` runs them too. `execute_light_actions` calls nothing else here;
+// `execute_actions` calls it for its own light-kind actions: strictly "downward", never back.
 pub(super) fn execute_light_actions<P: Producer>(seed: Vec<AttachAction>, leg: &mut Leg<'_, P>) {
     let mut queue: VecDeque<AttachAction> = VecDeque::from(seed);
     while let Some(action) = queue.pop_front() {
@@ -96,44 +90,35 @@ pub(super) fn execute_actions<'t, P: Producer>(seed: Vec<AttachAction>, mut leg:
                 execute_light_actions(vec![light], &mut leg);
             }
             AttachAction::CommitTake { conn, controller_id, request_id } => {
-                flush_output(&mut leg)?;
-                leg.ctx.take_epoch += 1;
-                leg.ctx.holder = Some(controller_id.clone());
-                let f = leg.ctx.capsule_frame(
-                    Class::Lifecycle,
-                    json!({"kind": "take_state",
-                           "take": {"take_epoch": leg.ctx.take_epoch, "holder": controller_id.clone()}}),
-                );
-                leg.w.append(&f, Commit::Immediate)?;
-                leg.frames_written += 1;
-                queue.extend(leg.attach_proto.take_committed(conn, controller_id, leg.ctx.take_epoch, request_id, Instant::now()));
+                leg.take_epoch += 1;
+                leg.holder = Some(controller_id.clone());
+                queue.extend(leg.attach_proto.take_committed(conn, controller_id, leg.take_epoch, request_id, Instant::now()));
             }
             AttachAction::ForwardInput {
                 conn,
                 controller_id,
                 take_epoch,
-                idem_key,
+                idem_key: _,
                 payload,
                 connection_authorized,
                 request_id,
             } => {
-                let outcome = run_input_wal(
-                    &mut leg.ctx,
-                    &mut leg.w,
-                    &mut leg.store,
-                    leg.producer.input(),
-                    &mut leg.frames_written,
-                    &controller_id,
-                    take_epoch,
-                    idem_key,
-                    &payload,
-                    connection_authorized,
-                )?;
-                leg = maybe_rotate(leg)?;
+                // Fresh means the connection is authorized AND it is the current durable holder under the current
+                // epoch: `attach_proto` checks the connection's half, this loop the durable half. The whole step
+                // runs on this one thread, so nothing changes between the check and the write.
+                let fresh = connection_authorized
+                    && leg.holder.as_deref() == Some(controller_id.as_str())
+                    && take_epoch == leg.take_epoch;
+                let outcome = if fresh {
+                    leg.producer.input().write_all(&payload)?; // the forward syscall: written, then recorded
+                    InputOutcome::Recorded
+                } else {
+                    InputOutcome::RefusedStale
+                };
                 queue.extend(leg.attach_proto.input_outcome(conn, outcome, request_id, Instant::now()));
             }
             AttachAction::ApplyResize { conn, cols, rows, request_id } => {
-                leg = apply_resize(conn, cols, rows, request_id, &mut queue, leg)?;
+                apply_resize(conn, cols, rows, request_id, &mut queue, &mut leg);
             }
             AttachAction::RunEndRequested { reason } => {
                 // record the
@@ -145,7 +130,7 @@ pub(super) fn execute_actions<'t, P: Producer>(seed: Vec<AttachAction>, mut leg:
                 // concurrent second request's reason never
                 // overwrites the one that actually got latched.
                 leg.shutdown_reason.get_or_insert_with(|| reason.clone());
-                commit_run_end_marker(&mut leg.ctx, &mut leg.w, &mut leg.frames_written, &mut leg.run_end_latched, reason)?;
+                latch_run_end(&mut leg, reason)?;
             }
             AttachAction::Shutdown { reason } => {
                 leg.shutdown_requested = true;
@@ -156,31 +141,17 @@ pub(super) fn execute_actions<'t, P: Producer>(seed: Vec<AttachAction>, mut leg:
     Ok(leg)
 }
 
-fn apply_resize<'t, P: Producer>(
+fn apply_resize<P: Producer>(
     conn: ConnId,
     cols: u16,
     rows: u16,
     request_id: RequestId,
     queue: &mut VecDeque<AttachAction>,
-    mut leg: Leg<'t, P>,
-) -> Result<Leg<'t, P>> {
-    // ADR 0041: "resize (driver-only) routes into the
-    // step-4 exchange unchanged" -- same ordered
-    // request -> one ResizePseudoConsole call (skipped
-    // if out of budget) -> parser/geometry updated
-    // only on success -> outcome shape step 4 already
-    // built, now reachable from the wire too.
-    flush_output(&mut leg)?;
-    let req = leg.ctx.current_controller_frame(
-        Class::ControlExchange,
-        json!({"phase": "request", "kind_ns": "conpty/resize",
-               "to": {"kind": "producer"}, "body": {"cols": cols, "rows": rows}}),
-    );
-    let req_seq = req.seq;
-    leg.w.append(&req, Commit::Immediate)?;
-    leg.frames_written += 1;
-    let in_budget =
-        (MIN_COLS..=MAX_COLS).contains(&cols) && (MIN_ROWS..=MAX_ROWS).contains(&rows);
+    leg: &mut Leg<'_, P>,
+) {
+    // ADR 0041: resize (driver-only) is one `ResizePseudoConsole` call (skipped if out of budget), the parser's
+    // geometry updated only on success, and the outcome reported back.
+    let in_budget = (MIN_COLS..=MAX_COLS).contains(&cols) && (MIN_ROWS..=MAX_ROWS).contains(&rows);
     let ok = if !in_budget {
         false
     } else {
@@ -188,27 +159,15 @@ fn apply_resize<'t, P: Producer>(
         match leg.producer.resize(cols, rows) {
             Ok(()) => {
                 leg.parser.screen_mut().set_size(rows, cols);
+                if let Some(screen) = &mut leg.screen {
+                    screen.output_arrived();
+                }
                 true
             }
             Err(_) => false,
         }
     };
-    let outcome_body = if ok {
-        json!({"disposition": "ok", "cols": cols, "rows": rows})
-    } else {
-        json!({"disposition": "failed", "cols": cols, "rows": rows,
-               "reason": "outside the 2x2..512x256 budget, or ResizePseudoConsole failed"})
-    };
-    let out = leg.ctx.current_controller_frame(
-        Class::ControlExchange,
-        json!({"phase": "outcome", "kind_ns": "conpty/resize", "scope": "pty",
-               "target": format!("{}:{}", req_seq.epoch, req_seq.n), "body": outcome_body}),
-    );
-    leg.w.append(&out, Commit::Immediate)?;
-    leg.frames_written += 1;
-    leg = maybe_rotate(leg)?;
     queue.extend(leg.attach_proto.resize_outcome(conn, ok, cols, rows, request_id, Instant::now()));
-    Ok(leg)
 }
 
 
@@ -328,7 +287,7 @@ pub(super) fn execute_teardown_actions<P: Producer>(seed: Vec<AttachAction>, leg
                 // committed. Same reason-recording discipline as
                 // the main loop's own arm.
                 leg.shutdown_reason.get_or_insert_with(|| reason.clone());
-                commit_run_end_marker(&mut leg.ctx, &mut leg.w, &mut leg.frames_written, &mut leg.run_end_latched, reason)?;
+                latch_run_end(leg, reason)?;
             }
             AttachAction::Shutdown { reason } => {
                 // `shutdown_requested`

@@ -67,7 +67,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `<sd>/supervisor.lock` | disk, lock | capsule | `rust/log/src/supervisor/journal/fence.rs` `lock_supervisor`; `rust/platform/src/host/lock.rs` `lock_supervisor` |
 | `<sd>/drawer.voyage` (pointer) | disk | capsule | `rust/log/src/supervisor/journal/pointer.rs` |
 | `<sd>/supervisor-journal/` | disk | capsule | `rust/log/src/supervisor/journal/mod.rs` `begin`, `finish` |
-| `<sd>/voyages/<id>/{writer.lock, seg/, blobs/sha256/}` | disk, lock | capsule | `rust/log/src/store/voyage.rs`; names repeated `rust/backend/src/rows/run/end_run.rs` `absence_proof` |
+| `<sd>/voyages/<id>/{writer.lock, leg, ended}` (the leg's fence, its number and its ending; no record) | disk, lock | capsule | `rust/log/src/capsule/fence.rs`; `rust/log/src/capsule/ended.rs`; names repeated `rust/backend/src/rows/run/end_run.rs` `absence_proof` |
+| `<sd>/screen` (the leg's latest screen, a vt100 checkpoint) | disk | capsule | `rust/log/src/capsule/screen.rs` |
 | `<sd>/row-scopes` and the row's systemd scope `sot-row-<hash>-<uuid>.scope` | disk, process | rows | `rust/backend/src/rows/spawn/row_scope.rs` `capture`, `listed`, `end`, `unit_name`; `rust/backend/src/rows/spawn/row_scope_aim.rs` `aim`, `v2_root` (shell twin of `v2_root`: `scripts/tests/rc-gate.sh` `R`) |
 | supervisor lane socket/pipe `supervisor-<hash>` | endpoint | capsule | `rust/log/src/lane/socket_unix/mod.rs`; `rust/log/src/lane/pipe_win/mod.rs` |
 | voyage lane socket/pipe `voyage-<id>` | endpoint | capsule | `rust/log/src/lane/socket_unix/mod.rs`; `rust/log/src/lane/pipe_win/mod.rs` |
@@ -262,9 +263,6 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `topology.changed` | event, bus | topology | `rust/backend/src/topology/store.rs` `TopologyChanged`; `rust/backend/src/server/events.rs` `write_topology_changed` |
 | capsule lanes SOM0, SOA0 (v1-v3), SOSV | wire | capsule | `rust/log/src/lane/wire/mgmt.rs`; `rust/log/src/lane/wire/attach.rs`; `rust/log/src/lane/wire/supervisor.rs` |
 | supervisor-lane build id `SUPERVISOR_LANE_BUILD_ID` (stamp `SOT_LOG_BUILD_SHA`: full sha, `-dirty`; carried in the lane hello and `version.query`, never compared) | wire (lane) | capsule | `rust/log/build.rs`; `rust/platform/src/identity/exchange.rs`; `rust/log/src/attach_client/supervisor_client.rs` `SUPERVISOR_LANE_BUILD_ID` |
-| rollout gate (`gate`, `RolloutEvidence`; `--assume-no-rollback-target`, which every daemon spawn passes) | rule | capsule | `rust/log/src/store/rollout.rs` `gate`; `rust/log/src/capsule/mod.rs` `RolloutEvidence`; `rust/log/src/bin/sot-capsule.rs`; `rust/backend/src/rows/spawn/detach.rs` `mode_flag` |
-| `<sd>/rollout-evidence.json` and its reader `read_rollout_evidence` (provisional; no writer, no caller) | disk | capsule | `rust/log/src/store/rollout.rs` `read_rollout_evidence` |
-| SDK helper-protocol 1 | wire | capsule | `rust/log/src/claude.rs`; `rust/log/claude-sdk-helper/src/protocol.ts` |
 | sotd subcommand `session-socket-path` | CLI | topology | `rust/backend/src/main.rs` `main`; `rust/topology/src/endpoint.rs` `session_socket_path` |
 | sotd subcommand `log-path` | CLI | server | `rust/backend/src/main.rs` `main`; `rust/platform/src/host/state_dir.rs` `daemon_state_dir` |
 | sotd subcommands `topology ...`, `status`, `stdio-bridge` | CLI | topology | `rust/backend/src/main.rs` `parse_args`; `rust/backend/src/topology/cli.rs` `run`; `rust/backend/src/topology/status.rs` `run`; `rust/backend/src/topology/stdio_bridge.rs` `run` |
