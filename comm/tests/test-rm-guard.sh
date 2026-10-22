@@ -140,7 +140,8 @@ done
 # Execute end_group itself on the stub daemons' watcher: a background subshell running a pipeline, started between
 # `set -m` and `set +m`. A row is STOP BODY RC LEFT: the stop (end_group, or `leader`, the base's kill of the subshell
 # alone, which Git Bash's missing pkill left as the whole stop), the body (`term`, or `ignore`: the members ignore
-# TERM), end_group's status, and whether a process of the group is left after the stop. The `leader` row is the check's
+# TERM; `leaderexit`: the step has already exited and a member it started is left in the group, which a stop by the
+# leader's job entry (`jobs -p`) would miss), end_group's status, and whether a process of the group is left after the stop. The `leader` row is the check's
 # sensitivity: it must see the pipeline that stop leaves (then ended here). `ignore` runs await on a sleep that does
 # not wait, so its 600 tries pass at once.
 while read -r stop body want_rc want_left; do
@@ -153,6 +154,8 @@ while read -r stop body want_rc want_left; do
             ( sleep 2 | { : > "$ready"; while read -r _; do :; done; } ) &
         elif [ "$body" = ignore ]; then
             ( trap "" TERM; sleep 30 | { : > "$ready"; while read -r _; do :; done; } ) &
+        elif [ "$body" = leaderexit ]; then
+            ( tail -f /dev/null & : > "$ready" ) &
         else
             ( sleep 30 | { : > "$ready"; while read -r _; do :; done; } ) &
         fi
@@ -172,6 +175,7 @@ done <<'ROWS'
 end_group term 0 gone
 end_group ignore 1 gone
 end_group noleader 2 gone
+end_group leaderexit 0 gone
 leader term - left
 ROWS
 exit "$rc"
