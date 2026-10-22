@@ -36,12 +36,16 @@ fn the_hooks_table_is_the_work_state_hooks_and_not_messagings_protections() {
 
 #[test]
 fn a_hook_runs_its_installed_script_by_a_quoted_absolute_path() {
-    let comm = Path::new("/home/o'neil/.sot-comm");
+    // An absolute comm home in each system's own form; Windows's reaches Git Bash with forward slashes.
+    #[cfg(unix)]
+    let (comm, command) = (Path::new("/home/o'neil/.sot-comm"), r"'/home/o'\''neil/.sot-comm/bin/comm-status-working.sh'");
+    #[cfg(windows)]
+    let (comm, command) = (Path::new(r"C:\Users\o'neil\.sot-comm"), r"'C:/Users/o'\''neil/.sot-comm/bin/comm-status-working.sh'");
     let settings = hooks_settings(comm);
     let working = &settings["hooks"]["UserPromptSubmit"][0];
     assert_eq!(working.get("matcher"), None);
     assert_eq!(working["hooks"][0]["type"], "command");
-    assert_eq!(working["hooks"][0]["command"], r"'/home/o'\''neil/.sot-comm/bin/comm-status-working.sh'");
+    assert_eq!(working["hooks"][0]["command"], command);
     let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
     assert_eq!(pre.len(), 1, "{settings}");
     assert_eq!(pre[0]["matcher"], "AskUserQuestion");
@@ -77,6 +81,6 @@ fn a_relative_comm_home_reaches_the_leg_as_absolute_paths() {
     let cwd = std::env::current_dir().unwrap();
     let hooks = hooks_settings(Path::new("rel/comm"));
     let command = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].as_str().unwrap().to_string();
-    assert!(command.starts_with(&format!("'{}", cwd.display())), "{command}");
+    assert!(command.starts_with(&format!("'{}", cwd.to_string_lossy().replace('\\', "/"))), "{command}");
     assert!(Path::new(add_dir_arg(Path::new("rel/layer")).trim_start_matches("--add-dir=")).is_absolute());
 }
