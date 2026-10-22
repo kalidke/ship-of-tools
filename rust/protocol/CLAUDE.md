@@ -18,7 +18,10 @@ name is in this crate's one op table.
    bytes; `write_frame` refuses a blob whose length differs from the declared one (or a blob the payload does not
    declare) before writing a byte; `read_frame` reads them and grows its buffer only with bytes that arrived, reserving
    at most 64 KiB up front (`BLOB_RESERVE_BOUND`), never the length the envelope declares; `read_envelope` reads the envelope alone, for a reader that must not read a blob it has not
-   admitted; the blocking pair never reads a blob tail.
+   admitted; the blocking pair `write_frame_blocking` and `read_frame_blocking` never reads a blob tail, and the pair
+   `write_frame_blocking_blob` and `read_frame_blocking_blob` holds this guarantee for a blocking connection: the
+   writer refuses a mismatch before a byte, the reader reads exactly the declared length and names a shortfall. A row
+   reader judges a row by its hello's row number (the capsule's `ROW_PROTOCOL`), never by a frame's `v`.
 3. **A payload grows only by defaulted fields; any other change raises `PROTOCOL_VERSION`, and hello refuses the
    mismatch.** Payload types are plain serde structs, so a client in another language needs only the op name and the
    JSON shape. The integer (3) is declared by every hello (`HelloReq::this_process`), by the shell client's literal

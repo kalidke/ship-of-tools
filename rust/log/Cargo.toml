@@ -24,6 +24,8 @@ native-barrier = ["sot-platform/native-barrier"]
 
 [dependencies]
 sot-platform = { path = "../platform" }
+# The row socket speaks wire's frames.
+sot-protocol = { path = "../protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

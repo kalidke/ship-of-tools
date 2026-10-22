@@ -3938,6 +3938,7 @@ dependencies = [
  "sha2",
  "sot-log",
  "sot-platform",
+ "sot-protocol",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

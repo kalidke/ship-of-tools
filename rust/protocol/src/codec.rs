@@ -217,6 +217,17 @@ pub fn read_frame_blocking<R: std::io::BufRead>(r: &mut R) -> Result<Frame> {
     Ok(frame)
 }
 
+/// The blocking twin of [`write_frame`] with its blob: the same two guarantees (an envelope at most
+/// [`MAX_ENVELOPE_BYTES`]; the declared blob and the bytes given agree, checked before a byte is written).
+pub fn write_frame_blocking_blob<W: std::io::Write>(_w: &mut W, _frame: &Frame, _blob: Option<&[u8]>) -> Result<()> {
+    todo!()
+}
+
+/// The blocking twin of [`read_frame`]: the envelope, then exactly the blob it declares.
+pub fn read_frame_blocking_blob<R: std::io::BufRead>(_r: &mut R) -> Result<(Frame, Option<Vec<u8>>)> {
+    todo!()
+}
+
 #[cfg(test)]
 #[path = "codec_tests.rs"]
 mod tests;

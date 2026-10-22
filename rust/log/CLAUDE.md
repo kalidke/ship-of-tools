@@ -24,6 +24,9 @@ true after the merge of the leg into the supervisor.
   management lane is only the attach lane's identity exchange (`status`) and an end request nobody sends any more;
   pass 6c replaces all three.
 - The attach client every viewer uses, and the daemon's supervisor-lane calls (`src/attach_client/`).
+- The row socket (`src/row/`, pass 6c-1a1), served beside the lanes above and read by nobody in the product yet: a
+  blocking acceptor and `RowClient`, in wire's frames. Pass 6c-1a2 switches the window, the wake and the bridge to it
+  and deletes the attach lane; 6c-1b moves the daemon's calls; 6c-1c adds the watch.
 
 ## Promises
 - One process per row: the agent is the supervisor's own child. The supervisor takes `supervisor.lock` (or adopts the
@@ -65,6 +68,18 @@ true after the merge of the leg into the supervisor.
   an input whose acknowledgement was lost as delivery unknown and never sends it again.
 - One run per voyage folder (`writer.lock`, taken by `fence::take_fence`); one authority per state dir
   (`supervisor.lock`, taken by `lock_supervisor`).
+- The row socket `row-<h>` (`<runtime dir>/row-<h>.sock`, a pipe `\\.\pipe\sot-row-<h>` on Windows) is served by the
+  supervisor for as long as its run lives, in wire's frames. A connection is served nothing before its `row.hello`
+  is admitted: the challenge's OS steps first, then the hello's reply naming the row's `(pid, created)`. A peer of
+  another account is dropped at accept. At most 8 connections are open; an accept error follows `accept_policy`. The
+  hello's `row` number (`ROW_PROTOCOL`, now 1) is the one gate between a row and a client: no reader judges a frame's
+  `v`, and a client refuses another row number by name within the hello's bound, never by a hang. `row.attach` sends
+  the screen as a snapshot cut at a parser ground state, in blobs of at most 1 MiB with the last flagged, then the
+  output in order in blobs of at most 64 KiB. One connection at a time is the driver: only a driver's `row.input` is
+  written and its `row.resize` applied, a watcher's is refused by name and writes nothing, and a second driver (an
+  attach as driver, or a `row.take`) demotes the first with `row.demoted`. The run id is minted at each agent start.
+  Limits: this landing binds the socket but nothing in the product dials it until 6c-1a2; a live 6b row on a dev box
+  is not served by it, and no candidate is cut from main until 6c-2.
 - Attach is ground-gated (`writer_loop::output_path::ground_check`), so a viewer joins only at a parser ground
   boundary, after every byte the parser has seen was published.
 - `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot serve the row), 70 (`EXIT_CONTENDED`, the
