@@ -504,6 +504,12 @@ where
     W: AsyncWrite + Unpin,
     F: std::future::Future<Output = (tokio::io::BufReader<R>, Result<(Frame, Option<Vec<u8>>)>)>,
 {
+    // The idle bound is checked on every turn, not only when the timer's arm wins the biased select below: a peer that
+    // sends nothing while events stream to it keeps an earlier arm ready, and would never be reaped.
+    if deadline_armed && tokio::time::Instant::now() >= read_deadline {
+        tracing::info!("no frame within the read deadline; reaping half-open connection");
+        return Ok(Woke::Reap);
+    }
     tokio::select! {
         biased;
         Some((frame, blob)) = out_rx.recv() => {
