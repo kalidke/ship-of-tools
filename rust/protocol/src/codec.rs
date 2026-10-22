@@ -14,6 +14,7 @@
 // data; bulk content rides through the blob path.
 
 use anyhow::{anyhow, Context, Result};
+use std::io::Read as _;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::Frame;
@@ -217,15 +218,41 @@ pub fn read_frame_blocking<R: std::io::BufRead>(r: &mut R) -> Result<Frame> {
     Ok(frame)
 }
 
-/// The blocking twin of [`write_frame`] with its blob: the same two guarantees (an envelope at most
-/// [`MAX_ENVELOPE_BYTES`]; the declared blob and the bytes given agree, checked before a byte is written).
-pub fn write_frame_blocking_blob<W: std::io::Write>(_w: &mut W, _frame: &Frame, _blob: Option<&[u8]>) -> Result<()> {
-    todo!()
+/// The blocking twin of [`write_frame`], blob included: the same two guarantees (an envelope at most
+/// [`MAX_ENVELOPE_BYTES`], and the blob given the length the payload declares, both checked before a byte is written).
+pub fn write_frame_blocking_blob<W: std::io::Write>(w: &mut W, frame: &Frame, blob: Option<&[u8]>) -> Result<()> {
+    let mut line = serde_json::to_vec(frame).context("frame serialize failed")?;
+    if line.len() > MAX_ENVELOPE_BYTES {
+        return Err(anyhow::Error::new(EnvelopeTooLarge { len: line.len(), cap: MAX_ENVELOPE_BYTES }));
+    }
+    let declared = declared_blob_len(frame);
+    let given = blob.map(|b| b.len() as u64);
+    if declared != given {
+        return Err(anyhow!("frame declares a blob of {declared:?} bytes but was given {given:?}; nothing written"));
+    }
+    line.push(b'\n');
+    // One write, so a blob never trails an envelope another writer's bytes could split from it.
+    if let Some(b) = blob {
+        line.extend_from_slice(b);
+    }
+    w.write_all(&line).context("write frame")?;
+    w.flush().context("flush")?;
+    Ok(())
 }
 
-/// The blocking twin of [`read_frame`]: the envelope, then exactly the blob it declares.
-pub fn read_frame_blocking_blob<R: std::io::BufRead>(_r: &mut R) -> Result<(Frame, Option<Vec<u8>>)> {
-    todo!()
+/// The blocking twin of [`read_frame`]: the envelope, capped while it is read, then exactly the blob it declares. The
+/// buffer grows only with bytes that arrived, from at most [`BLOB_RESERVE_BOUND`].
+pub fn read_frame_blocking_blob<R: std::io::BufRead>(r: &mut R) -> Result<(Frame, Option<Vec<u8>>)> {
+    let frame = read_frame_blocking(r)?;
+    let Some(len) = declared_blob_len(&frame) else {
+        return Ok((frame, None));
+    };
+    let mut blob = Vec::with_capacity(blob_reserve(len));
+    r.by_ref().take(len).read_to_end(&mut blob).context("read blob")?;
+    if (blob.len() as u64) < len {
+        return Err(anyhow!("blob ended after {} of {} bytes", blob.len(), len));
+    }
+    Ok((frame, Some(blob)))
 }
 
 #[cfg(test)]

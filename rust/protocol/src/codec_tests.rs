@@ -288,7 +288,9 @@ fn a_blocking_reader_reads_exactly_the_declared_blob() {
     assert_eq!(f2.op, "next", "the frame after the blob parses: no desync");
     assert!(b2.is_none());
     // A blob cut short is an error naming the shortfall, never a short blob.
-    let cut = &wire[..wire.len() - 40];
-    let e = super::read_frame_blocking_blob(&mut std::io::BufReader::new(std::io::Cursor::new(cut.to_vec()))).unwrap_err().to_string();
+    let mut one: Vec<u8> = Vec::new();
+    super::write_frame_blocking_blob(&mut one, &blob_frame(blob.len() as u64), Some(&blob)).unwrap();
+    one.truncate(one.len() - 3);
+    let e = super::read_frame_blocking_blob(&mut std::io::BufReader::new(std::io::Cursor::new(one))).unwrap_err().to_string();
     assert!(e.contains("blob ended after"), "{e}");
 }
