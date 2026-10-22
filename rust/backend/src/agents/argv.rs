@@ -99,7 +99,7 @@ fn caller_brought_settings(extra: &[String]) -> bool {
 /// carries `--add-dir=<layer>` (the skills) and the work-state hooks inside
 /// the one `--settings` (see `layer.rs`), so a plain `claude` has neither.
 fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>, comm_home: Option<&Path>) -> Vec<String> {
-    let layer = comm_home.and_then(layer::installed);
+    let layer = comm_home.and_then(layer::layer_under);
     let mut argv = vec!["claude".to_string()];
     argv.extend(layer.as_deref().map(layer::add_dir_arg));
     argv.extend(["--permission-mode".to_string(), "auto".to_string()]);

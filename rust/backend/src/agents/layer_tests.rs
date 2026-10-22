@@ -9,11 +9,11 @@ fn skills_folder(comm_home: &Path) -> PathBuf {
 #[test]
 fn the_layer_is_installed_only_where_it_holds_a_skills_folder() {
     let comm = tempfile::tempdir().unwrap();
-    assert_eq!(installed(comm.path()), None);
+    assert_eq!(layer_under(comm.path()), None);
     std::fs::create_dir_all(comm.path().join(LAYER_DIR)).unwrap();
-    assert_eq!(installed(comm.path()), None, "an empty layer folder is no layer");
+    assert_eq!(layer_under(comm.path()), None, "an empty layer folder is no layer");
     let layer = skills_folder(comm.path());
-    assert_eq!(installed(comm.path()), Some(layer));
+    assert_eq!(layer_under(comm.path()), Some(layer));
 }
 
 #[test]

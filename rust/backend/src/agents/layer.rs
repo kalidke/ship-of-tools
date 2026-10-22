@@ -17,7 +17,7 @@ pub(super) const HOOKS: &[(&str, &str, Option<&str>)] = &[
 ];
 
 /// The layer under `comm_home`, when it holds a skills folder: Claude Code loads `.claude/skills/` of an added folder.
-pub(super) fn installed(comm_home: &Path) -> Option<PathBuf> {
+pub(super) fn layer_under(comm_home: &Path) -> Option<PathBuf> {
     let layer = comm_home.join(LAYER_DIR);
     layer.join(".claude").join("skills").is_dir().then_some(layer)
 }
