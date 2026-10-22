@@ -12,21 +12,27 @@ where each lives).
 1. **A machine fact has one answer.** The state folder (`sot_state_dir`), the config folder (`sot_config_dir`), the
    runtime base (`runtime_sot_dir`), the host name (`host_name`, `SOT_SELF_HOST` over the kernel's name), the OS
    account (`own_account_id`) and the folder hash lane sockets are named by (`state_dir_hash`) are each defined once,
-   here, from an `Env` value the caller supplies or the process's own; a second rule anywhere is a defect.
+   here, from an `Env` value the caller supplies or the process's own; a second rule anywhere is a defect. Raw host
+   name readers that remain, each for a format that must not change under installed releases: the comm handle's host
+   component (`rust/backend/src/comm/identity/context.rs`), the updater's stage lock record (`rust/updater/src/lock.rs`)
+   and the window's resume file name (`rust/frontend/src/ui/persist/resume.rs`); they fold with their owners' passes.
    `host_name` returns `Err`, never a guessed name. A runtime base a process binds and another dials agrees only
    while the environment does not change; the supported setups keep it fixed for a boot (Linux: linger and the user
    manager's `XDG_RUNTIME_DIR`; macOS: none; Windows: no runtime base). A boot without logind binds at
    `/tmp/sot-<uid>`.
-2. **A publication is durable and never clobbers.** `publish_noreplace` flushes the source, renames without
-   replacing, flushes the renamed file (Windows) and then the parent; `write_durable` (tmp, fsync, replace,
-   directory sync) and `remove_durable` are the one write and delete for a record a later start acts on. Rests on
+2. **A publication is durable and never clobbers.** `publish_noreplace` renames without replacing, flushes the
+   renamed file (Windows) and then the parent; the caller flushes the source first (`write_durable` does); `write_durable` (tmp, fsync, replace,
+   directory sync) and `remove_durable` are the one write and delete for a record a later start acts on; on Windows a
+   removal has no parent sync (Win32 has no write-through delete). Rests on
    renameat2/renamex_np/MoveFileEx write-through; only linux, macos and windows build.
 3. **A lock is the kernel's.** A fence, the daemon's single-instance lock and a held folder's lock are released at
-   once by a dropped guard and by any death of the holder, and no exec'd child holds one (`WriterLock`'s Drop; a
-   `HandoverLock` only closes, so a copy in a child keeps the fence held, by design). A contended lock fails within
+   once by a dropped guard (`WriterLock`'s Drop unlocks) and when the holder dies and the last descriptor of the locked
+   file closes; a forked child that kept a copy holds it. The descriptors this crate opens are close-on-exec, so no
+   exec'd child inherits one; a `HandoverLock` only closes on drop, so a copy in a child keeps the fence held, by design. A contended lock fails within
    `RETRY_DEADLINE_MS` as "lock held". Kernel file locks are taken only in these guards and `InboxLock`
    (messaging's, in `rust/backend/src/comm/mail/inbox.rs`); `rust/clippy.toml` refuses them elsewhere.
-4. **A held folder stays while its maker lives.** `remove_ended` removes a folder only once it can take the folder's
+4. **A held folder stays while its maker lives.** (Its lifetime is the `HeldDir` guard's or the maker process's,
+   whichever the lock outlasts; on Windows the folder's parent is assumed private to the account.) `remove_ended` removes a folder only once it can take the folder's
    lock, which `HeldDir::create` takes under a staging name before renaming the lock file to the name a removal
    looks for; another computer sharing the folder, another pid namespace or a reused pid never removes a live
    maker's folder. A link, a file, another account's folder and a folder whose lock cannot be opened stay. Across
@@ -39,8 +45,12 @@ where each lives).
    handles (`harden_own_stdio`) and makes owner-only descriptors at birth (`owner_protected_pipe_descriptor`).
 6. **A local reply is trusted only after the challenge.** The OS steps (the peer's account and pid as the OS
    recorded them, then equality of identity) precede the wire steps (`exchange_identity`, over an
-   `IdentityExchange` the lane provides), and every step is bounded by `run_with_deadline`; a wrong, partial, doubled
-   or late reply is `Foreign` or `Undetermined`, never `Proven`. `connect_own` reaches only a listener this account
+   `IdentityExchange` the lane provides); `run_with_deadline` bounds the wire steps, and the OS steps read kernel
+   records without waiting on the peer. Two outcomes differ: the full challenge earns `Proven` (OS identity and the
+   wire's pid and creation time agree), while `authenticate_server` proves the account alone (`PeerAuthenticated`).
+   A wrong, partial or late reply is `Foreign` or `Undetermined`; a second complete reply inside the same read is
+   `Foreign`, and bytes after a conclusive answer are the exchange's to refuse (the lanes' do). On macOS the peer is
+   attributed by `LOCAL_PEERPID` and its start time; the assumptions are stated in `challenge_macos.rs`'s module doc. `connect_own` reaches only a listener this account
    owns. A TCP connection on loopback is admitted only when the OS names this account as its owner
    (`peer_owner::serve_own`). Rests on SO_PEERCRED/pidfd, LOCAL_PEERPID/kqueue, the pipe's SID and impersonation
    level, the TCP owner tables.
@@ -48,16 +58,22 @@ where each lives).
    ERROR_HANDLE_DISK_FULL and ERROR_DISK_QUOTA_EXCEEDED, read from the `io::Error` an `Error::Io` carries, never from
    text and never from a transport error (`storage_exhaustion`). `preflight_volume` and Windows `io_ctx` return such
    an error as itself.
-8. **A volume is proved before a store opens on it.** `preflight_volume` refuses a root the store cannot make
-   durable, a network filesystem above all (NFS answers EINVAL to every `renameat2` flag), so a state root on a
-   network home points `XDG_STATE_HOME` at local disk.
+8. **A volume is proved before a store opens on it.** `preflight_volume` refuses a root whose filesystem cannot do
+   the operations the store uses (create, no-clobber rename, fsync), a network filesystem above all (NFS answers EINVAL
+   to every `renameat2` flag), so a state root on a network home points `XDG_STATE_HOME` at local disk. It does not
+   prove persistent backing: rows refuses volatile storage itself (`rows/spawn/state_root.rs`). The Windows
+   preflight has no test.
 9. **A restart is paced.** A connection or child restarted through `Redial` waits from its caller's floor,
    doubling to its cap, and starts over only after one that lasted `STABLE` (60 s) or at a person's request; an
    answered hello, a bare connect or a generation alone does not restart it.
-10. **A directory pin opens only a directory.** `dir_identity` opens with `O_DIRECTORY`, so a FIFO or any other
-    non-directory fails at once and never waits.
-11. **Private means private.** `is_private_dir` and `ensure_private_dir` accept only an owner-only directory that is
-    not a link; a socket folder is secured the same way (`secure_socket_dir`).
+10. **A directory pin opens only a directory (Unix).** `dir_identity` opens with `O_DIRECTORY`, so a FIFO or any
+    other non-directory fails at once and never waits. On Windows it opens with backup semantics and accepts an
+    ordinary file (gap, listed in the result file).
+11. **Private means private (Unix).** `is_private_dir` and `secure_private_dir` accept only an owner-only directory
+    that is not a link; `secure_socket_dir` secures each level under the runtime base the same way. `ensure_private_dir`
+    is the weaker form: it creates the folder, follows a symlink and repairs the mode to 0700. On Windows
+    `is_private_dir` is only `is_dir`; the account's profile folders are the protection. A refusal from the OS keeps
+    the OS error as its source (`Error::Path`).
 
 Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MSYS program that execs another is a
 new Windows process whose Windows parent has exited, so a native parent walk alone stops short of the session (Git
@@ -75,8 +91,10 @@ launcher (`host/fd.rs`, `host/process_tree/`, one native C file); the directory 
 preflight; storage recognition; `Redial`; the Windows descriptors and SIDs (`host/winsec.rs`, `host/winhandle.rs`);
 the private-dir and socket-dir checks; the resource folder (`resource_dir`, `SOT_RESOURCE_ROOT`) and the verbatim-path
 strip; the peer challenge's OS steps, `PeerIdentity` and `PeerProcess`, the exchange trait and the deadline
-(`identity/`); the account (`os_account`) and loopback owner (`peer_owner`). The crate's `Error` is `Io` or `State`;
-upper crates convert, never match on it across a crate boundary.
+(`identity/`); the account (`os_account`) and loopback owner (`peer_owner`). The crate's `Error` is `Io`, `Path` (an OS error with what was being done) or `State`; the
+backend matches `State` for a held lock (`rows/run/end_run.rs`) and `Io` for an existing target (`agents/trust_declaration.rs`),
+and upper crates otherwise convert it. The resource folder and the native launcher are owned APIs without a guarantee
+of their own: `resource_dir` has no test (a gap), the launcher is proved by the backend's `native_premises` tests.
 
 ## One TOML parser (stated, not yet built)
 The `toml` crate is the one parser. Four hand-written readers disagree today: hosts.toml (topology), the rows
