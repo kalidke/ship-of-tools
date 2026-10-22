@@ -97,6 +97,38 @@ fn the_start_probes_tell_missing_and_stale_from_live() {
     assert!(!socket_answers(&stale));
 }
 
+/// Queue item 21 (successor start probe): the daemon lock's probe counts a socket as answering only when its listener
+/// replies. A listener that completes the connect and never serves it, as a copy of the old listener held by a child
+/// between its fork and its exec does, is not a daemon that answers, so the successor waits on the lock for it.
+#[cfg(unix)]
+#[test]
+fn the_lock_probe_reads_a_listener_that_never_replies_as_not_answering() {
+    let (_dir, path) = probe_socket_path();
+    let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+    assert!(
+        !socket_answers(&path),
+        "a listener that never serves its connections is not a daemon that answers"
+    );
+}
+
+/// The other side of queue item 21: a listener that serves the probe, here with the refusal a daemon gives a first
+/// frame that is not a hello, is a daemon that answers, so a start on a live socket is refused at once.
+#[cfg(unix)]
+#[test]
+fn the_lock_probe_reads_a_replying_listener_as_answering() {
+    let (_dir, path) = probe_socket_path();
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut first = std::io::BufReader::new(stream.try_clone().expect("clone"));
+        let frame = sot_protocol::codec::read_frame_blocking(&mut first).expect("the probe's frame");
+        let refusal = Frame::res(frame.id, &frame.op, serde_json::json!({ "code": "unauthenticated" }));
+        sot_protocol::codec::write_frame_blocking(&mut stream, &refusal).expect("reply");
+    });
+    assert!(socket_answers(&path), "a listener that replies is a daemon that answers");
+    server.join().expect("the replying listener");
+}
+
 /// One nonblocking `connect(2)` to `path`: a queued connection is returned; `None` is the full-backlog `EAGAIN`.
 #[cfg(target_os = "linux")]
 fn nonblocking_connect(path: &std::path::Path) -> Option<std::os::fd::OwnedFd> {
