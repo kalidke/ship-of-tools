@@ -515,3 +515,17 @@ async fn a_reaped_child_is_not_interrupted() {
     contained.wait().await.expect("wait");
     contained.interrupt().expect("a reaped child was asked to interrupt");
 }
+
+/// An observation that cannot be made is no observation of death: a pid the kernel refuses to open as an identity for a
+/// reason other than "no such process" fails the test at once, and a process that is really gone is seen gone.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_leftover_that_cannot_be_observed_fails_and_one_that_is_gone_is_seen_gone() {
+    let refused = std::panic::catch_unwind(|| Leftover::of_pid(-1));
+    assert!(refused.is_err(), "an identity the kernel refused (EINVAL) was read as a process that is gone");
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id() as i32;
+    child.wait().unwrap();
+    // The pid is free again (reaped): ESRCH, the one error that means gone.
+    assert!(Leftover::of_pid(pid).gone(), "a reaped process was not seen gone");
+}
