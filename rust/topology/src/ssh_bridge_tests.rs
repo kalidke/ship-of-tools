@@ -152,7 +152,7 @@ fn gate_start(mode: &str, gate: &LinkGate, voyage: bool) -> bool {
     let hook = gate.rendezvous.lock().unwrap().clone().unwrap();
     let refused = match mode {
         "sync" => match gate.spawn_sync(&recipe) {
-            Ok(mut child) => { cleanup_sync(&mut child, &hook); false }
+            Ok((mut child, _link)) => { cleanup_sync(&mut child, &hook); false }
             Err(SpawnError::LinkDown) => true,
             Err(error) => panic!("gate fixture failed: {error}"),
         },
@@ -160,7 +160,7 @@ fn gate_start(mode: &str, gate: &LinkGate, voyage: bool) -> bool {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             let _entered = runtime.enter();
             match gate.spawn_async(&recipe) {
-                Ok(mut child) => {
+                Ok((mut child, _link)) => {
                     hook.phase("cleanup"); hook.wait_entry("child-reaped");
                     child.start_kill().expect("terminate owned async gate child");
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -261,7 +261,7 @@ fn admission_rendezvous_pauses_once_per_armed_hook() {
     *hook.entries.lock().unwrap() = Some(entries_tx);
     *gate.rendezvous.lock().unwrap() = Some(hook.clone());
     let recipe = SshRecipe::new("teststub", None).unwrap();
-    let starters: Vec<_> = (0..2).map(|_| { let gate = gate.clone(); let recipe = recipe.clone(); std::thread::spawn(move || gate.spawn_sync(&recipe).expect("admitted start")) }).collect();
+    let starters: Vec<_> = (0..2).map(|_| { let gate = gate.clone(); let recipe = recipe.clone(); std::thread::spawn(move || gate.spawn_sync(&recipe).expect("admitted start").0) }).collect();
     let mut pauses = 0;
     for _ in 0..2 {
         let (_, claimed) = entries.recv_timeout(std::time::Duration::from_secs(30)).expect("an admission entry within 30 s");
@@ -348,4 +348,24 @@ fn argv_appends_host_only_when_the_recipe_carries_one() {
 fn display_matches_the_endpoint_grammar() {
     assert_eq!(SshRecipe::new("hub", None).unwrap().to_string(), "ssh:hub");
     assert_eq!(SshRecipe::new("hub", Some("gamma")).unwrap().to_string(), "ssh:hub/gamma");
+}
+
+/// A login is watched from the moment it starts, under the admission it started in, so a close right after the start
+/// returns finds the watch and ends it: there is no moment between a started login and its watch for a close to fall in.
+#[cfg(unix)]
+#[test]
+fn a_close_after_a_watched_start_ends_its_watch() {
+    let recipe = SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", "exec sleep 30"]);
+    let gate = LinkGate::default();
+    let (mut child, mut watch) = gate.spawn_sync(&recipe).expect("an up gate starts the login");
+    assert!(!watch.ended(), "the watch is live while the link is up");
+    gate.set_up(false);
+    assert!(watch.ended(), "a close ends the login's watch");
+    child.kill().expect("end the fixture login");
+    child.wait().expect("reap the fixture login");
+    gate.set_up(true);
+    let (mut again, mut fresh) = gate.spawn_sync(&recipe).expect("a reopened gate starts a login");
+    assert!(!fresh.ended(), "a watch begun after the reopen is live");
+    again.kill().expect("end the fixture login");
+    again.wait().expect("reap the fixture login");
 }

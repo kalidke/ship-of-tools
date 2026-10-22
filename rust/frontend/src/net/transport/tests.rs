@@ -428,7 +428,7 @@ async fn a_tree_root_error_reply_does_not_end_the_session() {
     let _ = session.await;
 }
 
-/// Every reply the connect path waits for arrives within `CONNECT_REPLY_BOUND`, or the attempt ends with an error
+/// Every reply the connect path waits for arrives within `SSH_LOGIN_BOUND`, or the attempt ends with an error
 /// naming its step; `spawn` shows that error as the `Disconnected` reason, and the status line as `disconnected ·
 /// <reason>`. The daemon falls silent after answering `answered` requests: before the hello's reply, before
 /// tree.root's, before preview.get's. On a paused clock the bound runs at its real 30 s; a read with no bound never
@@ -436,8 +436,9 @@ async fn a_tree_root_error_reply_does_not_end_the_session() {
 #[tokio::test(start_paused = true)]
 async fn a_daemon_that_falls_silent_during_connect_ends_the_attempt_naming_the_step() {
     let _env = crate::net::state::test_env::set_test_env();
-    // `CONNECT_REPLY_BOUND`, at the 30 s the fe-net charter promises.
-    let bound = std::time::Duration::from_secs(30);
+    // The fe-net charter promises 30 s: `SSH_LOGIN_BOUND`.
+    let bound = sot_topology::ssh_bridge::SSH_LOGIN_BOUND;
+    assert_eq!(bound, std::time::Duration::from_secs(30));
     for (answered, step) in [(0, "hello"), (1, "tree.root"), (2, "preview.get")] {
         let gate = sot_topology::ssh_bridge::LinkGate::default();
         let started = tokio::time::Instant::now();

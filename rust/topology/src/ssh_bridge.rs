@@ -111,7 +111,7 @@ pub const SSH_OPTS: &[&str] = &["-T", "-o", "BatchMode=yes", "-o", "ServerAliveI
 /// before that reply (the connect, key exchange, authentication, the remote shell and `sotd stdio-bridge`), so the
 /// local handshake bound (`CONNECT_BOUND`, 2 s) would kill a login that is merely slow, and its retry is one more login
 /// on a busy host. The window's control connection and page proxy wait the same 30 s for the same login
-/// (`CONNECT_REPLY_BOUND`).
+/// (`read_connect_reply`).
 pub const SSH_LOGIN_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// `recipe` → `ssh`'s own program name and argv, built with no shell on
@@ -280,7 +280,9 @@ impl LinkGate {
         self.admission.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    pub(crate) fn admit<C: StartedChild>(&self, command: std::process::Command, spawn: impl FnOnce(std::process::Command) -> std::io::Result<C>) -> Result<C, SpawnError> {
+    /// Starts the login and watches it, both under the one admission lock: a close of the gate either comes after the
+    /// watch exists and ends the login, or comes first and no login starts.
+    pub(crate) fn admit<C: StartedChild>(&self, command: std::process::Command, spawn: impl FnOnce(std::process::Command) -> std::io::Result<C>) -> Result<(C, LinkWatch), SpawnError> {
         let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
         if !self.is_up() { return Err(SpawnError::LinkDown); }
         #[cfg(test)]
@@ -301,14 +303,15 @@ impl LinkGate {
         if let Some(hook) = &rendezvous { hook.created(child.child_id()); }
         #[cfg(test)]
         if let Some(hook) = &rendezvous { hook.phase("admission-return"); }
-        Ok(child)
+        Ok((child, self.register_watch()))
     }
 
-    pub fn spawn_sync(&self, recipe: &SshRecipe) -> Result<std::process::Child, SpawnError> {
+    /// The login and its watch: see [`LinkGate::admit`].
+    pub fn spawn_sync(&self, recipe: &SshRecipe) -> Result<(std::process::Child, LinkWatch), SpawnError> {
         self.admit(command(recipe), spawn_sync)
     }
 
-    pub fn spawn_async(&self, recipe: &SshRecipe) -> Result<tokio::process::Child, SpawnError> {
+    pub fn spawn_async(&self, recipe: &SshRecipe) -> Result<(tokio::process::Child, LinkWatch), SpawnError> {
         self.admit(command(recipe), spawn_async)
     }
 
@@ -327,19 +330,22 @@ impl LinkGate {
         spawn_async(command(recipe))
     }
 
-    /// Watch a login through this gate from before it starts until its reply: a close in that time ends it
-    /// ([`LinkWatch`]). `None` while the link is down, when no login starts.
+    /// Watch a dial that starts no login of its own (a hub relay's local socket) until its reply: a close in that
+    /// time ends it ([`LinkWatch`]). `None` while the link is down, when no dial starts. A login this process starts
+    /// is watched by its own start ([`LinkGate::spawn_sync`]).
     pub fn watch(&self) -> Option<LinkWatch> {
         let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
-        if !self.is_up() {
-            return None;
-        }
+        self.is_up().then(|| self.register_watch())
+    }
+
+    /// A watch on the gate's open logins; the caller holds the admission lock, so a close is entirely before or after.
+    fn register_watch(&self) -> LinkWatch {
         let (end, closed) = tokio::sync::oneshot::channel();
         let mut logins = self.logins.lock().unwrap_or_else(|error| error.into_inner());
         let id = logins.next;
         logins.next += 1;
         logins.open.push((id, end));
-        Some(LinkWatch { listed: Listed { id, logins: std::sync::Arc::clone(&self.logins) }, closed })
+        LinkWatch { listed: Listed { id, logins: std::sync::Arc::clone(&self.logins) }, closed }
     }
 }
 

@@ -5,6 +5,13 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use super::lane_child::tests::spawn_stub_child;
 
+/// A spare's login as `spawn_ssh` gives it: the client and the gate's watch on it.
+fn spare_login(ep: &DaemonLaneEndpoint, child: std::process::Child) -> Result<(BridgedClient, crate::ssh_bridge::LinkWatch), TransportError> {
+    let LaneDial::Ssh(_, gate) = &ep.dial else { unreachable!() };
+    let link = gate.watch().expect("the gate is up");
+    Ok((BridgedClient::wrap(child).map_err(TransportError::Unreachable)?, link))
+}
+
 fn spare_endpoint() -> DaemonLaneEndpoint {
     let recipe = crate::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
     DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None)
@@ -13,7 +20,7 @@ fn spare_endpoint() -> DaemonLaneEndpoint {
 #[test]
 fn a_first_voyage_dial_takes_the_spare_the_supervisor_dial_started() {
     let ep = spare_endpoint();
-    ep.start_spare(|| BridgedClient::wrap(spawn_stub_child()).map_err(TransportError::Unreachable));
+    ep.start_spare(|| spare_login(&ep, spawn_stub_child()));
     assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Parked(..)), "the supervisor must park its voyage login");
     let (spare, _) = ep.take_spare().expect("the first voyage consumes the live spare");
     assert!(!spare.exited());
@@ -29,7 +36,7 @@ fn a_second_supervisor_dial_starts_no_second_spare() {
     for _ in 0..2 {
         ep.start_spare(|| {
             calls += 1;
-            BridgedClient::wrap(spawn_stub_child()).map_err(TransportError::Unreachable)
+            spare_login(&ep, spawn_stub_child())
         });
     }
     assert_eq!(calls, 1, "a parked endpoint starts just one spare");
@@ -38,7 +45,7 @@ fn a_second_supervisor_dial_starts_no_second_spare() {
 #[test]
 fn a_dead_spare_is_dropped_not_used() {
     let ep = spare_endpoint();
-    ep.start_spare(|| BridgedClient::wrap(spawn_stub_child()).map_err(TransportError::Unreachable));
+    ep.start_spare(|| spare_login(&ep, spawn_stub_child()));
     if let VoyageSpare::Parked(c, _) = &*ep.spare.lock().unwrap() {
         c.cancel();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -308,7 +315,7 @@ fn a_spare_handshake_in_flight_ends_when_its_link_closes() {
     let ep = std::sync::Arc::new(spare_endpoint());
     let LaneDial::Ssh(_, gate) = &ep.dial else { unreachable!() };
     let gate = gate.clone();
-    ep.start_spare(|| BridgedClient::wrap(super::tests::silent_login().expect("silent login")).map_err(TransportError::Unreachable));
+    ep.start_spare(|| spare_login(&ep, super::tests::silent_login().expect("silent login")));
     assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Parked(..)), "the supervisor must park its voyage login");
     let (sent, ended) = std::sync::mpsc::channel();
     let dial = {

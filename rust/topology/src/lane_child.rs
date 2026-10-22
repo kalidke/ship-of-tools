@@ -40,11 +40,11 @@ pub(super) struct BridgedClient {
 }
 
 impl BridgedClient {
-    pub(super) fn spawn(recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<Self, TransportError> {
+    pub(super) fn spawn(recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<(Self, crate::ssh_bridge::LinkWatch), TransportError> {
         #[allow(clippy::disallowed_methods, reason = "the lane dial's ssh, owned by the window's attach client")]
         let spawned = gate.spawn_sync(recipe);
         match spawned {
-            Ok(child) => Self::wrap(child).map_err(TransportError::Unreachable),
+            Ok((child, link)) => Ok((Self::wrap(child).map_err(TransportError::Unreachable)?, link)),
             Err(crate::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
             Err(crate::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
         }

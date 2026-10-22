@@ -189,29 +189,29 @@ async fn pipe_one(
     port: u16,
     token: Option<&str>,
 ) -> anyhow::Result<Answer> {
-    let Some(link) = gate.watch() else {
-        return Ok(Answer::LinkDown);
-    };
     match target {
         PageDial::Ssh(recipe) => {
             #[allow(
                 clippy::disallowed_methods,
                 reason = "the window's page-proxy ssh, owned by the window"
             )]
-            let child = match gate.spawn_async(recipe) {
-                Ok(child) => child,
+            let (child, link) = match gate.spawn_async(recipe) {
+                Ok(started) => started,
                 Err(SpawnError::LinkDown) => return Ok(Answer::LinkDown),
                 Err(e) => return Err(anyhow::Error::new(e).context(format!("spawn ssh {recipe}"))),
             };
-            pipe_child(child, browser, port, token, Some(link)).await
+            pipe_child(child, browser, port, token, link).await
         }
         PageDial::Relay(path) => {
             use interprocess::local_socket::tokio::prelude::*;
+            let Some(link) = gate.watch() else {
+                return Ok(Answer::LinkDown);
+            };
             let stream = crate::net::transport::connect_pipe(path).await?;
             let (rx, mut tx) = stream.split();
             let mut rx = codec::buffered(rx);
             let _ = browser.set_nodelay(true);
-            pipe_one_over(&mut tx, &mut rx, browser, port, token, Some(link)).await
+            pipe_one_over(&mut tx, &mut rx, browser, port, token, link).await
         }
     }
 }
@@ -223,7 +223,7 @@ async fn pipe_child(
     browser: tokio::net::TcpStream,
     port: u16,
     token: Option<&str>,
-    link: Option<LinkWatch>,
+    link: LinkWatch,
 ) -> anyhow::Result<Answer> {
     let d_wr = child.stdin.take().expect("spawned with a piped stdin");
     let d_rd = child.stdout.take().expect("spawned with a piped stdout");
@@ -256,7 +256,7 @@ async fn pipe_one_over<W, R>(
     browser: tokio::net::TcpStream,
     port: u16,
     token: Option<&str>,
-    link: Option<LinkWatch>,
+    link: LinkWatch,
 ) -> anyhow::Result<Answer>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -286,12 +286,10 @@ where
         anyhow::Ok(res)
     };
     // The login ends with the host's link (`LinkWatch`); a page already piped does not.
-    let res = match link {
-        Some(mut link) => tokio::select! {
-            res = login => res?,
-            () = link.closed() => return Ok(Answer::LinkDown),
-        },
-        None => login.await?,
+    let mut link = link;
+    let res = tokio::select! {
+        res = login => res?,
+        () = link.closed() => return Ok(Answer::LinkDown),
     };
     if res.payload.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         let code = res

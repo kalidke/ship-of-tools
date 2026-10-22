@@ -93,7 +93,7 @@ pub(super) fn recipe_from(host: &str, program: &Path, args: &[String]) -> SshRec
 /// it, and a real attach through the same recipe checkpoints Ready row 0 with its sentinel.
 pub(super) fn preflight(route: &Route, daemon: &Daemon) -> Result<()> {
     let name = route.kind.name();
-    let child = LinkGate::default().spawn_sync(&route.recipe()).map_err(|e| anyhow::anyhow!("{name} route could not start: {e}"))?;
+    let child = LinkGate::default().spawn_sync(&route.recipe()).map(|(child, _)| child).map_err(|e| anyhow::anyhow!("{name} route could not start: {e}"))?;
     let mut control = Control::from_child(child, Duration::from_secs(30))?;
     let session = control.hello("t3-preflight")?;
     ensure!(session == daemon.session_id, "{name} route reached another daemon");

@@ -391,10 +391,16 @@ fn run_systemctl(args: &[&str]) -> Result<(), String> {
 
 /// `systemctl args`: its stdout on success.
 fn systemctl_stdout(args: &[&str]) -> Result<String, String> {
+    systemctl_stdout_within(args, SYSTEMCTL_BOUND)
+}
+
+/// [`systemctl_stdout`] with its bound given: a user manager that does not answer (no user bus in the environment, a
+/// wedged manager) ends the call at `bound` with the error naming it, and the tree it started ends with it.
+fn systemctl_stdout_within(args: &[&str], bound: std::time::Duration) -> Result<String, String> {
     let mut cmd = systemctl();
     cmd.args(args);
     let out = sot_containment::process()
-        .output(&mut cmd, SYSTEMCTL_BOUND)
+        .output(&mut cmd, bound)
         .map_err(|e| format!("systemctl {}: {e}", args.join(" ")))?;
     if !out.status.success() {
         return Err(format!("systemctl {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));

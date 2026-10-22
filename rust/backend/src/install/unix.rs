@@ -416,10 +416,10 @@ fn ask_role(me: &str) -> Result<RoleFlag, Stop> {
             }
             let mut ssh = Command::new("ssh");
             ssh.args(sot_topology::ssh_bridge::SSH_OPTS).args(["-n", &alias, "true"]);
-            let ran = cmd::output_within(&mut ssh, std::time::Duration::from_secs(30));
+            let ran = cmd::output_within(&mut ssh, sot_topology::ssh_bridge::SSH_LOGIN_BOUND);
             match ran.code {
                 Some(0) => Ok(RoleFlag::Remote(alias)),
-                None if ran.err.contains("did not finish") => Err(Stop::new(1, format!("ssh to '{alias}' did not finish within 30s (a network, sshd or remote login that stopped answering)"))),
+                None if ran.err.contains("did not finish") => Err(Stop::new(1, format!("ssh to '{alias}' did not finish within {}s (a network, sshd or remote login that stopped answering)", sot_topology::ssh_bridge::SSH_LOGIN_BOUND.as_secs()))),
                 _ => Err(Stop::new(1, format!("key-based ssh to '{alias}' doesn't work (ssh-copy-id first, or fix ~/.ssh/config)"))),
             }
         }

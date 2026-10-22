@@ -2,22 +2,22 @@
 
 use super::*;
 
-/// How long each reply on the connect path may take: the hello's, then the preamble's tree.root and preview.get. An
-/// ssh child stalled before auth leaves the pipe open and silent, and a daemon that answered the hello can still leave
-/// the preamble unanswered; without a bound the one control transport waits forever, the second time "connected" with
-/// no rows. On expiry the read errors like an EOF naming its step, the window shows that as the disconnect reason, and
-/// the reconnect loop backs off normally, dropping the child.
-pub(super) const CONNECT_REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+// Each reply on the connect path (the hello's, then the preamble's tree.root and preview.get) waits at most
+// `SSH_LOGIN_BOUND`, the window's one bound for a login: an ssh child stalled before auth leaves the pipe open and
+// silent, and a daemon that answered the hello can still leave the preamble unanswered; without a bound the one control
+// transport waits forever, the second time "connected" with no rows. On expiry the read errors like an EOF naming its
+// step, the window shows that as the disconnect reason, and the reconnect loop backs off normally, dropping the child.
+use sot_topology::ssh_bridge::SSH_LOGIN_BOUND;
 
-/// Read the reply to the connect step `step` (its op), within `CONNECT_REPLY_BOUND`. The page proxy's handshake uses it
+/// Read the reply to the connect step `step` (its op), within `SSH_LOGIN_BOUND`. The page proxy's handshake uses it
 /// too (`pages::pipe_one_over`).
 pub(crate) async fn read_connect_reply<R: tokio::io::AsyncBufRead + Unpin>(
     rx: &mut R,
     step: &str,
 ) -> Result<(Frame, Option<Vec<u8>>)> {
-    tokio::time::timeout(CONNECT_REPLY_BOUND, codec::read_frame(rx))
+    tokio::time::timeout(SSH_LOGIN_BOUND, codec::read_frame(rx))
         .await
-        .map_err(|_| anyhow::anyhow!("{step} reply timed out after {CONNECT_REPLY_BOUND:?}"))?
+        .map_err(|_| anyhow::anyhow!("{step} reply timed out after {SSH_LOGIN_BOUND:?}"))?
 }
 
 /// The daemon answered the hello with a refusal (protocol skew, no account named, a second account):

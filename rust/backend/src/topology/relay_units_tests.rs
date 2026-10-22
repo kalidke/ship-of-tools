@@ -174,6 +174,10 @@ fn refresh_off_the_hub_touches_nothing() {
 /// The program `systemctl()` starts in place of the real one while a test holds it; `None` outside such a test.
 pub(super) static STUB_SYSTEMCTL: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
+/// Held by each test that names a stub, so one test never clears another's.
+#[cfg(target_os = "linux")]
+static STUB_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Clears the stub program on every path out of the test.
 #[cfg(target_os = "linux")]
 struct ClearStub;
@@ -190,6 +194,7 @@ impl Drop for ClearStub {
 #[cfg(target_os = "linux")]
 #[test]
 fn the_relay_probe_takes_its_tree() {
+    let _serial = STUB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().expect("tempdir");
     let bg = dir.path().join("bg");
     let descendant = sot_containment::leftover::Leftover::of_file(bg.clone());
@@ -199,4 +204,21 @@ fn the_relay_probe_takes_its_tree() {
     *STUB_SYSTEMCTL.lock().unwrap() = Some(stub);
     assert_eq!(supervised_by_systemd(), Ok(false));
     assert!(descendant.gone(), "the relay probe's descendant survived");
+}
+
+/// A user manager that never answers (no user bus in a non-interactive ssh's environment, a wedged manager) must end the
+/// call at its bound with an error that names the bound, not wait out the bus's own timeouts.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hung_systemctl_ends_at_its_bound_and_says_so() {
+    let _serial = STUB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _clear = ClearStub;
+    let stub = dir.path().join("systemctl");
+    sot_platform::test_exec::write_executable(&stub, "#!/bin/sh\nexec sleep 60\n".to_string());
+    *STUB_SYSTEMCTL.lock().unwrap() = Some(stub);
+    let started = std::time::Instant::now();
+    let e = systemctl_stdout_within(&["--user", "is-active", "sot-host-relay-remote-a.socket"], std::time::Duration::from_millis(300)).unwrap_err();
+    assert!(e.contains("did not exit within") && e.contains("systemctl --user is-active"), "{e}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "the call outlived its bound: {:?}", started.elapsed());
 }

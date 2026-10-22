@@ -39,7 +39,7 @@
 //! own `Client::cancel` already provides). That bound is 2 s on a local
 //! route and `SSH_LOGIN_BOUND` on an ssh or relay route, whose handshake
 //! holds a whole ssh login: this window's, or the hub relay's to the far host.
-//! The host's link gate watches such a login from before it starts until its
+//! The host's link gate watches such a login from the moment it starts until its
 //! reply (`LinkWatch`): a close of the gate cancels it, and the dial is `LinkDown`.
 //!
 //! # Refusals and uncertainty are typed
@@ -135,7 +135,7 @@ pub struct DaemonLaneEndpoint {
 
 enum VoyageSpare {
     Unused,
-    /// The parked login, and its gate's watch since before it started.
+    /// The parked login, and its gate's watch from the moment it started.
     Parked(BridgedClient, crate::ssh_bridge::LinkWatch),
     Spent,
 }
@@ -512,7 +512,8 @@ impl DaemonLaneEndpoint {
         self
     }
 
-    fn spawn_ssh(&self, recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
+    /// One ssh login, watched by its gate from the moment it starts (`LinkGate::admit`).
+    fn spawn_ssh(&self, recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<(BridgedClient, crate::ssh_bridge::LinkWatch), TransportError> {
         #[cfg(any(test, feature = "test-handshake-bound"))]
         if let Some(spawn) = &self.test_ssh_spawner {
             let command = gate.command(recipe).map_err(|error| match error {
@@ -520,7 +521,7 @@ impl DaemonLaneEndpoint {
                 crate::ssh_bridge::SpawnError::Io(error) => TransportError::Unreachable(error),
             })?;
             return match gate.admit(command, |command| spawn(command)) {
-                Ok(child) => BridgedClient::wrap(child).map_err(TransportError::Unreachable),
+                Ok((child, link)) => Ok((BridgedClient::wrap(child).map_err(TransportError::Unreachable)?, link)),
                 Err(crate::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
                 Err(crate::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
             };
@@ -528,23 +529,21 @@ impl DaemonLaneEndpoint {
         BridgedClient::spawn(recipe, gate)
     }
 
-    fn ssh_client(&self, kind: &str, recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
-        let client = self.spawn_ssh(recipe, gate)?;
+    fn ssh_client(&self, kind: &str, recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<(BridgedClient, crate::ssh_bridge::LinkWatch), TransportError> {
+        let login = self.spawn_ssh(recipe, gate)?;
         if kind == "supervisor" {
             self.start_spare(|| self.spawn_ssh(recipe, gate));
         }
-        Ok(client)
+        Ok(login)
     }
 
-    fn start_spare(&self, spawn: impl FnOnce() -> Result<BridgedClient, TransportError>) {
-        let LaneDial::Ssh(_, gate) = &self.dial else { return };
+    fn start_spare(&self, spawn: impl FnOnce() -> Result<(BridgedClient, crate::ssh_bridge::LinkWatch), TransportError>) {
+        let LaneDial::Ssh(..) = &self.dial else { return };
         let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
         if matches!(*state, VoyageSpare::Unused) {
-            // Watched from before it starts, so a spare whose link closed before its use is never used (`take_spare`).
-            if let Some(link) = gate.watch() {
-                if let Ok(client) = spawn() {
-                    *state = VoyageSpare::Parked(client, link);
-                }
+            // Watched from the moment it starts, so a spare whose link closed before its use is never used (`take_spare`).
+            if let Ok((client, link)) = spawn() {
+                *state = VoyageSpare::Parked(client, link);
             }
         }
     }
@@ -574,7 +573,7 @@ impl DaemonLaneEndpoint {
         let hello = Frame::req(1, op::HELLO, serde_json::to_value(&hello).expect("HelloReq always serializes"));
         let frame = Frame::req(2, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
 
-        // The host's link gate watches a relay or ssh login from before it starts until its reply: a down link starts
+        // The host's link gate watches a relay or ssh login from its start until its reply: a down link starts
         // none, and a close ends the one in flight. A parked spare carries its own watch.
         let mut link = match &self.dial {
             LaneDial::Relay(_, gate) => Some(gate.watch().ok_or(TransportError::LinkDown)?),
@@ -620,8 +619,8 @@ impl DaemonLaneEndpoint {
                         }
                     }
                 }
-                link = Some(gate.watch().ok_or(TransportError::LinkDown)?);
-                let client = self.ssh_client(kind, recipe, gate)?;
+                let (client, watch) = self.ssh_client(kind, recipe, gate)?;
+                link = Some(watch);
                 LaneStream::Bridged(client)
             }
         };

@@ -55,9 +55,9 @@ of each.
    has no containment domain), and the installer's own probe. Limit: preparing a command admits nothing, and the
    `kill_on_drop` async child is ended by its drop, not by the gate.
 6. **A close of the gate ends every login watched through it.** A login's start and its `LinkWatch` are taken under the
-   admission lock (`LinkGate::spawn_sync_watched`, `spawn_async_watched`; `watch` alone for a relay dial that starts
-   no ssh here), so a close either finds the watch and ends the login (`LinkDown`) or finds the link down and no login
-   starts. A parked spare is watched from before it starts and one whose link closed since is never used
+   one admission lock (`LinkGate::spawn_sync` and `spawn_async` return both; `watch` alone for a relay dial that
+   starts no ssh here), so a close either finds the watch and ends the login (`LinkDown`) or finds the link down and
+   no login starts. A parked spare is watched from the moment it starts and one whose link closed since is never used
    (`take_spare`). Limit: `LinkWatch::run` cancels through the login's own cancel; a login that does not honor it
    still waits for its own bound.
 7. **A lane dial is bounded, typed and its child's end is bounded.** A local dial goes through `connect_own` (only

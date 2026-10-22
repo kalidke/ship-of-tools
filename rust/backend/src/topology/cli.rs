@@ -168,8 +168,6 @@ fn report(r: Result<(), String>) -> i32 {
 const SET_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 const LOCAL_CHECK_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The longest `topology sync` waits on its ssh: past it the tree is killed and the sync fails naming the bound.
-const SYNC_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// `ssh <hub> cat ~/.config/sot/hosts.toml` into this box's own copy,
 /// tmp + rename, only after the fetched text parses, and only when it
@@ -189,7 +187,7 @@ fn sync(hub: Option<String>) -> Result<(), String> {
     let mut ssh = std::process::Command::new("ssh");
     ssh.args(topology::ssh_bridge::SSH_OPTS).args([hub.as_str(), "cat ~/.config/sot/hosts.toml"]);
     let out = sot_containment::process()
-        .output(&mut ssh, SYNC_BOUND)
+        .output(&mut ssh, topology::ssh_bridge::SSH_LOGIN_BOUND)
         .map_err(|e| format!("ssh {hub}: {e}"))?;
     if !out.status.success() {
         return Err(format!("ssh {hub}: {}", String::from_utf8_lossy(&out.stderr).trim()));

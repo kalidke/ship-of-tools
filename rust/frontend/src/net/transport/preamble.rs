@@ -1,9 +1,9 @@
 //! The connect preamble: after the hello, one tree.root and one preview.get of the default root, each reply within
-//! `CONNECT_REPLY_BOUND`. Any other frame the daemon writes meanwhile goes where the steady loop sends it.
+//! `SSH_LOGIN_BOUND`. Any other frame the daemon writes meanwhile goes where the steady loop sends it.
 
 use super::*;
 
-/// Read the reply to the preamble's request `id` (the connect step `step`) within `CONNECT_REPLY_BOUND`. A frame the
+/// Read the reply to the preamble's request `id` (the connect step `step`) within `SSH_LOGIN_BOUND`. A frame the
 /// daemon writes before it, an event replayed after the hello or a live one such as a REPL run's output, goes to
 /// `other` (`handle_response_frame`, as in the steady loop) with its revision noted, never taken for the reply.
 async fn read_step_reply<R: tokio::io::AsyncBufRead + Unpin>(
@@ -24,9 +24,9 @@ async fn read_step_reply<R: tokio::io::AsyncBufRead + Unpin>(
             other(frame, blob);
         }
     };
-    tokio::time::timeout(hello::CONNECT_REPLY_BOUND, read)
+    tokio::time::timeout(sot_topology::ssh_bridge::SSH_LOGIN_BOUND, read)
         .await
-        .map_err(|_| anyhow::anyhow!("{step} reply timed out after {:?}", hello::CONNECT_REPLY_BOUND))?
+        .map_err(|_| anyhow::anyhow!("{step} reply timed out after {:?}", sot_topology::ssh_bridge::SSH_LOGIN_BOUND))?
 }
 
 /// The connect preamble's tree.root: returns the root node id, empty if refused.

@@ -50,7 +50,7 @@ async fn a_silent_daemon_ends_the_proxy_handshake_naming_the_step() {
         let mut f_buf = BufReader::new(f_rd);
         tokio::time::pause();
         let started = tokio::time::Instant::now();
-        let handshake = super::pipe_one_over(&mut f_wr, &mut f_buf, browser, 1, None, None);
+        let handshake = super::pipe_one_over(&mut f_wr, &mut f_buf, browser, 1, None, sot_topology::ssh_bridge::LinkGate::default().watch().expect("a default gate is up"));
         let ended = tokio::time::timeout(Duration::from_secs(60), handshake)
             .await
             .unwrap_or_else(|_| {
@@ -212,7 +212,7 @@ async fn a_bad_port_answer_parks_the_port_until_the_page_is_opened_again() {
                 });
                 let (f_rd, mut f_wr) = tokio::io::split(fe);
                 let mut f_buf = tokio::io::BufReader::new(f_rd);
-                super::pipe_one_over(&mut f_wr, &mut f_buf, browser, port, None, None).await
+                super::pipe_one_over(&mut f_wr, &mut f_buf, browser, port, None, sot_topology::ssh_bridge::LinkGate::default().watch().expect("a default gate is up")).await
             }
         }
     };
@@ -508,7 +508,7 @@ async fn a_refused_hello_keeps_its_words_before_the_ssh_line() {
         .kill_on_drop(true)
         .spawn()
         .unwrap();
-    let err = super::pipe_child(child, browser, port, None, None).await.map(|_| ()).unwrap_err();
+    let err = super::pipe_child(child, browser, port, None, sot_topology::ssh_bridge::LinkGate::default().watch().expect("a default gate is up")).await.map(|_| ()).unwrap_err();
     assert_eq!(err.to_string(), format!("daemon refused the hello for port {port}: os_user_conflict: a line ssh wrote to stderr"));
 }
 
