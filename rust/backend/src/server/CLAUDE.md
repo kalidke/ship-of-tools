@@ -169,4 +169,17 @@ tests need the built `sotd` and run in test containers.
 | 15 | the log | `src/daemon_log/log_tests.rs`: `a_log_over_the_cap_rolls_after_the_first_write_and_a_held_writer_keeps_the_base`, `a_log_over_the_cap_rolls_within_a_run_and_every_writer_keeps_the_base`, `a_failing_roll_prints_once_and_is_not_retried_before_the_log_grows_by_the_cap`; `tests/daemon_stdout.rs`: `a_daemon_whose_stdout_is_a_file_writes_its_log_once` |
 
 ## Server queue
-Handled at a later pass of this subsystem; seen, not fixed here.
+Seen at pass 5c, handled at the server's next pass; none is a defect seen in use.
+- Windows' lock probe asks for no reply (`listen.rs:143`): a pipe instance a dead predecessor's child still holds reads
+  as a live daemon there until the child execs. The Unix probe's fix (item 21) has no Windows twin and no test.
+- `handle_connection`, `serve_control` and `run_local` carry the daemon's buses and handles as 17 to 19 positional
+  parameters (`conn.rs:107`, `conn.rs:254`, `listen.rs:250`), copied by name three times in `mod.rs` and `listen.rs`; one
+  context value built in `run` would delete the copies and become `Shared`'s base.
+- `hand_off`'s `bad_request` and every `reject` write no deadline (`sot_protocol::reply::reject`, `conn.rs:248`); one
+  small frame fits the buffer, so none was seen to park.
+- A lease or lane connection that has left the loop is not in the roster, so nothing reaps one that never pings; the
+  lease has its own ticker and the lane its pipe's end (`conn.rs:195`).
+- The accept loop's stop before any row is touched (lifecycle's guarantee 5) has no test that connects after the
+  departure; it holds by the order of `run_local`'s tail (`listen.rs`, the break, then `drop(listener)`).
+- `INLINE` still holds ops that wait on a local disk (`file.write`, `file.delete`, `dir.create`, `concept.write`): on
+  a network filesystem they hold the loop, and with it the ping (guarantee 10's limit).
