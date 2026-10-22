@@ -72,7 +72,11 @@ impl Drop for FakeLoop {
     }
 }
 
+/// The challenge refuses a peer that started in the clock tick it connects in (a pid reused inside one tick cannot be
+/// told apart), and a test binary's one process is both ends: the first test waits until the process is older.
 fn socket_in(dir: &Path) -> PathBuf {
+    static AGED: std::sync::Once = std::sync::Once::new();
+    AGED.call_once(|| std::thread::sleep(Duration::from_millis(50)));
     socket_path_in(dir, "0123456789abcdef").expect("a short path fits")
 }
 

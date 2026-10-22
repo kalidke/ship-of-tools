@@ -329,7 +329,7 @@ enum ReaderEvent {
 /// `(getpid, challenge_unix::self_start_ticks())` and the macOS one
 /// `(getpid, challenge_macos::self_pidversion())`.
 #[cfg(windows)]
-fn self_status(survival: Survival) -> Result<MgmtStatus> {
+pub(crate) fn self_status(survival: Survival) -> Result<MgmtStatus> {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
     // SAFETY: `GetCurrentProcess` returns a pseudo-handle needing no close;
@@ -360,7 +360,7 @@ fn self_status(survival: Survival) -> Result<MgmtStatus> {
 /// adoption challenge, if any, describe the identical process the
 /// identical way.
 #[cfg(target_os = "linux")]
-fn self_status(survival: Survival) -> Result<MgmtStatus> {
+pub(crate) fn self_status(survival: Survival) -> Result<MgmtStatus> {
     let pid = std::process::id();
     let created = sot_platform::identity::challenge_unix::self_start_ticks()
         .map_err(|e| Error::State(format!("capsule: self_start_ticks failed: {e}")))?;
@@ -380,7 +380,7 @@ fn self_status(survival: Survival) -> Result<MgmtStatus> {
 /// value a client reads off its own socket, the same way
 /// `self_start_ticks` is on Linux.
 #[cfg(target_os = "macos")]
-fn self_status(survival: Survival) -> Result<MgmtStatus> {
+pub(crate) fn self_status(survival: Survival) -> Result<MgmtStatus> {
     let pid = std::process::id();
     let created = sot_platform::identity::challenge_macos::self_pidversion()
         .map_err(|e| Error::State(format!("capsule: self_pidversion failed: {e}")))?;
