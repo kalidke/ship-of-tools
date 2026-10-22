@@ -179,7 +179,7 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
     )
     .await;
 
-    kill_supervisor_only(&env.state_root);
+    kill_supervisor(&env.state_root);
 
     // No watchdog exists (adopted, not spawned); killing just the authority
     // never marks the row terminal along the way.

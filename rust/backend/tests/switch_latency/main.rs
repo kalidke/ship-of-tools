@@ -670,7 +670,7 @@ exit 1
 #[cfg(target_os = "linux")]
 mod capsule_pty_open_answers_before_activation {
     use crate::support::{
-        any_process_matches, call, connect_and_hello, find_row, sot_capsule_exe, Env, BOUND as SUPPORT_BOUND,
+        call, connect_and_hello, find_row, own_capsule_pids, sot_capsule_exe, Env, BOUND as SUPPORT_BOUND,
         CAPSULE_EXE_NAME,
     };
     use sot_protocol::op;
@@ -695,9 +695,8 @@ mod capsule_pty_open_answers_before_activation {
         let workspace_id = row["workspace_id"].as_str().expect("workspace_id").to_string();
         // `sot-capsule supervise <state_dir>` carries the state dir in argv.
         let state_dir = env.state_root.join("sot").join("workspaces").join(&workspace_id);
-        let state_dir_pattern = state_dir.to_string_lossy().into_owned();
         assert!(
-            !any_process_matches(&state_dir_pattern),
+            own_capsule_pids(&state_dir).is_empty(),
             "no sot-capsule process for this row may exist before pty.open was even sent"
         );
 
@@ -708,7 +707,7 @@ mod capsule_pty_open_answers_before_activation {
         // Barrier still absent — the activation is provably still blocked.
         assert!(!barrier.exists(), "test bug: the barrier must not have been released yet");
         assert!(
-            !any_process_matches(&state_dir_pattern),
+            own_capsule_pids(&state_dir).is_empty(),
             "the reply must arrive while the activation is still held, before any lane traffic is possible"
         );
 
@@ -716,7 +715,7 @@ mod capsule_pty_open_answers_before_activation {
 
         let deadline = Instant::now() + SUPPORT_BOUND;
         loop {
-            if any_process_matches(&state_dir_pattern) {
+            if !own_capsule_pids(&state_dir).is_empty() {
                 break;
             }
             assert!(Instant::now() < deadline, "the async activation never spawned its own sot-capsule process");

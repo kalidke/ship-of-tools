@@ -71,7 +71,7 @@ async fn a_blackhole_is_unreachable_and_retried() {
     relay.resume();
 
     let alive_deadline = Instant::now() + Duration::from_secs(100);
-    kill_supervisor_only(&env.state_root);
+    kill_supervisor(&env.state_root);
 
     loop {
         client.pump();
@@ -243,13 +243,12 @@ async fn a_terminal_row_is_terminal_after_the_window() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
     // `workspace.list` reports phase "terminal" the moment `sot-capsule
     // supervise` LOGS the transition, which is still up to
     // `TERMINAL_EXIT_GRACE` (2s) before the process actually self-exits
     // -- poll it gone rather than assert instantly, or this races that
     // grace window.
-    assert!(poll_until_no_process_matches(&pattern, BOUND), "the row is terminal — its supervise process must exit within the terminal-exit grace period");
+    assert!(poll_until_no_capsule_pids(&env.state_root, BOUND).is_empty(), "the row is terminal — its supervise process must exit within the terminal-exit grace period");
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
@@ -266,7 +265,7 @@ async fn a_terminal_row_is_terminal_after_the_window() {
     )
     .expect("attach starts even against a terminal row");
 
-    let mut last_pgrep_check = Instant::now();
+    let mut last_listing_check = Instant::now();
     // Every change of the client's status line, with its time since the attach: a hang prints them.
     let mut lines = vec![(Duration::ZERO, client.status_line().to_string())];
     loop {
@@ -278,9 +277,9 @@ async fn a_terminal_row_is_terminal_after_the_window() {
             break;
         }
         assert!(start.elapsed() < HANG_GUARD, "the client had not ended {HANG_GUARD:?} after the attach; uncertain dials restart its window (ADR 0045 decision 4); status lines: {lines:?}");
-        if last_pgrep_check.elapsed() >= Duration::from_secs(10) {
-            assert!(!any_process_matches(&pattern), "a terminal row must never be resumed — a supervise process appeared");
-            last_pgrep_check = Instant::now();
+        if last_listing_check.elapsed() >= Duration::from_secs(10) {
+            assert!(own_supervisor_pids(&env.state_root).is_empty(), "a terminal row must never be resumed — a supervise process appeared");
+            last_listing_check = Instant::now();
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -289,7 +288,7 @@ async fn a_terminal_row_is_terminal_after_the_window() {
     // window on every uncertain dial), so there is no ceiling to assert: it is the floor, the reason and no supervise.
     assert!(elapsed >= HEALTH_WINDOW, "went terminal too early ({elapsed:?}) — the health window must run its full {HEALTH_WINDOW:?}; status lines: {lines:?}");
     assert!(client.status_line().contains("HealthWindowExpired"), "status must name HealthWindowExpired, got {:?}", client.status_line());
-    assert!(!any_process_matches(&pattern), "a terminal row must never be resumed");
+    assert!(own_supervisor_pids(&env.state_root).is_empty(), "a terminal row must never be resumed");
 
     drop(client);
     relay.cut();

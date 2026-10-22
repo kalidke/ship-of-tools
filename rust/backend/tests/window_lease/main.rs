@@ -329,7 +329,7 @@ async fn slow_row(state_dir: &Path) -> sot_log::supervisor::journal::fence::Supe
 
 #[cfg(target_os = "linux")]
 fn capsules_left(env: &Env) -> bool {
-    support::any_process_matches(&env.leg_pgrep_pattern())
+    !support::own_capsule_pids(&env.state_root).is_empty()
 }
 
 mod lease;

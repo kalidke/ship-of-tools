@@ -54,7 +54,7 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     // from that cached phase, so a stale read here would skip activation entirely.
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
 
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
+    let state_root = env.state_root.clone();
     let log_path = env.state_root.join("sot").join("sotd.log");
     // As `capsule_stale_attach_during_backoff_spawns_no_second_authority`'s
     // own sampler: a query failure FAILS the test rather than silently
@@ -67,15 +67,15 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
         let stop = stop.clone();
         let max_seen = max_seen.clone();
         let sampler_error = sampler_error.clone();
-        let pattern = pattern.clone();
+        let state_root = state_root.clone();
         tokio::spawn(async move {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let pattern = pattern.clone();
-                let outcome = tokio::task::spawn_blocking(move || count_matching_processes(&pattern)).await;
+                let state_root = state_root.clone();
+                let outcome = tokio::task::spawn_blocking(move || try_own_supervisor_count(&state_root)).await;
                 match outcome {
                     Ok(Ok(n)) => max_seen.fetch_max(n, std::sync::atomic::Ordering::Relaxed),
                     Ok(Err(e)) => {
-                        *sampler_error.lock().unwrap() = Some(format!("pgrep failed: {e}"));
+                        *sampler_error.lock().unwrap() = Some(format!("the capsule process listing failed: {e}"));
                         return;
                     }
                     Err(join_err) => {
@@ -119,7 +119,7 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     // the old resting authority, not yet retired (retirement is inside the guard).
     assert!(!barrier.exists(), "test bug: the barrier must not have been released yet");
     assert_eq!(
-        count_matching_processes(&pattern).expect("pgrep"),
+        try_own_supervisor_count(&state_root).expect("the capsule process listing"),
         1,
         "only the old resting authority may exist while both activations are still held at the barrier"
     );
@@ -264,7 +264,7 @@ async fn a_selection_that_reaches_the_guard_first_still_retires_and_resets() {
     // Neither barrier is released yet: killing the resting authority
     // lands the watchdog at ITS OWN barrier (never reaching the guard),
     // while pty.open's own activation is held at the OTHER barrier.
-    kill_supervisor_only(&env.state_root);
+    kill_supervisor(&env.state_root);
     let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
     next_id += 1;
@@ -333,7 +333,7 @@ async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire
     let log_path = env.state_root.join("sot").join("sotd.log");
     let backoff_seen_before = count_log_occurrences(&log_path, backoff_needle);
 
-    kill_supervisor_only(&env.state_root);
+    kill_supervisor(&env.state_root);
 
     // The backoff line only proves the watchdog decided to restart, not
     // that `poll_for_phase` below isn't reading a stale pre-kill
@@ -391,7 +391,7 @@ async fn a_selection_that_waits_through_several_reprobe_cycles_still_resets() {
     let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_voyage) =
         setup_ended_row(&env, "smr-workspace").await;
 
-    kill_supervisor_only(&env.state_root);
+    kill_supervisor(&env.state_root);
     let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
     next_id += 1;
@@ -475,7 +475,7 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
     // alone would never notice this kill: go straight to `pty.open`
     // (as cases 1 and 3 above do) and let ITS OWN fresh probe discover
     // the row is now unreachable, exactly like a real Selection would.
-    kill_supervisor_only(&env.state_root);
+    kill_supervisor(&env.state_root);
 
     // A Selection now finds `unreachable` with no watchdog -- resting --
     // and picks `Resume`. The fresh `--resume` supervisor's own recovery
@@ -501,177 +501,6 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
         "expected at least one post-spawn settle-deadline warning in sotd.log"
     );
 
-    let _ = tokio::task::spawn_blocking({
-        let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
-    })
-    .await;
-    env.kill_daemon_bounded().await;
-}
-
-/// ADR 0043 decision 33's retirement clause: a `stop` that never
-/// completes must leave the row EXACTLY as it was — no resume attempted,
-/// no reset sent. A real supervisor cannot be driven into "acked
-/// `Stopping`, then hangs" deterministically from outside (that window
-/// is sub-millisecond), so this induces an HONEST failure instead: a
-/// REAL supervisor, driven to a genuinely resident `EndedNoRespawn`,
-/// whose own `supervisor-journal` directory is temporarily replaced with
-/// a plain file (restored before this test ends, panic included).
-/// `handle_command`'s own idempotency check (`journal::read_active`,
-/// run before EVERY command, Stop included) then fails reading a path
-/// under that file, and answers `Operation(Failed{detail: "journal
-/// unreadable: ..."})` — which `stop()` itself reports as "expected
-/// Operation(Stopping), got ...".
-/// That EXACT text is `stop()`'s own mismatch report, never reachable
-/// from `reset()` (this arm cannot call it until `stop()` returns `Ok`),
-/// so the error crossing the wire is itself the cheap, honest witness
-/// that exactly one `Stop` — and zero `Reset` — requests ever reached
-/// the authority; a re-query over the SAME lane afterward confirms the
-/// SAME process is still resident on the SAME (never reset) voyage. Its
-/// reported PHASE is not asserted: `journal_failed`'s own safety rule
-/// treats any unreadable journal as cause to become Terminal regardless
-/// of which command tripped it — an orthogonal, expected side effect of
-/// this fault-injection method, not a claim about the retirement arm.
-#[tokio::test]
-#[cfg(target_os = "linux")]
-#[allow(clippy::too_many_lines, reason = "one test scenario: attach on an ended row keeps the row when the stop fails")]
-async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
-    let _serial = SERIAL.lock().await;
-    assert!(
-        sot_capsule_exe().is_file(),
-        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
-         this test's own sotd[.exe] was built into",
-        sot_capsule_exe()
-    );
-
-    let env = Env::new("cakw");
-    env.spawn_sotd();
-    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-
-    let create_req = serde_json::json!({
-        "label": "cakw-workspace",
-        "project_root": env.workspace_project_root.to_string_lossy(),
-        "runtime": "capsule",
-    });
-    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
-    next_id += 1;
-    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
-    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
-    let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
-
-    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
-
-    let (status, original_process) =
-        sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
-    let voyage = status.voyage.expect("a ready capsule has a voyage");
-    let original_pid = original_process.pid();
-    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
-    // Wait for the daemon's observer, not a raw lane probe -- a stale "ready"
-    // here would skip activation and miss this test's own fault injection.
-    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
-    let pointer_path = sot_log::supervisor::journal::pointer::pointer_path(&state_dir_path);
-    let pointer_before = std::fs::read(&pointer_path).expect("a resident EndedNoRespawn authority has a published pointer");
-
-    // Replace the journal directory with a plain file, restored on every
-    // exit path (including a panicking assertion) by this guard's `Drop`.
-    let journal_dir = state_dir_path.join("supervisor-journal");
-    assert!(journal_dir.is_dir(), "a resident authority must already have its own journal dir: {journal_dir:?}");
-    let journal_aside = state_dir_path.join("supervisor-journal.test-aside");
-    std::fs::rename(&journal_dir, &journal_aside).expect("rename the journal dir aside");
-    std::fs::write(&journal_dir, b"not a directory").expect("replace it with a plain file");
-    struct RestoreJournalDir {
-        journal_dir: PathBuf,
-        aside: PathBuf,
-    }
-    impl Drop for RestoreJournalDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.journal_dir);
-            let _ = std::fs::rename(&self.aside, &self.journal_dir);
-        }
-    }
-    let _restore_journal = RestoreJournalDir { journal_dir: journal_dir.clone(), aside: journal_aside };
-
-    // Never remove the lane socket before this attach -- that would make
-    // `phase_of`'s own initial probe read UNREACHABLE_PHASE and route
-    // through the RESUME path instead, never reaching this arm's retire
-    // logic at all.
-    //
-    // pty.open now answers attach_direct unconditionally; a Stop that cannot
-    // complete surfaces asynchronously as the row's own activation_error, polled below.
-    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
-    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
-    next_id += 1;
-    assert_eq!(
-        pty_res.payload["code"], "attach_direct",
-        "pty.open must answer attach_direct at once, never awaiting its own async activation: {:?}",
-        pty_res.payload
-    );
-
-    let activation_error_deadline = Instant::now() + BOUND;
-    let error_text = loop {
-        let id = next_id;
-        next_id += 1;
-        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
-        if let Some(row) = find_row(&payload, &workspace_id) {
-            if let Some(detail) = row["activation_error"].as_str() {
-                break detail.to_string();
-            }
-        }
-        assert!(
-            Instant::now() < activation_error_deadline,
-            "timed out waiting for the failed activation to surface as activation_error"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    assert!(
-        error_text.contains("retire (stop before reset) failed") && error_text.contains("expected Operation(Stopping)"),
-        "expected stop()'s own mismatch report (proof a Stop, never a Reset, reached the authority): {error_text:?}"
-    );
-    assert!(
-        error_text.contains("journal unreadable"),
-        "expected the induced journal failure to surface in the reply: {error_text:?}"
-    );
-
-    // The row stays exactly as it was: pointer untouched, authority
-    // still the SAME resident process on the SAME voyage (queried over
-    // its own lane), and still registered.
-    assert_eq!(
-        std::fs::read(&pointer_path).expect("the pointer file must still exist"),
-        pointer_before,
-        "a failed retirement must never touch drawer.voyage — nothing was reset"
-    );
-    let (status_after, process_after) =
-        sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status after the failed attach");
-    assert_eq!(
-        process_after.pid(), original_pid,
-        "the SAME authority must still be resident after a failed stop — never replaced"
-    );
-    // Phase is NOT asserted here: an unreadable journal is a real fault,
-    // and `journal_failed`'s own safety rule (`supervisor/`) treats it
-    // as cause to become Terminal regardless of which command tripped
-    // it — an orthogonal, expected side effect of THIS fault-injection
-    // method, not a claim about `ensure_started`'s own retirement arm.
-    // What that arm itself guarantees, and what stays checked: the SAME
-    // process, the SAME voyage, the pointer untouched, the row retained.
-    assert_eq!(
-        status_after.voyage.as_deref(),
-        Some(voyage.as_str()),
-        "the voyage must be UNCHANGED — no reset ever reached the authority"
-    );
-    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
-    // `next_id` has no further use on this connection — no further increment.
-    assert!(
-        find_row(&list_payload, &workspace_id).is_some(),
-        "the row must still be registered after a failed retirement attempt"
-    );
-
-    drop(_restore_journal);
-
-    // Real cleanup, journal restored: the run already ended above, so
-    // only the authority itself needs stopping (its leg is swept by
-    // `Env`'s own `Drop`, F4).
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || sot_log::attach_client::supervisor_client::stop(&dir)

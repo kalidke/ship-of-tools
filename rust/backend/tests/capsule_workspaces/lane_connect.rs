@@ -337,7 +337,7 @@ async fn lane_connect_closes_when_either_side_closes() {
 /// `lane: "supervisor"` on a row whose authority died resumes it in
 /// place rather than answering absent. TWO CONCURRENT initial dials
 /// (Codex review SHOULD-FIX, 2026-09-11: sequential connects plus one
-/// `pgrep` snapshot afterward cannot prove absence of a transient extra
+/// one process count afterward cannot prove absence of a transient extra
 /// spawn while the race is still live) both succeed, and a background
 /// sampler running continuously across the WHOLE recovery window proves
 /// at most one `supervise` process ever matched at any sampled instant —
@@ -366,19 +366,19 @@ async fn lane_connect_resumes_a_stopped_row() {
     let row = find_row(&list_payload, &workspace_id).expect("the row is still registered");
     let target = row["session_name"].as_str().expect("session_name").to_string();
 
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
+    let state_root = env.state_root.clone();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let max_seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let sampler = {
         let stop = stop.clone();
         let max_seen = max_seen.clone();
-        let pattern = pattern.clone();
+        let state_root = state_root.clone();
         tokio::spawn(async move {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let pattern = pattern.clone();
-                let n = tokio::task::spawn_blocking(move || count_matching_processes(&pattern).expect("pgrep"))
+                let state_root = state_root.clone();
+                let n = tokio::task::spawn_blocking(move || try_own_supervisor_count(&state_root).expect("the capsule process listing"))
                     .await
-                    .expect("the pgrep sampler's blocking count");
+                    .expect("the supervisor sampler's blocking count");
                 max_seen.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -397,7 +397,7 @@ async fn lane_connect_resumes_a_stopped_row() {
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    sampler.await.expect("the pgrep sampler");
+    sampler.await.expect("the supervisor sampler");
     assert!(
         max_seen.load(std::sync::atomic::Ordering::Relaxed) <= 1,
         "more than one supervise process matched at some sampled instant across the two concurrent initial dials"
@@ -513,16 +513,13 @@ async fn lane_connect_refusals() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env2.state_root);
     // The anti-flap authority exits within a couple hundred ms of its own
     // last spawn attempt (`capsule_row_with_an_unlaunchable_agent_...`'s
     // own doc); `workspace.list`'s "terminal" is a POINTER read, so it
     // can be observed a hair before the OS finishes reaping the just-
-    // exited process -- poll rather than a single point-in-time pgrep.
-    assert!(
-        poll_until_no_process_matches(&pattern, BOUND),
-        "a terminal row must settle to no live supervise process"
-    );
+    // exited process -- poll rather than a single point-in-time listing.
+    let left = poll_until_no_capsule_pids(&env2.state_root, BOUND);
+    assert!(left.is_empty(), "a terminal row must settle to no live capsule process: {left:?}");
 
     let (mut s, res) = lane_connect(&env2, &default_target2, "supervisor", None).await;
     assert_eq!(res["code"].as_str(), Some("lane_absent"), "{res:?}");
@@ -530,7 +527,7 @@ async fn lane_connect_refusals() {
     assert_lane_connect_closes(&mut s).await;
 
     assert_eq!(
-        count_matching_processes(&pattern).expect("pgrep"),
+        own_supervisor_pids(&env2.state_root).len(),
         0,
         "a terminal row's own lane.connect refusal must never spawn a supervise process"
     );
