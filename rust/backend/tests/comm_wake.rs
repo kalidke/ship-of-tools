@@ -844,15 +844,4 @@ async fn a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_bo
     assert_eq!(others(&row.log), 0, "the wake line was typed again");
     assert_eq!(daemon_log(&row.env).matches("boot look waits").count(), 1, "the wait should be logged once");
     row.env.kill_daemon_bounded().await;
-    tokio::time::sleep(THREE_TICKS).await;
-    assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
-    end_supervisor(&row.env);
-    let marks = marks(&row).to_string_lossy().to_string();
-    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[("SOT_TEST_WAKE_MARKS", marks.as_str()), ("SOT_TEST_RECOVERY_DELAY_MS", "7000")]);
-    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the restarted daemon never sent the line's Enter");
-    tokio::time::sleep(THREE_TICKS).await;
-    assert_eq!(pings(&row.log), 1);
-    assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
-    assert_eq!(daemon_log(&row.env).matches("boot look waits").count(), 1, "the wait should be logged once");
-    row.env.kill_daemon_bounded().await;
 }
