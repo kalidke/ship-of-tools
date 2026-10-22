@@ -293,7 +293,7 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
 /// could otherwise race to recover it first, and this test could pass
 /// even with that resume call deleted. The "no end marker" precondition
 /// this test's own name claims is checked directly
-/// (`sot_log::store::verify::leg_carries_run_end_marker`) right after both
+/// (the leg's `ended` file, `sot_log::capsule::read_ended`) right after both
 /// SIGKILLs, rather than only inferred from the recovery behaviour
 /// afterward — destroy's own success proves nothing about markerlessness
 /// on its own; an adopted-but-cleanly-ended leg would also let destroy
@@ -376,15 +376,13 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     // The "markerless" precondition this test is named for, checked
     // directly rather than only inferred from the recovery behaviour
     // afterward.
-    let seg_dir = sot_log::supervisor::voyage_root_path(&state_dir_path, &voyage_before).join("seg");
-    let carries_marker = tokio::task::spawn_blocking({
-        let seg_dir = seg_dir.clone();
-        let voyage = voyage_before.clone();
-        move || sot_log::store::verify::leg_carries_run_end_marker(&seg_dir, &voyage, leg_before)
+    let voyage_root = sot_log::supervisor::voyage_root_path(&state_dir_path, &voyage_before);
+    let carries_marker = tokio::task::spawn_blocking(move || {
+        sot_log::capsule::read_ended(&voyage_root).map(|ended| ended.is_some_and(|e| e.requested))
     })
     .await
     .unwrap()
-    .expect("leg_carries_run_end_marker must read the SIGKILLed leg's own segment cleanly");
+    .expect("read_ended must read the SIGKILLed leg's own folder cleanly");
     assert!(
         !carries_marker,
         "the killed leg carries an end marker — this is not the markerless-death precondition this test claims"

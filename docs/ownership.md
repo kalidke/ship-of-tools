@@ -67,7 +67,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `<sd>/supervisor.lock` | disk, lock | capsule | `rust/log/src/supervisor/journal/fence.rs` `lock_supervisor`; `rust/platform/src/host/lock.rs` `lock_supervisor` |
 | `<sd>/drawer.voyage` (pointer) | disk | capsule | `rust/log/src/supervisor/journal/pointer.rs` |
 | `<sd>/supervisor-journal/` | disk | capsule | `rust/log/src/supervisor/journal/mod.rs` `begin`, `finish` |
-| `<sd>/voyages/<id>/{writer.lock, seg/, blobs/sha256/}` | disk, lock | capsule | `rust/log/src/store/voyage.rs`; names repeated `rust/backend/src/rows/run/end_run.rs` `absence_proof` |
+| `<sd>/voyages/<id>/{writer.lock, leg, ended}` (the leg's fence, its number and its ending; no record) | disk, lock | capsule | `rust/log/src/capsule/fence.rs`; `rust/log/src/capsule/ended.rs`; names repeated `rust/backend/src/rows/run/end_run.rs` `absence_proof` |
+| `<sd>/screen` (the leg's latest screen, a vt100 checkpoint) | disk | capsule | `rust/log/src/capsule/screen.rs` |
 | `<sd>/row-scopes` and the row's systemd scope `sot-row-<hash>-<uuid>.scope` | disk, process | rows | `rust/backend/src/rows/spawn/row_scope.rs` `capture`, `listed`, `end`, `unit_name`; `rust/backend/src/rows/spawn/row_scope_aim.rs` `aim`, `v2_root` (shell twin of `v2_root`: `scripts/tests/rc-gate.sh` `R`) |
 | supervisor lane socket/pipe `supervisor-<hash>` | endpoint | capsule | `rust/log/src/lane/socket_unix/mod.rs`; `rust/log/src/lane/pipe_win/mod.rs` |
 | voyage lane socket/pipe `voyage-<id>` | endpoint | capsule | `rust/log/src/lane/socket_unix/mod.rs`; `rust/log/src/lane/pipe_win/mod.rs` |
@@ -176,7 +177,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | lease holder and reader tasks | thread | lifecycle | `rust/frontend/src/lease.rs` `spawn_holder`, `Leases` |
 | attach worker, reader, supervisor probe threads | thread | capsule | `rust/log/src/attach_client/worker/mod.rs`; `rust/log/src/attach_client/worker/steady.rs`; `rust/log/src/supervisor/probe/mod.rs` |
 | supervisor worker per operation | thread | capsule | `rust/log/src/supervisor/lifecycle.rs` `Lifecycle`; `rust/log/src/supervisor/oneshot.rs` `endrun_inner`, `reset_inner` |
-| storage wait: durable state-root probe and its backoff | state, thread | capsule | `rust/log/src/supervisor/storage/mod.rs` `Wait`, `advance`, `probe` |
+| the leg's screen writer (one thread, newest snapshot only) | thread | capsule | `rust/log/src/capsule/screen.rs` `ScreenFile` |
 | lane accept and reaper threads | thread | capsule | `rust/log/src/lane/socket_unix/accept.rs`; `rust/log/src/lane/socket_unix/conn.rs`; `rust/log/src/lane/pipe_win/accept.rs`; `rust/log/src/lane/pipe_win/conn.rs`; `rust/log/src/lane/pending.rs` `PendingJoins`, `Claimed` |
 | frame format, codec, 1 MiB cap | wire | wire | `rust/protocol/src/lib.rs` `Frame`; `rust/protocol/src/codec.rs` `read_frame`, `write_frame`, `MAX_ENVELOPE_BYTES` |
 | `PROTOCOL_VERSION` | wire | wire | `rust/protocol/src/lib.rs` `PROTOCOL_VERSION` (the shell literal in `comm/lib/comm-lib-client.sh` `sot_hello_frame`, held to it by `the_shell_hello_is_this_protocols_hello`, which runs it) |
@@ -262,9 +263,6 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `topology.changed` | event, bus | topology | `rust/backend/src/topology/store.rs` `TopologyChanged`; `rust/backend/src/server/events.rs` `write_topology_changed` |
 | capsule lanes SOM0, SOA0 (v1-v3), SOSV | wire | capsule | `rust/log/src/lane/wire/mgmt.rs`; `rust/log/src/lane/wire/attach.rs`; `rust/log/src/lane/wire/supervisor.rs` |
 | supervisor-lane build id `SUPERVISOR_LANE_BUILD_ID` (stamp `SOT_LOG_BUILD_SHA`: full sha, `-dirty`; carried in the lane hello and `version.query`, never compared) | wire (lane) | capsule | `rust/log/build.rs`; `rust/platform/src/identity/exchange.rs`; `rust/log/src/attach_client/supervisor_client.rs` `SUPERVISOR_LANE_BUILD_ID` |
-| rollout gate (`gate`, `RolloutEvidence`; `--assume-no-rollback-target`, which every daemon spawn passes) | rule | capsule | `rust/log/src/store/rollout.rs` `gate`; `rust/log/src/capsule/mod.rs` `RolloutEvidence`; `rust/log/src/bin/sot-capsule.rs`; `rust/backend/src/rows/spawn/detach.rs` `mode_flag` |
-| `<sd>/rollout-evidence.json` and its reader `read_rollout_evidence` (provisional; no writer, no caller) | disk | capsule | `rust/log/src/store/rollout.rs` `read_rollout_evidence` |
-| SDK helper-protocol 1 | wire | capsule | `rust/log/src/claude.rs`; `rust/log/claude-sdk-helper/src/protocol.ts` |
 | sotd subcommand `session-socket-path` | CLI | topology | `rust/backend/src/main.rs` `main`; `rust/topology/src/endpoint.rs` `session_socket_path` |
 | sotd subcommand `log-path` | CLI | server | `rust/backend/src/main.rs` `main`; `rust/platform/src/host/state_dir.rs` `daemon_state_dir` |
 | sotd subcommands `topology ...`, `status`, `stdio-bridge` | CLI | topology | `rust/backend/src/main.rs` `parse_args`; `rust/backend/src/topology/cli.rs` `run`; `rust/backend/src/topology/status.rs` `run`; `rust/backend/src/topology/stdio_bridge.rs` `run` |
@@ -368,6 +366,5 @@ user or another process sees.
 | Folder trust written two ways | agents | `rust/backend/src/agents/folder_trust.rs` `ensure_folder_trusted`; `agents/codex/bin/ccx` | `ccx`'s append is deleted where the bypass flag answers the prompt | behaviour |
 | Row creation and removal announced twice: ring entries and the live bus | rows | `rust/backend/src/rows/ops/create.rs`; `rust/backend/src/rows/ops/destroy.rs`; `rust/backend/src/rows/mod.rs` `WorkspaceChanged` | `workspace.changed` is the one announcement | behaviour |
 | Skill copies | agents | `.claude/skills/sot-setup/SKILL.md`; `agents/claude/sot-setup/SKILL.md`; `.claude/skills/sot-statusline-setup/statusline.sh`; `agents/claude/sot-statusline-setup/statusline.sh` | `.claude/skills/` is canonical and `agents/claude/` its install payload; both stay, pinned byte-identical by `agents/tests/test-skill-copies.sh` | pure (a test) |
-| cgroup kill written twice | rows | `rust/log/src/claude.rs`; `rust/backend/src/rows/spawn/row_scope.rs` `end` | `claude.rs` goes with the SDK producer's fate; until then its `Fence::discover` reads the root as the literal `/sys/fs/cgroup`, not through `row_scope_aim::v2_root`, so it refuses on a hybrid host | behaviour |
 | Rust video suffix/MIME classification and its Julia twin | wire | `rust/protocol/src/video_path.rs` `video_mime`; `julia/plugins/video-file/src/ShipToolsVideoFile.jl` matches method | Rust consumers call video_mime; Rust and the unchanged Julia matches method execute the same suffix corpus, including leading-dot filenames | pure (remaining language twin) |
 | `fe.sessions`: the window relays its computer's roster to other daemons | server | `rust/backend/src/clients.rs` `handle_fe_sessions`; `rust/frontend/src/net/transport/ops/workspace.rs` | Moves with the ruling on the hub link | behaviour |

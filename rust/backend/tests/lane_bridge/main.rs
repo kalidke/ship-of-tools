@@ -17,7 +17,6 @@ mod support;
 use support::*;
 
 use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
-use sot_log::store::segment::SegmentReader;
 use sot_topology::lane_client::{DaemonLaneEndpoint, LaneDial};
 use sot_protocol::{op, Frame};
 
@@ -63,28 +62,10 @@ async fn create_ready_capsule_row(env: &Env, conn: &mut Conn, next_id: &mut u64,
     (workspace_id, target)
 }
 
-/// [`rust/log/tests/fe_client/`'s own `sealed_frames`]: every frame
-/// across every sealed `.sotseg` under a real supervisor-owned voyage.
-fn sealed_frames(state_dir: &Path, voyage: &str) -> Vec<sot_log::store::envelope::Envelope> {
-    let seg_dir = state_dir.join("voyages").join(voyage).join("seg");
-    let mut names: Vec<String> =
-        std::fs::read_dir(&seg_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-    names.sort();
-    let mut out = Vec::new();
-    for n in names {
-        if n.ends_with(".sotseg") {
-            out.extend(SegmentReader::read(&seg_dir.join(&n), true).unwrap().frames);
-        }
-    }
-    out
-}
-
-/// Sum of file sizes under `dir` — a live, growing proxy for "the record
-/// keeps committing," without requiring `end_run` first (frames commit
-/// durably as `Commit::Immediate` — see `rust/log/tests/fe_client/`'s own doc on why
-/// that makes a mid-flight read honest).
-fn dir_bytes(dir: &Path) -> u64 {
-    std::fs::read_dir(dir).map(|rd| rd.filter_map(|e| e.ok()).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()).unwrap_or(0)
+/// When the row's screen file (`<state_dir>/screen`) was last written, if it has been: a live, growing proxy for "the
+/// capsule keeps handling output", without requiring `end_run` first.
+fn screen_modified(state_dir: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(state_dir.join("screen")).and_then(|m| m.modified()).ok()
 }
 
 fn screen_text(client: &FeAttachClient<DaemonLaneEndpoint>) -> String {

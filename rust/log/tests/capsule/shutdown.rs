@@ -1,4 +1,4 @@
-//! Capsule tests for teardown: the durable marker, concurrent shutdowns, every exit path, expiry and ack grace.
+//! Capsule tests for teardown: the durable end request, concurrent shutdowns, every exit path, expiry and ack grace.
 
 use super::*;
 
@@ -52,10 +52,9 @@ fn teardown_completes_even_when_the_shutdown_ack_is_never_delivered() {
 
     // ...and the marker is ALREADY durable on the still-open leg, even
     // though that ack's physical completion will NEVER be reported.
-    let seg_dir = root.join("seg");
     let marker_deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if leg_carries_run_end_marker(&seg_dir, "neverack1", 1).unwrap_or(false) {
+        if end_asked_for(&root) {
             break;
         }
         assert!(Instant::now() < marker_deadline, "marker never became visible on the still-open leg");
@@ -71,12 +70,9 @@ fn teardown_completes_even_when_the_shutdown_ack_is_never_delivered() {
         )
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
-    verify_voyage(&root, "neverack1").unwrap();
-    assert!(leg_carries_run_end_marker(&seg_dir, "neverack1", 1).unwrap());
+    assert!(end_asked_for(&root));
 
-    let frames = sealed_frames(&root, "neverack1");
-    let dead = assert_producer_dead_is_last(&frames);
-    assert_eq!(dead["reason"], "never-delivered-ack");
+    assert_eq!(ended_of(&root).reason.as_deref(), Some("never-delivered-ack"));
 }
 
 /// ADR 0041 step 6 U1b, acceptance matrix "the marker is the acceptance
@@ -118,10 +114,9 @@ fn marker_is_durable_before_the_ack_completes_and_the_ack_still_works() {
     // marker must already be durable regardless. Nothing is sealed yet
     // (teardown may already be under way), so poll the STILL-OPEN leg
     // directly.
-    let seg_dir = root.join("seg");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if leg_carries_run_end_marker(&seg_dir, "markerstall1", 1).unwrap_or(false) {
+        if end_asked_for(&root) {
             break;
         }
         assert!(Instant::now() < deadline, "marker never became visible on the still-open leg");
@@ -133,8 +128,7 @@ fn marker_is_durable_before_the_ack_completes_and_the_ack_still_works() {
         .expect("run did not return after the ack was released")
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
-    verify_voyage(&root, "markerstall1").unwrap();
-    assert!(leg_carries_run_end_marker(&seg_dir, "markerstall1", 1).unwrap());
+    assert!(end_asked_for(&root));
     // The courtesy still worked: the EARLIER `wait_for` already decoded a
     // well-formed `ShutdownOk` reply queued for this connection, and
     // `release_held` + the successful `wait_for_join` above prove its
@@ -189,18 +183,12 @@ fn two_concurrent_shutdown_requests_write_one_marker_and_ack_both() {
         .expect("run did not return after both acks were released")
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
-    verify_voyage(&root, "concurrentshutdown1").unwrap();
 
-    let frames = sealed_frames(&root, "concurrentshutdown1");
-    let marker_count = frames
-        .iter()
-        .filter(|f| {
-            f.class == Class::Lifecycle
-                && f.payload.as_ref().and_then(|p| p.get("kind")).and_then(|k| k.as_str())
-                    == Some("run_end_requested")
-        })
-        .count();
-    assert_eq!(marker_count, 1, "two concurrent callers must write exactly one marker");
+    // The first request wins: one reason in `ended`, never a mix of the two.
+    let ended = ended_of(&root);
+    assert!(ended.requested);
+    let reason = ended.reason.as_deref();
+    assert!(reason == Some("caller-a") || reason == Some("caller-b"), "{ended:?}");
 }
 
 /// Test 12 (finding 7, Codex review rework): `Transport::shutdown_all` is
@@ -282,10 +270,10 @@ fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
 }
 
 /// Codex round-1 Blocker 3 discharge: aggregate-teardown expiry is
-/// TERMINAL, not a "loud but successful" return. `run` must not seal the
-/// voyage or report `Ok(ExitSummary)` past a teardown whose transport
+/// TERMINAL, not a "loud but successful" return. `run` must not finish the
+/// run or report `Ok(ExitSummary)` past a teardown whose transport
 /// could not prove every worker stopped within the shared deadline — the
-/// writer fence (`store`, dropped via this same early return) is the
+/// writer fence (dropped via this same early return) is the
 /// only thing that may release past it. Simulated via `TestTransport::
 /// force_shutdown_expiry` (a real Windows stalled-worker scenario is
 /// proven separately, at the transport level, by `lane/pipe_win/`'s own
@@ -308,22 +296,9 @@ fn aggregate_teardown_expiry_is_terminal_not_a_silent_seal() {
         format!("{err}").contains("aggregate teardown"),
         "expected a named aggregate-teardown failure, got: {err}"
     );
-    // No seal, ever: the segment stays `.open`, never `.sotseg`, and the
-    // final `producer_dead` frame this path would otherwise have written
-    // never lands.
-    let seg_dir = root.join("seg");
-    let names: Vec<String> = std::fs::read_dir(&seg_dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    assert!(
-        names.iter().all(|n| !n.ends_with(".sotseg")),
-        "a terminal teardown failure must never seal a segment: {names:?}"
-    );
-    assert!(
-        names.iter().any(|n| n.ends_with(".open")),
-        "the survivor segment must remain unsealed: {names:?}"
-    );
+    // Nothing finished is claimed: the `ended` file this path would otherwise have written never lands, so a
+    // supervisor reads the leg as crashed.
+    assert!(capsule::read_ended(&root).unwrap().is_none(), "a terminal teardown failure must leave no finished ending");
 }
 
 /// Observe shutdown with its ack held, from before the management request.
@@ -373,9 +348,7 @@ fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
         "shutdown_all must run exactly twice: the explicit ack-grace call, then ShutdownGuard::drop"
     );
 
-    let frames = sealed_frames(&dir.path().join("ackgrace1"), "ackgrace1");
-    let dead = assert_producer_dead_is_last(&frames);
-    assert_eq!(dead["reason"], "late-in-teardown");
+    assert_eq!(ended_of(&dir.path().join("ackgrace1")).reason.as_deref(), Some("late-in-teardown"));
 }
 
 /// Observe shutdown with its ack held, from before the management request.

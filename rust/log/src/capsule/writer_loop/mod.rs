@@ -1,13 +1,15 @@
-//! `run`: the capsule writer loop, one producer from spawn to sealed voyage.
+//! `run`: the capsule writer loop, one producer from spawn to its end.
 use super::*;
+use super::ended::{self, Ended};
+use super::fence;
+use super::screen::{self, ScreenFile};
 use std::ops::ControlFlow;
 
 mod lanes;
 mod output_path;
 mod phases;
 mod start;
-use output_path::flush_output;
-use phases::{ack_grace, drain_output, join_workers, main_loop, reap_domain, seal_run};
+use phases::{ack_grace, drain_output, finish_run, join_workers, main_loop, reap_domain};
 use start::start;
 
 struct ShutdownGuard<'a>(&'a mut dyn Transport);
@@ -30,34 +32,21 @@ impl Drop for ShutdownGuard<'_> {
     }
 }
 
-/// One diagnostic line, as one write that never panics: `eprintln!` panics
-/// when stderr cannot take the line, and a full volume under the leg's log
-/// would then turn a diagnostic into a crash of the leg.
-fn leg_note(args: std::fmt::Arguments<'_>) {
-    let line = format!("{args}\n");
-    let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
-}
-
-/// The leg's writer-loop state from `start` to `seal_run`: every value two or more of
-/// `run`'s pieces share. Each piece takes it last: by `&mut`, or by value where the piece may
-/// rotate or seal the segment (`SegmentWriter::seal` consumes the writer).
+/// The leg's writer-loop state from `start` to `finish_run`: every value two or more of
+/// `run`'s pieces share. Each piece takes it last, by `&mut` or by value.
 ///
-/// FIELD ORDER IS LOAD-BEARING for the last six fields. Fields drop in declaration order, and
-/// these six drop in the order `run`'s locals did before it was cut: the output budget is
-/// cancelled, the producer's domain dropped, the segment file closed, the output channel
-/// closed, the transport shut down, and the writer lock released last. No other field's drop
-/// does anything. Never implement `Drop` for this struct.
+/// FIELD ORDER IS LOAD-BEARING for the last five fields. Fields drop in declaration order: the
+/// output budget is cancelled, the producer's domain dropped, the output channel closed, the
+/// transport shut down, and the fence released last. No other field's drop does anything. Never
+/// implement `Drop` for this struct.
 struct Leg<'t, P> {
-    /// Frame factory: sequence numbers, clocks, the durable take epoch and holder.
-    ctx: FrameCtx,
-    /// The features every segment of this run declares; rotation reuses them.
-    segment_features: Vec<String>,
-    /// Estimated bytes in the open segment; rotation starts at `SEGMENT_MAX_BYTES`.
-    seg_bytes: u64,
-    /// Frames appended this run (`ExitSummary`).
-    frames_written: u64,
-    /// Segments sealed this run (`ExitSummary`).
-    segments_sealed: u64,
+    /// The leg's folder: the fence's home, and where `ended` is written.
+    voyage_root: PathBuf,
+    /// The durable take epoch: the capsule's own, fed in and out of `attach_proto` as a plain value. Starts at 1 (the
+    /// null holder); each committed take raises it.
+    take_epoch: u64,
+    /// The driver's controller id, `None` until the first take commits.
+    holder: Option<String>,
     /// The attach protocol: it decides, the loop carries out its actions.
     attach_proto: AttachProto,
     /// Frame reassembly per open connection; a connection is active while it has one.
@@ -66,60 +55,48 @@ struct Leg<'t, P> {
     pending_sends: HashMap<(ConnId, u64), Option<SentMarker>>,
     /// Ends the main loop at its next check (shutdown ack written, or transport failed).
     shutdown_requested: bool,
-    /// The reason `producer_dead` records; the first one set wins.
+    /// The reason `ended` records; the first one set wins.
     shutdown_reason: Option<String>,
-    /// The run-end marker is committed; never unset.
+    /// An end was asked for and `ended` says so; never unset.
     run_end_latched: bool,
     /// Coalesces transport wakes; a loop clears it when it consumes one.
     wake_pending: Arc<AtomicBool>,
-    /// The live terminal screen, for checkpoints and the ground gate.
+    /// The live terminal screen, for checkpoints, the ground gate and the screen file.
     parser: vt100_ctt::Parser,
+    /// The screen file, when the leg keeps one.
+    screen: Option<ScreenFile>,
     /// Finds the host DA1 query in producer output.
     handshake: HostHandshake,
-    /// The first DA1 query was answered and recorded (`ExitSummary`).
+    /// The first DA1 query was answered (`ExitSummary`).
     dsr_answered: bool,
     /// DA1 queries after the first, counted only (`ExitSummary`).
     handshake_suppressed_matches: u64,
     /// Resize calls that reached the producer (`ExitSummary`).
     resize_os_calls: u64,
-    /// An output end before teardown that the producer's exit explained; `producer_dead` records it.
+    /// An output end before teardown that the producer's exit explained; `ended` records it.
     output_ended_early: Option<String>,
-    /// The reader's byte budget; the loop releases what it records.
+    /// The reader's byte budget; the loop releases what it handles.
     output_budget: Arc<OutputBudget>,
-    /// Output recorded since the last commit; published only after that commit's fsync.
-    pending_output: Vec<u8>,
-    /// Bytes in `pending_output`; the group-commit trigger.
-    pending_bytes: usize,
-    /// The last commit (group-commit window).
-    last_commit: Instant,
-    /// The last fsync (minimum gap between idle commits).
-    last_fsync: Instant,
-    /// The last output (idle commit).
-    last_output: Instant,
     /// Output handled since the pacer last slept.
     bytes_since_yield: usize,
     /// Cancels the budget on any exit, so a reader blocked in `reserve` wakes. Drops first.
     _budget_guard: BudgetCancelGuard,
     /// The producer and its kill domain.
     producer: P,
-    /// The open segment.
-    w: SegmentWriter,
     /// Producer output, the reader's end, and transport wakes: one channel.
     output_rx: mpsc::Receiver<ReaderEvent>,
-    /// Shuts the transport down on any exit, while the writer lock is still held.
+    /// Shuts the transport down on any exit, while the fence is still held.
     transport: ShutdownGuard<'t>,
-    /// The voyage store; it holds the writer lock. Drops last.
-    store: VoyageStore,
+    /// The writer fence. Drops last.
+    _fence: sot_platform::host::WriterLock,
 }
 
-/// Run one producer under a capsule, generic over `P: Producer` (ADR 0043
-/// "Decisions for LU2"). Blocks until the run ends — either the producer
+/// Run one producer under a capsule, generic over `P: Producer`. Blocks until the run ends — either the producer
 /// exits on its own, `commands` delivers [`Command::Kill`], or a mgmt
 /// `shutdown` commits the durable EndRun latch. The latch starts teardown
 /// without waiting for physical ack completion; the ack grace bounds
 /// the wait for a pending shutdown acknowledgement (ADR 0041 EndRun).
-/// `commands` mirrors `claude.rs`'s `operator: mpsc::Receiver<OperatorCmd>`
-/// parameter; the caller owns its `Sender` (see the module doc's
+/// The caller owns the `Sender` of `commands` (see the module doc's
 /// stdin-ownership point). `transport` is the ADR 0041 step-5 pipe
 /// protocol's seam: a real named pipe on Windows (U3) or a test transport
 /// (this unit) drives the SAME [`AttachProto`] state machine either way,
@@ -147,8 +124,6 @@ pub fn run<P: Producer>(
     // `producer.terminate_domain()` a few lines into teardown, with no
     // intervening I/O between here and there.
     let producer_uptime_ms = u64::try_from(spawned_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-    flush_output(&mut leg)?;
-
     // Producer-bound admission (take/input/resize) is revoked from here on
     // — but mgmt (probe/status/shutdown) and Sent completions
     // keep being serviced through BOTH phases below, via
@@ -161,5 +136,5 @@ pub fn run<P: Producer>(
     let (mut leg, closer_handle) = drain_output(leg)?;
     ack_grace(&mut leg)?;
     join_workers(closer_handle, reader_handle, &mut leg)?;
-    seal_run(exit_kind, producer_uptime_ms, leg)
+    finish_run(exit_kind, producer_uptime_ms, leg)
 }

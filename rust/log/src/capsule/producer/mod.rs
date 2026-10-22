@@ -1,14 +1,12 @@
-//! The `Producer` trait: the capsule writer loop's own nine call sites
+//! The `Producer` trait: the capsule writer loop's own call sites
 //! into whatever OS primitive is actually running the child — ConPTY +
 //! job containment on Windows (`capsule/producer/conpty/producer.rs`), a bare PTY +
 //! process group on Unix (`capsule/producer/pty/`, LU2b). Parameterizing
 //! `capsule::run` over this trait is what lets ONE writer loop serve
 //! every platform (ADR 0043 "Decisions for LU2", decision 11): the
-//! frame factory, the output budget, the input WAL, the run-end marker,
-//! the `AttachProto` service path, `ShutdownGuard`, rotation and sealing
-//! are all platform-neutral and never touch this trait at all — only the
-//! nine verbs below do. No `kind()` method: `producer_kind` stays a plain config
-//! string the caller sets, never derived from this trait.
+//! output budget, the `AttachProto` service path, the screen file and
+//! `ShutdownGuard` are all platform-neutral and never touch this trait at
+//! all — only the verbs below do.
 //!
 //! **The EOF contract (decision 12) is universal, with no knob.** The
 //! output side's own OS behavior differs — ConPTY keeps its output
@@ -79,14 +77,6 @@ pub trait Producer: Send + Sized {
     /// The producer's own output stream, read by the loop's dedicated
     /// reader thread — never this trait itself.
     type Output: Read + Send + 'static;
-
-    /// Diagnostics merged into `producer_spawn.detail` BEFORE [`spawn`]
-    /// is even attempted, so a spawn failure still records them —
-    /// Windows contributes `spawning_process_was_jobbed`; Unix
-    /// contributes nothing (`{}`). Always a JSON object.
-    ///
-    /// [`spawn`]: Producer::spawn
-    fn pre_spawn_detail() -> serde_json::Value;
 
     /// Spawn `argv[0]` with `argv[1..]` as arguments, at `cols`x`rows`.
     /// Geometry is validated by the loop's own 2x2..512x256 budget

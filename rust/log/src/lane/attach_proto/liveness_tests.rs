@@ -416,7 +416,7 @@ fn the_driver_is_closed_on_overflow_same_as_a_watcher_but_labeled_distinctly() {
 /// completing BEFORE `set_hold_for` -- then is held forever (its
 /// `Output` sends are never confirmed here, matching a client that
 /// stopped reading its pipe); a 6 MiB flood, in the capsule's own
-/// `GROUP_COMMIT_BYTES`-sized (256 KiB) increments, is published to
+/// `PACE_BYTES`-sized (256 KiB) increments, is published to
 /// both, with the driver's own sends confirmed immediately every round
 /// (an unheld synthetic transport). Once the watcher is evicted, the
 /// driver must still answer a `resize`.

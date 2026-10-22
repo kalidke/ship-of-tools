@@ -1,14 +1,10 @@
-//! `sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>]
+//! `sot-capsule run <voyage_root> <voyage_id> [--screen <path>] [--cols <n>] [--rows <n>]
 //! [--parent-lease-name <name> | --parent-lease-fd <n>] [--survival
 //! <normal|degraded>] [--assume-no-rollback-target] -- <cmd> [args...]`
 //!
-//! Runs one producer on a real terminal under a capsule, recording its
-//! voyage (ADR 0037/0039/0041; ADR 0043 "Decisions for LU2": ONE `cmd_run`
-//! drives both platforms' own producer + transport, below). Like
-//! `script(1)`, but the record is a Ship's Log voyage: output you see on
-//! stdout has already been fsynced (the visibility watermark), input is
-//! recorded redacted by default, and the voyage verifies with
-//! `sot-log verify` afterward.
+//! Runs one producer on a real terminal under a capsule (ADR 0043 "Decisions for LU2": ONE `cmd_run` drives both
+//! platforms' own producer + transport, below). The leg keeps no record of the terminal: its latest screen goes to
+//! the `--screen` file, and what it tells its supervisor about its ending goes to `<voyage_root>/ended`.
 
 /// The RAW total simultaneous connection ceiling this harness passes to
 /// each platform's own transport constructor (ADR 0041: subscribers plus
@@ -20,22 +16,11 @@
 const MAX_TRANSPORT_CONNECTIONS: u32 = 8;
 
 /// `run`, plus (ADR 0041 step 6 U2) `supervise`/`endrun`/`reset` — see
-/// each subcommand's own function for its usage line. `claude` (ADR
-/// 0040's own, unrelated producer) is the ONLY Linux-only subcommand,
-/// since it has no Windows counterpart. `run` is `cfg(unix)`: its
-/// producer and transport are the Unix ones, and a macOS supervisor
-/// spawns its legs through exactly this arm.
+/// each subcommand's own function for its usage line. A supervisor spawns its legs through the `run` arm.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let top_usage = "usage: sot-capsule <run|supervise|endrun|reset|build-id> ...\n       \
-sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-version>  (Linux only)";
-    #[cfg(target_os = "linux")]
-    {
-        if args.first().map(String::as_str) == Some("claude") {
-            return run_claude(&args[1..], top_usage);
-        }
-    }
+    let top_usage = "usage: sot-capsule <run|supervise|endrun|reset|build-id> ...";
     match args.first().map(String::as_str) {
         // The lane build id this binary will answer the supervisor hello
         // with -- a diagnostic only since ADR 0045 decision 7 (the lane
@@ -81,7 +66,7 @@ where
     T: sot_log::lane::transport::Transport,
     F: FnOnce(u32) -> T,
 {
-    let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>] \
+    let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--screen <path>] [--cols <n>] [--rows <n>] \
 [--parent-lease-name <name> | --parent-lease-fd <n>] [--survival <normal|degraded>] \
 [--assume-no-rollback-target] -- <cmd> [args...]";
     if args.len() < 3 {
@@ -113,11 +98,8 @@ where
     // harness default, not an ADR-pinned one.
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
-    // The ONE explicit, honestly-named operator
-    // override that lets this manual-testing harness run at all before
-    // U4's release-apply transaction exists — see the refusal message
-    // below for what it actually asserts.
-    let mut assume_no_rollback_target = false;
+    // Where the leg keeps its screen; none unless a supervisor (or a caller) names one.
+    let mut screen_path: Option<std::path::PathBuf> = None;
     // ADR 0041 step 6 U2 / ADR 0043 decision 15: `Some(_)` only when a
     // supervisor spawned this process — see
     // `capsule::CapsuleConfig::parent_lease`'s own doc. Held here as the
@@ -137,6 +119,10 @@ where
     let mut survival = sot_log::lane::wire::Survival::Normal;
     loop {
         match rest.first().map(String::as_str) {
+            Some("--screen") if rest.len() > 1 => {
+                screen_path = Some(std::path::PathBuf::from(&rest[1]));
+                rest = &rest[2..];
+            }
             Some("--cols") if rest.len() > 1 => {
                 cols = rest[1].parse().unwrap_or_else(|_| {
                     eprintln!("{usage}");
@@ -202,8 +188,8 @@ where
                 };
                 rest = &rest[2..];
             }
+            // Accepted and ignored: the rollout gate it answered is gone.
             Some("--assume-no-rollback-target") => {
-                assume_no_rollback_target = true;
                 rest = &rest[1..];
             }
             _ => break,
@@ -215,34 +201,6 @@ where
     }
     let argv: Vec<String> = rest[1..].to_vec();
 
-    // ADR 0041 "Upgrade and version skew" reader-first rollout gate:
-    // this manual-testing harness has no supervisor/
-    // release-apply transaction (U4) and therefore NO REAL evidence to
-    // construct. The honest pre-U4 posture is FAIL CLOSED, naming U4 as
-    // the reason. Absent the
-    // explicit override, this binary refuses before ever constructing a
-    // config or opening a segment. `sot-capsule supervise` (U2, Windows;
-    // LU3 on Unix) is in the exact same "no real evidence" position and
-    // passes the SAME flag down to every leg it spawns — see that
-    // subcommand's own doc.
-    if !assume_no_rollback_target {
-        run_note(format_args!(
-            "no rollout evidence available -- this binary cannot open a feature-bearing segment \
-             until U4's release-apply transaction supplies real evidence (ADR 0041 \"Upgrade and \
-             version skew\"). Pass --assume-no-rollback-target to override for manual testing -- \
-             that flag ASSERTS, without proof, that there is no installed rollback target to \
-             protect; a real supervisor must never pass it, and must construct real evidence from \
-             its own transaction instead."
-        ));
-        std::process::exit(2);
-    }
-    let rollout_evidence = sot_log::store::rollout::RolloutEvidence::NoRollbackTarget;
-
-    #[cfg(windows)]
-    let producer_kind = "raw-terminal-windows";
-    #[cfg(unix)]
-    let producer_kind = "raw-terminal";
-
     #[cfg(windows)]
     let parent_lease = parent_lease_name.map(sot_log::capsule::producer::ParentLease::NamedMutex);
     #[cfg(unix)]
@@ -251,13 +209,11 @@ where
     let config = sot_log::capsule::CapsuleConfig {
         voyage_root,
         voyage_id,
-        retention: sot_log::store::segment::RetentionClass::Archive,
-        producer_kind: producer_kind.into(),
+        screen_path,
         argv,
         cols,
         rows,
         survival,
-        rollout_evidence,
         parent_lease,
     };
     // No command source yet (Ctrl+C kills the process instead — see the
@@ -271,12 +227,10 @@ where
     match sot_log::capsule::run::<P>(config, cmd_rx, &mut transport) {
         Ok(s) => {
             run_note(format_args!(
-                "producer exited {:?} ({:?}); {} frames, {} segments sealed (handshake_answered={}, \
+                "producer exited {:?} ({:?}) (handshake_answered={}, \
                  handshake_suppressed={}, resize_os_calls={})",
                 s.exit_code,
                 s.exit_kind,
-                s.frames_written,
-                s.segments_sealed,
                 s.handshake_answered,
                 s.handshake_suppressed_matches,
                 s.resize_os_calls
@@ -332,17 +286,13 @@ fn birth_from_flags(claim_fd: Option<i32>, takeover_fd: Option<i32>, usage: &str
     None
 }
 
-/// The leg's process exit code. 71 (`EXIT_LEG_STORAGE_FULL`) means exactly
-/// one thing: the run failed with storage exhaustion. A producer that itself
-/// exits 71 leaves the leg with exit 1 (the voyage still records 71), so a
-/// producer cannot ask the supervisor to hold the row.
+/// The leg's process exit code: the producer's own exit code (`128 + n` for a signal death), 1 for a run that failed
+/// before or without one.
 fn leg_exit_code(result: &sot_log::Result<sot_log::capsule::ExitSummary>) -> i32 {
     use sot_log::capsule::producer::ExitStatus;
     match result {
-        Err(e) if sot_log::storage_exhaustion(e).is_some() => sot_log::capsule::EXIT_LEG_STORAGE_FULL,
         Err(_) => 1,
         Ok(s) => match s.exit_code {
-            Some(ExitStatus::Code(c)) if c as i32 == sot_log::capsule::EXIT_LEG_STORAGE_FULL => 1,
             Some(ExitStatus::Code(c)) => c as i32,
             Some(ExitStatus::Signal(n)) => 128 + n,
             None => 1,
@@ -353,8 +303,7 @@ fn leg_exit_code(result: &sot_log::Result<sot_log::capsule::ExitSummary>) -> i32
 /// `sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
 /// [--rows <n>] [--first-leg-only <token>]... [--claim-fd <n> --takeover-fd <n>]
 /// --assume-no-rollback-target -- <cmd> [args...]` (ADR 0041 step 6 U2): the authority. `--assume-no-rollback-target` is
-/// mandatory here for the exact reason `run`'s own copy of it is — see
-/// `sot_log::supervisor`'s own module doc. `--first-leg-only` is
+/// accepted and ignored: the rollout gate it answered is gone. `--first-leg-only` is
 /// repeatable and agent-agnostic: this binary knows nothing about `claude`
 /// or `--resume`, only that the caller wants a given token on the legs
 /// before any producer has run in this process and on none after — see
@@ -380,7 +329,6 @@ fn cmd_supervise(args: &[String]) {
     let mut rest = &args[2..];
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
-    let mut assume_no_rollback_target = false;
     // ADR 0042 slice L1a: the spawner's own
     // breakaway outcome, threaded into every leg via `SuperviseConfig`
     // (see that field's own doc) — defaults to `Normal` for a bare
@@ -430,8 +378,8 @@ fn cmd_supervise(args: &[String]) {
                 first_leg_only.push(rest[1].clone());
                 rest = &rest[2..];
             }
+            // Accepted and ignored: the rollout gate it answered is gone.
             Some("--assume-no-rollback-target") => {
-                assume_no_rollback_target = true;
                 rest = &rest[1..];
             }
             _ => break,
@@ -449,7 +397,6 @@ fn cmd_supervise(args: &[String]) {
         producer_argv,
         cols,
         rows,
-        assume_no_rollback_target,
         survival,
         first_leg_only,
         #[cfg(unix)]
@@ -533,69 +480,3 @@ fn cmd_reset(args: &[String]) {
 #[cfg(test)]
 #[path = "support/sot_capsule_tests.rs"]
 mod tests;
-
-/// The ADR 0040 producer: operator commands ride stdin as JSON lines
-/// ({"turn": text} | {"interrupt": true} | {"shutdown": true}).
-#[cfg(target_os = "linux")]
-fn run_claude(args: &[String], usage: &str) {
-    use sot_log::claude::{run, ClaudeConfig, Fence, OperatorCmd};
-    if args.len() != 4 {
-        eprintln!("{usage}");
-        std::process::exit(2);
-    }
-    let fence = match Fence::discover(&format!("{}", std::process::id())) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("sot-capsule: {e}");
-            std::process::exit(1);
-        }
-    };
-    let config = ClaudeConfig {
-        voyage_root: std::path::PathBuf::from(&args[0]),
-        voyage_id: args[1].clone(),
-        retention: sot_log::store::segment::RetentionClass::Archive,
-        helper_argv: vec!["node".into(), args[2].clone()],
-        expected_sdk_version: args[3].clone(),
-        fence,
-    };
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        use std::io::BufRead;
-        #[allow(clippy::disallowed_methods, reason = "this program's own stdin: the operator's JSON lines (ADR 0040), not a child's output")]
-        for line in std::io::stdin().lock().lines() {
-            let Ok(line) = line else { break };
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-            let cmd = if let Some(t) = v.get("turn").and_then(|t| t.as_str()) {
-                OperatorCmd::Turn(t.to_string())
-            } else if v.get("interrupt").is_some() {
-                OperatorCmd::Interrupt
-            } else if v.get("shutdown").is_some() {
-                OperatorCmd::Shutdown
-            } else {
-                continue;
-            };
-            if tx.send(cmd).is_err() {
-                break;
-            }
-        }
-    });
-    match run(config, rx) {
-        Ok(s) => {
-            eprintln!(
-                "sot-capsule claude: {} turn(s), {} frames, terminal: {}",
-                s.turns, s.frames_written, s.terminal_reason
-            );
-            std::process::exit(0);
-        }
-        Err(e) => {
-            eprintln!("sot-capsule claude: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn run_claude(_args: &[String], _usage: &str) {
-    eprintln!("the claude adapter requires Linux in v1 (ADR 0040 kill domain)");
-    std::process::exit(2);
-}

@@ -22,7 +22,6 @@ fn fixture() -> Fixture {
         producer_argv: vec!["unused".into()],
         cols: 80,
         rows: 24,
-        assume_no_rollback_target: true,
         survival: Survival::Normal,
         first_leg_only: Vec::new(),
         #[cfg(unix)]
@@ -73,63 +72,14 @@ fn advance_one_spawning(f: &mut Fixture, counter: &mut u32, outcome: ProbeOutcom
     advance_spawning(rx, handle, started_at, counter, &f.capsule_exe, &f.config, &f.lease, &mut f.authority, Instant::now())
 }
 
-/// A leg that exits 71 is a storage exit: the crash counter is left
-/// alone and the authority holds. The same leg with any other code is
-/// counted, and the third unstable leg is Terminal.
+/// An ordinary exit is counted: the third unstable leg is Terminal.
 #[test]
-fn a_storage_leg_exit_keeps_the_crash_counter() {
+fn an_unstable_leg_exit_is_counted_and_the_third_is_terminal() {
     let mut f = fixture();
-    let mut counter = 2;
-    let held = advance_one_spawning(&mut f, &mut counter, ProbeOutcome::LegEnded(Some(ExitStatus::Code(71))));
-    assert!(!matches!(held, Lifecycle::Terminal { .. }), "a storage exit never goes Terminal");
-    assert!(matches!(held, Lifecycle::StorageFull(_)), "a storage exit holds the authority");
-    assert_eq!(counter, 2, "a storage exit leaves the counter alone");
-
     let mut counter = 2;
     let counted = advance_one_spawning(&mut f, &mut counter, ProbeOutcome::LegEnded(Some(ExitStatus::Code(1))));
     assert!(matches!(counted, Lifecycle::Terminal { .. }), "an ordinary exit is counted: the third is Terminal");
     assert_eq!(counter, 3);
-}
-
-/// A storage failure of any authority worker holds the authority and
-/// re-runs startup recovery once storage clears; nothing goes Terminal.
-#[test]
-fn authority_storage_failures_wait() {
-    let mut f = fixture();
-    let now = Instant::now();
-    let expect = |lifecycle: Lifecycle, resume: storage::Resume| match lifecycle {
-        Lifecycle::StorageFull(wait) => assert_eq!(wait.resume(), resume),
-        _ => panic!("expected the storage wait"),
-    };
-
-    // Recovery.
-    let (tx, rx) = mpsc::channel();
-    tx.send(RecoveryOutcome::Storage("full".into())).unwrap();
-    let next = advance_recovering(rx, std::thread::spawn(|| {}), now, &f.config, &mut f.authority, now);
-    expect(next, storage::Resume::Recover);
-
-    // An end_run worker.
-    let (mut counter, mut step) = (0, 0);
-    let next = end_run_finished(
-        EndRunWorkerResult::Storage("full".into()),
-        "op-1",
-        exited_leg(),
-        &mut counter,
-        &mut step,
-        &f.capsule_exe.clone(),
-        &f.config,
-        &f.lease,
-        &mut f.authority,
-        now,
-    );
-    expect(next, storage::Resume::Recover);
-    assert_eq!(counter, 0, "an end_run storage failure does not touch the counter");
-
-    // A reset worker.
-    let (tx, rx) = mpsc::channel();
-    tx.send(ResetWorkerResult::Storage("full".into())).unwrap();
-    let next = advance_resetting("op-2".into(), rx, std::thread::spawn(|| {}), now, &f.capsule_exe.clone(), &f.config, &f.lease, &mut f.authority, now);
-    expect(next, storage::Resume::Recover);
 }
 
 /// The first-leg-only tokens are kept while no producer has run in this
@@ -271,7 +221,7 @@ fn deliver_record_closed(
     else {
         unreachable!()
     };
-    let (mut counter, mut step) = (0, 0);
+    let mut counter = 0;
     advance_ending(
         operation_id,
         rx,
@@ -282,7 +232,6 @@ fn deliver_record_closed(
         lane,
         conns,
         &mut counter,
-        &mut step,
         &f.capsule_exe,
         &f.config,
         &f.lease,

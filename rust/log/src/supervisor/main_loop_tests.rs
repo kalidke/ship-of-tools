@@ -27,7 +27,6 @@ fn a_takeover_nobody_reads_keeps_the_claim() {
         producer_argv: vec!["unused".into()],
         cols: 80,
         rows: 24,
-        assume_no_rollback_target: true,
         survival: Survival::Normal,
         first_leg_only: Vec::new(),
         birth: Some(super::super::birth_claim::InheritedBirth {

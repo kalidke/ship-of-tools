@@ -6,8 +6,6 @@ fn summary(exit_code: Option<ExitStatus>) -> sot_log::Result<ExitSummary> {
     Ok(ExitSummary {
         exit_code,
         exit_kind: ExitKind::ProducerExited,
-        frames_written: 0,
-        segments_sealed: 0,
         handshake_answered: false,
         handshake_suppressed_matches: 0,
         resize_os_calls: 0,
@@ -15,18 +13,14 @@ fn summary(exit_code: Option<ExitStatus>) -> sot_log::Result<ExitSummary> {
 }
 
 #[test]
-fn leg_exit_code_reserves_71_for_storage_exhaustion() {
-    #[cfg(unix)]
-    let (full, other) = (libc::ENOSPC, libc::EIO);
-    #[cfg(windows)]
-    let (full, other) = (112, 1117);
+fn leg_exit_code_is_the_producers_own() {
     let io = |code| std::io::Error::from_raw_os_error(code);
-    let transport = sot_log::lane::transport::TransportError::RuntimeDir(io(full));
-    assert_eq!(leg_exit_code(&Err(sot_log::Error::Io(io(full)))), 71);
-    // A full runtime folder is not the state root's volume being full.
-    assert_eq!(leg_exit_code(&Err(sot_log::Error::Transport(transport))), 1);
-    assert_eq!(leg_exit_code(&Err(sot_log::Error::Io(io(other)))), 1);
-    assert_eq!(leg_exit_code(&summary(Some(ExitStatus::Code(71)))), 1);
+    // A leg that failed before or without an exit status is 1, a full volume included: no exit code is reserved.
+    #[cfg(unix)]
+    assert_eq!(leg_exit_code(&Err(sot_log::Error::Io(io(libc::ENOSPC)))), 1);
+    #[cfg(windows)]
+    assert_eq!(leg_exit_code(&Err(sot_log::Error::Io(io(112)))), 1);
+    assert_eq!(leg_exit_code(&summary(Some(ExitStatus::Code(71)))), 71);
     assert_eq!(leg_exit_code(&summary(Some(ExitStatus::Code(3)))), 3);
     assert_eq!(leg_exit_code(&summary(Some(ExitStatus::Signal(9)))), 137);
     assert_eq!(leg_exit_code(&summary(None)), 1);

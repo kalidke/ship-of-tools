@@ -1,4 +1,4 @@
-//! Capsule tests over the pipe protocol: hello checkpoint, input WAL, watcher overflow, hello refusal.
+//! Capsule tests over the pipe protocol: hello checkpoint, input, watcher overflow, hello refusal.
 
 use super::*;
 
@@ -27,7 +27,6 @@ fn hello_v1_gets_a_checkpoint_with_no_scrollback_ring() {
     ];
     let (rows, cols) = (4u16, 20u16);
     let cfg = config(dir.path(), "hellov1", argv, cols, rows);
-    let root = cfg.voyage_root.clone();
     let transport = TestTransport::new();
     let (tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
@@ -68,7 +67,6 @@ fn hello_v1_gets_a_checkpoint_with_no_scrollback_ring() {
     let summary = wait_for_join(handle, Duration::from_secs(30))
         .expect("run did not return within the teardown bound")
         .unwrap();
-    verify_voyage(&root, "hellov1").unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
 
     let mut restored = vt100_ctt::Parser::new(rows, cols, 100);
@@ -83,183 +81,87 @@ fn hello_v1_gets_a_checkpoint_with_no_scrollback_ring() {
     );
 }
 
-/// Test 8: the wire input WAL folds every legal `idem_key` chain exactly,
-/// including a stale refusal (a demoted connection's replay) and a
-/// duplicate `idem_key` answered deterministically WITHOUT appending any
-/// new frame — and the SAME determinism holds across a capsule restart
-/// (reopen the voyage; the dedupe index is rebuilt from the retained
-/// segments, not started empty — ADR 0041 decision 5's whole point).
+/// Test 8: a wire `input` from the connection that holds the pen is written to the pty and answered `input_recorded`;
+/// one from a demoted connection is refused stale. No record is kept: the answer says only that the bytes were
+/// written.
 #[test]
-#[allow(clippy::too_many_lines, reason = "one test scenario: the input WAL chains across a restart, refused, stale and duplicate frames included")]
-fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_restart() {
+fn wire_input_is_recorded_once_written_and_stale_input_is_refused() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let name = "inputwal1";
-    let root = dir.path().join(name);
-    let k1 = [0x11u8; 16];
-    let k2 = [0x22u8; 16];
+    let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
+    let cfg = config(dir.path(), "inputwritten1", argv, 80, 25);
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule::run::<P>(cfg, rx, &mut t)
+    });
 
-    // --- Incarnation 1 -------------------------------------------------
-    {
-        let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
-        let cfg = config(dir.path(), name, argv, 80, 25);
-        let transport = TestTransport::new();
-        let (tx, rx) = mpsc::channel();
-        let run_transport = transport.clone();
-        let handle = std::thread::spawn(move || {
-            let mut t = run_transport;
-            capsule::run::<P>(cfg, rx, &mut t)
-        });
+    // conn A attaches and takes -- the first driver ever, a pipe take.
+    const A: ConnId = 1;
+    transport.open(A);
+    transport.feed(A, frame::hello());
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("A hello_ok", A, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+    });
+    transport.feed(A, frame::attach("alice"));
+    watcher.collect_checkpoint("A checkpoint", A, Duration::from_secs(10));
+    transport.feed(A, frame::take("alice"));
+    let epoch = watcher.wait_for("A take_ok", A, Duration::from_secs(10), |f| match f {
+        wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
+        _ => None,
+    });
 
-        // conn A attaches and takes -- the first driver ever, a pipe take.
-        const A: ConnId = 1;
-        transport.open(A);
-        transport.feed(A, frame::hello());
-        let mut watcher = FrameWatcher::new(&transport);
-        watcher.wait_for("A hello_ok", A, Duration::from_secs(10), |f| {
-            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-        });
-        transport.feed(A, frame::attach("alice"));
-        watcher.collect_checkpoint("A checkpoint", A, Duration::from_secs(10));
-        transport.feed(A, frame::take("alice"));
-        let epoch = watcher.wait_for("A take_ok", A, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
+    // Fresh input while authorized: written, so recorded -- and the shell's echo shows it reached the pty.
+    transport.feed(A, frame::input("alice", epoch, [0x11u8; 16], b"echo SOT_INPUT_WRITTEN_c3\r\n"));
+    let outcome1 = watcher.wait_for("A input fresh outcome", A, Duration::from_secs(10), |f| match f {
+        wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
+        wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
+        _ => None,
+    });
+    assert!(outcome1, "expected the fresh input to be recorded");
+    let mut seen = String::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !seen.contains("SOT_INPUT_WRITTEN_c3") {
+        assert!(Instant::now() < deadline, "the written input never echoed: {seen:?}");
+        seen.push_str(&watcher.wait_for("echo of the input", A, Duration::from_secs(10), |f| match f {
+            wire::DecodedFrame::AttachServer(wire::AttachServer::Output { bytes }) => {
+                Some(String::from_utf8_lossy(bytes).into_owned())
+            }
             _ => None,
-        });
-
-        // K1: fresh input while authorized -- recorded.
-        transport.feed(A, frame::input("alice", epoch, k1, b"echo one\r\n"));
-        let outcome1 = watcher.wait_for("A input K1 fresh outcome", A, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
-            _ => None,
-        });
-        assert!(outcome1, "expected the fresh K1 input to be recorded");
-
-        // K1 AGAIN, same idem_key: chain is already {input,intent,forwarded}
-        // -- must replay the SAME recorded outcome, appending nothing new
-        // (checked after this incarnation seals, via the sealed frame count
-        // for K1's idem_key, below).
-        transport.feed(A, frame::input("alice", epoch, k1, b"echo one\r\n"));
-        let outcome1_replay = watcher.wait_for("A input K1 replay outcome", A, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
-            _ => None,
-        });
-        assert!(outcome1_replay, "duplicate K1 must replay input_recorded");
-
-        // conn B attaches and takes, demoting A.
-        const B: ConnId = 2;
-        transport.open(B);
-        transport.feed(B, frame::hello());
-        watcher.wait_for("B hello_ok", B, Duration::from_secs(10), |f| {
-            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-        });
-        transport.feed(B, frame::attach("bob"));
-        watcher.collect_checkpoint("B checkpoint", B, Duration::from_secs(10));
-        transport.feed(B, frame::take("bob"));
-        watcher.wait_for("B take_ok", B, Duration::from_secs(10), |f| {
-            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { .. })).then_some(())
-        });
-
-        // A tries a NEW key (K2) with its now-stale claim: demoted, so this
-        // is refused -- folded into the SAME "stale" wire reply the ADR
-        // defines for a durable epoch mismatch (a demoted connection is
-        // indistinguishable from one on the wire).
-        transport.feed(A, frame::input("alice", epoch, k2, b"echo two\r\n"));
-        let outcome2 = watcher.wait_for("A input K2 stale outcome", A, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
-            _ => None,
-        });
-        assert!(!outcome2, "a demoted connection's input must be refused stale");
-
-        tx.send(Command::Kill).unwrap();
-        wait_for_join(handle, Duration::from_secs(30))
-            .expect("run did not return within the teardown bound")
-            .unwrap();
-        verify_voyage(&root, name).unwrap();
+        }));
     }
 
-    let frames = sealed_frames(&root, name);
-    let input_frames_for = |key: [u8; 16]| -> Vec<&Envelope> {
-        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
-        frames
-            .iter()
-            .filter(|f| f.class == Class::Input && f.payload.as_ref().unwrap()["idem_key"] == hex)
-            .collect()
-    };
-    assert_eq!(input_frames_for(k1).len(), 1, "K1's retry must not append a second `input` frame");
-    let k2_facts: Vec<&Envelope> = frames
-        .iter()
-        .filter(|f| {
-            f.class == Class::Lifecycle
-                && f.payload.as_ref().unwrap()["kind"] == "input_fact"
-                && f.payload.as_ref().unwrap()["fact"]["fact"] == "refused_stale_epoch"
-        })
-        .collect();
-    assert_eq!(k2_facts.len(), 1, "K2 must have exactly one refused_stale_epoch fact");
+    // conn B attaches and takes, demoting A.
+    const B: ConnId = 2;
+    transport.open(B);
+    transport.feed(B, frame::hello());
+    watcher.wait_for("B hello_ok", B, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+    });
+    transport.feed(B, frame::attach("bob"));
+    watcher.collect_checkpoint("B checkpoint", B, Duration::from_secs(10));
+    transport.feed(B, frame::take("bob"));
+    watcher.wait_for("B take_ok", B, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { .. })).then_some(())
+    });
 
-    // --- Incarnation 2 (a "successor capsule") --------------------------
-    {
-        let argv = vec![SHELL_ARGV.to_string()];
-        let cfg = config(dir.path(), name, argv, 80, 25);
-        let transport = TestTransport::new();
-        let (tx, rx) = mpsc::channel();
-        let run_transport = transport.clone();
-        let handle = std::thread::spawn(move || {
-            let mut t = run_transport;
-            capsule::run::<P>(cfg, rx, &mut t)
-        });
+    // A tries again with its now-stale claim: demoted, so this is refused, folded into the SAME "stale" wire reply a
+    // durable epoch mismatch gets (a demoted connection is indistinguishable from one on the wire).
+    transport.feed(A, frame::input("alice", epoch, [0x22u8; 16], b"echo two\r\n"));
+    let outcome2 = watcher.wait_for("A input stale outcome", A, Duration::from_secs(10), |f| match f {
+        wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
+        wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
+        _ => None,
+    });
+    assert!(!outcome2, "a demoted connection's input must be refused stale");
 
-        const C: ConnId = 1;
-        transport.open(C);
-        transport.feed(C, frame::hello());
-        let mut watcher = FrameWatcher::new(&transport);
-        watcher.wait_for("C hello_ok", C, Duration::from_secs(10), |f| {
-            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-        });
-        transport.feed(C, frame::attach("carol"));
-        watcher.collect_checkpoint("C checkpoint", C, Duration::from_secs(10));
-        transport.feed(C, frame::take("carol"));
-        let epoch2 = watcher.wait_for("C take_ok", C, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
-            _ => None,
-        });
-
-        // K1 again, from a BRAND NEW capsule incarnation, a brand new
-        // connection, and a brand new controller identity: the dedupe
-        // index was rebuilt from the RETAINED voyage at open, so this must
-        // still replay deterministically -- exactly decision 5's point ("a
-        // successor capsule starting with an empty index would let a
-        // pre-crash forwarded key re-forward").
-        transport.feed(C, frame::input("carol", epoch2, k1, b"echo one\r\n"));
-        let replay_after_restart = watcher.wait_for("C input K1 replay-after-restart outcome", C, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(true),
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => Some(false),
-            _ => None,
-        });
-        assert!(replay_after_restart, "K1 must still replay input_recorded after a capsule restart");
-
-        tx.send(Command::Kill).unwrap();
-        wait_for_join(handle, Duration::from_secs(30))
-            .expect("run did not return within the teardown bound")
-            .unwrap();
-        verify_voyage(&root, name).unwrap();
-    }
-
-    // K1 must STILL have exactly one `input` frame across BOTH incarnations
-    // -- the restart never re-forwarded it.
-    let frames = sealed_frames(&root, name);
-    let input_frames_for = |key: [u8; 16]| -> Vec<Envelope> {
-        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
-        frames
-            .iter()
-            .filter(|f| f.class == Class::Input && f.payload.as_ref().unwrap()["idem_key"] == hex)
-            .cloned()
-            .collect()
-    };
-    assert_eq!(input_frames_for(k1).len(), 1, "K1 must never gain a second `input` frame across a restart");
+    tx.send(Command::Kill).unwrap();
+    wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return within the teardown bound")
+        .unwrap();
 }
 
 /// Test 9: a slow (never-draining) watcher's queued live-output bytes
@@ -284,7 +186,6 @@ fn slow_watcher_overflow_closes_while_driver_stays_live() {
     // flood is committed.
     let argv = vec![helper, "--flood".to_string(), total.to_string(), "--linger".to_string(), "--wait-line".to_string()];
     let cfg = config(dir.path(), "slowwatcher1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
     let transport = TestTransport::new();
     let (tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
@@ -351,7 +252,6 @@ fn slow_watcher_overflow_closes_while_driver_stays_live() {
         .expect("run did not return within the local deadline")
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
-    verify_voyage(&root, "slowwatcher1").unwrap();
 }
 
 /// Test 10: a refused `hello` (unsupported proto) closes only that

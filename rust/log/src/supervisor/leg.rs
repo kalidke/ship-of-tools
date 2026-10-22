@@ -1,7 +1,6 @@
 //! The leg: pointer discovery or mint, the spawn decision, the spawn lease and the leg command line.
 
 use super::*;
-use crate::store::voyage::SEG_DIR;
 
 // ---------------------------------------------------------------------
 // Pointer discovery / mint (supervisor startup only)
@@ -14,11 +13,7 @@ pub(super) fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crat
             StartMode::Start => {
                 std::fs::create_dir_all(voyages_dir(state_dir))?;
                 let id = uuid::Uuid::now_v7().to_string();
-                VoyageStore::bootstrap(
-                    &voyage_root_path(state_dir, &id),
-                    &id,
-                    RetentionClass::Archive,
-                )?;
+                crate::capsule::bootstrap_voyage_folder(&voyage_root_path(state_dir, &id))?;
                 pointer::publish(state_dir, &id)?;
                 Ok(id)
             }
@@ -33,10 +28,8 @@ pub(super) fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crat
     }
 }
 
-/// The start-mode table's OWN "what to do about the latest leg" half,
-/// consulted ONLY when no live capsule was adopted. Checks the marker on
-/// an UNSEALED leg too, not only a sealed one: the marker is written
-/// mid graceful-teardown, before sealing completes.
+/// The start-mode table's OWN "what to do about the latest leg" half, consulted ONLY when no live capsule was
+/// adopted: a leg that left `ended` saying an end was asked for is not respawned over.
 pub(super) fn should_spawn_after_absent(
     state_dir: &Path,
     voyage_id: &str,
@@ -45,53 +38,35 @@ pub(super) fn should_spawn_after_absent(
     if mode == StartMode::Start {
         return Ok(true);
     }
-    let seg_dir = voyage_root_path(state_dir, voyage_id).join(SEG_DIR);
-    match recovery::latest_leg_state(&seg_dir).map_err(crate::Error::Io)? {
-        LatestLegState::NoLeg => Ok(true),
-        LatestLegState::Sealed { epoch } | LatestLegState::Unsealed { epoch } => {
-            let marked = verify::leg_carries_run_end_marker(&seg_dir, voyage_id, epoch)?;
-            Ok(!marked)
-        }
-    }
+    let ended = crate::capsule::read_ended(&voyage_root_path(state_dir, voyage_id))?;
+    Ok(!ended.is_some_and(|e| e.requested))
 }
 
+/// The number of the leg that is running in this voyage's folder, `None` when none is: a leg that has ended left a
+/// finished `ended` behind, and a folder that never had a leg has no number.
 pub(super) fn leg_epoch_of(state_dir: &Path, voyage_id: &str) -> Option<u64> {
-    let seg_dir = voyage_root_path(state_dir, voyage_id).join(SEG_DIR);
-    match recovery::latest_leg_state(&seg_dir) {
-        Ok(LatestLegState::Unsealed { epoch }) => Some(epoch),
+    let root = voyage_root_path(state_dir, voyage_id);
+    match crate::capsule::read_ended(&root) {
+        Ok(None) => crate::capsule::read_leg_epoch(&root),
+        Ok(Some(ended)) if !ended.finished => crate::capsule::read_leg_epoch(&root),
         _ => None,
     }
 }
 
-/// whether the CURRENT leg's own recorded
-/// `producer_uptime_ms` (`verify::leg_producer_uptime_ms`) proves it
-/// survived at least `STABILITY_INTERVAL` — the ONLY question the
-/// anti-flap counter's reset now depends on. Fail-safe direction is
-/// UNSTABLE (`false`) for every case that cannot prove otherwise:
-/// no leg found, no `producer_dead` frame yet on it (unsealed, or a
-/// spawn failure that never reached a real producer), the field absent,
-/// or the segment itself unreadable (logged, but this is an anti-flap
-/// HEURISTIC, not a safety-critical decision — never escalated past a
-/// warning).
+/// Whether the CURRENT leg's own recorded `uptime_ms` (its `ended` file) proves it survived at least
+/// `STABILITY_INTERVAL` — the ONLY question the anti-flap counter's reset depends on. Fail-safe direction is
+/// UNSTABLE (`false`) for every case that cannot prove otherwise: no `ended` file (a leg that crashed, or a spawn
+/// failure that never reached a real producer), no uptime in it, or a file that cannot be read (logged, but this is
+/// an anti-flap HEURISTIC, not a safety-critical decision — never escalated past a warning).
 pub(super) fn leg_was_stable(state_dir: &Path, voyage_id: &str) -> bool {
-    let seg_dir = voyage_root_path(state_dir, voyage_id).join(SEG_DIR);
-    let epoch = match recovery::latest_leg_state(&seg_dir) {
-        Ok(LatestLegState::Sealed { epoch } | LatestLegState::Unsealed { epoch }) => epoch,
-        Ok(LatestLegState::NoLeg) => return false,
-        Err(e) => {
-            note(format_args!(
-                "could not read this leg's own state to judge stability ({e}); counting it \
-                 unstable (N1 fail-safe)"
-            ));
-            return false;
+    match crate::capsule::read_ended(&voyage_root_path(state_dir, voyage_id)) {
+        Ok(Some(ended)) => {
+            ended.finished && ended.uptime_ms.is_some_and(|ms| Duration::from_millis(ms) >= STABILITY_INTERVAL)
         }
-    };
-    match verify::leg_producer_uptime_ms(&seg_dir, voyage_id, epoch) {
-        Ok(Some(ms)) => Duration::from_millis(ms) >= STABILITY_INTERVAL,
         Ok(None) => false,
         Err(e) => {
             note(format_args!(
-                "could not read this leg's own producer_uptime_ms ({e}); counting it unstable \
+                "could not read this leg's own ended file to judge stability ({e}); counting it unstable \
                  (N1 fail-safe)"
             ));
             false
@@ -225,6 +200,7 @@ pub(super) fn build_run_command(
     capsule_exe: &Path,
     voyage_root: &Path,
     voyage_id: &str,
+    screen: &Path,
     cols: u16,
     rows: u16,
     lease: &SpawnLease,
@@ -258,6 +234,8 @@ pub(super) fn build_run_command(
         .arg("run")
         .arg(voyage_root)
         .arg(voyage_id)
+        .arg("--screen")
+        .arg(screen)
         .arg("--cols")
         .arg(cols.to_string())
         .arg("--rows")
@@ -287,7 +265,6 @@ pub(super) fn build_run_command(
     command
         .arg("--survival")
         .arg(survival_flag)
-        .arg("--assume-no-rollback-target")
         .arg("--")
         .args(producer_argv);
     #[cfg(windows)]

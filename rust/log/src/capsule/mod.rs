@@ -1,163 +1,70 @@
-//! The capsule: one process babysitting one producer, writing its voyage
-//! (ADR 0041 step 4 — the capsule runtime; ADR 0039 is the format it
-//! writes). Generic over [`crate::capsule::producer::Producer`] (ADR 0043
-//! "Decisions for LU2"): the writer loop below — the frame factory, the
-//! output budget, the input WAL, the run-end marker, the `AttachProto`
-//! service path, `ShutdownGuard`, rotation and sealing — is
-//! platform-neutral and drives whatever producer the caller names through
-//! exactly nine trait calls: `capsule/producer/conpty/producer.rs`'s `ConptyProducer`
-//! (Windows), wrapping `capsule/producer/conpty/`'s owned-ConPTY primitives, and (LU2b)
-//! `capsule/producer/pty/`'s `PtyProducer` (Unix), a bare `openpty` fd plus a
-//! process group.
+//! The capsule: one process babysitting one producer, the leg (`sot-capsule run`). The producer's output feeds a live
+//! `vt100_ctt` parser that every attach checkpoints from; the leg keeps no record of the terminal, only the screen
+//! file (`screen.rs`) and the small `ended` file (`ended.rs`). Generic over [`crate::capsule::producer::Producer`]:
+//! the writer loop below, with the output budget, the `AttachProto` service path and `ShutdownGuard`, is
+//! platform-neutral and drives whatever producer the caller names: `producer/conpty/producer.rs`'s `ConptyProducer`
+//! (Windows) and `producer/pty/`'s `PtyProducer` (Unix).
 //!
-//! Three properties this module adds over the legacy Linux capsule, all
-//! pinned by ADR 0041 "Step 4 as specified":
-//! - a live `vt100_ctt` parser tracks the producer's screen for a later
-//!   attach (step 5) to checkpoint from — this unit only keeps it current
-//!   and resizes it, it never serializes it (no attach lane exists yet);
-//! - the ConPTY host-facing DA1 handshake (`host_handshake.rs`) is
-//!   answered THROUGH the teardown drain — the writer loop keeps servicing
-//!   it while the pseudoconsole closes, never pausing to make the close
-//!   call, so the pre-24H2 blocking close this sequence exists to survive
-//!   can never deadlock on an unanswered query (see "Teardown" below);
-//! - spawn failure and BOTH teardown entry points (an externally requested
-//!   kill, or the producer exiting on its own) are handled by ONE
-//!   compensation path / ONE orchestrator, so a segment is always sealed
-//!   whenever the producer ever actually ran or a spawn was attempted. An
-//!   unexpected PRE-close
-//!   reader failure is the one case that still bails unsealed on purpose
-//!   (see "Reader errors" below) — that is ADR 0039's crash shape, not a
-//!   gap.
+//! - **Teardown is a phase of the ordered loop, not a pause in it.** The reap poll keeps servicing the output channel
+//!   (publishing output, answering the ConPTY host handshake) while it polls; `close_pty()` runs on a dedicated
+//!   closer thread so the loop keeps draining during the call; the drain timeout's clock starts when the closer thread
+//!   starts.
+//! - **The output budget is reserve-before-read and cancellable.** The reader reserves a full `READ_CHUNK` before
+//!   calling `read()`, so the outstanding bytes never exceed the budget; a `BudgetCancelGuard` cancels it on any exit
+//!   from `run`, so a reader never outlives the loop that releases it.
+//! - **The host handshake is answered once.** The first DA1 query of a run is answered; later matches are counted.
+//! - **Exit status is raw and unsigned end to end** (`ExitSummary`, `ended`): a high-bit NTSTATUS code stays a `u32`.
+//! - **A read error is never folded into a clean end.** The reader thread sends one terminal event carrying a real
+//!   `Result`; before `close_pty()` it is an anomaly that only the producer's own exit explains (`READER_END_EXIT_GRACE`).
+//! - **`run` owns no stdin.** It takes the caller's `commands` channel and the wire's events from the transport; once
+//!   the main loop is left for teardown, `commands` is never read again.
 //!
-//! - **Teardown is now a PHASE of the ordered loop, not a pause in it.**
-//!   Now: the reap-poll
-//!   keeps servicing the output channel (committing frames, answering the
-//!   handshake) WHILE it polls; `close_pty()` runs on a dedicated CLOSER
-//!   thread so the writer loop keeps draining concurrently with the call
-//!   itself, never pausing for it; the drain timeout's clock starts the
-//!   moment the closer thread is spawned, not after it returns.
-//! - **The output budget is reserve-before-read and cancellable.** The
-//!   reader now reserves a full `READ_CHUNK` BEFORE calling `read()` (and
-//!   gives back the unused remainder), so `outstanding` can never exceed
-//!   the budget even momentarily; a `BudgetCancelGuard` cancels it — waking
-//!   every blocked/future `reserve` — on ANY exit from `run` (normal
-//!   return, an early `?`, or a panic unwind), so a reader can never
-//!   outlive the loop that is the only thing that ever releases it back.
-//!   `release` is checked, not saturating: a mismatch is this module's own
-//!   bookkeeping bug and must panic loudly, never absorb silently.
-//! - **The handshake exchange is now request → response → outcome** (ADR
-//!   0041's own phrase for a "query exchange"), and a write failure commits
-//!   a FAILURE outcome instead of silently leaving the exchange looking
-//!   like "never delivered, cause unknown". Per the ADR's own model — one
-//!   host handshake, asked once, at startup — this module now answers and
-//!   records only the FIRST match ever observed for a run; every later
-//!   match (a hostile or broken producer's repeat queries) is counted, not
-//!   re-answered and not re-recorded, closing the unbounded-frame-spam
-//!   amplification.
-//! - **Exit status is raw and unsigned end-to-end.** `capsule/producer/conpty/`'s
-//!   `exit_code` had a real bug — even after a caller had *already*
-//!   confirmed the process exited, it still mapped a genuine raw exit code
-//!   of 259 to `None`, the exact `STILL_ACTIVE` value it was trying to
-//!   avoid confusing with "still running". It is now
-//!   `exit_code_after_confirmed_exit`, which trusts the caller's own prior
-//!   observation and returns the DWORD unconditionally. This module carries
-//!   that value as `u32` throughout (`ExitSummary`, `producer_dead`'s
-//!   `detail.exit_code`) instead of casting to `i32`, which would turn a
-//!   high-bit NTSTATUS-shaped code (an access violation, say) negative for
-//!   no reason — reinterpretation to a process's own exit code happens only
-//!   at the actual OS process-exit boundary, in the bin harness.
-//! - **A read error is never silently folded into a sealed success.** The
-//!   reader thread now sends one explicit terminal event carrying a real
-//!   `Result` (not an undifferentiated "EOF" that swallowed both a clean
-//!   close and a genuine I/O error). Whether that's expected depends
-//!   entirely on WHEN it arrives: before this loop has ever called
-//!   `close_pty()`, it is exactly the anomaly `capsule/producer/conpty/`'s own contract
-//!   says shouldn't happen (ConPTY keeps `hOutput` open regardless of
-//!   child lifetime until explicitly closed) — capsule-fatal, `run`
-//!   returns an `Err` with nothing further written (ADR 0039's crash
-//!   shape: recovery seals whatever valid prefix already committed). After
-//!   `close_pty()` has been called, both a graceful EOF and a broken pipe
-//!   are the ordinary, expected end of the drain.
-//! - **`run` no longer owns stdin.** The fix
-//!   that survives step 5: `run` takes exactly the caller-owned channel a
-//!   caller feeds (today `commands: mpsc::Receiver<Command>` for `Kill`;
-//!   the wire's own events are polled through `Transport::try_recv_event`
-//!   instead of a second channel parameter — see that method's doc) — it owns none of the
-//!   sources that feed them. Admission revocation is real: once the main
-//!   loop is left
-//!   for teardown, `commands` is never read from again — not
-//!   received-then-discarded, simply never polled (the wire lane's own,
-//!   NARROWER revocation — producer-bound ops only, mgmt/`Sent` still
-//!   serviced — is `AttachProto::begin_teardown`, see "Step 5 (U2)").
-//!
-//! Judgment calls the review looked at and left standing (not litigated
-//! further here): `FrameCtx::capsule_frame` (not `controller_frame`) as the
-//! handshake exchange's source, and `to.kind = "producer"` on both the
-//! handshake and resize requests, reusing that value to mean "concerns the
-//! pty/producer channel" since no `ActorKind` names "the ConPTY host
-//! itself"; `controller_frame` for resize (it IS the future driver-facing
-//! command); resize's outcome `target` naming the resize request's own
-//! `seq`; `ExitKind`'s remaining vocabulary (`ProducerExited`/`Requested`/
-//! `SpawnFailed`) having no ADR-pinned name, existing purely for the Rust
-//! caller and never reaching a frame.
-//!
-//! ## Step 5 (U2): the pipe protocol through this loop
-//!
-//! `run` gains a transport-event channel ([`TransportEvent`]/[`Transport`],
-//! implemented by `lane::platform_transport::PlatformTransport`)
-//! serviced every MAIN-LOOP iteration through
-//! [`crate::lane::attach_proto::AttachProto`] — that module OWNS the
-//! connection/role/lockstep/pen/keepalive state machine; this loop only
-//! executes the [`crate::lane::attach_proto::Action`]s it returns
-//! (`execute_actions`) and feeds events back
-//! (`connection_opened`/`frame`/`sent`/`tick`/`ground_reached`/
-//! `checkpoint_ready`/`take_committed`/`resize_outcome`/`input_outcome`).
-//! `flush_output`'s watermark now ALSO publishes committed bytes to
-//! existing subscribers and, on a ground boundary, promotes any pending
-//! attach — the watermark barrier the ADR requires, one loop step.
+//! The pipe protocol runs through this loop: transport events go through [`crate::lane::attach_proto::AttachProto`],
+//! which owns the connection, role, lockstep, pen and keepalive state; the loop executes the actions it returns and
+//! feeds events back. Output is published to subscribers as it arrives, and a ground boundary promotes a pending attach.
 
 use crate::lane::attach_proto::{
     Action as AttachAction, AttachProto, ConnId, InputOutcome, MgmtStatus, SentMarker,
 };
-use crate::store::envelope::*;
 use crate::capsule::producer::{ExitStatus, ParentLease, Producer};
 use crate::capsule::producer::host_handshake::{self, HostHandshake};
-// the SAME shared-deadline poll-join
-// primitive and the SAME pinned aggregate bound `lane/pipe_win/` uses for its
-// own worker joins -- one mechanism, one constant, reused here for this
-// module's closer/reader thread joins rather than a second bespoke copy.
+// The shared-deadline poll-join primitive and the pinned aggregate bound `lane/pipe_win/` uses for its own worker
+// joins: one mechanism, one constant.
 use crate::lane::transport::{join_within, Transport, TransportEvent, TEARDOWN_AGGREGATE_DEADLINE};
-use crate::store::segment::{Commit, RetentionClass, SegmentWriter};
-use crate::store::dedupe::{DedupeEntry, DedupeState};
-use crate::store::voyage::VoyageStore;
 use crate::lane::wire::{self, Survival};
 use crate::{Error, Result};
-use serde_json::json;
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-mod frame;
+mod ended;
+mod fence;
 mod output;
 pub mod producer;
+mod screen;
 mod writer_loop;
-use frame::*;
 use output::*;
-pub use frame::wall_ms;
+pub use ended::{read as read_ended, Ended};
+pub use fence::{bootstrap as bootstrap_voyage_folder, read_leg_epoch, WRITER_LOCK};
+#[cfg(any(test, feature = "test-support"))]
+pub use screen::set_screen_hook_for_test;
 pub use writer_loop::run;
 
-/// The exit code of a leg (`sot-capsule run`) whose run failed with storage
-/// exhaustion (`host::storage_exhaustion`): the supervisor holds such a row
-/// instead of counting the leg against its crash bound. Reserved: a
-/// producer's own exit 71 leaves the leg with exit 1 (`leg_exit_code`).
-pub const EXIT_LEG_STORAGE_FULL: i32 = 71;
-
-const SEGMENT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const READ_CHUNK: usize = 8192;
+
+/// How long the leg's end waits for the screen writer: a stalled disk never holds the end of a leg longer.
+const SCREEN_FINISH_BOUND: Duration = Duration::from_secs(2);
+
+/// One diagnostic line, as one write that never panics: `eprintln!` panics when stderr cannot take the line, and a
+/// full volume under the leg's log would then turn a diagnostic into a crash of the leg.
+fn leg_note(args: std::fmt::Arguments<'_>) {
+    let line = format!("{args}\n");
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+}
 
 /// ADR 0041 "Terminal state" resource budget — the geometry a resize (or
 /// the initial spawn) may request. Independent from the vt100 fork's own
@@ -242,53 +149,29 @@ const SHUTDOWN_ACK_GRACE: Duration = Duration::from_secs(2);
 const SHUTDOWN_ACK_GRACE_POLL: Duration = Duration::from_millis(20);
 
 pub struct CapsuleConfig {
+    /// The leg's folder (`<state_dir>/voyages/<id>/`): the fence and the `ended` file.
     pub voyage_root: PathBuf,
+    /// Names the leg's lane (`voyage-<id>`).
     pub voyage_id: String,
-    pub retention: RetentionClass,
-    pub producer_kind: String,
+    /// Where the leg keeps its screen (`<state_dir>/screen`); `None` keeps none.
+    pub screen_path: Option<PathBuf>,
     /// argv[0] is the program; must be non-empty (`Producer::spawn`'s own
     /// check is what actually enforces this).
     pub argv: Vec<String>,
     /// Initial terminal geometry, validated by the SAME 2x2..512x256 rule
-    /// a later resize is (ADR 0041: "Initial geometry is validated by the
-    /// same rule").
+    /// a later resize is.
     pub cols: u16,
     pub rows: u16,
-    /// Supplied by the SPAWNER, never inferred (ADR 0041 decision 11: step
-    /// 6's breakaway attempt is the real source; `IsProcessInJob`
-    /// observation stays diagnostics, never authority). Transported
-    /// verbatim in mgmt `status`.
+    /// Supplied by the SPAWNER, never inferred (ADR 0041 decision 11: the
+    /// breakaway attempt is the real source). Transported verbatim in mgmt
+    /// `status`.
     pub survival: Survival,
-    /// The reader-first rollout gate's input (ADR 0041 "Upgrade and
-    /// version skew"; see `crate::store::rollout`) — TYPED, identity-bound
-    /// evidence, never an `Option` a caller could pass `None` into as an
-    /// implicit "no rollback target": `run`
-    /// refuses to open a segment declaring
-    /// `sot.capsule.run-end-requested-v1` unless this evidence
-    /// affirmatively clears it. The SPAWNER constructs this — a real
-    /// supervisor (U2/U4) from its own release-apply transaction; this
-    /// crate's manual testing harness (`sot-capsule.rs`) hardcodes
-    /// `RolloutEvidence::NoRollbackTarget` directly, never reading a
-    /// stopgap file that could quietly become load-bearing.
-    pub rollout_evidence: crate::store::rollout::RolloutEvidence,
-    /// ADR 0041 Lifecycle "Discovery, and the two windows a spawn passes
-    /// through": `Some(lease)` when a supervisor spawned this process and
-    /// wants its parent-death lease checked as the writer fence's own
-    /// first act — a per-platform [`ParentLease`] (ADR 0043 decision 15)
-    /// `run` polls EXACTLY ONCE, immediately after the fence is acquired,
-    /// via `VoyageStore::open_for_writing_with_lease`. `None` (this
-    /// crate's own manual-testing harness, and every existing capsule
-    /// test) is the U1a wrapper's own no-lease behavior, unchanged —
-    /// every in-tree caller before U2.
+    /// `Some(lease)` when a supervisor spawned this process and wants its
+    /// parent-death lease checked as the fence's first act: a per-platform
+    /// [`ParentLease`] `run` polls exactly once, right after the fence is
+    /// taken. `None` (the manual harness and most capsule tests) checks nothing.
     pub parent_lease: Option<ParentLease>,
 }
-
-/// The ADR 0039 registry entry a step-6 capsule's segments declare
-/// unconditionally at creation (ADR 0041 Lifecycle: "the marker's timing
-/// is not knowable in advance"). One name, one home — every
-/// `open_segment_with_features` call site in this module names this
-/// constant rather than the literal string.
-const RUN_END_REQUESTED_FEATURE: &str = "sot.capsule.run-end-requested-v1";
 
 /// The caller-owned command surface `run` services, alongside the wire
 /// protocol. Step 5 DELETES this channel's raw `Input`/`Resize` variants
@@ -336,8 +219,6 @@ pub enum ExitKind {
 pub struct ExitSummary {
     pub exit_code: Option<ExitStatus>,
     pub exit_kind: ExitKind,
-    pub frames_written: u64,
-    pub segments_sealed: u64,
     /// Whether the host-facing DA1 handshake was answered and recorded
     /// (ADR 0041's model: conhost asks once, at startup) — `false` if it
     /// never arrived at all in this run.

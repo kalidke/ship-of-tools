@@ -12,9 +12,7 @@
 //!
 //! One case per acceptance-matrix row named in the U3 unit: attach as a
 //! watcher and receive the checkpoint; first input takes the pen and the
-//! resize precedes the flush (proven at the wire level, via the sealed
-//! voyage record — the client's own black-box surface has no other way to
-//! observe SEND order); `end_run` from the quit dispatcher gets
+//! resize precedes the flush (proven by the echo of the first input reaching the screen); `end_run` from the quit dispatcher gets
 //! `record_closed`; reconnect after the capsule is killed and a fresh
 //! supervisor takes over restores the screen from the new checkpoint.
 //!
@@ -27,7 +25,6 @@
 
 use sot_log::lane::client::{Endpoint, PlatformEndpoint};
 use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
-use sot_log::store::segment::SegmentReader;
 use sot_platform::host::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
 use sot_log::lane::wire::{
@@ -284,6 +281,64 @@ fn taskkill(pid: u32) {
     assert_eq!(rc, 0, "kill(SIGKILL) failed for pid {pid}: {}", std::io::Error::last_os_error());
 }
 
+/// Arms the next legs to be crashable by this test: the leg exits abruptly right after the next screen save once the
+/// returned file exists (`SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN`, a seam of the leg's screen writer), saving at a short
+/// pace. Set before the supervisor is spawned: the leg inherits it. The test never aims at a pid.
+fn arm_leg_crash(dir: &Path) -> PathBuf {
+    let go = dir.join("crash-go");
+    std::env::set_var("SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN", &go);
+    std::env::set_var("SOT_TEST_SCREEN_PACE_MS", "300");
+    go
+}
+
+/// Crashes the leg: the file armed by `arm_leg_crash` appears, and one more command makes the screen change, so the
+/// leg saves it (marker included) and exits.
+fn crash_leg(client: &mut FeAttachClient, go: &Path) {
+    std::fs::write(go, b"").unwrap();
+    client.send_input(b"echo SOT_FE_CRASH_TRIGGER\r\n");
+}
+
+/// Waits until the screen file the leg keeps decodes to a screen that shows `marker`: the saved screen is what a
+/// restarted leg shows, whenever the leg got to write it.
+fn wait_for_saved_marker(state_dir: &Path, marker: &str) {
+    poll_until(
+        || {
+            let bytes = std::fs::read(state_dir.join("screen")).ok()?;
+            let mut parser = vt100_ctt::Parser::new(24, 80, 200);
+            parser.restore_screen(&bytes).ok()?;
+            screen_text(parser.screen()).contains(marker).then_some(())
+        },
+        Duration::from_secs(30),
+        "the saved screen to show the marker",
+    );
+}
+
+/// Disarms what `arm_leg_crash` set, once the restarted leg is running.
+fn disarm_leg_crash() {
+    std::env::remove_var("SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN");
+    std::env::remove_var("SOT_TEST_SCREEN_PACE_MS");
+}
+
+/// The screen's text with its history: the pages from the oldest down, so a retained line is found wherever the
+/// agent's start left it (the Windows ConPTY host repaints the visible screen).
+fn screen_and_history(client: &mut FeAttachClient) -> String {
+    let screen = client.screen_mut();
+    screen.set_scrollback(usize::MAX);
+    let mut offset = screen.scrollback();
+    let (rows, _) = screen.size();
+    let mut out = String::new();
+    loop {
+        screen.set_scrollback(offset);
+        out.push_str(&screen_text(screen));
+        if offset == 0 {
+            break;
+        }
+        offset = offset.saturating_sub(usize::from(rows));
+    }
+    screen.set_scrollback(0);
+    out
+}
+
 fn screen_text(screen: &vt100_ctt::Screen) -> String {
     let (rows, cols) = screen.size();
     let mut text = String::new();
@@ -323,29 +378,6 @@ fn poll_screen(client: &mut FeAttachClient, timeout: Duration, pred: impl Fn(&st
     }
 }
 
-/// Every sealed frame across every `.sotseg` under a real
-/// supervisor-owned voyage — `state_dir/voyages/<voyage>/seg`
-/// (`supervisor::voyage_root_path`'s own convention; not the bespoke
-/// per-test root `tests/e2e_pipe.rs`'s own harness uses, since THIS file
-/// goes through the real supervisor rather than configuring
-/// `capsule::CapsuleConfig` directly).
-fn sealed_frames(state_dir: &Path, voyage: &str) -> Vec<sot_log::store::envelope::Envelope> {
-    let seg_dir = state_dir.join("voyages").join(voyage).join("seg");
-    let mut out = Vec::new();
-    let mut names: Vec<String> = std::fs::read_dir(&seg_dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    for n in names {
-        if n.ends_with(".sotseg") {
-            let r = SegmentReader::read(&seg_dir.join(&n), true).unwrap();
-            out.extend(r.frames);
-        }
-    }
-    out
-}
-
 fn query(conn: &Client, operation_id: &str) -> SupervisorOperationState {
     match request_for_test(
         conn,
@@ -359,13 +391,10 @@ fn query(conn: &Client, operation_id: &str) -> SupervisorOperationState {
     }
 }
 
-/// Ends the run cleanly (mirrors `tests/supervisor/`'s own
-/// `end_run_and_expect_record_closed` + `poll_to_terminal` composition)
-/// so the voyage is durably SEALED before `sealed_frames` reads it — an
-/// in-progress segment's frames are written with `Commit::Immediate` but
-/// this file only ever reads the same way every other test in this crate
-/// does: after a clean shutdown.
-fn end_run_and_wait_verified(conn: &Client, voyage: &str) {
+/// Ends the run cleanly (mirrors `tests/supervisor/`'s own `end_run_and_expect_record_closed` + `poll_to_terminal`
+/// composition): `record_closed`, then `record_verified`, the wire's names for the end being acknowledged and then
+/// final. No record is kept, so nothing is read back.
+fn end_run_and_wait_ended(conn: &Client, voyage: &str) {
     let op_id = "test-teardown-end-run";
     let reply = command(conn, op_id, SupervisorOp::EndRun { reason: "test teardown".into(), voyage: voyage.to_string() });
     assert_eq!(reply, SupervisorOperationState::RecordClosed);

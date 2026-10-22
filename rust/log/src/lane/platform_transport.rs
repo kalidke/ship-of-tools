@@ -49,7 +49,7 @@
 //! `Transport::try_recv_event` is on `run`'s own critical per-iteration
 //! path (see that method's doc in `transport.rs`): it must never block
 //! or add its own wait, since `run`'s ONE latency budget per iteration is
-//! its `output_rx.recv_timeout(GROUP_COMMIT_WINDOW)`. A plain
+//! its `output_rx.recv_timeout(LOOP_TICK)`. A plain
 //! `Receiver::try_recv()` (never `recv_timeout`) is what makes that true
 //! here.
 //!

@@ -16,11 +16,6 @@ pub(super) fn advance_recovering(rx: mpsc::Receiver<RecoveryOutcome>, handle: Jo
                 Lifecycle::InitialProbe { rx, handle, started_at: now }
             }
         }
-        Ok(RecoveryOutcome::Storage(detail)) => {
-            join_and_warn(handle, "recovery");
-            note(format_args!("recovery met storage exhaustion ({detail}); waiting for storage"));
-            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Recover))
-        }
         Ok(RecoveryOutcome::Fatal { detail }) => {
             join_and_warn(handle, "recovery");
             Lifecycle::Terminal { detail, entered_at: now }
@@ -64,6 +59,7 @@ pub(super) fn advance_initial_probe(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>
                             capsule_exe.to_path_buf(),
                             voyage_root,
                             voyage_id,
+                            config.state_dir.join("screen"),
                             config.cols,
                             config.rows,
                             spawn_lease,
@@ -142,11 +138,6 @@ pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<LegProcess>>, han
             ));
             respawn_or_terminal(consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
         }
-        Ok(ProbeOutcome::LegEnded(status)) if storage::leg_death(status) == storage::LegDeath::Storage => {
-            join_and_warn(handle, "spawn");
-            note(format_args!("leg exited {} before reaching Ready (storage exhausted); waiting for storage", status_text(status)));
-            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Respawn))
-        }
         Ok(outcome @ (ProbeOutcome::KilledAfterTimeout | ProbeOutcome::LegEnded(_))) => {
             join_and_warn(handle, "spawn");
             *consecutive_unstable_legs += 1;
@@ -206,49 +197,29 @@ fn status_text(status: Option<ExitStatus>) -> String {
     }
 }
 
-/// Today's accounting for a leg that ended with no storage cause: judge it
-/// stable or not by its own recorded lifetime, count it (`storage::account`)
-/// and respawn or go Terminal. `how` says how the leg ended, for the note.
+/// The accounting for a leg that ended with no `end_run` involved: judge it stable or not by its own recorded
+/// lifetime (the `ended` file), count it, and respawn or go Terminal. `how` says how the leg ended, for the note.
 #[allow(clippy::too_many_arguments)]
-fn account_and_respawn(how: &str, consecutive_unstable_legs: &mut u32, storage_step: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState) -> Lifecycle {
-    // stability is judged on the PRODUCER's own recorded lifetime
-    // (`leg_was_stable`), never on a wall-clock interval measured from
-    // Ready to THIS observation -- a slow capsule teardown (job reap,
-    // ConPTY drain, the aggregate deadline, a final wait) could alone
-    // exceed the stability interval with nothing to do with how long the
+fn account_and_respawn(how: &str, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState) -> Lifecycle {
+    // Stability is judged on the PRODUCER's own recorded lifetime (`leg_was_stable`), never on a wall-clock interval
+    // measured from Ready to THIS observation: a slow capsule teardown (job reap, ConPTY drain, the aggregate
+    // deadline, a final wait) could alone exceed the stability interval with nothing to do with how long the
     // producer itself actually ran.
     let voyage_id = authority.voyage_id.clone().expect("a leg ended, so a voyage_id is Some");
     let unstable = !leg_was_stable(&config.state_dir, &voyage_id);
-    storage::account(consecutive_unstable_legs, storage_step, unstable);
+    if unstable {
+        *consecutive_unstable_legs += 1;
+    } else {
+        *consecutive_unstable_legs = 0;
+    }
     note(format_args!(
         "leg ended {how} (unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
     ));
     respawn_or_terminal(consecutive_unstable_legs, capsule_exe, config, lease, authority)
 }
 
-/// What follows a leg's death with this exit `status`: a storage exit (71)
-/// holds the authority and respawns when storage clears, an unknown status
-/// is settled by one immediate durable probe, and anything else is today's
-/// crash accounting.
 #[allow(clippy::too_many_arguments)]
-fn after_leg_death(status: Option<ExitStatus>, how: &str, consecutive_unstable_legs: &mut u32, storage_step: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState) -> Lifecycle {
-    match storage::leg_death(status) {
-        storage::LegDeath::Storage => {
-            note(format_args!("leg ended {how} (storage exhausted); waiting for storage"));
-            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Respawn))
-        }
-        storage::LegDeath::Unknown => {
-            note(format_args!("leg ended {how}; probing the state root to settle whether storage is the cause"));
-            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Suspect))
-        }
-        storage::LegDeath::Ordinary => {
-            account_and_respawn(how, consecutive_unstable_legs, storage_step, capsule_exe, config, lease, authority)
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn advance_ready(process: LegProcess, consecutive_unstable_legs: &mut u32, storage_step: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
+pub(super) fn advance_ready(process: LegProcess, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
     match process.wait(Duration::ZERO) {
         Ok(true) => {
             // Single-owner reaping: `wait` just confirmed this leg's exit
@@ -261,7 +232,7 @@ pub(super) fn advance_ready(process: LegProcess, consecutive_unstable_legs: &mut
             // whole cleanup there.
             let status = process.reap();
             let how = format!("status={}", status_text(status));
-            after_leg_death(status, &how, consecutive_unstable_legs, storage_step, capsule_exe, config, lease, authority)
+            account_and_respawn(&how, consecutive_unstable_legs, capsule_exe, config, lease, authority)
         }
         Ok(false) => Lifecycle::Ready { process },
         Err(e) => Lifecycle::Terminal {
@@ -272,7 +243,7 @@ pub(super) fn advance_ready(process: LegProcess, consecutive_unstable_legs: &mut
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProgress>, handle: JoinHandle<()>, started_at: Instant, mut pending_reply: Option<ConnId>, process: LegProcess, lane: &Lane, conns: &mut HashMap<ConnId, Conn>, consecutive_unstable_legs: &mut u32, storage_step: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
+pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProgress>, handle: JoinHandle<()>, started_at: Instant, mut pending_reply: Option<ConnId>, process: LegProcess, lane: &Lane, conns: &mut HashMap<ConnId, Conn>, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
     match rx.try_recv() {
         Ok(EndingProgress::RecordClosed) => {
             if let Some(conn_id) = pending_reply.take() {
@@ -284,7 +255,7 @@ pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProg
         }
         Ok(EndingProgress::Final(result)) => {
             join_and_warn(handle, "end_run");
-            end_run_finished(result, &operation_id, process, consecutive_unstable_legs, storage_step, capsule_exe, config, lease, authority, now)
+            end_run_finished(result, &operation_id, process, consecutive_unstable_legs, capsule_exe, config, lease, authority, now)
         }
         Err(mpsc::TryRecvError::Empty) => {
             if watchdog_expired(started_at, ENDING_WATCHDOG, now) {
@@ -313,7 +284,7 @@ pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProg
 /// What follows an `end_run` worker's final result. The retained `process`
 /// is retired first in every case (reaped, or kept for the main loop's poll).
 #[allow(clippy::too_many_arguments)]
-fn end_run_finished(result: EndRunWorkerResult, operation_id: &str, process: LegProcess, consecutive_unstable_legs: &mut u32, storage_step: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
+fn end_run_finished(result: EndRunWorkerResult, operation_id: &str, process: LegProcess, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &mut AuthorityState, now: Instant) -> Lifecycle {
     let status = retire_leg(&mut authority.retired_legs, process);
     match result {
         // The worker's own proven handle for this SAME leg is reaped inside
@@ -326,8 +297,7 @@ fn end_run_finished(result: EndRunWorkerResult, operation_id: &str, process: Leg
         // not by watching this exact process die), `retire_leg` moved it into
         // `retired_legs` instead of dropping it.
         EndRunWorkerResult::Ended => Lifecycle::EndedNoRespawn,
-        // The SAME routing a naturally-exited `Ready` leg gets (a storage
-        // exit holds, an unknown status is probed, the rest is the
+        // The SAME routing a naturally-exited `Ready` leg gets (the
         // producer-recorded stability check): a pre-barrier failure still
         // means the writer is CONFIRMED gone (finish_end_run_with/
         // without_process already proved that before ever returning
@@ -335,11 +305,7 @@ fn end_run_finished(result: EndRunWorkerResult, operation_id: &str, process: Leg
         // readable and authoritative here.
         EndRunWorkerResult::PreBarrierFailed => {
             let how = format!("status={} (end_run not durably accepted)", status_text(status));
-            after_leg_death(status, &how, consecutive_unstable_legs, storage_step, capsule_exe, config, lease, authority)
-        }
-        EndRunWorkerResult::Storage(detail) => {
-            note(format_args!("end_run {operation_id} met storage exhaustion ({detail}); waiting for storage"));
-            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Recover))
+            account_and_respawn(&how, consecutive_unstable_legs, capsule_exe, config, lease, authority)
         }
         EndRunWorkerResult::Fatal(detail) => {
             Lifecycle::Terminal { detail: format!("end_run {operation_id}: {detail}"), entered_at: now }
@@ -363,6 +329,7 @@ pub(super) fn advance_resetting(operation_id: String, rx: mpsc::Receiver<ResetWo
                         capsule_exe.to_path_buf(),
                         voyage_root,
                         new_voyage,
+                        config.state_dir.join("screen"),
                         config.cols,
                         config.rows,
                         spawn_lease,
@@ -378,11 +345,6 @@ pub(super) fn advance_resetting(operation_id: String, rx: mpsc::Receiver<ResetWo
                     entered_at: now,
                 },
             }
-        }
-        Ok(ResetWorkerResult::Storage(detail)) => {
-            join_and_warn(handle, "reset");
-            note(format_args!("reset {operation_id} met storage exhaustion ({detail}); waiting for storage"));
-            Lifecycle::StorageFull(storage::Wait::new(storage::Resume::Recover))
         }
         Ok(ResetWorkerResult::Fatal(detail)) => {
             join_and_warn(handle, "reset");
@@ -406,30 +368,6 @@ pub(super) fn advance_resetting(operation_id: String, rx: mpsc::Receiver<ResetWo
                 entered_at: now,
             }
         }
-    }
-}
-
-/// One tick of the storage wait (`storage::advance`): while it holds, nothing
-/// else changes; a resume respawns the same voyage with its full argv or
-/// re-runs startup recovery, and a suspected leg death that passed its probe
-/// takes the ordinary accounting.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn advance_storage_full(wait: storage::Wait, consecutive_unstable_legs: &mut u32, storage_step: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
-    match storage::advance(wait, storage_step, &authority.state_dir, now) {
-        storage::Outcome::Waiting(wait) => Lifecycle::StorageFull(wait),
-        storage::Outcome::Resume(storage::Resume::Respawn) => {
-            note(format_args!("storage is back; respawning the leg"));
-            respawn_or_terminal(consecutive_unstable_legs, capsule_exe, config, lease, authority)
-        }
-        storage::Outcome::Resume(storage::Resume::Recover) => {
-            note(format_args!("storage is back; re-running startup recovery"));
-            let (rx, handle) = spawn_recovery(config.state_dir.clone(), config.mode);
-            Lifecycle::Recovering { rx, handle, started_at: now }
-        }
-        storage::Outcome::Resume(storage::Resume::Suspect) => {
-            account_and_respawn("with no storage cause", consecutive_unstable_legs, storage_step, capsule_exe, config, lease, authority)
-        }
-        storage::Outcome::Terminal(detail) => Lifecycle::Terminal { detail, entered_at: now },
     }
 }
 

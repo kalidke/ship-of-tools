@@ -18,7 +18,7 @@ fn root_with(id: &str) -> (tempfile::TempDir, PathBuf) {
     let folder = state_dir_for(root.path(), id);
     let voyage = sot_log::supervisor::voyage_root_path(&folder, VOYAGE);
     std::fs::create_dir_all(&voyage).unwrap();
-    std::fs::write(voyage.join(sot_log::store::voyage::WRITER_LOCK), b"").unwrap();
+    std::fs::write(voyage.join(sot_log::capsule::WRITER_LOCK), b"").unwrap();
     std::fs::write(voyage.join("log"), b"x").unwrap();
     std::fs::write(folder.join("drawer.voyage"), VOYAGE).unwrap();
     (root, folder)
@@ -116,7 +116,7 @@ fn a_held_lock_keeps_the_folder() {
 fn a_held_voyage_writer_lock_or_a_scopes_record_keeps_the_folder() {
     let (root, folder) = root_with(ID);
     let voyage = sot_log::supervisor::voyage_root_path(&folder, VOYAGE);
-    let writer = voyage.join(sot_log::store::voyage::WRITER_LOCK);
+    let writer = voyage.join(sot_log::capsule::WRITER_LOCK);
     std::fs::write(&writer, b"").unwrap();
     let leg = sot_platform::host::lock_writer(&writer).unwrap();
     assert_eq!(
@@ -355,7 +355,7 @@ fn registered_row() -> (String, PathBuf, PathBuf) {
     let folder = state_dir_for(&state_root, &id);
     let voyage = sot_log::supervisor::voyage_root_path(&folder, VOYAGE);
     std::fs::create_dir_all(&voyage).unwrap();
-    std::fs::write(voyage.join(sot_log::store::voyage::WRITER_LOCK), b"").unwrap();
+    std::fs::write(voyage.join(sot_log::capsule::WRITER_LOCK), b"").unwrap();
     std::fs::write(folder.join("drawer.voyage"), VOYAGE).unwrap();
     (id, folder, toml)
 }

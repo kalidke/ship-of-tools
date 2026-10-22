@@ -106,7 +106,7 @@ pub trait Transport {
     /// events one iteration actually processes) — NOT a promise of one
     /// wake per event. So `run`'s own `output_rx.recv_timeout` wait can
     /// wake on real transport activity immediately instead of waiting out
-    /// its own group-commit window. Called by `run` AT MOST ONCE, before
+    /// its own tick. Called by `run` AT MOST ONCE, before
     /// [`Transport::bind`] — a real transport stores the callback and
     /// forwards it to whatever it binds; the concrete `PipeServer`/
     /// `SocketServer` created inside `bind` is what actually invokes it
@@ -150,7 +150,7 @@ pub trait Transport {
     /// MUST NOT BLOCK: called once per MAIN-LOOP iteration
     /// (`service_transport_events`/`service_transport_events_teardown`), in a `while let Some(ev)
     /// = ...` drain, immediately BEFORE this loop's own
-    /// `output_rx.recv_timeout(GROUP_COMMIT_WINDOW)` wait — that recv is
+    /// `output_rx.recv_timeout(LOOP_TICK)` wait — that recv is
     /// this loop's ONE latency budget per iteration; a blocking or
     /// timed-wait implementation here would add a second, uncoordinated
     /// wait ahead of it every iteration, silently doubling worst-case

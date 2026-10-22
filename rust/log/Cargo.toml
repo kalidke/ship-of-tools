@@ -27,7 +27,6 @@ sot-platform = { path = "../platform" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-crc32c = { workspace = true }
 uuid = { workspace = true }
 thiserror = "2"
 getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From impl

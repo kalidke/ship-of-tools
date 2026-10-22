@@ -118,7 +118,6 @@
 
 use crate::capsule::producer::{ExitStatus, Producer};
 use crate::{Error, Result};
-use serde_json::json;
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};

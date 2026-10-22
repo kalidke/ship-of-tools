@@ -127,10 +127,13 @@ files, messaging and containment to be crates.
 
 **capsule.** To the rest: a row's terminal survives the window and the daemon; one supervisor per state dir, so rows
 never start a second; a viewer (window, headless client, wake) attaches through one client and sees the screen as it
-is; rows read the supervisor's end as clean, terminal, contended or storage-held. Inside (current mechanism): an
-append-only voyage read forever, codec seams, torn-tail recovery, fsync before publish, ground-gated attach, three
-lanes, exit codes 0, 69, 70, 71. Rests on: platform (locks, durable publish, process birth), the OS pty/ConPTY. Does
-not: know about rows, mail or windows. Decision D2 decides how much of the inside stays.
+is; rows read the supervisor's end as clean, terminal or contended. Inside (after pass 6a): the append-only voyage,
+its codec, torn-tail recovery, the input WAL and the storage hold are gone; a leg keeps the screen in a bounded file
+(`<state_dir>/screen`, the vt100 checkpoint, written off the output path) and shows it above a restart line when it
+starts again; input whose acknowledgement was lost is reported as delivery unknown, never sent again; three lanes
+remain until 6c; exit codes 0, 69, 70. Rests on: platform (locks, durable publish, process birth), the OS pty/ConPTY.
+Does not: know about rows, mail or windows. Its contract is written in pass 6d; the plan is
+`dev/output/reorg/passes/6-capsule-plan.result.md`.
 
 **messaging.** The contract is settled (pass 4, decision D1): `rust/backend/src/comm/CLAUDE.md`, written from decision
 0031, which wins where they differ. Comm is one implementation, in `sotd`: the daemon runs it in process and every
@@ -253,9 +256,13 @@ Windows).
   unless the capsule contract finds a reader: in the maintainer's use a row's terminal is not read after its session
   ends, and closing a row already removes its state folder with its voyage. Retired with them: the promise that a
   voyage is read forever, the codec seams and torn-tail recovery.
+  Refined 2026-10-22 (the maintainer, on the capsule plan): attach keeps today's 200 rows of scrollback (the 10,000
+  above was never in use: a fresh attach carried 200); the old screen after a restart is new behavior, built in 6a;
+  old voyage folders are renamed at the 0.7.0 boot and removed by the start sweep a day later; the row socket speaks
+  wire's frames, and the row hello carries its own row-protocol number, so a daemon update never strands a live row.
 - **D3 sidecars.** The kernel, the REPL, Pluto and the monitor sampler stay; the Linux per-child X display stays (a
   security boundary). The dormant Claude SDK producer (`rust/log/src/claude.rs`, `claude-sdk-helper/`, 47k tokens,
-  no product path runs it) is deleted in the sidecars pass. MathJax's node child is decided in that pass on one fact:
+  no product path runs it) was deleted in the capsule's pass 6a with the store it wrote to. MathJax's node child is decided in that pass on one fact:
   whether markdown with math is previewed in use.
 - **D4 the frontend splits into five crates** along the existing event router (`drain_events`, one arm per event):
   app and render; chrome, input, help and persistence; navigation and session; agent pane and drawer (terminal, REPL,
@@ -298,7 +305,7 @@ at its end and one round for its findings; a class of breaks stops it, and the s
 | 5b-1 | Containment carved out of lifecycle into its own crate; lifecycle's contract (5b split by the load rule: 211k of code and tests) | 2-3 | 40-60 | 1.0 h wall in two agent rounds (the pass 23 min to a gate-ready head, the review round 5 min after an outside review), about 30 agent minutes; about $11 for the agent; lifecycle 42/67/39/15 -> 22/44/21/14, containment (new) 23/21/22/3; the landing run 12.2 min |
 | 5b-2 | Topology: its contract; its own crate out of `rust/protocol`, which ends wire's edge to `sot-log` | 2-3 | 40-60 | 1.0 h wall in two agent rounds (the pass 21 min to a gate-ready head, the review round 5 min after an outside review), about 28 agent minutes; about $9 for the agent; seven defects fixed red first (unserialized `topology.set`, a sync that could overwrite a newer hub edit, three unchecked names reaching ssh or a socket path, a monitor label repeated across headers, a refused edit swallowing a hand edit); topology 50/52/35/26 -> 52/55/35/23, wire 42/15/3/2 -> 41/15/3/1; the landing run 6.9 min |
 | 5c | Server: its contract; the op table into the binary, every service a handler with an explicit context | 4-6 | 80-120 | 0.9 h wall in two agent rounds (the pass 22 min to a gate-ready head, the review round 7 min after an outside review), about 29 agent minutes; about $7 for the agent; the op table was already one table and handlers already took explicit arguments, so the cut was the shared reply helpers and byte pump moved to wire, the server's submodules made private, pages and the updater given a closure instead of the roster; queue item 21 fixed on the real start path and the reaper fixed under event load, both red first; server 54/119/15/44 -> 52/118/14/45, wire 41/15/3/1 -> 43/17/4/1; the landing run 9.3 min |
-| 6 | Capsule (D2) | 10-20 | 200-400 | |
+| 6 | Capsule (D2), in passes from the plan: 6a voyage out, 6b one process per row, 6c-1 the row socket and its frames, 6c-2 the single dial and the 0.7.0 retire, 6d the transport home and the contract | 10-20 | 200-400 | 6a: 1.4 h wall (07:43 to 09:10) in four agent rounds (the pass 34 min to a gate-ready head; one review round 8 min; two landing fixes, a test-only re-export the normal build could not see and two screen tests that read only the visible screen on Windows), about 45 agent minutes; about $35 for the agent; capsule 410/403/143/3 -> 341/345/135/3 (69k product and 58k tests deleted); the landing run 6.9 min |
 | 7 | Frontend: State apart first, one short pass per cluster (the row record, focus and prompt, preview requests, the REPL and agent pane), each moving its fields into a type with private fields; then the five crate cuts (D4) as moves: app and render, chrome and input, navigation and session, agent pane and drawer, preview and control | 22-52 | 440-1,040 | |
 | 8 | Sidecars (D3) | 4-8 | 80-160 | |
 | 9 | Pages and files | 3-5 | 60-100 | |
@@ -346,5 +353,6 @@ and `rust/log/tests` (27 thousand lines) are assigned by file:
   containment's and lifecycle's contracts are settled, and containment is its own crate, `sot-containment`. Pass 5b-2
   landed 2026-10-21: topology's contract is settled, topology is its own crate, `sot-topology`, and wire depends on
   platform alone. Pass 5c landed 2026-10-21: the server's contract is settled, and no service names the server's
-  internals. The capsule pass (D2) is next, starting with its cut. Nothing is half-done on main.
+  internals. Pass 6a landed 2026-10-22: the capsule's voyage record is gone and a leg keeps a bounded screen file.
+  Pass 6b (one process per row) is next; pass 8a (sidecars) runs beside the capsule series. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

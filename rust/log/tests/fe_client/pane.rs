@@ -37,7 +37,7 @@ fn attach_as_watcher_receives_the_checkpoint() {
     assert!(!client.is_dead());
     assert!(woke.load(Ordering::Relaxed), "wake() was never called");
 
-    end_run_and_wait_verified(&conn, &voyage);
+    end_run_and_wait_ended(&conn, &voyage);
     let _ = command(&conn, "test-a-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }
@@ -131,7 +131,7 @@ fn a_missed_liveness_probe_clears_on_the_next_answer() {
     // new lane after the stall.
     drop(conn);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    end_run_and_wait_verified(&conn, &voyage);
+    end_run_and_wait_ended(&conn, &voyage);
     let _ = command(&conn, "probe-blink-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }
@@ -180,47 +180,10 @@ fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
     let found = poll_screen(&mut client, Duration::from_secs(30), |t| t.contains("SOT_FE_MARKER"));
     assert!(found, "input never reached the shell (dead={}, status={})", client.is_dead(), client.status_line());
 
-    // Ruling (b): resize precedes the flush -- proven at the wire level
-    // via the sealed voyage record (the client's own public surface has
-    // no other way to observe SEND order). `Class::Input`'s payload
-    // REDACTS content, so the match is by exact byte length -- unique in
-    // this run since no other command of this length is ever sent.
+    // Ruling (b): the resize precedes the flush. The wire's lockstep admits the input only after `take_ok` and the
+    // resize, so the echo above is itself the proof the order held; the capsule's geometry is the client's own 80x24.
     drop(client);
-    end_run_and_wait_verified(&conn, &voyage);
-
-    let frames = sealed_frames(&state_dir, &voyage);
-    let resize_seq = frames
-        .iter()
-        .find_map(|f| {
-            if f.class != sot_log::store::envelope::Class::ControlExchange {
-                return None;
-            }
-            let p = f.payload.as_ref()?;
-            if p.get("phase")?.as_str()? == "request" && p.get("kind_ns")?.as_str()? == "conpty/resize" {
-                Some(f.seq.n)
-            } else {
-                None
-            }
-        })
-        .expect("no resize control_exchange request frame found in the sealed voyage");
-    let input_seq = frames
-        .iter()
-        .find_map(|f| {
-            if f.class != sot_log::store::envelope::Class::Input {
-                return None;
-            }
-            let p = f.payload.as_ref()?;
-            if p.get("length")?.as_u64()? == marker.len() as u64 {
-                Some(f.seq.n)
-            } else {
-                None
-            }
-        })
-        .expect("no matching input frame found in the sealed voyage");
-    assert!(
-        resize_seq < input_seq,
-        "resize (seq {resize_seq}) must precede the flushed input (seq {input_seq})"
-    );
+    end_run_and_wait_ended(&conn, &voyage);
 
     let _ = command(&conn, "test-b-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard, Duration::from_secs(30));
@@ -344,17 +307,18 @@ fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkpoint() {
+fn reconnect_after_the_leg_crashes_restores_the_screen_from_the_new_leg_under_a_restart_line() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
+    let go = arm_leg_crash(dir.path());
 
-    let mut guard1 = spawn_supervisor(&state_dir, "--start", SHELL);
-    let conn1 = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage, _leg) = wait_for_ready(&conn1, Duration::from_secs(90));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
     let (_woke, wake) = wake_flag();
     let mut client = FeAttachClient::attach(
@@ -370,58 +334,108 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkp
     .expect("attach");
     assert!(
         poll_screen(&mut client, Duration::from_secs(30), |t| t.trim().chars().any(|c| !c.is_whitespace())),
-        "no checkpoint content ever reached the client's screen before the kill"
+        "no checkpoint content ever reached the client's screen before the crash"
     );
-    // A distinctive marker in the FIRST leg's screen, so the later
-    // assertion can tell "still showing the old screen" apart from "a
-    // genuinely fresh checkpoint arrived" -- proving RESTORE, not mere
-    // silence.
     client.send_input(b"echo SOT_FE_OLD_LEG\r\n");
     assert!(
         poll_screen(&mut client, Duration::from_secs(30), |t| t.contains("SOT_FE_OLD_LEG")),
         "first-leg marker never reached the screen"
     );
+    crash_leg(&mut client, &go);
 
-    // "The capsule is killed": hard-terminate the capsule process
-    // directly (learned via the voyage pipe's own mgmt status, the
-    // honest hard-termination fallback the ADR itself names), then kill
-    // the now-orphaned supervisor too so what comes next is genuinely a
-    // FRESH supervisor process, not the same one respawning its own
-    // child.
-    let pid = capsule_pid(&voyage);
-    taskkill(pid);
-    let _ = guard1.child_mut().kill();
-    let _ = guard1.child_mut().wait();
-
-    // A fresh supervisor, `--resume` against the SAME state dir: no live
-    // capsule survives to adopt, so it spawns a fresh leg under the SAME
-    // (already-published, unchanged) voyage pointer.
-    let mut guard2 = spawn_supervisor(&state_dir, "--resume", SHELL);
-    let conn2 = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage2, _leg2) = wait_for_ready(&conn2, Duration::from_secs(90));
-    assert_eq!(voyage2, voyage, "a fresh spawn under --resume must keep the SAME voyage pointer");
-
-    // The client's own reconnect episode (ruling d) notices the dropped
-    // attach connection, re-reads the pointer, reconnects the
-    // supervisor lane, and re-attaches -- restoring the screen from the
-    // NEW leg's checkpoint. Bounded generously: real backoff (250ms
-    // doubling to 4s) plus a real second capsule spawn both cost real
-    // wall time here.
-    let fresh = poll_screen(&mut client, Duration::from_secs(120), |t| {
-        t.trim().chars().any(|c| !c.is_whitespace()) && !t.contains("SOT_FE_OLD_LEG")
-    });
-    assert!(
-        fresh,
-        "the client never restored a fresh checkpoint after reconnect (dead={}, status={})",
-        client.is_dead(),
-        client.status_line()
+    // The supervisor respawns the leg; the client's own reconnect episode (ruling d) re-attaches, and the new leg's
+    // checkpoint starts from the screen file: the old marker above the restart line.
+    let restored = poll_until(
+        || {
+            client.pump();
+            let text = screen_and_history(&mut client);
+            let (old, line) = (text.find("SOT_FE_OLD_LEG")?, text.find("[restarted ")?);
+            (old < line).then_some(())
+        },
+        Duration::from_secs(120),
+        "the restarted leg's screen: the old marker above the restart line",
     );
+    let _ = restored;
     assert!(!client.is_dead());
+    disarm_leg_crash();
 
     drop(client);
-    end_run_and_wait_verified(&conn2, &voyage2);
-    let _ = command(&conn2, "test-d-stop", SupervisorOp::Stop);
-    wait_for_exit(&mut guard2, Duration::from_secs(30));
+    end_run_and_wait_ended(&conn, &voyage);
+    let _ = command(&conn, "test-d-stop", SupervisorOp::Stop);
+    wait_for_exit(&mut guard, Duration::from_secs(30));
+}
+
+// -----------------------------------------------------------------------
+// D2: the last screen survives a crash of the leg (the leg writes `screen`, the next leg restores it)
+// -----------------------------------------------------------------------
+
+#[test]
+fn screen_restores_after_a_supervisor_restart() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+    let go = arm_leg_crash(dir.path());
+
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+
+    let (_woke, wake) = wake_flag();
+    let mut client = FeAttachClient::attach(
+        PlatformEndpoint::default(),
+        h.clone(),
+        80,
+        24,
+        "fe-client-screen-restore".to_string(),
+        "test-handle".to_string(),
+        None,
+        wake,
+    )
+    .expect("attach");
+    assert!(
+        poll_screen(&mut client, Duration::from_secs(30), |t| t.trim().chars().any(|c| !c.is_whitespace())),
+        "no checkpoint content ever reached the client's screen before the crash"
+    );
+    client.send_input(b"echo SOT_FE_RESTORE_MARK\r\n");
+    assert!(
+        poll_screen(&mut client, Duration::from_secs(30), |t| t.contains("SOT_FE_RESTORE_MARK")),
+        "the marker never reached the screen"
+    );
+    crash_leg(&mut client, &go);
+    drop(client);
+
+    // A viewer that attaches only after the restart sees the old screen above the restart line, in that order.
+    let (_woke2, wake2) = wake_flag();
+    let mut fresh = FeAttachClient::attach(
+        PlatformEndpoint::default(),
+        h.clone(),
+        80,
+        24,
+        "fe-client-screen-restore-2".to_string(),
+        "test-handle".to_string(),
+        None,
+        wake2,
+    )
+    .expect("attach after the restart");
+    poll_until(
+        || {
+            fresh.pump();
+            let text = screen_and_history(&mut fresh);
+            let (mark, line) = (text.find("SOT_FE_RESTORE_MARK")?, text.find("[restarted ")?);
+            (mark < line).then_some(())
+        },
+        Duration::from_secs(120),
+        "the restarted leg's screen: the marker above the restart line",
+    );
+    disarm_leg_crash();
+
+    drop(fresh);
+    end_run_and_wait_ended(&conn, &voyage);
+    let _ = command(&conn, "test-restore-stop", SupervisorOp::Stop);
+    wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// Keys typed while an ATTACHED pane re-attaches are never delivered once it
@@ -437,6 +451,7 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
+    std::env::set_var("SOT_TEST_SCREEN_PACE_MS", "300");
 
     let mut guard1 = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn1 = wait_for_lane(&h, Duration::from_secs(30));
@@ -472,6 +487,7 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
         Duration::from_secs(30),
         "the old leg's input to be fully recorded",
     );
+    wait_for_saved_marker(&state_dir, "SOT_FE_OLD_LEG");
 
     let pid = capsule_pid(&voyage);
     taskkill(pid);
@@ -479,6 +495,7 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
     let _ = guard1.child_mut().wait();
 
     let mut guard2 = spawn_supervisor(&state_dir, "--resume", SHELL);
+    std::env::remove_var("SOT_TEST_SCREEN_PACE_MS");
     let conn2 = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage2, _leg2) = wait_for_ready(&conn2, Duration::from_secs(90));
     assert_eq!(voyage2, voyage, "a fresh spawn under --resume must keep the SAME voyage pointer");
@@ -500,11 +517,11 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
     poll_until(
         || {
             client.pump();
-            let fresh = !screen_text(client.screen()).contains("SOT_FE_OLD_LEG");
-            (fresh && client.status_line() == "attached").then_some(())
+            let restarted = screen_and_history(&mut client).contains("restarted");
+            (restarted && client.status_line() == "attached").then_some(())
         },
         Duration::from_secs(120),
-        "the client to re-attach to a fresh screen",
+        "the client to re-attach to the restarted leg's screen",
     );
     // The keys typed during the re-attach are counted, not silently lost.
     poll_until(
@@ -536,7 +553,7 @@ fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
     // The first management connection idles out during the freeze; dial a fresh one.
     drop(conn2);
     let conn3 = wait_for_lane(&h, Duration::from_secs(30));
-    end_run_and_wait_verified(&conn3, &voyage2);
+    end_run_and_wait_ended(&conn3, &voyage2);
     let _ = command(&conn3, "test-stale-stop", SupervisorOp::Stop);
     wait_for_exit(&mut guard2, Duration::from_secs(30));
 }

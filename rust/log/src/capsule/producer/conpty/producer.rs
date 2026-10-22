@@ -9,11 +9,10 @@
 
 #![cfg(windows)]
 
-use crate::capsule::producer::conpty::{observe_spawning_process_jobbed, ConptySpawn, PrimaryProcess, Pseudoconsole};
+use crate::capsule::producer::conpty::{ConptySpawn, PrimaryProcess, Pseudoconsole};
 use sot_platform::host::winjob::AnonymousJob;
 use crate::capsule::producer::{ExitStatus, Producer};
 use crate::Result;
-use serde_json::json;
 use std::fs::File;
 use std::io::Write;
 use std::time::Duration;
@@ -43,14 +42,6 @@ pub struct ConptyProducer {
 
 impl Producer for ConptyProducer {
     type Output = File;
-
-    fn pre_spawn_detail() -> serde_json::Value {
-        // The current `producer_spawn.detail` shape, unchanged (ADR 0041):
-        // observed independent of spawn's own outcome (see
-        // `observe_spawning_process_jobbed`'s own doc), so a failed spawn
-        // still records it.
-        json!({"spawning_process_was_jobbed": observe_spawning_process_jobbed()})
-    }
 
     fn spawn(argv: &[String], cols: u16, rows: u16) -> Result<Self> {
         let ConptySpawn {

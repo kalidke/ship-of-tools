@@ -113,10 +113,6 @@ struct FakeProducer {
 impl sot_log::capsule::producer::Producer for FakeProducer {
     type Output = FakeOutput;
 
-    fn pre_spawn_detail() -> serde_json::Value {
-        serde_json::json!({})
-    }
-
     fn spawn(_argv: &[String], _cols: u16, _rows: u16) -> sot_log::Result<Self> {
         let script = FAKE_SCRIPT.lock().unwrap().take().expect("no fake script armed");
         let state = Arc::new(FakeState {
@@ -214,41 +210,20 @@ fn run_fake(
     (capsule::run::<FakeProducer>(cfg, rx, &mut transport), root)
 }
 
-/// How many `producer_dead` frames the voyage actually sealed — the
-/// question "did this run seal anything" wants, tolerant of a segment a
-/// failed run left unsealed (which is not readable strictly and must not
-/// panic the test that is asserting the absence).
-fn sealed_producer_dead_count(root: &std::path::Path) -> usize {
-    let seg_dir = root.join("seg");
-    let Ok(entries) = std::fs::read_dir(&seg_dir) else {
-        return 0;
-    };
-    let mut n = 0;
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("sotseg") {
-            continue;
-        }
-        let Ok(r) = SegmentReader::read(&p, true) else { continue };
-        for f in r.frames {
-            if let Some(payload) = f.payload.as_ref() {
-                if payload["kind"] == "producer_dead" {
-                    n += 1;
-                }
-            }
-        }
-    }
-    n
+/// How many finished endings the leg left (0 or 1) — the question "did this run end honestly" wants, tolerant of a leg
+/// that failed and left none.
+fn finished_endings(root: &std::path::Path) -> usize {
+    usize::from(capsule::read_ended(root).ok().flatten().is_some_and(|e| e.finished))
 }
 
 /// Ordering B of the amended decision 12 (the writer loop's own
 /// `wait(ZERO)` observes the exit first, and the reader's terminal event
 /// is still in the channel when teardown starts): teardown Phase A picks
 /// the event up, confirms it against the exit it already knows about, and
-/// RECORDS it. The run seals, verifies, and reports the same
+/// RECORDS it. The run finishes and reports the same
 /// `ProducerExited` it would have without the early end.
 #[test]
-fn early_output_end_after_the_exit_is_recorded_and_the_run_still_seals() {
+fn early_output_end_after_the_exit_is_recorded_and_the_run_still_finishes() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let (summary, root) = run_fake(
@@ -269,12 +244,10 @@ fn early_output_end_after_the_exit_is_recorded_and_the_run_still_seals() {
     );
     let summary = summary.expect("an early output end the producer's exit explains must not be fatal");
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
-    verify_voyage(&root, "earlyend_b").unwrap();
-    let frames = sealed_frames(&root, "earlyend_b");
-    let detail = assert_producer_dead_is_last(&frames);
+    let ended = ended_of(&root);
     assert!(
-        detail["output_ended_early"].is_string(),
-        "the admitted case must be RECORDED, not forgiven: {detail:?}"
+        ended.output_ended_early.is_some(),
+        "the admitted case must be RECORDED, not forgiven: {ended:?}"
     );
 }
 
@@ -284,7 +257,7 @@ fn early_output_end_after_the_exit_is_recorded_and_the_run_still_seals() {
 /// `exit_kind`, same recorded field — which is the determinism claim of
 /// the ruling's race analysis, as an assertion.
 #[test]
-fn early_output_end_confirmed_inside_the_grace_is_recorded_and_the_run_still_seals() {
+fn early_output_end_confirmed_inside_the_grace_is_recorded_and_the_run_still_finishes() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let (summary, root) = run_fake(
@@ -299,18 +272,16 @@ fn early_output_end_confirmed_inside_the_grace_is_recorded_and_the_run_still_sea
     );
     let summary = summary.expect("an exit confirmed inside the grace must not be fatal");
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
-    verify_voyage(&root, "earlyend_a").unwrap();
-    let frames = sealed_frames(&root, "earlyend_a");
-    let detail = assert_producer_dead_is_last(&frames);
+    let ended = ended_of(&root);
     assert!(
-        detail["output_ended_early"].is_string(),
-        "the admitted case must be RECORDED, not forgiven: {detail:?}"
+        ended.output_ended_early.is_some(),
+        "the admitted case must be RECORDED, not forgiven: {ended:?}"
     );
 }
 
 /// The rule still forbids what the old one forbade: a terminal reader
 /// event with the producer STILL ALIVE past the grace is capsule-fatal and
-/// seals NOTHING. Without this test the lane has not discharged the
+/// finishes NOTHING. Without this test the lane has not discharged the
 /// invariant — it has only widened it. (This is the one test that waits
 /// out the real `READER_END_EXIT_GRACE`.)
 #[test]
@@ -332,9 +303,9 @@ fn early_output_end_with_the_producer_alive_past_the_grace_is_fatal() {
     assert!(text.contains("reader reached its terminal state"), "got: {text}");
     assert!(text.contains("still alive"), "the error must name the producer's liveness: {text}");
     assert_eq!(
-        sealed_producer_dead_count(&root),
+        finished_endings(&root),
         0,
-        "a fatal pre-close end of the output stream must seal nothing"
+        "a fatal pre-close end of the output stream must finish nothing"
     );
 }
 
@@ -358,7 +329,7 @@ fn a_reader_gone_without_a_terminal_event_is_still_fatal() {
     let err = summary.expect_err("a reader gone without a terminal Done must stay fatal");
     let text = format!("{err}");
     assert!(text.contains("without a terminal Done event"), "got: {text}");
-    assert_eq!(sealed_producer_dead_count(&root), 0, "a reader-gone must seal nothing");
+    assert_eq!(finished_endings(&root), 0, "a reader-gone must finish nothing");
 }
 
 /// The residual the ruling's race analysis does not cover, pinned so it is
@@ -386,17 +357,15 @@ fn early_output_end_is_not_recorded_when_the_domain_empties_first() {
     );
     let summary = summary.expect("this ordering is correct, just unrecorded");
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
-    verify_voyage(&root, "earlyend_fast").unwrap();
-    let frames = sealed_frames(&root, "earlyend_fast");
-    let detail = assert_producer_dead_is_last(&frames);
+    let ended = ended_of(&root);
     assert!(
-        detail.get("output_ended_early").is_none(),
-        "the drain cannot distinguish this event from its own close's EOF: {detail:?}"
+        ended.output_ended_early.is_none(),
+        "the drain cannot distinguish this event from its own close's EOF: {ended:?}"
     );
 }
 
 /// The isolation assertion the ruling requires, on the REAL producer this
-/// platform ships: a Linux or Windows capsule's record never carries
+/// platform ships: a Linux or Windows capsule's ending never carries
 /// `output_ended_early`, because the arm that sets it is unreachable there
 /// (decision 12's held slave; ConPTY's `hOutput` outliving the child).
 /// macOS is excluded deliberately — it is the one platform where a session
@@ -414,11 +383,10 @@ fn a_real_producer_never_records_an_early_output_end() {
     let mut transport = no_transport();
     let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
-    let frames = sealed_frames(&root, "noearly1");
-    let detail = assert_producer_dead_is_last(&frames);
+    let ended = ended_of(&root);
     assert!(
-        detail.get("output_ended_early").is_none(),
-        "this platform's output side cannot end before the loop closes it: {detail:?}"
+        ended.output_ended_early.is_none(),
+        "this platform's output side cannot end before the loop closes it: {ended:?}"
     );
 }
 
@@ -429,9 +397,9 @@ fn writer_lock_held_probe(cfg: &CapsuleConfig) -> Arc<dyn Fn() -> bool + Send + 
     Arc::new(move || sot_platform::host::lock_writer(&lock).is_err())
 }
 
-/// `ShutdownGuard`'s fallback `shutdown_all` runs while the voyage's writer
-/// lock is still held, on every way `run` ends. Pins the drop order `Leg`
-/// keeps: its transport field drops before its store field.
+/// `ShutdownGuard`'s fallback `shutdown_all` runs while the leg's writer
+/// fence is still held, on every way `run` ends. Pins the drop order `Leg`
+/// keeps: its transport field drops before its fence field.
 #[test]
 fn shutdown_guard_runs_while_the_writer_lock_is_held() {
     let _serial = serial();

@@ -103,18 +103,10 @@ pub(super) enum Lifecycle {
     /// AT ALL (see [`AuthorityState::stop_requested`] and the module
     /// doc's own "Stop no longer owns a Lifecycle state" section).
     Terminal { detail: String, entered_at: Instant },
-    /// The state root's storage is exhausted (a leg exited 71, a leg died
-    /// with no status and its probe met it, or a recovery, end_run or reset
-    /// worker failed with it). The authority probes the root on a backoff
-    /// and resumes when a probe succeeds; the crash counter is untouched and
-    /// the wait never goes Terminal for storage (`storage/`). Status reports
-    /// it as `starting`.
-    StorageFull(storage::Wait),
 }
 
 pub(super) enum RecoveryOutcome {
     Done { voyage_id: String, ended: bool },
-    Storage(String),
     Fatal { detail: String },
 }
 
@@ -131,26 +123,20 @@ pub(super) enum EndRunWorkerResult {
     /// absorbs every `PendingWriter` attempt into its OWN bounded retry
     /// loop and never surfaces it as a final result.
     PreBarrierFailed,
-    /// The worker's error was storage exhaustion: the operation stays active
-    /// and startup recovery finishes it once storage clears.
-    Storage(String),
     Fatal(String),
 }
 
 pub(super) enum ResetWorkerResult {
     Done { new_voyage: String },
-    /// As [`EndRunWorkerResult::Storage`]: no `Failed` record is written.
-    Storage(String),
     Fatal(String),
 }
 
 impl Lifecycle {
     pub(super) fn wire_phase(&self) -> SupervisorPhase {
         match self {
-            Lifecycle::Recovering { .. }
-            | Lifecycle::InitialProbe { .. }
-            | Lifecycle::Spawning { .. }
-            | Lifecycle::StorageFull(_) => SupervisorPhase::Starting,
+            Lifecycle::Recovering { .. } | Lifecycle::InitialProbe { .. } | Lifecycle::Spawning { .. } => {
+                SupervisorPhase::Starting
+            }
             Lifecycle::Ready { .. } => SupervisorPhase::Ready,
             Lifecycle::Ending { .. } => SupervisorPhase::Ending,
             // Reset produces a not-yet-started new voyage; no dedicated
@@ -196,7 +182,6 @@ fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<LegProce
             retire_leg(retired_legs, process);
             None
         }
-        Lifecycle::StorageFull(mut wait) => wait.take_worker_handle(),
         Lifecycle::EndedNoRespawn | Lifecycle::Terminal { .. } => None,
     }
 }
@@ -261,10 +246,7 @@ pub(super) fn spawn_recovery(state_dir: PathBuf, mode: StartMode) -> (mpsc::Rece
             let ended = summary.ended_voyages.contains(&voyage_id);
             Ok(RecoveryOutcome::Done { voyage_id, ended })
         })()
-        .unwrap_or_else(|e| match storage_exhaustion(&e) {
-            Some(_) => RecoveryOutcome::Storage(bounded_detail(format!("{e}"))),
-            None => RecoveryOutcome::Fatal { detail: bounded_detail(format!("{e}")) },
-        });
+        .unwrap_or_else(|e| RecoveryOutcome::Fatal { detail: bounded_detail(format!("{e}")) });
         let _ = tx.send(outcome);
     });
     (rx, handle)
@@ -291,6 +273,7 @@ pub(super) fn spawn_owned_spawn_attempt(
     capsule_exe: PathBuf,
     voyage_root: PathBuf,
     voyage_id: String,
+    screen: PathBuf,
     cols: u16,
     rows: u16,
     // ADR 0043 decision 21: owned, not borrowed -- moved into this
@@ -305,7 +288,7 @@ pub(super) fn spawn_owned_spawn_attempt(
     let handle = std::thread::spawn(move || {
         let readiness_cutoff = Instant::now() + READINESS_CUTOFF;
         let mut command =
-            build_run_command(&capsule_exe, &voyage_root, &voyage_id, cols, rows, &lease, survival, &producer_argv);
+            build_run_command(&capsule_exe, &voyage_root, &voyage_id, &screen, cols, rows, &lease, survival, &producer_argv);
         let outcome = classify::probe_owned_spawn(
             &RealProbeOps,
             &mut command,
@@ -451,7 +434,6 @@ pub(super) fn spawn_end_run(
             Ok(EndRunReconciliation::PendingWriter) => {
                 unreachable!("retry_until_writer_resolved only returns once result is no longer PendingWriter")
             }
-            Err(e) if storage_exhaustion(&e).is_some() => EndRunWorkerResult::Storage(bounded_detail(format!("{e}"))),
             Err(e) => EndRunWorkerResult::Fatal(bounded_detail(format!("{e}"))),
         };
         let _ = tx.send(EndingProgress::Final(final_result));
@@ -469,9 +451,6 @@ pub(super) fn do_reset(state_dir: &Path, operation_id: &str, new_voyage: &str, a
             let t = journal::TerminalRecord::ResetDone { new_voyage: new_voyage.to_string() };
             match journal::finish(state_dir, operation_id, &t) {
                 Ok(()) => ResetWorkerResult::Done { new_voyage: new_voyage.to_string() },
-                Err(e) if storage_exhaustion(&e).is_some() => {
-                    ResetWorkerResult::Storage(bounded_detail(format!("journal finish failed: {e}")))
-                }
                 Err(e) => ResetWorkerResult::Fatal(bounded_detail(format!("journal finish failed: {e}"))),
             }
         }
@@ -481,19 +460,14 @@ pub(super) fn do_reset(state_dir: &Path, operation_id: &str, new_voyage: &str, a
 
 /// A FAILED reset_pointer is Terminal -- a half-mutated pointer is the same
 /// "operator must investigate" condition this module's own recovery refusal
-/// already names for a third, unexplained identity. Storage exhaustion is
-/// not that: the operation stays active, no `Failed` record is written, and
-/// startup recovery finishes it from its journal when storage clears. Every
-/// other failure writes `Failed`; this journal::finish's OWN failure is
+/// already names for a third, unexplained identity. The failure is written
+/// as `Failed`; this journal::finish's OWN failure is
 /// never silently ignored either -- logged loud, even though the overall
 /// SEVERITY is unchanged either way (Fatal -> Terminal regardless): an
 /// operator investigating this failure deserves to know the journal record
 /// itself may be missing too.
 pub(super) fn reset_failure(state_dir: &Path, operation_id: &str, e: crate::Error) -> ResetWorkerResult {
     let detail = bounded_detail(format!("{e}"));
-    if storage_exhaustion(&e).is_some() {
-        return ResetWorkerResult::Storage(detail);
-    }
     let t = journal::TerminalRecord::Failed { detail: detail.clone() };
     if let Err(finish_err) = journal::finish(state_dir, operation_id, &t) {
         note(format_args!(
@@ -594,6 +568,7 @@ pub(super) fn respawn_or_terminal(
         capsule_exe.to_path_buf(),
         voyage_root,
         voyage_id,
+        authority.state_dir.join("screen"),
         config.cols,
         config.rows,
         spawn_lease,

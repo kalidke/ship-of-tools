@@ -74,7 +74,7 @@ use sot_platform::identity::challenge_macos;
 use sot_platform::identity::exit_watch_macos::{drain_exit, watch_exit};
 use crate::supervisor::probe::leg_process::LegProcess;
 use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
-use crate::store::voyage::WRITER_LOCK;
+use crate::capsule::WRITER_LOCK;
 use std::cell::Cell;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;

@@ -195,8 +195,8 @@ pub(crate) fn supervisor_stderr_std() -> Stdio {
 /// [`first_leg_only`]'s pairs, argv)
 /// is written ONCE regardless of which head it lands on. `scoped` is
 /// always `false` on Windows (no scope concept there).
-/// `--assume-no-rollback-target` is mandatory: `sot_log::supervisor::supervise`
-/// itself refuses (exit 69) without it pre-U4. The nesting env vars
+/// `--assume-no-rollback-target` is accepted and ignored by `sot-capsule supervise` (the gate it answered is gone);
+/// the launch still passes it until the row socket pass drops it. The nesting env vars
 /// are scrubbed, and a row created with a handle has it in its pinned
 /// self file before the leg starts (`self_file::pin_row`).
 ///

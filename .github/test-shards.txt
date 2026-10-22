@@ -27,7 +27,6 @@ wake3      test comm_wake a_slow_echo_is_entered_in_the_same_attempt a_stop_mark
 plat       lib  sot_platform
 plat       lib  sot_containment
 ws2        test capsule_workspaces --skip destroy:: --skip spawn:: --skip create:: --skip session_env:: --skip ended_row:: --skip resume:: --skip attach::
-fe         test fault_storage --skip native_volume_fill_free_sync
 sotd-a     bin  sotd sidecars::repl:: --skip repl_page_secret_never_reaches_command_line
 sotd-b     bin  sotd sidecars:: --skip sidecars::repl:: --skip sidecars::kernel::deadline_tests:: --skip repl_page_secret_never_reaches_command_line
 sotd-c     bin  sotd --skip sidecars:: --skip repl_page_secret_never_reaches_command_line
@@ -38,8 +37,6 @@ gate-sleep test window_lease
 gate-sleep test fe_client unresponsive_supervisor_expires_the_health_window
 gate-sleep bin  sotd sidecars::kernel::deadline_tests::
 gate-wgl   bin  sotd repl_page_secret_never_reaches_command_line
-# the native disk fill: it fills a volume, so it runs alone, on each system
-gate-storage test fault_storage native_volume_fill_free_sync
 
 # The jobs of each system (seconds from run 39646399759; a job's tests run about four minutes at most). Linux and Windows
 # share 20 concurrent jobs with the checks, macOS has 5. rest-0 to rest-2 split the targets named nowhere above.
