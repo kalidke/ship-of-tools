@@ -21,7 +21,10 @@ lane       test capsule_workspaces destroy:: spawn:: create:: session_env::
 ws         test capsule_workspaces ended_row:: resume:: attach::
 ws         test comm_wake a_restarted_daemon a_dead_row
 wake       test comm_wake a_wake_line_left_unsent an_unfinished_stop two_tomls a_newer_join a_row_whose_stop_hook
-wake       test comm_wake --skip a_restarted_daemon --skip a_dead_row --skip a_wake_line_left_unsent --skip an_unfinished_stop --skip two_tomls --skip a_newer_join --skip a_row_whose_stop_hook
+wake       test comm_wake --skip a_restarted_daemon --skip a_dead_row --skip a_wake_line_left_unsent --skip an_unfinished_stop --skip two_tomls --skip a_newer_join --skip a_row_whose_stop_hook --skip a_row_holding_a_persons_unsent_text_is_never_typed_into --skip a_row_in_a_dialog_is_not_typed_into_until_it_closes --skip a_slow_echo_is_entered_in_the_same_attempt --skip a_stop_mark_past_the_bound_does_not_hold_the_wake
+wake2      test comm_wake a_row_holding_a_persons_unsent_text_is_never_typed_into a_row_in_a_dialog_is_not_typed_into_until_it_closes
+wake3      test comm_wake a_slow_echo_is_entered_in_the_same_attempt a_stop_mark_past_the_bound_does_not_hold_the_wake
+plat       lib  sot_platform
 ws2        test capsule_workspaces --skip destroy:: --skip spawn:: --skip create:: --skip session_env:: --skip ended_row:: --skip resume:: --skip attach::
 fe         test fault_storage --skip native_volume_fill_free_sync
 sotd-a     bin  sotd sidecars::repl:: --skip repl_page_secret_never_reaches_command_line
@@ -39,6 +42,6 @@ gate-storage test fault_storage native_volume_fill_free_sync
 
 # The jobs of each system (seconds from run 39646399759; a job's tests run about four minutes at most). Linux and Windows
 # share 20 concurrent jobs with the checks, macOS has 5. rest-0 to rest-2 split the targets named nowhere above.
-fold linux   ws2+rest-2 sotd-a+sotd-b+sotd-c rest-0+rest-1 sup+fe
-fold windows sotd-a+sotd-b+ws2 lane+ws rest-0 rest-1 sotd-c+rest-2
-fold macos   sotd-c sotd-b+lane+wake sotd-a+rest-0 rest-1+rest-2 sup+fe+ws+ws2
+fold linux   ws2+rest-2 sotd-a+sotd-b+sotd-c rest-0+rest-1 sup+fe+plat
+fold windows sotd-a+sotd-b+ws2 lane+ws+plat rest-0 rest-1 sotd-c+rest-2
+fold macos   sotd-c+plat sotd-b+lane+wake sotd-a+rest-0 rest-1+rest-2 sup+fe+ws+ws2

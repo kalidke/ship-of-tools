@@ -421,7 +421,7 @@ pub(crate) fn app_config_dir() -> PathBuf {
 
 /// The refusal text for a config dir that cannot be derived.
 pub(crate) const CONFIG_DIR_UNDERIVABLE: &str = if cfg!(windows) {
-    "the daemon's config dir cannot be derived: neither LOCALAPPDATA nor USERPROFILE is set"
+    "cannot resolve the Windows state root: neither %LOCALAPPDATA% nor %USERPROFILE% is set — sotd cannot start without one"
 } else {
     "the daemon's config dir cannot be derived: neither XDG_CONFIG_HOME nor HOME is set; set HOME or XDG_CONFIG_HOME and start it again (it refuses to fall back to a shared directory such as /tmp)"
 };

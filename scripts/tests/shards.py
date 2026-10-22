@@ -29,6 +29,7 @@ import sys
 
 TABLE = pathlib.Path(__file__).resolve().parents[2] / '.github' / 'test-shards.txt'
 KINDS = ('bin', 'test', 'example', 'bench')
+ROW_KINDS = KINDS + ('lib',)  # a row may also name one library's unit tests, by the library's target name
 REST = ('rest-0', 'rest-1', 'rest-2')
 OSES = {'linux': 'ubuntu-latest', 'windows': 'windows-latest', 'macos': 'macos-latest'}
 
@@ -39,8 +40,8 @@ def rows():
         line = line.split('#', 1)[0].strip()
         if line and not line.startswith('fold '):
             shard, kind, target, *filters = line.split()
-            if kind not in KINDS:
-                sys.exit(f'{TABLE}: {line!r}: kind {kind} is not one of {KINDS}')
+            if kind not in ROW_KINDS:
+                sys.exit(f'{TABLE}: {line!r}: kind {kind} is not one of {ROW_KINDS}')
             out.append((shard, kind, target, filters))
     return out
 
@@ -107,6 +108,12 @@ def cargo_test(shard, selection, libtest=()):
     return subprocess.run(command).returncode != 0
 
 
+def cargo_lib(shard, target, libtest=()):
+    command = ['cargo', 'test', '-p', target.replace('_', '-'), '--lib', '--locked', '--no-fail-fast', '--', *libtest, '--nocapture']
+    print('shard ' + shard + ': ' + ' '.join(command), flush=True)
+    return subprocess.run(command).returncode != 0
+
+
 def selection_of(shard, table):
     """The cargo arguments of a rest shard: its slice of the unnamed targets, the libraries in rest-0."""
     declared = declared_tests()
@@ -116,7 +123,8 @@ def selection_of(shard, table):
     everything = sorted(declared - named)
     rest = [t for t in everything if t[0] in KINDS][REST.index(shard)::len(REST)]
     libs = shard == REST[0] and any(kind not in KINDS for kind, _ in everything)
-    return (['--lib'] if libs else []) + [arg for kind, name in rest for arg in ('--' + kind, name)]
+    apart = [arg for kind, name in sorted(named) if kind == 'lib' for arg in ('--exclude', name.replace('_', '-'))]
+    return (['--lib'] + apart if libs else []) + [arg for kind, name in rest for arg in ('--' + kind, name)]
 
 
 def build(job):
@@ -143,7 +151,8 @@ def run_shard(shard, table):
     mine = [row for row in table if row[0] == shard]
     if not mine:
         sys.exit(f'no shard {shard} in {TABLE}')
-    return [cargo_test(shard, ['--' + kind, target], filters) for _, kind, target, filters in mine]
+    return [cargo_test(shard, ['--' + kind, target], filters) if kind != 'lib' else cargo_lib(shard, target, filters)
+            for _, kind, target, filters in mine]
 
 
 def listed(message, extra):

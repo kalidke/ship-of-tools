@@ -189,7 +189,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
         super::guard_direction(implicit, &pre_version, &dir, &pack.version, &prefix, "--version")?;
     }
 
-    let config = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map_or_else(|| home.join(".config"), PathBuf::from).join("sot");
+    let config = sot_platform::host::state_dir::sot_config_dir_in(&sot_platform::host::env::Env::process().with("HOME", &home)).unwrap_or_else(|| home.join(".config").join("sot"));
     heal_old_hosts(&config);
 
     step("role");
