@@ -284,6 +284,7 @@ impl ProbeOps for RealProbeOps {
             Ok(_guard) => FenceProbe::Free,
             Err(sot_platform::Error::State(_)) => FenceProbe::Held,
             Err(sot_platform::Error::Io(e)) => FenceProbe::Error(e),
+            Err(other) => FenceProbe::Error(std::io::Error::other(other)),
         }
     }
 

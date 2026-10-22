@@ -1,7 +1,5 @@
 //! Which native errors mean the volume or quota is full.
 
-use crate::Error;
-
 /// The one table: the native storage-exhaustion codes of this platform, read from an `io::Error`, never from its text.
 /// A caller with an error type of its own reads its `Io` variant through this (`sot_log::storage_exhaustion`).
 pub fn native_storage_code(e: &std::io::Error) -> Option<i32> {
@@ -20,14 +18,6 @@ pub fn native_storage_code(e: &std::io::Error) -> Option<i32> {
         ]
     };
     full.contains(&code).then_some(code)
-}
-
-/// The native code when `e` is storage exhaustion, read from the `io::Error` an `Error::Io` carries, never from text.
-pub(crate) fn storage_exhaustion(e: &Error) -> Option<i32> {
-    match e {
-        Error::Io(io) => native_storage_code(io),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

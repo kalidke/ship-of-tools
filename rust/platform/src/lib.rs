@@ -9,8 +9,9 @@ pub mod test_isolated;
 #[cfg(feature = "test-support")]
 pub mod test_wait;
 
-/// The two ways a platform primitive fails: the OS said no (`Io`, its code kept so a caller can recognize storage
-/// exhaustion), or the primitive refused its input or a state it must not run in (`State`). Upper crates convert it
+/// The ways a platform primitive fails: the OS said no (`Io`, its code kept so a caller can recognize storage
+/// exhaustion; `Path`, the same with what was being done), or the primitive refused its input or a state it must not
+/// run in (`State`). Upper crates convert it
 /// into their own error; they do not match on it across a crate boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -18,6 +19,9 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("state: {0}")]
     State(String),
+    /// The OS said no while doing `what` to a path: the OS's own error stays as the source, its kind and raw code intact.
+    #[error("{what}: {source}")]
+    Path { what: String, #[source] source: std::io::Error },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

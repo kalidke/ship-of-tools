@@ -105,8 +105,6 @@ pub use fd::inherit_none;
 pub use lock::*;
 pub use pinned_dir::*;
 pub use storage::native_storage_code;
-#[allow(unused_imports)]
-pub(crate) use storage::storage_exhaustion;
 pub use volume::*;
 #[cfg(windows)]
 pub use winsec::*;

@@ -5,7 +5,7 @@ use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 #[cfg(unix)]
-use super::{fsync_dir, rename_noreplace_raw, storage_exhaustion};
+use super::{fsync_dir, native_storage_code, rename_noreplace_raw};
 #[cfg(windows)]
 use super::{io_ctx, open_dir_handle};
 
@@ -172,7 +172,7 @@ fn preflight_refusal(dir: &Path, detail: std::fmt::Arguments<'_>) -> Error {
 /// code, and every other probe failure becomes the refusal.
 #[cfg(unix)]
 fn full_or(e: Error, refusal: impl FnOnce(Error) -> Error) -> Error {
-    if storage_exhaustion(&e).is_some() {
+    if matches!(&e, Error::Io(io) if native_storage_code(io).is_some()) {
         e
     } else {
         refusal(e)

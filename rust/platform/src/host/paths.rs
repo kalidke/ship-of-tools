@@ -3,9 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-/// An OS error with what was being done, keeping its kind so a caller can still match on it.
-fn context(e: std::io::Error, what: String) -> crate::Error {
-    crate::Error::Io(std::io::Error::new(e.kind(), format!("{what}: {e}")))
+/// An OS error with what was being done; the error itself stays as the source.
+fn context(source: std::io::Error, what: String) -> crate::Error {
+    crate::Error::Path { what, source }
 }
 
 /// Resolve a REPO-ROOT-RELATIVE resource path (e.g. `julia/kernel`,

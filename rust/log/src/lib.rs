@@ -118,6 +118,7 @@ impl From<sot_platform::Error> for Error {
         match e {
             sot_platform::Error::Io(e) => Error::Io(e),
             sot_platform::Error::State(s) => Error::State(s),
+            sot_platform::Error::Path { what, source } => Error::Io(std::io::Error::new(source.kind(), format!("{what}: {source}"))),
         }
     }
 }
