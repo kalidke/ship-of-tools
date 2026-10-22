@@ -5,6 +5,8 @@
 pub mod host;
 pub mod identity;
 #[cfg(feature = "test-support")]
+pub mod test_exec;
+#[cfg(feature = "test-support")]
 pub mod test_isolated;
 #[cfg(feature = "test-support")]
 pub mod test_wait;

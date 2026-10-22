@@ -39,7 +39,7 @@ async fn row_running(stub: &str) -> Deaf {
     let root = dir.join("row");
     std::fs::create_dir_all(&root).unwrap();
     let julia = dir.join("julia");
-    sot_log::test_exec::write_executable(&julia, stub);
+    sot_platform::test_exec::write_executable(&julia, stub);
     let pin = pin_env(&julia, &resources);
     let (frame_tx, _bus) = tokio::sync::broadcast::channel(256);
     let workspaces = Workspaces::new();

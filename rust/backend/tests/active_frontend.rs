@@ -419,7 +419,7 @@ async fn two_windows(env: &Env) -> ((Conn, u64), (Conn, u64), String) {
 async fn an_announced_page_opens_in_one_window_the_one_in_use() {
     let stub = tempfile::tempdir().expect("tempdir");
     let julia = stub.path().join("julia");
-    sot_log::test_exec::write_executable(&julia, PAGE_JULIA);
+    sot_platform::test_exec::write_executable(&julia, PAGE_JULIA);
     let resources = stub.path().join("resources");
     std::fs::create_dir_all(resources.join("julia").join("repl")).expect("mkdir resources");
     let env = Env::spawn_with("page", &[("SOT_JULIA_BIN", &julia), ("SOT_RESOURCE_ROOT", &resources)]);
@@ -452,7 +452,7 @@ async fn an_announced_page_opens_in_one_window_the_one_in_use() {
 async fn a_page_a_windows_own_eval_announces_opens_there_under_its_own_number() {
     let stub = tempfile::tempdir().expect("tempdir");
     let julia = stub.path().join("julia");
-    sot_log::test_exec::write_executable(&julia, PAGE_JULIA);
+    sot_platform::test_exec::write_executable(&julia, PAGE_JULIA);
     let resources = stub.path().join("resources");
     std::fs::create_dir_all(resources.join("julia").join("repl")).expect("mkdir resources");
     let env = Env::spawn_with("ownpage", &[("SOT_JULIA_BIN", &julia), ("SOT_RESOURCE_ROOT", &resources)]);

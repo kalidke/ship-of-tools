@@ -309,7 +309,7 @@ async fn k3b_ssh_cold_dial() {
 fn private_ssh_endpoint(remote: &str, dir: &Path, guard: std::sync::Arc<ParentSshEnvironment>) -> DaemonLaneEndpoint {
     let wrapper = dir.join("private-ssh");
     let script = format!("#!/usr/bin/env python3\nimport os, sys\nos.execvp('ssh', ['ssh'] + sys.argv[1:-1] + [{remote:?}])\n");
-    sot_log::test_exec::write_executable(&wrapper, script);
+    sot_platform::test_exec::write_executable(&wrapper, script);
     guard.observe("after preparing private ssh endpoint");
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap();
     DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(std::sync::Arc::new(move |command| {

@@ -8,7 +8,7 @@ use sot_updater::identity::DEFAULT_REPO;
 #[cfg(unix)]
 mod spawner {
     use super::*;
-    use crate::lifecycle::child_signal::{tests::Leftover, Signal};
+    use sot_containment::{leftover::Leftover, Signal};
     use sot_updater::Spawner;
     use std::time::{Duration, Instant};
 
@@ -602,7 +602,7 @@ fn a_check_at_a_non_default_prefix_over_a_cut_record_says_so() {
     std::fs::create_dir_all(other.join("updates")).unwrap();
     std::fs::write(other.join("install.json"), r#"{"schema":1,"prefix":"/o","version":"0.6.5"}"#).unwrap();
     let exe = prefix.join("bin").join(std::env::current_exe().unwrap().file_name().unwrap());
-    sot_log::test_exec::write_executable(&exe, std::fs::read(std::env::current_exe().unwrap()).unwrap());
+    sot_platform::test_exec::write_executable(&exe, std::fs::read(std::env::current_exe().unwrap()).unwrap());
     let probe = |record: Option<&str>| {
         match record {
             Some(record) => std::fs::write(prefix.join("install.json"), record).unwrap(),

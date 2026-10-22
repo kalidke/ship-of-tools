@@ -9,7 +9,7 @@ pub(super) fn hello_answer() -> String {
 pub(super) fn stub_kernel(dir: &Path, name: &str, script: &str) -> (PathBuf, PathBuf) {
     let counter = dir.join(format!("{name}-spawns"));
     let stub = dir.join(format!("{name}-julia"));
-    sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho x >> {}\n{script}", counter.display()));
+    sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\necho x >> {}\n{script}", counter.display()));
     let project = dir.join(name);
     std::fs::create_dir(&project).unwrap();
     tests::STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
@@ -63,7 +63,7 @@ async fn a_wedged_kernel_is_named_and_replaced() {
     drop(kernel);
 
     let (project, counter2) = wedged_kernel(dir.path(), "replaced", true);
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (status, mut status_rx) = watch::channel(Status::Starting);
     let bounds = KernelBounds { start: Duration::from_secs(1800), answer: Duration::from_secs(2) };
     let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, bounds));
@@ -89,7 +89,7 @@ async fn a_kernel_answering_slowly_but_steadily_is_kept() {
     let steady = r#"while read l; do sleep 2; id=$(printf '%s\n' "$l" | sed 's/.*"id":\([0-9]*\).*/\1/'); echo "{\"id\":$id,\"payload\":{}}"; done
 "#;
     let (project, counter) = stub_kernel(dir.path(), "steady", &format!("{}{steady}", hello_answer()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (status, mut status_rx) = watch::channel(Status::Starting);
     let bounds = KernelBounds { start: Duration::from_secs(1800), answer: Duration::from_secs(3) };
     let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, bounds));
@@ -119,7 +119,7 @@ async fn a_kernel_answering_slowly_but_steadily_is_kept() {
 async fn a_kernel_that_never_says_hello_is_replaced() {
     let dir = tempfile::tempdir().unwrap();
     let (project, counter) = wedged_kernel(dir.path(), "mute", false);
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (status, mut status_rx) = watch::channel(Status::Starting);
     let bounds = KernelBounds { start: Duration::from_secs(1), answer: Duration::from_secs(300) };
     let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, bounds));

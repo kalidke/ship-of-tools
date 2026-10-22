@@ -41,7 +41,7 @@ fn seed_printing_claude_stub(home: &std::path::Path) -> PathBuf {
     let dir = home.join(".local").join("bin");
     std::fs::create_dir_all(&dir).expect("mkdir ~/.local/bin");
     let claude = dir.join("claude");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &claude,
         b"#!/bin/sh\n\
           echo \"ARGV0=$0\"\n\

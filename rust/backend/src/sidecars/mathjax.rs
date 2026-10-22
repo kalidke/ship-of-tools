@@ -48,7 +48,7 @@ struct MathJaxInner {
     submit: Mutex<Option<Running>>,
     /// The shutdown signal the child is started under and the service loop watches; supplied by the owner of
     /// this handle, never chosen inside supervision.
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
 }
 
 /// The supervisor of one running child: submissions go in on `submit`, `ready` turns true at the child's ready line,
@@ -103,7 +103,7 @@ struct WireRequest<'a> {
 }
 
 impl MathJax {
-    pub fn new(script_path: PathBuf, sig: &'static crate::lifecycle::child_signal::Signal) -> Self {
+    pub fn new(script_path: PathBuf, sig: &'static sot_containment::Signal) -> Self {
         let node_bin = std::env::var("SOT_NODE_BIN").unwrap_or_else(|_| "node".to_string());
         Self {
             inner: Arc::new(MathJaxInner {
@@ -188,7 +188,7 @@ impl MathJax {
 fn spawn_supervisor(
     node_bin: &str,
     script_path: &std::path::Path,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
 ) -> Result<Running> {
     if !script_path.exists() {
         return Err(anyhow!(
@@ -228,13 +228,13 @@ fn spawn_supervisor(
 }
 
 async fn supervisor_task(
-    mut contained: crate::lifecycle::child_signal::Contained,
+    mut contained: sot_containment::Contained,
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
     ready: watch::Sender<bool>,
     ended: oneshot::Receiver<()>,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     stderr: StderrTail,
 ) {
     let mut pending: HashMap<u64, oneshot::Sender<Result<RenderedSvg>>> = HashMap::new();

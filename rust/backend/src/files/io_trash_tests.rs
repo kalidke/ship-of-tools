@@ -1,10 +1,10 @@
 //! Absolute command fixtures for the bounded, recoverable trash path.
 use super::*;
 #[cfg(unix)]
-use crate::lifecycle::start_tests::unix::Watched;
+use sot_containment::watched::Watched;
 #[cfg(windows)]
-use crate::lifecycle::start_tests::windows::Watched;
-use crate::lifecycle::{child_signal::Signal, contain};
+use sot_containment::watched::Watched;
+use sot_containment::{contain, Signal};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -20,7 +20,7 @@ impl Fixture {
         let program = dir.path().join("trash");
         #[cfg(windows)]
         let program = dir.path().join("trash.ps1");
-        sot_log::test_exec::write_executable(&program, body);
+        sot_platform::test_exec::write_executable(&program, body);
         std::fs::write(dir.path().join("source.txt"), b"recoverable bytes").unwrap();
         Self { dir, program }
     }
@@ -44,7 +44,7 @@ $p.WaitForExit()
 "#;
         let fixture = Self::new(body);
         #[cfg(windows)]
-        sot_log::test_exec::write_executable(&fixture.dir.path().join("descendant.ps1"),
+        sot_platform::test_exec::write_executable(&fixture.dir.path().join("descendant.ps1"),
             "param($cleanup)\nwhile (!(Test-Path -LiteralPath $cleanup)) { Start-Sleep -Milliseconds 20 }\n");
         fixture
     }

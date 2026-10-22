@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// The process's start time in microseconds (`proc_bsdinfo`), the birth identity next to its pid. `arg` 1 includes an
-/// unreaped zombie, as the backend's group check reads one (`lifecycle/contain.rs`).
+/// unreaped zombie, as the backend's group check reads one (`rust/containment/src/contain.rs`).
 pub fn start_ticks(pid: i32) -> io::Result<u64> {
     // SAFETY: a zeroed proc_bsdinfo is a valid out-parameter for proc_pidinfo.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };

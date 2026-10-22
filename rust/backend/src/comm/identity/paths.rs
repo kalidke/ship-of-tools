@@ -42,7 +42,7 @@ pub(crate) fn windows_same_root(a: &str, b: &str) -> bool {
 pub(crate) fn raw_root(cwd: &Path) -> String {
     let mut git = std::process::Command::new("git");
     git.args(["rev-parse", "--show-toplevel"]).current_dir(cwd);
-    let top = crate::lifecycle::child_signal::process()
+    let top = sot_containment::process()
         .output(&mut git, std::time::Duration::from_secs(10))
         .ok()
         .filter(|o| o.status.success())

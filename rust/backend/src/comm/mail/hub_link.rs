@@ -49,7 +49,7 @@ pub async fn run() {
     };
     let name = format!("sotd-{self_host}");
     tracing::info!(%recipe, %name, "hub link starting");
-    hold_link(&env, &recipe, &self_host, &name, crate::lifecycle::child_signal::process()).await;
+    hold_link(&env, &recipe, &self_host, &name, sot_containment::process()).await;
 }
 
 /// Keep the link up until `sig` fires; it never reconnects after.
@@ -58,7 +58,7 @@ async fn hold_link(
     recipe: &sot_protocol::topology::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
 ) {
     // One rule with the window's control transport and the attach worker: the wait starts over only after a link
     // that lasted `STABLE`.
@@ -139,7 +139,7 @@ async fn link_once(
     recipe: &sot_protocol::topology::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
 ) -> Result<(), String> {
     let mut cmd = spawn_link(recipe)?;
     let mut contained = sig.spawn(&mut cmd).map_err(|e| format!("spawn {recipe}: {e}"))?;

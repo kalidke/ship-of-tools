@@ -459,7 +459,7 @@ pub(crate) fn user_scope_available() -> std::io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     // Contained like every process the daemon starts: the tree dies with the probe, and the leader is reaped only after that.
-    let mut c = crate::lifecycle::child_signal::process().spawn_std(&mut command)?;
+    let mut c = sot_containment::process().spawn_std(&mut command)?;
     let Some(status) = c.wait_within(USER_SCOPE_PROBE_BOUND)? else {
         return Err(std::io::Error::new(
             ErrorKind::TimedOut,

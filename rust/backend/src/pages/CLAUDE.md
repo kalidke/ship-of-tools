@@ -65,7 +65,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `is_servable_video`, `start_page_servers`, `remove_root`, `loopback_port_from_url`, `with_loopback_port`,
 `rust/protocol/src/page_url.rs`.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`,
-`dispatch`, `ClientGuard::site_owner`, `Clients::away_sites`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `child_signal::process`, `resolve_bin`,
+`dispatch`, `ClientGuard::site_owner`, `Clients::away_sites`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `sot_containment::process`, `resolve_bin`,
 `sot_state_dir`, `host_name`, `state_dir_hash`, `bound_pluto_port`, `allowed_proxy_ports`, `lane_dial`, `ResolvedDial`, `sot_protocol::video_path::video_mime`.
 
 ## Folders

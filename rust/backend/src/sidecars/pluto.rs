@@ -178,7 +178,7 @@ impl Pluto {
             &julia_bin,
             &self.inner.project_dir,
             &self.inner.start_script,
-            crate::lifecycle::child_signal::process(),
+            sot_containment::process(),
         )
         .await?;
         let handles = (running.submit.clone(), running.ready.clone(), running.start.clone());
@@ -191,7 +191,7 @@ async fn spawn_supervisor(
     julia_bin: &str,
     project_dir: &Path,
     start_script: &Path,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
 ) -> Result<Running> {
     if !start_script.exists() {
         return Err(anyhow!(
@@ -229,12 +229,12 @@ async fn spawn_supervisor(
 
 /// The server's whole life: its start, published on `ready`, then its service loop.
 async fn run_supervisor(
-    mut contained: crate::lifecycle::child_signal::Contained,
+    mut contained: sot_containment::Contained,
     stdin: ChildStdin,
     mut stdout_lines: sot_protocol::child_lines::ChildLines<tokio::process::ChildStdout>,
     submit_rx: mpsc::Receiver<Submission>,
     mut ended: oneshot::Receiver<()>,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     tmp: crate::sidecars::child::ChildTmp,
     stderr: StderrTail,
     ready: watch::Sender<Ready>,
@@ -268,11 +268,11 @@ async fn run_supervisor(
 /// requests until the server is actually listening. A start that fails has its child ended first, and its stderr logged
 /// at warn unless the daemon's shutdown or the handle ended it.
 async fn await_ready(
-    contained: &mut crate::lifecycle::child_signal::Contained,
+    contained: &mut sot_containment::Contained,
     stdout_lines: &mut sot_protocol::child_lines::ChildLines<tokio::process::ChildStdout>,
     mut tmp: crate::sidecars::child::ChildTmp,
     stderr: StderrTail,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     ended: &mut oneshot::Receiver<()>,
 ) -> Result<(String, crate::sidecars::child::ChildTmp, StderrTail)> {
     let ready_deadline = tokio::time::Instant::now() + PLUTO_READY_BOUND;
@@ -409,12 +409,12 @@ fn route_reply_line(line: &str, pending: &mut VecDeque<oneshot::Sender<Result<St
 pub(crate) mod seams;
 
 async fn supervisor_task(
-    mut contained: crate::lifecycle::child_signal::Contained,
+    mut contained: sot_containment::Contained,
     mut stdin: ChildStdin,
     mut stdout_lines: sot_protocol::child_lines::ChildLines<tokio::process::ChildStdout>,
     mut submit_rx: mpsc::Receiver<Submission>,
     ended: oneshot::Receiver<()>,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     grant: Option<Grant>,
     mut tmp: crate::sidecars::child::ChildTmp,
     stderr: StderrTail,

@@ -111,7 +111,7 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &
         ctl = ctl.display(),
         log = log.display(),
     );
-    sot_log::test_exec::write_executable(&claude, script);
+    sot_platform::test_exec::write_executable(&claude, script);
     dir.to_path_buf()
 }
 

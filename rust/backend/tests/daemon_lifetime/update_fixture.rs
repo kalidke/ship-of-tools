@@ -65,8 +65,8 @@ pub fn build(root: &Path) -> Release {
     let bin = prefix.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let daemon = bin.join("sotd");
-    sot_log::test_exec::write_executable(&daemon, std::fs::read(sotd_program()).expect("read the built daemon"));
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(&daemon, std::fs::read(sotd_program()).expect("read the built daemon"));
+    sot_platform::test_exec::write_executable(
         &bin.join("sot-capsule"),
         std::fs::read(sot_capsule_exe()).expect("read the capsule to put beside it"),
     );

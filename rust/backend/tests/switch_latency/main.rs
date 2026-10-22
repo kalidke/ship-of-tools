@@ -391,7 +391,7 @@ while IFS= read -r line; do
     fi
 done
 "#;
-    sot_log::test_exec::write_executable(&path, script);
+    sot_platform::test_exec::write_executable(&path, script);
     path
 }
 
@@ -597,7 +597,7 @@ exit 1
     /// hello, and a `quarto.open` (id 2) sent on it.
     async fn held_render(tag: &str, stub_dir: &Path, release: &Release) -> (Env, Conn) {
         let julia = write_fake_kernel(stub_dir);
-        sot_log::test_exec::write_executable(&stub_dir.join("quarto"), HELD_QUARTO);
+        sot_platform::test_exec::write_executable(&stub_dir.join("quarto"), HELD_QUARTO);
         let path = format!("{}:{}", stub_dir.display(), std::env::var("PATH").unwrap_or_default());
         let release_path = release.0.to_string_lossy().into_owned();
         let env = Env::spawn_with(

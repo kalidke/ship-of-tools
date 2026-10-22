@@ -407,7 +407,7 @@ impl Env {
         let dir = self._tmp.path().join("fakebin");
         std::fs::create_dir_all(&dir).expect("mkdir fakebin");
         let claude = dir.join("claude");
-        sot_log::test_exec::write_executable(
+        sot_platform::test_exec::write_executable(
             &claude,
             b"#!/bin/sh\nexec /no/such/binary/sot-test-unlaunchable-claude\n",
         );
@@ -426,7 +426,7 @@ impl Env {
         std::fs::create_dir_all(&dir).expect("mkdir fakebin");
         let pidfile = self._tmp.path().join("escapee.pid");
         let claude = dir.join("claude");
-        sot_log::test_exec::write_executable(
+        sot_platform::test_exec::write_executable(
             &claude,
             format!(
                 "#!/bin/sh\nsetsid sh -c 'echo $$ > \"{}\"; sleep 120; :' </dev/null >/dev/null 2>&1 &\nexec sleep 120\n",
@@ -611,7 +611,7 @@ impl Env {
         let dir = self._tmp.path().join("fakebin-systemd-run");
         std::fs::create_dir_all(&dir).expect("mkdir fakebin-systemd-run");
         let stub = dir.join("systemd-run");
-        sot_log::test_exec::write_executable(&stub, b"#!/bin/sh\necho 'stub: no user manager' >&2; exit 1\n");
+        sot_platform::test_exec::write_executable(&stub, b"#!/bin/sh\necho 'stub: no user manager' >&2; exit 1\n");
         dir
     }
 

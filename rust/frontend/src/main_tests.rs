@@ -41,7 +41,7 @@ fn owned_startup_probe(
 ) -> Result<(std::process::Child, sot_platform::test_isolated::Entry)> {
     use std::process::{Command, Stdio};
     let program = root.join("startup-probe.exe");
-    sot_log::test_exec::write_executable(&program, std::fs::read(std::env::current_exe()?)?);
+    sot_platform::test_exec::write_executable(&program, std::fs::read(std::env::current_exe()?)?);
     let (recipe, entry) =
         sot_platform::test_isolated::test_command("tests::window_startup_owned_probe");
     let mut command = Command::new(program);

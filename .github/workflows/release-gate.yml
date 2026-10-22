@@ -815,8 +815,8 @@ jobs:
         run: cargo test -p sot-backend --test capsule_workspaces -- --nocapture
 
   # The Windows containment tests that need julia, Git for Windows' bash or a job around the test process are `#[ignore]`
-  # in `cargo test` (rust/backend/src/lifecycle/contain.rs); this job runs them, with julia installed, on every run. The
-  # count is the number of `#[ignore]` tests in `lifecycle::contain::tests`: a selection that runs any other number fails.
+  # in `cargo test` (rust/containment/src/contain_tests.rs); this job runs them, with julia installed, on every run. The
+  # count is the number of `#[ignore]` tests in `contain::tests` of sot-containment: a selection that runs any other number fails.
   windows-ignored-containment:
     name: containment, ignored tests (windows-latest)
     runs-on: windows-latest
@@ -836,4 +836,4 @@ jobs:
       - name: Test the ignored containment tests
         shell: bash
         run: |
-          bash ../scripts/tests/run-filtered-tests.sh 3 ../dev/output/containment-ignored.log -- cargo test -p sot-backend --bin sotd --locked lifecycle::contain::tests:: -- --ignored --test-threads=1
+          bash ../scripts/tests/run-filtered-tests.sh 3 ../dev/output/containment-ignored.log -- cargo test -p sot-containment --lib --locked contain::tests:: -- --ignored --test-threads=1

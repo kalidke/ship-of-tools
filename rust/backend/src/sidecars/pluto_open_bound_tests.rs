@@ -12,7 +12,7 @@ async fn an_open_the_child_never_answers_fails_at_its_bound() {
     let dir = tempfile::Builder::new().prefix("sot-pluto-bound-").tempdir().unwrap();
     let stub = dir.path().join("stub-julia");
     let starts = dir.path().join("starts");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         format!(
             "#!/bin/sh\necho $$ >> '{}'\necho \"READY http://127.0.0.1:1/\"\nwhile read l; do :; done\n",
@@ -62,7 +62,7 @@ async fn an_open_whose_server_fails_its_boot_answers_with_its_stderr() {
     }
     let dir = tempfile::Builder::new().prefix("sot-pluto-fail-").tempdir().unwrap();
     let stub = dir.path().join("stub-julia");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         "#!/bin/sh\necho 'ERROR: ArgumentError: Package Pluto not found' >&2\nexit 1\n".to_string(),
     );
@@ -88,7 +88,7 @@ async fn the_server_is_up_from_its_start_until_it_ends() {
     }
     let dir = tempfile::Builder::new().prefix("sot-pluto-live-").tempdir().unwrap();
     let stub = dir.path().join("stub-julia");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         "#!/bin/sh\necho 'READY http://pluto.invalid/'\nread l\necho 'URL http://pluto.invalid/a'\nsleep 1\n".to_string(),
     );
@@ -117,7 +117,7 @@ async fn the_server_is_up_while_it_is_still_starting() {
     }
     let dir = tempfile::Builder::new().prefix("sot-pluto-up-").tempdir().unwrap();
     let (stub, go, said) = (dir.path().join("stub-julia"), dir.path().join("go"), dir.path().join("said"));
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         format!(
             "#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\necho 'READY http://pluto.invalid/'\n\
@@ -159,7 +159,7 @@ async fn an_open_behind_a_server_still_starting_says_so_and_the_next_joins_it() 
     let dir = tempfile::Builder::new().prefix("sot-pluto-start-").tempdir().unwrap();
     let (stub, starts, go) = (dir.path().join("stub-julia"), dir.path().join("starts"), dir.path().join("go"));
     let said = dir.path().join("said");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         format!(
             "#!/bin/sh\necho $$ >> '{}'\necho '    Checking for new Julia versions' >&2\necho '  Installing Julia 1.13.2+0.x64.linux.gnu' >&2\ntouch '{}'\n\

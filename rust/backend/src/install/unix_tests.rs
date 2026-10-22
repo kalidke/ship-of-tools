@@ -15,7 +15,7 @@ impl Fixture {
         std::fs::create_dir_all(d.join("prefix/bin")).unwrap();
         std::fs::create_dir_all(d.join("stubs")).unwrap();
         let pin = d.join("home/.config/systemd/user/sotd.service.d");
-        sot_log::test_exec::write_executable(
+        sot_platform::test_exec::write_executable(
             &d.join("prefix/bin/sotd"),
             format!(
                 "#!/bin/sh\nprintf 'sotd %s\\n' \"$*\" >> '{}'\ncase \"$*\" in *--claim*) mkdir -p '{}'; printf '[Unit]\\nConditionHost=|{claim_host}\\nConditionHost=|{claim_host}.*\\n' > '{}/topology.conf' ;; esac\n",
@@ -25,7 +25,7 @@ impl Fixture {
             ),
         );
         for name in ["systemctl", "loginctl"] {
-            sot_log::test_exec::write_executable(&d.join("stubs").join(name), format!("#!/bin/sh\nprintf '{name} %s\\n' \"$*\" >> '{}'\n", log.display()));
+            sot_platform::test_exec::write_executable(&d.join("stubs").join(name), format!("#!/bin/sh\nprintf '{name} %s\\n' \"$*\" >> '{}'\n", log.display()));
         }
         Self { dir }
     }
@@ -89,7 +89,7 @@ fn the_unit_is_pinned_before_any_reload() {
         assert!(!f.log().iter().any(|l| l.contains(" enable") && l.starts_with("systemctl")), "{:?}", f.log());
 
         let f = Fixture::new("me");
-        sot_log::test_exec::write_executable(&f.path("prefix/bin/sotd"), format!("#!/bin/sh\nprintf 'sotd %s\\n' \"$*\" >> '{}'\necho 'sotd topology: hosts.toml line 2: expected key = value' >&2\nexit 2\n", f.path("log").display()));
+        sot_platform::test_exec::write_executable(&f.path("prefix/bin/sotd"), format!("#!/bin/sh\nprintf 'sotd %s\\n' \"$*\" >> '{}'\necho 'sotd topology: hosts.toml line 2: expected key = value' >&2\nexit 2\n", f.path("log").display()));
         let stop = with_units(&f, |u| enable_local_service(u, &template(), "/s.sock")).unwrap_err();
         assert!(stop.detail.contains("could not pin sotd.service") && stop.detail.contains("hosts.toml line 2"), "{stop:?}");
         assert!(!f.log().iter().any(|l| l.starts_with("systemctl --user daemon-reload") || l.starts_with("systemctl --user start")), "{:?}", f.log());
@@ -133,7 +133,7 @@ fn the_unit_is_pinned_before_any_reload() {
         assert!(f.log().is_empty(), "with no unit file nothing runs: {:?}", f.log());
         let f = Fixture::new("me");
         std::fs::write(f.units().join("sotd.service"), "[Service]\nExecStart=/x/bin/sotd\n").unwrap();
-        sot_log::test_exec::write_executable(&f.path("prefix/bin/sotd"), format!("#!/bin/sh\nprintf 'sotd %s\\n' \"$*\" >> '{}'\necho 'sotd topology: hosts.toml line 2: expected key = value' >&2\nexit 2\n", f.path("log").display()));
+        sot_platform::test_exec::write_executable(&f.path("prefix/bin/sotd"), format!("#!/bin/sh\nprintf 'sotd %s\\n' \"$*\" >> '{}'\necho 'sotd topology: hosts.toml line 2: expected key = value' >&2\nexit 2\n", f.path("log").display()));
         let stop = with_units(&f, |u| retire_local_service(u, true, "me")).unwrap_err();
         assert!(stop.detail.contains("hosts.toml line 2"), "{stop:?}");
         assert!(!f.log().iter().any(|l| l.starts_with("systemctl --user daemon-reload")), "a retire whose pin failed reloaded: {:?}", f.log());
@@ -223,7 +223,7 @@ fn folder_trust_is_said_as_the_command_reports_it() {
     let dir = tempfile::tempdir().unwrap();
     let said = |body: &str| {
         let sotd = dir.path().join(format!("sotd-{}", body.len()));
-        sot_log::test_exec::write_executable(&sotd, format!("#!/bin/sh\n{body}\n"));
+        sot_platform::test_exec::write_executable(&sotd, format!("#!/bin/sh\n{body}\n"));
         trust_report(&sotd, dir.path())
     };
     assert_eq!(said("echo Declared"), ["folder trust declared"]);

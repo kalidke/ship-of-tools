@@ -1,9 +1,9 @@
 //! The macOS half of the start/fire tests: finished-group recognition before reap on real processes,
 //! rejected-observation error evidence with injected faults, and a real-request Result control of fixture diagnostics.
 
-use super::unix::Watched;
-use crate::lifecycle::child_signal::{ContainedStd, Signal};
-use crate::lifecycle::contain;
+use crate::watched::Watched;
+use crate::signal::{ContainedStd, Signal};
+use crate::contain;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ fn wait_file(path: &std::path::Path) {
 fn zombie_command() -> (tempfile::TempDir, Command) {
     let dir = tempfile::tempdir().unwrap();
     let program = dir.path().join("finished");
-    sot_log::test_exec::write_executable(&program, "#!/bin/sh\nexit 17\n");
+    sot_platform::test_exec::write_executable(&program, "#!/bin/sh\nexit 17\n");
     (dir, Command::new(program))
 }
 fn exited_eperm(pid: u32) {
@@ -185,8 +185,8 @@ impl LiveTree {
         let dir = tempfile::tempdir().unwrap();
         let (leader, member) = (dir.path().join("leader"), dir.path().join("member"));
         // The member keeps inherited stdin, exits on EOF, and has an independent 30 s ceiling.
-        sot_log::test_exec::write_executable(&member, "#!/usr/bin/env python3\nimport os,sys,time,select\nos.setpgid(0,int(sys.argv[1]))\nwith open(sys.argv[2],'w') as f: f.write('%d %d %d'%(os.getpid(),os.getpgrp(),os.geteuid()))\nend=time.monotonic()+30\nwhile time.monotonic()<end:\n if select.select([0],[],[],max(0,end-time.monotonic()))[0]:\n  data=os.read(0,4096)\n  if not data: break\n  with open(sys.argv[2]+'.live','w') as f: f.write('alive')\n");
-        sot_log::test_exec::write_executable(&leader, "#!/usr/bin/env python3\nimport os,sys,time,subprocess\nmember,ready,release,cleanup,root=sys.argv[1:]\nargs=[sys.executable,member,str(os.getpid()),ready]\np=subprocess.Popen((['/usr/bin/sudo','-n','--'] if root=='root' else [])+args,process_group=0 if root=='root' else None)\nend=time.monotonic()+20\nwhile not os.path.exists(release) and time.monotonic()<end:\n if p.poll() is not None: raise RuntimeError('owned descendant exited before readiness/release; sudo -n is required')\n time.sleep(.01)\nif os.path.exists(cleanup): p.wait(timeout=35)\nsys.exit(17)\n");
+        sot_platform::test_exec::write_executable(&member, "#!/usr/bin/env python3\nimport os,sys,time,select\nos.setpgid(0,int(sys.argv[1]))\nwith open(sys.argv[2],'w') as f: f.write('%d %d %d'%(os.getpid(),os.getpgrp(),os.geteuid()))\nend=time.monotonic()+30\nwhile time.monotonic()<end:\n if select.select([0],[],[],max(0,end-time.monotonic()))[0]:\n  data=os.read(0,4096)\n  if not data: break\n  with open(sys.argv[2]+'.live','w') as f: f.write('alive')\n");
+        sot_platform::test_exec::write_executable(&leader, "#!/usr/bin/env python3\nimport os,sys,time,subprocess\nmember,ready,release,cleanup,root=sys.argv[1:]\nargs=[sys.executable,member,str(os.getpid()),ready]\np=subprocess.Popen((['/usr/bin/sudo','-n','--'] if root=='root' else [])+args,process_group=0 if root=='root' else None)\nend=time.monotonic()+20\nwhile not os.path.exists(release) and time.monotonic()<end:\n if p.poll() is not None: raise RuntimeError('owned descendant exited before readiness/release; sudo -n is required')\n time.sleep(.01)\nif os.path.exists(cleanup): p.wait(timeout=35)\nsys.exit(17)\n");
         let signal = Box::leak(Box::new(Signal::new()));
         let mut command = Command::new(leader);
         let paths = ["ready", "release", "cleanup"].map(|name| dir.path().join(name));

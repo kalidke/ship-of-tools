@@ -101,7 +101,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `repl.eval`, `repl.run_file`, `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`,
 `monitor.subscribe`, `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `bound_pluto_port`,
 `allowed_proxy_ports`, `Kernel`, `Repl`, `julia::resolve_bin`, `child::remove_own`, `child::sweep_gone`, `Pluto::server_up`. Uses: `dispatch`, `SSH_OPTS`, `Redial`, `STABLE`, `Signal::spawn`, `Contained`, `Contained::wait_until_exited`, `Signal`,
-`child_signal::process`, `HeldDir`, `remove_ended`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `sot_state_dir`, `sot_config_dir`,
+`sot_containment::process`, `HeldDir`, `remove_ended`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `sot_state_dir`, `sot_config_dir`,
 `host_name`, `state_dir_hash`, `resource_dir`, `rust/backend/src/paths.rs`, `record_browser_port`,
 `revoke_browser_ports`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`, `ensure_proxy_for_url`, `ChildLines`.
 
@@ -139,4 +139,4 @@ for a sampler's life.
 - A supervisor uses the `Signal` it was given for spawn and `fired()`; it never selects a different shutdown signal inside its service loop.
 - A test that finds julia or node through the process environment (`contract_tests::executable`, `julia::resolve_bin`)
   runs its body in `isolated`, or holds `paths::ENV_TEST_LOCK` from that read through its spawn; the ignored Windows
-  julia test in `lifecycle/contain.rs` instead runs alone (`--test-threads=1`) in its own CI job.
+  julia test in `rust/containment/src/contain_tests.rs` instead runs alone (`--test-threads=1`) in its own CI job.

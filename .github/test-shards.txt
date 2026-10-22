@@ -25,6 +25,7 @@ wake       test comm_wake --skip a_restarted_daemon --skip a_dead_row --skip a_w
 wake2      test comm_wake a_row_holding_a_persons_unsent_text_is_never_typed_into a_row_in_a_dialog_is_not_typed_into_until_it_closes
 wake3      test comm_wake a_slow_echo_is_entered_in_the_same_attempt a_stop_mark_past_the_bound_does_not_hold_the_wake
 plat       lib  sot_platform
+plat       lib  sot_containment
 ws2        test capsule_workspaces --skip destroy:: --skip spawn:: --skip create:: --skip session_env:: --skip ended_row:: --skip resume:: --skip attach::
 fe         test fault_storage --skip native_volume_fill_free_sync
 sotd-a     bin  sotd sidecars::repl:: --skip repl_page_secret_never_reaches_command_line

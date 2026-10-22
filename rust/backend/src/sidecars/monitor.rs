@@ -469,7 +469,7 @@ impl MonitorHub {
         for h in hub.hosts.iter().cloned() {
             let tick_tx = hub.tick_tx.clone();
             let rings = hub.rings.clone();
-            tokio::spawn(supervise(h, tick_tx, rings, crate::lifecycle::child_signal::process()));
+            tokio::spawn(supervise(h, tick_tx, rings, sot_containment::process()));
         }
         hub
     }
@@ -532,7 +532,7 @@ async fn supervise(
     host: MonitorHost,
     tick_tx: broadcast::Sender<HostLatest>,
     rings: Arc<Mutex<HashMap<String, HostRing>>>,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
 ) {
     // The death reason and the parse error last logged for this host: a target that stays unreachable, or a sampler
     // that prints a bad line a second, logs each once, not on every ~5s respawn or every line forever.
@@ -658,8 +658,8 @@ fn sampler_command(host: &MonitorHost, interval: &str) -> Command {
 /// Spawn the sampler for one host and feed it the script over stdin.
 async fn spawn_source(
     host: &MonitorHost,
-    sig: &'static crate::lifecycle::child_signal::Signal,
-) -> std::io::Result<crate::lifecycle::child_signal::Contained> {
+    sig: &'static sot_containment::Signal,
+) -> std::io::Result<sot_containment::Contained> {
     let mut cmd = sampler_command(host, "1");
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())

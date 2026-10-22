@@ -468,11 +468,11 @@ async fn shutdown_bound_is_end_to_end() {
     let stage = tempfile::tempdir().expect("a stage folder");
     for (from, to) in [(support::sotd_program(), stage.path().join("sotd"))] {
         if std::fs::hard_link(&from, &to).is_err() {
-            sot_log::test_exec::write_executable(&to, std::fs::read(&from).expect("read the binary to stage"));
+            sot_platform::test_exec::write_executable(&to, std::fs::read(&from).expect("read the binary to stage"));
         }
     }
     let marker = stage.path().join("slow-start");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stage.path().join(support::CAPSULE_EXE_NAME),
         STUB_CAPSULE.replace("@REAL@", &support::sot_capsule_exe().display().to_string()),
     );

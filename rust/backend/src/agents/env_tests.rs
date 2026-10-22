@@ -161,7 +161,7 @@ fn sotd_bin_value_makes_the_start_path_absolute_as_its_start_found_it() {
     } else {
         name.to_string()
     };
-    sot_log::test_exec::write_executable(&bin.join(&file), "#!/bin/sh\n");
+    sot_platform::test_exec::write_executable(&bin.join(&file), "#!/bin/sh\n");
     let cwd = std::env::current_dir().expect("the working folder");
     let shown = |p: &Path| {
         let text = p.to_string_lossy().into_owned();

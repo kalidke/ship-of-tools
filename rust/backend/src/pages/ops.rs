@@ -491,7 +491,7 @@ async fn run_quarto(
     out_name: &str,
     execute: bool,
     within: std::time::Duration,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
 ) -> std::io::Result<Option<std::process::Output>> {
     use tokio::io::AsyncReadExt;
     let mut cmd = tokio::process::Command::new(program);
@@ -713,7 +713,7 @@ pub async fn handle_quarto_open(
     let out_name = quarto_out_name();
     let html_path = parent.join(&out_name);
 
-    let output = match run_quarto("quarto", parent, file_name, &out_name, req.execute, QUARTO_RUN_BOUND, crate::lifecycle::child_signal::process()).await {
+    let output = match run_quarto("quarto", parent, file_name, &out_name, req.execute, QUARTO_RUN_BOUND, sot_containment::process()).await {
         Ok(Some(o)) => o,
         Ok(None) => {
             let _ = tokio::fs::remove_file(&html_path).await;

@@ -35,7 +35,7 @@ fn child_folders(tmp: &Path) -> Vec<String> {
 async fn daemon_with_a_child(env: &Env, tmp: &Path, display: bool) -> Vec<String> {
     let folder = env.daemon_project_root.parent().expect("the env's folder").to_path_buf();
     let stub = folder.join("stub-julia");
-    sot_log::test_exec::write_executable(&stub, STUB);
+    sot_platform::test_exec::write_executable(&stub, STUB);
     let bin = folder.join("bin");
     std::fs::create_dir_all(&bin).expect("an empty PATH entry");
     let (stub, tmp_var, bin_only) = (stub.to_string_lossy(), tmp.to_string_lossy(), bin.to_string_lossy());
@@ -156,7 +156,7 @@ fn in_own_pid_namespace(folder: &Path, taken: u32) -> PathBuf {
         taken - 1,
         support::sotd_program().display()
     );
-    sot_log::test_exec::write_executable(&launcher, body);
+    sot_platform::test_exec::write_executable(&launcher, body);
     launcher
 }
 

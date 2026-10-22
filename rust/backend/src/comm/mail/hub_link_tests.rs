@@ -15,9 +15,9 @@ async fn shutdown_kills_the_link_child_and_never_reconnects() {
     let dir = tempfile::tempdir().unwrap();
     let counter = dir.path().join("spawns");
     let bg = dir.path().join("bg");
-    let descendant = crate::lifecycle::child_signal::tests::Leftover::of_file(bg.clone());
+    let descendant = sot_containment::leftover::Leftover::of_file(bg.clone());
     let stub = dir.path().join("stub-ssh");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         format!(
             "#!/bin/sh\necho x >> {}\nsleep 3108 >/dev/null 2>&1 &\necho $! > {}\nexec sleep 30\n",
@@ -26,7 +26,7 @@ async fn shutdown_kills_the_link_child_and_never_reconnects() {
         ),
     );
     STUB_PROGRAM.set(Some(stub.to_string_lossy().into_owned()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let task = tokio::spawn(async move { hold_link(&Env::empty(), &recipe, "self", "sotd-self", sig).await });
     let began = Instant::now();
@@ -316,7 +316,7 @@ fn silent_hub_ssh(dir: &Path) -> String {
         "#!/bin/sh\necho 'Warning: Permanently added hub (ED25519) to the list of known hosts.' >&2\nprintf '%s\\n' '{reply}'\n: > '{}'\nexec sleep 30\n",
         said.display()
     );
-    sot_log::test_exec::write_executable(&stub, script);
+    sot_platform::test_exec::write_executable(&stub, script);
     stub.to_string_lossy().into_owned()
 }
 
@@ -327,9 +327,9 @@ fn silent_hub_ssh(dir: &Path) -> String {
 async fn a_failed_link_names_an_ssh_line_that_is_not_utf8() {
     let dir = tempfile::tempdir().unwrap();
     let stub = dir.path().join("stub-ssh");
-    sot_log::test_exec::write_executable(&stub, "#!/bin/sh\nprintf 'Permission denied \\351 (publickey).\\n' >&2\nexit 255\n".to_string());
+    sot_platform::test_exec::write_executable(&stub, "#!/bin/sh\nprintf 'Permission denied \\351 (publickey).\\n' >&2\nexit 255\n".to_string());
     STUB_PROGRAM.set(Some(stub.to_string_lossy().into_owned()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let ended = tokio::time::timeout(Duration::from_secs(30), link_once(&Env::empty(), &recipe, "self", "sotd-self", sig)).await;
     STUB_PROGRAM.set(None);
@@ -344,7 +344,7 @@ async fn a_failed_link_names_an_ssh_line_that_is_not_utf8() {
 async fn a_silent_hub_ends_the_link_without_a_stale_ssh_line() {
     let dir = tempfile::tempdir().unwrap();
     STUB_PROGRAM.set(Some(silent_hub_ssh(dir.path())));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let link = tokio::spawn(async move { link_once(&Env::empty(), &recipe, "self", "sotd-self", sig).await });
     // A running blocking task holds the paused clock, so the link has the stub's warning and reply before it waits.
@@ -369,7 +369,7 @@ async fn a_silent_hub_ends_the_link_without_a_stale_ssh_line() {
 async fn a_link_cut_for_silence_is_dialled_again() {
     let dir = tempfile::tempdir().unwrap();
     STUB_PROGRAM.set(Some(silent_hub_ssh(dir.path())));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let task = tokio::spawn(async move { hold_link(&Env::empty(), &recipe, "self", "sotd-self", sig).await });
     // Each link is one process group. The paused clock runs the 90 s cut and the redial in a moment of real time.

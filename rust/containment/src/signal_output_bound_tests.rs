@@ -1,4 +1,4 @@
-use super::tests::Leftover;
+use crate::leftover::Leftover;
 use super::*;
 use std::time::Duration;
 

@@ -170,7 +170,7 @@ fn write_stub_ssh(dir: &Path, hub_socket: &Path, count: &Path) {
         s = hub_socket.display()
     );
     let path = dir.join("ssh");
-    sot_log::test_exec::write_executable(&path, script);
+    sot_platform::test_exec::write_executable(&path, script);
 }
 
 fn inbox_lines(env: &Env, h: &str) -> Vec<serde_json::Value> {

@@ -1,5 +1,5 @@
 use super::ChildTmp;
-use crate::lifecycle::child_signal::Signal;
+use sot_containment::Signal;
 use crate::sidecars::contract_tests::{executable, within};
 use std::time::Duration;
 use tokio::process::Command;

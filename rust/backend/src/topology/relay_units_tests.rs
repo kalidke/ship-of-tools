@@ -192,10 +192,10 @@ impl Drop for ClearStub {
 fn the_relay_probe_takes_its_tree() {
     let dir = tempfile::tempdir().expect("tempdir");
     let bg = dir.path().join("bg");
-    let descendant = crate::lifecycle::child_signal::tests::Leftover::of_file(bg.clone());
+    let descendant = sot_containment::leftover::Leftover::of_file(bg.clone());
     let _clear = ClearStub;
     let stub = dir.path().join("systemctl");
-    sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 3110 >/dev/null 2>&1 &\necho $! > '{}'\necho 0\n", bg.display()));
+    sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 3110 >/dev/null 2>&1 &\necho $! > '{}'\necho 0\n", bg.display()));
     *STUB_SYSTEMCTL.lock().unwrap() = Some(stub);
     assert_eq!(supervised_by_systemd(), Ok(false));
     assert!(descendant.gone(), "the relay probe's descendant survived");

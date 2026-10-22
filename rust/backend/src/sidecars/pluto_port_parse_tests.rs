@@ -2,7 +2,7 @@ use super::spawn_supervisor;
 use std::time::Duration;
 use {
     super::{bound_pluto_port, seams, Ready, Running, Submission},
-    crate::lifecycle::child_signal::Signal,
+    sot_containment::Signal,
     crate::sidecars::contract_tests::{executable, isolated, within, OwnedRoot},
     std::path::{Path, PathBuf},
     tokio::sync::oneshot,
@@ -28,10 +28,10 @@ async fn shutdown_kills_the_pluto_child_during_the_ready_wait() {
     let dir = tempfile::tempdir().unwrap();
     let stub = dir.path().join("stub-julia");
     let ready = dir.path().join("started");
-    sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho started > '{}'\nexec sleep 30\n", ready.display()));
+    sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\necho started > '{}'\nexec sleep 30\n", ready.display()));
     let script = dir.path().join("start.jl");
     std::fs::write(&script, "").unwrap();
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
     let task = tokio::spawn(async move { served(&bin, &project, &script, sig).await.map(|_| ()) });
     let began = std::time::Instant::now();
@@ -55,15 +55,15 @@ async fn shutdown_kills_the_pluto_child_during_the_ready_wait() {
 async fn pluto_grandchild_dies_with_shutdown() {
     let dir = tempfile::tempdir().unwrap();
     let gc_file = dir.path().join("gc");
-    let gc = crate::lifecycle::child_signal::tests::Leftover::of_file(gc_file.clone());
+    let gc = sot_containment::leftover::Leftover::of_file(gc_file.clone());
     let stub = dir.path().join("stub-julia");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         format!("#!/bin/sh\nsleep 3103 &\necho $! > {}\necho \"READY http://127.0.0.1:1/\"\nexec sleep 3103\n", gc_file.display()),
     );
     let script = dir.path().join("start.jl");
     std::fs::write(&script, "").unwrap();
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
     let tx = served(&bin, &project, &script, sig).await.expect("spawn_supervisor");
     let began = std::time::Instant::now();
@@ -86,7 +86,7 @@ async fn a_pluto_ready_after_the_old_180s_bound_is_served() {
     let dir = tempfile::tempdir().unwrap();
     let (started, go) = (dir.path().join("started"), dir.path().join("go"));
     let stub = dir.path().join("stub-julia");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         format!(
             "#!/bin/sh\necho x > '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\necho 'READY http://pluto.invalid/'\nexec sleep 30\n",
@@ -130,7 +130,7 @@ async fn dropping_the_handle_during_a_start_ends_the_child() {
     let dir = tempfile::tempdir().unwrap();
     let stub = dir.path().join("stub-julia");
     let started = dir.path().join("started");
-    sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho started > '{}'\nexec sleep 30\n", started.display()));
+    sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\necho started > '{}'\nexec sleep 30\n", started.display()));
     let script = dir.path().join("start.jl");
     std::fs::write(&script, "").unwrap();
     let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
@@ -149,7 +149,7 @@ async fn a_pluto_that_fails_its_boot_logs_its_stderr_at_warn() {
     let log = sot_log::test_log::capture();
     let dir = tempfile::tempdir().unwrap();
     let stub = dir.path().join("stub-julia");
-    sot_log::test_exec::write_executable(&stub, "#!/bin/sh\necho 'ERROR: LoadError: (pluto-boot-red)' >&2\nexit 1\n");
+    sot_platform::test_exec::write_executable(&stub, "#!/bin/sh\necho 'ERROR: LoadError: (pluto-boot-red)' >&2\nexit 1\n");
     let script = dir.path().join("start.jl");
     std::fs::write(&script, "").unwrap();
     let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
@@ -166,13 +166,13 @@ async fn a_pluto_that_fails_its_boot_logs_its_stderr_at_warn() {
 async fn a_pluto_line_holding_an_invalid_byte_keeps_the_server() {
     let dir = tempfile::tempdir().unwrap();
     let stub = dir.path().join("stub-julia");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         "#!/bin/sh\necho 'READY http://pluto.invalid/'\nread l\nprintf 'ERR a\\377b\\n'\nread l\necho 'URL http://pluto.invalid/edit'\nexec sleep 600\n".to_string(),
     );
     let script = dir.path().join("start.jl");
     std::fs::write(&script, "").unwrap();
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
     let running = served(&bin, &project, &script, sig).await.expect("spawn_supervisor");
     let mut answers = Vec::new();
@@ -429,7 +429,7 @@ async fn pluto_has_its_own_display_which_ends_with_it() {
 #[cfg(target_os = "linux")]
 fn display_stand_in(dir: &Path, named: &Path, ready: bool, descendant: bool) -> (String, PathBuf, &'static Signal) {
     let stub = dir.join("stub-julia");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         format!(
             "#!/bin/sh\n{child}printf '%s' \"$XAUTHORITY\" > '{named}.tmp'\nmv '{named}.tmp' '{named}'\n{ready}exec sleep 300\n",

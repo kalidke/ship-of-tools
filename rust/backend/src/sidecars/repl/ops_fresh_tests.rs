@@ -59,7 +59,7 @@ fn row(stub: &str) -> Row {
     std::fs::write(root.join("Project.toml"), "").unwrap();
     std::fs::write(root.join("fresh.jl"), "1\n").unwrap();
     let julia = dir.join("julia");
-    sot_log::test_exec::write_executable(&julia, stub);
+    sot_platform::test_exec::write_executable(&julia, stub);
     let pin = pin_env(&julia, &resources);
     let (frame_tx, bus) = tokio::sync::broadcast::channel(256);
     let workspaces = Workspaces::new();

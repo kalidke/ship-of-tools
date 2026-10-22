@@ -265,7 +265,7 @@ impl Kernel {
                     kernel_project,
                     project_root,
                     status,
-                    crate::lifecycle::child_signal::process(),
+                    sot_containment::process(),
                     KernelBounds::PRODUCT,
                 ));
             })
@@ -316,7 +316,7 @@ async fn supervisor_loop(
     kernel_project: PathBuf,
     project_root: PathBuf,
     status: watch::Sender<Status>,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     bounds: KernelBounds,
 ) {
     let mut redial = sot_platform::host::redial::Redial::new(RESPAWN_BACKOFF_FLOOR, RESPAWN_BACKOFF_CAP);
@@ -367,7 +367,7 @@ async fn run_one_generation(
     kernel_project: &Path,
     project_root: &Path,
     status: &watch::Sender<Status>,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     bounds: KernelBounds,
 ) -> (Option<tokio::time::Instant>, String) {
     let (julia_bin, source) = match julia_bin(kernel_project) {
@@ -422,7 +422,7 @@ async fn run_one_generation(
 }
 
 /// Takes the child's stdin and stdout; its stderr is drained by `run_one_generation`.
-fn take_pipes(contained: &mut crate::lifecycle::child_signal::Contained) -> Result<(ChildStdin, ChildStdout), String> {
+fn take_pipes(contained: &mut sot_containment::Contained) -> Result<(ChildStdin, ChildStdout), String> {
     let stdin = contained.stdin.take().ok_or("kernel child stdin missing")?;
     let stdout = contained.stdout.take().ok_or("kernel child stdout missing")?;
     Ok((stdin, stdout))
@@ -490,7 +490,7 @@ async fn write_raced(
     stdin: &mut ChildStdin,
     (id, op, payload): (u64, &str, &Value),
     status: &watch::Sender<Status>,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     due: Option<tokio::time::Instant>,
 ) -> Written {
     tokio::select! {
@@ -505,10 +505,10 @@ async fn write_raced(
 /// One generation's serving loop, from the hello until the child dies, every handle drops, the daemon shuts down, or
 /// the child answers nothing within `bounds`. `contained` stays with the caller, which ends it.
 async fn serve_child(
-    contained: &mut crate::lifecycle::child_signal::Contained,
+    contained: &mut sot_containment::Contained,
     julia_bin: &str,
     status: &watch::Sender<Status>,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     bounds: KernelBounds,
 ) -> (Option<tokio::time::Instant>, String) {
     let (mut stdin, stdout) = match take_pipes(contained) {

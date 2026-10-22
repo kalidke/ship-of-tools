@@ -87,7 +87,7 @@ fn probe_julia() -> Option<String> {
 
 /// How long a stopped daemon's guard may take to end: the daemon's own end, after its fire's wait and its children's
 /// folders' wait of at most 2 s each, then the guard's drain of what is left, within its 10 s bound
-/// (`daemon_children::guard::DRAIN_BOUND`).
+/// (`sot_containment::guard::DRAIN_BOUND`).
 #[cfg(target_os = "linux")]
 const STOP_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
 

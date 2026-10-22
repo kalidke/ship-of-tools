@@ -48,7 +48,7 @@ pub(super) async fn spawn_supervisor(
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     workspace_id: Option<String>,
     lifecycle: SharedLifecycle,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
 ) -> Result<Supervisor> {
     let repl_project = Repl::repl_project();
     let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
@@ -168,7 +168,7 @@ pub(super) mod seams;
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines, reason = "the REPL supervisor task: one loop over the child's output and the submissions; predates the 100-line limit")]
 async fn supervisor_task(
-    mut contained: crate::lifecycle::child_signal::Contained,
+    mut contained: sot_containment::Contained,
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
@@ -178,7 +178,7 @@ async fn supervisor_task(
     stderr_tail: StderrTail,
     lifecycle: SharedLifecycle,
     my_gen: u64,
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     mut tmp: crate::sidecars::child::ChildTmp,
 ) -> std::result::Result<(), String> {
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();

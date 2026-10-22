@@ -112,7 +112,7 @@ fn a_leg_spawned_after_the_binary_is_renamed_runs_the_supervisors_own_inode() {
     // the built binary itself (`capsule_exe()`) must stay put for every
     // other test in this file.
     let copy_path = dir.path().join("sot-capsule-copy");
-    sot_log::test_exec::write_executable(&copy_path, std::fs::read(capsule_exe()).expect("read sot-capsule for a renameable launch path"));
+    sot_platform::test_exec::write_executable(&copy_path, std::fs::read(capsule_exe()).expect("read sot-capsule for a renameable launch path"));
 
     let mut cmd = Command::new(&copy_path);
     cmd.arg("supervise")

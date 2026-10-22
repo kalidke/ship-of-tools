@@ -14,7 +14,7 @@ fn a_sync_whose_ssh_never_answers_ends_at_its_bound() {
     let t = tempfile::tempdir().unwrap();
     let bin = t.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    sot_log::test_exec::write_executable(&bin.join("ssh"), "#!/bin/sh\nexec sleep 600\n");
+    sot_platform::test_exec::write_executable(&bin.join("ssh"), "#!/bin/sh\nexec sleep 600\n");
     let mut cmd = sotd::sotd_command();
     let mut child = cmd
         .env_clear()

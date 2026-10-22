@@ -183,8 +183,8 @@ async fn res_without_done_closes_started_run() {
     let r = run_case(&workspaces, &session, &mut bus, "resonly", eval_payload(&id, "1", None)).await;
     assert_eq!(r.reply, refusal(&id, "error", "nope"));
     assert_closed_once(&r);
-    crate::lifecycle::child_signal::process().fire().expect("fire");
-    within(Duration::from_secs(60), "owned children reaped", || crate::lifecycle::child_signal::process().live() == 0).await;
+    sot_containment::process().fire().expect("fire");
+    within(Duration::from_secs(60), "owned children reaped", || sot_containment::process().live() == 0).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -210,7 +210,7 @@ async fn a_run_behind_a_repl_still_starting_says_so() {
     let resources = dir.join("resources");
     std::fs::create_dir_all(resources.join("julia").join("repl")).unwrap();
     let julia = dir.join("julia");
-    sot_log::test_exec::write_executable(&julia, INSTALLING);
+    sot_platform::test_exec::write_executable(&julia, INSTALLING);
     std::env::set_var("SOT_RESOURCE_ROOT", &resources);
     std::env::set_var("SOT_JULIA_BIN", &julia);
     let (frame_tx, mut bus) = tokio::sync::broadcast::channel(256);
@@ -229,8 +229,8 @@ async fn a_run_behind_a_repl_still_starting_says_so() {
     assert!(age.and_then(|n| n.parse::<u64>().ok()).is_some_and(|n| n >= 1), "the report names the start: {said:?}");
     assert!(warned, "the start is not in the log at warn:\n{}", log.text());
     assert_eq!(r.frames.iter().map(|f| f["kind"].clone()).collect::<Vec<_>>(), ["started", "done"]);
-    crate::lifecycle::child_signal::process().fire().expect("fire");
-    within(Duration::from_secs(30), "owned children reaped", || crate::lifecycle::child_signal::process().live() == 0).await;
+    sot_containment::process().fire().expect("fire");
+    within(Duration::from_secs(30), "owned children reaped", || sot_containment::process().live() == 0).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -284,7 +284,7 @@ mod shell_table {
         let resources = dir.join("resources");
         std::fs::create_dir_all(resources.join("julia").join("repl")).unwrap();
         let julia = dir.join("julia");
-        sot_log::test_exec::write_executable(&julia, STUB);
+        sot_platform::test_exec::write_executable(&julia, STUB);
         let log = dir.join("julia.log");
         let _pin = pin_env(&julia, &resources);
 

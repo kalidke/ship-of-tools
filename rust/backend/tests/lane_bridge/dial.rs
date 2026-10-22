@@ -360,7 +360,7 @@ while True:
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()
 "#, socket = socket.to_string_lossy());
-    sot_log::test_exec::write_executable(&dir.join("ssh"), script);
+    sot_platform::test_exec::write_executable(&dir.join("ssh"), script);
     guard.observe("after preparing relay");
 }
 
@@ -381,7 +381,7 @@ fn stub_endpoint(path: PathBuf, guard: Arc<ParentSshEnvironment>) -> DaemonLaneE
 fn stub_ssh_dying_with(dir: &Path, stderr_line: &str, guard: &ParentSshEnvironment) {
     let script = format!("#!/bin/sh\necho '{stderr_line}' >&2\nexit 255\n");
     let path = dir.join("ssh");
-    sot_log::test_exec::write_executable(&path, script);
+    sot_platform::test_exec::write_executable(&path, script);
     guard.observe("after preparing dying fixture");
 }
 
@@ -520,7 +520,7 @@ if request['payload']['lane'] == 'supervisor':
 else:
     sys.stdin.buffer.read()
 "#, root = dir.to_string_lossy());
-    sot_log::test_exec::write_executable(&path, script);
+    sot_platform::test_exec::write_executable(&path, script);
     guard.observe("after preparing ordering fixture");
     path
 }
@@ -701,7 +701,7 @@ if role == 'supervisor':
     sys.exit(255)
 sys.stdin.buffer.read()
 "#, root=dir.to_string_lossy(), reverse=if reversed { "True" } else { "False" });
-    sot_log::test_exec::write_executable(&path, script);
+    sot_platform::test_exec::write_executable(&path, script);
     guard.observe("after preparing rendezvous fixture");
     let slots = Arc::new(AtomicUsize::new(0));
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();

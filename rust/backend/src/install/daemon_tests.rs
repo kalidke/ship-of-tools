@@ -110,7 +110,7 @@ fn a_live_daemon_is_asked_before_it_ends() {
         // own processes do not show it (another prefix's, taken over): one that cannot be told is never read as none.
         let dir = tempfile::tempdir().unwrap();
         let mute = dir.path().join("sotd");
-        sot_log::test_exec::write_executable(&mute, "#!/bin/sh\necho 'sotd same-version: no hello within 5 s' >&2\nexit 1\n");
+        sot_platform::test_exec::write_executable(&mute, "#!/bin/sh\necho 'sotd same-version: no hello within 5 s' >&2\nexit 1\n");
         assert_eq!(unix::discover(&mute, "unix:/s.sock", false, true, false, false).0, State::Unknown, "an active unit the retire stops runs a daemon");
         assert_eq!(unix::discover(&mute, "unix:/s.sock", false, false, false, true).0, State::None, "a role with no daemon here and nothing to retire asks nothing");
         let retire = |before| unix::Question { before, unit_runs: false, retire_stops: true, restart_flag: false, socket: "/s.sock", why: "no answer" };
@@ -260,7 +260,7 @@ fn a_live_daemon_is_asked_before_it_ends() {
 fn a_wait_for_the_daemon_keeps_its_bound() {
     let dir = tempfile::tempdir().unwrap();
     let sotd = dir.path().join("sotd");
-    sot_log::test_exec::write_executable(&sotd, "#!/bin/sh\nsleep 10\nexit 3\n");
+    sot_platform::test_exec::write_executable(&sotd, "#!/bin/sh\nsleep 10\nexit 3\n");
     let t0 = Instant::now();
     let (st, why) = wait_current(&sotd, "unix:/nowhere.sock", Duration::from_secs(1), false, true);
     assert!(t0.elapsed() < Duration::from_millis(1800), "the wait took {:?}", t0.elapsed());

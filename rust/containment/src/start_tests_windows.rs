@@ -1,40 +1,11 @@
 //! The Windows half of the start/fire tests: a suspended start cannot be outwaited, and job requests are checked.
 
-use crate::lifecycle::child_signal::Signal;
+use crate::signal::Signal;
 use std::sync::{mpsc, Arc, Barrier};
 use std::time::{Duration, Instant};
-use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
-use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
-use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+use windows_sys::Win32::Foundation::CloseHandle;
 
-pub(crate) struct Watched(usize);
-
-impl Watched {
-    pub(crate) fn open(pid: u32) -> Self {
-        // SAFETY: the fixture is alive and owned; this retained handle is closed by Drop.
-        let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
-        assert!(
-            !handle.is_null(),
-            "cannot retain the fixture identity: {}",
-            std::io::Error::last_os_error()
-        );
-        Self(handle as usize)
-    }
-    pub(crate) fn dead(&self) -> bool {
-        self.dead_within(3000)
-    }
-    pub(crate) fn dead_within(&self, ms: u32) -> bool {
-        // SAFETY: wait on this object's retained handle, rather than a potentially reused PID.
-        unsafe { WaitForSingleObject(self.0 as _, ms) == WAIT_OBJECT_0 }
-    }
-}
-
-impl Drop for Watched {
-    fn drop(&mut self) {
-        // SAFETY: close this object's own process handle.
-        unsafe { CloseHandle(self.0 as _) };
-    }
-}
+use crate::watched::Watched;
 
 fn fire_result(signal: &Signal) -> std::io::Result<()> {
     signal.fire()
@@ -77,7 +48,7 @@ fn start_race(asynchronous: bool, adopted: bool) {
     let dir = tempfile::tempdir().unwrap();
     let ready = dir.path().join("ready");
     let program = dir.path().join("tree.ps1");
-    sot_log::test_exec::write_executable(&program,
+    sot_platform::test_exec::write_executable(&program,
         "param($ready)\n$p=Start-Process -PassThru powershell -ArgumentList '-NoProfile','-Command','Start-Sleep 600'\n[IO.File]::WriteAllText($ready,[string]$p.Id)\nStart-Sleep 600\n");
     let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
     let (entered, arrived) = mpsc::channel();
@@ -270,7 +241,7 @@ fn contained_tree_role() {
     let Some(dir) = std::env::var_os("SOT_L2_ROLE_DIR").map(std::path::PathBuf::from) else {
         return;
     };
-    sot_platform::test_isolated::enter("lifecycle::start_tests::windows::contained_tree_role");
+    sot_platform::test_isolated::enter("start_tests::windows::contained_tree_role");
     let began = Instant::now();
     while !dir.join("go").exists() {
         assert!(began.elapsed() < Duration::from_secs(60), "no go");
@@ -299,14 +270,14 @@ struct DaemonRole {
     dir: tempfile::TempDir,
     role: std::process::Child,
     entry: sot_platform::test_isolated::Entry,
-    _job: sot_log::capsule::producer::conpty::AnonymousJob,
+    _job: sot_platform::host::winjob::AnonymousJob,
 }
 
 impl DaemonRole {
     fn start(env: &[(&str, &std::ffi::OsStr)]) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (mut command, entry) = sot_platform::test_isolated::test_command(
-            "lifecycle::start_tests::windows::contained_tree_role",
+            "start_tests::windows::contained_tree_role",
         );
         command
             .env("SOT_L2_ROLE_DIR", dir.path())
@@ -317,7 +288,7 @@ impl DaemonRole {
             command.env(name, value);
         }
         let role = command.spawn().expect("start the role");
-        let job = sot_log::capsule::producer::conpty::AnonymousJob::create().unwrap();
+        let job = sot_platform::host::winjob::AnonymousJob::create().unwrap();
         // SAFETY: both handles are live; the job is the case's and the process handle is the role's.
         assert!(
             unsafe {
@@ -371,7 +342,7 @@ impl DaemonRole {
 /// What outlives the role's death: the case's job, which ends what is left when the case drops it.
 struct DeadRole {
     _dir: tempfile::TempDir,
-    _job: sot_log::capsule::producer::conpty::AnonymousJob,
+    _job: sot_platform::host::winjob::AnonymousJob,
 }
 
 /// The kernel closes a dead daemon's handles, and a contained tree's per-child job closes with them: the daemon (a re-run

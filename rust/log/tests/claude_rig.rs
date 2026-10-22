@@ -116,7 +116,7 @@ done
         other => panic!("unknown scenario {other}"),
     };
     let path = dir.join(format!("fake-helper-{scenario}.sh"));
-    sot_log::test_exec::write_executable(&path, body);
+    sot_platform::test_exec::write_executable(&path, body);
     path
 }
 

@@ -4,12 +4,12 @@ use std::time::Duration;
 
 fn stub(dir: &std::path::Path, body: &str) -> String {
     let p = dir.join("stub-quarto");
-    sot_log::test_exec::write_executable(&p, format!("#!/bin/sh\n{body}\n"));
+    sot_platform::test_exec::write_executable(&p, format!("#!/bin/sh\n{body}\n"));
     p.to_string_lossy().into_owned()
 }
 
-fn private_signal() -> &'static crate::lifecycle::child_signal::Signal {
-    Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()))
+fn private_signal() -> &'static sot_containment::Signal {
+    Box::leak(Box::new(sot_containment::Signal::new()))
 }
 
 /// A render that never ends is an error naming its bound, and its tree is killed.

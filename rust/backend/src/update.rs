@@ -43,7 +43,7 @@ use crate::sidecars::julia::JuliaError;
 /// folder of its own (`ChildTmp`) that goes after its reap, so what a command leaves there goes with it: Pkg's package
 /// download, which Pkg removes only at the end of the call that made it, from an instantiate that failed, was dropped
 /// past its bound or was ended with the daemon.
-pub(crate) struct UpdaterSpawner(pub(crate) &'static crate::lifecycle::child_signal::Signal);
+pub(crate) struct UpdaterSpawner(pub(crate) &'static sot_containment::Signal);
 
 impl sot_updater::Spawner for UpdaterSpawner {
     fn output<'a>(
@@ -84,7 +84,7 @@ impl sot_updater::Spawner for UpdaterSpawner {
 
 /// The updater's spawner: the process's one signal.
 fn updater_spawner() -> UpdaterSpawner {
-    UpdaterSpawner(crate::lifecycle::child_signal::process())
+    UpdaterSpawner(sot_containment::process())
 }
 
 /// Delay before the first automatic check after boot, then the steady cadence.

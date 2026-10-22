@@ -4,7 +4,7 @@
 //! The close asks rows to end every row and the drawer by one deadline
 //! (`rows::end::end_every`); what rows could not end comes back counted,
 //! never guessed. The daemon's own children
-//! receive checked termination requests through [`super::child_signal`]:
+//! receive checked termination requests through `sot_containment`:
 //! [`exit`] fires its signal before the one raw process exit, and does not
 //! wait for any tree to die.
 
@@ -109,7 +109,7 @@ const FOLDERS_WAIT: Duration = Duration::from_secs(2);
 /// and the exit, the backstop's included, does not depend on it. It waits no longer than [`FOLDERS_WAIT`] for the
 /// folders (`sidecars::child::remove_own`), whose rest the next start removes.
 pub(crate) fn exit(code: i32) -> ! {
-    terminal(super::child_signal::process(), code, |code| {
+    terminal(sot_containment::process(), code, |code| {
         crate::sidecars::child::remove_own(FOLDERS_WAIT);
         std::process::exit(code)
     })
@@ -121,7 +121,7 @@ pub(crate) fn exit(code: i32) -> ! {
 /// the signal). If the raise returns, the exit is 128 + n.
 #[cfg(unix)]
 pub(crate) fn exit_by_signal(signum: i32) -> ! {
-    terminal(super::child_signal::process(), 128 + signum, |code| {
+    terminal(sot_containment::process(), 128 + signum, |code| {
         crate::sidecars::child::remove_own(FOLDERS_WAIT);
         // SAFETY: the default action restored for one valid signal, the signal unblocked in this thread, then raised at
         // this thread; no handler runs.
@@ -142,7 +142,7 @@ pub(crate) fn exit_by_signal(signum: i32) -> ! {
 /// the first to arrive claims the exit and its code stands; the other waits for the process to end under it. A test
 /// supplies a private signal and a callback.
 pub(super) fn terminal<T>(
-    signal: &'static super::child_signal::Signal,
+    signal: &'static sot_containment::Signal,
     code: i32,
     terminate: impl FnOnce(i32) -> T,
 ) -> T {

@@ -1,5 +1,5 @@
 use super::{start_with, Display};
-use crate::lifecycle::child_signal::Signal;
+use sot_containment::Signal;
 use crate::sidecars::contract_tests::{executable, holding_display, within, x11_answer, x11_cookie, x11_server};
 use std::ffi::OsStr;
 use std::path::PathBuf;
@@ -11,7 +11,7 @@ fn private_signal() -> &'static Signal {
 
 /// A process that holds `cookie` as its `XAUTHORITY`, contained under `sig` in a process group of its own, outside
 /// the display's, as Pluto's notebook worker and a detached process run outside their child's.
-fn holder(sig: &'static Signal, cookie: &OsStr) -> crate::lifecycle::child_signal::Contained {
+fn holder(sig: &'static Signal, cookie: &OsStr) -> sot_containment::Contained {
     let mut cmd = tokio::process::Command::new(executable("sleep"));
     cmd.arg("300").env("XAUTHORITY", cookie);
     sig.spawn(&mut cmd).expect("start a process that holds a cookie")
@@ -164,13 +164,13 @@ async fn a_failed_start_says_why() {
         dir
     };
     let stub = folder.path().join("stub");
-    sot_log::test_exec::write_executable(&stub, "#!/bin/sh\necho 'Fatal server error: no screens found' >&2\nexit 1\n");
+    sot_platform::test_exec::write_executable(&stub, "#!/bin/sh\necho 'Fatal server error: no screens found' >&2\nexit 1\n");
     let ended = start_with(stub.as_os_str(), &own("ended"), sig, Duration::from_secs(10)).await;
     let why = ended.err().expect("a server that exits names no display");
     assert!(why.ends_with("ended before naming a display: Fatal server error: no screens found"), "{why}");
 
     let deaf = folder.path().join("deaf");
-    sot_log::test_exec::write_executable(&deaf, "#!/bin/sh\nexec sleep 30\n");
+    sot_platform::test_exec::write_executable(&deaf, "#!/bin/sh\nexec sleep 30\n");
     let silent = start_with(deaf.as_os_str(), &own("silent"), sig, Duration::from_millis(500)).await;
     let why = silent.err().expect("a server that never answers names no display");
     assert!(why.ends_with("named no display within 500ms"), "{why}");
@@ -178,7 +178,7 @@ async fn a_failed_start_says_why() {
     // A server that is still starting at the bound: the reason carries what it last wrote.
     let slow = folder.path().join("slow");
     let script = "#!/bin/sh\necho 'xkbcomp: still compiling the keymap' >&2\nexec sleep 30\n";
-    sot_log::test_exec::write_executable(&slow, script);
+    sot_platform::test_exec::write_executable(&slow, script);
     let stalled = start_with(slow.as_os_str(), &own("stalled"), sig, Duration::from_millis(500)).await;
     let why = stalled.err().expect("a server that never answers names no display");
     assert!(why.ends_with("named no display within 500ms: xkbcomp: still compiling the keymap"), "{why}");

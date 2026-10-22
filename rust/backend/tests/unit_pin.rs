@@ -45,7 +45,7 @@ fn topology(t: &TempDir, hosts: Option<&str>, self_host: &str, args: &[&str]) ->
     }
     let bin = t.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    sot_log::test_exec::write_executable(&bin.join("systemctl"), "#!/bin/sh\necho \"$*\" >> \"${0%/*}/calls\"\nexit 0\n");
+    sot_platform::test_exec::write_executable(&bin.join("systemctl"), "#!/bin/sh\necho \"$*\" >> \"${0%/*}/calls\"\nexit 0\n");
     sot_platform::test_wait::run_within(
         sotd::sotd_command()
             .env_clear()

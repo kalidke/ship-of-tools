@@ -6,7 +6,7 @@ use super::*;
 async fn two_answers(body: &str) -> (Vec<std::result::Result<Value, String>>, usize) {
     let dir = tempfile::tempdir().unwrap();
     let (project, counter) = stub_kernel(dir.path(), "bytes", &format!("{}{body}exec sleep 600\n", hello_answer()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (status, mut status_rx) = watch::channel(Status::Starting);
     let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
     let tx = running(&mut status_rx).await;
@@ -39,7 +39,7 @@ async fn a_kernel_that_fails_its_start_logs_its_stderr_at_warn() {
     let log = sot_log::test_log::capture();
     let dir = tempfile::tempdir().unwrap();
     let (project, _) = stub_kernel(dir.path(), "kp", "echo 'ERROR: LoadError: (kernel-boot-red)' >&2\nexit 1\n");
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (status, _keep) = watch::channel(Status::Starting);
     let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
     crate::sidecars::contract_tests::within(Duration::from_secs(10), "the kernel's stderr is in the log at warn", || {

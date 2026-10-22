@@ -1,0 +1,30 @@
+[package]
+name = "sot-containment"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+# The fault hooks and the observers the tests of this crate and of the backend use (`Signal::after_create`,
+# `contain::REQUEST_EVENTS`, `Leftover`, `Watched`). Never in an installed build: the backend turns it on in its
+# dev-dependencies only, and this crate's own tests get it through the self-referential dev-dependency below.
+test-support = []
+
+[dependencies]
+sot-platform = { path = "../platform" }
+tokio = { workspace = true, features = ["signal"] }
+tracing = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# `Win32_System_JobObjects` and `Win32_System_Console`: the per-child job and the console process group's interrupt;
+# `Win32_System_Diagnostics_ToolHelp` and `Win32_System_Threading`: resuming the suspended start's main thread.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[dev-dependencies]
+sot-containment = { path = ".", features = ["test-support"] }
+sot-platform = { path = "../platform", features = ["test-support"] }
+tempfile = { workspace = true }

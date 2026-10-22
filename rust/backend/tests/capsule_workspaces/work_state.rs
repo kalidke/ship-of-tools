@@ -24,7 +24,7 @@ fn write_dialog_claude(dir: &Path, dialog: &Path) -> PathBuf {
          done\n",
         dialog = dialog.display(),
     );
-    sot_log::test_exec::write_executable(&dir.join("claude"), script);
+    sot_platform::test_exec::write_executable(&dir.join("claude"), script);
     dir.to_path_buf()
 }
 

@@ -185,7 +185,7 @@ pub struct Repl {
 struct ReplInner {
     /// The shutdown signal every supervisor of this REPL is started under and watches; supplied by the owner of
     /// this handle, never chosen inside supervision.
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     /// The selected project, the running supervisor and the one being retired, under one lock.
     slot: Mutex<Slot>,
     /// Broadcast sink for streamed `repl.frame` evts. Threaded into every
@@ -256,7 +256,7 @@ impl Repl {
         frame_tx: broadcast::Sender<ReplFrameMsg>,
         workspace_id: Option<String>,
         user_project: PathBuf,
-        sig: &'static crate::lifecycle::child_signal::Signal,
+        sig: &'static sot_containment::Signal,
     ) -> Self {
         Self {
             inner: Arc::new(ReplInner {

@@ -17,6 +17,8 @@ mod storage;
 mod volume;
 pub mod winhandle;
 #[cfg(windows)]
+pub mod winjob;
+#[cfg(windows)]
 mod winsec;
 
 #[cfg(windows)]

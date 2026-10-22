@@ -11,7 +11,7 @@ fn present_when_executable_sibling_exists() {
     let dir = scratch_dir("present");
     let daemon = dir.join("sotd");
     let sibling = dir.join(CAPSULE_SIBLING_NAME);
-    sot_log::test_exec::write_executable(&sibling, b"#!/bin/sh\n");
+    sot_platform::test_exec::write_executable(&sibling, b"#!/bin/sh\n");
     assert!(capsule_sibling_present(&daemon));
     std::fs::remove_dir_all(&dir).ok();
 }

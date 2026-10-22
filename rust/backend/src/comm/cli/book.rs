@@ -204,7 +204,7 @@ pub(crate) fn list(env: &Env, _args: &[String]) -> Out {
     let fe = std::path::PathBuf::from(super::bin_dir(env)).join("sot-fe");
     let mut cmd = std::process::Command::new(&fe);
     cmd.arg("version");
-    let fe_out = crate::lifecycle::child_signal::process()
+    let fe_out = sot_containment::process()
         .output(&mut cmd, std::time::Duration::from_secs(5))
         .map(|r| String::from_utf8_lossy(&r.stdout).into_owned())
         .unwrap_or_default();

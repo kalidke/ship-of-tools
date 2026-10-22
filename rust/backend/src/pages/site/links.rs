@@ -137,7 +137,7 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, (bool, String)> {
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE");
     // Whatever git started dies with it, within the bound.
-    let out = crate::lifecycle::child_signal::process().output(&mut cmd, Duration::from_secs(10)).map_err(|e| (false, e.to_string()))?;
+    let out = sot_containment::process().output(&mut cmd, Duration::from_secs(10)).map_err(|e| (false, e.to_string()))?;
     if out.status.success() {
         Ok(out.stdout)
     } else {
@@ -164,7 +164,7 @@ fn git_present() -> bool {
         let clt = cfg!(target_os = "macos") && {
             let mut cmd = std::process::Command::new("xcode-select");
             cmd.arg("-p").stdin(std::process::Stdio::null());
-            crate::lifecycle::child_signal::process()
+            sot_containment::process()
                 .output(&mut cmd, Duration::from_secs(10))
                 .is_ok_and(|o| o.status.success())
         };

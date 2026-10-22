@@ -262,7 +262,7 @@ pub(crate) mod macos {
     pub(crate) fn chain(me: u32) -> Result<Vec<Rec>, String> {
         let mut ps = std::process::Command::new("/bin/ps");
         ps.args(["-ww", "-A", "-o", "pid=", "-o", "ppid=", "-o", "args="]);
-        let out = crate::lifecycle::child_signal::process()
+        let out = sot_containment::process()
             .output(&mut ps, std::time::Duration::from_secs(10))
             .map_err(|e| format!("ps: {e}"))?;
         let recs = records(&String::from_utf8_lossy(&out.stdout), me);

@@ -156,7 +156,7 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 )]
 fn main() -> Result<()> {
     #[cfg(unix)]
-    lifecycle::child_signal::reset_child_signal();
+    sot_containment::reset_child_signal();
     // Pure query subcommands (security review): checked against raw argv
     // BEFORE any startup side effect (umask, private log file/state dir
     // creation, tracing init) below. Previously pure path/version queries were
@@ -380,7 +380,7 @@ fn main() -> Result<()> {
         if std::env::var_os("SOT_TEST_PROLOGUE_THREAD").is_some() {
             std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_secs(3600)));
         }
-        if let Err(e) = lifecycle::daemon_children::guard::require_one_thread() {
+        if let Err(e) = sot_containment::guard::require_one_thread() {
             eprintln!("sotd: {e} -- refusing to start");
             lifecycle::shutdown::exit(1);
         }
@@ -395,10 +395,10 @@ fn main() -> Result<()> {
     }
 
     // On Linux this daemon becomes the child of a guard that ends everything the daemon starts when the daemon ends
-    // (`lifecycle::daemon_children::guard`). It needs a process with one thread, so it comes after the durable parent
+    // (`sot_containment::guard`). It needs a process with one thread, so it comes after the durable parent
     // and before the runtime, the relay refresh and every other thread.
     #[cfg(target_os = "linux")]
-    if let Err(e) = lifecycle::daemon_children::guard::install() {
+    if let Err(e) = sot_containment::guard::install() {
         eprintln!("sotd: {e} -- refusing to start");
         lifecycle::shutdown::exit(1);
     }

@@ -290,7 +290,7 @@ async fn a_session_after_an_in_place_update_carries_the_stable_start_path() {
         (sot_capsule_exe(), bin.join(CAPSULE_EXE_NAME)),
     ] {
         if std::fs::hard_link(&from, &to).is_err() {
-            sot_log::test_exec::write_executable(
+            sot_platform::test_exec::write_executable(
                 &to,
                 std::fs::read(&from).expect("read the binary to stage"),
             );
@@ -305,7 +305,7 @@ async fn a_session_after_an_in_place_update_carries_the_stable_start_path() {
 
     // An update replaces the file in place: a new file written beside it and renamed over it.
     let fresh = bin.join("sotd.new");
-    sot_log::test_exec::write_executable(&fresh, "#!/bin/sh\nexit 0\n");
+    sot_platform::test_exec::write_executable(&fresh, "#!/bin/sh\nexit 0\n");
     std::fs::rename(&fresh, bin.join("sotd")).expect("rename the replacement over the binary");
     let pid = row
         .env()

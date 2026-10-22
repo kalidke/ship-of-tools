@@ -1,4 +1,4 @@
-use crate::lifecycle::child_signal::Signal;
+use crate::signal::Signal;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -279,7 +279,7 @@ fn contain_job_permits_no_breakaway() {
         JobObjectExtendedLimitInformation, QueryInformationJobObject,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    let job = sot_log::capsule::producer::conpty::AnonymousJob::create().unwrap();
+    let job = sot_platform::host::winjob::AnonymousJob::create().unwrap();
     // SAFETY: a plain query into a zeroed, correctly sized struct.
     let flags = unsafe {
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
@@ -307,8 +307,7 @@ fn contain_job_permits_no_breakaway() {
 #[tokio::test]
 #[ignore = "needs julia"]
 async fn fire_kills_a_julia_detached_grandchild_windows() {
-    let (julia, _) = crate::sidecars::julia::resolve_bin().expect("resolve julia");
-    let mut cmd = tokio::process::Command::new(julia);
+    let mut cmd = tokio::process::Command::new("julia");
     cmd.args([
         "-e",
         "run(`cmd /c exit 0`); p=run(detach(`ping -n 600 127.0.0.1`);wait=false);println(getpid(p));flush(stdout);sleep(600)",
@@ -336,7 +335,7 @@ async fn fire_kills_an_msys_launched_grandchild_windows() {
 async fn contain_from_a_jobbed_daemon_windows() {
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
-    let outer = sot_log::capsule::producer::conpty::AnonymousJob::create().unwrap();
+    let outer = sot_platform::host::winjob::AnonymousJob::create().unwrap();
     // SAFETY: assigns this process to a job we own; the job is leaked so it never ends the test run.
     let ok = unsafe { AssignProcessToJobObject(outer.raw(), GetCurrentProcess()) };
     assert!(

@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(unix)]
-use crate::lifecycle::child_signal::tests::Leftover;
+use sot_containment::leftover::Leftover;
 
 /// Program-path override per kernel project, so no test touches the process env.
 pub(super) static STUB_BIN: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
@@ -27,11 +27,11 @@ async fn shutdown_kills_the_kernel_child_and_never_respawns() {
     let dir = tempfile::tempdir().unwrap();
     let counter = dir.path().join("spawns");
     let stub = dir.path().join("stub-julia");
-    sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display()));
+    sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display()));
     let project = dir.path().join("kp");
     std::fs::create_dir(&project).unwrap();
     STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (status, _keep) = watch::channel(Status::Starting);
     let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
     let began = std::time::Instant::now();
@@ -60,11 +60,11 @@ async fn the_kernel_spawn_passes_startup_file_no() {
     let dir = tempfile::tempdir().unwrap();
     let argv = dir.path().join("argv");
     let stub = dir.path().join("stub-julia");
-    sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho \"$@\" > {}\nexec sleep 30\n", argv.display()));
+    sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\necho \"$@\" > {}\nexec sleep 30\n", argv.display()));
     let project = dir.path().join("kp");
     std::fs::create_dir(&project).unwrap();
     STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (status, _keep) = watch::channel(Status::Starting);
     let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
     let began = std::time::Instant::now();
@@ -92,7 +92,7 @@ async fn blocked_kernel_write_does_not_outlive_shutdown() {
     let gc_file = dir.path().join("gc");
     let gc = Leftover::of_file(gc_file.clone());
     let stub = dir.path().join("stub-julia");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         format!(
             "#!/bin/sh\nsleep 3101 &\necho $! > {}\nread l\necho '{{\"id\":1,\"payload\":{{\"protocol\":0}}}}'\nexec sleep 3101\n",
@@ -102,7 +102,7 @@ async fn blocked_kernel_write_does_not_outlive_shutdown() {
     let project = dir.path().join("kp");
     std::fs::create_dir(&project).unwrap();
     STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (status, mut status_rx) = watch::channel(Status::Starting);
     let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
     let tx = loop {
@@ -147,7 +147,7 @@ async fn a_kernel_that_answers_and_dies_is_respawned_on_the_doubling_wait() {
     let dir = tempfile::tempdir().unwrap();
     let counter = dir.path().join("spawns");
     let stub = dir.path().join("stub-julia");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         format!(
             "#!/bin/sh\necho x >> {}\nread l\necho '{{\"id\":1,\"payload\":{{\"protocol\":{KERNEL_PROTOCOL_VERSION}}}}}'\n",
@@ -157,7 +157,7 @@ async fn a_kernel_that_answers_and_dies_is_respawned_on_the_doubling_wait() {
     let project = dir.path().join("kp");
     std::fs::create_dir(&project).unwrap();
     STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (status, _keep) = watch::channel(Status::Starting);
     let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig, KernelBounds::PRODUCT));
     tokio::time::sleep(WINDOW).await;
@@ -191,7 +191,7 @@ async fn a_generation_removes_its_temporary_folder_after_the_reap() {
     let owned = tempfile::tempdir().expect("owned temporary folder");
     std::env::set_var("TMPDIR", owned.path());
     let stub = dir.path().join("stub-julia");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         format!(
             "#!/bin/sh\necho x > \"$TMPDIR/made\"\nread l\necho '{{\"id\":1,\"payload\":{{\"protocol\":{KERNEL_PROTOCOL_VERSION}}}}}'\nexec sleep 30\n"
@@ -200,7 +200,7 @@ async fn a_generation_removes_its_temporary_folder_after_the_reap() {
     let project = dir.path().join("kp");
     std::fs::create_dir(&project).unwrap();
     STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (status, mut keep) = watch::channel(Status::Starting);
     let root = dir.path().to_path_buf();
     let generation = tokio::spawn(async move { run_one_generation(&project, &root, &status, sig, KernelBounds::PRODUCT).await });
@@ -246,7 +246,7 @@ async fn a_kernel_whose_precompile_outlasts_stable_without_serving_backs_off() {
         let dir = tempfile::tempdir().unwrap();
         let counter = dir.path().join("spawns");
         let stub = dir.path().join("stub-julia");
-        sot_log::test_exec::write_executable(
+        sot_platform::test_exec::write_executable(
             &stub,
             format!(
                 "#!/bin/sh\necho x >> {c}\nn=$(wc -l < {c} | tr -d ' ')\nwhile [ ! -f {d}/go-$n ]; do sleep 0.02; done\nif [ -f {d}/hello-$n ]; then read l; echo '{{\"id\":1,\"payload\":{{\"protocol\":{KERNEL_PROTOCOL_VERSION}}}}}'; fi\nif [ -f {d}/hold-$n ]; then while [ ! -f {d}/die-$n ]; do sleep 0.02; done; fi\n",
@@ -257,7 +257,7 @@ async fn a_kernel_whose_precompile_outlasts_stable_without_serving_backs_off() {
         let project = dir.path().join("kp");
         std::fs::create_dir(&project).unwrap();
         STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
-        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
         let (status, mut status_rx) = watch::channel(Status::Starting);
         // No deadline: a paused clock jumps to any armed timer whenever the runtime waits on the stub, which
         // would end each generation at its hello bound and measure nothing here.

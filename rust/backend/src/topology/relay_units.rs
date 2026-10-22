@@ -133,7 +133,7 @@ fn enabled_hosts((prefix, suffix): (&str, &str)) -> Result<Vec<String>, String> 
     let pattern = format!("{prefix}*{suffix}");
     let mut cmd = systemctl();
     cmd.args(["--user", "list-unit-files", &pattern, "--no-legend", "--no-pager"]);
-    let out = crate::lifecycle::child_signal::process()
+    let out = sot_containment::process()
         .output(&mut cmd, SYSTEMCTL_BOUND)
         .map_err(|e| format!("systemctl --user list-unit-files: {e}"))?;
     if !out.status.success() {
@@ -350,12 +350,12 @@ fn supervised_by_systemd() -> Result<bool, String> {
     let what = format!("systemctl --user show -p MainPID --value {DAEMON_UNIT}");
     let mut cmd = systemctl();
     cmd.args(["--user", "show", "-p", "MainPID", "--value", DAEMON_UNIT]);
-    let out = crate::lifecycle::child_signal::process().output(&mut cmd, SYSTEMCTL_BOUND).map_err(|e| format!("{what}: {e}"))?;
+    let out = sot_containment::process().output(&mut cmd, SYSTEMCTL_BOUND).map_err(|e| format!("{what}: {e}"))?;
     if !out.status.success() {
         return Err(format!("{what}: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
     // The unit's main process is the lifetime guard that supervises this daemon, else the daemon itself.
-    let me = crate::lifecycle::daemon_children::guard::guard_pid().unwrap_or_else(std::process::id);
+    let me = sot_containment::guard::guard_pid().unwrap_or_else(std::process::id);
     Ok(is_main_pid(&String::from_utf8_lossy(&out.stdout), me))
 }
 
@@ -393,7 +393,7 @@ fn run_systemctl(args: &[&str]) -> Result<(), String> {
 fn systemctl_stdout(args: &[&str]) -> Result<String, String> {
     let mut cmd = systemctl();
     cmd.args(args);
-    let out = crate::lifecycle::child_signal::process()
+    let out = sot_containment::process()
         .output(&mut cmd, SYSTEMCTL_BOUND)
         .map_err(|e| format!("systemctl {}: {e}", args.join(" ")))?;
     if !out.status.success() {

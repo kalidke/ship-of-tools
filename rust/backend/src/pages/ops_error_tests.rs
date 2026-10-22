@@ -223,7 +223,7 @@ mod handler {
     fn install_stand_ins(dir: &std::path::Path, stderr: &[u8]) {
         let bin = dir.join("bin");
         std::fs::create_dir(&bin).unwrap();
-        sot_log::test_exec::write_executable(&bin.join("julia"), "#!/bin/sh\nexit 0\n");
+        sot_platform::test_exec::write_executable(&bin.join("julia"), "#!/bin/sh\nexit 0\n");
         std::fs::write(dir.join("stderr.bin"), stderr).unwrap();
         let body = r#"#!/bin/sh
 set -eu
@@ -242,7 +242,7 @@ cat stderr.bin >&2
 printf 'stderr-written\n' > completed
 exit 1
 "#;
-        sot_log::test_exec::write_executable(&bin.join("quarto"), body);
+        sot_platform::test_exec::write_executable(&bin.join("quarto"), body);
         std::fs::write(dir.join("doc.qmd"), "---\nengine: julia\n---\n").unwrap();
         let mut paths = vec![bin.clone()];
         if let Some(preserved) = std::env::var_os("PATH") { paths.extend(std::env::split_paths(&preserved)); }
@@ -315,7 +315,7 @@ exit 1
         if !sot_platform::test_isolated::run_isolated(
             "pages::ops::error_tests::handler::quarto_failure_reply_survives_error_flood",
         ) { return; }
-        crate::lifecycle::child_signal::reset_child_signal();
+        sot_containment::reset_child_signal();
         let mut accepted = true;
         for execute in [false, true] {
             let frame = failed_render(&error_flood(), execute);

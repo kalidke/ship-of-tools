@@ -246,7 +246,7 @@ async fn a_submission_pushed_after_the_close_is_answered() {
     }
     let fx = Fixture::new(false);
     let stub = fx.root().join("julia");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub,
         "#!/bin/sh\nprintf '%s\\n' '{\"v\":1,\"id\":0,\"kind\":\"evt\",\"op\":\"repl.ready\",\"payload\":{}}'\nsleep 1\nexit 0\n".to_owned(),
     );
@@ -283,7 +283,7 @@ async fn retired_generation_cannot_grant() {
     }
     let fx = Fixture::new(false);
     let stub = fx.root().join("julia");
-    sot_log::test_exec::write_executable(&stub, LATE_BROWSER_STUB.to_owned());
+    sot_platform::test_exec::write_executable(&stub, LATE_BROWSER_STUB.to_owned());
     let resources = fx.root().join("resources");
     std::fs::create_dir_all(resources.join("julia").join("repl")).expect("create resources");
     std::env::set_var("SOT_RESOURCE_ROOT", &resources);

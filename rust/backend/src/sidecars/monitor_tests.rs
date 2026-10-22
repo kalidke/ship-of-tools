@@ -167,7 +167,7 @@
         let dir = std::env::temp_dir().join(format!("sot-sampler-na-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let stub = dir.join("nvidia-smi");
-        sot_log::test_exec::write_executable(
+        sot_platform::test_exec::write_executable(
             &stub,
             "#!/bin/sh\ncat <<'EOF'\n0, 11, [N/A], [N/A], 40, 5.0\n1, 22, N/A, N/A, 41, 5.1\n2, 33, Not Supported, Not Supported, 42, 5.2\n3, 44, , , 43, 5.3\nEOF\n",
         );
@@ -269,14 +269,14 @@
         for (i, name) in names.iter().enumerate() {
             cat.push_str(&format!("printf '{} ({name}) S 1 1 1 0 -1 0 0 0 0 0 %d 0\\n' $n\n", 4242 + i));
         }
-        sot_log::test_exec::write_executable(&dir.path().join("cat"), &cat);
+        sot_platform::test_exec::write_executable(&dir.path().join("cat"), &cat);
         let sampler = dir.path().join("sampler");
-        sot_log::test_exec::write_executable(
+        sot_platform::test_exec::write_executable(
             &sampler,
             &format!("#!/bin/sh\nexport LC_ALL=C PATH='{}':\"$PATH\"\nexec bash -s 2 1\n", dir.path().display()),
         );
         STUB_SAMPLER.lock().unwrap().push((host.to_string(), sampler.to_string_lossy().into_owned()));
-        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
         let (tick_tx, mut ticks) = broadcast::channel::<HostLatest>(16);
         let monitored = MonitorHost { name: host.to_string(), ssh_alias: None, local: true };
         let rings = Arc::new(Mutex::new(HashMap::from([(host.to_string(), HostRing::new())])));
@@ -346,9 +346,9 @@
     async fn monitor_backoff_returns_on_shutdown() {
         let dir = tempfile::tempdir().unwrap();
         let stub = dir.path().join("sampler");
-        sot_log::test_exec::write_executable(&stub, "#!/bin/sh\nexit 1\n");
+        sot_platform::test_exec::write_executable(&stub, "#!/bin/sh\nexit 1\n");
         STUB_SAMPLER.lock().unwrap().push(("stub-backoff".to_string(), stub.to_string_lossy().into_owned()));
-        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
         let (tick_tx, mut ticks) = broadcast::channel::<HostLatest>(16);
         let host = MonitorHost { name: "stub-backoff".to_string(), ssh_alias: None, local: true };
         let rings = Arc::new(Mutex::new(HashMap::from([(host.name.clone(), HostRing::new())])));
@@ -381,13 +381,13 @@
         let line = r#"{"ts":1,"cpu":1.0,"ram":2.0}"#;
         let body = script.replace("LINE", line);
         let first = dir.path().join("first.pid");
-        sot_log::test_exec::write_executable(
+        sot_platform::test_exec::write_executable(
             &stub,
             format!("#!/bin/sh\necho x >> '{}'\n[ -s '{1}' ] || echo $$ > '{1}'\n{body}exec sleep 600\n", starts.display(), first.display()),
         );
-        let first = crate::lifecycle::child_signal::tests::Leftover::of_file(first);
+        let first = sot_containment::leftover::Leftover::of_file(first);
         STUB_SAMPLER.lock().unwrap().push((name.to_string(), stub.to_string_lossy().into_owned()));
-        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
         let (tick_tx, mut ticks) = broadcast::channel::<HostLatest>(16);
         let host = MonitorHost { name: name.to_string(), ssh_alias: None, local: true };
         let rings = Arc::new(Mutex::new(HashMap::from([(host.name.clone(), HostRing::new())])));

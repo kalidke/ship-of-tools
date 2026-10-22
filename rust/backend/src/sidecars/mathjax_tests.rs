@@ -11,8 +11,8 @@ async fn a_mathjax_child_that_fails_its_start_logs_its_stderr_at_warn() {
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("render.sh");
     std::fs::write(&script, "echo 'Error: Cannot find module (mathjax-boot-red)' >&2\nexit 1\n").unwrap();
-    let sig: &'static crate::lifecycle::child_signal::Signal =
-        Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal =
+        Box::leak(Box::new(sot_containment::Signal::new()));
     let mathjax = MathJax {
         inner: Arc::new(MathJaxInner { script_path: script, node_bin: "/bin/sh".to_string(), submit: Mutex::new(None), sig }),
     };
@@ -39,8 +39,8 @@ async fn a_render_past_its_bound_is_an_error_and_ends_its_child() {
         format!("echo started >> '{}'\necho '{{\"ready\":true}}'\nwhile read -r line; do :; done\n", starts.display()),
     )
     .unwrap();
-    let sig: &'static crate::lifecycle::child_signal::Signal =
-        Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal =
+        Box::leak(Box::new(sot_containment::Signal::new()));
     let mathjax = MathJax {
         inner: Arc::new(MathJaxInner {
             script_path: script,
@@ -87,8 +87,8 @@ async fn a_child_never_ready_is_ended_at_its_start_bound() {
     let dir = tempfile::Builder::new().prefix("sot-mathjax-start-").tempdir().unwrap();
     let script = dir.path().join("render.sh");
     std::fs::write(&script, "while read -r line; do :; done\n").unwrap();
-    let sig: &'static crate::lifecycle::child_signal::Signal =
-        Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal =
+        Box::leak(Box::new(sot_containment::Signal::new()));
     let mathjax = MathJax {
         inner: Arc::new(MathJaxInner {
             script_path: script,

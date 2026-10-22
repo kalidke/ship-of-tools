@@ -49,7 +49,7 @@ impl Fixture {
     fn with_read_depot(read_depot: Option<std::ffi::OsString>) -> Self {
         // The process-wide signal fired by the owned root's end, and by its drop, is safe only inside an isolated body.
         debug_assert!(std::env::var_os(crate::sidecars::contract_tests::CHILD_ENV).is_some());
-        let owned = OwnedRoot::new(crate::lifecycle::child_signal::process());
+        let owned = OwnedRoot::new(sot_containment::process());
         let root = owned.path();
         let shim = owned_julia_env(root);
         if let Some(read) = read_depot {
@@ -558,8 +558,8 @@ async fn the_command_line_observer_rejects_a_deliberate_leak() {
 /// (`cli/loader_win_utils.c` in every release from 1.6 to 1.13.1), so a reader sees only its executable path, and the
 /// probe is PowerShell, whose command line keeps its arguments.
 async fn observer_rejects_a_deliberate_leak() {
-    let sig: &'static crate::lifecycle::child_signal::Signal =
-        Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal =
+        Box::leak(Box::new(sot_containment::Signal::new()));
     let mut probe = if cfg!(windows) {
         let mut probe = tokio::process::Command::new("powershell");
         probe.args([

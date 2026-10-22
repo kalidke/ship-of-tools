@@ -204,11 +204,11 @@ fn the_ssh_bridge_runs_the_far_boxs_own_bridge() {
     let far = home.path().join(".local/share/sot/bin");
     std::fs::create_dir_all(&stub).expect("mkdir stub-ssh");
     std::fs::create_dir_all(&far).expect("mkdir the far install folder");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stub.join("ssh"),
         "#!/bin/sh\ncase \"$1\" in -G) exit 0 ;; esac\nfor far in \"$@\"; do :; done\nexec sh -c \"$far\"\n",
     );
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &far.join("sotd"),
         "#!/bin/sh\necho \"far sotd $*\"\nexec cat\n",
     );

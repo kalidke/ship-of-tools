@@ -25,7 +25,7 @@ fn accepts_a_tiny_executable_file() {
     // a small but genuinely executable file is accepted.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("julia");
-    sot_log::test_exec::write_executable(&path, b"#!/bin/sh\nexit 0\n");
+    sot_platform::test_exec::write_executable(&path, b"#!/bin/sh\nexit 0\n");
     assert_eq!(looks_like_fake_julia(&path), None);
 }
 
@@ -35,7 +35,7 @@ fn write_fake_juliaup_home(juliaup_dir: &Path, version_dir_name: &str) {
     let bin_dir = juliaup_dir.join(version_dir_name).join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let exe_name = if cfg!(windows) { "julia.exe" } else { "julia" };
-    sot_log::test_exec::write_executable(&bin_dir.join(exe_name), vec![0u8; 8192]);
+    sot_platform::test_exec::write_executable(&bin_dir.join(exe_name), vec![0u8; 8192]);
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn app_bundle_bin(version_dir: &Path) -> PathBuf {
 
 fn write_exe(path: &Path) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    sot_log::test_exec::write_executable(path, vec![0u8; 8192]);
+    sot_platform::test_exec::write_executable(path, vec![0u8; 8192]);
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn falls_back_to_path_when_juliaup_absent() {
     let path_dir = tempfile::tempdir().unwrap();
     let exe_name = if cfg!(windows) { "julia.exe" } else { "julia" };
     let real_julia = path_dir.path().join(exe_name);
-    sot_log::test_exec::write_executable(&real_julia, vec![0u8; 8192]);
+    sot_platform::test_exec::write_executable(&real_julia, vec![0u8; 8192]);
 
     let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
     let _g2 = EnvGuard::capture("HOME");
@@ -267,7 +267,7 @@ fn path_search_skips_a_non_executable_candidate_for_a_real_one_further_along() {
     let real_dir = tempfile::tempdir().unwrap();
     std::fs::write(fake_dir.path().join("julia"), b"not executable").unwrap();
     let real_julia = real_dir.path().join("julia");
-    sot_log::test_exec::write_executable(&real_julia, vec![0u8; 8192]);
+    sot_platform::test_exec::write_executable(&real_julia, vec![0u8; 8192]);
 
     let joined_path = std::env::join_paths([fake_dir.path(), real_dir.path()]).unwrap();
 
@@ -362,7 +362,7 @@ fn ordinary_windowsapps_executable_is_accepted() {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join(folder).join(JULIA_EXE);
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
-        sot_log::test_exec::write_executable(&exe, vec![0u8; 8192]);
+        sot_platform::test_exec::write_executable(&exe, vec![0u8; 8192]);
         let exe_str = exe.to_string_lossy().into_owned();
 
         std::env::set_var("SOT_JULIA_BIN", &exe);
@@ -378,7 +378,7 @@ fn ordinary_windowsapps_executable_is_accepted() {
     std::fs::create_dir_all(&juliaup_dir).unwrap();
     let version_dir = home.path().join("WindowsApps").join("jl");
     std::fs::create_dir_all(version_dir.join("bin")).unwrap();
-    sot_log::test_exec::write_executable(&version_dir.join("bin").join(JULIA_EXE), vec![0u8; 8192]);
+    sot_platform::test_exec::write_executable(&version_dir.join("bin").join(JULIA_EXE), vec![0u8; 8192]);
     let config = serde_json::json!({
         "Default": "release",
         "InstalledChannels": { "release": { "Version": "1.12.6" } },
@@ -482,7 +482,7 @@ mod real_alias {
         let sp = spellings();
         let real_dir = tempfile::tempdir().unwrap();
         let real = real_dir.path().join(JULIA_EXE);
-        sot_log::test_exec::write_executable(&real, vec![0u8; 8192]);
+        sot_platform::test_exec::write_executable(&real, vec![0u8; 8192]);
         let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
         let _g2 = EnvGuard::capture("HOME");
         let _g3 = EnvGuard::capture("JULIAUP_DEPOT_PATH");

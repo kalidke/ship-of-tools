@@ -10,7 +10,7 @@ use std::time::Duration;
 use sot_protocol::child_lines::ChildLines;
 use tokio::process::Command;
 
-use crate::lifecycle::child_signal::{Contained, Signal};
+use sot_containment::{Contained, Signal};
 
 mod holders;
 

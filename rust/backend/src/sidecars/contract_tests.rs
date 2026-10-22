@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use crate::lifecycle::child_signal::Signal;
+use sot_containment::Signal;
 use crate::sidecars::mathjax::MathJax;
 use crate::sidecars::repl::{lifecycle::ReplLifecycle, Repl};
 use tokio::sync::broadcast;
@@ -459,7 +459,7 @@ async fn a_repl_child_that_fails_its_start_logs_its_stderr_at_warn() {
     let resources = dir.path().join("resources");
     std::fs::create_dir_all(resources.join("julia").join("repl")).expect("the REPL project folder");
     let julia = dir.path().join("julia");
-    sot_log::test_exec::write_executable(&julia, "#!/bin/sh\necho 'ERROR: LoadError: (repl-boot-red)' >&2\nexit 1\n");
+    sot_platform::test_exec::write_executable(&julia, "#!/bin/sh\necho 'ERROR: LoadError: (repl-boot-red)' >&2\nexit 1\n");
     let _pin = pin_env(&julia, &resources);
     let sig = private_signal();
     let (frames, _keep) = broadcast::channel(64);

@@ -1,4 +1,4 @@
-//! The Linux lifetime guard on real daemons (`lifecycle::daemon_children::guard`): the launched process is the guard and the
+//! The Linux lifetime guard on real daemons (`sot_containment::guard`): the launched process is the guard and the
 //! daemon is its child, the guard ends as the daemon did and forwards what it is sent, a lost guard ends the daemon at once,
 //! the boot refuses a second thread, and the relay refresh follows the guard's pid. Every process these cases end is one
 //! this test spawned (the launched guard); the daemon the case's own control connection reports through `SO_PEERCRED` is
@@ -665,7 +665,7 @@ async fn the_prologue_refuses_a_second_thread() {
     let bin = env._tmp.path().join("stub-bin");
     std::fs::create_dir_all(&bin).unwrap();
     let calls = bin.join("calls");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &bin.join("systemd-run"),
         format!("#!/bin/sh\necho \"$*\" >> '{}'\nexit 1\n", calls.display()),
     );

@@ -5,7 +5,7 @@ use super::*;
 #[cfg(unix)]
 #[test]
 fn the_terminal_does_not_wait_for_a_stalled_creation() {
-    use crate::lifecycle::child_signal::Signal;
+    use sot_containment::Signal;
     use std::sync::{mpsc, Barrier};
     let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
     let released = Arc::new(Barrier::new(2));
@@ -48,7 +48,7 @@ fn the_terminal_does_not_wait_for_a_stalled_creation() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_terminal_with_no_thread_to_fire_on_exits_without_the_fire() {
-    use crate::lifecycle::child_signal::Signal;
+    use sot_containment::Signal;
     use std::sync::{mpsc, Barrier};
     let name = "lifecycle::shutdown::tests::a_terminal_with_no_thread_to_fire_on_exits_without_the_fire";
     if !sot_platform::test_isolated::run_isolated(name) {
@@ -111,7 +111,7 @@ fn a_terminal_with_no_thread_to_fire_on_exits_without_the_fire() {
 /// the only one handed to the exit, and the second never reaches it.
 #[test]
 fn the_first_controlled_exit_decides_the_code() {
-    use crate::lifecycle::child_signal::Signal;
+    use sot_containment::Signal;
     let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
     let handed = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (first_in, first_inside) = std::sync::mpsc::channel();

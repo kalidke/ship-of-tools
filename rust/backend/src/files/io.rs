@@ -154,7 +154,7 @@ const TRASH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// is not confirmed.
 pub fn trash_file(abs: &Path, workspace_root: &Path) -> Result<Option<std::path::PathBuf>> {
     trash_with_command(
-        crate::lifecycle::child_signal::process(),
+        sot_containment::process(),
         &mut trash_command("gio", abs),
         abs,
         workspace_root,
@@ -178,12 +178,12 @@ fn trash_command(program: impl AsRef<std::ffi::OsStr>, abs: &Path) -> std::proce
 /// The absolute-command seam keeps fixtures independent of the process PATH. The observer runs before fallback;
 /// production supplies a no-op, and tests inspect the contained owner's confirmed reap without a reusable PID probe.
 fn trash_with_command(
-    signal: &'static crate::lifecycle::child_signal::Signal,
+    signal: &'static sot_containment::Signal,
     command: &mut std::process::Command,
     abs: &Path,
     workspace_root: &Path,
     wait_budget: std::time::Duration,
-    observe: impl FnOnce(&crate::lifecycle::child_signal::ContainedStd),
+    observe: impl FnOnce(&sot_containment::ContainedStd),
 ) -> Result<Option<std::path::PathBuf>> {
     match signal.spawn_std(command) {
         Ok(mut child) => {

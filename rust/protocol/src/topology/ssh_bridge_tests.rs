@@ -251,7 +251,7 @@ fn admission_rendezvous_pauses_once_per_armed_hook() {
     let path = std::env::temp_dir().join(format!("sot-gate-pause-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
     std::fs::create_dir(&path).unwrap();
     let program = path.join("child.py");
-    sot_log::test_exec::write_executable(&program, "import sys\nsys.stdin.buffer.read()\n");
+    sot_platform::test_exec::write_executable(&program, "import sys\nsys.stdin.buffer.read()\n");
     struct Fixture(std::path::PathBuf);
     impl Drop for Fixture { fn drop(&mut self) { std::fs::remove_dir_all(&self.0).expect("remove own gate fixture"); } }
     let _fixture = Fixture(path);
@@ -283,7 +283,7 @@ fn spawn_admission_and_link_close_are_one_decision() {
     let path = std::env::temp_dir().join(format!("sot-gate-fixture-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
     std::fs::create_dir(&path).unwrap();
     let program = path.join("child.py");
-    sot_log::test_exec::write_executable(&program, "import sys\nsys.stdin.buffer.read()\n");
+    sot_platform::test_exec::write_executable(&program, "import sys\nsys.stdin.buffer.read()\n");
     // Always remove the test-owned absolute folder, including on a reversal assertion.
     struct Fixture(std::path::PathBuf);
     impl Drop for Fixture { fn drop(&mut self) { std::fs::remove_dir_all(&self.0).expect("remove own gate fixture"); } }

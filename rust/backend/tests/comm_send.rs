@@ -128,7 +128,7 @@ fn a_send_to_a_handle_no_live_session_holds_is_failed_and_appends_nothing() {
 /// A stub `claude` that stays up: the row it backs is Ready for as long as the daemon runs it.
 fn write_sleeping_claude(dir: &Path) {
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
-    sot_log::test_exec::write_executable(&dir.join("claude"), "#!/bin/sh\nexec sleep 600\n");
+    sot_platform::test_exec::write_executable(&dir.join("claude"), "#!/bin/sh\nexec sleep 600\n");
 }
 
 /// An idle row's handle has a stale entry. Its daemon stamps `last_seen` while the row runs, so a send

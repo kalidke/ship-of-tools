@@ -1,5 +1,5 @@
 use super::{StderrTail, STARTING_LINES, TAIL_LINES};
-use crate::lifecycle::child_signal::Signal;
+use sot_containment::Signal;
 use std::process::Stdio;
 
 /// Ends a `/bin/sh -c script` child and logs its tail under `what`.

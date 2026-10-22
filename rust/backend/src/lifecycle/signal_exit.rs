@@ -155,7 +155,8 @@ mod unix {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::lifecycle::{child_signal::Signal, shutdown};
+        use crate::lifecycle::shutdown;
+        use sot_containment::Signal;
 
         /// A failed installation is a concrete failure exit: the reason reaches the log and the child signal is fired
         /// before the exit code is handed on. The delivery of INT and TERM to a real daemon (inherited blocked masks and a

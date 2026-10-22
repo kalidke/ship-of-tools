@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-# The birth observer and the test helpers every crate's tests share (`test_wait`, `test_isolated`), for tests of crates
+# The birth observer and the test helpers every crate's tests share (`test_wait`, `test_isolated`, `test_exec`), for tests of crates
 # above this one. The unit tests here get them through the self-referential dev-dependency below.
 test-support = []
 # Test-only phase barriers (the native launcher's child branch, the supervisor's fence claim). Never in an installed

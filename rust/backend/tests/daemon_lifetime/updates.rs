@@ -341,7 +341,7 @@ async fn an_update_the_daemon_may_not_take_leaves_it_serving() {
 fn hanging_stub(case: &Path, program: &str) -> PathBuf {
     let stubs = case.join(format!("{program}-stub"));
     std::fs::create_dir_all(&stubs).unwrap();
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &stubs.join(program),
         format!(
             "#!/bin/sh\necho $$ > '{0}/{program}.pid'\n(trap '' HUP TERM; exec sleep 100) &\necho $! > '{0}/{program}.sleeper'\nwait\n",

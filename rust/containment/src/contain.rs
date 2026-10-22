@@ -10,7 +10,7 @@
 //! run before the owner reaps that leader. On Windows wait/try_wait can obtain
 //! direct-child status before the job request; the retained job handle preserves
 //! containment identity across that wait. Explicit kill requests termination first.
-//! Requests run under the registry lock. [`crate::lifecycle::child_signal::Signal::spawn`]
+//! Requests run under the registry lock. [`crate::Signal::spawn`]
 //! owns the registry; this module holds nothing but the platform calls.
 //! On macOS only, a group-request EPERM counts as no live member when a libproc listing, each member's short status record and a second listing show every member ended, exiting, a zombie or in another group, and none added; any other observation returns its step and evidence with the original EPERM as source. No Unix signal or process-group identity query occurs after leader reap.
 
@@ -20,11 +20,11 @@ pub(crate) struct Tree {
     #[cfg(unix)]
     pgid: i32,
     #[cfg(windows)]
-    job: sot_log::capsule::producer::conpty::AnonymousJob,
+    job: sot_platform::host::winjob::AnonymousJob,
 }
 
 impl Tree {
-    #[cfg(all(test, unix))]
+    #[cfg(all(feature = "test-support", unix))]
     pub(crate) fn pgid(&self) -> i32 {
         self.pgid
     }
@@ -79,7 +79,7 @@ pub(crate) fn adopt(
     pid: Option<u32>,
     #[cfg(windows)] process: Option<std::os::windows::io::RawHandle>,
 ) -> std::io::Result<Tree> {
-    #[cfg(all(test, windows))]
+    #[cfg(all(feature = "test-support", windows))]
     if ADOPT_FAILURE.with(|failure| failure.get()) {
         return Err(std::io::Error::other("injected job assignment failure"));
     }
@@ -98,7 +98,7 @@ pub(crate) fn adopt(
             .ok_or_else(|| std::io::Error::other("the child was reaped before it was contained"))?;
         let handle = process
             .ok_or_else(|| std::io::Error::other("the child was reaped before it was contained"))?;
-        let job = sot_log::capsule::producer::conpty::AnonymousJob::create()
+        let job = sot_platform::host::winjob::AnonymousJob::create()
             .map_err(std::io::Error::other)?;
         assign(&job, pid, handle)?;
         let mut tree = Tree {
@@ -116,11 +116,11 @@ pub(crate) fn adopt(
 #[cfg(windows)]
 #[cfg_attr(not(test), allow(unused_variables))]
 fn assign(
-    job: &sot_log::capsule::producer::conpty::AnonymousJob,
+    job: &sot_platform::host::winjob::AnonymousJob,
     pid: u32,
     handle: std::os::windows::io::RawHandle,
 ) -> std::io::Result<()> {
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     {
         if let Some(path) = std::env::var_os("SOT_L2_PAUSE_ADOPT") {
             std::fs::write(path, pid.to_string())?;
@@ -176,9 +176,9 @@ impl Drop for Tree {
 }
 
 #[cfg(windows)]
-fn request_job(job: &sot_log::capsule::producer::conpty::AnonymousJob) -> std::io::Result<()> {
+fn request_job(job: &sot_platform::host::winjob::AnonymousJob) -> std::io::Result<()> {
     let result = job.terminate().map_err(std::io::Error::other);
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     {
         REQUEST_EVENTS.with(|events| events.borrow_mut().push("job"));
         if REQUEST_FAILURE.with(|failure| failure.get() & 4 != 0) {
@@ -205,14 +205,14 @@ pub(super) fn partial(pid: u32) -> Tree {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "test-support")]
 thread_local! {
     #[cfg(windows)]
-    pub(super) static ADOPT_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    pub(crate) static REQUEST_FAILURE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
-    pub(crate) static PROBE_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    pub(crate) static REQUEST_EVENTS: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
-    pub(crate) static REAP_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub static ADOPT_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub static REQUEST_FAILURE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    pub static PROBE_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub static REQUEST_EVENTS: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+    pub static REAP_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A group and its unreaped leader are checked independently. On macOS a group request refused with EPERM is done when
@@ -220,7 +220,7 @@ thread_local! {
 #[cfg(unix)]
 fn request(pid: i32, group: bool) -> std::io::Result<()> {
     // SAFETY: the caller retains the unreaped leader identity, and this only signals its own group or leader.
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     REQUEST_EVENTS.with(|events| {
         events
             .borrow_mut()
@@ -255,7 +255,7 @@ fn request(pid: i32, group: bool) -> std::io::Result<()> {
         }
         result => result,
     };
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     if REQUEST_FAILURE.with(|failure| failure.get() & if group { 1 } else { 2 } != 0) {
         return Err(std::io::Error::other(if group {
             "injected group request failure"
@@ -301,7 +301,7 @@ pub(super) mod macos {
     }
     const _: () = assert!(std::mem::size_of::<ShortBsdInfo>() == 64);
 
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     thread_local! {
         pub(crate) static FAULT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
         pub(crate) static EVENTS: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -335,7 +335,7 @@ pub(super) mod macos {
     }
 
     #[derive(Debug)]
-    pub(in crate::lifecycle) struct Observation {
+    pub(crate) struct Observation {
         rejection: Option<(&'static str, &'static str)>,
         evidence: Vec<String>,
     }
@@ -361,7 +361,7 @@ pub(super) mod macos {
         }
     }
 
-    pub(in crate::lifecycle) fn checked_no_live_group(group: i32) -> io::Result<()> {
+    pub(crate) fn checked_no_live_group(group: i32) -> io::Result<()> {
         let observation = observe(group);
         if observation.rejection.is_some() {
             Err(io::Error::other(observation))
@@ -371,7 +371,7 @@ pub(super) mod macos {
     }
 
     /// Read-only evidence of a group whose number is the retained, unreaped leader's pid.
-    pub(in crate::lifecycle) fn observe(group: i32) -> Observation {
+    pub(crate) fn observe(group: i32) -> Observation {
         let mut observation = Observation {
             rejection: None,
             evidence: Vec::new(),
@@ -395,13 +395,13 @@ pub(super) mod macos {
     }
 
     fn members(observation: &mut Observation, group: i32, step: &'static str) -> Option<Vec<i32>> {
-        #[cfg(test)]
+        #[cfg(feature = "test-support")]
         EVENTS.with(|events| events.borrow_mut().push("members"));
         let width = std::mem::size_of::<i32>();
         // SAFETY: the SDK sizing call writes nothing; it returns room for every process plus 20.
         let sizing =
             unsafe { libc::proc_listpids(PROC_PGRP_ONLY, group as u32, std::ptr::null_mut(), 0) };
-        #[cfg(test)]
+        #[cfg(feature = "test-support")]
         let sizing = match (FAULT.with(|fault| fault.get()), step) {
             (6, "membership-first") => 0,
             _ => sizing,
@@ -431,7 +431,7 @@ pub(super) mod macos {
             .then(|| io::Error::last_os_error().raw_os_error())
             .flatten()
             .filter(|&errno| errno != 0);
-        #[cfg(test)]
+        #[cfg(feature = "test-support")]
         let (count, errno) = match (FAULT.with(|fault| fault.get()), step) {
             (1, "membership-first") => (0, None),
             (2, "membership-first") => (bytes as i32, errno),
@@ -440,7 +440,7 @@ pub(super) mod macos {
         };
         let listed = usize::try_from(count).unwrap_or(0);
         pids.truncate(listed.min(bytes) / width);
-        #[cfg(test)]
+        #[cfg(feature = "test-support")]
         if FAULT.with(|fault| fault.get()) == 5 && step == "membership-second" {
             pids.push(1);
         }
@@ -465,7 +465,7 @@ pub(super) mod macos {
 
     /// One listed pid: ended when it is no longer shown, is in another group, is a zombie or is exiting.
     fn member(observation: &mut Observation, group: i32, pid: i32) {
-        #[cfg(test)]
+        #[cfg(feature = "test-support")]
         EVENTS.with(|events| events.borrow_mut().push("status"));
         // SAFETY: the buffer is the SDK layout; arg=1 includes zombies. This only reads evidence.
         let mut info: ShortBsdInfo = unsafe { std::mem::zeroed() };
@@ -482,14 +482,14 @@ pub(super) mod macos {
         let errno = (count <= 0)
             .then(|| io::Error::last_os_error().raw_os_error())
             .flatten();
-        #[cfg(test)]
+        #[cfg(feature = "test-support")]
         let (count, errno) = match FAULT.with(|fault| fault.get()) {
             3 => (size - 1, errno),
             8 => (0, Some(libc::ESRCH)),
             _ => (count, errno),
         };
         // Faults 4 and 8-11 leave one state each: live, not shown, exiting, in another group, a zombie.
-        #[cfg(test)]
+        #[cfg(feature = "test-support")]
         match FAULT.with(|fault| fault.get()) {
             4 => {
                 info.status = libc::SRUN;
@@ -533,7 +533,7 @@ pub(super) mod macos {
 
 pub(super) fn reap(child: &mut std::process::Child) -> std::io::Result<std::process::ExitStatus> {
     let status = child.wait();
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     if REAP_FAILURE.with(|failure| failure.get()) {
         return Err(std::io::Error::other("injected direct-child reap failure"));
     }
@@ -545,7 +545,7 @@ pub(super) fn reap(child: &mut std::process::Child) -> std::io::Result<std::proc
 /// for the exit.
 #[cfg(unix)]
 pub(super) fn exited_pid(pid: u32, block: bool) -> std::io::Result<bool> {
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     if PROBE_FAILURE.with(|failure| failure.get()) {
         return Err(std::io::Error::other("injected exit probe failure"));
     }
@@ -569,7 +569,7 @@ pub(super) fn exited_pid(pid: u32, block: bool) -> std::io::Result<bool> {
 /// Whether `child` has exited; with `block` this waits. Unix retains its unreaped identity;
 /// Windows uses wait/try_wait while the caller retains its job handle.
 pub(super) fn exited(child: &mut std::process::Child, block: bool) -> std::io::Result<bool> {
-    #[cfg(all(test, windows))]
+    #[cfg(all(feature = "test-support", windows))]
     if PROBE_FAILURE.with(|failure| failure.get()) {
         return Err(std::io::Error::other("injected exit probe failure"));
     }

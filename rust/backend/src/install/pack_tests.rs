@@ -32,7 +32,7 @@ fn a_pack_is_verified_before_it_runs() {
             let bin = d.join("sot-0.6.7-linux-x86_64");
             std::fs::create_dir_all(&bin).unwrap();
             for name in ["sotd", "sot"] {
-                sot_log::test_exec::write_executable(&bin.join(name), format!("#!/bin/sh\necho '{name} {says} (012345678 2026-10-20, protocol 9)'\n"));
+                sot_platform::test_exec::write_executable(&bin.join(name), format!("#!/bin/sh\necho '{name} {says} (012345678 2026-10-20, protocol 9)'\n"));
             }
             std::fs::write(d.join("sot-0.6.7-linux-x86_64.tar.gz"), b"archive").unwrap();
             std::fs::write(d.join("COMMIT"), format!("{c}\n")).unwrap();

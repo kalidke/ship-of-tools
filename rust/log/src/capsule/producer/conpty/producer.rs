@@ -9,7 +9,8 @@
 
 #![cfg(windows)]
 
-use crate::capsule::producer::conpty::{observe_spawning_process_jobbed, AnonymousJob, ConptySpawn, PrimaryProcess, Pseudoconsole};
+use crate::capsule::producer::conpty::{observe_spawning_process_jobbed, ConptySpawn, PrimaryProcess, Pseudoconsole};
+use sot_platform::host::winjob::AnonymousJob;
 use crate::capsule::producer::{ExitStatus, Producer};
 use crate::Result;
 use serde_json::json;
@@ -94,7 +95,7 @@ impl Producer for ConptyProducer {
     }
 
     fn terminate_domain(&self) -> Result<()> {
-        self.job.terminate()
+        Ok(self.job.terminate()?)
     }
 
     fn domain_is_empty(&self) -> Result<bool> {

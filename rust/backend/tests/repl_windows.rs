@@ -183,7 +183,7 @@ fn stub_daemon(env: &Env) -> std::path::PathBuf {
 fn daemon_running(env: &Env, script: &str) -> std::path::PathBuf {
     let folder = env.daemon_project_root.parent().expect("the env's folder").to_path_buf();
     let stub = folder.join("stub-julia");
-    sot_log::test_exec::write_executable(&stub, script);
+    sot_platform::test_exec::write_executable(&stub, script);
     let bin = folder.join("bin");
     std::fs::create_dir_all(&bin).expect("an empty PATH entry");
     env.spawn_sotd_with_path_and_env(&bin, &[("SOT_JULIA_BIN", &stub.to_string_lossy())]);

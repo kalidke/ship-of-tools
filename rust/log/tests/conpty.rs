@@ -48,7 +48,7 @@ fn spawn_reader_thread(mut reader: File) -> (Receiver<Vec<u8>>, std::thread::Joi
 
 /// Bounded-wait for the spawned child to exit, observed through the JOB
 /// (not a process handle — `capsule/producer/conpty/` deliberately doesn't keep one).
-fn wait_for_zero_active(job: &sot_log::capsule::producer::conpty::AnonymousJob, timeout: Duration) {
+fn wait_for_zero_active(job: &sot_platform::host::winjob::AnonymousJob, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
         let n = job.active_processes().unwrap();

@@ -1,5 +1,5 @@
 # The daemon's interrupt signal against the shim as the daemon starts it: a child process running `run_shim`, sent the
-# signal the daemon sends (rust/backend/src/lifecycle/contain.rs, `interrupt`) in the steps it sends it
+# signal the daemon sends (rust/containment/src/contain.rs, `interrupt`) in the steps it sends it
 # (rust/backend/src/sidecars/repl/supervisor.rs, `Escalation`).
 using Test
 using ShipToolsRepl

@@ -65,7 +65,7 @@ fn counted_endpoint(failed_spawn: Option<usize>, dying_spawn: Option<usize>) -> 
     let path = std::env::temp_dir().join(format!("sot-spare-peer-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
     std::fs::create_dir(&path).unwrap();
     let script = std::sync::Arc::new(PeerScript(path));
-    sot_log::test_exec::write_executable(&script.0.join("peer.py"), r#"import json, os, sys
+    sot_platform::test_exec::write_executable(&script.0.join("peer.py"), r#"import json, os, sys
 hello = json.loads(sys.stdin.readline())
 if sys.argv[1:] == ['dies-in-handshake']:
     sys.exit(0)

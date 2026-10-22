@@ -17,7 +17,7 @@ fn agent_argv_claude_starts_a_fresh_conversation() {
     let _guard = self_file_env_guarded();
     let dir = tempfile::tempdir().expect("tempdir");
     let claude = dir.path().join("claude");
-    sot_log::test_exec::write_executable(&claude, b"#!/bin/sh\n");
+    sot_platform::test_exec::write_executable(&claude, b"#!/bin/sh\n");
     // `claude_recipe` reads HOME (the account home); the guard restores it.
     std::env::remove_var("HOME");
     let env = AgentEnv { path: Some(dir.path().into()), home: None, shell: None };
@@ -44,7 +44,7 @@ fn agent_exec_argv_claude_never_adds_continue() {
     let _guard = self_file_env_guarded();
     let dir = tempfile::tempdir().expect("tempdir");
     let claude = dir.path().join("claude");
-    sot_log::test_exec::write_executable(&claude, b"#!/bin/sh\n");
+    sot_platform::test_exec::write_executable(&claude, b"#!/bin/sh\n");
     // `claude_recipe` reads HOME (the account home); the guard restores it.
     std::env::remove_var("HOME");
     let env = AgentEnv { path: Some(dir.path().into()), home: None, shell: None };
@@ -203,7 +203,7 @@ fn codex_over(path: Option<&std::path::Path>, home: Option<&std::path::Path>) ->
 
 #[cfg(unix)]
 fn write_stub_ccx(path: &Path) {
-    sot_log::test_exec::write_executable(path, "#!/bin/sh\nexit 0\n");
+    sot_platform::test_exec::write_executable(path, "#!/bin/sh\nexit 0\n");
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn agent_argv_codex_is_refused_on_windows() {
 fn resolve_claude_finds_an_executable_on_path() {
     let dir = tempfile_test_dir();
     let claude = dir.path().join("claude");
-    sot_log::test_exec::write_executable(&claude, b"#!/bin/sh\nexit 0\n");
+    sot_platform::test_exec::write_executable(&claude, b"#!/bin/sh\nexit 0\n");
     let path_var = std::ffi::OsString::from(dir.path());
     let resolved = resolve_claude(Some(&path_var), None).unwrap();
     assert_eq!(resolved, claude.to_string_lossy());
@@ -252,7 +252,7 @@ fn resolve_claude_falls_back_to_local_bin_under_home() {
     let local_bin = dir.path().join(".local/bin");
     std::fs::create_dir_all(&local_bin).unwrap();
     let claude = local_bin.join("claude");
-    sot_log::test_exec::write_executable(&claude, b"#!/bin/sh\nexit 0\n");
+    sot_platform::test_exec::write_executable(&claude, b"#!/bin/sh\nexit 0\n");
     // An empty PATH still finds it via the HOME-derived fallback dirs.
     let resolved = resolve_claude(None, Some(dir.path())).unwrap();
     assert_eq!(resolved, claude.to_string_lossy());
@@ -288,7 +288,7 @@ fn resolve_claude_skips_a_same_named_directory_for_a_later_real_file() {
     std::fs::create_dir(dir1.path().join("claude")).unwrap();
     let dir2 = tempfile_test_dir();
     let real = dir2.path().join("claude");
-    sot_log::test_exec::write_executable(&real, b"#!/bin/sh\nexit 0\n");
+    sot_platform::test_exec::write_executable(&real, b"#!/bin/sh\nexit 0\n");
     let path_var = std::env::join_paths([dir1.path(), dir2.path()]).unwrap();
     let resolved = resolve_claude(Some(&path_var), None).unwrap();
     assert_eq!(resolved, real.to_string_lossy());
@@ -312,7 +312,7 @@ fn resolve_claude_skips_a_relative_path_entry() {
 fn resolve_ccx_finds_an_executable_on_path() {
     let dir = tempfile_test_dir();
     let ccx = dir.path().join("ccx");
-    sot_log::test_exec::write_executable(&ccx, b"#!/bin/sh\nexit 0\n");
+    sot_platform::test_exec::write_executable(&ccx, b"#!/bin/sh\nexit 0\n");
     let path_var = std::ffi::OsString::from(dir.path());
     assert_eq!(resolve_ccx(Some(&path_var), None).unwrap(), ccx.to_string_lossy());
 }
@@ -324,7 +324,7 @@ fn resolve_ccx_falls_back_to_local_bin_under_home() {
     let local_bin = dir.path().join(".local/bin");
     std::fs::create_dir_all(&local_bin).unwrap();
     let ccx = local_bin.join("ccx");
-    sot_log::test_exec::write_executable(&ccx, b"#!/bin/sh\nexit 0\n");
+    sot_platform::test_exec::write_executable(&ccx, b"#!/bin/sh\nexit 0\n");
     assert_eq!(resolve_ccx(None, Some(dir.path())).unwrap(), ccx.to_string_lossy());
 }
 

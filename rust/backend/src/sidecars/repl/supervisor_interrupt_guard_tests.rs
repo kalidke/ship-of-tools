@@ -8,7 +8,7 @@ use super::*;
 #[tokio::test]
 async fn request_if_running_never_spawns() {
     let (tx, _rx) = broadcast::channel(8);
-    let repl = Repl::new(tx, None, std::env::temp_dir(), crate::lifecycle::child_signal::process());
+    let repl = Repl::new(tx, None, std::env::temp_dir(), sot_containment::process());
     let res = repl
         .request_if_running("repl.interrupt", serde_json::json!({}))
         .await

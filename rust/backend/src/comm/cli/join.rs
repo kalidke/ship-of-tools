@@ -314,7 +314,7 @@ fn status_join(env: &Env) {
     }
     let mut cmd = std::process::Command::new("bash");
     cmd.arg(&script).arg("join");
-    let _ = crate::lifecycle::child_signal::process().output(&mut cmd, std::time::Duration::from_secs(15));
+    let _ = sot_containment::process().output(&mut cmd, std::time::Duration::from_secs(15));
 }
 
 /// A row's declaration of its handle to the daemon that pinned its identity: best effort, one warning on failure, as

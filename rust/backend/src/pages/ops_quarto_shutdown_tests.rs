@@ -1,5 +1,5 @@
 use super::*;
-use crate::lifecycle::child_signal::tests::Leftover;
+use sot_containment::leftover::Leftover;
 use std::time::Duration;
 
 /// Holds `ENV_TEST_LOCK` and pins the julia the daemon resolves, so a
@@ -40,8 +40,8 @@ impl Drop for JuliaPin {
 /// Run `stub` (a script body) as `quarto render` to its end on a private signal.
 fn run_stub_quarto(dir: &std::path::Path, body: &str) -> std::io::Result<Option<std::process::Output>> {
     let stub = dir.join("stub-quarto");
-    sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\n{body}"));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\n{body}"));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let program = stub.to_string_lossy().into_owned();
     rt.block_on(run_quarto(&program, dir, std::ffi::OsStr::new("doc.qmd"), "out.html", true, QUARTO_RUN_BOUND, sig))
@@ -55,8 +55,8 @@ async fn shutdown_kills_the_quarto_render_and_its_children() {
     let pid_file = dir.path().join("engine.pid");
     let engine = Leftover::of_file(pid_file.clone());
     let stub = dir.path().join("stub-quarto");
-    sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n", pid_file.display()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n", pid_file.display()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
     let task = tokio::spawn(async move {
         run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, QUARTO_RUN_BOUND, sig).await
@@ -87,8 +87,8 @@ async fn quarto_engine_dies_when_its_launcher_exits() {
     let pid_file = dir.path().join("engine.pid");
     let engine = Leftover::of_file(pid_file.clone());
     let stub = dir.path().join("stub-quarto");
-    sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 3102 &\necho $! > {}\nexit 0\n", pid_file.display()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 3102 &\necho $! > {}\nexit 0\n", pid_file.display()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
     let task = tokio::spawn(async move {
         run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, QUARTO_RUN_BOUND, sig).await
@@ -114,11 +114,11 @@ fn quarto_is_given_the_daemons_julia() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("qj");
     let stub = dir.path().join("stub-quarto");
-    sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nprintf '%s' \"$QUARTO_JULIA\" > {}\n", out.display()));
+    sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\nprintf '%s' \"$QUARTO_JULIA\" > {}\n", out.display()));
     let julia = dir.path().join("julia");
     std::env::set_var("SOT_JULIA_BIN", &julia);
     std::env::remove_var("QUARTO_JULIA");
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let ran = rt.block_on(run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, QUARTO_RUN_BOUND, sig));
@@ -152,8 +152,8 @@ async fn quarto_never_holds_a_freed_group_number() {
     let stub = dir.path().join("stub-quarto");
     // The pid is written once the sleeper has its own session: until then a kill of the launcher's group takes it too.
     let body = "setsid sleep 120 &\np=$!\nwhile [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$(cut -d' ' -f6 /proc/$$/stat)\" ]; do sleep 0.02; done\n";
-    sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\n{body}echo $p > {}\nexit 0\n", sleeper.display()));
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\n{body}echo $p > {}\nexit 0\n", sleeper.display()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
     let task = tokio::spawn(async move {
         run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, QUARTO_RUN_BOUND, sig).await

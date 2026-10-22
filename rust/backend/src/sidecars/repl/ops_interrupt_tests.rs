@@ -25,7 +25,7 @@ async fn a_repl_line_holding_an_invalid_byte_keeps_the_child() {
     let root = dir.join("row");
     std::fs::create_dir_all(&root).unwrap();
     let julia = dir.join("julia");
-    sot_log::test_exec::write_executable(&julia, STUB_BYTE);
+    sot_platform::test_exec::write_executable(&julia, STUB_BYTE);
     let _pin = pin_env(&julia, &resources);
 
     let (frame_tx, _bus) = tokio::sync::broadcast::channel(256);
@@ -72,7 +72,7 @@ async fn an_interrupt_reaches_the_child_with_the_evals_it_names() {
     let root = dir.join("row");
     std::fs::create_dir_all(&root).unwrap();
     let julia = dir.join("julia");
-    sot_log::test_exec::write_executable(&julia, STUB);
+    sot_platform::test_exec::write_executable(&julia, STUB);
     let _pin = pin_env(&julia, &resources);
 
     let (frame_tx, _bus) = tokio::sync::broadcast::channel(256);

@@ -9,7 +9,7 @@ async fn quarto_resolver_error_precedes_spawn() {
     let dir = tempfile::tempdir().unwrap();
     // An owned program that does not exist: starting it would be a not-found error, not the resolver's.
     let missing = dir.path().join("no-such-quarto").to_string_lossy().into_owned();
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     for execute in [true, false] {
         let err = run_quarto(&missing, dir.path(), std::ffi::OsStr::new("doc.qmd"), "out.html", execute, QUARTO_RUN_BOUND, sig)
             .await

@@ -542,7 +542,7 @@ fn the_leg_job_refuses_a_breakaway() {
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 
-    let job = sot_log::capsule::producer::conpty::AnonymousJob::create().expect("create leg job");
+    let job = sot_platform::host::winjob::AnonymousJob::create().expect("create leg job");
     let mut helper = spawn_gated_breakaway_helper();
     let ok = unsafe { AssignProcessToJobObject(job.raw(), helper.as_raw_handle() as HANDLE) };
     assert!(ok != 0, "AssignProcessToJobObject: {}", std::io::Error::last_os_error());

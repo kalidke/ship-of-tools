@@ -9,7 +9,7 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
-use crate::lifecycle::child_signal::Contained;
+use sot_containment::Contained;
 
 /// How long the child must say nothing, with an interrupt unanswered, before the first signal, and after the last
 /// before the daemon gives the answer itself.

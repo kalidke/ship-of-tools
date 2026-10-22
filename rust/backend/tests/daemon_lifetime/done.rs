@@ -116,7 +116,7 @@ impl Inputs {
             let (bin, runtime) = (case.path().join("bin"), case.path().join("quarto-runtime"));
             std::fs::create_dir_all(&bin).expect("create the wrapper's folder");
             std::fs::create_dir_all(&runtime).expect("create the quarto runtime folder");
-            sot_log::test_exec::write_executable(
+            sot_platform::test_exec::write_executable(
                 &bin.join("quarto"),
                 format!(
                     "#!/bin/sh\nexec env XDG_RUNTIME_DIR='{}' '{}' \"$@\"\n",

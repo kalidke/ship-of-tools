@@ -72,7 +72,7 @@ pub fn julia_depot_path(owned: &std::path::Path) -> String {
 /// Write an executable stub `systemctl` into `dir` (the relay-refresh case's stand-in).
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 pub fn native_stub_systemctl(dir: &std::path::Path, body: &str) {
-    sot_log::test_exec::write_executable(&dir.join("systemctl"), body);
+    sot_platform::test_exec::write_executable(&dir.join("systemctl"), body);
 }
 
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]

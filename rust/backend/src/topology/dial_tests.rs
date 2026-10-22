@@ -7,7 +7,7 @@ use super::*;
 fn the_pipe_arm_opens_at_identification_level() {
     use std::io::Write;
     let level = sot_platform::identity::impersonation_probe::level_seen_by_server(|name| {
-        let (mut writer, reader, guard) = connect(&format!("pipe:{name}"), crate::lifecycle::child_signal::process()).expect("connect").split().expect("split");
+        let (mut writer, reader, guard) = connect(&format!("pipe:{name}"), sot_containment::process()).expect("connect").split().expect("split");
         writer.write_all(b"x").expect("write one byte");
         (writer, reader, guard)
     });
@@ -31,7 +31,7 @@ fn write_stub_ssh(dir: &std::path::Path, marker: &std::path::Path) {
 #[cfg(unix)]
 pub(crate) fn write_ssh_script(dir: &std::path::Path, body: &str) {
     let script = dir.join("ssh");
-    sot_log::test_exec::write_executable(&script, format!("#!/bin/sh\n{body}"));
+    sot_platform::test_exec::write_executable(&script, format!("#!/bin/sh\n{body}"));
 }
 
 /// PREPENDS `dir` to `PATH` rather than replacing it -- see the first
@@ -64,7 +64,7 @@ pub(crate) fn wait_for_marker(marker: &std::path::Path) -> bool {
 /// `dial_and_call` a `ChildGuard` for that arm so an early return
 /// cannot leak the spawned process -- proved here against a STUB
 /// `ssh` put FIRST on `PATH`, never the real one. The original
-/// version of this test called `connect("ssh:hub", crate::lifecycle::child_signal::process())` against whatever
+/// version of this test called `connect("ssh:hub", sot_containment::process())` against whatever
 /// `ssh` the box actually had: `Command::spawn()` returns as soon as
 /// the child process image exists, before it does any network
 /// connecting, but the exec itself was still a real `ssh hub` attempt
@@ -85,7 +85,7 @@ fn ssh_endpoint_dispatches_to_a_stub_on_path_never_the_network() {
     let marker1 = dir1.path().join("invoked");
     write_stub_ssh(dir1.path(), &marker1);
     prepend_to_path(dir1.path());
-    let conn = connect("ssh:hub", crate::lifecycle::child_signal::process()).expect("ssh: must dispatch to the stub on PATH, not fail as unrecognised");
+    let conn = connect("ssh:hub", sot_containment::process()).expect("ssh: must dispatch to the stub on PATH, not fail as unrecognised");
     let (_w, _r, guard) = conn.split().expect("split must hand back the stub's own stdin/stdout");
     assert!(guard.is_some(), "an ssh: connection must carry a ChildGuard, or dial_and_call returning early leaks the process");
     assert!(wait_for_marker(&marker1), "the ssh:hub arm must have exec'd OUR stub, not something else on PATH");
@@ -95,7 +95,7 @@ fn ssh_endpoint_dispatches_to_a_stub_on_path_never_the_network() {
     let marker2 = dir2.path().join("invoked");
     write_stub_ssh(dir2.path(), &marker2);
     prepend_to_path(dir2.path());
-    let conn = connect("ssh:hub/gamma", crate::lifecycle::child_signal::process()).expect("ssh:<target>/<host> must parse the same way dial.rs does");
+    let conn = connect("ssh:hub/gamma", sot_containment::process()).expect("ssh:<target>/<host> must parse the same way dial.rs does");
     let (_w, _r, guard) = conn.split().unwrap();
     assert!(wait_for_marker(&marker2), "the ssh:hub/gamma arm must have exec'd OUR stub too");
     drop(guard);
@@ -106,8 +106,8 @@ fn ssh_endpoint_dispatches_to_a_stub_on_path_never_the_network() {
     // fail HERE too, not just at the frontend. Neither call reaches
     // spawn_sync (the grammar check runs first), so PATH/the stub
     // above are irrelevant to these two.
-    assert!(connect("ssh:-oProxyCommand=x", crate::lifecycle::child_signal::process()).is_err(), "a leading-dash target must be refused");
-    assert!(connect("ssh:Hub", crate::lifecycle::child_signal::process()).is_err(), "an uppercase target must be refused (not a plain host name)");
+    assert!(connect("ssh:-oProxyCommand=x", sot_containment::process()).is_err(), "a leading-dash target must be refused");
+    assert!(connect("ssh:Hub", sot_containment::process()).is_err(), "an uppercase target must be refused (not a plain host name)");
 }
 
 /// Dropping the dial takes the ssh child and what it started: an ssh
@@ -119,10 +119,10 @@ fn a_dropped_dial_takes_its_ssh_tree() {
     let _path_guard = EnvGuard::capture("PATH");
     let dir = tempfile::tempdir().expect("tempdir");
     let bg = dir.path().join("bg");
-    let descendant = crate::lifecycle::child_signal::tests::Leftover::of_file(bg.clone());
+    let descendant = sot_containment::leftover::Leftover::of_file(bg.clone());
     write_ssh_script(dir.path(), &format!("sleep 3109 >/dev/null 2>&1 &\necho $! > '{}'\nexec cat\n", bg.display()));
     prepend_to_path(dir.path());
-    let conn = connect("ssh:hub", crate::lifecycle::child_signal::process()).expect("connect");
+    let conn = connect("ssh:hub", sot_containment::process()).expect("connect");
     let (_w, _r, guard) = conn.split().expect("split");
     let began = std::time::Instant::now();
     while std::fs::read_to_string(&bg).map_or(true, |s| s.trim().is_empty()) {
@@ -166,7 +166,7 @@ fn a_dead_child_whose_grandchild_holds_stderr_still_returns_promptly() {
         dir.path(),
         &format!("echo 'Permission denied (publickey).' >&2\nsleep 30 >/dev/null &\necho $! > '{}'\nexit 255\n", pid_file.display()),
     );
-    let holder = crate::lifecycle::child_signal::tests::Leftover::of_file(pid_file.clone());
+    let holder = sot_containment::leftover::Leftover::of_file(pid_file.clone());
     prepend_to_path(dir.path());
 
     let started = std::time::Instant::now();
@@ -201,7 +201,7 @@ fn a_dial_ends_at_its_timeout_or_the_shutdown_and_kills_its_ssh_child() {
         let pid_file = dir.path().join("pid");
         write_ssh_script(dir.path(), &format!("echo $$ > '{}'\nexec sleep 30\n", pid_file.display()));
         prepend_to_path(dir.path());
-        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
         let within = std::time::Duration::from_secs(if by_shutdown { 20 } else { 1 });
         let firer = std::thread::spawn({
             let pid_file = pid_file.clone();
@@ -233,7 +233,7 @@ fn a_dial_ends_at_its_timeout_or_the_shutdown_and_kills_its_ssh_child() {
 fn cancel_kills_the_tracked_child_through_its_own_handle() {
     // Other tests swap PATH under this lock; the child below is found through PATH.
     let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let track = std::sync::Arc::new(Track::new(sig));
     #[cfg(unix)]
     let mut cmd = std::process::Command::new("sleep");
@@ -272,7 +272,7 @@ fn cancel_kills_the_tracked_child_through_its_own_handle() {
 #[cfg(unix)]
 #[test]
 fn the_ssh_hint_reads_past_a_byte_that_is_not_utf8() {
-    let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+    let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.args(["-c", "printf 'Banner \\351t\\351\\nPermission denied (publickey).\\n' >&2"]);
     let child = sig
@@ -316,9 +316,9 @@ fn a_refused_hello_is_named() {
 
 #[test]
 fn unrecognised_scheme_names_the_dialable_spellings() {
-    let err = connect("carrier-pigeon:whatever", crate::lifecycle::child_signal::process()).err().expect("must be an error");
+    let err = connect("carrier-pigeon:whatever", sot_containment::process()).err().expect("must be an error");
     assert!(err.contains("unix:/pipe:/ssh:"), "error should name all three schemes, got: {err}");
-    let tcp = connect("tcp:127.0.0.1:1", crate::lifecycle::child_signal::process()).err().expect("a tcp endpoint is not dialable");
+    let tcp = connect("tcp:127.0.0.1:1", sot_containment::process()).err().expect("a tcp endpoint is not dialable");
     assert!(tcp.contains("unrecognised endpoint spelling"), "{tcp}");
 }
 
@@ -337,7 +337,7 @@ fn a_socket_another_account_listens_on_is_refused() {
     };
     let refused = match connect(
         &format!("unix:{}", foreign.path.display()),
-        crate::lifecycle::child_signal::process(),
+        sot_containment::process(),
     ) {
         Ok(_) => String::from("connected"),
         Err(e) => e,
@@ -359,7 +359,7 @@ fn a_socket_another_account_listens_on_is_refused() {
 fn a_pipe_another_account_serves_is_refused() {
     let refused = match connect(
         r"pipe:\\.\pipe\epmapper",
-        crate::lifecycle::child_signal::process(),
+        sot_containment::process(),
     ) {
         Ok(_) => String::from("connected"),
         Err(e) => e,
@@ -384,7 +384,7 @@ fn a_full_foreign_backlog_ends_the_dial_within_its_bound() {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ =
-            tx.send(connect(&endpoint, crate::lifecycle::child_signal::process()).map(|_| ()));
+            tx.send(connect(&endpoint, sot_containment::process()).map(|_| ()));
     });
     let result = rx
         .recv_timeout(

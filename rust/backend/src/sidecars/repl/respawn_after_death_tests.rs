@@ -18,7 +18,7 @@ fn scratch_dir(name: &str) -> PathBuf {
 
 /// A `julia` stand-in that appends its argv to `log` and then runs `body`.
 fn write_stub(path: &Path, log: &Path, body: &str) {
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         path,
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$* LP=$JULIA_LOAD_PATH\" >> '{}'\n{body}\n",
@@ -70,7 +70,7 @@ async fn submit_after_instant_child_death_respawns() {
     let _pin = pin_env(&julia, &root);
 
     let (frame_tx, _frame_rx) = broadcast::channel(64);
-    let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), crate::lifecycle::child_signal::process());
+    let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), sot_containment::process());
 
     for attempt in 1..=3u64 {
         settle(&repl, attempt)
@@ -104,7 +104,7 @@ async fn submit_survives_a_launcher_that_leaves_a_grandchild() {
     let _pin = pin_env(&julia, &root);
 
     let (frame_tx, _frame_rx) = broadcast::channel(64);
-    let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), crate::lifecycle::child_signal::process());
+    let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), sot_containment::process());
 
     settle(&repl, 1)
         .await
@@ -124,7 +124,7 @@ async fn spawn_failure_is_returned_immediately() {
     let _pin = pin_env(&missing, &root);
 
     let (frame_tx, _frame_rx) = broadcast::channel(64);
-    let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), crate::lifecycle::child_signal::process());
+    let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), sot_containment::process());
 
     for attempt in 1..=2u64 {
         let submitted = tokio::time::timeout(
@@ -163,7 +163,7 @@ async fn repl_project_is_resolved_at_every_spawn() {
     let _pin = pin_env(&julia, &broken);
 
     let (frame_tx, _frame_rx) = broadcast::channel(64);
-    let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), crate::lifecycle::child_signal::process());
+    let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), sot_containment::process());
 
     // First attempt: the root has no `julia/repl`, so resolution falls
     // through to this checkout's own copy — NOT the fixed root.
@@ -205,7 +205,7 @@ async fn a_child_that_answers_then_exits_still_delivers_its_answer() {
     let _pin = pin_env(&julia, &root);
 
     let (frame_tx, _frame_rx) = broadcast::channel(64);
-    let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), crate::lifecycle::child_signal::process());
+    let repl = Repl::new(frame_tx, Some("ws".to_string()), dir.clone(), sot_containment::process());
 
     let (reply_rx, _collector) = repl
         .execute("repl.eval", serde_json::json!({ "eval_id": 1 }))

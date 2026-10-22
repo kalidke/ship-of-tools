@@ -188,7 +188,7 @@ fn sync(hub: Option<String>) -> Result<(), String> {
     }
     let mut ssh = std::process::Command::new("ssh");
     ssh.args(topology::ssh_bridge::SSH_OPTS).args([hub.as_str(), "cat ~/.config/sot/hosts.toml"]);
-    let out = crate::lifecycle::child_signal::process()
+    let out = sot_containment::process()
         .output(&mut ssh, SYNC_BOUND)
         .map_err(|e| format!("ssh {hub}: {e}"))?;
     if !out.status.success() {

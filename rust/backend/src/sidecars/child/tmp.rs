@@ -4,7 +4,7 @@
 //! daemon's controlled end ([`remove_own`]), or, for a process that ended without either, at a later start
 //! ([`sweep_gone`]).
 
-use crate::lifecycle::child_signal::{Contained, Signal};
+use sot_containment::{Contained, Signal};
 use sot_platform::host::HeldDir;
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};

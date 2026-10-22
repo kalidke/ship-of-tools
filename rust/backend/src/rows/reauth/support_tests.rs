@@ -78,7 +78,7 @@ pub(super) fn seed_claude_binary(home: &Path) {
     let bin = home.join(".local/bin");
     std::fs::create_dir_all(&bin).unwrap();
     let claude = bin.join("claude");
-    sot_log::test_exec::write_executable(&claude, b"#!/bin/sh\nexit 0\n");
+    sot_platform::test_exec::write_executable(&claude, b"#!/bin/sh\nexit 0\n");
 }
 #[cfg(windows)]
 pub(super) fn seed_claude_binary(_home: &Path) {}

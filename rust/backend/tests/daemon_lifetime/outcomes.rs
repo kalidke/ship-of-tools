@@ -295,7 +295,7 @@ async fn early_commands_and_boot_refusals_keep_their_statuses() {
 
     let dir = tempfile::tempdir().expect("a temporary folder");
     let alone = dir.path().join("sotd");
-    sot_log::test_exec::write_executable(
+    sot_platform::test_exec::write_executable(
         &alone,
         std::fs::read(crate::support::sotd_program()).expect("read sotd to put alone in a folder"),
     );

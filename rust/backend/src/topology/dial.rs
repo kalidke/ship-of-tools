@@ -21,8 +21,8 @@ enum Conn {
     /// An `ssh:` endpoint's connection IS the spawned child (C2/C3,
     /// `sot_protocol::topology::ssh_bridge`) -- there is no separate "connect" step
     /// the way a socket has one, so this variant holds the not-yet-split
-    /// [`ContainedStd`](crate::lifecycle::child_signal::ContainedStd) rather than a stream.
-    Bridged(crate::lifecycle::child_signal::ContainedStd),
+    /// [`ContainedStd`](sot_containment::ContainedStd) rather than a stream.
+    Bridged(sot_containment::ContainedStd),
 }
 
 /// A blocking `Read`/`Write` view of a connected `PipeClient`, for `dial_and_call`'s `BufReader` and writer. Both halves
@@ -77,7 +77,7 @@ impl std::io::Write for PipeIo {
 /// hang is strictly worse than a poor message.
 struct ChildGuard {
     /// Shared with a [`Track`] so a cancel kills the child through this same handle.
-    child: std::sync::Arc<std::sync::Mutex<crate::lifecycle::child_signal::ContainedStd>>,
+    child: std::sync::Arc<std::sync::Mutex<sot_containment::ContainedStd>>,
     last_stderr: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Set for a forwarded call that a caller may cut short; see [`Track`].
     track: Option<std::sync::Arc<Track>>,
@@ -87,15 +87,15 @@ struct ChildGuard {
 /// child itself while its guard holds it unreaped, and a flag that tells a
 /// thread that has not spawned yet not to bother.
 struct Track {
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     /// The dial thread's child while its guard holds it unreaped; `None` before the spawn and from the moment the
     /// guard starts reaping.
-    child: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<crate::lifecycle::child_signal::ContainedStd>>>>,
+    child: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<sot_containment::ContainedStd>>>>,
     cancelled: std::sync::atomic::AtomicBool,
 }
 
 impl Track {
-    fn new(sig: &'static crate::lifecycle::child_signal::Signal) -> Self {
+    fn new(sig: &'static sot_containment::Signal) -> Self {
         Self { sig, child: std::sync::Mutex::new(None), cancelled: std::sync::atomic::AtomicBool::new(false) }
     }
 
@@ -194,7 +194,7 @@ impl Conn {
     }
 }
 
-fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal) -> Result<Conn, String> {
+fn connect(endpoint: &str, sig: &'static sot_containment::Signal) -> Result<Conn, String> {
     if let Some(p) = endpoint.strip_prefix("unix:") {
         #[cfg(unix)]
         {
@@ -261,12 +261,12 @@ pub fn dial_and_call(
     payload: serde_json::Value,
     within: std::time::Duration,
 ) -> Result<serde_json::Value, String> {
-    dial_and_call_on(crate::lifecycle::child_signal::process(), endpoint, self_host, req_op, payload, within)
+    dial_and_call_on(sot_containment::process(), endpoint, self_host, req_op, payload, within)
 }
 
 /// [`dial_and_call`] under `sig`, the signal that starts the ssh child and ends the wait.
 fn dial_and_call_on(
-    sig: &'static crate::lifecycle::child_signal::Signal,
+    sig: &'static sot_containment::Signal,
     endpoint: &str,
     self_host: &str,
     req_op: &str,
@@ -306,7 +306,7 @@ fn dial_and_call_tracked(
     payload: serde_json::Value,
     track: Option<std::sync::Arc<Track>>,
 ) -> Result<serde_json::Value, String> {
-    let sig = track.as_ref().map_or_else(crate::lifecycle::child_signal::process, |t| t.sig);
+    let sig = track.as_ref().map_or_else(sot_containment::process, |t| t.sig);
     let (mut w, r, mut guard) = connect(endpoint, sig)?.split().map_err(|e| format!("{endpoint}: {e}"))?;
     if let (Some(track), Some(g)) = (&track, guard.as_mut()) {
         if g.attach(track) {
@@ -378,7 +378,7 @@ pub fn hello_reply(endpoint: &str, self_host: &str, within: std::time::Duration)
 }
 
 fn hello_reply_blocking(endpoint: &str, self_host: &str) -> Result<serde_json::Value, String> {
-    let sig = crate::lifecycle::child_signal::process();
+    let sig = sot_containment::process();
     let (mut w, r, _guard) = connect(endpoint, sig)?.split().map_err(|e| format!("{endpoint}: {e}"))?;
     let hello = cli_hello(self_host).map_err(|e| format!("{endpoint}: {e}"))?;
     codec::write_frame_blocking(&mut w, &Frame::req(0, sot_protocol::op::HELLO, hello))

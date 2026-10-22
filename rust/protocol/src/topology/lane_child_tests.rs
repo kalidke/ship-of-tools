@@ -89,7 +89,7 @@ fn controlled_child() -> (ChildFixture, BridgedClient) {
     let path = std::env::temp_dir().join(format!("sot-child-owner-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
     std::fs::create_dir(&path).unwrap();
     let program = path.join("child.py");
-    sot_log::test_exec::write_executable(&program, "import sys\nsys.stdin.readline()\n");
+    sot_platform::test_exec::write_executable(&program, "import sys\nsys.stdin.readline()\n");
     let child = std::process::Command::new("python3").arg("-u").arg(program)
         .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
         .spawn().expect("spawn fixture-owned child");

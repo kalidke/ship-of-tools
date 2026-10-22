@@ -374,7 +374,7 @@ impl Workspace {
                 // Default the REPL into THIS workspace's directory so user code
                 // runs in the session package's env, not the ShipToolsRepl
                 // shim, whether or not it has a Project.toml yet.
-                Repl::new(frame_tx, Some(self.workspace_id.clone()), self.project_root.clone(), crate::lifecycle::child_signal::process())
+                Repl::new(frame_tx, Some(self.workspace_id.clone()), self.project_root.clone(), sot_containment::process())
             })
             .clone()
     }

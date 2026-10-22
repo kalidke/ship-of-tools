@@ -17,7 +17,7 @@ impl<T> Finished for std::thread::JoinHandle<T> {
 #[cfg(target_os = "linux")]
 #[test]
 fn the_test_process_never_holds_a_written_program_open() {
-    if !sot_platform::test_isolated::run_isolated(
+    if !crate::test_isolated::run_isolated(
         "test_exec::tests::the_test_process_never_holds_a_written_program_open",
     ) {
         return;

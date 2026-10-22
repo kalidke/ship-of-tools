@@ -22,6 +22,7 @@
 #![cfg(windows)]
 
 use sot_platform::host::wide_null;
+use sot_platform::host::winjob::{AnonymousJob, JobError};
 use crate::{Error, Result};
 use std::ffi::c_void;
 use std::fs::File;
@@ -33,12 +34,7 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
 };
-use windows_sys::Win32::System::JobObjects::{
-    CreateJobObjectW, IsProcessInJob, JobObjectBasicAccountingInformation,
-    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
-    TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-};
+use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, GetExitCodeProcess, WaitForSingleObject, STARTF_USESTDHANDLES,
@@ -68,6 +64,12 @@ pub struct ConptyError {
 
 fn conpty_err(op: &'static str, source: std::io::Error) -> Error {
     Error::Conpty(ConptyError { op, source })
+}
+
+impl From<JobError> for Error {
+    fn from(e: JobError) -> Self {
+        conpty_err(e.op, e.source)
+    }
 }
 
 /// `CreatePseudoConsole`/`ResizePseudoConsole` report failure as
@@ -216,96 +218,6 @@ pub struct SpawnDetail {
     /// records what it's given); this field is only the raw observation
     /// such detection would need.
     pub spawning_process_was_jobbed: Option<bool>,
-}
-
-/// The anonymous containment job (ADR 0041): `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
-/// alone, never named. It permits no breakaway: everything started inside
-/// dies with the run (ADR 0050 ruling (g)). The daemon's supervisor spawn
-/// asks to leave the daemon's own job; when the daemon was started inside a
-/// row it is denied and runs degraded (ADR 0043 decision 32). The job
-/// handle IS the lease — sole handle, kept
-/// alive for as long as containment is wanted; the kernel kills every
-/// in-job process when the LAST handle closes, however this process dies
-/// (a hard crash included, since handle closure on process exit is a
-/// kernel guarantee, not something our own code has to run). "Reaps the
-/// tree" is scoped to in-job descendants — broker-mediated spawning (WMI,
-/// COM activation, schtasks, services) is outside the domain, the exact
-/// analog of the Linux external-supervisor carve-out.
-#[derive(Debug)]
-pub struct AnonymousJob(OwnedHandle);
-
-impl AnonymousJob {
-    /// `pub` for the ADR 0043 decision 32 breakaway tests
-    /// (`rust/log/tests/capsule/`), which stand up their own anonymous
-    /// job(s) outside any `ConptySpawn` to prove the breakaway/denial
-    /// shape directly.
-    pub fn create() -> Result<Self> {
-        // NULL name + NULL security attributes: anonymous, non-inheritable
-        // by construction (same default as `CreatePipe`'s NULL arm).
-        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-        if handle.is_null() {
-            return Err(conpty_err("CreateJobObjectW", std::io::Error::last_os_error()));
-        }
-        let owned = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
-
-        // Zero-initialized is a valid `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`
-        // — every field is a plain integer (no pointers), so an all-zero
-        // bit pattern is a well-defined value everywhere in the struct;
-        // only `LimitFlags` needs a real value.
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let ok = unsafe {
-            SetInformationJobObject(
-                owned.as_raw_handle() as HANDLE,
-                JobObjectExtendedLimitInformation,
-                &info as *const _ as *const c_void,
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            )
-        };
-        if ok == 0 {
-            return Err(conpty_err("SetInformationJobObject", std::io::Error::last_os_error()));
-        }
-        Ok(Self(owned))
-    }
-
-    /// `pub` for the same reason [`create`](Self::create) is: the
-    /// breakaway tests assign this job to a process they spawn themselves
-    /// and probe with `IsProcessInJob`, both needing the raw handle.
-    pub fn raw(&self) -> HANDLE {
-        self.0.as_raw_handle() as HANDLE
-    }
-
-    /// `TerminateJobObject`: the writer loop's termination sequence calls
-    /// this BEFORE polling `active_processes` down to zero and only then
-    /// closing the pseudoconsole (ADR 0041's pinned order) — this method is
-    /// the raw call only, sequencing is the caller's.
-    pub fn terminate(&self) -> Result<()> {
-        if unsafe { TerminateJobObject(self.raw(), 1) } == 0 {
-            return Err(conpty_err("TerminateJobObject", std::io::Error::last_os_error()));
-        }
-        Ok(())
-    }
-
-    /// `QueryInformationJobObject(JobObjectBasicAccountingInformation)`,
-    /// the `ActiveProcesses` field — NOT `TotalProcesses`, which is a
-    /// cumulative ever-associated count that never decreases and would
-    /// never observe "the tree is gone".
-    pub fn active_processes(&self) -> Result<u32> {
-        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
-        let ok = unsafe {
-            QueryInformationJobObject(
-                self.raw(),
-                JobObjectBasicAccountingInformation,
-                &mut info as *mut _ as *mut c_void,
-                std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(conpty_err("QueryInformationJobObject", std::io::Error::last_os_error()));
-        }
-        Ok(info.ActiveProcesses)
-    }
 }
 
 /// The owned handle to the process `CreateProcessW` created (`pi.hProcess`).

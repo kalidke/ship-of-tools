@@ -295,7 +295,7 @@ async fn a_join_under_a_distinct_declared_host_binds_clears_and_is_pruned() {
     let env = Env::new("cfhost");
     let stub = env._tmp.path().join("stubbin");
     std::fs::create_dir_all(&stub).unwrap();
-    sot_log::test_exec::write_executable(&stub.join("claude"), "#!/bin/sh\nexec sleep 600\n");
+    sot_platform::test_exec::write_executable(&stub.join("claude"), "#!/bin/sh\nexec sleep 600\n");
     env.spawn_sotd_with_path_and_env(&stub, &[("SOT_SELF_HOST", DECLARED)]);
     let (mut conn, mut id) = connect_and_hello(&env.socket_path).await;
     let create = serde_json::json!({
