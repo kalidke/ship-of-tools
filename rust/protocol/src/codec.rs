@@ -61,6 +61,12 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
             cap: MAX_ENVELOPE_BYTES,
         }));
     }
+    // The payload's declared blob and the bytes given must agree, or a reader takes the next envelope for blob bytes.
+    let declared = declared_blob_len(frame);
+    let given = blob.map(|b| b.len() as u64);
+    if declared != given {
+        return Err(anyhow!("frame declares a blob of {declared:?} bytes but was given {given:?}; nothing written"));
+    }
     line.push(b'\n');
     w.write_all(&line).await.context("write envelope")?;
     if let Some(b) = blob {
@@ -105,14 +111,21 @@ pub fn declared_blob_len(frame: &Frame) -> Option<u64> {
     frame.payload.as_object().and_then(|m| m.get("blob")).and_then(|b| b.get("len")).and_then(serde_json::Value::as_u64)
 }
 
+/// The most a reader reserves up front for a blob on the peer's declared length; the buffer grows with bytes that arrive.
+pub(crate) const BLOB_RESERVE_BOUND: usize = 64 * 1024;
+
+pub(crate) fn blob_reserve(declared: u64) -> usize {
+    declared.min(BLOB_RESERVE_BOUND as u64) as usize
+}
+
 pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<(Frame, Option<Vec<u8>>)> {
     let frame = read_envelope(r).await?;
     let Some(len) = declared_blob_len(&frame) else {
         return Ok((frame, None));
     };
-    // The buffer grows only with bytes that arrived, from at most one envelope's size: a declared length is never
+    // The buffer grows only with bytes that arrived, from at most `BLOB_RESERVE_BOUND`: a declared length is never
     // memory reserved on the peer's word.
-    let mut blob = Vec::with_capacity(len.min(MAX_ENVELOPE_BYTES as u64) as usize);
+    let mut blob = Vec::with_capacity(blob_reserve(len));
     AsyncReadExt::take(&mut *r, len).read_to_end(&mut blob).await.context("read blob")?;
     if (blob.len() as u64) < len {
         return Err(anyhow!("blob ended after {} of {} bytes", blob.len(), len));
