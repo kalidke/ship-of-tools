@@ -40,6 +40,8 @@ struct Good {
 pub struct TopologyStore {
     path: PathBuf,
     inner: Mutex<Option<Good>>,
+    /// Held by one edit from its read of the file to its write, so two edits never start from the same text.
+    edit: Mutex<()>,
 }
 
 /// One `refresh()` call's outcome.
@@ -63,11 +65,16 @@ pub struct Refreshed {
 
 impl TopologyStore {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, inner: Mutex::new(None) }
+        Self { path, inner: Mutex::new(None), edit: Mutex::new(()) }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Serializes edits: an edit holds this from its first `refresh` to its write and its confirming `refresh`.
+    pub fn edit_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.edit.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn refresh(&self) -> Refreshed {

@@ -223,7 +223,14 @@ fn resolve_hub(local: Option<&Topology>, cli_hub: Option<&str>, dest: &std::path
             }
             Ok(t.hub.clone())
         }
-        None => cli_hub.map(str::to_string).ok_or_else(|| format!("no hosts.toml at {} yet: pass --hub <alias>", dest.display())),
+        None => {
+            let hub = cli_hub.ok_or_else(|| format!("no hosts.toml at {} yet: pass --hub <alias>", dest.display()))?;
+            // It becomes an argument of ssh, which reads one that begins with `-` as an option.
+            if !topology::endpoint::is_plain_host_name(hub) {
+                return Err(format!("`{hub}` is not a plain host name"));
+            }
+            Ok(hub.to_string())
+        }
     }
 }
 

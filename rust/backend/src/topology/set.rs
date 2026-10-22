@@ -61,6 +61,7 @@ pub async fn handle_topology_set(
         Err(e) => return Ok(refused(req_id, format!("topology.set payload: {e}"), "bad_request")),
     };
 
+    let _edit = store.edit_lock();
     let before = store.refresh();
     if let Some(err) = before.error {
         return Ok(refused(

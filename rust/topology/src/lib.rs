@@ -206,6 +206,7 @@ pub fn parse(text: &str) -> Result<Topology, String> {
             }
             Section::Monitor => {
                 let target = val.string().ok_or_else(|| format!("line {n}: `{key}` must be a quoted ssh target"))?;
+                check_monitor_target(if target.is_empty() { key } else { target }).map_err(|e| format!("line {n}: {e}"))?;
                 monitor.push((key.to_string(), target.to_string()));
             }
         }
@@ -219,6 +220,15 @@ pub fn parse(text: &str) -> Result<Topology, String> {
         return Err(format!("hub `{hub}` has `daemon = false`; the hub runs the relay daemon, so `[host.{hub}]` needs `daemon = true`"));
     }
     Ok(Topology { hub, hosts, monitor, warnings })
+}
+
+/// A `[monitor]` target (an empty one is its label) becomes an argument of ssh, which reads one that begins with `-` as an option (`-oProxyCommand=...`
+/// runs a command on this box). Anything else is allowed: it may be an alias or `user@host`, and ssh gets it as one argument.
+fn check_monitor_target(target: &str) -> Result<(), String> {
+    match target.starts_with('-') {
+        true => Err(format!("monitor target `{target}` would be read by ssh as an ssh option")),
+        false => Ok(()),
+    }
 }
 
 enum Value<'a> {
@@ -578,6 +588,7 @@ pub fn apply(topo: &Topology, edit: &TopologyEdit) -> Result<Topology, String> {
             }
         }
         TopologyEdit::MonitorAdd { label, target } => {
+            check_monitor_target(if target.is_empty() { label } else { target })?;
             if t.monitor.iter().any(|(l, _)| l == label) {
                 return Err(format!("monitor label `{label}` is already declared"));
             }
