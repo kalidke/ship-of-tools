@@ -592,7 +592,7 @@ async fn two_tomls_on_one_handle_keep_it_on_the_last_joiner_at_boot() {
 #[tokio::test]
 async fn a_dead_row_is_never_restarted_by_a_wake() {
     let _serial = SERIAL.lock().await;
-    let mut row = start("cwx", None, false).await;
+    let mut row = start_with("cwx", None, false, &[], &[SHORT_BACKOFF]).await;
     let ws = row.ws.clone();
     std::fs::write(row.dialog.with_extension("down"), b"").unwrap();
     let quit = serde_json::json!({ "workspace_id": ws, "data_b64": "cXVpdA==", "enter": true });
@@ -600,8 +600,8 @@ async fn a_dead_row_is_never_restarted_by_a_wake() {
     row.next_id += 1;
     assert_eq!(res.payload["ok"], true, "pty.input failed: {:?}", res.payload);
     // The watchdog restarts a stub that exits, so the stub is made to exit at every start until the row rests in a phase
-    // other than ready: after the watchdog's restart budget, the sum of its backoffs (1 + 3 + 7 + 15 + 30 s) plus the bound.
-    let deadline = Instant::now() + Duration::from_secs(56) + BOUND;
+    // other than ready: after the watchdog's restart budget (its backoffs shortened by `SHORT_BACKOFF`) plus the bound.
+    let deadline = Instant::now() + BUDGET_WAIT;
     let before = loop {
         let phase = phase_of_row(&mut row, &ws).await;
         if phase == "terminal" || phase == "ended_no_respawn" {

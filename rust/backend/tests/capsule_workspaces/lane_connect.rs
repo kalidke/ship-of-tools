@@ -474,7 +474,7 @@ async fn lane_connect_refusals() {
     let env2 = Env::new("lcft");
     env2.seed_default_capsule_toml("claude");
     let fake_claude_dir = env2.seed_fake_unlaunchable_claude();
-    env2.spawn_sotd_with_prepended_path(&fake_claude_dir);
+    env2.spawn_sotd_with_path_and_env(&fake_claude_dir, &[SHORT_BACKOFF]);
     let (mut conn2, mut next_id2) = connect_and_hello(&env2.socket_path).await;
 
     let list_payload = call(&mut conn2, next_id2, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -496,9 +496,9 @@ async fn lane_connect_refusals() {
     next_id2 += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
 
-    // The daemon watchdog's restart backoffs (1 + 3 + 7 + 15 + 30 s) plus the suite's own `BOUND`: the longest the one
+    // The daemon watchdog's restart backoffs (shortened by `SHORT_BACKOFF`), its settles and the suite's own bound: the longest the one
     // restart budget can take to end the row, whichever capsule runs it.
-    let terminal_deadline = Instant::now() + Duration::from_secs(56) + BOUND;
+    let terminal_deadline = Instant::now() + BUDGET_WAIT;
     loop {
         let id = next_id2;
         next_id2 += 1;

@@ -446,7 +446,7 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
     #[cfg(windows)]
     {
         let scrubbed = path_without(&["claude.exe", "claude.cmd", "claude"]);
-        env.spawn_sotd_with_env(&[("PATH", scrubbed.to_str().expect("scrubbed PATH is not UTF-8"))]);
+        env.spawn_sotd_with_env(&[("PATH", scrubbed.to_str().expect("scrubbed PATH is not UTF-8")), SHORT_BACKOFF]);
     }
     // Linux: `agent_argv`'s own resolution step means a genuinely absent
     // `claude` would refuse at the DAEMON level instead (never reaching
@@ -457,7 +457,7 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
     #[cfg(target_os = "linux")]
     let fake_claude_dir = env.seed_fake_unlaunchable_claude();
     #[cfg(target_os = "linux")]
-    env.spawn_sotd_with_prepended_path(&fake_claude_dir);
+    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[SHORT_BACKOFF]);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -487,11 +487,10 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
     // cycling Starting -> Terminal -> Starting forever, and never resting
     // at "ended_no_respawn" on the way (an agent that cannot start is not
     // an agent that was asked to end). The bound is the daemon watchdog's
-    // restart backoffs (1 + 3 + 7 + 15 + 30 s, `RESTART_BACKOFFS`, which
-    // this suite cannot import) plus the suite's own `BOUND`: whichever
-    // capsule ends the row, the one restart budget is the longest it can
-    // take.
-    let terminal_deadline = Instant::now() + Duration::from_secs(56) + BOUND;
+    // restart backoffs (shortened to 200 ms by `SHORT_BACKOFF`) and settles
+    // plus the suite's own `BOUND`: whichever capsule ends the row, the one
+    // restart budget is the longest it can take.
+    let terminal_deadline = Instant::now() + BUDGET_WAIT;
     loop {
         let id = next_id;
         next_id += 1;
@@ -581,7 +580,7 @@ async fn an_unlaunchable_agent_ends_the_row_terminal_after_five_restarts_however
     let env = Env::new("ulslow");
     env.seed_default_capsule_toml("claude");
     let fake_claude_dir = env.seed_fake_unlaunchable_claude();
-    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[("SOT_TEST_SETTLE_DELAY_MS", "4000")]);
+    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[("SOT_TEST_SETTLE_DELAY_MS", "3000"), SHORT_BACKOFF]);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -601,8 +600,8 @@ async fn an_unlaunchable_agent_ends_the_row_terminal_after_five_restarts_however
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
 
-    // The backoffs (56 s), five settles of 4 s and the suite's own bound.
-    let terminal_deadline = Instant::now() + Duration::from_secs(56 + 5 * 4) + BOUND;
+    // The short backoffs, six settles of 3 s (plus their own 2 s) and the suite's own bound.
+    let terminal_deadline = Instant::now() + Duration::from_secs(6 * 5 + 5) + BOUND;
     loop {
         let id = next_id;
         next_id += 1;
@@ -622,8 +621,8 @@ async fn an_unlaunchable_agent_ends_the_row_terminal_after_five_restarts_however
 }
 
 /// Never reaching `ready` is what the budget counts, not how long a supervisor lived: each supervisor here is held in
-/// `starting` for nine seconds (`SOT_TEST_RECOVERY_DELAY_MS`) before its agent, which cannot start, ends it, so it lives
-/// past any lifetime a clock could call ready and never reaches `ready`. The row still ends `terminal` after five such
+/// `starting` for three seconds (`SOT_TEST_RECOVERY_DELAY_MS`) before its agent, which cannot start, ends it, so it lives
+/// seconds, longer than any agent that cannot start, and never reaches `ready`. The row still ends `terminal` after five such
 /// restarts.
 #[cfg(target_os = "linux")]
 #[tokio::test]
@@ -632,7 +631,7 @@ async fn a_slow_failing_supervisor_that_never_reaches_ready_still_counts_toward_
     let env = Env::new("ulslowstart");
     env.seed_default_capsule_toml("claude");
     let fake_claude_dir = env.seed_fake_unlaunchable_claude();
-    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[("SOT_TEST_RECOVERY_DELAY_MS", "9000")]);
+    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[("SOT_TEST_RECOVERY_DELAY_MS", "3000"), SHORT_BACKOFF]);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -652,8 +651,8 @@ async fn a_slow_failing_supervisor_that_never_reaches_ready_still_counts_toward_
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
 
-    // The backoffs (56 s), six starts held for 9 s, their settles (2 s each) and the suite's own bound.
-    let terminal_deadline = Instant::now() + Duration::from_secs(56 + 6 * 9 + 6 * 2) + BOUND;
+    // The short backoffs, six starts held for 3 s, their settles (2 s each) and the suite's own bound.
+    let terminal_deadline = Instant::now() + Duration::from_secs(6 * 3 + 6 * 2 + 5) + BOUND;
     loop {
         let id = next_id;
         next_id += 1;

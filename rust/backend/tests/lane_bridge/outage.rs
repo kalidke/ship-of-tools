@@ -209,7 +209,7 @@ async fn a_terminal_row_is_terminal_after_the_window() {
     let env = Env::new("lb6");
     env.seed_default_capsule_toml("claude");
     let fake_claude_dir = env.seed_fake_unlaunchable_claude();
-    env.spawn_sotd_with_prepended_path(&fake_claude_dir);
+    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[SHORT_BACKOFF]);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -229,8 +229,8 @@ async fn a_terminal_row_is_terminal_after_the_window() {
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
 
-    // The daemon watchdog's restart backoffs (1 + 3 + 7 + 15 + 30 s) plus the suite's own `BOUND`.
-    let terminal_deadline = Instant::now() + Duration::from_secs(56) + BOUND;
+    // The daemon watchdog's restart backoffs (shortened by `SHORT_BACKOFF`), its settles and the suite's own bound.
+    let terminal_deadline = Instant::now() + BUDGET_WAIT;
     loop {
         let id = next_id;
         next_id += 1;

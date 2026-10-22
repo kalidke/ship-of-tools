@@ -30,6 +30,16 @@ pub const MAX_RESTARTS_PER_WINDOW: usize = 5;
 
 pub const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// The backoff before restart number `restarts` (from 0): `RESTART_BACKOFFS`, or, with the test seam
+/// `SOT_TEST_BACKOFF_MS` named, that many milliseconds for every restart (the budget is a count, so a test that waits it
+/// out proves the same with short waits). Inert unless named.
+fn backoff_for(restarts: usize) -> std::time::Duration {
+    match std::env::var("SOT_TEST_BACKOFF_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
+        Some(ms) => std::time::Duration::from_millis(ms),
+        None => RESTART_BACKOFFS[restarts.min(RESTART_BACKOFFS.len() - 1)],
+    }
+}
+
 /// The restart budget, one per watchdog. An agent that cannot start is a count, not a rate: consecutive restarts of
 /// supervisors that never reached `ready` are counted without a window, so how long each start, settle or life takes
 /// never decides it, and the count resets when one reaches `ready`. Rows knows `ready` by observation: the row's phase
@@ -57,7 +67,7 @@ impl Budget {
             self.never_ready += 1;
             self.never_ready - 1
         };
-        (restarts < MAX_RESTARTS_PER_WINDOW).then(|| RESTART_BACKOFFS[restarts.min(RESTART_BACKOFFS.len() - 1)])
+        (restarts < MAX_RESTARTS_PER_WINDOW).then(|| backoff_for(restarts))
     }
 
     /// The restart judged by the last exit began.
