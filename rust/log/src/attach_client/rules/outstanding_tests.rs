@@ -37,14 +37,15 @@ fn refused_stale_mints_a_new_key_under_the_new_epoch() {
     assert_eq!(o.take_epoch, 7);
 }
 
+/// An input whose acknowledgement never arrived may have run: after a reconnect it is dropped and reported, never
+/// sent again.
 #[test]
-fn reconnect_within_the_same_voyage_resends_the_same_key() {
+fn reconnect_within_the_same_voyage_never_resends_the_input() {
     let mut slot = OutstandingSlot::new();
     slot.record("v1".into(), 1, b"hi".to_vec(), || key(1));
     let decision = slot.resend_after_reconnect("v1", 9);
-    assert_eq!(decision, ReconnectResendDecision::Resend { idem_key: key(1) });
-    assert_eq!(slot.outstanding().unwrap().take_epoch, 9);
-    assert_eq!(slot.outstanding().unwrap().idem_key, key(1));
+    assert!(!matches!(decision, ReconnectResendDecision::Resend { .. }), "an unacknowledged input was resent: {decision:?}");
+    assert!(slot.outstanding().is_none(), "the unacknowledged input stays outstanding");
 }
 
 #[test]

@@ -6,11 +6,22 @@ pub(super) const SCREEN_PACE: Duration = Duration::from_secs(5);
 
 type WriteFn = Box<dyn FnMut(&std::path::Path, &[u8]) -> std::io::Result<()> + Send>;
 
+/// A test's replacement for the screen file's write, and its pace: the next `ScreenFile::new` takes it.
+#[cfg(any(test, feature = "test-support"))]
+static HOOK: Mutex<Option<(WriteFn, Duration)>> = Mutex::new(None);
+
+/// Test seam: the next leg writes its screen through `write` at `pace` instead of `write_durable` every 5 s.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_screen_hook_for_test(write: WriteFn, pace: Duration) {
+    *HOOK.lock().unwrap() = Some((write, pace));
+}
+
 /// Writes `<state_dir>/screen` from the leg's own parser. A failed write is noted and tried again at the next
 /// pace; it never reaches the output path.
 pub(super) struct ScreenFile {
     path: PathBuf,
     write: WriteFn,
+    pace: Duration,
     last_write: Instant,
     dirty: bool,
     /// The last write failed; the failure was noted once for the streak.
@@ -21,11 +32,17 @@ pub(super) struct ScreenFile {
 
 impl ScreenFile {
     pub(super) fn new(path: PathBuf, now: Instant) -> Self {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some((write, pace)) = HOOK.lock().unwrap().take() {
+            let mut file = Self::with_writer(path, now, write);
+            file.pace = pace;
+            return file;
+        }
         Self::with_writer(path, now, Box::new(|p, b| sot_platform::host::write_durable(p, b)))
     }
 
     pub(super) fn with_writer(path: PathBuf, now: Instant, write: WriteFn) -> Self {
-        Self { path, write, last_write: now, dirty: false, failing: false, notes: 0 }
+        Self { path, write, pace: SCREEN_PACE, last_write: now, dirty: false, failing: false, notes: 0 }
     }
 
     /// The screen changed since the last write.
@@ -35,7 +52,7 @@ impl ScreenFile {
 
     /// Writes the screen when it changed and the pace has passed.
     pub(super) fn tick(&mut self, parser: &vt100_ctt::Parser, now: Instant) {
-        if self.dirty && now.duration_since(self.last_write) >= SCREEN_PACE {
+        if self.dirty && now.duration_since(self.last_write) >= self.pace {
             self.save(parser, now);
         }
     }

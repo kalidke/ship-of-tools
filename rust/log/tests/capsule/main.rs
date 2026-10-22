@@ -431,3 +431,4 @@ mod windows_only;
 mod unix_only;
 
 mod no_record;
+mod screen_io;

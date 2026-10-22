@@ -50,6 +50,7 @@ mod writer_loop;
 use output::*;
 pub use ended::{read as read_ended, Ended};
 pub use fence::{bootstrap as bootstrap_voyage_folder, read_leg_epoch, WRITER_LOCK};
+pub use screen::set_screen_hook_for_test;
 pub use writer_loop::run;
 
 const READ_CHUNK: usize = 8192;
