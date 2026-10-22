@@ -333,7 +333,7 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         *seen.borrow_mut() = (reason, border);
         prompt.ok().filter(|_| reason.is_none())
     };
-    let out = wake_if_free(state_dir, CONTROLLER_ID, WAKE_LINE, &free, agent, STILL_FOR, OP_BUDGET);
+    let out = wake_if_free(state_dir, CONTROLLER_ID, handle, WAKE_LINE, &free, agent, STILL_FOR, OP_BUDGET);
     let seen = seen.take();
     if look {
         match (&out, seen.0) {

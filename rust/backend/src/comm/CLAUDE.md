@@ -86,7 +86,8 @@ Waking:
   the cursor's row out of the box's one line), so the wake types nothing into it, appends nothing to it and sends no
   Enter for it. Enter goes only after a fresh read shows the wake line alone in main's input box; a box that holds
   anything else gets nothing. A line the wake typed that did not send is sent by a later tick, Enter alone, only once
-  main's box holds just that line.
+  main's box holds just that line. Each typing, the line or Enter alone, is one INFO log event: the handle, what was
+  sent, the cursor's row and the box's rows as the gate read them (escaped), and the outcome.
 - A busy session needs no typing: its end-of-turn check (the Stop hook, through `sotd comm unread`) does not let a turn
   end while unread mail waits, once per batch.
 - A session outside any row, every server session included, has a handle and an inbox and is never woken; it sees mail
