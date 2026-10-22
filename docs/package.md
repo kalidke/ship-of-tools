@@ -67,9 +67,9 @@ in every reader and writer; a blob is exactly its declared length, and the write
 payload grows only by defaulted fields, else the protocol integer rises and hello refuses the mismatch (the server's
 check, tested there); a child's output is read by lines lossily, so no byte ends a reader; policy asks
 `is_release_build`, never the version string; the shared grammars have one parser. Rests on: serde, the compiler and
-platform. Owns: nothing at run time. Its crate keeps an edge to `sot-log` through topology's lane client until pass 5b.
+platform. Owns: nothing at run time.
 
-**topology.** Guarantees: hosts.toml has one grammar and one writer (the hub's daemon); a host name outside
+**topology.** The contract is drafted (pass 5b-2): `rust/topology/CLAUDE.md`, the crate `sot-topology`; the daemon's half stays in `sotd`. Guarantees: hosts.toml has one grammar and one writer (the hub's daemon); a host name outside
 `[a-z0-9][a-z0-9._-]*` never reaches ssh; every ssh turns sharing off; closing the link gate ends every login watched
 through it; a unit is written only where hosts.toml gives it. Rests on: wire, platform, containment. Owns: the hub's
 hosts.toml and the generated relay units. Does not: hold connections (fe-net and the daemon's link do).
@@ -186,8 +186,10 @@ move to a history folder.
 
 ## Depends on
 
-Today (crates): platform <- log <- protocol <- {backend, frontend}; platform <- log <- updater <- {backend, frontend} (protocol and the updater
-also depend on platform directly; protocol's edge to log is topology's lane client, which leaves with pass 5b). Inside `sot-backend`
+Today (crates): platform <- {containment, protocol, log, updater}; {protocol, log} <- topology; the backend depends on
+protocol, topology, updater, containment, log and platform, the frontend on all of those but containment. Wire
+(protocol) depends on platform alone; topology on wire, platform and log (the capsule's lane client trait); containment
+on platform alone. Inside `sot-backend`
 (one binary, no library target) the modules form one cycle: {agents clients comm files lifecycle pages rows server
 sidecars topology update}; inside the frontend, {lease net pages ui}; inside sot-log, {attach_client capsule lane store
 supervisor}.
