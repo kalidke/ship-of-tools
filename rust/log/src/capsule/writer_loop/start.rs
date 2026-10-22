@@ -92,6 +92,7 @@ pub(super) fn start<'t, P: Producer>(
             splitters,
             pending_sends,
             shutdown_requested: false,
+            transport_failed: false,
             shutdown_reason: None,
             run_end_latched: false,
             wake_pending,

@@ -55,6 +55,8 @@ struct Leg<'t, P> {
     pending_sends: HashMap<(ConnId, u64), Option<SentMarker>>,
     /// Ends the main loop at its next check (shutdown ack written, or transport failed).
     shutdown_requested: bool,
+    /// The attach lane's transport failed for good: the run ends, not as a requested end.
+    transport_failed: bool,
     /// The reason `ended` records; the first one set wins.
     shutdown_reason: Option<String>,
     /// An end was asked for and `ended` says so; never unset.

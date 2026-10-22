@@ -300,8 +300,15 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, voyage: &str, agent_ran:
     let mut transport = PlatformTransport::new(MAX_LANE_INSTANCES);
     let result = crate::capsule::run::<Agent>(capsule, commands, &mut transport);
     drop(transport);
+    // An acknowledged end_run is a requested end even if the agent ended first: the voyage records it before the answer.
+    if shared.end_run_asked() {
+        if let Err(e) = crate::capsule::mark_end_requested(&voyage_root_path(&config.state_dir, voyage), "end_run") {
+            note(format_args!("could not record the requested end: {e}"));
+        }
+    }
     match result {
         Ok(summary) => match summary.exit_kind {
+            ExitKind::TransportFailed => RunEnd::Failed("the attach lane failed".into()),
             ExitKind::SpawnFailed if shared.end_asked() => RunEnd::Ended { started: false },
             ExitKind::SpawnFailed => {
                 note(format_args!("the agent could not be started"));

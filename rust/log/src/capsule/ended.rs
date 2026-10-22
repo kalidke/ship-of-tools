@@ -40,6 +40,15 @@ pub(super) fn write(root: &std::path::Path, ended: &Ended) -> Result<()> {
     Ok(())
 }
 
+/// Records that an end was asked for, on the file the run left: an acknowledged `end_run` is a requested end even when the
+/// agent ended on its own before the run was told, so a resume never starts another run over it.
+pub fn mark_requested(root: &std::path::Path, reason: &str) -> Result<()> {
+    let mut ended = read(root)?.unwrap_or(Ended { finished: true, ..Ended::default() });
+    ended.requested = true;
+    ended.reason.get_or_insert_with(|| reason.to_string());
+    write(root, &ended)
+}
+
 /// Removes the file a former leg left, so one leg's ending is never read as the next's.
 pub(super) fn clear(root: &std::path::Path) -> Result<()> {
     sot_platform::host::remove_durable(&path(root))?;

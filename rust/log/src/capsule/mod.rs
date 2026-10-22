@@ -48,7 +48,7 @@ pub mod producer;
 mod screen;
 mod writer_loop;
 use output::*;
-pub use ended::{read as read_ended, Ended};
+pub use ended::{mark_requested as mark_end_requested, read as read_ended, Ended};
 pub use fence::{bootstrap as bootstrap_voyage_folder, read_leg_epoch, WRITER_LOCK};
 #[cfg(any(test, feature = "test-support"))]
 pub use screen::set_screen_hook_for_test;
@@ -237,6 +237,9 @@ pub enum ExitKind {
     /// for physical ack completion; the ack grace bounds the wait for a
     /// pending shutdown acknowledgement (ADR 0041 EndRun).
     Requested,
+    /// The attach lane's transport failed for good: nobody asked for this end, and the supervisor treats it as its own
+    /// failure. `ended` records no request.
+    TransportFailed,
     /// `P::spawn` failed, or the initial geometry was outside the
     /// budget — nothing ever ran. `producer_dead {spawn_failed:true}` was
     /// still committed and the segment still sealed.

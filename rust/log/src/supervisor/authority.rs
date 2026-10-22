@@ -133,7 +133,10 @@ impl Shared {
             return;
         }
         note(format_args!("terminal: {detail}"));
-        inner.run = None;
+        // A dropped sender is not a kill: the agent is told to end, with no request recorded, before the run is let go.
+        if let Some(run) = inner.run.take() {
+            let _ = run.kill.send(Command::Stop);
+        }
         inner.phase = SupervisorPhase::Terminal;
         inner.terminal_since = Some(Instant::now());
         if let Some(ending) = inner.ending.take() {
@@ -184,6 +187,11 @@ impl Shared {
     pub(super) fn end_asked(&self) -> bool {
         let inner = self.lock();
         inner.ending.is_some() || inner.stop.is_some()
+    }
+
+    /// An `end_run` is in flight (a stop is not one).
+    pub(super) fn end_run_asked(&self) -> bool {
+        self.lock().ending.is_some()
     }
 
     pub(super) fn stop_asked(&self) -> bool {

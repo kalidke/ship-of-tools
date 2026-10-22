@@ -33,6 +33,9 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
         // it. The ack remains a courtesy -- serviced normally through
         // teardown (still tracked via `pending_sends`/the ack-grace window)
         // but never a precondition for STARTING it.
+        if leg.transport_failed {
+            break 'main ExitKind::TransportFailed;
+        }
         if leg.shutdown_requested || leg.run_end_latched {
             break 'main ExitKind::Requested;
         }
