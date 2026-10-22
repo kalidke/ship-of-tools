@@ -10,15 +10,15 @@ const SUBSYSTEMS = ["topology", "wire", "server", "lifecycle", "rows", "agents",
 const PREFIXES = [
     "rust/protocol/src/topology/" => "topology", "rust/backend/src/topology" => "topology",
     "rust/protocol/" => "wire",
-    "rust/backend/src/daemon_log" => "server", "rust/backend/src/durable.rs" => "platform",
-    "rust/backend/src/paths.rs" => "platform", "rust/frontend/build.rs" => "fe-ui",
+    "rust/backend/src/daemon_log" => "server", "rust/backend/src/paths.rs" => "server",
+    "rust/frontend/build.rs" => "fe-ui",
     "rust/frontend/src/browser_open.rs" => "fe-ui", "rust/frontend/src/relaunch.rs" => "distribution",
     "rust/backend/src/server/" => "server", "rust/backend/src/main.rs" => "server",
     "rust/backend/src/clients" => "server", "rust/backend/src/session.rs" => "server",
     "rust/backend/src/lifecycle/" => "lifecycle", "rust/frontend/src/lease" => "lifecycle",
     "rust/backend/src/rows/" => "rows",
     "agents/" => "agents", "rust/backend/src/agents/" => "agents",
-    "rust/platform/src/host/" => "platform", "rust/platform/src/identity/" => "platform",
+    "rust/platform/" => "platform",
     "rust/log/" => "capsule", "julia/sotlog/" => "capsule",
     "rust/vt100/" => "vt100",
     "comm/" => "messaging", "rust/backend/src/comm/" => "messaging",
@@ -61,7 +61,7 @@ const STEM_SUBSYSTEM = Dict(s => sub for (sub, v) in TEST_STEMS for s in v)
 const TEST_DIRS = ("rust/backend/tests/", "rust/log/tests/")
 
 # Rust crates by name as `use` paths spell them, to the folder of their source.
-const CRATE_DIR = Dict("sot_protocol" => "rust/protocol", "sot_updater" => "rust/updater", "sot_log" => "rust/log",
+const CRATE_DIR = Dict("sot_platform" => "rust/platform", "sot_protocol" => "rust/protocol", "sot_updater" => "rust/updater", "sot_log" => "rust/log",
                        "sot_backend" => "rust/backend", "sot_frontend" => "rust/frontend")
 const CODE_EXT = (".rs", ".jl", ".sh", ".ps1", ".ts", ".js", ".mjs", ".py")
 const GENERIC = Set(["main", "new", "run", "default", "fmt", "from", "drop", "clone", "eq", "hash", "parse", "usage",
