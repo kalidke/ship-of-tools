@@ -8,9 +8,14 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
         # The end-of-turn mail check and the subagent guard serve every joined session and stay in the user's settings
         # (`_install_claude_hooks`). What an earlier install put in the user's own folders is removed only after the
         # layer holds every skill.
+        # The onboarding skills are what a person runs before any row exists: they install where they always did, into
+        # the global skills folder every account reaches by the daemon's link.
         for srcdir in CLAUDE_SKILL_SRCS
             _stage!(problems, "claude skills") do
-                _install_skills(srcdir, claude_layer_skills())
+                _install_skills(srcdir, claude_layer_skills(); keep = !in(CLAUDE_GLOBAL_SKILLS))
+            end
+            _stage!(problems, "claude global skills") do
+                _install_skills(srcdir, joinpath(claude_home(), "skills"); keep = in(CLAUDE_GLOBAL_SKILLS), prune = false)
             end
         end
         isempty(problems) && _stage!(problems, "claude layer") do

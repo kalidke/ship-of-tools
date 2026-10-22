@@ -44,7 +44,8 @@ end
             end
             @test isfile(joinpath(dotfiles, "show-result", "SKILL.md"))
             @test islink(joinpath(home, ".claude", "skills"))
-            @test readdir(dotfiles) == ["show-result"]
+            # The onboarding skills install into the folder as they always did; nothing in it was removed.
+            @test sort(readdir(dotfiles)) == sort(["show-result", ShipTools.CLAUDE_GLOBAL_SKILLS...])
             @test any(r -> occursin("symbolic link", string(r.message)), logger.logs)
         end
     end

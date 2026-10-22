@@ -68,8 +68,12 @@ of each.
    own; a file it cannot read or parse is refused, never clobbered. Outside the prefix, with no
    declaration, and on a failed preparation the outcome is logged and the agent still starts. Limits: preparation is
    proved, claude's consumption of it and its no-dialog behavior are the maintainer's done test; a concurrent edit of the file by another process (claude's own) is the writer's stated limit; a `CLAUDE_CONFIG_DIR` that is relative or not UTF-8 records nothing.
-7. **A skill and a work-state hook exist only where a leg of the recipe runs.** The installer puts every Claude skill
-   under `<comm home>/claude-layer/.claude/skills/`. The layer is ready when it holds `sot-session-start`'s
+7. **A skill and a work-state hook exist only where a leg of the recipe runs, except four onboarding skills.** The
+   installer puts every Claude skill but four under `<comm home>/claude-layer/.claude/skills/`. The four, `sot-gh-auth`,
+   `sot-install`, `sot-setup` and `sot-statusline-setup` (`CLAUDE_GLOBAL_SKILLS` in `src/sources.jl`, the one list), are
+   what a person runs before any row exists, so they install into the global Claude skills folder as before, which every
+   named account reaches by the daemon's link; they are never in the layer, and the removal of guarantee 8 never takes
+   them. The layer is ready when it holds `sot-session-start`'s
    `SKILL.md`; then `claude_recipe` adds `--add-dir=<layer>` (one token, so the variadic flag cannot take the next
    argument, and an absolute path, since the leg's working folder is the project's) and a `hooks` key, built from `HOOKS`
    in `layer.rs` (`comm-status-working.sh`, `comm-status-blocked.sh`, `comm-status-heartbeat.sh` from the comm folder's
@@ -112,7 +116,7 @@ of each.
   declaration, the auto-memory flag, and `sotd agent-exec` and `accounts.list`.
 - The layer: `<comm home>/claude-layer/` (written by the installer from `agents/claude/` and `comm/adapters/claude/`,
   read by the recipe) and the table of hooks in `layer.rs`.
-- The non-messaging Claude skills (`julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `sot-gh-auth`,
+- The non-messaging Claude skills (the four onboarding ones global, the rest the layer's; `julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `sot-gh-auth`,
   `sot-install`, `sot-setup`, `sot-status`, `sot-statusline-setup`, `worktree`) and the Claude launcher `ccb` with its
   `PATH` wrappers (`show-result`, `sot-fe`, `sot-gh-auth`): `claude/`. The Codex launcher `ccx`: `codex/`.
 - Pass 10b settles: the row CLIs `spawn/`, the /worktree scripts `worktree/`, the frontend CLI and nav broadcast

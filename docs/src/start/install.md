@@ -177,7 +177,8 @@ installs the agent integration:
 |------|------|
 | `~/.sot-comm/` | the session messaging scripts (`bin/`) and their runtime state |
 | `~/.local/bin/` | `ccb` (Claude Code launcher), `ccx` (Codex launcher), `sot-fe`, `show-result`, `sot-gh-auth` |
-| `~/.sot-comm/claude-layer/` | the Claude Code skills (under `.claude/skills/`): `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `sot-install`, `sot-setup`, `sot-statusline-setup`, `sot-gh-auth`. A session Ship of Tools starts (a row or `ccb`) adds this folder to itself and carries the work-state hooks in its own launch settings; a plain `claude` loads none of it |
+| `~/.claude/skills/` | the four onboarding skills, which you run before any row exists: `sot-install`, `sot-setup`, `sot-statusline-setup`, `sot-gh-auth` (each named account reaches the folder by the daemon's link) |
+| `~/.sot-comm/claude-layer/` | the other Claude Code skills (under `.claude/skills/`): `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `reauth`. A session Ship of Tools starts (a row or `ccb`) adds this folder to itself and carries the work-state hooks in its own launch settings; a plain `claude` loads none of it |
 | `~/.claude/settings.json`, `~/.claude-auth/<name>/settings.json` | two hook entries, merged in without removing yours: `Stop` (the end-of-turn mail check) and `PreToolUse` on `Bash` (the subagent mail guard), each calling a script under `~/.sot-comm/bin`. The work-state hooks an earlier release merged in are removed, but only a command that is exactly one that release wrote; every other hook, a compound command of yours included, stays. A link is followed and its target written once; an account folder with no `settings.json` is skipped |
 | `~/.codex/skills/` | the Codex skills `sot-comm` and `sot-session-start` |
 | `~/.codex/AGENTS.md` | the repo's `AGENTS.md`, installed when none is there and replaced only while the installed file holds "Codex sessions in Ship of Tools"; any other file there is left alone and a warning says to merge by hand |
@@ -192,8 +193,8 @@ reason (a file made read-only, one that could not be read or parsed).
 Setting those three variables is therefore not an isolated try-out; for that,
 install under a separate user account or in a virtual machine.
 
-The Claude skills and the work-state hooks exist only in a session Ship of Tools
-starts: a row, or `ccb`. That session adds `~/.sot-comm/claude-layer` to itself
+Apart from the four onboarding skills, the Claude skills and the work-state hooks
+exist only in a session Ship of Tools starts: a row, or `ccb`. That session adds `~/.sot-comm/claude-layer` to itself
 (`--add-dir`) and carries the hooks in its own launch settings, so a `claude`
 you start yourself in a terminal loads none of them, and neither your skills
 folder nor your `settings.json` holds a skill or a work-state hook. An install

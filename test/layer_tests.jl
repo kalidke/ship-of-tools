@@ -6,9 +6,9 @@ jq_values(cmd::Cmd) = [Sys.iswindows() ? chopsuffix(l, "\r") : l for l in split(
 # The hook commands settings file `f` runs, over every event.
 all_hook_commands(f) = jq_values(`jq -r "[(.hooks // {})[] | .[] | (.hooks // [])[] | .command] | .[]" $f`)
 
-# The names of the skills the repo ships for Claude.
+# The names of the skills the repo ships for Claude that only a row loads (the onboarding skills are the global ones).
 shipped_skills() = sort(unique([n for src in ShipTools.CLAUDE_SKILL_SRCS for n in readdir(src)
-                                if isfile(joinpath(src, n, "SKILL.md"))]))
+                                if isfile(joinpath(src, n, "SKILL.md")) && !(n in ShipTools.CLAUDE_GLOBAL_SKILLS)]))
 
 layer_skills(home) = joinpath(home, ".sot-comm", "claude-layer", ".claude", "skills")
 
@@ -21,8 +21,10 @@ layer_skills(home) = joinpath(home, ".sot-comm", "claude-layer", ".claude", "ski
             for n in names
                 @test isfile(joinpath(layer_skills(home), n, "SKILL.md"))
             end
-            # Not in the Claude skills folder.
-            @test !ispath(joinpath(home, ".claude", "skills"))
+            # Not in the Claude skills folder (test/global_skills_tests.jl holds the onboarding skills that are).
+            for n in names
+                @test !ispath(joinpath(home, ".claude", "skills", n))
+            end
         end
     end
 end

@@ -48,7 +48,7 @@ end
 """
     _install_skills(srcdir, skillsroot) -> Vector{String}
 
-Install every skill directory under `srcdir` (one containing a `SKILL.md`)
+Install every skill directory under `srcdir` (one containing a `SKILL.md`, and `keep(name)`)
 into `skillsroot`, file by file through [`install_file`](@ref)'s atomic
 copy-then-rename, plus one orphan sweep. Every file is either the old copy or
 the new one — never missing, never partial. The destination is NEVER removed:
@@ -60,9 +60,9 @@ One path for BOTH adapters. Returns the names that landed (`"/name"`); raises
 one combined error naming every skill that kept its previous copy, which the
 caller records as a stage failure.
 """
-function _install_skills(srcdir::AbstractString, skillsroot::AbstractString)
+function _install_skills(srcdir::AbstractString, skillsroot::AbstractString; keep = Returns(true), prune::Bool = true)
     mkpath(skillsroot)
-    names = [n for n in readdir(srcdir) if isfile(joinpath(srcdir, n, "SKILL.md"))]
+    names = [n for n in readdir(srcdir) if isfile(joinpath(srcdir, n, "SKILL.md")) && keep(n)]
     installed = String[]
     stale = String[]
     problems = String[]
@@ -82,7 +82,7 @@ function _install_skills(srcdir::AbstractString, skillsroot::AbstractString)
             @warn "skill NOT updated — the destination still holds the PREVIOUS copy" skill = "/$name" dir = skillsroot reason = last(problems)
         end
     end
-    _prune_deprecated_skills!(skillsroot)
+    prune && _prune_deprecated_skills!(skillsroot)
     # The word Installed may never appear without its denominator and its
     # stale list in the same line: a reader who sees only this line can
     # compute the outcome without reading anything above it.
@@ -108,12 +108,13 @@ end
 """
     _prune_layer_skills!(layerskills, srcdirs)
 
-The layer is the installer's alone, so a skill directory in it that no source folder in `srcdirs` ships any more goes:
+The layer is the installer's alone, so a skill directory in it that no source folder in `srcdirs` ships any more, or that is an onboarding skill
+([`CLAUDE_GLOBAL_SKILLS`], which live in the global folder), goes:
 a retired skill must not stay loadable in a row. Called only after every skill installed.
 """
 function _prune_layer_skills!(layerskills::AbstractString, srcdirs)
     isdir(layerskills) || return nothing
-    shipped = Set(n for src in srcdirs for n in readdir(src) if isfile(joinpath(src, n, "SKILL.md")))
+    shipped = Set(n for src in srcdirs for n in readdir(src) if isfile(joinpath(src, n, "SKILL.md")) && !(n in CLAUDE_GLOBAL_SKILLS))
     for name in readdir(layerskills)
         name in shipped && continue
         rm(joinpath(layerskills, name); recursive = true, force = true)
@@ -181,6 +182,7 @@ function _retire_placed_skills!(skillsroot::AbstractString; known = _legacy_skil
     end
     isdir(skillsroot) || return nothing
     for name in sort!(collect(keys(known)))
+        name in CLAUDE_GLOBAL_SKILLS && continue   # the onboarding skills live here
         dst = joinpath(skillsroot, name)
         (isdir(dst) && !islink(dst)) || continue
         if _skill_folder_hash(dst) in known[name]
