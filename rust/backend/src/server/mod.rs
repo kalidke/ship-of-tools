@@ -222,7 +222,8 @@ pub async fn run(opts: Opts) -> Result<()> {
     // handle). A source build, a `+` in its version (the whole fleet), disables it at the hard
     // guard inside `spawn_periodic`, which logs the disabled state and
     // returns without spawning anything.
-    crate::update::spawn_periodic(fe_command_tx.clone(), clients.clone(), leases.clone());
+    let roster = clients.clone();
+    crate::update::spawn_periodic(fe_command_tx.clone(), move || roster.count(), leases.clone());
 
     let label = Arc::new(opts.label);
     let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();

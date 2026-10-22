@@ -488,7 +488,7 @@ fn notify_text(latest: &str, current: &str) -> String {
 /// the updater's state (the ADR-required dev-build info line lives here).
 pub fn spawn_periodic(
     fe_command_tx: broadcast::Sender<FeCommandEvt>,
-    clients: crate::clients::Clients,
+    attached: impl Fn() -> usize + Send + Sync + 'static,
     leases: Arc<Leases>,
 ) {
     let updater = Updater::from_env();
@@ -512,7 +512,7 @@ pub fn spawn_periodic(
     tokio::spawn(async move {
         first_check_wait().await;
         loop {
-            run_check_once(&updater, &fe_command_tx, &clients, &leases).await;
+            run_check_once(&updater, &fe_command_tx, &attached, &leases).await;
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
     });
@@ -524,7 +524,7 @@ pub fn spawn_periodic(
 async fn run_check_once(
     updater: &Updater,
     fe_command_tx: &broadcast::Sender<FeCommandEvt>,
-    clients: &crate::clients::Clients,
+    attached: &(impl Fn() -> usize + ?Sized),
     leases: &Leases,
 ) {
     let out = updater.check().await;
@@ -556,19 +556,19 @@ async fn run_check_once(
                 sot_updater::pending::read(&cfg.updates_root, &id.target).await,
                 Ok(Some(p)) if p.identity == id
             );
-            let attached = clients.count();
-            if armed && attached == 0 {
+            let attached_now = attached();
+            if armed && attached_now == 0 {
                 tracing::info!(tag = %id.tag, "auto mode: armed and no clients attached — exiting for the apply owner");
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 // Re-check after the grace sleep: a client that attached in
                 // the window must not have its session killed.
-                if clients.count() == 0 {
+                if attached() == 0 {
                     exit_for_update(leases, |code| crate::lifecycle::shutdown::exit(code)).await;
                 } else {
                     tracing::info!(tag = %id.tag, "auto mode: a client attached during the exit window — deferring");
                 }
             } else if armed {
-                tracing::info!(tag = %id.tag, attached, "auto mode: armed but clients attached — applying at next launch/restart instead");
+                tracing::info!(tag = %id.tag, attached = attached_now, "auto mode: armed but clients attached — applying at next launch/restart instead");
             }
         }
     } else if out.status.strip_prefix("disabled: ").is_some_and(|s| s.starts_with(UNREADABLE_LEAD) || s.starts_with(MISSING_LEAD)) {
