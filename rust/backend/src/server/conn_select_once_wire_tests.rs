@@ -207,3 +207,28 @@ async fn with_both_optional_buses_absent_and_every_bus_idle_nothing_wakes() {
     assert!(woke.is_err(), "select_once returned with nothing to do");
     assert!(w.buf.is_empty());
 }
+
+/// Guarantee 9 under load: an armed connection whose read deadline has passed is reaped even while an event arm is
+/// ready on every turn (the select is biased toward events, so the reaper's own arm would never be polled).
+#[tokio::test]
+async fn an_expired_read_deadline_reaps_a_connection_whose_event_arms_are_always_ready() {
+    let (mut w, s) = wire();
+    let past = tokio::time::Instant::now();
+    for turn in 0..3 {
+        s.agent_events
+            .send(AgentMessage { from: "x".into(), to: String::new(), text: "y".into(), ts: String::new() })
+            .unwrap();
+        let woke = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            select_once(
+                &mut w.buf, &mut w.read_fut, &mut w.out_rx, &mut w.watcher_rx, &mut w.ws_events_rx, &mut w.topo_changed_rx,
+                &mut w.agent_events_rx, &mut w.link, &mut w.fe_command_rx, &mut w.repl_frame_rx, &mut w.monitor_rx,
+                &mut w.jobs, past, true, true, &None, &w.workspaces, &None, &Clients::new(), &Default::default(),
+            ),
+        )
+        .await
+        .expect("select_once returned")
+        .expect("select_once");
+        assert!(matches!(woke, Woke::Reap), "turn {turn}: an expired deadline was not reaped while events were ready");
+    }
+}
