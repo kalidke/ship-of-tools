@@ -21,7 +21,7 @@ fn a_registry_read_tells_present_absent_and_unreadable_apart() {
 
 #[test]
 fn every_door_write_is_one_locked_step() {
-    let mut t = TestHome::new();
+    let mut t = TestHome::exclusive();
     assert_eq!(registry(&t.env, &args(&["del", "x"])).code, 0, "nothing to delete is no failure");
     t.put("prov", json!({"status": "spawning", "root": "/r", "nonce": "n1"}));
     assert_eq!(registry(&t.env, &args(&["del-provisional", "prov", "/r", "other"])).code, 2, "not ours any more");

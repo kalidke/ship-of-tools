@@ -5,8 +5,14 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
+/// Held for the test's life: shared with every other test that takes the registry lock, or alone (`exclusive`).
+enum Turn {
+    Shared(#[allow(dead_code)] std::sync::RwLockReadGuard<'static, ()>),
+    Alone(#[allow(dead_code)] std::sync::RwLockWriteGuard<'static, ()>),
+}
+
 pub(crate) struct TestHome {
-    _turn: std::sync::RwLockReadGuard<'static, ()>,
+    _turn: Turn,
     _dir: tempfile::TempDir,
     /// The environment every command under test is given: this test's alone, the process's never written.
     pub env: crate::comm::Env,
@@ -19,7 +25,16 @@ pub(crate) struct TestHome {
 impl TestHome {
     /// The comm folder `<dir>/comm` on the box `box1`, no topology, no daemon.
     pub(crate) fn new() -> TestHome {
-        let turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        TestHome::with(Turn::Shared(crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner())))
+    }
+
+    /// A home whose test holds the process-wide registry turn alone: for a test that gives the lock no wait
+    /// (`SOT_LOCK_WAIT_SECS` of 0), which fails when any other thread of the process holds the turn at that instant.
+    pub(crate) fn exclusive() -> TestHome {
+        TestHome::with(Turn::Alone(crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner())))
+    }
+
+    fn with(turn: Turn) -> TestHome {
         let dir = tempfile::tempdir().expect("tempdir");
         let home = dir.path().join("comm");
         let cwd = std::env::current_dir().expect("cwd");
@@ -37,6 +52,8 @@ impl TestHome {
 
     /// `self` with `k` set in its environment.
     pub(crate) fn set(&mut self, k: &str, v: impl AsRef<std::ffi::OsStr>) {
+        let no_wait = k == "SOT_LOCK_WAIT_SECS" && v.as_ref() == "0";
+        assert!(!no_wait || matches!(self._turn, Turn::Alone(_)), "a lock with no wait needs TestHome::exclusive()");
         self.env = std::mem::take(&mut self.env).with(k, v);
     }
 
