@@ -9,12 +9,8 @@ challenge's OS steps, and re-exports none of it. The capsule's contract is writt
 true after the merge of the leg into the supervisor.
 
 ## Owns
-- Deviation, deferred to pass 6c-1b2: the SOM0 management lane has no server since pass 6c-1a3 (no attach lane
-  `voyage-<id>` is bound), but its client side (`VoyageMgmtExchange`, `connect_voyage_*`) and the lane servers
-  (`SocketServer`, `PipeServer`, with the wake callback no one registers) remain, used by this crate's own transport
-  and challenge tests; since pass 6c-1b1 the supervisor binds no lane at all. Limit: a screen
-  writer that timed out at a run's end (`ScreenFile::finish`) can still publish a stale snapshot over a later run's
-  `screen` (queue item SCREEN-WRITER-SPAN: one writer whose ownership spans runs).
+- Limit: a screen writer that timed out at a run's end (`ScreenFile::finish`) can still publish a stale snapshot over a
+  later run's `screen` (queue item SCREEN-WRITER-SPAN: one writer whose ownership spans runs).
 - The supervisor, `sot-capsule supervise`: `supervisor.lock`, the pointer `drawer.voyage` and the daemon's four
   management calls (`src/supervisor/`). It runs the agent itself, from its main thread (`capsule::run`); a connection's
   thread of the row socket answers a management call through `Shared`, and a third thread watches the row listener.
@@ -22,15 +18,16 @@ true after the merge of the leg into the supervisor.
   `<state_dir>/screen` and the run's folder `<state_dir>/voyages/<id>/` with its `writer.lock`, `leg` (the number of
   the run that last started there) and `ended` (how the run ended: whether an end was asked for, the producer's uptime
   and exit; `src/capsule/fence.rs`, `src/capsule/ended.rs`). The folder holds no segments and no blobs.
-- The lanes' remnants (`src/lane/`): the lane servers, the management lane SOM0's client side with nothing serving
-  it, and the supervisor lane SOSV's codec, which nothing dials or serves since pass 6c-1b1; pass 6c-1b2 deletes them.
-  The attach lane SOA0 (its protocol machine, frames and listener) was deleted in pass 6c-1a3.
+- The transports' client half (`src/lane/`): `SocketClient` and `PipeClient`, the bounded connect they come from, the
+  client seam (`Client`, `Endpoint`) and the one local connect, `connect_own`. Every server is the row socket's: the
+  lane servers, the management lane SOM0, the supervisor lane SOSV and the attach lane SOA0 are gone (passes 6c-1a3 and
+  6c-1b2).
 - The attach client every viewer uses (`src/attach_client/client.rs` over the worker in `attach.rs`, both on the row
   socket), and the daemon's calls on a row's supervisor (`supervisor_client.rs`, over `RowClient`).
 - The row socket (`src/row/`), the way in for every viewer and for the daemon: a blocking acceptor, `RowClient` and
   the input thread, in wire's frames, and the four management ops (`row.status`, `row.end_run`, `row.reset`,
   `row.stop`) a row hands to the `Management` its supervisor installs. Pass 6c-1a2 switched the window, the wake and
-  the bridge to it, and pass 6c-1b1 the daemon's calls; 6c-1b2 deletes the lanes; 6c-1c adds the watch.
+  the bridge to it, and pass 6c-1b1 the daemon's calls; 6c-1c adds the watch.
 
 ## Promises
 - One process per row: the agent is the supervisor's own child. The supervisor takes `supervisor.lock` (or adopts the
@@ -188,7 +185,7 @@ true after the merge of the leg into the supervisor.
   does not end within the bound is noted and left; it holds the cloned terminal until the write fails.
 - Attach is ground-gated (`RowRun::tick`, once a pass, and `RowRun::output`), so a viewer joins only at a parser ground
   boundary, after every byte the parser has seen was published.
-- `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot take its fence or its lane), 70 (`EXIT_CONTENDED`, the
+- `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot take its fence), 70 (`EXIT_CONTENDED`, the
   fence was already held), 75 (`EXIT_AGENT_NOT_STARTED`: the agent could not be spawned, or the row socket could not be bound) or 76 (`EXIT_AGENT_ENDED`: it
   started and ended by itself), the last two with no stop or end asked for (`tests/supervisor/spawn.rs`); rows' one restart
   budget decides when a row that exits 75 or 76 ends terminal, a row whose socket could not be bound included. A supervisor
@@ -199,7 +196,7 @@ true after the merge of the leg into the supervisor.
   accepted and ignored.
 - Only linux, macos and windows build.
 - A reply on a local connection is trusted only after the challenge in platform (`../platform/src/identity/`); the
-  lanes' own request and reply bytes are `src/lane/exchange.rs`.
+  row hello's request and reply are `RowHelloExchange` (`src/row/proto.rs`).
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot-capsule supervise`,
@@ -212,7 +209,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Folders
 - `src/capsule/`: a run, one producer under a live parser, its screen file and its ending.
 - `src/supervisor/`: the one process of a row: the fence, the pointer, the management calls and the main thread's loop.
-- `src/lane/`: transport pieces, the client seam, the supervisor and management lanes' wire and the platform lane servers.
+- `src/lane/`: transport pieces (the connect bound, the error type), the client seam and the two platform clients.
 - `src/attach_client/`: one client for every viewer of a row, and the daemon's calls on a row's supervisor.
 - `src/row/`: the row socket: `RowServer` (acceptor and connection threads), `RowRun` (the run's fan-out and request
   queue, what the loop feeds and drains), `RowClient` (the blocking client) and the hello's payloads and exchange.
@@ -225,7 +222,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and brings
   `test_log`, `test_copy`, `test_scan` and, on Unix, `test_foreign`, and turns on platform's `test_isolated` and `test_wait` (the
   backend, frontend and updater turn it on in their dev-dependencies, and platform's own beside it).
-- `build.rs`: stamps the lane build id (`SOT_LOG_BUILD_SHA`) from the full git sha, or `SOT_BUILD_ID`.
+- `build.rs`: stamps the build id (`SOT_LOG_BUILD_SHA`, `sot_log::BUILD_ID`) from the full git sha, or `SOT_BUILD_ID`.
 - `tests/`: integration and whole-process tests, by target:
   - `capsule/`: `capsule::run` over a real producer or a fake one: the run to its end, `ended` and the screen file
     (`main.rs`, `no_record.rs`, `screen_io.rs`, `output_end.rs`), what a `RowClient` on the row socket sees of a run
@@ -234,12 +231,15 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
     `row_supervisor.rs` (a real supervisor: the row socket serves, no lane is bound, and the listener's watch waits on
     an event), `row_management.rs` (the daemon's calls on the row socket), `fe_attach.rs` (`FeAttachClient`),
     `fe_client/` (the client against a real supervisor, and the headless client).
-  - `supervisor/`: the real-process supervisor, driven over the row socket. `wire/`: the lanes' frames through the
-    public API, with `fixtures/supervisor-lane-v1*.bin` pinned.
-  - the lane servers: `socket_unix/`, `pipe_win/`, `connect_own.rs`, `challenge_unix.rs`, `challenge_macos.rs`,
-    `other_account.rs`, `winhandle_windows.rs`, `macos_kernel_facts/`.
-  - `conpty.rs`, `isolation_guards.rs`, `test_body_fixture.rs`, and `support/` (`capsule_guard.rs`).
-- `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`) and `Error`/`Result`.
+  - `supervisor/`: the real-process supervisor, driven over the row socket.
+  - the transports' clients, against the row acceptor: `socket_unix/` and `pipe_win/` (cancel, concurrent submit, the
+    connector's bounds and descriptor flags, an excess connection), `connect_own.rs`, and the identity challenge
+    (`challenge_unix.rs`, `challenge_macos.rs`, `pipe_win/challenge.rs`: a real `RowServer` answers the hello, and the
+    adversarial cases are the exchanges in `support/row_challenge.rs`), with `other_account.rs`,
+    `winhandle_windows.rs` and `macos_kernel_facts/`.
+  - `conpty.rs`, `isolation_guards.rs`, `test_body_fixture.rs`, and `support/` (`capsule_guard.rs`, `row_challenge.rs`).
+- `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`), `BUILD_ID`,
+  `SupervisorPhase` and `Error`/`Result`.
 - `src/secret.rs`: `redact` and `RedactingWriter`, the masking of page secrets in both binaries' logs.
 - `src/test_barrier.rs`: `hold`, a named phase barrier a real process can be held at (Unix, feature `native-barrier`, which no installed build enables; inert unless `SOT_TEST_BARRIER_DIR` names a folder).
 - `src/test_copy.rs`: `copy_release_folder`, the one copy of a project folder for a test, leaving out every Julia manifest (feature `test-support`).
@@ -251,10 +251,10 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   failure on CI), and every later helper failure fails the test (feature `test-support`, Unix).
 - `src/capsule/`: a run's runtime, its screen and ended files, and the producers.
 - `src/supervisor/`: the supervisor, its fence and pointer, and `Shared`, the state its management calls and its main thread share.
-- `src/lane/`: wire frames (`wire/`: SOM0 and SOSV), the platform lane servers (`socket_unix/`, `pipe_win/`), the client seam and the identity exchanges.
+- `src/lane/`: the platform clients (`socket_unix/`, `pipe_win/`), the client seam and the error type.
 - `src/attach_client/`: the attach client, its worker (`attach.rs`) and the daemon's calls on a row's supervisor.
 - `src/row/`: the row socket's server, run side, client and protocol types; tests `tests/row.rs`, `row_limits.rs`, `row_supervisor.rs`, `row_pipe.rs`.
-- `src/lane/exchange.rs`, `src/lane/connect_own.rs`: the lanes' identity exchanges, and the connect that asks platform's account check.
+- `src/lane/connect_own.rs`: the connect that asks platform's account check.
 - `src/storage.rs`: `storage_exhaustion`, the capsule's reading of platform's storage table.
 - `src/test_scan.rs`: the source scans' one walker, `rust_sources()` (every workspace member's `src/` and `tests/`), and its production view `production_sources()` with `without_test_modules`, and `enclosing` and `is_ident` (the `fn` or `struct` a match lies in, and the identifier test at its edges) (feature `test-support`).
 - `src/bin/`: `sot-capsule` and the two test-fixture helpers.
