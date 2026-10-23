@@ -67,3 +67,18 @@ fn the_destroy_proof_needs_no_voyage() {
     }
     drop(holder);
 }
+
+/// Ending a row that never started observes it and leaves no mark: the fence file is the start marker, so an absence
+/// check that created it would make a registered row that stays registered read `unreachable` and resume at the next
+/// boot. Every `end_run` caller holds the row's guard, so no start can begin between a missing marker and the answer.
+#[test]
+fn ending_a_never_started_row_creates_no_start_marker() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state_dir = dir.path();
+    match end_run(state_dir, "test reason", true) {
+        Ok(super::EndRunOutcome::Unheld) => {}
+        other => panic!("expected Ok(Unheld) for a row that never started: {other:?}"),
+    }
+    assert!(!state_dir.join("supervisor.lock").exists(), "the proof created the start marker");
+    assert_eq!(super::super::probe::phase_of(state_dir), super::super::NEVER_STARTED_PHASE, "the row still reads never started");
+}
