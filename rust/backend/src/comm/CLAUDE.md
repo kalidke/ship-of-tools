@@ -81,6 +81,9 @@ Waking:
   after it (a dim cell reads blank: Claude Code draws its suggestion dim), that line alone between the input box's two
   rules, the agents panel (if any) on main, the line wide enough for the wake line, and every row through the box's
   lower rule unchanged for 1.5 s; and no `stop_at` mark under a minute old on its entry (its Stop hook is running).
+- How a wake attaches: as a watcher over the row's socket that takes the pen once, only to type (the capsule charter's
+  driver and watcher). A window that was driving is demoted by it and takes the pen back on its next key
+  (`fe_attach::a_demoted_window_types_again_after_a_wake`).
 - What a wake never touches: a dialog, a menu, a working session, and a person's unsent text. Text a person typed is not
   dim and is not free wherever the cursor sits, on one row or on several (a draft that wraps or holds a newline puts
   the cursor's row out of the box's one line), so the wake types nothing into it, appends nothing to it and sends no
