@@ -22,7 +22,7 @@ fn mk_ws(label: &str) -> Workspace {
 fn mark_running(ws: &Workspace) {
     let id = SupervisorIdentity { pid: 1, created: 1 };
     ws.begin_supervisor_epoch(id);
-    assert!(ws.apply_phase_observation(Observation::Phase { phase: Phase::Ready, supervisor: id, voyage: None }));
+    assert!(ws.apply_phase_observation(Observation::Phase { phase: Phase::Ready, supervisor: id, run: None }));
 }
 
 const V2: &str = "hub = \"alpha\"\n\n[host.alpha]\ndaemon = true\n\n[host.beta]\ndaemon = true\n";

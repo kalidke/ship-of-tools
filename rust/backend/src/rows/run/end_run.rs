@@ -1,4 +1,4 @@
-//! `end_run`: ending a capsule row's run, with the destroy proof (no authority and no leg left) before a row is reported ended.
+//! `end_run`: ending a capsule row's run, with the destroy proof (the fence free and nothing answering the row socket) before a row is reported ended.
 
 use std::path::Path;
 #[cfg(not(target_os = "linux"))]
@@ -23,13 +23,13 @@ pub enum EndRunOutcome {
     /// this arm the row was UNENDABLE: `workspace.destroy` kept reporting `NotEnded` forever, because nothing ever told
     /// the stuck authority to stop.
     ///
-    /// `Terminal` alone does NOT prove the leg died (Codex review,
+    /// `Terminal` alone does NOT prove the agent died (Codex review,
     /// 2026-09-11: watchdog restart-budget exhaustion, a failed
-    /// adoption, or a kill/wait failure on the leg itself can all reach
-    /// `Terminal` with a leg still running) — this variant is reported
-    /// ONLY once the SAME [`absence_proof`] `Unheld` uses has
-    /// independently confirmed no leg holds the voyage either; a leg
-    /// still present is reported (`end_run` keeps the row), never
+    /// adoption, or a kill/wait failure can all reach `Terminal` with an
+    /// agent still running) — this variant is reported ONLY once the
+    /// SAME [`absence_proof`] `Unheld` uses has independently confirmed
+    /// the fence free and nothing answering the row socket; a socket
+    /// that still answers is reported (`end_run` keeps the row), never
     /// silently orphaned.
     Terminal,
     /// `end_run` reported the operation failed, was refused, or its
@@ -42,12 +42,12 @@ pub enum EndRunOutcome {
     /// `supervisor.lock` on the same state dir succeeded — nobody holds
     /// the AUTHORITY over this row (the kernel released the fence the
     /// instant its last holder died — `sot_log::supervisor::journal::fence`) — AND
-    /// [`leg_absent`] independently proved no LEG holds the
-    /// voyage's own `writer.lock` either (`voyage.rs`). No authority AND
-    /// no leg is safe to treat as `Removable`, same as `Terminal`.
-    /// Fence free but a leg still present is NOT this variant — a leg
-    /// with no authority left to end it is reported instead of silently
-    /// orphaned (see `end_run`'s own doc). Distinct from `NotEnded`: that
+    /// [`row_socket_silent`] found nothing answering the row's socket
+    /// (the agent ends with its supervisor). No authority AND nothing
+    /// answering is safe to treat as `Removable`, same as `Terminal`.
+    /// Fence free but a socket still answering is NOT this variant — it
+    /// is reported instead of silently orphaned (see `end_run`'s own
+    /// doc). Distinct from `NotEnded`: that
     /// variant means the lane DID answer and refused/failed the request
     /// — a live, responsive holder, never fabricated as ended. Field
     /// defect closed (v0.6.0-rc.12): a supervisor that died out from
@@ -60,10 +60,10 @@ pub enum EndRunOutcome {
     /// row's lane (`is_definitely_orphaned` — decision 27's own
     /// "no listener at all" classification, never a mere timeout or a
     /// foreign/undetermined challenge). Distinct from `Unheld`: that
-    /// variant proves absence by taking the fence and the writer lock;
-    /// neither lock can even be attempted here because both live INSIDE
-    /// the missing directory (`fence.rs`, `voyage_root_path`) — so there
-    /// is nowhere left for either to exist, let alone be held. This row
+    /// variant proves absence by taking the fence; it cannot even be
+    /// attempted here because it lives INSIDE the missing directory
+    /// (`fence.rs`) — so there is nowhere left for it to exist, let
+    /// alone be held. This row
     /// has no durable record and no supervisor that could be alive under
     /// this daemon's state root — safe to remove, same as `Unheld`, but
     /// reported under its own name (`orphan_removed`) rather than folded
@@ -136,13 +136,13 @@ pub fn end_run(
         Err(e) => {
             // Recoverability (ADR 0043 decision 33): a row is
             // removed only after a confirmed end or a PROVEN absence
-            // of BOTH authority (fence) and leg (writer.lock) — a
+            // of BOTH the fence and the row socket — a
             // missing state dir proves neither BY ITSELF, and fence
             // creation there fails outright (`CREATE_NEW` needs the
             // directory), so `absence_proof` below cannot even be
             // attempted. It is checked and reported FIRST, distinct
             // from every other "lane unreachable" case — never a
-            // licence to recreate anything (`leg_absent`'s own
+            // licence to recreate anything (`row_socket_silent`'s own
             // caller, `destroy_capsule_workspace`, never does).
             //
             // STAT STRICTLY (Fable review): `fs::metadata`, not
@@ -165,8 +165,8 @@ pub fn end_run(
                 Err(stat_err) if stat_err.kind() == std::io::ErrorKind::NotFound => {
                     // A missing directory is not automatically a dead
                     // end, though: `supervisor.lock` and every
-                    // voyage's `writer.lock` live INSIDE `state_dir`
-                    // (`fence.rs`, `voyage_root_path`), so if the
+                    // the fence live INSIDE `state_dir`
+                    // (`fence.rs`), so if the
                     // directory is gone neither lock can possibly be
                     // held BY THIS ROW anywhere else — the one thing
                     // that could still be alive is a supervisor
@@ -220,8 +220,8 @@ pub fn end_run(
                     }
                     Ok(R::Unheld)
                 }
-                Ok(false) => Err(std::io::Error::other("a leg is running with no authority")),
-                Err(NotProven::LegCheckFailed(detail)) => Err(std::io::Error::other(detail)),
+                Ok(false) => Err(std::io::Error::other("a row socket answers with no authority holding the fence")),
+                Err(NotProven::RowSocketUnjudged(detail)) => Err(std::io::Error::other(detail)),
                 Err(NotProven::FenceUnavailable) => Err(std::io::Error::other(e.to_string())),
             };
         }
@@ -297,9 +297,9 @@ pub fn end_run(
             return match absence_proof(state_dir) {
                 Ok(true) => Ok(R::Terminal),
                 Ok(false) => {
-                    Err(std::io::Error::other("a leg is running with no authority (terminal)"))
+                    Err(std::io::Error::other("a row socket answers with no authority holding the fence (terminal)"))
                 }
-                Err(NotProven::LegCheckFailed(detail)) => Err(std::io::Error::other(detail)),
+                Err(NotProven::RowSocketUnjudged(detail)) => Err(std::io::Error::other(detail)),
                 Err(NotProven::FenceUnavailable) => Err(std::io::Error::other(
                     "the authority did not release its fence after being stopped",
                 )),
@@ -370,8 +370,8 @@ fn end_still_starting(
     }
     match prove() {
         Ok(true) => Ok(super::EndRunOutcome::Unheld),
-        Ok(false) => Err(std::io::Error::other("a leg is running with no authority (stopped while starting)")),
-        Err(NotProven::LegCheckFailed(detail)) => Err(std::io::Error::other(detail)),
+        Ok(false) => Err(std::io::Error::other("a row socket answers with no authority holding the fence (stopped while starting)")),
+        Err(NotProven::RowSocketUnjudged(detail)) => Err(std::io::Error::other(detail)),
         Err(NotProven::FenceUnavailable) => Err(std::io::Error::other(
             "the authority did not release its fence after being stopped while starting",
         )),
@@ -383,50 +383,50 @@ fn end_still_starting(
 /// unreachable-lane arm and the `Terminal` arm) can keep its own
 /// honest wording: a fence-stage failure means something else may
 /// still hold the AUTHORITY (each caller already knows its own
-/// reason to say there), while a leg-check failure carries
-/// [`leg_absent`]'s own message forward instead of being discarded
+/// reason to say there), while a socket-check failure carries
+/// [`row_socket_silent`]'s own message forward instead of being discarded
 /// for a caller-supplied one (Codex review, 2026-09-11 — the old code
-/// replaced `leg_absent`'s own error with the outer `query_status`
+/// replaced the check's own error with the outer `query_status`
 /// error, losing the actual reason absence wasn't proven).
 pub(crate) enum NotProven {
     FenceUnavailable,
-    LegCheckFailed(String),
+    RowSocketUnjudged(String),
 }
 
 /// ADR 0043 decision 33's own absence proof, shared by every
-/// [`end_run`] arm that reaches a state with no live leg to end and
+/// [`end_run`] arm that reaches a state with no live run to end and
 /// so gets no live `end_run` round trip over the lane: the
 /// unreachable-lane arm (no supervisor answers at all) and the
 /// `Terminal` arm (a lane that DID answer, but whose authority admits
 /// no fresh `EndRun` and was just told to stop — Codex review,
 /// 2026-09-11: `Terminal` is also reached by watchdog restart-budget
-/// exhaustion and by a failed kill/wait on the leg itself, neither of
-/// which proves the leg died, so `Terminal` alone is not a confirmed
+/// exhaustion and by a failed kill/wait on the agent itself, neither of
+/// which proves the agent died, so `Terminal` alone is not a confirmed
 /// end). A bounded, non-blocking attempt to take `supervisor.lock`
 /// settles the AUTHORITY half — acquirable means no supervisor holds
 /// this row; released immediately (this call only OBSERVES, it must
-/// never itself become the holder) — and [`leg_absent`] independently
-/// settles the LEG half. `Ok(true)`: neither is held — nothing is
-/// running here. `Ok(false)`: the leg is running with no authority
-/// left to end it — reported, never silently orphaned. `Err`:
+/// never itself become the holder) — and [`row_socket_silent`] settles
+/// the other half. `Ok(true)`: the fence is free and nothing answers —
+/// nothing is running here. `Ok(false)`: a socket answers with no
+/// authority holding the fence — reported, never silently orphaned. `Err`:
 /// absence is NOT proven either way, so the caller must keep the row
 /// rather than guess.
 fn absence_proof(state_dir: &Path) -> Result<bool, NotProven> {
-    absence_proof_then(state_dir, leg_absent, || ()).map(|acted| acted.is_some())
+    absence_proof_then(state_dir, row_socket_silent, || ()).map(|acted| acted.is_some())
 }
 
-/// [`absence_proof`] with its leg check named by the caller and an act run while the supervisor fence is still held:
-/// `Ok(Some(_))` is the act's result when the fence was free and `leg` found no leg; `Ok(None)` is a leg holding the
-/// voyage (the act did not run); `Err` is absence not proven. The act runs under the fence so nothing can take it
+/// [`absence_proof`] with its socket check named by the caller and an act run while the supervisor fence is still held:
+/// `Ok(Some(_))` is the act's result when the fence was free and `silent` found nothing answering; `Ok(None)` is a socket
+/// that answers (the act did not run); `Err` is absence not proven. The act runs under the fence so nothing can take it
 /// between the proof and the act (a removal's rename).
 pub(crate) fn absence_proof_then<T>(
     state_dir: &Path,
-    leg: impl FnOnce(&Path) -> Result<bool, String>,
+    silent: impl FnOnce(&Path) -> Result<bool, String>,
     act: impl FnOnce() -> T,
 ) -> Result<Option<T>, NotProven> {
     let _fence =
         sot_log::supervisor::journal::fence::lock_supervisor(state_dir).map_err(|_| NotProven::FenceUnavailable)?;
-    if leg(state_dir).map_err(NotProven::LegCheckFailed)? {
+    if silent(state_dir).map_err(NotProven::RowSocketUnjudged)? {
         Ok(Some(act()))
     } else {
         Ok(None)
@@ -447,55 +447,24 @@ pub(crate) fn absence_proof_then<T>(
 /// here, because each of those means something DID answer. A `true`
 /// result, together with the caller's own `!state_dir.is_dir()`
 /// check, is the missing directory's own version of
-/// [`absence_proof`]: nowhere left for `supervisor.lock` or any
-/// voyage's `writer.lock` to exist (both live under `state_dir`), and
-/// no supervisor reachable at the one address that does not depend on
+/// [`absence_proof`]: nowhere left for `supervisor.lock` to exist
+/// (it lives under `state_dir`), and no supervisor reachable at the one address that does not depend on
 /// the directory existing.
 fn is_definitely_orphaned(e: &sot_log::Error) -> bool {
     matches!(e, sot_log::Error::Transport(te) if te.is_endpoint_absent())
 }
 
-/// Whether a `lock_writer` failure is genuine contention (its OWN
-/// bounded-retry exhaustion, `host/`) rather than some OTHER
-/// refusal that happens to share `Error::State`'s shape — Windows:
-/// `open_lock_file`'s reparse-point refusal is the one other producer
-/// of `Error::State` on this exact call (Codex review, 2026-09-11:
-/// conflating the two used to report a live leg for what was actually
-/// a security refusal). Matched on `lock_writer`'s own fixed message
-/// prefix rather than a new `sot_log::Error` variant — that ONE
-/// crate-wide `State` variant already serves dozens of unrelated call
-/// sites (see its own doc), so a new variant there is a much wider
-/// change than this one call site needs.
-pub fn is_lock_contention(detail: &str) -> bool {
-    detail.starts_with("lock held by another process:")
-}
-
-/// The LEG half of decision 33's destroy proof — [`absence_proof`]
-/// calls this only once the AUTHORITY half (the supervisor fence) is
-/// already proven free, never on its own. Reads the published
-/// pointer to find which voyage the row last bound, then takes the
-/// SAME bounded, non-blocking primitive `open_for_writing` itself
-/// uses on that voyage's `writer.lock` (`voyage.rs`) — held by a live
-/// leg, never by the authority — and releases it at once (this call
-/// only OBSERVES, it must never become the holder). `Ok(true)`: the
-/// lock was acquirable — no leg holds this voyage. `Ok(false)`: the
-/// lock is held — a leg lives with no authority left to end it.
-/// `Err`: the pointer itself is not a valid voyage id, or the lock
-/// attempt failed for a reason OTHER than contention — either way,
-/// absence is NOT proven, so the caller must keep the row rather than
-/// guess.
-pub fn leg_absent(state_dir: &Path) -> Result<bool, String> {
-    let voyage = match sot_log::supervisor::journal::pointer::validate(state_dir) {
-        sot_log::supervisor::journal::pointer::PointerState::Valid(id) => id,
-        other => return Err(format!("voyage pointer is not valid: {other:?}")),
-    };
-    let root = sot_log::supervisor::voyage_root_path(state_dir, &voyage);
-    match sot_platform::host::lock_writer(&root.join(sot_log::capsule::WRITER_LOCK)) {
-        Ok(lock) => {
-            drop(lock); // observe only -- never become the holder
-            Ok(true)
-        }
-        Err(sot_platform::Error::State(detail)) if is_lock_contention(&detail) => Ok(false),
+/// The row-socket half of decision 33's destroy proof: [`absence_proof`] calls this only once the supervisor fence is
+/// already proven free, never on its own. A supervisor holds the fence for its whole life and its agent ends with it (the
+/// kernel's parent-death signal, the hangup, the job), so a free fence leaves nothing to answer on the row's socket; this
+/// asks anyway, once, and reads no voyage. `Ok(true)`: nothing answers (the connect was refused or found nothing there,
+/// [`is_definitely_orphaned`]). `Ok(false)`: something answers a row whose fence nobody holds -- reported, never silently
+/// orphaned. `Err`: the socket could not be judged (a timeout, a challenge that proves nothing), so absence is NOT proven
+/// and the caller keeps the row rather than guesses.
+pub fn row_socket_silent(state_dir: &Path) -> Result<bool, String> {
+    match sot_log::attach_client::supervisor_client::query_status(state_dir) {
+        Ok(_) => Ok(false),
+        Err(e) if is_definitely_orphaned(&e) => Ok(true),
         Err(e) => Err(e.to_string()),
     }
 }

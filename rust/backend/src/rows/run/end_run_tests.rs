@@ -67,20 +67,3 @@ fn the_destroy_proof_needs_no_voyage() {
     }
     drop(holder);
 }
-
-// `is_lock_contention` tells the non-contention refusal `lock_writer` can report (Windows' reparse-point check, `host/`)
-// from genuine contention: both share one `Error::State` shape. Pure string matching, independent of any real lock file.
-#[test]
-fn lock_contention_is_recognized_only_by_its_own_message() {
-    assert!(
-        is_lock_contention("lock held by another process: \"/tmp/x/writer.lock\""),
-        "lock_writer's own bounded-retry-exhaustion text must be recognized as contention"
-    );
-    assert!(
-        !is_lock_contention(
-            "writer.lock at \"/tmp/x/writer.lock\" is a reparse point — refusing a redirected fence"
-        ),
-        "a reparse-point refusal is not contention -- absence must stay unproven, not read as \"a leg lives\""
-    );
-    assert!(!is_lock_contention("some unrelated State error"));
-}

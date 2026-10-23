@@ -24,7 +24,7 @@ pub enum ActivationIntent {
 /// the healthy already-running path used to call [`phase_of`] a
 /// SECOND time here; reusing an already-fetched phase string costs
 /// nothing beyond what an already-answered lane already told the
-/// caller). [`NEVER_STARTED_PHASE`] (no published pointer) means
+/// caller). [`NEVER_STARTED_PHASE`] (no fence file) means
 /// `Start`; [`UNREACHABLE_PHASE`] means `Resume`; any answered
 /// lifecycle phase means a supervisor is already up — `None`.
 fn start_mode_for_phase(phase: &str) -> Option<StartMode> {
@@ -154,7 +154,7 @@ fn resume_locked_spawned(
 /// than answering `NotReady` forever; `pty.open`'s own attach path
 /// keeps using [`ensure_started`] instead — it needs the `Start` arm
 /// this function deliberately does not have (resume-only intent: it
-/// never starts a row that has no pointer published at all, and it
+/// never starts a row that has no fence file at all, and it
 /// never sends `reset`).
 pub fn resume_if_absent(
     state_root: &Path,
@@ -430,7 +430,7 @@ fn ensure_started_locked(
             // then a fresh spawn via the same guarded resume body every
             // other caller uses. Sending `reset` straight to the OLD
             // resident process (the prior behaviour) would let IT mint
-            // the new voyage and spawn the new leg from whatever binary
+            // the new run and spawn the new agent from whatever binary
             // it cached at its own start.
             if let Err(e) = sot_log::attach_client::supervisor_client::stop(&state_dir) {
                 return LockedStep::Done(Err(format!("capsule workspace retire (stop before reset) failed: {e}")));
@@ -479,11 +479,11 @@ fn ensure_started_locked(
             }
         }
         // The second of the two resets in this tree, and the other is
-        // `reauth::mint_replacement_voyage`; both go through
+        // `reauth::reset_replacement_run`; both go through
         // [`reset_run`]. Its doc comment carries the long form.
         return LockedStep::Done(match reset_run(&workspaces, workspace_id, &state_dir) {
-            // Mints a fresh voyage on the SAME epoch; the observer's next round supersedes the latch.
-            Ok(_new_voyage) => Ok(()),
+            // A new run on the SAME epoch; the observer's next round supersedes the latch.
+            Ok(_) => Ok(()),
             Err(e) => Err(format!("capsule workspace reset (after retiring an ended run) failed: {e}")),
         });
     }

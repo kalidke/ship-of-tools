@@ -273,7 +273,7 @@ fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
     if let Ok(ms) = std::env::var("SOT_TEST_RECOVERY_DELAY_MS").unwrap_or_default().parse::<u64>() {
         std::thread::sleep(Duration::from_millis(ms));
     }
-    let mut voyage = match discover_or_mint_voyage(&config.state_dir, config.mode) {
+    let mut voyage = match discover_or_mint_voyage(&config.state_dir) {
         Ok(v) => v,
         Err(e) => {
             shared.terminal(bounded_detail(format!("{e}")));
@@ -447,20 +447,18 @@ pub fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
     voyages_dir(state_dir).join(voyage_id)
 }
 
-/// The voyage the pointer names, minted on a `--start` with no pointer; a `--resume` with none has nothing to resume.
-fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crate::Result<String> {
+/// The voyage the pointer names, minted when there is none: a `--resume` over a folder with no pointer starts the agent
+/// like a `--start`, since the supervisor that left it never got as far as publishing one.
+fn discover_or_mint_voyage(state_dir: &Path) -> crate::Result<String> {
     match pointer::validate(state_dir) {
         PointerState::Valid(id) => Ok(id),
-        PointerState::NotFound => match mode {
-            StartMode::Start => {
-                std::fs::create_dir_all(voyages_dir(state_dir))?;
-                let id = uuid::Uuid::now_v7().to_string();
-                crate::capsule::bootstrap_voyage_folder(&voyage_root_path(state_dir, &id))?;
-                pointer::publish(state_dir, &id)?;
-                Ok(id)
-            }
-            StartMode::Resume => Err(crate::Error::State("--resume with no drawer.voyage pointer at all: nothing to resume".into())),
-        },
+        PointerState::NotFound => {
+            std::fs::create_dir_all(voyages_dir(state_dir))?;
+            let id = uuid::Uuid::now_v7().to_string();
+            crate::capsule::bootstrap_voyage_folder(&voyage_root_path(state_dir, &id))?;
+            pointer::publish(state_dir, &id)?;
+            Ok(id)
+        }
         PointerState::Corrupt => Err(crate::Error::State("drawer.voyage is corrupt".into())),
         PointerState::OtherIo(e) => Err(e.into()),
     }

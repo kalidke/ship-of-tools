@@ -83,7 +83,7 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
         .into_iter()
         .filter(|ws| {
             let state_dir = super::state_dir_for(&state_root, &ws.workspace_id);
-            sot_log::supervisor::journal::pointer::pointer_path(&state_dir).is_file()
+            super::fence_file_exists(&state_dir)
         })
         .map(|ws| {
             (

@@ -47,7 +47,9 @@ true after the merge of the leg into the supervisor.
   rests only after a requested end: an agent that cannot be started or ends by itself ends the supervisor with 75 or
   76, so the daemon's watchdog is the one restart budget (rows' contract). A `--resume` over a run that was asked to
   end (`ended.requested`) rests in `ended_no_respawn`; any other `--resume` starts a fresh agent, in a new run of the
-  same voyage. A stop is not an end of the run: it leaves no request, so the next start runs the agent again.
+  same voyage, and a `--resume` with no voyage to resume (a folder whose supervisor died before it published one)
+  mints one and starts the agent like a `--start`. A resting supervisor reports the run whose end it rests on
+  (`row.status`'s `run`), held in memory, so the daemon's cell can tell a stale resting observation from a current one. A stop is not an end of the run: it leaves no request, so the next start runs the agent again.
 - The daemon's four calls are ops of the row socket, each answered in the calling connection's own thread, every outcome a
   reply payload (an `error` reply is kept for a protocol fault: an unknown op, a bad payload): `row.status` answers at
   once `{phase, run?, voyage?}`; `row.end_run {run, reason}` is fenced by the run, so another run's id is `stale_run`
@@ -171,9 +173,8 @@ true after the merge of the leg into the supervisor.
   (`tests/capsule/row_run.rs::input_sent_while_a_requested_end_is_in_progress_is_answered_run_ended`).
 - A bind failure of the row socket ends the supervisor with 75 (`EXIT_AGENT_NOT_STARTED`), before any agent starts:
   it is a row that did not start, which rows' watchdog is to count against its one restart budget, ending the row terminal
-  only when the failure lasts through it. Limit: rows' watchdog does not yet restart a supervisor that died before its
-  first answer (its recheck reads the row as already resumed), so today the row stays stopped and the next attach tries
-  again (queue item WATCHDOG-FIRST-START-RECHECK; the ignored `capsule_workspaces::a_row_socket_that_cannot_be_bound_ends_the_row_terminal_through_the_budget`).
+  only when the failure lasts through it. Rows' watchdog restarts a supervisor that died before its first answer, since rows read a start from the fence file
+  (`capsule_workspaces::a_row_socket_that_cannot_be_bound_ends_the_row_terminal_through_the_budget`).
   The Unix bind reclaims a socket file left behind without probing for a listener: the fence is held, so the file is
   this row's own.
 - Every write to the terminal has one owner (`src/row/input.rs`): one thread, started with the run's terminal, writes

@@ -36,10 +36,10 @@ async fn end_with_retry_table() {
 #[test]
 fn drawer_is_an_end_target() {
     let root = tempfile::tempdir().expect("tempdir");
-    assert!(!drawer_is_target(root.path()), "no pointer, no drawer to end");
+    assert!(!drawer_is_target(root.path()), "no fence file, no drawer to end");
 
-    std::fs::write(sot_log::supervisor::journal::pointer::pointer_path(root.path()), "x").expect("pointer");
-    assert!(drawer_is_target(root.path()), "a drawer pointer makes the drawer an end target");
+    std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(root.path()), "").expect("fence file");
+    assert!(drawer_is_target(root.path()), "a drawer's fence file makes the drawer an end target");
 }
 
 #[tokio::test(start_paused = true)]

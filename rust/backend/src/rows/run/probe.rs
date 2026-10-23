@@ -32,43 +32,31 @@ pub const UNREACHABLE_PHASE: &str = crate::rows::workspace::Phase::Unreachable.a
 /// a fact this daemon already had.
 pub const FOREIGN_PHASE: &str = crate::rows::workspace::Phase::Foreign.as_wire_str();
 
-/// The wire phase string for a capsule workspace with no published
-/// voyage pointer (`<state_dir>/drawer.voyage`, `sot_log::supervisor::journal::pointer` —
-/// ADR 0041 Lifecycle's write-once durable fact that a voyage exists).
-/// Rule B (shrink round): the POINTER, not directory presence, is the
-/// discriminator — a state directory can exist with no pointer ever
-/// published to it (the exact pre-pointer crash window ADR 0041 names,
-/// or simply a row `resume_all` correctly never touched because it had
-/// none), and that reads identically to a workspace whose directory was
-/// never created at all: neither has ever had a real run. Distinct from
-/// [`UNREACHABLE_PHASE`]: a workspace WITH a published pointer means a
-/// supervisor did reach a real run at least once, so a lane that fails to
-/// answer against it stays "unreachable" — `query_status`'s own doc
-/// deliberately folds every such failure (connect refused, a foreign/
-/// undetermined challenge, a timeout) into one `Err` without saying
-/// which, so a query against a workspace WITH a pointer can never be
-/// reclassified as "never started" either. One narrow race this accepts
-/// (Codex round, PR #172): a `workspace.list` landing in the brief window
-/// where a resumed supervisor's pointer is still being (re-)published
-/// reads "stopped" too — bounded by the spawn call itself and
-/// self-correcting on the very next list once the pointer (and the
-/// supervisor behind it) exists.
+/// The wire phase string for a capsule workspace whose state folder holds no supervisor fence file
+/// (`<state_dir>/supervisor.lock`, `sot_log::supervisor::journal::fence`).
+/// The fence file, not directory presence, is the discriminator: the daemon claims the fence before it forks a supervisor
+/// and a supervisor takes it before anything else, so a folder holding the file had a supervisor started in it, whether
+/// or not that supervisor got as far as publishing anything. A folder without one (the directory missing, or present and
+/// never started in) reads as never started: neither has ever had a start. Distinct from [`UNREACHABLE_PHASE`]: a folder
+/// WITH a fence file means a start was made, so a row socket that fails to answer against it stays "unreachable"
+/// (`query_status` folds every such failure -- connect refused, a foreign or undetermined challenge, a timeout -- into one
+/// `Err` without saying which), and a start whose fork failed after the claim reads the same. One narrow race this
+/// accepts: a `workspace.list` that lands before the daemon's claim for a first start reads "stopped" too, which the next
+/// list corrects.
 pub const NEVER_STARTED_PHASE: &str = crate::rows::workspace::Phase::Stopped.as_wire_str();
 
-/// Whether a capsule workspace's supervisor lane is even worth querying,
-/// given whether its voyage pointer exists — pure, no I/O itself (the
-/// caller supplies `pointer_exists`, e.g. `phase_of`'s own
-/// `sot_log::supervisor::journal::pointer::pointer_path(state_dir).is_file()`). `None` means
-/// "query it, we can't tell from this alone"; `Some(..)` short-circuits a
-/// connect attempt that cannot possibly succeed — no pipe was ever bound
-/// for a workspace whose pointer was never published, so `phase_of` skips
-/// straight to [`NEVER_STARTED_PHASE`] rather than waiting out a connect
-/// budget destined to fail. The pointer lives INSIDE the state dir, so
-/// its absence subsumes "no state dir at all" (the check this replaces)
-/// as well as "a state dir exists but nothing was ever durably published
-/// to it" — both read as never started.
-pub fn phase_for_missing_pointer(pointer_exists: bool) -> Option<&'static str> {
-    (!pointer_exists).then_some(NEVER_STARTED_PHASE)
+/// Whether a capsule workspace's supervisor is even worth querying, given whether its fence file exists: pure, no I/O
+/// itself (the caller supplies `fence_exists`, e.g. `phase_of`'s own `fence_file_exists`). `None` means "query it, we can't
+/// tell from this alone"; `Some(..)` short-circuits a connect attempt that cannot possibly succeed -- no row socket was
+/// ever bound for a folder no start was made in -- so `phase_of` skips straight to [`NEVER_STARTED_PHASE`] rather than
+/// waiting out a connect budget destined to fail.
+pub fn phase_for_missing_fence(fence_exists: bool) -> Option<&'static str> {
+    (!fence_exists).then_some(NEVER_STARTED_PHASE)
+}
+
+/// Whether `state_dir` holds the supervisor fence file: the one fact that a start was made in it.
+pub fn fence_file_exists(state_dir: &Path) -> bool {
+    sot_log::supervisor::journal::fence::supervisor_lock_path(state_dir).is_file()
 }
 
 /// Map the supervisor's own phase to the wire string
@@ -96,9 +84,7 @@ pub(crate) fn local_phase(phase: sot_log::SupervisorPhase) -> crate::rows::works
 /// One status round trip: wire string plus the identity-carrying `Observation` it implies. BLOCKING.
 pub fn probe(state_dir: &Path) -> (&'static str, crate::rows::workspace::Observation) {
     use crate::rows::workspace::{Observation, SupervisorIdentity};
-    if let Some(phase) =
-        super::phase_for_missing_pointer(sot_log::supervisor::journal::pointer::pointer_path(state_dir).is_file())
-    {
+    if let Some(phase) = super::phase_for_missing_fence(super::fence_file_exists(state_dir)) {
         return (phase, Observation::Stopped);
     }
     match sot_log::attach_client::supervisor_client::query_status(state_dir) {
@@ -109,7 +95,7 @@ pub fn probe(state_dir: &Path) -> (&'static str, crate::rows::workspace::Observa
             let observation = Observation::Phase {
                 phase: super::local_phase(report.phase),
                 supervisor: SupervisorIdentity { pid: report.pid, created: report.created },
-                voyage: report.voyage.as_deref().and_then(|v| v.parse().ok()),
+                run: report.run.as_deref().and_then(|r| r.parse().ok()),
             };
             (super::phase_str(report.phase), observation)
         }

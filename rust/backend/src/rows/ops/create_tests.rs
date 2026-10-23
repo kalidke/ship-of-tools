@@ -136,7 +136,7 @@ mod label_in_use_tests {
             assert!(w.apply_phase_observation(Observation::Phase {
                 phase,
                 supervisor: SupervisorIdentity { pid: 1, created: 1 },
-                voyage: Some(uuid::Uuid::from_u128(1)),
+                run: Some(uuid::Uuid::from_u128(1)),
             }));
             assert_eq!(w.phase(), phase);
         }

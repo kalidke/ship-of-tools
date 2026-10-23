@@ -23,7 +23,7 @@ fn full_lifecycle_status_end_run_and_clean_exit() {
     end_run_and_expect_ended(&conn, &run, "integration test");
     let rested = status(&conn);
     assert_eq!(rested.phase, SupervisorPhase::EndedNoRespawn, "the run's end is answered once the supervisor rests");
-    assert_eq!(rested.run, None, "a resting supervisor has no run");
+    assert_eq!(rested.run.as_deref(), Some(run.as_str()), "a resting supervisor names the run it rests on");
 
     // Single-owner reaping: asserted HERE, while the supervisor is still alive (its own `/proc/<pid>` entry, hence this
     // check, only exists until it exits), right after the run ended and before `stop`. Proves the agent is reaped as

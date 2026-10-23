@@ -33,6 +33,25 @@ fn start_reaches_ready_promptly() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
+/// A `--resume` over a state folder with no voyage to resume (the supervisor that left it died before it published one)
+/// starts the agent like a `--start` does, rather than ending with an error.
+#[test]
+fn a_resume_with_nothing_to_resume_starts_the_agent() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let mut guard = spawn_supervisor(&state_dir, "--resume", SHELL);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(30));
+    end_run_and_expect_ended(&conn, &run, "cleanup");
+    stop(&conn);
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
+}
+
 /// The supervisor-epoch rule's whole Linux safety argument, in
 /// executable form: the start-time the DAEMON reads off a freshly
 /// spawned supervisor is bit-identical to the `created` that same

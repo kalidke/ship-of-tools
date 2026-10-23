@@ -51,16 +51,21 @@ fn never_started_phase_is_distinct_from_unreachable_and_every_answered_phase() {
 }
 
 #[test]
-fn phase_for_missing_pointer_only_fires_when_the_pointer_is_absent() {
-    // Rule B: a published pointer means a supervisor reached a real
-    // run at least once — that case defers to the real query (`None`)
-    // rather than guessing; only a genuinely absent pointer
-    // short-circuits to `NEVER_STARTED_PHASE`.
-    assert_eq!(
-        phase_for_missing_pointer(false),
-        Some(NEVER_STARTED_PHASE)
-    );
-    assert_eq!(phase_for_missing_pointer(true), None);
+fn phase_for_missing_fence_only_fires_when_the_fence_file_is_absent() {
+    // A fence file means a start was made in the folder, whether or not its supervisor published anything — that case
+    // defers to the real query (`None`) rather than guessing; only a genuinely absent fence file short-circuits to
+    // `NEVER_STARTED_PHASE`.
+    assert_eq!(phase_for_missing_fence(false), Some(NEVER_STARTED_PHASE));
+    assert_eq!(phase_for_missing_fence(true), None);
+}
+
+#[test]
+fn a_folder_with_a_fence_file_and_no_supervisor_reads_unreachable_not_stopped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_eq!(phase_of(dir.path()), NEVER_STARTED_PHASE, "nothing was ever started here");
+    std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(dir.path()), b"").expect("the fence file");
+    assert!(fence_file_exists(dir.path()));
+    assert_eq!(phase_of(dir.path()), UNREACHABLE_PHASE, "a start was made, and nothing answers it");
 }
 
 #[test]

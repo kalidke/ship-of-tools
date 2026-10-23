@@ -55,7 +55,7 @@ fn row(label: &str, name: &str, declared: &str, ready: bool) -> Arc<Workspace> {
         assert!(w.apply_phase_observation(Observation::Phase {
             phase: Phase::Ready,
             supervisor: SupervisorIdentity { pid: 1, created: 1 },
-            voyage: Some(uuid::Uuid::from_u128(1)),
+            run: Some(uuid::Uuid::from_u128(1)),
         }));
     }
     Arc::new(w)

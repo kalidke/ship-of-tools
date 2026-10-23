@@ -267,7 +267,7 @@ async fn a_running_observer_feeds_the_row_a_same_slug_insert_registers() {
         ws.runtime = "capsule".to_string();
         reg.insert(ws)
     };
-    let ready = |pid| Observation::Phase { phase: Phase::Ready, supervisor: SupervisorIdentity { pid, created: 100 }, voyage: None };
+    let ready = |pid| Observation::Phase { phase: Phase::Ready, supervisor: SupervisorIdentity { pid, created: 100 }, run: None };
     // Three of the observer's rounds (`observer::POLL_INTERVAL`, 2 s).
     let stops = |ws: Arc<Workspace>| async move {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);

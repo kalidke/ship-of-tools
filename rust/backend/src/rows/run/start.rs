@@ -171,10 +171,10 @@ pub fn start_supervisor(
     })
 }
 
-/// Mints a fresh voyage on the row's live authority — a run start, so
+/// Resets the row's live authority into a new run — a run start, so
 /// it passes the gate first. The ONLY `supervisor_client::reset` call
 /// outside tests; the retire arm of [`ensure_started`] and
-/// `reauth::mint_replacement_voyage` both come through here.
+/// `reauth::reset_replacement_run` both come through here.
 pub(crate) fn reset_run(workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<String, String> {
     let _permit = workspaces.begin_start(workspace_id)?;
     sot_log::attach_client::supervisor_client::reset(state_dir).map_err(|e| e.to_string())

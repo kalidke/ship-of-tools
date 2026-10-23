@@ -140,8 +140,8 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
     // `StartMode::Resume` DELIBERATELY never resurrects an ended run (ADR
     // 0041's no-resurrection rule), so the replacement settles at
     // `ended_no_respawn` BY DESIGN: a live supervisor, holding this row's
-    // producer argv, with no voyage and nothing on the pty. `reset` mints
-    // the voyage the leg actually runs in. `ensure_started`'s `Selection`
+    // producer argv, with no run and nothing on the pty. `reset` starts
+    // the run the agent actually runs in. `ensure_started`'s `Selection`
     // arm does all three (retire, resume, reset); this path used to do the
     // first two and stop, which left a row that logged as spawned and had
     // no leg at all — data-safe, and silent, which is worse.
@@ -163,33 +163,33 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
     // "can report `starting` through its own recovery for many seconds".
     // `Reset` is admissible ONLY from `EndedNoRespawn`, so a reset fired
     // two seconds into a three-second recovery is REFUSED, leaving exactly
-    // the live-supervisor-no-voyage-no-leg row this change exists to
+    // the live-supervisor-no-run-no-agent row this change exists to
     // prevent — with a red log instead of a green one, which is no better
     // for the conversation. So wait for the authority to rest on its own
     // clock, and then let the phase decide.
-    let voyage = match mint_replacement_voyage(fx, &plan, &state_dir, retired) {
-        Ok(voyage) => voyage,
-        Err(MintRefusal::NeverAnswered(detail)) => {
+    let started = match reset_replacement_run(fx, &plan, &state_dir, retired) {
+        Ok(started) => started,
+        Err(ResetRefusal::NeverAnswered(detail)) => {
             tracing::error!(
                 workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
                 spawn_phase = phase, detail = %detail,
-                "workspace.reauth: the replacement authority never answered, so no voyage was minted and this row has no leg"
+                "workspace.reauth: the replacement authority never answered, so no new run was started and this row has no agent"
             );
             return;
         }
-        Err(MintRefusal::Refused { settled, detail }) => {
+        Err(ResetRefusal::Refused { settled, detail }) => {
             tracing::error!(
                 workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
                 phase = settled, detail = %detail,
-                "workspace.reauth: refusing to mint a voyage on this authority, so the switch left no new leg"
+                "workspace.reauth: refusing to reset this authority, so the switch left no new run"
             );
             return;
         }
-        Err(MintRefusal::MintedNothing { settled, error }) => {
+        Err(ResetRefusal::StartedNothing { settled, error }) => {
             tracing::error!(
                 workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
                 phase = settled, error = %error,
-                "workspace.reauth: the reset minted no voyage, so this row has no leg; \
+                "workspace.reauth: the reset started no run, so this row has no agent; \
                  opening the row retires this authority and revives it on a fresh conversation"
             );
             return;
@@ -197,32 +197,31 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
     };
     tracing::info!(
         workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
-        voyage = %voyage,
-        // Deliberately narrower than "the leg is running": `reset`
-        // answers as soon as the pointer moves, and the leg is spawned
-        // after that, in the supervisor's own Resetting -> Spawning
-        // transition, where it can still fail into `terminal`. A
-        // minted voyage is evidence of the third step being taken, not
-        // of a process on the pty.
-        "workspace.reauth: a fresh voyage was minted for the replacement leg on the new account"
+        reset = %started,
+        // Deliberately narrower than "the agent is running": `reset`
+        // answers as soon as the supervisor has taken it, and the agent
+        // starts after that, where it can still fail into `terminal`. The
+        // answer is evidence of the third step being taken, not of a
+        // process on the pty.
+        "workspace.reauth: a new run was requested for the replacement agent on the new account"
     );
 }
 
-/// Why a revival's tail stopped short of the mint. One variant per line
+/// Why a revival's tail stopped short of the reset. One variant per line
 /// [`restart_blocking`] owes its log: the three failures are not
 /// interchangeable to whoever reads it — nothing answered, something
-/// answered and was refused, or the mint itself answered nothing — and two
+/// answered and was refused, or the reset itself answered nothing — and two
 /// of them carry the phase the authority settled at, which only the tail
 /// has read. THE LOG RECORDS ARE THE CONTRACT, and one `String` cannot
 /// carry three of them.
-enum MintRefusal {
+enum ResetRefusal {
     NeverAnswered(String),
     Refused { settled: &'static str, detail: String },
-    MintedNothing { settled: &'static str, error: String },
+    StartedNothing { settled: &'static str, error: String },
 }
 
 /// The revival tail: wait for the replacement authority to come to rest on
-/// its own clock, judge it, and mint its voyage. ONE name for the rule, so
+/// its own clock, judge it, and reset it into a new run. ONE name for the rule, so
 /// [`restart_blocking`] above reads as exactly the three effects it is.
 ///
 /// There is a SECOND reset in this tree — `ensure_started_locked`, in
@@ -249,20 +248,20 @@ enum MintRefusal {
 ///   4. What identity means. Attach uses it as a fast path to SKIP the
 ///      retire; this path uses it as a REFUSAL. Opposite polarity, opposite
 ///      consequence.
-fn mint_replacement_voyage(
+fn reset_replacement_run(
     fx: &dyn RestartEffects,
     plan: &ReauthRestart,
     state_dir: &Path,
     retired: Option<(u32, u64)>,
-) -> Result<String, MintRefusal> {
-    let report = wait_until_resting(fx, state_dir).map_err(MintRefusal::NeverAnswered)?;
+) -> Result<String, ResetRefusal> {
+    let report = wait_until_resting(fx, state_dir).map_err(ResetRefusal::NeverAnswered)?;
     let settled = crate::rows::run::probe::phase_str(report.phase);
     if let Err(detail) = ready_to_mint(report.phase, retired, (report.pid, report.created)) {
-        return Err(MintRefusal::Refused { settled, detail });
+        return Err(ResetRefusal::Refused { settled, detail });
     }
     match fx.reset(&plan.workspaces, &plan.row.workspace_id, state_dir) {
         Ok(voyage) if !voyage.trim().is_empty() => Ok(voyage),
-        other => Err(MintRefusal::MintedNothing {
+        other => Err(ResetRefusal::StartedNothing {
             settled,
             error: other.err().unwrap_or_else(|| "the reset answered an empty voyage".into()),
         }),

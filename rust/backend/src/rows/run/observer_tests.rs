@@ -32,11 +32,11 @@ fn identity(pid: u32, created: u64) -> SupervisorIdentity {
 }
 
 fn phase_obs(phase: Phase, supervisor: SupervisorIdentity) -> Observation {
-    Observation::Phase { phase, supervisor, voyage: None }
+    Observation::Phase { phase, supervisor, run: None }
 }
 
 #[test]
-fn begin_supervisor_epoch_resets_phase_voyage_and_failures() {
+fn begin_supervisor_epoch_resets_phase_run_and_failures() {
     let a = identity(1, 100);
     let ws = seeded_capsule_row(a);
     assert_eq!(ws.phase(), Phase::Stopped, "a fresh epoch starts Stopped");
@@ -82,13 +82,13 @@ fn unreachable_needs_two_consecutive_failed_rounds() {
     assert_eq!(ws.phase(), Phase::Ready, "a success between two failures resets the count");
 }
 
-/// RA blocker 1: `Terminal` is supervisor-scoped, not voyage-scoped -- applies regardless of phase/voyage.
+/// RA blocker 1: `Terminal` is supervisor-scoped, not run-scoped -- applies regardless of phase/run.
 #[test]
-fn a_terminal_observation_with_no_voyage_applies_even_over_ended_no_respawn() {
+fn a_terminal_observation_with_no_run_applies_even_over_ended_no_respawn() {
     let a = identity(1, 100);
     let ws = seeded_capsule_row(a);
     let v1 = uuid::Uuid::from_u128(1);
-    observe(&ws, Observation::Phase { phase: Phase::EndedNoRespawn, supervisor: a, voyage: Some(v1) });
+    observe(&ws, Observation::Phase { phase: Phase::EndedNoRespawn, supervisor: a, run: Some(v1) });
     assert_eq!(ws.phase(), Phase::EndedNoRespawn);
 
     observe(&ws, phase_obs(Phase::Terminal, a));
@@ -115,22 +115,22 @@ fn a_terminal_observation_latches_and_only_a_fresh_epoch_clears_it() {
     assert_eq!(ws.phase(), Phase::Ready);
 }
 
-/// `EndedNoRespawn` latches for its VOYAGE within the epoch; a strictly newer voyage clears it.
+/// `EndedNoRespawn` latches for its RUN within the epoch; a strictly newer run clears it.
 #[test]
-fn ended_no_respawn_latches_for_its_voyage() {
+fn ended_no_respawn_latches_for_its_run() {
     let a = identity(1, 100);
     let ws = seeded_capsule_row(a);
     let v1 = uuid::Uuid::from_u128(1);
     let v2 = uuid::Uuid::from_u128(2);
 
-    observe(&ws, Observation::Phase { phase: Phase::EndedNoRespawn, supervisor: a, voyage: Some(v1) });
+    observe(&ws, Observation::Phase { phase: Phase::EndedNoRespawn, supervisor: a, run: Some(v1) });
     assert_eq!(ws.phase(), Phase::EndedNoRespawn);
 
-    observe(&ws, Observation::Phase { phase: Phase::Ready, supervisor: a, voyage: Some(v1) });
-    assert_eq!(ws.phase(), Phase::EndedNoRespawn, "the same voyage reported again must never clear the latch");
+    observe(&ws, Observation::Phase { phase: Phase::Ready, supervisor: a, run: Some(v1) });
+    assert_eq!(ws.phase(), Phase::EndedNoRespawn, "the same run reported again must never clear the latch");
 
-    observe(&ws, Observation::Phase { phase: Phase::Ready, supervisor: a, voyage: Some(v2) });
-    assert_eq!(ws.phase(), Phase::Ready, "a strictly newer voyage supersedes the latch");
+    observe(&ws, Observation::Phase { phase: Phase::Ready, supervisor: a, run: Some(v2) });
+    assert_eq!(ws.phase(), Phase::Ready, "a strictly newer run supersedes the latch");
 }
 
 /// Addition (a): an empty cell takes the FIRST prover -- and only

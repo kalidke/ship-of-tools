@@ -1,6 +1,6 @@
 //! Removing a row's state folder: a close renames it to a tombstone and removes that; the start sweep removes tombstones and any folder no registry names (an older daemon's, a window close's, one a close kept).
 
-use crate::rows::run::end_run::{absence_proof_then, leg_absent, NotProven};
+use crate::rows::run::end_run::{absence_proof_then, row_socket_silent, NotProven};
 use crate::rows::Workspaces;
 use std::collections::HashSet;
 use std::io;
@@ -57,25 +57,8 @@ fn check_real_dirs(workspaces_dir: &Path, name: &str) -> Result<(), Removal> {
     }
 }
 
-/// The leg half of the proof that nothing runs in a row folder: the codebase's `leg_absent`, and, for a folder whose row
-/// never started (no pointer and no voyage in it), nothing to hold.
-fn leg_absent_or_never_started(folder: &Path) -> Result<bool, String> {
-    let no_pointer = matches!(
-        sot_log::supervisor::journal::pointer::validate(folder),
-        sot_log::supervisor::journal::pointer::PointerState::NotFound
-    );
-    let no_voyage = match std::fs::read_dir(folder.join("voyages")) {
-        Ok(mut entries) => entries.next().is_none(),
-        Err(e) => e.kind() == io::ErrorKind::NotFound,
-    };
-    if no_pointer && no_voyage {
-        return Ok(true);
-    }
-    leg_absent(folder)
-}
-
-/// Retire the row folder `id`: after the same proof of absence a close uses (the supervisor's fence free and no leg
-/// holding the voyage's `writer.lock`, `end_run::absence_proof_then`), rename it to its tombstone and return the
+/// Retire the row folder `id`: after the same proof of absence a close uses (the supervisor's fence free and nothing
+/// answering the row's socket, `end_run::absence_proof_then`), rename it to its tombstone and return the
 /// tombstone's name. Refused (kept) unless `id` is a row folder name, the `workspaces` folder and the folder are real
 /// directories (a link at either is never followed), the folder holds no `row-scopes` record (the only record of scopes
 /// that may still hold processes), `supervisor.lock` is not a link, and, with an `age_floor`, nothing in the folder was
@@ -112,7 +95,7 @@ fn retire(workspaces_dir: &Path, id: &str, age_floor: Option<Duration>, now: Sys
     }
     let tombstone = format!("{TOMBSTONE_PREFIX}{id}");
     let to = workspaces_dir.join(&tombstone);
-    let renamed_under_fence = absence_proof_then(&folder, leg_absent_or_never_started, || {
+    let renamed_under_fence = absence_proof_then(&folder, row_socket_silent, || {
         if cfg!(unix) {
             std::fs::rename(&folder, &to)
         } else {
@@ -121,9 +104,9 @@ fn retire(workspaces_dir: &Path, id: &str, age_floor: Option<Duration>, now: Sys
     });
     let renamed = match renamed_under_fence {
         Ok(Some(done)) => done,
-        Ok(None) => return Err(Removal::Kept("a leg holds the voyage's writer.lock")),
+        Ok(None) => return Err(Removal::Kept("a row socket answers with no supervisor holding the fence")),
         Err(NotProven::FenceUnavailable) => return Err(Removal::Kept("supervisor.lock is held or cannot be checked")),
-        Err(NotProven::LegCheckFailed(_)) => return Err(Removal::Kept("no leg check could be made")),
+        Err(NotProven::RowSocketUnjudged(_)) => return Err(Removal::Kept("the row socket could not be judged")),
     };
     let renamed = if cfg!(windows) { std::fs::rename(&folder, &to) } else { renamed };
     match renamed {

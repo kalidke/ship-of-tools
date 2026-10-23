@@ -225,7 +225,7 @@ fn observe_terminal(workspaces: &Workspaces, workspace_id: &str, identity: Optio
     if let Some(ws) = workspaces.resolve(Some(workspace_id)) {
         let observation = match identity {
             Some(supervisor) => {
-                crate::rows::workspace::Observation::Phase { phase: crate::rows::workspace::Phase::Terminal, supervisor, voyage: None }
+                crate::rows::workspace::Observation::Phase { phase: crate::rows::workspace::Phase::Terminal, supervisor, run: None }
             }
             None => crate::rows::workspace::Observation::TerminalUnclaimed,
         };

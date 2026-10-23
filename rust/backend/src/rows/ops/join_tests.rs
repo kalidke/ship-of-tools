@@ -477,7 +477,7 @@ fn at(phase: crate::rows::workspace::Phase) -> crate::rows::workspace::Observati
     Observation::Phase {
         phase,
         supervisor: SupervisorIdentity { pid: 1, created: 1 },
-        voyage: Some(uuid::Uuid::from_u128(1)),
+        run: Some(uuid::Uuid::from_u128(1)),
     }
 }
 

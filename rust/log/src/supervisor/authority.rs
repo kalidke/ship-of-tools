@@ -33,6 +33,8 @@ struct Inner {
     phase: SupervisorPhase,
     voyage: Option<String>,
     run: Option<LiveRun>,
+    /// The last run that began: a resting supervisor reports it, so the daemon can tell the run a rest follows from a newer one.
+    last_run: Option<String>,
     /// An admitted `end_run` waits for its run to end; the answer `run_ended` or `terminal` leaves is kept under the
     /// admission's number, so another run's admission never clears it. `ending` is the admission waiting now.
     ending: Option<u64>,
@@ -81,6 +83,7 @@ impl Shared {
                 phase: SupervisorPhase::Starting,
                 voyage: None,
                 run: None,
+                last_run: None,
                 ending: None,
                 end_answers: HashMap::new(),
                 reset: None,
@@ -113,6 +116,7 @@ impl Shared {
             return false;
         }
         inner.phase = SupervisorPhase::Starting;
+        inner.last_run = Some(id.clone());
         inner.run = Some(LiveRun { id, kill, signals });
         true
     }
@@ -373,7 +377,7 @@ impl Management for Shared {
         let inner = self.lock();
         StatusRes {
             phase: Self::phase_name(Self::wire_phase(&inner)).to_string(),
-            run: inner.run.as_ref().map(|r| r.id.clone()),
+            run: inner.run.as_ref().map(|r| r.id.clone()).or_else(|| inner.last_run.clone()),
             voyage: inner.voyage.clone(),
         }
     }

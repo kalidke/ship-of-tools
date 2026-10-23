@@ -28,4 +28,4 @@ pub(crate) mod watchdog;
 use crate::rows::spawn::row_scope;
 use crate::rows::spawn::state_root::state_dir_for;
 use end_run::EndRunOutcome;
-use probe::{local_phase, phase_for_missing_pointer, phase_str, FOREIGN_PHASE, NEVER_STARTED_PHASE, UNREACHABLE_PHASE};
+use probe::{fence_file_exists, local_phase, phase_for_missing_fence, phase_str, FOREIGN_PHASE, NEVER_STARTED_PHASE, UNREACHABLE_PHASE};

@@ -132,14 +132,10 @@ fn scope_events_unreadable_is_not_empty() {
         .expect_err("an unreadable cgroup.events is not an empty scope");
 }
 
-/// A row whose authority and leg are both proven absent, so
-/// `end_run`'s unreachable arm reaches its `Unheld` answer.
+/// A row whose fence is free and whose socket answers nothing, so `end_run`'s unreachable arm reaches its `Unheld`
+/// answer. The folder only has to exist.
 fn absent_row(state_dir: &Path) {
-    let voyage_id = "a1b2c3d4-e5f6-4890-9abc-def012345678";
-    sot_log::supervisor::journal::pointer::publish(state_dir, voyage_id).expect("publish the pointer");
-    let voyage_root = sot_log::supervisor::voyage_root_path(state_dir, voyage_id);
-    std::fs::create_dir_all(&voyage_root).expect("voyage root");
-    std::fs::write(voyage_root.join("writer.lock"), b"").expect("writer.lock file");
+    std::fs::create_dir_all(state_dir).expect("the state folder");
 }
 
 /// Points `root()` at a fake cgroup root for this test's thread.

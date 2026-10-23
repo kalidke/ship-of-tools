@@ -122,9 +122,9 @@ async fn join_by(deadline: Instant, joins: Vec<(String, tokio::task::JoinHandle<
     report
 }
 
-/// The drawer is a target iff its pointer exists in the state root (#17).
+/// The drawer is a target iff its fence file exists in the state root (#17).
 fn drawer_is_target(state_root: &Path) -> bool {
-    sot_log::supervisor::journal::pointer::pointer_path(state_root).is_file()
+    sot_log::supervisor::journal::fence::supervisor_lock_path(state_root).is_file()
 }
 
 /// One row, as `workspace.destroy` ends it but with no resume first (#11).

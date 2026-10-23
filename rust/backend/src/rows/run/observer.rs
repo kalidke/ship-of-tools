@@ -1,6 +1,6 @@
 //! One lifecycle observer per capsule row, the single writer of a row's phase cell.
 
-use super::probe::{local_phase, phase_for_missing_pointer};
+use super::probe::{fence_file_exists, local_phase, phase_for_missing_fence};
 use crate::rows::spawn::state_root::state_dir_for;
 use crate::rows::workspace::{Observation, SupervisorIdentity};
 use crate::rows::{Workspace, Workspaces};
@@ -73,16 +73,16 @@ async fn run(
     }
 }
 
-/// One BLOCKING round: no pointer -> `Stopped`; otherwise one `status` call via [`local_phase`].
+/// One BLOCKING round: no fence file -> `Stopped`; otherwise one `status` call via [`local_phase`].
 fn poll_once(state_dir: &Path, persistent: &mut sot_log::attach_client::supervisor_client::Persistent) -> Observation {
-    if phase_for_missing_pointer(sot_log::supervisor::journal::pointer::pointer_path(state_dir).is_file()).is_some() {
+    if phase_for_missing_fence(fence_file_exists(state_dir)).is_some() {
         return Observation::Stopped;
     }
     match persistent.status() {
         Ok(report) => Observation::Phase {
             phase: local_phase(report.phase),
             supervisor: SupervisorIdentity { pid: report.pid, created: report.created },
-            voyage: report.voyage.as_deref().and_then(|v| v.parse().ok()),
+            run: report.run.as_deref().and_then(|r| r.parse().ok()),
         },
         Err(sot_log::Error::VersionSkew) => Observation::Foreign,
         Err(_) => Observation::Failed,

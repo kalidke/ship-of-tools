@@ -16,11 +16,11 @@ fn an_attach_to_a_terminal_row_reports_nothing_started() {
     let row = reg.resolve(Some(id.as_str())).expect("the row");
     let identity = SupervisorIdentity { pid: 1, created: 1 };
     row.begin_supervisor_epoch(identity);
-    row.apply_phase_observation(Observation::Phase { phase: Phase::Terminal, supervisor: identity, voyage: None });
-    // A published pointer with nothing answering its lane: the lane reads unreachable, as after the exit 69.
+    row.apply_phase_observation(Observation::Phase { phase: Phase::Terminal, supervisor: identity, run: None });
+    // A fence file with nothing answering its lane: the lane reads unreachable, as after the exit 69.
     let state_dir = super::super::state_dir_for(state_root.path(), &id);
     std::fs::create_dir_all(&state_dir).unwrap();
-    sot_log::supervisor::journal::pointer::publish(&state_dir, "a1b2c3d4-e5f6-4890-9abc-def012345678").unwrap();
+    std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(&state_dir), b"").unwrap();
     let started = ensure_started(state_root.path(), &id, "none", "", &slug, Path::new("/p/t"), ActivationIntent::Selection, reg.clone());
     assert_eq!(started, Ok(None), "a terminal row was reported started");
     assert_eq!(row.phase(), Phase::Terminal);
@@ -41,7 +41,7 @@ fn a_wait_that_outlasts_the_settle_budget_fails_the_activation() {
     row.set_watchdog_owner(1);
     let state_dir = super::super::state_dir_for(state_root.path(), &id);
     std::fs::create_dir_all(&state_dir).unwrap();
-    sot_log::supervisor::journal::pointer::publish(&state_dir, "a1b2c3d4-e5f6-4890-9abc-def012345678").unwrap();
+    std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(&state_dir), b"").unwrap();
     let result = ensure_started(state_root.path(), &id, "none", "", &slug, Path::new("/p/u"), ActivationIntent::Selection, reg.clone());
     assert!(result.is_err(), "an exhausted settle wait was reported as resolved: {result:?}");
     assert_eq!(row.activation_error(), result.err(), "the row must carry the reason");

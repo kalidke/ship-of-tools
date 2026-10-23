@@ -133,8 +133,8 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
 /// destroyable. `destroy_capsule_workspace`'s own pre-step
 /// (`rows::run::activation::resume_locked`, under the SAME row guard
 /// `end_run` then runs under) re-establishes the authority first, so
-/// `end_run` finds a real lane to ask — the fence/leg proof
-/// (`leg_absent`) never needs to fire at all.
+/// `end_run` finds a real lane to ask — the fence/socket proof
+/// (`row_socket_silent`) never needs to fire at all.
 ///
 /// Codex review (2026-09-11): the authority is first ADOPTED across a
 /// daemon restart (`restart_daemon_and_prove_adoption`,

@@ -113,17 +113,8 @@ fn a_held_lock_keeps_the_folder() {
 }
 
 #[test]
-fn a_held_voyage_writer_lock_or_a_scopes_record_keeps_the_folder() {
+fn a_scopes_record_keeps_the_folder() {
     let (root, folder) = root_with(ID);
-    let voyage = sot_log::supervisor::voyage_root_path(&folder, VOYAGE);
-    let writer = voyage.join(sot_log::capsule::WRITER_LOCK);
-    std::fs::write(&writer, b"").unwrap();
-    let leg = sot_platform::host::lock_writer(&writer).unwrap();
-    assert_eq!(
-        remove_now(&workspaces_of(&root), ID, Some(AGE_FLOOR)),
-        Removal::Kept("a leg holds the voyage's writer.lock")
-    );
-    drop(leg);
     #[cfg(target_os = "linux")]
     {
         std::fs::write(folder.join("row-scopes"), b"user.slice/x.scope\n").unwrap();
@@ -131,20 +122,21 @@ fn a_held_voyage_writer_lock_or_a_scopes_record_keeps_the_folder() {
         assert!(folder.is_dir());
         std::fs::remove_file(folder.join("row-scopes")).unwrap();
     }
+    let _ = &folder;
     assert_eq!(remove_now(&workspaces_of(&root), ID, Some(AGE_FLOOR)), Removal::Removed);
 }
 
 #[test]
-fn a_row_that_never_started_is_removed_and_one_with_voyages_but_no_pointer_is_kept() {
+fn a_row_folder_holding_only_a_fence_file_is_removed_with_no_voyage_read() {
     let root = tempfile::tempdir().unwrap();
     let folder = state_dir_for(root.path(), ID);
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("supervisor.lock"), b"").unwrap();
     assert_eq!(remove_now(&workspaces_of(&root), ID, Some(AGE_FLOOR)), Removal::Removed);
+    // A folder with voyages and no pointer is no different: the proof is the fence and the row socket.
     let folder = state_dir_for(root.path(), ID);
     std::fs::create_dir_all(folder.join("voyages").join("v1")).unwrap();
-    assert!(matches!(remove_now(&workspaces_of(&root), ID, Some(AGE_FLOOR)), Removal::Kept(_)));
-    assert!(folder.is_dir());
+    assert_eq!(remove_now(&workspaces_of(&root), ID, Some(AGE_FLOOR)), Removal::Removed);
 }
 
 #[test]

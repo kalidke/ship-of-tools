@@ -36,7 +36,7 @@ impl Phase {
     }
 
     /// `Terminal` latches for its supervisor, `EndedNoRespawn` for its
-    /// voyage — see [`Workspace::apply_phase_observation`].
+    /// run — see [`Workspace::apply_phase_observation`].
     pub(crate) fn is_latched(self) -> bool {
         matches!(self, Phase::EndedNoRespawn | Phase::Terminal)
     }
@@ -52,8 +52,9 @@ pub(crate) struct SupervisorIdentity {
 
 #[derive(Debug, Clone)]
 pub(crate) enum Observation {
-    /// `None` voyage keeps the cell's last-seen voyage rather than clearing it.
-    Phase { phase: Phase, supervisor: SupervisorIdentity, voyage: Option<uuid::Uuid> },
+    /// `None` run keeps the cell's last-seen run rather than clearing it. A run is the supervisor's current run, or, while
+    /// it rests, the run it rests on.
+    Phase { phase: Phase, supervisor: SupervisorIdentity, run: Option<uuid::Uuid> },
     Stopped,
     Foreign,
     Failed,
@@ -82,7 +83,7 @@ pub(crate) const READY_STABLE: std::time::Duration = std::time::Duration::from_s
 pub(super) struct PhaseCell {
     phase: Phase,
     supervisor: Option<SupervisorIdentity>,
-    voyage: Option<uuid::Uuid>,
+    run: Option<uuid::Uuid>,
     /// Reaching 2 sets `Unreachable` (unless already latched).
     consecutive_failures: u8,
     /// When the cell adopted its supervisor.
@@ -194,7 +195,7 @@ impl Workspace {
         self.phase_cell.lock().unwrap_or_else(|e| e.into_inner()).phase
     }
 
-    /// The ONLY way `phase_cell.supervisor` changes. Resets phase/voyage/failure-count
+    /// The ONLY way `phase_cell.supervisor` changes. Resets phase/run/failure-count
     /// fresh — the only thing that clears a `Terminal` latch.
     pub(crate) fn begin_supervisor_epoch(&self, identity: SupervisorIdentity) {
         let mut cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
@@ -251,13 +252,14 @@ impl Workspace {
     /// So a `Phase` observation is rejected unless `supervisor` EQUALS
     /// the cell's current epoch (never an ordering comparison) -- with
     /// `supervisor: None` meaning "unclaimed", which the observation
-    /// itself then claims. Within an epoch, phases are voyage-ordered
-    /// and `Terminal`/`EndedNoRespawn` latches reject anything but a
-    /// strictly newer voyage.
+    /// itself then claims. Within an epoch, phases are run-ordered
+    /// (one supervisor's runs order by their ids, which are UUIDv7) and a
+    /// `Terminal`/`EndedNoRespawn` latch rejects anything but a strictly
+    /// newer run.
     pub(crate) fn apply_phase_observation(&self, observation: Observation) -> bool {
         let mut cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
         match observation {
-            Observation::Phase { phase, supervisor, voyage } => {
+            Observation::Phase { phase, supervisor, run } => {
                 // An unclaimed cell adopts its first prover, on exactly
                 // the terms `begin_supervisor_epoch` would -- a fresh
                 // epoch, judged below like any other. This is what keeps
@@ -273,8 +275,8 @@ impl Workspace {
                 }
                 if phase == Phase::Terminal {
                     cell.phase = Phase::Terminal;
-                    if let Some(v) = voyage {
-                        cell.voyage = Some(v);
+                    if let Some(r) = run {
+                        cell.run = Some(r);
                     }
                     cell.consecutive_failures = 0;
                     return true;
@@ -282,20 +284,25 @@ impl Workspace {
                 if cell.phase == Phase::Terminal {
                     return false;
                 }
-                if let (Some(v), Some(held_v)) = (voyage, cell.voyage) {
-                    if v < held_v {
+                // A supervisor's run never goes from named to unnamed, so an observation that names none once the cell
+                // holds one is a stale rest, and one that names a lower run is stale too.
+                if let Some(held) = cell.run {
+                    if run.is_none_or(|r| r < held) {
                         return false;
                     }
                 }
-                if cell.phase == Phase::EndedNoRespawn
-                    && !matches!((voyage, cell.voyage), (Some(v), Some(held_v)) if v > held_v)
-                {
+                let newer = match (run, cell.run) {
+                    (Some(r), Some(held)) => r > held,
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+                if cell.phase == Phase::EndedNoRespawn && !newer {
                     return false;
                 }
                 cell.phase = phase;
                 cell.ready_seen |= phase == Phase::Ready && cell.adopted_at.is_some_and(|at| at.elapsed() >= READY_STABLE);
-                if let Some(v) = voyage {
-                    cell.voyage = Some(v);
+                if let Some(r) = run {
+                    cell.run = Some(r);
                 }
                 cell.consecutive_failures = 0;
                 true

@@ -203,8 +203,9 @@ pub fn end_run(state_dir: &Path, run: &str, reason: &str) -> crate::Result<EndRu
         }
     }
     Ok(recover(state_dir, peer, |status| match (status.run.as_deref() == Some(run), phase_of(&status.phase)) {
-        (false, Ok(SupervisorPhase::Terminal)) => Some(EndRunOutcome::Failed("the supervisor went terminal".into())),
-        (false, Ok(_)) => Some(EndRunOutcome::Ended),
+        (_, Ok(SupervisorPhase::Terminal)) => Some(EndRunOutcome::Failed("the supervisor went terminal".into())),
+        // A resting supervisor still names the run it rests on, and that run is over.
+        (_, Ok(SupervisorPhase::EndedNoRespawn)) | (false, Ok(_)) => Some(EndRunOutcome::Ended),
         // The run is there: while its end is in progress, wait for it; with none in progress, none was admitted.
         (true, Ok(SupervisorPhase::Ending)) => None,
         (true, _) => Some(EndRunOutcome::OutcomeUnknown),

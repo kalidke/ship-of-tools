@@ -133,10 +133,9 @@ fn pin_local_state_root(dir: &std::path::Path) -> std::path::PathBuf {
 /// Builds a hermetic on-disk state dir that `destroy_capsule_
 /// workspace`'s real guarded path (ADR 0043 decision 33) will
 /// independently prove BOTH halves of the destroy proof absent for —
-/// nothing ever holds `supervisor.lock`, and a published pointer
-/// names a voyage whose own `writer.lock` exists and is free — so
-/// `end_run`'s `Unheld` arm reports `Removable` with no live process
-/// anywhere. Caller must first call `pin_local_state_root` (under
+/// nothing ever holds `supervisor.lock`, and nothing answers on the
+/// row's socket — so `end_run`'s `Unheld` arm reports `Removable`
+/// with no live process anywhere. Caller must first call `pin_local_state_root` (under
 /// `env_guarded`) and pass ITS return value as `state_root` — the
 /// resolved root `sot_platform::host::state_dir::sot_state_dir()` itself reports,
 /// never a hand-built path, so this fixture lands exactly where
@@ -152,11 +151,6 @@ fn pin_local_state_root(dir: &std::path::Path) -> std::path::PathBuf {
 fn seed_provably_unheld_state_dir(state_root: &std::path::Path, workspace_id: &str) {
     let state_dir = crate::rows::spawn::state_root::state_dir_for(state_root, workspace_id);
     std::fs::create_dir_all(&state_dir).expect("create the fake state dir");
-    let voyage_id = "a1b2c3d4-e5f6-4890-9abc-def012345678";
-    sot_log::supervisor::journal::pointer::publish(&state_dir, voyage_id).expect("publish the pointer");
-    let voyage_root = sot_log::supervisor::voyage_root_path(&state_dir, voyage_id);
-    std::fs::create_dir_all(&voyage_root).expect("voyage root");
-    std::fs::write(voyage_root.join("writer.lock"), b"").expect("writer.lock file");
 }
 
 fn seed_default(runtime: &str) -> (Workspaces, String) {
@@ -411,7 +405,7 @@ async fn a_capsule_workspace_marked_terminal_still_needs_the_absence_proof() {
     ws.apply_phase_observation(crate::rows::workspace::Observation::Phase {
         phase: crate::rows::workspace::Phase::Terminal,
         supervisor: identity,
-        voyage: None,
+        run: None,
     });
     seed_provably_unheld_state_dir(&state_root, &id);
 
