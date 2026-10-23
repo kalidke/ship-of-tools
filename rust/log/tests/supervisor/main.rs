@@ -9,7 +9,7 @@
 //! answering, a process's own exit code), never a sleep-and-hope.
 
 use serde_json::{json, Value};
-use sot_log::lane::wire::SupervisorPhase;
+use sot_log::SupervisorPhase;
 use sot_log::row::{row_socket_path, RowClient};
 use sot_log::supervisor::journal;
 use sot_platform::host::state_dir::state_dir_hash;

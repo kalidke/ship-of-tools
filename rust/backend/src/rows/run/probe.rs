@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 /// for a capsule workspace whose supervisor lane could not be reached at
 /// all — connect refused, an undetermined challenge, or a timeout (ADR
 /// 0042 L1a: "failure -> unreachable"). Distinct from every
-/// [`sot_log::lane::wire::SupervisorPhase`] variant, which are all states of a
+/// [`sot_log::SupervisorPhase`] variant, which are all states of a
 /// lane that DID answer, and from [`FOREIGN_PHASE`] (ADR 0030 §8 decision
 /// 31c) below — a challenge that specifically proves foreign now gets its
 /// own phase rather than folding in here.
@@ -71,20 +71,19 @@ pub fn phase_for_missing_pointer(pointer_exists: bool) -> Option<&'static str> {
     (!pointer_exists).then_some(NEVER_STARTED_PHASE)
 }
 
-/// Map the supervisor lane's own phase to the wire string
+/// Map the supervisor's own phase to the wire string
 /// `workspace.list` reports — snake_case, matching every other
 /// wire-enum-as-string in this protocol (`repl_state`, `agent_state`).
-/// Portable: [`sot_log::lane::wire`] has no OS dependency (see that crate's own
-/// module doc), so this needs no `#[cfg(windows)]` either, and the pure
-/// unit tests below exercise it directly on Linux.
-pub fn phase_str(phase: sot_log::lane::wire::SupervisorPhase) -> &'static str {
+/// Portable: [`sot_log::SupervisorPhase`] has no OS dependency, so this needs no `#[cfg(windows)]` either, and the
+/// pure unit tests below exercise it directly on Linux.
+pub fn phase_str(phase: sot_log::SupervisorPhase) -> &'static str {
     local_phase(phase).as_wire_str()
 }
 
 /// Converts to the local `Phase` (R10); [`phase_str`] stays for the wire mapping.
-pub(crate) fn local_phase(phase: sot_log::lane::wire::SupervisorPhase) -> crate::rows::workspace::Phase {
+pub(crate) fn local_phase(phase: sot_log::SupervisorPhase) -> crate::rows::workspace::Phase {
     use crate::rows::workspace::Phase;
-    use sot_log::lane::wire::SupervisorPhase as SP;
+    use sot_log::SupervisorPhase as SP;
     match phase {
         SP::Starting => Phase::Starting,
         SP::Ready => Phase::Ready,

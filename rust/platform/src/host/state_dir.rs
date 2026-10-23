@@ -155,13 +155,9 @@ fn host_label(raw: &str) -> Result<String, String> {
     Ok(label)
 }
 
-/// L1-unix LU3b: moved here from `supervisor/` (a pure hash of a path,
-/// with no OS-facing mechanism of its own) — the supervisor lane's own
-/// per-state-dir pipe/socket name, shared by every caller that connects
-/// to it: `attach_client::client`'s worker, `supervisor_client`'s `connect`, the
-/// authority's own `PipeServer::bind_supervisor`/`SocketServer::
-/// bind_supervisor` call in `supervisor/`, and both platforms' real-
-/// process integration tests. Stable for the SAME path (canonicalized
+/// A pure hash of a path, with no OS-facing mechanism of its own: a row's per-state-dir pipe/socket name, shared by
+/// every caller that connects to it (the viewers' attach client, `supervisor_client`'s dial, the supervisor's own bind
+/// of the row socket) and both platforms' real-process integration tests. Stable for the SAME path (canonicalized
 /// first, so a symlinked or relative `state_dir` still names the same
 /// lane), different for different paths — proven by this module's own
 /// tests below.

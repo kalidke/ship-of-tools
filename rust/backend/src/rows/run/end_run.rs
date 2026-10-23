@@ -105,7 +105,7 @@ pub fn end_run(
 ) -> std::io::Result<super::EndRunOutcome> {
     use super::EndRunOutcome as R;
     use sot_log::attach_client::supervisor_client::EndRunOutcome as O;
-    use sot_log::lane::wire::SupervisorPhase;
+    use sot_log::SupervisorPhase;
 
     // A4b: the row's remembered scopes (`row_scope::SCOPES_FILE`)
     // are ended after the graceful end when a supervisor answers, and
@@ -343,7 +343,7 @@ fn settle_starting(
     mut requery: impl FnMut() -> sot_log::Result<sot_log::attach_client::supervisor_client::StatusReport>,
     mut pause: impl FnMut(),
 ) -> Settle {
-    use sot_log::lane::wire::SupervisorPhase;
+    use sot_log::SupervisorPhase;
     for pauses in 0..=super::activation::ACTIVATION_MAX_REPROBES {
         match requery() {
             Ok(status) if status.phase != SupervisorPhase::Starting => return Settle::Settled(status),

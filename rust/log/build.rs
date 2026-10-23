@@ -28,19 +28,11 @@
 //     variable -- an empty/absent identity is not a safe default here,
 //     it is exactly the "two builds nobody can tell apart" case.
 //
-// Codex review round 3, N12/M9 (the SOT_BUILD_ID half, fixed here now):
-// `exchange.rs` truncates an oversized build id on the WIRE
-// (`wire::MAX_SUPERVISOR_STRING_LEN`, 128 bytes) before ever comparing
-// it, so a caller-supplied `SOT_BUILD_ID` longer than that bound would
-// make this exact binary's own transmitted id disagree with its own
-// locally-held constant -- a binary that can never successfully
-// handshake with ITSELF. Bounded and FAILED here instead, at build
-// time, rather than discovered as a live version-skew refusal against a
-// peer running the identical binary. `wire::MAX_SUPERVISOR_STRING_LEN`
-// cannot be imported into a build script (a separate compilation unit
-// with no access to the crate's own source), so the bound is
-// duplicated as a literal below -- keep the two in sync if either ever
-// changes.
+// A caller-supplied `SOT_BUILD_ID` is bounded here (see `MAX_BUILD_ID_LEN`): the row's hello cuts an oversized build
+// to a length that keeps its request far inside the wire's cap, so a longer id would make this exact binary's
+// transmitted id disagree with its own locally-held constant. Bounded and FAILED here instead, at build time, rather
+// than discovered later. The bound cannot be imported into a build script (a separate compilation unit with no access
+// to the crate's own source), so it is a literal below.
 //
 // The OTHER half of N12/M9 -- two distinct DIRTY trees at the same HEAD
 // still sharing one identical `<sha>-dirty` id -- is DEFERRED to U4:
@@ -60,9 +52,9 @@
 
 use std::process::Command;
 
-/// Duplicated from `wire::MAX_SUPERVISOR_STRING_LEN` -- see this file's
-/// own top comment on why a build script cannot import it directly.
-const MAX_BUILD_ID_LEN: usize = 128;
+/// The longest build id the row's hello carries whole (`MAX_BUILD_BYTES` in `src/row/proto.rs`) -- see this file's own top comment on why a build script cannot
+/// import it.
+const MAX_BUILD_ID_LEN: usize = 256;
 
 fn git(args: &[&str]) -> Option<String> {
     #[allow(clippy::disallowed_methods, reason = "a build script runs git at compile time; no daemon runs here")]
@@ -124,11 +116,9 @@ fn main() {
             ),
             Ok(id) if id.len() > MAX_BUILD_ID_LEN => panic!(
                 "sot-log build.rs: SOT_BUILD_ID is {} bytes, exceeding the {MAX_BUILD_ID_LEN}-byte \
-                 wire bound (wire::MAX_SUPERVISOR_STRING_LEN) the supervisor lane's own hello \
-                 exchange truncates every build id to (Codex review round 3, N12) -- an oversized \
+                 bound the row's hello keeps a build id whole to (an oversized \
                  id would make this exact binary's OWN transmitted id disagree with its own \
-                 locally-held constant, so it could never successfully handshake with itself. \
-                 Use a shorter SOT_BUILD_ID.",
+                 locally-held constant). Use a shorter SOT_BUILD_ID.",
                 id.len()
             ),
             Ok(id) => id,

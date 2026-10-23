@@ -22,6 +22,25 @@ pub mod test_foreign;
 
 pub use storage::storage_exhaustion;
 
+/// This build's own identity, a diagnostic stamp: the row's hello carries it as `build`, and `sot-capsule build-id` and
+/// the log and pane lines that name a peer's build read it. It is never compared: the row number is the only gate. A
+/// bare crate version would not serve even that purpose, since two different commits can share one `Cargo.toml` version
+/// between releases, so `build.rs` stamps `SOT_LOG_BUILD_SHA` from the FULL `git rev-parse HEAD`, `-dirty`-suffixed over
+/// an uncommitted tree (the same git-sha capture `rust/protocol/build.rs` uses for `app_version`; the stamp stays its
+/// own). `build.rs` FAILS the build rather than emit an empty or ambiguous value when no git repository is found, so
+/// this constant trusts the env var is always a real, nonempty identity.
+pub const BUILD_ID: &str = env!("SOT_LOG_BUILD_SHA");
+
+/// A supervisor's phase, total over its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupervisorPhase {
+    Starting,
+    Ready,
+    Ending,
+    EndedNoRespawn,
+    Terminal,
+}
+
 /// Errors are split by what the caller may do about them.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -27,7 +27,7 @@
 #![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 
 use crate::capsule::{CapsuleConfig, ExitKind, RunSignals};
-use crate::lane::wire::{self, SupervisorPhase};
+use crate::SupervisorPhase;
 use crate::row::{row_socket_path, RowRun, RowServer};
 use std::collections::HashMap;
 use std::fmt;
@@ -475,11 +475,14 @@ fn mark_end_requested(voyage_root: &Path) -> crate::Result<()> {
     crate::capsule::mark_end_requested(voyage_root, "end_run")
 }
 
-/// Truncate `detail` to fit within [`wire::MAX_SUPERVISOR_STRING_LEN`] bytes, on a UTF-8 boundary.
+/// The longest detail a supervisor keeps of a failure, in bytes.
+const MAX_DETAIL_LEN: usize = 128;
+
+/// Truncate `detail` to fit within [`MAX_DETAIL_LEN`] bytes, on a UTF-8 boundary.
 fn bounded_detail(detail: impl Into<String>) -> String {
     let mut s = detail.into();
-    if s.len() > wire::MAX_SUPERVISOR_STRING_LEN {
-        let mut cut = wire::MAX_SUPERVISOR_STRING_LEN;
+    if s.len() > MAX_DETAIL_LEN {
+        let mut cut = MAX_DETAIL_LEN;
         while !s.is_char_boundary(cut) {
             cut -= 1;
         }

@@ -1,43 +1,15 @@
-//! L1-unix LU3a (ADR 0043 decision 19): the three seam traits landed
-//! BEFORE any consumer uses them — every existing call site still names
-//! `PipeClient`/`SocketClient`/`PipeServer`/`SocketServer`/
-//! `challenge_win::ChallengedProcess`/`challenge_unix::ChallengedProcess`
-//! directly; this module only adds the trait vocabulary and the
-//! delegating `impl`s that prove each concrete type already satisfies
-//! it. Generic consumers (`attach_client::client`, `supervisor`) are LU3b/LU3c's
-//! job, not this lane's.
+//! The client seam: the traits every concrete client implements, and the delegating `impl`s that prove each does.
 //!
-//! Ungated, like `challenge.rs`/`transport.rs`: this is the CONTRACT, not
-//! an implementation. `Client`/`Endpoint`'s two implementors
-//! (`PipeClient`/`PipeEndpoint` on Windows, `SocketClient`/
-//! `SocketEndpoint` on Linux) live in `lane/pipe_win/`/`lane/socket_unix/`
-//! themselves, next to the concrete types they delegate to — the same
-//! placement `impl sot_platform::identity::challenge::ChallengeableConnection for
-//! PipeClient` used to have; `challengeable_client!` below writes that impl once.
+//! Ungated, like `transport.rs`: this is the CONTRACT, not an implementation. `Client`/`Endpoint`'s two implementors
+//! (`PipeClient`/`PipeEndpoint` on Windows, `SocketClient`/`SocketEndpoint` on Linux and macOS) live in
+//! `lane/pipe_win/`/`lane/socket_unix/`, next to the concrete types they delegate to; `challengeable_client!` below
+//! writes the `ChallengeableConnection` impl once.
 
 use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
 use sot_platform::identity::exchange::IdentityExchange;
 use crate::lane::transport::TransportError;
 use sot_platform::identity::peer::PeerIdentity;
 use std::time::Instant;
-
-/// Maps [`PeerAuthOutcome`] to a `Result` — the exact logic both platforms'
-/// voyage connects run, pulled out so it is directly unit-testable (U1a
-/// Codex round-1, minor cluster: "a constructor-level failure-mapping
-/// test") without needing an OS-level SID mismatch or OS-call failure
-/// through a live endpoint, neither of which is constructible in CI (a
-/// genuine Foreign result needs a second real account; the ADR itself
-/// scopes that proof to step 7's real-machine suite).
-pub(super) fn map_peer_auth_outcome(outcome: PeerAuthOutcome) -> Result<(), TransportError> {
-    match outcome {
-        PeerAuthOutcome::Authenticated(_) => Ok(()),
-        PeerAuthOutcome::Foreign => Err(TransportError::Foreign),
-        PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined {
-            via: "direct",
-            detail: "peer identity authentication could not be completed".to_string(),
-        }),
-    }
-}
 
 /// The blocking read/write/cancel shape every concrete pipe/socket
 /// client already exposed as an inherent API — named here so a caller
@@ -159,22 +131,3 @@ pub trait Endpoint {
 pub type PlatformEndpoint = crate::lane::pipe_win::PipeEndpoint;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub type PlatformEndpoint = crate::lane::socket_unix::SocketEndpoint;
-
-/// U1a Codex round-1, minor cluster: failure-mapping tests for
-/// `map_peer_auth_outcome`, the mapping both platforms' connects share, proving
-/// the mapping code the constructors actually run -- not `challenge`/
-/// `authenticate_server` directly, and not through a live pipe (a genuine
-/// OS-level Foreign/Undetermined through a real connection needs either a
-/// second real account or an unreliable timing race, neither
-/// constructible deterministically in CI; see `authenticate_server_is_
-/// undetermined_when_step_one_itself_fails` in the integration test for
-/// the OS-call-failure case proven against a real, deliberately invalid
-/// handle instead). Lives here (not in `tests/pipe_win/`) because
-/// `map_peer_auth_outcome` is `pub(super)`, with no reason to be `pub`
-/// merely for testability, and a pure mapping over
-/// already-constructed `PeerAuthOutcome` values needs no real pipe --
-/// exactly the kind of test this crate's OTHER pure-logic modules
-/// (`wire`, `exchange`) already keep inline.
-#[cfg(test)]
-#[path = "client_tests.rs"]
-mod tests;

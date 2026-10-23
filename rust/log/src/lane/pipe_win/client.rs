@@ -1,11 +1,10 @@
-//! The pipe client: `PipeClient`, the voyage and supervisor connects, and `PipeEndpoint`.
+//! The pipe client: `PipeClient`, the unchallenged connect `connect_own` builds on, and `PipeEndpoint`.
 
 use super::*;
-use crate::lane::client::map_peer_auth_outcome;
 
-/// The client side of one voyage's pipe: `read`/`write_all` are blocking
+/// The client side of a row's pipe: `read`/`write_all` are blocking
 /// from the calling thread's own perspective, but `PipeClient` is `Sync`
-/// (via the same [`IoSlot`] the server uses, rejecting a concurrent
+/// (via an [`IoSlot`] per direction, rejecting a concurrent
 /// same-direction submission rather than corrupting one) — a second
 /// thread may call [`PipeClient::cancel`] at any time to unblock whichever
 /// of the two is currently in flight.
@@ -23,81 +22,15 @@ impl std::fmt::Debug for PipeClient {
     }
 }
 
-/// Connect to `\\.\pipe\sot-voyage-<voyage_id>` AND authenticate the
-/// server behind it (ADR 0041 Lifecycle "The challenge", steps 1-3 —
-/// U1a) before handing the connection back — the shared,
-/// step-5-client-facing constructor every ordinary caller (tests, the
-/// e2e harness, and any future mgmt/attach client) uses. A pipe's DACL is
-/// directional (governs who may CONNECT, not who MADE the object), so a
-/// raw successful `CreateFileW` here proves nothing about who is on the
-/// other end; this function runs
-/// [`sot_platform::identity::challenge_win::authenticate_server`] (identify the peer process,
-/// compare its token-user SID to this account's — NOT the full five-step
-/// `challenge()`, which additionally binds a reply's own pid/creation to
-/// this connection and needs a lane-specific request to get one) before
-/// returning `Ok(_)` — the MINIMAL SAFE CALL for a connection whose lane
-/// is not yet known here (the caller's own first frame —
-/// `status`/`probe`/`shutdown` for mgmt, `hello` for attach — decides
-/// that, and this function must not consume either by sending a
-/// lane-specific request of its own; see `authenticate_server`'s own doc
-/// for why the full proof does not apply at this layer). A failed
-/// authentication is a loud, typed [`TransportError::Foreign`] or
-/// [`TransportError::Undetermined`] — never a silent retry. A caller that
-/// needs the FULL proof (mgmt lane; the probe classifier) runs
-/// `challenge_win::challenge` itself on top of this — see
-/// `supervisor::probe::win::RealProbeOps` for exactly that composition.
-///
-/// Retries `CreateFileW` (bounded, 2s total) on `ERROR_PIPE_BUSY` ONLY
-/// (all instances currently connected — waits on `WaitNamedPipeW`
-/// between attempts): an ordinary race in a healthy multi-client server,
-/// not a failure. `ERROR_FILE_NOT_FOUND` (no instance exists yet — the
-/// server has not called `bind` yet) returns on the FIRST attempt (ADR
-/// 0043 decision 27) — the caller's own readiness wait owns that race
-/// now, not this bounded retry.
-pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, TransportError> {
-    let client = connect_voyage_pipe_unchallenged(voyage_id)?;
-    map_peer_auth_outcome(sot_platform::identity::challenge_win::authenticate_server(&client))?;
-    Ok(client)
-}
-
-/// The raw connect, with NO authentication — every step-5 client must go
-/// through [`connect_voyage_pipe`] instead. `pub(crate)`, and MUST STAY
-/// `pub(crate)` (U1a Codex round-1, Blocker 2): the only in-crate consumer
-/// is `supervisor::probe::win::RealProbeOps::connect`, which is itself `pub(crate)` for
-/// exactly this reason — an unchallenged `PipeClient` reachable through a
-/// PUBLIC type would be a public path to raw pipe I/O on an unauthenticated
-/// connection, defeating this whole module's own enforcement. See
-/// `supervisor/probe/win.rs`'s module doc for why making `RealProbeOps` crate-private
-/// costs nothing today (no production code instantiates it yet) and stays
-/// architecturally sound once U2's classifier lands (a public function
-/// in THIS crate, reachable from `sot-capsule`'s separate bin target,
-/// wrapping this crate-private plumbing).
-///
-/// This exists ONLY for the probe classifier's own `ProbeOps::connect` (a
-/// later unit, ADR 0041 "The probe"), which deliberately keeps "connect"
-/// and "challenge" as two separately-observed steps — Stage B's own
-/// transition table (B1-B6) is defined in terms of a raw connect outcome
-/// followed by a SEPARATELY timed challenge (a bespoke deadline clamped to
-/// the probe episode's remaining wall time), so folding authentication
-/// into the connect itself here would collapse rows the classifier needs
-/// to tell apart.
-pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeClient, TransportError> {
-    validate_voyage_id(voyage_id)?;
-    #[allow(clippy::disallowed_methods, reason = "a voyage lane connector: the caller runs the lane's identity challenge")]
-    let client = connect_named_pipe_unchallenged(pipe_name_wide(voyage_id), &AtomicBool::new(false))?;
-    Ok(client)
-}
-
 /// Shared raw connect, given an already-resolved wide pipe name: retries
 /// `CreateFileW` (bounded, [`CONNECT_BOUND`] total) on `ERROR_PIPE_BUSY`
-/// ONLY — an instance is held continuously and recycled once bound (this
-/// module's "Continuous name hold" doc above), so "unavailable" past that
+/// ONLY — a listener holds its instances continuously and recycles them once bound, so "unavailable" past that
 /// point means busy, never absent. `ERROR_FILE_NOT_FOUND` — no instance
 /// exists yet — returns [`TransportError::Io`] on the very first attempt:
 /// an absent pipe is the caller's to poll (ADR 0043 decision 27), not a
 /// transient this function retries. NO authentication of any kind —
-/// every caller of either wrapper above is responsible for running the
-/// OS-level identity check (and, where the lane needs it, the full
+/// every caller is responsible for running the
+/// OS-level identity check (and, where the caller needs it, the full
 /// challenge) on top.
 ///
 /// `cancel`: checked at the top of every loop iteration — i.e. between
@@ -109,8 +42,8 @@ pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeCl
 /// `WaitNamedPipeW` has no cancellation handle either — there is no OS
 /// object yet for another thread to act on. A bounded poll loop that
 /// checks a flag between its own already-bounded waits is the only
-/// mechanism that exists; existing callers (both wrappers above) pass a
-/// fresh, never-set flag, so their own behavior is unchanged.
+/// mechanism that exists; a caller with nothing to cancel passes a
+/// fresh, never-set flag.
 pub(super) fn connect_named_pipe_unchallenged(name: Vec<u16>, cancel: &AtomicBool) -> Result<PipeClient, TransportError> {
     let deadline = Instant::now() + CONNECT_BOUND;
     loop {

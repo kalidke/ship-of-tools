@@ -5,7 +5,7 @@
 
 use serde_json::{json, Value};
 use sot_log::attach_client::supervisor_client;
-use sot_log::lane::wire::SupervisorPhase;
+use sot_log::SupervisorPhase;
 use sot_log::row::{socket_path_in, RowClient, RowEvent, ROW_PROTOCOL};
 use sot_platform::host::state_dir::state_dir_hash;
 use std::path::{Path, PathBuf};

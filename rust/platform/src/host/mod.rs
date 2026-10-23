@@ -25,7 +25,7 @@ mod winsec;
 use crate::Error;
 
 /// The most bytes of an error's text a caller may carry in a fixed-width record field (the capsule supervisor's
-/// terminal-exit reason is one, `lane::wire::MAX_SUPERVISOR_STRING_LEN`, which takes this value); `io_ctx` keeps its
+/// terminal-exit reason is one, the supervisor's `MAX_DETAIL_LEN`, which takes this value); `io_ctx` keeps its
 /// text within it.
 pub const ERROR_DETAIL_BOUND: usize = 128;
 
@@ -43,7 +43,7 @@ const RETRY_STEP_MS: u64 = 10;
 /// The OS error code goes right after `what`'s operation name (its text
 /// up to the first `"`, where every call site switches to a `{path:?}`)
 /// and is NEVER dropped: the supervisor's terminal-exit reason is a
-/// fixed-width record field (`wire::MAX_SUPERVISOR_STRING_LEN` bytes,
+/// fixed-width record field (`MAX_DETAIL_LEN` bytes,
 /// `supervisor::bounded_detail`) that truncates blindly from the tail — a
 /// raw "MoveFileExW <two long paths>: <message> (os error N)" buried the
 /// one number an operator can act on. Remaining budget goes to the

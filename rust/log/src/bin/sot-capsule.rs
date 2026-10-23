@@ -9,7 +9,7 @@ fn main() {
     match args.first().map(String::as_str) {
         // The lane build id this binary answers the supervisor hello with: a diagnostic, since the lane gate is the
         // protocol integer.
-        Some("build-id") => println!("{}", sot_log::lane::exchange::SUPERVISOR_LANE_BUILD_ID),
+        Some("build-id") => println!("{}", sot_log::BUILD_ID),
         Some("supervise") => cmd_supervise(&args[1..]),
         _ => {
             eprintln!("usage: sot-capsule <supervise|build-id> ...");

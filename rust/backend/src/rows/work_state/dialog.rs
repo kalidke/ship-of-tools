@@ -159,7 +159,7 @@ enum Seen {
 /// The row's screen as the wake reads it, from one watcher attach, after one status probe.
 fn read_screen(state_dir: &Path) -> Seen {
     use crate::rows::run::probe::{phase_of, phase_str};
-    use sot_log::lane::wire::SupervisorPhase as SP;
+    use sot_log::SupervisorPhase as SP;
     let phase = phase_of(state_dir);
     if phase != phase_str(SP::Ready) {
         let ended = [phase_str(SP::EndedNoRespawn), phase_str(SP::Terminal), crate::rows::run::probe::NEVER_STARTED_PHASE];

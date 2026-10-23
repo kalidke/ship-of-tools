@@ -9,7 +9,7 @@
 
 use crate::lane::client::{Endpoint, PlatformEndpoint};
 use crate::lane::connect_own::connect_own;
-use crate::lane::wire::SupervisorPhase;
+use crate::SupervisorPhase;
 use crate::row::{
     row_socket_path, EndRunOutcome as RowEndRun, EndRunRes, ResetOutcome, ResetRes, RowCanceler, RowClient, RowError, StatusRes,
     StopRes, OP_END_RUN, OP_RESET, OP_STATUS, OP_STOP,
@@ -80,7 +80,7 @@ fn connect(state_dir: &Path, bound: Duration) -> crate::Result<(RowClient, Chall
     let path = row_socket_path(&h).map_err(row_error)?;
     // A failed dial stays a transport error, so a caller can tell "nothing listens" from a peer that answered.
     let conn = connect_own(&path)?;
-    RowClient::over_proven(&PlatformEndpoint::default(), conn, crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
+    RowClient::over_proven(&PlatformEndpoint::default(), conn, crate::BUILD_ID, deadline)
         .map_err(row_error)
 }
 

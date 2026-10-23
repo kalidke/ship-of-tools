@@ -29,7 +29,7 @@
 //! here" flag that would serve no invariant.
 
 use crate::Result;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::time::Duration;
 
 pub mod conpty;
@@ -71,11 +71,6 @@ pub trait Producer: Send + Sized {
     /// Takes the producer's output stream. Called EXACTLY ONCE, before
     /// the loop's reader thread starts — never again after.
     fn take_output(&mut self) -> Self::Output;
-
-    /// The producer's input sink — the WAL's own forward syscall
-    /// (`run_input_wal`), and (Windows) the host-handshake reply write,
-    /// both go through this.
-    fn input(&mut self) -> &mut dyn Write;
 
     /// A second handle on the producer's input sink, for a thread that writes typed input without holding the loop
     /// (a write to a terminal whose agent reads nothing blocks).

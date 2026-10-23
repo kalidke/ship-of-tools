@@ -1,149 +1,30 @@
-//! Connect, byte exchange, multiplexing, rival first instance and owner-only descriptor tests.
+//! Connect tests: an absent pipe fails fast, a busy one is retried within the bound, and a token without the owner grant
+//! is refused by the row pipe.
 
 use super::*;
+use sot_log::lane::connect_own::connect_own;
+use sot_log::lane::transport::{TransportError, CONNECT_BOUND};
 
-/// Test 1: one server, one client, bytes both ways (accumulated); a
-/// marker-tagged send's `Sent` event fires once its `WriteFile`
-/// physically completes.
-#[test]
-fn server_and_client_exchange_bytes_and_sent_carries_marker() {
-    if !run_isolated("connect::server_and_client_exchange_bytes_and_sent_carries_marker") {
-        return;
-    }
-    let id = fresh_voyage_id();
-    let server = PipeServer::bind(&id, 4).unwrap();
-    let client = std::sync::Arc::new(connect_voyage_pipe(&id).unwrap());
-    let conn_id = expect_accepted(&server, TIMEOUT);
-
-    let outbound = b"hello from client";
-    client.write_all(outbound).unwrap();
-    let got = accumulate_bytes(&server, conn_id, outbound.len(), TIMEOUT);
-    assert_eq!(got, outbound);
-
-    let inbound = b"hello from server";
-    server.send(conn_id, inbound.to_vec(), Some(42)).unwrap();
-    let reader = std::sync::Arc::clone(&client);
-    let want = inbound.len();
-    let buf = sot_platform::test_wait::within(TIMEOUT, "the server's bytes", move || {
-        let mut buf = vec![0u8; want];
-        let mut got = 0;
-        while got < buf.len() {
-            got += reader.read(&mut buf[got..]).unwrap();
-        }
-        buf
-    });
-    assert_eq!(buf, inbound);
-
-    match next_event(&server, TIMEOUT) {
-        LaneEvent::Sent(cid, marker) => {
-            assert_eq!(cid, conn_id);
-            assert_eq!(marker, 42);
-        }
-        other => panic!("expected Sent, got {other:?}"),
-    }
-
-    drop(server);
-}
-
-/// Test 2: two clients connected to the same voyage pipe are multiplexed
-/// by distinct `ConnId`s.
-#[test]
-fn two_concurrent_clients_multiplexed_by_conn_id() {
-    if !run_isolated("connect::two_concurrent_clients_multiplexed_by_conn_id") {
-        return;
-    }
-    let id = fresh_voyage_id();
-    let server = PipeServer::bind(&id, 4).unwrap();
-
-    let client_a = connect_voyage_pipe(&id).unwrap();
-    let conn_a = expect_accepted(&server, TIMEOUT);
-    let client_b = connect_voyage_pipe(&id).unwrap();
-    let conn_b = expect_accepted(&server, TIMEOUT);
-    assert_ne!(conn_a, conn_b);
-
-    client_a.write_all(b"from A").unwrap();
-    client_b.write_all(b"from B").unwrap();
-
-    let mut a_got = Vec::new();
-    let mut b_got = Vec::new();
-    let deadline = Instant::now() + TIMEOUT;
-    while a_got.len() < 6 || b_got.len() < 6 {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(!remaining.is_zero(), "timed out: a={a_got:?} b={b_got:?}");
-        match next_event(&server, remaining) {
-            LaneEvent::Bytes(cid, bytes) if cid == conn_a => a_got.extend(bytes),
-            LaneEvent::Bytes(cid, bytes) if cid == conn_b => b_got.extend(bytes),
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
-    assert_eq!(a_got, b"from A");
-    assert_eq!(b_got, b"from B");
-
-    drop(server);
-}
-
-/// Test 3: squat detection AND continuous name hold. With
-/// `max_instances == 1`, several connect/close cycles run in a row; the
-/// `FIRST_PIPE_INSTANCE` rival probe (using the SAME `nMaxInstances`,
-/// round-3 finding 9) must fail EVERY time, including immediately after
-/// each teardown. Only after `PipeServer::drop` does the probe succeed.
-#[test]
-fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
-    if !run_isolated("connect::rival_first_instance_create_fails_continuously_then_frees_on_drop") {
-        return;
-    }
-    let id = fresh_voyage_id();
-    let max_instances = 1;
-    let server = PipeServer::bind(&id, max_instances).unwrap();
-
-    for _ in 0..3 {
-        assert_squat_check_failed(try_create_first_instance(&id, max_instances).unwrap_err());
-
-        let client = connect_voyage_pipe(&id).unwrap();
-        let conn_id = expect_accepted(&server, TIMEOUT);
-        server.close(conn_id);
-        assert_eq!(
-            expect_closed(&server, conn_id, TIMEOUT),
-            ClosedReason::Closed
-        );
-        drop(client);
-
-        assert_squat_check_failed(try_create_first_instance(&id, max_instances).unwrap_err());
-    }
-
-    drop(server);
-    try_create_first_instance(&id, max_instances)
-        .unwrap_or_else(|e| panic!("expected the freed name to bind again: {e}"));
-}
-
-/// ADR 0043 decision 27: an ABSENT pipe — no instance has EVER been
-/// created for this voyage id — fails `connect_voyage_pipe` on the FIRST
-/// `CreateFileW` attempt with `ERROR_FILE_NOT_FOUND`, never retried
-/// within [`CONNECT_BOUND`] (this module's own "Continuous name hold"
-/// doc: an instance is held and recycled once bound, so unavailable past
-/// that point can only mean busy — absence is the caller's to poll, not
-/// this bound's to spend). Elapsed time is asserted GENEROUSLY (< 1s) —
-/// evidence the bound was never consumed, not a tight perf gate.
+/// ADR 0043 decision 27: an ABSENT pipe, with no instance created for this name, fails the connect on the FIRST
+/// `CreateFileW` attempt with `ERROR_FILE_NOT_FOUND`, never retried within [`CONNECT_BOUND`]: absence is the caller's
+/// to poll, not this bound's to spend. Elapsed time is asserted GENEROUSLY (the bound itself), evidence the bound was
+/// never consumed, not a tight perf gate.
 #[test]
 fn connect_fails_fast_when_pipe_absent() {
     if !run_isolated("connect::connect_fails_fast_when_pipe_absent") {
         return;
     }
-    let id = fresh_voyage_id(); // nothing ever binds this id
+    let path = fresh_row_pipe(); // nothing ever binds this name
 
     let started = Instant::now();
-    let err = connect_voyage_pipe(&id).unwrap_err();
+    let err = connect_own(&path).unwrap_err();
     let elapsed = started.elapsed();
 
-    // Codex review round finding 9: classification is the real proof; the
-    // timing check is a loose sanity bound against `CONNECT_BOUND` itself
-    // (the value the OLD retrying behavior would have fully consumed),
-    // reported alongside it rather than a tight wall-clock gate a busy
-    // runner could occasionally trip.
     eprintln!("connect_fails_fast_when_pipe_absent: elapsed={elapsed:?}");
+    assert!(err.is_endpoint_absent(), "expected an absent endpoint, got {err}");
     assert!(
-        matches!(err, TransportError::Io { op, .. } if op == "CreateFileW"),
-        "expected a CreateFileW error, got {err}"
+        matches!(err, TransportError::Io { .. }),
+        "expected the connector's own Io error, got {err}"
     );
     assert!(
         elapsed < CONNECT_BOUND,
@@ -151,172 +32,71 @@ fn connect_fails_fast_when_pipe_absent() {
     );
 }
 
-/// ADR 0043 decision 27: a BUSY pipe — every instance already claimed —
-/// is a DIFFERENT case from an absent one, and stays retried within
-/// [`CONNECT_BOUND`] exactly as before. Proven the same way
-/// `rival_first_instance_create_fails_continuously_then_frees_on_drop`
-/// proves continuous name hold: `max_instances = 1`, hold one client
-/// connected (the only instance is now claimed), start a second connect
-/// on its own thread, assert it is STILL PENDING after 300ms (busy, not
-/// failed), release the first client (the instance recycles per this
-/// module's own "Continuous name hold" doc), then assert the second
-/// connect succeeds once the recycled instance is available again.
+/// ADR 0043 decision 27: a BUSY pipe (every instance already claimed) is a DIFFERENT case from an absent one, and stays
+/// retried within [`CONNECT_BOUND`]. A pipe with ONE instance stands in: one client holds it, a second connect starts
+/// on its own thread, and the test asserts it is STILL PENDING after 300 ms (busy, not failed). The server then frees
+/// the instance (disconnect, then listen again, as the row's listener does between clients), and the second connect
+/// succeeds once the instance is available again.
 #[test]
 fn connect_retries_within_the_bound_when_busy_then_succeeds_once_freed() {
-    if !run_isolated("connect::connect_retries_within_the_bound_when_busy_then_succeeds_once_freed")
-    {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+        PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
+    if !run_isolated("connect::connect_retries_within_the_bound_when_busy_then_succeeds_once_freed") {
         return;
     }
-    let id = fresh_voyage_id();
-    let max_instances = 1;
-    let server = PipeServer::bind(&id, max_instances).unwrap();
+    let path = fresh_row_pipe();
+    let name = wide_null(path.to_str().expect("a pipe name"));
+    let instance = unsafe {
+        CreateNamedPipeW(
+            name.as_ptr(),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_REJECT_REMOTE_CLIENTS | PIPE_WAIT,
+            1,
+            512,
+            512,
+            0,
+            std::ptr::null(),
+        )
+    };
+    assert_ne!(instance, INVALID_HANDLE_VALUE, "CreateNamedPipeW failed: {}", std::io::Error::last_os_error());
+    let instance = Handle(instance);
 
-    let first_client = connect_voyage_pipe(&id).unwrap();
-    let first_conn = expect_accepted(&server, TIMEOUT);
+    let first_client = connect_own(&path).unwrap();
 
     // The connector sends its pre-call origin; wait only until origin + 300 ms before freeing the instance.
     let (started_tx, started_rx) = std::sync::mpsc::channel();
-    let id_for_thread = id.clone();
+    let path_for_thread = path.clone();
     let second = std::thread::spawn(move || {
         let started = Instant::now();
         let _ = started_tx.send(started);
-        let client = connect_voyage_pipe(&id_for_thread)
-            .expect("expected the busy retry to eventually succeed");
+        let client = connect_own(&path_for_thread).expect("expected the busy retry to eventually succeed");
         (client, started.elapsed())
     });
-    let started = started_rx
-        .recv_timeout(TIMEOUT)
-        .expect("expected the second connect thread to signal it has started");
+    let started = started_rx.recv_timeout(TIMEOUT).expect("expected the second connect thread to signal it has started");
+    std::thread::sleep((started + Duration::from_millis(300)).saturating_duration_since(Instant::now()));
+    assert!(!second.is_finished(), "expected the second connect to still be retrying against a busy pipe 300ms after it started");
 
-    // The connector sends its pre-call origin; wait only until origin + 300 ms before freeing the instance.
-    std::thread::sleep(
-        (started + Duration::from_millis(300)).saturating_duration_since(Instant::now()),
-    );
-    assert!(
-        !second.is_finished(),
-        "expected the second connect to still be retrying against a busy pipe 300ms after it started"
-    );
-
-    server.close(first_conn);
-    assert_eq!(
-        expect_closed(&server, first_conn, TIMEOUT),
-        ClosedReason::Closed
-    );
+    // Free the instance: disconnect the first client, then listen again (a blocking call, on its own thread).
     drop(first_client);
+    unsafe { DisconnectNamedPipe(instance.0) };
+    let raw = instance.0 as usize;
+    let listen = std::thread::spawn(move || unsafe {
+        ConnectNamedPipe(raw as windows_sys::Win32::Foundation::HANDLE, std::ptr::null_mut());
+    });
 
     let join_deadline = Instant::now() + CONNECT_BOUND + Duration::from_secs(5);
     while !second.is_finished() {
-        assert!(
-            Instant::now() < join_deadline,
-            "expected the second connect thread to finish once the instance was freed"
-        );
+        assert!(Instant::now() < join_deadline, "expected the second connect thread to finish once the instance was freed");
         std::thread::sleep(Duration::from_millis(20));
     }
     let (_second_client, elapsed) = second.join().unwrap();
-    eprintln!(
-        "connect_retries_within_the_bound_when_busy_then_succeeds_once_freed: elapsed={elapsed:?}"
-    );
-    assert!(
-        elapsed < CONNECT_BOUND,
-        "expected the busy retry to succeed comfortably inside {CONNECT_BOUND:?}, took {elapsed:?}"
-    );
-    drop(server);
-}
-
-/// ADR 0041 step 6 U1b, Lifecycle "the pipe NAME disappears before any
-/// blocking join" — Codex round-2b Blocker 1 discharge: `disconnect_listener`
-/// ALONE — never `join_workers`, never `Drop` — must free the name for a
-/// `FIRST_PIPE_INSTANCE` rival probe the INSTANT it returns, WHILE A
-/// CONNECTION IS STILL LIVE, not only after it has already closed. The
-/// client's own handle is left open throughout (never dropped before the
-/// probe): the SERVER-side instance `disconnect_listener` closes is what a
-/// squat probe actually checks for, so a still-open client handle must not
-/// keep the name held. NO POLL LOOP inside `disconnect_listener` itself:
-/// it closes the live connection's handle synchronously (round 1) and the
-/// pending accept's own listening instance handle synchronously too
-/// (round 2b — cancelling alone only REQUESTS cancellation, asynchronously;
-/// closing the handle directly is what actually makes the instance stop
-/// existing) — a poll THERE would silently tolerate exactly the residual
-/// delay this round's fix exists to remove.
-///
-/// Codex round-3 test-premise-gap fix: `max_instances = 2` means a SECOND
-/// instance becomes the accept loop's own pending `ConnectNamedPipe` the
-/// moment the first connection is accepted, but the accept loop reaching
-/// that point is a RACE against this test thread — the previous version
-/// of this test called `disconnect_listener` right after `expect_accepted`
-/// with no guarantee that race had resolved, so it exercised live-
-/// connection closure but did NOT deterministically prove a pending
-/// accept handle existed at teardown too (the actual defect this test
-/// exists to catch — Codex round-3 finding 1).
-///
-/// Codex round-4 finding 3: `AcceptState::current` alone is populated
-/// BEFORE `ConnectNamedPipe` is ever issued, so polling it cannot prove
-/// submission happened at all — and a separate "poll, then call
-/// `disconnect_listener`" pair leaves a TOCTOU gap between the two calls.
-///
-/// Codex round-5 fix 2a/2b/2c: plain `SlotState::Pending` is ALSO set for
-/// a synchronously-completed op still awaiting result collection, so
-/// even polling THAT is not proof of a genuine `ERROR_IO_PENDING`
-/// submission — and merely being in one function does not itself close
-/// a TOCTOU between a pre-check and a later act.
-/// `assert_accept_parked_then_disconnect_listener_for_test` polls the
-/// accept slot's OWN genuine-async-pending signal (set only when `issue`
-/// actually returns `ERROR_IO_PENDING`) purely to decide WHEN to call
-/// `disconnect_listener`, then returns the TOCTOU-free LATCH that
-/// `disconnect_listener`'s own synchronized cancellation records at the
-/// exact instant it cancels — the proof and the act share one critical
-/// section, so nothing can go stale in between.
-#[test]
-fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
-    if !run_isolated("connect::disconnect_listener_frees_the_name_even_with_a_live_connection") {
-        return;
-    }
-    let id = fresh_voyage_id();
-    let max_instances = 2;
-    let mut server = PipeServer::bind(&id, max_instances).unwrap();
-
-    // A LIVE connection: never closed by either side before the probe.
-    let client = connect_voyage_pipe(&id).unwrap();
-    expect_accepted(&server, TIMEOUT);
-
-    assert!(
-        server.assert_accept_parked_then_disconnect_listener_for_test(TIMEOUT),
-        "expected a second pending accept instance (max_instances=2) to be genuinely parked \
-         (ConnectNamedPipe issued) before teardown"
-    );
-
-    try_create_first_instance(&id, max_instances)
-        .unwrap_or_else(|e| panic!("expected the name to be immediately winnable: {e}"));
-    drop(client);
-    drop(server);
-}
-
-/// Test 4: the pipe's own security descriptor, queried on a LIVE HANDLE
-/// via `GetSecurityInfo` — protected, owner-only full access, NO `OI`/`CI`
-/// inheritance flags.
-#[test]
-fn pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags() {
-    if !run_isolated(
-        "connect::pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags",
-    ) {
-        return;
-    }
-    let id = fresh_voyage_id();
-    let server = PipeServer::bind(&id, 1).unwrap();
-
-    let handle = open_pipe_handle(&id);
-    let sid = current_user_sid_string();
-    let expected = canonical_sddl(&format!("D:P(A;;FA;;;{sid})"));
-    let actual = security_descriptor_sddl(handle);
-    unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-
-    assert_eq!(actual, expected);
-    assert!(
-        !actual.contains("OICI"),
-        "pipe descriptor must carry no OI/CI flags: {actual}"
-    );
-
-    drop(server);
+    eprintln!("connect_retries_within_the_bound_when_busy_then_succeeds_once_freed: elapsed={elapsed:?}");
+    assert!(elapsed < CONNECT_BOUND, "expected the busy retry to succeed comfortably inside {CONNECT_BOUND:?}, took {elapsed:?}");
+    let _ = listen.join();
 }
 
 /// Native access check on a synchronous test-owned client thread; impersonation never crosses an await.
@@ -423,77 +203,58 @@ fn restricted_open_denied(path: String) -> std::io::Error {
     .expect("test-owned access thread panicked")
 }
 
+/// A token without the owner grant is refused by the row pipe, repeatedly, and takes no connection; the owner's token,
+/// on the same instance, is served the hello, and the instance's descriptor is unchanged afterward.
 #[test]
 fn pipe_denies_a_token_without_the_owner_grant() {
+    use std::io::{BufRead, Write};
     let test = "connect::pipe_denies_a_token_without_the_owner_grant";
     if !run_isolated(test) {
         return;
     }
-    for endpoint in ["voyage", "supervisor"] {
-        let id = fresh_voyage_id();
-        let server = if endpoint == "voyage" {
-            PipeServer::bind(&id, 1)
-        } else {
-            PipeServer::bind_supervisor(&id, 1)
-        }
-        .unwrap();
-        let path = format!(r"\\.\pipe\sot-{endpoint}-{id}");
-        for _ in 0..2 {
-            let denied = restricted_open_denied(path.clone());
-            assert_eq!(
-                denied.kind(),
-                std::io::ErrorKind::PermissionDenied,
-                "restricted-token open was not access denied: {denied}"
-            );
-            assert!(
-                server
-                    .events()
-                    .recv_timeout(Duration::from_millis(100))
-                    .is_err(),
-                "denied token produced an Accepted event"
-            );
-            let deadline = Instant::now() + TIMEOUT;
-            let mut owner = loop {
-                match std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&path)
-                {
-                    Ok(file) => break file,
-                    Err(error)
-                        if error.raw_os_error() == Some(231) && Instant::now() < deadline =>
-                    {
-                        std::thread::sleep(Duration::from_millis(10))
-                    }
-                    Err(error) => panic!("owner-token open failed: {error}"),
+    let (path, server, run) = bind_row();
+    let path_text = path.to_str().expect("a pipe name").to_string();
+    for _ in 0..2 {
+        let denied = restricted_open_denied(path_text.clone());
+        assert_eq!(
+            denied.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "restricted-token open was not access denied: {denied}"
+        );
+        assert_eq!(run.open_connections(), 0, "a denied token took a connection");
+        let deadline = Instant::now() + TIMEOUT;
+        let mut owner = loop {
+            match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+                Ok(file) => break file,
+                Err(error) if error.raw_os_error() == Some(231) && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10))
                 }
-            };
-            let conn = expect_accepted(&server, TIMEOUT);
-            use std::io::{Read, Write};
-            owner.write_all(b"a").unwrap();
-            assert!(
-                matches!(next_event(&server, TIMEOUT), LaneEvent::Bytes(_, ref bytes) if bytes == b"a")
-            );
-            server.send(conn, b"m".to_vec(), Some(9)).unwrap();
-            let (owner, marker) = sot_platform::test_wait::within(TIMEOUT, "the owner's marker", move || {
-                let mut marker = [0];
-                owner.read_exact(&mut marker).unwrap();
-                (owner, marker)
-            });
-            assert_eq!(marker, *b"m");
-            assert!(matches!(
-                next_event(&server, TIMEOUT),
-                LaneEvent::Sent(_, 9)
-            ));
-            let actual = security_descriptor_sddl(
-                std::os::windows::io::AsRawHandle::as_raw_handle(&owner).cast(),
-            );
-            let expected = canonical_sddl(&format!("D:P(A;;FA;;;{})", current_user_sid_string()));
-            assert_eq!(actual, expected, "live endpoint descriptor changed");
-            server.close(conn);
-            expect_closed(&server, conn, TIMEOUT);
-            drop(owner);
-            eprintln!("admission-proof test={test} endpoint={endpoint} boundary=pipe-access fixture=restricted-token rejected=true dispatched=0 bodies=1");
+                Err(error) => panic!("owner-token open failed: {error}"),
+            }
+        };
+        let hello = sot_protocol::Frame::req(1, "row.hello", serde_json::json!({"build": "t", "row": sot_log::row::ROW_PROTOCOL}));
+        let mut text = serde_json::to_vec(&hello).unwrap();
+        text.push(b'\n');
+        owner.write_all(&text).unwrap();
+        let (owner, reply) = sot_platform::test_wait::within(TIMEOUT, "the owner's hello reply", move || {
+            let mut line = String::new();
+            let mut reader = std::io::BufReader::new(&mut owner);
+            reader.read_line(&mut line).unwrap();
+            drop(reader);
+            (owner, line)
+        });
+        let reply: sot_protocol::Frame = serde_json::from_str(reply.trim_end()).expect("a hello reply");
+        assert_eq!(reply.op, "row.hello", "the owner is served");
+        let actual = security_descriptor_sddl(std::os::windows::io::AsRawHandle::as_raw_handle(&owner).cast());
+        let expected = canonical_sddl(&format!("D:P(A;;FA;;;{})", current_user_sid_string()));
+        assert_eq!(actual, expected, "live endpoint descriptor changed");
+        drop(owner);
+        let deadline = Instant::now() + TIMEOUT;
+        while run.open_connections() != 0 {
+            assert!(Instant::now() < deadline, "the owner's connection never ended");
+            std::thread::sleep(Duration::from_millis(20));
         }
+        eprintln!("admission-proof test={test} endpoint=row boundary=pipe-access fixture=restricted-token rejected=true dispatched=0 bodies=1");
     }
+    server.shutdown();
 }

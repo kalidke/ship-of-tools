@@ -1,91 +1,68 @@
 #![cfg(windows)]
-//! Integration tests for the ADR 0041 step-5 pipe transport
-//! (`src/lane/pipe_win/`, unit U3 round 3 — discharges the second Codex
-//! adversarial round's test findings). Lives in `tests/` for the same
-//! structural reason `tests/conpty.rs` does:
-//! this module's own types are `pub` specifically so a real-pipe
-//! integration test can reach them.
+//! The client half of the named-pipe transport (`src/lane/pipe_win/`), against the row acceptor: a real `RowServer` over
+//! a fake `RowRun` on a row pipe, or a plain pipe instance where the peer must not answer. The server half of the lanes
+//! is gone, and what the row acceptor keeps of its properties is tested with it (`tests/row_pipe.rs`: every pipe
+//! instance is owner-only).
 //!
-//! # Process-isolated hang bounding (round-3 findings 7-8)
-//!
-//! An in-thread watchdog (spawn a thread, `recv_timeout` on a completion
-//! signal) cannot actually bound every hang path: `client.read` blocking
-//! directly on the TEST thread is not wrapped by it at all, and if an
-//! assertion earlier in the same test panics, unwinding drops `server`
-//! right there on the test thread — invoking a potentially wedged
-//! `PipeServer::drop` completely outside any watchdog. A real PROCESS
-//! boundary bounds both: `sot_platform::test_isolated::run_isolated` re-invokes THIS test binary
-//! as a child process running only the one named test (`--exact
-//! <module>::<name>`, the exact libtest name), requires that test's body to
-//! enter, and kills the child if it outlives a hard deadline — regardless of WHERE inside the child a hang occurs. Every
-//! test below that touches `PipeServer`/`PipeClient` I/O runs this way;
-//! the one exception (`invalid_voyage_ids_and_instance_counts_are_rejected_loudly`)
-//! is provably non-wedging — every call in it fails before any Win32 I/O
-//! call is ever issued (rejected by validation).
-//!
-//! The handle-count test additionally NEEDS isolation for correctness,
-//! not just safety: `GetProcessHandleCount` measures the whole process,
-//! so it would be confounded by every other pipe test running
-//! concurrently in the shared default parallel runner. Isolated, it is
-//! the only thing running in its process.
-//!
-//! Two structural fixes from round 2 stay: the pipe is byte-type, so
-//! tests that check received content accumulate bytes across events
-//! rather than assuming one write equals one `Bytes` event.
-//!
-//! L1-unix LU1a: `challenge`/`ChallengedProcess`/`authenticate_server`
-//! moved to `sot_platform::identity::challenge_win` (the Windows steps 1-3 half); the
-//! `ChallengeableConnection` trait itself (`write_all`/`read`/`cancel`)
-//! stays in `sot_platform::identity::challenge`, and its raw-handle counterpart is now
-//! the separate `sot_platform::identity::challenge_win::PipeChallengeable` extension
-//! trait — see `InvalidHandleConn`'s own two `impl` blocks below.
+//! Every test that touches a pipe runs in its own process (`sot_platform::test_isolated::run_isolated`): a real PROCESS
+//! boundary bounds every hang path, including one inside a wedged server's `drop` running on the test thread after an
+//! earlier assertion panicked.
 
 use sot_platform::host::wide_null;
-use sot_platform::identity::challenge::ChallengeOutcome;
-use sot_platform::identity::challenge_win::challenge;
-use sot_log::lane::exchange::VoyageMgmtExchange;
-use sot_log::lane::transport::ConnId;
-use sot_log::lane::pipe_win::{connect_voyage_pipe, PipeServer};
-use sot_log::lane::transport::{
-    ClosedReason, LaneEvent, TransportError, CONNECT_BOUND, TEARDOWN_AGGREGATE_DEADLINE,
-};
-use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
 use sot_platform::test_isolated::run_isolated;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// A per-event bound used throughout (well inside `sot_platform::test_isolated::ISOLATION_TIMEOUT`, so
-/// a stalled event always trips before the parent's own kill fires).
+/// A per-step bound used throughout (well inside `sot_platform::test_isolated::ISOLATION_TIMEOUT`, so a stalled step
+/// always trips before the parent's own kill fires).
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A fresh, canonical lowercase-hyphenated UUID for one test's voyage id.
-fn fresh_voyage_id() -> String {
-    uuid::Uuid::now_v7().to_string()
-}
+/// A pipe handle that closes when it drops.
+struct Handle(windows_sys::Win32::Foundation::HANDLE);
 
-/// Bounded wait for the next transport event.
-fn next_event(server: &PipeServer, timeout: Duration) -> LaneEvent {
-    server
-        .events()
-        .recv_timeout(timeout)
-        .unwrap_or_else(|e| panic!("expected a transport event within {timeout:?}, got {e}"))
-}
-
-fn expect_accepted(server: &PipeServer, timeout: Duration) -> ConnId {
-    match next_event(server, timeout) {
-        LaneEvent::Accepted(id) => id,
-        other => panic!("expected Accepted, got {other:?}"),
+impl Drop for Handle {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
     }
 }
 
-fn expect_closed(server: &PipeServer, conn_id: ConnId, timeout: Duration) -> ClosedReason {
-    match next_event(server, timeout) {
-        LaneEvent::Closed(id, reason) => {
-            assert_eq!(id, conn_id, "Closed for the wrong connection");
-            reason
-        }
-        other => panic!("expected Closed, got {other:?}"),
-    }
+/// The name of a row pipe no other test shares.
+fn fresh_row_pipe() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    sot_log::row::row_socket_path(&format!("t{}-{n}", std::process::id())).expect("the pipe name")
+}
+
+/// A row server over a fake run, on a fresh pipe.
+fn bind_row() -> (std::path::PathBuf, sot_log::row::RowServer, std::sync::Arc<sot_log::row::RowRun>) {
+    let path = fresh_row_pipe();
+    let run = sot_log::row::RowRun::new("run-one", "ready");
+    let server = sot_log::row::RowServer::bind(&path, std::sync::Arc::clone(&run)).expect("bind the pipe");
+    (path, server, run)
+}
+
+/// ONE instance of a pipe that exists, is owner-only by default and is never read: a peer that accepts and says
+/// nothing. The pipe's buffers are small, so a client that writes to it fills them at once.
+fn silent_pipe(path: &std::path::Path) -> Handle {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX};
+    use windows_sys::Win32::System::Pipes::{
+        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
+    let name = wide_null(path.to_str().expect("a pipe name"));
+    let h = unsafe {
+        CreateNamedPipeW(
+            name.as_ptr(),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_REJECT_REMOTE_CLIENTS | PIPE_WAIT,
+            1,
+            512,
+            512,
+            0,
+            std::ptr::null(),
+        )
+    };
+    assert_ne!(h, INVALID_HANDLE_VALUE, "CreateNamedPipeW failed: {}", std::io::Error::last_os_error());
+    Handle(h)
 }
 
 /// ADR 0043 decision 27: the transport's own connect no longer retries an
@@ -114,94 +91,6 @@ fn wait_for_endpoint<T, E: std::fmt::Display>(
             }
         }
     }
-}
-
-/// Pull `Bytes` events for `conn_id` until `expected_len` bytes have
-/// accumulated — the pipe is byte-type, so a single write is not
-/// guaranteed to surface as a single `Bytes` event.
-fn accumulate_bytes(
-    server: &PipeServer,
-    conn_id: ConnId,
-    expected_len: usize,
-    timeout: Duration,
-) -> Vec<u8> {
-    let deadline = Instant::now() + timeout;
-    let mut out = Vec::new();
-    while out.len() < expected_len {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(
-            !remaining.is_zero(),
-            "only got {} of {expected_len} expected bytes: {out:?}",
-            out.len()
-        );
-        match next_event(server, remaining) {
-            LaneEvent::Bytes(cid, bytes) => {
-                assert_eq!(cid, conn_id, "Bytes for the wrong connection");
-                out.extend(bytes);
-            }
-            other => panic!("expected Bytes, got {other:?}"),
-        }
-    }
-    assert_eq!(
-        out.len(),
-        expected_len,
-        "accumulated more than expected: {out:?}"
-    );
-    out
-}
-
-/// Attempt to create the FIRST instance of `voyage_id`'s pipe name with
-/// `FILE_FLAG_FIRST_PIPE_INSTANCE` — the squat-detection probe.
-/// `max_instances` MUST match the server's own value under test (round-3
-/// finding 9): Win32 requires every instance of a name to agree on
-/// `nMaxInstances`, so a probe using a different value would mix the
-/// intended `FIRST_PIPE_INSTANCE` failure with an unrelated
-/// instance-count-mismatch failure.
-fn try_create_first_instance(voyage_id: &str, max_instances: u32) -> std::io::Result<()> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
-    };
-    use windows_sys::Win32::System::Pipes::{
-        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
-    };
-
-    let name = wide_null(&format!(r"\\.\pipe\sot-voyage-{voyage_id}"));
-    let h = unsafe {
-        CreateNamedPipeW(
-            name.as_ptr(),
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_REJECT_REMOTE_CLIENTS | PIPE_WAIT,
-            max_instances,
-            65536,
-            65536,
-            0,
-            std::ptr::null(),
-        )
-    };
-    if h == INVALID_HANDLE_VALUE {
-        Err(std::io::Error::last_os_error())
-    } else {
-        unsafe { CloseHandle(h) };
-        Ok(())
-    }
-}
-
-/// Assert that a squat probe failed with one of the TWO documented codes
-/// Windows can report for the same underlying protection:
-/// `ERROR_ACCESS_DENIED` (5) is `FILE_FLAG_FIRST_PIPE_INSTANCE`'s own
-/// check firing against a name that already has ANY instance;
-/// `ERROR_PIPE_BUSY` (231) is the plain instance-count check firing
-/// because `nMaxInstances` is already saturated (as it continuously is
-/// under the continuous-hold design whenever `max_instances` is small).
-/// Both mean the same thing: the name could not be taken.
-fn assert_squat_check_failed(err: std::io::Error) {
-    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY};
-    let code = err.raw_os_error();
-    assert!(
-        code == Some(ERROR_ACCESS_DENIED as i32) || code == Some(ERROR_PIPE_BUSY as i32),
-        "expected ERROR_ACCESS_DENIED (5) or ERROR_PIPE_BUSY (231), got {err}"
-    );
 }
 
 /// This process's own token-user SID, stringified — independently
@@ -331,60 +220,9 @@ fn canonical_sddl(sddl: &str) -> String {
     }
 }
 
-/// Open a raw handle to the voyage's pipe with `READ_CONTROL` for
-/// security queries — bypassing `connect_voyage_pipe` (no reason to
-/// expose its raw handle) since this is a test-only need.
-fn open_pipe_handle(voyage_id: &str) -> windows_sys::Win32::Foundation::HANDLE {
-    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, READ_CONTROL,
-    };
-    let name = wide_null(&format!(r"\\.\pipe\sot-voyage-{voyage_id}"));
-    let h = unsafe {
-        CreateFileW(
-            name.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
-            0,
-            std::ptr::null(),
-            OPEN_EXISTING,
-            FILE_FLAG_OVERLAPPED,
-            std::ptr::null_mut(),
-        )
-    };
-    assert_ne!(
-        h,
-        INVALID_HANDLE_VALUE,
-        "CreateFileW failed: {}",
-        std::io::Error::last_os_error()
-    );
-    h
-}
-
-fn process_handle_count() -> u32 {
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
-    let mut count: u32 = 0;
-    let ok = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
-    assert_ne!(
-        ok,
-        0,
-        "GetProcessHandleCount failed: {}",
-        std::io::Error::last_os_error()
-    );
-    count
-}
-
-/// One connect -> accept -> server-close -> confirmed-closed -> client
-/// drop cycle, used by the churn/leak test.
-fn churn_one(server: &PipeServer, id: &str) {
-    let client = connect_voyage_pipe(id).unwrap();
-    let conn_id = expect_accepted(server, TIMEOUT);
-    server.close(conn_id);
-    expect_closed(server, conn_id, TIMEOUT);
-    drop(client);
-}
+#[path = "../support/row_challenge.rs"]
+mod row_challenge;
 
 mod challenge;
 mod close;
 mod connect;
-mod reaper;
-mod teardown;

@@ -56,9 +56,9 @@ fn is_resting_phase(phase: &str, watchdog_owns_it: bool) -> bool {
     phase == NEVER_STARTED_PHASE
         || phase == FOREIGN_PHASE
         || phase == UNREACHABLE_PHASE && !watchdog_owns_it
-        || phase == super::phase_str(sot_log::lane::wire::SupervisorPhase::Ready)
-        || phase == super::phase_str(sot_log::lane::wire::SupervisorPhase::EndedNoRespawn)
-        || phase == super::phase_str(sot_log::lane::wire::SupervisorPhase::Terminal)
+        || phase == super::phase_str(sot_log::SupervisorPhase::Ready)
+        || phase == super::phase_str(sot_log::SupervisorPhase::EndedNoRespawn)
+        || phase == super::phase_str(sot_log::SupervisorPhase::Terminal)
 }
 
 /// The guard-HELD body shared by [`resume_if_absent`] (which takes
@@ -114,7 +114,7 @@ fn resume_locked_spawned(
         return Err("unknown workspace".to_string());
     };
     if ws.phase() == crate::rows::workspace::Phase::Terminal {
-        return Ok((super::phase_str(sot_log::lane::wire::SupervisorPhase::Terminal), false));
+        return Ok((super::phase_str(sot_log::SupervisorPhase::Terminal), false));
     }
     let state_dir = super::state_dir_for(state_root, workspace_id);
     let (phase, observation) = probe(&state_dir);
@@ -405,7 +405,7 @@ fn ensure_started_locked(
     // resurrect it — ADR 0041's own no-resurrection rule). A new run
     // never starts on a resident authority; replacement requires a
     // confirmed stop (ADR 0043 decision 33's retirement clause).
-    let ended_phase = super::phase_str(sot_log::lane::wire::SupervisorPhase::EndedNoRespawn);
+    let ended_phase = super::phase_str(sot_log::SupervisorPhase::EndedNoRespawn);
     if settled_phase == ended_phase {
         // RB: a passive Reconnect never resets an ended run -- only a real Selection may retire+reset it below.
         if intent == ActivationIntent::Reconnect {

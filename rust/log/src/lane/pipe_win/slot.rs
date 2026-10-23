@@ -12,26 +12,11 @@ pub(super) enum SlotState {
 }
 
 /// A synchronized, reusable overlapped-I/O slot: one `Mutex<SlotState>`
-/// plus one address-stable, manual-reset-event-backed `OVERLAPPED`. Used
-/// for the accept loop's `ConnectNamedPipe`, every connection's read and
-/// write directions (server and client alike). See the module doc's "I/O
-/// slot" section for the full soundness argument.
+/// plus one address-stable, manual-reset-event-backed `OVERLAPPED`. One per direction of a
+/// [`PipeClient`](super::PipeClient).
 pub(super) struct IoSlot {
     state: Mutex<SlotState>,
     ov: UnsafeCell<OVERLAPPED>,
-    /// `true` iff the CURRENT (or most recently settled) submission on
-    /// this slot genuinely went `ERROR_IO_PENDING` at the OS level —
-    /// DISTINCT from `SlotState::Pending`, which is ALSO set for a
-    /// synchronously-completed op still awaiting `GetOverlappedResult`
-    /// collection (Codex round-5 finding: the two are not the same
-    /// observable state — a test polling `SlotState::Pending` alone can
-    /// pass during that synchronous-completion window without ever
-    /// proving a genuine kernel-level pending op existed). Reset to
-    /// `false` at the START of every submission (before its outcome is
-    /// known) and set `true` only in the actual `ERROR_IO_PENDING`
-    /// branch, so it always reflects the CURRENT attempt, never a stale
-    /// one.
-    genuinely_async: AtomicBool,
 }
 // SAFETY: `ov`'s contents are only ever touched (reset, issued, or read
 // via `GetOverlappedResult`) by the ONE thread that got past
@@ -49,9 +34,7 @@ pub(super) fn aborted_error() -> std::io::Error {
 }
 
 /// Marker error: `submit_and_wait` rejected a call because another
-/// submission is already `Pending` on this exact direction. Server-
-/// internal code never triggers this — each slot has exactly one driving
-/// thread by construction — it exists so `PipeClient`'s genuinely `Sync`,
+/// submission is already `Pending` on this exact direction. It exists so `PipeClient`'s genuinely `Sync`,
 /// `&self`-based `read`/`write_all` reject concurrent same-direction
 /// misuse with a distinct `Result` instead of corrupting one shared
 /// `OVERLAPPED`.
@@ -78,17 +61,7 @@ pub(super) fn is_concurrent_submit(e: &std::io::Error) -> bool {
 /// the kernel is DONE with them — an error return alone is not that
 /// proof. This module cannot safely return normally in that case:
 ///
-/// - Every SERVER-side caller ([`accept_loop`], [`reader_loop`],
-///   [`writer_loop`]) owns the buffer/slot it handed to the OS outright
-///   and MUST permanently leak it — `std::mem::forget` an extra
-///   `Arc<IoSlot>` clone (so the underlying allocation, including the
-///   `OVERLAPPED` and its event, is never freed) and `std::mem::forget`
-///   the I/O buffer — then treat the connection (or the accept loop
-///   itself) as unrecoverably gone, reported loudly (`eprintln!`), never
-///   silently. This matches `join_within`'s own abandonment philosophy:
-///   never silently unsafe, but also never a process-wide abort for a
-///   condition scoped to one connection.
-/// - [`PipeClient::write_all`]/[`PipeClient::read`] receive a BORROWED
+/// [`PipeClient::write_all`]/[`PipeClient::read`] receive a BORROWED
 ///   buffer from their own caller — this module cannot leak memory it
 ///   does not own, and the caller may free or reuse that memory the
 ///   instant this call returns. The only safe response left is to abort
@@ -149,7 +122,6 @@ impl IoSlot {
         Ok(Self {
             state: Mutex::new(SlotState::Idle),
             ov: UnsafeCell::new(ov),
-            genuinely_async: AtomicBool::new(false),
         })
     }
 
@@ -172,10 +144,7 @@ impl IoSlot {
     /// Attempt to submit one overlapped op (`issue`, returning the raw
     /// `BOOL` of `ReadFile`/`WriteFile`) against a handle THIS CALLER
     /// already owns outright, and block for its definitive result.
-    /// CLIENT-facing only — see the module doc's "I/O slot" section for
-    /// why server-side instances go through
-    /// [`submit_and_wait_registered`](Self::submit_and_wait_registered)
-    /// instead. Refuses WITHOUT ever calling `issue` if this slot is
+    /// Refuses WITHOUT ever calling `issue` if this slot is
     /// `Closing` (`Err(aborted)`) or already `Pending`
     /// (`Err(ConcurrentSubmitMarker)`) — both checked under the same lock
     /// `cancel` uses, so neither race is possible. `synchronous_ok` names
@@ -196,7 +165,6 @@ impl IoSlot {
             if *st == SlotState::Pending {
                 return Err(std::io::Error::other(ConcurrentSubmitMarker));
             }
-            self.genuinely_async.store(false, Ordering::Release);
             // Reset AND issue while holding the lock: a concurrent
             // `cancel` cannot observe a half-reset `OVERLAPPED`, and
             // cannot call `CancelIoEx` in the gap between this reset and
@@ -210,7 +178,6 @@ impl IoSlot {
                 if code == ERROR_IO_PENDING as i32 {
                     *st = SlotState::Pending;
                     genuinely_pending = true;
-                    self.genuinely_async.store(true, Ordering::Release);
                 } else if synchronous_ok(code) {
                     return Ok(0);
                 } else {
@@ -229,85 +196,6 @@ impl IoSlot {
                 return result;
             }
         }
-        self.genuinely_async.store(false, Ordering::Release);
-        let mut st = self.state.lock().unwrap();
-        if *st != SlotState::Closing {
-            *st = SlotState::Idle;
-        }
-        result
-    }
-
-    /// Same contract as [`submit_and_wait`](Self::submit_and_wait), for a
-    /// REGISTERED server-side instance (ADR 0041 step 6 U1b, Codex
-    /// round-4): `issue` receives the raw handle only once a
-    /// [`LiveHandle`] proves `id` is still registered in `registry` —
-    /// held for exactly the duration of the `issue` call itself, never
-    /// across the subsequent blocking wait (see [`LiveHandle`]'s own
-    /// doc). If `id` is already gone (closed by
-    /// [`InstanceRegistry::close_all`]), this behaves exactly like this
-    /// module's own cancellation: `Err(aborted_error())`, without ever
-    /// calling `issue` — a torn-down instance is, from every caller's
-    /// perspective, indistinguishable from one THIS module cancelled.
-    pub(super) fn submit_and_wait_registered(
-        &self,
-        registry: &InstanceRegistry,
-        id: u64,
-        issue: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32,
-        synchronous_ok: impl Fn(i32) -> bool,
-    ) -> std::io::Result<u32> {
-        let mut genuinely_pending = false;
-        let handle = {
-            let mut st = self.state.lock().unwrap();
-            if *st == SlotState::Closing {
-                return Err(aborted_error());
-            }
-            if *st == SlotState::Pending {
-                return Err(std::io::Error::other(ConcurrentSubmitMarker));
-            }
-            let Some(live) = registry.live(id) else {
-                return Err(aborted_error());
-            };
-            let handle = live.get();
-            self.genuinely_async.store(false, Ordering::Release);
-            self.reset();
-            let ok = issue(handle, self.ptr());
-            // Codex round-5 finding 1: capture `GetLastError` IMMEDIATELY
-            // after `issue` returns, BEFORE `drop(live)` -- dropping the
-            // `LiveHandle` releases the registry's `RwLock` read side,
-            // and this crate never assumes an intervening call (however
-            // unlikely to actually touch it) leaves the thread's last-
-            // error value alone. A real `ERROR_IO_PENDING` misread as an
-            // ordinary failure here would free an `OVERLAPPED`/buffer
-            // the kernel still owns.
-            let sync_err = (ok == 0).then(std::io::Error::last_os_error);
-            drop(live);
-            if ok == 0 {
-                let err = sync_err.unwrap();
-                let code = err.raw_os_error().unwrap_or(0);
-                if code == ERROR_IO_PENDING as i32 {
-                    *st = SlotState::Pending;
-                    genuinely_pending = true;
-                    self.genuinely_async.store(true, Ordering::Release);
-                } else if synchronous_ok(code) {
-                    return Ok(0);
-                } else {
-                    return Err(err);
-                }
-            } else {
-                *st = SlotState::Pending;
-            }
-            handle
-        };
-        let result = wait_overlapped(handle, self.ptr(), genuinely_pending);
-        if let Err(e) = &result {
-            if is_completion_unproven(e) {
-                // Never touch this slot's state again -- see
-                // `CompletionUnproven`'s own doc. The caller MUST leak
-                // whatever storage it owns.
-                return result;
-            }
-        }
-        self.genuinely_async.store(false, Ordering::Release);
         let mut st = self.state.lock().unwrap();
         if *st != SlotState::Closing {
             *st = SlotState::Idle;
@@ -319,63 +207,12 @@ impl IoSlot {
     /// `CancelIoEx`; either way, latch `Closing` so every FUTURE
     /// `submit_and_wait` call refuses before ever touching the OS again.
     /// Idempotent — safe to call more than once, from any thread.
-    /// CLIENT-facing only — see
-    /// [`cancel_registered`](Self::cancel_registered) for server-side
-    /// instances.
     pub(super) fn cancel(&self, handle: HANDLE) {
         let mut st = self.state.lock().unwrap();
         if *st == SlotState::Pending {
             unsafe { CancelIoEx(handle, self.ptr()) };
         }
         *st = SlotState::Closing;
-    }
-
-    /// Same contract as [`cancel`](Self::cancel), for a REGISTERED
-    /// server-side instance: `CancelIoEx` is issued only while a
-    /// [`LiveHandle`] proves `id` is still registered. If `id` is
-    /// already gone, there is nothing to cancel against — its
-    /// `CloseHandle` already forced the pending op to complete/error —
-    /// so this just latches `Closing`, exactly like the plain `cancel`
-    /// always does.
-    ///
-    /// Returns whether the op THIS CALL cancelled (if any) was
-    /// GENUINELY asynchronously pending, decided under the SAME lock
-    /// acquisition that performs the cancellation (Codex round-5 fix
-    /// 2b/2c) — this is the TOCTOU-free proof a caller needing to KNOW
-    /// (not merely poll-and-hope) must use: a separate prior check of
-    /// [`is_genuinely_pending`](Self::is_genuinely_pending) can always
-    /// go stale between the check and this call; this return value
-    /// cannot, because both the read and the cancellation happen inside
-    /// one critical section.
-    pub(super) fn cancel_registered(&self, registry: &InstanceRegistry, id: u64) -> bool {
-        let mut st = self.state.lock().unwrap();
-        let was_genuinely_pending =
-            *st == SlotState::Pending && self.genuinely_async.load(Ordering::Acquire);
-        if *st == SlotState::Pending {
-            if let Some(live) = registry.live(id) {
-                unsafe { CancelIoEx(live.get(), self.ptr()) };
-            }
-        }
-        *st = SlotState::Closing;
-        was_genuinely_pending
-    }
-
-    pub(super) fn is_closing(&self) -> bool {
-        *self.state.lock().unwrap() == SlotState::Closing
-    }
-
-    /// `true` iff the CURRENT submission genuinely went `ERROR_IO_PENDING`
-    /// at the OS level right now — see [`IoSlot::genuinely_async`]'s own
-    /// doc for why this is NOT the same thing as `SlotState::Pending`.
-    /// A caller that needs a race-free ANSWER (not merely a heuristic
-    /// "is it probably time to act") must use
-    /// [`cancel_registered`](Self::cancel_registered)'s own return value
-    /// instead, which decides this under the same lock that performs
-    /// the cancellation. This accessor is a best-effort PRE-check only
-    /// — e.g. "has the writer plausibly reached a pending write yet, so
-    /// it is worth proceeding to teardown" — never itself the proof.
-    pub(super) fn is_genuinely_pending(&self) -> bool {
-        self.genuinely_async.load(Ordering::Acquire)
     }
 }
 
@@ -390,8 +227,7 @@ impl Drop for IoSlot {
 /// proof"): Microsoft documents `CancelIoEx` as REQUESTING cancellation,
 /// never waiting for it, and `GetOverlappedResult`'s error return alone
 /// is not itself proof the kernel is done with this `OVERLAPPED` — if
-/// `handle` was closed by another thread (e.g. `InstanceRegistry::close_all`
-/// racing this exact call) in the gap between `IoSlot::submit_and_wait`
+/// `handle` was closed by another thread (racing this exact call) in the gap between `IoSlot::submit_and_wait`
 /// releasing its lock and `wait_overlapped` ever calling
 /// `GetOverlappedResult`, that call can fail IMMEDIATELY against the
 /// now-invalid handle without ever having waited on anything. The

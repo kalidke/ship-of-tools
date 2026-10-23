@@ -210,7 +210,7 @@ async fn capsule_resume_never_resets_an_ended_row() {
             let dir = state_dir_path.clone();
             async move {
                 let report = try_query_status(dir).await?;
-                (report.phase == sot_log::lane::wire::SupervisorPhase::EndedNoRespawn).then_some(())
+                (report.phase == sot_log::SupervisorPhase::EndedNoRespawn).then_some(())
             }
         },
         BOUND,

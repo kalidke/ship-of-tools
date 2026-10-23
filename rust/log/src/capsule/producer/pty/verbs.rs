@@ -243,10 +243,6 @@ impl Producer for PtyProducer {
         File::from(fd)
     }
 
-    fn input(&mut self) -> &mut dyn Write {
-        &mut self.writer
-    }
-
     fn input_writer(&self) -> std::io::Result<std::fs::File> {
         self.writer.try_clone()
     }

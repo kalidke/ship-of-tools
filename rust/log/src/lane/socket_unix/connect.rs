@@ -1,6 +1,5 @@
 //! The bounded, non-blocking connect(2) attempt over a fresh socket.
 
-use super::listener::set_nonblocking;
 use super::*;
 
 // ---------------------------------------------------------------------

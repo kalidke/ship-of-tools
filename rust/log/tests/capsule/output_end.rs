@@ -107,7 +107,6 @@ struct FakeProducer {
     state: Arc<FakeState>,
     output: Option<FakeOutput>,
     steps: Option<mpsc::Sender<OutputEnd>>,
-    sink: std::io::Sink,
 }
 
 impl sot_log::capsule::producer::Producer for FakeProducer {
@@ -144,16 +143,11 @@ impl sot_log::capsule::producer::Producer for FakeProducer {
             state,
             output: Some(FakeOutput { steps: steps_rx }),
             steps: Some(steps_tx),
-            sink: std::io::sink(),
         })
     }
 
     fn take_output(&mut self) -> Self::Output {
         self.output.take().expect("take_output called twice")
-    }
-
-    fn input(&mut self) -> &mut dyn std::io::Write {
-        &mut self.sink
     }
 
     fn resize(&self, _cols: u16, _rows: u16) -> sot_log::Result<()> {

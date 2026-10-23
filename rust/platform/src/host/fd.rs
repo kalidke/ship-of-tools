@@ -8,7 +8,7 @@
 //! constructors (std's, tokio's, mio's) is covered by [`inherit_none`] in the child.
 //!
 //! A constructor owns what it makes the moment it exists, so any failure closes it. `role` names a descriptor for the
-//! tests' birth recorder (`lane::test_progress`).
+//! tests' birth recorder (`observe_births`).
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};

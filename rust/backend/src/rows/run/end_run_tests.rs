@@ -1,6 +1,6 @@
 use super::*;
 
-fn report(phase: sot_log::lane::wire::SupervisorPhase) -> sot_log::attach_client::supervisor_client::StatusReport {
+fn report(phase: sot_log::SupervisorPhase) -> sot_log::attach_client::supervisor_client::StatusReport {
     sot_log::attach_client::supervisor_client::StatusReport { pid: 1, created: 1, phase, run: None, voyage: None }
 }
 
@@ -10,7 +10,7 @@ fn report(phase: sot_log::lane::wire::SupervisorPhase) -> sot_log::attach_client
 /// keeps the row with an error naming the starting authority.
 #[test]
 fn a_still_starting_authority_is_stopped_then_proven() {
-    use sot_log::lane::wire::SupervisorPhase as P;
+    use sot_log::SupervisorPhase as P;
     // Starting, Starting, Ready: settled after two pauses.
     let mut script = vec![P::Starting, P::Starting, P::Ready].into_iter();
     let mut pauses = 0;

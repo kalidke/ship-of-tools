@@ -1,13 +1,10 @@
-//! The client: `SocketClient`, its `Client`/`Endpoint` impls, and the unchallenged and challenged connects.
+//! The client: `SocketClient`, its `Client`/`Endpoint` impls, and the unchallenged connect `connect_own` builds on.
 
 use super::connect::{capture_connect_anchor_boot_ticks, one_connect_attempt, ConnectAttempt};
 use super::*;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::lane::client::map_peer_auth_outcome;
 
 // ---------------------------------------------------------------------
-// L1-unix LU1c: the client side of one voyage's (or the supervisor
-// lane's) socket. Mirrors `pipe_win::PipeClient` in SHAPE — the exact
+// The client side of a row's socket. Mirrors `pipe_win::PipeClient` in SHAPE — the exact
 // three-method surface (property 26) — with `shutdown(2)` standing in
 // for `CancelIoEx` (ADR 0043 decision 5) and no completion-proof
 // apparatus at all: POSIX `read`/`write` never borrow the caller's
@@ -15,7 +12,7 @@ use crate::lane::client::map_peer_auth_outcome;
 // (`pipe_win`'s own `CompletionUnproven` has no Unix analogue).
 // ---------------------------------------------------------------------
 
-/// The client side of one voyage's socket: `read`/`write_all` are
+/// The client side of a row's socket: `read`/`write_all` are
 /// blocking from the calling thread's own perspective, but `SocketClient`
 /// is `Sync` — a second thread may call [`SocketClient::cancel`] at any
 /// time to unblock whichever of the two is currently in flight, via
@@ -66,14 +63,11 @@ pub struct SocketClient {
     /// never a false `Proven`. See
     /// [`connect_unix_socket_unchallenged`]'s own doc for where this is
     /// sampled. `0` on a non-Linux Unix target, where nothing ever reads
-    /// it (the whole identity-pinning path is Linux-only; see
-    /// `connect_voyage_socket`'s own two cfg'd bodies) — hence the
+    /// it (the whole identity-pinning path is Linux-only) — hence the
     /// `cfg_attr`: only the Linux `SocketChallengeable` impl below ever
     /// reads this field.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     connect_anchor_boot_ticks: u64,
-    /// The client's own recorder (`conn=pending`): never linked to a server's connection id.
-    progress: crate::lane::test_progress::Progress,
 }
 
 impl std::fmt::Debug for SocketClient {
@@ -201,7 +195,7 @@ impl SocketClient {
             if self.cancelled.load(Ordering::SeqCst) {
                 return Err(TransportError::Cancelled);
             }
-            match super::conn::read_when_ready(&self.stream, buf) {
+            match read_when_ready(&self.stream, buf) {
                 Ok(0) => {
                     return if self.cancelled.load(Ordering::SeqCst) {
                         Err(TransportError::Cancelled)
@@ -237,12 +231,8 @@ impl SocketClient {
     /// observes `cancelled` already set before it ever reaches the OS.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
-        super::conn::observe_shutdown(
-            &self.progress,
-            None,
-            &self.stream,
-            "rust/log/src/lane/socket_unix/client.rs::cancel",
-        );
+        // SAFETY: `shutdown(2)` on the stream's own live fd.
+        unsafe { libc::shutdown(self.stream.as_raw_fd(), libc::SHUT_RDWR) };
     }
 
     /// ADR 0045 decision 2 (the daemon-side lane bridge): hand the raw
@@ -273,12 +263,6 @@ impl SocketClient {
         self.read_slot_entered.load(Ordering::SeqCst)
     }
 
-    /// The client's own checkpoints (`conn=pending`); a snapshot never waits for a lock a read or write holds.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn progress_for_test(&self) -> crate::lane::test_progress::Snapshot {
-        self.progress.snapshot()
-    }
-
     /// The write twin of
     /// [`read_slot_entered_for_test`](Self::read_slot_entered_for_test).
     #[cfg(any(test, feature = "test-support"))]
@@ -306,7 +290,6 @@ impl SocketClient {
             #[cfg(any(test, feature = "test-support"))]
             write_slot_entered: AtomicBool::new(false),
             connect_anchor_boot_ticks,
-            progress: crate::lane::test_progress::Progress::default(),
         }
     }
 }
@@ -474,8 +457,7 @@ pub(crate) fn connect_unix_socket_unchallenged(
                     #[cfg(any(test, feature = "test-support"))]
                     write_slot_entered: AtomicBool::new(false),
                     connect_anchor_boot_ticks,
-                    progress: crate::lane::test_progress::Progress::default(),
-                });
+                        });
             }
             Err(ConnectAttempt::Fatal(e)) => {
                 return Err(TransportError::Io {
@@ -494,49 +476,4 @@ pub(crate) fn connect_unix_socket_unchallenged(
             }
         }
     }
-}
-
-/// The raw connect to the voyage socket, with NO authentication — every
-/// step-5 client must go through [`connect_voyage_socket`] instead.
-/// `pub(crate)`, and MUST STAY `pub(crate)` — mirrors
-/// `pipe_win::connect_voyage_pipe_unchallenged`'s own "never widen" doc:
-/// an unchallenged `SocketClient` reachable through a PUBLIC path would
-/// defeat this whole module's enforcement.
-pub(crate) fn connect_voyage_socket_unchallenged(
-    voyage_id: &str,
-) -> Result<SocketClient, TransportError> {
-    let path = voyage_socket_path(voyage_id)?;
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a voyage lane connector: the caller runs the lane's identity challenge"
-    )]
-    let client = connect_unix_socket_unchallenged(&path)?;
-    Ok(client)
-}
-
-/// Connect to `<runtime_dir>/voyage-<voyage_id>.sock` AND authenticate
-/// the server behind it (ADR 0043 decision 8, steps 1-3) before handing
-/// the connection back — the shared, step-5-client-facing constructor
-/// every ordinary caller uses, mirroring `pipe_win::connect_voyage_pipe`'s
-/// own doc almost verbatim: a raw successful `connect(2)` proves nothing
-/// about who is listening, so this runs
-/// the platform's own `authenticate_server` (the account the kernel
-/// recorded for the connection only — NOT the full five-step `challenge()`,
-/// which also matches an honest reply's own pid/creation and needs a
-/// lane-specific request this layer must not consume) before returning
-/// `Ok(_)`. A failed authentication is
-/// a loud, typed [`TransportError::Foreign`] or
-/// [`TransportError::Undetermined`] — never a silent retry.
-///
-/// ONE body for both targets: which module answers is the `challenge_os`
-/// alias's business, not this function's. The two differ only in
-/// mechanism — Linux reads `SO_PEERCRED` plus a pidfd pin, macOS `getpeereid`
-/// for the account plus one `LOCAL_PEERTOKEN` audit token carrying pid
-/// and reuse generation together (M2, MAC-ID) — and that difference is
-/// already stated once, where the alias is declared.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn connect_voyage_socket(voyage_id: &str) -> Result<SocketClient, TransportError> {
-    let client = connect_voyage_socket_unchallenged(voyage_id)?;
-    map_peer_auth_outcome(challenge_os::authenticate_server(&client))?;
-    Ok(client)
 }

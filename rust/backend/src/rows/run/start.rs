@@ -210,7 +210,7 @@ pub(super) fn settle_after_spawn(state_dir: &Path, workspace_id: &str) -> (&'sta
 
 fn settle_probe(state_dir: &Path, workspace_id: &str) -> (&'static str, crate::rows::workspace::Observation) {
     let settle = spawn_settle_deadline();
-    let starting_phase = super::phase_str(sot_log::lane::wire::SupervisorPhase::Starting);
+    let starting_phase = super::phase_str(sot_log::SupervisorPhase::Starting);
     let deadline = Instant::now() + settle;
     loop {
         let (phase, observation) = probe(state_dir);

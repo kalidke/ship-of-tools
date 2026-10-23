@@ -330,8 +330,8 @@ fn wait_until_resting(
 /// restricted to the phases a live supervisor can report over `status` —
 /// this caller has just spawned one and is holding its reply, so the
 /// "nothing is there" phases that function also admits cannot arise here.
-fn phase_rests(phase: sot_log::lane::wire::SupervisorPhase) -> bool {
-    use sot_log::lane::wire::SupervisorPhase as P;
+fn phase_rests(phase: sot_log::SupervisorPhase) -> bool {
+    use sot_log::SupervisorPhase as P;
     matches!(phase, P::Ready | P::EndedNoRespawn | P::Terminal)
 }
 
@@ -361,11 +361,11 @@ fn phase_rests(phase: sot_log::lane::wire::SupervisorPhase) -> bool {
 /// switch was supposed to retire must never be minted on, whatever phase
 /// it rests at.
 fn ready_to_mint(
-    phase: sot_log::lane::wire::SupervisorPhase,
+    phase: sot_log::SupervisorPhase,
     retired: Option<(u32, u64)>,
     resident: (u32, u64),
 ) -> Result<(), String> {
-    use sot_log::lane::wire::SupervisorPhase as P;
+    use sot_log::SupervisorPhase as P;
     if retired == Some(resident) {
         return Err(format!(
             "the authority answering is the same process the switch was supposed to retire (pid {}), \

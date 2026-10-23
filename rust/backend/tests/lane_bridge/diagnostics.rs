@@ -14,7 +14,7 @@ pub(super) fn expiry_result(error: Option<&sot_log::lane::transport::TransportEr
         Some(Unreachable(source)) => ("Unreachable", Some(source), "none", "none", "none", sanitized(&source.to_string())),
         Some(Undetermined { via, detail }) => ("Undetermined", None, "none", public(via, &["direct", "bridge"], "<via>"), "none", sanitized(detail)),
         Some(Refused { code, detail }) => ("Refused", None, "none", "none", public(code, &["no_bridge", "hello_refused", "unknown_workspace", "not_capsule", "bad_lane", "unauthenticated", "foreign", "voyage_mismatch", "protocol_mismatch", "bad_request"], "<code>"), sanitized(detail)),
-        Some(error) => (match error { InvalidVoyageId(_) => "InvalidVoyageId", InvalidMaxConnections => "InvalidMaxConnections", PathTooLong(_) => "PathTooLong", UnknownConnection(_) => "UnknownConnection", QueueFull(_) => "QueueFull", EmptyPayload => "EmptyPayload", PayloadTooLarge(_) => "PayloadTooLarge", Cancelled => "Cancelled", ConcurrentSubmit => "ConcurrentSubmit", Foreign => "Foreign", LinkDown => "LinkDown", _ => unreachable!() }, None, "none", "none", "none", "<detail>".into()),
+        Some(error) => (match error { PathTooLong(_) => "PathTooLong", EmptyPayload => "EmptyPayload", PayloadTooLarge(_) => "PayloadTooLarge", Cancelled => "Cancelled", ConcurrentSubmit => "ConcurrentSubmit", Foreign => "Foreign", LinkDown => "LinkDown", _ => unreachable!() }, None, "none", "none", "none", "<detail>".into()),
     };
     let kind = io.map(|error| format!("{:?}", error.kind())).unwrap_or_else(|| "none".into());
     let os = io.and_then(|error| error.raw_os_error()).map(|number| number.to_string()).unwrap_or_else(|| "none".into());

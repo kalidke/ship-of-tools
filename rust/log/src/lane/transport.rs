@@ -1,255 +1,55 @@
-//! The lanes' transport pieces: the connection id, the shared teardown bound and poll-join every server's worker
-//! threads join against, and the platform servers' event and error types.
+//! The lanes' transport pieces: the connect bound and the error type every client reports.
 //!
 //! Deliberately ungated: this is the contract, not an implementation.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-/// A connection of a lane server: allocated only by the server, unique and stable for the connection's whole life.
-pub type ConnId = u64;
-
-/// The existing 20 s aggregate budget is shared by acceptor, reaper and all registered pending worker joins. Expiry is
-/// loud and unfinished registered pairs remain reaper-owned. The capsule's closer/reader joins use the same caller
-/// deadline. A normal close's own report budget is separate (`pending::NORMAL_CLOSE_BUDGET`).
+/// The aggregate budget the capsule's closer and reader joins share: expiry is loud, and a thread still unfinished
+/// stays unjoined.
 pub const TEARDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_secs(20);
 
-/// L1-unix LU1b (ADR 0043 "Bounds are the same numbers on both
-/// platforms"): the total connect retry budget, hoisted here from
-/// `lane/pipe_win/`'s own `PIPE_CONNECT_BOUND` — the one bound LU1a left
-/// behind because only one platform's client existed yet. Both
-/// `pipe_win::connect_named_pipe_unchallenged` (Windows) and the Unix
-/// client's own connect retry (LU1c) share this SAME constant, and both
-/// now retry the SAME meaning within it (ADR 0043 decision 27): an
-/// endpoint that is BUSY — a pipe instance already claimed
-/// (`ERROR_PIPE_BUSY`), or a Unix listener whose backlog is momentarily
-/// full or whose accept was merely interrupted (`EAGAIN`/`EINTR`) — is
-/// retried here, because instances are held continuously and recycled
-/// once bound, so "unavailable" past that point can only mean busy. An
-/// ABSENT endpoint — no pipe instance exists yet (`ERROR_FILE_NOT_FOUND`)
-/// or no listener at all (`ECONNREFUSED`/`ENOENT`) — returns on the very
-/// first attempt: this bound is never charged waiting for a server that
-/// has not started yet. Whoever knows a server is coming (a supervisor's
-/// readiness probe, the daemon's post-spawn poll, the attach client's own
-/// episode loop, a test harness) polls for that at its own interval
-/// instead — see each caller's own doc.
-pub const CONNECT_BOUND: Duration = Duration::from_secs(2);
-
-/// [`join_within`]'s poll granularity — small enough that a fast, healthy
-/// teardown (the ordinary case) never visibly waits for it, and small
-/// enough that a test proving "loud on expiry" against a short injected
-/// budget stays fast too.
+/// [`join_within`]'s poll granularity: small enough that a fast, healthy teardown never visibly waits for it.
 pub(crate) const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-/// Wait for `jh` to finish without ever calling the BLOCKING
-/// `JoinHandle::join` — std gives that call no timeout, which is exactly
-/// what "each wait taking the remaining budget" (ADR 0041) rules out.
-/// Polls [`JoinHandle::is_finished`] (never blocks) until either it
-/// reports true (join it for real — `is_finished() == true` guarantees
-/// that call cannot then block — and return `true`) or `deadline` passes
-/// (`false`: LOUD, since this crate cannot force an OS thread to stop —
-/// the handle is simply dropped here, which detaches rather than kills
-/// it; the thread keeps running in the background). `pub(crate)`:
-/// `capsule/writer_loop/phases.rs` reuses this SAME mechanism (Codex round-1 Blocker 3)
-/// to join its own closer/reader threads under the identical aggregate
-/// deadline, rather than a second bespoke poll loop.
-///
-/// **The exact boundary semantic (Codex round-2b, ruling on finding 2,
-/// a reasoned deviation from literal strictness):** expiry is terminal
-/// IFF a thread REMAINS UNFINISHED at the instant the budget is
-/// exhausted — `is_finished` is checked FIRST on every poll, including
-/// the one that observes the expired deadline, so a thread that
-/// genuinely finished at or before that exact instant is accepted
-/// (`true`) even though the deadline has ALSO passed by the time this
-/// function notices. This is deliberate, not a race: the invariant this
-/// bound exists to serve is "never proceed past an UNFINISHED worker",
-/// and a thread that has ALREADY finished leaves nothing dangling — it
-/// satisfies that invariant regardless of which check this function
-/// happened to run first. Flagging it as failed would be a false alarm,
-/// not a safety property. There is no "acceptance after the decision"
-/// hazard either way: once this function returns, its `bool` is the
-/// decision, made exactly once, from the caller's own single call site —
-/// nothing later re-evaluates or overturns it, whether the answer was
-/// `true` or `false`.
-///
-/// A thread that panicked still counts as finished here; a caller that must tell the two apart uses [`join_checked`].
+/// Wait for `jh` to finish without ever calling the BLOCKING `JoinHandle::join`, which std gives no timeout. Polls
+/// [`JoinHandle::is_finished`] until it reports true (join it for real, which cannot then block, and return `true`) or
+/// `deadline` passes (`false`: LOUD, since this crate cannot force an OS thread to stop; the handle is dropped, which
+/// detaches rather than kills it). `is_finished` is checked FIRST on every poll, including the one that observes the
+/// expired deadline, so a thread that finished at or before that instant is accepted even though the deadline has
+/// also passed: the invariant is "never proceed past an UNFINISHED worker", and a finished thread leaves nothing
+/// dangling. A thread that panicked still counts as finished.
 pub(crate) fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
-    join_checked(jh, deadline) != Joined::Unfinished
-}
-
-/// How [`join_checked`] found a thread at its deadline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Joined {
-    Ended,
-    Panicked,
-    Unfinished,
-}
-
-/// [`join_within`] with the joined thread's panic kept: the same poll and the same boundary semantic.
-pub(crate) fn join_checked(jh: JoinHandle<()>, deadline: Instant) -> Joined {
     loop {
         if jh.is_finished() {
-            return if jh.join().is_ok() {
-                Joined::Ended
-            } else {
-                Joined::Panicked
-            };
+            let _ = jh.join();
+            return true;
         }
         if Instant::now() >= deadline {
-            return Joined::Unfinished;
+            return false;
         }
         thread::sleep(JOIN_POLL_INTERVAL);
     }
 }
 
-// ---------------------------------------------------------------------
-// Shared implementation helpers — both platforms' transports use these
-// (L1-unix LU1a, hoisted out of `lane/pipe_win/`).
-// ---------------------------------------------------------------------
+/// The total connect retry budget, shared by both platforms' clients (ADR 0043 decision 27): an endpoint that is
+/// BUSY (a pipe instance already claimed, `ERROR_PIPE_BUSY`, or a Unix listener whose backlog is momentarily full or
+/// whose accept was merely interrupted, `EAGAIN`/`EINTR`) is retried within it, because a listener holds its instances
+/// continuously and recycles them once bound, so "unavailable" past that point can only mean busy. An ABSENT endpoint
+/// (no pipe instance exists yet, `ERROR_FILE_NOT_FOUND`, or no listener at all, `ECONNREFUSED`/`ENOENT`) returns on the
+/// very first attempt: this bound is never charged waiting for a server that has not started yet. Whoever knows a
+/// server is coming (the daemon's post-spawn poll, a viewer's own episode loop, a test harness) polls for that at its
+/// own interval instead.
+pub const CONNECT_BOUND: Duration = Duration::from_secs(2);
 
-/// Bound on one outstanding overlapped `ReadFile` (ADR 0041: "the transport
-/// just must not read unboundedly ahead").
-pub(crate) const READ_BUF_LEN: usize = 65_536;
-
-/// Per-connection outbound byte budget: enqueued-but-not-yet-physically-
-/// written bytes, INCLUDING the writer's in-flight item, may never exceed
-/// this. Sized to the same order of magnitude as the ADR's own "4 MiB
-/// per-watcher queue" figure — not a literal citation of it (that number
-/// bounds a different queue, the future capsule's checkpoint transfer),
-/// just a consistent order of magnitude for this transport's own ceiling.
-pub(crate) const OUTBOUND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
-
-/// The `events()` channel's item capacity: sized so a run of maximum-size
-/// `Bytes` deliveries caps buffered inbound at roughly the same order of
-/// magnitude as [`OUTBOUND_BUDGET_BYTES`].
-pub(crate) const EVENTS_CHANNEL_CAP: usize = OUTBOUND_BUDGET_BYTES / READ_BUF_LEN;
-
-/// How long a stalled delivery (lifecycle retry, or one `Bytes` attempt)
-/// sleeps between retries against a full `events` channel.
-pub(crate) const EVENTS_RETRY_INTERVAL: Duration = Duration::from_millis(20);
-
-/// How long a stalled `Bytes` delivery may retry a single chunk against a
-/// full `events` channel before abandoning it and force-closing the
-/// connection with a guaranteed `Closed`. Generous relative to
-/// [`EVENTS_RETRY_INTERVAL`] — this is "the consumer has genuinely
-/// stalled," not routine backpressure.
-pub(crate) const BYTES_ABANDON_AFTER: Duration = Duration::from_secs(5);
-
-/// Per-connection outbound byte accounting: reserved eagerly before an
-/// item is even queued, released only once the writer's submission for
-/// that item RETURNS (success or failure) — the in-flight item stays
-/// counted the whole time. The cap is always [`OUTBOUND_BUDGET_BYTES`] —
-/// not configurable, so no field for it.
-pub(crate) struct OutboundBudget {
-    used: Mutex<usize>,
-}
-
-impl OutboundBudget {
-    pub(crate) fn new() -> Self {
-        Self {
-            used: Mutex::new(0),
-        }
-    }
-
-    pub(crate) fn try_reserve(&self, n: usize) -> bool {
-        let mut used = self.used.lock().unwrap();
-        if *used + n > OUTBOUND_BUDGET_BYTES {
-            return false;
-        }
-        *used += n;
-        true
-    }
-
-    pub(crate) fn release(&self, n: usize) {
-        let mut used = self.used.lock().unwrap();
-        *used = used.saturating_sub(n);
-    }
-}
-
-/// A connection's reader/writer threads block here until released — the
-/// gate is opened only after the connection is fully registered and its
-/// initial lifecycle event has been RELIABLY queued, or `abort`ed if the
-/// connection could not be fully set up, in which case the gated thread
-/// returns immediately, having never touched the transport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GateSignal {
-    Wait,
-    Start,
-    Abort,
-}
-
-pub(crate) struct StartGate {
-    state: Mutex<GateSignal>,
-    cv: Condvar,
-}
-
-impl StartGate {
-    pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self {
-            state: Mutex::new(GateSignal::Wait),
-            cv: Condvar::new(),
-        })
-    }
-
-    /// Blocks until `open` or `abort`; returns `true` to proceed, `false`
-    /// to return immediately without ever touching the pipe.
-    pub(crate) fn wait_for_start(&self) -> bool {
-        let mut st = self.state.lock().unwrap();
-        while *st == GateSignal::Wait {
-            st = self.cv.wait(st).unwrap();
-        }
-        *st == GateSignal::Start
-    }
-
-    pub(crate) fn open(&self) {
-        *self.state.lock().unwrap() = GateSignal::Start;
-        self.cv.notify_all();
-    }
-
-    pub(crate) fn abort(&self) {
-        *self.state.lock().unwrap() = GateSignal::Abort;
-        self.cv.notify_all();
-    }
-}
-
-// ---------------------------------------------------------------------
-// L1-unix LU3a (ADR 0043 decisions 17/19): the ONE error type and event
-// vocabulary every concrete `pipe_win`/`socket_unix` transport now
-// produces, plus the `LaneServer` seam trait a step-6 supervisor will
-// eventually be generic over (LU3c). This section is a pure hoist —
-// `pipe_win::PipeError`/`socket_unix::SocketError` and each module's own
-// `TransportEvent`/`ClosedReason` were already identical in shape (Codex
-// review of ADR 0043's own sizing note); nothing here changes behavior,
-// and no consumer goes generic yet — every existing call site still
-// names the concrete `PipeServer`/`SocketServer`/`PipeClient`/
-// `SocketClient` type directly.
-// ---------------------------------------------------------------------
-
-/// Errors a concrete transport's own synchronous API surface can report
-/// at the call site — `crate::lane::pipe_win`'s former `PipeError` and
-/// [`crate::lane::socket_unix`]'s former `SocketError` merged into one type
-/// (ADR 0043 decision 17): the union of both platforms' variants,
-/// `Io { op, source }` kept verbatim (the shape production code already
-/// matches on), `InvalidMaxInstances` folded into `InvalidMaxConnections`
-/// (one name for one concept), and the Unix-only
-/// `PathTooLong`/`RuntimeDir` carried unconditionally — an
-/// enum variant costs nothing on a platform that never produces it.
-/// Background-thread failures still surface as [`LaneEvent::Closed`]/
-/// [`LaneEvent::AcceptError`] instead — this type is only ever returned
-/// from a synchronous call, never delivered through the event channel.
+/// Errors a client's synchronous API surface can report at the call site: the union of both platforms' variants, with
+/// `Io { op, source }` kept as the shape production code matches on, and the Unix-only `PathTooLong`/`RuntimeDir`
+/// carried unconditionally (an enum variant costs nothing on a platform that never produces it).
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
-    #[error("invalid voyage id {0:?}: must be the canonical lowercase-hyphenated form of an RFC 4122 UUID")]
-    InvalidVoyageId(String),
-    #[error("max_connections must be between 1 and 255")]
-    InvalidMaxConnections,
-    // Unix only (never produced on Windows, where there is no `sun_path`
-    // limit to exceed): the exact byte ceiling is platform-specific
-    // (`crate::lane::socket_unix::max_sun_path_bytes`, unreachable from this
-    // ungated module on a non-Unix target), so the message names the
-    // path without embedding a number this type cannot portably compute.
+    // Unix only (never produced on Windows, where there is no `sun_path` limit to exceed). The exact byte ceiling is
+    // platform-specific, so the message names the path without embedding a number this type cannot portably compute.
     #[error("endpoint path {0:?} exceeds this platform's path-length limit")]
     PathTooLong(PathBuf),
     #[error("resolving the runtime dir: {0}")]
@@ -259,11 +59,7 @@ pub enum TransportError {
         op: &'static str,
         source: std::io::Error,
     },
-    #[error("unknown or already-closed connection {0}")]
-    UnknownConnection(ConnId),
-    #[error("outbound budget exhausted for connection {0}")]
-    QueueFull(ConnId),
-    #[error("empty payload: this wire never carries a zero-length send")]
+    #[error("empty payload: a write never carries a zero-length send")]
     EmptyPayload,
     #[error("payload of {0} bytes exceeds what a single write/read call can represent")]
     PayloadTooLarge(usize),
@@ -350,117 +146,3 @@ impl TransportError {
         )
     }
 }
-
-/// Why a connection ended, reported once per connection on
-/// [`LaneEvent::Closed`] — hoisted (ADR 0043 decision 19) from
-/// `pipe_win`/`socket_unix`'s own byte-for-byte identical copies.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ClosedReason {
-    /// The peer disconnected (or this side observed a broken/reset/
-    /// unconnected endpoint) — detected by the connection's own reader
-    /// loop, or (rarely) its writer.
-    Eof,
-    /// The server's own `close` call tore this connection down.
-    Closed,
-    /// An I/O error other than a recognized disconnect ended a
-    /// connection's reader or writer loop, or its `Bytes` delivery was
-    /// abandoned — always paired with this guaranteed notification,
-    /// never a silent stream gap.
-    Error(String),
-}
-
-/// This transport's event surface to its consumer, hoisted (ADR 0043
-/// decision 19) from `pipe_win`/`socket_unix`'s own byte-for-byte
-/// identical copies — both platforms' servers produce the SAME event
-/// type. Delivered over a `LaneServer::events()` receiver in the
-/// order the transport observed them; the consumer feeds `Bytes`
-/// payloads to its own [`crate::lane::wire::FrameSplitter`] per connection.
-#[derive(Debug)]
-pub enum LaneEvent {
-    /// A new connection accepted; `send`/`close` may now target it.
-    Accepted(ConnId),
-    /// Raw bytes read from a connection, in the order read. Never empty.
-    Bytes(ConnId, Vec<u8>),
-    /// A marker-tagged `send` call has physically completed.
-    Sent(ConnId, u64),
-    /// The connection ended; no further events for this `ConnId` follow.
-    Closed(ConnId, ClosedReason),
-    /// The accept loop hit a persistent, unrecoverable resource failure
-    /// and has stopped accepting new connections FOR GOOD — existing
-    /// connections are unaffected.
-    AcceptError(String),
-}
-
-/// An opaque, caller-assigned correlation tag for one `send` call, echoed
-/// back on [`LaneEvent::Sent`] when the OS reports that send's write has
-/// PHYSICALLY completed.
-pub type SendMarker = u64;
-
-/// The voyage id is validated as a canonical RFC 4122 UUID — lowercase,
-/// hyphenated, the exact form [`uuid::Uuid`]'s own `Display` produces —
-/// before it is ever interpolated into an endpoint name. Delegates to
-/// `pointer::canonical_voyage_id` (ADR 0041 U0 round-1 minor finding 9):
-/// one canonical-UUID check for this crate, not two that can drift, as
-/// this one already had from `drawer.voyage`'s own (stricter) validation.
-/// Anything that fails to parse at all (path-traversal shapes, wrong
-/// length, non-hex bytes) is rejected the same way.
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-pub(super) fn validate_voyage_id(voyage_id: &str) -> std::result::Result<(), TransportError> {
-    if crate::supervisor::journal::pointer::canonical_voyage_id(voyage_id).is_some() {
-        Ok(())
-    } else {
-        Err(TransportError::InvalidVoyageId(voyage_id.to_string()))
-    }
-}
-
-/// L1-unix LU3a (ADR 0043 decision 19): what a step-6 supervisor needs
-/// from a lane's own server-side transport, seamed so it can eventually
-/// be generic over `PipeServer`/`SocketServer` (LU3c) — today, both
-/// implement this purely by delegation, and every existing consumer
-/// keeps calling the concrete type directly (no consumer goes generic in
-/// this lane). Only `bind_supervisor` is part of the seam: the plain
-/// voyage `bind` stays a concrete-type-only constructor, since nothing
-/// in this crate needs a generic voyage bind yet.
-pub trait LaneServer: Sized {
-    /// Bind the supervisor lane's own endpoint and start accepting.
-    /// `max_connections` must be in `1..=255`.
-    fn bind_supervisor(h: &str, max_connections: u32) -> std::result::Result<Self, TransportError>;
-    /// The event stream: single-consumer by convention (a `Receiver` is
-    /// not `Sync`).
-    fn events(&self) -> &std::sync::mpsc::Receiver<LaneEvent>;
-    /// Queue `bytes` for `conn`, tagged with `marker` if the caller wants
-    /// a [`LaneEvent::Sent`] once the OS write physically completes.
-    /// Non-blocking.
-    fn send(
-        &self,
-        conn: ConnId,
-        bytes: Vec<u8>,
-        marker: Option<u64>,
-    ) -> std::result::Result<(), TransportError>;
-    /// Request that `conn` be torn down. Fire-and-forget; a no-op if
-    /// already gone or already tearing down.
-    fn close(&self, conn: ConnId);
-    /// Phase one of teardown: make the endpoint's NAME disappear and
-    /// issue cancellation to every worker — synchronous, no blocking
-    /// join.
-    fn disconnect_listener(&mut self);
-    /// Phase two: wait for every thread this transport owns, against one
-    /// shared absolute `deadline`. True requires every owned join complete and
-    /// no latched teardown failure. False is loud and terminal on expiry, a
-    /// completed-worker panic or a panicked acceptor or reaper; unfinished
-    /// registered pairs remain reaper-owned.
-    fn join_workers(&mut self, deadline: Instant) -> bool;
-}
-
-/// L1-unix LU3c: the server twin of `client::PlatformEndpoint` — the
-/// lane a step-6 supervisor binds on the platform it runs on, chosen
-/// ONCE by this alias (never by threading a type parameter through
-/// `supervisor/`'s own state machine). Windows speaks `PipeServer`;
-/// Linux and macOS both speak `SocketServer`, which is `#![cfg(unix)]`
-/// and needs no per-OS half at all: a LISTENER has no peer identity to
-/// read, so the one mechanism that separates the two Unixes never
-/// reaches this side of the lane.
-#[cfg(windows)]
-pub type PlatformLaneServer = crate::lane::pipe_win::PipeServer;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub type PlatformLaneServer = crate::lane::socket_unix::SocketServer;

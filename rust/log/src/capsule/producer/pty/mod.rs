@@ -119,7 +119,7 @@
 use crate::capsule::producer::{ExitStatus, Producer};
 use crate::{Error, Result};
 use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;

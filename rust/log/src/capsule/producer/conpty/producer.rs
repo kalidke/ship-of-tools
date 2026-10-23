@@ -14,7 +14,6 @@ use sot_platform::host::winjob::AnonymousJob;
 use crate::capsule::producer::{ExitStatus, Producer};
 use crate::Result;
 use std::fs::File;
-use std::io::Write;
 use std::time::Duration;
 
 /// Wraps one `ConptySpawn`'s fields. `pty` is `Option` so
@@ -64,10 +63,6 @@ impl Producer for ConptyProducer {
 
     fn take_output(&mut self) -> Self::Output {
         self.reader.take().expect("ConptyProducer::take_output called twice")
-    }
-
-    fn input(&mut self) -> &mut dyn Write {
-        &mut self.writer
     }
 
     fn input_writer(&self) -> std::io::Result<std::fs::File> {

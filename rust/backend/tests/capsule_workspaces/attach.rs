@@ -285,7 +285,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
             let dir = state_dir_path.clone();
             async move {
                 let report = try_query_status(dir).await?;
-                (report.phase == sot_log::lane::wire::SupervisorPhase::Ready).then_some(())
+                (report.phase == sot_log::SupervisorPhase::Ready).then_some(())
             }
         },
         BOUND,
@@ -311,7 +311,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
             let dir = state_dir_path.clone();
             async move {
                 let report = try_query_status(dir).await?;
-                (report.phase == sot_log::lane::wire::SupervisorPhase::EndedNoRespawn).then_some(())
+                (report.phase == sot_log::SupervisorPhase::EndedNoRespawn).then_some(())
             }
         },
         BOUND,
@@ -345,7 +345,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
             reattach_res.payload
         );
         if let Some(report) = try_query_status(state_dir_path.clone()).await {
-            if report.phase == sot_log::lane::wire::SupervisorPhase::Ready {
+            if report.phase == sot_log::SupervisorPhase::Ready {
                 break report.voyage.expect("a ready capsule has a voyage");
             }
         }
@@ -456,7 +456,7 @@ async fn capsule_attach_right_after_run_end_activates_despite_a_stale_cached_rea
     let ready_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
     let new_voyage = loop {
         if let Some(report) = try_query_status(state_dir_path.clone()).await {
-            if report.phase == sot_log::lane::wire::SupervisorPhase::Ready {
+            if report.phase == sot_log::SupervisorPhase::Ready {
                 break report.voyage.expect("a ready capsule has a voyage");
             }
         }

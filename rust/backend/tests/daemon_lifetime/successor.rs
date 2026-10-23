@@ -302,7 +302,7 @@ async fn status_of(state_dir: &std::path::Path) -> Option<(i32, u64, bool)> {
                 (
                     report.pid as i32,
                     report.created,
-                    report.phase == sot_log::lane::wire::SupervisorPhase::Ready,
+                    report.phase == sot_log::SupervisorPhase::Ready,
                 )
             })
     })

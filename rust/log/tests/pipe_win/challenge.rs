@@ -1,18 +1,16 @@
-//! Same-connection challenge and SID authentication enforcement tests.
+//! Same-connection challenge and SID authentication enforcement tests, against the row pipe: a real `RowServer` over a
+//! fake `RowRun` answers the hello, and the adversarial cases are made by the exchange the client drives
+//! (`support/row_challenge.rs`), since the row answers its own hello.
 
+use super::row_challenge::{Lying, NotAFrame, Unanswered};
 use super::*;
+use sot_log::lane::connect_own::connect_own;
+use sot_log::row::{RowHelloExchange, RowRun, RowServer};
+use sot_platform::identity::challenge::ChallengeOutcome;
+use sot_platform::identity::challenge_win::challenge;
 
-
-// ---------------------------------------------------------------------
-// ADR 0041 U0 round-1: the same-connection challenge's real-pipe tests
-// (moved here from `src/identity/challenge.rs`'s own unit tests -- security-
-// sensitive Windows I/O belongs in a named integration target the
-// windows-2022 job runs, not in the crate's own `--lib` test binary).
-// Deadlines are GENEROUS (30s), not the tight 5s the original in-crate
-// tests used, so two-core CI contention can't flake a genuinely correct
-// challenge into a spurious `Undetermined` (round-1 review, "replace
-// independent real deadlines with generous ones").
-// ---------------------------------------------------------------------
+// Deadlines are GENEROUS (30s), not tight, so two-core CI contention can't flake a genuinely correct challenge into a
+// spurious `Undetermined`.
 
 fn self_pid_and_created() -> (u32, u64) {
     use windows_sys::Win32::Foundation::FILETIME;
@@ -29,47 +27,14 @@ fn self_pid_and_created() -> (u32, u64) {
     }
 }
 
-/// The `status` request has no body, so its ENCODED length alone is what
-/// we wait for; the pipe is byte-type, so a single write is not
-/// guaranteed to surface as a single `Bytes` event.
-fn await_status_request(server: &PipeServer, conn_id: ConnId, timeout: Duration) {
-    let expected = wire::encode_mgmt_request(&MgmtRequest::Status).unwrap();
-    let mut got = Vec::new();
-    let deadline = Instant::now() + timeout;
-    while got.len() < expected.len() {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(!remaining.is_zero(), "timed out waiting for the status request");
-        match server.events().recv_timeout(remaining) {
-            Ok(LaneEvent::Bytes(cid, bytes)) if cid == conn_id => got.extend(bytes),
-            Ok(other) => panic!("unexpected event waiting for status: {other:?}"),
-            Err(_) => panic!("timed out waiting for the status request"),
-        }
-    }
-    assert_eq!(got, expected);
-}
-
-/// Real challenge, real pipe, SAME process on both ends — a genuine
-/// same-user server, proven. Also this test's own shared "give me a real
-/// proven process" helper for the two tests below it.
-fn self_proven_challenge() -> ChallengeOutcome<sot_platform::identity::challenge_win::ChallengedProcess> {
-    let voyage_id = fresh_voyage_id();
-    let server = PipeServer::bind(&voyage_id, 1).expect("bind");
-    let client = connect_voyage_pipe(&voyage_id).expect("connect");
-
-    std::thread::scope(|scope| {
-        let challenge_handle = scope.spawn(|| {
-            let mut exchange = VoyageMgmtExchange::default();
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30))
-        });
-
-        let conn_id = expect_accepted(&server, TIMEOUT);
-        await_status_request(&server, conn_id, TIMEOUT);
-        let (pid, created) = self_pid_and_created();
-        let reply = wire::encode_mgmt_reply(&MgmtReply::StatusOk { pid, created, survival: Survival::Normal }).unwrap();
-        server.send(conn_id, reply, None).expect("send status_ok");
-
-        challenge_handle.join().expect("challenge thread panicked")
-    })
+/// Real challenge, real pipe, SAME process on both ends: a genuine same-user server, proven. Also this file's shared
+/// "give me a real proven process" helper for the test below it.
+fn self_proven_challenge() -> (ChallengeOutcome<sot_platform::identity::challenge_win::ChallengedProcess>, RowServer) {
+    let (path, server, _run) = bind_row();
+    let client = connect_own(&path).expect("connect");
+    let mut exchange = RowHelloExchange::new("test");
+    let outcome = challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30));
+    (outcome, server)
 }
 
 #[test]
@@ -78,7 +43,7 @@ fn challenge_proves_a_genuine_same_user_server() {
         return;
     }
     let (pid, created) = self_pid_and_created();
-    match self_proven_challenge() {
+    match self_proven_challenge().0 {
         ChallengeOutcome::Proven(p) => {
             assert_eq!(p.pid(), pid);
             assert_eq!(p.created(), created);
@@ -92,7 +57,7 @@ fn challenged_process_reverify_and_wait_reflect_a_live_self_proof() {
     if !run_isolated("challenge::challenged_process_reverify_and_wait_reflect_a_live_self_proof") {
         return;
     }
-    let ChallengeOutcome::Proven(p) = self_proven_challenge() else {
+    let (ChallengeOutcome::Proven(p), _server) = self_proven_challenge() else {
         panic!("expected Proven")
     };
     assert!(p.reverify().unwrap());
@@ -100,75 +65,32 @@ fn challenged_process_reverify_and_wait_reflect_a_live_self_proof() {
     assert!(!p.wait(Duration::from_millis(50)).unwrap());
 }
 
+/// Same account, wrong reply: a pid and creation that are not the server process's are `Foreign`, which the SID check
+/// upstream cannot catch.
 #[test]
 fn challenge_rejects_a_pid_creation_mismatch_as_foreign() {
     if !run_isolated("challenge::challenge_rejects_a_pid_creation_mismatch_as_foreign") {
         return;
     }
-    let voyage_id = fresh_voyage_id();
-    let server = PipeServer::bind(&voyage_id, 1).expect("bind");
-    let client = connect_voyage_pipe(&voyage_id).expect("connect");
-
-    let outcome = std::thread::scope(|scope| {
-        let challenge_handle = scope.spawn(|| {
-            let mut exchange = VoyageMgmtExchange::default();
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30))
-        });
-
-        let conn_id = expect_accepted(&server, TIMEOUT);
-        await_status_request(&server, conn_id, TIMEOUT);
-        // A well-formed status_ok, but a FABRICATED pid/creation that
-        // does not match the real server process (this test binary
-        // itself) — the SID check upstream cannot catch this: same
-        // account, wrong reply.
-        let reply = wire::encode_mgmt_reply(&MgmtReply::StatusOk { pid: 1, created: 0, survival: Survival::Normal }).unwrap();
-        server.send(conn_id, reply, None).expect("send status_ok");
-
-        challenge_handle.join().expect("challenge thread panicked")
-    });
-
+    let (path, _server, _run) = bind_row();
+    let client = connect_own(&path).expect("connect");
+    let outcome = challenge(&client, &mut Lying::new(1, 0), Instant::now() + Duration::from_secs(30));
     assert!(matches!(outcome, ChallengeOutcome::Foreign), "{outcome:?}");
 }
 
-/// Real deadline expiry, real pending `read`, real `conn.cancel()` — as
-/// opposed to `challenge_classifies_connection_death_mid_challenge_as_undetermined`
-/// below (an ordered EOF, a DIFFERENT path entirely). The server accepts
-/// and receives `status`, but never replies and never closes: the
-/// client's `read` is genuinely blocked until the watchdog's deadline
-/// fires and `cancel()` unblocks it. Deterministic despite the short
-/// deadline: the SERVER thread never does anything that could race it
-/// (no reply, no close), so the only way this test can reach
-/// `Undetermined` is via the cancellation path being exercised for real.
+/// Real deadline expiry, real pending `read`, real `conn.cancel()`, as opposed to the ordered EOF of the next test (a
+/// different path entirely). The row waits for the rest of a half frame (a pipe has no hello deadline) and answers
+/// nothing, and never closes: the client's `read` is genuinely blocked until the watchdog's deadline fires and
+/// `cancel()` unblocks it.
 #[test]
 fn challenge_cancels_a_genuinely_pending_read_when_the_deadline_expires() {
     if !run_isolated("challenge::challenge_cancels_a_genuinely_pending_read_when_the_deadline_expires") {
         return;
     }
-    let voyage_id = fresh_voyage_id();
-    let server = PipeServer::bind(&voyage_id, 1).expect("bind");
-    let client = connect_voyage_pipe(&voyage_id).expect("connect");
-
-    let outcome = std::thread::scope(|scope| {
-        let challenge_handle = scope.spawn(|| {
-            let mut exchange = VoyageMgmtExchange::default();
-            // A short but real deadline -- the server below never replies,
-            // so this can only resolve via the watchdog's own cancel.
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_millis(300))
-        });
-
-        let conn_id = expect_accepted(&server, TIMEOUT);
-        await_status_request(&server, conn_id, TIMEOUT);
-        // Deliberately never reply and never close -- the client's read
-        // stays genuinely pending until the deadline cancels it.
-
-        let outcome = challenge_handle.join().expect("challenge thread panicked");
-        // Keep the server (and the connection) alive until the challenge
-        // side has already concluded, so the server side is never what
-        // ends the connection here.
-        drop(server);
-        outcome
-    });
-
+    let (path, _server, _run) = bind_row();
+    let client = connect_own(&path).expect("connect");
+    // A short but real deadline: the row never replies, so this can only resolve via the watchdog's own cancel.
+    let outcome = challenge(&client, &mut Unanswered, Instant::now() + Duration::from_millis(300));
     assert!(matches!(outcome, ChallengeOutcome::Undetermined), "{outcome:?}");
 }
 
@@ -177,83 +99,43 @@ fn challenge_classifies_connection_death_mid_challenge_as_undetermined() {
     if !run_isolated("challenge::challenge_classifies_connection_death_mid_challenge_as_undetermined") {
         return;
     }
-    let voyage_id = fresh_voyage_id();
-    let server = PipeServer::bind(&voyage_id, 1).expect("bind");
-    let client = connect_voyage_pipe(&voyage_id).expect("connect");
-
-    let outcome = std::thread::scope(|scope| {
-        let challenge_handle = scope.spawn(|| {
-            let mut exchange = VoyageMgmtExchange::default();
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30))
-        });
-
-        let conn_id = expect_accepted(&server, TIMEOUT);
-        await_status_request(&server, conn_id, TIMEOUT);
-        // The server closes without ever answering `status`.
-        server.close(conn_id);
-
-        challenge_handle.join().expect("challenge thread panicked")
-    });
-
+    let (path, _server, _run) = bind_row();
+    let client = connect_own(&path).expect("connect");
+    // The row ends the connection on a first line that is no frame, without ever answering.
+    let outcome = challenge(&client, &mut NotAFrame, Instant::now() + Duration::from_secs(30));
     assert!(matches!(outcome, ChallengeOutcome::Undetermined), "{outcome:?}");
 }
 
-/// The "child" half of `cross_process_challenge_proves_a_real_child_server`
-/// below: binds a real named pipe server for the voyage id named by
-/// `PIPE_WIN_XPROC_VOYAGE_ID`, answers exactly one `status` request with
-/// THIS PROCESS's own real pid/creation time, then exits. A normal test
-/// pass never sets that env var, so this is a silent no-op then — the
-/// parent test is the only thing that ever invokes this BY NAME with it
-/// set, in a dedicated child process.
+/// The "child" half of `cross_process_challenge_proves_a_real_child_server` below: binds a real row server on the
+/// pipe named by `PIPE_WIN_XPROC_PIPE`, which answers the hello with THIS PROCESS's own real pid and creation time,
+/// then stays up until the parent kills it. A normal test pass never sets that env var, so this is a silent no-op then:
+/// the parent test is the only thing that ever invokes this BY NAME with it set, in a dedicated child process.
 #[test]
 fn cross_process_challenge_server_role() {
-    let Ok(voyage_id) = std::env::var("PIPE_WIN_XPROC_VOYAGE_ID") else {
+    let Ok(path) = std::env::var("PIPE_WIN_XPROC_PIPE") else {
         return;
     };
     sot_platform::test_isolated::enter("challenge::cross_process_challenge_server_role");
-    let server = PipeServer::bind(&voyage_id, 1).expect("server role: bind");
-    let conn_id = expect_accepted(&server, Duration::from_secs(30));
-    await_status_request(&server, conn_id, Duration::from_secs(30));
-    let (pid, created) = self_pid_and_created();
-    let reply = wire::encode_mgmt_reply(&MgmtReply::StatusOk { pid, created, survival: Survival::Normal }).unwrap();
-    server.send(conn_id, reply, None).expect("server role: send status_ok");
-    // Stay alive until the CLIENT has read the reply and closed: `send` only
-    // queues the bytes, and this process's exit drops the `PipeServer`, whose
-    // teardown `DisconnectNamedPipe`s the instance — which DISCARDS anything
-    // the client has not yet read. On a fast box the client always won that
-    // race; on a loaded CI runner it lost it and the parent saw EOF instead
-    // of `status_ok`, i.e. `Undetermined` (main, windows-latest, 2026-09-08).
-    // The parent drops its client right after the challenge, so `Closed`
-    // arrives promptly; the bound only guards a parent that died mid-test.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match next_event(&server, left) {
-            LaneEvent::Closed(id, _) if id == conn_id => break,
-            _ => continue,
-        }
-    }
+    let _server = RowServer::bind(std::path::Path::new(&path), RowRun::new("run-one", "ready")).expect("server role: bind");
+    std::thread::sleep(Duration::from_secs(30));
 }
 
-/// The real cross-process test (ADR 0041 U0 round-1 required test):
-/// `GetNamedPipeServerProcessId`, called on the CLIENT's own handle
-/// (this process), must resolve to a GENUINELY DIFFERENT process's real
-/// pid — closing the Microsoft-docs ambiguity Codex flagged (the API's
-/// own parameter prose describes a handle from `CreateNamedPipe`, not a
-/// client's `CreateFile` handle; Chromium's own client-side use is the
-/// only precedent, not a documented guarantee). Every same-process test
-/// above proves the PROTOCOL; only this one proves the OS call actually
-/// crosses a real process boundary the way `challenge()` depends on.
+/// The real cross-process test (ADR 0041 U0 round-1 required test): `GetNamedPipeServerProcessId`, called on the
+/// CLIENT's own handle (this process), must resolve to a GENUINELY DIFFERENT process's real pid, closing the
+/// Microsoft-docs ambiguity Codex flagged (the API's own parameter prose describes a handle from `CreateNamedPipe`, not
+/// a client's `CreateFile` handle; Chromium's own client-side use is the only precedent, not a documented guarantee).
+/// Every same-process test above proves the PROTOCOL; only this one proves the OS call actually crosses a real process
+/// boundary the way `challenge()` depends on.
 #[test]
 fn cross_process_challenge_proves_a_real_child_server() {
     if !run_isolated("challenge::cross_process_challenge_proves_a_real_child_server") {
         return;
     }
-    let voyage_id = fresh_voyage_id();
+    let path = fresh_row_pipe();
     let (mut role, role_entry) =
         sot_platform::test_isolated::test_command("challenge::cross_process_challenge_server_role");
     let child = role
-        .env("PIPE_WIN_XPROC_VOYAGE_ID", &voyage_id)
+        .env("PIPE_WIN_XPROC_PIPE", &path)
         .spawn()
         .expect("failed to spawn the cross-process server child");
     let child_pid = child.id();
@@ -267,14 +149,12 @@ fn cross_process_challenge_proves_a_real_child_server() {
             }
         }
     }
-    let mut guard = KillGuard(Some(child));
+    let _guard = KillGuard(Some(child));
 
-    // ADR 0043 decision 27: `connect_voyage_pipe` no longer retries an
-    // absent pipe (`ERROR_FILE_NOT_FOUND` now fails on the first
-    // attempt) -- this test owns the ordinary race of the child not
-    // having bound yet via `wait_for_endpoint`.
-    let client = wait_for_endpoint(|| connect_voyage_pipe(&voyage_id), Duration::from_secs(30));
-    let mut exchange = VoyageMgmtExchange::default();
+    // ADR 0043 decision 27: the connector no longer retries an absent pipe (`ERROR_FILE_NOT_FOUND` fails on the first
+    // attempt): this test owns the ordinary race of the child not having bound yet via `wait_for_endpoint`.
+    let client = wait_for_endpoint(|| connect_own(&path), Duration::from_secs(30));
+    let mut exchange = RowHelloExchange::new("test");
     let outcome = challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30));
 
     match outcome {
@@ -285,69 +165,41 @@ fn cross_process_challenge_proves_a_real_child_server() {
         other => panic!("expected Proven against a real cross-process server, got {other:?}"),
     }
     role_entry.assert_once(child_pid);
-
-    // Close our end FIRST: the child waits for our `Closed` before it exits
-    // (see `cross_process_challenge_server_role`), so reaping it while this
-    // handle is still open would deadlock. Then reap it normally and defuse
-    // the guard's own kill (a no-op by then, kept only for the panic/
-    // early-return paths above).
-    drop(client);
-    // The role exits once it sees this client's close; its exit, within a bound, must be a success.
-    let status = sot_platform::test_isolated::wait_within(guard.0.as_mut().expect("the server role"), Duration::from_secs(10));
-    guard.0 = None;
-    assert!(status.success(), "the server role failed: {status}");
 }
 
-// ---------------------------------------------------------------------
-// U1a: SID authentication enforcement in the shared `connect_voyage_pipe`
-// constructor. Every step-5 client — mgmt or attach, tests and the e2e
-// harness included — now gets steps 1-3 of ADR 0041's same-connection
-// challenge (`challenge_win::authenticate_server`) as PART of connecting, not
-// as a separate call the caller has to remember to make. This is
-// DELIBERATELY WEAKER than the full five-step `challenge()` (Codex round-1
-// Blocker 1): no reply round trip happens here, so no liveness/pid-binding
-// proof is claimed at this layer — see `connect_voyage_pipe`'s own doc for
-// the full reasoning and why the attach lane's `hello` still gets to be
-// the connection's first frame.
-// ---------------------------------------------------------------------
-
-/// The pass case: against a genuine same-account server,
-/// `connect_voyage_pipe`'s SID authentication is a transparent
-/// pass-through — the connection it hands back is fully usable for the
-/// caller's own intended protocol (an ordinary mgmt round trip here), not
-/// merely "connected". This exercises the ENFORCED CONSTRUCTOR ITSELF
-/// (`connect_voyage_pipe`, not `authenticate_server` or `challenge`
-/// directly), so a regression that stopped calling `authenticate_server`
-/// at all would still pass this test (nothing here proves enforcement
-/// happened) -- that is exactly why the failure-mapping unit tests in
-/// `lane/client.rs` (`map_peer_auth_outcome`) exist alongside it: they
-/// prove the CONSTRUCTOR's mapping logic in isolation, and this test
-/// proves the happy path stays usable end to end.
+/// The pass case: against a genuine same-account row, `authenticate_server` is a transparent pass-through. The
+/// connection stays fully usable for the caller's own protocol (the hello round trip here), not merely "connected".
+/// This exercises the authentication on its own, not the full five-step `challenge()`: no reply round trip happens in
+/// it, so no liveness or pid-binding proof is claimed at this layer.
 #[test]
-fn connect_voyage_pipe_peer_authentication_enforced_pass_against_a_genuine_server() {
-    if !run_isolated("challenge::connect_voyage_pipe_peer_authentication_enforced_pass_against_a_genuine_server") {
+fn authenticate_server_passes_a_genuine_row_and_leaves_the_connection_usable() {
+    use sot_platform::identity::challenge::PeerAuthOutcome;
+    use sot_platform::identity::challenge_win::authenticate_server;
+    use sot_platform::identity::exchange::{ExchangeDecode, IdentityExchange};
+    if !run_isolated("challenge::authenticate_server_passes_a_genuine_row_and_leaves_the_connection_usable") {
         return;
     }
-    let voyage_id = fresh_voyage_id();
-    let server = PipeServer::bind(&voyage_id, 1).expect("bind");
-    let client = connect_voyage_pipe(&voyage_id)
-        .expect("SID-authentication-enforced connect must pass against a genuine same-account server");
-
-    let conn_id = expect_accepted(&server, TIMEOUT);
-    let probe = wire::encode_mgmt_request(&MgmtRequest::Probe).unwrap();
-    client.write_all(&probe).expect("the connection must still be fully usable after authentication");
-    let expected = wire::encode_mgmt_request(&MgmtRequest::Probe).unwrap();
-    let got = accumulate_bytes(&server, conn_id, expected.len(), TIMEOUT);
-    assert_eq!(got, expected);
-
-    let reply = wire::encode_mgmt_reply(&MgmtReply::ProbeOk).unwrap();
-    server.send(conn_id, reply.clone(), None).expect("send probe_ok");
-    let (buf, n) = sot_platform::test_wait::within(TIMEOUT, "the probe_ok read", move || {
-        let mut buf = [0u8; 512];
-        let n = client.read(&mut buf).expect("read probe_ok");
-        (buf, n)
+    let (path, _server, _run) = bind_row();
+    let client = connect_own(&path).expect("connect");
+    match authenticate_server(&client) {
+        PeerAuthOutcome::Authenticated(peer) => assert_eq!(peer.pid, std::process::id()),
+        other => panic!("authentication must pass against a genuine same-account server, got {other:?}"),
+    }
+    let mut hello = RowHelloExchange::new("test");
+    client.write_all(&hello.encode_request()).expect("the connection must still be fully usable after authentication");
+    let named = sot_platform::test_wait::within(TIMEOUT, "the hello reply", move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = client.read(&mut buf).expect("read the hello reply");
+            assert!(n > 0, "the row closed before it answered");
+            match hello.feed(&buf[..n]) {
+                ExchangeDecode::Incomplete => continue,
+                ExchangeDecode::Identity { pid, .. } => break Some(pid),
+                ExchangeDecode::Foreign => break None,
+            }
+        }
     });
-    assert_eq!(&buf[..n], reply.as_slice());
+    assert_eq!(named, Some(std::process::id()), "the row's hello names this process");
 }
 
 /// A `ChallengeableConnection` whose `raw_handle()` is deliberately

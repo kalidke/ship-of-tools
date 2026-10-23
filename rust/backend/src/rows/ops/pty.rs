@@ -192,7 +192,7 @@ pub async fn handle_pty_input(
                         }
                     };
                     let ready_phase =
-                        crate::rows::run::probe::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
+                        crate::rows::run::probe::phase_str(sot_log::SupervisorPhase::Ready);
                     if phase != ready_phase {
                         return CapsuleOpOutcome::NotReady(phase);
                     }
@@ -318,7 +318,7 @@ pub async fn handle_pty_screen(
                         }
                     };
                     let ready_phase =
-                        crate::rows::run::probe::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
+                        crate::rows::run::probe::phase_str(sot_log::SupervisorPhase::Ready);
                     if phase != ready_phase {
                         return CapsuleOpOutcome::NotReady(phase);
                     }
