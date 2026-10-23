@@ -52,7 +52,7 @@ const TEST_STEMS = Dict{String,Vector{String}}(
                    "macos_kernel_facts"],
     "capsule" => ["lane_bridge", "switch_latency", "keystroke_latency", "socket_unix", "pipe_win", "wire", "e2e_socket",
                   "e2e_pipe", "capsule", "supervisor", "conpty", "fe_client", "attach_worker", "row", "row_limits",
-                  "row_pipe", "row_supervisor"],
+                  "row_pipe", "row_supervisor", "fe_attach", "row_flood", "row_switch"],
     "sidecars" => ["repl_windows", "child_folders"],
     "pages" => ["site_root", "site_windows"],
     "files" => ["preview_order", "old_watcher"],
