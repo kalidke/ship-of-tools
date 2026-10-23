@@ -23,6 +23,8 @@ pub enum RowRequest {
 
 /// How long a connection waits for the main loop to take its input.
 const INPUT_BOUND: Duration = Duration::from_secs(2);
+/// How long a connection has to say hello, in all.
+const HELLO_BOUND: Duration = Duration::from_secs(5);
 /// The frames a connection may have queued; a viewer that does not drain them is dropped.
 pub(super) const QUEUE_FRAMES: usize = 256;
 /// Requests the main loop has not yet taken, at most; one more is refused as busy.
@@ -34,6 +36,35 @@ struct Conn {
     tx: mpsc::SyncSender<Out>,
     /// The snapshot was sent: output flows to it.
     live: bool,
+    /// Ends the connection's stream, so a reader or writer blocked on it returns.
+    closer: Arc<dyn Fn() + Send + Sync>,
+}
+
+/// A connection's slot. It is released when both of the connection's threads have ended, never earlier, so at most
+/// `MAX_CONNECTIONS` connections exist, whatever has been evicted.
+pub(super) struct Slot(Arc<RowRun>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.lock().slots -= 1;
+    }
+}
+
+/// Refusal texts; the server names each by its code.
+pub(super) const BUSY: &str = "busy: the row's request queue is full";
+pub(super) const UNKNOWN: &str = "delivery unknown: the terminal did not answer in time";
+pub(super) const RUN_ENDED: &str = "run ended: the input was sent to an earlier run";
+
+pub(super) fn code_of(msg: &str) -> &'static str {
+    if msg.starts_with("busy") {
+        "busy"
+    } else if msg.starts_with("delivery unknown") {
+        "unknown"
+    } else if msg.starts_with("run ended") {
+        "run_ended"
+    } else {
+        "refused"
+    }
 }
 
 struct Inner {
@@ -41,6 +72,12 @@ struct Inner {
     phase: String,
     phase_source: Option<Arc<dyn Fn() -> String + Send + Sync>>,
     conns: HashMap<ConnId, Conn>,
+    /// Slots held: connections whose threads have not both ended.
+    slots: usize,
+    /// A wake is pending: the loop has not drained since the last one was sent.
+    wake_pending: bool,
+    hello_bound: Duration,
+    input_bound: Duration,
     next_conn: ConnId,
     driver: Option<ConnId>,
     /// Attached connections that wait for a parser ground state to be sent the screen.
@@ -63,6 +100,10 @@ impl RowRun {
                 phase: phase.to_string(),
                 phase_source: None,
                 conns: HashMap::new(),
+                slots: 0,
+                wake_pending: false,
+                hello_bound: HELLO_BOUND,
+                input_bound: INPUT_BOUND,
                 next_conn: 1,
                 driver: None,
                 pending: Vec::new(),
@@ -98,8 +139,11 @@ impl RowRun {
     }
 
     /// A new agent start is a new run: the id changes, and connections of the old run keep their pen and their output.
+    /// Input still queued for the run that ended is answered `run ended` now, never written into the next.
     pub fn set_run(&self, run: impl Into<String>) {
-        self.lock().run = run.into();
+        let mut inner = self.lock();
+        inner.run = run.into();
+        inner.answer_stale_input();
     }
 
     /// What the loop calls to be woken when a request arrives.
@@ -129,42 +173,61 @@ impl RowRun {
         }
     }
 
+    /// At most `max` requests, for one pass of the loop. What is left arms the wake again.
     pub fn take_requests(&self, max: usize) -> Vec<RowRequest> {
         let mut inner = self.lock();
+        inner.answer_stale_input();
         let n = inner.requests.len().min(max);
-        inner.requests.drain(..n).collect()
+        let taken: Vec<RowRequest> = inner.requests.drain(..n).collect();
+        inner.wake_pending = false;
+        if !inner.requests.is_empty() {
+            inner.arm_wake();
+        }
+        taken
     }
 
     /// Connections open now, counted until both of a connection's threads have ended.
     pub fn open_connections(&self) -> usize {
-        self.lock().conns.len()
+        self.lock().slots
     }
 
     /// Shortens the hello's and the input's bounds for a test.
     #[doc(hidden)]
-    pub fn set_bounds_for_test(&self, _hello: Duration, _input: Duration) {}
+    pub fn set_bounds_for_test(&self, hello: Duration, input: Duration) {
+        let mut inner = self.lock();
+        inner.hello_bound = hello;
+        inner.input_bound = input;
+    }
 
-    /// Ends every connection: the run is over for them.
+    #[cfg(unix)]
+    pub(super) fn hello_bound(&self) -> Duration {
+        self.lock().hello_bound
+    }
+
+    /// Ends every connection's stream: the run is over for them. Their threads end on their own; the server joins them.
     pub fn close_all(&self) {
         let mut inner = self.lock();
         for conn in inner.conns.values() {
             let _ = conn.tx.try_send(Out::Close);
+            (conn.closer)();
         }
         inner.conns.clear();
         inner.pending.clear();
         inner.driver = None;
     }
 
-    pub(super) fn open(&self) -> Option<(ConnId, mpsc::Receiver<Out>)> {
+    /// A slot for a new connection, `None` while eight are held. The slot goes back when the guard drops.
+    pub(super) fn open(self: &Arc<Self>, closer: Arc<dyn Fn() + Send + Sync>) -> Option<(ConnId, mpsc::Receiver<Out>, Slot)> {
         let mut inner = self.lock();
-        if inner.conns.len() >= MAX_CONNECTIONS {
+        if inner.slots >= MAX_CONNECTIONS {
             return None;
         }
+        inner.slots += 1;
         let id = inner.next_conn;
         inner.next_conn += 1;
         let (tx, rx) = mpsc::sync_channel(QUEUE_FRAMES);
-        inner.conns.insert(id, Conn { tx, live: false });
-        Some((id, rx))
+        inner.conns.insert(id, Conn { tx, live: false, closer });
+        Some((id, rx, Slot(Arc::clone(self))))
     }
 
     pub(super) fn close(&self, id: ConnId) {
@@ -180,13 +243,14 @@ impl RowRun {
         self.lock().send(id, frame, blob);
     }
 
-    /// Admits an attach: the reply goes first, then the screen follows at the next ground state. A driver's attach
-    /// demotes the driver before it and resizes the terminal to the attaching window.
+    /// Admits an attach: a driver's own size is applied to the terminal first, and only then is the reply sent and the
+    /// screen queued, so the snapshot is cut at the driver's geometry. A reattach as a watcher gives up the pen.
     pub(super) fn attach(&self, id: ConnId, req_id: u64, cols: u16, rows: u16, driver: bool) -> Result<(), String> {
-        let mut inner = self.lock();
         if driver {
             check_size(cols, rows)?;
+            self.resize_terminal(cols, rows)?;
         }
+        let mut inner = self.lock();
         let res = Frame::res(req_id, OP_ATTACH, serde_json::to_value(AttachRes { run: inner.run.clone() }).unwrap_or_default());
         inner.send(id, res, None);
         if !inner.pending.contains(&id) {
@@ -197,8 +261,8 @@ impl RowRun {
         }
         if driver {
             inner.make_driver(id);
-            let (reply, _) = mpsc::sync_channel(1);
-            inner.request(RowRequest::Resize { cols, rows, reply });
+        } else if inner.driver == Some(id) {
+            inner.driver = None;
         }
         Ok(())
     }
@@ -207,32 +271,45 @@ impl RowRun {
         self.lock().make_driver(id);
     }
 
-    /// Hands bytes to the main loop and waits for it to write them.
+    /// Asks the loop to resize the terminal and waits for its answer: a failure is a failure.
+    fn resize_terminal(&self, cols: u16, rows: u16) -> Result<(), String> {
+        let (reply, answered) = mpsc::sync_channel(1);
+        let bound = {
+            let mut inner = self.lock();
+            inner.request(RowRequest::Resize { cols, rows, reply })?;
+            inner.input_bound
+        };
+        match answered.recv_timeout(bound) {
+            Ok(result) => result,
+            Err(_) => Err("the terminal did not take the resize in time".into()),
+        }
+    }
+
+    /// Hands bytes to the main loop and waits for it to write them. A full queue is `busy`; no answer in time is
+    /// `delivery unknown`, since the loop may still write them.
     pub(super) fn input(&self, id: ConnId, bytes: Vec<u8>) -> Result<usize, String> {
         let (reply, answered) = mpsc::sync_channel(1);
-        {
+        let bound = {
             let mut inner = self.lock();
             if inner.driver != Some(id) {
                 return Err("this connection is not the driver".into());
             }
             let run = inner.run.clone();
-            inner.request(RowRequest::Input { bytes, run, reply });
-        }
-        match answered.recv_timeout(INPUT_BOUND) {
-            Ok(r) => r,
-            Err(_) => Err("the terminal did not take the input in time".into()),
+            inner.request(RowRequest::Input { bytes, run, reply })?;
+            inner.input_bound
+        };
+        match answered.recv_timeout(bound) {
+            Ok(result) => result,
+            Err(_) => Err(UNKNOWN.into()),
         }
     }
 
     pub(super) fn resize(&self, id: ConnId, cols: u16, rows: u16) -> Result<(), String> {
         check_size(cols, rows)?;
-        let mut inner = self.lock();
-        if inner.driver != Some(id) {
+        if self.lock().driver != Some(id) {
             return Err("this connection is not the driver".into());
         }
-        let (reply, _) = mpsc::sync_channel(1);
-        inner.request(RowRequest::Resize { cols, rows, reply });
-        Ok(())
+        self.resize_terminal(cols, rows)
     }
 }
 
@@ -251,11 +328,12 @@ fn blob_payload(mut payload: serde_json::Value, len: usize) -> serde_json::Value
 }
 
 impl Inner {
-    /// Queues a frame for a connection; a connection whose queue is full is cut, never waited for.
+    /// Queues a frame for a connection; a connection whose queue is full is cut, never waited for: its stream is shut
+    /// down, so its blocked threads return and end.
     fn send(&mut self, id: ConnId, frame: Frame, blob: Option<Vec<u8>>) {
         let Some(conn) = self.conns.get(&id) else { return };
         if conn.tx.try_send(Out::Frame(frame, blob)).is_err() {
-            let _ = conn.tx.try_send(Out::Close);
+            (conn.closer)();
             self.conns.remove(&id);
             self.pending.retain(|p| *p != id);
             if self.driver == Some(id) {
@@ -264,10 +342,37 @@ impl Inner {
         }
     }
 
-    fn request(&mut self, req: RowRequest) {
+    /// Queues a request for the loop, refused as busy when the queue is full.
+    fn request(&mut self, req: RowRequest) -> Result<(), String> {
+        if self.requests.len() >= REQUEST_QUEUE {
+            return Err(BUSY.into());
+        }
         self.requests.push_back(req);
+        self.arm_wake();
+        Ok(())
+    }
+
+    /// One wake is pending at most; the loop's drain clears it.
+    fn arm_wake(&mut self) {
+        if self.wake_pending {
+            return;
+        }
+        self.wake_pending = true;
         if let Some(wake) = &self.wake {
             wake();
+        }
+    }
+
+    /// Input queued for an earlier run is answered `run ended`, and never reaches the loop.
+    fn answer_stale_input(&mut self) {
+        let run = self.run.clone();
+        let (stale, keep): (Vec<_>, Vec<_>) =
+            self.requests.drain(..).partition(|r| matches!(r, RowRequest::Input { run: sent, .. } if *sent != run));
+        self.requests = keep.into();
+        for request in stale {
+            if let RowRequest::Input { reply, .. } = request {
+                let _ = reply.send(Err(RUN_ENDED.into()));
+            }
         }
     }
 

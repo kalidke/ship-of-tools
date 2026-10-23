@@ -13,12 +13,13 @@ name is in this crate's one op table.
 1. **An envelope is at most 1 MiB in every reader and writer.** `MAX_ENVELOPE_BYTES`, its newline not counted;
    `write_frame` and `write_frame_blocking` fail with `EnvelopeTooLarge` before writing a byte; `read_frame` refuses an
    envelope one byte past the cap, never reading a line with no newline to its end; `read_frame_blocking` caps while
-   it reads. Rests on: one constant and one codec, no second reader.
+   it reads. Rests on: one constant and one codec; the blocking envelope writer is the blob writer with no blob, and the
+   hand-decoded hello of the capsule's row socket (`sot-log`'s `RowHelloExchange`) keeps the same cap on its whole line.
 2. **A blob is exactly its declared length.** A frame whose payload has `blob.len` is followed by exactly that many
    bytes; `write_frame` refuses a blob whose length differs from the declared one (or a blob the payload does not
    declare) before writing a byte; `read_frame` reads them and grows its buffer only with bytes that arrived, reserving
    at most 64 KiB up front (`BLOB_RESERVE_BOUND`), never the length the envelope declares; `read_envelope` reads the envelope alone, for a reader that must not read a blob it has not
-   admitted; the blocking pair `write_frame_blocking` and `read_frame_blocking` never reads a blob tail, and the pair
+   admitted; the envelope-only `read_frame_blocking` never reads a blob tail (an admission reads it first), and the pair
    `write_frame_blocking_blob` and `read_frame_blocking_blob` holds this guarantee for a blocking connection: the
    writer refuses a mismatch before a byte, the reader reads exactly the declared length and names a shortfall. A row
    reader judges a row by its hello's row number (the capsule's `ROW_PROTOCOL`), never by a frame's `v`.

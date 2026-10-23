@@ -61,9 +61,14 @@ fn an_evicted_viewer_gives_its_slot_back_only_when_its_threads_have_ended() {
     // The viewer reads nothing: its client's buffer, the socket's and the connection's queue fill, and it is evicted.
     let chunk = vec![b'x'; 60 * 1024];
     let mut p = vt100_ctt::Parser::new(24, 80, 0);
-    for _ in 0..400 {
+    // The client holds 256 frames and the connection 256 more before either gives: flood until it does.
+    for _ in 0..4000 {
         p.process(&chunk[..1]);
         run.output(&chunk, &p);
+        if run.open_connections() == 7 {
+            break;
+        }
+        std::thread::sleep(Duration::from_micros(200));
     }
     wait_for("the evicted viewer's slot to return", || run.open_connections() == 7);
     // Both of its threads ended with it: two threads per open connection, no more.

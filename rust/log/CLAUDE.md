@@ -70,21 +70,41 @@ true after the merge of the leg into the supervisor.
   (`supervisor.lock`, taken by `lock_supervisor`).
 - The row socket `row-<h>` (`<runtime dir>/row-<h>.sock`, a pipe `\\.\pipe\sot-row-<h>` on Windows) is served by the
   supervisor for as long as its run lives, in wire's frames. A connection is served nothing before its `row.hello`
-  is admitted: the challenge's OS steps first, then the hello's reply naming the row's `(pid, created)`. A peer of
-  another account is dropped at accept. At most 8 connections are open; an accept error follows `accept_policy`. The
-  hello's `row` number (`ROW_PROTOCOL`, now 1) is the one gate between a row and a client: no reader judges a frame's
-  `v`, and a client refuses another row number by name within the hello's bound, never by a hang. `row.attach` sends
-  the screen as a snapshot cut at a parser ground state, in blobs of at most 1 MiB with the last flagged, then the
-  output in order in blobs of at most 64 KiB. One connection at a time is the driver: only a driver's `row.input` is
-  written and its `row.resize` applied, a watcher's is refused by name and writes nothing, and a second driver (an
-  attach as driver, or a `row.take`) demotes the first with `row.demoted`. The run id is minted at each agent start.
-  Limits: this landing binds the socket but nothing in the product dials it until 6c-1a2, so a bind failure is noted
-  and the supervisor serves on without it; a live 6b row on a dev box is not served by it, and no candidate is cut
-  from main until 6c-2. A pipe has no read timeout and a close from the row's end does not wake its reader, so on
-  Windows a peer that never says hello holds a thread and one of the eight slots until it closes (the owner-only
-  descriptor keeps that to the account's own processes). The challenge refuses a peer that started in the clock tick
-  the client connects in, so a test binary that is both ends waits out one tick first. The row socket is the capsule's
-  first dependency on `sot-protocol`.
+  is admitted: the challenge's OS steps first, then the hello's reply naming the row's `(pid, created)`. The hello
+  has one absolute deadline (Unix) and its framing keeps wire's envelope cap on the whole line. A peer of another
+  account is dropped at accept. The runtime folder must be private (`runtime_dir` checks it; `RowServer::bind` on a
+  path of the caller's own only documents it). On Windows every pipe instance carries the protected owner-only
+  descriptor, read back from each instance by `tests/row_pipe.rs` (hosted).
+  The hello's `row` number (`ROW_PROTOCOL`, now 1) is the one gate between a row and a client: no reader judges a
+  frame's `v`, and a client refuses another row number by name, never by a hang. A client that cannot prove the peer
+  says so (`Unproven`), apart from a deadline that expired (`Timeout`).
+- Eight connections are eight real ones. A connection has two threads, a reader and a writer; its slot returns only
+  after both have ended, and `RowServer::shutdown` stops the acceptor, ends every connection's stream and joins every
+  connection thread. A viewer whose queue of 256 frames fills is evicted: its stream is shut down so its blocked
+  threads return, and its slot returns when they end. On Unix that is `shutdown(2)`; on Windows it is `CancelIoEx` on
+  the pipe's handle, with later calls failing at once. Limits: a Windows pipe has no read timeout, so a peer that
+  never says hello holds its two threads and a slot until it closes or the row ends; a write blocked in the
+  supervisor's own terminal (below) is not a row thread's. The client's incoming queue is bounded (256 frames), so a
+  caller that stops pumping stops the client reading and the row evicts it; a request's write is under its deadline.
+- `row.attach` sends the screen as a snapshot cut at a parser ground state, in blobs of at most 1 MiB with the last
+  flagged, then the output in order in blobs of at most 64 KiB. One connection at a time is the driver. A driver's
+  attach applies its own size to the terminal first, waiting for the loop's answer, so the snapshot is cut at that
+  size; a failed OS resize is a refused attach or resize, never a success. A reattach as a watcher gives up the pen.
+  Only a driver's `row.input` is written and its `row.resize` applied (2x2 to 512x256); a watcher's is refused by name
+  and writes nothing; a second driver (an attach as driver, or `row.take`) demotes the first with `row.demoted`.
+- Row requests (input, resize) wait in a queue of 64, never more: one that finds it full is refused as `busy`. The loop
+  drains at most 16 a pass and has at most one wake pending, so output, ticks and the exit checks still run under a
+  flood. Input is acknowledged as written, or reported `delivery unknown` when the loop did not answer in 2 s (it may
+  still write it; the client never sends it again), and input queued for one run is answered `run ended` when the run
+  changes and never written into the next. The run id is a UUIDv7 minted at each agent start.
+- Limits of this landing: nothing in the product dials the row socket until 6c-1a2, so a bind failure is noted and
+  the supervisor serves on without it; a live 6b row on a dev box is not served by it, and no candidate is cut from
+  main until 6c-2. The loop's own write of a driver's input to the terminal is still a blocking `write_all` on the
+  main thread, as the old lane's is (queue item CAPSULE-INPUT-BLOCKS-LOOP, for 6c-1a2, which makes the row path the
+  only input path). On Linux the challenge refuses a peer that started in the clock tick the client connects in
+  (`validate_pin`), so a supervisor dialed within 10 ms of its start can be `Unproven`; a later connection, with a
+  fresh anchor, is proven, and a test binary that is both ends waits out one tick first. The row socket is the
+  capsule's first dependency on `sot-protocol`.
 - Attach is ground-gated (`writer_loop::output_path::ground_check`), so a viewer joins only at a parser ground
   boundary, after every byte the parser has seen was published.
 - `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot serve the row), 70 (`EXIT_CONTENDED`, the
@@ -112,6 +132,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/supervisor/`: the one process of a row: the fence, the pointer, the lane and the main thread's loop.
 - `src/lane/`: transport contract, client seam and the platform bridge for the lanes.
 - `src/attach_client/`: one client for every viewer of a capsule.
+- `src/row/`: the row socket: `RowServer` (acceptor and connection threads), `RowRun` (the run's fan-out and request
+  queue, what the loop feeds and drains), `RowClient` (the blocking client) and the hello's payloads and exchange.
 - `../platform/`: the platform crate, whose charter is `../platform/CLAUDE.md`.
 - `src/bin/`: the sot-log crate's binaries (`sot-capsule` and the two helpers).
 - `tests/`: integration and whole-process tests (its page maps each file).
@@ -137,6 +159,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/supervisor/`: the supervisor, its fence and pointer, and the lane's thread.
 - `src/lane/`: wire frames, transports and the attach protocol.
 - `src/attach_client/`: the attach client and its worker.
+- `src/row/`: the row socket's server, run side, client and protocol types; tests `tests/row.rs`, `row_limits.rs`, `row_supervisor.rs`, `row_pipe.rs`.
 - `src/lane/exchange.rs`, `src/lane/connect_own.rs`: the lanes' identity exchanges, and the connect that asks platform's account check.
 - `src/storage.rs`: `storage_exhaustion`, the capsule's reading of platform's storage table.
 - `src/test_scan.rs`: the source scans' one walker, `rust_sources()` (every workspace member's `src/` and `tests/`), and its production view `production_sources()` with `without_test_modules`, and `enclosing` and `is_ident` (the `fn` or `struct` a match lies in, and the identifier test at its edges) (feature `test-support`).

@@ -7,7 +7,7 @@
 use super::proto::{
     AttachReq, HelloReq, HelloRes, InputRes, ResizeReq, RowError, OP_ATTACH, OP_HELLO, OP_INPUT, OP_RESIZE, OP_TAKE,
 };
-use super::run::{ConnId, Out, RowRun};
+use super::run::{code_of, ConnId, Out, RowRun, Slot};
 use super::ROW_PROTOCOL;
 use crate::lane::accept_policy::{accept_policy, AcceptAction, ACCEPT_SLEEP};
 use serde::de::DeserializeOwned;
@@ -19,17 +19,30 @@ use std::io::{BufRead, BufReader, Write};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 
-/// A connection that has not said hello within this is dropped.
-const HELLO_BOUND: Duration = Duration::from_secs(5);
+/// A write that makes no progress for this long fails, so a connection whose peer stopped reading ends.
+#[cfg(unix)]
+const WRITE_BOUND: Duration = Duration::from_secs(5);
+
+/// The connection threads the acceptor started, which shutdown joins.
+type Threads = Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>;
 
 pub struct RowServer {
     path: PathBuf,
     run: Arc<RowRun>,
     stop: Arc<AtomicBool>,
     accept: Option<std::thread::JoinHandle<()>>,
+    threads: Threads,
+}
+
+/// Keeps a connection's thread to be joined at shutdown, and forgets the ones that have ended.
+fn keep(threads: &Threads, handle: std::thread::JoinHandle<()>) {
+    let mut all = threads.lock().unwrap_or_else(|p| p.into_inner());
+    all.retain(|h| !h.is_finished());
+    all.push(handle);
 }
 
 /// The row's endpoint: `<runtime_dir>/row-<h>.sock` on Unix, the pipe `\\.\pipe\sot-row-<h>` on Windows.
@@ -99,13 +112,14 @@ impl RowServer {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
         let stop = Arc::new(AtomicBool::new(false));
+        let threads: Threads = Arc::default();
         let accept = {
-            let (run, stop) = (Arc::clone(&run), Arc::clone(&stop));
+            let (run, stop, threads) = (Arc::clone(&run), Arc::clone(&stop), Arc::clone(&threads));
             std::thread::Builder::new()
                 .name("row-accept".into())
-                .spawn(move || accept_loop(listener, run, stop, own_uid))?
+                .spawn(move || accept_loop(listener, run, stop, threads, own_uid))?
         };
-        Ok(Self { path: path.to_path_buf(), run, stop, accept: Some(accept) })
+        Ok(Self { path: path.to_path_buf(), run, stop, accept: Some(accept), threads })
     }
 
     /// Binds the pipe `path` with the owner-only descriptor on every instance it creates, and serves it.
@@ -127,13 +141,14 @@ impl RowServer {
             .security_descriptor(Some(owned))
             .create_duplex::<pipe_mode::Bytes>()?;
         let stop = Arc::new(AtomicBool::new(false));
+        let threads: Threads = Arc::default();
         let accept = {
-            let (run, stop) = (Arc::clone(&run), Arc::clone(&stop));
+            let (run, stop, threads) = (Arc::clone(&run), Arc::clone(&stop), Arc::clone(&threads));
             std::thread::Builder::new()
                 .name("row-accept".into())
-                .spawn(move || accept_loop(listener, run, stop))?
+                .spawn(move || accept_loop(listener, run, stop, threads))?
         };
-        Ok(Self { path: path.to_path_buf(), run, stop, accept: Some(accept) })
+        Ok(Self { path: path.to_path_buf(), run, stop, accept: Some(accept), threads })
     }
 
     /// Stops accepting, ends every connection and removes the socket.
@@ -141,13 +156,19 @@ impl RowServer {
         self.end();
     }
 
+    /// Stops the acceptor first (it rechecks the stop after every accept, so no connection is registered behind
+    /// this), then ends every connection's stream and joins every connection thread.
     fn end(&mut self) {
         self.stop.store(true, Ordering::Release);
-        self.run.close_all();
         // A blocked pipe accept wakes on a connect; a Unix accept polls the flag.
         #[cfg(windows)]
         let _ = std::fs::OpenOptions::new().read(true).write(true).open(&self.path);
         if let Some(t) = self.accept.take() {
+            let _ = t.join();
+        }
+        self.run.close_all();
+        let threads = std::mem::take(&mut *self.threads.lock().unwrap_or_else(|p| p.into_inner()));
+        for t in threads {
             let _ = t.join();
         }
         #[cfg(unix)]
@@ -162,7 +183,7 @@ impl Drop for RowServer {
 }
 
 #[cfg(unix)]
-fn accept_loop(listener: std::os::unix::net::UnixListener, run: Arc<RowRun>, stop: Arc<AtomicBool>, own_uid: u32) {
+fn accept_loop(listener: std::os::unix::net::UnixListener, run: Arc<RowRun>, stop: Arc<AtomicBool>, threads: Threads, own_uid: u32) {
     use std::os::unix::io::AsRawFd;
     while !stop.load(Ordering::Acquire) {
         #[allow(
@@ -172,18 +193,30 @@ fn accept_loop(listener: std::os::unix::net::UnixListener, run: Arc<RowRun>, sto
         let accepted = listener.accept();
         match accepted {
             Ok((stream, _)) => {
+                // A shutdown that began during the accept registers nothing.
+                if stop.load(Ordering::Acquire) {
+                    return;
+                }
                 // Another account's peer is dropped before a byte is read.
                 match peer_euid(stream.as_raw_fd()) {
                     Ok(uid) if uid == own_uid => {}
                     _ => continue,
                 }
                 let _ = stream.set_nonblocking(false);
-                let Some((id, rx)) = run.open() else { continue };
-                let run = Arc::clone(&run);
-                let spawned = std::thread::Builder::new().name("row-conn".into()).spawn(move || serve(stream, id, rx, &run));
-                if spawned.is_err() {
-                    // The closure's captures are gone with it; the connection id is released by the next close_all.
-                    continue;
+                let Ok(closer_stream) = stream.try_clone() else { continue };
+                let closer: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                    let _ = closer_stream.shutdown(std::net::Shutdown::Both);
+                });
+                let Some((id, rx, slot)) = run.open(closer) else { continue };
+                let hello_bound = run.hello_bound();
+                let conn_run = Arc::clone(&run);
+                let spawned = std::thread::Builder::new()
+                    .name("row-conn".into())
+                    .spawn(move || serve(stream, id, rx, slot, hello_bound, &conn_run));
+                match spawned {
+                    Ok(handle) => keep(&threads, handle),
+                    // The closure, and with it the slot, is gone; the registration is not.
+                    Err(_) => run.close(id),
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(10)),
@@ -204,6 +237,7 @@ fn accept_loop(
     >,
     run: Arc<RowRun>,
     stop: Arc<AtomicBool>,
+    threads: Threads,
 ) {
     while !stop.load(Ordering::Acquire) {
         match listener.accept() {
@@ -211,9 +245,21 @@ fn accept_loop(
                 if stop.load(Ordering::Acquire) {
                     return;
                 }
-                let Some((id, rx)) = run.open() else { continue };
-                let run = Arc::clone(&run);
-                let _ = std::thread::Builder::new().name("row-conn".into()).spawn(move || serve(stream, id, rx, &run));
+                let stream = Arc::new(stream);
+                let closed = Arc::new(AtomicBool::new(false));
+                let closer: Arc<dyn Fn() + Send + Sync> = {
+                    let (stream, closed) = (Arc::clone(&stream), Arc::clone(&closed));
+                    Arc::new(move || cancel_pipe_io(&stream, &closed))
+                };
+                let Some((id, rx, slot)) = run.open(closer) else { continue };
+                let conn_run = Arc::clone(&run);
+                let spawned = std::thread::Builder::new()
+                    .name("row-conn".into())
+                    .spawn(move || serve(stream, closed, id, rx, slot, &conn_run));
+                match spawned {
+                    Ok(handle) => keep(&threads, handle),
+                    Err(_) => run.close(id),
+                }
             }
             Err(e) => match accept_policy(&e) {
                 AcceptAction::Retry => {}
@@ -224,25 +270,57 @@ fn accept_loop(
     }
 }
 
+/// A `Read` over the connection's stream that gives the hello one absolute deadline: before each read the stream's
+/// timeout is set to what is left of it, and it is cleared once the hello is admitted.
 #[cfg(unix)]
-fn serve(stream: std::os::unix::net::UnixStream, id: ConnId, rx: std::sync::mpsc::Receiver<Out>, run: &Arc<RowRun>) {
-    let (Ok(write_half), Ok(closer), Ok(reader_half)) = (stream.try_clone(), stream.try_clone(), stream.try_clone()) else {
+struct HelloDeadline {
+    stream: std::os::unix::net::UnixStream,
+    deadline: Instant,
+    admitted: Arc<AtomicBool>,
+    cleared: bool,
+}
+
+#[cfg(unix)]
+impl std::io::Read for HelloDeadline {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.admitted.load(Ordering::Acquire) {
+            if !self.cleared {
+                self.stream.set_read_timeout(None)?;
+                self.cleared = true;
+            }
+        } else {
+            let left = self.deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "no hello by its deadline"));
+            }
+            self.stream.set_read_timeout(Some(left))?;
+        }
+        self.stream.read(buf)
+    }
+}
+
+#[cfg(unix)]
+fn serve(stream: std::os::unix::net::UnixStream, id: ConnId, rx: std::sync::mpsc::Receiver<Out>, slot: Slot, hello_bound: Duration, run: &Arc<RowRun>) {
+    let Ok(write_half) = stream.try_clone() else {
         run.close(id);
         return;
     };
-    let _ = write_half.set_write_timeout(Some(HELLO_BOUND));
-    let _ = stream.set_read_timeout(Some(HELLO_BOUND));
+    let _ = write_half.set_write_timeout(Some(WRITE_BOUND));
+    let admitted = Arc::new(AtomicBool::new(false));
+    let closer = stream.try_clone();
+    let reader = HelloDeadline { stream, deadline: Instant::now() + hello_bound, admitted: Arc::clone(&admitted), cleared: false };
     serve_io(
-        BufReader::new(reader_half),
+        BufReader::new(reader),
         write_half,
         move || {
-            let _ = closer.shutdown(std::net::Shutdown::Both);
+            if let Ok(s) = closer {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
         },
-        move || {
-            let _ = stream.set_read_timeout(None);
-        },
+        move || admitted.store(true, Ordering::Release),
         id,
         rx,
+        slot,
         run,
     );
 }
@@ -250,38 +328,77 @@ fn serve(stream: std::os::unix::net::UnixStream, id: ConnId, rx: std::sync::mpsc
 #[cfg(windows)]
 type PipeStream = interprocess::os::windows::named_pipe::DuplexPipeStream<interprocess::os::windows::named_pipe::pipe_mode::Bytes>;
 
+/// Cancels the I/O a thread has blocked on this pipe, from any thread, and makes every later call fail. A thread that
+/// began its call between the flag's check and the cancel is caught by the second call the writer makes as it ends.
+#[cfg(windows)]
+fn cancel_pipe_io(stream: &PipeStream, closed: &AtomicBool) {
+    use std::os::windows::io::AsRawHandle;
+    closed.store(true, Ordering::Release);
+    // SAFETY: the handle is the live pipe's own; a null overlapped cancels every pending call on it.
+    unsafe {
+        windows_sys::Win32::System::IO::CancelIoEx(stream.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE, std::ptr::null());
+    }
+}
+
 /// One pipe, read by this thread and written by the writer's.
 #[cfg(windows)]
-struct PipeHalf(Arc<PipeStream>);
+struct PipeHalf {
+    stream: Arc<PipeStream>,
+    closed: Arc<AtomicBool>,
+}
+
+#[cfg(windows)]
+impl PipeHalf {
+    fn check(&self) -> std::io::Result<()> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the connection was ended"));
+        }
+        Ok(())
+    }
+}
 
 #[cfg(windows)]
 impl Read for PipeHalf {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        (&*self.0).read(buf)
+        self.check()?;
+        (&*self.stream).read(buf)
     }
 }
 
 #[cfg(windows)]
 impl Write for PipeHalf {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        (&*self.0).write(buf)
+        self.check()?;
+        (&*self.stream).write(buf)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        (&*self.0).flush()
+        self.check()?;
+        (&*self.stream).flush()
     }
 }
 
-/// Limits on Windows: a pipe has no read timeout, so a peer that never says hello holds its thread and one of the eight
-/// slots until it closes, and a close from this end does not wake the reader until the peer ends too. The pipe's
-/// owner-only descriptor keeps both to this account's own processes.
+/// A pipe has no read timeout, so on Windows the hello has no deadline: a peer of this account that never says hello
+/// holds its two threads and one of the eight slots until it closes or the row ends. Every other end goes through
+/// `cancel_pipe_io`, which wakes a blocked read or write.
 #[cfg(windows)]
-fn serve(stream: PipeStream, id: ConnId, rx: std::sync::mpsc::Receiver<Out>, run: &Arc<RowRun>) {
-    let shared = Arc::new(stream);
-    serve_io(BufReader::new(PipeHalf(Arc::clone(&shared))), PipeHalf(shared), || {}, || {}, id, rx, run);
+fn serve(stream: Arc<PipeStream>, closed: Arc<AtomicBool>, id: ConnId, rx: std::sync::mpsc::Receiver<Out>, slot: Slot, run: &Arc<RowRun>) {
+    let closer_stream = Arc::clone(&stream);
+    let closer_flag = Arc::clone(&closed);
+    serve_io(
+        BufReader::new(PipeHalf { stream: Arc::clone(&stream), closed: Arc::clone(&closed) }),
+        PipeHalf { stream, closed },
+        move || cancel_pipe_io(&closer_stream, &closer_flag),
+        || {},
+        id,
+        rx,
+        slot,
+        run,
+    );
 }
 
 /// The connection's two threads: this one reads requests, the writer drains the connection's queue in order. `closer`
-/// ends the stream when the writer is done; `after_admit` runs once the hello has been admitted.
+/// ends the stream when the writer is done; `after_admit` runs once the hello has been admitted. The slot goes back
+/// only after the writer has been joined.
 fn serve_io<R: BufRead, W: Write + Send + 'static>(
     mut reader: R,
     mut write_half: W,
@@ -289,9 +406,10 @@ fn serve_io<R: BufRead, W: Write + Send + 'static>(
     after_admit: impl FnOnce(),
     id: ConnId,
     rx: std::sync::mpsc::Receiver<Out>,
+    slot: Slot,
     run: &Arc<RowRun>,
 ) {
-    let writer = std::thread::spawn(move || {
+    let spawned = std::thread::Builder::new().name("row-write".into()).spawn(move || {
         while let Ok(out) = rx.recv() {
             match out {
                 Out::Frame(frame, blob) => {
@@ -304,6 +422,11 @@ fn serve_io<R: BufRead, W: Write + Send + 'static>(
         }
         closer();
     });
+    let Ok(writer) = spawned else {
+        run.close(id);
+        drop(slot);
+        return;
+    };
     if admit(&mut reader, id, run) {
         after_admit();
         requests(&mut reader, id, run);
@@ -312,6 +435,7 @@ fn serve_io<R: BufRead, W: Write + Send + 'static>(
     // included), then ends the stream.
     run.close(id);
     let _ = writer.join();
+    drop(slot);
 }
 
 /// The hello: the first frame, before anything is served. The reply names this row, so a client with another row number
@@ -332,6 +456,11 @@ fn refuse(run: &RowRun, id: ConnId, req: &Frame, code: &str, msg: &str) {
     run.send(id, Frame::res(req.id, &req.op, json!({"error": msg, "code": code})), None);
 }
 
+/// A refusal from the run, named by its own code.
+fn refuse_with(run: &RowRun, id: ConnId, req: &Frame, msg: &str) {
+    refuse(run, id, req, code_of(msg), msg);
+}
+
 fn payload<T: DeserializeOwned>(frame: &Frame) -> Result<T, String> {
     serde_json::from_value(frame.payload.clone()).map_err(|e| format!("bad payload for {}: {e}", frame.op))
 }
@@ -345,7 +474,7 @@ fn requests<R: std::io::BufRead>(reader: &mut R, id: ConnId, run: &Arc<RowRun>) 
         match frame.op.as_str() {
             OP_ATTACH => match payload::<AttachReq>(&frame).and_then(|r| run.attach(id, frame.id, r.cols, r.rows, r.driver)) {
                 Ok(()) => {}
-                Err(msg) => refuse(run, id, &frame, "bad_request", &msg),
+                Err(msg) => refuse_with(run, id, &frame, &msg),
             },
             OP_TAKE => {
                 run.take(id);
@@ -356,11 +485,11 @@ fn requests<R: std::io::BufRead>(reader: &mut R, id: ConnId, run: &Arc<RowRun>) 
                     let res = InputRes { written: written as u64 };
                     run.send(id, Frame::res(frame.id, OP_INPUT, serde_json::to_value(res).unwrap_or_default()), None);
                 }
-                Err(msg) => refuse(run, id, &frame, "refused", &msg),
+                Err(msg) => refuse_with(run, id, &frame, &msg),
             },
             OP_RESIZE => match payload::<ResizeReq>(&frame).and_then(|r| run.resize(id, r.cols, r.rows)) {
                 Ok(()) => run.send(id, Frame::res(frame.id, OP_RESIZE, json!({})), None),
-                Err(msg) => refuse(run, id, &frame, "refused", &msg),
+                Err(msg) => refuse_with(run, id, &frame, &msg),
             },
             other => refuse(run, id, &frame, "unknown_op", &format!("no row op {other}")),
         }

@@ -188,8 +188,8 @@ pub(super) fn service_row<P: Producer>(leg: &mut Leg<'_, P>) {
                 let _ = reply.send(written);
             }
             crate::row::RowRequest::Resize { cols, rows, reply } => {
-                let _ = reply.send(Ok(()));
-                resize_terminal(cols, rows, leg);
+                let result = if resize_terminal(cols, rows, leg) { Ok(()) } else { Err("the terminal could not be resized".to_string()) };
+                let _ = reply.send(result);
             }
         }
     }

@@ -8,6 +8,7 @@ use super::ROW_PROTOCOL;
 use crate::lane::client::{Endpoint, PlatformEndpoint};
 use crate::lane::connect_own::connect_own;
 use sot_platform::identity::challenge::ChallengeOutcome;
+use sot_platform::identity::deadline::run_with_deadline;
 use sot_protocol::codec::{read_frame_blocking_blob, write_frame_blocking_blob};
 use sot_protocol::{Frame, Kind};
 use std::collections::VecDeque;
@@ -28,6 +29,12 @@ pub enum RowEvent {
     /// Another connection took the driver's place.
     Demoted,
 }
+
+/// Frames the reader thread holds for the caller. Past it the reader stops reading the socket, so a caller that stops
+/// pumping pushes back on the row, which then drops it as a slow viewer.
+const INCOMING_FRAMES: usize = 256;
+/// Events kept while a request waits for its reply, at most.
+const PENDING_EVENTS: usize = 1024;
 
 type Incoming = Result<(Frame, Option<Vec<u8>>), RowError>;
 
@@ -55,7 +62,12 @@ impl RowClient {
     /// name; the frames' `v` is never read.
     pub fn connect(path: &Path, build: &str, bound: Duration) -> Result<Self, RowError> {
         let deadline = Instant::now() + bound;
+        // The platform connector keeps its own 2 s retry budget and cannot be cut short; a dial that outlasts the
+        // caller's deadline is reported as a timeout when it returns.
         let conn = connect_own(path).map_err(transport)?;
+        if Instant::now() >= deadline {
+            return Err(RowError::Timeout("the dial"));
+        }
         let mut hello = RowHelloExchange::new(build);
         match PlatformEndpoint::default().challenge(&conn, &mut hello, deadline) {
             ChallengeOutcome::Proven(_) => {}
@@ -65,11 +77,14 @@ impl RowClient {
                     None => RowError::Foreign,
                 })
             }
-            ChallengeOutcome::Undetermined => return Err(RowError::Timeout("the row's hello")),
+            // A deadline that passed is a timeout; any other failure to prove (an end of stream, an OS error, a start in
+            // the clock tick of the connect on Linux) is that the peer could not be proven.
+            ChallengeOutcome::Undetermined if Instant::now() >= deadline => return Err(RowError::Timeout("the row's hello")),
+            ChallengeOutcome::Undetermined => return Err(RowError::Unproven),
         }
         let run = hello.reply().map(|r| r.run.clone()).unwrap_or_default();
         let conn = Arc::new(conn);
-        let (tx, incoming) = mpsc::channel();
+        let (tx, incoming) = mpsc::sync_channel(INCOMING_FRAMES);
         let reader = ConnReader(Arc::clone(&conn));
         std::thread::Builder::new().name("row-client-read".into()).spawn(move || {
             let mut reader = BufReader::new(reader);
@@ -149,20 +164,31 @@ impl RowClient {
         self.next_id += 1;
         let mut bytes = Vec::new();
         write_frame_blocking_blob(&mut bytes, &Frame::req(id, op, payload), blob).map_err(|e| RowError::Protocol(e.to_string()))?;
-        self.conn.write_all(&bytes).map_err(transport)?;
         let deadline = Instant::now() + REQUEST_BOUND;
+        // The write is under the request's own deadline: a row that stops reading cannot park the caller.
+        let conn = Arc::clone(&self.conn);
+        match run_with_deadline(deadline, || self.conn.cancel(), move || conn.write_all(&bytes)) {
+            Some(written) => written.map_err(transport)?,
+            None => return Err(RowError::Timeout("a row request's write")),
+        }
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.incoming.recv_timeout(left) {
                 Ok(Ok((frame, blob))) => match frame.kind {
                     Kind::Res if frame.id == id => {
                         if let Some(msg) = frame.payload.get("error").and_then(|e| e.as_str()) {
-                            return Err(RowError::Refused(msg.to_string()));
+                            return Err(match frame.payload.get("code").and_then(|c| c.as_str()) {
+                                Some("unknown") => RowError::DeliveryUnknown,
+                                _ => RowError::Refused(msg.to_string()),
+                            });
                         }
                         return Ok(frame);
                     }
                     Kind::Evt => {
                         if let Some(ev) = event_of(frame, blob)? {
+                            if self.events.len() >= PENDING_EVENTS {
+                                return Err(RowError::Protocol("too many events were left unread".into()));
+                            }
                             self.events.push_back(ev);
                         }
                     }

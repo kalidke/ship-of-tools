@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use sot_platform::identity::exchange::{ExchangeDecode, IdentityExchange};
 use sot_protocol::{BlobDescriptor, Frame, Kind};
 
+/// The most of a build label a hello carries.
+const MAX_BUILD_BYTES: usize = 256;
+
 pub const OP_HELLO: &str = "row.hello";
 pub const OP_ATTACH: &str = "row.attach";
 pub const OP_SNAPSHOT: &str = "row.snapshot";
@@ -100,7 +103,16 @@ pub struct RowHelloExchange {
 
 impl RowHelloExchange {
     pub fn new(build: impl Into<String>) -> Self {
-        Self { build: build.into(), buf: Vec::new(), done: false, mismatch: None, reply: None }
+        // The build is a label; cut to a length that keeps the request far inside wire's cap.
+        let mut build: String = build.into();
+        if build.len() > MAX_BUILD_BYTES {
+            let mut end = MAX_BUILD_BYTES;
+            while !build.is_char_boundary(end) {
+                end -= 1;
+            }
+            build.truncate(end);
+        }
+        Self { build, buf: Vec::new(), done: false, mismatch: None, reply: None }
     }
 
     /// The row number the peer declared, when it was not ours.
@@ -128,11 +140,13 @@ impl IdentityExchange for RowHelloExchange {
             return ExchangeDecode::Foreign;
         }
         self.buf.extend_from_slice(bytes);
+        let cap = sot_protocol::codec::MAX_ENVELOPE_BYTES;
         let Some(end) = self.buf.iter().position(|&b| b == b'\n') else {
-            return if self.buf.len() > sot_protocol::codec::MAX_ENVELOPE_BYTES { self.finish(None) } else { ExchangeDecode::Incomplete };
+            return if self.buf.len() > cap { self.finish(None) } else { ExchangeDecode::Incomplete };
         };
-        // One reply is all an exchange is owed: bytes behind it are corruption.
-        if end + 1 != self.buf.len() {
+        // The cap is on the whole line, wherever its newline arrives; and one reply is all an exchange is owed, so
+        // bytes behind it are corruption.
+        if end > cap || end + 1 != self.buf.len() {
             return self.finish(None);
         }
         let Ok(frame) = serde_json::from_slice::<Frame>(&self.buf[..end]) else { return self.finish(None) };

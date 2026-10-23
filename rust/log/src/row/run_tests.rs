@@ -2,8 +2,8 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn driver(run: &Arc<RowRun>) -> ConnId {
-    let (id, _rx) = run.open().expect("a slot");
-    std::mem::forget(_rx);
+    let (id, rx, slot) = run.open(Arc::new(|| {})).expect("a slot");
+    std::mem::forget((rx, slot));
     run.take(id);
     id
 }
