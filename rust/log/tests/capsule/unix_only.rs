@@ -103,7 +103,7 @@
     /// Test: after a driver's resize on the row socket, the ACTUAL pty geometry moved, not merely the row's own answer.
     /// Writes `stty size\n` through the driver and reads the shell's own echoed answer back off the live output,
     /// asserting it names the resized geometry exactly (an asymmetric rows/cols pair, so a transposed readback cannot
-    /// pass by accident). An out-of-budget resize is refused, and the pty is asked once.
+    /// pass by accident). An out-of-budget resize is refused and never reaches the pty.
     #[test]
     fn resize_reaches_the_pty() {
         let _serial = serial();
@@ -129,5 +129,7 @@
             .expect("run did not return within the teardown bound")
             .unwrap();
         assert_eq!(summary.exit_kind, ExitKind::Requested);
-        assert_eq!(summary.resize_os_calls, 1, "the pty was asked once: the in-budget resize only");
+        // A driver's attach applies its own size first (one call), then the in-budget resize; the refused ones never
+        // reach the pty.
+        assert_eq!(summary.resize_os_calls, 2, "the pty was asked for the attach's size and the in-budget resize only");
     }

@@ -22,7 +22,7 @@ fn spawn_failure_is_compensated() {
 
 
 /// Test 4: resize rejects out-of-budget requests rather than clamping them, and `ResizePseudoConsole` is
-/// actually invoked exactly once (the in-budget request only — review
+/// never invoked for them (the attach's size and the in-budget request only — review
 /// finding: the disposition string alone doesn't prove the OS call was
 /// really gated). Drives resize the way a real driver does: attach as the
 /// driver on the row socket, then three `resize` requests.
@@ -48,7 +48,9 @@ fn resize_commits_and_rejects() {
         .expect("run did not return within the teardown bound")
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
-    assert_eq!(summary.resize_os_calls, 1, "expected exactly one ResizePseudoConsole call (the valid request only)");
+    // A driver's attach applies its own size first (one call), then the in-budget resize; the refused ones never reach
+    // `ResizePseudoConsole`.
+    assert_eq!(summary.resize_os_calls, 2, "expected ResizePseudoConsole for the attach's size and the valid request only");
 }
 
 /// Test 5: flood. A producer emits well beyond the 8 MiB output budget;
