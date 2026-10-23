@@ -85,3 +85,17 @@ fn a_viewer_that_falls_behind_is_resynced_with_one_screen_not_cut() {
     assert_eq!(screens, 1, "a resync supersedes the screen the writer has not begun");
     drop(slot);
 }
+
+/// A connection whose reader has ended is still registered while its writer may be flushing, so a shutdown's
+/// `close_all` reaches its stream: a peer that never reads cannot hold the supervisor's exit.
+#[test]
+fn a_closed_connection_stays_reachable_until_its_threads_have_ended() {
+    let run = RowRun::new("r", "ready");
+    let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = Arc::clone(&closed);
+    let (id, rx, slot) = run.open(Arc::new(move || seen.store(true, Ordering::SeqCst))).expect("a slot");
+    std::mem::forget((rx, slot));
+    run.close(id);
+    run.close_all();
+    assert!(closed.load(Ordering::SeqCst), "close_all did not reach a connection whose writer has yet to end");
+}

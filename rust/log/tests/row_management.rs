@@ -252,3 +252,150 @@ fn a_stop_is_answered_before_the_supervisor_exits() {
     supervisor_client::stop(&state_dir).expect("the daemon's stop sees the reply and the exit");
     assert!(second.0.try_wait().unwrap().is_some(), "the supervisor had exited when stop returned");
 }
+
+/// What a row that loses replies has done so far.
+#[derive(Default)]
+struct Lossy {
+    ended: bool,
+    reset: bool,
+}
+
+/// A stand-in row that carries out `row.end_run` and `row.reset` and then drops the connection with no reply, as a
+/// supervisor that died mid-answer or a connection that broke would, and says what happened when status is read.
+fn lossy_row(path: &Path, state: std::sync::Arc<std::sync::Mutex<Lossy>>, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) -> std::thread::JoinHandle<()> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::Ordering;
+    let listener = UnixListener::bind(path).expect("bind the stand-in");
+    listener.set_nonblocking(true).unwrap();
+    std::thread::spawn(move || {
+        while !stop.load(Ordering::Acquire) {
+            let Ok((stream, _)) = listener.accept() else {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            stream.set_nonblocking(false).unwrap();
+            let state = state.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut out = stream;
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                    let req: sot_protocol::Frame = serde_json::from_str(line.trim_end()).expect("a request frame");
+                    line.clear();
+                    let (pid, created) = sot_log::row::self_identity().expect("own identity");
+                    let payload = match req.op.as_str() {
+                        "row.hello" => json!({"pid": pid, "created": created, "phase": "ready", "run": "run-one", "row": ROW_PROTOCOL}),
+                        "row.status" => {
+                            let s = state.lock().unwrap();
+                            if s.reset {
+                                json!({"phase": "starting", "run": "run-two", "voyage": "voyage-two"})
+                            } else if s.ended {
+                                json!({"phase": "ended_no_respawn", "voyage": "voyage-one"})
+                            } else {
+                                json!({"phase": "ready", "run": "run-one", "voyage": "voyage-one"})
+                            }
+                        }
+                        "row.end_run" => {
+                            state.lock().unwrap().ended = true;
+                            return;
+                        }
+                        "row.reset" => {
+                            state.lock().unwrap().reset = true;
+                            return;
+                        }
+                        _ => json!({"error": "no such op", "code": "unknown_op"}),
+                    };
+                    let mut text = serde_json::to_vec(&sot_protocol::Frame::res(req.id, &req.op, payload)).unwrap();
+                    text.push(b'\n');
+                    if out.write_all(&text).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    })
+}
+
+fn lossy_setup(runtime: &Path, state: Lossy) -> (tempfile::TempDir, PathBuf, std::sync::Arc<std::sync::atomic::AtomicBool>, std::thread::JoinHandle<()>) {
+    std::thread::sleep(Duration::from_millis(50));
+    std::env::set_var("SOT_RUNTIME_DIR", runtime);
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let path = socket_path_in(runtime, &state_dir_hash(&state_dir)).expect("the path fits");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let row = lossy_row(&path, std::sync::Arc::new(std::sync::Mutex::new(state)), stop.clone());
+    (dir, state_dir, stop, row)
+}
+
+/// An end whose reply is lost after the run ended is settled by reading status from the same supervisor: the run is
+/// gone, so it ended.
+#[test]
+fn an_end_run_whose_reply_is_lost_after_the_run_ended_reports_ended() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    let (dir, state_dir, stop, row) = lossy_setup(runtime.path(), Lossy::default());
+    let outcome = supervisor_client::end_run(&state_dir, "run-one", "test").expect("the call is answered");
+    assert!(matches!(outcome, supervisor_client::EndRunOutcome::Ended), "a lost reply over an ended run: {outcome:?}");
+    stop.store(true, std::sync::atomic::Ordering::Release);
+    row.join().unwrap();
+    drop(dir);
+}
+
+/// A reset whose reply is lost after the new voyage was published reports the reset and its voyage.
+#[test]
+fn a_reset_whose_reply_is_lost_after_publication_reports_reset() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    let (dir, state_dir, stop, row) = lossy_setup(runtime.path(), Lossy { ended: true, reset: false });
+    let voyage = supervisor_client::reset(&state_dir).expect("the reset is found published");
+    assert_eq!(voyage, "voyage-two");
+    stop.store(true, std::sync::atomic::Ordering::Release);
+    row.join().unwrap();
+    drop(dir);
+}
+
+/// A peer that sends `row.stop` and never reads its reply cannot hold the supervisor's exit: shutdown ends its
+/// connection whatever the peer does.
+#[test]
+fn a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown() {
+    use std::io::Write;
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let path = socket_path_in(runtime.path(), "0123456789abcdef").expect("the path fits");
+    struct Stopper;
+    impl sot_log::row::Management for Stopper {
+        fn status(&self) -> sot_log::row::StatusRes {
+            sot_log::row::StatusRes { phase: "ready".into(), run: None, voyage: None }
+        }
+        fn end_run(&self, _: &str, _: &str) -> sot_log::row::EndRunRes {
+            unreachable!()
+        }
+        fn reset(&self) -> sot_log::row::ResetRes {
+            unreachable!()
+        }
+        fn stop(&self, _: sot_log::row::ConnId) -> sot_log::row::StopRes {
+            sot_log::row::StopRes { outcome: sot_log::row::StopOutcome::Stopping }
+        }
+        fn conn_gone(&self, _: sot_log::row::ConnId) {}
+    }
+    let run = sot_log::row::RowRun::new("r", "ready");
+    run.set_management(Box::new(Stopper));
+    let server = sot_log::row::RowServer::bind(&path, run).expect("bind");
+    let mut peer = std::os::unix::net::UnixStream::connect(&path).expect("connect");
+    for (id, op, payload) in [(1, "row.hello", json!({"build": "t", "row": ROW_PROTOCOL})), (2, "row.stop", json!({}))] {
+        let mut text = serde_json::to_vec(&sot_protocol::Frame::req(id, op, payload)).unwrap();
+        text.push(b'\n');
+        peer.write_all(&text).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let (done, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        server.shutdown();
+        let _ = done.send(());
+    });
+    assert!(ended.recv_timeout(Duration::from_secs(10)).is_ok(), "the shutdown never ended with a peer that does not read");
+    drop((peer, dir));
+}

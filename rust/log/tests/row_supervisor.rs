@@ -263,3 +263,58 @@ fn the_row_listeners_watch_waits_on_an_event() {
     let served = served.expect("the rebound listener served a dial");
     assert!(served < Duration::from_secs(5), "the dial after the death was served after {served:?}");
 }
+
+/// A listener lost while the supervisor rests (its run ended, nothing left to ask of it) cannot be bound again: the
+/// supervisor ends with 75 and frees its fence, so rows' budget decides. Nothing else could stop it, since the row
+/// socket is its only way in.
+#[test]
+fn a_listener_lost_while_the_supervisor_rests_ends_it_with_75() {
+    let trigger_dir = tempfile::tempdir().unwrap();
+    let trigger = trigger_dir.path().join("lost");
+    let runtime = tempfile::Builder::new().prefix("sot-r").tempdir_in("/tmp").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sot-capsule"));
+    cmd.arg("supervise")
+        .arg(&state_dir)
+        .arg("--start")
+        .arg("--assume-no-rollback-target")
+        .arg("--")
+        .args(["/bin/sh", "-c", "echo agent-was-here; exec cat"])
+        .env("SOT_RUNTIME_DIR", runtime.path())
+        .env("SOT_TEST_ROW_LISTENER_DIES_ON", &trigger)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let mut supervisor = Supervisor(cmd.spawn().expect("start a supervisor"));
+    let path = sot_log::row::socket_path_in(runtime.path(), &state_dir_hash(&state_dir)).expect("the path fits");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut client = loop {
+        match RowClient::connect(&path, "test", Duration::from_secs(5)) {
+            Ok(c) => break c,
+            Err(e) => assert!(Instant::now() < deadline, "the row socket never answered: {e}"),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    client.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut client, "agent-was-here", Duration::from_secs(20));
+    let run = client.call("row.status", serde_json::json!({}), Duration::from_secs(5)).expect("status").payload["run"].as_str().unwrap().to_string();
+    let ended = client.call("row.end_run", serde_json::json!({"run": run, "reason": "test"}), Duration::from_secs(40)).expect("end_run");
+    assert_eq!(ended.payload["outcome"], "ended", "{ended:?}");
+    drop(client);
+
+    std::fs::write(&trigger, b"").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = supervisor.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "a resting supervisor with no listener kept its fence");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(status.code(), Some(75), "a row nobody can reach is a row that did not start");
+}

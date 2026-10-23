@@ -54,6 +54,13 @@ fn listener_dies_for_test() -> bool {
     }
 }
 
+/// Test seam: `SOT_TEST_ROW_LISTENER_DIES_ON=<path>` ends every acceptor, this process's first and each one bound after,
+/// once that file exists, as a permanent listener failure that comes while the row is up. Inert unless named.
+#[cfg(unix)]
+fn listener_dies_on_trigger_for_test() -> bool {
+    std::env::var_os("SOT_TEST_ROW_LISTENER_DIES_ON").is_some_and(|path| Path::new(&path).exists())
+}
+
 /// Keeps a connection's thread to be joined at shutdown, and forgets the ones that have ended.
 fn keep(threads: &Threads, handle: std::thread::JoinHandle<()>) {
     let mut all = threads.lock().unwrap_or_else(|p| p.into_inner());
@@ -261,7 +268,13 @@ fn accept_loop(
                     Err(_) => run.close(id),
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(10)),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if listener_dies_on_trigger_for_test() {
+                    on_death();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             Err(e) => match accept_policy(&e) {
                 AcceptAction::Retry => {}
                 AcceptAction::Sleep => std::thread::sleep(ACCEPT_SLEEP),
