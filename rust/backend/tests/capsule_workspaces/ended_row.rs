@@ -48,7 +48,6 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
 
     let (status, _process) =
         sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
-    let voyage = status.voyage.expect("a ready capsule has a voyage");
     sot_log::attach_client::supervisor_client::end_run(&state_dir_path, status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
     // Wait for the daemon's observer, not a raw lane probe -- pty.open decides
     // from that cached phase, so a stale read here would skip activation entirely.
@@ -191,32 +190,32 @@ async fn setup_ended_row(env: &Env, label: &str) -> (Conn, u64, String, String, 
 
     let (status, _process) =
         sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
-    let original_voyage = status.voyage.expect("a ready capsule has a voyage");
+    let original_run = status.run.clone().expect("a ready capsule has a run");
     sot_log::attach_client::supervisor_client::end_run(&state_dir_path, status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
     // The daemon's own observer, not a raw lane probe -- `pty.open`
     // decides from that cached phase.
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
 
-    (conn, next_id, workspace_id, target, state_dir_path, original_voyage)
+    (conn, next_id, workspace_id, target, state_dir_path, original_run)
 }
 
-/// Shared conclusion: the row must converge on Ready under a FRESH
-/// voyage -- never the original, never stuck `ended_no_respawn`.
+/// Shared conclusion: the row must converge on Ready in a FRESH
+/// run -- never the original, never stuck `ended_no_respawn`.
 #[cfg(target_os = "linux")]
-async fn assert_ends_in_a_fresh_voyage(
+async fn assert_ends_in_a_fresh_run(
     conn: &mut Conn,
     next_id: &mut u64,
     workspace_id: &str,
     state_dir_path: &Path,
-    original_voyage: &str,
+    original_run: &str,
 ) {
     poll_for_phase(conn, next_id, workspace_id, "ready", BOUND.max(Duration::from_secs(60))).await;
     let (status2, _process2) =
         sot_log::attach_client::supervisor_client::query_status(state_dir_path).expect("query_status after the race resolved");
-    let new_voyage = status2.voyage.expect("a ready capsule has a voyage");
+    let new_run = status2.run.expect("a ready capsule has a run");
     assert_ne!(
-        new_voyage, original_voyage,
-        "a Selection racing the watchdog must still mint a NEW voyage, never resurrect the ended one"
+        new_run, original_run,
+        "a Selection racing the watchdog must still start a NEW run, never resurrect the ended one"
     );
 }
 
@@ -258,7 +257,7 @@ async fn a_selection_that_reaches_the_guard_first_still_retires_and_resets() {
     let watchdog_barrier = PathBuf::from(format!("{}.watchdog-restart", barrier.to_string_lossy()));
     env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
 
-    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_voyage) =
+    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_run) =
         setup_ended_row(&env, "ssf-workspace").await;
 
     // Neither barrier is released yet: killing the resting authority
@@ -290,7 +289,7 @@ async fn a_selection_that_reaches_the_guard_first_still_retires_and_resets() {
     .await;
     std::fs::write(&watchdog_barrier, b"go").expect("release the watchdog restart barrier");
 
-    assert_ends_in_a_fresh_voyage(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_voyage).await;
+    assert_ends_in_a_fresh_run(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_run).await;
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
@@ -326,7 +325,7 @@ async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire
     let watchdog_barrier = PathBuf::from(format!("{}.watchdog-restart", barrier.to_string_lossy()));
     std::fs::write(&watchdog_barrier, b"go").expect("release the watchdog restart barrier up front");
 
-    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_voyage) =
+    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_run) =
         setup_ended_row(&env, "wsf-workspace").await;
 
     let backoff_needle = "capsule supervisor watchdog: crashed, restarting with --resume";
@@ -337,7 +336,7 @@ async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire
 
     // The backoff line only proves the watchdog decided to restart, not
     // that `poll_for_phase` below isn't reading a stale pre-kill
-    // `ended_no_respawn`; `assert_ends_in_a_fresh_voyage` is the real proof.
+    // `ended_no_respawn`; `assert_ends_in_a_fresh_run` is the real proof.
     let backoff_deadline = Instant::now() + BOUND;
     loop {
         if count_log_occurrences(&log_path, backoff_needle) > backoff_seen_before {
@@ -354,7 +353,7 @@ async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
     std::fs::write(&barrier, b"go").expect("release the activation barrier");
 
-    assert_ends_in_a_fresh_voyage(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_voyage).await;
+    assert_ends_in_a_fresh_run(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_run).await;
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
@@ -388,7 +387,7 @@ async fn a_selection_that_waits_through_several_reprobe_cycles_still_resets() {
     let watchdog_barrier = PathBuf::from(format!("{}.watchdog-restart", barrier.to_string_lossy()));
     env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
 
-    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_voyage) =
+    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_run) =
         setup_ended_row(&env, "smr-workspace").await;
 
     kill_supervisor(&env.state_root);
@@ -415,7 +414,7 @@ async fn a_selection_that_waits_through_several_reprobe_cycles_still_resets() {
     .await;
     std::fs::write(&watchdog_barrier, b"go").expect("release the watchdog restart barrier");
 
-    assert_ends_in_a_fresh_voyage(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_voyage).await;
+    assert_ends_in_a_fresh_run(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_run).await;
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
@@ -456,7 +455,7 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
 
     let env = Env::new("arr");
     env.spawn_sotd();
-    let (conn, _next_id, workspace_id, target, state_dir_path, original_voyage) =
+    let (conn, _next_id, workspace_id, target, state_dir_path, original_run) =
         setup_ended_row(&env, "arr-workspace").await;
 
     // Adopt: kill only the DAEMON, leaving the ended-but-still-resident
@@ -489,8 +488,8 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
 
     // Proven the same way every other case in this file is: a FRESH
-    // voyage, never the original, never stuck `ended_no_respawn`.
-    assert_ends_in_a_fresh_voyage(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_voyage).await;
+    // run, never the original, never stuck `ended_no_respawn`.
+    assert_ends_in_a_fresh_run(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_run).await;
 
     // Prove this test actually hit the transient-settle
     // window it exists to exercise, not merely that the row eventually
@@ -521,7 +520,7 @@ struct FailingStopLane {
 
 #[cfg(target_os = "linux")]
 impl FailingStopLane {
-    fn bind(state_dir: &Path, voyage: &str) -> Self {
+    fn bind(state_dir: &Path) -> Self {
         use std::io::{BufRead, BufReader, Write};
         use std::sync::atomic::Ordering;
         let hash = sot_platform::host::state_dir::state_dir_hash(state_dir);
@@ -531,7 +530,7 @@ impl FailingStopLane {
         listener.set_nonblocking(true).expect("nonblocking listener");
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let ops = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (pid, voyage) = (std::process::id(), voyage.to_string());
+        let pid = std::process::id();
         let created = sot_platform::identity::challenge_unix::process_start_ticks(pid).expect("this process's start ticks");
         let thread = std::thread::spawn({
             let (stop, ops) = (stop.clone(), ops.clone());
@@ -542,7 +541,7 @@ impl FailingStopLane {
                         continue;
                     };
                     stream.set_nonblocking(false).expect("blocking stream");
-                    let (ops, voyage) = (ops.clone(), voyage.clone());
+                    let ops = ops.clone();
                     std::thread::spawn(move || {
                         let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
                         let mut out = stream;
@@ -556,7 +555,7 @@ impl FailingStopLane {
                                     "row": sot_log::row::ROW_PROTOCOL,
                                 }),
                                 sot_log::row::OP_STATUS => {
-                                    serde_json::json!({"phase": "ended_no_respawn", "voyage": voyage})
+                                    serde_json::json!({"phase": "ended_no_respawn"})
                                 }
                                 other => {
                                     ops.lock().unwrap().push(other.to_string());
@@ -585,7 +584,7 @@ impl FailingStopLane {
 }
 
 /// ADR 0043 decision 33's retirement clause: a retire whose `stop` fails leaves the row EXACTLY as it was -- still
-/// registered, its pointer untouched, `activation_error` holding the retire failure, and no `reset` sent. The
+/// registered, its end record untouched, `activation_error` holding the retire failure, and no `reset` sent. The
 /// supervisor is a test-owned lane ([`FailingStopLane`]) that rests at `EndedNoRespawn` and refuses `row.stop`, so the real `ensure_started` takes its retire arm and the failure is the lane's, not an
 /// induced fault in a capsule's files.
 #[tokio::test]
@@ -612,13 +611,12 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
         .expect("session_name")
         .to_string();
 
-    let pointer_path = sot_log::supervisor::journal::pointer::pointer_path(&state_dir_path);
-    let pointer_before = std::fs::read(&pointer_path).expect("a stopped supervisor leaves its published pointer");
+    let ended_path = state_dir_path.join("ended");
+    let ended_before = std::fs::read(&ended_path).expect("a stopped supervisor leaves its end record");
     // The observer first reads the real supervisor's silence; only then does a different process answering on the
     // lane count as a supervisor to adopt rather than a stranger's phase to reject.
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "unreachable", BOUND.max(Duration::from_secs(60))).await;
-    let voyage = "0198d3a0-0000-7000-8000-000000000001";
-    let lane = FailingStopLane::bind(&state_dir_path, voyage);
+    let lane = FailingStopLane::bind(&state_dir_path);
     // The row's cached phase is still "unreachable", so pty.open starts an activation, whose own probe reads the fixture
     // lane's EndedNoRespawn and adopts it. pty.open answers attach_direct at once; a Stop that fails surfaces asynchronously as the row's activation_error.
     let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
@@ -653,9 +651,9 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
         "the row must still be registered after a failed retirement attempt"
     );
     assert_eq!(
-        std::fs::read(&pointer_path).expect("the pointer file must still exist"),
-        pointer_before,
-        "a failed retirement must never touch the published pointer"
+        std::fs::read(&ended_path).expect("the end record must still exist"),
+        ended_before,
+        "a failed retirement must never touch the end record"
     );
     let commands = lane.finish();
     assert!(
@@ -680,13 +678,13 @@ async fn a_row_that_is_ended_then_selected_stays_live_through_two_observer_round
 
     let env = Env::new("rr2");
     env.spawn_sotd();
-    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_voyage) = setup_ended_row(&env, "rr2-workspace").await;
+    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_run) = setup_ended_row(&env, "rr2-workspace").await;
 
     let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
-    assert_ends_in_a_fresh_voyage(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_voyage).await;
+    assert_ends_in_a_fresh_run(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_run).await;
 
     // The observer polls every 2 s: two full rounds, each read through `workspace.list`.
     let until = Instant::now() + Duration::from_secs(5);

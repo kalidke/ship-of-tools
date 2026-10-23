@@ -28,7 +28,7 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
     // client ends up at (120, 40) cannot pass by coincidence.
     let mut guard = spawn_supervisor_sized(&state_dir, "--start", 120, 40, SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
 
     let mut client = FeAttachClient::attach_headless(PlatformEndpoint::default(), h.clone())
         .expect("attach_headless");
@@ -102,7 +102,7 @@ fn headless_screen_read_never_takes_the_pen() {
 
     let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
 
     // The headless watcher: attach, wait for the checkpoint, then drop —
     // exactly `screen_of`'s own shape, minus the wrapper.
@@ -141,7 +141,7 @@ fn headless_screen_read_never_takes_the_pen() {
 }
 
 /// Decision 28 (LU6b, attach convergence): a state dir with NO supervisor
-/// ever run has no `drawer.voyage` pointer and no supervisor lane, and the
+/// ever run has no fence file and no supervisor lane, and the
 /// worker invents NO cutoff of its own for that -- the frontend's create
 /// path starts this same client before the supervisor has bound its lane,
 /// so "nothing there yet" is a wait ("supervisor lane not answering --
@@ -209,7 +209,7 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
 
     let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
 
     // 1. Driver A attaches and becomes DRIVING.
     let (_woke, wake) = wake_flag();
@@ -322,7 +322,7 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
         let guard = CapsuleGuard::spawn(&mut cmd);
         let h = state_dir_hash(&state_dir);
         let conn = wait_for_lane(&h, Duration::from_secs(30));
-        let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+        let run = wait_for_ready(&conn, Duration::from_secs(90));
         rows.push(Row { h, conn, run, guard, err });
     }
     let read = |h: &str| {

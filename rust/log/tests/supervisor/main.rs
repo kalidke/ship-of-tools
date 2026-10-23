@@ -112,7 +112,6 @@ fn wait_for_lane(h: &str, timeout: Duration) -> Lane {
 
 /// What `row.status` says.
 struct Status {
-    voyage: Option<String>,
     run: Option<String>,
     phase: SupervisorPhase,
 }
@@ -128,15 +127,15 @@ fn status(conn: &Lane) -> Status {
         Some("terminal") => SupervisorPhase::Terminal,
         other => panic!("a status with no known phase: {other:?}"),
     };
-    Status { voyage: text("voyage"), run: text("run"), phase }
+    Status { run: text("run"), phase }
 }
 
 /// The row socket binds before the agent starts, so answering `status` does not by itself mean the agent is running:
-/// poll for the phase itself, the observable fact. Returns the voyage and the run.
-fn wait_for_ready(conn: &Lane, timeout: Duration) -> (String, String) {
+/// poll for the phase itself, the observable fact. Returns the run.
+fn wait_for_ready(conn: &Lane, timeout: Duration) -> String {
     poll_until(
         || match status(conn) {
-            Status { voyage: Some(voyage), run: Some(run), phase: SupervisorPhase::Ready } => Some((voyage, run)),
+            Status { run: Some(run), phase: SupervisorPhase::Ready } => Some(run),
             _ => None,
         },
         timeout,
@@ -156,11 +155,10 @@ fn end_run_and_expect_ended(conn: &Lane, run: &str, reason: &str) {
     assert_eq!(reply["outcome"], "ended", "end_run's reply arrives when the run has ended: {reply}");
 }
 
-/// A reset from a resting supervisor, answered once the new voyage is published: returns it.
-fn reset(conn: &Lane) -> String {
+/// A reset from a resting supervisor, answered once the end record is removed.
+fn reset(conn: &Lane) {
     let reply = conn.call("row.reset", json!({}), Duration::from_secs(40));
     assert_eq!(reply["outcome"], "reset", "{reply}");
-    reply["voyage"].as_str().expect("a reset names its new voyage").to_string()
 }
 
 /// `row.stop`: the supervisor ends its agent and exits once this connection has ended.
@@ -258,25 +256,10 @@ mod spawn;
 /// the child it starts, whose body is `killed_child_body`.
 const KILLED_CHILD: &str = "SOT_TEST_KILLED_CHILD";
 
-fn recorded_voyage(state_dir: &Path) -> Option<String> {
-    match journal::pointer::validate(state_dir) {
-        journal::pointer::PointerState::Valid(voyage) => Some(voyage),
-        _ => None,
-    }
-}
-
-fn writer_lock_path(state_dir: &Path, voyage: &str) -> PathBuf {
-    sot_log::supervisor::voyage_root_path(state_dir, voyage).join(sot_log::capsule::WRITER_LOCK)
-}
-
 /// Each probe takes its lock and drops it before returning: locks conflict between two opens in one process, so
 /// a probe that kept its lock would make the next probe of that lock read a live holder.
 fn fence_free(state_dir: &Path) -> bool {
     journal::fence::lock_supervisor(state_dir).is_ok()
-}
-
-fn writer_free(lock: &Path) -> bool {
-    sot_platform::host::lock_writer(lock).is_ok()
 }
 
 fn free_within(free: impl Fn() -> bool, bound: Duration) -> bool {
@@ -292,13 +275,10 @@ fn free_within(free: impl Fn() -> bool, bound: Duration) -> bool {
     }
 }
 
-/// A capsule is gone when neither kernel lock it holds is held: the supervisor fence and its voyage's writer lock,
-/// both released on any death. No pid is read.
+/// A capsule is gone when the kernel lock it holds, the supervisor fence, is free: released on any death. No pid is
+/// read.
 fn capsule_gone_within(state_dir: &Path, bound: Duration) -> bool {
-    free_within(
-        || fence_free(state_dir) && recorded_voyage(state_dir).map_or(true, |v| writer_free(&writer_lock_path(state_dir, &v))),
-        bound,
-    )
+    free_within(|| fence_free(state_dir), bound)
 }
 
 /// A red's cleanup, run on every path after the kill: ends a supervisor that outlived its test, over its row socket. It never panics, so the assert that follows it still reports.
@@ -371,8 +351,6 @@ fn a_killed_test_process_leaves_no_capsule_process() {
             "the test process to start its capsule",
         );
         assert!(!fence_free(&state_dir), "precondition: the supervisor holds its fence");
-        let voyage = recorded_voyage(&state_dir).expect("precondition: the supervisor recorded a voyage");
-        assert!(!writer_free(&writer_lock_path(&state_dir, &voyage)), "precondition: the leg holds the writer lock");
     }));
     let _ = child.kill();
     let reaped = sot_platform::test_isolated::wait_until(&mut child, Instant::now() + Duration::from_secs(5));
@@ -385,7 +363,7 @@ fn a_killed_test_process_leaves_no_capsule_process() {
     let exit = reaped.unwrap_or_else(|e| panic!("{e}"));
     assert!(!exit.success(), "the killed test process reported success: {exit}");
     entry.assert_once(child.id());
-    assert!(gone, "the capsule outlived its killed test process (the fence or the writer lock was still held 5 s after the kill)");
+    assert!(gone, "the capsule outlived its killed test process (the fence was still held 5 s after the kill)");
 }
 
 /// A panicking test must leave no capsule process: not the supervisor, and not the `--survival normal` leg that
@@ -411,5 +389,5 @@ fn a_panicking_test_leaves_no_capsule_process() {
 
     let gone = capsule_gone_within(&state_dir, Duration::from_secs(5));
     end_what_outlived(&state_dir);
-    assert!(gone, "the capsule outlived its guard (the fence or the writer lock was still held 5 s after the unwind)");
+    assert!(gone, "the capsule outlived its guard (the fence was still held 5 s after the unwind)");
 }

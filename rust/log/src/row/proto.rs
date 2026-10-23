@@ -94,14 +94,12 @@ pub struct InputRes {
     pub written: u64,
 }
 
-/// `row.status`: what the supervisor is now. `run` and `voyage` are absent while there is none.
+/// `row.status`: what the supervisor is now. `run` is absent while there is none.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusRes {
     pub phase: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voyage: Option<String>,
 }
 
 /// `row.end_run`: ends the run `run` names, for `reason`.
@@ -134,7 +132,7 @@ pub struct EndRunRes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResetOutcome {
-    /// The new voyage is published; the next run starts under it.
+    /// The end record is removed; the next run starts clean.
     Reset,
     Failed,
 }
@@ -142,8 +140,6 @@ pub enum ResetOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResetRes {
     pub outcome: ResetOutcome,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voyage: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }

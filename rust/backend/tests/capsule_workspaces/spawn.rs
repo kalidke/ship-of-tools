@@ -4,7 +4,7 @@ use super::*;
 
 /// Field finding (a Windows FE box, 2026-09): the daemon boot resume-scan
 /// (`resume_all`) used to skip straight to spawning `--resume` for every
-/// capsule row with a published pointer, with NO probe of whether that
+/// capsule row with a fence file, with NO probe of whether that
 /// row's supervisor was already alive. A capsule supervisor is spawned
 /// DETACHED (ADR 0042) and survives its daemon by design, so an FE
 /// relaunch that reboots the LOCAL daemon left every existing supervisor
@@ -151,7 +151,7 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
 ///
 /// 2026-09-04 amendment: no longer the DEFAULT workspace. Before this
 /// amendment, the default row's fixed, known-ahead-of-boot identity gave
-/// this test a state dir that was pointer-free before its own first
+/// this test a state dir that was fence-free before its own first
 /// attach — the one way to pre-fence a workspace before its FIRST spawn,
 /// since a created workspace's `workspace_id` (hence its state dir) is
 /// only known AFTER `workspace.create` returns, and that handler spawns
@@ -160,9 +160,9 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
 /// `capsule_default_workspace_with_no_agent_is_never_started_on_attach`)
 /// and can no longer be used this way. This test instead creates an
 /// ordinary row, lets it reach Ready once normally, STOPS its authority
-/// (the leg, and the run's own published pointer, both survive — ADR
+/// (the leg, and the run's own end record, both survive — ADR
 /// 0041 Lifecycle), THEN pre-fences its now-EXISTING state dir: the next
-/// attach needs a RESUME spawn (pointer published, lane dead) rather
+/// attach needs a RESUME spawn (fence file left, lane dead) rather
 /// than a fresh Start, but the fence check above runs before mode is
 /// ever consulted either way, so this is the exact same contention this
 /// test always proved, just reached via `--resume` instead of `--start`.
@@ -224,7 +224,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
     let state_dir_path = PathBuf::from(&state_dir);
 
     // Stop the supervisor authority over its own lane — its capsule leg
-    // and the run's own published pointer both survive (ADR 0041
+    // and the run's own end record both survive (ADR 0041
     // Lifecycle) — so the NEXT attach needs a RESUME spawn, straight
     // into the fence this test is about to pre-hold.
     tokio::task::spawn_blocking({
@@ -327,11 +327,11 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
 /// how the state-root failure on a shared home presented, and `terminal`
 /// on the row was the signal the operator read.
 ///
-/// The trigger is `sot-capsule supervise`'s own first act,
-/// `create_dir_all(<state_dir>/voyages)`, which runs BEFORE the
-/// authority fence, the lane bind and the parent-death lease: a regular
-/// FILE at that path makes it fail, and the supervisor returns
-/// `EXIT_TERMINAL` having answered nothing. A file rather than a
+/// The trigger is the supervisor's test seam `SOT_TEST_SUPERVISOR_BOOT_FAILS`, named
+/// on the daemon's environment (which reaches the supervisor): it fails
+/// right after the supervisor makes its state folder, BEFORE the
+/// authority fence and the lane bind, and the supervisor returns
+/// `EXIT_TERMINAL` having answered nothing. A seam rather than a
 /// permission bit on purpose -- `chmod` proves nothing when the suite
 /// happens to run as root.
 ///
@@ -359,7 +359,7 @@ async fn a_capsule_that_dies_before_its_lane_answers_still_latches_the_row_termi
     // runs here: its supervisor dies first.
     env.seed_default_capsule_toml("claude");
     let fake_claude_dir = env.seed_fake_unlaunchable_claude();
-    env.spawn_sotd_with_prepended_path(&fake_claude_dir);
+    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[("SOT_TEST_SUPERVISOR_BOOT_FAILS", "1")]);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -373,12 +373,6 @@ async fn a_capsule_that_dies_before_its_lane_answers_still_latches_the_row_termi
         .expect("a default workspace row");
     let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
     let default_target = default_row["session_name"].as_str().expect("session_name").to_string();
-
-    // Block the bootstrap. The daemon never creates a state directory
-    // itself (rule C), so both of these are this test's own doing.
-    let state_dir_path = env.state_root.join("sot").join("workspaces").join(&default_workspace_id);
-    std::fs::create_dir_all(&state_dir_path).expect("mkdir the row's state dir");
-    std::fs::write(state_dir_path.join("voyages"), b"not a directory").expect("write the blocking file");
 
     let pty_req = serde_json::json!({
         "cols": 80, "rows": 24, "user_switch": true, "target": default_target,

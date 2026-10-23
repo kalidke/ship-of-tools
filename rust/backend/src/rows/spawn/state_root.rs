@@ -22,8 +22,8 @@ pub(crate) const STATE_ROOT_HINT: &str = "%LOCALAPPDATA%";
 pub(crate) const STATE_ROOT_HINT: &str = "$XDG_STATE_HOME or $HOME";
 
 /// `<state-root>/workspaces/<workspace_id>/` — the capsule's own state
-/// directory (ADR 0041/0042: `supervisor.lock`, `drawer.voyage`, the
-/// journal, the voyages — all owned and created by `sot-capsule
+/// directory (ADR 0041/0042: `supervisor.lock`, the screen and the end
+/// record — all owned and created by `sot-capsule
 /// supervise` itself, as its own first act after it actually runs; rule
 /// C, shrink round: this daemon never creates it — a synchronous spawn
 /// failure then leaves nothing on disk at all). `state_root` is
@@ -139,9 +139,10 @@ fn row_has_run(state_dir: &Path) -> bool {
 /// The invariant [`qualified_state_root`] alone cannot enforce (it never
 /// sees a project root): a workspace's file watcher recursively watches
 /// `project_root`, holding directory handles under it, and on Windows an
-/// open handle blocks a rename of the directory it is in -- so
-/// `voyages\<uuid>` publication fails with a sharing violation whenever a
-/// capsule's state tree sits inside a directory this daemon watches. A
+/// open handle blocks a rename of the directory it is in -- so a
+/// publication in the capsule's state folder fails with a sharing violation
+/// whenever it sits inside a directory this daemon watches, and the watcher
+/// must never watch the daemon's own tree (files' guarantee). A
 /// capsule row's state directory must never lie inside (or at) its
 /// project root. Each side is canonicalized first, falling back to its
 /// given spelling if that fails, so a symlinked root is judged by what it

@@ -12,7 +12,7 @@ use crate::row::{
 const READY_AFTER: Duration = Duration::from_secs(2);
 /// An `end_run` that has not seen the run end by now is answered `ending`, so the caller's own 30 s bound never races it.
 const END_RUN_BOUND: Duration = Duration::from_secs(25);
-/// A `reset` that has not published its voyage by now is answered `failed`.
+/// A `reset` that has not removed the end record by now is answered `failed`.
 const RESET_BOUND: Duration = Duration::from_secs(25);
 
 /// The agent's run in progress: the channel that ends it, and what it tells its owner.
@@ -31,7 +31,6 @@ struct StopRequest {
 struct Inner {
     /// `starting`, `ending`, `ended_no_respawn` or `terminal`; `ready` is derived (`wire_phase`).
     phase: SupervisorPhase,
-    voyage: Option<String>,
     run: Option<LiveRun>,
     /// The last run that began: a resting supervisor reports it, so the daemon can tell the run a rest follows from a newer one.
     last_run: Option<String>,
@@ -39,8 +38,9 @@ struct Inner {
     /// admission's number, so another run's admission never clears it. `ending` is the admission waiting now.
     ending: Option<u64>,
     end_answers: HashMap<u64, EndRunRes>,
-    /// An admitted `reset`: the new voyage the main thread publishes, and the answers it leaves, by admission number.
-    reset: Option<String>,
+    /// An admitted `reset` the main thread has not yet published (by removing the end record), and the answers it
+    /// leaves, by admission number.
+    reset: bool,
     resetting: Option<u64>,
     reset_answers: HashMap<u64, ResetRes>,
     /// The last admission number given to an `end_run` or a `reset`.
@@ -61,7 +61,7 @@ pub(super) struct Shared {
 /// What the main thread does once the agent's run ended.
 pub(super) enum After {
     Stop,
-    Reset { new_voyage: String },
+    Reset,
     /// The row socket's listener is lost for good: nothing can reach this supervisor, so it ends with 75.
     RowLost,
     /// A terminal supervisor with no stop asked lingers `TERMINAL_EXIT_GRACE` and exits.
@@ -73,7 +73,7 @@ fn failed_end(detail: &str) -> EndRunRes {
 }
 
 fn failed_reset(detail: &str) -> ResetRes {
-    ResetRes { outcome: ResetOutcome::Failed, voyage: None, detail: Some(bounded_detail(detail)) }
+    ResetRes { outcome: ResetOutcome::Failed, detail: Some(bounded_detail(detail)) }
 }
 
 impl Shared {
@@ -81,12 +81,11 @@ impl Shared {
         Shared {
             inner: Mutex::new(Inner {
                 phase: SupervisorPhase::Starting,
-                voyage: None,
                 run: None,
                 last_run: None,
                 ending: None,
                 end_answers: HashMap::new(),
-                reset: None,
+                reset: false,
                 resetting: None,
                 reset_answers: HashMap::new(),
                 admissions: 0,
@@ -101,10 +100,6 @@ impl Shared {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub(super) fn set_voyage(&self, voyage: &str) {
-        self.lock().voyage = Some(voyage.to_string());
     }
 
     /// A run begins: its id, kill channel and signals are what `end_run`, `stop` and status read. `false` when a stop
@@ -148,22 +143,18 @@ impl Shared {
         if let Some(admission) = inner.ending.take() {
             inner.end_answers.insert(admission, failed_end(&detail));
         }
-        inner.reset = None;
+        inner.reset = false;
         if let Some(admission) = inner.resetting.take() {
             inner.reset_answers.insert(admission, failed_reset(&detail));
         }
         self.changed.notify_all();
     }
 
-    /// The reset's new voyage is published and its folder is there: the next run starts under it.
-    pub(super) fn reset_done(&self, new_voyage: &str) {
+    /// The reset is published, the end record removed: the next run starts clean.
+    pub(super) fn reset_done(&self) {
         let mut inner = self.lock();
-        inner.voyage = Some(new_voyage.to_string());
         if let Some(admission) = inner.resetting.take() {
-            inner.reset_answers.insert(
-                admission,
-                ResetRes { outcome: ResetOutcome::Reset, voyage: Some(new_voyage.to_string()), detail: None },
-            );
+            inner.reset_answers.insert(admission, ResetRes { outcome: ResetOutcome::Reset, detail: None });
         }
         self.changed.notify_all();
     }
@@ -178,8 +169,8 @@ impl Shared {
             if inner.row_lost {
                 return After::RowLost;
             }
-            if let Some(new_voyage) = inner.reset.take() {
-                return After::Reset { new_voyage };
+            if std::mem::take(&mut inner.reset) {
+                return After::Reset;
             }
             if let Some(since) = inner.terminal_since {
                 if since.elapsed() >= TERMINAL_EXIT_GRACE {
@@ -330,7 +321,7 @@ impl Shared {
         }
         inner.admissions += 1;
         let admission = inner.admissions;
-        inner.reset = Some(uuid::Uuid::now_v7().to_string());
+        inner.reset = true;
         inner.resetting = Some(admission);
         inner.phase = SupervisorPhase::Starting;
         self.changed.notify_all();
@@ -378,7 +369,6 @@ impl Management for Shared {
         StatusRes {
             phase: Self::phase_name(Self::wire_phase(&inner)).to_string(),
             run: inner.last_run.clone(),
-            voyage: inner.voyage.clone(),
         }
     }
 
@@ -391,7 +381,7 @@ impl Management for Shared {
         }
     }
 
-    /// Admits a `reset` from a resting supervisor, then waits for the main thread to publish the new voyage. The phase
+    /// Admits a `reset` from a resting supervisor, then waits for the main thread to publish it. The phase
     /// fences it: only `ended_no_respawn` admits one, and none while another is in progress.
     fn reset(&self) -> ResetRes {
         match self.admit_reset() {

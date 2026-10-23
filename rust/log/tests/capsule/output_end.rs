@@ -203,7 +203,7 @@ fn run_fake(
 ) -> (sot_log::Result<capsule::ExitSummary>, std::path::PathBuf) {
     *FAKE_SCRIPT.lock().unwrap() = Some(script);
     let cfg = config(dir, name, vec!["fake-producer".to_string()], 80, 25);
-    let root = cfg.voyage_root.clone();
+    let root = cfg.state_dir.clone();
     let (_tx, rx) = mpsc::channel();
     (capsule::run::<FakeProducer>(cfg, rx), root)
 }
@@ -376,7 +376,7 @@ fn a_real_producer_never_records_an_early_output_end() {
     let dir = tempfile::tempdir().unwrap();
     let argv = shell_command("exit 0");
     let cfg = config(dir.path(), "noearly1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
+    let root = cfg.state_dir.clone();
     let (_tx, rx) = mpsc::channel();
     let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
@@ -385,47 +385,4 @@ fn a_real_producer_never_records_an_early_output_end() {
         ended.output_ended_early.is_none(),
         "this platform's output side cannot end before the loop closes it: {ended:?}"
     );
-}
-
-/// Whether the leg's writer fence is free: `lock_writer` retries 250 ms, then fails closed, and the guard it returns
-/// is dropped at once.
-fn writer_lock_free(cfg_root: &std::path::Path) -> bool {
-    sot_platform::host::lock_writer(&cfg_root.join("writer.lock")).is_ok()
-}
-
-/// The writer fence is released on every way `run` ends: a natural exit, an error after the loop, a spawn failure and
-/// an error inside the main loop, so a later run of the same folder is never locked out by an earlier one.
-#[test]
-fn the_writer_fence_is_released_on_every_way_a_run_ends() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-
-    // 1. A natural exit.
-    let cfg = config(dir.path(), "fence1", shell_command("exit 0"), 80, 25);
-    let root = cfg.voyage_root.clone();
-    let (_tx, rx) = mpsc::channel();
-    let summary = capsule::run::<P>(cfg, rx).unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
-    assert!(writer_lock_free(&root), "the fence is still held after a natural exit");
-
-    // 2. A spawn failure (geometry out of budget).
-    let cfg = config(dir.path(), "fence2", shell_command("exit 0"), 1, 25);
-    let root = cfg.voyage_root.clone();
-    let (_tx, rx) = mpsc::channel();
-    let summary = capsule::run::<P>(cfg, rx).unwrap();
-    assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
-    assert!(writer_lock_free(&root), "the fence is still held after a spawn failure");
-
-    // 3. An error inside the main loop (the output ended with the producer alive past the grace).
-    *FAKE_SCRIPT.lock().unwrap() = Some(FakeScript {
-        output_ends_after: Duration::from_millis(50),
-        output_end: OutputEnd::Eof,
-        exit: ExitObservable::Never,
-        domain: Domain::EmptyOnceExited,
-    });
-    let cfg = config(dir.path(), "fence3", vec!["fake-producer".to_string()], 80, 25);
-    let root = cfg.voyage_root.clone();
-    let (_tx, rx) = mpsc::channel();
-    capsule::run::<FakeProducer>(cfg, rx).unwrap_err();
-    assert!(writer_lock_free(&root), "the fence is still held after an error in the main loop");
 }

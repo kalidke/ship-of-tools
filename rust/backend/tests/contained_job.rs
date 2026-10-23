@@ -22,20 +22,13 @@ use support::{
 const NAME: &str = "a_killed_test_job_leaves_no_row";
 const CHILD: &str = "SOT_TEST_CONTAINED_CHILD";
 
-/// Whether the row's supervisor fence and its voyage's writer lock can be taken (each is dropped at once), in that order.
-fn state_locks(state_dir: &Path, voyage: &str) -> (bool, bool) {
-    let fence = sot_log::supervisor::journal::fence::lock_supervisor(state_dir).is_ok();
-    let writer =
-        sot_platform::host::lock_writer(&state_dir.join("voyages").join(voyage).join("writer.lock")).is_ok();
-    (fence, writer)
-}
-
-fn state_lock_free(state_dir: &Path, voyage: &str) -> bool {
-    state_locks(state_dir, voyage) == (true, true)
+/// Whether the row's supervisor fence can be taken (it is dropped at once).
+fn state_lock_free(state_dir: &Path) -> bool {
+    sot_log::supervisor::journal::fence::lock_supervisor(state_dir).is_ok()
 }
 
 /// The row's own state folder and its supervisor's report, once ready.
-async fn ready_row(env: &Env) -> (PathBuf, String, u32) {
+async fn ready_row(env: &Env) -> (PathBuf, u32) {
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let req = serde_json::json!({
         "label": "cj-row",
@@ -64,7 +57,7 @@ async fn ready_row(env: &Env) -> (PathBuf, String, u32) {
     .await;
     let row = find_row(&list.payload, &id).expect("the new row is listed");
     let state_dir = PathBuf::from(row["state_dir"].as_str().expect("state_dir of a ready row"));
-    let (voyage, pid) = poll_until(
+    let pid = poll_until(
         || {
             let dir = state_dir.clone();
             async move {
@@ -73,24 +66,24 @@ async fn ready_row(env: &Env) -> (PathBuf, String, u32) {
                 })
                 .await
                 .ok()??;
-                Some((report.voyage?, process.pid()))
+                (report.phase == sot_log::SupervisorPhase::Ready).then(|| process.pid())
             }
         },
         BOUND,
-        "the supervisor's status with a voyage",
+        "the supervisor's status, ready",
     )
     .await;
-    (state_dir, voyage, pid)
+    (state_dir, pid)
 }
 
 async fn child(dir: PathBuf) {
     sot_platform::test_isolated::enter(NAME);
     let env = Env::new("cj");
     env.spawn_sotd();
-    let (state_dir, voyage, peer_pid) = ready_row(&env).await;
+    let (state_dir, peer_pid) = ready_row(&env).await;
     let me = std::process::id();
     let record = format!(
-        "state_dir={}\nvoyage={voyage}\nsocket={}\nruntime={}\ntmp={}\nchild_pid={me}\nchild_cgroup={}\nsupervisor_cgroup={}\n",
+        "state_dir={}\nsocket={}\nruntime={}\ntmp={}\nchild_pid={me}\nchild_cgroup={}\nsupervisor_cgroup={}\n",
         state_dir.display(),
         env.socket_path.display(),
         env._runtime_tmp.path().display(),
@@ -218,14 +211,14 @@ fn group_empty(rel: &str) -> bool {
 }
 
 /// Releases the child to kill itself, waits for the job to end, then judges: was the row's fence held before, are its
-/// fence and writer lock free and the job's control group empty within 10 s, and did the row live in that group.
+/// fence free and the job's control group empty within 10 s, and did the row live in that group.
 async fn judge(
     dir: &Path,
     r: &HashMap<String, String>,
     client: &mut std::process::Child,
 ) -> (bool, bool, bool, bool) {
-    let (state_dir, voyage) = (PathBuf::from(&r["state_dir"]), r["voyage"].clone());
-    let held_before = state_locks(&state_dir, &voyage) == (false, false);
+    let state_dir = PathBuf::from(&r["state_dir"]);
+    let held_before = !state_lock_free(&state_dir);
     std::fs::write(dir.join("go"), "").expect("release the child");
     // The job's end: the client returns when its unit stops; with the base shape it is the child itself.
     let end = Instant::now() + Duration::from_secs(30);
@@ -235,7 +228,7 @@ async fn judge(
     let end = Instant::now() + Duration::from_secs(10);
     let (mut gone, mut emptied) = (false, false);
     while !(gone && emptied) && Instant::now() < end {
-        gone = gone || state_lock_free(&state_dir, &voyage);
+        gone = gone || state_lock_free(&state_dir);
         emptied = emptied || group_empty(&r["child_cgroup"]);
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -247,13 +240,13 @@ async fn judge(
     )
 }
 
-/// Whether the row's fence and writer lock are both free within `secs`.
-async fn wait_free(state_dir: &Path, voyage: &str, secs: u64) -> bool {
+/// Whether the row's fence is free within `secs`.
+async fn wait_free(state_dir: &Path, secs: u64) -> bool {
     let end = Instant::now() + Duration::from_secs(secs);
-    while !state_lock_free(state_dir, voyage) && Instant::now() < end {
+    while !state_lock_free(state_dir) && Instant::now() < end {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    state_lock_free(state_dir, voyage)
+    state_lock_free(state_dir)
 }
 
 /// The lease close on a thread of its own, with a runtime of its own: a panic in it stays in that thread.
@@ -270,13 +263,9 @@ fn close_on_thread(sock: PathBuf) {
 }
 
 /// Ends a row the job left, through the product, then by its scope's control group if it escaped, and reports whether
-/// its locks are free at the end. Never panics.
+/// its fence is free at the end. Never panics.
 async fn end_leftover_row(r: &HashMap<String, String>) -> bool {
-    let (state_dir, voyage, sock) = (
-        PathBuf::from(&r["state_dir"]),
-        r["voyage"].clone(),
-        PathBuf::from(&r["socket"]),
-    );
+    let (state_dir, sock) = (PathBuf::from(&r["state_dir"]), PathBuf::from(&r["socket"]));
     // A row that left the job's group lives in a scope of its own: the product's end may not reach it.
     let guard = (r["supervisor_cgroup"] != r["child_cgroup"])
         .then(|| {
@@ -303,12 +292,12 @@ async fn end_leftover_row(r: &HashMap<String, String>) -> bool {
         })
         .await;
     }
-    if wait_free(&state_dir, &voyage, 60).await {
+    if wait_free(&state_dir, 60).await {
         return true;
     }
     // The scope's cgroup.kill ends whatever the product did not.
     drop(guard);
-    wait_free(&state_dir, &voyage, 10).await
+    wait_free(&state_dir, 10).await
 }
 
 #[tokio::test]
@@ -356,7 +345,7 @@ async fn a_killed_test_job_leaves_no_row() {
     );
     if let (Some(r), false) = (&record, freed) {
         kill_job_group(&r["child_cgroup"], &unit);
-        freed = wait_free(Path::new(&r["state_dir"]), &r["voyage"], 10).await;
+        freed = wait_free(Path::new(&r["state_dir"]), 10).await;
     }
     let field = |k: &str| record.as_ref().map(|r| r[k].clone()).unwrap_or_default();
     if record.is_none() {
@@ -387,12 +376,12 @@ async fn a_killed_test_job_leaves_no_row() {
     );
     assert!(
         held_before,
-        "precondition: the supervisor's fence and the voyage's writer lock must be held while the job runs"
+        "precondition: the supervisor's fence must be held while the job runs"
     );
     entry.assert_once(field("child_pid").parse().expect("child_pid"));
     let (c, sc) = (field("child_cgroup"), field("supervisor_cgroup"));
     assert!(
         contained && gone && emptied,
-        "a killed test job: contained={contained} (the supervisor's control group {sc}, the job's {c}), gone={gone} (its fence or writer lock was still held 10 s after the job ended), emptied={emptied} (the job's control group was still populated)"
+        "a killed test job: contained={contained} (the supervisor's control group {sc}, the job's {c}), gone={gone} (its fence was still held 10 s after the job ended), emptied={emptied} (the job's control group was still populated)"
     );
 }

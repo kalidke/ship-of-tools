@@ -75,7 +75,7 @@ fn isolated_runtime_dir() -> RuntimeDirGuard {
     RuntimeDirGuard
 }
 
-/// The voyage mgmt lane's own unchallenged connect, per platform —
+/// The row socket's own unchallenged connect, per platform —
 /// mirrors `tests/supervisor/`'s identical helper.
 /// Real-process tests are SERIALIZED (same reason and mechanism as
 /// `tests/supervisor/`'s `SERIAL`): each spawns a supervisor, a capsule and a
@@ -151,13 +151,13 @@ fn call(conn: &Client, op: &str, payload: Value, bound: Duration) -> Value {
     conn.0.borrow_mut().call(op, payload, bound).unwrap_or_else(|e| panic!("{op}: {e}")).payload
 }
 
-/// Polls `row.status` until the agent has started and written: returns the voyage and the run.
-fn wait_for_ready(conn: &Client, timeout: Duration) -> (String, String) {
+/// Polls `row.status` until the agent has started and written: returns the run.
+fn wait_for_ready(conn: &Client, timeout: Duration) -> String {
     poll_until(
         || {
             let reply = call(conn, "row.status", json!({}), Duration::from_secs(5));
-            match (reply["phase"].as_str(), reply["voyage"].as_str(), reply["run"].as_str()) {
-                (Some("ready"), Some(voyage), Some(run)) => Some((voyage.to_string(), run.to_string())),
+            match (reply["phase"].as_str(), reply["run"].as_str()) {
+                (Some("ready"), Some(run)) => Some(run.to_string()),
                 _ => None,
             }
         },

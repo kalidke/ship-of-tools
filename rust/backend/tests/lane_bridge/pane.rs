@@ -52,14 +52,6 @@ async fn a_busy_pane_over_a_slow_link_converges() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let voyage = tokio::task::spawn_blocking({
-        let d = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&d).expect("query_status").0.voyage
-    })
-    .await
-    .unwrap()
-    .expect("a ready row has a voyage");
-    let _ = voyage;
     let initial_screen = screen_modified(&state_dir);
 
     // The row socket resyncs a viewer that falls 256 output frames behind and cuts one that stalls writing, but this is

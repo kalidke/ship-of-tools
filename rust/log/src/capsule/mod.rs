@@ -1,6 +1,6 @@
-//! The capsule: one process babysitting one producer, the leg (`sot-capsule run`). The producer's output feeds a live
-//! `vt100_ctt` parser that the row socket's attaches checkpoint from; the leg keeps no record of the terminal, only the
-//! screen file (`screen.rs`) and the small `ended` file (`ended.rs`). Generic over
+//! The capsule: one run of one producer inside the supervisor. The producer's output feeds a live `vt100_ctt` parser
+//! that the row socket's attaches checkpoint from; the run keeps no record of the terminal, only the screen file
+//! (`screen.rs`) and the small `ended` file (`ended.rs`). Generic over
 //! [`crate::capsule::producer::Producer`]: the writer loop below, with the output budget and the row socket's
 //! requests, is platform-neutral and drives whatever producer the caller names: `producer/conpty/producer.rs`'s
 //! `ConptyProducer` (Windows) and `producer/pty/`'s `PtyProducer` (Unix).
@@ -35,14 +35,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod ended;
-mod fence;
 mod output;
 pub mod producer;
 mod screen;
 mod writer_loop;
 use output::*;
-pub use ended::{mark_requested as mark_end_requested, read as read_ended, Ended};
-pub use fence::{bootstrap as bootstrap_voyage_folder, read_leg_epoch, WRITER_LOCK};
+pub use ended::{clear as clear_ended, mark_requested as mark_end_requested, read as read_ended, Ended};
 #[cfg(any(test, feature = "test-support"))]
 pub use screen::set_screen_hook_for_test;
 pub use writer_loop::run;
@@ -115,8 +113,8 @@ const TEARDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const TEARDOWN_DRAIN_POLL: Duration = Duration::from_millis(200);
 
 pub struct CapsuleConfig {
-    /// The leg's folder (`<state_dir>/voyages/<id>/`): the fence and the `ended` file.
-    pub voyage_root: PathBuf,
+    /// The row's state folder: the `ended` file is written in it, and its volume is proved before the run starts.
+    pub state_dir: PathBuf,
     /// Where the leg keeps its screen (`<state_dir>/screen`); `None` keeps none.
     pub screen_path: Option<PathBuf>,
     /// argv[0] is the program; must be non-empty (`Producer::spawn`'s own

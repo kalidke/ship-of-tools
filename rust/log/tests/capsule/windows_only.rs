@@ -10,7 +10,7 @@ fn spawn_failure_is_compensated() {
     let dir = tempfile::tempdir().unwrap();
     let argv = vec!["Z:\\sot_capsule_win_test_no_such_exe_9f31.exe".to_string()];
     let cfg = config(dir.path(), "fail1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
+    let root = cfg.state_dir.clone();
     let (_tx, rx) = mpsc::channel();
     let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
@@ -71,7 +71,7 @@ fn flood_drains_without_deadlock() {
     let total: usize = 20 * 1024 * 1024; // > the 8 MiB producer-channel budget
     let argv = vec![helper, "--flood".to_string(), total.to_string()];
     let cfg = config(dir.path(), "flood1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
+    let root = cfg.state_dir.clone();
     let (_tx, rx) = mpsc::channel();
     let start = Instant::now();
     let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
@@ -96,7 +96,7 @@ fn exit_code_high_bit_status_preserved_through_ended() {
     let argv =
         vec![SHELL_ARGV.to_string(), "/d".to_string(), "/c".to_string(), "exit -1073741819".to_string()];
     let cfg = config(dir.path(), "exitcode1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
+    let root = cfg.state_dir.clone();
     let (_tx, rx) = mpsc::channel();
     let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_code, Some(ExitStatus::Code(0xC000_0005)));

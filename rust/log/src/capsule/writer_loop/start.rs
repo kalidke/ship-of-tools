@@ -1,15 +1,15 @@
-//! Starting a leg: take the fence, restore the screen, spawn the producer and its reader, and hand `run` the loop state.
+//! Starting a run: prove the volume, restore the screen, spawn the producer and its reader, and hand `run` the loop state.
 use super::output_path::spawn_reader;
 use super::*;
 
 pub(super) fn start<P: Producer>(
     config: &CapsuleConfig,
 ) -> Result<ControlFlow<ExitSummary, (Leg<P>, std::thread::JoinHandle<()>, Instant)>> {
-    let fence = take_fence(config)?;
-    // A former leg's `ended` is not this leg's: the supervisor reads it only after this leg ends. The leg's own
-    // number is what a supervisor's status reports while it runs.
-    ended::clear(&config.voyage_root)?;
-    fence::next_leg_epoch(&config.voyage_root)?;
+    // One run per state folder already holds: one supervisor holds its fence, and runs one at a time. What a run adds is
+    // the proof that the folder's volume can take a write.
+    sot_platform::host::preflight_volume(&std::fs::canonicalize(&config.state_dir)?)?;
+    // A former run's `ended` is not this run's: the supervisor reads it only after this run ends.
+    ended::clear(&config.state_dir)?;
 
     // One channel for producer output, the reader thread's own death (`ReaderGone`) and the row's wakes: the reader
     // thread (spawned below once `producer` exists) and its own `ReaderGoneGuard` are two of this channel's senders and
@@ -79,7 +79,7 @@ pub(super) fn start<P: Producer>(
     let bytes_since_yield: usize = 0;
     Ok(ControlFlow::Continue((
         Leg {
-            voyage_root: config.voyage_root.clone(),
+            state_dir: config.state_dir.clone(),
             shutdown_reason: None,
             run_end_latched: false,
             parser,
@@ -100,20 +100,10 @@ pub(super) fn start<P: Producer>(
             _budget_guard,
             producer,
             output_rx,
-            _fence: fence,
         },
         reader_handle,
         spawned_at,
     )))
-}
-
-/// Takes the fence of the leg's folder, making the folder first if it is not there.
-fn take_fence(config: &CapsuleConfig) -> Result<sot_platform::host::WriterLock> {
-    let root = sot_platform::host::ensure_container(&config.voyage_root)?;
-    if !root.exists() {
-        fence::bootstrap(&root)?;
-    }
-    fence::take_fence(&root)
 }
 
 fn spawn_producer<P: Producer>(config: &CapsuleConfig) -> std::result::Result<P, String> {
@@ -137,7 +127,7 @@ fn spawn_producer<P: Producer>(config: &CapsuleConfig) -> std::result::Result<P,
 /// `?` escape that would leave the supervisor nothing to read.
 fn spawn_failure(config: &CapsuleConfig, reason: String) -> Result<ExitSummary> {
     ended::write(
-        &config.voyage_root,
+        &config.state_dir,
         &Ended { finished: true, reason: Some(format!("spawn_failed: {reason}")), ..Ended::default() },
     )?;
     Ok(ExitSummary {

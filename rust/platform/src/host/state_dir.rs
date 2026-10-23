@@ -71,8 +71,8 @@ pub fn daemon_state_dir_in(env: &super::env::Env) -> std::path::PathBuf {
 /// env var itself is unset or empty) on Windows, `$XDG_STATE_HOME/sot` (or
 /// `$HOME/.local/state/sot`) elsewhere. Home for the staged binary + logs
 /// (ADR 0017), the relaunch sentinel, the FE control channel (ADR 0019),
-/// session reconnect memory, and — from ADR 0041 on — `drawer.voyage`/
-/// `supervisor.lock` and the capsule's own durable state.
+/// session reconnect memory, and — from ADR 0041 on — the rows' state
+/// folders (`supervisor.lock` and the capsule's own durable state).
 ///
 /// No POSIX (`XDG_*`/`HOME`/`/tmp`) fallback exists on Windows — deriving
 /// a `$HOME`-shaped path there depends on which shell launched the

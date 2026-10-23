@@ -214,7 +214,7 @@ pub(super) fn join_workers<P: Producer>(
     // happened earlier (Phase A's `producer.terminate_domain()`, Phase B's `producer.close_output_side()` on
     // `closer_handle`), so both are expected to be at or near their own natural return, and `join_within` (never the raw
     // blocking `.join()`) bounds the residual gap between "signalled EOF/exit" and "the thread function returned".
-    // Expiry is TERMINAL: `run` must not report success, nor release the writer fence (the leg's drop), past a
+    // Expiry is TERMINAL: `run` must not report success, nor let the supervisor go on to a next run, past a
     // teardown that could not prove every worker stopped.
     let teardown_deadline = Instant::now() + TEARDOWN_AGGREGATE_DEADLINE;
     // The terminal's input thread: what waits is answered `run ended`, and a write blocked in the hung-up terminal returns.
@@ -265,7 +265,7 @@ pub(super) fn finish_run<P: Producer>(exit_kind: ExitKind, producer_uptime_ms: u
         ExitStatus::Code(c) => ended.exit_code = Some(c),
         ExitStatus::Signal(n) => ended.signal = Some(n),
     }
-    ended::write(&leg.voyage_root, &ended)?;
+    ended::write(&leg.state_dir, &ended)?;
 
     Ok(ExitSummary {
         exit_code: Some(exit_status),
@@ -281,7 +281,7 @@ pub(super) fn finish_run<P: Producer>(exit_kind: ExitKind, producer_uptime_ms: u
 /// nothing was promised.
 pub(super) fn latch_run_end<P: Producer>(leg: &mut Leg<P>, reason: String) -> Result<()> {
     if !leg.run_end_latched {
-        ended::write(&leg.voyage_root, &Ended { requested: true, reason: Some(reason), ..Ended::default() })?;
+        ended::write(&leg.state_dir, &Ended { requested: true, reason: Some(reason), ..Ended::default() })?;
         leg.run_end_latched = true;
     }
     Ok(())

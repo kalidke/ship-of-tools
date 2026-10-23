@@ -5,9 +5,8 @@ use super::*;
 /// Decision 33: a headless op (`pty.input`) resumes a row whose
 /// supervisor died between two ops, in place, under the row's own guard —
 /// `resume_if_absent` in place of a bare `phase_of` read. The row returns
-/// to `ready` in the SAME voyage (whether the resume adopts a surviving
-/// run or starts a new one is the capsule's, so the leg epoch is not
-/// asserted) and the input lands.
+/// to `ready` (the agent died with its supervisor, so the resume is a
+/// new run) and the input lands.
 ///
 /// Codex review (2026-09-11): the authority is first ADOPTED across a
 /// daemon restart (`restart_daemon_and_prove_adoption`,
@@ -60,13 +59,13 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let (run_before, voyage_before) = tokio::task::spawn_blocking({
+    let run_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             let report = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before killing the supervisor")
                 .0;
-            (report.run.expect("a ready capsule has a run"), report.voyage.expect("a ready capsule has a voyage"))
+            report.run.expect("a ready capsule has a run")
         }
     })
     .await
@@ -113,23 +112,18 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(30))).await;
 
-    let (voyage_after, run_after) = tokio::task::spawn_blocking({
+    let run_after = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             let report = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after the resume")
                 .0;
-            (report.voyage, report.run)
+            report.run
         }
     })
     .await
     .unwrap();
-    assert_eq!(
-        voyage_after.as_deref(),
-        Some(voyage_before.as_str()),
-        "the resume must continue the row's own voyage, never mint another"
-    );
-    // The agent died with its supervisor, so the resume is a new run in that voyage.
+    // The agent died with its supervisor, so the resume is a new run.
     assert!(
         run_after.as_deref().is_some_and(|run| run > run_before.as_str()),
         "the resume must start a new run: {run_after:?} after, {run_before} before"
@@ -148,8 +142,8 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
 /// `reset`. A row already `EndedNoRespawn` whose authority then dies
 /// (SIGKILL, no graceful `stop`) must, on the next headless op, come back
 /// reporting its OWN ended phase — never resurrected to "ready," and its
-/// durable voyage pointer must be byte-identical (only `reset` — attach's
-/// own retirement path, unchanged by this lane — ever rewrites it).
+/// end record (`<state_dir>/ended`) must be byte-identical (only `reset` —
+/// attach's own retirement path, unchanged by this lane — ever removes it).
 ///
 /// Codex review (2026-09-11): the authority is first ADOPTED across a
 /// daemon restart (own inline restart, not
@@ -201,8 +195,6 @@ async fn capsule_resume_never_resets_an_ended_row() {
 
     let (original_status, _process) = sot_log::attach_client::supervisor_client::query_status(&state_dir_path)
         .expect("query_status before ending the run");
-    let voyage = original_status.voyage.expect("a ready capsule has a voyage");
-
     sot_log::attach_client::supervisor_client::end_run(&state_dir_path, original_status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
 
     poll_until(
@@ -218,8 +210,8 @@ async fn capsule_resume_never_resets_an_ended_row() {
     )
     .await;
 
-    let pointer_path = sot_log::supervisor::journal::pointer::pointer_path(&state_dir_path);
-    let pointer_before = std::fs::read(&pointer_path).expect("read the pointer before killing the authority");
+    let ended_path = state_dir_path.join("ended");
+    let ended_before = std::fs::read(&ended_path).expect("read the end record before killing the authority");
 
     // Adopt across a daemon restart FIRST -- the resting authority
     // survives (ADR 0041 Lifecycle: `EndedNoRespawn` persists until an
@@ -262,10 +254,10 @@ async fn capsule_resume_never_resets_an_ended_row() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    let pointer_after = std::fs::read(&pointer_path).expect("read the pointer after the resume attempt");
+    let ended_after = std::fs::read(&ended_path).expect("read the end record after the resume attempt");
     assert_eq!(
-        pointer_before, pointer_after,
-        "resume must never touch the durable voyage pointer — only reset does, and resume never resets"
+        ended_before, ended_after,
+        "resume must never touch the end record — only reset does, and resume never resets"
     );
 
     let _ = tokio::task::spawn_blocking({
@@ -279,10 +271,9 @@ async fn capsule_resume_never_resets_an_ended_row() {
 
 /// Decision 33, the stated policy: a leg that ended WITHOUT a marker
 /// (both the authority AND its leg SIGKILLed — no graceful end, nothing
-/// to adopt) is RE-EXECUTED by `--resume` within the SAME voyage — the
-/// supervisor's own recovery rule, never a `reset`'s fresh one. Proven by
-/// a strictly higher leg epoch (a genuinely new leg process) alongside an
-/// unchanged voyage id.
+/// to adopt) is RE-EXECUTED by `--resume` — the supervisor's own recovery
+/// rule, never a `reset`. Proven by a strictly later run (a genuinely new
+/// agent process).
 ///
 /// Codex review (2026-09-11): the authority is first ADOPTED across a
 /// daemon restart (`restart_daemon_and_prove_adoption`,
@@ -332,15 +323,12 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let (run_before, voyage_before) = tokio::task::spawn_blocking({
+    let run_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before killing supervisor and leg");
-            (
-                report.run.expect("a ready capsule has a run"),
-                report.voyage.expect("a ready capsule has a voyage"),
-            )
+            report.run.expect("a ready capsule has a run")
         }
     })
     .await
@@ -388,12 +376,12 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(30))).await;
 
-    let (run_after, voyage_after) = tokio::task::spawn_blocking({
+    let run_after = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after the re-execution");
-            (report.run, report.voyage)
+            report.run
         }
     })
     .await
@@ -401,11 +389,6 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     assert!(
         run_after.as_deref().is_some_and(|run| run > run_before.as_str()),
         "the run must be STRICTLY later — a fresh agent must have been re-executed, not merely adopted"
-    );
-    assert_eq!(
-        voyage_after.as_deref(),
-        Some(voyage_before.as_str()),
-        "re-execution stays within the SAME voyage — never a reset's fresh one"
     );
 
     let _ = tokio::task::spawn_blocking({
@@ -581,12 +564,12 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
     env.kill_daemon_bounded().await;
 }
 
-/// A row's state folder is known to have held a supervisor by its fence file, not by a pointer: the folder holds
-/// `supervisor.lock` and no `drawer.voyage`, as one whose supervisor died before it published anything does. A daemon
-/// that boots finds it unreachable, resumes it, and the row reaches `ready` with no selection.
+/// A row's state folder is known to have held a supervisor by its fence file: the folder holds `supervisor.lock` and
+/// nothing else, as one whose supervisor died before its first run does. A daemon that boots finds it unreachable,
+/// resumes it, and the row reaches `ready` with no selection.
 #[tokio::test]
 #[cfg(target_os = "linux")]
-async fn a_row_with_a_fence_file_and_no_pointer_resumes_at_boot() {
+async fn a_row_with_only_a_fence_file_resumes_at_boot() {
     let _serial = SERIAL.lock().await;
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first", sot_capsule_exe());
 
@@ -596,7 +579,6 @@ async fn a_row_with_a_fence_file_and_no_pointer_resumes_at_boot() {
     let state_dir = env.state_root.join("sot").join("workspaces").join(workspace_id);
     std::fs::create_dir_all(&state_dir).expect("mkdir the row's state folder");
     std::fs::write(state_dir.join("supervisor.lock"), b"").expect("the fence file a supervisor left");
-    assert!(!state_dir.join("drawer.voyage").exists(), "the premise: no pointer");
 
     env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;

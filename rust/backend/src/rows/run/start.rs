@@ -175,7 +175,7 @@ pub fn start_supervisor(
 /// it passes the gate first. The ONLY `supervisor_client::reset` call
 /// outside tests; the retire arm of [`ensure_started`] and
 /// `reauth::reset_replacement_run` both come through here.
-pub(crate) fn reset_run(workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<String, String> {
+pub(crate) fn reset_run(workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<(), String> {
     let _permit = workspaces.begin_start(workspace_id)?;
     sot_log::attach_client::supervisor_client::reset(state_dir).map_err(|e| e.to_string())
 }

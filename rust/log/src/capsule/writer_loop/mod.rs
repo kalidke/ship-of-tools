@@ -1,7 +1,6 @@
 //! `run`: the capsule writer loop, one producer from spawn to its end.
 use super::*;
 use super::ended::{self, Ended};
-use super::fence;
 use super::screen::{self, ScreenFile};
 use std::ops::ControlFlow;
 
@@ -15,12 +14,12 @@ use start::start;
 /// The leg's writer-loop state from `start` to `finish_run`: every value two or more of
 /// `run`'s pieces share. Each piece takes it last, by `&mut` or by value.
 ///
-/// FIELD ORDER IS LOAD-BEARING for the last four fields. Fields drop in declaration order: the
-/// output budget is cancelled, the producer's domain dropped, the output channel closed, and the
-/// fence released last. No other field's drop does anything. Never implement `Drop` for this struct.
+/// FIELD ORDER IS LOAD-BEARING for the last three fields. Fields drop in declaration order: the
+/// output budget is cancelled, the producer's domain dropped, and the output channel closed last.
+/// No other field's drop does anything. Never implement `Drop` for this struct.
 struct Leg<P> {
-    /// The leg's folder: the fence's home, and where `ended` is written.
-    voyage_root: PathBuf,
+    /// The row's state folder: where `ended` is written.
+    state_dir: PathBuf,
     /// The reason `ended` records; the first one set wins.
     shutdown_reason: Option<String>,
     /// An end was asked for and `ended` says so; never unset.
@@ -55,8 +54,6 @@ struct Leg<P> {
     producer: P,
     /// Producer output, the reader's end, and the row's wakes: one channel.
     output_rx: mpsc::Receiver<ReaderEvent>,
-    /// The writer fence. Drops last.
-    _fence: sot_platform::host::WriterLock,
 }
 
 /// Run one producer under a capsule, generic over `P: Producer`. Blocks until the run ends: either the producer

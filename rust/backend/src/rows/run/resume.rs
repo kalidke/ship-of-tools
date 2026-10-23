@@ -1,4 +1,4 @@
-//! Boot resume: after a daemon restart, resume every registered capsule row whose voyage pointer exists, and log stray state directories.
+//! Boot resume: after a daemon restart, resume every registered capsule row whose fence file exists, and log stray state directories.
 
 use super::activation::resume_locked;
 use crate::rows::Workspaces;
@@ -13,16 +13,12 @@ use std::sync::Arc;
 pub const LANE_CONCURRENCY: usize = 4;
 
 /// On daemon startup: resume every REGISTERED capsule workspace's
-/// supervisor whose voyage pointer has ALREADY been published (rule
-/// B, shrink round). A row with NO published pointer — never started
-/// at all, OR a leg that crashed before ever publishing one (the
-/// exact pre-pointer crash window ADR 0041 names) — is SKIPPED
-/// entirely: `pty.open`'s start-on-attach (`ensure_started`) is what
+/// supervisor whose fence file EXISTS (rule B, shrink round): a
+/// supervisor was started there. A row with NO fence file — never
+/// started at all — is SKIPPED entirely: `pty.open`'s start-on-attach (`ensure_started`) is what
 /// starts those now, not this scan. Before rule B this scan launched
 /// `--resume` unconditionally for EVERY registered row, including
-/// ones with no pointer at all — `sot-capsule supervise --resume`
-/// against a workspace with no leg to adopt and no pointer to found
-/// one against simply fails (exit 69), leaving a bare state directory
+/// ones with no fence file at all, leaving a bare state directory
 /// behind and reading back as a misleading row on the owner's own box
 /// (the field finding behind this shrink round).
 ///
@@ -61,7 +57,7 @@ pub const LANE_CONCURRENCY: usize = 4;
 /// into an unbounded synchronous fan-out before the listener binds.
 pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
     // 2026-09-04 amendment: the inert default anchor is never resumed
-    // here either, even on the rare box where a pointer already exists
+    // here either, even on the rare box where a fence file already exists
     // for it (a hand-edited toml that dropped its agent after a prior
     // real run). Every OTHER `agent == "none"` capsule row still
     // resumes: `agent_argv("none", None)` is a real leg (the bare platform

@@ -58,8 +58,8 @@ fn a_completion_answer_belongs_to_the_run_it_was_admitted_for() {
     // The reset and the next run come before A's waiter has read its answer.
     let resetter = Arc::clone(&shared);
     let reset = std::thread::spawn(move || resetter.reset());
-    let After::Reset { new_voyage } = shared.wait_after_run() else { panic!("a reset was admitted") };
-    shared.reset_done(&new_voyage);
+    let After::Reset = shared.wait_after_run() else { panic!("a reset was admitted") };
+    shared.reset_done();
     assert_eq!(reset.join().unwrap().outcome, ResetOutcome::Reset);
     let _b = begin("run-b");
     let second = shared.admit_end("run-b").expect("run B's end is admitted");

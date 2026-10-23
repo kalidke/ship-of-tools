@@ -31,7 +31,6 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
 thiserror = "2"
-getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From impl
 tokio = { workspace = true }
 # ADR 0030 §8 "Where it is shown": mirror an FE attach client's terminal
 # reason to `tracing` (`attach_client/client.rs`), not only the pane's own status
@@ -91,6 +90,7 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
+getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From impl
 # Self-referential dev-dependency (a standard Cargo idiom): enables
 # `test-support` for every target `cargo test -p sot-log` builds --
 # this crate's own `tests/*.rs` integration binaries included — without

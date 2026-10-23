@@ -65,9 +65,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | a row's capsule state dir `<state>/workspaces/<id>` (name) | disk rule | rows | `rust/backend/src/rows/spawn/state_root.rs` `state_dir_for` |
 | removal of a row's state dir (close's tombstone, the start sweep) | disk rule | rows | `rust/backend/src/rows/state_folder.rs` `close_row_folder`, `sweep_state_folders`; the registries it asks `rust/backend/src/rows/store/mod.rs` `named_workspace_ids` |
 | `<sd>/supervisor.lock` | disk, lock | capsule | `rust/log/src/supervisor/journal/fence.rs` `lock_supervisor`; `rust/platform/src/host/lock.rs` `lock_supervisor` |
-| `<sd>/drawer.voyage` (pointer) | disk | capsule | `rust/log/src/supervisor/journal/pointer.rs` |
-| `<sd>/voyages/<id>/{writer.lock, leg, ended}` (the leg's fence, its number and its ending; no record) | disk, lock | capsule | `rust/log/src/capsule/fence.rs`; `rust/log/src/capsule/ended.rs`; names repeated `rust/backend/src/rows/run/end_run.rs` `absence_proof` |
-| `<sd>/screen` (the leg's latest screen, a vt100 checkpoint) | disk | capsule | `rust/log/src/capsule/screen.rs` |
+| `<sd>/ended` (how the last run ended; each run's start and each reset clears it) | disk | capsule | `rust/log/src/capsule/ended.rs` |
+| `<sd>/screen` (the latest screen, a vt100 checkpoint) | disk | capsule | `rust/log/src/capsule/screen.rs` |
 | `<sd>/row-scopes` and the row's systemd scope `sot-row-<hash>-<uuid>.scope` | disk, process | rows | `rust/backend/src/rows/spawn/row_scope.rs` `capture`, `listed`, `end`, `unit_name`; `rust/backend/src/rows/spawn/row_scope_aim.rs` `aim`, `v2_root` (shell twin of `v2_root`: `scripts/tests/rc-gate.sh` `R`) |
 | row socket/pipe `row-<hash>` (the daemon's management calls ride it since pass 6c-1b1; the supervisor lane `supervisor-<hash>` is no longer bound) | endpoint | capsule | `rust/log/src/row/server.rs` `row_socket_path`, `RowServer` |
 | hub relay sockets `sot-host-<h>.sock`, relay units and the `zz-sot-relay-command.conf` drop-in | disk, endpoint | topology | `rust/topology/src/lib.rs` `relay_socket_path`, `runtime_relay_dir`; `rust/topology/src/relay_units.rs` `relay_service_unit`, `RELAY_COMMAND_DROPIN`; `rust/backend/src/topology/relay_units.rs` `apply`, `refresh` |

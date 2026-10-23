@@ -11,7 +11,7 @@
         let dir = tempfile::tempdir().unwrap();
         let argv = vec!["/nonexistent/no_such_exe".to_string()];
         let cfg = config(dir.path(), "failunix1", argv, 80, 25);
-        let root = cfg.voyage_root.clone();
+        let root = cfg.state_dir.clone();
         let (_tx, rx) = mpsc::channel();
         let summary = capsule::run::<P>(cfg, rx).unwrap();
         assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
@@ -39,7 +39,7 @@
         let dir = tempfile::tempdir().unwrap();
         let argv = shell_command("exit 3");
         let cfg = config(dir.path(), "exitcode3", argv, 80, 25);
-        let root = cfg.voyage_root.clone();
+        let root = cfg.state_dir.clone();
         let (_tx, rx) = mpsc::channel();
         let summary = capsule::run::<P>(cfg, rx).unwrap();
         assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
@@ -85,7 +85,7 @@
         let dir = tempfile::tempdir().unwrap();
         let argv = vec!["sleep".to_string(), "600".to_string()];
         let cfg = config(dir.path(), "signaldeath1", argv, 80, 25);
-        let root = cfg.voyage_root.clone();
+        let root = cfg.state_dir.clone();
         let (tx, rx) = mpsc::channel();
         let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
         std::thread::sleep(Duration::from_millis(300));

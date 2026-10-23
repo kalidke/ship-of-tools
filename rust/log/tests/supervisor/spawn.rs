@@ -4,7 +4,7 @@ use super::*;
 
 /// ADR 0043 decision 27/30: with the InitialProbe's connect no longer
 /// paying the full [`sot_log::lane::transport::CONNECT_BOUND`] on an absent
-/// voyage pipe (it fails fast on `ENOENT`/`ECONNREFUSED` now, retried
+/// run's pipe (it fails fast on `ENOENT`/`ECONNREFUSED` now, retried
 /// only at [`sot_log::supervisor`]'s own 250ms `ATTEMPT_INTERVAL`), a
 /// fresh `--start` should reach `Ready` in well under a second rather
 /// than the 2+ seconds the old fixed wait alone used to cost. Asserted
@@ -23,7 +23,7 @@ fn start_reaches_ready_promptly() {
     let started = Instant::now();
     let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(30));
+    let run = wait_for_ready(&conn, Duration::from_secs(30));
     let elapsed = started.elapsed();
     println!("LU6b start_reaches_ready_promptly: spawn->Ready = {elapsed:?}");
     assert!(elapsed < Duration::from_secs(30), "expected Ready well within the generous 30s bound, took {elapsed:?}");
@@ -33,8 +33,8 @@ fn start_reaches_ready_promptly() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// A `--resume` over a state folder with no voyage to resume (the supervisor that left it died before it published one)
-/// starts the agent like a `--start` does, rather than ending with an error.
+/// A `--resume` over a state folder with no record of an end (the supervisor that left it died before any run) starts
+/// the agent like a `--start` does, rather than ending with an error.
 #[test]
 fn a_resume_with_nothing_to_resume_starts_the_agent() {
     let _serial = serial();
@@ -46,7 +46,7 @@ fn a_resume_with_nothing_to_resume_starts_the_agent() {
 
     let mut guard = spawn_supervisor(&state_dir, "--resume", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(30));
+    let run = wait_for_ready(&conn, Duration::from_secs(30));
     end_run_and_expect_ended(&conn, &run, "cleanup");
     stop(&conn);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
@@ -71,7 +71,7 @@ fn a_run_asked_to_end_rests_after_a_supervisor_restart() {
 
     let mut first = spawn_supervisor(&state_dir, "--start", &argv);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(30));
+    let run = wait_for_ready(&conn, Duration::from_secs(30));
     end_run_and_expect_ended(&conn, &run, "cleanup");
     let record = std::fs::read(state_dir.join("ended")).expect("the end is recorded in <state_dir>/ended");
     let record: Value = serde_json::from_slice(&record).expect("the record is JSON");
@@ -114,7 +114,7 @@ fn no_voyage_folder_is_written() {
 
     let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
     end_run_and_expect_ended(&conn, &run, "cleanup");
     stop(&conn);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
@@ -158,7 +158,7 @@ fn a_supervisor_creates_its_own_state_folder() {
     let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     poll_until(|| state_dir.is_dir().then_some(()), Duration::from_secs(30), "the supervisor to make its state folder");
     let conn = wait_for_lane(&state_dir_hash(&state_dir), Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
     end_run_and_expect_ended(&conn, &run, "cleanup");
     stop(&conn);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
@@ -204,7 +204,7 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
          if this ever fails, the daemon's spawn-side identity read was NOT a second implementation of the same value"
     );
 
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(30));
+    let run = wait_for_ready(&conn, Duration::from_secs(30));
     end_run_and_expect_ended(&conn, &run, "cleanup");
     stop(&conn);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
@@ -259,7 +259,7 @@ fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_
 
     // Ready first: that is the agent having run, after which no run carries the token.
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(30));
+    let run = wait_for_ready(&conn, Duration::from_secs(30));
     end_run_and_expect_ended(&conn, &run, "test");
     poll_until(
         || (status(&conn).phase == SupervisorPhase::EndedNoRespawn).then_some(()),
@@ -275,14 +275,14 @@ fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_
     );
     assert_eq!(lines[1], "", "a run after an agent ran must not carry the first-leg-only token");
 
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(30));
+    let run = wait_for_ready(&conn, Duration::from_secs(30));
     end_run_and_expect_ended(&conn, &run, "cleanup");
     stop(&conn);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// `sot_log::attach_client::supervisor_client::Persistent` reconnects transparently across real processes: the held
-/// connection survives the supervisor process being killed and a fresh one resuming the same voyage over the same state
+/// connection survives the supervisor process being killed and a fresh one resuming over the same state
 /// dir. (The row socket has no idle close, so the idle-expiry half of the old lane's test has nothing to cross.)
 #[test]
 fn persistent_client_survives_a_supervisor_restart() {
@@ -296,12 +296,11 @@ fn persistent_client_survives_a_supervisor_restart() {
     let mut first_guard = spawn_supervisor(&state_dir, "--start", SHELL);
     // Wait for the row socket over the raw helper first, proving the row is up before `Persistent` connects.
     let raw_conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage, run) = wait_for_ready(&raw_conn, Duration::from_secs(90));
+    let run = wait_for_ready(&raw_conn, Duration::from_secs(90));
     drop(raw_conn);
 
     let mut persistent = sot_log::attach_client::supervisor_client::Persistent::new(&state_dir);
     let report = persistent.status().expect("first status on a freshly-ready row");
-    assert_eq!(report.voyage.as_deref(), Some(voyage.as_str()));
     assert_eq!(report.run.as_deref(), Some(run.as_str()));
     assert_eq!(report.phase, SupervisorPhase::Ready);
 
@@ -312,13 +311,11 @@ fn persistent_client_survives_a_supervisor_restart() {
     let mut second_guard = spawn_supervisor(&state_dir, "--resume", SHELL);
     // The old connection is now dead; give the new supervisor's row socket a moment to bind.
     let raw_conn2 = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage2, run2) = wait_for_ready(&raw_conn2, Duration::from_secs(30));
+    let run2 = wait_for_ready(&raw_conn2, Duration::from_secs(30));
     drop(raw_conn2);
-    assert_eq!(voyage2, voyage, "the SAME voyage -- resumed, never re-minted");
-    assert_ne!(run2, run, "a fresh agent runs in the resumed voyage");
+    assert_ne!(run2, run, "a fresh agent runs in the resumed supervisor");
 
     let report2 = persistent.status().expect("Persistent must transparently reconnect across a supervisor restart");
-    assert_eq!(report2.voyage.as_deref(), Some(voyage.as_str()));
     assert_eq!(report2.run.as_deref(), Some(run2.as_str()));
     assert_eq!(report2.phase, SupervisorPhase::Ready);
 
@@ -343,7 +340,7 @@ fn a_cancel_landing_between_connect_and_publish_is_never_missed() {
 
     let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let raw_conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&raw_conn, Duration::from_secs(90));
+    let run = wait_for_ready(&raw_conn, Duration::from_secs(90));
     drop(raw_conn);
 
     let mut persistent = sot_log::attach_client::supervisor_client::Persistent::new(&state_dir);
@@ -388,7 +385,7 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
     // The run the reauth ends: start, Ready, end, stop.
     let mut first = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
     end_run_and_expect_ended(&conn, &run, "test");
     stop(&conn);
     let _ = wait_for_exit(&mut first, Duration::from_secs(30));
@@ -419,7 +416,7 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
         "the reauth's supervisor to rest at EndedNoRespawn",
     );
     reset(&conn);
-    let (new_voyage, new_run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let new_run = wait_for_ready(&conn, Duration::from_secs(90));
 
     let read_lines = |path: &Path| -> Option<Vec<String>> {
         std::fs::read_to_string(path).ok().map(|c| c.lines().map(str::to_string).collect())
@@ -434,8 +431,8 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
         "EndedNoRespawn after the reset's run was ended",
     );
     reset(&conn);
-    let (current, current_run) = wait_for_ready(&conn, Duration::from_secs(90));
-    assert_ne!(current, new_voyage);
+    let current_run = wait_for_ready(&conn, Duration::from_secs(90));
+    assert_ne!(current_run, new_run);
     let lines = poll_until(|| read_lines(&log_path).filter(|l| l.len() >= 2), Duration::from_secs(30), "the next run's argv");
     assert_eq!(lines[1], "", "a run after the reauth's own run must not carry the token");
 
@@ -448,7 +445,7 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
         "EndedNoRespawn before the second reset",
     );
     reset(&conn);
-    let (_last, last_run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let last_run = wait_for_ready(&conn, Duration::from_secs(90));
     let lines = poll_until(|| read_lines(&log_path).filter(|l| l.len() >= 3), Duration::from_secs(30), "the second reset's leg argv");
     assert_eq!(lines[2], "", "a reset after a producer ran must not carry the token");
 
@@ -490,8 +487,8 @@ fn an_agent_that_cannot_be_started_ends_the_supervisor_with_75() {
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_AGENT_NOT_STARTED), "exit status: {status:?}");
 }
 
-/// A stop is not an end of the run: it leaves no request on the voyage, so the next start resumes the row with a new
-/// run in the same voyage.
+/// A stop is not an end of the run: it leaves no request in the end record, so the next start resumes the row with a
+/// new run.
 #[test]
 fn a_stop_leaves_no_end_request_so_the_next_start_runs_the_agent_again() {
     let _serial = serial();
@@ -503,7 +500,7 @@ fn a_stop_leaves_no_end_request_so_the_next_start_runs_the_agent_again() {
 
     let mut first = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
     stop(&conn);
     let status = wait_for_exit(&mut first, Duration::from_secs(30));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_CLEAN), "exit status: {status:?}");
@@ -511,8 +508,7 @@ fn a_stop_leaves_no_end_request_so_the_next_start_runs_the_agent_again() {
 
     let mut second = spawn_supervisor(&state_dir, "--resume", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage_after, run_after) = wait_for_ready(&conn, Duration::from_secs(90));
-    assert_eq!(voyage_after, voyage, "the same voyage");
+    let run_after = wait_for_ready(&conn, Duration::from_secs(90));
     assert_ne!(run_after, run, "one new run");
     end_run_and_expect_ended(&conn, &run_after, "cleanup");
     stop(&conn);
@@ -520,7 +516,7 @@ fn a_stop_leaves_no_end_request_so_the_next_start_runs_the_agent_again() {
 }
 
 /// An `end_run` that was acknowledged is a requested end even when the agent exits on its own first: the request reaches
-/// the run only after the agent is gone (`SOT_TEST_END_RUN_HOLD_MS`), yet the voyage records it, so a stop and a resume
+/// the run only after the agent is gone (`SOT_TEST_END_RUN_HOLD_MS`), yet the end record says so, so a stop and a resume
 /// rest and never start another run.
 #[cfg(target_os = "linux")]
 #[test]
@@ -537,7 +533,7 @@ fn an_end_run_the_agent_beat_is_still_a_requested_end_after_a_stop_and_a_resume(
 
     let mut first = spawn_supervisor_with_env(&state_dir, "--start", &argv, &[("SOT_TEST_END_RUN_HOLD_MS", "4000")]);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
     let ender = {
         let conn = wait_for_lane(&h, Duration::from_secs(30));
         std::thread::spawn(move || end_run(&conn, &run, "test"))
@@ -579,7 +575,7 @@ fn a_requested_end_that_cannot_be_recorded_is_not_answered_ended() {
 
     let mut guard = spawn_supervisor_with_env(&state_dir, "--start", SHELL, &[("SOT_TEST_END_MARK_FAILS", "1")]);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
     drop(conn);
 
     let outcome = sot_log::attach_client::supervisor_client::end_run(&state_dir, &run, "test").expect("the end_run call is answered");

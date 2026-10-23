@@ -93,7 +93,7 @@ mod work_state;
 // ONLY the supervisor AUTHORITY — ADR 0041 Lifecycle, legs are
 // deliberately outside the supervisor's own job — so a test whose own
 // teardown calls `stop` but never a matching `end_run` for the row's
-// CURRENT voyage leaves its platform-shell leg orphaned on Linux) no
+// CURRENT run leaves its platform-shell leg orphaned on Linux) no
 // longer needs a per-test sweep call: `Env`'s own `Drop` (F4, LU4 review
 // round 2) sweeps every leg this env could have spawned, anchored on its
 // own `state_root`, unconditionally, on every exit path — see that impl.
@@ -112,10 +112,8 @@ enum AuthorityAtRestart {
     Alive,
     /// The supervisor is explicitly stopped first
     /// (`sot_log::attach_client::supervisor_client::stop`). A stop is not an
-    /// end of the run: the next start resumes the row, in the same voyage,
-    /// behind a genuinely DEAD lane. Whether that resume adopts a surviving
-    /// run or starts a new one is the capsule's, so only the voyage is
-    /// asserted, not the leg epoch.
+    /// end of the run: the next start resumes the row
+    /// behind a genuinely DEAD lane, in a new run.
     Stopped,
 }
 
@@ -136,10 +134,10 @@ enum AuthorityAtRestart {
 /// poll could exit before a DELAYED terminal-mark regression ever showed
 /// up — the `Stopped` scenario's resume is a real process spawn with no
 /// fence contention at risk once it reports ready, so it gets no extra
-/// dwell). Finally asserts the voyage is UNCHANGED across the restart and the
-/// leg epoch: unchanged for [`AuthorityAtRestart::Alive`] (the proof that
+/// dwell). Finally asserts the run:
+/// unchanged for [`AuthorityAtRestart::Alive`] (the proof that
 /// whichever mechanism resumed the run ADOPTED it rather than spawning a
-/// fresh contender), one higher for [`AuthorityAtRestart::Stopped`]. Returns the new connection/
+/// fresh contender), a newer one for [`AuthorityAtRestart::Stopped`]. Returns the new connection/
 /// next-id so a caller (today: only the `Stopped` scenario) can continue
 /// past this point on the SAME connection — the new daemon itself needs
 /// no return: `env` already owns it (`Env::spawn_sotd`, F4), so a later
@@ -153,18 +151,6 @@ async fn restart_daemon_and_prove_adoption(
     run_before: String,
     authority: AuthorityAtRestart,
 ) -> (Conn, u64) {
-    let voyage_before = tokio::task::spawn_blocking({
-        let dir = state_dir_path.to_path_buf();
-        move || {
-            sot_log::attach_client::supervisor_client::query_status(&dir)
-                .expect("query_status before the daemon restart")
-                .0
-                .voyage
-        }
-    })
-    .await
-    .unwrap()
-    .expect("a ready capsule has a voyage");
     if matches!(authority, AuthorityAtRestart::Stopped) {
         tokio::task::spawn_blocking({
             let dir = state_dir_path.to_path_buf();
@@ -252,11 +238,6 @@ async fn restart_daemon_and_prove_adoption(
     })
     .await
     .unwrap();
-    assert_eq!(
-        after.voyage.as_deref(),
-        Some(voyage_before.as_str()),
-        "the voyage changed across the daemon restart (authority={authority:?}) -- the row was reset, not resumed"
-    );
     match authority {
         AuthorityAtRestart::Alive => assert_eq!(
             after.run.as_deref(),
@@ -266,7 +247,7 @@ async fn restart_daemon_and_prove_adoption(
         // The stop ended the agent with its supervisor and asked for no end of the run: the resume is a new run.
         AuthorityAtRestart::Stopped => assert!(
             after.run.as_deref().is_some_and(|run| run > run_before.as_str()),
-            "a stopped supervisor's resume must start a new run in the same voyage, after the old one (authority={authority:?}): {:?} after {run_before}",
+            "a stopped supervisor's resume must start a new run, after the old one (authority={authority:?}): {:?} after {run_before}",
             after.run
         ),
     }

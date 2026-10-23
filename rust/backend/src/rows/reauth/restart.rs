@@ -1,4 +1,4 @@
-//! The restart runner: ends the old leg, waits for its authority to rest, mints the replacement voyage and
+//! The restart runner: ends the old leg, waits for its authority to rest, resets the replacement into a new run and
 //! spawns the new leg, behind the `RestartEffects` seam the tests fake.
 
 use super::*;
@@ -24,7 +24,7 @@ fn run_ended(outcome: &crate::rows::run::end_run::EndRunOutcome) -> Result<(), S
 /// happen in is pinned by a test instead of by adjacency.
 ///
 /// INVARIANT THIS CARRIES: a revival is three effects — end the old leg,
-/// spawn the replacement, mint its voyage — and a path that performs two of
+/// spawn the replacement, reset it into a new run — and a path that performs two of
 /// them produces a row that LOGS as revived and has no leg. That failure is
 /// an ABSENT call, and no pure function can observe an absence:
 /// [`ready_to_mint`] can be entirely correct, fully tested, and never
@@ -44,7 +44,7 @@ pub(crate) trait RestartEffects {
         root_canonicalized: bool,
     ) -> std::io::Result<crate::rows::run::end_run::EndRunOutcome>;
     fn spawn_replacement(&self, plan: &ReauthRestart) -> Result<&'static str, String>;
-    fn reset(&self, workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<String, String>;
+    fn reset(&self, workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<(), String>;
 }
 
 /// The production impl, and the ONLY place in this module that names the
@@ -79,7 +79,7 @@ impl RestartEffects for LiveSupervisor {
             plan.workspaces.clone(),
         )
     }
-    fn reset(&self, workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<String, String> {
+    fn reset(&self, workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<(), String> {
         crate::rows::run::start::reset_run(workspaces, workspace_id, state_dir)
     }
 }
@@ -167,8 +167,8 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
     // prevent — with a red log instead of a green one, which is no better
     // for the conversation. So wait for the authority to rest on its own
     // clock, and then let the phase decide.
-    let started = match reset_replacement_run(fx, &plan, &state_dir, retired) {
-        Ok(started) => started,
+    match reset_replacement_run(fx, &plan, &state_dir, retired) {
+        Ok(()) => {}
         Err(ResetRefusal::NeverAnswered(detail)) => {
             tracing::error!(
                 workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
@@ -197,7 +197,6 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
     };
     tracing::info!(
         workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
-        reset = %started,
         // Deliberately narrower than "the agent is running": `reset`
         // answers as soon as the supervisor has taken it, and the agent
         // starts after that, where it can still fail into `terminal`. The
@@ -253,19 +252,13 @@ fn reset_replacement_run(
     plan: &ReauthRestart,
     state_dir: &Path,
     retired: Option<(u32, u64)>,
-) -> Result<String, ResetRefusal> {
+) -> Result<(), ResetRefusal> {
     let report = wait_until_resting(fx, state_dir).map_err(ResetRefusal::NeverAnswered)?;
     let settled = crate::rows::run::probe::phase_str(report.phase);
     if let Err(detail) = ready_to_mint(report.phase, retired, (report.pid, report.created)) {
         return Err(ResetRefusal::Refused { settled, detail });
     }
-    match fx.reset(&plan.workspaces, &plan.row.workspace_id, state_dir) {
-        Ok(voyage) if !voyage.trim().is_empty() => Ok(voyage),
-        other => Err(ResetRefusal::StartedNothing {
-            settled,
-            error: other.err().unwrap_or_else(|| "the reset answered an empty voyage".into()),
-        }),
-    }
+    fx.reset(&plan.workspaces, &plan.row.workspace_id, state_dir).map_err(|error| ResetRefusal::StartedNothing { settled, error })
 }
 
 /// How long to let the replacement authority recover before giving up on
@@ -334,7 +327,7 @@ fn phase_rests(phase: sot_log::SupervisorPhase) -> bool {
     matches!(phase, P::Ready | P::EndedNoRespawn | P::Terminal)
 }
 
-/// Whether this call may mint the replacement's voyage — from the phase
+/// Whether this call may reset the replacement into a new run — from the phase
 /// its authority settled at, and from whether that authority is actually a
 /// NEW one. Pure and exhaustive so both rules are testable without a
 /// supervisor, the same reason [`run_ended`] is factored out above.

@@ -63,7 +63,9 @@ Supervisor:
   `Workspace::apply_phase_observation`, which rejects an observation from a supervisor other than the cell's epoch and
   latches `terminal` (for its supervisor) and `ended_no_respawn` (for its run: a supervisor's runs order by their ids, a
   resting supervisor reports the run it rests on, a lower or unnamed run is a stale observation and a strictly newer run
-  releases the latch). Each row's one observer task holds the row's id and feeds the row registered under it at each
+  releases the latch; a supervisor restarted onto a requested end names no run, and the latch on no run is released by
+  its first run: the capsule's `ended` record carries no run, by decision, so the cell never compares runs across
+  supervisors). Each row's one observer task holds the row's id and feeds the row registered under it at each
   round (`run::observer`), so a refreshed row's phase follows its new supervisor.
 - A state folder had a supervisor iff it holds the fence file `supervisor.lock`: on Unix the daemon claims it before it
   forks and a supervisor takes it before anything else, so such a folder whose row socket does not answer reads
@@ -73,14 +75,15 @@ Supervisor:
   missing file as never started and takes nothing; only the state-folder sweep and retirement, which work on folders no
   registered row names (the boot resume reads registered rows only), take the fence with the creating API. Limit
   (Windows): the supervisor is spawned before it takes its fence (`spawn/detach.rs`), so one that exits in that window
-  leaves no marker for the recheck or the boot resume. No row reads a voyage or the pointer.
+  leaves no marker for the recheck or the boot resume.
 
 The daemon's calls on a row's supervisor are ops of the row socket, through `sot_log::attach_client::supervisor_client`
 (`query_status`, `end_run`, `reset`, `stop`, and the observer's `Persistent`), each bounded; a row of another row number
 is `foreign` and one that answers no such op, or none, is `unreachable`. An outcome the call could not settle is
 settled by reading the same supervisor's status, never by asking again: a lost end whose run is gone is `Ended`, a
-lost reset whose new voyage is published is `Ok` with it, and what stays unsettled is `NotEnded` (an `end_run`) or an
-error (a `reset`), so the row is kept and lifecycle's or the caller's retry reads the true state. Management shares
+lost reset after which status names a run other than the one the supervisor rested on (possibly none) is `Ok`, one
+still resting or terminal on that run is an error, and what stays unsettled is `NotEnded` (an `end_run`) or an error (a
+`reset`), so the row is kept and lifecycle's or the caller's retry reads the true state. Management shares
 the row's 8 connections with the viewers; a dial that gets no slot is one failed observation, never an end.
 
 Ends:

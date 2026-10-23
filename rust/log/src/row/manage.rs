@@ -10,7 +10,7 @@ pub trait Management: Send + Sync {
     fn status(&self) -> StatusRes;
     /// Ends the run `run` names and waits for its end.
     fn end_run(&self, run: &str, reason: &str) -> EndRunRes;
-    /// Starts a new voyage from a resting supervisor and waits for it to be published.
+    /// Starts a new run from a resting supervisor: removes the end record and waits for that to be done.
     fn reset(&self) -> ResetRes;
     /// Asks the supervisor to end its agent and exit once `conn`'s reply has been delivered; at once.
     fn stop(&self, conn: ConnId) -> StopRes;

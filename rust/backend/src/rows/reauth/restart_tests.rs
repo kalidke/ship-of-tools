@@ -30,7 +30,7 @@ struct FakeSupervisor {
     status: std::sync::Mutex<std::collections::VecDeque<(u32, u64, sot_log::SupervisorPhase)>>,
     end_run: Result<crate::rows::run::end_run::EndRunOutcome, String>,
     spawn: Result<&'static str, String>,
-    reset: Result<String, String>,
+    reset: Result<(), String>,
 }
 
 impl FakeSupervisor {
@@ -48,7 +48,7 @@ impl FakeSupervisor {
             ),
             end_run: Ok(crate::rows::run::end_run::EndRunOutcome::Ended),
             spawn: Ok("starting"),
-            reset: Ok("voyage-1".to_string()),
+            reset: Ok(()),
         }
     }
 
@@ -79,7 +79,7 @@ impl RestartEffects for FakeSupervisor {
             .unwrap()
             .pop_front()
             .expect("the fake was asked for more status reads than it was scripted");
-        Ok(sot_log::attach_client::supervisor_client::StatusReport { pid, created, phase, run: None, voyage: None })
+        Ok(sot_log::attach_client::supervisor_client::StatusReport { pid, created, phase, run: None })
     }
     fn end_run(
         &self,
@@ -95,7 +95,7 @@ impl RestartEffects for FakeSupervisor {
         *self.spawned_argv.lock().unwrap() = Some(plan.argv.clone());
         self.spawn.clone()
     }
-    fn reset(&self, _workspaces: &Workspaces, _workspace_id: &str, _state_dir: &Path) -> Result<String, String> {
+    fn reset(&self, _workspaces: &Workspaces, _workspace_id: &str, _state_dir: &Path) -> Result<(), String> {
         self.record.lock().unwrap().push(Effect::Reset);
         self.reset.clone()
     }

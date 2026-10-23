@@ -43,7 +43,6 @@ pub struct StatusReport {
     pub phase: SupervisorPhase,
     /// The live run's id, or, while the supervisor rests, the run whose end it rests on; absent before any run.
     pub run: Option<String>,
-    pub voyage: Option<String>,
 }
 
 /// What [`end_run`] settled on.
@@ -107,7 +106,6 @@ fn report(status: StatusRes, process_identity: (u32, u64)) -> crate::Result<Stat
         created: process_identity.1,
         phase: phase_of(&status.phase)?,
         run: status.run,
-        voyage: status.voyage,
     })
 }
 
@@ -214,13 +212,14 @@ pub fn end_run(state_dir: &Path, run: &str, reason: &str) -> crate::Result<EndRu
     .unwrap_or(EndRunOutcome::OutcomeUnknown))
 }
 
-/// Connect, challenge, and send `reset`: the one operation a supervisor resting in `ended_no_respawn` admits. It mints
-/// a fresh voyage and the next run starts under it, the deliberate alternative to `--resume`, which never resurrects a
-/// voyage whose run was asked to end. Returns the new voyage id.
+/// Connect, challenge, and send `reset`: the one operation a supervisor resting in `ended_no_respawn` admits. It removes
+/// the end record and the next run starts clean, the deliberate alternative to `--resume`, which never resurrects a run
+/// that was asked to end.
 ///
-/// A reply that was lost is settled by reading status from the same supervisor: a voyage other than the one it was
-/// resting on is the reset's, published; the same voyage, with the supervisor still resting or terminal, is not.
-pub fn reset(state_dir: &Path) -> crate::Result<String> {
+/// A reply that was lost is settled by reading status from the same supervisor, against the run it named before the
+/// reset (possibly none): a resting supervisor begins a run only after a reset, so a named run other than that one is
+/// the reset's, done; still resting or terminal on the same run, it was not.
+pub fn reset(state_dir: &Path) -> crate::Result<()> {
     let (mut client, _process) = connect(state_dir, HELLO_BUDGET)?;
     let peer = client.peer();
     let before: StatusRes = request(&mut client, OP_STATUS, json!({}), STATUS_BUDGET)?;
@@ -229,20 +228,20 @@ pub fn reset(state_dir: &Path) -> crate::Result<String> {
     let lost = match reply {
         Ok(res) => {
             return match res.outcome {
-                ResetOutcome::Reset => res.voyage.ok_or_else(|| err_state("reset: the reply names no voyage")),
+                ResetOutcome::Reset => Ok(()),
                 ResetOutcome::Failed => Err(err_state(format!("reset did not complete: {}", res.detail.unwrap_or_default()))),
             }
         }
         Err(e) => e,
     };
-    let settled = recover(state_dir, peer, |status| match (&status.voyage, phase_of(&status.phase)) {
-        (Some(now), Ok(_)) if Some(now) != before.voyage.as_ref() => Some(Ok(now.clone())),
-        (_, Ok(SupervisorPhase::Terminal | SupervisorPhase::EndedNoRespawn)) => Some(Err(())),
+    let settled = recover(state_dir, peer, |status| match (status.run.is_some() && status.run != before.run, phase_of(&status.phase)) {
+        (true, Ok(_)) => Some(Ok(())),
+        (false, Ok(SupervisorPhase::Terminal | SupervisorPhase::EndedNoRespawn)) => Some(Err(())),
         _ => None,
     });
     match settled {
-        Some(Ok(voyage)) => Ok(voyage),
-        _ => Err(err_state(format!("reset was not answered and no new voyage was found published: {lost}"))),
+        Some(Ok(())) => Ok(()),
+        _ => Err(err_state(format!("reset was not answered and no new run was found: {lost}"))),
     }
 }
 

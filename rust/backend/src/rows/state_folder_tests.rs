@@ -6,7 +6,6 @@ use crate::rows::Workspace;
 use std::path::PathBuf;
 
 const ID: &str = "ws-demo-1a2b3c";
-const VOYAGE: &str = "a1b2c3d4-e5f6-4890-9abc-def012345678";
 
 fn later() -> SystemTime {
     SystemTime::now() + AGE_FLOOR + Duration::from_secs(3600)
@@ -16,11 +15,9 @@ fn later() -> SystemTime {
 fn root_with(id: &str) -> (tempfile::TempDir, PathBuf) {
     let root = tempfile::tempdir().unwrap();
     let folder = state_dir_for(root.path(), id);
-    let voyage = sot_log::supervisor::voyage_root_path(&folder, VOYAGE);
-    std::fs::create_dir_all(&voyage).unwrap();
-    std::fs::write(voyage.join(sot_log::capsule::WRITER_LOCK), b"").unwrap();
-    std::fs::write(voyage.join("log"), b"x").unwrap();
-    std::fs::write(folder.join("drawer.voyage"), VOYAGE).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("screen"), b"x").unwrap();
+    std::fs::write(folder.join("ended"), b"{}").unwrap();
     (root, folder)
 }
 
@@ -107,7 +104,7 @@ fn a_held_lock_keeps_the_folder() {
     for floor in [Some(AGE_FLOOR), None] {
         assert!(matches!(remove_now(&workspaces_of(&root), ID, floor), Removal::Kept(_)));
     }
-    assert!(folder.join("drawer.voyage").is_file());
+    assert!(folder.join("ended").is_file());
     drop(held);
     assert_eq!(remove_now(&workspaces_of(&root), ID, Some(AGE_FLOOR)), Removal::Removed);
 }
@@ -127,15 +124,11 @@ fn a_scopes_record_keeps_the_folder() {
 }
 
 #[test]
-fn a_row_folder_holding_only_a_fence_file_is_removed_with_no_voyage_read() {
+fn a_row_folder_holding_only_a_fence_file_is_removed() {
     let root = tempfile::tempdir().unwrap();
     let folder = state_dir_for(root.path(), ID);
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("supervisor.lock"), b"").unwrap();
-    assert_eq!(remove_now(&workspaces_of(&root), ID, Some(AGE_FLOOR)), Removal::Removed);
-    // A folder with voyages and no pointer is no different: the proof is the fence and the row socket.
-    let folder = state_dir_for(root.path(), ID);
-    std::fs::create_dir_all(folder.join("voyages").join("v1")).unwrap();
     assert_eq!(remove_now(&workspaces_of(&root), ID, Some(AGE_FLOOR)), Removal::Removed);
 }
 
@@ -169,7 +162,7 @@ fn a_name_the_registry_does_not_make_is_never_touched() {
 fn the_sweep_removes_tombstones_without_a_registry_and_keeps_a_registered_row() {
     let (root, kept_folder) = root_with("ws-live-1");
     let tomb = tombstone_of(&root, "ws-closed-2");
-    std::fs::create_dir_all(tomb.join("voyages")).unwrap();
+    std::fs::create_dir_all(tomb.join("inner")).unwrap();
     let reg = Workspaces::new();
     let mut ws = Workspace::from_label("live", PathBuf::from("/p/live"), false, "none".into(), String::new(), String::new());
     ws.workspace_id = "ws-live-1".to_string();
@@ -212,11 +205,11 @@ fn the_sweep_with_no_workspaces_folder_does_nothing() {
 fn a_failure_in_one_folder_logs_and_the_sweep_goes_on() {
     let root = tempfile::tempdir().unwrap();
     let first = tombstone_of(&root, "ws-aaa-1");
-    std::fs::create_dir_all(first.join("voyages")).unwrap();
-    std::fs::write(first.join("voyages").join("log"), b"x").unwrap();
+    std::fs::create_dir_all(first.join("inner")).unwrap();
+    std::fs::write(first.join("inner").join("log"), b"x").unwrap();
     let second = tombstone_of(&root, "ws-zzz-2");
     std::fs::create_dir_all(&second).unwrap();
-    let _blocked = block_removal(&first.join("voyages"));
+    let _blocked = block_removal(&first.join("inner"));
     let log = sot_log::test_log::capture();
     let left = sweep_with(root.path(), &Workspaces::new(), &none_named(), later());
     let text = log.text();
@@ -285,7 +278,7 @@ fn a_link_inside_is_unlinked_and_its_target_left_alone() {
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("precious"), b"x").unwrap();
     let (root, folder) = root_with(ID);
-    make_link(outside.path(), &sot_log::supervisor::voyage_root_path(&folder, VOYAGE).join("link"));
+    make_link(outside.path(), &folder.join("link"));
     assert_eq!(remove_now(&workspaces_of(&root), ID, Some(AGE_FLOOR)), Removal::Removed);
     assert!(!folder.exists());
     assert!(outside.path().join("precious").is_file(), "the link's target is never entered");
@@ -345,10 +338,8 @@ fn registered_row() -> (String, PathBuf, PathBuf) {
     let toml = crate::rows::store::save(&ws).unwrap();
     let state_root = sot_platform::host::state_dir::sot_state_dir().unwrap();
     let folder = state_dir_for(&state_root, &id);
-    let voyage = sot_log::supervisor::voyage_root_path(&folder, VOYAGE);
-    std::fs::create_dir_all(&voyage).unwrap();
-    std::fs::write(voyage.join(sot_log::capsule::WRITER_LOCK), b"").unwrap();
-    std::fs::write(folder.join("drawer.voyage"), VOYAGE).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("ended"), b"{}").unwrap();
     (id, folder, toml)
 }
 

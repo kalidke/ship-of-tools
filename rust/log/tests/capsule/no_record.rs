@@ -20,15 +20,15 @@ fn files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     out
 }
 
-/// A run that prints and exits leaves no segment, no record folder and no blob in its voyage folder: the only
-/// things there are the writer fence and the leg's own small files.
+/// A run that prints and exits leaves no segment, no record folder and no blob in its state folder: the only things
+/// there are the run's own small files.
 #[test]
 fn a_run_writes_no_voyage_record() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let argv = shell_command("echo SOT_NO_RECORD_5b1c");
     let cfg = config(dir.path(), "norec1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
+    let root = cfg.state_dir.clone();
     let (_tx, rx) = mpsc::channel();
     let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);

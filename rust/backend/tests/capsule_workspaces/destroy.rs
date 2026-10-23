@@ -270,7 +270,7 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
 /// ADR 0043 decision 33's destroy proof, the markerless-death case: BOTH
 /// the supervisor AND the leg die with no end marker on disk. Destroy
 /// still succeeds — the resumed authority re-executes the leg within the
-/// same voyage (the supervisor's own recovery rule, exercised by
+/// same state folder (the supervisor's own recovery rule, exercised by
 /// `capsule_resume_reexecutes_a_leg_that_ended_without_a_marker`) and the
 /// subsequent `end_run` ends THAT leg — the stated policy, not a gap
 /// this proof leaves open. Nothing survives, and the row is removed.
@@ -332,15 +332,12 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let (run_before, voyage_before) = tokio::task::spawn_blocking({
+    let run_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before the daemon restart");
-            (
-                report.run.expect("a ready capsule has a run"),
-                report.voyage.expect("a ready capsule has a voyage"),
-            )
+            report.run.expect("a ready capsule has a run")
         }
     })
     .await
@@ -366,13 +363,15 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     // The "markerless" precondition this test is named for, checked
     // directly rather than only inferred from the recovery behaviour
     // afterward.
-    let voyage_root = sot_log::supervisor::voyage_root_path(&state_dir_path, &voyage_before);
-    let carries_marker = tokio::task::spawn_blocking(move || {
-        sot_log::capsule::read_ended(&voyage_root).map(|ended| ended.is_some_and(|e| e.requested))
-    })
+    let carries_marker = {
+        let dir = state_dir_path.clone();
+        tokio::task::spawn_blocking(move || {
+            sot_log::capsule::read_ended(&dir).map(|ended| ended.is_some_and(|e| e.requested))
+        })
+    }
     .await
     .unwrap()
-    .expect("read_ended must read the SIGKILLed leg's own folder cleanly");
+    .expect("read_ended must read the SIGKILLed row's own folder cleanly");
     assert!(
         !carries_marker,
         "the killed leg carries an end marker — this is not the markerless-death precondition this test claims"
@@ -426,8 +425,8 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
 /// an external volume issue) — never a licence to recreate anything, but
 /// no longer an automatic keep either. `end_run`'s `!state_dir.is_dir()`
 /// check no longer reports `state_dir_missing` unconditionally: with the
-/// directory gone, neither the supervisor fence nor this voyage's writer
-/// lock can exist anywhere (both live under `state_dir`), so the only
+/// directory gone, the supervisor fence
+/// cannot exist anywhere (it lives under `state_dir`), so the only
 /// remaining question is whether a supervisor still answers this row's
 /// lane (addressed independently of the directory, by the hash of the
 /// canonical state-dir path). Here the authority was already stopped and

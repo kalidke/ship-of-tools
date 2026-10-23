@@ -18,7 +18,7 @@ fn full_lifecycle_status_end_run_and_clean_exit() {
     // `wait_for_lane` already ran the dial's hello, which names the row number: a second hello here would be a
     // protocol violation.
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
 
     end_run_and_expect_ended(&conn, &run, "integration test");
     let rested = status(&conn);
@@ -79,7 +79,7 @@ fn a_status_probe_against_an_idle_supervisor_is_not_poll_bound() {
     let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
     drop(conn); // only the timed trials below are measured
 
     const TRIALS: usize = 20;

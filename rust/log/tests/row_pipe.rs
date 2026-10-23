@@ -96,7 +96,7 @@ fn a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown() {
     struct Stopper;
     impl sot_log::row::Management for Stopper {
         fn status(&self) -> sot_log::row::StatusRes {
-            sot_log::row::StatusRes { phase: "ready".into(), run: None, voyage: None }
+            sot_log::row::StatusRes { phase: "ready".into(), run: None }
         }
         fn end_run(&self, _: &str, _: &str) -> sot_log::row::EndRunRes {
             unreachable!()

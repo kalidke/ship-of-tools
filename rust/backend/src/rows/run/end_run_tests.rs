@@ -1,7 +1,7 @@
 use super::*;
 
 fn report(phase: sot_log::SupervisorPhase) -> sot_log::attach_client::supervisor_client::StatusReport {
-    sot_log::attach_client::supervisor_client::StatusReport { pid: 1, created: 1, phase, run: None, voyage: None }
+    sot_log::attach_client::supervisor_client::StatusReport { pid: 1, created: 1, phase, run: None }
 }
 
 /// An authority that reports `Starting` (a held row is one) is waited out
@@ -49,12 +49,12 @@ fn the_destroy_proof_needs_no_voyage() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path();
 
-    // A fence free and nothing answering the row's socket: proved, with no pointer and no voyage in the folder.
+    // A fence free and nothing answering the row's socket: proved, writing nothing in the folder.
     match end_run(state_dir, "test reason", true) {
         Ok(super::EndRunOutcome::Unheld) => {}
         other => panic!("expected Ok(Unheld) with a free fence and no row socket: {other:?}"),
     }
-    assert!(!state_dir.join("drawer.voyage").exists() && !state_dir.join("voyages").exists(), "the proof wrote a voyage");
+    assert_eq!(std::fs::read_dir(state_dir).unwrap().count(), 0, "the proof wrote into the folder");
 
     // Something else holds the SUPERVISOR fence right now: `end_run` keeps the unreachable-lane refusal (Err) rather
     // than fabricating `Unheld` out from under a live holder.

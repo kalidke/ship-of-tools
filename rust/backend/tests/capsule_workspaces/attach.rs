@@ -77,8 +77,8 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
 
     // Precondition: no state dir on disk at all, and `workspace.list`'s
     // own row already reads "stopped" from THIS first list call (rule B:
-    // the startup resume-scan skips every row with no published voyage
-    // pointer, so it never touched this one either).
+    // the startup resume-scan skips every row with no fence file, so it
+    // never touched this one either).
     assert!(
         !state_dir_path.exists(),
         "the default capsule's state dir must not exist before this test's own attach: {state_dir_path:?}"
@@ -143,7 +143,7 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
 /// anchor by design (see
 /// `capsule_default_workspace_with_no_agent_is_never_started_on_attach`,
 /// above, which this test's predecessor was split into). This moves
-/// that proof, plus the #182 items A.1/C end -> reattach -> new-voyage-
+/// that proof, plus the #182 items A.1/C end -> reattach -> new-run-
 /// via-reset proof, onto an ORDINARY (non-default) capsule row instead —
 /// pre-seeded via `Env::seed_capsule_toml` rather than
 /// `workspace.create`, since `workspace.create`'s own handler spawns
@@ -169,7 +169,7 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
 /// real retirement arm against a genuinely resident authority, not an
 /// already-stopped one), leaving the row fully registered; `pty.open`'s
 /// start-on-attach (`ensure_started`) then retires it (ADR 0043
-/// decision 33) and mints a new voyage via `reset` — the exact mechanic
+/// decision 33) and starts a new run via `reset` — the exact mechanic
 /// this proves, regardless of which row it runs on.
 #[tokio::test]
 #[allow(clippy::too_many_lines, reason = "one test scenario: a created row starts on attach and recovers by reset after its end")]
@@ -220,7 +220,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     // Rule H: prove the "never started" precondition BEFORE `pty.open` —
     // no state dir on disk at all, and `workspace.list`'s own row already
     // reads "stopped" from THIS first list call (rule B: the startup
-    // resume-scan skips every row with no published voyage pointer, so
+    // resume-scan skips every row with no fence file, so
     // it never touched this one).
     assert!(
         !state_dir_path.exists(),
@@ -295,12 +295,10 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
 
     // --- #182 items A.1/C, plus this test's own doc above: end the run,
     // leave the authority resting, prove attach recovers via `reset`
-    // with a NEW voyage (not a flat refusal, not a resurrected old one) ---
+    // with a NEW run (not a flat refusal, not a resurrected old one) ---
     let (original_status, original_process) = sot_log::attach_client::supervisor_client::query_status(&state_dir_path)
         .expect("query_status before ending the run");
-    let original_voyage = original_status
-        .voyage
-        .expect("a ready capsule has a voyage");
+    let original_run = original_status.run.clone().expect("a ready capsule has a run");
     let original_pid = original_process.pid();
 
     sot_log::attach_client::supervisor_client::end_run(&state_dir_path, original_status.run.as_deref().expect("a ready capsule has a run"), "test end")
@@ -320,7 +318,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     .await;
 
     // Re-attach, repeatedly and bounded, until the row is genuinely
-    // live again with a NEW voyage — item C, the claim this test
+    // live again with a NEW run — item C, the claim this test
     // proves. Never assert a specific attach count or an intermediate
     // phase: `ensure_started`'s own inline settle loop after a resume
     // spawn usually catches a marker-only recovery's near-instant
@@ -333,7 +331,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     // (a `Resetting`/already-live authority answers "already up",
     // nothing to do).
     let ready_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
-    let new_voyage = loop {
+    let new_run = loop {
         let reattach_req = serde_json::json!({
             "cols": 80, "rows": 24, "user_switch": true, "target": target,
         });
@@ -346,7 +344,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
         );
         if let Some(report) = try_query_status(state_dir_path.clone()).await {
             if report.phase == sot_log::SupervisorPhase::Ready {
-                break report.voyage.expect("a ready capsule has a voyage");
+                break report.run.expect("a ready capsule has a run");
             }
         }
         assert!(
@@ -355,10 +353,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
-    assert_ne!(
-        new_voyage, original_voyage,
-        "reset must mint a NEW voyage, not resurrect the ended one"
-    );
+    assert_ne!(new_run, original_run, "reset must start a NEW run, not resurrect the ended one");
 
     // L3 (ADR 0043 decision 33's retirement clause): the OLD resident authority must actually
     // be RETIRED, never merely raced past by a `reset` that landed on it
@@ -441,7 +436,7 @@ async fn capsule_attach_right_after_run_end_activates_despite_a_stale_cached_rea
 
     let (status, _process) =
         sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
-    let original_voyage = status.voyage.expect("a ready capsule has a voyage");
+    let original_run = status.run.clone().expect("a ready capsule has a run");
     sot_log::attach_client::supervisor_client::end_run(&state_dir_path, status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
 
     // end_run went straight to the lane, bypassing the daemon, so the phase
@@ -451,13 +446,13 @@ async fn capsule_attach_right_after_run_end_activates_despite_a_stale_cached_rea
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open right after end_run: {:?}", pty_res.payload);
 
-    // A NEW voyage is proof the guarded activation ran retire->resume->reset,
+    // A NEW run is proof the guarded activation ran retire->resume->reset,
     // not a no-op against the stale cached phase.
     let ready_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
-    let new_voyage = loop {
+    let new_run = loop {
         if let Some(report) = try_query_status(state_dir_path.clone()).await {
             if report.phase == sot_log::SupervisorPhase::Ready {
-                break report.voyage.expect("a ready capsule has a voyage");
+                break report.run.expect("a ready capsule has a run");
             }
         }
         assert!(
@@ -466,7 +461,7 @@ async fn capsule_attach_right_after_run_end_activates_despite_a_stale_cached_rea
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
-    assert_ne!(new_voyage, original_voyage, "reset must mint a NEW voyage, not resurrect the ended one");
+    assert_ne!(new_run, original_run, "reset must start a NEW run, not resurrect the ended one");
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();

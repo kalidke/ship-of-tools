@@ -118,7 +118,7 @@ fn stand_in_row(path: &Path, row_number: u32, v: u32, stop: std::sync::Arc<std::
                     let (pid, created) = sot_log::row::self_identity().expect("own identity");
                     let payload = match req.op.as_str() {
                         "row.hello" => json!({"pid": pid, "created": created, "phase": "ready", "run": "run-one", "row": row_number}),
-                        "row.status" => json!({"phase": "ready", "run": "run-one", "voyage": "voyage-one"}),
+                        "row.status" => json!({"phase": "ready", "run": "run-one"}),
                         _ => json!({"error": "no such op", "code": "unknown_op"}),
                     };
                     let mut res = sot_protocol::Frame::res(req.id, &req.op, payload);
@@ -207,14 +207,11 @@ fn a_reset_after_end_run_is_admitted() {
     assert_eq!(ended.payload["outcome"], "ended", "{ended:?}");
     let reset = manager.call("row.reset", json!({}), Duration::from_secs(30)).expect("reset answers");
     assert_eq!(reset.payload["outcome"], "reset", "{reset:?}");
-    let new_voyage = reset.payload["voyage"].as_str().expect("the reset names its new voyage").to_string();
-    assert_ne!(Some(new_voyage.as_str()), first["voyage"].as_str(), "the reset minted a new voyage");
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let now = status(&mut manager);
         if now["phase"] == "ready" && now["run"] != first["run"] {
-            assert_eq!(now["voyage"], new_voyage.as_str(), "a fresh agent runs under the new voyage");
             break;
         }
         assert!(Instant::now() < deadline, "no new run after the reset: {now:?}");
@@ -295,6 +292,8 @@ fn a_stop_is_answered_before_the_supervisor_exits() {
 struct Lossy {
     ended: bool,
     reset: bool,
+    /// The reset is dropped without being carried out: the supervisor died mid-answer before it did anything.
+    reset_dropped: bool,
     /// The status the stand-in gives once ended, as JSON; none answers the unnamed rest of a fresh supervisor.
     after_end: Option<&'static str>,
 }
@@ -328,14 +327,14 @@ fn lossy_row(path: &Path, state: std::sync::Arc<std::sync::Mutex<Lossy>>, stop: 
                         "row.status" => {
                             let s = state.lock().unwrap();
                             if s.reset {
-                                json!({"phase": "starting", "run": "run-two", "voyage": "voyage-two"})
+                                json!({"phase": "starting", "run": "run-two"})
                             } else if s.ended {
                                 match s.after_end {
                                     Some(text) => serde_json::from_str(text).unwrap(),
-                                    None => json!({"phase": "ended_no_respawn", "voyage": "voyage-one"}),
+                                    None => json!({"phase": "ended_no_respawn"}),
                                 }
                             } else {
-                                json!({"phase": "ready", "run": "run-one", "voyage": "voyage-one"})
+                                json!({"phase": "ready", "run": "run-one"})
                             }
                         }
                         "row.end_run" => {
@@ -343,7 +342,8 @@ fn lossy_row(path: &Path, state: std::sync::Arc<std::sync::Mutex<Lossy>>, stop: 
                             return;
                         }
                         "row.reset" => {
-                            state.lock().unwrap().reset = true;
+                            let mut s = state.lock().unwrap();
+                            s.reset = !s.reset_dropped;
                             return;
                         }
                         _ => json!({"error": "no such op", "code": "unknown_op"}),
@@ -408,14 +408,21 @@ fn a_lost_end_reply_is_settled_by_the_run_a_rest_or_a_terminal_status_names() {
     assert!(matches!(lost_end_settled_by(r#"{"phase":"terminal","run":"run-other"}"#), O::Failed(_)), "terminal on another run");
 }
 
-/// A reset whose reply is lost after the new voyage was published reports the reset and its voyage.
+/// A reset whose reply is lost is settled by the run status then names: a run other than the one it rested on (here
+/// none) is the reset's, done, and a supervisor still resting on the old one was not reset.
 #[test]
-fn a_reset_whose_reply_is_lost_after_publication_reports_reset() {
+fn a_reset_whose_reply_is_lost_is_settled_by_the_run_status_names() {
     let _serial = serial();
     let runtime = private_runtime_dir();
     let (dir, state_dir, stop, row) = lossy_setup(runtime.path(), Lossy { ended: true, ..Lossy::default() });
-    let voyage = supervisor_client::reset(&state_dir).expect("the reset is found published");
-    assert_eq!(voyage, "voyage-two");
+    supervisor_client::reset(&state_dir).expect("the reset is found done: a new run is named");
+    stop.store(true, std::sync::atomic::Ordering::Release);
+    row.join().unwrap();
+    drop(dir);
+
+    let runtime = private_runtime_dir();
+    let (dir, state_dir, stop, row) = lossy_setup(runtime.path(), Lossy { ended: true, reset_dropped: true, ..Lossy::default() });
+    supervisor_client::reset(&state_dir).expect_err("a supervisor still resting on the old run was not reset");
     stop.store(true, std::sync::atomic::Ordering::Release);
     row.join().unwrap();
     drop(dir);
@@ -433,7 +440,7 @@ fn a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown() {
     struct Stopper;
     impl sot_log::row::Management for Stopper {
         fn status(&self) -> sot_log::row::StatusRes {
-            sot_log::row::StatusRes { phase: "ready".into(), run: None, voyage: None }
+            sot_log::row::StatusRes { phase: "ready".into(), run: None }
         }
         fn end_run(&self, _: &str, _: &str) -> sot_log::row::EndRunRes {
             unreachable!()

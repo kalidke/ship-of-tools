@@ -42,7 +42,6 @@ pub mod birth_claim;
 pub mod journal;
 pub(crate) use authority::self_pid_and_created;
 use authority::{After, Shared};
-use journal::pointer::{self, PointerState};
 
 #[cfg(windows)]
 type Agent = crate::capsule::producer::conpty::producer::ConptyProducer;
@@ -134,7 +133,13 @@ fn take_authority(config: &SuperviseConfig) -> crate::Result<Fence> {
 
 fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     init_process_globals(&config)?;
-    std::fs::create_dir_all(voyages_dir(&config.state_dir))?;
+    // The supervisor makes its own state folder: on Windows the start creates nothing before it, and it is the first
+    // thing the fence needs.
+    std::fs::create_dir_all(&config.state_dir)?;
+    // Test seam: the supervisor fails before the fence, as a state folder it cannot make would. Inert unless named.
+    if std::env::var_os("SOT_TEST_SUPERVISOR_BOOT_FAILS").is_some() {
+        return Err(crate::Error::State("test: the supervisor cannot boot".into()));
+    }
 
     #[cfg(all(unix, feature = "native-barrier"))]
     crate::test_barrier::hold("pre_fence");
@@ -266,30 +271,32 @@ fn watch_row_listener(
     }
 }
 
-/// The main thread's life: discover the voyage, run the agent, and after each run wait for what a client asks.
+/// The main thread's life: read how the last run ended, run the agent, and after each run wait for what a client asks.
 fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
-    // Test seam: holds the supervisor in `starting` for the named milliseconds, before it has a voyage, so a test can
+    // Test seam: holds the supervisor in `starting` for the named milliseconds, before it has a run, so a test can
     // prove a caller waits for a row to rest rather than deciding from a snapshot mid-start. Inert unless named.
     if let Ok(ms) = std::env::var("SOT_TEST_RECOVERY_DELAY_MS").unwrap_or_default().parse::<u64>() {
         std::thread::sleep(Duration::from_millis(ms));
     }
-    let mut voyage = match discover_or_mint_voyage(&config.state_dir, config.mode) {
-        Ok(v) => v,
-        Err(e) => {
-            shared.terminal(bounded_detail(format!("{e}")));
-            return leave(shared);
+    // A `--resume` over a run that was asked to end does not start another: it rests until a reset or a stop, naming
+    // no run (a supervisor names only the runs it began). A record that cannot be read is not a record of no end, so
+    // the supervisor is terminal before any run; a `--start` reads none and clears a stale one at its run's start.
+    let mut rest_first = false;
+    if config.mode == StartMode::Resume {
+        match crate::capsule::read_ended(&config.state_dir) {
+            Ok(ended) => rest_first = ended.is_some_and(|e| e.requested),
+            Err(e) => {
+                shared.terminal(bounded_detail(format!("the end record could not be read: {e}")));
+                return leave(shared);
+            }
         }
-    };
-    shared.set_voyage(&voyage);
+    }
     let mut agent_ran = false;
-    // A `--resume` over a run that was asked to end does not start another: it rests until a reset or a stop.
-    let mut rest_first = config.mode == StartMode::Resume
-        && crate::capsule::read_ended(&voyage_root_path(&config.state_dir, &voyage)).ok().flatten().is_some_and(|e| e.requested);
     loop {
         let ended = if std::mem::take(&mut rest_first) {
             RunEnd::Ended { started: false }
         } else {
-            run_agent(config, shared, row, &voyage, agent_ran)
+            run_agent(config, shared, row, agent_ran)
         };
         match ended {
             RunEnd::NotStarted => return leave(shared),
@@ -307,10 +314,16 @@ fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
             After::Stop => return finish(shared),
             After::TerminalGrace => return EXIT_TERMINAL,
             After::RowLost => return EXIT_AGENT_NOT_STARTED,
-            After::Reset { new_voyage } => match pointer::reset(&config.state_dir, &new_voyage) {
+            // The reset's publication is the end record's removal, before it is answered: a supervisor killed after
+            // the answer resumes into an agent, never back onto the end the reset removed.
+            After::Reset => match crate::capsule::clear_ended(&config.state_dir) {
                 Ok(()) => {
-                    shared.reset_done(&new_voyage);
-                    voyage = new_voyage;
+                    shared.reset_done();
+                    // Test seam: holds the main thread this many milliseconds after the answer, before the next run,
+                    // so a test can kill the supervisor in between. Inert unless named.
+                    if let Some(ms) = std::env::var("SOT_TEST_RESET_HOLD_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
+                        std::thread::sleep(Duration::from_millis(ms));
+                    }
                 }
                 Err(e) => shared.terminal(bounded_detail(format!("reset: {e}"))),
             },
@@ -351,7 +364,7 @@ enum RunEnd {
 
 /// One run of the agent, to its end, on this thread: the kernel's parent-death signal on Linux follows the thread
 /// that forks the agent, and this one lives as long as the process.
-fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, voyage: &str, agent_ran: bool) -> RunEnd {
+fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, agent_ran: bool) -> RunEnd {
     if shared.is_row_lost() {
         return RunEnd::Unasked(EXIT_AGENT_NOT_STARTED);
     }
@@ -365,7 +378,7 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, voyag
         return RunEnd::NotStarted;
     }
     let capsule = CapsuleConfig {
-        voyage_root: voyage_root_path(&config.state_dir, voyage),
+        state_dir: config.state_dir.clone(),
         screen_path: Some(config.state_dir.join("screen")),
         argv: agent_argv(config, agent_ran),
         cols: config.cols,
@@ -373,11 +386,11 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, voyag
         signals: Some(Arc::clone(&signals)),
     };
     let result = crate::capsule::run::<Agent>(capsule, commands);
-    // An acknowledged end_run is a requested end even if the agent ended first: the voyage records it before the answer.
+    // An acknowledged end_run is a requested end even if the agent ended first: the end record is written before the answer.
     // An end that cannot be recorded is not an end: a later `--resume` would read no request and start another agent,
     // so the supervisor is terminal and the caller is told it failed.
     if shared.end_run_asked() {
-        if let Err(e) = mark_end_requested(&voyage_root_path(&config.state_dir, voyage)) {
+        if let Err(e) = mark_end_requested(&config.state_dir) {
             return RunEnd::Failed(bounded_detail(format!("the requested end could not be recorded: {e}")));
         }
     }
@@ -437,65 +450,13 @@ fn init_process_globals(config: &SuperviseConfig) -> crate::Result<()> {
 // Small shared helpers
 // ---------------------------------------------------------------------
 
-fn voyages_dir(state_dir: &Path) -> PathBuf {
-    state_dir.join("voyages")
-}
-
-/// The leg's folder of `voyage_id`, `<state_dir>/voyages/<id>/`: one place derives it, for the daemon's destroy proof
-/// as for this module.
-pub fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
-    voyages_dir(state_dir).join(voyage_id)
-}
-
-/// The voyage the pointer names, minted when there is none: a `--resume` over a folder that never held a voyage starts
-/// the agent like a `--start`, since the supervisor that left it never got as far as publishing one, but a folder that
-/// lost its pointer is not a folder never used. A voyage there whose `ended` records a requested end is adopted, the
-/// pointer published to it, so the end is read on this start and on every later one; one whose record cannot be read
-/// fails closed, as a corrupt pointer does.
-fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crate::Result<String> {
-    match pointer::validate(state_dir) {
-        PointerState::Valid(id) => Ok(id),
-        PointerState::NotFound => {
-            if mode == StartMode::Resume {
-                if let Some(id) = lost_requested_end(state_dir)? {
-                    pointer::publish(state_dir, &id)?;
-                    return Ok(id);
-                }
-            }
-            std::fs::create_dir_all(voyages_dir(state_dir))?;
-            let id = uuid::Uuid::now_v7().to_string();
-            crate::capsule::bootstrap_voyage_folder(&voyage_root_path(state_dir, &id))?;
-            pointer::publish(state_dir, &id)?;
-            Ok(id)
-        }
-        PointerState::Corrupt => Err(crate::Error::State("drawer.voyage is corrupt".into())),
-        PointerState::OtherIo(e) => Err(e.into()),
-    }
-}
-
-/// The name of a voyage left in the folder that records a requested end (`Err` when a record cannot be read).
-fn lost_requested_end(state_dir: &Path) -> crate::Result<Option<String>> {
-    let entries = match std::fs::read_dir(voyages_dir(state_dir)) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    for entry in entries {
-        let root = entry?.path();
-        if root.is_dir() && crate::capsule::read_ended(&root)?.is_some_and(|ended| ended.requested) {
-            return Ok(root.file_name().map(|n| n.to_string_lossy().into_owned()));
-        }
-    }
-    Ok(None)
-}
-
-/// Records on the voyage that the run was asked to end. Test seam: `SOT_TEST_END_MARK_FAILS` makes the write fail,
+/// Records in the state folder that the run was asked to end. Test seam: `SOT_TEST_END_MARK_FAILS` makes the write fail,
 /// inert unless named.
-fn mark_end_requested(voyage_root: &Path) -> crate::Result<()> {
+fn mark_end_requested(state_dir: &Path) -> crate::Result<()> {
     if std::env::var_os("SOT_TEST_END_MARK_FAILS").is_some() {
         return Err(crate::Error::State("test: the requested end cannot be written".into()));
     }
-    crate::capsule::mark_end_requested(voyage_root, "end_run")
+    crate::capsule::mark_end_requested(state_dir, "end_run")
 }
 
 /// The longest detail a supervisor keeps of a failure, in bytes.

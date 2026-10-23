@@ -79,8 +79,10 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 
 
 fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows: u16) -> CapsuleConfig {
+    // The supervisor makes the state folder in the product; a run is given one.
+    std::fs::create_dir_all(dir.join(name)).unwrap();
     CapsuleConfig {
-        voyage_root: dir.join(name),
+        state_dir: dir.join(name),
         screen_path: Some(dir.join(format!("{name}.screen"))),
         argv,
         cols,
@@ -89,9 +91,9 @@ fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows:
     }
 }
 
-/// The `ended` file the leg left in the folder at `root`.
+/// The `ended` file the run left in the state folder at `root`.
 fn ended_of(root: &std::path::Path) -> Ended {
-    capsule::read_ended(root).unwrap().expect("the leg left no ended file")
+    capsule::read_ended(root).unwrap().expect("the run left no ended file")
 }
 
 /// What the screen file the leg left for `name` shows, as text: the saved screen restored into a parser, rows joined
@@ -134,7 +136,7 @@ fn e2e_runs_and_leaves_its_ending_and_its_screen() {
     let marker = "SOT_CAPSULE_WIN_E2E_9f31";
     let argv = shell_command(&format!("echo {marker}"));
     let cfg = config(dir.path(), "e2e1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
+    let root = cfg.state_dir.clone();
     let (_tx, rx) = mpsc::channel();
     let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
@@ -156,7 +158,7 @@ fn spawn_failure_from_out_of_budget_initial_geometry() {
     let dir = tempfile::tempdir().unwrap();
     let argv = shell_command("exit 0");
     let cfg = config(dir.path(), "fail2", argv, 1, 25); // cols=1 < the 2-column floor
-    let root = cfg.voyage_root.clone();
+    let root = cfg.state_dir.clone();
     let (_tx, rx) = mpsc::channel();
     let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
@@ -173,7 +175,7 @@ fn requested_kill_tears_down_and_says_so() {
     let dir = tempfile::tempdir().unwrap();
     let argv = vec![SHELL_ARGV.to_string()]; // bare interactive shell — stays open until killed
     let cfg = config(dir.path(), "kill1", argv, 80, 25);
-    let root = cfg.voyage_root.clone();
+    let root = cfg.state_dir.clone();
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
     std::thread::sleep(Duration::from_millis(500));
@@ -235,7 +237,7 @@ fn a_stop_ends_the_run_without_asking_for_an_end() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let cfg = config(dir.path(), "stop1", vec![SHELL_ARGV.to_string()], 80, 25);
-    let root = cfg.voyage_root.clone();
+    let root = cfg.state_dir.clone();
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
     std::thread::sleep(Duration::from_millis(500));

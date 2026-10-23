@@ -12,8 +12,8 @@
 //!   it. No binary that includes this file builds on macOS, so nothing is claimed for it there.
 //! - Windows: the supervise child is put in a kill-on-close job right after it starts, and its legs, which
 //!   inherit the job, end when the test process's last handle to it closes.
-//! "Ends" means signalled: `Drop` returns once the kill is sent, so a leg may still hold its writer lock for a few
-//! milliseconds; a test that restarts on the same state folder waits on `writer.lock`. A leg adopted by a second
+//! "Ends" means signalled: `Drop` returns once the kill is sent, so a leg may still hold its fence for a few
+//! milliseconds; a test that restarts on the same state folder waits on `supervisor.lock`. A leg adopted by a second
 //! guard's supervisor stays in the FIRST guard's group (or job), so it ends when the first guard drops.
 //! Included by each test file with `#[path = "support/capsule_guard.rs"] mod capsule_guard;`.
 
