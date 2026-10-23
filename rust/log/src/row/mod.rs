@@ -17,7 +17,9 @@ pub use proto::{
     OP_DEMOTED, OP_HELLO, OP_INPUT, OP_OUTPUT, OP_RESIZE, OP_SNAPSHOT, OP_TAKE, OUTPUT_CHUNK, SNAPSHOT_CHUNK,
 };
 pub use run::{self_identity, RowRequest, RowRun};
-pub use server::{row_socket_path, socket_path_in, RowServer};
+pub use server::{row_socket_path, RowServer};
+#[cfg(unix)]
+pub use server::socket_path_in;
 
 /// The row socket's own protocol number. It rises only when a row op changes; a client refuses a different one by name.
 pub const ROW_PROTOCOL: u32 = 1;

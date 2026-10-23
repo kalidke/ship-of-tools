@@ -14,7 +14,9 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 use sot_protocol::codec::{read_frame_blocking, read_frame_blocking_blob, write_frame_blocking_blob};
 use sot_protocol::{Frame, Kind};
-use std::io::BufReader;
+use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -30,13 +32,20 @@ pub struct RowServer {
     accept: Option<std::thread::JoinHandle<()>>,
 }
 
-/// `<runtime_dir>/row-<h>.sock`.
+/// The row's endpoint: `<runtime_dir>/row-<h>.sock` on Unix, the pipe `\\.\pipe\sot-row-<h>` on Windows.
+#[cfg(unix)]
 pub fn row_socket_path(h: &str) -> Result<PathBuf, RowError> {
     let dir = sot_platform::host::state_dir::runtime_dir()?;
     socket_path_in(&dir, h)
 }
 
+#[cfg(windows)]
+pub fn row_socket_path(h: &str) -> Result<PathBuf, RowError> {
+    Ok(PathBuf::from(format!(r"\\.\pipe\sot-row-{h}")))
+}
+
 /// `<dir>/row-<h>.sock`, refused by name when it is longer than a socket path holds.
+#[cfg(unix)]
 pub fn socket_path_in(dir: &Path, h: &str) -> Result<PathBuf, RowError> {
     let path = dir.join(format!("row-{h}.sock"));
     check_path_len(&path)?;
@@ -51,11 +60,6 @@ fn check_path_len(path: &Path) -> Result<(), RowError> {
     if path.as_os_str().as_bytes().len() > max {
         return Err(RowError::PathTooLong(path.to_path_buf()));
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn check_path_len(_path: &Path) -> Result<(), RowError> {
     Ok(())
 }
 
@@ -104,6 +108,34 @@ impl RowServer {
         Ok(Self { path: path.to_path_buf(), run, stop, accept: Some(accept) })
     }
 
+    /// Binds the pipe `path` with the owner-only descriptor on every instance it creates, and serves it.
+    #[cfg(windows)]
+    pub fn bind(path: &Path, run: Arc<RowRun>) -> Result<Self, RowError> {
+        use interprocess::os::windows::named_pipe::{pipe_mode, PipeListenerOptions};
+        use interprocess::os::windows::security_descriptor::{AsSecurityDescriptorExt as _, BorrowedSecurityDescriptor};
+        let text = path
+            .to_str()
+            .ok_or_else(|| RowError::Protocol("the pipe name is not valid Unicode".into()))?;
+        let descriptor = sot_platform::host::owner_protected_pipe_descriptor().map_err(|e| RowError::Protocol(e.to_string()))?;
+        // SAFETY: `descriptor` was built by `ConvertStringSecurityDescriptorToSecurityDescriptorW` (self-relative, valid,
+        // unaliased) and outlives this call; `to_owned_sd` copies it before it is freed.
+        let owned = unsafe { BorrowedSecurityDescriptor::from_ptr(descriptor.as_ptr()) }
+            .to_owned_sd()?;
+        #[allow(clippy::disallowed_methods, reason = "listener: an owner-only DACL on every instance")]
+        let listener = PipeListenerOptions::new()
+            .path(text)
+            .security_descriptor(Some(owned))
+            .create_duplex::<pipe_mode::Bytes>()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let accept = {
+            let (run, stop) = (Arc::clone(&run), Arc::clone(&stop));
+            std::thread::Builder::new()
+                .name("row-accept".into())
+                .spawn(move || accept_loop(listener, run, stop))?
+        };
+        Ok(Self { path: path.to_path_buf(), run, stop, accept: Some(accept) })
+    }
+
     /// Stops accepting, ends every connection and removes the socket.
     pub fn shutdown(mut self) {
         self.end();
@@ -112,9 +144,13 @@ impl RowServer {
     fn end(&mut self) {
         self.stop.store(true, Ordering::Release);
         self.run.close_all();
+        // A blocked pipe accept wakes on a connect; a Unix accept polls the flag.
+        #[cfg(windows)]
+        let _ = std::fs::OpenOptions::new().read(true).write(true).open(&self.path);
         if let Some(t) = self.accept.take() {
             let _ = t.join();
         }
+        #[cfg(unix)]
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -155,31 +191,116 @@ fn accept_loop(listener: std::os::unix::net::UnixListener, run: Arc<RowRun>, sto
     }
 }
 
+#[cfg(windows)]
+fn accept_loop(
+    listener: interprocess::os::windows::named_pipe::PipeListener<
+        interprocess::os::windows::named_pipe::pipe_mode::Bytes,
+        interprocess::os::windows::named_pipe::pipe_mode::Bytes,
+    >,
+    run: Arc<RowRun>,
+    stop: Arc<AtomicBool>,
+) {
+    while !stop.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok(stream) => {
+                if stop.load(Ordering::Acquire) {
+                    return;
+                }
+                let Some((id, rx)) = run.open() else { continue };
+                let run = Arc::clone(&run);
+                let _ = std::thread::Builder::new().name("row-conn".into()).spawn(move || serve(stream, id, rx, &run));
+            }
+            Err(e) => match accept_policy(&e) {
+                AcceptAction::Retry => {}
+                AcceptAction::Sleep => std::thread::sleep(ACCEPT_SLEEP),
+                AcceptAction::Dead => return,
+            },
+        }
+    }
+}
+
 #[cfg(unix)]
 fn serve(stream: std::os::unix::net::UnixStream, id: ConnId, rx: std::sync::mpsc::Receiver<Out>, run: &Arc<RowRun>) {
-    let Ok(write_half) = stream.try_clone() else {
+    let (Ok(write_half), Ok(closer), Ok(reader_half)) = (stream.try_clone(), stream.try_clone(), stream.try_clone()) else {
         run.close(id);
         return;
     };
     let _ = write_half.set_write_timeout(Some(HELLO_BOUND));
+    let _ = stream.set_read_timeout(Some(HELLO_BOUND));
+    serve_io(
+        BufReader::new(reader_half),
+        write_half,
+        move || {
+            let _ = closer.shutdown(std::net::Shutdown::Both);
+        },
+        move || {
+            let _ = stream.set_read_timeout(None);
+        },
+        id,
+        rx,
+        run,
+    );
+}
+
+#[cfg(windows)]
+type PipeStream = interprocess::os::windows::named_pipe::DuplexPipeStream<interprocess::os::windows::named_pipe::pipe_mode::Bytes>;
+
+/// One pipe, read by this thread and written by the writer's.
+#[cfg(windows)]
+struct PipeHalf(Arc<PipeStream>);
+
+#[cfg(windows)]
+impl Read for PipeHalf {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        (&*self.0).read(buf)
+    }
+}
+
+#[cfg(windows)]
+impl Write for PipeHalf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        (&*self.0).write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        (&*self.0).flush()
+    }
+}
+
+/// Limits on Windows: a pipe has no read timeout, so a peer that never says hello holds its thread and one of the eight
+/// slots until it closes, and a close from this end does not wake the reader until the peer ends too. The pipe's
+/// owner-only descriptor keeps both to this account's own processes.
+#[cfg(windows)]
+fn serve(stream: PipeStream, id: ConnId, rx: std::sync::mpsc::Receiver<Out>, run: &Arc<RowRun>) {
+    let shared = Arc::new(stream);
+    serve_io(BufReader::new(PipeHalf(Arc::clone(&shared))), PipeHalf(shared), || {}, || {}, id, rx, run);
+}
+
+/// The connection's two threads: this one reads requests, the writer drains the connection's queue in order. `closer`
+/// ends the stream when the writer is done; `after_admit` runs once the hello has been admitted.
+fn serve_io<R: BufRead, W: Write + Send + 'static>(
+    mut reader: R,
+    mut write_half: W,
+    closer: impl FnOnce() + Send + 'static,
+    after_admit: impl FnOnce(),
+    id: ConnId,
+    rx: std::sync::mpsc::Receiver<Out>,
+    run: &Arc<RowRun>,
+) {
     let writer = std::thread::spawn(move || {
-        let mut w = write_half;
         while let Ok(out) = rx.recv() {
             match out {
                 Out::Frame(frame, blob) => {
-                    if write_frame_blocking_blob(&mut w, &frame, blob.as_deref()).is_err() {
+                    if write_frame_blocking_blob(&mut write_half, &frame, blob.as_deref()).is_err() {
                         break;
                     }
                 }
                 Out::Close => break,
             }
         }
-        let _ = w.shutdown(std::net::Shutdown::Both);
+        closer();
     });
-    let _ = stream.set_read_timeout(Some(HELLO_BOUND));
-    let mut reader = BufReader::new(stream);
     if admit(&mut reader, id, run) {
-        let _ = reader.get_ref().set_read_timeout(None);
+        after_admit();
         requests(&mut reader, id, run);
     }
     // Closing the connection drops its queue's sender: the writer sends what is queued (a refused hello's reply

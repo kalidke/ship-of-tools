@@ -193,11 +193,6 @@ impl RowRun {
         self.lock().make_driver(id);
     }
 
-    #[cfg(test)]
-    pub(super) fn is_driver(&self, id: ConnId) -> bool {
-        self.lock().driver == Some(id)
-    }
-
     /// Hands bytes to the main loop and waits for it to write them.
     pub(super) fn input(&self, id: ConnId, bytes: Vec<u8>) -> Result<usize, String> {
         let (reply, answered) = mpsc::sync_channel(1);
