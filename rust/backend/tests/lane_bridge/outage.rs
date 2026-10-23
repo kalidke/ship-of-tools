@@ -279,7 +279,7 @@ async fn a_terminal_row_is_terminal_after_the_window() {
     // The product promises the terminal only after HEALTH_WINDOW of continuous absence (ADR 0045 decision 4 restarts the
     // window on every uncertain dial), so there is no ceiling to assert: it is the floor, the reason and no supervise.
     assert!(elapsed >= HEALTH_WINDOW, "went terminal too early ({elapsed:?}) — the health window must run its full {HEALTH_WINDOW:?}; status lines: {lines:?}");
-    assert!(client.status_line().contains("HealthWindowExpired"), "status must name HealthWindowExpired, got {:?}", client.status_line());
+    assert!(client.status_line().contains("did not answer for"), "status must say the row did not answer for the window, got {:?}", client.status_line());
     assert!(own_supervisor_pids(&env.state_root).is_empty(), "a terminal row must never be resumed");
 
     drop(client);

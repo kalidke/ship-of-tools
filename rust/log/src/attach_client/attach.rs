@@ -452,6 +452,10 @@ fn dial_error(e: TransportError) -> Attempt {
         TransportError::Io { source, .. } if source.kind() == std::io::ErrorKind::PermissionDenied => {
             Attempt::Terminal(format!("access to the row was denied: {source}"))
         }
+        // The daemon (or the ssh login to it) did not answer: said in those words, since a person reads it.
+        TransportError::Unreachable(e) => Attempt::Retry(format!("daemon unreachable: {e}")),
+        TransportError::Undetermined { detail, .. } => Attempt::Retry(format!("daemon unreachable: {detail}")),
+        TransportError::LinkDown => Attempt::Retry("daemon unreachable: the host's link is down".into()),
         other => Attempt::Retry(other.to_string()),
     }
 }
