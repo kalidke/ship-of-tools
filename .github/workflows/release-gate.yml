@@ -701,10 +701,10 @@ jobs:
       - name: Test capsule (capsule runtime, ConPTY producer)
         timeout-minutes: 10
         run: cargo test -p sot-log --test capsule -- --nocapture
-      # --test pipe_win: the named-pipe transport plus the same-connection
-      # challenge's real-pipe and real-cross-process tests (ADR 0041 U0
-      # round-1).
-      - name: Test pipe_win (named-pipe transport + same-connection challenge)
+      # --test pipe_win: the named-pipe client plus the same-connection
+      # challenge's real-pipe and real-cross-process tests, against the
+      # row pipe (ADR 0041 U0 round-1).
+      - name: Test pipe_win (named-pipe client + same-connection challenge)
         timeout-minutes: 10
         run: cargo test -p sot-log --test pipe_win -- --nocapture
       # --test supervisor: the real-process supervisor authority --
