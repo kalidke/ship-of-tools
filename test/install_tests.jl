@@ -32,7 +32,7 @@ end
         adapters = first(ShipTools.CLAUDE_SKILL_SRCS)
         skill = first(sort([n for n in readdir(adapters)
                             if isfile(joinpath(adapters, n, "SKILL.md"))]))
-        stuckdir = joinpath(home, ".claude", "skills", skill, "SKILL.md")
+        stuckdir = joinpath(home, ".sot-comm", "claude-layer", ".claude", "skills", skill, "SKILL.md")
         mkpath(stuckdir)
         write(joinpath(stuckdir, "marker.txt"), "keepme")
         in_home(home) do
@@ -104,7 +104,7 @@ end
             adapters = first(ShipTools.CLAUDE_SKILL_SRCS)
             skill = first(sort([n for n in readdir(adapters)
                                 if isfile(joinpath(adapters, n, "SKILL.md"))]))
-            stuckdir = joinpath(home, ".claude", "skills", skill, "SKILL.md")
+            stuckdir = joinpath(home, ".sot-comm", "claude-layer", ".claude", "skills", skill, "SKILL.md")
             mkpath(stuckdir)
             write(joinpath(bin, "comm-listen.sh"), "stale")
             write(joinpath(bin, "comm-gone.sh"), "stale")

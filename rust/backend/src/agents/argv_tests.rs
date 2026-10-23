@@ -4,7 +4,7 @@ use super::super::support_tests::{platform_spelling, self_file_env_guarded};
 #[test]
 fn claude_recipe_places_extra_flags_before_the_skill() {
     assert_eq!(
-        claude_recipe(&["--x".to_string()], None),
+        claude_recipe(&["--x".to_string()], None, None),
         vec!["claude", "--permission-mode", "auto", "--x", "/sot-session-start"]
     );
 }
@@ -20,7 +20,7 @@ fn agent_argv_claude_starts_a_fresh_conversation() {
     sot_platform::test_exec::write_executable(&claude, b"#!/bin/sh\n");
     // `claude_recipe` reads HOME (the account home); the guard restores it.
     std::env::remove_var("HOME");
-    let env = AgentEnv { path: Some(dir.path().into()), home: None, shell: None };
+    let env = AgentEnv { path: Some(dir.path().into()), home: None, shell: None, comm_home: None };
     assert_eq!(
         agent_argv_in(&env, "claude", None).unwrap(),
         vec![
@@ -47,7 +47,7 @@ fn agent_exec_argv_claude_never_adds_continue() {
     sot_platform::test_exec::write_executable(&claude, b"#!/bin/sh\n");
     // `claude_recipe` reads HOME (the account home); the guard restores it.
     std::env::remove_var("HOME");
-    let env = AgentEnv { path: Some(dir.path().into()), home: None, shell: None };
+    let env = AgentEnv { path: Some(dir.path().into()), home: None, shell: None, comm_home: None };
     let argv = agent_exec_argv_in(
         &env,
         "claude",
@@ -114,7 +114,7 @@ fn agent_argv_claude_fails_closed_when_nothing_resolves() {
     // would only fail to spawn later, one layer down. The environment
     // is passed in, so the precondition holds on any host, a real
     // `claude` on its `PATH` included.
-    let env = AgentEnv { path: None, home: None, shell: None };
+    let env = AgentEnv { path: None, home: None, shell: None, comm_home: None };
     let result = agent_argv_in(&env, "claude", None);
     assert!(result.is_err());
 }
@@ -165,10 +165,11 @@ fn claude_recipe_emits_our_settings_unless_the_caller_brought_one() {
 
     std::env::set_var("HOME", &root);
     std::env::remove_var("CLAUDE_CONFIG_DIR");
-    let ours = claude_recipe(&[], Some(&proj));
+    let ours = claude_recipe(&[], Some(&proj), None);
     let caller = claude_recipe(
         &["--settings".to_string(), "{\"a\":1}".to_string()],
         Some(&proj),
+        None,
     );
 
     let at = ours
@@ -197,7 +198,7 @@ fn agent_argv_rejects_unsupported_kinds() {
 /// `agent_argv("codex")` over a `PATH` and `HOME` of the test's own.
 #[cfg(unix)]
 fn codex_over(path: Option<&std::path::Path>, home: Option<&std::path::Path>) -> Result<Vec<String>, String> {
-    let env = AgentEnv { path: path.map(Into::into), home: home.map(Into::into), shell: None };
+    let env = AgentEnv { path: path.map(Into::into), home: home.map(Into::into), shell: None, comm_home: None };
     agent_argv_in(&env, "codex", None)
 }
 
@@ -347,10 +348,112 @@ fn tempfile_test_dir() -> tempfile::TempDir {
 // `resolve_claude`'s own, already tested above.
 #[test]
 fn a_reauth_leg_resumes_by_id_and_never_continues() {
-    let argv = claude_recipe(&["--resume".to_string(), "abc-123".to_string()], None);
+    let argv = claude_recipe(&["--resume".to_string(), "abc-123".to_string()], None, None);
     assert!(!argv.iter().any(|a| a == "--continue"), "{argv:?}");
     let at = argv.iter().position(|a| a == "--resume").expect("--resume present");
     assert_eq!(argv[at + 1], "abc-123");
     assert_eq!(argv.last().map(String::as_str), Some("/sot-session-start"));
     assert!(argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "auto"), "{argv:?}");
+}
+
+/// A comm home whose layer holds a skills folder, and the layer's path.
+fn comm_home_with_layer() -> (tempfile::TempDir, PathBuf) {
+    let comm = tempfile::tempdir().expect("tempdir");
+    let layer = comm.path().join(super::super::layer::LAYER_DIR);
+    let bootstrap = layer.join(".claude").join("skills").join("sot-session-start");
+    std::fs::create_dir_all(&bootstrap).unwrap();
+    std::fs::write(bootstrap.join("SKILL.md"), "---\nname: sot-session-start\n---\n").unwrap();
+    (comm, layer)
+}
+
+/// The three legs the recipe builds on Unix, over a stub `claude` found on `path`: the capsule leg, the reauth leg and
+/// `sotd agent-exec claude`.
+#[cfg(unix)]
+fn the_three_legs(comm_home: Option<&Path>) -> Vec<Vec<String>> {
+    let bin = tempfile::tempdir().expect("tempdir");
+    sot_platform::test_exec::write_executable(&bin.path().join("claude"), b"#!/bin/sh\n");
+    let env = AgentEnv {
+        path: Some(bin.path().into()),
+        home: None,
+        shell: None,
+        comm_home: comm_home.map(Into::into),
+    };
+    vec![
+        agent_argv_in(&env, "claude", None).unwrap(),
+        claude_resume_argv_in(&env, "abc-123", None).unwrap(),
+        agent_exec_argv_in(&env, "claude", &[]).unwrap(),
+    ]
+}
+
+#[test]
+#[cfg(unix)]
+fn every_claude_leg_runs_auto_mode_and_never_skips_permissions() {
+    let _guard = self_file_env_guarded();
+    let (comm, _) = comm_home_with_layer();
+    for comm_home in [None, Some(comm.path())] {
+        for argv in the_three_legs(comm_home) {
+            assert!(argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "auto"), "{argv:?}");
+            assert!(!argv.iter().any(|a| a == "--dangerously-skip-permissions"), "{argv:?}");
+            assert_eq!(argv.last().map(String::as_str), Some("/sot-session-start"), "{argv:?}");
+        }
+    }
+}
+
+#[test]
+fn the_layer_rides_the_recipe_and_a_plain_claude_has_none() {
+    let (comm, layer) = comm_home_with_layer();
+    let bare = tempfile::tempdir().expect("tempdir");
+    // No comm home, or one with no layer: the recipe's own shape and nothing of the layer.
+    for none in [None, Some(bare.path())] {
+        assert_eq!(
+            claude_recipe(&[], None, none),
+            vec!["claude", "--permission-mode", "auto", "/sot-session-start"]
+        );
+    }
+    // An installed layer: one `--add-dir=` token ahead of the flags, and the hooks in the one `--settings`.
+    let argv = claude_recipe(&["--x".to_string()], None, Some(comm.path()));
+    assert_eq!(argv[1], format!("--add-dir={}", layer.display()), "{argv:?}");
+    assert_eq!(&argv[2..4], ["--permission-mode", "auto"], "{argv:?}");
+    assert!(!argv.iter().any(|a| a == "--add-dir"), "the flag is variadic: {argv:?}");
+    assert_eq!(argv.iter().filter(|a| *a == "--settings").count(), 1, "{argv:?}");
+    let at = argv.iter().position(|a| a == "--settings").unwrap();
+    let json: serde_json::Value = serde_json::from_str(&argv[at + 1]).unwrap();
+    assert_eq!(json["hooks"].as_object().unwrap().len(), 3, "{json}");
+    assert_eq!(argv.last().map(String::as_str), Some("/sot-session-start"));
+    // A caller's own `--settings` wins outright: its hooks are not added beside it, the skills still load.
+    let caller = claude_recipe(&["--settings".to_string(), "{\"a\":1}".to_string()], None, Some(comm.path()));
+    assert_eq!(caller[1], format!("--add-dir={}", layer.display()), "{caller:?}");
+    assert_eq!(caller.iter().filter(|a| *a == "--settings").count(), 1, "{caller:?}");
+    assert!(!caller.iter().any(|a| a.contains("\"hooks\"")), "{caller:?}");
+}
+
+#[test]
+#[cfg(unix)]
+fn the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec() {
+    let _guard = self_file_env_guarded();
+    let (comm, layer) = comm_home_with_layer();
+    let want = format!("--add-dir={}", layer.display());
+    for argv in the_three_legs(Some(comm.path())) {
+        assert_eq!(argv[1], want, "{argv:?}");
+        assert!(argv.iter().any(|a| a.contains("\"hooks\"")), "{argv:?}");
+    }
+    for argv in the_three_legs(None) {
+        assert!(!argv.iter().any(|a| a.starts_with("--add-dir") || a.contains("\"hooks\"")), "{argv:?}");
+    }
+}
+
+#[test]
+fn a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it() {
+    let comm = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(comm.path().join(super::super::layer::LAYER_DIR).join(".claude").join("skills").join("sitrep")).unwrap();
+    let argv = claude_recipe(&[], None, Some(comm.path()));
+    assert_eq!(argv, vec!["claude", "--permission-mode", "auto"], "{argv:?}");
+}
+
+#[test]
+fn a_setting_sources_without_project_is_known_to_the_recipe() {
+    let extra = ["--setting-sources".to_string(), "user".to_string()];
+    assert!(setting_sources_exclude_project(&extra));
+    assert!(!setting_sources_exclude_project(&["--setting-sources=user,project".to_string()]));
+    assert!(!setting_sources_exclude_project(&["--continue".to_string()]));
 }

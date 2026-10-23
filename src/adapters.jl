@@ -3,23 +3,39 @@
 function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
     problems = String[]
     if cli === :claude
+        # The skills go to the Claude layer, which only a leg of the launch recipe adds (`--add-dir`), and the work-state
+        # hooks ride that leg's `--settings` (`rust/backend/src/agents/layer.rs`): so a plain `claude` loads neither.
+        # The end-of-turn mail check and the subagent guard serve every joined session and stay in the user's settings
+        # (`_install_claude_hooks`). What an earlier install put in the user's own folders is removed only after the
+        # layer holds every skill.
+        # The onboarding skills are what a person runs before any row exists: they install where they always did, into
+        # the global skills folder every account reaches by the daemon's link.
         for srcdir in CLAUDE_SKILL_SRCS
             _stage!(problems, "claude skills") do
-                _install_skills(srcdir, joinpath(claude_home(), "skills"))
+                _install_skills(srcdir, claude_layer_skills(); keep = !in(CLAUDE_GLOBAL_SKILLS))
             end
+            _stage!(problems, "claude global skills") do
+                _install_skills(srcdir, joinpath(claude_home(), "skills"); keep = in(CLAUDE_GLOBAL_SKILLS), prune = false)
+            end
+        end
+        isempty(problems) && _stage!(problems, "claude layer") do
+            _prune_layer_skills!(claude_layer_skills(), CLAUDE_SKILL_SRCS)
         end
         _stage!(problems, "claude launchers") do
             _install_launchers(CLAUDE_LAUNCHER_SRC)
         end
-        _stage!(problems, "claude hooks") do
-            _install_claude_hooks(claude_home(); unhooked = unhooked)
+        if isempty(problems)
+            # Every configuration folder an account uses, each skills folder by the same rule: a folder that is a link
+            # (the daemon links a named account's to the default's) is never acted through.
+            _stage!(problems, "claude skills move") do
+                for dir in _claude_config_dirs(homedir(), claude_home())
+                    _retire_placed_skills!(joinpath(dir, "skills"))
+                end
+            end
+            _stage!(problems, "claude hooks") do
+                _install_claude_hooks(claude_home(); unhooked = unhooked)
+            end
         end
-        # Named accounts get skills via the shared-folder symlink the
-        # daemon creates at spawn (`rust/backend/src/agents/accounts.rs::
-        # ensure_account_links`); the hooks are merged into every
-        # account's own settings.json by `_install_claude_hooks` itself,
-        # since an account with a real settings.json never sees the
-        # shared one.
     elseif cli === :codex
         # ADR 0031 — codex adapter: ccx launcher, and the hooks.json plugin
         # payload (state-nav wiring).

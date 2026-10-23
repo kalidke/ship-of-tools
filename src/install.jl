@@ -38,7 +38,7 @@ exist. Installs the files of every folder listed in
 comm/bin-folders.txt into `\$SOT_COMM_HOME/bin` (default `~/.sot-comm/bin`),
 each part inside the file that sources it (`_comm_bin_text`),
 whatever `clis`, and installs the adapter for each CLI in `clis`
-(`:claude` skills/hooks, `:codex` skills/hooks/plugin). Idempotent — safe to
+(`:claude` skills into the Claude layer, the mail-check hooks, and the retirement of what an earlier install put in the user's own folders; `:codex` skills/hooks/plugin). Idempotent — safe to
 re-run to update an existing install. Without jq on PATH it stops before it
 changes anything, with one line naming the command that installs jq
 (`_jq_install_command`).
@@ -75,10 +75,11 @@ function install_comm(; clis = [:claude, :codex])
             _install_adapter(Symbol(cli); unhooked = unhooked)
         end
     end
-    # Never silent about an account the hooks did not reach (each line was
-    # also warned where it happened; this is the one place they are listed).
-    isempty(unhooked) || @warn "The comm hooks are NOT in these Claude settings — a session there does not report its work state:\n  " *
-                               join(unhooked, "\n  ")
+    # Never silent about a settings file the hooks could not be brought up to date in (each line was also warned where it
+    # happened; this is the one place they are listed). Such a file may lack the end-of-turn mail check, or still hold
+    # work-state hooks a row's leg now carries itself.
+    isempty(unhooked) || @warn "These Claude settings were NOT brought up to date, so a session there may lack the end-of-turn mail check or still run old work-state hooks:\n  " *
+                              join(unhooked, "\n  ")
     isempty(problems) ||
         error("sot-comm install INCOMPLETE — " * join(problems, "; ") *
               "; no version stamp written, `sot-fe version` reports this install as unknown")
@@ -94,7 +95,11 @@ function install_comm(; clis = [:claude, :codex])
     # suffixed when the source checkout has local edits), the fact a
     # send-deaf Windows bridge incident had no way to state.
     write(version_file, _repo_commit())
-    @info "sot-comm ready" protocol = COMM_PROTOCOL_VERSION home = comm_home()
+    if isempty(unhooked)
+        @info "sot-comm ready" protocol = COMM_PROTOCOL_VERSION home = comm_home()
+    else
+        @warn "sot-comm installed, but not every Claude settings file was brought up to date (see above)" protocol = COMM_PROTOCOL_VERSION home = comm_home()
+    end
     @info "Next: in your session run  /sot-session-start  (the session-start step; it names the session)"
     return nothing
 end

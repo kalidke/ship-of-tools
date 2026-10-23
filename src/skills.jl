@@ -48,7 +48,7 @@ end
 """
     _install_skills(srcdir, skillsroot) -> Vector{String}
 
-Install every skill directory under `srcdir` (one containing a `SKILL.md`)
+Install every skill directory under `srcdir` (one containing a `SKILL.md`, and `keep(name)`)
 into `skillsroot`, file by file through [`install_file`](@ref)'s atomic
 copy-then-rename, plus one orphan sweep. Every file is either the old copy or
 the new one — never missing, never partial. The destination is NEVER removed:
@@ -60,9 +60,9 @@ One path for BOTH adapters. Returns the names that landed (`"/name"`); raises
 one combined error naming every skill that kept its previous copy, which the
 caller records as a stage failure.
 """
-function _install_skills(srcdir::AbstractString, skillsroot::AbstractString)
+function _install_skills(srcdir::AbstractString, skillsroot::AbstractString; keep = Returns(true), prune::Bool = true)
     mkpath(skillsroot)
-    names = [n for n in readdir(srcdir) if isfile(joinpath(srcdir, n, "SKILL.md"))]
+    names = [n for n in readdir(srcdir) if isfile(joinpath(srcdir, n, "SKILL.md")) && keep(n)]
     installed = String[]
     stale = String[]
     problems = String[]
@@ -82,7 +82,7 @@ function _install_skills(srcdir::AbstractString, skillsroot::AbstractString)
             @warn "skill NOT updated — the destination still holds the PREVIOUS copy" skill = "/$name" dir = skillsroot reason = last(problems)
         end
     end
-    _prune_deprecated_skills!(skillsroot)
+    prune && _prune_deprecated_skills!(skillsroot)
     # The word Installed may never appear without its denominator and its
     # stale list in the same line: a reader who sees only this line can
     # compute the outcome without reading anything above it.
@@ -103,4 +103,94 @@ function _prune_deprecated_skills!(skillsroot::AbstractString)
         rm(dst; recursive = true, force = true)
         @info "Pruned deprecated skill" dir = dst
     end
+end
+
+"""
+    _prune_layer_skills!(layerskills, srcdirs)
+
+The layer is the installer's alone, so a skill directory in it that no source folder in `srcdirs` ships any more, or that is an onboarding skill
+([`CLAUDE_GLOBAL_SKILLS`], which live in the global folder), goes:
+a retired skill must not stay loadable in a row. Called only after every skill installed.
+"""
+function _prune_layer_skills!(layerskills::AbstractString, srcdirs)
+    isdir(layerskills) || return nothing
+    shipped = Set(n for src in srcdirs for n in readdir(src) if isfile(joinpath(src, n, "SKILL.md")) && !(n in CLAUDE_GLOBAL_SKILLS))
+    for name in readdir(layerskills)
+        name in shipped && continue
+        rm(joinpath(layerskills, name); recursive = true, force = true)
+        @info "Pruned a skill the release no longer ships from the Claude layer" skill = name
+    end
+    return nothing
+end
+
+"""
+    _legacy_skill_hashes() -> Dict{String,Set{String}}
+
+The skills an earlier installer placed straight into a Claude skills folder: each name with the hash of every version the
+repo ever shipped (`comm/legacy-skills.txt`, made by `scripts/legacy-skill-hashes.sh`; frozen history).
+"""
+function _legacy_skill_hashes()
+    known = Dict{String,Set{String}}()
+    for line in eachline(LEGACY_SKILL_HASHES)
+        name, hash = split(line, ' ')
+        push!(get!(known, String(name), Set{String}()), String(hash))
+    end
+    return known
+end
+
+# SHA is a standard library the package does not list as a dependency (a stale manifest would then need resolving), so
+# it is found by its identity at the first use.
+const _SHA_ID = Base.PkgId(Base.UUID("ea8e919c-243c-51af-8825-aaa63cd721ce"), "SHA")
+
+"""
+    _skill_folder_hash(dir) -> Union{Nothing,String}
+
+The hash `scripts/legacy-skill-hashes.sh` gives a skill folder: sha256 of its sorted manifest, one line
+`<path>\t<git blob sha1>` per file. `nothing` for a folder with no file or with any link in it: that is not a copy an
+installer made.
+"""
+function _skill_folder_hash(dir::AbstractString)
+    SHA = Base.require(_SHA_ID)
+    lines = String[]
+    for (root, dirs, files) in walkdir(dir)
+        any(d -> islink(joinpath(root, d)), dirs) && return nothing
+        for f in files
+            path = joinpath(root, f)
+            islink(path) && return nothing
+            f == NEVER_INSTALLED && continue
+            data = read(path)
+            blob = Base.invokelatest(SHA.sha1, vcat(Vector{UInt8}("blob $(length(data))\0"), data))
+            push!(lines, replace(relpath(path, dir), '\\' => '/') * "\t" * bytes2hex(blob))
+        end
+    end
+    isempty(lines) && return nothing
+    return bytes2hex(Base.invokelatest(SHA.sha256, join(sort(lines), "\n")))
+end
+
+"""
+    _retire_placed_skills!(skillsroot; known = _legacy_skill_hashes())
+
+Remove from a Claude skills folder the skills an earlier install put there, and nothing else. A folder goes only when its
+contents hash to a version the repo shipped of the skill of that name; any other folder of such a name is a person's own
+and stays, with a warning. A skills folder that is itself a link is never acted through (its target is somebody's
+dotfiles), and a link inside it is never removed. The rule holds on every run, so it keeps no marker.
+"""
+function _retire_placed_skills!(skillsroot::AbstractString; known = _legacy_skill_hashes())
+    if islink(skillsroot)
+        @warn "this Claude skills folder is a symbolic link: skills an earlier install placed in it were left where they are" dir = skillsroot
+        return nothing
+    end
+    isdir(skillsroot) || return nothing
+    for name in sort!(collect(keys(known)))
+        name in CLAUDE_GLOBAL_SKILLS && continue   # the onboarding skills live here
+        dst = joinpath(skillsroot, name)
+        (isdir(dst) && !islink(dst)) || continue
+        if _skill_folder_hash(dst) in known[name]
+            rm(dst; recursive = true)
+            @info "Removed a skill an earlier install placed here; a row loads it from the Claude layer" dir = dst
+        else
+            @warn "a skill of this name is not a copy of one this installer shipped: left in place" dir = dst
+        end
+    end
+    return nothing
 end

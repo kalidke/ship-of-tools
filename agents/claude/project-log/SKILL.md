@@ -26,7 +26,7 @@ REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 SKILL_DIR=""
 for candidate in \
   "${CLAUDE_PROJECT_DIR:-$REPO}/.claude/skills/project-log" \
-  "$HOME/.claude/skills/project-log"
+  "${SOT_COMM_HOME:-$HOME/.sot-comm}/claude-layer/.claude/skills/project-log"
 do
   if [ -d "$candidate/resources" ]; then
     SKILL_DIR="$candidate"

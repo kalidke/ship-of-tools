@@ -319,7 +319,7 @@ end
                     Base.CoreLogging.with_logger(logger) do
                         ShipTools.update_comm(clis = [:claude])
                     end
-                    summaries = filter(r -> occursin("The comm hooks are NOT in these Claude settings", string(r.message)), logger.logs)
+                    summaries = filter(r -> occursin("were NOT brought up to date", string(r.message)), logger.logs)
                     @test length(summaries) == 1
                     msg = string(only(summaries).message)
                     # A file the install could not merge is named by the real path it writes (links and short names
@@ -354,7 +354,7 @@ end
                     Base.CoreLogging.with_logger(logger) do
                         @test (ShipTools.update_comm(clis = [:claude]); true)   # does not throw
                     end
-                    summaries = filter(r -> occursin("The comm hooks are NOT in these Claude settings", string(r.message)), logger.logs)
+                    summaries = filter(r -> occursin("were NOT brought up to date", string(r.message)), logger.logs)
                     @test length(summaries) == 1
                     @test occursin(realpath(acct), string(only(summaries).message))
                 end
@@ -431,7 +431,8 @@ end
     # neither it nor PostToolUseFailure is wired, and an install strips the wiring an earlier build added.
     events = [e for (e, _, _) in ShipTools._COMM_STATE_HOOKS]
     @test !any(in(("PermissionRequest", "PostToolUseFailure", "Notification")), events)
-    @test ("PostToolUse", "comm-status-heartbeat.sh", nothing) in ShipTools._COMM_STATE_HOOKS
+    # The work-state hooks are the row layer's, not the user's settings'.
+    @test !any(t -> t[2] in ("comm-status-heartbeat.sh", "comm-status-working.sh", "comm-status-blocked.sh"), ShipTools._COMM_STATE_HOOKS)
     mktempdir() do dir
         settings = joinpath(dir, "settings.json")
         write(settings, """{"hooks":{
@@ -439,8 +440,7 @@ end
           "PostToolUseFailure":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-heartbeat.sh"}]}],
           "PostToolUse":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-heartbeat.sh"}]}]}}""")
         ShipTools._remove_stale_comm_hooks!(settings)
-        @test jq_lines(`jq -r '.hooks | keys[]' $settings`) == ["PostToolUse"]
-        @test jq_lines(`jq -r '.hooks.PostToolUse[].hooks[].command' $settings`) == ["\$HOME/.sot-comm/bin/comm-status-heartbeat.sh"]
+        @test jq_lines(`jq -r '.hooks | length' $settings`) == ["0"]
     end
 end
 

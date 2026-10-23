@@ -1,6 +1,7 @@
 // argv.rs — the agent launch recipe: argv per agent kind, resolved to absolute paths on Unix.
 
 use std::path::{Path, PathBuf};
+use super::layer;
 use super::memory::auto_memory_settings;
 
 /// The process environment this module reads: the one place `PATH`, `HOME` and `SHELL` are read. The `_in` functions
@@ -10,6 +11,7 @@ struct AgentEnv {
     path: Option<std::ffi::OsString>,
     home: Option<PathBuf>,
     shell: Option<String>,
+    comm_home: Option<PathBuf>,
 }
 
 impl AgentEnv {
@@ -18,6 +20,7 @@ impl AgentEnv {
             path: std::env::var_os("PATH"),
             home: std::env::var_os("HOME").map(PathBuf::from),
             shell: std::env::var("SHELL").ok(),
+            comm_home: crate::comm::home::comm_home(&crate::comm::Env::process()),
         }
     }
 }
@@ -74,6 +77,16 @@ fn caller_brought_settings(extra: &[String]) -> bool {
         .any(|a| a == "--settings" || a.starts_with("--settings="))
 }
 
+/// Whether the caller's `--setting-sources` leaves out `project`, which is where an added folder's skills come from.
+fn setting_sources_exclude_project(extra: &[String]) -> bool {
+    let value = extra.iter().enumerate().find_map(|(i, a)| match a.strip_prefix("--setting-sources") {
+        Some("") => extra.get(i + 1).map(String::as_str),
+        Some(rest) => rest.strip_prefix('='),
+        None => None,
+    });
+    value.is_some_and(|v| !v.split(',').any(|source| source.trim() == "project"))
+}
+
 /// The one shared builder for claude's launch flags (ADR 0046 decision
 /// 4): a capsule spawn ([`claude_argv`], no extra flags: every leg starts
 /// a fresh conversation), a reauth leg ([`claude_resume_argv`],
@@ -91,13 +104,25 @@ fn caller_brought_settings(extra: &[String]) -> bool {
 /// below, keeps the literal name); `"codex"` has its own, much smaller,
 /// recipe ([`codex_argv`]) rather than sharing this one — its flag shape
 /// (no skill argv) is unrelated to claude's.
-fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>) -> Vec<String> {
-    let mut argv = vec![
-        "claude".to_string(),
-        "--permission-mode".to_string(),
-        "auto".to_string(),
-    ];
+///
+/// `comm_home` is where the Claude layer lives: when it holds one, the leg
+/// carries `--add-dir=<layer>` (the skills) and the work-state hooks inside
+/// the one `--settings` (see `layer.rs`), so a plain `claude` has neither.
+fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>, comm_home: Option<&Path>) -> Vec<String> {
+    let layer = comm_home.and_then(layer::layer_under);
+    if comm_home.is_some_and(layer::is_partial) {
+        tracing::warn!("the Claude layer is incomplete (no sot-session-start skill): the leg starts without it and without the bootstrap prompt");
+    }
+    if layer.is_some() && setting_sources_exclude_project(extra) {
+        tracing::warn!("--setting-sources leaves out `project`, where an added folder's skills come from: the layer's skills will not load");
+    }
+    let mut argv = vec!["claude".to_string()];
+    argv.extend(layer.as_deref().map(layer::add_dir_arg));
+    argv.extend(["--permission-mode".to_string(), "auto".to_string()]);
     // See [`caller_brought_settings`] for why a caller's own wins.
+    if caller_brought_settings(extra) && layer.is_some() {
+        tracing::warn!("a caller's own --settings is passed as given: the leg carries no work-state hooks (the skills still load)");
+    }
     if !caller_brought_settings(extra) {
         // `account_home`, never `HOME`: this module's own resolver is what
         // `spawn_detached_supervisor` uses, and it reads `USERPROFILE` on
@@ -111,18 +136,21 @@ fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>) -> Vec<String> {
         let child_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from);
-        if let Some(json) = memory_cwd
+        let memory = memory_cwd
             .zip(crate::agents::accounts::account_home())
             .and_then(|(cwd, home)| {
                 auto_memory_settings(&home, cwd, child_config_dir.as_deref())
-            })
-        {
+            });
+        let hooks = comm_home.filter(|_| layer.is_some()).map(layer::hooks_settings);
+        if let Some(json) = layer::merged_settings(memory, hooks) {
             argv.push("--settings".to_string());
             argv.push(json);
         }
     }
     argv.extend(extra.iter().cloned());
-    argv.push("/sot-session-start".to_string());
+    if !comm_home.is_some_and(layer::is_partial) {
+        argv.push("/sot-session-start".to_string());
+    }
     argv
 }
 
@@ -132,8 +160,8 @@ fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>) -> Vec<String> {
 /// the daemon's own `PATH` (a detached child inherits it); that stays
 /// out of scope here, not a gap this decision closes.
 #[cfg(windows)]
-fn claude_argv(_env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
-    Ok(claude_recipe(&[], memory_cwd))
+fn claude_argv(env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
+    Ok(claude_recipe(&[], memory_cwd, env.comm_home.as_deref()))
 }
 /// macOS lane: widened from `target_os = "linux"` to `unix`, a DELETION
 /// of the third arm that used to refuse here ("claude has no capsule
@@ -146,7 +174,7 @@ fn claude_argv(_env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>
 #[cfg(unix)]
 fn claude_argv(env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
     let claude = resolve_claude(env.path.as_deref(), env.home.as_deref())?;
-    let mut argv = claude_recipe(&[], memory_cwd);
+    let mut argv = claude_recipe(&[], memory_cwd, env.comm_home.as_deref());
     argv[0] = claude;
     Ok(argv)
 }
@@ -179,6 +207,7 @@ fn claude_resume_argv_in(
     let mut argv = claude_recipe(
         &["--resume".to_string(), session_id.to_string()],
         memory_cwd,
+        env.comm_home.as_deref(),
     );
     argv[0] = claude;
     Ok(argv)
@@ -187,13 +216,14 @@ fn claude_resume_argv_in(
 /// daemon's own `PATH` exactly as [`claude_argv`]'s Windows arm is.
 #[cfg(windows)]
 fn claude_resume_argv_in(
-    _env: &AgentEnv,
+    env: &AgentEnv,
     session_id: &str,
     memory_cwd: Option<&Path>,
 ) -> Result<Vec<String>, String> {
     Ok(claude_recipe(
         &["--resume".to_string(), session_id.to_string()],
         memory_cwd,
+        env.comm_home.as_deref(),
     ))
 }
 
@@ -254,7 +284,7 @@ fn agent_exec_argv_in(env: &AgentEnv, kind: &str, extra: &[String]) -> Result<Ve
             // child), so this process's own cwd is already the directory
             // the session will run in — `ccb`'s caller chose it.
             let cwd = std::env::current_dir().ok();
-            let mut recipe = claude_recipe(extra, cwd.as_deref());
+            let mut recipe = claude_recipe(extra, cwd.as_deref(), env.comm_home.as_deref());
             recipe[0] = claude;
             Ok(recipe)
         }

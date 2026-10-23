@@ -25,7 +25,7 @@ you edit `settings.json`.
 The harness reports "Base directory for this skill: `<path>`" when this
 skill is invoked — that directory holds `statusline.bat`, `statusline.ps1`,
 and `statusline.sh` next to this file (deployed copy:
-`~/.claude/skills/sot-statusline-setup/`). Copy from there; do not
+`~/.sot-comm/claude-layer/.claude/skills/sot-statusline-setup/`). Copy from there; do not
 transcribe the content.
 
 ## 3. Shared-home check — before writing anything

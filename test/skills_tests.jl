@@ -122,11 +122,15 @@ end
             ShipTools.update_comm(clis = [:claude, :codex])
         end
 
+        # The Codex folder is the installer's own, so the retired names are pruned by name. The Claude folder is the
+        # person's: a folder there is removed only when it is a copy of a version the repo shipped (test/protect_tests.jl),
+        # and these stubs are not.
+        @test !isdir(joinpath(codex_skills, "sot-be-session-start"))
+        @test !isdir(joinpath(codex_skills, "sot-fe-session-start"))
         for skills in (claude_skills, codex_skills)
-            @test !isdir(joinpath(skills, "sot-be-session-start"))
-            @test !isdir(joinpath(skills, "sot-fe-session-start"))
             @test isdir(joinpath(skills, "my-user-skill"))
         end
+        @test isdir(joinpath(claude_skills, "sot-be-session-start"))
         @test !isfile(joinpath(bindir, "ccbe"))
         @test isfile(joinpath(bindir, "my-launcher"))
     end

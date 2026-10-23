@@ -31,6 +31,31 @@ function _is_under(dir::AbstractString, root::AbstractString)
 end
 
 """
+    _claude_config_dirs(home, claude_dir) -> Vector{String}
+
+Every Claude configuration folder an account uses, each once: `claude_dir` (the install's own), the default `home/.claude`,
+and every `home/.claude-auth/<name>` folder whose name passes [`_is_account_name`]. A folder that does not exist is
+included (callers test what they need).
+"""
+function _claude_config_dirs(home::AbstractString, claude_dir::AbstractString)
+    dirs = [claude_dir, joinpath(home, ".claude")]
+    auth = joinpath(home, ".claude-auth")
+    names = try
+        isdir(auth) ? readdir(auth) : String[]
+    catch
+        String[]
+    end
+    for name in names
+        dir = joinpath(auth, name)
+        try
+            _is_account_name(name) && isdir(dir) && push!(dirs, dir)
+        catch
+        end
+    end
+    return unique(_dirkey, dirs)
+end
+
+"""
     _claude_settings_targets(home, claude_dir; unhooked = String[]) -> Vector{String}
 
 Every Claude account's settings.json the comm hooks go into, as the REAL
@@ -175,18 +200,17 @@ end
 # is no work-state source: it denies a subagent's Bash call that names a sot-comm
 # script (a subagent uses no mail; the hook input's `agent_id` is the only signal).
 const _COMM_STATE_HOOKS = [
-    ("UserPromptSubmit", "comm-status-working.sh", nothing),     # turn starts    → prompt (sets floor)
-    ("PreToolUse", "comm-status-blocked.sh", "AskUserQuestion"), # opens question → blocked, then stop (a real turn end)
     ("PreToolUse", "comm-subagent-guard.sh", "Bash"),            # a subagent's sot-comm script → denied (it uses no mail)
-    ("Stop", "comm-status-idle.sh", nothing),                    # turn ends      → stop (done iff floor=user, nothing pending)
-    # Long-turn heartbeat: re-stamps a WORKING row's status_at on tool
-    # activity (throttled to 60s) so the nav's 10-min wilt marks real stalls,
-    # not long busy turns ("a peer session reverting to white", 2026-07-03).
-    # Writes no fact of its own. The SAME tool call's answer, when tool_name
-    # is AskUserQuestion, is instead the owner replying: sends prompt origin
-    # user (a fresh turn start), not a heartbeat refresh.
-    ("PostToolUse", "comm-status-heartbeat.sh", nothing),
+    ("Stop", "comm-status-idle.sh", nothing),                    # turn ends → the mail check, for every joined session
 ]
+
+# The commands an earlier install wrote into a settings.json, every spelling: the script under the comm folder, with the
+# home written `$HOME` and both slashes. A command is retired only when it is exactly one of these.
+const _EARLIER_HOOK_COMMANDS = [prefix * script
+    for prefix in ("\$HOME/.sot-comm/bin/", "\$HOME\\.sot-comm\\bin\\")
+    for script in ("comm-status-working.sh", "comm-status-blocked.sh", "comm-status-idle.sh", "comm-status-heartbeat.sh",
+                   "comm-status-dialog.sh", "comm-subagent-guard.sh", "comm-postcompact-reminder.sh",
+                   "comm-postclear-reminder.sh")]
 
 # A hook command string. `\$HOME` (not the resolved path) so the entry is portable
 # across machines with the same key but different homes.
@@ -322,8 +346,9 @@ function _remove_stale_comm_hooks!(settings::AbstractString)
     # by one; a group is dropped only when that leaves it empty, then any
     # event whose group list is now empty.
     keep = _comm_keep_json()
+    old = "[" * join(("\"" * replace(c, "\\" => "\\\\") * "\"" for c in _EARLIER_HOOK_COMMANDS), ",") * "]"
     prog = _JQ_READ_SETTINGS * """
-    def comm: (.command // "") | test("(^|/)[.]sot-comm/bin/comm-(status-|subagent-guard|post(compact|clear)-reminder)");
+    def comm: (.command // "") as \$c | any(\$old[]; . == \$c);
     def current(\$e; \$m): (.command // "") as \$c | any(\$keep[]; . == [\$e, \$c, \$m]);
     if .hooks then
       .hooks |= ( to_entries
@@ -339,7 +364,7 @@ function _remove_stale_comm_hooks!(settings::AbstractString)
     tmp = ""
     try
         tmp = _settings_tmp(settings)
-        run(pipeline(`jq -n --argjson keep $keep $prog $settings`; stdout = tmp))
+        run(pipeline(`jq -n --argjson keep $keep --argjson old $old $prog $settings`; stdout = tmp))
         # A blank file has nothing to retire; the add gives it its content.
         changed = !all(isspace, read(settings, String)) && read(tmp, String) != read(settings, String)
         if !changed

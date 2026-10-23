@@ -92,8 +92,8 @@ checkout (no `install.json`, a `+` in `sotd.exe --version`) updates by `git pull
 ## Only the agent comm and skills
 
 To refresh just the agent-side resources (the comm scripts in `~/.sot-comm/bin/`, the Claude Code skills in
-`~/.claude/skills/`, the Codex skills in `$CODEX_HOME/skills/`, the launcher commands `ccb` and `ccx` in
-`~/.local/bin/`, the state-nav hooks), from a checkout:
+`~/.sot-comm/claude-layer/`, which a row or `ccb` loads and a plain `claude` does not, the Codex skills in
+`$CODEX_HOME/skills/`, the launcher commands `ccb` and `ccx` in `~/.local/bin/`), from a checkout:
 
 ```bash
 julia --project=. -e 'using ShipTools; ShipTools.update_comm()'

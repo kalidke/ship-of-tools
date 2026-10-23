@@ -6,6 +6,7 @@ pub(crate) mod argv;
 pub(crate) mod awareness;
 pub(crate) mod env;
 pub(crate) mod folder_trust;
+mod layer;
 pub(crate) mod memory;
 pub(super) mod ops;
 pub(crate) mod trust_declaration;

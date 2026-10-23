@@ -38,6 +38,10 @@ pub(crate) enum TrustOutcome {
     NotDeclared,
 }
 
+/// Serializes this daemon's preparations: two rows starting at once would each read the file and one's entry would
+/// replace the other's. Another process's edit (claude's own) is not covered, as the writer's limit says.
+static PREPARING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Compare OS-resolved scope while recording the child cwd's spelling.
 /// Existing accepted bytes and unrelated JSON keys are preserved.
 /// Concurrent external edits remain the existing writer's scoped limit.
@@ -70,6 +74,7 @@ pub fn ensure_folder_trusted(
         return Ok(TrustOutcome::Outside);
     }
 
+    let _one_at_a_time = PREPARING.lock().unwrap_or_else(|e| e.into_inner());
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let existing = match std::fs::read(&path) {
         Ok(bytes) => Some(bytes),
@@ -115,6 +120,12 @@ fn claude_project_key(root: &str, windows: bool) -> String {
     }
 }
 
+/// A temporary name no other preparation of this process or another shares: the process id and a per-process counter.
+fn trust_temp_name(name: &str) -> String {
+    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("{name}.sot-{}-{}.tmp", std::process::id(), CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
 /// Publish [`ensure_folder_trusted`]'s bytes: temp file in the SAME
 /// directory, then a plain `rename`. The temp name carries this process's
 /// id so two spawns racing on one config dir -- and claude's own temp
@@ -126,7 +137,7 @@ fn publish_trust_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(dir)?;
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(CLAUDE_TRUST_FILE);
-    let tmp = dir.join(format!("{name}.sot-{}.tmp", std::process::id()));
+    let tmp = dir.join(trust_temp_name(name));
     let published = (|| -> std::io::Result<()> {
         std::fs::write(&tmp, bytes)?;
         #[cfg(unix)]

@@ -64,7 +64,7 @@ The full walkthrough, with the table-building body, is in [Writing a FileType Pl
   <p class="sot-why">Frontend and backend together on one Linux machine. For a remote backend, a second frontend or Windows, see <a href="./start/remote">Going remote</a> and <a href="./start/install">Install details</a>, which also lists what the installer writes and how to remove it. What it touches:</p>
   <ul class="sot-why">
     <li>Everything goes under your home directory, mostly <code>~/.local/share/sot</code>, plus user lingering so the backend keeps running after logout on Linux.</li>
-    <li>Skills and hooks go into your global <code>~/.claude</code> and <code>~/.codex</code>; a skill of yours with the same name as a shipped one is overwritten without a backup.</li>
+    <li>The Claude skills go into <code>~/.sot-comm/claude-layer</code>, which only a session Ship of Tools starts loads (four onboarding skills stay in <code>~/.claude/skills</code>), and only two mail hooks are merged into your Claude settings; the Codex skills and plugin go into your global <code>~/.codex</code> and <code>~/.agents</code>. An install removes the skills and hooks an earlier release put in your own <code>~/.claude</code> only where they are exact copies.</li>
     <li>Sessions start their agent with fixed permission flags: Claude Code in auto mode; Codex with approvals, the sandbox and hook trust all bypassed.</li>
   </ul>
   <p class="sot-why">No isolated mode yet: try it under a separate user account or in a VM. See <a href="./start/install#install-footprint">What the installer changes</a>.</p>

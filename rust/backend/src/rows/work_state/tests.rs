@@ -145,11 +145,12 @@ fn a_read_clears_done_and_restamps_nothing() {
     assert!(!write);
 }
 
-/// A registry under a temporary comm home, named by `SOT_COMM_HOME` while the guards live; the host is `host-4`.
+/// A registry under a temporary comm home, named by `SOT_COMM_HOME` while the guards live; the host is `host-4`. Fields
+/// drop in the order written, so the variables are put back and the folder removed before the lock is let go.
 struct Home {
-    _serial: std::sync::MutexGuard<'static, ()>,
     _env: [crate::paths::EnvGuard; 2],
     dir: tempfile::TempDir,
+    _serial: std::sync::MutexGuard<'static, ()>,
 }
 
 impl Home {
@@ -192,6 +193,37 @@ fn a_held_lock_writes_nothing() {
     let before = home.bytes();
     assert!(matches!(write_event("h", &Event::Stop, Duration::from_millis(100)), Err(StampError::Registry(EditError::Locked(_)))));
     assert_eq!(home.bytes(), before);
+}
+
+/// A home is undone before its lock is let go: whoever takes the lock next finds the variables put back and the folder
+/// gone, so nothing it sets is overwritten and no folder it is handed is removed under it. The next holder spins on the
+/// lock from before the drop, so it holds the lock the moment the home lets it go.
+#[test]
+fn a_home_is_undone_before_its_lock_is_let_go() {
+    let home = Home::with(json!({}));
+    let folder = home.dir.path().to_path_buf();
+    let spinning = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let next = std::thread::spawn({
+        let (spinning, folder) = (spinning.clone(), folder.clone());
+        move || {
+            spinning.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _serial = loop {
+                match crate::paths::ENV_TEST_LOCK.try_lock() {
+                    Ok(serial) => break serial,
+                    Err(std::sync::TryLockError::Poisoned(p)) => break p.into_inner(),
+                    Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
+                }
+            };
+            (folder.exists(), std::env::var_os("SOT_COMM_HOME"))
+        }
+    });
+    while !spinning.load(std::sync::atomic::Ordering::SeqCst) {
+        std::hint::spin_loop();
+    }
+    drop(home);
+    let (there, named) = next.join().expect("the next holder");
+    assert!(!there, "the next holder found the dropped home's folder still there: {}", folder.display());
+    assert_ne!(named.as_deref(), Some(folder.as_os_str()), "the next holder found the dropped home's folder named");
 }
 
 fn row(label: &str, name: &str, declared: &str) -> Arc<Workspace> {

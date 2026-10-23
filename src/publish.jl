@@ -5,8 +5,8 @@
 
 Copy `src` to `dst` via copy-then-rename: copy to a sibling temp path, then
 `Base.Filesystem.rename` it onto `dst` — a single, non-destructive rename
-syscall (the same shape `_add_comm_hook!`/`_remove_stale_comm_hooks!` already
-use for settings.json).
+syscall (the same shape `_retire_comm_hooks!` already
+uses for settings.json).
 
 Every plain-file install in this module goes through this instead of
 `cp(src, dst; force = true)`, because that form REMOVES `dst` before copying:

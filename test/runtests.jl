@@ -31,6 +31,9 @@ mktempdir() do suite_home
             include("install_tests.jl")
             include("homes_tests.jl")
             include("claude_hooks_tests.jl")
+            include("layer_tests.jl")
+            include("protect_tests.jl")
+            include("global_skills_tests.jl")
 
             @testset "a test sets its home only through in_home" begin
                 # No subject file names a home variable as a string: a home is set only through in_home.
