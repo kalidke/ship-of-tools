@@ -39,27 +39,33 @@ fn join_within_false_on_expiry_and_never_blocks_past_the_deadline() {
 
 #[test]
 fn one_shared_deadline_not_a_fresh_budget_per_join() {
-    // Two joins against the SAME deadline: the first consumes most of
-    // the budget by construction (a thread that finishes only after
-    // most of it has elapsed), so the second must see a near-zero
-    // REMAINING budget -- proving the deadline is shared, not reset
-    // per call (ADR 0041: "each wait taking the remaining budget").
-    let budget = Duration::from_millis(150);
+    // Two joins against the SAME deadline (ADR 0041: "each wait taking the remaining budget"). The first joins a
+    // thread that has already finished; then the whole budget is let pass, so the second join, of a thread that never
+    // finishes, must return false at once. A fresh budget per join would wait the full 2 s, so the elapsed time tells
+    // the two apart with a second of margin; no thread's speed decides the outcome.
+    let budget = Duration::from_secs(2);
     let deadline = Instant::now() + budget;
 
-    let jh1 = thread::spawn(move || thread::sleep(Duration::from_millis(100)));
-    assert!(
-        join_within(jh1, deadline),
-        "the first join should still fit its share"
-    );
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let jh1 = thread::spawn(move || {
+        let _ = done_tx.send(());
+    });
+    done_rx.recv().expect("the first thread ran");
+    assert!(join_within(jh1, deadline), "the first join fits its share");
 
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
     let (tx, rx) = mpsc::channel::<()>();
     let jh2 = thread::spawn(move || {
         let _ = rx.recv();
     });
+    let started = Instant::now();
+    assert!(!join_within(jh2, deadline), "the second join finds the shared deadline spent");
     assert!(
-        !join_within(jh2, deadline),
-        "the second join must not get a fresh budget after the first consumed most of it"
+        started.elapsed() < Duration::from_secs(1),
+        "a spent deadline returns at once, not after a fresh budget: {:?}",
+        started.elapsed()
     );
     drop(tx);
 }
