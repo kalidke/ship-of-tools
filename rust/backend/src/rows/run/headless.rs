@@ -128,6 +128,14 @@ fn send_and_wait_recorded(client: &mut Client, bytes: &[u8], deadline: Instant) 
                         submitted: true,
                     });
                 }
+                InputOutcome::RunEnded => {
+                    // Nothing was written: the agent that was typed into is gone, and the new run is not typed into.
+                    return Err(HeadlessError {
+                        phase: "input",
+                        detail: "input was typed into a run that has ended; this op is never retried".to_string(),
+                        submitted: true,
+                    });
+                }
                 InputOutcome::DeliveryUnknown => {
                     return Err(HeadlessError {
                         phase: "record",
