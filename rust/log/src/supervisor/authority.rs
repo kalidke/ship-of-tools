@@ -12,7 +12,7 @@ use crate::row::{
 const READY_AFTER: Duration = Duration::from_secs(2);
 /// An `end_run` that has not seen the run end by now is answered `ending`, so the caller's own 30 s bound never races it.
 const END_RUN_BOUND: Duration = Duration::from_secs(25);
-/// A `reset` that has not removed the end record by now is answered `failed`.
+/// A `reset` that has not published by now is answered `failed`.
 const RESET_BOUND: Duration = Duration::from_secs(25);
 
 /// The agent's run in progress: the channel that ends it, and what it tells its owner.
@@ -32,6 +32,8 @@ struct Inner {
     /// `starting`, `ending`, `ended_no_respawn` or `terminal`; `ready` is derived (`wire_phase`).
     phase: SupervisorPhase,
     run: Option<LiveRun>,
+    /// The run's agent is gone and the main thread has decided whether an end was asked for: no end is admitted.
+    run_over: bool,
     /// The last run that began: a resting supervisor reports it, so the daemon can tell the run a rest follows from a newer one.
     last_run: Option<String>,
     /// An admitted `end_run` waits for its run to end; the answer `run_ended` or `terminal` leaves is kept under the
@@ -82,6 +84,7 @@ impl Shared {
             inner: Mutex::new(Inner {
                 phase: SupervisorPhase::Starting,
                 run: None,
+                run_over: false,
                 last_run: None,
                 ending: None,
                 end_answers: HashMap::new(),
@@ -107,10 +110,11 @@ impl Shared {
     pub(super) fn run_begins(&self, id: String, kill: mpsc::Sender<Command>, signals: Arc<RunSignals>) -> bool {
         let mut inner = self.lock();
         // A lost listener admits no run: an agent nobody can reach is not worth starting.
-        if inner.stop.is_some() || inner.row_lost {
+        if inner.stop.is_some() || inner.row_lost || inner.phase == SupervisorPhase::Terminal {
             return false;
         }
         inner.phase = SupervisorPhase::Starting;
+        inner.run_over = false;
         inner.last_run = Some(id.clone());
         inner.run = Some(LiveRun { id, kill, signals });
         true
@@ -150,7 +154,7 @@ impl Shared {
         self.changed.notify_all();
     }
 
-    /// The reset is published, the end record removed: the next run starts clean.
+    /// The reset is published, the end record replaced: the next run starts clean.
     pub(super) fn reset_done(&self) {
         let mut inner = self.lock();
         if let Some(admission) = inner.resetting.take() {
@@ -187,9 +191,12 @@ impl Shared {
         inner.ending.is_some() || inner.stop.is_some()
     }
 
-    /// An `end_run` is in flight (a stop is not one).
-    pub(super) fn end_run_asked(&self) -> bool {
-        self.lock().ending.is_some()
+    /// The run's agent is gone: no end is admitted from here on, and whether one was admitted is the answer, read under
+    /// the lock that closes admission. Every end answered `ended` was admitted before this, so the caller records it.
+    pub(super) fn close_run(&self) -> bool {
+        let mut inner = self.lock();
+        inner.run_over = true;
+        inner.ending.is_some()
     }
 
     /// The row socket is gone for good: the live run, if any, is told to end with no request recorded, and no run
@@ -259,7 +266,7 @@ impl Shared {
         if inner.phase == SupervisorPhase::Terminal {
             return Err(failed_end("the supervisor is in a terminal state"));
         }
-        let Some(live) = inner.run.as_ref() else {
+        let Some(live) = inner.run.as_ref().filter(|_| !inner.run_over) else {
             return Err(failed_end("no run is currently live"));
         };
         if live.id != run {

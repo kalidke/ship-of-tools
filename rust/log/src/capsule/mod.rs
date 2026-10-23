@@ -40,7 +40,7 @@ pub mod producer;
 mod screen;
 mod writer_loop;
 use output::*;
-pub use ended::{clear as clear_ended, mark_requested as mark_end_requested, read as read_ended, Ended};
+pub use ended::{mark_requested as mark_end_requested, publish_reset as publish_reset_ended, read as read_ended, Ended};
 #[cfg(any(test, feature = "test-support"))]
 pub use screen::set_screen_hook_for_test;
 pub use writer_loop::run;

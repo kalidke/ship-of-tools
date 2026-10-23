@@ -132,7 +132,7 @@ pub struct EndRunRes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResetOutcome {
-    /// The end record is removed; the next run starts clean.
+    /// The end record is replaced by one that asks for no end; the next run starts clean.
     Reset,
     Failed,
 }

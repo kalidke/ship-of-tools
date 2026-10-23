@@ -314,8 +314,9 @@ fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
             After::Stop => return finish(shared),
             After::TerminalGrace => return EXIT_TERMINAL,
             After::RowLost => return EXIT_AGENT_NOT_STARTED,
-            // The reset's publication is the end record's removal, before it is answered: a supervisor killed after
-            // the answer resumes into an agent, never back onto the end the reset removed.
+            // The reset's publication is a durable write of an end record that asks for no end, before it is answered: a
+            // supervisor killed after the answer resumes into an agent, never back onto the end the reset replaced. A
+            // publication that fails leaves the supervisor terminal, and a terminal supervisor starts no run.
             After::Reset => match reset_publication(&config.state_dir) {
                 Ok(()) => {
                     shared.reset_done();
@@ -325,7 +326,10 @@ fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
                         std::thread::sleep(Duration::from_millis(ms));
                     }
                 }
-                Err(e) => shared.terminal(bounded_detail(format!("reset: {e}"))),
+                Err(e) => {
+                    shared.terminal(bounded_detail(format!("reset: {e}")));
+                    return leave(shared);
+                }
             },
         }
     }
@@ -389,7 +393,7 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, agent
     // An acknowledged end_run is a requested end even if the agent ended first: the end record is written before the answer.
     // An end that cannot be recorded is not an end: a later `--resume` would read no request and start another agent,
     // so the supervisor is terminal and the caller is told it failed.
-    if shared.end_run_asked() {
+    if shared.close_run() {
         if let Err(e) = mark_end_requested(&config.state_dir) {
             return RunEnd::Failed(bounded_detail(format!("the requested end could not be recorded: {e}")));
         }
@@ -460,7 +464,7 @@ fn reset_publication(state_dir: &Path) -> crate::Result<()> {
     if std::env::var_os("SOT_TEST_RESET_CLEAR_FAILS").is_some() {
         return Err(crate::Error::State("test: the reset cannot be published".into()));
     }
-    crate::capsule::clear_ended(state_dir)
+    crate::capsule::publish_reset_ended(state_dir)
 }
 
 /// Records in the state folder that the run was asked to end. Test seam: `SOT_TEST_END_MARK_FAILS` makes the write fail,

@@ -79,3 +79,31 @@ fn runs_minted_by_one_supervisor_order_by_time() {
         last = next;
     }
 }
+
+/// An end is admitted only while the run is open: `close_run` closes admission and reports, under the same lock, whether
+/// one was admitted, so every end answered `ended` is one the caller recorded.
+#[test]
+fn an_end_admitted_after_the_run_is_closed_is_refused_and_one_before_is_reported() {
+    let shared = Shared::new();
+    let (kill, _commands) = mpsc::channel();
+    assert!(shared.run_begins("run-a".into(), kill, Arc::new(RunSignals::default())));
+    shared.admit_end("run-a").expect("an end before the close is admitted");
+    assert!(shared.close_run(), "the admitted end is reported");
+
+    let other = Shared::new();
+    let (kill, _commands) = mpsc::channel();
+    assert!(other.run_begins("run-b".into(), kill, Arc::new(RunSignals::default())));
+    assert!(!other.close_run(), "no end was admitted");
+    let answer = other.admit_end("run-b").expect_err("an end after the close is refused");
+    assert_eq!(answer.outcome, EndRunOutcome::Failed);
+}
+
+/// A terminal supervisor starts no run: its phase and its run stay as they were.
+#[test]
+fn a_terminal_supervisor_admits_no_run() {
+    let shared = Shared::new();
+    shared.terminal("test".into());
+    let (kill, _commands) = mpsc::channel();
+    assert!(!shared.run_begins("run-a".into(), kill, Arc::new(RunSignals::default())));
+    assert!(shared.is_terminal());
+}

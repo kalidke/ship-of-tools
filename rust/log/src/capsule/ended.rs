@@ -1,5 +1,6 @@
 //! The `ended` file, `<state_dir>/ended`: the one record of how the last run ended. The supervisor reads it on a
-//! `--resume`: whether an end was asked for. Each run's start and each reset clears it.
+//! `--resume`: whether an end was asked for. Each run's start clears it, and a reset replaces it with a record that asks
+//! for no end.
 use super::*;
 
 /// The file's name in the state folder.
@@ -49,8 +50,14 @@ pub fn mark_requested(state_dir: &std::path::Path, reason: &str) -> Result<()> {
     write(state_dir, &ended)
 }
 
-/// Removes the file a former run left, so one run's ending is never read as the next's. A reset's publication.
-pub fn clear(state_dir: &std::path::Path) -> Result<()> {
+/// A reset's publication: replaces the file with one that records no request, by the same durable write as every other
+/// `ended` write, so a `--resume` after it starts an agent on every system (a removal is not flushed on Windows).
+pub fn publish_reset(state_dir: &std::path::Path) -> Result<()> {
+    write(state_dir, &Ended { finished: true, reason: Some("reset".to_string()), ..Ended::default() })
+}
+
+/// Removes the file a former run left, so one run's ending is never read as the next's.
+pub(super) fn clear(state_dir: &std::path::Path) -> Result<()> {
     sot_platform::host::remove_durable(&path(state_dir))?;
     Ok(())
 }

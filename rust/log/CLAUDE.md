@@ -16,7 +16,7 @@ true after the merge of the leg into the supervisor.
   thread of the row socket answers a management call through `Shared`, and a third thread watches the row listener.
 - The agent's run: the terminal, the vt100 parser, the screen file
   `<state_dir>/screen` and `<state_dir>/ended` (how the last run ended: whether an end was asked for, the producer's
-  uptime and exit; `src/capsule/ended.rs`). Each run's start and each reset clears `ended`. The state folder holds
+  uptime and exit; `src/capsule/ended.rs`). Each run's start clears `ended`, and a reset replaces it with a record that asks for no end. The state folder holds
   nothing else of the capsule's: no segments, no blobs, no voyage folder, no pointer.
 - The transports' client half (`src/lane/`): `SocketClient` and `PipeClient`, the bounded connect they come from, the
   client seam (`Client`, `Endpoint`) and the one local connect, `connect_own`. Every server is the row socket's: the
@@ -43,7 +43,7 @@ true after the merge of the leg into the supervisor.
   descendant that leaves the session survives on Unix, and one in another job (Windows)
   or session (Unix) is not the supervisor's to end.
 - Phases: `starting` (until the agent has written or lived two seconds), `ready`, `ending`, `ended_no_respawn` (the
-  agent is gone because an end was asked for; only a reset or a stop remains) and `terminal` (sticky). The supervisor
+  agent is gone because an end was asked for; only a reset or a stop remains) and `terminal` (sticky: run admission refuses a terminal supervisor, so none begins and no agent starts). The supervisor
   rests only after a requested end: an agent that cannot be started or ends by itself ends the supervisor with 75 or
   76, so the daemon's watchdog is the one restart budget (rows' contract). A `--resume` over a run that was asked to
   end (`<state_dir>/ended` with `requested`) rests in `ended_no_respawn`; a `--resume` with no `ended`, or one that
@@ -61,9 +61,11 @@ true after the merge of the leg into the supervisor.
   once the run has ended (so a `reset` sent after the answer is admitted), `failed` (no run is live, an end is in
   progress, the supervisor is terminal, or the end could not be recorded), or `ending` when 25 s have passed; `row.reset`
   is fenced by the phase alone, admitted only from `ended_no_respawn` and answering `reset` once the end record is
-  removed (durably, before the answer: that removal is the reset's publication, so a supervisor killed after the answer
-  resumes into an agent, `tests/supervisor/authority.rs::a_reset_answered_before_a_kill_is_not_undone_by_the_resume`; a
-  removal that fails makes the supervisor terminal); `row.stop` ends the agent and answers `stopping` as its connection's last reply, and the
+  replaced (by a durable write of a record whose `requested` is false, before the answer: that write is the reset's
+  publication, and a removal would not be flushed on Windows, so a supervisor killed after the answer resumes into an
+  agent on every system, `tests/supervisor/authority.rs::a_reset_answered_before_a_kill_is_not_undone_by_the_resume`; a
+  publication that fails makes the supervisor terminal, answers `failed`, and starts no run,
+  `a_reset_whose_publication_fails_leaves_the_supervisor_terminal_and_starts_no_run`); `row.stop` ends the agent and answers `stopping` as its connection's last reply, and the
   process exits (0, or 69 when it was terminal) once that connection has ended, or after 3 s, and its shutdown then ends every
   connection: a closed connection stays registered until both of its threads have ended, so `close_all` reaches a writer
   that a peer which does not read has stuck (on Windows a pipe flush blocks until the peer reads, and `CancelIoEx` ends
@@ -74,8 +76,11 @@ true after the merge of the leg into the supervisor.
   cannot be recorded in `<state_dir>/ended` (`mark_end_requested`) is not an end: the run fails, the caller is answered
   `failed`, the supervisor is terminal and starts no other agent, so a later `--resume` does not run an agent whose end
   was acknowledged (`tests/supervisor/spawn.rs::a_requested_end_that_cannot_be_recorded_is_not_answered_ended`, over the
-  test seam `SOT_TEST_END_MARK_FAILS`); an acknowledged `end_run` is recorded as a requested end in `ended` before the
-  answer even when the agent ended first, so a resume rests; a supervisor that goes terminal sends its running agent
+  test seam `SOT_TEST_END_MARK_FAILS`); every end answered `ended` is recorded as a requested end in `ended` before the
+  answer, even when the agent ended first, so a resume rests: when the agent's run returns, admission closes under the
+  lock that reads whether an end was admitted (`Shared::close_run`), so an end admitted before is recorded and one
+  after is answered `failed` (no run is live) (`tests/supervisor/spawn.rs::an_end_run_asked_after_the_agent_ended_by_itself_is_never_answered_ended_unrecorded`,
+  over the test seam `SOT_TEST_RUN_OVER_HOLD_MS`); a supervisor that goes terminal sends its running agent
   `Stop` first. No call carries an id and nothing is kept for a resubmit. A completion answer is kept under its own
   admission, so another run's admission never clears it. A client that lost a reply, or got `ending`, settles it by
   reading status from the same supervisor (the dial's `(pid, created)` must match), for at most 10 s: for `end_run` the
@@ -105,8 +110,10 @@ true after the merge of the leg into the supervisor.
   folder (on Windows the start creates none). A run's start proves its state folder's volume (`preflight_volume`: a
   network state root is refused there, platform's guarantee 8). Test seams, each inert unless named:
   `SOT_TEST_END_MARK_FAILS`, `SOT_TEST_SUPERVISOR_BOOT_FAILS` (the supervisor fails right after making its state
-  folder, exit 69, before its fence) and `SOT_TEST_RESET_HOLD_MS` (the main thread waits that long after a reset is
-  answered, before the next run).
+  folder, exit 69, before its fence), `SOT_TEST_RESET_HOLD_MS` (the main thread waits that long after a reset is
+  answered, before the next run), `SOT_TEST_RESET_CLEAR_FAILS` (the reset's publication fails) and
+  `SOT_TEST_RUN_OVER_HOLD_MS` (the main thread waits that long after a run returned, after it recorded an asked end and
+  before it decides how the run ended).
 - The row socket `row-<h>` (`<runtime dir>/row-<h>.sock`, a pipe `\\.\pipe\sot-row-<h>` on Windows) is served by the
   supervisor for as long as the supervisor lives (it outlives each run it serves), in wire's frames. A connection is served nothing before its `row.hello`
   is admitted: the challenge's OS steps first, then the hello's reply naming the row's `(pid, created)`. The hello
@@ -213,7 +220,7 @@ true after the merge of the leg into the supervisor.
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot-capsule supervise`,
 `supervisor_client`, `FeAttachClient`, `rust/backend/src/rows/run/headless.rs`,
-`rust/frontend/src/ui/agent_pane/attach.rs`, `ended`, `screen`, `Endpoint`, `DaemonLaneEndpoint`, `AnonymousJob`. Uses:
+`rust/frontend/src/ui/agent_pane/attach.rs`, `ended`, `screen`, `Endpoint`, `DaemonLaneEndpoint`. Uses:
 `DaemonLaneEndpoint`, `lane.connect`, `try_lock_daemon`, `preflight_volume`,
 `owner_protected_pipe_descriptor`, `harden_own_stdio`, `inherit_none`, `boot_identity`, `process_created`, `IdentityExchange`, `write_durable`, `remove_durable`, `storage_exhaustion`,
 `Redial`, `STABLE`.

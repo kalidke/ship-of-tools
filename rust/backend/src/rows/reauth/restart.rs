@@ -185,12 +185,12 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
             );
             return;
         }
-        Err(ResetRefusal::StartedNothing { settled, error }) => {
+        Err(ResetRefusal::Unsettled { settled, error }) => {
             tracing::error!(
                 workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
                 phase = settled, error = %error,
-                "workspace.reauth: the reset started no run, so this row has no agent; \
-                 opening the row retires this authority and revives it on a fresh conversation"
+                "workspace.reauth: the reset did not settle, so whether this row has an agent is unknown; \
+                 opening the row reads its state and, if it rests, revives it on a fresh conversation"
             );
             return;
         }
@@ -216,7 +216,7 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
 enum ResetRefusal {
     NeverAnswered(String),
     Refused { settled: &'static str, detail: String },
-    StartedNothing { settled: &'static str, error: String },
+    Unsettled { settled: &'static str, error: String },
 }
 
 /// The revival tail: wait for the replacement authority to come to rest on
@@ -258,7 +258,7 @@ fn reset_replacement_run(
     if let Err(detail) = ready_to_mint(report.phase, retired, (report.pid, report.created)) {
         return Err(ResetRefusal::Refused { settled, detail });
     }
-    fx.reset(&plan.workspaces, &plan.row.workspace_id, state_dir).map_err(|error| ResetRefusal::StartedNothing { settled, error })
+    fx.reset(&plan.workspaces, &plan.row.workspace_id, state_dir).map_err(|error| ResetRefusal::Unsettled { settled, error })
 }
 
 /// How long to let the replacement authority recover before giving up on

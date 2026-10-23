@@ -30,9 +30,9 @@ fn reset_is_refused_while_a_run_is_live() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// Once `ended_no_respawn`, `reset` is admissible, removes the end record and starts a fresh agent in a new run.
+/// Once `ended_no_respawn`, `reset` is admissible and starts a fresh agent in a new run.
 #[test]
-fn reset_from_ended_no_respawn_removes_the_end_record_and_starts_an_agent_in_a_new_run() {
+fn reset_from_ended_no_respawn_starts_an_agent_in_a_new_run() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -49,7 +49,6 @@ fn reset_from_ended_no_respawn_removes_the_end_record_and_starts_an_agent_in_a_n
     assert!(state_dir.join("ended").exists(), "the end is recorded");
 
     reset(&conn);
-    assert!(!state_dir.join("ended").exists(), "the reset removed the end record");
 
     // The supervisor starts a fresh agent.
     let new_run = wait_for_ready(&conn, Duration::from_secs(90));
