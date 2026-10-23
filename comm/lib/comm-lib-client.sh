@@ -494,7 +494,7 @@ sot_hello_frame() {
     # unescaped quote or backslash in a declared host/name would
     # otherwise produce invalid JSON the daemon's own parser rejects.
     #
-    # The `"protocol":3` literal below is sotd's WIRE protocol
+    # The `"protocol":4` literal below is sotd's WIRE protocol
     # (`sot_protocol::PROTOCOL_VERSION`, rust/protocol/src/lib.rs) — not
     # the registry's schema version (unrelated). It is bumped by hand with every `PROTOCOL_VERSION`
     # change; sot-protocol's `the_shell_hello_is_this_protocols_hello`
@@ -505,7 +505,7 @@ sot_hello_frame() {
     j_user="$(sot_json_escape "$os_user")" || return 1
     j_role="$(sot_json_escape "$role")" || return 1
     j_name="$(sot_json_escape "${NAME:-}")" || return 1
-    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":3,"app_version":"comm","host":%s,"os_user":%s,"role":%s,"name":%s}}\n' \
+    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":4,"app_version":"comm","host":%s,"os_user":%s,"role":%s,"name":%s}}\n' \
         "$j_host" "$j_user" "$j_role" "$j_name"
 }
 

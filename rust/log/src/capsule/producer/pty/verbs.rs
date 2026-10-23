@@ -247,6 +247,10 @@ impl Producer for PtyProducer {
         &mut self.writer
     }
 
+    fn input_writer(&self) -> std::io::Result<std::fs::File> {
+        self.writer.try_clone()
+    }
+
     fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         let winsz = libc::winsize {
             ws_row: rows,

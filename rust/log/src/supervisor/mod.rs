@@ -189,12 +189,13 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         let shared = Arc::clone(&shared);
         row.set_phase_source(Box::new(move || shared.phase_text().to_string()));
     }
-    // Served beside the lane until pass 6c-1a2 moves every caller over, so a bind failure is noted, not terminal.
+    // The row socket is the way in: a row nobody can reach is not worth an agent, so a bind failure ends this
+    // supervisor before one starts.
     let row_server = match row_socket_path(&h).and_then(|path| RowServer::bind(&path, Arc::clone(&row))) {
-        Ok(server) => Some(server),
+        Ok(server) => server,
         Err(e) => {
             note(format_args!("could not bind the row socket: {e}"));
-            None
+            return Ok(EXIT_TERMINAL);
         }
     };
     let lane_thread = {
@@ -399,7 +400,7 @@ pub fn connect_and_challenge_with_proto_for_test(h: &str, proto: u32) -> crate::
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(Client, Process)> {
-    crate::attach_client::supervisor_client::connect_and_challenge::<PlatformEndpoint>(
+    crate::attach_client::supervisor_client::connect_and_challenge(
         &PlatformEndpoint::default(),
         h,
         crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID,

@@ -77,6 +77,10 @@ pub trait Producer: Send + Sized {
     /// both go through this.
     fn input(&mut self) -> &mut dyn Write;
 
+    /// A second handle on the producer's input sink, for a thread that writes typed input without holding the loop
+    /// (a write to a terminal whose agent reads nothing blocks).
+    fn input_writer(&self) -> std::io::Result<std::fs::File>;
+
     /// Resize the producer's terminal. Geometry is validated by the SAME
     /// budget a resize wire request is, by the caller — never this
     /// method.

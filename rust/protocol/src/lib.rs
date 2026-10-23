@@ -48,9 +48,11 @@ use serde::{Deserialize, Serialize};
 
 /// The wire protocol a hello must speak; the daemon's gate refuses any other with `protocol_mismatch`. 3 (ADR
 /// 0049 `## User isolation`): every hello declares the host and the OS account it runs as, and a connection
-/// that becomes a pipe or a lease says so in its hello. Every pre-0.6.6 client speaks 2 and so meets the gate.
+/// that becomes a pipe or a lease says so in its hello. 4 (pass 6c-1a2): `lane.connect` pipes a row's own socket, so
+/// its request is `{target, token}` and `DaemonVersion` no longer names a lane protocol. Every pre-0.6.6 client speaks 2
+/// and so meets the gate; the last release speaks 3.
 /// The shell client's hello carries the same number by hand; `the_shell_hello_is_this_protocols_hello` checks it.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 mod version;
 pub use version::{app_version, is_release_build, version_line};

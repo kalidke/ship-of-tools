@@ -147,7 +147,7 @@ fn cleanup_sync(child: &mut std::process::Child, hook: &GateRendezvous) {
     }
 }
 
-fn gate_start(mode: &str, gate: &LinkGate, voyage: bool) -> bool {
+fn gate_start(mode: &str, gate: &LinkGate) -> bool {
     let recipe = SshRecipe::new("teststub", None).unwrap();
     let hook = gate.rendezvous.lock().unwrap().clone().unwrap();
     let refused = match mode {
@@ -182,8 +182,7 @@ fn gate_start(mode: &str, gate: &LinkGate, voyage: bool) -> bool {
                 .with_test_ssh_spawner(std::sync::Arc::new(|mut command| command.spawn()))
                 .with_test_handshake_bound(sot_log::lane::transport::CONNECT_BOUND);
             hook.phase("endpoint-handshake");
-            let result = if voyage { endpoint.connect_voyage_unchallenged("fixture-row", "fixture-voyage") }
-                else { endpoint.connect_supervisor_unchallenged("fixture-row") };
+            let result = endpoint.connect_row_unchallenged("fixture-row");
             hook.phase("cleanup"); hook.wait_entry("endpoint-reaped");
             let refused = matches!(result, Err(sot_log::lane::transport::TransportError::LinkDown));
             drop(result); drop(endpoint);
@@ -202,12 +201,12 @@ fn gate_race(mode: &'static str, program: &std::path::Path) -> bool {
     let (hook, ready, release) = GateRendezvous::new(program, mode, true, events.clone());
     *gate.rendezvous.lock().unwrap() = Some(hook.clone());
     gate.set_up(false);
-    assert!(gate_start(mode, &gate, true), "close-first must return LinkDown");
+    assert!(gate_start(mode, &gate), "close-first must return LinkDown");
     assert!(events.lock().unwrap().is_empty(), "close-first creates no child");
     gate.set_up(true);
     let admitted = gate.clone();
     let (spawn_done_tx, spawn_done) = mpsc::channel();
-    let starter = std::thread::spawn(move || { let result = gate_start(mode, &admitted, false); spawn_done_tx.send(result).unwrap(); });
+    let starter = std::thread::spawn(move || { let result = gate_start(mode, &admitted); spawn_done_tx.send(result).unwrap(); });
     hook.wait(&ready, "admission-ready", "spawn reached its admission rendezvous");
     let closing = gate.clone();
     let (closed_tx, closed_rx) = mpsc::channel();
@@ -228,14 +227,14 @@ fn gate_race(mode: &'static str, program: &std::path::Path) -> bool {
     let all_before_close = closed.len() == 1 && closed[0] == starts;
     let paused = hook.snapshot.lock().unwrap().releases_consumed;
     let count = observed.len();
-    let refused = gate_start(mode, &gate, true);
+    let refused = gate_start(mode, &gate);
     assert!(refused, "after close returns the gate must return LinkDown");
     assert_eq!(events.lock().unwrap().len(), count, "after close creates no additional child");
     let (reopened, _, _) = GateRendezvous::new(program, mode, false, events.clone());
     *gate.rendezvous.lock().unwrap() = Some(reopened);
     gate.set_up(true);
     let count = events.lock().unwrap().len();
-    gate_start(mode, &gate, true);
+    gate_start(mode, &gate);
     let reopen_starts = events.lock().unwrap().len() - count;
     println!("T2 gate order: mode={mode} first={first:?} held-start-before-close={held_before_close} all-starts-before-close={all_before_close} after-close-refused={refused} reopen-starts={reopen_starts} paused={paused}");
     assert_eq!(reopen_starts, 1, "reopen admits one ordinary child start");

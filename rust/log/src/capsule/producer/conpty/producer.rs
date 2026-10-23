@@ -70,6 +70,10 @@ impl Producer for ConptyProducer {
         &mut self.writer
     }
 
+    fn input_writer(&self) -> std::io::Result<std::fs::File> {
+        self.writer.try_clone()
+    }
+
     fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         self.pty
             .as_ref()

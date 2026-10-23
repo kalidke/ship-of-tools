@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(in crate::ui) type PaneAttachClient = sot_log::attach_client::client::FeAttachClient<sot_topology::lane_client::DaemonLaneEndpoint>;
+pub(in crate::ui) type PaneAttachClient = sot_log::attach_client::client::FeAttachClient;
 
 /// Attach clients parked when the session pane leaves their row, so a
 /// switch back reuses the live lane instead of dialing again (a remote
@@ -265,19 +265,12 @@ impl State {
             return false;
         };
         let endpoint = sot_topology::lane_client::DaemonLaneEndpoint::new(dial, token);
-        // Invariant: the record names the frontend that typed —
-        // `fe_instance_component`'s own doc.
-        let controller_id = format!("{}#{}", self_comm_handle(), frontend_identity().instance);
-        let fe_down_to = self_comm_handle();
         let wake = self.wake.clone();
         match sot_log::attach_client::client::FeAttachClient::attach(
             endpoint,
             target.to_string(),
             cols,
             rows,
-            controller_id,
-            fe_down_to,
-            None,
             Box::new(move || wake.wake()),
         ) {
             Ok(c) => {
@@ -393,24 +386,7 @@ impl State {
             }
         }
         if changed {
-            // BLOCKER (Codex review, lane B5 discharge): a `notice()` set
-            // by an EARLIER checkpoint ("attached to leg started …") is
-            // retracted only on the NEXT checkpoint (`attach_client/client.rs`'s
-            // own doc) — between the two, a mid-outage `Unreachable`
-            // retry, a refusal, or any other non-"attached" status must
-            // win over that stale text, never be hidden behind it. The
-            // notice is subordinate: it adds color ONLY once the client
-            // is honestly attached again.
-            let status_line = t.status_line().to_string();
-            if status_line != "attached" {
-                self.status = status_line;
-            } else if let Some(notice) = t.notice() {
-                self.status = notice.to_string();
-            } else if let Some(msg) = t.quit_message() {
-                self.status = msg.to_string();
-            } else {
-                self.status = status_line;
-            }
+            self.status = t.status_line().to_string();
         }
     }
 

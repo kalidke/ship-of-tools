@@ -1,7 +1,7 @@
-//! One client for every viewer of a capsule (`client`), plus the daemon's
-//! supervisor-lane client (`supervisor_client`).
+//! One client for every viewer of a row (`client`, over the attach worker in `attach`), plus the daemon's
+//! supervisor-lane client (`supervisor_client`, until the row socket takes its calls).
+pub mod attach;
 pub mod client;
-pub mod rules;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod supervisor_client;
-pub mod worker;
+mod supervisor_wait;

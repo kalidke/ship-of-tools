@@ -312,15 +312,10 @@ pub struct PingRes {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VersionQueryReq {}
 
-/// This daemon's own version triple, as `version.query` reports it.
-/// `lane_proto` is the supervisor-lane wire protocol integer this daemon
-/// gates on (ADR 0045 decision 7: `wire::SUPERVISOR_PROTO_V1`, compared
-/// against any supervisor it attaches, adopts, or spawns); `lane_build`
-/// is `sot_log::lane::exchange::SUPERVISOR_LANE_BUILD_ID`, carried alongside
-/// as an informational build stamp only — never compared. Both are
-/// distinct from `app_version`, which is the product version (ADR 0030
-/// §1) and never gates a capsule attach. `#[serde(default)]` on
-/// `lane_proto`: a daemon predating ADR 0045 answers without it.
+/// This daemon's own version, as `version.query` reports it. `lane_build` is always empty since protocol 4: the
+/// supervisor-lane build stamp and the lane protocol integer it travelled with are gone, and the field stays only so an
+/// older reader, which requires it, still parses the answer (kept until the release after 0.7.0). Neither was ever
+/// compared with `app_version`, the product version (ADR 0030 §1), which never gates a capsule attach.
 ///
 /// `host` (topology plan §F step 1) is this daemon's own declared host —
 /// `rows::store::declared_host()` on the backend side, the same
@@ -334,9 +329,8 @@ pub struct VersionQueryReq {}
 pub struct DaemonVersion {
     pub app_version: String,
     pub protocol: u32,
-    pub lane_build: String,
     #[serde(default)]
-    pub lane_proto: u32,
+    pub lane_build: String,
     #[serde(default)]
     pub host: String,
     /// `hash_text` of this daemon's currently-loaded `hosts.toml` (plan §B

@@ -5,14 +5,13 @@ use sot_protocol::PtyEnter;
 use std::time::{Duration, Instant};
 
 use sot_log::lane::client::PlatformEndpoint;
-use sot_log::attach_client::rules::TAKE_QUEUE_CAP;
-use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
+use sot_log::attach_client::client::{FeAttachClient, InputOutcome, TAKE_QUEUE_CAP};
 use sot_platform::host::state_dir::state_dir_hash;
 
 /// This daemon build's own concrete attach client — always the real
 /// platform endpoint (pipes on Windows, a Unix socket on Linux). No
 /// caller of this module ever needs to name `E` itself.
-pub(crate) type Client = FeAttachClient<PlatformEndpoint>;
+pub(crate) type Client = FeAttachClient;
 
 /// How often the daemon polls its own headless client. Independent of
 /// (and much finer than) the deadline a caller passes in — this is
@@ -305,7 +304,9 @@ pub(crate) fn checkpointed(mut client: Client, deadline: Instant) -> Result<Clie
 }
 
 pub(crate) fn attach(state_dir: &Path, controller_id: &str) -> Result<Client, HeadlessError> {
-    Client::attach_headless(PlatformEndpoint::default(), state_dir_hash(state_dir), controller_id.to_string()).map_err(|e| {
+    // The row socket has no notion of a controller: the id only names this attach in the daemon's log.
+    tracing::debug!(controller = controller_id, "headless attach");
+    Client::attach_headless(PlatformEndpoint::default(), state_dir_hash(state_dir)).map_err(|e| {
         HeadlessError { phase: "attach", detail: e.to_string(), submitted: false }
     })
 }

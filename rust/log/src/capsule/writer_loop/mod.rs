@@ -79,6 +79,8 @@ struct Leg<'t, P> {
     signals: Option<Arc<RunSignals>>,
     /// The row socket's fan-out, when the owner serves one: fed every committed chunk, and asked for its requests every pass.
     row: Option<Arc<crate::row::RowRun>>,
+    /// Typed input to the terminal, written off this loop's thread.
+    input: crate::row::InputPump,
     /// An output end before teardown that the producer's exit explained; `ended` records it.
     output_ended_early: Option<String>,
     /// The reader's byte budget; the loop releases what it handles.

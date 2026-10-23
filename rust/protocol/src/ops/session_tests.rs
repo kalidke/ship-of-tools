@@ -71,29 +71,16 @@ mod hello_version_tests {
 
     #[test]
     fn lane_connect_req_round_trips_and_optionals_are_optional() {
-        // ADR 0045 §2 handshake shapes. `voyage_id`/`token` absent on the
-        // wire must parse (the supervisor lane and a tokenless Unix-socket
-        // transport never send either).
-        let req: super::LaneConnectReq =
-            serde_json::from_str(r#"{"target":"ws-a","lane":"supervisor"}"#)
-                .expect("minimal req parses");
+        // ADR 0045 §2 handshake shapes (protocol 4: `{target, token}`). `token` absent on the wire must parse (a
+        // tokenless Unix-socket transport never sends one).
+        let req: super::LaneConnectReq = serde_json::from_str(r#"{"target":"ws-a"}"#).expect("minimal req parses");
         assert_eq!(req.target, "ws-a");
-        assert_eq!(req.lane, "supervisor");
-        assert!(req.voyage_id.is_none());
         assert!(req.token.is_none());
         let back: super::LaneConnectReq = serde_json::from_str(
-            &serde_json::to_string(&super::LaneConnectReq {
-                target: "ws-b".into(),
-                lane: "voyage".into(),
-                voyage_id: Some("v1".into()),
-                token: Some("t".into()),
-            })
-            .unwrap(),
+            &serde_json::to_string(&super::LaneConnectReq { target: "ws-b".into(), token: Some("t".into()) }).unwrap(),
         )
         .unwrap();
         assert_eq!(back.target, "ws-b");
-        assert_eq!(back.lane, "voyage");
-        assert_eq!(back.voyage_id.as_deref(), Some("v1"));
         assert_eq!(back.token.as_deref(), Some("t"));
     }
 
@@ -236,8 +223,7 @@ mod version_query_tests {
             daemon: DaemonVersion {
                 app_version: "0.6.0-dev+abc1234".into(),
                 protocol: 1,
-                lane_build: "abc1234def".into(),
-                lane_proto: 1,
+                lane_build: String::new(),
                 host: "test-host".into(),
                 hosts_toml_hash: "deadbeefcafef00d".into(),
                 uptime_s: 10_800,
@@ -260,8 +246,7 @@ mod version_query_tests {
         };
         let json = serde_json::to_string(&res).unwrap();
         let back: VersionQueryRes = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.daemon.lane_build, "abc1234def");
-        assert_eq!(back.daemon.lane_proto, 1);
+        assert_eq!(back.daemon.lane_build, "");
         assert_eq!(back.daemon.host, "test-host");
         assert_eq!(back.daemon.hosts_toml_hash, "deadbeefcafef00d");
         assert_eq!(back.daemon.uptime_s, 10_800);
@@ -300,7 +285,6 @@ mod version_query_tests {
             app_version: "0.7.0-dev".into(),
             protocol: crate::PROTOCOL_VERSION,
             lane_build: String::new(),
-            lane_proto: 0,
             host: "test-host".into(),
             hosts_toml_hash: String::new(),
             uptime_s: 5,
@@ -351,8 +335,7 @@ mod version_query_tests {
     fn version_query_res_missing_clients_deserializes_to_empty() {
         // Mirrors `legacy_hello_res_defaults_to_preversioning`: a peer that
         // answers this op but omits the roster must still deserialize
-        // rather than failing the whole response. Also omits `lane_proto`
-        // (a daemon predating ADR 0045), `host` (topology plan §F step
+        // rather than failing the whole response. Also omits `host` (topology plan §F step
         // 1), and `hosts_toml_hash` (topology plan §B, this lane) --
         // `#[serde(default)]` must supply 0 / "" rather than failing the
         // whole payload.
@@ -362,7 +345,7 @@ mod version_query_tests {
         let res: VersionQueryRes = serde_json::from_value(json).expect("legacy payload deserializes");
         assert!(res.clients.is_empty());
         assert_eq!(res.daemon.app_version, "0.6.0");
-        assert_eq!(res.daemon.lane_proto, 0);
+        assert_eq!(res.daemon.lane_build, "abc");
         assert_eq!(res.daemon.host, "");
         assert_eq!(res.daemon.hosts_toml_hash, "");
     }

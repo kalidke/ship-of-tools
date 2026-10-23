@@ -113,6 +113,11 @@ struct FakeProducer {
 impl sot_log::capsule::producer::Producer for FakeProducer {
     type Output = FakeOutput;
 
+    fn input_writer(&self) -> std::io::Result<std::fs::File> {
+        // Typed input goes nowhere in these tests.
+        std::fs::File::options().write(true).open(if cfg!(windows) { "NUL" } else { "/dev/null" })
+    }
+
     fn spawn(_argv: &[String], _cols: u16, _rows: u16) -> sot_log::Result<Self> {
         let script = FAKE_SCRIPT.lock().unwrap().take().expect("no fake script armed");
         let state = Arc::new(FakeState {

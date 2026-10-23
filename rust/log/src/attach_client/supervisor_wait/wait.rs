@@ -1,12 +1,13 @@
-//! The quit path: `run_end_run_and_wait`, `run_quit` and the supervisor-lane reconnect it needs.
+//! The one end-run loop: `run_end_run_and_wait`, shared by the daemon's `end_run`.
 
 use crate::lane::client::Endpoint;
-use crate::attach_client::rules::{OutstandingSlot, QuitDispatcher, QuitState};
+use super::quit::{QuitDispatcher, QuitState};
+use super::lane_io::{write_bounded, FrameReader};
+use super::WRITE_BUDGET;
 use crate::lane::wire::{self, DecodedFrame, SupervisorOp, SupervisorReply, SupervisorRequest};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::*;
 
 
 /// Steady heartbeat cadence for `run_quit`'s own loop. The supervisor
@@ -171,99 +172,6 @@ pub(crate) fn run_end_run_and_wait<E: Endpoint>(
                     thread::sleep(QUIT_HEARTBEAT_INTERVAL);
                 }
             }
-        }
-    }
-}
-
-/// The FE's own wrapping around [`run_end_run_and_wait`]: cancels any
-/// outstanding input (Ruling (c), Codex review round finding 6 — never
-/// dropped silently) before the transaction starts, and emits
-/// `QuitMessage` events at every transition. The quit path never touches
-/// the ATTACH connection at all — the capsule's own pipe going away is
-/// exactly what a successful `end_run` does, so depending on it (as the
-/// steady-state loop that used to poll `query` did) can never be correct
-/// here.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn run_quit<E: Endpoint>(
-    endpoint: &E,
-    supervisor_conn: &mut E::Client,
-    sup_reader: &mut FrameReader,
-    h: &str,
-    voyage: &str,
-    reason: String,
-    quit: &mut QuitDispatcher,
-    outstanding: &mut OutstandingSlot,
-    emit: &dyn Fn(WorkerEvent),
-) {
-    let operation_id = format!("fe-quit-{}", uuid::Uuid::now_v7());
-    // Mirrors `run_end_run_and_wait`'s own `request_quit` gate: this is
-    // the SAME "is state currently Idle" condition that function checks
-    // moments later, read here (nothing else mutates `quit` in between)
-    // so the outstanding-input cancel — a ONE-TIME side effect — fires
-    // only on the call that actually starts the ending transaction.
-    if matches!(quit.state(), QuitState::Idle) {
-        if let Some(o) = outstanding.cancel_for_quit() {
-            emit(WorkerEvent::Status(format!(
-                "input canceled by quit \u{2014} {} byte(s) not confirmed",
-                o.bytes.len()
-            )));
-        }
-    }
-    let refused = std::cell::Cell::new(false);
-    run_end_run_and_wait::<E>(
-        supervisor_conn,
-        sup_reader,
-        |conn, reader| reconnect_supervisor_lane_for_quit::<E>(endpoint, conn, reader, h, &refused),
-        quit,
-        operation_id,
-        reason,
-        voyage,
-        |quit| emit(WorkerEvent::QuitMessage(quit.message())),
-    );
-}
-
-/// Reconnects the supervisor lane in place, for [`run_quit`]'s own use.
-/// Best-effort and silent-on-failure BY DESIGN (beyond the one stderr
-/// line): the caller's own loop simply tries again next iteration,
-/// bounded overall by `QuitDispatcher::tick`'s 90 s cutoff -- there is
-/// no separate retry budget to manage here, unlike the reconnect EPISODE
-/// loop the rest of this module drives for the attach lane.
-///
-/// `refused`: latched `true` the first time the daemon answers
-/// `lane.connect` with a genuine `Refused` (ADR 0045 decision 4, lane
-/// B4a Codex review SHOULD-FIX: "the quit reconnect must not retry
-/// refusals") — once latched, every FURTHER tick skips the dial
-/// entirely rather than hammering a daemon that has already said no.
-/// Still returns `false` either way (this closure's `bool` contract has
-/// no third "give up" state, and `run_end_run_and_wait`'s own 90 s
-/// cutoff is the real bound either way), so the caller's pacing is
-/// unchanged — this only stops the WASTED re-dial, not the transaction's
-/// own timeout.
-pub(super) fn reconnect_supervisor_lane_for_quit<E: Endpoint>(
-    endpoint: &E,
-    supervisor_conn: &mut E::Client,
-    sup_reader: &mut FrameReader,
-    h: &str,
-    refused: &std::cell::Cell<bool>,
-) -> bool {
-    if refused.get() {
-        return false;
-    }
-    match connect_supervisor_lane::<E>(endpoint, h) {
-        Ok((conn, _proven)) => {
-            *supervisor_conn = conn;
-            *sup_reader = FrameReader::new();
-            eprintln!("fe-client quit: reconnected the supervisor lane");
-            true
-        }
-        Err(e @ LaneError::Refused { .. }) => {
-            refused.set(true);
-            eprintln!("fe-client quit: reconnect refused ({e}); giving up on further dials for this quit");
-            false
-        }
-        Err(e) => {
-            eprintln!("fe-client quit: reconnect failed ({e}); will retry");
-            false
         }
     }
 }

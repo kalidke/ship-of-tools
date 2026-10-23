@@ -62,7 +62,7 @@ where
     let daemon = FakeDaemon::new();
     let endpoint = daemon.endpoint();
     let handle = std::thread::spawn(move || respond(daemon.accept()));
-    let result = endpoint.dial("row-1", "supervisor", None).map(|c| (c.peer.pid, c.peer.created));
+    let result = endpoint.dial("row-1").map(|c| (c.peer.pid, c.peer.created));
     within(BOUND, "the fake daemon", move || handle.join()).unwrap();
     result
 }
@@ -130,7 +130,7 @@ fn the_dial_says_a_handoff_hello_first_in_the_same_write() {
         respond_with_ok_lane(&mut conn);
         (hello, request)
     });
-    let client = endpoint.dial("row-1", "supervisor", None).expect("handshake succeeds");
+    let client = endpoint.dial("row-1").expect("handshake succeeds");
     drop(client);
     let (hello, request) = within(BOUND, "the fake daemon", move || handle.join()).unwrap();
     assert_eq!((hello.kind, hello.op.as_str()), (Kind::Req, op::HELLO));
@@ -164,7 +164,7 @@ fn a_refused_hello_is_refused_with_its_code_and_message() {
             line.push(b'\n');
             conn.write_all(&line).unwrap();
         });
-        let result = endpoint.dial("row-1", "supervisor", None).map(|_| ());
+        let result = endpoint.dial("row-1").map(|_| ());
         within(BOUND, "the fake daemon", move || handle.join()).unwrap();
         match result {
             Err(TransportError::Refused { code: got, detail }) => assert_eq!((got.as_str(), detail.as_str()), (code, "no thanks")),
@@ -182,7 +182,7 @@ fn an_ssh_dial_with_a_down_gate_is_link_down_at_once() {
     let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate), None);
     let t0 = Instant::now();
-    let result = endpoint.dial("row", "supervisor", None);
+    let result = endpoint.dial("row");
     assert!(matches!(result, Err(TransportError::LinkDown)), "got {:?}", result.err());
     assert!(t0.elapsed() < Duration::from_millis(50));
 }
@@ -196,7 +196,7 @@ fn a_relay_dial_waits_for_its_gate_then_uses_the_local_connector() {
     gate.set_up(false);
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Relay(daemon.path.clone(), gate.clone()), None);
     assert!(!endpoint.link_up());
-    let result = endpoint.dial("row-1", "supervisor", None);
+    let result = endpoint.dial("row-1");
     assert!(
         matches!(result, Err(TransportError::LinkDown)),
         "got {:?}",
@@ -215,7 +215,7 @@ fn a_relay_dial_waits_for_its_gate_then_uses_the_local_connector() {
         conn.write_all(&line).unwrap();
     });
     let client = endpoint
-        .dial("row-1", "supervisor", None)
+        .dial("row-1")
         .expect("an up gate dials the relay path");
     assert_eq!((client.peer.pid, client.peer.created), (41, 7));
     within(BOUND, "the fake daemon", move || handle.join()).unwrap();
@@ -285,7 +285,7 @@ fn a_silent_daemon_is_unreachable_within_two_seconds() {
     // `.map(|_| ())`: `DaemonLaneClient` carries no `Debug` impl (a
     // live socket/pipe handle has no useful one), so the success
     // side is dropped before the failure assertion formats `result`.
-    let result = endpoint.dial("row-1", "supervisor", None).map(|_| ());
+    let result = endpoint.dial("row-1").map(|_| ());
     assert!(matches!(result, Err(TransportError::Unreachable(_))), "got {result:?}");
     assert!(started.elapsed() < std::time::Duration::from_secs(3));
     let _ = release_tx.send(());
@@ -325,7 +325,7 @@ fn cancel_unblocks_a_pending_read() {
         // completed -- see this test's own doc.
         let _ = release_rx.recv_timeout(Duration::from_secs(10));
     });
-    let client = endpoint.dial("row-1", "supervisor", None).expect("handshake succeeds");
+    let client = endpoint.dial("row-1").expect("handshake succeeds");
 
     let client = std::sync::Arc::new(client);
     let reader = std::sync::Arc::clone(&client);
@@ -376,7 +376,7 @@ fn a_wire_identity_that_differs_from_the_reported_peer_is_foreign() {
         let _ = conn.write_all(b"irrelevant");
     });
 
-    let client = endpoint.dial("row-1", "supervisor", None).expect("handshake succeeds");
+    let client = endpoint.dial("row-1").expect("handshake succeeds");
 
     struct FixedExchange;
     impl IdentityExchange for FixedExchange {
@@ -399,14 +399,11 @@ fn a_wire_identity_that_differs_from_the_reported_peer_is_foreign() {
 /// needs (C3 as amended §2; §7's test table, "Linux + Windows").
 #[test]
 fn a_local_dial_starts_no_ssh_child() {
-    for kind in ["supervisor", "voyage"] {
-        let daemon = FakeDaemon::new();
-        let ep = daemon.endpoint().with_test_ssh_spawner(std::sync::Arc::new(|_| panic!("a local dial never starts ssh")));
-        let peer = std::thread::spawn(move || { let mut conn = daemon.accept(); serve_hello(&mut conn); respond_with_ok_lane(&mut conn); });
-        drop(ep.dial("row-local", kind, (kind == "voyage").then(|| "voyage".to_string())).unwrap());
-        within(BOUND, "the fake daemon", move || peer.join()).unwrap();
-        assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Unused));
-    }
+    let daemon = FakeDaemon::new();
+    let ep = daemon.endpoint().with_test_ssh_spawner(std::sync::Arc::new(|_| panic!("a local dial never starts ssh")));
+    let peer = std::thread::spawn(move || { let mut conn = daemon.accept(); serve_hello(&mut conn); respond_with_ok_lane(&mut conn); });
+    drop(ep.dial("row-local").unwrap());
+    within(BOUND, "the fake daemon", move || peer.join()).unwrap();
 }
 
 /// ADR 0049, User isolation: a lane dial refuses a socket another OS account listens on, and that listener gets no
@@ -421,7 +418,7 @@ fn a_socket_another_account_listens_on_is_refused_by_the_lane_dial() {
         return;
     };
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Local(foreign.path.clone()), None);
-    let refused = match endpoint.dial("row-1", "supervisor", None) {
+    let refused = match endpoint.dial("row-1") {
         Ok(_) => String::from("connected"),
         Err(e) => e.to_string(),
     };
@@ -452,7 +449,7 @@ fn a_full_foreign_backlog_ends_the_lane_dial_within_its_bound() {
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Local(foreign.path.clone()), None);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(endpoint.dial("row-1", "supervisor", None).map(|_| ()));
+        let _ = tx.send(endpoint.dial("row-1").map(|_| ()));
     });
     let result = rx
         .recv_timeout(CONNECT_BOUND + Duration::from_secs(2))
@@ -535,7 +532,7 @@ fn a_burst_of_ssh_logins_slower_than_the_local_bound_all_answer() {
         .map(|i| {
             let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", login.as_str()]);
             let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None);
-            std::thread::spawn(move || endpoint.dial(&format!("row-{i}"), "voyage", Some("v".to_string())).map(|c| (c.peer.pid, c.peer.created)))
+            std::thread::spawn(move || endpoint.dial(&format!("row-{i}")).map(|c| (c.peer.pid, c.peer.created)))
         })
         .collect();
     let results: Vec<_> = dials.into_iter().map(|dial| within(BOUND, "a slow ssh login", move || dial.join()).unwrap()).collect();
@@ -622,13 +619,12 @@ pub(super) fn silent_login() -> std::io::Result<std::process::Child> {
 /// `SSH_LOGIN_BOUND`, so a login the close did not end reads as the time it outlived its link.
 fn dial_across_a_link_close(
     endpoint: DaemonLaneEndpoint,
-    kind: &'static str,
     gate: &crate::ssh_bridge::LinkGate,
     admitted: std::sync::mpsc::Receiver<()>,
 ) -> (Result<(), TransportError>, Duration) {
     let (sent, ended) = std::sync::mpsc::channel();
     let dial = std::thread::spawn(move || {
-        let result = endpoint.dial("row-1", kind, (kind == "voyage").then(|| "v".to_string())).map(|_| ());
+        let result = endpoint.dial("row-1").map(|_| ());
         sent.send((result, Instant::now())).unwrap();
     });
     admitted.recv_timeout(BOUND).expect("the login started");
@@ -661,7 +657,7 @@ fn an_ssh_login_in_flight_ends_when_its_link_closes() {
         let _ = started.send(());
         login
     }));
-    assert_ended_by_the_close("ssh", dial_across_a_link_close(endpoint, "voyage", &gate, admitted));
+    assert_ended_by_the_close("ssh", dial_across_a_link_close(endpoint, &gate, admitted));
 }
 
 #[test]
@@ -679,7 +675,7 @@ fn a_relay_login_in_flight_ends_when_its_link_closes() {
         let _ = released.recv_timeout(crate::ssh_bridge::SSH_LOGIN_BOUND + BOUND);
         drop(conn);
     });
-    let ended = dial_across_a_link_close(endpoint, "supervisor", &gate, admitted);
+    let ended = dial_across_a_link_close(endpoint, &gate, admitted);
     let _ = release.send(());
     within(BOUND, "the fake relay", move || relay.join()).unwrap();
     assert_ended_by_the_close("relay", ended);

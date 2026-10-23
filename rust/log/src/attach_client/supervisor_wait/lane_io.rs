@@ -1,10 +1,8 @@
-//! Bounded lane I/O: `LaneError`, `write_bounded`, `FrameReader` and the attach-refusal wording.
+//! Bounded lane I/O for the supervisor lane: `LaneError`, `write_bounded` and `FrameReader`.
 
 use crate::lane::client::{transport_error_to_io, Client, Endpoint};
-use crate::lane::transport::TransportError;
 use crate::lane::wire::{self, DecodedFrame};
 use std::collections::VecDeque;
-use std::io::ErrorKind;
 use std::time::Instant;
 
 
@@ -43,35 +41,6 @@ pub(crate) enum LaneError {
     /// ADR 0045 decision 4: the host's link is down and the dial started
     /// no ssh. Treated as a failed dial: no absence charge, backoff.
     LinkDown,
-    /// The capsule refused the attach, carrying the reason IT named
-    /// rather than collapsing into `Protocol("attach_refused")`. The
-    /// reason is not decoration: `SubscriberCap` held by orphaned watcher
-    /// connections never clears on its own, while `GroundTimeout` clears
-    /// within seconds — a caller that cannot tell the two apart retries
-    /// an unretryable state forever with nothing naming the cause.
-    AttachRefused(wire::AttachRefusedReason),
-}
-
-/// The pane wording for an `attach_refused` reason — the ONE place either
-/// reason becomes words, shared by [`LaneError`]'s own `Display` and the
-/// episode's status emit. Deliberately does not quote the capsule's
-/// subscriber cap as a number: that bound lives in `attach_proto` (and is
-/// scheduled to change), while the user's move does not depend on its
-/// value, and deliberately promises nothing about what a restart costs:
-/// restarting the daemon frees the held slots without ending a session
-/// whose supervisor got its own transient systemd scope (ADR 0043
-/// decision 32 — `capsule_workspace`'s Linux `spawn_detached`), but a
-/// supervisor launched after `user_scope_available()` was DENIED runs
-/// degraded in the daemon's own kill domain and dies with it. One pane
-/// status line cannot carry that fork, so the reassurance and its
-/// exception both live in the troubleshooting page instead.
-pub(crate) fn attach_refused_text(reason: wire::AttachRefusedReason) -> &'static str {
-    match reason {
-        wire::AttachRefusedReason::GroundTimeout => "capsule busy grounding a checkpoint \u{2014} retrying\u{2026}",
-        wire::AttachRefusedReason::SubscriberCap => {
-            "capsule watcher slots all taken \u{2014} restart the backend daemon to free them"
-        }
-    }
 }
 
 impl std::fmt::Display for LaneError {
@@ -86,40 +55,8 @@ impl std::fmt::Display for LaneError {
             LaneError::Unreachable(s) => write!(f, "unreachable: {s}"),
             LaneError::Undetermined(s) => write!(f, "undetermined: {s}"),
             LaneError::LinkDown => write!(f, "host link down"),
-            LaneError::AttachRefused(r) => write!(f, "attach refused: {}", attach_refused_text(*r)),
         }
     }
-}
-
-/// The three bridge-only `TransportError` arms (ADR 0045 decision 4),
-/// classified BEFORE any conversion through [`transport_error_to_io`] —
-/// unwrapping `Unreachable`/a bridge-sourced `Undetermined` that way
-/// would make transport uncertainty look exactly like the absence
-/// `TransportError::is_endpoint_absent()` reports, folding a hiccup and
-/// a genuinely dead row into one signal (the invariant this whole
-/// decision exists to keep). Every other `TransportError` — the
-/// platform endpoints' own `Io`/`RuntimeDir`/etc., including a
-/// direct-sourced `Undetermined`/the unit `Foreign` a CHALLENGED
-/// connect can still produce elsewhere in this crate, never from an
-/// `Endpoint::connect_*_unchallenged` call — keeps going through
-/// [`transport_error_to_io`] exactly as before this decision landed.
-pub(super) fn classify_transport(e: TransportError) -> LaneError {
-    match e {
-        TransportError::Refused { code, detail } => LaneError::Refused { code, detail },
-        TransportError::Unreachable(io) => LaneError::Unreachable(io.to_string()),
-        TransportError::Undetermined { detail, .. } => LaneError::Undetermined(detail),
-        TransportError::LinkDown => LaneError::LinkDown,
-        other => LaneError::Io(transport_error_to_io(other)),
-    }
-}
-
-pub(super) fn is_access_denied(e: &std::io::Error) -> bool {
-    // ERROR_ACCESS_DENIED == 5 is a Windows GetLastError code -- on Linux
-    // os error 5 is EIO, unrelated, so the raw-code check must not apply
-    // there (L1-unix LU3b: this function is now reachable from a Linux
-    // build too). `ErrorKind::PermissionDenied` (std's own EACCES/EPERM
-    // mapping) alone is both necessary and sufficient on Linux.
-    (cfg!(windows) && e.raw_os_error() == Some(5)) || e.kind() == ErrorKind::PermissionDenied
 }
 
 pub(crate) fn write_bounded<E: Endpoint>(conn: &E::Client, bytes: &[u8], deadline: Instant) -> Result<(), LaneError> {

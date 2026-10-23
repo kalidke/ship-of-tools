@@ -30,7 +30,7 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
-    let mut client = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), "lu6c-headless-test".to_string())
+    let mut client = FeAttachClient::attach_headless(PlatformEndpoint::default(), h.clone())
         .expect("attach_headless");
 
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -64,7 +64,7 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
 
     // No resize ever: the capsule's own geometry is still what a fresh watcher adopts. And the one input landed: its
     // echo is on the screen.
-    let mut after = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), "lu6c-headless-after".to_string())
+    let mut after = FeAttachClient::attach_headless(PlatformEndpoint::default(), h.clone())
         .expect("attach_headless after");
     poll_until(
         || {
@@ -107,7 +107,7 @@ fn headless_screen_read_never_takes_the_pen() {
     // The headless watcher: attach, wait for the checkpoint, then drop —
     // exactly `screen_of`'s own shape, minus the wrapper.
     {
-        let mut watcher = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), "lu6c-headless-watcher".to_string())
+        let mut watcher = FeAttachClient::attach_headless(PlatformEndpoint::default(), h.clone())
             .expect("attach_headless");
         let deadline = Instant::now() + Duration::from_secs(30);
         while !watcher.is_checkpointed() {
@@ -123,16 +123,7 @@ fn headless_screen_read_never_takes_the_pen() {
     // normal, uncontested take_ok — if the watcher above had taken the
     // pen and never released it, this would stall waiting for `take_ok`.
     let (_woke, wake) = wake_flag();
-    let mut client = FeAttachClient::attach(
-        PlatformEndpoint::default(),
-        h.clone(),
-        80,
-        24,
-        "lu6c-post-watcher-driver".to_string(),
-        "test-handle".to_string(),
-        None,
-        wake,
-    )
+    let mut client = FeAttachClient::attach(PlatformEndpoint::default(), h.clone(), 80, 24, wake)
     .expect("attach");
     assert!(
         poll_screen(&mut client, Duration::from_secs(30), |t| t.trim().chars().any(|c| !c.is_whitespace())),
@@ -169,10 +160,9 @@ fn headless_attach_against_a_pointerless_state_dir_waits_and_shutdown_closes_the
 
     // Anchor before attach and always pump once before the deadline exit.
     let spell = Instant::now() + Duration::from_secs(2);
-    let mut client = FeAttachClient::<PlatformEndpoint>::attach_headless(
+    let mut client = FeAttachClient::attach_headless(
         PlatformEndpoint::default(),
         state_dir_hash(&state_dir),
-        "lu6c-headless-deadline-test".to_string(),
     )
     .expect("attach_headless (the constructor itself never touches the network)");
 
@@ -223,16 +213,7 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
 
     // 1. Driver A attaches and becomes DRIVING.
     let (_woke, wake) = wake_flag();
-    let mut driver_a = FeAttachClient::attach(
-        PlatformEndpoint::default(),
-        h.clone(),
-        80,
-        24,
-        "lu6c-driver-a".to_string(),
-        "test-handle".to_string(),
-        None,
-        wake,
-    )
+    let mut driver_a = FeAttachClient::attach(PlatformEndpoint::default(), h.clone(), 80, 24, wake)
     .expect("attach driver_a");
     assert!(
         poll_screen(&mut driver_a, Duration::from_secs(30), |t| t.trim().chars().any(|c| !c.is_whitespace())),
@@ -246,7 +227,7 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
 
     // 2. A headless write lands on the SAME row while driver_a still holds
     // the pen — must demote driver_a and succeed on its own.
-    let mut headless = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), "lu6c-headless-b".to_string())
+    let mut headless = FeAttachClient::attach_headless(PlatformEndpoint::default(), h.clone())
         .expect("attach_headless");
     let deadline = Instant::now() + Duration::from_secs(30);
     while !headless.is_checkpointed() {
@@ -284,7 +265,7 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
     // 4. Each marker was delivered exactly once: a shell shows `echo X` and its output `X`, so a marker reaching it
     // once is on the screen twice, and a double forward (the headless write duplicated, or driver_a's refused attempt
     // and its retry both written) four times.
-    let mut reader = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), "lu6c-headless-reader".to_string())
+    let mut reader = FeAttachClient::attach_headless(PlatformEndpoint::default(), h.clone())
         .expect("attach_headless reader");
     poll_until(
         || {
@@ -347,7 +328,7 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
     }
     let read = |h: &str| {
         let started = Instant::now();
-        let mut w = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.to_string(), watcher_id.to_string())
+        let mut w = FeAttachClient::attach_headless(PlatformEndpoint::default(), h.to_string())
             .expect("attach_headless");
         let deadline = started + Duration::from_secs(3);
         while !w.is_checkpointed() {

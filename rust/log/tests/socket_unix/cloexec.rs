@@ -137,11 +137,7 @@ fn connector_is_born_close_on_exec() {
             "client.connect",
             "connected under observation",
             None,
-            sot_log::lane::client::Endpoint::connect_voyage_unchallenged(
-                &sot_log::lane::socket_unix::SocketEndpoint,
-                "voyage",
-                &id
-            )
+            sot_log::lane::connect_own::connect_own(&sot_log::lane::socket_unix::voyage_socket_path(&id).unwrap())
         )
     });
     let client = client.expect("the client connects");
@@ -210,11 +206,7 @@ fn a_connector_flag_failure_closes_the_socket() {
     flag_failures(test, move |fail_at| {
         let server = SocketServer::bind(&id, 2).expect("the server binds");
         let (result, births, calls) = observe_births(fail_at, || {
-            sot_log::lane::client::Endpoint::connect_voyage_unchallenged(
-                &sot_log::lane::socket_unix::SocketEndpoint,
-                "voyage",
-                &id,
-            )
+            sot_log::lane::connect_own::connect_own(&sot_log::lane::socket_unix::voyage_socket_path(&id).unwrap())
         });
         drop(server);
         (result.is_ok(), births, calls)

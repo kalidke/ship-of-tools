@@ -46,17 +46,12 @@ impl State {
             self.drawer = DrawerContent::Closed;
             return;
         };
-        let controller_id = self_comm_handle();
-        let fe_down_to = self_comm_handle();
         let wake = self.wake.clone();
         match sot_log::attach_client::client::FeAttachClient::attach(
             sot_log::lane::client::PlatformEndpoint::default(),
             sot_platform::host::state_dir::state_dir_hash(&state_dir),
             80,
             24,
-            controller_id,
-            fe_down_to,
-            None,
             Box::new(move || wake.wake()),
         ) {
             Ok(c) => {
@@ -81,21 +76,9 @@ impl State {
             return;
         };
         let changed = t.pump();
-        // Codex review round, finding 11: status text (queue overflow/
-        // expiry, geometry refusal, pen loss, input-delivery-unknown,
-        // ...) must reach the drawer independently of `is_dead()` — the
-        // first landing only copied `status_line()` once the client was
-        // already terminal, so every one of those still-live diagnostics
-        // was invisible. `notice`/`quit_message` are the more urgent
-        // overlays and still take priority when present.
+        // Status text (a redial, a refusal, a terminal reason) must reach the drawer independently of `is_dead()`.
         if changed {
-            if let Some(notice) = t.notice() {
-                self.status = notice.to_string();
-            } else if let Some(msg) = t.quit_message() {
-                self.status = msg.to_string();
-            } else {
-                self.status = t.status_line().to_string();
-            }
+            self.status = t.status_line().to_string();
         }
     }
 }

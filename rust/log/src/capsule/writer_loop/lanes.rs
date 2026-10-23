@@ -183,10 +183,9 @@ pub(super) fn service_row<P: Producer>(leg: &mut Leg<'_, P>) {
     row.tick(&leg.parser);
     for request in row.take_requests(ROW_REQUESTS_PER_PASS) {
         match request {
-            crate::row::RowRequest::Input { bytes, reply, .. } => {
-                let written = leg.producer.input().write_all(&bytes).map(|()| bytes.len()).map_err(|e| e.to_string());
-                let _ = reply.send(written);
-            }
+            // Handed to the input thread: a terminal whose agent reads nothing would hold this loop, and with it the
+            // agent's own output.
+            crate::row::RowRequest::Input { bytes, reply, .. } => leg.input.write(bytes, reply),
             crate::row::RowRequest::Resize { cols, rows, reply } => {
                 let result = if resize_terminal(cols, rows, leg) { Ok(()) } else { Err("the terminal could not be resized".to_string()) };
                 let _ = reply.send(result);

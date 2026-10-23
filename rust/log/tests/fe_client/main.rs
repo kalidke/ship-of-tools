@@ -419,6 +419,4 @@ fn end_run_and_wait_ended(conn: &Client, voyage: &str) {
     assert_eq!(final_state, SupervisorOperationState::RecordVerified);
 }
 
-mod pane;
 mod headless;
-mod supervisor_word;

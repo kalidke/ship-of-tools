@@ -90,16 +90,15 @@ impl Drop for FakeLoop {
     }
 }
 
-fn window(row: &str) -> FeAttachClient<PlatformEndpoint> {
-    FeAttachClient::attach(PlatformEndpoint::default(), row.to_string(), 80, 24, "window".into(), "window".into(), None, Box::new(|| {}))
-        .expect("start the window's client")
+fn window(row: &str) -> FeAttachClient {
+    FeAttachClient::attach(PlatformEndpoint::default(), row.to_string(), 80, 24, Box::new(|| {})).expect("start the window's client")
 }
 
-fn wake(row: &str) -> FeAttachClient<PlatformEndpoint> {
-    FeAttachClient::attach_headless(PlatformEndpoint::default(), row.to_string(), "wake".into()).expect("start the wake's client")
+fn wake(row: &str) -> FeAttachClient {
+    FeAttachClient::attach_headless(PlatformEndpoint::default(), row.to_string()).expect("start the wake's client")
 }
 
-fn pump_until(client: &mut FeAttachClient<PlatformEndpoint>, what: &str, mut done: impl FnMut(&mut FeAttachClient<PlatformEndpoint>) -> bool) {
+fn pump_until(client: &mut FeAttachClient, what: &str, mut done: impl FnMut(&mut FeAttachClient) -> bool) {
     let deadline = Instant::now() + BOUND;
     loop {
         client.pump();

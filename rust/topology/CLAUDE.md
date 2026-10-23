@@ -74,10 +74,8 @@ of each.
 6. **A close of the gate ends the login a dial is waiting on.** A login's start and its `LinkWatch` are taken under the
    one admission lock (`LinkGate::spawn_sync` and `spawn_async` return both; `watch` alone for a relay dial that
    starts no ssh here), so a close either finds the watch and ends the dial (`LinkDown`, the handshake cancelled
-   through the stream's own cancel) or finds the link down and no login starts. A parked spare is registered from the
-   moment it starts and one whose link closed since is never used (`take_spare`). Limits: registration is not
-   cancellation: a parked spare is not ended by the close, it stays alive until it is used (and rejected) or its
-   endpoint is dropped (queue); a login that does not honor its cancel still waits for its own bound.
+   through the stream's own cancel) or finds the link down and no login starts. Limit: a login that does not honor its
+   cancel still waits for its own bound.
 7. **A lane dial is bounded, typed and its child's end is bounded.** A local dial goes through `connect_own` (only
    an endpoint this OS account serves) and its fixed `CONNECT_BOUND` retry budget, which an attempt in progress
    finishes; its handshake is bounded separately (2 s) and cancellable; on an ssh or relay route the handshake waits
@@ -92,11 +90,10 @@ of each.
    stdout open holds the handshake past its bound (the class containment's `Signal::output` bounded; queue). The lane
    identity is the daemon's own report (`lane.connect`'s `pid` and `created`, bound only by the hello the dial runs over
    the stream); nothing here re-verifies it, so the dial trusts the daemon it reached.
-8. **The first voyage's spare is an optimization that never changes an answer.** An ssh route's supervisor attempt
-   parks at most one voyage login; a local route parks none; a spare spawn failure leaves the ordinary dial; the first
-   voyage tries a live spare once and, when its handshake fails however it failed, makes one ordinary gated dial,
-   whose result is the dial's; a failed supervisor handshake abandons the spare (`start_spare`, `take_spare`,
-   `drop_spare`). Spare state changes under its mutex and teardown runs after the mutex is released.
+8. **An attach is one dial, and so one login.** A row has one socket, so an ssh route's attach makes one `lane.connect`
+   and starts one login; none is parked for a later dial, and a login that cannot start is the dial's error with no
+   second try inside it (`a_remote_attach_uses_one_login`). The spare login of earlier releases is gone with the supervisor
+   dial that started it.
 9. **Endpoints are derived by one function each and never guessed.** `local_endpoint` is `$SOT_SOCKET`, else
    `$SOT_BACKEND_LABEL`'s session socket, else the local label's (`sot` on Unix, `local` on Windows, never a literal);
    `plan`, `dial_endpoints`, `relay_endpoint` and `relay_socket_path` give every other endpoint from a parse and the
@@ -176,9 +173,9 @@ One per guarantee. Library paths are under `rust/topology/src/`; daemon-half pat
 | 3 | names checked before ssh | `ssh_bridge_tests.rs`: `recipe_rejects_a_leading_dash_in_either_half`, `recipe_rejects_grammar_outside_a_plain_host_name`, `argv_has_no_shell_and_the_stated_option_set`; `cli_tests.rs`: `sync_refuses_a_hub_that_is_not_a_plain_host_name`; the launcher: `scripts/tests/test-launcher-leases.ps1` (Windows PowerShell 5.1, release-gate.yml, not run by the landing job) |
 | 4 | sharing off | `ssh_bridge_tests.rs`: `argv_has_no_shell_and_the_stated_option_set`; `relay_units_tests.rs`: `relay_ssh_turns_multiplexing_off_over_an_ssh_config_that_turns_it_on` |
 | 5 | gated starts | `ssh_bridge_tests.rs`: `spawn_admission_and_link_close_are_one_decision`, `a_down_gate_spawns_no_child`, `a_down_gate_starts_no_fixture_command`; `dial_tests.rs`: `a_dropped_dial_takes_its_ssh_tree` (the daemon's start is contained); the exceptions' reasons are the clippy allows' |
-| 6 | a close ends the watched login | `lane_client_tests.rs`: `an_ssh_login_in_flight_ends_when_its_link_closes`, `a_relay_login_in_flight_ends_when_its_link_closes`, `dial_across_a_link_close`; `lane_client_ownership_tests.rs`: `a_spare_parked_before_a_link_close_is_not_used_after_it`, `a_spare_handshake_in_flight_ends_when_its_link_closes`; `ssh_bridge_tests.rs`: `a_close_after_a_watched_start_ends_its_watch` |
+| 6 | a close ends the watched login | `lane_client_tests.rs`: `an_ssh_login_in_flight_ends_when_its_link_closes`, `a_relay_login_in_flight_ends_when_its_link_closes`, `dial_across_a_link_close`; `ssh_bridge_tests.rs`: `a_close_after_a_watched_start_ends_its_watch` |
 | 7 | bounded, typed dial and teardown | `lane_client_tests.rs`: `refusal_codes_map_to_typed_errors`, `a_silent_daemon_is_unreachable_within_two_seconds`, `a_burst_of_ssh_logins_slower_than_the_local_bound_all_answer`, `a_daemons_answer_over_ssh_is_never_replaced_by_its_stderr`, `a_socket_another_account_listens_on_is_refused_by_the_lane_dial`, `a_full_foreign_backlog_ends_the_lane_dial_within_its_bound`; `lane_child_tests.rs`: `lane_child_teardown_finishes_within_its_bound`, `lane_child_teardown_reports_termination_reap_and_timeout_errors`; the one login constant holds by construction (the window reads `SSH_LOGIN_BOUND`) |
-| 8 | spare | `lane_client_ownership_tests.rs`: `a_first_voyage_dial_takes_the_spare_the_supervisor_dial_started`, `a_second_supervisor_dial_starts_no_second_spare`, `a_dead_spare_uses_one_fresh_voyage_login`, `a_spare_that_dies_in_its_handshake_uses_one_fresh_voyage_login`, `endpoint_destruction_reaps_the_parked_spare` |
+| 8 | one dial, one login | `lane_client_ownership_tests.rs`: `a_remote_attach_uses_one_login`, `a_failed_login_is_the_dials_error_with_no_second_try` |
 | 9 | endpoints derived once | `tests.rs`: `plan_lines_are_stable`, `relay_socket_path_is_a_sibling_of_the_relay_socket`, `only_the_complete_generated_path_is_a_hub_relay`, `a_planned_relay_dial_is_recognized_and_the_hubs_own_is_not`; `endpoint_tests.rs`: `session_socket_path_honours_xdg_runtime_dir` (the launcher's label has no behavior test here); `rust/backend/tests/stdio_bridge.rs`: `stdio_bridge_refuses_a_host_outside_the_grammar` |
 | 10 | pins | `relay_units_tests.rs`: `a_pin_names_each_host_and_its_domain_forms_only`, `unit_names_and_pin_paths`, `relay_units_carry_the_host_and_the_declared_path`; backend `relay_units_tests.rs`: `refresh_pins_the_daemon_and_the_tunnels`; `rust/backend/tests/unit_pin.rs` (real systemd condition evaluation, pin-write refusal); the `[Install]` limit has no test |
 | 11 | bounded `systemctl` | backend `relay_units_tests.rs`: `a_hung_systemctl_ends_at_its_bound_and_says_so`, `refresh_writes_and_reloads_in_order`, `refresh_after_a_failed_reload_reloads_and_restarts_again`, `the_relay_probe_takes_its_tree` |

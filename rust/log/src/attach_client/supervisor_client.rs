@@ -39,9 +39,9 @@
 //! `Endpoint::challenge`, `exchange::{SupervisorLaneExchange,
 //! SUPERVISOR_LANE_BUILD_ID}`, and `wire`'s supervisor-lane frames.
 
-use crate::attach_client::worker::{run_end_run_and_wait, FrameReader, HELLO_BUDGET, STATUS_BUDGET};
+use crate::attach_client::supervisor_wait::{run_end_run_and_wait, FrameReader, HELLO_BUDGET, STATUS_BUDGET};
 use crate::lane::client::{Client, Endpoint, PlatformEndpoint};
-use crate::attach_client::rules::{QuitDispatcher, QuitState};
+use crate::attach_client::supervisor_wait::{QuitDispatcher, QuitState};
 use crate::lane::transport::TEARDOWN_AGGREGATE_DEADLINE;
 use crate::lane::wire::{
     self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest,
@@ -113,7 +113,7 @@ fn connect(
     deadline: Instant,
 ) -> crate::Result<(<PlatformEndpoint as Endpoint>::Client, ChallengedProcess)> {
     let h = sot_platform::host::state_dir::state_dir_hash(state_dir);
-    connect_and_challenge::<PlatformEndpoint>(&PlatformEndpoint::default(), &h, crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
+    connect_and_challenge(&PlatformEndpoint::default(), &h, crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
 }
 
 /// Connect, challenge, and run one `status` request — everything a
@@ -227,7 +227,7 @@ pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<En
         &mut conn,
         &mut reader,
         |c, r| {
-            if let Ok((new_conn, _process)) = connect_and_challenge::<PlatformEndpoint>(
+            if let Ok((new_conn, _process)) = connect_and_challenge(
                 &PlatformEndpoint::default(),
                 &h,
                 crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID,
@@ -523,12 +523,12 @@ impl Persistent {
 /// connect_and_challenge_for_test`) has no use for telling those two
 /// apart any further than "not a proven connection to my own
 /// supervisor".
-pub(crate) fn connect_and_challenge<E: Endpoint>(
-    endpoint: &E,
+pub(crate) fn connect_and_challenge(
+    endpoint: &PlatformEndpoint,
     h: &str,
     build: &str,
     deadline: Instant,
-) -> crate::Result<(E::Client, E::Process)> {
+) -> crate::Result<(<PlatformEndpoint as Endpoint>::Client, <PlatformEndpoint as Endpoint>::Process)> {
     let conn = endpoint.connect_supervisor_unchallenged(h)?;
     let mut exchange = crate::lane::exchange::SupervisorLaneExchange::new(build.to_string());
     match endpoint.challenge(&conn, &mut exchange, deadline) {

@@ -7,15 +7,17 @@
 //! the run's output hook.
 
 mod client;
+mod input;
 mod proto;
 mod run;
 mod server;
 
-pub use client::{RowClient, RowEvent};
+pub use client::{PlatformConn, RowClient, RowEvent, RowWaker};
 pub use proto::{
     AttachReq, AttachRes, HelloReq, HelloRes, InputRes, ResizeReq, RowError, RowHelloExchange, SnapshotEvt, OP_ATTACH,
     OP_DEMOTED, OP_HELLO, OP_INPUT, OP_OUTPUT, OP_RESIZE, OP_SNAPSHOT, OP_TAKE, OUTPUT_CHUNK, SNAPSHOT_CHUNK,
 };
+pub use input::InputPump;
 pub use run::{self_identity, RowRequest, RowRun};
 pub use server::{row_socket_path, RowServer};
 #[cfg(unix)]

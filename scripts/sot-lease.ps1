@@ -98,7 +98,7 @@ function Open-SotLease([string]$PipePath, [string]$SotdExe) {
     $why = ''
     try {
         $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        $hello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":3,"app_version":"launcher","host":' + (ConvertTo-SotJsonString (Get-SotHelloHost)) + ',"os_user":' + (ConvertTo-SotJsonString $sid) + ',"role":"handoff"}}'
+        $hello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":4,"app_version":"launcher","host":' + (ConvertTo-SotJsonString (Get-SotHelloHost)) + ',"os_user":' + (ConvertTo-SotJsonString $sid) + ',"role":"handoff"}}'
         $bridge = Start-SotBridge $SotdExe $PipePath
         $created = $bridge.StartTime.ToFileTimeUtc()
         $line = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + (Get-SotBootId) + '","created":' + $created + ',"pid":' + $bridge.Id + '}}'

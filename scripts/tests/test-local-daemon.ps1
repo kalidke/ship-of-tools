@@ -278,7 +278,7 @@ try {
         $host5c = ConvertTo-SotJsonString (Get-SotHelloHost)
         $request5c = '{"v":3,"id":1,"kind":"req","op":"version.query","payload":{}}'
         $old5c = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":2,"app_version":"t","host":' + $host5c + ',"os_user":"' + $sid5c + '","role":"cli"}}'
-        $new5c = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":3,"app_version":"t","host":' + $host5c + ',"os_user":"' + $sid5c + '","role":"cli"}}'
+        $new5c = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":4,"app_version":"t","host":' + $host5c + ',"os_user":"' + $sid5c + '","role":"cli"}}'
         $r5c = Invoke-PipeTransport $pipe5c version.query @($old5c, $request5c)
         Check '5c: the transport ends on its own after a refused hello' (-not $r5c.Hung) "still running after 20 s; stdout: $($r5c.Out -join ' | ') stderr: $($r5c.Err)"
         $refused5c = $r5c.Out
@@ -516,7 +516,7 @@ try {
         # The fake answers the hello with FAKE_SOTD_HELLO_REFUSAL as its code and then still answers fe.lease. A refusal
         # for the protocol is followed by the request's own reply, which decides (exit 0); any other code ends the script
         # at once (exit 1), the lease reply that would follow never read.
-        $hello8d = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":3,"app_version":"t","host":"t-host","os_user":"t-account","role":"cli"}}'
+        $hello8d = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":4,"app_version":"t","host":"t-host","os_user":"t-account","role":"cli"}}'
         $lease8d = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{}}'
         foreach ($code8d in @('protocol_mismatch', 'os_user_conflict')) {
             Clear-FakeEnv

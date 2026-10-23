@@ -148,7 +148,7 @@ try {
                 # The hello that precedes it (ADR 0049, User isolation): a handoff naming this computer and the OS account.
                 $helloHost11 = if ($env:SOT_SELF_HOST) { $env:SOT_SELF_HOST } else { ([System.Net.Dns]::GetHostName().Split('.')[0]).ToLowerInvariant() }
                 $sid11 = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-                $goldenHello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":3,"app_version":"launcher","host":"' + $helloHost11 + '","os_user":"' + $sid11 + '","role":"handoff"}}'
+                $goldenHello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":4,"app_version":"launcher","host":"' + $helloHost11 + '","os_user":"' + $sid11 + '","role":"handoff"}}'
                 $wait11a = [System.Diagnostics.Stopwatch]::StartNew()
                 do {
                     $lines11a = @(Get-Content -LiteralPath $log11a -ErrorAction SilentlyContinue)

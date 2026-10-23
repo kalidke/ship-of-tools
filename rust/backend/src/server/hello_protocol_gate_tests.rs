@@ -7,8 +7,8 @@ fn accepts_matching_protocol() {
         protocol_gate(sot_protocol::PROTOCOL_VERSION),
         ProtocolGate::Accept
     );
-    // Concretely, protocol 3 is accepted today.
-    assert_eq!(protocol_gate(3), ProtocolGate::Accept);
+    // Concretely, protocol 4 is accepted today.
+    assert_eq!(protocol_gate(4), ProtocolGate::Accept);
 }
 
 #[test]

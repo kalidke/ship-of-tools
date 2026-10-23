@@ -375,22 +375,21 @@ impl sot_platform::identity::challenge_macos::SocketChallengeable for SocketClie
 pub struct SocketEndpoint;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+impl SocketEndpoint {
+    /// The supervisor lane's raw connect, for `supervisor_client` until the row socket takes the daemon's calls (6c-1b).
+    pub(crate) fn connect_supervisor_unchallenged(&self, lane: &str) -> Result<SocketClient, TransportError> {
+        connect_supervisor_socket_unchallenged(lane)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Endpoint for SocketEndpoint {
     type Client = SocketClient;
     type Process = challenge_os::ChallengedProcess;
 
-    fn connect_voyage_unchallenged(
-        &self,
-        _lane: &str,
-        voyage_id: &str,
-    ) -> Result<Self::Client, TransportError> {
-        // The Linux voyage socket is named by voyage id alone; `_lane` is
-        // the daemon-lane endpoint's namespace, unused here.
-        connect_voyage_socket_unchallenged(voyage_id)
-    }
-
-    fn connect_supervisor_unchallenged(&self, lane: &str) -> Result<Self::Client, TransportError> {
-        connect_supervisor_socket_unchallenged(lane)
+    fn connect_row_unchallenged(&self, row: &str) -> Result<Self::Client, TransportError> {
+        let path = crate::row::row_socket_path(row).map_err(row_error_to_transport)?;
+        crate::lane::connect_own::connect_own(&path)
     }
 
     fn challenge(
@@ -407,6 +406,15 @@ impl Endpoint for SocketEndpoint {
         conn: &Self::Client,
     ) -> sot_platform::identity::challenge::PeerAuthOutcome {
         challenge_os::authenticate_server(conn)
+    }
+}
+
+/// A row socket path that could not be made, as the lane's own error.
+pub(crate) fn row_error_to_transport(e: crate::row::RowError) -> TransportError {
+    match e {
+        crate::row::RowError::PathTooLong(path) => TransportError::PathTooLong(path),
+        crate::row::RowError::Io(source) => TransportError::RuntimeDir(source),
+        other => TransportError::RuntimeDir(std::io::Error::other(other)),
     }
 }
 

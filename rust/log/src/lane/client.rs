@@ -117,25 +117,12 @@ pub trait Endpoint {
     type Client: Client;
     type Process: PeerIdentity;
 
-    /// Connect to the voyage lane's own endpoint, with NO authentication
-    /// — every real caller runs [`Self::authenticate_server`] or
-    /// [`Self::challenge`] on top; see either concrete module's own doc
-    /// for why the raw connect and the identity proof stay two separately
-    /// observed steps. `lane` is the row that owns the voyage, in this
-    /// endpoint's own namespace — the platform endpoints ignore it (their
-    /// voyage socket is named by id); the daemon-lane endpoint reads it.
-    fn connect_voyage_unchallenged(
-        &self,
-        lane: &str,
-        voyage_id: &str,
-    ) -> Result<Self::Client, TransportError>;
-    /// Connect to the supervisor lane's own endpoint, with NO
-    /// authentication — the supervisor lane's security is MUTUAL, so
-    /// unlike the voyage lane this has no `_unchallenged`-free sibling:
-    /// the caller composes the full [`Self::challenge`] itself. `lane` is
-    /// the supervisor lane's name in this endpoint's own namespace — the
-    /// state-dir hash for the platform endpoints.
-    fn connect_supervisor_unchallenged(&self, lane: &str) -> Result<Self::Client, TransportError>;
+    /// Connect to the row's own socket, with NO authentication — every real caller runs [`Self::authenticate_server`] or
+    /// [`Self::challenge`] on top; see either concrete module's own doc for why the raw connect and the identity proof
+    /// stay two separately observed steps. `row` is the row in this endpoint's own namespace: the state-dir hash for the
+    /// platform endpoints, the row's session name for the daemon-lane endpoint, which reaches the socket through the
+    /// row's own daemon.
+    fn connect_row_unchallenged(&self, row: &str) -> Result<Self::Client, TransportError>;
     /// The full five-step same-connection challenge (ADR 0041 Lifecycle
     /// "The challenge").
     fn challenge(
@@ -148,10 +135,6 @@ pub trait Endpoint {
     /// identity — no wire I/O, deliberately weaker than [`Self::challenge`]
     /// (see either concrete module's own `authenticate_server` doc).
     fn authenticate_server(&self, conn: &Self::Client) -> PeerAuthOutcome;
-    /// Abandon work parked for a supervisor attempt before the first voyage dial.
-    /// Local endpoints have no such work.
-    fn drop_spare(&self) {}
-
     /// Whether a dial through this endpoint can start at all right now.
     /// An endpoint reached over a link another component watches (an ssh
     /// lane) reports that link here, so a worker pauses instead of dialing

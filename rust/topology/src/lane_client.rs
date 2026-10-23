@@ -1,6 +1,6 @@
 //! ADR 0045 decision 3: `DaemonLaneEndpoint`, the attach client's own
 //! `sot_log::lane::client::Endpoint` for the lane bridge — a capsule row's
-//! supervisor or voyage lane, piped through the row's OWN daemon
+//! one socket, piped through the row's OWN daemon
 //! (`lane.connect`, `sot_protocol::ops::LANE_CONNECT`) instead of a loopback
 //! named pipe or Unix socket the platform endpoints dial directly. Lives
 //! in `sot-protocol`, not `sot-log`, because it is a WIRE CLIENT of this
@@ -111,7 +111,7 @@ pub enum LaneDial {
 /// use sot_log::lane::client::Endpoint;
 /// fn dial(route: LaneDial) {
 ///     let ep = DaemonLaneEndpoint::new(route, None);
-///     let _ = ep.connect_supervisor_unchallenged("row");
+///     let _ = ep.connect_row_unchallenged("row");
 /// }
 /// ```
 ///
@@ -126,18 +126,10 @@ pub enum LaneDial {
 pub struct DaemonLaneEndpoint {
     dial: LaneDial,
     pub token: Option<String>,
-    spare: std::sync::Mutex<VoyageSpare>,
     #[cfg(any(test, feature = "test-handshake-bound"))]
     test_ssh_spawner: Option<TestSshSpawner>,
     #[cfg(any(test, feature = "test-handshake-bound"))]
     test_handshake_bound: Option<std::time::Duration>,
-}
-
-enum VoyageSpare {
-    Unused,
-    /// The parked login, and its gate's watch from the moment it started.
-    Parked(BridgedClient, crate::ssh_bridge::LinkWatch),
-    Spent,
 }
 
 #[cfg(any(test, feature = "test-handshake-bound"))]
@@ -236,16 +228,9 @@ impl Endpoint for DaemonLaneEndpoint {
     type Client = DaemonLaneClient;
     type Process = BridgedPeer;
 
-    /// `lane` is the row's `session_name` name — `LaneConnectReq::target`
-    /// is required for the voyage lane too (a voyage is reached only
-    /// through the row that owns it), so no daemon-side change was
-    /// needed here: B3 already requires `target` on both lane kinds.
-    fn connect_voyage_unchallenged(&self, lane: &str, voyage_id: &str) -> Result<Self::Client, TransportError> {
-        self.dial(lane, "voyage", Some(voyage_id.to_string()))
-    }
-
-    fn connect_supervisor_unchallenged(&self, lane: &str) -> Result<Self::Client, TransportError> {
-        self.dial(lane, "supervisor", None)
+    /// `row` is the row's `session_name`: the daemon dials that row's one socket and pipes it.
+    fn connect_row_unchallenged(&self, row: &str) -> Result<Self::Client, TransportError> {
+        self.dial(row)
     }
 
     /// Steps 4-5 ONLY, over the already-piped connection — the SAME
@@ -275,16 +260,6 @@ impl Endpoint for DaemonLaneEndpoint {
     /// that report back.
     fn authenticate_server(&self, conn: &Self::Client) -> PeerAuthOutcome {
         PeerAuthOutcome::Authenticated(conn.peer)
-    }
-
-    fn drop_spare(&self) {
-        let abandoned = {
-            let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
-            if matches!(*state, VoyageSpare::Parked(..)) {
-                Some(std::mem::replace(&mut *state, VoyageSpare::Unused))
-            } else { None }
-        };
-        drop(abandoned);
     }
 
     /// The host's link gate for an ssh dial; every other dial is local.
@@ -492,7 +467,6 @@ impl DaemonLaneEndpoint {
         Self {
             dial,
             token,
-            spare: std::sync::Mutex::new(VoyageSpare::Unused),
             #[cfg(any(test, feature = "test-handshake-bound"))]
             test_ssh_spawner: None,
             #[cfg(any(test, feature = "test-handshake-bound"))]
@@ -529,43 +503,10 @@ impl DaemonLaneEndpoint {
         BridgedClient::spawn(recipe, gate)
     }
 
-    fn ssh_client(&self, kind: &str, recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<(BridgedClient, crate::ssh_bridge::LinkWatch), TransportError> {
-        let login = self.spawn_ssh(recipe, gate)?;
-        if kind == "supervisor" {
-            self.start_spare(|| self.spawn_ssh(recipe, gate));
-        }
-        Ok(login)
-    }
-
-    fn start_spare(&self, spawn: impl FnOnce() -> Result<(BridgedClient, crate::ssh_bridge::LinkWatch), TransportError>) {
-        let LaneDial::Ssh(..) = &self.dial else { return };
-        let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
-        if matches!(*state, VoyageSpare::Unused) {
-            // Watched from the moment it starts, so a spare whose link closed before its use is never used (`take_spare`).
-            if let Ok((client, link)) = spawn() {
-                *state = VoyageSpare::Parked(client, link);
-            }
-        }
-    }
-
-    fn take_spare(&self) -> Option<(BridgedClient, crate::ssh_bridge::LinkWatch)> {
-        let previous = {
-            let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
-            std::mem::replace(&mut *state, VoyageSpare::Spent)
-        };
-        match previous {
-            // A spare whose link closed since it started is on a connection that is gone: it drops here, unused.
-            VoyageSpare::Parked(client, mut link) if !client.exited() => (!link.ended()).then_some((client, link)),
-            _ => None,
-        }
-    }
-
     // Complete the lane handshake according to `handshake`'s contract.
-    fn dial(&self, row: &str, kind: &str, voyage_id: Option<String>) -> Result<DaemonLaneClient, TransportError> {
+    fn dial(&self, row: &str) -> Result<DaemonLaneClient, TransportError> {
         let req = LaneConnectReq {
             target: row.to_string(),
-            lane: kind.to_string(),
-            voyage_id,
             token: self.token.clone(),
         };
         let hello = sot_protocol::HelloReq::this_process("sot-lane-dial", sot_protocol::HANDOFF_ROLE, sot_platform::host::state_dir::host_name().ok())
@@ -574,7 +515,7 @@ impl DaemonLaneEndpoint {
         let frame = Frame::req(2, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
 
         // The host's link gate watches a relay or ssh login from its start until its reply: a down link starts
-        // none, and a close ends the one in flight. A parked spare carries its own watch.
+        // none, and a close ends the one in flight.
         let mut link = match &self.dial {
             LaneDial::Relay(_, gate) => Some(gate.watch().ok_or(TransportError::LinkDown)?),
             LaneDial::Ssh(..) | LaneDial::Local(_) => None,
@@ -609,27 +550,13 @@ impl DaemonLaneEndpoint {
                 LaneStream::Pipe(client)
             }
             LaneDial::Ssh(recipe, gate) => {
-                // The first voyage spends the spare: a live one whose link has not closed since it started is tried
-                // once, and when its handshake fails for any reason (it can die after `take_spare`'s check) the
-                // ordinary gated login follows (ADR 0045 decision 3).
-                if kind == "voyage" {
-                    if let Some((spare, spare_link)) = self.take_spare() {
-                        if let Ok(client) = handshake(LaneStream::Bridged(spare), &hello, &frame, bound, Some(spare_link)) {
-                            return Ok(client);
-                        }
-                    }
-                }
-                let (client, watch) = self.ssh_client(kind, recipe, gate)?;
+                let (client, watch) = self.spawn_ssh(recipe, gate)?;
                 link = Some(watch);
                 LaneStream::Bridged(client)
             }
         };
 
-        let result = handshake(stream, &hello, &frame, bound, link);
-        if kind == "supervisor" && result.is_err() {
-            self.drop_spare();
-        }
-        result
+        handshake(stream, &hello, &frame, bound, link)
     }
 }
 

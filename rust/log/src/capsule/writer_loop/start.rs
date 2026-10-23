@@ -75,6 +75,7 @@ pub(super) fn start<'t, P: Producer>(
     }
 
     let handshake = HostHandshake::new();
+    let input = crate::row::InputPump::new(producer.input_writer().map_err(crate::Error::Io)?).map_err(crate::Error::Io)?;
 
     // The output budget, and the guard that cancels it on ANY exit from this function from this point on, declared
     // as early as the budget itself so an early `?` anywhere below unwinds through it.
@@ -113,6 +114,7 @@ pub(super) fn start<'t, P: Producer>(
             resize_os_calls: 0,
             signals: config.signals.clone(),
             row,
+            input,
             // Set by the ONE rule in the main loop's arm and teardown Phase A's identical one: a terminal reader
             // event that arrived before `close_output_side` and that a confirmed producer exit explained. Stays
             // `None` on Linux and on Windows by those platforms' own contracts.

@@ -5,7 +5,7 @@ use super::proto::{
     OP_OUTPUT, OP_RESIZE, OP_SNAPSHOT, OP_TAKE,
 };
 use super::ROW_PROTOCOL;
-use crate::lane::client::{Endpoint, PlatformEndpoint};
+use crate::lane::client::{Client, Endpoint, PlatformEndpoint};
 use crate::lane::connect_own::connect_own;
 use sot_platform::identity::challenge::ChallengeOutcome;
 use sot_platform::identity::deadline::run_with_deadline;
@@ -36,30 +36,48 @@ const INCOMING_FRAMES: usize = 256;
 /// Events kept while a request waits for its reply, at most.
 const PENDING_EVENTS: usize = 1024;
 
-type Incoming = Result<(Frame, Option<Vec<u8>>), RowError>;
+/// What the reader thread hands the caller: a frame, a nudge from [`RowWaker`], or the end of the stream.
+enum Incoming {
+    Frame(Frame, Option<Vec<u8>>),
+    Wake,
+    Ended(RowError),
+}
 
-type Conn = <PlatformEndpoint as Endpoint>::Client;
+/// The connection of the platform's own endpoint, which a caller of [`RowClient::connect`] names by default.
+pub type PlatformConn = <PlatformEndpoint as Endpoint>::Client;
 
 /// `Read` over the lane client's own blocking read.
-struct ConnReader(Arc<Conn>);
+struct ConnReader<C>(Arc<C>);
 
-impl Read for ConnReader {
+impl<C: Client> Read for ConnReader<C> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.0.read(buf).map_err(crate::lane::client::transport_error_to_io)
     }
 }
 
-pub struct RowClient {
-    conn: Arc<Conn>,
+/// Ends a blocked [`RowClient::next_event`] early, from any thread: a caller with something to do besides reading.
+#[derive(Clone)]
+pub struct RowWaker(mpsc::SyncSender<Incoming>);
+
+impl RowWaker {
+    pub fn wake(&self) {
+        // A full queue is a reader with plenty to do already.
+        let _ = self.0.try_send(Incoming::Wake);
+    }
+}
+
+pub struct RowClient<C: Client + 'static = PlatformConn> {
+    conn: Arc<C>,
     incoming: mpsc::Receiver<Incoming>,
+    waker: RowWaker,
     events: VecDeque<RowEvent>,
     next_id: u64,
     run: String,
 }
 
 impl RowClient {
-    /// Dials, proves the peer and checks its row number, all within `bound`. A row of another row number is refused by
-    /// name; the frames' `v` is never read.
+    /// Dials the platform's own socket at `path`, proves the peer and checks its row number, all within `bound`. A row
+    /// of another row number is refused by name; the frames' `v` is never read.
     pub fn connect(path: &Path, build: &str, bound: Duration) -> Result<Self, RowError> {
         let deadline = Instant::now() + bound;
         // The platform connector keeps its own 2 s retry budget and cannot be cut short; a dial that outlasts the
@@ -68,8 +86,15 @@ impl RowClient {
         if Instant::now() >= deadline {
             return Err(RowError::Timeout("the dial"));
         }
+        Self::over(&PlatformEndpoint::default(), conn, build, deadline)
+    }
+}
+
+impl<C: Client + 'static> RowClient<C> {
+    /// Proves the peer on `conn` (already dialed through `endpoint`) and checks its row number, by `deadline`.
+    pub fn over<E: Endpoint<Client = C>>(endpoint: &E, conn: C, build: &str, deadline: Instant) -> Result<Self, RowError> {
         let mut hello = RowHelloExchange::new(build);
-        match PlatformEndpoint::default().challenge(&conn, &mut hello, deadline) {
+        match endpoint.challenge(&conn, &mut hello, deadline) {
             ChallengeOutcome::Proven(_) => {}
             ChallengeOutcome::Foreign => {
                 return Err(match hello.mismatch() {
@@ -85,24 +110,30 @@ impl RowClient {
         let run = hello.reply().map(|r| r.run.clone()).unwrap_or_default();
         let conn = Arc::new(conn);
         let (tx, incoming) = mpsc::sync_channel(INCOMING_FRAMES);
+        let waker = RowWaker(tx.clone());
         let reader = ConnReader(Arc::clone(&conn));
         std::thread::Builder::new().name("row-client-read".into()).spawn(move || {
             let mut reader = BufReader::new(reader);
             loop {
                 match read_frame_blocking_blob(&mut reader) {
-                    Ok(frame) => {
-                        if tx.send(Ok(frame)).is_err() {
+                    Ok((frame, blob)) => {
+                        if tx.send(Incoming::Frame(frame, blob)).is_err() {
                             return;
                         }
                     }
                     Err(_) => {
-                        let _ = tx.send(Err(RowError::Closed));
+                        let _ = tx.send(Incoming::Ended(RowError::Closed));
                         return;
                     }
                 }
             }
         })?;
-        Ok(Self { conn, incoming, events: VecDeque::new(), next_id: 2, run })
+        Ok(Self { conn, incoming, waker, events: VecDeque::new(), next_id: 2, run })
+    }
+
+    /// A handle that ends a blocked [`Self::next_event`] from another thread.
+    pub fn waker(&self) -> RowWaker {
+        self.waker.clone()
     }
 
     /// The run the row declared in its hello.
@@ -128,12 +159,13 @@ impl RowClient {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.incoming.recv_timeout(left) {
-                Ok(Ok((frame, blob))) => {
+                Ok(Incoming::Frame(frame, blob)) => {
                     if let Some(ev) = event_of(frame, blob)? {
                         return Ok(Some(ev));
                     }
                 }
-                Ok(Err(e)) => return Err(e),
+                Ok(Incoming::Wake) => return Ok(None),
+                Ok(Incoming::Ended(e)) => return Err(e),
                 Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Err(RowError::Closed),
             }
@@ -174,7 +206,8 @@ impl RowClient {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.incoming.recv_timeout(left) {
-                Ok(Ok((frame, blob))) => match frame.kind {
+                Ok(Incoming::Wake) => {}
+                Ok(Incoming::Frame(frame, blob)) => match frame.kind {
                     Kind::Res if frame.id == id => {
                         if let Some(msg) = frame.payload.get("error").and_then(|e| e.as_str()) {
                             return Err(match frame.payload.get("code").and_then(|c| c.as_str()) {
@@ -194,7 +227,7 @@ impl RowClient {
                     }
                     _ => {}
                 },
-                Ok(Err(e)) => return Err(e),
+                Ok(Incoming::Ended(e)) => return Err(e),
                 Err(mpsc::RecvTimeoutError::Timeout) => return Err(RowError::Timeout("a row request")),
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Err(RowError::Closed),
             }
@@ -202,7 +235,7 @@ impl RowClient {
     }
 }
 
-impl Drop for RowClient {
+impl<C: Client + 'static> Drop for RowClient<C> {
     fn drop(&mut self) {
         self.conn.cancel();
     }

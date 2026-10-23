@@ -27,7 +27,7 @@ fn a_probe_ends_within_its_one_bound() {
             reader.read_line(&mut line).unwrap();
             if line.contains(sot_protocol::op::VERSION_QUERY) {
                 std::thread::sleep(Duration::from_secs(2));
-                let daemon = serde_json::json!({ "app_version": "probe", "protocol": 3, "lane_build": "probe", "host": "probe-host" });
+                let daemon = serde_json::json!({ "app_version": "probe", "protocol": 4, "lane_build": "probe", "host": "probe-host" });
                 answer(sot_protocol::Frame::res(1, sot_protocol::op::VERSION_QUERY, serde_json::json!({ "daemon": daemon, "clients": [] })));
             }
             held.push(reader);
