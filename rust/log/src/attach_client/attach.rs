@@ -25,8 +25,9 @@ const SINK_BOUND_BYTES: usize = 4 * 1024 * 1024;
 /// `STABLE`.
 pub const REDIAL_FLOOR: Duration = Duration::from_millis(250);
 pub const REDIAL_CAP: Duration = Duration::from_secs(4);
-/// How long a row may stay unreachable, attempt after attempt, before the episode ends.
-pub const UNREACHABLE_WINDOW: Duration = Duration::from_secs(120);
+/// How long a row may stay absent (its socket not there, though the daemon answers), attempt after attempt, before the
+/// episode ends. A daemon that cannot be reached says nothing about the row, so such an attempt starts the window over.
+pub const ABSENT_WINDOW: Duration = Duration::from_secs(120);
 /// How long one dial, hello included, may take.
 const DIAL_BOUND: Duration = Duration::from_secs(10);
 /// How often an idle worker looks at its flags; a connected one wakes on the row's frames and on its caller.
@@ -240,7 +241,8 @@ enum Ended {
 
 /// How one attempt to connect and attach ended before it served.
 enum Attempt {
-    Retry(String),
+    /// Try again; `absent` is whether the row's socket was not there (the window's clock), as against trouble reaching it.
+    Retry { reason: String, absent: bool },
     Terminal(String),
 }
 
@@ -256,7 +258,7 @@ where
 
     fn run(self) {
         let mut redial = Redial::new(REDIAL_FLOOR, REDIAL_CAP);
-        let mut unreachable_since: Option<Instant> = None;
+        let mut absent_since: Option<Instant> = None;
         loop {
             if !self.wait_until_ready() {
                 return;
@@ -264,7 +266,7 @@ where
             let started = Instant::now();
             let lasted = match self.attempt() {
                 Ok((mut client, driver)) => {
-                    unreachable_since = None;
+                    absent_since = None;
                     let ended = self.serve(&mut client, driver);
                     self.shared.attached.store(false, Ordering::Release);
                     *self.shared.waker.lock().unwrap_or_else(|p| p.into_inner()) = None;
@@ -278,11 +280,15 @@ where
                     (self.sink)(WorkerEvent::Terminal(reason));
                     return;
                 }
-                Err(Attempt::Retry(reason)) => {
-                    let since = *unreachable_since.get_or_insert_with(Instant::now);
-                    if since.elapsed() >= UNREACHABLE_WINDOW {
-                        (self.sink)(WorkerEvent::Terminal(format!("the row did not answer for {UNREACHABLE_WINDOW:?}: {reason}")));
-                        return;
+                Err(Attempt::Retry { reason, absent }) => {
+                    if absent {
+                        let since = *absent_since.get_or_insert_with(Instant::now);
+                        if since.elapsed() >= ABSENT_WINDOW {
+                            (self.sink)(WorkerEvent::Terminal(format!("the row did not answer for {ABSENT_WINDOW:?}: {reason}")));
+                            return;
+                        }
+                    } else {
+                        absent_since = None;
                     }
                     (self.sink)(WorkerEvent::Status(format!("redialing\u{2026} ({reason})")));
                     Duration::ZERO
@@ -327,7 +333,7 @@ where
         let deadline = Instant::now() + DIAL_BOUND;
         loop {
             if self.stopping() {
-                return Err(Attempt::Retry("ending".into()));
+                return Err(Attempt::Retry { reason: "ending".into(), absent: false });
             }
             match client.next_event(EVENT_TICK).map_err(row_error)? {
                 Some(RowEvent::Snapshot { bytes, last }) => {
@@ -339,7 +345,7 @@ where
                 Some(RowEvent::Demoted) | Some(RowEvent::Output(_)) => {}
                 None => {
                     if Instant::now() >= deadline {
-                        return Err(Attempt::Retry("the row sent no screen".into()));
+                        return Err(Attempt::Retry { reason: "the row sent no screen".into(), absent: false });
                     }
                 }
             }
@@ -453,10 +459,10 @@ fn dial_error(e: TransportError) -> Attempt {
             Attempt::Terminal(format!("access to the row was denied: {source}"))
         }
         // The daemon (or the ssh login to it) did not answer: said in those words, since a person reads it.
-        TransportError::Unreachable(e) => Attempt::Retry(format!("daemon unreachable: {e}")),
-        TransportError::Undetermined { detail, .. } => Attempt::Retry(format!("daemon unreachable: {detail}")),
-        TransportError::LinkDown => Attempt::Retry("daemon unreachable: the host's link is down".into()),
-        other => Attempt::Retry(other.to_string()),
+        TransportError::Unreachable(e) => Attempt::Retry { reason: format!("daemon unreachable: {e}"), absent: false },
+        TransportError::Undetermined { detail, .. } => Attempt::Retry { reason: format!("daemon unreachable: {detail}"), absent: false },
+        TransportError::LinkDown => Attempt::Retry { reason: "daemon unreachable: the host's link is down".into(), absent: false },
+        other => Attempt::Retry { absent: other.is_endpoint_absent(), reason: other.to_string() },
     }
 }
 
@@ -468,6 +474,6 @@ fn row_error(e: RowError) -> Attempt {
         }
         RowError::Foreign => Attempt::Terminal("the peer behind the row is not this account's".into()),
         RowError::PathTooLong(path) => Attempt::Terminal(format!("the row socket path is too long: {}", path.display())),
-        other => Attempt::Retry(other.to_string()),
+        other => Attempt::Retry { reason: other.to_string(), absent: false },
     }
 }

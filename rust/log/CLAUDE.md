@@ -116,8 +116,9 @@ true after the merge of the leg into the supervisor.
   is held and sent after it, 8 KiB at most, and a count of the inputs dropped for want of room is kept. The worker
   stops reading the row once 4 MiB of output sit unconsumed, so a viewer that does not pump is evicted by the row and
   shown a fresh snapshot on its redial. A failure ends the episode only when it cannot get better (another account's
-  socket, a row number this client does not speak, a refusal by the daemon, access denied) or when the row has not
-  answered for 120 s; anything else is retried. A bind failure of the row socket ends the supervisor terminal before
+  socket, a row number this client does not speak, a refusal by the daemon, access denied) or when the row's socket has
+  been absent, though the daemon answers, for 120 s running; anything else is retried, and a daemon that cannot be
+  reached starts that window over. A bind failure of the row socket ends the supervisor terminal before
   any agent starts. Input to the terminal is written without blocking the run's loop, so an agent that reads nothing
   until its output drains cannot stop that drain (`a_paste_the_agent_has_not_read_does_not_stop_its_output`).
 - Attach is ground-gated (`writer_loop::output_path::ground_check`), so a viewer joins only at a parser ground
