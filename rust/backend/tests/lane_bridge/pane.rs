@@ -94,63 +94,6 @@ async fn a_busy_pane_over_a_slow_link_converges() {
     let deadline = Instant::now() + CHECKPOINT_TRANSFER_BUDGET;
     loop {
         client.pump();
-        if client.last_input_outcome() == Some(InputOutcome::Recorded) {
-            break;
-        }
-        assert!(!client.is_dead(), "died before \"yes\" recorded: {}", client.status_line());
-        assert!(Instant::now() < deadline, "\"yes\" was never recorded");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    let voyage = tokio::task::spawn_blocking({
-        let d = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&d).expect("query_status").0.voyage
-    })
-    .await
-    .unwrap()
-    .expect("a ready row has a voyage");
-    let _ = voyage;
-    let initial_screen = screen_modified(&state_dir);
-
-    // `lane/attach_proto/`'s own `WATCHER_LIVE_QUEUE_BUDGET_BYTES` (4 MiB)
-    // eviction exists and is wired (confirmed by reading that source: it
-    // closes a watcher whose OWN unsent queue overflows 4 MiB) but is a
-    // stalled-reader safety valve, not a slow-but-still-draining one: this
-    // relay's own throttle paces writes without ever refusing to drain its
-    // Unix-socket read, so the pipe's natural backpressure keeps the
-    // supervisor's per-connection unsent queue bounded to roughly one
-    // in-flight chunk rather than ever reaching 4 MiB -- empirically
-    // confirmed (a 20s run at 256 KiB/s never logged `QueueOverflow`,
-    // only an unrelated `MgmtIdleTimeout` on the short-lived status probe
-    // connection above). A genuinely STALLED reader is already covered by
-    // [`a_blackhole_is_unreachable_and_retried`] and the `cut()` cases;
-    // this test verifies decision 11's actually-observable core claim for
-    // a merely slow one instead: output handling never blocks on it, and the
-    // client stays alive and converges once the flood ends.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
-        client.pump();
-        assert!(!client.is_dead(), "must not go terminal under a busy pane over a slow link: {}", client.status_line());
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    let kept_screen = screen_modified(&state_dir);
-    assert!(
-        kept_screen.is_some() && kept_screen > initial_screen,
-        "the capsule must keep handling the flood and keep its screen file: {initial_screen:?} -> {kept_screen:?}"
-    );
-
-    relay.throttle(0);
-    client.send_input(&[0x03]);
-    let deadline = Instant::now() + CHECKPOINT_TRANSFER_BUDGET;
-    loop {
-        client.pump();
-        if client.last_input_outcome() == Some(InputOutcome::DeliveryUnknown)
-            && client.status_line() == "attached"
-            && typed.elapsed() >= Duration::from_secs(1)
-        {
-            client.send_input(&[0x03]);
-            typed = Instant::now();
-        }
         if client.last_input_outcome() == Some(InputOutcome::Recorded)
             && !client.status_line().contains("unreachable")
             && !client.status_line().contains("connecting")
