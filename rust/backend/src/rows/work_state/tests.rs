@@ -194,6 +194,37 @@ fn a_held_lock_writes_nothing() {
     assert_eq!(home.bytes(), before);
 }
 
+/// A home is undone before its lock is let go: whoever takes the lock next finds the variables put back and the folder
+/// gone, so nothing it sets is overwritten and no folder it is handed is removed under it. The next holder spins on the
+/// lock from before the drop, so it holds the lock the moment the home lets it go.
+#[test]
+fn a_home_is_undone_before_its_lock_is_let_go() {
+    let home = Home::with(json!({}));
+    let folder = home.dir.path().to_path_buf();
+    let spinning = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let next = std::thread::spawn({
+        let (spinning, folder) = (spinning.clone(), folder.clone());
+        move || {
+            spinning.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _serial = loop {
+                match crate::paths::ENV_TEST_LOCK.try_lock() {
+                    Ok(serial) => break serial,
+                    Err(std::sync::TryLockError::Poisoned(p)) => break p.into_inner(),
+                    Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
+                }
+            };
+            (folder.exists(), std::env::var_os("SOT_COMM_HOME"))
+        }
+    });
+    while !spinning.load(std::sync::atomic::Ordering::SeqCst) {
+        std::hint::spin_loop();
+    }
+    drop(home);
+    let (there, named) = next.join().expect("the next holder");
+    assert!(!there, "the next holder found the dropped home's folder still there: {}", folder.display());
+    assert_ne!(named.as_deref(), Some(folder.as_os_str()), "the next holder found the dropped home's folder named");
+}
+
 fn row(label: &str, name: &str, declared: &str) -> Arc<Workspace> {
     let mut ws = Workspace::from_label(label, PathBuf::from("/p"), false, "claude".into(), name.into(), String::new());
     ws.agent_handle = crate::rows::handle::Declared::new(declared);
