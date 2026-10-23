@@ -70,8 +70,10 @@ impl Leftover {
     fn open_identity(&self, pid: i32) {
         match crate::watched::Watched::try_open(pid) {
             Ok(identity) => *self.identity.borrow_mut() = Some(identity),
-            // EINVAL: the pid number was reused by a thread of another process, and a live process is its own group leader.
-            Err(e) if matches!(e.raw_os_error(), Some(libc::ESRCH | libc::EINVAL)) => self.gone_at_open.set(true),
+            Err(e) if e.raw_os_error() == Some(libc::ESRCH) => self.gone_at_open.set(true),
+            // EINVAL for a real pid: its number was reused by a thread of another process, and a live process is the leader
+            // of its own thread group, so it is gone. (A non-positive pid is no pid at all.)
+            Err(e) if pid > 0 && e.raw_os_error() == Some(libc::EINVAL) => self.gone_at_open.set(true),
             Err(e) => panic!("cannot observe pid {pid}: {e}"),
         }
     }
