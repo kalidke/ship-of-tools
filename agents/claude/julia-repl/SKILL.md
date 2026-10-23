@@ -58,6 +58,38 @@ So divide the labour; do not build a retry loop:
 If a fan-out must share compiled packages, serialize it through one caller
 that owns the REPL, and let the others stay on fresh processes.
 
+## PARALLEL LANES IN WORKTREES — a row per lane, or fresh processes
+
+A REPL belongs to a **row**: its project is the row's folder, and a row has
+exactly one. There is no REPL per worktree, per subagent or per session
+inside a row. Lanes that each edit their own copy of a package (one git
+worktree per lane) choose one of two shapes:
+
+- **A lane that runs Julia again and again is a row of its own.** The
+  session makes it with `/worktree` (`comm-worktree-new.sh`): a worktree and a
+  row bound to it. That row's REPL runs `--project=<the worktree>`, loads
+  that lane's copy of the package once, and keeps it warm. The lane's own
+  agent drives it with `sot-fe repl run "$SOT_WORKSPACE_ID" <file>`. The
+  session that launches the lanes makes these rows, never a subagent.
+- **A lane that is a subagent uses fresh processes:**
+  `julia --project=<its worktree> <file>`. Each run pays the load: the
+  dependencies' precompiled caches are shared from the depot (paid once per
+  computer), but loading them, and recompiling the lane's own edited
+  package, is paid on every run. That is the stated price of a subagent lane.
+
+Never point a subagent's `repl run` at a file in its own worktree: it runs in
+the **parent row's** kernel, with the parent's project and the parent's copy
+of the package (it prints a note and does not switch), so the lane tests the
+wrong code, and two lanes collide as `busy`.
+
+**Revise is not needed, and no session installs it.** `repl run` re-includes
+the file you run on every call, so what that file defines is always current.
+A package's own source is loaded once by `using`; after editing it, `--fresh`
+reloads it, or `using Revise` first if the person's own default environment
+already has it. No session adds Revise, or any package, to a shared default
+environment (`@v1.x`): it is the person's, every Julia process of theirs on
+that computer reads it, and a change there reaches all of them.
+
 ## HOW TO CALL IT — a line or two, or a file
 
 Every call is one of two shapes, never anything in between:
@@ -168,9 +200,10 @@ the one the user used last. `wglshow(fig; open = "<fe>")`
 box can read a command line. Serve every page you want to look at through `wglshow`. A page your own code serves
 on a port it opens itself can be opened by any account on that box.
 
-**Revise is not loaded.** Editing a source file does not change the next run:
-`include` it again, or `using Revise` yourself first (it must resolve from
-the workspace project or the default environment).
+**Revise is not loaded.** A file you `repl run` is re-included each time, so
+its edits take effect. An edited package source loaded by `using` does not
+change the next run: `--fresh`, or `using Revise` first when the person's
+default environment already has it (see PARALLEL LANES; never add it).
 
 **Lifetime.** The kernel outlives your session, a `/compact` and every
 subagent; it dies with the daemon. What you leave in `Main` is what the next
@@ -185,7 +218,9 @@ There is no quiet mode.
 - Pass more than a line or two through `--code`: write the file and
   `repl run` it.
 - Define stubs, redirect imports or rebind consts in it — fresh process.
-- Drive it from parallel subagents: the second one gets `busy`.
+- Drive it from parallel subagents: the second one gets `busy`. A lane that
+  needs a warm Julia is a row of its own (`/worktree`).
+- Add Revise or any package to a shared default environment (`@v1.x`).
 - Use it for throwaway parse checks — every run lands in the owner's history.
   `julia -e` is right for those.
 - Re-run after a timeout or a missing response — the first run is still going.
