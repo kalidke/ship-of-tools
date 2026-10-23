@@ -590,3 +590,53 @@ fn a_requested_end_that_cannot_be_recorded_is_not_answered_ended() {
     let status = wait_for_exit(&mut guard, Duration::from_secs(30));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_TERMINAL), "exit status: {status:?}");
 }
+
+/// Every end answered `ended` is recorded as requested before the answer, whenever it was asked: after the agent ended
+/// by itself, either the end is refused (no run is live), or it is answered `ended` and a kill and a `--resume` rest.
+/// The seam holds the main thread after its check for a requested end, in the window the end is asked in.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_end_run_asked_after_the_agent_ended_by_itself_is_never_answered_ended_unrecorded() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+    let starts = dir.path().join("starts");
+    let trigger = dir.path().join("exit-now");
+    let script = format!("echo started >> {}; while [ ! -e '{}' ]; do sleep 0.05; done", starts.display(), trigger.display());
+    let argv = ["/bin/sh", "-c", script.as_str()];
+    let started = || std::fs::read_to_string(&starts).unwrap().lines().count();
+
+    let mut first = spawn_supervisor_with_env(&state_dir, "--start", &argv, &[("SOT_TEST_RUN_OVER_HOLD_MS", "8000")]);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let run = wait_for_ready(&conn, Duration::from_secs(90));
+    std::fs::write(&trigger, b"").unwrap();
+    // The agent is gone well inside the hold; the end is asked in the window the hold opens.
+    std::thread::sleep(Duration::from_secs(3));
+    let reply = conn.0.borrow_mut().call("row.end_run", json!({"run": run, "reason": "late"}), Duration::from_secs(40));
+    let acknowledged = reply.map(|f| f.payload["outcome"] == "ended").unwrap_or(false);
+    first.child_mut().kill().unwrap();
+    first.child_mut().wait().unwrap();
+    drop(conn);
+    assert_eq!(started(), 1, "one agent ran");
+    std::fs::remove_file(&trigger).unwrap();
+
+    let mut second = spawn_supervisor(&state_dir, "--resume", &argv);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let settled = poll_until(
+        || Some(status(&conn)).filter(|s| s.phase != SupervisorPhase::Starting),
+        Duration::from_secs(30),
+        "the resumed supervisor to settle",
+    );
+    assert_eq!(
+        settled.phase == SupervisorPhase::EndedNoRespawn,
+        acknowledged,
+        "an end answered `ended` rests after a resume, one that was not does not (acknowledged: {acknowledged}, phase: {:?})",
+        settled.phase
+    );
+    assert_eq!(started(), if acknowledged { 1 } else { 2 }, "no agent starts over an acknowledged end");
+    stop(&conn);
+    let _ = wait_for_exit(&mut second, Duration::from_secs(30));
+}

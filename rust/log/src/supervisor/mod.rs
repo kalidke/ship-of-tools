@@ -316,7 +316,7 @@ fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
             After::RowLost => return EXIT_AGENT_NOT_STARTED,
             // The reset's publication is the end record's removal, before it is answered: a supervisor killed after
             // the answer resumes into an agent, never back onto the end the reset removed.
-            After::Reset => match crate::capsule::clear_ended(&config.state_dir) {
+            After::Reset => match reset_publication(&config.state_dir) {
                 Ok(()) => {
                     shared.reset_done();
                     // Test seam: holds the main thread this many milliseconds after the answer, before the next run,
@@ -394,6 +394,11 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, agent
             return RunEnd::Failed(bounded_detail(format!("the requested end could not be recorded: {e}")));
         }
     }
+    // Test seam: holds the main thread this many milliseconds after the run returned, between its check for a requested end
+    // and its decision on how the run ended, so a test can ask for an end in that window. Inert unless named.
+    if let Some(ms) = std::env::var("SOT_TEST_RUN_OVER_HOLD_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
     // The row socket was lost, so the run was told to stop: a row that did not start, whatever the agent did.
     if shared.is_row_lost() {
         return RunEnd::Unasked(EXIT_AGENT_NOT_STARTED);
@@ -449,6 +454,14 @@ fn init_process_globals(config: &SuperviseConfig) -> crate::Result<()> {
 // ---------------------------------------------------------------------
 // Small shared helpers
 // ---------------------------------------------------------------------
+
+/// The reset's publication. Test seam: `SOT_TEST_RESET_CLEAR_FAILS` makes it fail, inert unless named.
+fn reset_publication(state_dir: &Path) -> crate::Result<()> {
+    if std::env::var_os("SOT_TEST_RESET_CLEAR_FAILS").is_some() {
+        return Err(crate::Error::State("test: the reset cannot be published".into()));
+    }
+    crate::capsule::clear_ended(state_dir)
+}
 
 /// Records in the state folder that the run was asked to end. Test seam: `SOT_TEST_END_MARK_FAILS` makes the write fail,
 /// inert unless named.

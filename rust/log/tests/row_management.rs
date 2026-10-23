@@ -408,24 +408,33 @@ fn a_lost_end_reply_is_settled_by_the_run_a_rest_or_a_terminal_status_names() {
     assert!(matches!(lost_end_settled_by(r#"{"phase":"terminal","run":"run-other"}"#), O::Failed(_)), "terminal on another run");
 }
 
-/// A reset whose reply is lost is settled by the run status then names: a run other than the one it rested on (here
-/// none) is the reset's, done, and a supervisor still resting on the old one was not reset.
-#[test]
-fn a_reset_whose_reply_is_lost_is_settled_by_the_run_status_names() {
+/// What a lost `reset` reply is settled to: `state` is what the stand-in has done, `after_end` the status it gives while
+/// it rests (none: unnamed). A reset it carries out is followed by `starting` on `run-two`.
+fn lost_reset_settled_by(state: Lossy) -> sot_log::Result<()> {
     let _serial = serial();
     let runtime = private_runtime_dir();
-    let (dir, state_dir, stop, row) = lossy_setup(runtime.path(), Lossy { ended: true, ..Lossy::default() });
-    supervisor_client::reset(&state_dir).expect("the reset is found done: a new run is named");
+    let (dir, state_dir, stop, row) = lossy_setup(runtime.path(), state);
+    let outcome = supervisor_client::reset(&state_dir);
     stop.store(true, std::sync::atomic::Ordering::Release);
     row.join().unwrap();
     drop(dir);
+    outcome
+}
 
-    let runtime = private_runtime_dir();
-    let (dir, state_dir, stop, row) = lossy_setup(runtime.path(), Lossy { ended: true, reset_dropped: true, ..Lossy::default() });
-    supervisor_client::reset(&state_dir).expect_err("a supervisor still resting on the old run was not reset");
-    stop.store(true, std::sync::atomic::Ordering::Release);
-    row.join().unwrap();
-    drop(dir);
+const REST_ON_ONE: &str = r#"{"phase":"ended_no_respawn","run":"run-one"}"#;
+const TERMINAL_ON_ONE: &str = r#"{"phase":"terminal","run":"run-one"}"#;
+
+/// A reset whose reply is lost is settled by the run status then names, against the run it rested on: a run other than
+/// that one (here none, or `run-one`) is the reset's, done; a supervisor still resting or terminal on the same run was
+/// not reset.
+#[test]
+fn a_reset_whose_reply_is_lost_is_settled_by_the_run_status_names() {
+    let lossy = |after_end, reset_dropped| Lossy { ended: true, reset_dropped, after_end, ..Lossy::default() };
+    lost_reset_settled_by(lossy(None, false)).expect("an unnamed rest, then a named run: done");
+    lost_reset_settled_by(lossy(None, true)).expect_err("an unnamed rest still resting: not done");
+    lost_reset_settled_by(lossy(Some(REST_ON_ONE), false)).expect("a rest on run-one, then run-two: done");
+    lost_reset_settled_by(lossy(Some(REST_ON_ONE), true)).expect_err("still resting on run-one: not done");
+    lost_reset_settled_by(lossy(Some(TERMINAL_ON_ONE), true)).expect_err("terminal on run-one: not done, a failed publication");
 }
 
 /// A peer that sends `row.stop` and never reads its reply cannot hold the supervisor's exit: shutdown ends its
