@@ -165,7 +165,12 @@ impl Drop for RowServer {
 fn accept_loop(listener: std::os::unix::net::UnixListener, run: Arc<RowRun>, stop: Arc<AtomicBool>, own_uid: u32) {
     use std::os::unix::io::AsRawFd;
     while !stop.load(Ordering::Acquire) {
-        match listener.accept() {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "listener: row socket: the peer's uid is checked at accept, before a byte is read"
+        )]
+        let accepted = listener.accept();
+        match accepted {
             Ok((stream, _)) => {
                 // Another account's peer is dropped before a byte is read.
                 match peer_euid(stream.as_raw_fd()) {

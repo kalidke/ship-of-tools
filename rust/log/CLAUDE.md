@@ -78,8 +78,13 @@ true after the merge of the leg into the supervisor.
   output in order in blobs of at most 64 KiB. One connection at a time is the driver: only a driver's `row.input` is
   written and its `row.resize` applied, a watcher's is refused by name and writes nothing, and a second driver (an
   attach as driver, or a `row.take`) demotes the first with `row.demoted`. The run id is minted at each agent start.
-  Limits: this landing binds the socket but nothing in the product dials it until 6c-1a2; a live 6b row on a dev box
-  is not served by it, and no candidate is cut from main until 6c-2.
+  Limits: this landing binds the socket but nothing in the product dials it until 6c-1a2, so a bind failure is noted
+  and the supervisor serves on without it; a live 6b row on a dev box is not served by it, and no candidate is cut
+  from main until 6c-2. A pipe has no read timeout and a close from the row's end does not wake its reader, so on
+  Windows a peer that never says hello holds a thread and one of the eight slots until it closes (the owner-only
+  descriptor keeps that to the account's own processes). The challenge refuses a peer that started in the clock tick
+  the client connects in, so a test binary that is both ends waits out one tick first. The row socket is the capsule's
+  first dependency on `sot-protocol`.
 - Attach is ground-gated (`writer_loop::output_path::ground_check`), so a viewer joins only at a parser ground
   boundary, after every byte the parser has seen was published.
 - `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot serve the row), 70 (`EXIT_CONTENDED`, the
