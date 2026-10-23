@@ -49,7 +49,7 @@ true after the merge of the leg into the supervisor.
   end (`ended.requested`) rests in `ended_no_respawn`; any other `--resume` starts a fresh agent, in a new run of the
   same voyage, and a `--resume` with no voyage to resume (a folder whose supervisor died before it published one)
   mints one and starts the agent like a `--start`; one that lost its pointer but holds a voyage whose `ended` records a
-  requested end rests (an `ended` record that cannot be read fails closed), so a requested end is not resurrected by a
+  requested end is adopted (the pointer is published to it) and rests, on this start and every later one (an `ended` record that cannot be read fails closed), so a requested end is not resurrected by a
   lost pointer (6c-1c2 moves `ended` out of the voyage and deletes this scan). A supervisor that has run an agent
   reports, while resting, the run whose end it rests on (`row.status`'s `run`), held in memory; one restarted with
   `--resume` that rests on a requested end names no run until 6c-1c2 reads it from `<state_dir>/ended`, and the daemon's

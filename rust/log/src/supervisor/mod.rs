@@ -273,8 +273,8 @@ fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
     if let Ok(ms) = std::env::var("SOT_TEST_RECOVERY_DELAY_MS").unwrap_or_default().parse::<u64>() {
         std::thread::sleep(Duration::from_millis(ms));
     }
-    let (mut voyage, lost_end) = match discover_or_mint_voyage(&config.state_dir, config.mode) {
-        Ok(found) => found,
+    let mut voyage = match discover_or_mint_voyage(&config.state_dir, config.mode) {
+        Ok(v) => v,
         Err(e) => {
             shared.terminal(bounded_detail(format!("{e}")));
             return leave(shared);
@@ -283,9 +283,8 @@ fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
     shared.set_voyage(&voyage);
     let mut agent_ran = false;
     // A `--resume` over a run that was asked to end does not start another: it rests until a reset or a stop.
-    let mut rest_first = lost_end
-        || config.mode == StartMode::Resume
-            && crate::capsule::read_ended(&voyage_root_path(&config.state_dir, &voyage)).ok().flatten().is_some_and(|e| e.requested);
+    let mut rest_first = config.mode == StartMode::Resume
+        && crate::capsule::read_ended(&voyage_root_path(&config.state_dir, &voyage)).ok().flatten().is_some_and(|e| e.requested);
     loop {
         let ended = if std::mem::take(&mut rest_first) {
             RunEnd::Ended { started: false }
@@ -448,41 +447,46 @@ pub fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
     voyages_dir(state_dir).join(voyage_id)
 }
 
-/// The voyage the pointer names, minted when there is none, and whether the supervisor must rest on a requested end it
-/// found: a `--resume` over a folder that never held a voyage starts the agent like a `--start`, since the supervisor
-/// that left it never got as far as publishing one, but a folder that lost its pointer is not a folder never used: a
-/// voyage there whose `ended` records a requested end is not resurrected, and one whose record cannot be read fails
-/// closed, as a corrupt pointer does.
-fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crate::Result<(String, bool)> {
+/// The voyage the pointer names, minted when there is none: a `--resume` over a folder that never held a voyage starts
+/// the agent like a `--start`, since the supervisor that left it never got as far as publishing one, but a folder that
+/// lost its pointer is not a folder never used. A voyage there whose `ended` records a requested end is adopted, the
+/// pointer published to it, so the end is read on this start and on every later one; one whose record cannot be read
+/// fails closed, as a corrupt pointer does.
+fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crate::Result<String> {
     match pointer::validate(state_dir) {
-        PointerState::Valid(id) => Ok((id, false)),
+        PointerState::Valid(id) => Ok(id),
         PointerState::NotFound => {
-            let rest = mode == StartMode::Resume && lost_requested_end(state_dir)?;
+            if mode == StartMode::Resume {
+                if let Some(id) = lost_requested_end(state_dir)? {
+                    pointer::publish(state_dir, &id)?;
+                    return Ok(id);
+                }
+            }
             std::fs::create_dir_all(voyages_dir(state_dir))?;
             let id = uuid::Uuid::now_v7().to_string();
             crate::capsule::bootstrap_voyage_folder(&voyage_root_path(state_dir, &id))?;
             pointer::publish(state_dir, &id)?;
-            Ok((id, rest))
+            Ok(id)
         }
         PointerState::Corrupt => Err(crate::Error::State("drawer.voyage is corrupt".into())),
         PointerState::OtherIo(e) => Err(e.into()),
     }
 }
 
-/// Whether any voyage left in the folder records a requested end (`Err` when a record cannot be read).
-fn lost_requested_end(state_dir: &Path) -> crate::Result<bool> {
+/// The name of a voyage left in the folder that records a requested end (`Err` when a record cannot be read).
+fn lost_requested_end(state_dir: &Path) -> crate::Result<Option<String>> {
     let entries = match std::fs::read_dir(voyages_dir(state_dir)) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
     for entry in entries {
         let root = entry?.path();
         if root.is_dir() && crate::capsule::read_ended(&root)?.is_some_and(|ended| ended.requested) {
-            return Ok(true);
+            return Ok(root.file_name().map(|n| n.to_string_lossy().into_owned()));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// Records on the voyage that the run was asked to end. Test seam: `SOT_TEST_END_MARK_FAILS` makes the write fail,
