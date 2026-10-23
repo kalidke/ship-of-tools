@@ -65,10 +65,15 @@ Supervisor:
   resting supervisor reports the run it rests on, a lower or unnamed run is a stale observation and a strictly newer run
   releases the latch). Each row's one observer task holds the row's id and feeds the row registered under it at each
   round (`run::observer`), so a refreshed row's phase follows its new supervisor.
-- A state folder had a supervisor iff it holds the fence file `supervisor.lock`, which the daemon claims before it forks
-  and a supervisor takes before anything else: such a folder whose row socket does not answer reads `unreachable`,
-  not `stopped`, including a start whose fork failed after the claim, and the boot resume and the watchdog's recheck
-  act on it. A folder without the file reads `stopped` (never started). No row reads a voyage or the pointer.
+- A state folder had a supervisor iff it holds the fence file `supervisor.lock`: on Unix the daemon claims it before it
+  forks and a supervisor takes it before anything else, so such a folder whose row socket does not answer reads
+  `unreachable`, not `stopped`, including a start whose fork failed after the claim, and the boot resume and the
+  watchdog's recheck act on it. A folder without the file reads `stopped` (never started). Nothing that only observes a
+  row creates the file: `end_run` under the row's guard (every caller holds it, and no start begins without it) reads a
+  missing file as never started and takes nothing; only the state-folder sweep and retirement, which work on folders no
+  registered row names (the boot resume reads registered rows only), take the fence with the creating API. Limit
+  (Windows): the supervisor is spawned before it takes its fence (`spawn/detach.rs`), so one that exits in that window
+  leaves no marker for the recheck or the boot resume. No row reads a voyage or the pointer.
 
 The daemon's calls on a row's supervisor are ops of the row socket, through `sot_log::attach_client::supervisor_client`
 (`query_status`, `end_run`, `reset`, `stop`, and the observer's `Persistent`), each bounded; a row of another row number
@@ -79,8 +84,10 @@ error (a `reset`), so the row is kept and lifecycle's or the caller's retry read
 the row's 8 connections with the viewers; a dial that gets no slot is one failed observation, never an end.
 
 Ends:
-- A row is reported ended only after the destroy proof: the supervisor fence can be taken and nothing answers on the
-  row's socket (`run::end_run`). Then its comm entries are pruned, its toml removed durably, the row unregistered and
+- A row is reported ended only after a confirmed end or the destroy proof: the supervisor fence can be taken (or no
+  fence file exists, which proves never started) and nothing answers on the row's socket (`run::end_run`); an already
+  resting supervisor is stopped and its scopes ended without the proof, and a stop that fails is logged, not an error.
+  Then its comm entries are pruned, its toml removed durably, the row unregistered and
   `workspace.changed` sent. `workspace.destroy` renames a non-default row's state folder to `.closed-<id>` and removes
   it on a thread; a row the end API ends keeps its folder for a later start's sweep; the default row ends its run and
   stays registered.

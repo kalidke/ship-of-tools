@@ -48,8 +48,13 @@ true after the merge of the leg into the supervisor.
   76, so the daemon's watchdog is the one restart budget (rows' contract). A `--resume` over a run that was asked to
   end (`ended.requested`) rests in `ended_no_respawn`; any other `--resume` starts a fresh agent, in a new run of the
   same voyage, and a `--resume` with no voyage to resume (a folder whose supervisor died before it published one)
-  mints one and starts the agent like a `--start`. A resting supervisor reports the run whose end it rests on
-  (`row.status`'s `run`), held in memory, so the daemon's cell can tell a stale resting observation from a current one. A stop is not an end of the run: it leaves no request, so the next start runs the agent again.
+  mints one and starts the agent like a `--start`; one that lost its pointer but holds a voyage whose `ended` records a
+  requested end rests (an `ended` record that cannot be read fails closed), so a requested end is not resurrected by a
+  lost pointer (6c-1c2 moves `ended` out of the voyage and deletes this scan). A supervisor that has run an agent
+  reports, while resting, the run whose end it rests on (`row.status`'s `run`), held in memory; one restarted with
+  `--resume` that rests on a requested end names no run until 6c-1c2 reads it from `<state_dir>/ended`, and the daemon's
+  cell then latches on no run and releases on the first. Limit, inherited: the `ended` read at the resume is fail-open
+  (an unreadable record reads as no request), rewritten in 6c-1c2. A stop is not an end of the run: it leaves no request, so the next start runs the agent again.
 - The daemon's four calls are ops of the row socket, each answered in the calling connection's own thread, every outcome a
   reply payload (an `error` reply is kept for a protocol fault: an unknown op, a bad payload): `row.status` answers at
   once `{phase, run?, voyage?}`; `row.end_run {run, reason}` is fenced by the run, so another run's id is `stale_run`
@@ -66,8 +71,8 @@ true after the merge of the leg into the supervisor.
   Linux the same test in `tests/row_management.rs` passes at the base too, since the reply fits the socket buffer).
   `tests/row_management.rs` and the supervisor suite run on Linux only; on Windows and macOS they are cross-checked. A requested end that
   cannot be recorded on the voyage (`mark_end_requested`) is not an end: the run fails, the caller is answered
-  `failed`, the supervisor is terminal and starts no other agent, so a later `--resume` never runs an agent whose end
-  was acknowledged (`tests/supervisor/spawn.rs::a_requested_end_that_cannot_be_recorded_is_not_answered_ended`, over the
+  `failed`, the supervisor is terminal and starts no other agent, so a later `--resume` does not run an agent whose end
+  was acknowledged, given a readable `ended` record (the fail-open limit above) (`tests/supervisor/spawn.rs::a_requested_end_that_cannot_be_recorded_is_not_answered_ended`, over the
   test seam `SOT_TEST_END_MARK_FAILS`); an acknowledged `end_run` is recorded as a requested end on the voyage before the
   answer even when the agent ended first, so a resume rests; a supervisor that goes terminal sends its running agent
   `Stop` first. No call carries an id and nothing is kept for a resubmit. A completion answer is kept under its own

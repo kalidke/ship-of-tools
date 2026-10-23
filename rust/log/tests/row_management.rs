@@ -295,6 +295,8 @@ fn a_stop_is_answered_before_the_supervisor_exits() {
 struct Lossy {
     ended: bool,
     reset: bool,
+    /// The status the stand-in gives once ended, as JSON; none answers the unnamed rest of a fresh supervisor.
+    after_end: Option<&'static str>,
 }
 
 /// A stand-in row that carries out `row.end_run` and `row.reset` and then drops the connection with no reply, as a
@@ -328,7 +330,10 @@ fn lossy_row(path: &Path, state: std::sync::Arc<std::sync::Mutex<Lossy>>, stop: 
                             if s.reset {
                                 json!({"phase": "starting", "run": "run-two", "voyage": "voyage-two"})
                             } else if s.ended {
-                                json!({"phase": "ended_no_respawn", "voyage": "voyage-one"})
+                                match s.after_end {
+                                    Some(text) => serde_json::from_str(text).unwrap(),
+                                    None => json!({"phase": "ended_no_respawn", "voyage": "voyage-one"}),
+                                }
                             } else {
                                 json!({"phase": "ready", "run": "run-one", "voyage": "voyage-one"})
                             }
@@ -380,12 +385,35 @@ fn an_end_run_whose_reply_is_lost_after_the_run_ended_reports_ended() {
     drop(dir);
 }
 
+/// What a lost `end_run` reply is settled to when the supervisor's status afterward is `after_end`.
+fn lost_end_settled_by(after_end: &'static str) -> supervisor_client::EndRunOutcome {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    let (dir, state_dir, stop, row) = lossy_setup(runtime.path(), Lossy { after_end: Some(after_end), ..Lossy::default() });
+    let outcome = supervisor_client::end_run(&state_dir, "run-one", "test").expect("the call is answered");
+    stop.store(true, std::sync::atomic::Ordering::Release);
+    row.join().unwrap();
+    drop(dir);
+    outcome
+}
+
+/// A resting supervisor names the run it rests on, and that run is over: a rest naming the asked run, and one naming
+/// another, both read as ended; a terminal supervisor fails the end whatever run it names.
+#[test]
+fn a_lost_end_reply_is_settled_by_the_run_a_rest_or_a_terminal_status_names() {
+    use supervisor_client::EndRunOutcome as O;
+    assert!(matches!(lost_end_settled_by(r#"{"phase":"ended_no_respawn","run":"run-one"}"#), O::Ended), "a rest on the asked run");
+    assert!(matches!(lost_end_settled_by(r#"{"phase":"ended_no_respawn","run":"run-other"}"#), O::Ended), "a rest on another run");
+    assert!(matches!(lost_end_settled_by(r#"{"phase":"terminal","run":"run-one"}"#), O::Failed(_)), "terminal on the asked run");
+    assert!(matches!(lost_end_settled_by(r#"{"phase":"terminal","run":"run-other"}"#), O::Failed(_)), "terminal on another run");
+}
+
 /// A reset whose reply is lost after the new voyage was published reports the reset and its voyage.
 #[test]
 fn a_reset_whose_reply_is_lost_after_publication_reports_reset() {
     let _serial = serial();
     let runtime = private_runtime_dir();
-    let (dir, state_dir, stop, row) = lossy_setup(runtime.path(), Lossy { ended: true, reset: false });
+    let (dir, state_dir, stop, row) = lossy_setup(runtime.path(), Lossy { ended: true, ..Lossy::default() });
     let voyage = supervisor_client::reset(&state_dir).expect("the reset is found published");
     assert_eq!(voyage, "voyage-two");
     stop.store(true, std::sync::atomic::Ordering::Release);

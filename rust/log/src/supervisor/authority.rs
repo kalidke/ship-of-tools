@@ -377,7 +377,7 @@ impl Management for Shared {
         let inner = self.lock();
         StatusRes {
             phase: Self::phase_name(Self::wire_phase(&inner)).to_string(),
-            run: inner.run.as_ref().map(|r| r.id.clone()).or_else(|| inner.last_run.clone()),
+            run: inner.last_run.clone(),
             voyage: inner.voyage.clone(),
         }
     }

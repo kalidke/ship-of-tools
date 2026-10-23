@@ -41,7 +41,7 @@ pub struct StatusReport {
     pub pid: u32,
     pub created: u64,
     pub phase: SupervisorPhase,
-    /// The live run's id, absent while none is live.
+    /// The live run's id, or, while the supervisor rests, the run whose end it rests on; absent before any run.
     pub run: Option<String>,
     pub voyage: Option<String>,
 }

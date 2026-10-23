@@ -411,14 +411,25 @@ pub(crate) enum NotProven {
 /// authority holding the fence — reported, never silently orphaned. `Err`:
 /// absence is NOT proven either way, so the caller must keep the row
 /// rather than guess.
+///
+/// This proof only observes, so it never creates the fence file, which is the row's start marker
+/// ([`super::fence_file_exists`]): a row that never started and stays registered must not read `unreachable` and resume
+/// at the next boot because it was asked to end. Every caller holds the row's guard and no start begins without it, so a
+/// missing file proves never started with nothing taken and nothing created (the drawer is an end target only when its
+/// file exists).
 fn absence_proof(state_dir: &Path) -> Result<bool, NotProven> {
+    if !super::fence_file_exists(state_dir) {
+        return Ok(true);
+    }
     absence_proof_then(state_dir, row_socket_silent, || ()).map(|acted| acted.is_some())
 }
 
 /// [`absence_proof`] with its socket check named by the caller and an act run while the supervisor fence is still held:
 /// `Ok(Some(_))` is the act's result when the fence was free and `silent` found nothing answering; `Ok(None)` is a socket
 /// that answers (the act did not run); `Err` is absence not proven. The act runs under the fence so nothing can take it
-/// between the proof and the act (a removal's rename).
+/// between the proof and the act (a removal's rename). It takes the fence with the creating API, so it is for folders no
+/// registered row names (the state-folder sweep and retirement): the boot resume reads registered rows only, so a marker
+/// left by a retirement that failed cannot start an agent. [`absence_proof`] is the observing form.
 pub(crate) fn absence_proof_then<T>(
     state_dir: &Path,
     silent: impl FnOnce(&Path) -> Result<bool, String>,
