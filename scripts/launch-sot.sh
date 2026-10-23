@@ -32,6 +32,11 @@
 # survives that inheritance rather than depending on -e's absence.
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# A clone of main is the next release in progress, and a box should run a release: say so first, before any pull or
+# build, and carry on.
+if [ "$(git -C "$REPO" symbolic-ref --short -q HEAD 2>/dev/null)" = main ]; then
+    echo "NOTE: this launcher runs from a clone of main, the next release in progress. A box should run a release; install one with: curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/install.sh | bash -s -- --local" >&2
+fi
 # The four launcher variables are read once here and unset below, before the
 # daemon starts or the window execs, so neither inherits them.
 install_daemon="${SOT_OWN_DAEMON:-0}"

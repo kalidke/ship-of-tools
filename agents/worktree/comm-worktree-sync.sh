@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Context: REPO (current checkout basename), NAME (self handle), REGISTRY path.
+# Context: REPO (current checkout basename), NAME (self handle).
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 
 git rev-parse --show-toplevel >/dev/null 2>&1 \
@@ -37,7 +37,6 @@ BASE="${REPO%%-wt-*}"
 SELF="${NAME:-}"
 
 command -v jq >/dev/null 2>&1 || { echo "comm-worktree-sync.sh: jq required" >&2; exit 1; }
-[ -f "$REGISTRY" ] || { echo "comm-worktree-sync.sh: no registry at $REGISTRY" >&2; exit 1; }
 
 # Family = exact base OR `<base>-...` (dash-guarded so pkg != pkg-analysis).
 REG="$(sot_registry_read)" || { echo "FAILED: the registry could not be read; nobody was reminded" >&2; exit 1; }

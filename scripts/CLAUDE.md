@@ -184,7 +184,10 @@ Apply (`sot-apply.sh`, `sot-apply.ps1`):
   (`SOT_APPLY_REEXECED`; Unix: the archive's executable `sot-apply`, which reads the prefix from where the stage sits).
 
 Launch (`launch-sot.sh`, the rendered `sot-launch`, `lib/sot-daemon.sh`, `launch-sot.ps1` and the files it sources):
-- It fails open: every update or freshness step logs and the window still starts.
+- It fails open: every update or freshness step logs and the window still starts. A launcher run from a clone of main
+  says first, before any pull, that a box should run a release and how to install one
+  (`agents/tests/test-launcher-main-notice.sh`; the PowerShell launcher's line is proved only on the hosted run), and
+  carries on.
 - It keeps this computer's daemon only when it runs the launch's version, unless a window holds it (`sotd
   same-version` exit 4); one launcher per user; on Windows no window spawns without a lease held across the gap.
 - A script reaches a daemon only through `sotd stdio-bridge --endpoint` and finds it by its socket or pipe owner,

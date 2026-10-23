@@ -48,12 +48,13 @@ fn capsule_comm_home_str() -> Option<String> {
 
 /// The `SOTD_BIN` value for a session: the path this daemon was started by, made absolute the way its start found it,
 /// without following a link. A path (absolute, relative, or drive-relative such as `C:sotd.exe`) is made absolute by
-/// `std::path::absolute`: against the working folder, and a drive-relative one against that drive's. A bare name is
+/// `std::path::absolute`: against the working folder, and a drive-relative one against that drive's; it is the value
+/// only when it names a runnable file, as a bare name's must. A bare name is
 /// looked up as a start looks it up: on Windows in the working folder and then each `PATH` entry, with `.exe` added to
 /// a name that has no extension; elsewhere in each `PATH` entry. The first runnable file is the value. Forward slashes
 /// on Windows, where a git-bash/MSYS shell reads it, as with `SOT_COMM_HOME`. The start path, never the resolved one: a
-/// session outlives its daemon, and an update replaces the file at that path. `None` for an empty start path, or a bare
-/// name found nowhere; the session's shell then finds `sotd` by its own ladder.
+/// session outlives its daemon, and an update replaces the file at that path. `None` for an empty start path, a path that
+/// names no runnable file, or a bare name found nowhere; the session's shell then finds `sotd` by its own ladder.
 fn sotd_bin_value(start: &std::ffi::OsStr, path_var: Option<&std::ffi::OsStr>) -> Option<String> {
     if start.is_empty() {
         return None;
@@ -75,7 +76,13 @@ fn sotd_bin_value(start: &std::ffi::OsStr, path_var: Option<&std::ffi::OsStr>) -
             .filter_map(|dir| std::path::absolute(dir.join(&name)).ok())
             .find(|candidate| crate::rows::spawn::detach::runnable_file(candidate))?
     } else {
-        std::path::absolute(start).ok()?
+        let absolute = std::path::absolute(start).ok()?;
+        // As a bare name is: Windows adds `.exe` to a program name that has no extension.
+        let program = match absolute.extension() {
+            None if cfg!(windows) => absolute.with_extension("exe"),
+            _ => absolute,
+        };
+        crate::rows::spawn::detach::runnable_file(&program).then_some(program)?
     };
     let text = found.to_string_lossy();
     Some(if cfg!(windows) {

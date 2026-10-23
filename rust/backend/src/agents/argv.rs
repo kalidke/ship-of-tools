@@ -69,8 +69,9 @@ fn login_shell(shell: Option<&str>) -> String {
 }
 
 /// Whether a caller already passed `--settings` (either spelling), in
-/// which case [`claude_recipe`] adds none of its own: the two would
-/// contend for one key and the caller's intent is the specific one.
+/// which case [`claude_recipe`] adds no `--settings` of its own: the two would
+/// contend for one key and the caller's intent is the specific one. The recipe's hooks join the caller's JSON
+/// ([`layer::merge_caller_settings`]); the auto-memory key does not.
 fn caller_brought_settings(extra: &[String]) -> bool {
     extra
         .iter()
@@ -119,9 +120,11 @@ fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>, comm_home: Option<
     let mut argv = vec!["claude".to_string()];
     argv.extend(layer.as_deref().map(layer::add_dir_arg));
     argv.extend(["--permission-mode".to_string(), "auto".to_string()]);
-    // See [`caller_brought_settings`] for why a caller's own wins.
-    if caller_brought_settings(extra) && layer.is_some() {
-        tracing::warn!("a caller's own --settings is passed as given: the leg carries no work-state hooks (the skills still load)");
+    let hooks = comm_home.filter(|_| layer.is_some()).map(layer::hooks_settings);
+    // See [`caller_brought_settings`] for why a caller's own wins: its JSON gains the hooks, nothing else of it changes.
+    let merged = hooks.as_ref().filter(|_| caller_brought_settings(extra)).and_then(|hooks| layer::merge_caller_settings(extra, hooks));
+    if caller_brought_settings(extra) && layer.is_some() && merged.is_none() {
+        tracing::warn!("a caller's own --settings is not one JSON object we can merge into: it is passed as given and the leg carries no work-state hooks (the skills still load)");
     }
     if !caller_brought_settings(extra) {
         // `account_home`, never `HOME`: this module's own resolver is what
@@ -141,13 +144,12 @@ fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>, comm_home: Option<
             .and_then(|(cwd, home)| {
                 auto_memory_settings(&home, cwd, child_config_dir.as_deref())
             });
-        let hooks = comm_home.filter(|_| layer.is_some()).map(layer::hooks_settings);
         if let Some(json) = layer::merged_settings(memory, hooks) {
             argv.push("--settings".to_string());
             argv.push(json);
         }
     }
-    argv.extend(extra.iter().cloned());
+    argv.extend(merged.as_deref().unwrap_or(extra).iter().cloned());
     if !comm_home.is_some_and(layer::is_partial) {
         argv.push("/sot-session-start".to_string());
     }

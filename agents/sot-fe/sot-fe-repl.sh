@@ -9,10 +9,7 @@
 # sot_send's op-grep). Exits 2 on a non-ok outcome.
 send_repl_execute() {
     local input_json="$1" ws="$2"
-    if ! ENDPOINT="$(resolve_endpoint)"; then
-        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path, ssh:target[/host], or (Windows) pipe:name (or \$SOT_FE_ENDPOINT)." >&2
-        exit 1
-    fi
+    _need_endpoint
     ws="$(_ws_id_or_passthrough "$ws")"
     local secs="${TIMEOUT:-120}"
     local ms=$(( secs * 1000 ))
@@ -64,10 +61,7 @@ send_repl_execute() {
 # $2=workspace. Exits 2 on a failed ack.
 send_repl_run_file() {
     local file="$1" ws="$2"
-    if ! ENDPOINT="$(resolve_endpoint)"; then
-        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path, ssh:target[/host], or (Windows) pipe:name (or \$SOT_FE_ENDPOINT)." >&2
-        exit 1
-    fi
+    _need_endpoint
     ws="$(_ws_id_or_passthrough "$ws")"
     # The restart spawns a fresh julia child before the ack; give it more room
     # than sot_send's 6s default (honour --timeout if the caller set it).

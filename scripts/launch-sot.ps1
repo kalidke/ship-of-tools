@@ -283,6 +283,18 @@ function Invoke-SelfUpdatePrelude {
         [switch]$AllowReexec
     )
     $script:launchNotices.Clear()
+    # A clone of main is the next release in progress, and a box should run a release: say so first, before any pull,
+    # and carry on (launch-sot.sh says the same).
+    if (-not $script:sotPinned -and (Test-Path (Join-Path $repo '.git'))) {
+        $savedBranchEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { $branchNow = git -C $repo symbolic-ref --short -q HEAD 2>$null } finally { $ErrorActionPreference = $savedBranchEAP }
+        if ($branchNow -eq 'main') {
+            $mainNote = 'this launcher runs from a clone of main, the next release in progress. A box should run a release; install one with: curl.exe -fsSL -o "$env:TEMP\sot-install.ps1" https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/install.ps1 , then powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\sot-install.ps1"'
+            Write-SupLog "self-update: $mainNote"
+            $script:launchNotices.Add($mainNote) | Out-Null
+        }
+    }
     if ($script:sotPinned) {
         # See docs/history/adr/0030-versioning-release-and-auto-update.md's
         # 2026-09-17 amendment: nothing here for a git pull to refresh.

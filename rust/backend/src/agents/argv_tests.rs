@@ -420,11 +420,14 @@ fn the_layer_rides_the_recipe_and_a_plain_claude_has_none() {
     let json: serde_json::Value = serde_json::from_str(&argv[at + 1]).unwrap();
     assert_eq!(json["hooks"].as_object().unwrap().len(), 3, "{json}");
     assert_eq!(argv.last().map(String::as_str), Some("/sot-session-start"));
-    // A caller's own `--settings` wins outright: its hooks are not added beside it, the skills still load.
+    // A caller's own `--settings` stays the one, with its own keys, and gains the hooks (the next test); the skills load.
     let caller = claude_recipe(&["--settings".to_string(), "{\"a\":1}".to_string()], None, Some(comm.path()));
     assert_eq!(caller[1], format!("--add-dir={}", layer.display()), "{caller:?}");
     assert_eq!(caller.iter().filter(|a| *a == "--settings").count(), 1, "{caller:?}");
-    assert!(!caller.iter().any(|a| a.contains("\"hooks\"")), "{caller:?}");
+    let at = caller.iter().position(|a| a == "--settings").unwrap();
+    let json: serde_json::Value = serde_json::from_str(&caller[at + 1]).unwrap();
+    assert_eq!(json["a"], 1, "{json}");
+    assert_eq!(json["hooks"].as_object().unwrap().len(), 3, "{json}");
 }
 
 /// A caller's own `--settings` JSON keeps its own keys and gains the recipe's hooks beside its own: per event the

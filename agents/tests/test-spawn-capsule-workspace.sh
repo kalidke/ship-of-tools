@@ -45,15 +45,16 @@ trap cleanup EXIT
 
 PASS=0
 FAIL=0
+SKIP=0
 check() {
     local desc="$1" fn="$2" rc
     "$fn"
     rc=$?
-    if [ "$rc" -eq 0 ]; then
-        echo "PASS: $desc"; PASS=$((PASS + 1))
-    else
-        echo "FAIL: $desc"; FAIL=$((FAIL + 1))
-    fi
+    case "$rc" in
+        0) echo "PASS: $desc"; PASS=$((PASS + 1)) ;;
+        2) echo "SKIP: $desc"; SKIP=$((SKIP + 1)) ;;
+        *) echo "FAIL: $desc"; FAIL=$((FAIL + 1)) ;;
+    esac
 }
 
 contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
@@ -149,7 +150,7 @@ run_spawn() {
     mkdir -p "$SPAWN_HOME"
     local errfile="$WORK/spawn-stderr-$SPAWNN.tmp"
     SPAWN_OUT="$(cd "$WORK" && in_row spawn-test bounded 30 env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION \
-        ${SPAWN_PATH:+PATH="$SPAWN_PATH"} GUARD_PIPE_SOCKET="$SOCK" XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
+        ${SPAWN_PATH:+PATH="$SPAWN_PATH"} ${SPAWN_SYSROOT:+SYSTEMROOT="$SPAWN_SYSROOT"} GUARD_PIPE_SOCKET="$SOCK" XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
         SOT_COMM_HOME="$SPAWN_HOME" SOT_COMM_SELF_FILE="$SPAWN_HOME/self.txt" \
         "$SPAWN" ${name:+--name "$name"} "$REPO_PATH" --endpoint "${SPAWN_EP:-unix:$SOCK}" "$@" 2>"$errfile")"
     SPAWN_RC=$?
@@ -261,7 +262,8 @@ case_occupied_root_refused_derived_name() {
 
 # stub_windows_tools map|fail — what a Windows box has on PATH for a pipe:
 # endpoint: the stand-in bridge (carries stdin to the stub daemon's socket and its
-# replies back), a SYSTEMROOT whose System32/whoami.exe answers the hello's account lookup, and cygpath. `map` acts
+# replies back), a SYSTEMROOT whose System32/whoami.exe answers the hello's account lookup (SPAWN_SYSROOT, given to the spawn call only,
+# as SPAWN_PATH is), and cygpath. `map` acts
 # as cygpath -m for this test (/x ->
 # C:/mapped/x; a C:/ path comes back unchanged; it takes the -m and -l the library passes); `fail` exits 1. Call it AFTER
 # start_stub_daemon: GUARD_PIPE_SOCKET names the current $SOCK.
@@ -281,7 +283,6 @@ EOF
     mkdir -p "$WORK/sysroot/System32"
     printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WORK/sysroot/System32/whoami.exe"
     chmod +x "$WORK/bin/cygpath" "$WORK/sysroot/System32/whoami.exe"
-    export SYSTEMROOT="$WORK/sysroot"
 }
 wire_root() { jq -r 'select(.op=="workspace.create") | .payload.project_root' "$REQLOG"; }
 
@@ -295,7 +296,7 @@ case_capsule_ready_over_pipe_endpoint() {
         "$(entry "$wsid" "$slug" capsule starting)" \
         "$(entry "$wsid" "$slug" capsule ready)"
     stub_windows_tools map
-    SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" \
+    SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" SPAWN_SYSROOT="$WORK/sysroot" \
         SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn spawn-pipe
     stop_stub_daemon
 
@@ -310,15 +311,15 @@ case_capsule_ready_over_pipe_endpoint() {
 # non-pipe daemon sends the path as resolved here.
 # A Windows caller (OS=Windows_NT) is stood in for only where comm-spawn reads its ancestry from /proc, as on Windows
 # (Cygwin's): with no /proc it refuses, rightly, a caller it cannot read.
-needs_proc() { [ -r "/proc/$$/stat" ] && return 0; echo "SKIP: $1: a Windows caller is stood in for only where /proc holds the ancestry"; return 1; }
+needs_proc() { [ -r "/proc/$$/stat" ] && return 0; echo "  $1: a Windows caller is stood in for only where /proc holds the ancestry"; return 1; }
 case_windows_caller_nonpipe_daemon_keeps_root() {
-    needs_proc "Windows caller, non-pipe daemon" || return 0
+    needs_proc "Windows caller, non-pipe daemon" || return 2
     local wsid="ws-win" slug="win1"
     start_stub_daemon "$wsid" "$slug" \
         "$(entry "$wsid" "$slug" capsule starting)" \
         "$(entry "$wsid" "$slug" capsule ready)"
     stub_windows_tools map
-    OS=Windows_NT SPAWN_PATH="$WORK/bin:$PATH" \
+    OS=Windows_NT SPAWN_PATH="$WORK/bin:$PATH" SPAWN_SYSROOT="$WORK/sysroot" \
         SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn spawn-win
     stop_stub_daemon
 
@@ -330,10 +331,10 @@ case_windows_caller_nonpipe_daemon_keeps_root() {
 # A failed conversion refuses before the derived-name claim, the earliest
 # registry write: nothing claimed, nothing to roll back.
 case_pipe_conversion_failure_refuses_before_any_write() {
-    needs_proc "pipe: endpoint, cygpath fails" || return 0
+    needs_proc "pipe: endpoint, cygpath fails" || return 2
     start_stub_daemon ws-cvt cvt1 "$(entry ws-cvt cvt1 capsule ready)"
     stub_windows_tools fail
-    OS=Windows_NT SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" \
+    OS=Windows_NT SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" SPAWN_SYSROOT="$WORK/sysroot" \
         SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn ""
     stop_stub_daemon
     [ "$SPAWN_RC" -eq 1 ] || { echo "  exited $SPAWN_RC (want 1): $SPAWN_ERR"; return 1; }
@@ -351,7 +352,7 @@ case_pipe_occupied_root_in_daemon_spelling_refused() {
     PRE_CREATE_LIST="$(REPO_PATH="C:/mapped$(realpath "$REPO_PATH")" entry ws-occ repo capsule ready)"
     start_stub_daemon ws-occ repo "$(entry ws-occ repo capsule ready)"
     stub_windows_tools map
-    SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" \
+    SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" SPAWN_SYSROOT="$WORK/sysroot" \
         SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn ""
     stop_stub_daemon
     PRE_CREATE_LIST=""
@@ -448,5 +449,5 @@ check "a skipped case is counted as a skip, never as a pass" case_a_skipped_case
 check "no case leaves SYSTEMROOT set for the cases after it" case_system_root_is_the_suites_own
 
 echo ""
-echo "$PASS passed, $FAIL failed"
+echo "$PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]

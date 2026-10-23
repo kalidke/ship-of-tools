@@ -24,10 +24,7 @@ sot_send() {
 # attaching `target` from --fe when set, and send it to the daemon.
 send_fe_command() {
     local fe_cmd="$1" args_json="$2"
-    if ! ENDPOINT="$(resolve_endpoint)"; then
-        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path, ssh:target[/host], or (Windows) pipe:name (or \$SOT_FE_ENDPOINT)." >&2
-        exit 1
-    fi
+    _need_endpoint
     # $FE (fe@<host>) and fe_cmd are both id-shaped tokens (an address;
     # a small fixed set of literal verbs from the case
     # dispatch below) -- neither can legitimately start with "/", so both
@@ -118,16 +115,20 @@ send_fe_command() {
     esac
 }
 
-# Resolve ENDPOINT in the CALLER's shell (never from inside a $( ) subshell),
-# reporting an unreachable daemon as its own outcome. That distinction is
+# Resolve ENDPOINT in the CALLER's shell (never from inside a $( ) subshell), once per run: the dispatcher calls it for
+# a verb that needs the endpoint before it sends (`docs`, `repl run`: the path's spelling), and the sender calls it
+# again at no cost. An unreachable daemon is reported as its own outcome. That distinction is
 # load-bearing: a transport failure and a dead REPL look identical from a
 # failing CLI and point at opposite fixes — one is your endpoint, the other is
 # the kernel. A stale tcp: endpoint aimed at a dead port lands here.
+_ENDPOINT_FOUND=""
 _need_endpoint() {
+    [ -z "$_ENDPOINT_FOUND" ] || return 0
     if ! ENDPOINT="$(resolve_endpoint)"; then
         echo "ERROR: could not find the sotd daemon — this is a TRANSPORT problem, not a REPL problem. Set --endpoint unix:/path, ssh:target[/host], or (Windows) pipe:name (or \$SOT_FE_ENDPOINT). A stale tcp: endpoint pointing at a dead port fails exactly like this." >&2
         exit 1
     fi
+    _ENDPOINT_FOUND=1
 }
 
 # Fetch workspace.list once and echo the row matching $1 (by workspace_id,

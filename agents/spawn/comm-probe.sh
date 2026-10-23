@@ -262,17 +262,13 @@ probe_status() {
 
 # --- serve -------------------------------------------------------------------
 
-# probe_inbox_stamp — a cheap size of the per-handle inbox file. Only a CHANGE
-# here makes the loop spend a comm-poll.sh; equality is the common case and
-# costs one stat.
+# probe_inbox_stamp HANDLE — the count of lines in the handle's inbox, as the daemon counts them (`sotd comm unread`,
+# whose first field is the total); empty when it cannot say. Only a CHANGE here makes the loop spend a comm-poll.sh;
+# equality is the common case and costs one call.
 probe_inbox_stamp() {
-    local handle="$1" total=0 f sz
-    f="$INBOX_DIR/$handle.jsonl"
-    if [ -f "$f" ]; then
-        sz="$(wc -c < "$f" 2>/dev/null)" || sz=0
-        total=${sz:-0}
-    fi
-    printf '%s\n' "$total"
+    local total
+    total="$(sot_comm unread "$1" 2>/dev/null | sed -n 1p)" || total=""
+    printf '%s\n' "${total%% *}"
 }
 
 # probe_field LINE KEY — the @handle following KEY in a PROBE line, without its

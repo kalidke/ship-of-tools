@@ -68,6 +68,35 @@ pub(super) fn hooks_settings(comm_home: &Path) -> Value {
     json!({ "hooks": events })
 }
 
+/// `extra` with the recipe's `hooks` merged into the caller's one `--settings` value (either spelling) when that value is
+/// a JSON object: the caller's own keys stay as they are, and per event the caller's groups come first, then the
+/// recipe's. `None`, to pass `extra` as given, when there is no such flag, more than one, a value that is not a JSON
+/// object (a file path, which would need reading), or a `hooks` of the caller's that is not an object of arrays.
+pub(super) fn merge_caller_settings(extra: &[String], hooks: &Value) -> Option<Vec<String>> {
+    let mut at = extra.iter().enumerate().filter(|(_, a)| a.as_str() == "--settings" || a.starts_with("--settings="));
+    let (flag, _) = at.next()?;
+    if at.next().is_some() {
+        return None;
+    }
+    let (value_at, prefix) = match extra[flag].strip_prefix("--settings=") {
+        Some(_) => (flag, "--settings="),
+        None => (flag + 1, ""),
+    };
+    let value = extra.get(value_at)?.strip_prefix(prefix)?;
+    let Value::Object(mut object) = serde_json::from_str::<Value>(value).ok()? else {
+        return None;
+    };
+    let ours = hooks.get("hooks")?.as_object()?;
+    let theirs = object.entry("hooks").or_insert_with(|| json!({})).as_object_mut()?;
+    for (event, groups) in ours {
+        let slot = theirs.entry(event.clone()).or_insert_with(|| json!([])).as_array_mut()?;
+        slot.extend(groups.as_array()?.iter().cloned());
+    }
+    let mut merged = extra.to_vec();
+    merged[value_at] = format!("{prefix}{}", Value::Object(object));
+    Some(merged)
+}
+
 /// The one `--settings` JSON: the auto-memory object and the hooks object, merged; `None` when both are.
 pub(super) fn merged_settings(memory: Option<String>, hooks: Option<Value>) -> Option<String> {
     let Some(hooks) = hooks else {
