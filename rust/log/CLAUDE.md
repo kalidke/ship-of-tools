@@ -55,8 +55,7 @@ true after the merge of the leg into the supervisor.
   command answers from its record, another command under it is `id_conflict`, a command naming another voyage is
   `stale_voyage`. `end_run` is admitted only while an agent runs and answers `record_verified` once it has ended, so a
   `reset` sent after the answer is admitted; an acknowledged `end_run` is recorded as a requested end on the voyage
-  before the answer even when the agent ended first (`mark_end_requested`), so a resume rests; a failed attach
-  transport (`ExitKind::TransportFailed`) is not a requested end and ends the supervisor terminal; a supervisor that
+  before the answer even when the agent ended first (`mark_end_requested`), so a resume rests; a supervisor that
   goes terminal sends its running agent `Stop` first; `reset` only from `ended_no_respawn`; `stop` ends the agent and the
   process (exit 0, or 69 when it was terminal). Nothing outlives the supervisor to reconcile: a crash loses operation
   records, and a client that lost a reply reads status.
@@ -132,6 +131,16 @@ true after the merge of the leg into the supervisor.
   denied, a socket path that can never fit) or when the row's socket has been absent, though the daemon answers, for
   120 s running; anything else is retried, and a daemon that cannot be reached starts that window over. The drawer's
   attach (dormant until 6c-2 deletes it) names a row no row has, so it ends terminal after those 120 s.
+- A row listener that dies (a permanent accept failure) does not leave a running agent nobody can reach. The supervisor
+  watches it every 100 ms and binds it once more; a second death, or a bind that fails, ends the live run unrequested
+  (`Command::Stop`, no request recorded) and the supervisor exits 75, so rows' watchdog decides through its one restart
+  budget (`tests/row_supervisor.rs::a_row_listener_that_keeps_dying_ends_the_supervisor_with_75`, over the test seam
+  `SOT_TEST_ROW_LISTENER_DIES`). Limit: the watch polls, so a viewer that dials in the gap sees a refused connection and
+  retries.
+- An end retires the row's request queue. When the loop leaves its main loop (or the agent could not start), `RowRun::end_run`
+  closes admission and answers every queued request `run ended`; a request that arrives after is answered `run ended`
+  at once, until the next run starts, so input sent to an ending or ended run never times out as `delivery unknown`
+  (`tests/capsule/row_run.rs::input_sent_while_a_requested_end_is_in_progress_is_answered_run_ended`).
 - A bind failure of the row socket ends the supervisor with 75 (`EXIT_AGENT_NOT_STARTED`), before any agent starts:
   it is a row that did not start, which rows' watchdog is to count against its one restart budget, ending the row terminal
   only when the failure lasts through it. Limit: rows' watchdog does not yet restart a supervisor that died before its
@@ -189,7 +198,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `tests/`: integration and whole-process tests, by target:
   - `capsule/`: `capsule::run` over a real producer or a fake one: the run to its end, `ended` and the screen file
     (`main.rs`, `no_record.rs`, `screen_io.rs`, `output_end.rs`), what a `RowClient` on the row socket sees of a run
-    (`row_run.rs`, over `rowside.rs`), the Unix and Windows mechanisms (`unix_only.rs`, `windows_only.rs`).
+    (`row_run.rs`, over `rowside.rs`), the Unix and Windows mechanisms (`unix_only.rs`, `windows_only.rs`, which holds the ConPTY snapshot-fidelity proof on the row socket).
   - the row socket: `row.rs` (a fake loop), `row_limits.rs`, `row_flood.rs`, `row_switch.rs`, `row_pipe.rs` (Windows),
     `row_supervisor.rs` (a real supervisor: the row socket serves, and no attach lane is bound), `fe_attach.rs`
     (`FeAttachClient`), `fe_client/` (the client against a real supervisor, and the headless client).

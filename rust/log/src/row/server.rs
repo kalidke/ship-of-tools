@@ -38,6 +38,18 @@ pub struct RowServer {
     threads: Threads,
 }
 
+/// Test seam: `SOT_TEST_ROW_LISTENER_DIES=first` ends this process's first acceptor, and `always` every one, at once, as
+/// a permanent listener failure would. Inert unless named.
+fn listener_dies_for_test() -> bool {
+    static STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = STARTED.fetch_add(1, Ordering::AcqRel);
+    match std::env::var("SOT_TEST_ROW_LISTENER_DIES").as_deref() {
+        Ok("always") => true,
+        Ok("first") => n == 0,
+        _ => false,
+    }
+}
+
 /// Keeps a connection's thread to be joined at shutdown, and forgets the ones that have ended.
 fn keep(threads: &Threads, handle: std::thread::JoinHandle<()>) {
     let mut all = threads.lock().unwrap_or_else(|p| p.into_inner());
@@ -151,6 +163,11 @@ impl RowServer {
         Ok(Self { path: path.to_path_buf(), run, stop, accept: Some(accept), threads })
     }
 
+    /// The acceptor ended without a shutdown: a permanent listener failure, after which no viewer can connect.
+    pub fn listener_died(&self) -> bool {
+        !self.stop.load(Ordering::Acquire) && self.accept.as_ref().is_some_and(|t| t.is_finished())
+    }
+
     /// Stops accepting, ends every connection and removes the socket.
     pub fn shutdown(mut self) {
         self.end();
@@ -185,6 +202,9 @@ impl Drop for RowServer {
 #[cfg(unix)]
 fn accept_loop(listener: std::os::unix::net::UnixListener, run: Arc<RowRun>, stop: Arc<AtomicBool>, threads: Threads, own_uid: u32) {
     use std::os::unix::io::AsRawFd;
+    if listener_dies_for_test() {
+        return;
+    }
     while !stop.load(Ordering::Acquire) {
         #[allow(
             clippy::disallowed_methods,
@@ -239,6 +259,9 @@ fn accept_loop(
     stop: Arc<AtomicBool>,
     threads: Threads,
 ) {
+    if listener_dies_for_test() {
+        return;
+    }
     while !stop.load(Ordering::Acquire) {
         match listener.accept() {
             Ok(stream) => {

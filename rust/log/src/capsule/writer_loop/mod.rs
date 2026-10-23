@@ -69,6 +69,10 @@ pub fn run<P: Producer>(config: CapsuleConfig, commands: mpsc::Receiver<Command>
         ControlFlow::Break(summary) => return Ok(summary),
     };
     let (leg, exit_kind) = main_loop(&commands, leg)?;
+    // The run is over for the row socket: its queued requests are answered `run ended` and no later one is admitted.
+    if let Some(row) = &leg.row {
+        row.end_run();
+    }
     // Captured HERE, the instant the main loop concludes for either exit kind, not after the teardown machinery
     // below (job reap, ConPTY drain, the aggregate deadline, a final wait), which alone can outlast the producer's own
     // life. For ProducerExited the producer is already dead by definition; for Requested it is about to be forcibly

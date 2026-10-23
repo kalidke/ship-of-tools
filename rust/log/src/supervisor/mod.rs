@@ -192,7 +192,14 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     // The row socket is the way in: a row nobody can reach is not worth an agent, so a bind failure ends this supervisor
     // before one starts, as a row that did not start: exit 75, which rows' watchdog counts against its one restart budget
     // (a failure that lasts ends the row terminal there, one that passes costs a restart).
-    let row_server = match row_socket_path(&h).and_then(|path| RowServer::bind(&path, Arc::clone(&row))) {
+    let row_path = match row_socket_path(&h) {
+        Ok(path) => path,
+        Err(e) => {
+            note(format_args!("could not bind the row socket: {e}"));
+            return Ok(EXIT_AGENT_NOT_STARTED);
+        }
+    };
+    let row_server = match RowServer::bind(&row_path, Arc::clone(&row)) {
         Ok(server) => server,
         Err(e) => {
             note(format_args!("could not bind the row socket: {e}"));
@@ -206,13 +213,59 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             .spawn(move || authority::serve(lane, &shared))
             .map_err(crate::Error::Io)?
     };
+    // A listener that dies is bound once more; one that dies again, or cannot be bound, ends the run unrequested.
+    let watch_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let row_watch = {
+        let (shared, row, stop) = (Arc::clone(&shared), Arc::clone(&row), Arc::clone(&watch_stop));
+        let path = row_path;
+        std::thread::Builder::new()
+            .name("row-watch".into())
+            .spawn(move || watch_row_listener(row_server, &path, &row, &shared, &stop))
+            .map_err(crate::Error::Io)?
+    };
     let code = drive(&config, &shared, &row);
     shared.finish();
-    drop(row_server);
+    watch_stop.store(true, std::sync::atomic::Ordering::Release);
+    if row_watch.join().is_err() {
+        note(format_args!("the row listener's watch panicked"));
+    }
     if lane_thread.join().is_err() {
         note(format_args!("the lane's thread panicked"));
     }
     Ok(code)
+}
+
+/// Holds the row server for the supervisor's life and watches its acceptor. A dead acceptor is replaced once; a second
+/// death or a failed bind is `Shared::row_lost`, which ends the run unrequested so rows' watchdog decides through its one
+/// restart budget. Returns, dropping the server, when `stop` is set.
+fn watch_row_listener(
+    mut server: RowServer,
+    path: &Path,
+    row: &Arc<RowRun>,
+    shared: &Shared,
+    stop: &std::sync::atomic::AtomicBool,
+) {
+    let mut rebound = false;
+    while !stop.load(std::sync::atomic::Ordering::Acquire) {
+        if server.listener_died() {
+            note(format_args!("the row socket's listener died"));
+            drop(server);
+            if rebound {
+                shared.row_lost();
+                return;
+            }
+            rebound = true;
+            match RowServer::bind(path, Arc::clone(row)) {
+                Ok(s) => server = s,
+                Err(e) => {
+                    note(format_args!("could not bind the row socket again: {e}"));
+                    shared.row_lost();
+                    return;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// The main thread's life: discover the voyage, run the agent, and after each run wait for what a client asks.
@@ -299,6 +352,9 @@ enum RunEnd {
 /// One run of the agent, to its end, on this thread: the kernel's parent-death signal on Linux follows the thread
 /// that forks the agent, and this one lives as long as the process.
 fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, voyage: &str, agent_ran: bool) -> RunEnd {
+    if shared.is_row_lost() {
+        return RunEnd::Unasked(EXIT_AGENT_NOT_STARTED);
+    }
     let (kill, commands) = mpsc::channel();
     let signals = Arc::new(RunSignals::default());
     // Each agent start is a run of its own on the row socket, ordered by its UUIDv7.
@@ -321,6 +377,10 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, voyag
         if let Err(e) = crate::capsule::mark_end_requested(&voyage_root_path(&config.state_dir, voyage), "end_run") {
             note(format_args!("could not record the requested end: {e}"));
         }
+    }
+    // The row socket was lost, so the run was told to stop: a row that did not start, whatever the agent did.
+    if shared.is_row_lost() {
+        return RunEnd::Unasked(EXIT_AGENT_NOT_STARTED);
     }
     match result {
         Ok(summary) => match summary.exit_kind {

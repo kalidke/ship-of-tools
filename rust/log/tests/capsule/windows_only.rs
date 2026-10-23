@@ -104,6 +104,150 @@ fn exit_code_high_bit_status_preserved_through_ended() {
 }
 
 
+/// The snapshot a freshly attached viewer is sent: its pieces, joined, up to the one flagged last.
+fn collect_snapshot(client: &mut sot_log::row::RowClient, within: Duration) -> Vec<u8> {
+    use sot_log::row::RowEvent;
+    let deadline = Instant::now() + within;
+    let mut bytes = Vec::new();
+    while Instant::now() < deadline {
+        match client.next_event(Duration::from_millis(100)).expect("the row stays up") {
+            Some(RowEvent::Snapshot { bytes: piece, last }) => {
+                bytes.extend(piece);
+                if last {
+                    return bytes;
+                }
+            }
+            Some(RowEvent::Output(_)) => panic!("output arrived before the snapshot ended"),
+            _ => {}
+        }
+    }
+    panic!("no snapshot within {within:?}");
+}
+
+/// Test 7: a viewer that attaches mid-stream, on a producer emitting escape sequences and multibyte UTF-8
+/// continuously, is sent a snapshot and then exactly the bytes after it: the output of a viewer attached from the start
+/// is its from-scratch reference. The producer is `sot-conpty-helper --script` (a deterministic byte emitter that
+/// `--linger`s, so it is alive for every step and the run ends by the test's `Kill`).
+///
+/// Three things are proved:
+/// 1. The late viewer's output is the exact byte-for-byte tail of the reference viewer's total output: nothing was
+///    dropped, duplicated or reordered across the snapshot's cut.
+/// 2. Its snapshot is byte-identical to a checkpoint computed independently by feeding a fresh parser the reference's
+///    own start snapshot and the prefix before the cut (checkpoint bytes are a pure function of screen state).
+/// 3. The snapshot carries a nonempty scrollback ring, and a parser restored from it and fed the suffix reaches the
+///    same checkpoint as a from-scratch parser fed the whole reference stream.
+///
+/// A resync would send a viewer a second snapshot and break the reference, so the reference viewer is read
+/// continuously and the test fails if it sees one.
+#[test]
+fn attach_mid_stream_snapshot_reproduces_reference_screen() {
+    use sot_log::row::RowEvent;
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let side = rowside::RowSide::new();
+    let argv = vec![HELPER_EXE.to_string(), "--script".to_string(), "1000".to_string(), "--linger".to_string()];
+    let (rows, cols) = (25u16, 80u16);
+    let mut cfg = config(dir.path(), "midattach1", argv, cols, rows);
+    cfg.signals = Some(Arc::clone(&side.signals));
+    let (tx, rx) = mpsc::channel();
+    let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
+
+    // The reference: a viewer attached at the very start, read continuously until told to stop.
+    let mut early = side.watcher(cols, rows);
+    let early_snapshot = collect_snapshot(&mut early, Duration::from_secs(20));
+    let stop = Arc::new(AtomicBool::new(false));
+    let reference = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut frames: Vec<Vec<u8>> = Vec::new();
+            let mut resynced = false;
+            while !stop.load(Ordering::Acquire) {
+                match early.next_event(Duration::from_millis(100)).expect("the reference viewer stays up") {
+                    Some(RowEvent::Output(bytes)) => frames.push(bytes),
+                    Some(RowEvent::Snapshot { .. }) => resynced = true,
+                    _ => {}
+                }
+            }
+            (frames, resynced)
+        })
+    };
+
+    // Attach WHILE the producer is still emitting, with no attempt to engineer a cut point: `is_ground`'s own unit
+    // tests cover that. Long enough that the scrollback assertion below has real content to find (one line roughly
+    // every 59 ms, so a couple hundred lines scroll off a 25-row screen in 15 s).
+    std::thread::sleep(Duration::from_millis(15_000));
+    let mut late = side.watcher(cols, rows);
+    let snapshot = collect_snapshot(&mut late, Duration::from_secs(20));
+
+    // Let more output flow after the cut, then end the run and read until the row has been quiet for a second.
+    let mut suffix: Vec<u8> = Vec::new();
+    let read_for = |late: &mut sot_log::row::RowClient, suffix: &mut Vec<u8>, quiet: Duration, at_most: Duration| {
+        let (start, mut last_output) = (Instant::now(), Instant::now());
+        while start.elapsed() < at_most && last_output.elapsed() < quiet {
+            match late.next_event(Duration::from_millis(100)).expect("the late viewer stays up") {
+                Some(RowEvent::Output(bytes)) => {
+                    suffix.extend(bytes);
+                    last_output = Instant::now();
+                }
+                Some(RowEvent::Snapshot { .. }) => panic!("the late viewer was resynced"),
+                _ => {}
+            }
+        }
+    };
+    read_for(&mut late, &mut suffix, Duration::from_secs(60), Duration::from_millis(300));
+    tx.send(Command::Kill).unwrap();
+    read_for(&mut late, &mut suffix, Duration::from_secs(1), Duration::from_secs(30));
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return within the teardown bound")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+    stop.store(true, Ordering::Release);
+    let (early_frames, resynced) = reference.join().unwrap();
+    assert!(!resynced, "the reference viewer was resynced, so it is no reference");
+    let total: Vec<u8> = early_frames.iter().flatten().copied().collect();
+
+    assert!(!suffix.is_empty(), "expected at least some output after the snapshot");
+    assert!(suffix.len() <= total.len(), "the late viewer received more output than the reference ever saw");
+    let split = total.len() - suffix.len();
+    assert_eq!(
+        &total[split..],
+        suffix.as_slice(),
+        "the output after the snapshot must be the exact byte-for-byte tail of the reference stream"
+    );
+    let prefix = &total[..split];
+
+    // The snapshot against an independently replayed prefix. The reference parser's scrollback capacity must match the
+    // capsule's own (`CAPSULE_SCROLLBACK_ROWS`), or it would disagree about how much of the ring survives.
+    let mut at_cut = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
+    at_cut.restore_screen(&early_snapshot).expect("the early snapshot must decode");
+    at_cut.process(prefix);
+    assert_eq!(
+        snapshot,
+        at_cut.screen().checkpoint().expect("the prefix screen must be representable"),
+        "the snapshot must be byte-identical to an independently computed checkpoint of the same prefix"
+    );
+
+    // The scrollback ring must have arrived: an empty one on every attach was the defect this guards.
+    let mut ring = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
+    ring.restore_screen(&snapshot).expect("the snapshot must decode");
+    ring.screen_mut().set_scrollback(usize::MAX);
+    assert!(ring.screen().scrollback() > 0, "the snapshot must carry a nonempty scrollback ring");
+
+    // The full round trip: restored from the snapshot and fed the suffix, a parser reaches the checkpoint a from-scratch
+    // parser reaches on the whole reference stream.
+    let mut restored = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
+    restored.restore_screen(&snapshot).expect("the snapshot must decode");
+    restored.process(&suffix);
+    let mut whole = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
+    whole.restore_screen(&early_snapshot).expect("the early snapshot must decode");
+    whole.process(&total);
+    assert_eq!(
+        restored.screen().checkpoint().expect("the restored screen must be representable"),
+        whole.screen().checkpoint().expect("the reference screen must be representable"),
+        "a viewer attached mid-stream must reach the screen a viewer attached from the start reached"
+    );
+}
+
 /// Spawn `sot-conpty-helper spawn-breakaway cmd.exe /c timeout 30`
 /// with piped stdin/stdout — blocked on its own "go" read (see the
 /// helper's own module doc) until the caller sends one, so the

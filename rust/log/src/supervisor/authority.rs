@@ -49,6 +49,8 @@ struct Inner {
     terminal_since: Option<Instant>,
     /// The main thread is done; the lane's thread ends.
     exiting: bool,
+    /// The row socket's listener died and could not be bound again: nobody can reach the row.
+    row_lost: bool,
 }
 
 pub(super) struct Shared {
@@ -86,6 +88,7 @@ impl Shared {
                 stop: None,
                 terminal_since: None,
                 exiting: false,
+                row_lost: false,
             }),
             changed: Condvar::new(),
         }
@@ -192,6 +195,21 @@ impl Shared {
     /// An `end_run` is in flight (a stop is not one).
     pub(super) fn end_run_asked(&self) -> bool {
         self.lock().ending.is_some()
+    }
+
+    /// The row socket is gone for good: the live run, if any, is told to end with no request recorded, and no run
+    /// starts after it.
+    pub(super) fn row_lost(&self) {
+        let mut inner = self.lock();
+        inner.row_lost = true;
+        if let Some(run) = &inner.run {
+            let _ = run.kill.send(Command::Stop);
+        }
+        self.changed.notify_all();
+    }
+
+    pub(super) fn is_row_lost(&self) -> bool {
+        self.lock().row_lost
     }
 
     pub(super) fn stop_asked(&self) -> bool {

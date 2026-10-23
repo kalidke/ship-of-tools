@@ -43,7 +43,12 @@ pub(super) fn start<P: Producer>(
     let spawn_result = spawn_producer::<P>(config);
     let mut producer = match spawn_result {
         Ok(p) => p,
-        Err(reason) => return spawn_failure(config, reason).map(ControlFlow::Break),
+        Err(reason) => {
+            if let Some(row) = &row {
+                row.end_run();
+            }
+            return spawn_failure(config, reason).map(ControlFlow::Break);
+        }
     };
     // The supervisor's anti-flap counter judges stability on the PRODUCER's lifetime, never on how long this
     // process's own teardown happens to take afterward. Captured the instant a real spawn succeeds (not before the
