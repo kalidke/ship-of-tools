@@ -85,8 +85,22 @@ fn a_lost_pointer_does_not_resurrect_a_requested_end() {
     );
     assert_eq!(rested.phase, SupervisorPhase::EndedNoRespawn, "a requested end is not resurrected");
     assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 1, "no second agent started");
+
+    // The resting supervisor dies and the watchdog's next `--resume` reads the pointer the first one left: the end
+    // is still read, never lost with the pointer.
+    second.child_mut().kill().unwrap();
+    second.child_mut().wait().unwrap();
+    let mut third = spawn_supervisor(&state_dir, "--resume", &argv);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let rested = poll_until(
+        || Some(status(&conn)).filter(|s| s.phase != SupervisorPhase::Starting),
+        Duration::from_secs(30),
+        "the second resumed supervisor to settle",
+    );
+    assert_eq!(rested.phase, SupervisorPhase::EndedNoRespawn, "the requested end survives a second restart");
+    assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 1, "still no second agent");
     stop(&conn);
-    let _ = wait_for_exit(&mut second, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut third, Duration::from_secs(30));
 }
 
 /// The supervisor-epoch rule's whole Linux safety argument, in
