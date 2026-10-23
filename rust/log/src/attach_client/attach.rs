@@ -158,6 +158,8 @@ impl AttachWorker {
             return false;
         }
         self.shared.queued_input.fetch_add(bytes.len(), Ordering::AcqRel);
+        // The answer to the most recent input: none until this one is answered.
+        *self.shared.outcome.lock().unwrap_or_else(|p| p.into_inner()) = None;
         if self.commands.send(Command::Input(bytes)).is_err() {
             return false;
         }
@@ -181,6 +183,7 @@ impl AttachWorker {
         self.shared.recorded.load(Ordering::Acquire)
     }
 
+    /// The row's answer to the most recent input, `None` while it is unanswered.
     pub fn last_input_outcome(&self) -> Option<InputOutcome> {
         *self.shared.outcome.lock().unwrap_or_else(|p| p.into_inner())
     }
