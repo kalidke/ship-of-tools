@@ -24,14 +24,11 @@ async fn a_busy_pane_over_a_slow_link_converges() {
     relay.throttle(256 * 1024);
 
     let (_woke, wake) = wake_flag_for_test();
-    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut client = FeAttachClient::attach(
         daemon_lane_endpoint(&relay),
         target,
         80,
         24,
-        "test-fe".to_string(),
-        "test-fe".to_string(),
-        None,
         wake,
     )
     .expect("attach over a throttled relay");
@@ -137,14 +134,11 @@ async fn headless_write_while_a_bridged_client_is_driving_demotes_it_without_dup
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
-    let mut driver = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut driver = FeAttachClient::attach(
         daemon_lane_endpoint(&relay),
         target,
         80,
         24,
-        "lb8-driver".to_string(),
-        "lb8-driver".to_string(),
-        None,
         wake,
     )
     .expect("attach the driving client through the bridge");

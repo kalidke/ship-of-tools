@@ -73,8 +73,8 @@ fn a_paste_the_agent_has_not_read_does_not_stop_its_output() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    // The agent writes more than any buffer holds before it reads a byte, then reports how much it was given.
-    let script = "stty raw -echo; head -c 600000 /dev/zero | tr '\\0' x; n=$(head -c 200000 | wc -c); echo; echo \"AGENT-READ:$n:END\"; exec cat";
+    // The agent writes more than the run's output queue holds (8 MiB) before it reads a byte, then reports how much it was given.
+    let script = "stty raw -echo; head -c 12000000 /dev/zero | tr '\\0' x; n=$(head -c 200000 | wc -c); echo; echo \"AGENT-READ:$n:END\"; exec cat";
     let _supervisor = Supervisor(supervise(&state_dir, runtime.path(), &["/bin/sh", "-c", script]));
     let path = sot_log::row::socket_path_in(runtime.path(), &state_dir_hash(&state_dir)).expect("the path fits");
     let deadline = Instant::now() + Duration::from_secs(30);

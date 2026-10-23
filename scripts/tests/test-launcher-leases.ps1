@@ -144,11 +144,11 @@ try {
                 $regOut = (& reg query 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters' /v BootId) -join ' '
                 $bootDec = ''
                 if ($regOut -match 'BootId\s+REG_DWORD\s+0x([0-9a-fA-F]+)') { $bootDec = [string][Convert]::ToUInt32($Matches[1], 16) }
-                $goldenPrefix = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + $bootDec + '","created":'
+                $goldenPrefix = '{"v":4,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + $bootDec + '","created":'
                 # The hello that precedes it (ADR 0049, User isolation): a handoff naming this computer and the OS account.
                 $helloHost11 = if ($env:SOT_SELF_HOST) { $env:SOT_SELF_HOST } else { ([System.Net.Dns]::GetHostName().Split('.')[0]).ToLowerInvariant() }
                 $sid11 = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-                $goldenHello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":4,"app_version":"launcher","host":"' + $helloHost11 + '","os_user":"' + $sid11 + '","role":"handoff"}}'
+                $goldenHello = '{"v":4,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":4,"app_version":"launcher","host":"' + $helloHost11 + '","os_user":"' + $sid11 + '","role":"handoff"}}'
                 $wait11a = [System.Diagnostics.Stopwatch]::StartNew()
                 do {
                     $lines11a = @(Get-Content -LiteralPath $log11a -ErrorAction SilentlyContinue)
@@ -183,7 +183,7 @@ try {
                     Start-Sleep -Milliseconds 50
                 } while ($wait11a.ElapsedMilliseconds -lt 10000)
                 Check '11a: at least 4 log lines arrive within 10 s' ($lines11a.Count -ge 4) "lines: $($lines11a -join ' | ')"
-                $handover = '{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
+                $handover = '{"v":4,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
                 Check '11a: the handover line follows' (($lines11a.Count -ge 3) -and ($lines11a[2] -ceq $handover)) "lines: $($lines11a -join ' | ')"
                 Check '11a: then eof' (($lines11a.Count -ge 4) -and ($lines11a[3] -ceq 'eof')) "lines: $($lines11a -join ' | ')"
                 Check '11a: the lease list is empty after Close-SotLeases' ($global:SotLeases.Count -eq 0) "count $($global:SotLeases.Count)"
@@ -326,7 +326,7 @@ try {
                     if ($lines11g.Count -ge 3) { break }
                     Start-Sleep -Milliseconds 50
                 } while ($wait11g.ElapsedMilliseconds -lt 10000)
-                $handover11g = '{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
+                $handover11g = '{"v":4,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
                 Check '11g: the daemon then reads the handover' (($lines11g.Count -ge 3) -and ($lines11g[2] -ceq $handover11g)) "lines: $($lines11g -join ' | ')"
                 # Close-SotLeases closes no kept request: a second on, the bridge runs and the fake has read no eof.
                 $alive11g = $child11g -and -not $child11g.WaitForExit(1000)
@@ -460,7 +460,7 @@ try {
             & $inner16
             Start-Sleep -Milliseconds 500
             $lines16 = @(Get-Content -LiteralPath $log16 -ErrorAction SilentlyContinue)
-            $handover16 = '{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
+            $handover16 = '{"v":4,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
             Check '16e: the re-invoked copy hands over the caller''s lease' (($lines16.Count -ge 3) -and ($lines16[2] -ceq $handover16)) "lines: $($lines16 -join ' | ')"
             Check '16e: and then closes it (eof)' (($lines16.Count -ge 4) -and ($lines16[3] -ceq 'eof')) "lines: $($lines16 -join ' | ')"
             Check '16e: the caller''s list is empty afterwards' ($global:SotLeases.Count -eq 0) "count $($global:SotLeases.Count)"

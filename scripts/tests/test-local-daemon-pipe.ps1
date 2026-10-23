@@ -9,7 +9,7 @@
         # reads. After an accepted hello the daemon reads on, so (iii) and (v) are answered with any buffer. After a
         # refusal it reads no more and holds the pipe open until the refusal is read, so (iv) needs an inbound buffer
         # that holds the request: with less, the transport hangs in its write.
-        $head5c = '{"v":3,"id":1,"kind":"req","op":"version.query","payload":{"pad":"'
+        $head5c = '{"v":4,"id":1,"kind":"req","op":"version.query","payload":{"pad":"'
         $tail5c = '"}}'
         foreach ($case5c in @(@(16384, $new5c, 'iii'), @(16384, $old5c, 'iv'), @(1048576, $new5c, 'v'))) {
             $len5c = $case5c[0]
@@ -64,7 +64,7 @@
             $wedged5c.Write($hb5c, 0, $hb5c.Length)
             $text5c = 'x' * 4096
             for ($k5c = 1; $k5c -le 3; $k5c++) {
-                $send5c = '{"v":3,"id":2,"kind":"req","op":"agent.send","payload":{"from":"t-sender","to":"","text":"' + $text5c + '"}}'
+                $send5c = '{"v":4,"id":2,"kind":"req","op":"agent.send","payload":{"from":"t-sender","to":"","text":"' + $text5c + '"}}'
                 $null = Invoke-PipeTransport $pipe5c agent.send @($new5c, $send5c)
             }
             $gaveUp5c = $false

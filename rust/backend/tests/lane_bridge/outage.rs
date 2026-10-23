@@ -1,7 +1,7 @@
 //! A blackhole, a daemon outage past the window, and a terminal row after the window.
 
 use super::*;
-use sot_log::attach_client::rules::HEALTH_WINDOW;
+use sot_log::attach_client::attach::UNREACHABLE_WINDOW as HEALTH_WINDOW;
 
 // -----------------------------------------------------------------------
 // (iv)+(v) A blackhole is unreachable and retried, never terminal; a cut
@@ -22,14 +22,11 @@ async fn a_blackhole_is_unreachable_and_retried() {
     relay.blackhole(true);
 
     let (_woke, wake) = wake_flag_for_test();
-    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut client = FeAttachClient::attach(
         daemon_lane_endpoint(&relay),
         target,
         80,
         24,
-        "test-fe".to_string(),
-        "test-fe".to_string(),
-        None,
         wake,
     )
     .expect("attach starts even against a blackholed relay");
@@ -109,14 +106,11 @@ async fn a_daemon_outage_past_the_window_keeps_retrying() {
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
-    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut client = FeAttachClient::attach(
         daemon_lane_endpoint(&relay),
         target,
         80,
         24,
-        "test-fe".to_string(),
-        "test-fe".to_string(),
-        None,
         wake,
     )
     .expect("attach");
@@ -254,14 +248,11 @@ async fn a_terminal_row_is_terminal_after_the_window() {
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
     let start = Instant::now();
-    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut client = FeAttachClient::attach(
         daemon_lane_endpoint(&relay),
         default_target,
         80,
         24,
-        "test-fe".to_string(),
-        "test-fe".to_string(),
-        None,
         wake,
     )
     .expect("attach starts even against a terminal row");

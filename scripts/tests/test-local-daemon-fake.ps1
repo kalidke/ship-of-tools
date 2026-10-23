@@ -66,7 +66,7 @@ public static class FakeSotd
                     string reply = helloRefusal.Length == 0
                         ? "{\"session_id\":\"s\",\"revision\":0,\"snapshot_pending\":false}"
                         : "{\"error\":\"refused\",\"code\":\"" + helloRefusal + "\"}";
-                    byte[] h = new UTF8Encoding(false).GetBytes("{\"v\":3,\"id\":0,\"kind\":\"res\",\"op\":\"hello\",\"payload\":" + reply + "}\n");
+                    byte[] h = new UTF8Encoding(false).GetBytes("{\"v\":4,\"id\":0,\"kind\":\"res\",\"op\":\"hello\",\"payload\":" + reply + "}\n");
                     srv.Write(h, 0, h.Length);
                     srv.Flush();
                 }
@@ -74,7 +74,7 @@ public static class FakeSotd
                 {
                     Hold("fe.lease");
                     byte[] b = new UTF8Encoding(false).GetBytes(
-                        "{\"v\":3,\"id\":1,\"kind\":\"res\",\"op\":\"fe.lease\",\"payload\":{\"outcome\":\"" + outcome + "\"}}\n");
+                        "{\"v\":4,\"id\":1,\"kind\":\"res\",\"op\":\"fe.lease\",\"payload\":{\"outcome\":\"" + outcome + "\"}}\n");
                     srv.Write(b, 0, b.Length);
                     srv.Flush();
                 }

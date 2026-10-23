@@ -100,7 +100,7 @@ try {
             $report7c = if (Test-Path -LiteralPath $out7c) { "$(Get-Content -LiteralPath $out7c -Raw)".Trim() } else { '<no report>' }
             $gotLease7c = if (Test-Path -LiteralPath $lease7c) { "$(Get-Content -LiteralPath $lease7c -Raw)".Trim() } else { '<nothing recorded>' }
             $gotProbe7c = if (Test-Path -LiteralPath $probe7c) { "$(Get-Content -LiteralPath $probe7c -Raw)".Trim() } else { '<nothing recorded>' }
-            $hello7c = [BitConverter]::ToString([System.Text.Encoding]::ASCII.GetBytes('{"v":3,"id":0,"kind":"req","op":"hello"'))
+            $hello7c = [BitConverter]::ToString([System.Text.Encoding]::ASCII.GetBytes('{"v":4,"id":0,"kind":"req","op":"hello"'))
             $head7c = if ($gotLease7c.Length -gt 48) { $gotLease7c.Substring(0, 48) + '...' } else { $gotLease7c }
             Write-Host ("  7c reads: the lease's bridge [{0}], the probe's bridge [{1}]" -f $head7c, $gotProbe7c)
             Check '7c: the child ran the lease and the probe, and its console input encoding was put back' ($report7c -ceq 'leases=1 probe=True restored=True') "child: $report7c"

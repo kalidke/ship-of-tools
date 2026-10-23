@@ -4,7 +4,7 @@
 //! `cargo test -p sot-backend --test keystroke_latency -- --ignored --nocapture --test-threads=1`.
 //!
 //! Each `k*` test drives the real headless attach client
-//! (`FeAttachClient<DaemonLaneEndpoint>`) at a bash capsule row of a daemon
+//! (`FeAttachClient`) at a bash capsule row of a daemon
 //! the harness started with its own HOME, state root and socket, takes the
 //! pen, then 200 times sends one byte and polls every 0.2 ms for two events:
 //! `t_ack` (`recorded_bytes` grew: the capsule acknowledged the input) and
@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 const SAMPLES: usize = 200;
 const PROBE: u8 = b'Z';
 
-fn screen_count(client: &FeAttachClient<DaemonLaneEndpoint>, byte: u8) -> usize {
+fn screen_count(client: &FeAttachClient, byte: u8) -> usize {
     let (rows, cols) = client.screen().size();
     let mut n = 0;
     for r in 0..rows {
@@ -62,7 +62,7 @@ async fn create_row(env: &Env, conn: &mut Conn, next_id: &mut u64) -> String {
 }
 
 /// Polls until `done`, pumping the client; returns the instant it was seen.
-fn wait_for(client: &mut FeAttachClient<DaemonLaneEndpoint>, what: &str, done: impl Fn(&FeAttachClient<DaemonLaneEndpoint>) -> bool) -> Instant {
+fn wait_for(client: &mut FeAttachClient, what: &str, done: impl Fn(&FeAttachClient) -> bool) -> Instant {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         client.pump();
@@ -79,14 +79,11 @@ async fn measure(env: &Env) {
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let target = create_row(env, &mut conn, &mut next_id).await;
     let dial = LaneDial::Local(env.socket_path.clone());
-    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut client = FeAttachClient::attach(
         DaemonLaneEndpoint::new(dial, None),
         target,
         80,
         24,
-        "latency-fe".to_string(),
-        "latency-fe".to_string(),
-        None,
         Box::new(|| {}),
     )
     .expect("attach");
@@ -325,7 +322,7 @@ fn private_ssh_endpoint(remote: &str, dir: &Path, guard: std::sync::Arc<ParentSs
 /// Headless request-to-checkpoint interval; T3 owns the frontend request-to-pane interval.
 fn timed_attach(endpoint: DaemonLaneEndpoint, target: &str, guard: &ParentSshEnvironment) -> Duration {
     let t0 = Instant::now();
-    let mut client = FeAttachClient::attach(endpoint, target.to_string(), 80, 24, "latency-fe".to_string(), "latency-fe".to_string(), None, Box::new(|| {})).expect("attach");
+    let mut client = FeAttachClient::attach(endpoint, target.to_string(), 80, 24, Box::new(|| {})).expect("attach");
     let elapsed = wait_for(&mut client, "checkpoint", |client| client.is_checkpointed()) - t0;
     guard.observe("after checkpoint result");
     client.shutdown(Duration::from_secs(5)); drop(client);

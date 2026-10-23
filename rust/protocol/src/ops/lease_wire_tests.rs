@@ -17,7 +17,7 @@ fn fe_lease_golden_line() {
     let f = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap());
     assert_eq!(
         serde_json::to_string(&f).unwrap(),
-        r#"{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"","created":133000000000000000,"pid":4242}}"#
+        r#"{"v":4,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"","created":133000000000000000,"pid":4242}}"#
     );
 }
 

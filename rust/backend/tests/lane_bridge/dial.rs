@@ -20,14 +20,11 @@ async fn fe_client_reaches_a_capsule_row_through_the_daemon() {
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
-    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut client = FeAttachClient::attach(
         daemon_lane_endpoint(&relay),
         target,
         80,
         24,
-        "test-fe".to_string(),
-        "test-fe".to_string(),
-        None,
         wake,
     )
     .expect("attach through the daemon bridge");
@@ -112,7 +109,7 @@ async fn attach_to_a_daemon_that_answers(reply: Frame) -> (String, usize) {
     });
 
     let (_woke, wake) = wake_flag_for_test();
-    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut client = FeAttachClient::attach(
         DaemonLaneEndpoint::new(LaneDial::Local(path), None),
         "row-old-daemon".to_string(),
         80,
@@ -168,14 +165,11 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
-    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut client = FeAttachClient::attach(
         daemon_lane_endpoint(&relay),
         target,
         80,
         24,
-        "test-fe".to_string(),
-        "test-fe".to_string(),
-        None,
         wake,
     )
     .expect("attach");
@@ -273,14 +267,11 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
     let (_woke, wake) = wake_flag_for_test();
     // The window starts before attach, which starts the client's own health clock.
     let window_deadline = Instant::now() + Duration::from_secs(10);
-    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut client = FeAttachClient::attach(
         daemon_lane_endpoint(&relay),
         target,
         80,
         24,
-        "test-fe".to_string(),
-        "test-fe".to_string(),
-        None,
         wake,
     )
     .expect("attach");
@@ -416,14 +407,11 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
 
     let endpoint = stub_endpoint(stub_dir.path().join("ssh"), guard.clone());
     let (_woke, wake) = wake_flag_for_test();
-    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut client = FeAttachClient::attach(
         endpoint,
         target,
         80,
         24,
-        "test-fe".to_string(),
-        "test-fe".to_string(),
-        None,
         wake,
     )
     .expect("attach through the ssh-child bridge");
@@ -481,14 +469,11 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     // decision 4: "Unreachable must retry, never go terminal on its
     // own"). The observable this test proves is the status TEXT a
     // retrying attempt already carries, not a terminal/dead client.
-    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+    let mut client = FeAttachClient::attach(
         endpoint,
         "row-does-not-matter-the-child-dies-first".to_string(),
         80,
         24,
-        "test-fe".to_string(),
-        "test-fe".to_string(),
-        None,
         wake,
     )
     .expect("attach() itself only fails on a thread-spawn error");

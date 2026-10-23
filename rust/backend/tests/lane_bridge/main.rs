@@ -68,7 +68,7 @@ fn screen_modified(state_dir: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(state_dir.join("screen")).and_then(|m| m.modified()).ok()
 }
 
-fn screen_text(client: &FeAttachClient<DaemonLaneEndpoint>) -> String {
+fn screen_text(client: &FeAttachClient) -> String {
     let (rows, cols) = client.screen().size();
     let mut text = String::new();
     for r in 0..rows {

@@ -98,10 +98,10 @@ function Open-SotLease([string]$PipePath, [string]$SotdExe) {
     $why = ''
     try {
         $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        $hello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":4,"app_version":"launcher","host":' + (ConvertTo-SotJsonString (Get-SotHelloHost)) + ',"os_user":' + (ConvertTo-SotJsonString $sid) + ',"role":"handoff"}}'
+        $hello = '{"v":4,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":4,"app_version":"launcher","host":' + (ConvertTo-SotJsonString (Get-SotHelloHost)) + ',"os_user":' + (ConvertTo-SotJsonString $sid) + ',"role":"handoff"}}'
         $bridge = Start-SotBridge $SotdExe $PipePath
         $created = $bridge.StartTime.ToFileTimeUtc()
-        $line = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + (Get-SotBootId) + '","created":' + $created + ',"pid":' + $bridge.Id + '}}'
+        $line = '{"v":4,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + (Get-SotBootId) + '","created":' + $created + ',"pid":' + $bridge.Id + '}}'
         $in = $bridge.StandardInput.BaseStream
         $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($hello + "`n" + $line + "`n")
         $in.Write($bytes, 0, $bytes.Length)
@@ -158,7 +158,7 @@ function Close-SotLeases {
     $kept = @(foreach ($b in $global:SotLeasesUnanswered) { try { $b.StandardInput.BaseStream } catch { } })
     foreach ($c in @($global:SotLeases)) {
         try {
-            $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes('{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}' + "`n")
+            $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes('{"v":4,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}' + "`n")
             $c.Write($bytes, 0, $bytes.Length)
             $c.Flush()
         } catch { }
