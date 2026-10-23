@@ -162,13 +162,13 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let leg_before = tokio::task::spawn_blocking({
+    let run_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status before killing the supervisor").0.leg
+        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status before killing the supervisor").0.run
     })
     .await
     .unwrap()
-    .expect("a ready capsule has a leg");
+    .expect("a ready capsule has a run");
 
     // Adopts first, stripping this lifetime's own watchdog.
     let (mut conn, mut next_id) = restart_daemon_and_prove_adoption(
@@ -177,7 +177,7 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
         &workspace_id,
         &state_dir,
         &state_dir_path,
-        leg_before,
+        run_before,
         AuthorityAtRestart::Alive,
     )
     .await;
@@ -221,13 +221,13 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(30))).await;
 
     // Recovery is a fresh leg (ADR 0043 decision 33 spawns anew, never resurrects).
-    let leg_after = tokio::task::spawn_blocking({
+    let run_after = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status after recovery").0.leg
+        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status after recovery").0.run
     })
     .await
     .unwrap();
-    assert!(leg_after.is_some(), "the recovered row must have a real leg");
+    assert!(run_after.is_some(), "the recovered row must have a live run");
 
     env.kill_daemon_bounded().await;
 }

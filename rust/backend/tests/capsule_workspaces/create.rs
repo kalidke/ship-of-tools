@@ -80,18 +80,18 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     // authority over its own lane (sot_log::attach_client::supervisor_client::stop) --
     // its capsule leg is deliberately outside the supervisor's own job
     // (ADR 0041 Lifecycle) and survives.
-    let leg_before = tokio::task::spawn_blocking({
+    let run_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before stop")
                 .0
-                .leg
+                .run
         }
     })
     .await
     .unwrap()
-    .expect("a ready capsule has a leg");
+    .expect("a ready capsule has a run");
 
     let (mut conn2, mut next_id2) = restart_daemon_and_prove_adoption(
         &env,
@@ -99,7 +99,7 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
         &workspace_id,
         &state_dir,
         &state_dir_path,
-        leg_before,
+        run_before,
         AuthorityAtRestart::Stopped,
     )
     .await;

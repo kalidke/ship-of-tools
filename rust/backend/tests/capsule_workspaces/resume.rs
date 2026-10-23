@@ -60,13 +60,13 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let (leg_before, voyage_before) = tokio::task::spawn_blocking({
+    let (run_before, voyage_before) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             let report = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before killing the supervisor")
                 .0;
-            (report.leg.expect("a ready capsule has a leg"), report.voyage.expect("a ready capsule has a voyage"))
+            (report.run.expect("a ready capsule has a run"), report.voyage.expect("a ready capsule has a voyage"))
         }
     })
     .await
@@ -80,7 +80,7 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
         &workspace_id,
         &state_dir,
         &state_dir_path,
-        leg_before,
+        run_before.clone(),
         AuthorityAtRestart::Alive,
     )
     .await;
@@ -113,13 +113,13 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(30))).await;
 
-    let (voyage_after, leg_after) = tokio::task::spawn_blocking({
+    let (voyage_after, run_after) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             let report = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after the resume")
                 .0;
-            (report.voyage, report.leg)
+            (report.voyage, report.run)
         }
     })
     .await
@@ -131,8 +131,8 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     );
     // The agent died with its supervisor, so the resume is a new run in that voyage.
     assert!(
-        leg_after.expect("the resumed row has a leg") > leg_before,
-        "the resume must start a new run: leg {leg_after:?} after, {leg_before} before"
+        run_after.as_deref().is_some_and(|run| run > run_before.as_str()),
+        "the resume must start a new run: {run_after:?} after, {run_before} before"
     );
 
     let _ = tokio::task::spawn_blocking({
@@ -203,7 +203,7 @@ async fn capsule_resume_never_resets_an_ended_row() {
         .expect("query_status before ending the run");
     let voyage = original_status.voyage.expect("a ready capsule has a voyage");
 
-    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
+    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, original_status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
 
     poll_until(
         || {
@@ -332,13 +332,13 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let (leg_before, voyage_before) = tokio::task::spawn_blocking({
+    let (run_before, voyage_before) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before killing supervisor and leg");
             (
-                report.leg.expect("a ready capsule has a leg"),
+                report.run.expect("a ready capsule has a run"),
                 report.voyage.expect("a ready capsule has a voyage"),
             )
         }
@@ -355,7 +355,7 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
         &workspace_id,
         &state_dir,
         &state_dir_path,
-        leg_before,
+        run_before.clone(),
         AuthorityAtRestart::Alive,
     )
     .await;
@@ -388,19 +388,19 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(30))).await;
 
-    let (leg_after, voyage_after) = tokio::task::spawn_blocking({
+    let (run_after, voyage_after) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after the re-execution");
-            (report.leg, report.voyage)
+            (report.run, report.voyage)
         }
     })
     .await
     .unwrap();
     assert!(
-        leg_after.expect("the re-executed row has a leg") > leg_before,
-        "the leg epoch must be STRICTLY higher — a fresh leg must have been re-executed, not merely adopted"
+        run_after.as_deref().is_some_and(|run| run > run_before.as_str()),
+        "the run must be STRICTLY later — a fresh agent must have been re-executed, not merely adopted"
     );
     assert_eq!(
         voyage_after.as_deref(),

@@ -55,18 +55,18 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let leg_before = tokio::task::spawn_blocking({
+    let run_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before the daemon restart")
                 .0
-                .leg
+                .run
         }
     })
     .await
     .unwrap()
-    .expect("a ready capsule has a leg");
+    .expect("a ready capsule has a run");
 
     // Adopt: kill only the DAEMON, leave the authority alive, reboot —
     // resume_all's own `None` arm now just logs and moves on (decision
@@ -77,7 +77,7 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
         &workspace_id,
         &state_dir,
         &state_dir_path,
-        leg_before,
+        run_before,
         AuthorityAtRestart::Alive,
     )
     .await;
@@ -194,18 +194,18 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let leg_before = tokio::task::spawn_blocking({
+    let run_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before the daemon restart")
                 .0
-                .leg
+                .run
         }
     })
     .await
     .unwrap()
-    .expect("a ready capsule has a leg");
+    .expect("a ready capsule has a run");
 
     // Adopt across a daemon restart FIRST -- the authority survives, this
     // daemon lifetime never spawned it, so no watchdog exists for it; the
@@ -217,7 +217,7 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
         &workspace_id,
         &state_dir,
         &state_dir_path,
-        leg_before,
+        run_before,
         AuthorityAtRestart::Alive,
     )
     .await;
@@ -332,13 +332,13 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let (leg_before, voyage_before) = tokio::task::spawn_blocking({
+    let (run_before, voyage_before) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before the daemon restart");
             (
-                report.leg.expect("a ready capsule has a leg"),
+                report.run.expect("a ready capsule has a run"),
                 report.voyage.expect("a ready capsule has a voyage"),
             )
         }
@@ -356,7 +356,7 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
         &workspace_id,
         &state_dir,
         &state_dir_path,
-        leg_before,
+        run_before,
         AuthorityAtRestart::Alive,
     )
     .await;
@@ -482,21 +482,21 @@ async fn capsule_destroy_on_a_missing_state_dir_with_no_listener_removes_the_row
     // End the run and stop the authority cleanly (`sot_log::
     // supervisor_client` directly, mirroring this file's own doc on why:
     // proving the record is closed before ever touching the directory).
-    let voyage = tokio::task::spawn_blocking({
+    let run = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before ending the run")
                 .0
-                .voyage
-                .expect("a ready capsule has a voyage")
+                .run
+                .expect("a ready capsule has a run")
         }
     })
     .await
     .unwrap();
     tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::end_run(&dir, &voyage, "test: state_dir_missing proof")
+        move || sot_log::attach_client::supervisor_client::end_run(&dir, &run, "test: state_dir_missing proof")
     })
     .await
     .unwrap()

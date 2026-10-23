@@ -49,7 +49,7 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     let (status, _process) =
         sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
     let voyage = status.voyage.expect("a ready capsule has a voyage");
-    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
+    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
     // Wait for the daemon's observer, not a raw lane probe -- pty.open decides
     // from that cached phase, so a stale read here would skip activation entirely.
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
@@ -192,7 +192,7 @@ async fn setup_ended_row(env: &Env, label: &str) -> (Conn, u64, String, String, 
     let (status, _process) =
         sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
     let original_voyage = status.voyage.expect("a ready capsule has a voyage");
-    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end").expect("end_run over the lane");
+    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
     // The daemon's own observer, not a raw lane probe -- `pty.open`
     // decides from that cached phase.
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;

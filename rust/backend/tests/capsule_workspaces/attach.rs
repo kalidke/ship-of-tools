@@ -303,7 +303,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
         .expect("a ready capsule has a voyage");
     let original_pid = original_process.pid();
 
-    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end")
+    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, original_status.run.as_deref().expect("a ready capsule has a run"), "test end")
         .expect("end_run over the lane");
 
     poll_until(
@@ -442,7 +442,7 @@ async fn capsule_attach_right_after_run_end_activates_despite_a_stale_cached_rea
     let (status, _process) =
         sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
     let original_voyage = status.voyage.expect("a ready capsule has a voyage");
-    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end").expect("end_run over the lane");
+    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
 
     // end_run went straight to the lane, bypassing the daemon, so the phase
     // cell is still stale Ready; the guarded helper's fresh probe must decide.

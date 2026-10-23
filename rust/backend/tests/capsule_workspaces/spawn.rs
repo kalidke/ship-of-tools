@@ -87,25 +87,25 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let leg_before = tokio::task::spawn_blocking({
+    let run_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
             sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before daemon restart")
                 .0
-                .leg
+                .run
         }
     })
     .await
     .unwrap()
-    .expect("a ready capsule has a leg");
+    .expect("a ready capsule has a run");
 
     // The key difference from the create/list/attach/adopt/destroy
     // test's own adoption proof (which stops the authority first): here
     // it is deliberately left ALIVE across the restart — the field
     // bug's exact precondition — reproduced via the SAME
     // restart_daemon_and_prove_adoption helper that test uses (round-2
-    // fold: this test's own "never terminal, same leg epoch" regression
+    // fold: this test's own "never terminal, same run" regression
     // proof is now that shared helper's `Alive` arm; nothing past this
     // point needs `conn2`/`next_id2`, so both are discarded).
     let (_conn2, _next_id2) = restart_daemon_and_prove_adoption(
@@ -114,7 +114,7 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
         &workspace_id,
         &state_dir,
         &state_dir_path,
-        leg_before,
+        run_before,
         AuthorityAtRestart::Alive,
     )
     .await;

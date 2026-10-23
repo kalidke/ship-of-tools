@@ -150,7 +150,7 @@ async fn restart_daemon_and_prove_adoption(
     workspace_id: &str,
     state_dir: &str,
     state_dir_path: &Path,
-    leg_before: u64,
+    run_before: String,
     authority: AuthorityAtRestart,
 ) -> (Conn, u64) {
     let voyage_before = tokio::task::spawn_blocking({
@@ -259,15 +259,15 @@ async fn restart_daemon_and_prove_adoption(
     );
     match authority {
         AuthorityAtRestart::Alive => assert_eq!(
-            after.leg,
-            Some(leg_before),
-            "the leg epoch changed across the daemon restart (authority={authority:?}) -- a fresh/competing leg was spawned, not adopted"
+            after.run.as_deref(),
+            Some(run_before.as_str()),
+            "the run changed across the daemon restart (authority={authority:?}) -- a fresh/competing agent was started, not adopted"
         ),
-        // The stop ended the agent with its supervisor and asked for no end of the run: the resume is one new run.
-        AuthorityAtRestart::Stopped => assert_eq!(
-            after.leg,
-            Some(leg_before + 1),
-            "a stopped supervisor's resume must start exactly one new run in the same voyage (authority={authority:?})"
+        // The stop ended the agent with its supervisor and asked for no end of the run: the resume is a new run.
+        AuthorityAtRestart::Stopped => assert!(
+            after.run.as_deref().is_some_and(|run| run > run_before.as_str()),
+            "a stopped supervisor's resume must start a new run in the same voyage, after the old one (authority={authority:?}): {:?} after {run_before}",
+            after.run
         ),
     }
 
