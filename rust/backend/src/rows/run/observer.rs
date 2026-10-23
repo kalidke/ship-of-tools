@@ -42,14 +42,25 @@ fn observation_of(report: &StatusReport, supervisor: SupervisorIdentity) -> Obse
     }
 }
 
-/// A watch's first reply: the cell takes the supervisor the hello named (a new epoch when it is not the cell's), and the
-/// watch record names it, `ready` as the reply said. The row that is registered under the id is the one fed.
-fn feed_first(ws: &Workspace, supervisor: SupervisorIdentity, report: &StatusReport) {
+/// A watch's first reply, from a round that began at spawn generation `generation`: the watch record names the supervisor
+/// the hello named, `ready` as the reply said, and the cell takes it (a new epoch when it is not the cell's). `false`
+/// when a spawn has begun a newer generation since the round began: the reply may come from the supervisor that spawn
+/// replaces, so it is neither recorded nor fed. The row that is registered under the id is the one fed.
+fn feed_first(ws: &Workspace, generation: u64, supervisor: SupervisorIdentity, report: &StatusReport) -> bool {
+    if !ws.record_watch(generation, supervisor, local_phase(report.phase) == Phase::Ready) {
+        return false;
+    }
     if ws.current_supervisor() != Some(supervisor) {
         ws.begin_supervisor_epoch(supervisor);
     }
-    ws.record_watch(supervisor, local_phase(report.phase) == Phase::Ready);
     observe(ws, observation_of(report, supervisor));
+    true
+}
+
+/// Whether an exit a round saw is still this observer's to hand to a watchdog, under the row's guard: nothing owns the
+/// row, and no spawn has begun since the round did (a spawn's own watchdog handled that exit, and may have finished).
+fn exit_is_unhandled(ws: &Workspace, generation: u64) -> bool {
+    ws.spawn_generation() == generation && ws.watchdog_owner().is_none()
 }
 
 /// A `row.phase` of the watched supervisor.
@@ -88,8 +99,8 @@ enum Round {
     /// No fence file, or a dial that failed: observed as such, and nothing to read.
     Unwatched,
     /// A watch ended: the code `row.exiting` carried if it did, whether the supervisor's process ended within
-    /// [`EXIT_WAIT`], and how long the watch lived.
-    Ended { code: Option<i32>, process_ended: bool, lasted: Duration },
+    /// [`EXIT_WAIT`], how long the watch lived, and the row's spawn generation when the round began.
+    Ended { code: Option<i32>, process_ended: bool, lasted: Duration, generation: u64 },
 }
 
 /// Watches the row's supervisor round after round until the row is gone. Each report feeds the row registered under
@@ -106,11 +117,11 @@ async fn run(workspace_id: String, state_dir: PathBuf, cancel: CancelHandle, wak
         };
         let lasted = match round {
             Round::Unwatched => Duration::ZERO,
-            Round::Ended { code, process_ended, lasted } => {
+            Round::Ended { code, process_ended, lasted, generation } => {
                 // A watch that ended with its supervisor gone and nobody to restart it is an adopted supervisor's exit;
                 // exit 0 is a stop, which nothing restarts.
-                if process_ended && code != Some(0) && ws.watchdog_owner().is_none() {
-                    adopt_exit(&workspaces, &workspace_id, &state_dir, code).await;
+                if process_ended && code != Some(0) && exit_is_unhandled(&ws, generation) {
+                    adopt_exit(&workspaces, &workspace_id, &state_dir, code, generation).await;
                 }
                 lasted
             }
@@ -125,6 +136,10 @@ async fn run(workspace_id: String, state_dir: PathBuf, cancel: CancelHandle, wak
 
 /// One BLOCKING round: no fence file -> `Stopped`; otherwise one watch, held until it ends.
 fn watch_round(workspace_id: &str, state_dir: &Path, cancel: &CancelHandle, workspaces: &Workspaces) -> Round {
+    // The spawn generation this round is bound to, read before anything is dialed.
+    let Some(generation) = workspaces.resolve(Some(workspace_id)).map(|ws| ws.spawn_generation()) else {
+        return Round::Unwatched;
+    };
     let feed = |observation: Observation| {
         if let Some(ws) = workspaces.resolve(Some(workspace_id)) {
             observe(&ws, observation);
@@ -148,8 +163,8 @@ fn watch_round(workspace_id: &str, state_dir: &Path, cancel: &CancelHandle, work
     let began = Instant::now();
     let supervisor = supervisor_of(held.peer());
     match workspaces.resolve(Some(workspace_id)) {
-        Some(ws) => feed_first(&ws, supervisor, held.first()),
-        None => return Round::Unwatched,
+        Some(ws) if feed_first(&ws, generation, supervisor, held.first()) => {}
+        _ => return Round::Unwatched,
     }
     let mut code = None;
     loop {
@@ -172,17 +187,18 @@ fn watch_round(workspace_id: &str, state_dir: &Path, cancel: &CancelHandle, work
         return Round::Unwatched;
     }
     let process_ended = held.end(EXIT_WAIT);
-    if process_ended {
+    // The process is gone, whatever its last report said, unless a spawn has replaced it since.
+    if process_ended && workspaces.resolve(Some(workspace_id)).is_some_and(|ws| ws.spawn_generation() == generation) {
         feed(Observation::Gone);
     }
-    Round::Ended { code, process_ended, lasted: began.elapsed() }
+    Round::Ended { code, process_ended, lasted: began.elapsed(), generation }
 }
 
 /// An adopted supervisor's exit: nothing of this daemon's launch watches it, so the observer hands it to a watchdog whose
 /// first outcome is the exit the watch carried (none for a kill), exactly as a child's exit, to be restarted within rows'
 /// budget. Under the row's guard, where it checks again that nothing owns the row; the watchdog announces its ownership
 /// before this returns, and its own recheck decides whether anything is restarted.
-async fn adopt_exit(workspaces: &Workspaces, workspace_id: &str, state_dir: &Path, code: Option<i32>) {
+async fn adopt_exit(workspaces: &Workspaces, workspace_id: &str, state_dir: &Path, code: Option<i32>, generation: u64) {
     let Some(guard) = workspaces.capsule_guard(workspace_id) else {
         return;
     };
@@ -190,7 +206,7 @@ async fn adopt_exit(workspaces: &Workspaces, workspace_id: &str, state_dir: &Pat
     let Some(ws) = workspaces.resolve(Some(workspace_id)) else {
         return;
     };
-    if ws.watchdog_owner().is_some() || workspaces.is_inert_default_anchor(&ws) {
+    if !exit_is_unhandled(&ws, generation) || workspaces.is_inert_default_anchor(&ws) {
         return;
     }
     let argv = match crate::agents::argv::agent_argv(&ws.agent(), Some(&ws.project_root)) {
@@ -216,7 +232,7 @@ async fn adopt_exit(workspaces: &Workspaces, workspace_id: &str, state_dir: &Pat
         ws.project_root.clone(),
         ws.agent_name(),
         ws.slug.clone(),
-        First::Exited(code),
+        First::Exited(code, generation),
         workspaces.clone(),
     );
 }

@@ -460,8 +460,9 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
 
     // Adopt: kill only the DAEMON, leaving the ended-but-still-resident
     // supervisor alive, then reboot with the recovery-delay hook armed.
-    // Decision 33: a row this (new) daemon never itself spawned gets no
-    // watchdog at all, so ONLY a Selection can ever act on it again.
+    // A row this (new) daemon never itself spawned has no watchdog until its
+    // supervisor exits; the supervisor is then stopped (exit 0), which nothing
+    // restarts, so ONLY a Selection can act on it again.
     drop(conn);
     env.kill_daemon_bounded().await;
     // The barrier file exists up front, so nothing waits on it: it only turns on the activation's per-cycle markers.

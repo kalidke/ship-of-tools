@@ -8,8 +8,6 @@ use crate::row::{
     ConnId, EndRunOutcome, EndRunRes, Management, ResetOutcome, ResetRes, StatusRes, StopOutcome, StopRes,
 };
 
-/// A `starting` supervisor reads `ready` this long after its agent started, if the agent has not written before.
-const READY_AFTER: Duration = Duration::from_secs(2);
 /// An `end_run` that has not seen the run end by now is answered `ending`, so the caller's own 30 s bound never races it.
 const END_RUN_BOUND: Duration = Duration::from_secs(25);
 /// A `reset` that has not published by now is answered `failed`.
@@ -285,14 +283,15 @@ impl Shared {
         self.changed.notify_all();
     }
 
-    /// The phase the wire reports: `starting` becomes `ready` once the agent has lived `READY_AFTER`: an agent that
-    /// writes its error and exits within that time was never ready.
+    /// The phase the wire reports: `starting` becomes `ready` once the run's loop has found the agent alive
+    /// `READY_AFTER` after it started: an agent that writes its error and exits within that time was never ready, and
+    /// elapsed time alone never promotes one that died before it.
     fn wire_phase(inner: &Inner) -> SupervisorPhase {
         if inner.phase != SupervisorPhase::Starting {
             return inner.phase;
         }
         match inner.run.as_ref().map(|r| &r.signals) {
-            Some(s) if s.spawned_at().is_some_and(|at| at.elapsed() >= READY_AFTER) => {
+            Some(s) if s.lived() => {
                 SupervisorPhase::Ready
             }
             _ => SupervisorPhase::Starting,

@@ -132,9 +132,13 @@ fn classify_exit_code(code: Option<i32>) -> LegOutcome {
 /// What starts a watchdog's loop: a child this daemon launched, whose wait it trusts outright (the daemon is its durable
 /// parent, so on Unix the exit is reported), or the exit of a supervisor it did not launch, which the observer's watch
 /// carried (the code `row.exiting` told, none for a kill). Every later leg is the watchdog's own child.
+///
+/// Each carries the spawn generation its supervisor was made under (`Workspace::begin_spawn`), which the observer's round
+/// carried for an exit it saw. The watchdog acts on an exit only while the row is still at that generation, checked under
+/// the row's guard: an outcome of a supervisor a later spawn replaced is the earlier spawn's, never the replacement's.
 pub(super) enum First {
-    Child(SupervisorChild),
-    Exited(Option<i32>),
+    Child(SupervisorChild, u64),
+    Exited(Option<i32>, u64),
 }
 
 /// Waits for `child` to end and classifies the result. A parent lost before it could report is a crash here: the
@@ -205,6 +209,10 @@ fn nothing_answers(phase: &str) -> bool {
 /// the row's guard: the row is registered, not already terminal, and nothing answers (see [`nothing_answers`]). A terminal
 /// mark on a row a fresh supervisor is serving would misreport it. BLOCKING (`phase_of`): callers run it via
 /// `spawn_blocking`.
+fn still_mine(workspace_id: &str, generation: u64, workspaces: &Workspaces) -> bool {
+    workspaces.resolve(Some(workspace_id)).is_some_and(|ws| ws.spawn_generation() == generation)
+}
+
 fn may_mark_terminal(workspace_id: &str, state_dir: &Path, workspaces: &Workspaces) -> bool {
     let Some(ws) = workspaces.resolve(Some(workspace_id)) else {
         return false;
@@ -309,12 +317,15 @@ pub(super) fn install_watchdog(
     let watchdog_owner_guard = WatchdogOwnerGuard::new(workspaces.clone(), workspace_id.clone());
     tokio::spawn(async move {
         let _watchdog_owner_guard = watchdog_owner_guard;
-        let mut first = Some(first);
+        let (mut first, mut generation) = match first {
+            First::Child(child, generation) => (Some(First::Child(child, generation)), generation),
+            First::Exited(code, generation) => (Some(First::Exited(code, generation)), generation),
+        };
         let mut budget = Budget::default();
         loop {
             let outcome = match first.take() {
-                Some(First::Child(c)) => wait_and_classify(c, &workspace_id).await,
-                Some(First::Exited(code)) => classify_exit_code(code),
+                Some(First::Child(c, _)) => wait_and_classify(c, &workspace_id).await,
+                Some(First::Exited(code, _)) => classify_exit_code(code),
                 // A previous restart attempt itself found nothing to
                 // wait on -- counts as another crash against the
                 // same budget.
@@ -332,6 +343,12 @@ pub(super) fn install_watchdog(
                     // exited 69 before it answered, as every bootstrap failure does) is marked under the guard, if
                     // nothing answers, so the row latches `terminal` rather than reading `stopped` and starting the same
                     // instant failure on every attach.
+                    // Under the guard, at this exit's own generation: a spawn since replaced the supervisor that exited.
+                    let _held = capsule_guard.lock().await;
+                    if !still_mine(&workspace_id, generation, &workspaces) {
+                        tracing::info!(workspace_id = %workspace_id, "capsule supervisor watchdog: exit 69 of a superseded supervisor; marking nothing");
+                        return;
+                    }
                     match workspaces.resolve(Some(&workspace_id)).and_then(|ws| ws.watched().map(|watched| (ws, watched))) {
                         Some((ws, watched)) => observe(
                             &ws,
@@ -341,10 +358,7 @@ pub(super) fn install_watchdog(
                                 run: None,
                             },
                         ),
-                        None => {
-                            let _held = capsule_guard.lock().await;
-                            latch_terminal_if_nothing_answers(&workspaces, &workspace_id, &state_dir).await;
-                        }
+                        None => latch_terminal_if_nothing_answers(&workspaces, &workspace_id, &state_dir).await,
                     }
                     return;
                 }
@@ -357,7 +371,7 @@ pub(super) fn install_watchdog(
                 }
                 LegOutcome::Crash | LegOutcome::AgentEnded => {
                     // Decided before taking the guard -- giving up needs no recheck (R4a).
-                    let said_ready = workspaces.resolve(Some(&workspace_id)).is_some_and(|ws| ws.watch_said_ready());
+                    let said_ready = workspaces.resolve(Some(&workspace_id)).is_some_and(|ws| ws.watch_said_ready(generation));
                     let Some(backoff) = budget.on_exit(said_ready, Instant::now()) else {
                         tracing::error!(
                             workspace_id = %workspace_id, window = ?RESTART_WINDOW, max = MAX_RESTARTS_PER_WINDOW,
@@ -365,11 +379,17 @@ pub(super) fn install_watchdog(
                         );
                         // Rechecked under the guard: nothing else has started the row since.
                         let _held = capsule_guard.lock().await;
-                        latch_terminal_if_nothing_answers(&workspaces, &workspace_id, &state_dir).await;
+                        if still_mine(&workspace_id, generation, &workspaces) {
+                            latch_terminal_if_nothing_answers(&workspaces, &workspace_id, &state_dir).await;
+                        }
                         return;
                     };
                     wait_for_test_watchdog_restart_barrier().await;
                     let _held = capsule_guard.lock().await;
+                    if !still_mine(&workspace_id, generation, &workspaces) {
+                        tracing::info!(workspace_id = %workspace_id, "capsule supervisor watchdog: the supervisor that exited was replaced by a later spawn; not restarting");
+                        return;
+                    }
                     let may_act = {
                         let dir = state_dir.clone();
                         let wsid = workspace_id.clone();
@@ -428,10 +448,8 @@ pub(super) fn install_watchdog(
                         crate::agents::argv::agent_argv(&agent_kind_for_spawn, Some(cwd_for_spawn.as_path())),
                         &argv,
                     );
-                    // The supervisor about to start has been watched by no one.
-                    if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
-                        ws.clear_watched();
-                    }
+                    // A new generation begins: the supervisor about to start has been watched by no one.
+                    generation = workspaces.resolve(Some(&workspace_id)).map_or(generation, |ws| ws.begin_spawn());
                     let spawn_result = tokio::task::spawn_blocking(move || {
                         spawn_detached_supervisor(
                             &permit,
@@ -474,7 +492,7 @@ pub(super) fn install_watchdog(
                             let _ = tokio::task::spawn_blocking(move || settle_after_spawn(&settle_dir, &settle_wsid)).await;
                             workspaces.wake_observer(&workspace_id);
                             drop(permit);
-                            first = Some(First::Child(child));
+                            first = Some(First::Child(child, generation));
                         }
                         Ok(Err(e)) if e.kind() == ErrorKind::Unsupported => {
                             // `qualified_state_root` refused (ADR 0043

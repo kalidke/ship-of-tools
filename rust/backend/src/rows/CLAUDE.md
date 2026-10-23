@@ -49,32 +49,41 @@ Supervisor:
   spawned), 76 (it started and ended by itself) and a killed supervisor (no code), which takes its agent with it. 75 and
   76 are one path for the restart and differ only in the log; a restart spawns the row's own recipe, never a reauth's
   `--resume`. The watch record (`Workspace::watched`: the supervisor the row's watch last named and whether it told
-  `ready`) is written by the observer, cleared under the row's guard just before each spawn, and read by the watchdog
-  at an exit; an event still in flight when the watchdog reads is not counted, which matters only for an agent that ends
-  within the observer's latency of its 2 s mark. A 69 marks the supervisor the record names `terminal` on its own word;
-  a 69 with no record (the supervisor exited before it answered, as every bootstrap failure does) and the give-up mark
-  the row `terminal` under the row's guard, rechecked once (`may_mark_terminal`: registered, not already `terminal`, and
-  nothing answers: `unreachable`, or `stopped`, which only Windows can read of a first start whose supervisor has not
-  taken its fence).
+  `ready`) is written by the observer, kept when a watch reconnects to the same supervisor, and read by the watchdog at
+  an exit. Every outcome is bound to the spawn it came from: the row counts the spawns this daemon makes
+  (`Workspace::begin_spawn`, under the row's guard just before each spawn, which also clears the record), and an
+  observer's round and a watchdog each carry the generation they began under. A watch's first reply from a round that
+  began before a spawn is refused (it may be the supervisor the spawn replaces); an exit is acted on, under the guard,
+  only while the row is still at its generation, so an old supervisor's 69 never latches its replacement and an exit a
+  spawn's watchdog already handled is never handed to a second one. A 69 marks the supervisor the record names
+  `terminal` on its own word; a 69 with no record (the supervisor exited before it answered, as every bootstrap failure
+  does) and the give-up mark the row `terminal` under the row's guard, rechecked once (`may_mark_terminal`: registered,
+  not already `terminal`, and nothing answers: `unreachable`, or `stopped`, which only Windows can read of a first
+  start whose supervisor has not taken its fence). Limit: a spawn refused as contended also begins a generation, so the
+  live supervisor it found loses its record and its exit is left to the redial.
 - A supervisor this daemon did not launch (found alive at boot) is watched all the same, and its exit is restarted
   within the same budget with no selection. At a watch's end the observer waits for the supervisor's process to end
   (`Watch::end`, at most 5 s), so a decision is not taken while the exiting supervisor still answers or holds its fence;
-  if nothing owns the row and the watch did not carry exit 0 (a stop, which nothing restarts), it takes the row's guard,
-  checks again that nothing owns it, and installs a watchdog whose first outcome is the exit the watch carried (none for
-  a kill), exactly as a child's. The watchdog announces its ownership before the install returns, under that guard.
-  Limit: a supervisor that outlives a told exit by 5 s reads `unreachable` until it is selected; a row whose recipe
-  cannot be built is logged and left as such.
+  if the process ended, the cell reads `unreachable` (a rest does not outlive its supervisor; `terminal` does), and if
+  nothing owns the row, no spawn has begun since, and the watch did not carry exit 0 (a stop, which nothing restarts),
+  it takes the row's guard, checks again, and installs a watchdog whose first outcome is the exit the watch carried
+  (none for a kill), exactly as a child's. The watchdog announces its ownership before the install returns, under that
+  guard. Limits: a supervisor whose death is not confirmed within `Watch::end`'s 5 s (a slow teardown, a listener lost
+  for good) is left to the redial, whose failed dials establish no exit, so it reads `unreachable` or keeps its rest
+  until it is selected; a row whose recipe cannot be built is logged and left as such.
 - No start begins once the close has begun: `Workspaces::begin_start` refuses after `close_gate_and_settle`, which waits
   for the starts already admitted (`gate.rs`).
-- A row's phase follows its current supervisor, run by run. The phase cell changes only through
-  `Workspace::apply_phase_observation`, which rejects an observation from a supervisor other than the cell's epoch and
+- A row's phase follows its current supervisor, run by run. The phase cell is written by the observer through
+  `Workspace::apply_phase_observation` (and `begin_supervisor_epoch` when a watch names a new supervisor), and by the
+  watchdog's terminal marks (`apply_phase_observation` for the supervisor the watch record names, `latch_terminal`
+  under the guard). `apply_phase_observation` rejects an observation from a supervisor other than the cell's epoch and
   latches `terminal` (for its supervisor) and `ended_no_respawn` (for its run: a supervisor's runs order by their ids, a
   resting supervisor reports the run it rests on, a lower or unnamed run is a stale observation and a strictly newer run
   releases the latch; a supervisor restarted onto a requested end names no run, and the latch on no run is released by
   its first run: the capsule's `ended` record carries no run, by decision, so the cell never compares runs across
   supervisors). Each row's one observer task holds the row's id and one watch on its supervisor
   (`supervisor_client::watch`: the status at the first reply, then a report at each change of phase or run, and the exit
-  code before a controlled exit), and is the cell's one writer: every report is fed to the row registered under the id,
+  code before a controlled exit), and is the writer of every report: each is fed to the row registered under the id,
   so a refreshed row's phase follows its new supervisor, and a hello that names a supervisor other than the cell's
   begins its epoch. A start's settle writes nothing and wakes the observer; a settle returns at the supervisor's first
   answer, so a start reads `starting` until the agent has lived 2 s. Redials follow platform's `Redial` (250 ms doubling

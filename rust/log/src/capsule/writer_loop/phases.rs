@@ -13,6 +13,10 @@ pub(super) fn main_loop<P: Producer>(commands: &mpsc::Receiver<Command>, mut leg
         if leg.producer.wait(Duration::ZERO)? {
             break 'main ExitKind::ProducerExited;
         }
+        // The agent is alive on this pass: this is where the clock may make it ready.
+        if let Some(signals) = &leg.signals {
+            signals.check_lived();
+        }
         service_row(&mut leg);
         match commands.try_recv() {
             // `Command::Kill` is the supervisor's EndRun primitive (this module's own doc on `Command`): it carries a

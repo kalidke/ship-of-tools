@@ -29,6 +29,7 @@ use crate::lane::transport::{join_within, TEARDOWN_AGGREGATE_DEADLINE};
 use crate::{Error, Result};
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -127,11 +128,16 @@ pub struct CapsuleConfig {
     pub signals: Option<Arc<RunSignals>>,
 }
 
-/// What a run tells its owner while it lives: when the agent was started. The owner reads it to tell `starting` from
-/// `ready` (the supervisor's status).
+/// A started agent that is still alive this long after it started is `ready`.
+pub const READY_AFTER: Duration = Duration::from_secs(2);
+
+/// What a run tells its owner while it lives: when the agent was started, and whether it lived long enough. The owner
+/// reads it to tell `starting` from `ready` (the supervisor's status).
 #[derive(Debug, Default)]
 pub struct RunSignals {
     spawned_at: std::sync::OnceLock<Instant>,
+    /// The run's loop found the agent alive at least [`READY_AFTER`] after it started.
+    lived: AtomicBool,
     /// The row socket's fan-out for this run, when the owner serves one: the run feeds it and services its requests.
     row: std::sync::OnceLock<Arc<crate::row::RowRun>>,
 }
@@ -149,6 +155,18 @@ impl RunSignals {
     /// When the agent was started, `None` until it was.
     pub fn spawned_at(&self) -> Option<Instant> {
         self.spawned_at.get().copied()
+    }
+
+    /// The agent was alive [`READY_AFTER`] after it started: judged only by the run's loop, in the pass that has just
+    /// found the agent not yet exited, so elapsed time alone never promotes an agent that died before it.
+    pub fn lived(&self) -> bool {
+        self.lived.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn check_lived(&self) {
+        if self.spawned_at().is_some_and(|at| at.elapsed() >= READY_AFTER) {
+            self.lived.store(true, Ordering::Release);
+        }
     }
 
     fn spawned(&self, at: Instant) {

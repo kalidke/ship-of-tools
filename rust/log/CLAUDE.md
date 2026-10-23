@@ -43,7 +43,7 @@ true after the merge of the leg into the supervisor.
   is tested on macOS (`tests/macos_kernel_facts/kqueue.rs`), the SIGHUP-ignoring case on Linux and Windows only; a
   descendant that leaves the session survives on Unix, and one in another job (Windows)
   or session (Unix) is not the supervisor's to end.
-- Phases: `starting` (until the agent has lived two seconds: an agent that writes its error and exits sooner was never ready), `ready`, `ending`, `ended_no_respawn` (the
+- Phases: `starting` (until the run's loop has found the agent alive two seconds after it started: an agent that writes its error and exits sooner was never ready, and the clock alone never promotes one that died before the two seconds), `ready`, `ending`, `ended_no_respawn` (the
   agent is gone because an end was asked for; only a reset or a stop remains) and `terminal` (sticky: run admission refuses a terminal supervisor, so none begins and no agent starts). The supervisor
   rests only after a requested end: an agent that cannot be started or ends by itself ends the supervisor with 75 or
   76, so the daemon's watchdog is the one restart budget (rows' contract). A `--resume` over a run that was asked to
@@ -79,8 +79,8 @@ true after the merge of the leg into the supervisor.
   handle gates every watch's publication, so a cancel that lands during the dial leaves no connection behind and every watch
   on a cancelled handle is refused (`tests/row_management.rs::a_cancelled_watch_never_publishes_a_connection`); a dropped
   watch withdraws its own publication, and no newer one, so its connection is not kept open by the handle
-  (`a_dropped_watch_gives_its_slot_back`; the Windows pipe, which stays open until its last owner lets go, is proved only
-  by the hosted run). Limit, the slow-watcher policy: reports and the exit are answers, never dropped for output's sake,
+  (`a_dropped_watch_gives_its_slot_back`, and `a_watch_end_withdraws_its_publication_before_waiting` for `Watch::end`; both
+  run on Linux only, so the Windows pipe, which stays open until its last owner lets go, is not proved by any test). Limit, the slow-watcher policy: reports and the exit are answers, never dropped for output's sake,
   but a watcher with 64 answers queued that it has not read is cut, and the cut aborts everything queued for it, the
   reports and the exit frame too: it reads the end with no code, and a redial's first reply is the status then. The row
   protocol stays 1: no release has shipped it.

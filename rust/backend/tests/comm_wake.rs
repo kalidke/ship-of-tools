@@ -767,6 +767,8 @@ async fn a_restarted_daemon_completes_a_wake_line_left_typed() {
     wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
     read_mail(&row.env, 1);
     row.env.kill_daemon_bounded().await;
+    // What the second daemon writes from here: the first daemon's boot look can wait once too, by timing.
+    let second_daemon_from = row.env.daemon_log_len();
     tokio::time::sleep(THREE_TICKS).await;
     assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
     let marks = marks(&row).to_string_lossy().to_string();
@@ -842,7 +844,7 @@ async fn a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_bo
     tokio::time::sleep(THREE_TICKS).await;
     assert_eq!(pings(&row.log), 0, "the new run's box owed no Enter");
     assert_eq!(others(&row.log), 0, "the wake line was typed again");
-    assert_eq!(daemon_log(&row.env).matches("boot look waits").count(), 1, "the wait should be logged once");
+    assert_eq!(row.env.daemon_log_since(second_daemon_from).matches("boot look waits").count(), 1, "the wait should be logged once");
     row.env.kill_daemon_bounded().await;
 }
 

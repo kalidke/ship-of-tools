@@ -59,10 +59,9 @@ pub fn spawn_and_watch(
         .resolve(Some(&workspace_id))
         .map(|ws| (ws.agent(), ws.account()))
         .unwrap_or_default();
-    // The supervisor about to start has been watched by no one.
-    if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
-        ws.clear_watched();
-    }
+    // A new generation begins: the supervisor about to start has been watched by no one, and every outcome of an earlier
+    // one (an observer's round, a watchdog's exit) is now stale.
+    let generation = workspaces.resolve(Some(&workspace_id)).map_or(0, |ws| ws.begin_spawn());
     let child = match spawn_detached_supervisor(
         permit, sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug, &agent_kind, &account,
     )? {
@@ -79,7 +78,7 @@ pub fn spawn_and_watch(
         cwd.to_path_buf(),
         agent_name.to_string(),
         slug,
-        First::Child(child),
+        First::Child(child, generation),
         workspaces.clone(),
     );
     // The supervisor authors its own identity and this daemon learns it from the observer's watch, which the settle's end
@@ -201,12 +200,17 @@ pub(super) fn settle_after_spawn(state_dir: &Path, workspace_id: &str) -> &'stat
     settled
 }
 
+/// Whether a probe's phase ends the settle: any supervisor's answer does, `starting` included.
+fn settled(phase: &str) -> bool {
+    phase != UNREACHABLE_PHASE
+}
+
 fn settle_probe(state_dir: &Path, workspace_id: &str) -> &'static str {
     let settle = spawn_settle_deadline();
     let deadline = Instant::now() + settle;
     loop {
         let phase = phase_of(state_dir);
-        if phase != UNREACHABLE_PHASE {
+        if settled(phase) {
             return phase;
         }
         if Instant::now() >= deadline {

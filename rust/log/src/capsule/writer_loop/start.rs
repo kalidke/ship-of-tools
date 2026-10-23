@@ -88,6 +88,7 @@ pub(super) fn start<P: Producer>(
             dsr_answered: false,
             handshake_suppressed_matches: 0,
             resize_os_calls: 0,
+            signals: config.signals.clone(),
             row,
             input,
             // Set by the ONE rule in the main loop's arm and teardown Phase A's identical one: a terminal reader

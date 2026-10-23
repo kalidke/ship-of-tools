@@ -283,6 +283,12 @@ impl CancelHandle {
         Ok(shared.generation)
     }
 
+    /// Whether a connection is published through this handle now.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_published(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).canceler.is_some()
+    }
+
     /// Withdraws publication `generation` when it is still the published one: the canceler owns the connection, so a
     /// connection that has ended must not stay owned (on Windows a cancelled pipe stays open until its last owner lets go).
     /// A newer publication is left alone.
@@ -357,8 +363,10 @@ impl Watch {
     /// ended while its supervisor lives (a cut watcher, a rebound listener) reports `false` after the bound.
     pub fn end(mut self, bound: Duration) -> bool {
         let process = self.process.take();
-        let Watch { client, .. } = self;
+        // The connection first, then its place in the cancel handle (which owns it too), then the wait.
+        let Watch { client, _publication: publication, .. } = self;
         drop(client);
+        drop(publication);
         process.is_some_and(|process| process.wait(bound).unwrap_or(false))
     }
 
