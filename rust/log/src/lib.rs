@@ -5,6 +5,7 @@
 pub mod attach_client;
 pub mod capsule;
 pub mod lane;
+pub mod row;
 pub mod secret;
 pub mod storage;
 pub mod supervisor;

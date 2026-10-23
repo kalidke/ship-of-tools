@@ -1,6 +1,6 @@
 //! The writer loop after `start`, in `run`'s order: the main loop, Phase A (reap), Phase B (drain), the shutdown-ack grace, the worker join and the run end.
 use super::lanes::{
-    drain_pending_sends_only, execute_actions, execute_teardown_actions, service_transport_events,
+    drain_pending_sends_only, execute_actions, execute_teardown_actions, service_row, service_transport_events,
     service_transport_events_teardown,
 };
 use super::output_path::{eager_ground_check, pace_output};
@@ -20,6 +20,7 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
             break 'main ExitKind::ProducerExited;
         }
         leg = service_transport_events(leg)?;
+        service_row(&mut leg);
         leg = execute_actions(leg.attach_proto.tick(Instant::now()), leg)?;
         eager_ground_check(&mut leg);
         // ADR 0041 EndRun step 2: the

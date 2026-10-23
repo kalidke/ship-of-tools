@@ -52,6 +52,15 @@ pub(super) fn start<'t, P: Producer>(
         file
     });
 
+    let row = config.signals.as_ref().and_then(|s| s.row());
+    if let Some(row) = &row {
+        // A request on the row socket wakes the loop as a transport event does.
+        let wake_tx = tx.clone();
+        row.set_wake(Box::new(move || {
+            let _ = wake_tx.send(ReaderEvent::TransportActivity);
+        }));
+    }
+
     let spawn_result = spawn_producer::<P>(config);
     let mut producer = match spawn_result {
         Ok(p) => p,
@@ -103,6 +112,7 @@ pub(super) fn start<'t, P: Producer>(
             handshake_suppressed_matches: 0,
             resize_os_calls: 0,
             signals: config.signals.clone(),
+            row,
             // Set by the ONE rule in the main loop's arm and teardown Phase A's identical one: a terminal reader
             // event that arrived before `close_output_side` and that a confirmed producer exit explained. Stays
             // `None` on Linux and on Windows by those platforms' own contracts.

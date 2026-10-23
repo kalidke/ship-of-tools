@@ -254,3 +254,43 @@ fn a_declared_blob_length_reserves_at_most_a_small_bound() {
     assert_eq!(super::blob_reserve(u64::MAX), super::BLOB_RESERVE_BOUND);
     assert!(super::BLOB_RESERVE_BOUND <= 64 * 1024);
 }
+
+fn blob_frame(len: u64) -> Frame {
+    Frame::evt("row.output", serde_json::json!({"blob": {"len": len, "mime": "application/octet-stream"}}))
+}
+
+#[test]
+fn a_blocking_blob_writer_refuses_a_mismatch_before_a_byte() {
+    let mut out: Vec<u8> = Vec::new();
+    let err = super::write_frame_blocking_blob(&mut out, &blob_frame(5), Some(b"abc")).unwrap_err().to_string();
+    assert!(err.contains("nothing written"), "named refusal: {err}");
+    assert!(out.is_empty(), "a mismatch writes no byte");
+    let err = super::write_frame_blocking_blob(&mut out, &blob_frame(3), None).unwrap_err().to_string();
+    assert!(err.contains("nothing written"), "a declared blob with none given: {err}");
+    assert!(out.is_empty());
+    let err = super::write_frame_blocking_blob(&mut out, &Frame::evt("x", serde_json::json!({})), Some(b"abc")).unwrap_err().to_string();
+    assert!(err.contains("nothing written"), "a blob given with none declared: {err}");
+    assert!(out.is_empty());
+}
+
+#[test]
+fn a_blocking_reader_reads_exactly_the_declared_blob() {
+    let mut wire: Vec<u8> = Vec::new();
+    // Bytes that would break a JSON parse and a newline split: the blob is length-framed, never scanned.
+    let blob = b"\n{{{ not json \n\x1b[0m".to_vec();
+    super::write_frame_blocking_blob(&mut wire, &blob_frame(blob.len() as u64), Some(&blob)).unwrap();
+    super::write_frame_blocking_blob(&mut wire, &Frame::evt("next", serde_json::json!({})), None).unwrap();
+    let mut r = std::io::BufReader::new(std::io::Cursor::new(wire.clone()));
+    let (f1, b1) = super::read_frame_blocking_blob(&mut r).unwrap();
+    assert_eq!(f1.op, "row.output");
+    assert_eq!(b1.as_deref(), Some(&blob[..]));
+    let (f2, b2) = super::read_frame_blocking_blob(&mut r).unwrap();
+    assert_eq!(f2.op, "next", "the frame after the blob parses: no desync");
+    assert!(b2.is_none());
+    // A blob cut short is an error naming the shortfall, never a short blob.
+    let mut one: Vec<u8> = Vec::new();
+    super::write_frame_blocking_blob(&mut one, &blob_frame(blob.len() as u64), Some(&blob)).unwrap();
+    one.truncate(one.len() - 3);
+    let e = super::read_frame_blocking_blob(&mut std::io::BufReader::new(std::io::Cursor::new(one))).unwrap_err().to_string();
+    assert!(e.contains("blob ended after"), "{e}");
+}

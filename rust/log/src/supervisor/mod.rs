@@ -30,6 +30,7 @@ use crate::lane::attach_proto::ConnId;
 use crate::lane::client::{Endpoint, PlatformEndpoint};
 use crate::lane::platform_transport::PlatformTransport;
 use crate::lane::transport::{LaneEvent, PlatformLaneServer};
+use crate::row::{row_socket_path, RowRun, RowServer};
 use crate::lane::wire::{self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest, Survival};
 #[cfg(any(test, feature = "test-support"))]
 use sot_platform::identity::challenge::ChallengeOutcome;
@@ -183,6 +184,19 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     };
 
     let shared = Arc::new(Shared::new(config.state_dir.clone()));
+    let row = RowRun::new("", "starting");
+    {
+        let shared = Arc::clone(&shared);
+        row.set_phase_source(Box::new(move || shared.phase_text().to_string()));
+    }
+    // Served beside the lane until pass 6c-1a2 moves every caller over, so a bind failure is noted, not terminal.
+    let row_server = match row_socket_path(&h).and_then(|path| RowServer::bind(&path, Arc::clone(&row))) {
+        Ok(server) => Some(server),
+        Err(e) => {
+            note(format_args!("could not bind the row socket: {e}"));
+            None
+        }
+    };
     let lane_thread = {
         let shared = Arc::clone(&shared);
         std::thread::Builder::new()
@@ -190,8 +204,9 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             .spawn(move || authority::serve(lane, &shared))
             .map_err(crate::Error::Io)?
     };
-    let code = drive(&config, &shared);
+    let code = drive(&config, &shared, &row);
     shared.finish();
+    drop(row_server);
     if lane_thread.join().is_err() {
         note(format_args!("the lane's thread panicked"));
     }
@@ -199,7 +214,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
 }
 
 /// The main thread's life: discover the voyage, run the agent, and after each run wait for what a client asks.
-fn drive(config: &SuperviseConfig, shared: &Shared) -> i32 {
+fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
     // Test seam: holds the supervisor in `starting` for the named milliseconds, before it has a voyage, so a test can
     // prove a caller waits for a row to rest rather than deciding from a snapshot mid-start. Inert unless named.
     if let Ok(ms) = std::env::var("SOT_TEST_RECOVERY_DELAY_MS").unwrap_or_default().parse::<u64>() {
@@ -221,7 +236,7 @@ fn drive(config: &SuperviseConfig, shared: &Shared) -> i32 {
         let ended = if std::mem::take(&mut rest_first) {
             RunEnd::Ended { started: false }
         } else {
-            run_agent(config, shared, &voyage, agent_ran)
+            run_agent(config, shared, row, &voyage, agent_ran)
         };
         match ended {
             RunEnd::NotStarted => return leave(shared),
@@ -281,9 +296,12 @@ enum RunEnd {
 
 /// One run of the agent, to its end, on this thread: the kernel's parent-death signal on Linux follows the thread
 /// that forks the agent, and this one lives as long as the process.
-fn run_agent(config: &SuperviseConfig, shared: &Shared, voyage: &str, agent_ran: bool) -> RunEnd {
+fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, voyage: &str, agent_ran: bool) -> RunEnd {
     let (kill, commands) = mpsc::channel();
     let signals = Arc::new(RunSignals::default());
+    // Each agent start is a run of its own on the row socket, ordered by its UUIDv7.
+    row.set_run(uuid::Uuid::now_v7().to_string());
+    signals.attach_row(Arc::clone(row));
     if !shared.run_begins(kill, Arc::clone(&signals)) {
         return RunEnd::NotStarted;
     }

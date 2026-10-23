@@ -138,6 +138,9 @@ fn handle_output<P: Producer>(bytes: Vec<u8>, leg: &mut Leg<'_, P>) -> Result<()
     }
     execute_light_actions(leg.attach_proto.output_committed(&bytes, Instant::now()), leg);
     ground_check(leg);
+    if let Some(row) = &leg.row {
+        row.output(&bytes, &leg.parser);
+    }
 
     let matches = leg.handshake.feed(&bytes);
     if matches > 0 {

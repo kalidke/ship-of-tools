@@ -176,9 +176,20 @@ pub struct CapsuleConfig {
 pub struct RunSignals {
     spawned_at: std::sync::OnceLock<Instant>,
     output_seen: AtomicBool,
+    /// The row socket's fan-out for this run, when the owner serves one: the run feeds it and services its requests.
+    row: std::sync::OnceLock<Arc<crate::row::RowRun>>,
 }
 
 impl RunSignals {
+    /// Names the row socket's fan-out this run feeds. Set once, before the run starts.
+    pub fn attach_row(&self, row: Arc<crate::row::RowRun>) {
+        let _ = self.row.set(row);
+    }
+
+    pub(crate) fn row(&self) -> Option<Arc<crate::row::RowRun>> {
+        self.row.get().cloned()
+    }
+
     /// When the agent was started, `None` until it was.
     pub fn spawned_at(&self) -> Option<Instant> {
         self.spawned_at.get().copied()
@@ -329,7 +340,7 @@ enum ReaderEvent {
 /// `(getpid, challenge_unix::self_start_ticks())` and the macOS one
 /// `(getpid, challenge_macos::self_pidversion())`.
 #[cfg(windows)]
-fn self_status(survival: Survival) -> Result<MgmtStatus> {
+pub(crate) fn self_status(survival: Survival) -> Result<MgmtStatus> {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
     // SAFETY: `GetCurrentProcess` returns a pseudo-handle needing no close;
@@ -360,7 +371,7 @@ fn self_status(survival: Survival) -> Result<MgmtStatus> {
 /// adoption challenge, if any, describe the identical process the
 /// identical way.
 #[cfg(target_os = "linux")]
-fn self_status(survival: Survival) -> Result<MgmtStatus> {
+pub(crate) fn self_status(survival: Survival) -> Result<MgmtStatus> {
     let pid = std::process::id();
     let created = sot_platform::identity::challenge_unix::self_start_ticks()
         .map_err(|e| Error::State(format!("capsule: self_start_ticks failed: {e}")))?;
@@ -380,7 +391,7 @@ fn self_status(survival: Survival) -> Result<MgmtStatus> {
 /// value a client reads off its own socket, the same way
 /// `self_start_ticks` is on Linux.
 #[cfg(target_os = "macos")]
-fn self_status(survival: Survival) -> Result<MgmtStatus> {
+pub(crate) fn self_status(survival: Survival) -> Result<MgmtStatus> {
     let pid = std::process::id();
     let created = sot_platform::identity::challenge_macos::self_pidversion()
         .map_err(|e| Error::State(format!("capsule: self_pidversion failed: {e}")))?;

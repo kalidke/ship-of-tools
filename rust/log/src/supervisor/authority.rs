@@ -235,6 +235,17 @@ impl Shared {
         }
     }
 
+    /// The phase the wire reports, as the row socket's hello names it.
+    pub(super) fn phase_text(&self) -> &'static str {
+        match Self::wire_phase(&self.lock()) {
+            SupervisorPhase::Starting => "starting",
+            SupervisorPhase::Ready => "ready",
+            SupervisorPhase::Ending => "ending",
+            SupervisorPhase::EndedNoRespawn => "ended_no_respawn",
+            SupervisorPhase::Terminal => "terminal",
+        }
+    }
+
     fn status(&self) -> SupervisorReply {
         let inner = self.lock();
         let phase = Self::wire_phase(&inner);

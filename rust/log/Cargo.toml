@@ -24,6 +24,8 @@ native-barrier = ["sot-platform/native-barrier"]
 
 [dependencies]
 sot-platform = { path = "../platform" }
+# The row socket speaks wire's frames.
+sot-protocol = { path = "../protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -56,6 +58,8 @@ libc = { workspace = true }
 tempfile = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
+# The row socket's pipe listener, with its owner-only descriptor on every instance.
+interprocess = { workspace = true }
 # Raw Win32 for the durability arms (ADR 0041 §store port): MoveFileExW,
 # GetVolumeInformationByHandleW, FILE_FLAG_BACKUP_SEMANTICS. Plus the
 # atomic-DACL-at-birth arm (ADR 0041 "attach protocol" §Security split):

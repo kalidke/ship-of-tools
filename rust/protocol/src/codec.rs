@@ -14,6 +14,7 @@
 // data; bulk content rides through the blob path.
 
 use anyhow::{anyhow, Context, Result};
+use std::io::Read as _;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::Frame;
@@ -140,32 +141,15 @@ pub fn buffered<R: AsyncRead + Unpin>(r: R) -> tokio::io::BufReader<R> {
     tokio::io::BufReader::new(r)
 }
 
-/// The blocking twin of [`write_frame`], for a connection with no Tokio
-/// runtime behind it — ADR 0045 decision 3's lane-bridge dial
-/// (`sot-topology::lane_client`) runs on a plain blocking thread, exactly
-/// like the rest of `sot-log`'s own client machinery it composes with.
-/// One `\n`-terminated JSON envelope, same [`MAX_ENVELOPE_BYTES`] cap as
-/// the async path — NO blob support: `lane.connect`'s request/response
-/// pair never carries one (see [`crate::ops::LaneConnectReq`]'s own
-/// doc), so this never looks for a `payload.blob` descriptor the way
-/// [`read_frame`] does.
+/// The blocking twin of [`write_frame`] for a frame that carries no blob (ADR 0045 decision 3's lane-bridge dial
+/// runs on a plain blocking thread): [`write_frame_blocking_blob`] with none. A frame whose payload declares a blob is
+/// refused, as `write_frame` refuses it, before a byte is written.
 pub fn write_frame_blocking<W: std::io::Write>(w: &mut W, frame: &Frame) -> Result<()> {
-    let mut line = serde_json::to_vec(frame).context("frame serialize failed")?;
-    if line.len() > MAX_ENVELOPE_BYTES {
-        // Nothing has been written yet — see `EnvelopeTooLarge`.
-        return Err(anyhow::Error::new(EnvelopeTooLarge {
-            len: line.len(),
-            cap: MAX_ENVELOPE_BYTES,
-        }));
-    }
-    line.push(b'\n');
-    w.write_all(&line).context("write envelope")?;
-    w.flush().context("flush")?;
-    Ok(())
+    write_frame_blocking_blob(w, frame, None)
 }
 
-/// The blocking twin of [`read_frame`] — see [`write_frame_blocking`]'s
-/// own doc for why this exists and why it never reads a blob tail.
+/// The blocking twin of [`read_envelope`]: one envelope, capped while it is read, and never a blob tail. An admission
+/// that must not read a blob it has not admitted reads this; [`read_frame_blocking_blob`] reads the blob after it.
 pub fn read_frame_blocking<R: std::io::BufRead>(r: &mut R) -> Result<Frame> {
     // Capped DURING the read, not after: `read_until` itself has no
     // limit, so accumulating a whole `\n`-terminated line first and only
@@ -215,6 +199,43 @@ pub fn read_frame_blocking<R: std::io::BufRead>(r: &mut R) -> Result<Frame> {
         Err(e) => return Err(anyhow!("frame parse failed: {}", unparsed(&e, line.len()))),
     };
     Ok(frame)
+}
+
+/// The blocking twin of [`write_frame`], blob included: the same two guarantees (an envelope at most
+/// [`MAX_ENVELOPE_BYTES`], and the blob given the length the payload declares, both checked before a byte is written).
+pub fn write_frame_blocking_blob<W: std::io::Write>(w: &mut W, frame: &Frame, blob: Option<&[u8]>) -> Result<()> {
+    let mut line = serde_json::to_vec(frame).context("frame serialize failed")?;
+    if line.len() > MAX_ENVELOPE_BYTES {
+        return Err(anyhow::Error::new(EnvelopeTooLarge { len: line.len(), cap: MAX_ENVELOPE_BYTES }));
+    }
+    let declared = declared_blob_len(frame);
+    let given = blob.map(|b| b.len() as u64);
+    if declared != given {
+        return Err(anyhow!("frame declares a blob of {declared:?} bytes but was given {given:?}; nothing written"));
+    }
+    line.push(b'\n');
+    // One write call; a connection has one writer, so nothing else's bytes land between envelope and blob.
+    if let Some(b) = blob {
+        line.extend_from_slice(b);
+    }
+    w.write_all(&line).context("write frame")?;
+    w.flush().context("flush")?;
+    Ok(())
+}
+
+/// The blocking twin of [`read_frame`]: the envelope, capped while it is read, then exactly the blob it declares. The
+/// buffer grows only with bytes that arrived, from at most [`BLOB_RESERVE_BOUND`].
+pub fn read_frame_blocking_blob<R: std::io::BufRead>(r: &mut R) -> Result<(Frame, Option<Vec<u8>>)> {
+    let frame = read_frame_blocking(r)?;
+    let Some(len) = declared_blob_len(&frame) else {
+        return Ok((frame, None));
+    };
+    let mut blob = Vec::with_capacity(blob_reserve(len));
+    r.by_ref().take(len).read_to_end(&mut blob).context("read blob")?;
+    if (blob.len() as u64) < len {
+        return Err(anyhow!("blob ended after {} of {} bytes", blob.len(), len));
+    }
+    Ok((frame, Some(blob)))
 }
 
 #[cfg(test)]

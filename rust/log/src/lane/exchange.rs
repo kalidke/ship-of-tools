@@ -93,8 +93,8 @@ impl IdentityExchange for VoyageMgmtExchange {
 /// `build.rs` stamps `SOT_LOG_BUILD_SHA` from the FULL `git rev-parse
 /// HEAD`, `-dirty`-suffixed over an uncommitted tree — the same
 /// git-sha-capture pattern `rust/protocol/build.rs` uses for
-/// `app_version` (copied rather than shared: `sot-log` must not depend on
-/// `sot-protocol`, see `build.rs`'s own doc comment). `build.rs` itself
+/// `app_version` (copied from before `sot-log` depended on `sot-protocol`, which the row socket's frames now need;
+/// the stamp stays its own). `build.rs` itself
 /// FAILS the build rather than emitting an empty/ambiguous value when no
 /// git repository is found (Codex review round 2, finding M9: silently
 /// falling back to the bare package version here made two different
