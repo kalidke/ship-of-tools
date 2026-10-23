@@ -867,3 +867,27 @@ async fn a_new_run_drops_the_owed_enter_and_wakes_in_the_same_tick() {
     assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
     row.env.kill_daemon_bounded().await;
 }
+
+/// An attempt's input belongs to the run whose screen it checked. The attempt is held after its last check (the seam), the
+/// supervisor is killed and the watchdog's restart gives the row a new run that is in a dialog, and the attempt's worker has
+/// reconnected to it by the time the hold ends: nothing is typed into the new run, which is woken only once its dialog has
+/// closed, by its own attempt.
+#[tokio::test]
+async fn an_attempt_never_types_into_a_run_it_did_not_check() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_with("cwfr", None, false, &[], &[SHORT_BACKOFF, ("SOT_TEST_WAKE_HOLD_AFTER_FINAL_MS", "9000")]).await;
+    append_mail(&row.env, 1);
+    let final_ok = marks(&row).join("final-ok");
+    wait_for("the attempt's final check", || final_ok.exists()).await;
+    // The new run draws the dialog, not the prompt.
+    std::fs::write(&row.dialog, b"").unwrap();
+    kill_supervisor(&row.env.state_root);
+    wait_for_screen(&mut row, "Allow this action").await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert!(!row.screen_has("[sot-comm]").await, "the old run's attempt typed into the new run's dialog: {:?}", row.screen().await);
+    std::fs::remove_file(&row.dialog).unwrap();
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the new run was not woken once its dialog closed");
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!((pings(&row.log), others(&row.log)), (1, 0), "one wake line, once");
+    row.env.kill_daemon_bounded().await;
+}

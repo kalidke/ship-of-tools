@@ -486,6 +486,18 @@ fn a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown() {
     drop((peer, dir));
 }
 
+/// The supervisor's own exit code, once it has exited.
+fn exit_code(supervisor: &mut Supervisor) -> Option<i32> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(status) = supervisor.0.try_wait().unwrap() {
+            return status.code();
+        }
+        assert!(Instant::now() < deadline, "the supervisor never exited");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Reads the watch until `done` says a step is the one wanted; every phase report on the way is returned, in order.
 fn watch_until(watch: &mut supervisor_client::Watch, within: Duration, mut done: impl FnMut(&WatchStep) -> bool) -> Vec<WatchStep> {
     let deadline = Instant::now() + within;
@@ -558,7 +570,7 @@ fn a_watch_reports_exiting_with_the_code_before_a_controlled_end() {
 
     // A stop, on another connection: 0.
     let state_dir = dir.path().join("stopped");
-    let (_supervisor, path) = supervisor(runtime.path(), &state_dir, &[]);
+    let (mut supervisor, path) = supervisor(runtime.path(), &state_dir, &[]);
     let mut driver = dial(&path);
     driver.attach(80, 24, true).expect("attach as the driver");
     read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
@@ -569,10 +581,11 @@ fn a_watch_reports_exiting_with_the_code_before_a_controlled_end() {
     let seen = watch_until(&mut watch, Duration::from_secs(30), |s| matches!(s, WatchStep::Exiting(_) | WatchStep::Ended));
     assert!(matches!(seen.last(), Some(WatchStep::Exiting(0))), "a stop is told as exit 0: {seen:?}");
     assert!(matches!(watch.next(Duration::from_secs(10)), WatchStep::Ended), "the stream ends after the exit is told");
+    assert_eq!(exit_code(&mut supervisor), Some(0), "the code the watch was told is the one the process left with");
 
     // The agent ends by itself: 76.
     let state_dir = dir.path().join("agent-ends");
-    let (_supervisor, path) = supervisor_running(runtime.path(), &state_dir, &[], "echo agent-was-here; read line; exit 0");
+    let (mut supervisor, path) = supervisor_running(runtime.path(), &state_dir, &[], "echo agent-was-here; read line; exit 0");
     let mut driver = dial(&path);
     driver.attach(80, 24, true).expect("attach as the driver");
     read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
@@ -581,6 +594,7 @@ fn a_watch_reports_exiting_with_the_code_before_a_controlled_end() {
     let seen = watch_until(&mut watch, Duration::from_secs(30), |s| matches!(s, WatchStep::Exiting(_) | WatchStep::Ended));
     assert!(matches!(seen.last(), Some(WatchStep::Exiting(76))), "an agent that ends by itself is told as exit 76: {seen:?}");
     assert!(matches!(watch.next(Duration::from_secs(10)), WatchStep::Ended), "the stream ends after the exit is told");
+    assert_eq!(exit_code(&mut supervisor), Some(76), "the code the watch was told is the one the process left with");
 }
 
 /// A cancel that lands between the dial and the publication of the connection is never missed: the watch is refused, and
@@ -606,4 +620,85 @@ fn a_cancelled_watch_never_publishes_a_connection() {
     }
     let fresh = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("the row still serves a watch");
     assert_eq!(fresh.first().phase, SupervisorPhase::Ready);
+}
+
+/// Every change is told, in order, whatever the thread that announces it is doing: the announcing thread is held after the
+/// mutation of an `end_run` (the seam), so the run's end completes before the first announcement, and the watch must
+/// still hear `ending` before `ended_no_respawn`.
+#[test]
+fn a_transition_is_told_though_the_run_ends_before_its_announcement() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    std::env::set_var("SOT_RUNTIME_DIR", runtime.path());
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let (_supervisor, path) = supervisor(runtime.path(), &state_dir, &[("SOT_TEST_ANNOUNCE_HOLD_MS", "700")]);
+    let mut driver = dial(&path);
+    driver.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut driver, "agent-was-here", Duration::from_secs(30));
+
+    let mut watch = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("the watch is served");
+    let run = watch.first().run.clone().expect("the first reply names the run");
+    let mut manager = dial(&path);
+    let ended = manager.call("row.end_run", json!({"run": run, "reason": "test"}), Duration::from_secs(30)).expect("end_run answers");
+    assert_eq!(ended.payload["outcome"], "ended", "{ended:?}");
+    let seen = watch_until(&mut watch, Duration::from_secs(30), |s| matches!(s, WatchStep::Phase(r) if r.phase == SupervisorPhase::EndedNoRespawn));
+    let phases: Vec<_> = seen.iter().filter_map(|s| match s { WatchStep::Phase(r) => Some(r.phase), _ => None }).collect();
+    assert_eq!(phases, vec![SupervisorPhase::Ending, SupervisorPhase::EndedNoRespawn], "{seen:?}");
+}
+
+/// Input meant for one run is refused, `run ended`, by a row whose current run is another: a reset replaces the run while
+/// the typing connection survives, and what was meant for the run before is never written into the one after.
+#[test]
+fn a_row_refuses_input_meant_for_another_run() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let (_supervisor, path) = supervisor(runtime.path(), &dir.path().join("state"), &[]);
+    let mut driver = dial(&path);
+    let first = driver.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
+    assert_eq!(driver.send_input_in(b"for-the-first\r", Some(&first)).expect("the run it was meant for takes it"), 14);
+    read_until(&mut driver, "for-the-first", Duration::from_secs(10));
+
+    let mut manager = dial(&path);
+    let ended = manager.call("row.end_run", json!({"run": first, "reason": "test"}), Duration::from_secs(30)).expect("end_run answers");
+    assert_eq!(ended.payload["outcome"], "ended", "{ended:?}");
+    let reset = manager.call("row.reset", json!({}), Duration::from_secs(30)).expect("reset answers");
+    assert_eq!(reset.payload["outcome"], "reset", "{reset:?}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let second = loop {
+        let now = status(&mut manager);
+        if now["phase"] == "ready" && now["run"].as_str().is_some_and(|r| r != first) {
+            break now["run"].as_str().unwrap().to_string();
+        }
+        assert!(Instant::now() < deadline, "no new run after the reset: {now:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let refused = driver.send_input_in(b"for-the-old-run\r", Some(&first)).expect_err("another run's input is refused");
+    assert!(refused.to_string().contains("run ended"), "{refused}");
+    // Input sent for no run keeps today's rule: it goes to the current one.
+    driver.send_input_in(b"for-whoever\r", None).expect("input for no run in particular is written");
+    driver.send_input_in(b"for-the-new-run\r", Some(&second)).expect("the current run takes input meant for it");
+    read_until(&mut driver, "for-the-new-run", Duration::from_secs(10));
+}
+
+/// A watch that is dropped gives its slot back: the row holds eight connections, and nine watches in turn all get one.
+#[test]
+fn a_dropped_watch_gives_its_slot_back() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    std::env::set_var("SOT_RUNTIME_DIR", runtime.path());
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let (_supervisor, path) = supervisor(runtime.path(), &state_dir, &[]);
+    let mut driver = dial(&path);
+    driver.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
+    let cancel = CancelHandle::new();
+    for turn in 0..9 {
+        let watch = supervisor_client::watch(&state_dir, &cancel).unwrap_or_else(|e| panic!("watch {turn} found no slot: {e}"));
+        drop(watch);
+    }
+    let _viewer = dial(&path);
 }

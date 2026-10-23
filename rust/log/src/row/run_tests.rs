@@ -232,3 +232,28 @@ fn exiting_gives_up_on_a_watcher_that_does_not_drain() {
     assert!(started.elapsed() < Duration::from_secs(2), "the exit waited past its bound");
     std::mem::forget(slot);
 }
+
+/// Once the exit code is committed, a watch that is admitted is told it: its status, then `row.exiting` with the code, then
+/// the end of its stream.
+#[test]
+fn a_watch_admitted_during_the_exit_is_told_the_code() {
+    let run = RowRun::new("r", "ready");
+    let status = Scripted::new("ready", Some("run-one"));
+    run.set_management(Box::new(Arc::clone(&status)));
+    let (first, _first_queue, first_slot) = run.open(Arc::new(|| {})).expect("a slot");
+    run.watch(first, 1, &Arc::clone(&status));
+    // The first watcher never drains, so `exiting` is still waiting when the second arrives.
+    let exiting = {
+        let run = Arc::clone(&run);
+        std::thread::spawn(move || run.exiting(76, Duration::from_secs(3)))
+    };
+    std::thread::sleep(Duration::from_millis(300));
+    let (late, late_queue, late_slot) = run.open(Arc::new(|| {})).expect("a slot");
+    run.watch(late, 2, &Arc::clone(&status));
+    let frames = drained(&late_queue);
+    let ops: Vec<_> = frames.iter().map(|(op, _)| op.as_str()).collect();
+    assert_eq!(ops, ["row.watch", "row.exiting"], "{frames:?}");
+    assert_eq!(frames[1].1["code"], 76);
+    exiting.join().unwrap();
+    std::mem::forget((first_slot, late_slot));
+}

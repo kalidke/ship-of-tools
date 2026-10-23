@@ -111,6 +111,11 @@ impl Shared {
     }
 
     fn announce_change(&self) {
+        // Test seam: holds the announcing thread this many milliseconds after the mutation, so a test can finish the run's
+        // end before the first announcement. Inert unless named.
+        if let Some(ms) = std::env::var("SOT_TEST_ANNOUNCE_HOLD_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
         if let Some(hook) = self.on_change.get() {
             hook();
         }

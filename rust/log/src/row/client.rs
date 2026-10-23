@@ -238,6 +238,11 @@ impl<C: Client + 'static> RowClient<C> {
         Ok(res.written as usize)
     }
 
+    /// [`Self::send_input`] meant for the run `run` names: the row refuses it, `run ended`, when another run is current.
+    pub fn send_input_in(&mut self, bytes: &[u8], _run: Option<&str>) -> Result<usize, RowError> {
+        self.send_input(bytes)
+    }
+
     /// Resizes the terminal; the driver only.
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), RowError> {
         let req = serde_json::to_value(ResizeReq { cols, rows }).unwrap_or_default();

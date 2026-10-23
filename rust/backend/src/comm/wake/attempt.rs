@@ -138,6 +138,11 @@ pub fn wake_if_free(
         match live {
             Some(prompt) if Some(prompt) == first_prompt => {
                 mark("final-ok");
+                // Test seam: holds the attempt this many milliseconds between its last check and its typing, so a test can
+                // replace the run in between. Inert unless named.
+                if let Some(ms) = std::env::var("SOT_TEST_WAKE_HOLD_AFTER_FINAL_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
+                    std::thread::sleep(Duration::from_millis(ms));
+                }
                 let read = typing_read(&client);
                 let (sent, out) = if prompt == Prompt::HoldsLine {
                     tracing::info!("comm wake: Enter for the wake line left in main's input box");
