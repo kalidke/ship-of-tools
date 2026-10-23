@@ -80,6 +80,8 @@ true after the merge of the leg into the supervisor.
   The hello's `row` number (`ROW_PROTOCOL`, now 1) is the one gate between a row and a client: no reader judges a
   frame's `v`, and a client refuses another row number by name, never by a hang. A client that cannot prove the peer
   says so (`Unproven`), apart from a deadline that expired (`Timeout`).
+- **A viewer that falls behind is resynced, never cut for it, and its input replies are never dropped.** The window
+  shows an input whose delivery is unknown (`delivery unknown`, `run ended`) in its status line. The rule is below.
 - Eight connections are eight real ones. A connection has two threads, a reader and a writer; its slot returns only
   after both have ended, and `RowServer::shutdown` stops the acceptor, ends every connection's stream and joins every
   connection thread. A viewer that cannot keep up is resynced, not cut: when 256 output frames wait for it they are all
@@ -147,7 +149,8 @@ true after the merge of the leg into the supervisor.
   boundary, after every byte the parser has seen was published.
 - `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot take its fence or its lane), 70 (`EXIT_CONTENDED`, the
   fence was already held), 75 (`EXIT_AGENT_NOT_STARTED`: the agent could not be spawned, or the row socket could not be bound) or 76 (`EXIT_AGENT_ENDED`: it
-  started and ended by itself), the last two with no stop or end asked for (`tests/supervisor/spawn.rs`). A supervisor
+  started and ended by itself), the last two with no stop or end asked for (`tests/supervisor/spawn.rs`); rows' one restart
+  budget decides when a row that exits 75 or 76 ends terminal, a row whose socket could not be bound included. A supervisor
   killed has no code. Limits: a supervisor that fails to take over an inherited claim (a wrong or unlocked descriptor)
   also exits 70, which does not prove another live authority; and on Unix an executable that passes preflight but fails
   at exec can read as an aborted child, so 76 for a program that never started (the exec-error pipe is closed). There is
