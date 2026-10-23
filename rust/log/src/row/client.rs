@@ -33,7 +33,7 @@ pub enum RowEvent {
 /// Frames the reader thread holds for the caller. Past it the reader stops reading the socket, so a caller that stops
 /// pumping pushes back on the row, which then drops it as a slow viewer.
 const INCOMING_FRAMES: usize = 256;
-/// Events kept while a request waits for its reply, at most.
+/// Output events kept while a request waits for its reply, at most.
 const PENDING_EVENTS: usize = 1024;
 
 /// What the reader thread hands the caller: a frame, a nudge from [`RowWaker`], or the end of the stream.
@@ -71,6 +71,9 @@ pub struct RowClient<C: Client + 'static = PlatformConn> {
     incoming: mpsc::Receiver<Incoming>,
     waker: RowWaker,
     events: VecDeque<RowEvent>,
+    /// Output was dropped, while a request waited, because the caller was not taking events: the screen it builds is
+    /// behind, and an attach again shows it the screen as it is.
+    lost_output: bool,
     next_id: u64,
     run: String,
 }
@@ -128,12 +131,17 @@ impl<C: Client + 'static> RowClient<C> {
                 }
             }
         })?;
-        Ok(Self { conn, incoming, waker, events: VecDeque::new(), next_id: 2, run })
+        Ok(Self { conn, incoming, waker, events: VecDeque::new(), lost_output: false, next_id: 2, run })
     }
 
     /// A handle that ends a blocked [`Self::next_event`] from another thread.
     pub fn waker(&self) -> RowWaker {
         self.waker.clone()
+    }
+
+    /// Whether output was dropped since the last call; the caller attaches again to be sent the screen as it is.
+    pub fn take_lost_output(&mut self) -> bool {
+        std::mem::take(&mut self.lost_output)
     }
 
     /// The run the row declared in its hello.
@@ -219,10 +227,14 @@ impl<C: Client + 'static> RowClient<C> {
                     }
                     Kind::Evt => {
                         if let Some(ev) = event_of(frame, blob)? {
-                            if self.events.len() >= PENDING_EVENTS {
-                                return Err(RowError::Protocol("too many events were left unread".into()));
+                            // Output a caller that does not take events cannot be kept without bound: it is dropped, and
+                            // the caller told (`take_lost_output`), who attaches again for the screen as it is. The
+                            // rarer events (a snapshot, a demotion) are kept.
+                            if self.events.len() >= PENDING_EVENTS && matches!(ev, RowEvent::Output(_)) {
+                                self.lost_output = true;
+                            } else {
+                                self.events.push_back(ev);
                             }
-                            self.events.push_back(ev);
                         }
                     }
                     _ => {}

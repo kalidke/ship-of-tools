@@ -393,6 +393,13 @@ where
                     Err(_) => return Ended::Lost,
                 }
             }
+            // Output dropped while a request waited: ask the row for the screen as it is, which arrives as a snapshot.
+            if client.take_lost_output() {
+                let (cols, rows) = *self.shared.size.lock().unwrap_or_else(|p| p.into_inner());
+                if client.attach(cols, rows, driver).is_err() {
+                    return Ended::Lost;
+                }
+            }
             while let Ok(command) = self.inbox.try_recv() {
                 match command {
                     Command::Input(bytes, typed_into) => {

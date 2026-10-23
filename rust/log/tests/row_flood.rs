@@ -1,6 +1,7 @@
 #![cfg(unix)]
 //! A driver under an output flood (pass 6c-1a2 review): the row resyncs a viewer that cannot keep up, with a fresh
-//! snapshot, and never drops an answer to its input, so the driver keeps its connection and every key is answered.
+//! snapshot, and never drops an answer to its input, so the driver keeps its connection and every key is answered. The
+//! client drops, rather than keeps without bound, the output that arrives while a key waits, and says so.
 
 use sot_log::row::{socket_path_in, RowClient, RowEvent, RowRequest, RowRun, RowServer};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,11 +34,11 @@ fn a_driver_that_pumps_slowly_under_a_flood_keeps_its_connection_and_gets_every_
                     }
                 }
                 // The flood: as much output as the loop can produce.
+                // (The parser is not fed: only the row's fan-out is under test, and a debug parser is slower than a viewer.)
                 let chunk = vec![b'x'; 60_000];
-                p.process(&chunk);
                 run.output(&chunk, &p);
                 drop(p);
-                std::thread::sleep(Duration::from_micros(200));
+                std::thread::sleep(Duration::from_micros(50));
             }
         })
     };
@@ -47,9 +48,9 @@ fn a_driver_that_pumps_slowly_under_a_flood_keeps_its_connection_and_gets_every_
     let mut snapshots = 0;
     let started = Instant::now();
     let mut answered = 0;
-    while started.elapsed() < Duration::from_secs(6) {
-        // Pumps slowly: a few events, then a key.
-        for _ in 0..4 {
+    while started.elapsed() < Duration::from_secs(10) {
+        // Pumps slowly, well under the flood's rate: some events, then a key.
+        for _ in 0..40 {
             match driver.next_event(Duration::from_millis(5)) {
                 Ok(Some(RowEvent::Snapshot { last: true, .. })) => snapshots += 1,
                 Ok(_) => {}
@@ -61,8 +62,12 @@ fn a_driver_that_pumps_slowly_under_a_flood_keeps_its_connection_and_gets_every_
             Ok(1) => answered += 1,
             other => panic!("a key was not answered, after {answered} answers: {other:?}"),
         }
+        // As the client's worker does: output dropped while the key waited is made good by asking for the screen again.
+        if driver.take_lost_output() {
+            driver.attach(80, 24, true).expect("attach again for the screen as it is");
+        }
     }
-    assert!(answered >= 20, "{answered}");
+    assert!(answered >= 30, "{answered}");
     assert!(snapshots >= 2, "a viewer that fell behind is resynced with a fresh snapshot ({snapshots} seen, the attach's included)");
     stop.store(true, Ordering::Release);
     looped.join().unwrap();
