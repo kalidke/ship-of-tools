@@ -17,6 +17,7 @@ use std::time::Instant;
 /// 0042 L1a, Codex review finding 4 — one lane-I/O error vocabulary, not
 /// two).
 #[derive(Debug)]
+#[allow(dead_code, reason = "the variants the attach worker produced are gone; 6c-1b deletes this module with the supervisor lane")]
 pub(crate) enum LaneError {
     Io(std::io::Error),
     Timeout,

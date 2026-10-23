@@ -79,6 +79,7 @@ impl QuitDispatcher {
         }
     }
 
+    #[allow(dead_code, reason = "the window's quit path that read it is gone; 6c-1b deletes the dispatcher with the supervisor lane")]
     /// The operation id this dispatcher is currently waiting on a reply
     /// for (either the initial command or a subsequent `query`) —
     /// `Some` while `Ending` or `Verifying`, `None` otherwise. The
@@ -139,10 +140,12 @@ impl QuitDispatcher {
         }
     }
 
+    #[allow(dead_code, reason = "the window's quit path that read it is gone; 6c-1b deletes the dispatcher with the supervisor lane")]
     pub fn should_exit(&self) -> bool {
         matches!(self.state, QuitState::Ended)
     }
 
+    #[allow(dead_code, reason = "the window's quit path that read it is gone; 6c-1b deletes the dispatcher with the supervisor lane")]
     /// The visible window message while ending, verifying, or after a
     /// terminal outcome; `None` once idle/ended (nothing to show).
     pub fn message(&self) -> Option<String> {

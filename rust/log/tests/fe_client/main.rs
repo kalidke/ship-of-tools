@@ -28,7 +28,7 @@ use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
 use sot_platform::host::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
 use sot_log::lane::wire::{
-    MgmtReply, MgmtRequest, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
+    SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
     SupervisorRequest,
 };
 use std::path::{Path, PathBuf};
@@ -83,15 +83,6 @@ fn isolated_runtime_dir() -> RuntimeDirGuard {
 
 /// The voyage mgmt lane's own unchallenged connect, per platform —
 /// mirrors `tests/supervisor/`'s identical helper.
-#[cfg(windows)]
-fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::lane::transport::TransportError> {
-    sot_log::lane::pipe_win::connect_voyage_pipe(voyage_id)
-}
-#[cfg(target_os = "linux")]
-fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::lane::transport::TransportError> {
-    sot_log::lane::socket_unix::connect_voyage_socket(voyage_id)
-}
-
 /// Real-process tests are SERIALIZED (same reason and mechanism as
 /// `tests/supervisor/`'s `SERIAL`): each spawns a supervisor, a capsule and a
 /// shell, and a two-core runner is the shared resource.
@@ -169,19 +160,6 @@ fn status(conn: &Client) -> (Option<String>, Option<u64>, SupervisorPhase) {
     }
 }
 
-/// As [`status`], but never panics — `Err`'s own text names what went
-/// wrong. Mirrors `tests/supervisor/`'s own helper of the same
-/// name (this crate's leaf-helper-duplication convention). Used only
-/// where a connection MAY legitimately be gone (a diagnostic path that
-/// must not itself panic and hide the real failure).
-fn try_status(conn: &Client) -> Result<(Option<String>, Option<u64>, SupervisorPhase), String> {
-    match request_for_test(conn, &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)) {
-        Ok(SupervisorReply::StatusOk { voyage, leg, phase, .. }) => Ok((voyage, leg, phase)),
-        Ok(other) => Err(format!("expected StatusOk, got {other:?}")),
-        Err(e) => Err(format!("{e}")),
-    }
-}
-
 fn wait_for_ready(conn: &Client, timeout: Duration) -> (String, u64) {
     poll_until(
         || match status(conn) {
@@ -204,149 +182,6 @@ fn command(conn: &Client, operation_id: &str, op: SupervisorOp) -> SupervisorOpe
         SupervisorReply::Operation(state) => state,
         other => panic!("expected Operation, got {other:?}"),
     }
-}
-
-/// One bounded, cancellable `Client::read` — Codex review round,
-/// finding 14: mirrors `tests/e2e_pipe.rs`'s own `read_bounded` (the
-/// `sot_platform::identity::deadline` module this pattern is built on is crate-private,
-/// unreachable from an external `tests/*.rs` binary, so this file keeps
-/// its own copy of the idiom rather than the machinery). Spawns a worker
-/// thread that owns the actual blocking read; `Client::cancel`,
-/// called from THIS thread, unblocks it from another thread.
-fn read_bounded(conn: &Arc<Client>, label: &'static str, timeout: Duration) -> Vec<u8> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let worker_conn = Arc::clone(conn);
-    let jh = std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        let n = worker_conn.read(&mut buf).unwrap_or(0);
-        let _ = tx.send(buf[..n].to_vec());
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(bytes) => {
-            let _ = jh.join();
-            bytes
-        }
-        Err(_) => {
-            conn.cancel();
-            let _ = jh.join();
-            panic!("timed out waiting for {label}");
-        }
-    }
-}
-
-/// The capsule's OWN pid, read off the voyage pipe's mgmt sub-lane
-/// (`probe`/`status`/`shutdown` — the step-5 lane, distinct from the
-/// supervisor lane above). A throwaway connection: the mgmt lane accepts
-/// unrelated probe/status connections freely alongside an already-attached
-/// watcher (this test's own `FeAttachClient`), per step 5's design.
-fn capsule_pid(voyage: &str) -> u32 {
-    let conn = Arc::new(connect_voyage_mgmt(voyage).expect("connect voyage mgmt lane for status"));
-    let bytes = sot_log::lane::wire::encode_mgmt_request(&MgmtRequest::Status).unwrap();
-    conn.write_all(&bytes).unwrap();
-    let mut splitter = sot_log::lane::wire::FrameSplitter::new();
-    loop {
-        let chunk = read_bounded(&conn, "mgmt status_ok", Duration::from_secs(10));
-        assert!(!chunk.is_empty(), "unexpected EOF waiting for mgmt status_ok");
-        let (frames, err) = splitter.feed(&chunk);
-        assert_eq!(err, None, "unexpected wire error decoding mgmt status_ok");
-        for f in frames {
-            if let sot_log::lane::wire::DecodedFrame::MgmtReply(MgmtReply::StatusOk { pid, .. }) = f {
-                return pid;
-            }
-        }
-    }
-}
-
-/// Forcefully terminates a process by pid — the honest hard-termination
-/// fallback this test uses to simulate "the capsule is killed" (ADR 0041:
-/// "the honest fallback is hard termination"), via the same OS tool/call
-/// a real operator would reach for. Windows: `taskkill.exe /T` also kills
-/// any child tree, matching the capsule's own containment job semantics
-/// (nothing should be left dangling for the test's own cleanup to trip
-/// over) -- Linux has no job object to mirror that with here (the
-/// capsule's own kill DOMAIN is the process group, `killpg`, which this
-/// test does not need: `SIGKILL` on the leader alone is exactly "the
-/// capsule is killed", the scenario this simulates).
-#[cfg(windows)]
-fn taskkill(pid: u32) {
-    sot_platform::test_wait::run_within(
-        Command::new("taskkill.exe").args(["/PID", &pid.to_string(), "/F", "/T"]),
-        Duration::from_secs(30),
-    )
-    .ok();
-}
-#[cfg(target_os = "linux")]
-fn taskkill(pid: u32) {
-    let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-    assert_eq!(rc, 0, "kill(SIGKILL) failed for pid {pid}: {}", std::io::Error::last_os_error());
-}
-
-/// Arms the next legs to be crashable by this test: the leg exits abruptly right after the next screen save once the
-/// returned file exists (`SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN`, a seam of the leg's screen writer), saving at a short
-/// pace. Set before the supervisor is spawned: the leg inherits it. The test never aims at a pid.
-fn arm_leg_crash(dir: &Path) -> PathBuf {
-    let go = dir.join("crash-go");
-    std::env::set_var("SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN", &go);
-    std::env::set_var("SOT_TEST_SCREEN_PACE_MS", "300");
-    go
-}
-
-/// Crashes the leg: the file armed by `arm_leg_crash` appears, and one more command makes the screen change, so the
-/// leg saves it (marker included) and exits. Returns only once the leg has taken the trigger (it removes the file just
-/// before it aborts), pumping the client so the queued command is sent: a caller that drops its client at once would
-/// otherwise shut the worker down with the command still queued.
-fn crash_leg(client: &mut FeAttachClient, go: &Path) {
-    std::fs::write(go, b"").unwrap();
-    client.send_input(b"echo SOT_FE_CRASH_TRIGGER\r\n");
-    poll_until(
-        || {
-            client.pump();
-            (!go.exists()).then_some(())
-        },
-        Duration::from_secs(30),
-        "the leg to take the crash trigger (30 s)",
-    );
-}
-
-/// Waits until the screen file the leg keeps decodes to a screen that shows `marker`: the saved screen is what a
-/// restarted leg shows, whenever the leg got to write it.
-fn wait_for_saved_marker(state_dir: &Path, marker: &str) {
-    poll_until(
-        || {
-            let bytes = std::fs::read(state_dir.join("screen")).ok()?;
-            let mut parser = vt100_ctt::Parser::new(24, 80, 200);
-            parser.restore_screen(&bytes).ok()?;
-            screen_text(parser.screen()).contains(marker).then_some(())
-        },
-        Duration::from_secs(30),
-        "the saved screen to show the marker",
-    );
-}
-
-/// Disarms what `arm_leg_crash` set, once the restarted leg is running.
-fn disarm_leg_crash() {
-    std::env::remove_var("SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN");
-    std::env::remove_var("SOT_TEST_SCREEN_PACE_MS");
-}
-
-/// The screen's text with its history: the pages from the oldest down, so a retained line is found wherever the
-/// agent's start left it (the Windows ConPTY host repaints the visible screen).
-fn screen_and_history(client: &mut FeAttachClient) -> String {
-    let screen = client.screen_mut();
-    screen.set_scrollback(usize::MAX);
-    let mut offset = screen.scrollback();
-    let (rows, _) = screen.size();
-    let mut out = String::new();
-    loop {
-        screen.set_scrollback(offset);
-        out.push_str(&screen_text(screen));
-        if offset == 0 {
-            break;
-        }
-        offset = offset.saturating_sub(usize::from(rows));
-    }
-    screen.set_scrollback(0);
-    out
 }
 
 fn screen_text(screen: &vt100_ctt::Screen) -> String {

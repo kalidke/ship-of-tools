@@ -306,7 +306,6 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
     let _runtime = isolated_runtime_dir();
     let log = sot_log::test_log::capture();
     let dir = tempfile::tempdir().unwrap();
-    let watcher_id = "dialog-tick-watcher";
     let fill = "i=0; while [ $i -lt 400 ]; do echo scrollback line $i; i=$((i+1)); done; exec sleep 600";
 
     struct Row { h: String, conn: Client, voyage: String, guard: CapsuleGuard, err: PathBuf }
