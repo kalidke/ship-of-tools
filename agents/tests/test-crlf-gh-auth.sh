@@ -99,6 +99,10 @@ case "$url" in
   */login/device/code)
     printf '{"device_code":"DC-FAKE-0000","user_code":"ABCD-1234","verification_uri":"https://example.invalid/device","interval":1,"expires_in":900}' ;;
   */login/oauth/access_token)
+    if [ -n "${SOT_TEST_CURL_SLOW:-}" ]; then   # a GitHub that answers, slowly, and is always pending
+        "$SOT_TEST_REAL_SLEEP" "$SOT_TEST_CURL_SLOW"; n=$(( $(cat "$SOT_TEST_TMP/tok.count" 2>/dev/null || echo 0) + 1 ))
+        printf '%s' "$n" > "$SOT_TEST_TMP/tok.count"; printf '{"error":"authorization_pending"}'; exit 0
+    fi
     n=$(( $(cat "$SOT_TEST_TMP/tok.count" 2>/dev/null || echo 0) + 1 ))
     printf '%s' "$n" > "$SOT_TEST_TMP/tok.count"
     if [ "$n" = 1 ]; then printf '{"error":"authorization_pending"}'
@@ -172,7 +176,7 @@ check "and with every byte intact" "$(printf '%s' "$facts" | sed -n 's/^LEN=//p'
 check "the device code curl was given had no CR" "$(cat "$TMP/dc.hascr" 2>/dev/null)" "0"
 # A stalled GitHub must end a request with curl's own error: every call carries the connect and stall bound.
 check "every curl call carries the stall bound" \
-    "$(grep -vc -e '--connect-timeout 15 --speed-limit 1000 --speed-time 60' "$TMP/curl.argv" || true)" "0"
+    "$(grep -vc -e '--connect-timeout 15 --max-time 60 --speed-limit 1000 --speed-time 60' "$TMP/curl.argv" || true)" "0"
 # Under a CRLF jq the `error` value carried a CR, every case arm missed, and the
 # poll died on the first response. Two calls to the token endpoint is the proof
 # it kept waiting instead.
@@ -206,6 +210,21 @@ check "a hung gh auth status ends the script with 124" "$rc" "124"
 check "at the script's 30 s bound, not the test's 45 s" "$([ "$took" -lt 40 ] && echo yes || echo "no, after ${took}s")" "yes"
 check "its line names the call and the bound" \
     "$(grep -c 'sot-gh-auth: gh auth status did not finish within 30s' "$TMP/hang.err" || true)" "1"
+
+# --- poll: the code's expiry counts the time a request took, not only the sleeps between requests ---------------
+# The code lives 3 s; each token request takes 2 s and the stand-in sleep waits for nothing, so counting sleeps alone
+# would send three requests before it gave up. One request and a named timeout is the elapsed time counted.
+printf '{"device_code":"DC-FAKE-0000","interval":1,"expires_in":3}' > "$TMP/comm/gh-device-auth.json"
+rm -f "$TMP/tok.count"
+rc=0
+( unset GH_TOKEN GITHUB_TOKEN
+  export PATH="$STUB:$PATH" SOT_COMM_HOME="$TMP/comm" GH_CONFIG_DIR="$TMP/gh" SOT_TEST_TMP="$TMP" \
+         SOT_TEST_CURL_SLOW=2 SOT_TEST_REAL_SLEEP="$REAL_SLEEP"
+  sot_bounded() { shift; "$@"; }
+  bash "$GH_AUTH" poll >"$TMP/slow.out" 2>"$TMP/slow.err" ) || rc=$?
+check "a slow GitHub ends the poll at the code's expiry, by elapsed time" "$rc" "7"
+check "after one request, not three" "$(cat "$TMP/tok.count" 2>/dev/null)" "1"
+check "its line names the time" "$(grep -c 'timed out after 3s' "$TMP/slow.err" || true)" "1"
 
 rm -rf "${TMP:?}"
 printf 'PASS=%s FAIL=%s\n' "$PASS" "$FAIL"

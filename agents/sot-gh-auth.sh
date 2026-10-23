@@ -59,9 +59,10 @@ GH_CFG_DIR="${GH_CONFIG_DIR:-$HOME/.config/gh}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "sot-gh-auth: missing required tool: $1" >&2; exit 3; }; }
 
-# Every curl call carries a bound: a connect past 15 s or a transfer under 1000 B/s for 60 s ends it with curl's own
-# error, which each call site reports. No total time limit: a slow transfer that keeps moving is not a hang.
-CURL_BOUND=(--connect-timeout 15 --speed-limit 1000 --speed-time 60)
+# Every curl call carries a bound: a connect past 15 s, a transfer under 1000 B/s for 60 s, or a call past 60 s in all
+# ends it with curl's own error, which each call site reports. The two requests are small JSON replies, so 60 s is far
+# above any real one.
+CURL_BOUND=(--connect-timeout 15 --max-time 60 --speed-limit 1000 --speed-time 60)
 
 # Every gh call that reaches GitHub (all but `auth setup-git`, which writes git's config) runs under sot_bounded, so a
 # GitHub that stops answering ends it at GH_BOUND. gh_net names that expiry on the script's own stderr (fd 3, which a
@@ -164,6 +165,7 @@ poll() {
     while :; do
         sleep "$interval"
         waited=$((waited + interval))
+        lap_began=$SECONDS
         # The device code reaches curl on stdin (`device_code@-`). Stripped again on
         # the way out: the route this defends is a read added later that calls
         # `jq -r` directly instead of `sot_jq`, whose CR curl would SEND, the failure
@@ -187,6 +189,8 @@ poll() {
         else
             echo "sot-gh-auth: token-poll network error; retrying" >&2
         fi
+        # The code's age is the time spent: the sleeps and the request itself.
+        waited=$((waited + SECONDS - lap_began))
         if [ "$waited" -ge "$expires" ]; then
             echo "sot-gh-auth: timed out after ${waited}s (code TTL ~${expires}s) — re-run for a fresh code." >&2
             exit 7

@@ -5,8 +5,7 @@ recipe (argv, environment, account, folder trust), and the program drives Ship o
 using the tools and skills installed from the repository. Two halves: the daemon's, in `rust/backend/src/agents/` (the
 launch recipe: `argv.rs`, `env.rs`, `awareness.rs`, `accounts.rs`, `account_links.rs`, `folder_trust.rs`,
 `trust_declaration.rs`, `memory.rs`, `layer.rs` and the ops in `ops.rs`), and the shell's, in this folder (the launchers,
-the row CLIs, the skills). Pass 10a wrote this contract for the whole subsystem and proved the daemon's half and the
-skills' placement; pass 10b settles the launchers and the row CLIs and marks its sections below.
+the row CLIs, the skills).
 
 ## Guarantees
 Each states what the rest may rely on, the mechanism it rests on and the limit it has. The Tests section holds the test
@@ -18,8 +17,14 @@ of each.
    leg (`claude_argv`), the reauth leg (`claude_resume_argv`) and `sotd agent-exec claude` (`agent_exec_argv`, which
    `ccb` execs) all call it, and `--dangerously-skip-permissions` is in none of them. Limits: a caller's own flags pass
    through verbatim, so `ccb --dangerously-skip-permissions` is the caller's choice, not the recipe's; a caller's own
-   `--settings` replaces the recipe's (the recipe adds neither the auto-memory key nor the layer's hooks then, and
-   logs it; the layer's skills still load); on Windows the argv keeps the literal name `claude`, found by the daemon's own `PATH`;
+   `--settings` stays the one, and the recipe adds no auto-memory key to it. The shape rule: the layer's hooks are merged in
+   (guarantee 7) only when the value is a JSON object whose `hooks`, if it has any, is an object, and every event the
+   recipe also names is an array there; a recipe hook whose command the caller's event already carries is not added
+   again, and the recipe's other groups follow the caller's. Anything else (invalid JSON, a root that is not an object,
+   `"hooks": null` or another non-object, an event that is not an array, a file path, which would need reading, or more
+   than one `--settings`) is passed as given, with no hooks, and the recipe logs "a caller's own --settings is not the
+   only one, or not a JSON object whose hooks are an object of arrays" (the layer's skills still load);
+   on Windows the argv keeps the literal name `claude`, found by the daemon's own `PATH`;
    `agent-exec` is Unix only; `"none"` is the bare platform shell and every other kind is refused, never substituted.
 2. **A leg starts a fresh conversation unless a reauth or a person resumes one.** The capsule recipes carry no resume
    token. The reauth leg carries `--resume <id>`, handed to the supervisor as `--first-leg-only`, so no later leg or
@@ -33,17 +38,17 @@ of each.
    real file), return the absolute path, and name every candidate they tried when none runs. `agent_env` puts
    `~/.local/bin` first on a leg's `PATH` once, only when absent, so the leg finds `gh`, the comm launchers and user
    tools a service `PATH` lacks. Limits: Windows resolves by the daemon's `PATH` and has no `ccx`; the check is `access`
-   when the leg is built, not at the exec; `ccb` resolves `sotd` by its own ladder (pass 10b).
+   when the leg is built, not at the exec; `ccb` resolves `sotd` by its own ladder (guarantee 10).
 4. **A leg's environment is built in one place.** `capsule_supervisor_env` gives a row's leg `SOT_SESSION=1`,
    `SOT_SOCKET` (Unix, the daemon's own listener, once it is set), `SOT_WORKSPACE`, `SOT_WORKSPACE_ID`,
    `SOT_WORKSPACE_ROOT`, `SOT_MANUAL` (when the manual's checkout is found), `SOT_AGENT_KIND`, `SOT_COMM_HOME` and
    `SOT_COMM_SELF_FILE` (the row's pinned self file, so a capsule never falls to the shared no-pane slot),
-   `SOTD_BIN` (this daemon's own start path, made absolute; a path is not checked to run, only a bare name is looked up), `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1` and
+   `SOTD_BIN` (this daemon's own start path, made absolute; it is checked to be a regular file, executable on Unix, and is not run; a bare name is looked up on `PATH` the same way), `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1` and
    `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, and the `PATH` addition of guarantee 3. The spawn removes
    `NESTING_ENV_VARS_TO_SCRUB` from the daemon's own environment first (`CLAUDECODE` and the other markers that make a
    fresh `claude` think it is nested, and `NO_COLOR`), then applies the row's pairs, then the account's, so an account's
    `CLAUDE_CONFIG_DIR` wins. `sotd agent-exec` scrubs the same list and adds only the `PATH` rule. Limits: comm home and
-   self file are absent when no comm home resolves; `SOTD_BIN` is absent only when a bare start name is found nowhere (queue: the runnable check for an explicit path); a
+   self file are absent when no comm home resolves; `SOTD_BIN` is always set, and empty when the start path names no such file or a bare start name is found nowhere, so the leg never inherits the daemon's own value over it, and the session's shell, which reads an empty value as unset, finds `sotd` by its own ladder (an executable that does not work, a missing interpreter included, passes the check); a
    leg started by `agent-exec` carries none of the `SOT_*` row variables, since it runs in a shell that already has its
    own.
 5. **An account is a folder, discovered each time, and a named one never falls back to the default.** `discover_accounts`
@@ -84,14 +89,16 @@ of each.
    Stop) and the subagent guard serve every joined session, so they stay in the user's own settings, written by the
    installer as before, and gate themselves on a joined identity (messaging's contract); the work-state part of the Stop
    script is not separable from its mail check, so a joined session outside a row still runs it (queue). Limits: `--add-dir`
-   also lets the session read and write the layer folder, which the next install overwrites; a caller's own `--settings`
-   replaces the recipe's, so that leg carries no work-state hooks (logged; its skills still load); a caller's
+   also lets the session read and write the layer folder, which the next install overwrites; a caller's own `--settings` gains the hooks by guarantee 1's shape rule, and one the rule declines is left as given,
+   so that leg carries no work-state hooks (logged; its skills still load); a caller's
    `--setting-sources` without `project` keeps an added folder's skills from loading (logged, and the recipe appends the
    prompt anyway); that Claude Code loads an added folder's `.claude/skills/` is Claude Code's behavior, which no test
    here proves (Claude Code 2.1.308's own text names `--add-dir` as a source of skills, and no session was started to see
    it; the maintainer's done test, as for guarantee 6); the tracked project-local skills of a checkout (`.claude/skills/`)
    load in any session that opens it, row or not, and are not the layer's; the tests prove the argv, the JSON and the
-   installed files, not that a shell runs a hook command (the quoting is POSIX and Git Bash's).
+   installed files, and that a shell runs each hook command the leg is given from a comm folder whose name holds a space
+   and a quote (`tests/test-hook-commands.sh`, under whatever bash runs it: macOS's 3.2 and Linux's 3.2.57 on the hosted runs;
+   `agent-exec` is Unix only, so Git Bash, whose quoting is the same POSIX form, is not run).
 8. **An install removes only exact copies of what an earlier installer placed.** The installer, `ShipTools.update_comm`,
    visits every Claude configuration folder (the install's own, `~/.claude`, each `~/.claude-auth/<name>`). In a skills
    folder it removes a skill directory only when its contents hash to a version of that skill the repo shipped
@@ -106,8 +113,78 @@ of each.
    Limits: a version of a skill shipped from a path the history above does not cover is kept (with a warning); a copy
    made on Windows with CRLF checkout hashes differently and is kept; a settings file that does not parse is left alone and
    named in the install's closing warning, which then says the settings were not brought up to date.
-9. **The shell tools reach the daemon only through the wire.** Pass 10b settles it, with the launchers and the row CLIs
-   below.
+9. **The shell tools of this folder reach the daemon only through the wire.** The tools are the launchers `ccb` and
+   `ccx`, the row CLIs in `spawn/`, `worktree/` and `sot-fe/`, `sot-gh-auth.sh` and the `PATH` wrappers of `claude/bin/`.
+   Their route is one of three, and none opens a file the daemon owns. (a) A framed op over an endpoint, through
+   comm-lib's `sot_oneshot_request`, which says hello first (the daemon admits nothing before it): `sot-fe`
+   (`fe.command.send`, `repl.execute`, `repl.run_file`, `repl.interrupt`, `pty.input`, `pty.screen`,
+   `workspace.reauth`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
+   `workspace.list`, `workspace.destroy`, `version.query`), `comm-bootstrap.sh` and `comm-probe.sh` (`workspace.list`,
+   `workspace.create`, `pty.input`), `sot-nav.sh` (`agent.send`, to the hub's relay endpoint). (b) A `sotd` subcommand:
+   `sotd comm VERB` through `sot_comm` (the registry, unread counts, identity, a handoff line), `sotd agent-exec`
+   (`ccb`), `sotd session-socket-path` and `sotd topology relay-endpoint` (where the daemon is). (c) The tool's own work
+   in its own folder or in git (the /worktree scripts). The endpoint is the one thing a tool finds: an explicit one,
+   `SOT_SOCKET`, or the path `sotd session-socket-path` names when a test finds a socket there (the type, not a
+   listener that answers), and every value leaves comm-lib through `_sot_emit_endpoint`, a whitelist of `unix:`, `pipe:`
+   and `ssh:` (an explicit value it refuses is fatal; the hub's `sot_relay_endpoint` takes no argument or variable and
+   never falls back to the local daemon; messaging's `comm/tests/test-endpoint-gate.sh`). In this folder the worktree
+   scripts read the registry as `sotd comm registry read` answers, the probe counts its inbox with `sotd comm unread`,
+   and the spawn leaves the inbox to the daemon's first append. Limits: a tool keeps files of its own in the comm folder
+   (`bin/`, written by the installer; `probe/`; `gh-device-auth.json`), and `sot-fe version` prints the install's
+   `VERSION` file; `ccx` reads and appends to Codex's own `config.toml`, which is Codex's and not the daemon's; the
+   tools' hello is checked by the server (messaging's and the server's contracts), not here. **Shipped tools outside this
+   folder's ownership still open daemon-owned paths, and this guarantee does not cover them:** the work-state hooks
+   (`comm-status.sh`, `comm-status-heartbeat.sh`, `comm-status-idle.sh`) and the turn auditor, rows' and messaging's, test
+   the registry and the inbox and keep turn marks and a signature under the comm folder's `state/` (queued under rows:
+   WORK-STATE-HOOKS-READ-FILES); the Windows launcher's stop helper reads `held.json` (queued under distribution:
+   WIN-LAUNCHER-HELD-JSON). Test: `tests/test-tools-wire-only.sh` (the registry and inbox folders the tools are told of
+   do not exist, and a stand-in `sotd` answers the registry and the unread count; worktree status and sync and the
+   probe's responder, through one delivered mail and its report, give the daemon's answers and leave the comm folder's
+   whole tree as it was), `tests/test-spawn-remote-no-local-row.sh` (a local spawn writes its row through the daemon
+   and no inbox file), and `tests/test-sot-fe-endpoint-once.sh` (a `sot-fe` run asks `sotd` for the socket once,
+   whichever verb). The other tools are read, not run, by it: their routes are the ones listed.
+10. **`ccb` carries no recipe of its own; `ccx` builds Codex's argv itself.** `ccb` finds `sotd` by `$SOTD_BIN` when it is
+    executable, else `PATH`, else `~/.local/share/sot/bin/sotd`, else `~/.local/bin/sotd`, and execs `sotd agent-exec
+    claude` with the caller's flags in order (guarantee 1), or says `ccb: sotd not found` and exits 1. `ccx` has no
+    daemon recipe behind it: it builds the Codex argv itself (`codex [resume <id>]
+    --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust <prompt>`). It chooses no handle
+    (decision 0031): it joins with no name and names, in Codex's first prompt, the handle `comm-context.sh` reads back; a
+    join that gives none still starts Codex, with a prompt that names none and one stderr line saying so; it starts a
+    fresh conversation unless `--continue` or `--resume` is given (`--fresh` wins over `--continue`). Limits: `ccx` runs
+    Codex with its approvals and its sandbox bypassed, and is bash: it has no Windows form. Test:
+    `tests/test-ccb-agent-exec.sh` (the ladder and the order), `tests/test-ccx-launch.sh`,
+    `tests/test-ccx-resume-default.sh`.
+11. **The tools run under macOS's bash 3.2 and Git Bash.** They use no bash 4 feature, as messaging's scripts do
+    (`comm/CLAUDE.md`). Limit: the proof is the hosted run of `scripts/tests/under-bash.sh` on macOS and on a built bash
+    3.2.57 on Linux (a new suite joins by its name); it runs a suite's own body in the newer shell and puts bash 3.2
+    first on `PATH` for the scripts the suite starts, so the suites' code is not proved under 3.2; no hosted job runs the
+    agents suites under Git Bash, and a local run is under bash 5 and proves nothing of it.
+12. **`sot-gh-auth.sh`, the GitHub device-flow sign-in, waits at most a stated time.** Every `curl` call carries
+    `CURL_BOUND` (connect 15 s, a call 60 s in all, under 1000 B/s for 60 s), and every `gh` call that reaches GitHub
+    runs under comm-lib's `sot_bounded` (`GH_BOUND`, 30 s) and names the expiry on the script's own stderr. The poll's
+    expiry counts the sleeps and the time each request took, so a slow GitHub cannot stretch the code's life. Limit:
+    `gh auth setup-git`, which writes git's configuration and reaches no network, runs unbounded. Test:
+    `tests/test-crlf-gh-auth.sh` ("every curl call carries the stall bound"; "at the script's 30 s bound"; "a slow
+    GitHub ends the poll at the code's expiry, by elapsed time").
+13. **Where the tools install is fixed by one list.** Every code file directly in each folder `comm/bin-folders.txt`
+    lists (`agents`, `agents/sot-fe`, `agents/spawn`, `agents/worktree`) installs flat into the comm folder's `bin/`,
+    except that `sot-fe`'s four parts (`sot-fe-request.sh`, `sot-fe-repl.sh`, `sot-fe-row.sh`, `sot-fe-version.sh`) are
+    embedded in the installed `sot-fe` and are no files of their own (`src/comm_bin.jl`); nothing in `claude/` or
+    `codex/` installs there (the launchers and the `PATH` wrappers reach `~/.local/bin` through the installer's own
+    stage, `src/sources.jl`), and the wrapper `claude/bin/sot-fe` never replaces the tool `sot-fe/sot-fe`. Test:
+    `test/install_tests.jl` ("the agents tools install flat from the four listed folders"), over the installer's own
+    file list.
+14. **No tool leaves a file in the temporary folders, by messaging's rule and with its limits.** On success, on failure,
+    killed by a catchable signal and ended twice, no script of this folder leaves a file in `$TMPDIR` or
+    `$XDG_RUNTIME_DIR`, by the cleanup-trap rule of `comm/CLAUDE.md` (a shell running `comm-spawn.sh` that stops on
+    Ctrl-C says its rollback's outcome). Limits, the rule's own (`comm/lib/comm-lib-base.sh`, cleanup traps): SIGKILL
+    runs no trap, so a request killed that way leaves its scratch folder, and a signal that arrives inside the handler
+    itself can leave one. Test: `tests/test-temp-files.sh`, whose kill rows stop at marked points, not every one.
+15. **A skill body is a template, so it carries no `$` and a digit.** Claude Code substitutes `$<digit>` and
+    `$ARGUMENTS` into the text before the model reads it; a skill file of the layer or of the checkout carries no `$0`,
+    `$1` or `${1}`. Limit: the rule keeps a skill from being spoiled by a substitution, not from being wrong, and no
+    test runs a skill's script or Claude Code. Check (a lint over the files, which a skill with `$1` fails):
+    `tests/test-skill-templates.sh`.
 
 ## Owns
 - The launch recipe: `agent_argv`, `agent_exec_argv`, `claude_resume_argv`, `claude_recipe`, `resolve_claude`,
@@ -119,8 +196,8 @@ of each.
 - The non-messaging Claude skills (the four onboarding ones global, the rest the layer's; `julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `sot-gh-auth`,
   `sot-install`, `sot-setup`, `sot-status`, `sot-statusline-setup`, `worktree`) and the Claude launcher `ccb` with its
   `PATH` wrappers (`show-result`, `sot-fe`, `sot-gh-auth`): `claude/`. The Codex launcher `ccx`: `codex/`.
-- Pass 10b settles: the row CLIs `spawn/`, the /worktree scripts `worktree/`, the frontend CLI and nav broadcast
-  `sot-fe/`, `sot-gh-auth.sh`, and the suites `tests/`.
+- The row CLIs `spawn/`, the /worktree scripts `worktree/`, the frontend CLI and nav broadcast `sot-fe/`,
+  `sot-gh-auth.sh`, and the suites `tests/`.
 - Still elsewhere, listed so a reader finds them: the shell daemon client `comm/lib/comm-lib-client.sh`
   (`sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`); the hooks' scripts, the Codex
   skills and plugin, and the two messaging skills (`sot-comm`, `sot-session-start`) in `comm/work_state/` and
@@ -148,30 +225,10 @@ Unix and Windows alike: the recipe's flag shape, accounts, folder trust, the lay
 absolute resolution of `claude` and `ccx`, `agent-exec`, the `PATH` rule, the codex recipe. Windows only: the
 junction and copy fallbacks of guarantee 5, forward-slash spellings of the trust key and `SOT_COMM_HOME`.
 
-## Launchers and the row CLIs (pass 10b settles)
-Carried from the charter as it stood, each sentence unproven by this pass:
-- `ccb` execs `sotd agent-exec claude`, which carries the recipe; `ccx` chooses no handle (decision 0031): it joins with
-  no name and names in codex's first prompt the handle `comm-context.sh` reads back; a join that gives none still
-  starts codex and says so (`agents/tests/test-ccx-launch.sh`).
-- Scripts run under bash 3.2 and git-bash, as messaging's do (`comm/CLAUDE.md`, `scripts/tests/under-bash.sh`); `ccb`,
-  `ccx` and the `sot-fe` and `sot-gh-auth` wrappers start `#!/bin/bash`.
-- `sot-gh-auth.sh`, the GitHub device-flow sign-in: every curl call carries `CURL_BOUND` (connect 15 s, under 1000 B/s
-  for 60 s) and every gh call that reaches GitHub runs under comm-lib's `sot_bounded` (`GH_BOUND`, 30 s).
-- Every endpoint leaves the shell client through `_sot_emit_endpoint` (a whitelist of `unix:`, `pipe:` and `ssh:`); an
-  explicit endpoint it refuses is fatal; `sot_relay_endpoint` is what `sotd topology relay-endpoint` answers, takes no
-  argument or variable override, and never falls back to the local daemon.
-- Every code file directly in this folder installs flat into `~/.sot-comm/bin`, because `comm/bin-folders.txt` lists
-  `agents`; `claude/` and `codex/` are never in that list, so their files install only through `src/sources.jl`.
-- A cleanup trap follows `comm/CLAUDE.md`'s rule.
-- A skill body is a template: Claude Code substitutes `$<digit>` and `$ARGUMENTS` into the text before the model reads
-  it, so a skill carries no `$` followed by a digit; the sot-setup skill's launcher script finds its folder by
-  `BASH_SOURCE`, not `$0`. No test enforces the rule.
-- Folders: `spawn/` (the four row-lifecycle CLIs), `worktree/` (the four /worktree scripts), `sot-fe/` (the frontend
-  and REPL CLI, `sot-nav.sh`), `claude/` and `codex/` (installer-shaped, no page), `tests/` (their hermetic suites).
-
 ## Files
 `claude/`: `bin/ccb`, the wrappers `bin/show-result`, `bin/sot-fe`, `bin/sot-gh-auth`, and the skills. `codex/`:
-`bin/ccx`. `spawn/`, `worktree/`, `sot-fe/`, `tests/`: pass 10b's. `sot-gh-auth.sh`. Daemon half:
+`bin/ccx`. `spawn/` (the four row-lifecycle CLIs), `worktree/` (the four /worktree scripts), `sot-fe/` (the frontend and
+REPL CLI and `sot-nav.sh`), `tests/` (their hermetic suites), `sot-gh-auth.sh`. Daemon half:
 `rust/backend/src/agents/` (its `CLAUDE.md` points here). Installer half: `src/adapters.jl` (the adapter stages),
 `src/skills.jl` (the layer's skills and the one-time move), `src/claude_hooks.jl` (the hook retirement), `src/sources.jl`
 (every repo path the installer reads).
@@ -189,24 +246,27 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 1 | `argv::tests::every_claude_leg_runs_auto_mode_and_never_skips_permissions` |
 | 2 | `argv::tests::agent_argv_claude_starts_a_fresh_conversation`, `a_reauth_leg_resumes_by_id_and_never_continues`, `agent_exec_argv_claude_never_adds_continue`; the supervisor's stripping of a resume on later legs, `rust/log/src/supervisor/transitions_tests.rs` |
 | 3 | `argv::tests::resolve_claude_*`, `resolve_ccx_*`; `env::tests::agent_env_prepends_local_bin_to_path_once`; `tests/agent_exec.rs` |
-| 4 | `env::tests::capsule_supervisor_env_*`, `nesting_env_scrub_list_matches_ccb`; `tests/agent_exec.rs` |
+| 4 | `env::tests::capsule_supervisor_env_*`, `nesting_env_scrub_list_matches_ccb`, `sotd_bin_value_*`, `the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected`; `tests/agent_exec.rs` |
 | 5 | `accounts::tests::*`, `account_links::tests::*` |
 | 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*`, `env::trust_config_controls::*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
-| 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `layer::tests::*`; `tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
+| 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*`;
+`tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh`; `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
 | 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement) |
-| 9 | pass 10b |
+| 9 | `tests/test-tools-wire-only.sh`, `tests/test-spawn-remote-no-local-row.sh`, `tests/test-sot-fe-endpoint-once.sh` |
+| 10 | `tests/test-ccb-agent-exec.sh`, `tests/test-ccx-launch.sh`, `tests/test-ccx-resume-default.sh` |
+| 11 | the hosted run of `scripts/tests/under-bash.sh` |
+| 12 | `tests/test-crlf-gh-auth.sh` |
+| 13 | `test/install_tests.jl` (the agents testset) |
+| 14 | `tests/test-temp-files.sh` |
+| 15 | `tests/test-skill-templates.sh` (a lint) |
 
 ## Queue
-- A caller's own `--settings` carries no work-state hooks; merging the recipe's hooks into a JSON value the caller gives
-  (a file path would need reading) is the fix.
 - The Stop script `comm-status-idle.sh` does the mail check and the work-state stamping, audits and nudges in one
   574-line flow, and every joined session runs it. Splitting the mail check from the work-state part is messaging's and
   rows' pass; the layer then carries the work-state half.
-- `SOTD_BIN`: check that an explicit start path runs, as a bare name is checked (`env.rs`, `sotd_bin_value`).
 - The Windows skill-folder hash: a CRLF checkout's copies differ from the list and are kept.
 - The auto-memory flag (`memory.rs`, `--settings` key `autoMemoryDirectory`) has no guarantee of its own in this page;
   it is owned policy of the recipe and is proved by `memory::tests::*`.
-- A shell test of the hook command's quoting under Git Bash and macOS's shell (hosted run).
 - 5 REMOTE-TOOL: a feature; left.
 - 51 CLAUDE-MD-STUB: needs a Windows box with a logged-in account and a real `claude -p`; left.
 - Codex: its skills and plugin still install into the global `$CODEX_HOME` and `~/.agents`, outside any row. The same

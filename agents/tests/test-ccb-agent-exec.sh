@@ -92,9 +92,33 @@ case_no_sotd_found_fails_with_one_clear_error_line() {
     return 0
 }
 
+# The ladder: an executable $SOTD_BIN, else PATH, else the two install paths, in that order; a $SOTD_BIN that does not run
+# is passed over.
+mark_stub() {  # DIR — a sotd stub in DIR that records its own first line, then its argv
+    mkdir -p "$1"
+    printf '#!/bin/sh\n: > "$ARGV_LOG_PATH"\nprintf "%%s\\n" "%s" >> "$ARGV_LOG_PATH"\nfor a in "$@"; do printf "%%s\\n" "$a" >> "$ARGV_LOG_PATH"; done\n' "$1" > "$1/sotd"
+    chmod +x "$1/sotd"
+}
+case_the_ladder_runs_in_order() {
+    local h="$WORK/ladder-home" want
+    mark_stub "$WORK/l-explicit"; mark_stub "$WORK/l-path"; mark_stub "$h/.local/share/sot/bin"; mark_stub "$h/.local/bin"
+    : > "$WORK/l-plain"   # a file that is not executable
+    rm -f "${ARGV_LOG:?}"
+    ARGV_LOG_PATH="$ARGV_LOG" HOME="$h" SOTD_BIN="$WORK/l-explicit/sotd" PATH="$WORK/l-path:$PATH" "$BIN_DIR/ccb" > /dev/null 2>&1
+    assert_argv_is "$WORK/l-explicit" agent-exec claude || return 1
+    ARGV_LOG_PATH="$ARGV_LOG" HOME="$h" SOTD_BIN="$WORK/l-plain" PATH="$WORK/l-path:$PATH" "$BIN_DIR/ccb" > /dev/null 2>&1
+    assert_argv_is "$WORK/l-path" agent-exec claude || return 1
+    ARGV_LOG_PATH="$ARGV_LOG" HOME="$h" SOTD_BIN="" PATH="$WORK/no-such-dir:$(dirname "$(command -v cat)")" "$BIN_DIR/ccb" > /dev/null 2>&1
+    assert_argv_is "$h/.local/share/sot/bin" agent-exec claude || return 1
+    rm -f "$h/.local/share/sot/bin/sotd"
+    ARGV_LOG_PATH="$ARGV_LOG" HOME="$h" SOTD_BIN="" PATH="$WORK/no-such-dir:$(dirname "$(command -v cat)")" "$BIN_DIR/ccb" > /dev/null 2>&1
+    assert_argv_is "$h/.local/bin" agent-exec claude
+}
+
 check "ccb forwards its flags, in order, to sotd agent-exec claude"       case_ccb_forwards_flags_in_order_to_agent_exec
 check "a bare ccb (no flags) still reaches agent-exec claude"             case_a_bare_ccb_forwards_no_flags
 check "no sotd resolvable anywhere fails with one clear error line"       case_no_sotd_found_fails_with_one_clear_error_line
+check "ccb finds sotd by SOTD_BIN, then PATH, then the two install paths, passing over one that does not run" case_the_ladder_runs_in_order
 
 echo ""
 echo "$PASS passed, $FAIL failed"

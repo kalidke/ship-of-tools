@@ -48,18 +48,18 @@
 #                 auto-detected from the running sotd. A daemon on ANOTHER
 #                 box (its own declared host, asked over version.query —
 #                 never guessed from the endpoint's path) gets NO
-#                 provisional registry row and NO inbox file here: both are
-#                 keyed to THIS host, the child joins its own box's
-#                 registry, and the pair would stand as a false success
-#                 for every later send from here.
+#                 provisional registry row here: it is keyed to THIS host,
+#                 the child joins its own box's registry, and the row
+#                 would stand as a false success for every later send
+#                 from here.
 #
 #
 # Rollback contract (Codex review F9, hardened in round 2 findings 1 & 2):
 # an EXIT trap is armed BEFORE either write path can happen (right after
 # the provisional row's JSON — including a random nonce — is built, ahead
 # of both the derived-claim write and the explicit-name write), so there
-# is no window — not even the inbox touch, or an invalid explicit --name
-# failing there — where a row can exist unprotected. On any SYNCHRONOUS
+# is no window — not even an invalid explicit --name failing there —
+# where a row can exist unprotected. On any SYNCHRONOUS
 # failure this script itself detects after that point — the same-label
 # refusal (F5), a rejected/failed workspace.create, a capsule row that
 # never reaches "ready" — the trap CONDITIONALLY deletes
@@ -243,8 +243,8 @@ PROV_OBJ="$(printf '%s' "$CANON_ROOT" | jq -Rs --arg host "$HOST" --arg repo "$R
 # Rollback (Codex review PR #148 round 2, finding 2): armed HERE, BEFORE
 # either write path below (a derived claim writes immediately at the next
 # block; an explicit name writes later, at the "Provisional registry row"
-# section) — not after both, which left a window (the inbox touch, an
-# invalid explicit --name whose parent dir doesn't exist) where a row
+# section) — not after both, which left a window (an invalid explicit
+# --name whose parent dir doesn't exist) where a row
 # could exist with no rollback protection at all. NAME can still be empty
 # here (the derived path hasn't resolved it yet); the reporter below
 # no-ops until there is something to protect.
@@ -288,7 +288,7 @@ sot_cleanup_signals
 # --- resolve the daemon endpoint, and learn WHICH BOX it is on -----------
 # Both happen BEFORE either provisional write below (rc9.5), because every
 # one of those writes is keyed to THIS host: a registry row whose `host` is
-# this box, an inbox file under this box's $COMM_HOME. The endpoint used to
+# this box. The endpoint used to
 # be resolved AFTER them, so at the moment it wrote the row the script did
 # not yet know which daemon — let alone which box — it was spawning into.
 resolve_endpoint() {
@@ -500,10 +500,11 @@ _despawn_cmd() {
 }
 
 
-# Provisional registry row + inbox, so the agent is addressable FROM SPAWN TIME:
+# Provisional registry row, so the agent is addressable FROM SPAWN TIME:
 # comm-send refuses unregistered handles, and without this the spawner had to
-# sit out the agent's whole boot before its first message. With the row + inbox
-# in place, anyone can comm-send @<name> immediately — the line queues durably,
+# sit out the agent's whole boot before its first message. With the row in
+# place, anyone can comm-send @<name> immediately — the daemon makes the inbox
+# at the first append, the line queues durably,
 # and the agent reads the backlog with comm-poll once it is up and told of
 # mail, and replies (~1 min). The real join later overwrites
 # this row with full pane/expertise info; comm-leave.sh --name <handle> removes it if the
@@ -511,12 +512,11 @@ _despawn_cmd() {
 # above (`sotd comm derive --claim`) — only an EXPLICIT name still needs the
 # write here (its collision, if any, was already ruled out above).
 #
-# ONLY when the daemon is on THIS box (rc9.5). Both stores are this box's:
-# the row records `host: $HOST` and the inbox file lives under this box's
-# $COMM_HOME, so "the real join later overwrites this row" holds only while
-# the child shares this $HOME. A child on ANOTHER box joins THAT box's
-# registry, leaving this pair to stand as a false success for the rest of
-# its life: comm-send.sh reads the row as a registry HIT (`deliver`),
+# ONLY when the daemon is on THIS box (rc9.5). The row is this box's: it
+# records `host: $HOST`, so "the real join later overwrites this row" holds
+# only while the child shares this $HOME. A child on ANOTHER box joins THAT
+# box's registry, leaving this row to stand as a false success for the rest
+# of its life: comm-send.sh reads the row as a registry HIT (`deliver`),
 # appends to the local inbox, and prints `filed -> @<name>` with exit 0
 # while nothing on the target box ever reads that file. Writing nothing is
 # what makes the same send route over the relay instead (comm-send.sh's
@@ -527,12 +527,11 @@ if [ -n "$NAME" ] && [ "$SPAWN_IS_LOCAL" = true ]; then
         printf '%s' "$PROV_OBJ" | sot_comm registry put "$NAME"
         PROV_WRITTEN=true
     fi
-    : >> "$INBOX_DIR/$NAME.jsonl"
 fi
 
 # Rollback protection is already armed (see the trap set right after
 # PROV_OBJ was built, above) — before either write path, including this
-# one and the inbox touch just above it. The endpoint resolution that used
+# one. The endpoint resolution that used
 # to sit HERE now runs before that trap is armed (it has to: its answer
 # decides whether either write happens at all), so an unresolvable daemon
 # fails with nothing written and nothing to roll back.
@@ -674,7 +673,7 @@ echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}, a
 # Said BEFORE the --task attempt below, because it is also why that attempt
 # can fail: a handle with no row here is not addressable here yet.
 if [ "$SPAWN_IS_LOCAL" = false ]; then
-    echo "@${NAME} runs on ${SPAWN_HOST}, so this box wrote NO registry row and NO inbox for it — it is not addressable from here yet."
+    echo "@${NAME} runs on ${SPAWN_HOST}, so this box wrote NO registry row for it — it is not addressable from here yet."
     echo "It becomes reachable once it joins comm on ${SPAWN_HOST} (~1 min); sends from here then route over the relay."
 fi
 if [ -n "$SPAWNER" ]; then

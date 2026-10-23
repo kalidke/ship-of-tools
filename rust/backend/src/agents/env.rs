@@ -48,12 +48,13 @@ fn capsule_comm_home_str() -> Option<String> {
 
 /// The `SOTD_BIN` value for a session: the path this daemon was started by, made absolute the way its start found it,
 /// without following a link. A path (absolute, relative, or drive-relative such as `C:sotd.exe`) is made absolute by
-/// `std::path::absolute`: against the working folder, and a drive-relative one against that drive's. A bare name is
+/// `std::path::absolute`: against the working folder, and a drive-relative one against that drive's; it is the value
+/// only when it names a runnable file, as a bare name's must. A bare name is
 /// looked up as a start looks it up: on Windows in the working folder and then each `PATH` entry, with `.exe` added to
 /// a name that has no extension; elsewhere in each `PATH` entry. The first runnable file is the value. Forward slashes
 /// on Windows, where a git-bash/MSYS shell reads it, as with `SOT_COMM_HOME`. The start path, never the resolved one: a
-/// session outlives its daemon, and an update replaces the file at that path. `None` for an empty start path, or a bare
-/// name found nowhere; the session's shell then finds `sotd` by its own ladder.
+/// session outlives its daemon, and an update replaces the file at that path. `None` for an empty start path, a path that
+/// names no runnable file, or a bare name found nowhere; the session's shell then finds `sotd` by its own ladder.
 fn sotd_bin_value(start: &std::ffi::OsStr, path_var: Option<&std::ffi::OsStr>) -> Option<String> {
     if start.is_empty() {
         return None;
@@ -75,7 +76,13 @@ fn sotd_bin_value(start: &std::ffi::OsStr, path_var: Option<&std::ffi::OsStr>) -
             .filter_map(|dir| std::path::absolute(dir.join(&name)).ok())
             .find(|candidate| crate::rows::spawn::detach::runnable_file(candidate))?
     } else {
-        std::path::absolute(start).ok()?
+        let absolute = std::path::absolute(start).ok()?;
+        // As a bare name is: Windows adds `.exe` to a program name that has no extension.
+        let program = match absolute.extension() {
+            None if cfg!(windows) => absolute.with_extension("exe"),
+            _ => absolute,
+        };
+        crate::rows::spawn::detach::runnable_file(&program).then_some(program)?
     };
     let text = found.to_string_lossy();
     Some(if cfg!(windows) {
@@ -98,6 +105,13 @@ pub fn own_sotd_bin() -> Option<&'static str> {
             )
         })
         .as_deref()
+}
+
+/// The leg's `SOTD_BIN` pair: this daemon's runnable start path, or an empty value when it has none. The pair is always
+/// there, so the leg never inherits the daemon's own `SOTD_BIN` over a start path that was rejected; every shell ladder
+/// reads an empty value as unset and goes on to `PATH` and the install paths.
+fn sotd_bin_pair(own: Option<&str>) -> (String, String) {
+    ("SOTD_BIN".to_string(), own.unwrap_or_default().to_string())
 }
 
 /// A row's comm home and its pinned self file, `<comm home>/self/<declared host>__<row id>.txt`, in the forward-slash
@@ -139,7 +153,7 @@ pub fn row_self_file(workspace_id: &str) -> Option<(String, String)> {
 /// declared handle is the row's (`rows::handle::bound_handle`); the daemon never
 /// reads the self-file back.
 /// `SOTD_BIN` is this daemon's own start path ([`own_sotd_bin`]), so the session's comm shell bridges with the daemon's
-/// own binary.
+/// own binary; empty when that path is not a runnable file ([`sotd_bin_pair`]).
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_kind: &str) -> Vec<(String, String)> {
     let mut env = crate::agents::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
     // The kind is an input to the session's derived handle (`comm::identity::derive::Kind`).
@@ -150,9 +164,7 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
     }
     // The comm shell in the session bridges with SOTD_BIN first, so it is this daemon's own binary, over any value the
     // daemon inherited (detach.rs applies these pairs with `Command::env`).
-    if let Some(sotd) = own_sotd_bin() {
-        env.push(("SOTD_BIN".to_string(), sotd.to_string()));
-    }
+    env.push(sotd_bin_pair(own_sotd_bin()));
     // Claude Code's feedback survey is a modal panel that holds a row's
     // session until someone answers it, so no row's agent shows it, on
     // any OS. Only this switch: telemetry and nonessential traffic stay

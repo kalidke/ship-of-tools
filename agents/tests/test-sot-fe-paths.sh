@@ -29,8 +29,10 @@ mkdir -p "$SOT_COMM_HOME"
 
 PASS=0
 FAIL=0
+LAST_OUT="$WORK/last.out"   # what the last child run through lib, sent or probe_root_sent printed: a FAIL line shows it
+: > "$LAST_OUT"
 ok()  { PASS=$((PASS + 1)); echo "PASS: $1"; }
-bad() { FAIL=$((FAIL + 1)); echo "FAIL: $1"; }
+bad() { FAIL=$((FAIL + 1)); echo "FAIL: $1"; [ ! -s "$LAST_OUT" ] || { echo "  the last child printed:"; sed 's/^/    /' "$LAST_OUT"; }; }
 check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1 (no '$3' in: $2)" ;; esac; }
 
@@ -72,9 +74,15 @@ NATIVE_CYGPATH=0; command -v cygpath > /dev/null 2>&1 && NATIVE_CYGPATH=1
 # lib PATH FN ARG... — FN's answer from the staged comm-lib.sh with PATH, or "rc N" when it fails.
 lib() {
     local p="$1" out rc; shift
-    out="$(PATH="$p" bash -c '. "$1"; shift; "$@"' _ "$SCRIPTS_DIR/comm-lib.sh" "$@" 2>/dev/null)"; rc=$?
-    if [ "$rc" = 0 ]; then printf '%s' "$out"; else printf 'rc %s' "$rc"; fi
+    out="$(PATH="$p" bash -c '. "$1"; shift; "$@"' _ "$SCRIPTS_DIR/comm-lib.sh" "$@" 2> "$LAST_OUT")"; rc=$?
+    if [ "$rc" = 0 ]; then printf '%s' "$out"; else printf '%s\n' "$out" >> "$LAST_OUT"; printf 'rc %s' "$rc"; fi
 }
+
+# 0. A failing case shows what the child printed: `lib` and `sent` keep the child's output, and a FAIL line carries it.
+lib "$PATH" bash -c 'echo hidden-by-lib >&2; exit 3' > /dev/null
+has "a failing lib call shows the child's stderr in the FAIL line" "$(bad probe)" "hidden-by-lib"
+lib "$PATH" bash -c 'echo diagnosis-on-stdout; exit 3' > /dev/null
+has "a failing lib call shows the child's stdout in the FAIL line" "$(bad probe)" "diagnosis-on-stdout"
 
 # 1. The rule, one table: ROOT, PATH and the answer, in each spelling.
 while IFS='|' read -r arm root path want; do
@@ -243,7 +251,7 @@ PIPE='pipe:\\.\pipe\sot-paths-test'
 sent() {  # OP JQ-PATH PATH CMD... — the value at JQ-PATH of the OP request CMD sends, run from the repo with PATH
     local op="$1" q="$2" p="$3"; shift 3
     : > "$RECLOG"
-    (cd "$WORK/repo" && PATH="$p" "$@" > /dev/null 2>&1)
+    (cd "$WORK/repo" && PATH="$p" "$@" > "$LAST_OUT" 2>&1)
     jq -r --arg op "$op" "select(.op == \$op) | $q" "$RECLOG" 2>/dev/null | head -n 1
 }
 F="$WORK/repo/a.txt"
@@ -264,7 +272,7 @@ check "repl run: a unix: daemon gets the path as written" \
     "$(sent repl.execute .payload.input.path "$PATH" bash "$SCRIPTS_DIR/sot-fe" repl run ws-x "$F" --endpoint "unix:$REC" --timeout 1)" "$F"
 probe_root_sent() {  # PATH ENDPOINT — the project_root comm-probe's workspace.create carries
     PATH="$1" ENDPOINT="$2" bash -c 'log="$2"; . "$1"; probe_request() { printf "%s\n" "$1" > "$log"; return 1; }
-        probe_create probe-t > /dev/null 2>&1; jq -r .payload.project_root "$log"' _ "$SCRIPTS_DIR/comm-probe.sh" "$WORK/probe-req"
+        probe_create probe-t > "$3" 2>&1; jq -r .payload.project_root "$log"' _ "$SCRIPTS_DIR/comm-probe.sh" "$WORK/probe-req" "$LAST_OUT"
 }
 check "probe (windows): a pipe: daemon gets its spelling" \
     "$(probe_root_sent "$WIN_PATH" "$PIPE")" "$(PATH="$WIN_PATH" cygpath -m -l "$SOT_COMM_HOME/probe/probe-t")"

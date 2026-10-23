@@ -88,6 +88,13 @@ fn after_shutdown_no_connection_thread_is_left() {
     assert_eq!(row_threads(), 6);
     server.shutdown();
     assert_eq!(run.open_connections(), 0);
-    assert_eq!(row_threads(), 0, "shutdown joins every connection's threads");
+    // A joined thread can stay in /proc/self/task for a moment: its join returns when the kernel clears its id, before
+    // the task is reaped. So the count is read until it reaches zero, within a bound far shorter than any thread left
+    // blocked on a read would take to end (the clients are still open).
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while row_threads() != 0 {
+        assert!(Instant::now() < deadline, "shutdown joins every connection's threads: {} left", row_threads());
+        std::thread::sleep(Duration::from_millis(5));
+    }
     drop(clients);
 }
