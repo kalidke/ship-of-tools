@@ -175,16 +175,20 @@ pub(super) fn resize_terminal<P: Producer>(cols: u16, rows: u16, leg: &mut Leg<'
 
 /// The row socket's side of one pass: waiting attaches get the screen at a ground state, typed input is written to
 /// the terminal and answered, a resize is applied.
+/// Row requests served in one pass, so output, ticks and the exit checks still run under a flood.
+const ROW_REQUESTS_PER_PASS: usize = 16;
+
 pub(super) fn service_row<P: Producer>(leg: &mut Leg<'_, P>) {
     let Some(row) = leg.row.clone() else { return };
     row.tick(&leg.parser);
-    for request in row.take_requests() {
+    for request in row.take_requests(ROW_REQUESTS_PER_PASS) {
         match request {
-            crate::row::RowRequest::Input { bytes, reply } => {
+            crate::row::RowRequest::Input { bytes, reply, .. } => {
                 let written = leg.producer.input().write_all(&bytes).map(|()| bytes.len()).map_err(|e| e.to_string());
                 let _ = reply.send(written);
             }
-            crate::row::RowRequest::Resize { cols, rows } => {
+            crate::row::RowRequest::Resize { cols, rows, reply } => {
+                let _ = reply.send(Ok(()));
                 resize_terminal(cols, rows, leg);
             }
         }

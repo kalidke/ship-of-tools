@@ -55,7 +55,7 @@ fn a_supervisor_serves_its_row_socket_and_the_agent_hears_a_driver() {
         .arg("--start")
         .arg("--assume-no-rollback-target")
         .arg("--")
-        .args(["/bin/sh", "-c", "echo agent-was-here; exec cat"])
+        .args(["/bin/sh", "-c", "echo agent-was-here; read line; echo \"agent-read:$line:done\"; exec cat"])
         .env("SOT_RUNTIME_DIR", runtime.path())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -77,5 +77,6 @@ fn a_supervisor_serves_its_row_socket_and_the_agent_hears_a_driver() {
     client.attach(80, 24, true).expect("attach as the driver");
     read_until(&mut client, "agent-was-here", Duration::from_secs(20));
     client.send_input(b"typed-by-the-driver\r").expect("the driver types");
-    read_until(&mut client, "typed-by-the-driver", Duration::from_secs(10));
+    // The terminal echoes what was typed; only the agent's own line proves it read it.
+    read_until(&mut client, "agent-read:typed-by-the-driver:done", Duration::from_secs(10));
 }

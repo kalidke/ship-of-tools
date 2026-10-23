@@ -13,35 +13,67 @@ use std::time::{Duration, Instant};
 
 const BOUND: Duration = Duration::from_secs(5);
 
+/// What the fake main loop does with a request.
+#[derive(Clone, Default)]
+struct Behavior {
+    /// Takes input and never answers it (an agent that reads nothing).
+    hold_input_replies: bool,
+    /// Fails an OS resize to this many columns.
+    fail_resize_cols: Option<u16>,
+    /// Starts paused: nothing is serviced until `resume`.
+    paused: bool,
+}
+
 struct FakeLoop {
     run: Arc<RowRun>,
     parser: Arc<Mutex<vt100_ctt::Parser>>,
     written: Arc<Mutex<Vec<u8>>>,
     stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl FakeLoop {
     fn new(screen: &[u8]) -> Self {
+        Self::with(screen, Behavior::default())
+    }
+
+    fn with(screen: &[u8], behavior: Behavior) -> Self {
         let run = RowRun::new("run-one", "ready");
         let parser = Arc::new(Mutex::new(vt100_ctt::Parser::new(24, 80, 200)));
         parser.lock().unwrap().process(screen);
         let written = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
+        let paused = Arc::new(AtomicBool::new(behavior.paused));
         let thread = {
-            let (run, parser, written, stop) = (Arc::clone(&run), Arc::clone(&parser), Arc::clone(&written), Arc::clone(&stop));
+            let (run, parser, written, stop, paused) =
+                (Arc::clone(&run), Arc::clone(&parser), Arc::clone(&written), Arc::clone(&stop), Arc::clone(&paused));
             std::thread::spawn(move || {
+                let mut held = Vec::new();
                 while !stop.load(Ordering::Acquire) {
-                    {
+                    if !paused.load(Ordering::Acquire) {
                         let mut p = parser.lock().unwrap();
+                        // The screen is served before the pass's requests, as the loop may: an attach's own resize
+                        // must not depend on the order.
                         run.tick(&p);
-                        for req in run.take_requests() {
+                        for req in run.take_requests(16) {
                             match req {
-                                RowRequest::Input { bytes, reply } => {
+                                RowRequest::Input { bytes, reply, .. } => {
                                     written.lock().unwrap().extend_from_slice(&bytes);
-                                    let _ = reply.send(Ok(bytes.len()));
+                                    if behavior.hold_input_replies {
+                                        held.push(reply);
+                                    } else {
+                                        let _ = reply.send(Ok(bytes.len()));
+                                    }
                                 }
-                                RowRequest::Resize { cols, rows } => p.screen_mut().set_size(rows, cols),
+                                RowRequest::Resize { cols, rows, reply } => {
+                                    if behavior.fail_resize_cols == Some(cols) {
+                                        let _ = reply.send(Err("the terminal refused the resize".into()));
+                                    } else {
+                                        p.screen_mut().set_size(rows, cols);
+                                        let _ = reply.send(Ok(()));
+                                    }
+                                }
                             }
                         }
                     }
@@ -49,7 +81,11 @@ impl FakeLoop {
                 }
             })
         };
-        Self { run, parser, written, stop, thread: Some(thread) }
+        Self { run, parser, written, stop, paused, thread: Some(thread) }
+    }
+
+    fn resume(&self) {
+        self.paused.store(false, Ordering::Release);
     }
 
     fn feed(&self, bytes: &[u8]) {
@@ -234,7 +270,8 @@ fn spawn_test_row(path: &Path, row_number: u32, wire_v: u32) -> std::thread::Joi
 fn a_row_that_declares_an_older_wire_integer_and_the_current_row_number_still_attaches() {
     let dir = tempfile::tempdir().unwrap();
     let path = socket_in(dir.path());
-    let row = spawn_test_row(&path, ROW_PROTOCOL, 3);
+    let older = sot_protocol::PROTOCOL_VERSION - 1;
+    let row = spawn_test_row(&path, ROW_PROTOCOL, older);
     let mut client = RowClient::connect(&path, "test", BOUND).expect("the current row number connects whatever v says");
     client.attach(80, 24, true).expect("attach");
     let screen = snapshot_screen(&mut client, BOUND);
@@ -246,7 +283,7 @@ fn a_row_that_declares_an_older_wire_integer_and_the_current_row_number_still_at
 fn a_row_with_a_newer_row_number_is_refused_by_name() {
     let dir = tempfile::tempdir().unwrap();
     let path = socket_in(dir.path());
-    let row = spawn_test_row(&path, ROW_PROTOCOL + 1, 4);
+    let row = spawn_test_row(&path, ROW_PROTOCOL + 1, sot_protocol::PROTOCOL_VERSION + 1);
     let started = Instant::now();
     let err = RowClient::connect(&path, "test", Duration::from_secs(3)).err().expect("a newer row is refused");
     assert!(started.elapsed() < Duration::from_secs(3), "refused within the hello bound, not by timeout");
@@ -270,8 +307,11 @@ fn a_peer_of_another_uid_is_dropped_at_accept() {
     raw.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     let _ = raw.write_all(b"{\"v\":3,\"id\":1,\"kind\":\"req\",\"op\":\"row.hello\",\"payload\":{\"build\":\"t\",\"row\":1}}\n");
     let mut buf = [0u8; 64];
-    let n = raw.read(&mut buf).unwrap_or(0);
-    assert_eq!(n, 0, "nothing is served to a foreign peer: it is dropped at accept");
+    match raw.read(&mut buf) {
+        Ok(0) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+        other => panic!("a foreign peer is dropped at accept (closed, nothing served), not left waiting: {other:?}"),
+    }
     server.shutdown();
 }
 
@@ -287,4 +327,132 @@ fn a_row_socket_path_past_sun_path_is_refused_by_name() {
     let fits = PathBuf::from(format!("/{}", "d".repeat(59)));
     let path = socket_path_in(&fits, "0123456789abcdef").expect("fits");
     assert!(path.as_os_str().len() <= 104, "{}", path.as_os_str().len());
+}
+
+#[test]
+fn reattaching_as_a_watcher_gives_up_the_driver() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = socket_in(dir.path());
+    let looped = FakeLoop::new(b"");
+    let server = RowServer::bind(&path, Arc::clone(&looped.run)).expect("bind");
+    let mut client = RowClient::connect(&path, "test", BOUND).expect("connect");
+    client.attach(80, 24, true).expect("attach as driver");
+    assert_eq!(client.send_input(b"a").expect("a driver types"), 1);
+    client.attach(80, 24, false).expect("reattach as a watcher");
+    assert!(matches!(client.send_input(b"b").unwrap_err(), RowError::Refused(_)), "a watcher cannot type");
+    assert!(matches!(client.resize(100, 30).unwrap_err(), RowError::Refused(_)), "a watcher cannot resize");
+    assert_eq!(looped.written(), b"a");
+    server.shutdown();
+}
+
+#[test]
+fn a_failed_os_resize_is_a_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = socket_in(dir.path());
+    let looped = FakeLoop::with(b"", Behavior { fail_resize_cols: Some(99), ..Behavior::default() });
+    let server = RowServer::bind(&path, Arc::clone(&looped.run)).expect("bind");
+    let mut client = RowClient::connect(&path, "test", BOUND).expect("connect");
+    client.attach(80, 24, true).expect("attach as driver");
+    client.resize(100, 30).expect("a resize the terminal took");
+    let err = client.resize(99, 20).unwrap_err();
+    assert!(matches!(err, RowError::Refused(_)), "a resize the terminal refused is refused: {err:?}");
+    server.shutdown();
+}
+
+#[test]
+fn a_drivers_attach_gets_its_own_geometry_in_the_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = socket_in(dir.path());
+    let looped = FakeLoop::new(b"\x1b[2J\x1b[Hsized for the attaching window");
+    let server = RowServer::bind(&path, Arc::clone(&looped.run)).expect("bind");
+    let mut client = RowClient::connect(&path, "test", BOUND).expect("connect");
+    client.attach(100, 30, true).expect("attach as driver of another size");
+    let deadline = Instant::now() + BOUND;
+    let mut bytes = Vec::new();
+    loop {
+        match client.next_event(Duration::from_millis(100)).unwrap() {
+            Some(RowEvent::Snapshot { bytes: b, last }) => {
+                bytes.extend_from_slice(&b);
+                if last {
+                    break;
+                }
+            }
+            _ => assert!(Instant::now() < deadline, "no snapshot"),
+        }
+    }
+    let mut parser = vt100_ctt::Parser::new(24, 80, 0);
+    parser.restore_screen(&bytes).expect("restore");
+    assert_eq!(parser.screen().size(), (30, 100), "the snapshot is cut after the attach's own resize");
+    server.shutdown();
+}
+
+#[test]
+fn input_that_times_out_is_delivery_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = socket_in(dir.path());
+    let looped = FakeLoop::with(b"", Behavior { hold_input_replies: true, ..Behavior::default() });
+    looped.run.set_bounds_for_test(Duration::from_secs(5), Duration::from_millis(300));
+    let server = RowServer::bind(&path, Arc::clone(&looped.run)).expect("bind");
+    let mut client = RowClient::connect(&path, "test", BOUND).expect("connect");
+    client.attach(80, 24, true).expect("attach");
+    let err = client.send_input(b"x").unwrap_err();
+    assert!(matches!(err, RowError::DeliveryUnknown), "an unanswered input is delivery unknown, never refused: {err:?}");
+    server.shutdown();
+}
+
+#[test]
+fn a_request_left_over_when_the_run_changes_is_answered_run_ended() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = socket_in(dir.path());
+    let looped = FakeLoop::with(b"", Behavior { paused: true, ..Behavior::default() });
+    let server = RowServer::bind(&path, Arc::clone(&looped.run)).expect("bind");
+    let mut client = RowClient::connect(&path, "test", BOUND).expect("connect");
+    client.take().expect("take");
+    // The attach of a driver waits on the loop, so this client takes the pen as a watcher would.
+    let typed = std::thread::spawn(move || client.send_input(b"late"));
+    std::thread::sleep(Duration::from_millis(200));
+    looped.run.set_run("run-two");
+    looped.resume();
+    let err = typed.join().unwrap().unwrap_err();
+    assert!(err.to_string().contains("run ended"), "{err}");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(looped.written().is_empty(), "input sent to one run is never written into the next");
+    server.shutdown();
+}
+
+#[test]
+fn a_peer_that_cannot_be_proven_is_not_reported_as_a_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = socket_in(dir.path());
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let closer = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        drop(stream);
+    });
+    let err = RowClient::connect(&path, "test", Duration::from_secs(3)).err().expect("no proof");
+    assert!(matches!(err, RowError::Unproven), "an immediate failure is not a deadline: {err:?}");
+    closer.join().unwrap();
+}
+
+#[test]
+fn a_peer_that_trickles_bytes_before_hello_is_dropped_at_the_deadline() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let path = socket_in(dir.path());
+    let looped = FakeLoop::new(b"");
+    looped.run.set_bounds_for_test(Duration::from_millis(800), Duration::from_secs(2));
+    let server = RowServer::bind(&path, Arc::clone(&looped.run)).expect("bind");
+    let mut raw = std::os::unix::net::UnixStream::connect(&path).unwrap();
+    let started = Instant::now();
+    let mut dropped_at = None;
+    while started.elapsed() < Duration::from_secs(4) {
+        if raw.write_all(b" ").is_err() {
+            dropped_at = Some(started.elapsed());
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    let at = dropped_at.expect("a peer that trickles is dropped, not held");
+    assert!(at < Duration::from_millis(2500), "dropped at the hello's one deadline, not after each read: {at:?}");
+    server.shutdown();
 }

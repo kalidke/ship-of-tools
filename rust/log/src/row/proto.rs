@@ -31,6 +31,10 @@ pub enum RowError {
     Foreign,
     #[error("refused: {0}")]
     Refused(String),
+    #[error("the peer could not be proven")]
+    Unproven,
+    #[error("delivery unknown: the row did not answer the input in time")]
+    DeliveryUnknown,
     #[error("the connection is closed")]
     Closed,
     #[error("timed out: {0}")]
@@ -159,3 +163,7 @@ impl RowHelloExchange {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "proto_tests.rs"]
+mod tests;

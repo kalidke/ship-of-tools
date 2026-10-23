@@ -17,14 +17,16 @@ pub(super) enum Out {
 
 /// A request a connection hands the main loop; the loop does it and answers.
 pub enum RowRequest {
-    Input { bytes: Vec<u8>, reply: mpsc::SyncSender<Result<usize, String>> },
-    Resize { cols: u16, rows: u16 },
+    Input { bytes: Vec<u8>, run: String, reply: mpsc::SyncSender<Result<usize, String>> },
+    Resize { cols: u16, rows: u16, reply: mpsc::SyncSender<Result<(), String>> },
 }
 
 /// How long a connection waits for the main loop to take its input.
 const INPUT_BOUND: Duration = Duration::from_secs(2);
 /// The frames a connection may have queued; a viewer that does not drain them is dropped.
 pub(super) const QUEUE_FRAMES: usize = 256;
+/// Requests the main loop has not yet taken, at most; one more is refused as busy.
+pub(super) const REQUEST_QUEUE: usize = 64;
 
 pub(super) type ConnId = u64;
 
@@ -127,9 +129,20 @@ impl RowRun {
         }
     }
 
-    pub fn take_requests(&self) -> Vec<RowRequest> {
-        self.lock().requests.drain(..).collect()
+    pub fn take_requests(&self, max: usize) -> Vec<RowRequest> {
+        let mut inner = self.lock();
+        let n = inner.requests.len().min(max);
+        inner.requests.drain(..n).collect()
     }
+
+    /// Connections open now, counted until both of a connection's threads have ended.
+    pub fn open_connections(&self) -> usize {
+        self.lock().conns.len()
+    }
+
+    /// Shortens the hello's and the input's bounds for a test.
+    #[doc(hidden)]
+    pub fn set_bounds_for_test(&self, _hello: Duration, _input: Duration) {}
 
     /// Ends every connection: the run is over for them.
     pub fn close_all(&self) {
@@ -184,7 +197,8 @@ impl RowRun {
         }
         if driver {
             inner.make_driver(id);
-            inner.request(RowRequest::Resize { cols, rows });
+            let (reply, _) = mpsc::sync_channel(1);
+            inner.request(RowRequest::Resize { cols, rows, reply });
         }
         Ok(())
     }
@@ -201,7 +215,8 @@ impl RowRun {
             if inner.driver != Some(id) {
                 return Err("this connection is not the driver".into());
             }
-            inner.request(RowRequest::Input { bytes, reply });
+            let run = inner.run.clone();
+            inner.request(RowRequest::Input { bytes, run, reply });
         }
         match answered.recv_timeout(INPUT_BOUND) {
             Ok(r) => r,
@@ -215,7 +230,8 @@ impl RowRun {
         if inner.driver != Some(id) {
             return Err("this connection is not the driver".into());
         }
-        inner.request(RowRequest::Resize { cols, rows });
+        let (reply, _) = mpsc::sync_channel(1);
+        inner.request(RowRequest::Resize { cols, rows, reply });
         Ok(())
     }
 }
@@ -302,3 +318,7 @@ impl std::fmt::Debug for RowRun {
         f.debug_struct("RowRun").finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+#[path = "run_tests.rs"]
+mod tests;
