@@ -343,3 +343,13 @@ fn a_spare_handshake_in_flight_ends_when_its_link_closes() {
         "the spare's handshake outlived its link: {result:?}, {after:?} after the close"
     );
 }
+
+/// An ssh-route attach is one dial, so one login: nothing is parked for a second dial that no longer follows.
+#[test]
+fn a_remote_attach_uses_one_login() {
+    let (ep, calls) = counted_endpoint(None, None);
+    let client = ssh_step(&ep, "supervisor").expect("the one login answers");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "a remote attach starts exactly one login");
+    drop(client);
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "and no login is started behind it");
+}

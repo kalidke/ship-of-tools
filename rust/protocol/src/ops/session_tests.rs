@@ -276,6 +276,41 @@ mod version_query_tests {
         assert_eq!(back.disconnected[0].since_s, 720);
     }
 
+    /// The 0.6.6 reader's `DaemonVersion`, frozen: `lane_build` is required, the rest default. A new daemon's answer must
+    /// still parse in it (a window of the last release asking a daemon of this one).
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code, reason = "parsed to prove the answer reads, never read")]
+    struct DaemonVersion066 {
+        app_version: String,
+        protocol: u32,
+        lane_build: String,
+        #[serde(default)]
+        lane_proto: u32,
+        #[serde(default)]
+        host: String,
+        #[serde(default)]
+        hosts_toml_hash: String,
+        #[serde(default)]
+        uptime_s: u64,
+    }
+
+    #[test]
+    fn an_older_readers_daemon_version_parses_a_new_answer() {
+        let new = DaemonVersion {
+            app_version: "0.7.0-dev".into(),
+            protocol: crate::PROTOCOL_VERSION,
+            lane_build: String::new(),
+            lane_proto: 0,
+            host: "test-host".into(),
+            hosts_toml_hash: String::new(),
+            uptime_s: 5,
+        };
+        let json = serde_json::to_value(&new).unwrap();
+        let old: DaemonVersion066 = serde_json::from_value(json).expect("an older reader parses the new answer");
+        assert_eq!(old.protocol, crate::PROTOCOL_VERSION);
+        assert_eq!(old.lane_build, "", "the retired field is always empty");
+    }
+
     #[test]
     fn version_query_res_missing_disconnected_and_uptime_deserializes_to_defaults() {
         // A daemon that predates this feature omits `uptime_s` and

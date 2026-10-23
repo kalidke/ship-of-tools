@@ -23,3 +23,10 @@ fn rejects_mismatched_protocol() {
     assert_eq!(protocol_gate(0), ProtocolGate::Reject);
     assert_eq!(protocol_gate(99), ProtocolGate::Reject);
 }
+
+#[test]
+fn hello_refuses_protocol_3() {
+    // Protocol 3 is the last release's: the bytes `lane.connect` pipes changed with 4, so a peer at 3 is refused with
+    // the mismatch named, never served half-understood.
+    assert_eq!(protocol_gate(3), ProtocolGate::Reject);
+}

@@ -105,6 +105,14 @@ true after the merge of the leg into the supervisor.
   (`validate_pin`), so a supervisor dialed within 10 ms of its start can be `Unproven`; a later connection, with a
   fresh anchor, is proven, and a test binary that is both ends waits out one tick first. The row socket is the
   capsule's first dependency on `sot-protocol`.
+- The row socket is the only way in (pass 6c-1a2). `FeAttachClient` is one worker thread over `RowClient`: it waits until
+  the row is viewed and the endpoint's link is up, dials once, restores the snapshot into its parser and then follows
+  the output; a lost connection is redialed on platform's `Redial` (250 ms doubling to 4 s, started over only after a
+  connection that lasted `STABLE`). The window attaches as the driver, the wake and the dialog tick as watchers that
+  take the pen only to type; a client that was demoted takes it again on its next input. Input typed before the attach
+  is held and sent after it; a count of the inputs dropped for want of room is kept. A bind failure of the row socket
+  ends the supervisor terminal before any agent starts. Input to the terminal is written without blocking the run's
+  loop, so an agent that reads nothing until its output drains cannot stop that drain.
 - Attach is ground-gated (`writer_loop::output_path::ground_check`), so a viewer joins only at a parser ground
   boundary, after every byte the parser has seen was published.
 - `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot serve the row), 70 (`EXIT_CONTENDED`, the
