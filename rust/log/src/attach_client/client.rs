@@ -184,6 +184,14 @@ impl FeAttachClient {
         }
     }
 
+    /// [`Self::send_input`] meant for the run `run` names: it is written there or nowhere, so a client that was reconnected
+    /// to a later run since the caller looked at its screen types nothing into it.
+    pub fn send_input_in_run(&mut self, bytes: &[u8], run: &str) {
+        if !self.worker.send_input_for(bytes.to_vec(), Some(run.to_string())) {
+            tracing::warn!("fe attach client: dropped an input send");
+        }
+    }
+
     /// Records the pane's size. The local screen is reflowed at once; the row is resized when this client holds the
     /// pen, and at the next attach otherwise.
     pub fn resize(&mut self, cols: u16, rows: u16) {

@@ -94,7 +94,10 @@ Waking:
   client's `run()`), and a later tick whose attach names another run drops it: with mail unread the same attempt goes on
   as a wake of the new run, so a new run's empty box is woken within one tick and a hold, never after the repeat
   interval; with none the debt simply ends and nothing is typed (`comm_wake::a_new_run_drops_the_owed_enter_and_wakes_in_the_same_tick`,
-  a daemon whose watchdog restarts the killed supervisor). A restarted daemon's boot look knows no run, so it sends Enter
+  a daemon whose watchdog restarts the killed supervisor). Within one attempt the typing and its Enter are fenced to the
+  run whose screen the gate read: the attempt sends them for that run, and a row whose run was replaced after the check
+  refuses them, so a run the attempt did not check is typed into by no one
+  (`comm_wake::an_attempt_never_types_into_a_run_it_did_not_check`, over the seam `SOT_TEST_WAKE_HOLD_AFTER_FINAL_MS`). A restarted daemon's boot look knows no run, so it sends Enter
   alone only into a box that holds the wake line, and types nothing else (WAKE-RESTART-LOOK,
   `comm_wake::a_restarted_daemon_completes_a_wake_line_left_typed`;
   `comm_wake::a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_box_alone`).

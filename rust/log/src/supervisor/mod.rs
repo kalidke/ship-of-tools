@@ -168,11 +168,26 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         row.set_phase_source(Box::new(move || shared.phase_text().to_string()));
     }
     row.set_management(Box::new(SharedHandle(Arc::clone(&shared))));
-    {
-        // A change of phase or run reaches the row's watchers from here, after the lock that guards it is released.
+    // Each change of the status is recorded under `Shared`'s lock, in order, and one thread tells the watchers from that
+    // record: an announcement never rereads state a later change has already moved on.
+    let (notes, record) = mpsc::channel();
+    row.publish(shared.set_announcer(notes));
+    let announcer = {
         let row = Arc::clone(&row);
-        shared.set_change_hook(Box::new(move || row.announce()));
-    }
+        std::thread::Builder::new()
+            .name("row-announce".into())
+            .spawn(move || {
+                for status in record {
+                    // Test seam: holds the announcing thread this many milliseconds before each announcement, so a test can
+                    // finish a run's end before its first. Inert unless named.
+                    if let Some(ms) = std::env::var("SOT_TEST_ANNOUNCE_HOLD_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
+                        std::thread::sleep(Duration::from_millis(ms));
+                    }
+                    row.publish(status);
+                }
+            })
+            .map_err(crate::Error::Io)?
+    };
     // The row socket is the way in: a row nobody can reach is not worth an agent, so a bind failure ends this supervisor
     // before one starts, as a row that did not start: exit 75, which rows' watchdog counts against its one restart budget
     // (a failure that lasts ends the row terminal there, one that passes costs a restart).
@@ -202,7 +217,12 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     };
     let code = drive(&config, &shared, &row);
     shared.finish();
-    // The watchers hear the exit before the row socket is dropped: the server's end aborts what is still queued.
+    // The watchers hear every change before the exit, and the exit before the row socket is dropped: the server's end aborts
+    // what is still queued.
+    shared.close_announcer();
+    if announcer.join().is_err() {
+        note(format_args!("the row announcer panicked"));
+    }
     row.exiting(code, EXITING_TOLD_BOUND);
     let _ = watch_tx.send(Watch::Stop);
     if row_watch.join().is_err() {
@@ -239,6 +259,9 @@ impl crate::row::Management for SharedHandle {
     }
     fn stop(&self, conn: crate::row::ConnId) -> crate::row::StopRes {
         self.0.stop(conn)
+    }
+    fn poll(&self) {
+        self.0.poll();
     }
     fn conn_gone(&self, conn: crate::row::ConnId) {
         self.0.conn_gone(conn);

@@ -14,6 +14,9 @@ pub trait Management: Send + Sync {
     fn reset(&self) -> ResetRes;
     /// Asks the supervisor to end its agent and exit once `conn`'s reply has been delivered; at once.
     fn stop(&self, conn: ConnId) -> StopRes;
+    /// Notes any change the clock made to the status (`ready` comes when time has passed, with no call to make it), so the
+    /// watchers are told it in its place among the others; at once, and nothing for a management with no clock.
+    fn poll(&self) {}
     /// A connection's threads have both ended: its last reply was delivered or given up on.
     fn conn_gone(&self, conn: ConnId);
 }

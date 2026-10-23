@@ -515,6 +515,19 @@ fn watch_until(watch: &mut supervisor_client::Watch, within: Duration, mut done:
     panic!("the watch never reached the step wanted within {within:?}; saw {seen:?}");
 }
 
+/// A watch on a row that has an agent writing, and the report that says it is ready: the first reply is the status last
+/// told, which can still be the start's when the watch is dialed, and `ready` then follows as an event.
+fn ready_watch(state_dir: &Path) -> (supervisor_client::Watch, supervisor_client::StatusReport) {
+    let mut watch = supervisor_client::watch(state_dir, &CancelHandle::new()).expect("the watch is served");
+    let first = watch.first().clone();
+    if first.phase == SupervisorPhase::Ready && first.run.is_some() {
+        return (watch, first);
+    }
+    let seen = watch_until(&mut watch, Duration::from_secs(30), |s| matches!(s, WatchStep::Phase(r) if r.phase == SupervisorPhase::Ready));
+    let Some(WatchStep::Phase(ready)) = seen.last().cloned() else { unreachable!() };
+    (watch, ready)
+}
+
 /// A watch's first reply names the run; each change of phase or run after it is one event, in the order the changes
 /// happened: an `end_run` brings `ending` then `ended_no_respawn` naming the same run, and a reset brings `starting` on a
 /// newer run.
@@ -530,10 +543,8 @@ fn a_watch_reports_each_phase_change_in_order() {
     driver.attach(80, 24, true).expect("attach as the driver");
     read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
 
-    let mut watch = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("the watch is served");
-    let first = watch.first().clone();
-    let run = first.run.clone().expect("the first reply names the run");
-    assert_eq!(first.phase, SupervisorPhase::Ready, "{first:?}");
+    let (mut watch, first) = ready_watch(&state_dir);
+    let run = first.run.clone().expect("the report names the run");
     assert_eq!(watch.peer(), (first.pid, first.created), "the watch's peer is the supervisor's hello identity");
 
     let mut manager = dial(&path);
@@ -618,8 +629,7 @@ fn a_cancelled_watch_never_publishes_a_connection() {
     for _ in 0..3 {
         assert!(supervisor_client::watch(&state_dir, &cancel).is_err(), "a cancelled handle refuses every later watch");
     }
-    let fresh = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("the row still serves a watch");
-    assert_eq!(fresh.first().phase, SupervisorPhase::Ready);
+    let _fresh = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("the row still serves a watch");
 }
 
 /// Every change is told, in order, whatever the thread that announces it is doing: the announcing thread is held after the

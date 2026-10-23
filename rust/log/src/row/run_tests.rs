@@ -18,7 +18,7 @@ fn a_full_request_queue_refuses_input_as_busy() {
         .map(|_| {
             let (run, busy) = (Arc::clone(&run), Arc::clone(&busy));
             std::thread::spawn(move || {
-                if let Err(e) = run.input(id, vec![1]) {
+                if let Err(e) = run.input(id, vec![1], None) {
                     if e.contains("busy") {
                         busy.fetch_add(1, Ordering::SeqCst);
                     }
@@ -49,7 +49,7 @@ fn a_wake_is_coalesced_and_the_drain_is_under_a_quota() {
         .map(|_| {
             let run = Arc::clone(&run);
             std::thread::spawn(move || {
-                let _ = run.input(id, vec![1]);
+                let _ = run.input(id, vec![1], None);
             })
         })
         .collect();
@@ -138,21 +138,21 @@ fn drained(queue: &OutQueue) -> Vec<(String, serde_json::Value)> {
     frames
 }
 
-/// A watch answers the status the row has; after it, one `row.phase` leaves for each change of phase or run and none for
-/// a status that is the same, and a second watcher joining hears the first's changes in order.
+/// A watch answers the status last told; after it, one `row.phase` leaves for each report that differs, in the order the
+/// reports were handed over, and none for a status that is the same.
 #[test]
 fn a_watch_is_told_each_change_once_and_in_order() {
     let run = RowRun::new("r", "starting");
     let status = Scripted::new("starting", None);
     run.set_management(Box::new(Arc::clone(&status)));
+    let report = |phase: &str, run: Option<&str>| StatusRes { phase: phase.into(), run: run.map(str::to_string) };
+    run.publish(report("starting", None));
     let (id, queue, slot) = run.open(Arc::new(|| {})).expect("a slot");
     run.watch(id, 7, &Arc::clone(&status));
-    run.announce();
-    status.set("starting", Some("run-one"));
-    run.announce();
-    run.announce();
-    status.set("ready", Some("run-one"));
-    run.announce();
+    run.publish(report("starting", None));
+    run.publish(report("starting", Some("run-one")));
+    run.publish(report("starting", Some("run-one")));
+    run.publish(report("ready", Some("run-one")));
     let frames = drained(&queue);
     let ops: Vec<_> = frames.iter().map(|(op, _)| op.as_str()).collect();
     assert_eq!(ops, ["row.watch", "row.phase", "row.phase"], "{frames:?}");
@@ -162,13 +162,16 @@ fn a_watch_is_told_each_change_once_and_in_order() {
     drop(slot);
 }
 
-/// A row nobody watches reads no status: the loop's every tick costs nothing.
+/// A row nobody watches asks its management for nothing: the loop's every tick costs nothing.
 #[test]
-fn announce_returns_at_once_when_nothing_watches() {
+fn a_tick_asks_nothing_when_nothing_watches() {
     struct Panics;
     impl Management for Panics {
         fn status(&self) -> StatusRes {
             panic!("the status was read for no watcher")
+        }
+        fn poll(&self) {
+            panic!("the clock was read for no watcher")
         }
         fn end_run(&self, _: &str, _: &str) -> super::super::proto::EndRunRes {
             unreachable!()
@@ -184,7 +187,7 @@ fn announce_returns_at_once_when_nothing_watches() {
     let run = RowRun::new("r", "ready");
     run.set_management(Box::new(Panics));
     let (_id, _queue, _slot) = run.open(Arc::new(|| {})).expect("a slot");
-    run.announce();
+    run.tick(&vt100_ctt::Parser::new(24, 80, 0));
 }
 
 /// `row.exiting` is the watcher's last frame, and the server's shutdown, which aborts what is still queued, never loses

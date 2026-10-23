@@ -56,24 +56,36 @@ true after the merge of the leg into the supervisor.
   run, so the daemon's cell latches on no run and releases on the first (`tests/supervisor/spawn.rs::a_run_asked_to_end_rests_after_a_supervisor_restart`).
   A stop is not an end of the run: it leaves no request, so the next start runs the agent again.
 - A watch is a held connection the supervisor tells its phase on (`supervisor_client::watch`, a `Watch` over `RowClient`).
-  `row.watch` answers the status the row has, `{phase, run?}`, and each change of phase or run after it is one
-  `row.phase` event carrying the new status, in the order the changes happened and never twice for one status: `Shared`
-  calls a hook after releasing its lock in every method that changes either (an announcement made under the lock would
-  deadlock on the status it reads, `supervisor/authority_tests.rs::the_change_hook_runs_with_the_lock_released`), the
-  run's loop calls it each tick (`ready` is a clock), and one lock of the row's own is held across the read of the status
-  and the queueing of what it says (`row/run_tests.rs::a_watch_is_told_each_change_once_and_in_order`;
-  `tests/row_management.rs::a_watch_reports_each_phase_change_in_order`). A row nobody watches reads no status. A watch
-  takes no pen, needs no attach and is never closed as idle. A controlled exit (0, 69, 75 or 76, whichever `drive`
-  returns) is told, `row.exiting {code}` as the watcher's last frame and then the end of the stream: the supervisor sends
-  it right after `drive` returns and waits, at most 1 s, until the watchers' connections are released before it drops the
-  row socket, whose shutdown aborts what is still queued (`row/run_tests.rs::exiting_is_sent_before_the_shutdown_and_waits_for_the_watchers`,
-  `tests/row_management.rs::a_watch_reports_exiting_with_the_code_before_a_controlled_end`). A stream that ends with no
-  `row.exiting` is a kill, a lost listener (its 75 comes after the listener's server was dropped) or an exit before the
-  bind, and carries no code: a reader treats 75 and no code alike. A cancel handle gates every watch's publication, so a
-  cancel that lands during the dial leaves no connection behind and every watch on a cancelled handle is refused
-  (`tests/row_management.rs::a_cancelled_watch_never_publishes_a_connection`). Limit: an event still being written when
-  the connection is cut is lost with it; the next watch's first reply is the status then. The row protocol stays 1: no
-  release has shipped it.
+  `row.watch` answers the status last told, `{phase, run?}` (not a reread of the supervisor's state), and each change of
+  phase or run after it is one `row.phase` event carrying the new status, in the order the changes happened and never
+  twice for one status. Every change is captured with its value under `Shared`'s lock (a send down an unbounded channel,
+  which never blocks) and one announcing thread tells the watchers from that record, so a change the run has already moved
+  past, `ending` before an end that completed at once, is still told
+  (`tests/row_management.rs::a_transition_is_told_though_the_run_ends_before_its_announcement`, over the seam
+  `SOT_TEST_ANNOUNCE_HOLD_MS`; `supervisor/authority_tests.rs::every_change_is_recorded_in_order_with_its_value`).
+  `ready` is a clock, so the run's loop asks the management each tick to note it (`Management::poll`), only while something
+  watches; it enters the same record. A watch takes no pen, needs no attach and is never closed as idle. A controlled exit
+  (0, 69, 75 or 76, whichever `drive` returns) is told: the supervisor closes the record, waits for the announcer to
+  deliver it, commits the code, and sends `row.exiting {code}` as each watcher's last frame and then the end of the
+  stream; a watch admitted after the code is committed is answered its status and then told the same
+  (`row/run_tests.rs::a_watch_admitted_during_the_exit_is_told_the_code`). The supervisor waits, at most 1 s, until the
+  watchers' connections are released before it drops the row socket, whose shutdown aborts what is still queued
+  (`row/run_tests.rs::exiting_is_sent_before_the_shutdown_and_waits_for_the_watchers`,
+  `tests/row_management.rs::a_watch_reports_exiting_with_the_code_before_a_controlled_end`, which also reads the process's own
+  exit status). A stream that ends with no `row.exiting` is a kill, a lost listener (its 75 comes after the listener's server
+  was dropped), a cut watcher or an exit before the bind, and carries no code: a reader treats 75 and no code alike. A cancel
+  handle gates every watch's publication, so a cancel that lands during the dial leaves no connection behind and every watch
+  on a cancelled handle is refused (`tests/row_management.rs::a_cancelled_watch_never_publishes_a_connection`); a dropped
+  watch withdraws its own publication, and no newer one, so its connection is not kept open by the handle
+  (`a_dropped_watch_gives_its_slot_back`; the Windows pipe, which stays open until its last owner lets go, is proved only
+  by the hosted run). Limit, the slow-watcher policy: reports and the exit are answers, never dropped for output's sake,
+  but a watcher with 64 answers queued that it has not read is cut, and the cut aborts everything queued for it, the
+  reports and the exit frame too: it reads the end with no code, and a redial's first reply is the status then. The row
+  protocol stays 1: no release has shipped it.
+- Input meant for a run is written there or nowhere. `row.input` carries an optional `run`; a row whose current run is
+  another refuses it `run ended` and writes nothing, and the request keeps that run until the loop writes it. The attach
+  client's `send_input_in_run` also discards it if its worker has been reconnected to another run; the window's typing names
+  no run and goes to the current one (`tests/row_management.rs::a_row_refuses_input_meant_for_another_run`).
 - The daemon's four calls are ops of the row socket, each answered in the calling connection's own thread, every outcome a
   reply payload (an `error` reply is kept for a protocol fault: an unknown op, a bad payload): `row.status` answers at
   once `{phase, run?}`; `row.end_run {run, reason}` is fenced by the run, so another run's id is `stale_run`

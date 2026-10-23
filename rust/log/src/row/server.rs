@@ -549,7 +549,7 @@ fn requests<R: std::io::BufRead>(reader: &mut R, id: ConnId, run: &Arc<RowRun>) 
                 run.take(id);
                 run.send(id, Frame::res(frame.id, OP_TAKE, json!({})), None);
             }
-            OP_INPUT => match run.input(id, blob.unwrap_or_default()) {
+            OP_INPUT => match run.input(id, blob.unwrap_or_default(), frame.payload.get("run").and_then(|r| r.as_str())) {
                 Ok(written) => {
                     let res = InputRes { written: written as u64 };
                     run.send(id, Frame::res(frame.id, OP_INPUT, serde_json::to_value(res).unwrap_or_default()), None);

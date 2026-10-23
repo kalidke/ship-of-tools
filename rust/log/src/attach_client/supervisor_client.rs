@@ -249,6 +249,8 @@ pub fn reset(state_dir: &Path) -> crate::Result<()> {
 /// [`Persistent`]'s and [`watch`]'s way to be interrupted, and whether it was.
 struct Shared {
     canceler: Option<RowCanceler>,
+    /// Which publication `canceler` is: a connection that ends unpublishes only its own.
+    generation: u64,
     /// Latched by [`CancelHandle::cancel`]; never cleared, so a cancelled client never reconnects.
     cancelled: bool,
 }
@@ -276,12 +278,12 @@ impl Default for CancelHandle {
 impl CancelHandle {
     /// A handle nothing is published through yet, for [`watch`].
     pub fn new() -> Self {
-        CancelHandle(Arc::new(Mutex::new(Shared { canceler: None, cancelled: false })))
+        CancelHandle(Arc::new(Mutex::new(Shared { canceler: None, generation: 0, cancelled: false })))
     }
 
     /// Installs `client`'s canceler as the published connection, unless `cancelled` is already set under the same lock,
     /// in which case the connection is cancelled and refused: the one gate a connect becomes visible through.
-    fn publish(&self, client: &RowClient) -> crate::Result<()> {
+    fn publish(&self, client: &RowClient) -> crate::Result<u64> {
         let mut shared = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if shared.cancelled {
             drop(shared);
@@ -289,7 +291,18 @@ impl CancelHandle {
             return Err(err_state("cancelled".to_string()));
         }
         shared.canceler = Some(client.canceler());
-        Ok(())
+        shared.generation += 1;
+        Ok(shared.generation)
+    }
+
+    /// Withdraws publication `generation` when it is still the published one: the canceler owns the connection, so a
+    /// connection that has ended must not stay owned (on Windows a cancelled pipe stays open until its last owner lets go).
+    /// A newer publication is left alone.
+    fn unpublish(&self, generation: u64) {
+        let mut shared = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if shared.generation == generation {
+            shared.canceler = None;
+        }
     }
 
     /// Sets `cancelled` and takes and cancels the published connection under the same lock, so a concurrent
@@ -308,7 +321,7 @@ impl Persistent {
         Persistent {
             state_dir: state_dir.to_path_buf(),
             conn: None,
-            shared: Arc::new(Mutex::new(Shared { canceler: None, cancelled: false })),
+            shared: Arc::new(Mutex::new(Shared { canceler: None, generation: 0, cancelled: false })),
             #[cfg(any(test, feature = "test-support"))]
             after_connect_before_publish: None,
         }
@@ -398,10 +411,13 @@ pub enum WatchStep {
     Ended,
 }
 
-/// One held connection that a supervisor tells its phase on: the status it had at the hello's reply, then each change.
+/// One held connection that a supervisor tells its phase on: the status `row.watch` answered with, then each change. Its
+/// end is the connection's: dropping it closes the connection and withdraws its publication from the cancel handle.
 pub struct Watch {
     client: RowClient,
     first: StatusReport,
+    cancel: CancelHandle,
+    published: u64,
     /// The process the challenge proved, held while the watch lives.
     _process: ChallengedProcess,
 }
@@ -412,7 +428,7 @@ impl Watch {
         self.client.peer()
     }
 
-    /// The status the supervisor answered `row.watch` with.
+    /// The status the supervisor answered `row.watch` with (the hello's status is not read).
     pub fn first(&self) -> &StatusReport {
         &self.first
     }
@@ -464,8 +480,19 @@ fn watch_through(state_dir: &Path, cancel: &CancelHandle, between: &mut dyn FnMu
     }
     let (mut client, process) = connect(state_dir, HELLO_BUDGET)?;
     between();
-    cancel.publish(&client)?;
-    let status = client.watch().map_err(row_error)?;
-    let first = report(status, client.peer())?;
-    Ok(Watch { client, first, _process: process })
+    let published = cancel.publish(&client)?;
+    let first = match client.watch().map_err(row_error).and_then(|status| report(status, client.peer())) {
+        Ok(first) => first,
+        Err(e) => {
+            cancel.unpublish(published);
+            return Err(e);
+        }
+    };
+    Ok(Watch { client, first, cancel: cancel.clone(), published, _process: process })
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.cancel.unpublish(self.published);
+    }
 }

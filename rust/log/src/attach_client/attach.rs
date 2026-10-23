@@ -60,8 +60,9 @@ pub enum InputOutcome {
 }
 
 enum Command {
-    /// Bytes, and the run they were typed into (`None` before the first attach).
-    Input(Vec<u8>, Option<String>),
+    /// Bytes, the run they were typed into (`None` before the first attach), and the run they are meant for, if one was
+    /// named: the row is told it, and refuses them in any other.
+    Input(Vec<u8>, Option<String>, Option<String>),
     Resize(u16, u16),
 }
 
@@ -154,6 +155,12 @@ impl AttachWorker {
     /// Queues input for the row. Before the attach only [`HELD_INPUT_CAP`] bytes are held; the rest are dropped and
     /// counted. Returns whether the bytes were kept.
     pub fn send_input(&self, bytes: Vec<u8>) -> bool {
+        self.send_input_for(bytes, None)
+    }
+
+    /// [`Self::send_input`] meant for the run `run` names: never written into another, however the worker has been
+    /// reconnected since, and the row refuses it in any run but that one.
+    pub fn send_input_for(&self, bytes: Vec<u8>, run: Option<String>) -> bool {
         let cap = if self.shared.attached.load(Ordering::Acquire) { QUEUED_INPUT_CAP } else { HELD_INPUT_CAP };
         let queued = self.shared.queued_input.load(Ordering::Acquire);
         if queued.saturating_add(bytes.len()) > cap {
@@ -163,8 +170,8 @@ impl AttachWorker {
         self.shared.queued_input.fetch_add(bytes.len(), Ordering::AcqRel);
         // The answer to the most recent input: none until this one is answered.
         *self.shared.outcome.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        let typed_into = Some(self.shared.current_run()).filter(|r| !r.is_empty());
-        if self.commands.send(Command::Input(bytes, typed_into)).is_err() {
+        let typed_into = run.clone().or_else(|| Some(self.shared.current_run()).filter(|r| !r.is_empty()));
+        if self.commands.send(Command::Input(bytes, typed_into, run)).is_err() {
             return false;
         }
         self.shared.wake();
@@ -403,7 +410,7 @@ where
             }
             while let Ok(command) = self.inbox.try_recv() {
                 match command {
-                    Command::Input(bytes, typed_into) => {
+                    Command::Input(bytes, typed_into, meant_for) => {
                         self.shared.queued_input.fetch_sub(bytes.len(), Ordering::AcqRel);
                         // Typed into a run that is not this one (the connection was lost, and the row's agent started
                         // again): never written here.
@@ -412,7 +419,7 @@ where
                             self.settle(InputOutcome::RunEnded);
                             continue;
                         }
-                        if let Err(ended) = self.type_input(client, &bytes, &mut driver) {
+                        if let Err(ended) = self.type_input(client, &bytes, meant_for.as_deref(), &mut driver) {
                             return ended;
                         }
                     }
@@ -427,7 +434,7 @@ where
     }
 
     /// Types `bytes`, taking the pen first when this client does not hold it.
-    fn type_input(&self, client: &mut RowClient<E::Client>, bytes: &[u8], driver: &mut bool) -> Result<(), Ended> {
+    fn type_input(&self, client: &mut RowClient<E::Client>, bytes: &[u8], meant_for: Option<&str>, driver: &mut bool) -> Result<(), Ended> {
         if !*driver {
             // A watcher that typed once in a run gives up the pen to whoever took it after, and does not fight for it,
             // not even over a new connection to the same run; in another run it has not typed.
@@ -455,7 +462,7 @@ where
                 }
             }
         }
-        match client.send_input(bytes) {
+        match client.send_input_in(bytes, meant_for) {
             Ok(written) => {
                 self.shared.recorded.fetch_add(written as u64, Ordering::AcqRel);
                 self.settle(InputOutcome::Recorded);

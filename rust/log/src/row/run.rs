@@ -204,14 +204,23 @@ struct Inner {
     management: Option<Arc<dyn Management>>,
 }
 
+#[derive(Default)]
+struct Announced {
+    /// The status last told to the watchers: what a new watch is answered, so the events after it are the changes after
+    /// that status and none before.
+    last: Option<StatusRes>,
+    /// The exit code, once the supervisor has committed it: no report follows it, and every watch admitted after it is told it.
+    exit: Option<i32>,
+}
+
 /// One run's fan-out. The main loop calls [`RowRun::output`] after the parser took a chunk, [`RowRun::tick`] every pass,
 /// and drains [`RowRun::take_requests`]; connections never touch the parser or the terminal.
 pub struct RowRun {
     inner: Mutex<Inner>,
-    /// The status last told to the watchers. Held across a read of the status and the queueing of what it says, so
-    /// reports leave in the order of the states they report; never held while `inner` is asked for anything but the
-    /// queueing itself, and never taken under the management's own lock.
-    announced: Mutex<Option<StatusRes>>,
+    /// What the watchers have been told, and whether the exit is committed. Held across the queueing of a report, so reports
+    /// leave in the order they were handed over, and across a watch's admission, so a watch is never admitted between the
+    /// commitment of the exit and the frames that tell it.
+    announced: Mutex<Announced>,
     /// A connection was released.
     released: std::sync::Condvar,
 }
@@ -236,7 +245,7 @@ impl RowRun {
                 wake: None,
                 management: None,
             }),
-            announced: Mutex::new(None),
+            announced: Mutex::new(Announced::default()),
             released: std::sync::Condvar::new(),
         })
     }
@@ -329,10 +338,14 @@ impl RowRun {
         inner.serve_pending(parser);
     }
 
-    /// Serves attaches waiting for a ground state, and tells the watchers of a change the run made on its own (`ready`
-    /// is a clock).
+    /// Serves attaches waiting for a ground state, and has the management note a change the clock made (`ready`), when
+    /// something watches.
     pub fn tick(&self, parser: &vt100_ctt::Parser) {
-        self.announce();
+        if self.lock().conns.values().any(|c| c.watching) {
+            if let Some(management) = self.management() {
+                management.poll();
+            }
+        }
         let mut inner = self.lock();
         if !inner.pending.is_empty() {
             inner.serve_pending(parser);
@@ -352,59 +365,58 @@ impl RowRun {
         taken
     }
 
-    /// Tells every watcher the status if it differs from the one last told: one `row.phase` per change of phase or run.
-    /// Returns at once when nothing watches. The caller holds no lock of the management it reads, so a change hook calls
-    /// it only after the lock that guards the change is released.
-    pub fn announce(&self) {
-        if !self.lock().conns.values().any(|c| c.watching) {
-            return;
-        }
-        let Some(management) = self.management() else { return };
+    /// Tells every watcher `status`, one `row.phase`, if it differs from the one last told. The reports are handed over in
+    /// the order the changes happened (the supervisor's one announcing thread), and none follows the exit.
+    pub fn publish(&self, status: StatusRes) {
         let mut announced = self.announced.lock().unwrap_or_else(|p| p.into_inner());
-        let now = management.status();
-        self.tell_watchers(&mut announced, now);
-    }
-
-    /// Queues `now` to every watcher when it differs from the one last told.
-    fn tell_watchers(&self, announced: &mut Option<StatusRes>, now: StatusRes) {
-        if announced.as_ref() == Some(&now) {
+        if announced.exit.is_some() || announced.last.as_ref() == Some(&status) {
             return;
         }
         let mut inner = self.lock();
         let watchers: Vec<ConnId> = inner.conns.iter().filter(|(_, c)| c.watching).map(|(id, _)| *id).collect();
         for id in watchers {
-            inner.send(id, Frame::evt(OP_PHASE, serde_json::to_value(&now).unwrap_or_default()), None);
+            inner.send(id, Frame::evt(OP_PHASE, serde_json::to_value(&status).unwrap_or_default()), None);
         }
-        *announced = Some(now);
+        drop(inner);
+        announced.last = Some(status);
     }
 
-    /// Makes `id` a watcher: its reply is the status the row has now, and every change after it is a `row.phase`. The
-    /// watchers there already hear first of any change this read finds, so nobody is told out of order.
+    /// Makes `id` a watcher: its reply is the status last told, and every report after it is a `row.phase`. Once the exit is
+    /// committed the reply is followed by `row.exiting` and the end of the stream. A row that has told nothing yet answers
+    /// with its management's status.
     pub(super) fn watch(&self, id: ConnId, req_id: u64, management: &dyn Management) {
         let mut announced = self.announced.lock().unwrap_or_else(|p| p.into_inner());
-        let now = management.status();
-        self.tell_watchers(&mut announced, now.clone());
+        let now = match announced.last.clone() {
+            Some(status) => status,
+            None => {
+                let status = management.status();
+                announced.last = Some(status.clone());
+                status
+            }
+        };
         let mut inner = self.lock();
         if let Some(conn) = inner.conns.get_mut(&id) {
             conn.watching = true;
         }
         inner.send(id, Frame::res(req_id, OP_WATCH, serde_json::to_value(&now).unwrap_or_default()), None);
+        if let Some(code) = announced.exit {
+            inner.tell_exit(id, code);
+        }
     }
 
-    /// The supervisor leaves with `code`: every watcher is sent `row.exiting` as its last frame and its stream ends once it
-    /// is written. Waits, at most `bound`, until those connections are released, so that the server's shutdown, which
-    /// aborts what is still queued, cannot lose the frame. Returns at once when nothing watches.
+    /// The supervisor leaves with `code`: it is committed, every watcher is sent `row.exiting` as its last frame and its stream
+    /// ends once it is written, and a watch admitted from here on is told the same. Waits, at most `bound`, until the
+    /// watchers' connections are released, so that the server's shutdown, which aborts what is still queued, cannot lose the
+    /// frame. Returns at once when nothing watches.
     pub fn exiting(&self, code: i32, bound: Duration) {
         {
-            let _announced = self.announced.lock().unwrap_or_else(|p| p.into_inner());
+            let mut announced = self.announced.lock().unwrap_or_else(|p| p.into_inner());
+            announced.exit.get_or_insert(code);
+            let code = announced.exit.unwrap_or(code);
             let mut inner = self.lock();
             let watchers: Vec<ConnId> = inner.conns.iter().filter(|(_, c)| c.watching).map(|(id, _)| *id).collect();
             for id in watchers {
-                let evt = Frame::evt(OP_EXITING, serde_json::to_value(ExitingEvt { code }).unwrap_or_default());
-                inner.send(id, evt, None);
-                if let Some(conn) = inner.conns.get_mut(&id) {
-                    conn.queue.finish();
-                }
+                inner.tell_exit(id, code);
             }
         }
         let deadline = std::time::Instant::now() + bound;
@@ -524,13 +536,17 @@ impl RowRun {
     }
 
     /// Hands bytes to the main loop and waits for it to write them. A full queue is `busy`; no answer in time is
-    /// `delivery unknown`, since the loop may still write them.
-    pub(super) fn input(&self, id: ConnId, bytes: Vec<u8>) -> Result<usize, String> {
+    /// `delivery unknown`, since the loop may still write them. Input meant for a run (`expected`) is refused `run ended`
+    /// when another is current, and is fenced to that run until the loop writes it; with none it goes to the current run.
+    pub(super) fn input(&self, id: ConnId, bytes: Vec<u8>, expected: Option<&str>) -> Result<usize, String> {
         let (reply, answered) = mpsc::sync_channel(1);
         let bound = {
             let mut inner = self.lock();
             if inner.driver != Some(id) {
                 return Err("this connection is not the driver".into());
+            }
+            if expected.is_some_and(|run| run != inner.run) {
+                return Err(RUN_ENDED.into());
             }
             let run = inner.run.clone();
             inner.request(RowRequest::Input { bytes, run, reply })?;
@@ -636,6 +652,15 @@ impl Inner {
             if let RowRequest::Input { reply, .. } = request {
                 let _ = reply.send(Err(RUN_ENDED.into()));
             }
+        }
+    }
+
+    /// Sends a watcher `row.exiting` as its last frame, and ends its queue once that is written.
+    fn tell_exit(&mut self, id: ConnId, code: i32) {
+        let evt = Frame::evt(OP_EXITING, serde_json::to_value(ExitingEvt { code }).unwrap_or_default());
+        self.send(id, evt, None);
+        if let Some(conn) = self.conns.get_mut(&id) {
+            conn.queue.finish();
         }
     }
 

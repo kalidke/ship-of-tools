@@ -81,7 +81,7 @@ pub fn type_into(
     }
 
     let mut client = checkpointed(attach(state_dir, controller_id)?, deadline)?;
-    let result = send_and_wait_recorded(&mut client, bytes, deadline);
+    let result = send_and_wait_recorded(&mut client, bytes, None, deadline);
     client.shutdown(SHUTDOWN_WAIT);
     result
 }
@@ -90,10 +90,15 @@ pub fn type_into(
 /// [`write_and_enter`] can call it twice (text, then Enter) on ONE
 /// continuous attach — a mid-sequence pen loss then surfaces as an
 /// ordinary `RefusedStale`/`is_dead()` on the same client.
-fn send_and_wait_recorded(client: &mut Client, bytes: &[u8], deadline: Instant) -> Result<usize, HeadlessError> {
+///
+/// `run` is the run the bytes are meant for, when the caller checked one: they are written there or nowhere.
+fn send_and_wait_recorded(client: &mut Client, bytes: &[u8], run: Option<&str>, deadline: Instant) -> Result<usize, HeadlessError> {
     let expected = bytes.len() as u64;
     let before = client.recorded_bytes();
-    client.send_input(bytes);
+    match run {
+        Some(run) => client.send_input_in_run(bytes, run),
+        None => client.send_input(bytes),
+    }
     loop {
         client.pump();
         if let Some(outcome) = client.last_input_outcome() {
@@ -203,7 +208,7 @@ pub fn write_and_enter(
 
     let mut client = checkpointed(attach(state_dir, controller_id)?, Instant::now() + op_budget)?;
     let out = type_and_pace(&mut client, text, op_budget, quiet_budget, pacing_budget)
-        .map(|n| (n, enter_outcome(send_enter(&mut client, op_budget))));
+        .map(|n| (n, enter_outcome(send_enter(&mut client, None, op_budget))));
     client.shutdown(SHUTDOWN_WAIT);
     out
 }
@@ -228,7 +233,7 @@ fn type_and_pace(
     quiet_budget: Duration,
     pacing_budget: Duration,
 ) -> Result<usize, HeadlessError> {
-    let n = if text.is_empty() { 0 } else { send_text(client, text, op_budget)? };
+    let n = if text.is_empty() { 0 } else { send_text(client, text, None, op_budget)? };
     // `SOT_TEST_PACING_HOLD` (test-only, the `SOT_TEST_ACTIVATION_BARRIER`
     // convention): hold pacing to its full bound. Terminal output batches,
     // so a scripted test load cannot keep the screen changing every poll.
@@ -255,13 +260,13 @@ fn type_and_pace(
 }
 
 /// The text write, recorded on the wire, as [`send_enter`] is for Enter: the bytes written.
-pub(crate) fn send_text(client: &mut Client, text: &[u8], op_budget: Duration) -> Result<usize, HeadlessError> {
-    send_and_wait_recorded(client, text, Instant::now() + op_budget)
+pub(crate) fn send_text(client: &mut Client, text: &[u8], run: Option<&str>, op_budget: Duration) -> Result<usize, HeadlessError> {
+    send_and_wait_recorded(client, text, run, Instant::now() + op_budget)
 }
 
 /// [`write_and_enter`]'s step 4: the Enter byte, written and recorded. Doc above.
-pub(crate) fn send_enter(client: &mut Client, op_budget: Duration) -> Result<(), HeadlessError> {
-    send_and_wait_recorded(client, &[0x0d], Instant::now() + op_budget).map(|_| ())
+pub(crate) fn send_enter(client: &mut Client, run: Option<&str>, op_budget: Duration) -> Result<(), HeadlessError> {
+    send_and_wait_recorded(client, &[0x0d], run, Instant::now() + op_budget).map(|_| ())
 }
 
 /// Current screen lines, top to bottom, trailing spaces trimmed —

@@ -53,14 +53,14 @@ struct Inner {
     exiting: bool,
     /// The row socket's listener died and could not be bound again: nobody can reach the row.
     row_lost: bool,
+    /// Where each change of the status is sent, and the last one sent ([`Shared::note`]).
+    notes: Option<mpsc::Sender<StatusRes>>,
+    noted: Option<StatusRes>,
 }
 
 pub(super) struct Shared {
     inner: Mutex<Inner>,
     changed: Condvar,
-    /// Called, once the lock is released, by every method that changes the phase or the run the status reports: the row
-    /// socket's watchers are told from it. It reads the status, so it can never run under the lock.
-    on_change: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 /// What the main thread does once the agent's run ended.
@@ -99,26 +99,42 @@ impl Shared {
                 terminal_since: None,
                 exiting: false,
                 row_lost: false,
+                notes: None,
+                noted: None,
             }),
             changed: Condvar::new(),
-            on_change: OnceLock::new(),
         }
     }
 
-    /// Installs the hook the changing methods call after releasing the lock; set once, before the row socket serves.
-    pub(super) fn set_change_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
-        let _ = self.on_change.set(hook);
+    /// Starts the ordered record of what the status reports: from here every change of phase or run is sent down `notes`,
+    /// with its value, under the lock that made it. Returns the status as it stands, which the caller announces first.
+    pub(super) fn set_announcer(&self, notes: mpsc::Sender<StatusRes>) -> StatusRes {
+        let mut inner = self.lock();
+        let now = Self::status_of(&inner);
+        inner.noted = Some(now.clone());
+        inner.notes = Some(notes);
+        now
     }
 
-    fn announce_change(&self) {
-        // Test seam: holds the announcing thread this many milliseconds after the mutation, so a test can finish the run's
-        // end before the first announcement. Inert unless named.
-        if let Some(ms) = std::env::var("SOT_TEST_ANNOUNCE_HOLD_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
-            std::thread::sleep(Duration::from_millis(ms));
+    /// Ends the record: what was sent stays in the channel for the announcer to deliver, and nothing more is sent.
+    pub(super) fn close_announcer(&self) {
+        self.lock().notes = None;
+    }
+
+    /// Sends the status down the record if it differs from the last one sent. A send never blocks, so this runs under the
+    /// lock: the order of the record is the order of the mutations, and no announcement ever rereads state that moved on.
+    fn note(inner: &mut Inner) {
+        let now = Self::status_of(inner);
+        if inner.noted.as_ref() != Some(&now) {
+            if let Some(notes) = &inner.notes {
+                let _ = notes.send(now.clone());
+            }
+            inner.noted = Some(now);
         }
-        if let Some(hook) = self.on_change.get() {
-            hook();
-        }
+    }
+
+    fn status_of(inner: &Inner) -> StatusRes {
+        StatusRes { phase: Self::phase_name(Self::wire_phase(inner)).to_string(), run: inner.last_run.clone() }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -137,8 +153,7 @@ impl Shared {
         inner.run_over = false;
         inner.last_run = Some(id.clone());
         inner.run = Some(LiveRun { id, kill, signals });
-        drop(inner);
-        self.announce_change();
+        Self::note(&mut inner);
         true
     }
 
@@ -150,9 +165,8 @@ impl Shared {
         if let Some(admission) = inner.ending.take() {
             inner.end_answers.insert(admission, EndRunRes { outcome: EndRunOutcome::Ended, detail: None });
         }
+        Self::note(&mut inner);
         self.changed.notify_all();
-        drop(inner);
-        self.announce_change();
     }
 
     /// The supervisor can go no further: the agent could not run, or an internal step failed. Sticky.
@@ -175,9 +189,8 @@ impl Shared {
         if let Some(admission) = inner.resetting.take() {
             inner.reset_answers.insert(admission, failed_reset(&detail));
         }
+        Self::note(&mut inner);
         self.changed.notify_all();
-        drop(inner);
-        self.announce_change();
     }
 
     /// The reset is published, the end record replaced: the next run starts clean.
@@ -187,8 +200,6 @@ impl Shared {
             inner.reset_answers.insert(admission, ResetRes { outcome: ResetOutcome::Reset, detail: None });
         }
         self.changed.notify_all();
-        drop(inner);
-        self.announce_change();
     }
 
     /// Blocks until the supervisor has something to do after the run: a stop, a reset, or the terminal grace over.
@@ -321,8 +332,7 @@ impl Shared {
                 let _ = kill.send(Command::Kill);
             }
         }
-        drop(inner);
-        self.announce_change();
+        Self::note(&mut inner);
         Ok(admission)
     }
 
@@ -361,9 +371,8 @@ impl Shared {
         inner.reset = true;
         inner.resetting = Some(admission);
         inner.phase = SupervisorPhase::Starting;
+        Self::note(&mut inner);
         self.changed.notify_all();
-        drop(inner);
-        self.announce_change();
         Ok(admission)
     }
 
@@ -404,11 +413,12 @@ impl Shared {
 
 impl Management for Shared {
     fn status(&self) -> StatusRes {
-        let inner = self.lock();
-        StatusRes {
-            phase: Self::phase_name(Self::wire_phase(&inner)).to_string(),
-            run: inner.last_run.clone(),
-        }
+        Self::status_of(&self.lock())
+    }
+
+    /// `ready` is a clock: the loop asks, each tick, whether the clock has changed the status.
+    fn poll(&self) {
+        Self::note(&mut self.lock());
     }
 
     /// Admits an `end_run` for the live run `run` names, then waits for the run to end. The run fences it: another

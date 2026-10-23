@@ -232,15 +232,19 @@ impl<C: Client + 'static> RowClient<C> {
 
     /// Types. Refused by name unless this connection is the driver; the count is what the terminal took.
     pub fn send_input(&mut self, bytes: &[u8]) -> Result<usize, RowError> {
-        let payload = serde_json::json!({"blob": {"len": bytes.len(), "mime": "application/octet-stream"}});
+        self.send_input_in(bytes, None)
+    }
+
+    /// [`Self::send_input`] meant for the run `run` names: the row refuses it, `run ended`, when another run is current,
+    /// whatever connection carried it there. With `None` it goes to the current run.
+    pub fn send_input_in(&mut self, bytes: &[u8], run: Option<&str>) -> Result<usize, RowError> {
+        let mut payload = serde_json::json!({"blob": {"len": bytes.len(), "mime": "application/octet-stream"}});
+        if let Some(run) = run {
+            payload["run"] = serde_json::json!(run);
+        }
         let res = self.request(OP_INPUT, payload, Some(bytes))?;
         let res: InputRes = serde_json::from_value(res.payload).map_err(|e| RowError::Protocol(e.to_string()))?;
         Ok(res.written as usize)
-    }
-
-    /// [`Self::send_input`] meant for the run `run` names: the row refuses it, `run ended`, when another run is current.
-    pub fn send_input_in(&mut self, bytes: &[u8], _run: Option<&str>) -> Result<usize, RowError> {
-        self.send_input(bytes)
     }
 
     /// Resizes the terminal; the driver only.

@@ -146,9 +146,9 @@ pub fn wake_if_free(
                 let read = typing_read(&client);
                 let (sent, out) = if prompt == Prompt::HoldsLine {
                     tracing::info!("comm wake: Enter for the wake line left in main's input box");
-                    ("enter", wake_outcome(send_enter(&mut client, op_budget)))
+                    ("enter", wake_outcome(send_enter(&mut client, Some(&run), op_budget)))
                 } else {
-                    ("line and enter", type_then_enter(&mut client, line, agent, op_budget))
+                    ("line and enter", type_then_enter(&mut client, line, agent, &run, op_budget))
                 };
                 log_typing(handle, sent, &read, &out);
                 Ok(out)
@@ -178,8 +178,8 @@ fn log_typing(handle: &str, sent: &str, read: &(String, Vec<String>), outcome: &
 
 /// Types `line`, pumps until the typed-line gate passes or `op_budget` has passed since the write returned, then
 /// writes Enter. A line that never shows alone gets no Enter ([`WakeOutcome::TypedNoEnter`]).
-fn type_then_enter(client: &mut Client, line: &str, agent: &str, op_budget: Duration) -> WakeOutcome {
-    if let Err(e) = send_text(client, line.as_bytes(), op_budget) {
+fn type_then_enter(client: &mut Client, line: &str, agent: &str, run: &str, op_budget: Duration) -> WakeOutcome {
+    if let Err(e) = send_text(client, line.as_bytes(), Some(run), op_budget) {
         return text_failed(e);
     }
     let deadline = Instant::now() + op_budget;
@@ -188,7 +188,7 @@ fn type_then_enter(client: &mut Client, line: &str, agent: &str, op_budget: Dura
         let lines = free_test_lines(client.screen());
         let cursor = Some(client.screen().cursor_position());
         match super::screen::typed_refusal(&lines, cursor, agent, cfg!(windows), line) {
-            None => return wake_outcome(send_enter(client, op_budget)),
+            None => return wake_outcome(send_enter(client, Some(run), op_budget)),
             Some(reason) if Instant::now() >= deadline => {
                 let border = cursor.and_then(|(row, _)| lines.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
                 return WakeOutcome::TypedNoEnter { reason, border, row: cursor_row_trace(client.screen()) };
