@@ -882,12 +882,26 @@ async fn an_attempt_never_types_into_a_run_it_did_not_check() {
     // The new run draws the dialog, not the prompt.
     std::fs::write(&row.dialog, b"").unwrap();
     kill_supervisor(&row.env.state_root);
-    wait_for_screen(&mut row, "Allow this action").await;
+    // The row has no screen while its supervisor restarts: a read that answers no lines is read again.
+    let deadline = Instant::now() + WAKE_WITHIN;
+    while !screen_now(&mut row).await.is_some_and(|l| l.iter().any(|l| l.contains("Allow this action"))) {
+        assert!(Instant::now() < deadline, "the new run never drew its dialog");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
     tokio::time::sleep(Duration::from_secs(10)).await;
-    assert!(!row.screen_has("[sot-comm]").await, "the old run's attempt typed into the new run's dialog: {:?}", row.screen().await);
+    let screen = screen_now(&mut row).await.unwrap_or_default();
+    assert!(!screen.iter().any(|l| l.contains("[sot-comm]")), "the old run's attempt typed into the new run's dialog: {screen:?}");
     std::fs::remove_file(&row.dialog).unwrap();
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the new run was not woken once its dialog closed");
     tokio::time::sleep(THREE_TICKS).await;
     assert_eq!((pings(&row.log), others(&row.log)), (1, 0), "one wake line, once");
     row.env.kill_daemon_bounded().await;
+}
+
+/// The row's screen now, or `None` while it has none (its supervisor is restarting).
+async fn screen_now(row: &mut Row) -> Option<Vec<String>> {
+    let id = row.next_id;
+    row.next_id += 1;
+    let res = call(&mut row.conn, id, op::PTY_SCREEN, serde_json::json!({ "workspace_id": row.ws })).await;
+    res.payload["lines"].as_array().map(|l| l.iter().map(|l| l.as_str().unwrap_or_default().to_string()).collect())
 }

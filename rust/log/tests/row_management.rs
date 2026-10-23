@@ -632,17 +632,19 @@ fn a_transition_is_told_though_the_run_ends_before_its_announcement() {
     std::env::set_var("SOT_RUNTIME_DIR", runtime.path());
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
-    let (_supervisor, path) = supervisor(runtime.path(), &state_dir, &[("SOT_TEST_ANNOUNCE_HOLD_MS", "700")]);
+    let (_supervisor, path) = supervisor(runtime.path(), &state_dir, &[("SOT_TEST_ANNOUNCE_HOLD_MS", "2000")]);
     let mut driver = dial(&path);
     driver.attach(80, 24, true).expect("attach as the driver");
     read_until(&mut driver, "agent-was-here", Duration::from_secs(30));
 
     let mut watch = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("the watch is served");
-    let run = watch.first().run.clone().expect("the first reply names the run");
     let mut manager = dial(&path);
+    let run = status(&mut manager)["run"].as_str().expect("a live run has an id").to_string();
+    // Let the watch catch up with the run's start (each announcement is held), so the end's reports stand alone.
+    watch_until(&mut watch, Duration::from_secs(60), |s| matches!(s, WatchStep::Phase(r) if r.phase == SupervisorPhase::Ready));
     let ended = manager.call("row.end_run", json!({"run": run, "reason": "test"}), Duration::from_secs(30)).expect("end_run answers");
     assert_eq!(ended.payload["outcome"], "ended", "{ended:?}");
-    let seen = watch_until(&mut watch, Duration::from_secs(30), |s| matches!(s, WatchStep::Phase(r) if r.phase == SupervisorPhase::EndedNoRespawn));
+    let seen = watch_until(&mut watch, Duration::from_secs(60), |s| matches!(s, WatchStep::Phase(r) if r.phase == SupervisorPhase::EndedNoRespawn));
     let phases: Vec<_> = seen.iter().filter_map(|s| match s { WatchStep::Phase(r) => Some(r.phase), _ => None }).collect();
     assert_eq!(phases, vec![SupervisorPhase::Ending, SupervisorPhase::EndedNoRespawn], "{seen:?}");
 }
