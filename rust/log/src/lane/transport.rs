@@ -106,10 +106,7 @@ pub(crate) fn join_checked(jh: JoinHandle<()>, deadline: Instant) -> Joined {
 
 // ---------------------------------------------------------------------
 // Shared implementation helpers — both platforms' transports use these
-// (L1-unix LU1a, hoisted out of `lane/pipe_win/`). Not part of the
-// `Transport` CONTRACT above; a Unix transport implementation is free to
-// reuse them exactly as `lane/pipe_win/` does, or not, at its own
-// discretion.
+// (L1-unix LU1a, hoisted out of `lane/pipe_win/`).
 // ---------------------------------------------------------------------
 
 /// Bound on one outstanding overlapped `ReadFile` (ADR 0041: "the transport

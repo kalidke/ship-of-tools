@@ -202,11 +202,10 @@ mod row_run;
 mod rowside;
 
 // ---------------------------------------------------------------------
-// ADR 0043 "Decisions for LU2": the five tests that exercise real
+// ADR 0043 "Decisions for LU2": the tests that exercise real
 // Windows-only mechanism (ConPTY spawn failure/geometry, ResizePseudoConsole,
-// the output budget's own blocking bound under a real flood, and a
-// reader-chunk-boundary replay) rather than the portable
-// writer-loop/AttachProto contract every other test in this file proves.
+// and the output budget's own blocking bound under a real flood) rather than the portable
+// writer-loop contract every other test in this file proves.
 // Grouped under ONE module (LU2b, per the plan this module's own doc
 // already stated): this module gains #[cfg(windows)], in place of the
 // file-level #![cfg(windows)] the file dropped.

@@ -35,12 +35,9 @@ use tokio::net::{UnixListener, UnixStream};
 /// THIS binary would race it exactly the same way.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// `attach_client::client::CHECKPOINT_TRANSFER_BUDGET` is private (12 checkpoint
-/// chunks x its own private 5s per-frame `STATUS_BUDGET`) — reconstructed
-/// here from the one piece that IS `pub`, `wire::CHECKPOINT_CHUNKS_AT_
-/// MAX_PAYLOAD`, rather than a second, drifting magic number.
-const CHECKPOINT_TRANSFER_BUDGET: Duration =
-    Duration::from_secs(sot_log::lane::wire::CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD as u64 * 5);
+/// How long the pane test lets a snapshot transfer take over its throttled relay: the 60 s the old attach lane's
+/// checkpoint transfer was bounded at (12 chunks of 5 s), kept as the one bound.
+const CHECKPOINT_TRANSFER_BUDGET: Duration = Duration::from_secs(60);
 
 /// Creates a `runtime: "capsule"` workspace and polls it to `"ready"`,
 /// returning its id and the `session_name` `lane.connect`'s own `target`

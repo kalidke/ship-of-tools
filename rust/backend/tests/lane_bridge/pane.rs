@@ -62,17 +62,10 @@ async fn a_busy_pane_over_a_slow_link_converges() {
     let _ = voyage;
     let initial_screen = screen_modified(&state_dir);
 
-    // `lane/attach_proto/`'s own `WATCHER_LIVE_QUEUE_BUDGET_BYTES` (4 MiB)
-    // eviction exists and is wired (confirmed by reading that source: it
-    // closes a watcher whose OWN unsent queue overflows 4 MiB) but is a
-    // stalled-reader safety valve, not a slow-but-still-draining one: this
-    // relay's own throttle paces writes without ever refusing to drain its
-    // Unix-socket read, so the pipe's natural backpressure keeps the
-    // supervisor's per-connection unsent queue bounded to roughly one
-    // in-flight chunk rather than ever reaching 4 MiB -- empirically
-    // confirmed (a 20s run at 256 KiB/s never logged `QueueOverflow`,
-    // only an unrelated `MgmtIdleTimeout` on the short-lived status probe
-    // connection above). A genuinely STALLED reader is already covered by
+    // The row socket resyncs a viewer that falls 256 output frames behind and cuts one that stalls writing, but this is
+    // neither: this relay's own throttle paces writes without ever refusing to drain its Unix-socket read, so the
+    // pipe's natural backpressure keeps the supervisor's per-connection unsent queue bounded to roughly one
+    // in-flight chunk. A genuinely STALLED reader is already covered by
     // [`a_blackhole_is_unreachable_and_retried`] and the `cut()` cases;
     // this test verifies decision 11's actually-observable core claim for
     // a merely slow one instead: output handling never blocks on it, and the
