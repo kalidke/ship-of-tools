@@ -72,3 +72,47 @@ fn a_supervisor_that_reached_ready_resets_the_count_and_keeps_the_window() {
         "the window slid past them"
     );
 }
+
+#[test]
+fn a_terminal_mark_admits_only_a_row_nothing_answers() {
+    use crate::rows::workspace::Phase;
+    // `stopped` is what a Windows first start reads before its supervisor takes the fence.
+    for phase in [Phase::Unreachable, Phase::Stopped] {
+        assert!(nothing_answers(phase.as_wire_str()), "{phase:?} is a row nothing answers");
+    }
+    for phase in [Phase::Starting, Phase::Ready, Phase::Ending, Phase::EndedNoRespawn, Phase::Terminal, Phase::Foreign] {
+        assert!(!nothing_answers(phase.as_wire_str()), "{phase:?} is a row something answers");
+    }
+}
+
+/// The watchdog an adopted exit installs owns the row before `install_watchdog` returns, under its caller's guard: the
+/// task that restarts it has not run yet (a current-thread runtime), and its recheck would decline (no fence file), so
+/// ownership announced inside the task would leave the row ownerless for a moment.
+#[tokio::test]
+async fn an_adopted_exit_owns_the_row_before_install_returns() {
+    let state = tempfile::tempdir().unwrap();
+    let workspaces = Workspaces::new();
+    let mut row = crate::rows::Workspace::from_label(
+        "adopted-exit",
+        PathBuf::from("/tmp/sot-adopted-exit"),
+        false,
+        "none".to_string(),
+        String::new(),
+        String::new(),
+    );
+    row.runtime = "capsule".to_string();
+    let ws = workspaces.insert(row);
+    assert_eq!(ws.watchdog_owner(), None);
+    install_watchdog(
+        ws.workspace_id.clone(),
+        PathBuf::from("sot-capsule"),
+        state.path().to_path_buf(),
+        Vec::new(),
+        PathBuf::from("/tmp"),
+        String::new(),
+        ws.slug.clone(),
+        First::Exited(None),
+        workspaces.clone(),
+    );
+    assert!(ws.watchdog_owner().is_some(), "the adopted exit's watchdog owns the row when install returns");
+}

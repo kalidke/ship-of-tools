@@ -591,3 +591,126 @@ async fn a_row_with_only_a_fence_file_resumes_at_boot() {
     .await;
     env.kill_daemon_bounded().await;
 }
+
+/// A row readied under a daemon started with `before`, whose supervisor lives on when that daemon is killed, and adopted
+/// by a daemon started with `after`. Returns the new daemon's connection, the row's id and its state folder.
+#[cfg(target_os = "linux")]
+pub(super) async fn ready_row_adopted_by_a_new_daemon(
+    env: &Env,
+    before: &[(&str, &str)],
+    after: &[(&str, &str)],
+    label: &str,
+) -> (Conn, u64, String, PathBuf) {
+    env.spawn_sotd_with_env(before);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let create_req = serde_json::json!({
+        "label": label,
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
+    let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
+
+    env.kill_daemon_bounded().await;
+    drop(conn);
+    env.spawn_sotd_with_env(after);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
+    (conn, next_id, workspace_id, state_dir)
+}
+
+/// The supervisor answering on `state_dir`, if one does.
+#[cfg(target_os = "linux")]
+pub(super) async fn supervisor_pid(state_dir: &Path) -> Option<u32> {
+    try_query_status(state_dir.to_path_buf()).await.map(|report| report.pid)
+}
+
+/// An adopted supervisor (found alive at the daemon's boot) is watched like a launched one: its agent exits by itself,
+/// the supervisor exits 76, and the row is restarted within rows' budget under a new supervisor with no `pty.open`,
+/// attach or selection. Daemon A's supervisor holds its exit 1.5 s with its socket still bound (a test seam it inherits),
+/// so a decision taken before the process is gone finds the row answering: the restart waits for the process itself.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn an_adopted_supervisor_whose_agent_exits_is_restarted_within_the_budget_with_no_selection() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("adx");
+    let (mut conn, mut next_id, workspace_id, state_dir) = ready_row_adopted_by_a_new_daemon(
+        &env,
+        &[("SOT_TEST_EXIT_HOLD_MS", "1500")],
+        &[SHORT_BACKOFF],
+        "adx-workspace",
+    )
+    .await;
+    let before = supervisor_pid(&state_dir).await.expect("the adopted supervisor answers");
+
+    // The agent is the platform shell: `exit` typed into it ends it by itself, and the supervisor with it (76).
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    let input_req = serde_json::json!({
+        "workspace_id": workspace_id,
+        "data_b64": STANDARD.encode(b"exit"),
+        "enter": true,
+        "origin": "adopted-exit-test",
+    });
+    let input_res = call(&mut conn, next_id, op::PTY_INPUT, input_req).await;
+    next_id += 1;
+    assert_eq!(input_res.payload["ok"], true, "pty.input: {:?}", input_res.payload);
+
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        next_id += 1;
+        let ready = find_row(&payload, &workspace_id).is_some_and(|row| row["phase"] == "ready");
+        if ready && supervisor_pid(&state_dir).await.is_some_and(|pid| pid != before) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the adopted row was not restarted after its agent exited: {:?}, supervisor {:?}",
+            find_row(&payload, &workspace_id),
+            supervisor_pid(&state_dir).await
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir.clone();
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
+    })
+    .await;
+    env.kill_daemon_bounded().await;
+}
+
+/// The restarted supervisor of an adopted row exits 69 before it answers (`SOT_TEST_SUPERVISOR_BOOT_FAILS`, named on
+/// daemon B only, so the adopted supervisor was unaffected): no watch ever named it, and the row is latched `terminal`
+/// all the same, rather than reading `unreachable` until someone selects it.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_replacement_that_exits_69_before_it_answers_latches_the_row_terminal() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("t69");
+    let (mut conn, mut next_id, workspace_id, _state_dir) = ready_row_adopted_by_a_new_daemon(
+        &env,
+        &[],
+        &[SHORT_BACKOFF, ("SOT_TEST_SUPERVISOR_BOOT_FAILS", "1")],
+        "t69-workspace",
+    )
+    .await;
+    kill_supervisor(&env.state_root);
+
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        next_id += 1;
+        let phase = find_row(&payload, &workspace_id).map(|row| row["phase"].clone());
+        if phase.as_ref().is_some_and(|p| p == "terminal") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the row never latched terminal after its replacement exited 69: {phase:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    env.kill_daemon_bounded().await;
+}

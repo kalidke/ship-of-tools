@@ -33,6 +33,46 @@ fn start_reaches_ready_promptly() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
+/// `ready` is the agent having lived 2 s, not having written: an agent that writes at once is `starting` until the
+/// supervisor's own two seconds have passed. The proof is a lower bound on the clock and an upper bound on the wait: no
+/// report says `ready` before the supervisor's launch plus 2 s, and one comes within 5 s after it.
+#[cfg(unix)]
+#[test]
+fn a_watch_reports_ready_only_after_the_agent_lived_two_seconds() {
+    use sot_log::attach_client::supervisor_client::{watch, CancelHandle, WatchStep};
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let spawned = Instant::now();
+    let mut guard = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "echo hello; exec cat"]);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let mut held = watch(&state_dir, &CancelHandle::new()).expect("the watch");
+    let mut ready_at = (held.first().phase == SupervisorPhase::Ready).then(Instant::now);
+    while ready_at.is_none() && spawned.elapsed() < Duration::from_secs(7) {
+        match held.next(Duration::from_millis(100)) {
+            WatchStep::Phase(report) if report.phase == SupervisorPhase::Ready => ready_at = Some(Instant::now()),
+            WatchStep::Ended => panic!("the watch ended before the supervisor was ready"),
+            _ => {}
+        }
+    }
+    let ready_at = ready_at.expect("a report said ready within 7 s of the launch");
+    assert!(
+        ready_at.duration_since(spawned) >= Duration::from_secs(2),
+        "ready was reported {:?} after the launch, before the agent had lived 2 s",
+        ready_at.duration_since(spawned)
+    );
+
+    let run = wait_for_ready(&conn, Duration::from_secs(30));
+    end_run_and_expect_ended(&conn, &run, "cleanup");
+    drop(held);
+    stop(&conn);
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
+}
+
 /// A `--resume` over a state folder with no record of an end (the supervisor that left it died before any run) starts
 /// the agent like a `--start` does, rather than ending with an error.
 #[test]

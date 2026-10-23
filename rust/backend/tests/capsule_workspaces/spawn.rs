@@ -722,3 +722,47 @@ async fn a_row_socket_that_cannot_be_bound_ends_the_row_terminal_through_the_bud
     assert!(log.contains("could not bind the row socket"), "the supervisor said why:\n{log}");
     env.kill_daemon_bounded().await;
 }
+
+/// An agent that writes a line and exits within two seconds has not reached `ready` for having written: `ready` is the
+/// agent having lived 2 s. Five such starts in a row spend the one restart budget as a count, and the row is `terminal`.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_agent_that_writes_and_exits_within_two_seconds_counts_as_never_ready() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("wex");
+    env.seed_default_capsule_toml("claude");
+    let fake_claude_dir = env.seed_fake_writing_claude();
+    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[SHORT_BACKOFF]);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let default_row = list_payload["workspaces"]
+        .as_array()
+        .expect("workspaces array")
+        .iter()
+        .find(|w| w["is_default"].as_bool() == Some(true))
+        .cloned()
+        .expect("a default workspace row");
+    let workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
+    let target = default_row["session_name"].as_str().expect("session_name").to_string();
+    let pty_req = serde_json::json!({"cols": 80, "rows": 24, "user_switch": true, "target": target});
+    let _ = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+
+    let deadline = Instant::now() + BUDGET_WAIT;
+    loop {
+        let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        next_id += 1;
+        let row = find_row(&payload, &workspace_id).expect("the default row");
+        if row["phase"] == "terminal" {
+            break;
+        }
+        assert_ne!(row["phase"], "ended_no_respawn", "an agent that cannot run is not one that was asked to end: {row:?}");
+        assert!(Instant::now() < deadline, "an agent that writes and exits never ended the row terminal: {row:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let log = env.daemon_log_since(0);
+    assert!(log.contains("restart budget exhausted"), "the watchdog's budget line is missing; got:\n{log}");
+    env.kill_daemon_bounded().await;
+}

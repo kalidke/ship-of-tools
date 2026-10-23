@@ -231,3 +231,48 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
 
     env.kill_daemon_bounded().await;
 }
+
+/// An adopted supervisor that is killed is restarted by the daemon that adopted it and comes back `ready` under a new
+/// pid; one that is stopped (exit 0, a stop is not a crash) stays down, with no supervisor process, for five seconds.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_killed_adopted_supervisor_is_restarted_and_a_stopped_one_is_not() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("killstop");
+    let (mut conn, mut next_id, workspace_id, state_dir) =
+        super::resume::ready_row_adopted_by_a_new_daemon(&env, &[], &[SHORT_BACKOFF], "killstop-workspace").await;
+    let first = super::resume::supervisor_pid(&state_dir).await.expect("the adopted supervisor answers");
+
+    kill_supervisor(&env.state_root);
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let second = loop {
+        let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        next_id += 1;
+        let ready = find_row(&payload, &workspace_id).is_some_and(|row| row["phase"] == "ready");
+        if let Some(pid) = super::resume::supervisor_pid(&state_dir).await.filter(|pid| *pid != first) {
+            if ready {
+                break pid;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the killed adopted supervisor was not restarted: {:?}",
+            find_row(&payload, &workspace_id)
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_ne!(first, second);
+
+    tokio::task::spawn_blocking({
+        let dir = state_dir.clone();
+        move || sot_log::attach_client::supervisor_client::stop(&dir).expect("stop the supervisor")
+    })
+    .await
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < until {
+        assert!(own_supervisor_pids(&env.state_root).is_empty(), "a stopped supervisor was restarted");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    env.kill_daemon_bounded().await;
+}

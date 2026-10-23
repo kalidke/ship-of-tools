@@ -249,3 +249,59 @@ fn activation_error_is_independent_of_phase_and_clears_on_the_next_attempt() {
     ws.set_activation_error(None);
     assert_eq!(ws.activation_error(), None);
 }
+
+/// The watch record: a supervisor reached `ready` iff its watch said so, in the first reply or in a `row.phase` of the
+/// same supervisor, never another's; a spawn clears it, and an event with no record names nobody.
+#[test]
+fn a_supervisor_reached_ready_only_if_its_watch_said_so() {
+    let a = identity(1, 100);
+    let b = identity(2, 200);
+    let ws = unclaimed_capsule_row();
+    assert!(!ws.reached_ready(), "no watch, no record");
+    ws.record_watch(a, false);
+    assert!(!ws.reached_ready(), "a first reply that said starting");
+    ws.note_watch_ready(b);
+    assert!(!ws.reached_ready(), "another supervisor's event is not this record's");
+    ws.note_watch_ready(a);
+    assert!(ws.reached_ready(), "the same supervisor told ready");
+    ws.clear_watched();
+    assert!(!ws.reached_ready(), "a spawn clears the record");
+    ws.note_watch_ready(a);
+    assert!(!ws.reached_ready(), "an event with no record names nobody");
+    ws.record_watch(b, true);
+    assert!(ws.reached_ready(), "a first reply that said ready");
+}
+
+/// With no wake sent, a fence file that appears under a running observer is still found: the observer's own wait rule,
+/// not a settle's wake, ends its wait on an absent fence.
+#[tokio::test]
+async fn a_fence_that_appears_without_a_wake_is_observed() {
+    use crate::rows::run::observer::ensure_running;
+    let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = ["XDG_STATE_HOME", "LOCALAPPDATA"].map(crate::paths::EnvGuard::capture);
+    let state = tempfile::tempdir().unwrap();
+    std::env::set_var("XDG_STATE_HOME", state.path());
+    std::env::set_var("LOCALAPPDATA", state.path());
+    let registry = Workspaces::new();
+    let ws = registry.insert(Workspace::from_label(
+        "fence-appears",
+        PathBuf::from("/tmp/sot-fence-appears"),
+        false,
+        "none".to_string(),
+        String::new(),
+        String::new(),
+    ));
+    ensure_running(&registry, &ws);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(ws.phase(), Phase::Stopped, "no fence file: never started");
+
+    let root = sot_platform::host::state_dir::sot_state_dir().expect("a state root");
+    let dir = crate::rows::spawn::state_root::state_dir_for(&root, &ws.workspace_id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(&dir), b"").unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ws.phase() != Phase::Unreachable && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(ws.phase(), Phase::Unreachable, "a fence file with nothing answering reads unreachable within 10 s");
+}

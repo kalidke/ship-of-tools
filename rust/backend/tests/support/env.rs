@@ -414,6 +414,17 @@ impl Env {
         dir
     }
 
+    /// A fake `claude` that writes a line and exits nonzero, every time it runs: an agent that prints its error and
+    /// ends within two seconds, which a supervisor does not report as `ready` for having written it.
+    #[cfg(target_os = "linux")]
+    pub fn seed_fake_writing_claude(&self) -> PathBuf {
+        let dir = self._tmp.path().join("fakebin");
+        std::fs::create_dir_all(&dir).expect("mkdir fakebin");
+        let claude = dir.join("claude");
+        sot_platform::test_exec::write_executable(&claude, b"#!/bin/sh\necho 'sot-test: this agent cannot run'\nexit 1\n");
+        dir
+    }
+
     /// A4b: a fake `claude` that starts a child in a NEW session
     /// (`setsid`), which the leg's `killpg` cannot reach, then stays up
     /// itself. Returns the fakebin dir and the pidfile the escapee's
