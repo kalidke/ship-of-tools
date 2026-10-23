@@ -75,7 +75,7 @@ NATIVE_CYGPATH=0; command -v cygpath > /dev/null 2>&1 && NATIVE_CYGPATH=1
 lib() {
     local p="$1" out rc; shift
     out="$(PATH="$p" bash -c '. "$1"; shift; "$@"' _ "$SCRIPTS_DIR/comm-lib.sh" "$@" 2> "$LAST_OUT")"; rc=$?
-    if [ "$rc" = 0 ]; then printf '%s' "$out"; else printf 'rc %s' "$rc"; fi
+    if [ "$rc" = 0 ]; then printf '%s' "$out"; else printf '%s\n' "$out" >> "$LAST_OUT"; printf 'rc %s' "$rc"; fi
 }
 
 # 0. A failing case shows what the child printed: `lib` and `sent` keep the child's output, and a FAIL line carries it.

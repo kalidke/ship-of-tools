@@ -260,6 +260,32 @@ end
     end
 end
 
+@testset "the agents tools install flat from the four listed folders, sot-fe's parts inside it, the launchers by their own stage" begin
+    # agents/CLAUDE.md, guarantee 13: the production list, not a test stager's.
+    files = ShipTools._comm_bin_files()
+    owner = Dict(n => f for (f, n) in files)
+    root = ShipTools.REPO_ROOT
+    @test Set(ShipTools._comm_bin_folders()) >= Set(joinpath(root, d) for d in ("agents", "agents/sot-fe", "agents/spawn", "agents/worktree"))
+    parts = Set(p for l in eachline(joinpath(root, "agents", "sot-fe", "sot-fe"))
+                for p in (ShipTools._comm_part_of(joinpath(root, "agents", "sot-fe"), l),) if p !== nothing)
+    @test length(parts) == 4
+    for d in ("agents", "agents/sot-fe", "agents/spawn", "agents/worktree")
+        folder = joinpath(root, d)
+        for f in readdir(folder)
+            isfile(joinpath(folder, f)) && !endswith(f, ".md") || continue
+            if f in parts
+                @test !haskey(owner, f)                       # embedded in sot-fe, never a file of its own
+            else
+                @test get(owner, f, nothing) == folder        # one flat file, from this folder
+            end
+        end
+    end
+    for launcher in ("ccb", "ccx", "show-result")
+        @test !haskey(owner, launcher)
+    end
+    @test owner["sot-fe"] == joinpath(root, "agents", "sot-fe")  # the tool, not the PATH wrapper
+end
+
 @testset "a source command the installer cannot install whole stops the install" begin
     mktempdir() do root
         lib = mkpath(joinpath(root, "lib"))

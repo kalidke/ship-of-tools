@@ -124,7 +124,7 @@ fn claude_recipe(extra: &[String], memory_cwd: Option<&Path>, comm_home: Option<
     // See [`caller_brought_settings`] for why a caller's own wins: its JSON gains the hooks, nothing else of it changes.
     let merged = hooks.as_ref().filter(|_| caller_brought_settings(extra)).and_then(|hooks| layer::merge_caller_settings(extra, hooks));
     if caller_brought_settings(extra) && layer.is_some() && merged.is_none() {
-        tracing::warn!("a caller's own --settings is not one JSON object we can merge into: it is passed as given and the leg carries no work-state hooks (the skills still load)");
+        tracing::warn!("a caller's own --settings is not the only one, or not a JSON object whose hooks are an object of arrays: it is passed as given and the leg carries no work-state hooks (the skills still load)");
     }
     if !caller_brought_settings(extra) {
         // `account_home`, never `HOME`: this module's own resolver is what
