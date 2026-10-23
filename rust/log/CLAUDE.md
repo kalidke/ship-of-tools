@@ -130,8 +130,10 @@ true after the merge of the leg into the supervisor.
   120 s running; anything else is retried, and a daemon that cannot be reached starts that window over. The drawer's
   attach (dormant until 6c-2 deletes it) names a row no row has, so it ends terminal after those 120 s.
 - A bind failure of the row socket ends the supervisor with 75 (`EXIT_AGENT_NOT_STARTED`), before any agent starts:
-  it is a row that did not start, so rows' watchdog counts it against its one restart budget and ends the row terminal
-  only when the failure lasts through the budget (`capsule_workspaces::a_row_socket_that_cannot_be_bound_ends_the_row_terminal_through_the_budget`).
+  it is a row that did not start, which rows' watchdog is to count against its one restart budget, ending the row terminal
+  only when the failure lasts through it. Limit: rows' watchdog does not yet restart a supervisor that died before its
+  first answer (its recheck reads the row as already resumed), so today the row stays stopped and the next attach tries
+  again (queue item WATCHDOG-FIRST-START-RECHECK; the ignored `capsule_workspaces::a_row_socket_that_cannot_be_bound_ends_the_row_terminal_through_the_budget`).
   The Unix bind reclaims a socket file left behind without probing for a listener: the fence is held, so the file is
   this row's own.
 - Every write to the terminal has one owner (`src/row/input.rs`): one thread, started with the run's terminal, writes
