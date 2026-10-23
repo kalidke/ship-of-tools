@@ -90,30 +90,28 @@ async fn a_busy_pane_over_a_slow_link_converges() {
     );
 
     relay.throttle(0);
-    // The flood outruns a viewer that pumps once in 100 ms, so the row may cut the connection with the input's answer
-    // still queued: an input is written at most once and its outcome is then unknown, never sent again by the client. A
-    // person who sees the flood still running presses Ctrl-C again, and so does this test, until one is recorded.
+    // The row resyncs a viewer that falls behind and never cuts it, so one Ctrl-C is answered, written once, and ends the
+    // flood: no second key.
     client.send_input(&[0x03]);
-    let mut typed = Instant::now();
     let deadline = Instant::now() + CHECKPOINT_TRANSFER_BUDGET;
-    loop {
+    while client.last_input_outcome() != Some(InputOutcome::Recorded) {
         client.pump();
-        if client.last_input_outcome() == Some(InputOutcome::DeliveryUnknown)
-            && client.status_line() == "attached"
-            && typed.elapsed() >= Duration::from_secs(1)
-        {
-            client.send_input(&[0x03]);
-            typed = Instant::now();
-        }
-        if client.last_input_outcome() == Some(InputOutcome::Recorded)
-            && !client.status_line().contains("unreachable")
-            && !client.status_line().contains("connecting")
-        {
+        assert_ne!(client.last_input_outcome(), Some(InputOutcome::DeliveryUnknown), "the Ctrl-C's answer was lost: {}", client.status_line());
+        assert!(!client.is_dead(), "died while converging after the flood: {}", client.status_line());
+        assert!(Instant::now() < deadline, "the Ctrl-C was never answered within the checkpoint transfer budget");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(client.recorded_bytes(), 5, "\"yes\\r\" and one Ctrl-C written, each once");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = screen_modified(&state_dir);
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let now = screen_modified(&state_dir);
+        if now == seen {
             break;
         }
-        assert!(!client.is_dead(), "died while converging after the flood: {}", client.status_line());
-        assert!(Instant::now() < deadline, "never converged after the flood within the checkpoint transfer budget");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(Instant::now() < deadline, "the flood did not stop after the one Ctrl-C");
+        seen = now;
     }
 
     drop(client);

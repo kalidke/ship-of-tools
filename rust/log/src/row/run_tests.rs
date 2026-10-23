@@ -61,3 +61,27 @@ fn a_wake_is_coalesced_and_the_drain_is_under_a_quota() {
         w.join().unwrap();
     }
 }
+
+#[test]
+fn a_viewer_that_falls_behind_is_resynced_with_one_screen_not_cut() {
+    let run = RowRun::new("r", "ready");
+    let cuts = Arc::new(AtomicUsize::new(0));
+    let closer = {
+        let cuts = Arc::clone(&cuts);
+        Arc::new(move || {
+            cuts.fetch_add(1, Ordering::SeqCst);
+        })
+    };
+    let (id, queue, slot) = run.open(closer).expect("a slot");
+    let parser = vt100_ctt::Parser::new(24, 80, 0);
+    run.attach(id, 2, 80, 24, false).expect("attach");
+    run.tick(&parser);
+    // The writer never pops: every QUEUE_FRAMES outputs resync it, far more often than ANSWER_FRAMES.
+    for _ in 0..(ANSWER_FRAMES + 8) * (QUEUE_FRAMES + 1) {
+        run.output(b"y\n", &parser);
+    }
+    assert_eq!(cuts.load(Ordering::SeqCst), 0, "a slow viewer is resynced, never cut");
+    let screens = queue.lock().items.iter().filter(|(Out::Frame(f, _), _)| f.op == OP_SNAPSHOT).count();
+    assert_eq!(screens, 1, "a resync supersedes the screen the writer has not begun");
+    drop(slot);
+}
