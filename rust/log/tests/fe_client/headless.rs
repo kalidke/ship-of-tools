@@ -28,7 +28,7 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
     // client ends up at (120, 40) cannot pass by coincidence.
     let mut guard = spawn_supervisor_sized(&state_dir, "--start", 120, 40, SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
 
     let mut client = FeAttachClient::attach_headless(PlatformEndpoint::default(), h.clone())
         .expect("attach_headless");
@@ -82,8 +82,8 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
     );
     assert!(after.shutdown(Duration::from_secs(5)));
 
-    end_run_and_wait_ended(&conn, &voyage);
-    let _ = command(&conn, "test-headless-a-stop", SupervisorOp::Stop);
+    end_run_and_wait_ended(&conn, &run);
+    stop(&conn);
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
@@ -102,7 +102,7 @@ fn headless_screen_read_never_takes_the_pen() {
 
     let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
 
     // The headless watcher: attach, wait for the checkpoint, then drop —
     // exactly `screen_of`'s own shape, minus the wrapper.
@@ -135,8 +135,8 @@ fn headless_screen_read_never_takes_the_pen() {
     assert!(found, "the pen was not free after the headless screen read (dead={}, status={})", client.is_dead(), client.status_line());
 
     drop(client);
-    end_run_and_wait_ended(&conn, &voyage);
-    let _ = command(&conn, "test-headless-b-stop", SupervisorOp::Stop);
+    end_run_and_wait_ended(&conn, &run);
+    stop(&conn);
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
@@ -209,7 +209,7 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
 
     let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
 
     // 1. Driver A attaches and becomes DRIVING.
     let (_woke, wake) = wake_flag();
@@ -280,8 +280,8 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
     assert_eq!(text.matches("HEADLESSB").count(), 2, "the headless write must reach the shell EXACTLY once: {text:?}");
     assert_eq!(text.matches("A2RETAKE").count(), 2, "driver_a's retaken keystroke must reach the shell EXACTLY once: {text:?}");
 
-    end_run_and_wait_ended(&conn, &voyage);
-    let _ = command(&conn, "test-headless-c-stop", SupervisorOp::Stop);
+    end_run_and_wait_ended(&conn, &run);
+    stop(&conn);
     wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
@@ -308,7 +308,7 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
     let dir = tempfile::tempdir().unwrap();
     let fill = "i=0; while [ $i -lt 400 ]; do echo scrollback line $i; i=$((i+1)); done; exec sleep 600";
 
-    struct Row { h: String, conn: Client, voyage: String, guard: CapsuleGuard, err: PathBuf }
+    struct Row { h: String, conn: Client, run: String, guard: CapsuleGuard, err: PathBuf }
     let mut rows = Vec::new();
     for n in 0..SWEEP_ROWS {
         let state_dir = dir.path().join(format!("state-{n}"));
@@ -322,8 +322,8 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
         let guard = CapsuleGuard::spawn(&mut cmd);
         let h = state_dir_hash(&state_dir);
         let conn = wait_for_lane(&h, Duration::from_secs(30));
-        let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
-        rows.push(Row { h, conn, voyage, guard, err });
+        let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+        rows.push(Row { h, conn, run, guard, err });
     }
     let read = |h: &str| {
         let started = Instant::now();
@@ -387,8 +387,8 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
         // A fresh lane connection: the one held since the start may have been closed while the sweeps ran.
         row.conn = wait_for_lane(&row.h, Duration::from_secs(30));
         assert_eq!(read(&row.h).2, texts_before[n], "capsule {n}: the reads changed its screen");
-        end_run_and_wait_ended(&row.conn, &row.voyage);
-        let _ = command(&row.conn, &format!("test-headless-sweep-stop-{n}"), SupervisorOp::Stop);
+        end_run_and_wait_ended(&row.conn, &row.run);
+        stop(&row.conn);
         wait_for_exit(&mut row.guard, Duration::from_secs(30));
     }
 }

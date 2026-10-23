@@ -8,7 +8,7 @@ use serde_json::json;
 /// workspace's row (and its persisted toml) may be safely removed by
 /// `workspace.destroy`.
 pub(crate) enum CapsuleDestroyOutcome {
-    /// The run was CONFIRMED ended (`RecordVerified`/`RecordClosed`/
+    /// The run was CONFIRMED ended (`Ended`/
     /// `AlreadyEnded` — see `rows::run::end_run::EndRunOutcome`) — the row
     /// may be removed. `workspace.destroy` then also renames its state directory away and removes it (`state_folder`); the window's close does not, and leaves that folder to the next start's sweep. Human-readable
     /// (never the raw, Windows-only `EndRunOutcome` type) so this enum
@@ -32,10 +32,7 @@ pub(crate) const ALREADY_REMOVED: &str = "workspace was removed before its capsu
 pub(crate) fn capsule_destroy_outcome_of(o: crate::rows::run::end_run::EndRunOutcome) -> CapsuleDestroyOutcome {
     use crate::rows::run::end_run::EndRunOutcome as O;
     match o {
-        O::RecordVerified => CapsuleDestroyOutcome::Removable("run ended and verified".to_string()),
-        O::RecordClosed => CapsuleDestroyOutcome::Removable(
-            "run ended (record closed, not yet verified)".to_string(),
-        ),
+        O::Ended => CapsuleDestroyOutcome::Removable("run ended".to_string()),
         O::AlreadyEnded => CapsuleDestroyOutcome::Removable("run had already ended".to_string()),
         // A `Terminal` authority has no leg left to orphan -- `end_run`
         // already sent it `stop` and waited for confirmed exit (see

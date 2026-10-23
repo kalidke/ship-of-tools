@@ -2,10 +2,10 @@
 
 use super::*;
 
-/// A minimal lane-refusal FIXTURE standing in for a supervisor of another
-/// build (ADR 0030 §8 decision 31c) — binds the EXACT unix socket path
+/// A minimal row-socket FIXTURE standing in for a row of another row number
+/// (ADR 0030 §8 decision 31c) — binds the EXACT unix socket path
 /// `phase_of`'s own `query_status` will dial for `state_dir`
-/// (`sot_log::lane::socket_unix::supervisor_socket_path`, the same one this
+/// (`sot_log::row::row_socket_path`, the same one this
 /// process's own `SOT_RUNTIME_DIR` resolves it to), accepts ONE
 /// connection, and writes back `reply_bytes` verbatim before closing.
 /// Same-user peer credentials (the SID/`SO_PEERCRED` steps) pass for
@@ -14,13 +14,13 @@ use super::*;
 /// code does — no second build, no real supervisor, and no compile step
 /// are needed to prove either half of the "answered but ___" split;
 /// only the one reply a real peer would send. Two callers below use this
-/// with two different `reply_bytes`: an actual `Refused { VersionSkew }`
-/// encoding proves "foreign"; anything else well-formed-but-wrong proves
+/// with two different `reply_bytes`: a hello reply declaring another row
+/// number proves "foreign"; anything else well-formed-but-wrong proves
 /// "unreachable" stays unreachable.
 #[cfg(target_os = "linux")]
 fn spawn_lane_refusal_fixture(state_dir: &Path, reply_bytes: Vec<u8>) -> std::thread::JoinHandle<()> {
     let h = sot_platform::host::state_dir::state_dir_hash(state_dir);
-    let path = sot_log::lane::socket_unix::supervisor_socket_path(&h).expect("supervisor socket path");
+    let path = sot_log::row::row_socket_path(&h).expect("row socket path");
     let _ = std::fs::remove_file(&path);
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture supervisor socket");
     std::thread::spawn(move || {
@@ -38,7 +38,7 @@ fn spawn_lane_refusal_fixture(state_dir: &Path, reply_bytes: Vec<u8>) -> std::th
 /// ADR 0030 §8 decision 31c (cross-referenced as ADR 0043 decision 31;
 /// the gate itself is superseded by ADR 0045 decision 7 -- `proto`, not
 /// build): `phase_of` reports `"foreign"` for a capsule row whose
-/// supervisor lane answered but refused this daemon's protocol (typed as
+/// row answered with another row number (typed as
 /// `sot_log::Error::VersionSkew`, never a text match). Reproduces the
 /// field incident's OBSERVABLE shape (a row an operator finds already
 /// held by a foreign lane, not one this daemon started that way -- this
@@ -63,13 +63,16 @@ async fn phase_reports_foreign_for_a_version_skew_refusal() {
     let (workspace_id, state_dir_path) =
         create_ready_workspace_then_stop_its_supervisor(&env, &mut conn, &mut next_id, "foreign-workspace").await;
 
-    // Bind the fixture where the (now-stopped) real supervisor was, and
-    // reply with the ACTUAL wire encoding of `Refused { VersionSkew }` —
-    // the one reply a real supervisor of another build would send.
-    let reply = sot_log::lane::wire::encode_supervisor_reply(&sot_log::lane::wire::SupervisorReply::Refused {
-        reason: sot_log::lane::wire::SupervisorRefusedReason::VersionSkew,
-    })
-    .expect("Refused encodes unconditionally");
+    // Bind the fixture where the (now-stopped) real supervisor was, and reply
+    // with a hello that declares a newer row number: the one reply a real
+    // row of another row number would send.
+    let hello = sot_protocol::Frame::res(
+        1,
+        sot_log::row::OP_HELLO,
+        serde_json::json!({"pid": 1, "created": 1, "phase": "ready", "run": "", "row": sot_log::row::ROW_PROTOCOL + 1}),
+    );
+    let mut reply = serde_json::to_vec(&hello).expect("a hello reply serializes");
+    reply.push(b'\n');
     let fixture = spawn_lane_refusal_fixture(&state_dir_path, reply);
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "foreign", BOUND.max(Duration::from_secs(60))).await;

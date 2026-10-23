@@ -46,7 +46,7 @@ impl FakeSupervisor {
             status: std::sync::Mutex::new(
                 [(1111, 800, P::EndedNoRespawn), (4242, 900, P::EndedNoRespawn)].into_iter().collect(),
             ),
-            end_run: Ok(crate::rows::run::end_run::EndRunOutcome::RecordVerified),
+            end_run: Ok(crate::rows::run::end_run::EndRunOutcome::Ended),
             spawn: Ok("starting"),
             reset: Ok("voyage-1".to_string()),
         }
@@ -79,7 +79,7 @@ impl RestartEffects for FakeSupervisor {
             .unwrap()
             .pop_front()
             .expect("the fake was asked for more status reads than it was scripted");
-        Ok(sot_log::attach_client::supervisor_client::StatusReport { pid, created, voyage: None, leg: None, phase })
+        Ok(sot_log::attach_client::supervisor_client::StatusReport { pid, created, phase, run: None, voyage: None })
     }
     fn end_run(
         &self,
@@ -360,7 +360,7 @@ fn only_settled_phases_end_the_wait() {
 #[test]
 fn only_an_ended_run_licenses_a_replacement_spawn() {
     use crate::rows::run::end_run::EndRunOutcome as O;
-    for over in [O::RecordVerified, O::RecordClosed, O::AlreadyEnded, O::Terminal, O::Unheld, O::Orphaned] {
+    for over in [O::Ended, O::AlreadyEnded, O::Terminal, O::Unheld, O::Orphaned] {
         assert!(run_ended(&over).is_ok(), "{over:?}");
     }
     assert!(run_ended(&O::NotEnded("starting".to_string())).is_err());

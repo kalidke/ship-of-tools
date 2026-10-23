@@ -509,95 +509,84 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
     env.kill_daemon_bounded().await;
 }
 
-/// A test-owned supervisor lane for [`capsule_attach_on_ended_row_keeps_the_row_when_stop_fails`]: it completes Hello
-/// with this process's real identity, answers Status as a resting `EndedNoRespawn`, answers every command with
-/// `Operation(Failed)`, and records each command it receives.
+/// A test-owned row socket for [`capsule_attach_on_ended_row_keeps_the_row_when_stop_fails`]: it completes the hello
+/// with this process's real identity, answers `row.status` as a resting `ended_no_respawn`, refuses every other op by
+/// name, and records each management op it receives.
 #[cfg(target_os = "linux")]
 struct FailingStopLane {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    commands: std::sync::Arc<std::sync::Mutex<Vec<sot_log::lane::wire::SupervisorOp>>>,
+    ops: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     thread: std::thread::JoinHandle<()>,
 }
 
 #[cfg(target_os = "linux")]
 impl FailingStopLane {
     fn bind(state_dir: &Path, voyage: &str) -> Self {
-        use sot_log::lane::wire::{
-            encode_supervisor_reply, DecodedFrame, FrameSplitter, SupervisorOperationState, SupervisorPhase, SupervisorReply,
-            SupervisorRequest, SUPERVISOR_PROTO_V1,
-        };
-        use std::io::{Read, Write};
+        use std::io::{BufRead, BufReader, Write};
         use std::sync::atomic::Ordering;
         let hash = sot_platform::host::state_dir::state_dir_hash(state_dir);
-        let path = sot_log::lane::socket_unix::supervisor_socket_path(&hash).expect("supervisor socket path");
+        let path = sot_log::row::row_socket_path(&hash).expect("row socket path");
         let _ = std::fs::remove_file(&path);
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture supervisor socket");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture row socket");
         listener.set_nonblocking(true).expect("nonblocking listener");
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ops = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let (pid, voyage) = (std::process::id(), voyage.to_string());
         let created = sot_platform::identity::challenge_unix::process_start_ticks(pid).expect("this process's start ticks");
         let thread = std::thread::spawn({
-            let (stop, commands) = (stop.clone(), commands.clone());
+            let (stop, ops) = (stop.clone(), ops.clone());
             move || {
-                let mut connections: Vec<(std::os::unix::net::UnixStream, FrameSplitter)> = Vec::new();
                 while !stop.load(Ordering::Relaxed) {
-                    if let Ok((stream, _)) = listener.accept() {
-                        stream.set_nonblocking(true).expect("nonblocking stream");
-                        connections.push((stream, FrameSplitter::new()));
-                    }
-                    for (stream, splitter) in &mut connections {
-                        let mut buf = [0u8; 4096];
-                        let Ok(n @ 1..) = stream.read(&mut buf) else { continue };
-                        let (frames, _) = splitter.feed(&buf[..n]);
-                        for frame in frames {
-                            let DecodedFrame::SupervisorRequest(request) = frame else { continue };
-                            let reply = match request {
-                                SupervisorRequest::Hello { .. } => SupervisorReply::HelloOk {
-                                    proto: SUPERVISOR_PROTO_V1,
-                                    build: sot_log::lane::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
-                                    pid,
-                                    created,
-                                },
-                                SupervisorRequest::Status => SupervisorReply::StatusOk {
-                                    pid,
-                                    created,
-                                    voyage: Some(voyage.clone()),
-                                    leg: Some(1),
-                                    phase: SupervisorPhase::EndedNoRespawn,
-                                },
-                                SupervisorRequest::Command { op, .. } => {
-                                    commands.lock().unwrap().push(op);
-                                    SupervisorReply::Operation(SupervisorOperationState::Failed {
-                                        detail: "the fixture lane refuses every command".to_string(),
-                                    })
+                    let Ok((stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    };
+                    stream.set_nonblocking(false).expect("blocking stream");
+                    let (ops, voyage) = (ops.clone(), voyage.clone());
+                    std::thread::spawn(move || {
+                        let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
+                        let mut out = stream;
+                        let mut line = String::new();
+                        while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                            let Ok(req) = serde_json::from_str::<sot_protocol::Frame>(line.trim_end()) else { return };
+                            line.clear();
+                            let payload = match req.op.as_str() {
+                                sot_log::row::OP_HELLO => serde_json::json!({
+                                    "pid": pid, "created": created, "phase": "ended_no_respawn", "run": "",
+                                    "row": sot_log::row::ROW_PROTOCOL,
+                                }),
+                                sot_log::row::OP_STATUS => {
+                                    serde_json::json!({"phase": "ended_no_respawn", "voyage": voyage})
                                 }
-                                SupervisorRequest::Query { .. } => {
-                                    SupervisorReply::Operation(SupervisorOperationState::UnknownOperation)
+                                other => {
+                                    ops.lock().unwrap().push(other.to_string());
+                                    serde_json::json!({"error": "the fixture refuses every command", "code": "refused"})
                                 }
                             };
-                            let _ = stream.write_all(&encode_supervisor_reply(&reply).expect("encode the fixture reply"));
+                            let mut text = serde_json::to_vec(&sot_protocol::Frame::res(req.id, &req.op, payload)).expect("a reply serializes");
+                            text.push(b'\n');
+                            if out.write_all(&text).is_err() {
+                                return;
+                            }
                         }
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+                    });
                 }
             }
         });
-        Self { stop, commands, thread }
+        Self { stop, ops, thread }
     }
 
-    /// Ends the lane and returns every command it received.
-    fn finish(self) -> Vec<sot_log::lane::wire::SupervisorOp> {
+    /// Ends the lane and returns every management op it received.
+    fn finish(self) -> Vec<String> {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.thread.join().expect("the fixture lane's thread");
-        std::mem::take(&mut *self.commands.lock().unwrap())
+        std::mem::take(&mut *self.ops.lock().unwrap())
     }
 }
 
 /// ADR 0043 decision 33's retirement clause: a retire whose `stop` fails leaves the row EXACTLY as it was -- still
 /// registered, its pointer untouched, `activation_error` holding the retire failure, and no `reset` sent. The
-/// supervisor is a test-owned lane ([`FailingStopLane`]) that rests at `EndedNoRespawn` and answers `stop` with
-/// `Operation(Failed)`, so the real `ensure_started` takes its retire arm and the failure is the lane's, not an
+/// supervisor is a test-owned lane ([`FailingStopLane`]) that rests at `EndedNoRespawn` and refuses `row.stop`, so the real `ensure_started` takes its retire arm and the failure is the lane's, not an
 /// induced fault in a capsule's files.
 #[tokio::test]
 #[cfg(target_os = "linux")]
@@ -670,11 +659,11 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
     );
     let commands = lane.finish();
     assert!(
-        commands.contains(&sot_log::lane::wire::SupervisorOp::Stop),
+        commands.iter().any(|op| op == sot_log::row::OP_STOP),
         "the retire must have asked the supervisor to stop: {commands:?}"
     );
     assert!(
-        !commands.iter().any(|op| matches!(op, sot_log::lane::wire::SupervisorOp::Reset { .. })),
+        !commands.iter().any(|op| op == sot_log::row::OP_RESET),
         "no reset may follow a failed stop: {commands:?}"
     );
 

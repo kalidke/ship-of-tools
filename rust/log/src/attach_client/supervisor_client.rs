@@ -1,391 +1,202 @@
 #![cfg(any(windows, target_os = "linux", target_os = "macos"))]
-//! ADR 0042 slice L1a, generalized by L1-unix LU3b (ADR 0043 decision
-//! 20): a small, PRODUCTION supervisor-lane client for a caller OUTSIDE
-//! this crate that is not the FE — today, the backend daemon's own
-//! capsule workspace runtime (`sot-backend`'s `rows/run/`).
-//! `attach_client/worker/` (ADR 0046 decision 3; formerly `attach_client/client.rs`,
-//! before that lane's extraction) already runs this exact
-//! connect+hello(build identity)+challenge procedure
-//! (`connect_and_challenge`, moved HERE from `supervisor/` this lane)
-//! and its own `status` round trip (`attach_client::worker::supervisor_status`,
-//! still private there — right, since the attach worker's own six
-//! rulings own everything downstream of it there). This
-//! module is the SAME procedure's production entry point for a caller
-//! that only ever needs `status`/`stop`/`end_run`/`reset`: it adds no new
-//! wire behavior, only the external-facing functions that did not exist
-//! yet. `supervisor::connect_and_challenge_for_test` / `request_for_test`
-//! are the nearest existing public surface, but both are
-//! `#[cfg(any(test, feature = "test-support"))]` — "never enabled by a
-//! normal consumer" per this crate's own `Cargo.toml` — and the daemon is
-//! a normal consumer, not a test, so it needs its own, ungated path.
+//! The daemon's calls on one row's supervisor: `status`, `end_run`, `reset` and `stop`, each one connection on the row
+//! socket (`row-<h>`): the row client's dial, hello and challenge, then one request with its bound. The exception is
+//! [`Persistent`], which holds one connection across status calls and reconnects when it fails. A call that loses its
+//! reply is answered by reading status again; no call carries an id.
 //!
-//! Generic over [`Endpoint`], instantiated at a [`PlatformEndpoint`]
-//! value (`PlatformEndpoint::default()` — it is a type alias, so the
-//! unit value lives behind its own concrete name, not this one) for
-//! every `pub fn` below (ADR 0045 decision 5: an `Endpoint` is a value,
-//! its four trait functions take `&self`) — the daemon keeps calling
-//! `sot_log::attach_client::supervisor_client::{query_status, stop,
-//! end_run, reset}` unchanged; only the TYPE `ChallengedProcess` names now
-//! resolves via `PlatformEndpoint` rather than hard-coding
-//! `challenge_win`'s. The connect/send/read/error helpers this module and
-//! `supervisor/` both need (`connect_and_challenge`, `send_and_read`,
-//! `err_state`) moved HERE from `supervisor/` this
-//! lane, alongside `state_dir_hash` (moved to `state_dir.rs`, a neutral
-//! pure function) — the dependency now points server (`supervisor/`) ->
-//! client-helpers (this module), the right way round: a supervisor-lane
-//! CLIENT's own helpers should not have lived inside the SERVER module
-//! they were factored out of in the first place. Every piece below is
-//! reused, not reimplemented: `Endpoint::connect_supervisor_unchallenged`,
-//! `Endpoint::challenge`, `exchange::{SupervisorLaneExchange,
-//! SUPERVISOR_LANE_BUILD_ID}`, and `wire`'s supervisor-lane frames.
+//! The dial checks the row number the hello carries and never the frames' wire integer, so a daemon update never
+//! strands a live row: a row of another row number is [`crate::Error::VersionSkew`], which rows reads as `foreign`.
 
-use crate::attach_client::supervisor_wait::{run_end_run_and_wait, FrameReader, HELLO_BUDGET, STATUS_BUDGET};
-use crate::lane::client::{Client, Endpoint, PlatformEndpoint};
-use crate::attach_client::supervisor_wait::{QuitDispatcher, QuitState};
-use crate::lane::transport::TEARDOWN_AGGREGATE_DEADLINE;
-use crate::lane::wire::{
-    self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest,
+use crate::lane::client::{Endpoint, PlatformEndpoint};
+use crate::lane::connect_own::connect_own;
+use crate::lane::wire::SupervisorPhase;
+use crate::row::{
+    row_socket_path, EndRunOutcome as RowEndRun, EndRunRes, ResetOutcome, ResetRes, RowCanceler, RowClient, RowError, StatusRes,
+    StopRes, OP_END_RUN, OP_RESET, OP_STATUS, OP_STOP,
 };
+use serde::de::DeserializeOwned;
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The retained-process type every `pub fn` below returns/accepts —
-/// [`PlatformEndpoint`]'s own `Process`, so a caller outside this crate
-/// (`sot-backend`'s `rows/run/`) can name it without depending
-/// on `challenge_win`/`challenge_unix` directly. The SAME type Windows
-/// named before this lane (`challenge_win::ChallengedProcess`, since
-/// `PlatformEndpoint = PipeEndpoint` there) — zero backend edits
-/// expected.
+/// How long the dial and the hello may take.
+const HELLO_BUDGET: Duration = Duration::from_secs(2);
+/// How long a status reply may take.
+const STATUS_BUDGET: Duration = Duration::from_secs(5);
+/// How long an `end_run`'s reply may take; the supervisor answers `ending` before this passes.
+const END_RUN_BUDGET: Duration = Duration::from_secs(30);
+/// How long a `reset`'s reply may take; the supervisor answers `failed` before this passes.
+const RESET_BUDGET: Duration = Duration::from_secs(30);
+/// How long a `stop` may take in all: its reply, then the supervisor's exit.
+const STOP_BUDGET: Duration = Duration::from_secs(30);
+
+/// The retained-process type the calls return: [`PlatformEndpoint`]'s own `Process`, so a caller outside this crate can
+/// name it without depending on the platform's challenge module.
 pub type ChallengedProcess = <PlatformEndpoint as Endpoint>::Process;
 
-/// What a `status` round trip reports. `pid`/`created` are the reporting
-/// supervisor's own identity, off the same reply.
+/// What a `status` round trip reports. `pid` and `created` are the reporting supervisor's own identity, off the hello.
 #[derive(Debug, Clone)]
 pub struct StatusReport {
     pub pid: u32,
     pub created: u64,
-    pub voyage: Option<String>,
-    pub leg: Option<u64>,
     pub phase: SupervisorPhase,
+    /// The live run's id, absent while none is live.
+    pub run: Option<String>,
+    pub voyage: Option<String>,
 }
 
-/// What [`end_run`] settled on — [`QuitState`]'s own terminal vocabulary
-/// (ADR 0042 L1a, Codex review finding 4: `end_run` shares
-/// [`run_end_run_and_wait`] with the FE's own quit path rather than
-/// carrying a second state machine, so its outcomes are exactly that
-/// dispatcher's). `RecordClosed` is not one of `QuitDispatcher`'s own
-/// states — `Verifying` is non-terminal, so the dispatcher alone cannot
-/// distinguish "closed, not yet verified when the 90 s cutoff hit" from
-/// "never even got a reply." [`end_run`] recovers that ONE extra bit
-/// itself, externally, via `on_transition` (never touching
-/// `QuitDispatcher`'s shared state machine) — see that function's own
-/// comment.
+/// What [`end_run`] settled on.
 #[derive(Debug, Clone)]
 pub enum EndRunOutcome {
-    /// The run ended and its record verified green.
-    RecordVerified,
-    /// The run ended (the marker committed — `record_closed` was
-    /// observed) but the authority's own O(retained history)
-    /// `record_verified` walk had not completed by the ADR's 90 s
-    /// cutoff. The marker itself is the irrevocable acceptance (ADR
-    /// 0041 Lifecycle), so a caller may still treat this as "ended."
-    RecordClosed,
-    /// The authority reports the operation failed — never ended.
+    /// The run ended and its requested end is recorded.
+    Ended,
+    /// The supervisor reports the end failed: no run was live, one was already ending, it could not be recorded, or the
+    /// supervisor is terminal.
     Failed(String),
-    /// Voyage-fenced or id-conflict refusal — the caller's observed
-    /// voyage was stale, or `operation_id` collided with a different
-    /// command's digest.
+    /// The run named is not the current run: nothing changed.
     Refused(String),
-    /// Neither `record_closed` nor a terminal reply was ever observed
-    /// before `QuitDispatcher`'s own ADR-pinned 90 s cutoff — genuinely
-    /// unknown, not merely slow.
+    /// No answer that the run had ended: the supervisor said it had not ended within its bound, or the connection
+    /// failed. The caller reads status.
     OutcomeUnknown,
 }
 
-/// Connect the supervisor lane at `state_dir` and run the full
-/// same-connection challenge with this crate's own build identity — the
-/// production analog of `supervisor::connect_and_challenge_for_test`,
-/// reusing the exact same [`connect_and_challenge`] the test helper now
-/// delegates to.
-fn connect(
-    state_dir: &Path,
-    deadline: Instant,
-) -> crate::Result<(<PlatformEndpoint as Endpoint>::Client, ChallengedProcess)> {
-    let h = sot_platform::host::state_dir::state_dir_hash(state_dir);
-    connect_and_challenge(&PlatformEndpoint::default(), &h, crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
+fn err_state(msg: impl Into<String>) -> crate::Error {
+    crate::Error::State(msg.into())
 }
 
-/// Connect, challenge, and run one `status` request — everything a
-/// caller needs to map a capsule workspace's supervisor lane to a
-/// `runtime: "capsule"` `workspace.list` row's `phase` (ADR 0042 L1a).
-/// Any failure — connect refused, the challenge proving `Foreign` or
-/// `Undetermined`, a timeout, a malformed reply — is folded into one
-/// `Err`: the caller has no use here for distinguishing WHY the lane is
-/// unreachable, only THAT it is (`workspace.list`'s own "failure ->
-/// unreachable" rule).
-///
-/// Returns the [`ChallengedProcess`] ALONGSIDE the status (round-2 Codex
-/// finding, daemon-boot-adopts-supervisor fix): the challenge already
-/// proves and retains a live handle to the process on the other end of
-/// this connection, and a caller that just ADOPTED a lane (found it
-/// alive rather than spawning into it) needs exactly that handle as its
-/// own death signal — the same role a spawned child's own `Child` plays
-/// for a leg this process spawned itself. A caller with no use for it
-/// (most callers) simply drops the second element; dropping closes the
-/// handle.
-pub fn query_status(state_dir: &Path) -> crate::Result<(StatusReport, ChallengedProcess)> {
-    let deadline = Instant::now() + HELLO_BUDGET;
-    let (conn, process) = connect(state_dir, deadline)?;
-    match send_and_read(&conn, &SupervisorRequest::Status, Instant::now() + STATUS_BUDGET)? {
-        SupervisorReply::StatusOk { pid, created, voyage, leg, phase } => {
-            Ok((StatusReport { pid, created, voyage, leg, phase }, process))
-        }
-        other => Err(err_state(format!("expected status_ok, got {other:?}"))),
+fn row_error(e: RowError) -> crate::Error {
+    match e {
+        RowError::RowMismatch { .. } => crate::Error::VersionSkew,
+        RowError::Io(e) => crate::Error::Io(e),
+        other => err_state(format!("the row socket: {other}")),
     }
 }
 
-/// Connect, challenge, and send `stop` — the authority acknowledges
-/// `stopping` and then exits, while its own capsule LEG survives:
-/// "Legs are spawned as CHILD PROCESSES and deliberately NOT placed in
-/// the supervisor's job... the supervisor dying must be harmless to the
-/// run, which is the whole reason adoption exists" (ADR 0041 Lifecycle).
-/// This is therefore the clean, protocol-level way to end JUST the
-/// authority — used today by `tests/capsule_workspaces.rs` (ADR 0042
-/// L1a, Codex review finding 13) to prove ADOPTION (a fresh `--resume`
-/// finding the SAME leg still alive) rather than mere detachment (an
-/// untouched, already-running supervisor surviving a daemon restart).
+/// Dials the row socket of `state_dir`, proves the peer and checks its row number, all within `bound`.
+fn connect(state_dir: &Path, bound: Duration) -> crate::Result<(RowClient, ChallengedProcess)> {
+    let deadline = Instant::now() + bound;
+    let h = sot_platform::host::state_dir::state_dir_hash(state_dir);
+    let path = row_socket_path(&h).map_err(row_error)?;
+    // A failed dial stays a transport error, so a caller can tell "nothing listens" from a peer that answered.
+    let conn = connect_own(&path)?;
+    RowClient::over_proven(&PlatformEndpoint::default(), conn, crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
+        .map_err(row_error)
+}
+
+/// One request and its reply decoded.
+fn request<T: DeserializeOwned>(client: &mut RowClient, op: &str, payload: serde_json::Value, bound: Duration) -> crate::Result<T> {
+    let frame = client.call(op, payload, bound).map_err(row_error)?;
+    serde_json::from_value(frame.payload).map_err(|e| err_state(format!("{op}: a reply that is not what was asked: {e}")))
+}
+
+fn phase_of(text: &str) -> crate::Result<SupervisorPhase> {
+    Ok(match text {
+        "starting" => SupervisorPhase::Starting,
+        "ready" => SupervisorPhase::Ready,
+        "ending" => SupervisorPhase::Ending,
+        "ended_no_respawn" => SupervisorPhase::EndedNoRespawn,
+        "terminal" => SupervisorPhase::Terminal,
+        other => return Err(err_state(format!("status: a phase this client does not know: {other}"))),
+    })
+}
+
+fn report(status: StatusRes, process_identity: (u32, u64)) -> crate::Result<StatusReport> {
+    Ok(StatusReport {
+        pid: process_identity.0,
+        created: process_identity.1,
+        phase: phase_of(&status.phase)?,
+        run: status.run,
+        voyage: status.voyage,
+    })
+}
+
+/// Connect, challenge, and run one `status` request: everything a caller needs to map a row's supervisor to the
+/// `phase` `workspace.list` reports. Any failure (connect refused, the challenge proving `Foreign` or `Undetermined`, a
+/// timeout, a malformed reply) is one `Err`, except a row of another row number, which is `Error::VersionSkew`.
 ///
-/// WAITS for confirmed process death after the ACK (round-2 Codex
-/// finding, daemon-boot-adopts-supervisor fix): an earlier version
-/// returned the instant `Stopping` was acknowledged, before the process
-/// had actually exited or released `supervisor.lock` — a caller that
-/// immediately acted on "stopped" (e.g. starting a fresh authority)
-/// could still race the old one's own teardown. The RPC connection is
-/// dropped first (never held open across a wait the peer has no reason
-/// to answer on), then this blocks on the SAME retained
-/// [`ChallengedProcess`] handle [`query_status`]'s own caller would use
-/// as a death signal, bounded by [`TEARDOWN_AGGREGATE_DEADLINE`] — the
-/// authority's own documented worst-case teardown budget (it drops its
-/// lane before releasing the fence), so a caller that waits this long
-/// and still sees no exit has a genuine, reportable problem, not mere
-/// impatience.
+/// Returns the [`ChallengedProcess`] alongside the status: the challenge already proves and retains a live handle to
+/// the process on the other end, and a caller that adopted a row needs exactly that as its death signal. A caller with
+/// no use for it drops the second element, which closes the handle.
+pub fn query_status(state_dir: &Path) -> crate::Result<(StatusReport, ChallengedProcess)> {
+    let (mut client, process) = connect(state_dir, HELLO_BUDGET)?;
+    let status: StatusRes = request(&mut client, OP_STATUS, json!({}), STATUS_BUDGET)?;
+    Ok((report(status, client.peer())?, process))
+}
+
+/// Connect, challenge, and send `stop`: the supervisor ends its agent and exits once the reply's connection has ended.
 ///
-/// A reply that misses the read budget does not end the Stop (ADR 0041: a
-/// client timeout abandons the connection, never the operation). The
-/// authority admits a Stop with two durable journal writes before it
-/// replies, so on slow storage the reply can come late; the connection is
-/// then dropped, and the authority's exit, waited for the same way, is the
-/// outcome.
+/// Waits for confirmed process death after the reply: a caller that acted on "stopped" the instant the reply came
+/// (starting a fresh supervisor, say) could race the old one's own teardown. The connection is dropped first, then this
+/// blocks on the retained [`ChallengedProcess`], all within [`STOP_BUDGET`]. A reply that never came does not end the
+/// stop: the supervisor's exit, waited for the same way, is the outcome.
 pub fn stop(state_dir: &Path) -> crate::Result<()> {
-    let deadline = Instant::now() + HELLO_BUDGET;
-    let (conn, process) = connect(state_dir, deadline)?;
-    let operation_id = format!("sot-backend-stop-{}", uuid::Uuid::now_v7());
-    let request = SupervisorRequest::Command { operation_id, op: SupervisorOp::Stop };
-    let unanswered = match send_and_read(&conn, &request, Instant::now() + STATUS_BUDGET) {
-        Ok(SupervisorReply::Operation(SupervisorOperationState::Stopping)) => None,
-        Ok(other) => return Err(err_state(format!("expected Operation(Stopping), got {other:?}"))),
-        Err(e) => Some(e),
+    let deadline = Instant::now() + STOP_BUDGET;
+    let (mut client, process) = connect(state_dir, HELLO_BUDGET)?;
+    let left = deadline.saturating_duration_since(Instant::now());
+    // A refusal is an answer: nothing is stopping, so there is no exit to wait for. A reply that never came is not.
+    let unanswered = match client.call(OP_STOP, json!({}), left) {
+        Ok(frame) => match serde_json::from_value::<StopRes>(frame.payload) {
+            Ok(_) => None,
+            Err(e) => return Err(err_state(format!("stop: a reply that is not what was asked: {e}"))),
+        },
+        Err(RowError::Refused(msg)) => return Err(err_state(format!("stop was refused: {msg}"))),
+        Err(e) => Some(row_error(e)),
     };
-    // Close the RPC connection first: the authority owes it nothing more,
-    // and an admitted Stop exits only once its connection is gone
-    // (`should_exit_now`), answered or not, so holding it open would delay
-    // the very exit the wait below observes.
-    drop(conn);
-    match process.wait(TEARDOWN_AGGREGATE_DEADLINE) {
+    drop(client);
+    let left = deadline.saturating_duration_since(Instant::now());
+    match process.wait(left) {
         Ok(true) => Ok(()),
         Ok(false) => Err(err_state(match unanswered {
-            None => format!("supervisor acknowledged stop but did not exit within {TEARDOWN_AGGREGATE_DEADLINE:?}"),
-            Some(e) => format!("stop got no reply ({e}) and the supervisor did not exit within {TEARDOWN_AGGREGATE_DEADLINE:?}"),
+            None => format!("supervisor acknowledged stop but did not exit within {STOP_BUDGET:?}"),
+            Some(e) => format!("stop got no reply ({e}) and the supervisor did not exit within {STOP_BUDGET:?}"),
         })),
         Err(e) => Err(err_state(format!("waiting for the stopped supervisor to exit: {e}"))),
     }
 }
 
-/// Connect, challenge, and run [`run_end_run_and_wait`] — the SAME
-/// end_run+heartbeat-query loop `attach_client/worker/quit.rs`'s own `run_quit` uses
-/// (ADR 0042 L1a, Codex review finding 4), bounded by that function's own
-/// ADR-pinned `attach_client::rules::QUIT_CUTOFF` (90 s), never a daemon-invented
-/// budget. `voyage` MUST be the voyage the caller most recently observed
-/// via [`query_status`] — lifecycle commands are voyage-fenced (ADR 0041
-/// Lifecycle), so a stale value is safely refused rather than mutated
-/// against.
-pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<EndRunOutcome> {
-    let hello_deadline = Instant::now() + HELLO_BUDGET;
-    let (mut conn, _process) = connect(state_dir, hello_deadline)?;
-    let mut reader = FrameReader::new();
-    let h = sot_platform::host::state_dir::state_dir_hash(state_dir);
-    let mut quit = QuitDispatcher::new();
-    let operation_id = format!("sot-backend-end-run-{}", uuid::Uuid::now_v7());
-    // Recovers the `record_closed`-but-not-yet-`record_verified` case
-    // `QuitDispatcher`'s own terminal states cannot express on their
-    // own (see `EndRunOutcome::RecordClosed`'s doc) — a plain external
-    // observer of the SAME transitions `run_quit` already emits as UI
-    // events, never a second copy of the dispatcher's own logic.
-    let mut observed_record_closed = false;
-    run_end_run_and_wait::<PlatformEndpoint>(
-        &mut conn,
-        &mut reader,
-        |c, r| {
-            if let Ok((new_conn, _process)) = connect_and_challenge(
-                &PlatformEndpoint::default(),
-                &h,
-                crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID,
-                Instant::now() + HELLO_BUDGET,
-            ) {
-                *c = new_conn;
-                *r = FrameReader::new();
-                true
-            } else {
-                false
-            }
+/// Connect, challenge, and ask the supervisor to end the run `run` names. `run` is the run the caller most recently
+/// read from [`query_status`]: the end is fenced by it, so another run's id is refused and nothing changes.
+///
+/// A connection that fails after the request was sent is [`EndRunOutcome::OutcomeUnknown`], as is an `ending` answer:
+/// the caller reads status.
+pub fn end_run(state_dir: &Path, run: &str, reason: &str) -> crate::Result<EndRunOutcome> {
+    let (mut client, _process) = connect(state_dir, HELLO_BUDGET)?;
+    let reply: crate::Result<EndRunRes> = request(&mut client, OP_END_RUN, json!({"run": run, "reason": reason}), END_RUN_BUDGET);
+    Ok(match reply {
+        Ok(res) => match res.outcome {
+            RowEndRun::Ended => EndRunOutcome::Ended,
+            RowEndRun::StaleRun => EndRunOutcome::Refused("stale_run: the run named is not the current run".into()),
+            RowEndRun::Failed => EndRunOutcome::Failed(res.detail.unwrap_or_default()),
+            RowEndRun::Ending => EndRunOutcome::OutcomeUnknown,
         },
-        &mut quit,
-        operation_id,
-        reason.to_string(),
-        voyage,
-        |quit| {
-            if matches!(quit.state(), QuitState::Verifying { .. } | QuitState::Ended) {
-                observed_record_closed = true;
-            }
-        },
-    );
-    Ok(match quit.state() {
-        QuitState::Ended => EndRunOutcome::RecordVerified,
-        QuitState::Failed { detail } => EndRunOutcome::Failed(detail.clone()),
-        QuitState::Refused { reason } => EndRunOutcome::Refused(format!("{reason:?}")),
-        _ if observed_record_closed => EndRunOutcome::RecordClosed,
-        _ => EndRunOutcome::OutcomeUnknown,
+        Err(_) => EndRunOutcome::OutcomeUnknown,
     })
 }
 
-/// Bound for [`reset`]'s own poll-to-completion, from the command's
-/// send — matches the authority's private `RESETTING_WATCHDOG`
-/// (`supervisor/`, 30s), the reset transaction's own worst-case
-/// budget.
-const RESET_BUDGET: Duration = Duration::from_secs(30);
-const RESET_POLL_INTERVAL: Duration = Duration::from_millis(200);
-
-/// Connect, challenge, and send `reset` — mirrors [`stop`]'s shape.
-/// `reset` is the ONE operation an authority resting in `EndedNoRespawn`
-/// admits; it mints a FRESH voyage and spawns a new leg over the SAME
-/// resident authority — the deliberate alternative to `--resume`, which
-/// never resurrects a voyage whose last leg carries the
-/// `run_end_requested` marker. Fenced against the voyage observed via
-/// this call's own `status` request (voyage-fenced like every lifecycle
-/// command).
-///
-/// The command's reply is `Accepted` once the authority has journaled it,
-/// a durable write, so on slow storage it can miss the read budget. The
-/// transaction (mint + bootstrap + publish) then runs asynchronously, so
-/// this polls `Query{operation_id}` for the terminal
-/// `ResetDone { new_voyage }`: on the same connection, or after a reply
-/// timeout on a fresh one (ADR 0041: a client timeout abandons the
-/// connection, never the operation), until [`RESET_BUDGET`] from the
-/// command's send. A reconnect that finds no listener ends it. Returns the
-/// new voyage id.
+/// Connect, challenge, and send `reset`: the one operation a supervisor resting in `ended_no_respawn` admits. It mints
+/// a fresh voyage and the next run starts under it, the deliberate alternative to `--resume`, which never resurrects a
+/// voyage whose run was asked to end. Returns the new voyage id.
 pub fn reset(state_dir: &Path) -> crate::Result<String> {
-    let deadline = Instant::now() + HELLO_BUDGET;
-    let (conn, _process) = connect(state_dir, deadline)?;
-    let voyage = match send_and_read(
-        &conn,
-        &SupervisorRequest::Status,
-        Instant::now() + STATUS_BUDGET,
-    )? {
-        SupervisorReply::StatusOk {
-            voyage: Some(v), ..
-        } => v,
-        other => {
-            return Err(err_state(format!(
-                "reset: expected status_ok with a voyage, got {other:?}"
-            )))
-        }
-    };
-    let operation_id = format!("sot-backend-reset-{}", uuid::Uuid::now_v7());
-    let request = SupervisorRequest::Command {
-        operation_id: operation_id.clone(),
-        op: SupervisorOp::Reset {
-            voyage: Some(voyage),
-        },
-    };
-    let poll_deadline = Instant::now() + RESET_BUDGET;
-    // Whether the authority was ever seen holding this reset, and the last transport error: the deadline names both.
-    let mut accepted = false;
-    let mut last_error = None;
-    let mut conn = match send_and_read(&conn, &request, Instant::now() + STATUS_BUDGET) {
-        Ok(SupervisorReply::Operation(SupervisorOperationState::Accepted)) => {
-            accepted = true;
-            Some(conn)
-        }
-        Ok(other) => {
-            return Err(err_state(format!(
-                "reset: expected Operation(Accepted), got {other:?}"
-            )))
-        }
-        Err(e) => {
-            last_error = Some(e);
-            None
-        }
-    };
-    loop {
-        if conn.is_none() {
-            match connect(state_dir, Instant::now() + HELLO_BUDGET) {
-                Ok((c, _)) => conn = Some(c),
-                // No listener at all: the authority is gone, and nothing will answer this reset.
-                Err(crate::Error::Transport(e)) if e.is_endpoint_absent() => {
-                    return Err(err_state(format!(
-                        "reset: the supervisor went away before its reset completed: {e}"
-                    )))
-                }
-                // A busy or still-stalled authority: the next pass tries again.
-                Err(e) => last_error = Some(e),
-            }
-        }
-        if let Some(c) = &conn {
-            let query = SupervisorRequest::Query {
-                operation_id: operation_id.clone(),
-            };
-            match send_and_read(c, &query, Instant::now() + STATUS_BUDGET) {
-                Ok(SupervisorReply::Operation(SupervisorOperationState::ResetDone { new_voyage })) => {
-                    return Ok(new_voyage)
-                }
-                Ok(SupervisorReply::Operation(SupervisorOperationState::Accepted)) => accepted = true, // still in flight
-                Ok(SupervisorReply::Operation(other)) => {
-                    return Err(err_state(format!("reset did not complete: {other:?}")))
-                }
-                Ok(other) => {
-                    return Err(err_state(format!(
-                        "reset: expected an Operation reply, got {other:?}"
-                    )))
-                }
-                Err(e) => {
-                    last_error = Some(e);
-                    conn = None;
-                }
-            }
-        }
-        if Instant::now() >= poll_deadline {
-            let what = if accepted { "reset accepted but did not complete" } else { "reset was never answered" };
-            return Err(err_state(match last_error {
-                None => format!("{what} within {RESET_BUDGET:?}"),
-                Some(e) => format!("{what} within {RESET_BUDGET:?}; last error: {e}"),
-            }));
-        }
-        std::thread::sleep(RESET_POLL_INTERVAL);
+    let (mut client, _process) = connect(state_dir, HELLO_BUDGET)?;
+    let res: ResetRes = request(&mut client, OP_RESET, json!({}), RESET_BUDGET)?;
+    match res.outcome {
+        ResetOutcome::Reset => res.voyage.ok_or_else(|| err_state("reset: the reply names no voyage")),
+        ResetOutcome::Failed => Err(err_state(format!("reset did not complete: {}", res.detail.unwrap_or_default()))),
     }
 }
 
-/// [`Persistent`]'s connection + cancelled flag, read/written together.
+/// [`Persistent`]'s way to be interrupted, and whether it was.
 struct Shared {
-    client: Option<Arc<<PlatformEndpoint as Endpoint>::Client>>,
+    canceler: Option<RowCanceler>,
     /// Latched by [`CancelHandle::cancel`]; never cleared, so a cancelled client never reconnects.
     cancelled: bool,
 }
 
-/// A held connection to one capsule row's supervisor lane, reused across [`Persistent::status`] calls.
+/// A held connection to one row, reused across [`Persistent::status`] calls. It holds one of the row's connections.
 pub struct Persistent {
     state_dir: PathBuf,
-    conn: Option<(Arc<<PlatformEndpoint as Endpoint>::Client>, ChallengedProcess)>,
+    conn: Option<RowClient>,
     /// Lets [`Persistent::cancel_handle`] reach the current connection from another thread.
     shared: Arc<Mutex<Shared>>,
     /// Test-support only: fires between connect and publish, to land a cancel deterministically.
@@ -397,13 +208,13 @@ pub struct Persistent {
 pub struct CancelHandle(Arc<Mutex<Shared>>);
 
 impl CancelHandle {
-    /// Sets `cancelled` and takes+shuts the published client under the SAME lock, so a concurrent
-    /// [`Persistent::publish`] either installs first (and gets shut here) or sees `cancelled` and never installs.
+    /// Sets `cancelled` and takes and cancels the published connection under the same lock, so a concurrent
+    /// [`Persistent::publish`] either installs first (and gets cancelled here) or sees `cancelled` and never installs.
     pub fn cancel(&self) {
         let mut shared = self.0.lock().unwrap_or_else(|e| e.into_inner());
         shared.cancelled = true;
-        if let Some(client) = shared.client.take() {
-            client.cancel();
+        if let Some(canceler) = shared.canceler.take() {
+            canceler.cancel();
         }
     }
 }
@@ -413,7 +224,7 @@ impl Persistent {
         Persistent {
             state_dir: state_dir.to_path_buf(),
             conn: None,
-            shared: Arc::new(Mutex::new(Shared { client: None, cancelled: false })),
+            shared: Arc::new(Mutex::new(Shared { canceler: None, cancelled: false })),
             #[cfg(any(test, feature = "test-support"))]
             after_connect_before_publish: None,
         }
@@ -458,148 +269,40 @@ impl Persistent {
         }
     }
 
-    /// Discards the held connection without touching `cancelled` — never a cancellation path.
+    /// Discards the held connection without touching `cancelled`: never a cancellation path.
     fn clear_conn(&mut self) {
-        self.shared.lock().unwrap_or_else(|e| e.into_inner()).client = None;
+        self.shared.lock().unwrap_or_else(|e| e.into_inner()).canceler = None;
         self.conn = None;
     }
 
-    /// Installs a fresh client as held/published — unless `cancelled` is already set under the SAME
-    /// lock, in which case the connection is shut and discarded: the one gate a connect becomes visible through.
-    fn publish(&mut self, conn: (<PlatformEndpoint as Endpoint>::Client, ChallengedProcess)) -> crate::Result<()> {
+    /// Installs a fresh client as held and published, unless `cancelled` is already set under the same lock, in which
+    /// case the connection is cancelled and discarded: the one gate a connect becomes visible through.
+    fn publish(&mut self, fresh: (RowClient, ChallengedProcess)) -> crate::Result<()> {
         #[cfg(any(test, feature = "test-support"))]
         if let Some(hook) = self.after_connect_before_publish.as_mut() {
             hook();
         }
-        let (client, process) = conn;
-        let client = Arc::new(client);
+        // The process handle is dropped: a held status connection has no use for the row's death signal.
+        let (client, _process) = fresh;
         let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         if shared.cancelled {
             drop(shared);
-            client.cancel();
+            client.canceler().cancel();
             return Err(err_state("cancelled".to_string()));
         }
-        shared.client = Some(client.clone());
+        shared.canceler = Some(client.canceler());
         drop(shared);
-        self.conn = Some((client, process));
+        self.conn = Some(client);
         Ok(())
     }
 
-    fn fresh_connection(&self) -> crate::Result<(<PlatformEndpoint as Endpoint>::Client, ChallengedProcess)> {
-        let deadline = Instant::now() + HELLO_BUDGET;
-        connect(&self.state_dir, deadline)
+    fn fresh_connection(&self) -> crate::Result<(RowClient, ChallengedProcess)> {
+        connect(&self.state_dir, HELLO_BUDGET)
     }
 
-    fn status_on_held_connection(&self) -> crate::Result<StatusReport> {
-        let (conn, _process) = self
-            .conn
-            .as_ref()
-            .expect("status_on_held_connection: caller just ensured a connection");
-        match send_and_read(conn.as_ref(), &SupervisorRequest::Status, Instant::now() + STATUS_BUDGET)? {
-            SupervisorReply::StatusOk { pid, created, voyage, leg, phase } => {
-                Ok(StatusReport { pid, created, voyage, leg, phase })
-            }
-            other => Err(err_state(format!("expected status_ok, got {other:?}"))),
-        }
+    fn status_on_held_connection(&mut self) -> crate::Result<StatusReport> {
+        let client = self.conn.as_mut().expect("status_on_held_connection: caller just ensured a connection");
+        let status: StatusRes = request(client, OP_STATUS, json!({}), STATUS_BUDGET)?;
+        report(status, client.peer())
     }
-}
-
-// ---------------------------------------------------------------------
-// L1-unix LU3b: the client-side supervisor-lane helpers, moved here from
-// `supervisor/` (ADR 0043 decision 20) — a supervisor-lane CLIENT's own
-// connect/send/read/error primitives belong in the client module, not
-// the server module they were factored out of; `supervisor/` (the
-// server, still Windows-only until LU3c) now imports `err_state` from
-// HERE and its three test-support helpers instantiate
-// [`connect_and_challenge`]/[`send_and_read`] at `pipe_win::PipeEndpoint`
-// explicitly, the same way this module's own `pub fn`s instantiate them
-// at [`PlatformEndpoint`].
-// ---------------------------------------------------------------------
-
-/// Connect the supervisor lane by state-dir hash and run the full
-/// same-connection challenge with THIS build's own identity, folding
-/// `Foreign`/`Undetermined` straight into `Err` — a production caller
-/// (this module's own [`connect`], and `supervisor::
-/// connect_and_challenge_for_test`) has no use for telling those two
-/// apart any further than "not a proven connection to my own
-/// supervisor".
-pub(crate) fn connect_and_challenge(
-    endpoint: &PlatformEndpoint,
-    h: &str,
-    build: &str,
-    deadline: Instant,
-) -> crate::Result<(<PlatformEndpoint as Endpoint>::Client, <PlatformEndpoint as Endpoint>::Process)> {
-    let conn = endpoint.connect_supervisor_unchallenged(h)?;
-    let mut exchange = crate::lane::exchange::SupervisorLaneExchange::new(build.to_string());
-    match endpoint.challenge(&conn, &mut exchange, deadline) {
-        sot_platform::identity::challenge::ChallengeOutcome::Proven(process) => Ok((conn, process)),
-        // ADR 0030 §8 decision 31c: the ONE `Foreign` cause that is
-        // typed, not text — `exchange.is_version_skew()` is read AFTER
-        // the challenge, off the SAME concrete exchange this call
-        // constructed (never a trait object here), so it reflects
-        // exactly what the terminal reply was.
-        sot_platform::identity::challenge::ChallengeOutcome::Foreign if exchange.is_version_skew() => {
-            Err(crate::Error::VersionSkew)
-        }
-        sot_platform::identity::challenge::ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
-        sot_platform::identity::challenge::ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
-    }
-}
-
-/// The blocking read loop shared by
-/// [`send_and_read`] — no deadline of its own.
-fn read_next_frame<C: Client>(conn: &C) -> crate::Result<DecodedFrame> {
-    let mut splitter = wire::FrameSplitter::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        let n = conn.read(&mut buf)?;
-        if n == 0 {
-            return Err(err_state("connection closed before a reply arrived"));
-        }
-        let (frames, err) = splitter.feed(&buf[..n]);
-        if let Some(e) = err {
-            return Err(err_state(format!("wire error waiting for a reply: {e}")));
-        }
-        if let Some(frame) = frames.into_iter().next() {
-            return Ok(frame);
-        }
-    }
-}
-
-/// Encode `request`, write it, and read back exactly one reply — the one
-/// request/reply round trip every supervisor-lane caller needs after its
-/// own connect+challenge, factored out so `supervisor::request_for_test`
-/// (test-only) and this module's own production `pub fn`s share one
-/// implementation rather than two that could drift. Generic over
-/// [`Client`] alone (not [`Endpoint`]): sending and reading a reply needs
-/// no Endpoint-level operation, so any concrete client either platform's
-/// `Endpoint::Client` names satisfies this directly.
-///
-/// The write and the read both run inside ONE `run_with_deadline` — a
-/// stalled write is cancellable exactly like a stalled read.
-pub(crate) fn send_and_read<C: Client>(
-    conn: &C,
-    request: &SupervisorRequest,
-    deadline: Instant,
-) -> crate::Result<SupervisorReply> {
-    let bytes = wire::encode_supervisor_request(request).map_err(|e| err_state(format!("{e}")))?;
-    let result = sot_platform::identity::deadline::run_with_deadline(
-        deadline,
-        || conn.cancel(),
-        move || -> crate::Result<SupervisorReply> {
-            conn.write_all(&bytes)?;
-            match read_next_frame(conn)? {
-                DecodedFrame::SupervisorReply(reply) => Ok(reply),
-                other => Err(err_state(format!("expected a SupervisorReply, got {other:?}"))),
-            }
-        },
-    );
-    result.unwrap_or_else(|| Err(err_state("timed out waiting for a reply")))
-}
-
-/// The one "malformed/unexpected protocol shape" error shape every
-/// caller in this module (and `supervisor/`, which imports this) uses
-/// rather than minting a second one.
-pub(crate) fn err_state(msg: impl Into<String>) -> crate::Error {
-    crate::Error::State(msg.into())
 }

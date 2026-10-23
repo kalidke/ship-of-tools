@@ -11,15 +11,10 @@ use std::path::PathBuf;
 /// mapping stays plain and unit-testable on every platform.
 #[derive(Debug, Clone)]
 pub enum EndRunOutcome {
-    /// The run ended and its record verified green.
-    RecordVerified,
-    /// The marker committed but the O(retained history) verify walk
-    /// hadn't finished within the ADR's 90s cutoff — still safe to treat
-    /// as "ended" (the marker itself is the irrevocable acceptance).
-    RecordClosed,
-    /// The lane was ALREADY resting in `EndedNoRespawn` — recovered via
-    /// the leg's own end-marker alone, NEVER via `verify_voyage`, so
-    /// this must not be reported as `RecordVerified`/`RecordClosed`.
+    /// The run ended and its requested end is recorded: the supervisor answered `ended`.
+    Ended,
+    /// The supervisor was ALREADY resting in `EndedNoRespawn`: a prior end landed here, so this call asked for none and
+    /// must not be reported as `Ended`.
     AlreadyEnded,
     /// The authority had already reached `Terminal` before this call ever reached it: its own failure to serve the
     /// row (its folders, its lane, the run's failure), or the watchdog's restart budget exhausted over an agent that
@@ -78,7 +73,7 @@ pub enum EndRunOutcome {
 }
 
 /// `workspace.delete` on a capsule workspace (and the default row's
-/// end-run path): send `end_run {reason, voyage}` on the lane,
+/// end-run path): send `row.end_run {run, reason}` on the row socket,
 /// reporting the outcome via [`super::EndRunOutcome`] (see its own
 /// variant docs for the Starting/AlreadyEnded/Terminal honesty
 /// rules), THEN `stop` the authority once confirmed there is no more
@@ -313,29 +308,20 @@ pub fn end_run(
         SupervisorPhase::Ready | SupervisorPhase::Ending => {}
     }
 
-    // Ready/Ending are only reachable once Recovering's own Done arm
-    // has set `authority.voyage_id` (`supervisor/authority/`), so this is
-    // always populated here.
-    let voyage = status
-        .voyage
-        .expect("Ready/Ending implies a voyage_id (supervisor.rs's own recovery transition)");
-    let outcome = sot_log::attach_client::supervisor_client::end_run(state_dir, &voyage, reason)
+    // Ready and Ending name the live run, which fences the end: another run's id is refused.
+    let Some(run) = status.run else {
+        return Ok(R::NotEnded("the supervisor reports no live run to end".to_string()));
+    };
+    let outcome = sot_log::attach_client::supervisor_client::end_run(state_dir, &run, reason)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(match outcome {
-        O::RecordVerified => match stop_and_end_scope(state_dir, "end_run confirmed verified", scope.as_deref(), &root, &own) {
-            Ok(()) => R::RecordVerified,
-            Err(d) => R::NotEnded(d),
-        },
-        O::RecordClosed => match stop_and_end_scope(state_dir, "end_run confirmed closed", scope.as_deref(), &root, &own) {
-            Ok(()) => R::RecordClosed,
+        O::Ended => match stop_and_end_scope(state_dir, "end_run confirmed", scope.as_deref(), &root, &own) {
+            Ok(()) => R::Ended,
             Err(d) => R::NotEnded(d),
         },
         O::Failed(detail) => R::NotEnded(format!("end_run failed: {detail}")),
         O::Refused(detail) => R::NotEnded(format!("end_run refused: {detail}")),
-        O::OutcomeUnknown => R::NotEnded(
-            "end_run outcome unknown (the ADR's own 90s cutoff elapsed with no terminal reply)"
-                .to_string(),
-        ),
+        O::OutcomeUnknown => R::NotEnded("end_run outcome unknown (no answer that the run had ended; read status)".to_string()),
     })
 }
 

@@ -5,9 +5,9 @@ use super::*;
 /// dropped (a disconnect is not a kill), leaving a healthy agent under a supervisor that can no longer serve its row.
 #[test]
 fn a_terminal_supervisor_ends_its_running_agent() {
-    let shared = Shared::new(std::env::temp_dir());
+    let shared = Shared::new();
     let (kill, commands) = mpsc::channel();
-    assert!(shared.run_begins(kill, Arc::new(RunSignals::default())));
+    assert!(shared.run_begins("run-one".into(), kill, Arc::new(RunSignals::default())));
     shared.terminal("the supervisor lane failed".into());
     assert!(
         matches!(commands.try_recv(), Ok(Command::Stop) | Ok(Command::Kill)),

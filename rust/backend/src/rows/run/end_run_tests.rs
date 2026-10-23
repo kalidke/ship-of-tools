@@ -1,7 +1,7 @@
 use super::*;
 
 fn report(phase: sot_log::lane::wire::SupervisorPhase) -> sot_log::attach_client::supervisor_client::StatusReport {
-    sot_log::attach_client::supervisor_client::StatusReport { pid: 1, created: 1, voyage: None, leg: None, phase }
+    sot_log::attach_client::supervisor_client::StatusReport { pid: 1, created: 1, phase, run: None, voyage: None }
 }
 
 /// An authority that reports `Starting` (a held row is one) is waited out

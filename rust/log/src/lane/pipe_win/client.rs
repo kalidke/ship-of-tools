@@ -88,20 +88,6 @@ pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeCl
     Ok(client)
 }
 
-/// ADR 0041 step 6 U2: connect to the supervisor lane's own pipe with NO
-/// authentication — every real caller must run the SAME five-step
-/// [`sot_platform::identity::challenge_win::challenge`] the mgmt lane's own client does (the
-/// supervisor lane's security is "MUTUAL", not the weaker SID-only proof
-/// [`connect_voyage_pipe`] settles for), so unlike that function this one
-/// intentionally has no `_unchallenged`-free sibling here — the caller
-/// composes the full challenge itself, exactly as `supervisor::probe::win::RealProbeOps`
-/// does for the mgmt lane's own unchallenged connect.
-pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient, TransportError> {
-    #[allow(clippy::disallowed_methods, reason = "a supervisor lane connector: the caller runs the lane's identity challenge")]
-    let client = connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h), &AtomicBool::new(false))?;
-    Ok(client)
-}
-
 /// Shared raw connect, given an already-resolved wide pipe name: retries
 /// `CreateFileW` (bounded, [`CONNECT_BOUND`] total) on `ERROR_PIPE_BUSY`
 /// ONLY — an instance is held continuously and recycled once bound (this
@@ -363,13 +349,6 @@ impl sot_platform::identity::challenge_win::PipeChallengeable for PipeClient {
 /// this module already exposes.
 #[derive(Clone, Copy, Default)]
 pub struct PipeEndpoint;
-
-impl PipeEndpoint {
-    /// The supervisor lane's raw connect, for `supervisor_client` until the row socket takes the daemon's calls (6c-1b).
-    pub(crate) fn connect_supervisor_unchallenged(&self, lane: &str) -> Result<PipeClient, TransportError> {
-        connect_supervisor_pipe_unchallenged(lane)
-    }
-}
 
 /// A row socket path that could not be made, as the lane's own error.
 fn row_error_to_transport(e: crate::row::RowError) -> TransportError {

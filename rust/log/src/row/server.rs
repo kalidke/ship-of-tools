@@ -5,7 +5,8 @@
 //! connection's hello is admitted.
 
 use super::proto::{
-    AttachReq, HelloReq, HelloRes, InputRes, ResizeReq, RowError, OP_ATTACH, OP_HELLO, OP_INPUT, OP_RESIZE, OP_TAKE,
+    AttachReq, EndRunReq, HelloReq, HelloRes, InputRes, ResizeReq, RowError, OP_ATTACH, OP_END_RUN, OP_HELLO, OP_INPUT,
+    OP_RESET, OP_RESIZE, OP_STATUS, OP_STOP, OP_TAKE,
 };
 use super::run::{code_of, ConnId, Out, OutQueue, RowRun, Slot};
 use super::ROW_PROTOCOL;
@@ -26,6 +27,9 @@ use std::time::{Duration, Instant};
 /// A write that makes no progress for this long fails, so a connection whose peer stopped reading ends.
 #[cfg(unix)]
 const WRITE_BOUND: Duration = Duration::from_secs(5);
+
+/// What the acceptor calls when it ends without a shutdown.
+type Death = Arc<dyn Fn() + Send + Sync>;
 
 /// The connection threads the acceptor started, which shutdown joins.
 type Threads = Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>;
@@ -101,18 +105,25 @@ impl RowServer {
     /// removed first; the folder it lives in must be private.
     #[cfg(unix)]
     pub fn bind(path: &Path, run: Arc<RowRun>) -> Result<Self, RowError> {
-        Self::bind_as_uid(path, run, sot_platform::host::state_dir::current_uid())
+        Self::bind_as_uid(path, run, sot_platform::host::state_dir::current_uid(), Arc::new(|| {}))
+    }
+
+    /// As [`Self::bind`]; `on_death` is called, once, from the acceptor's own thread if it ends without a shutdown: a
+    /// permanent listener failure, after which no viewer can connect.
+    #[cfg(unix)]
+    pub fn bind_watched(path: &Path, run: Arc<RowRun>, on_death: impl Fn() + Send + Sync + 'static) -> Result<Self, RowError> {
+        Self::bind_as_uid(path, run, sot_platform::host::state_dir::current_uid(), Arc::new(on_death))
     }
 
     /// A server that takes this uid for its own, so a test's peer reads as another account.
     #[doc(hidden)]
     #[cfg(unix)]
     pub fn bind_as_uid_for_test(path: &Path, run: Arc<RowRun>, uid: u32) -> Result<Self, RowError> {
-        Self::bind_as_uid(path, run, uid)
+        Self::bind_as_uid(path, run, uid, Arc::new(|| {}))
     }
 
     #[cfg(unix)]
-    fn bind_as_uid(path: &Path, run: Arc<RowRun>, own_uid: u32) -> Result<Self, RowError> {
+    fn bind_as_uid(path: &Path, run: Arc<RowRun>, own_uid: u32, on_death: Death) -> Result<Self, RowError> {
         use std::os::unix::fs::{FileTypeExt, PermissionsExt};
         check_path_len(path)?;
         if let Ok(meta) = std::fs::symlink_metadata(path) {
@@ -129,7 +140,7 @@ impl RowServer {
             let (run, stop, threads) = (Arc::clone(&run), Arc::clone(&stop), Arc::clone(&threads));
             std::thread::Builder::new()
                 .name("row-accept".into())
-                .spawn(move || accept_loop(listener, run, stop, threads, own_uid))?
+                .spawn(move || accept_loop(listener, run, stop, threads, own_uid, on_death))?
         };
         Ok(Self { path: path.to_path_buf(), run, stop, accept: Some(accept), threads })
     }
@@ -137,8 +148,16 @@ impl RowServer {
     /// Binds the pipe `path` with the owner-only descriptor on every instance it creates, and serves it.
     #[cfg(windows)]
     pub fn bind(path: &Path, run: Arc<RowRun>) -> Result<Self, RowError> {
+        Self::bind_watched(path, run, || {})
+    }
+
+    /// As [`Self::bind`]; `on_death` is called, once, from the acceptor's own thread if it ends without a shutdown: a
+    /// permanent listener failure, after which no viewer can connect.
+    #[cfg(windows)]
+    pub fn bind_watched(path: &Path, run: Arc<RowRun>, on_death: impl Fn() + Send + Sync + 'static) -> Result<Self, RowError> {
         use interprocess::os::windows::named_pipe::{pipe_mode, PipeListenerOptions};
         use interprocess::os::windows::security_descriptor::{AsSecurityDescriptorExt as _, BorrowedSecurityDescriptor};
+        let on_death: Death = Arc::new(on_death);
         let text = path
             .to_str()
             .ok_or_else(|| RowError::Protocol("the pipe name is not valid Unicode".into()))?;
@@ -158,14 +177,9 @@ impl RowServer {
             let (run, stop, threads) = (Arc::clone(&run), Arc::clone(&stop), Arc::clone(&threads));
             std::thread::Builder::new()
                 .name("row-accept".into())
-                .spawn(move || accept_loop(listener, run, stop, threads))?
+                .spawn(move || accept_loop(listener, run, stop, threads, on_death))?
         };
         Ok(Self { path: path.to_path_buf(), run, stop, accept: Some(accept), threads })
-    }
-
-    /// The acceptor ended without a shutdown: a permanent listener failure, after which no viewer can connect.
-    pub fn listener_died(&self) -> bool {
-        !self.stop.load(Ordering::Acquire) && self.accept.as_ref().is_some_and(|t| t.is_finished())
     }
 
     /// Stops accepting, ends every connection and removes the socket.
@@ -200,9 +214,17 @@ impl Drop for RowServer {
 }
 
 #[cfg(unix)]
-fn accept_loop(listener: std::os::unix::net::UnixListener, run: Arc<RowRun>, stop: Arc<AtomicBool>, threads: Threads, own_uid: u32) {
+fn accept_loop(
+    listener: std::os::unix::net::UnixListener,
+    run: Arc<RowRun>,
+    stop: Arc<AtomicBool>,
+    threads: Threads,
+    own_uid: u32,
+    on_death: Death,
+) {
     use std::os::unix::io::AsRawFd;
     if listener_dies_for_test() {
+        on_death();
         return;
     }
     while !stop.load(Ordering::Acquire) {
@@ -243,7 +265,13 @@ fn accept_loop(listener: std::os::unix::net::UnixListener, run: Arc<RowRun>, sto
             Err(e) => match accept_policy(&e) {
                 AcceptAction::Retry => {}
                 AcceptAction::Sleep => std::thread::sleep(ACCEPT_SLEEP),
-                AcceptAction::Dead => return,
+                AcceptAction::Dead => {
+                    // A shutdown that began meanwhile is not a death.
+                    if !stop.load(Ordering::Acquire) {
+                        on_death();
+                    }
+                    return;
+                }
             },
         }
     }
@@ -258,8 +286,10 @@ fn accept_loop(
     run: Arc<RowRun>,
     stop: Arc<AtomicBool>,
     threads: Threads,
+    on_death: Death,
 ) {
     if listener_dies_for_test() {
+        on_death();
         return;
     }
     while !stop.load(Ordering::Acquire) {
@@ -287,7 +317,13 @@ fn accept_loop(
             Err(e) => match accept_policy(&e) {
                 AcceptAction::Retry => {}
                 AcceptAction::Sleep => std::thread::sleep(ACCEPT_SLEEP),
-                AcceptAction::Dead => return,
+                AcceptAction::Dead => {
+                    // A shutdown that began meanwhile is not a death.
+                    if !stop.load(Ordering::Acquire) {
+                        on_death();
+                    }
+                    return;
+                }
             },
         }
     }
@@ -442,6 +478,7 @@ fn serve_io<R: BufRead, W: Write + Send + 'static>(
     });
     let Ok(writer) = spawned else {
         run.close(id);
+        run.released(id);
         drop(slot);
         return;
     };
@@ -453,6 +490,7 @@ fn serve_io<R: BufRead, W: Write + Send + 'static>(
     // then ends the stream.
     run.close(id);
     let _ = writer.join();
+    run.released(id);
     drop(slot);
 }
 
@@ -509,7 +547,30 @@ fn requests<R: std::io::BufRead>(reader: &mut R, id: ConnId, run: &Arc<RowRun>) 
                 Ok(()) => run.send(id, Frame::res(frame.id, OP_RESIZE, json!({})), None),
                 Err(msg) => refuse_with(run, id, &frame, &msg),
             },
+            OP_STATUS | OP_END_RUN | OP_RESET | OP_STOP => {
+                let Some(management) = run.management() else {
+                    refuse(run, id, &frame, "unknown_op", &format!("no row op {}", frame.op));
+                    continue;
+                };
+                match frame.op.as_str() {
+                    OP_STATUS => answer(run, id, &frame, &management.status()),
+                    OP_END_RUN => match payload::<EndRunReq>(&frame) {
+                        Ok(req) => answer(run, id, &frame, &management.end_run(&req.run, &req.reason)),
+                        Err(msg) => refuse(run, id, &frame, "bad_payload", &msg),
+                    },
+                    OP_RESET => answer(run, id, &frame, &management.reset()),
+                    _ => {
+                        // A stop's reply is the connection's last word: the supervisor leaves once it is delivered.
+                        answer(run, id, &frame, &management.stop(id));
+                        return;
+                    }
+                }
+            }
             other => refuse(run, id, &frame, "unknown_op", &format!("no row op {other}")),
         }
     }
+}
+
+fn answer(run: &RowRun, id: ConnId, req: &Frame, res: &impl serde::Serialize) {
+    run.send(id, Frame::res(req.id, &req.op, serde_json::to_value(res).unwrap_or_default()), None);
 }

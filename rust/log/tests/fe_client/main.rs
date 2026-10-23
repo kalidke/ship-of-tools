@@ -23,14 +23,11 @@
 //! this file does not attempt to inject a clock into a live worker
 //! thread, unlike `attach_client::rules`'s own unit tests.
 
-use sot_log::lane::client::{Endpoint, PlatformEndpoint};
+use serde_json::{json, Value};
 use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
+use sot_log::lane::client::PlatformEndpoint;
+use sot_log::row::{row_socket_path, RowClient};
 use sot_platform::host::state_dir::state_dir_hash;
-use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
-use sot_log::lane::wire::{
-    SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
-    SupervisorRequest,
-};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,11 +38,8 @@ use std::time::{Duration, Instant};
 mod capsule_guard;
 use capsule_guard::CapsuleGuard;
 
-/// L1-unix LU3c: the lane's own client type, chosen once — see
-/// `tests/supervisor/`'s identical alias for why this replaces
-/// `sot_log::lane::pipe_win::PipeClient` (Windows-only, as this whole file used
-/// to be).
-type Client = <PlatformEndpoint as Endpoint>::Client;
+/// A connection to a row's supervisor on the row socket: the daemon's own dial, then raw ops.
+struct Client(std::cell::RefCell<RowClient>);
 
 /// An interactive shell on its pty stays open until EndRun, on both
 /// platforms — mirrors `tests/supervisor/`'s identical `SHELL` const.
@@ -143,45 +137,38 @@ fn wait_for_exit(child: &mut CapsuleGuard, timeout: Duration) -> std::process::E
     poll_until(|| child.child_mut().try_wait().unwrap(), timeout, "the supervisor process to exit")
 }
 
-/// Bounded poll for the lane to accept a connection AND answer the
-/// challenge — `tests/supervisor/`'s own helper of the same name.
+/// Bounded poll for the row socket to accept a connection AND answer the hello.
 fn wait_for_lane(h: &str, timeout: Duration) -> Client {
-    poll_until(
-        || connect_and_challenge_for_test(h).ok().map(|(conn, _process)| conn),
+    let path = row_socket_path(h).expect("the row socket's path fits");
+    Client(std::cell::RefCell::new(poll_until(
+        || RowClient::connect(&path, "test", Duration::from_secs(5)).ok(),
         timeout,
-        "the supervisor lane to accept and answer the challenge",
-    )
+        "the row socket to accept and answer the hello",
+    )))
 }
 
-fn status(conn: &Client) -> (Option<String>, Option<u64>, SupervisorPhase) {
-    match request_for_test(conn, &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)).expect("status") {
-        SupervisorReply::StatusOk { voyage, leg, phase, .. } => (voyage, leg, phase),
-        other => panic!("expected StatusOk, got {other:?}"),
-    }
+fn call(conn: &Client, op: &str, payload: Value, bound: Duration) -> Value {
+    conn.0.borrow_mut().call(op, payload, bound).unwrap_or_else(|e| panic!("{op}: {e}")).payload
 }
 
-fn wait_for_ready(conn: &Client, timeout: Duration) -> (String, u64) {
+/// Polls `row.status` until the agent has started and written: returns the voyage and the run.
+fn wait_for_ready(conn: &Client, timeout: Duration) -> (String, String) {
     poll_until(
-        || match status(conn) {
-            (Some(voyage), Some(leg), SupervisorPhase::Ready) => Some((voyage, leg)),
-            _ => None,
+        || {
+            let reply = call(conn, "row.status", json!({}), Duration::from_secs(5));
+            match (reply["phase"].as_str(), reply["voyage"].as_str(), reply["run"].as_str()) {
+                (Some("ready"), Some(voyage), Some(run)) => Some((voyage.to_string(), run.to_string())),
+                _ => None,
+            }
         },
         timeout,
-        "the leg to reach phase Ready",
+        "the agent to reach phase ready",
     )
 }
 
-fn command(conn: &Client, operation_id: &str, op: SupervisorOp) -> SupervisorOperationState {
-    match request_for_test(
-        conn,
-        &SupervisorRequest::Command { operation_id: operation_id.to_string(), op },
-        Instant::now() + Duration::from_secs(5),
-    )
-    .expect("command")
-    {
-        SupervisorReply::Operation(state) => state,
-        other => panic!("expected Operation, got {other:?}"),
-    }
+fn stop(conn: &Client) {
+    let reply = call(conn, "row.stop", json!({}), Duration::from_secs(30));
+    assert_eq!(reply["outcome"], "stopping", "{reply}");
 }
 
 fn screen_text(screen: &vt100_ctt::Screen) -> String {
@@ -223,35 +210,10 @@ fn poll_screen(client: &mut FeAttachClient, timeout: Duration, pred: impl Fn(&st
     }
 }
 
-fn query(conn: &Client, operation_id: &str) -> SupervisorOperationState {
-    match request_for_test(
-        conn,
-        &SupervisorRequest::Query { operation_id: operation_id.to_string() },
-        Instant::now() + Duration::from_secs(5),
-    )
-    .expect("query")
-    {
-        SupervisorReply::Operation(state) => state,
-        other => panic!("expected Operation, got {other:?}"),
-    }
-}
-
-/// Ends the run cleanly (mirrors `tests/supervisor/`'s own `end_run_and_expect_record_closed` + `poll_to_terminal`
-/// composition): `record_closed`, then `record_verified`, the wire's names for the end being acknowledged and then
-/// final. No record is kept, so nothing is read back.
-fn end_run_and_wait_ended(conn: &Client, voyage: &str) {
-    let op_id = "test-teardown-end-run";
-    let reply = command(conn, op_id, SupervisorOp::EndRun { reason: "test teardown".into(), voyage: voyage.to_string() });
-    assert_eq!(reply, SupervisorOperationState::RecordVerified);
-    let final_state = poll_until(
-        || match query(conn, op_id) {
-            SupervisorOperationState::Accepted | SupervisorOperationState::RecordClosed => None,
-            other => Some(other),
-        },
-        Duration::from_secs(60),
-        "record_verified",
-    );
-    assert_eq!(final_state, SupervisorOperationState::RecordVerified);
+/// Ends the run cleanly: the reply comes once the run has ended.
+fn end_run_and_wait_ended(conn: &Client, run: &str) {
+    let reply = call(conn, "row.end_run", json!({"run": run, "reason": "test teardown"}), Duration::from_secs(40));
+    assert_eq!(reply["outcome"], "ended", "{reply}");
 }
 
 mod headless;

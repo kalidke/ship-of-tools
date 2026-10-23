@@ -1,5 +1,6 @@
 //! The run side of the row socket: what the supervisor's main loop feeds and drains.
 
+use super::manage::Management;
 use super::proto::{AttachRes, OP_ATTACH, OP_DEMOTED, OP_OUTPUT, OP_SNAPSHOT, OUTPUT_CHUNK, SNAPSHOT_CHUNK};
 use super::MAX_CONNECTIONS;
 use serde_json::json;
@@ -139,7 +140,7 @@ pub(super) const ANSWER_FRAMES: usize = 64;
 /// Requests the main loop has not yet taken, at most; one more is refused as busy.
 pub(super) const REQUEST_QUEUE: usize = 64;
 
-pub(super) type ConnId = u64;
+pub type ConnId = u64;
 
 struct Conn {
     queue: Arc<OutQueue>,
@@ -195,6 +196,7 @@ struct Inner {
     /// The run has ended: no request is admitted until the next run starts.
     ended: bool,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    management: Option<Arc<dyn Management>>,
 }
 
 /// One run's fan-out. The main loop calls [`RowRun::output`] after the parser took a chunk, [`RowRun::tick`] every pass,
@@ -221,6 +223,7 @@ impl RowRun {
                 requests: VecDeque::new(),
                 ended: false,
                 wake: None,
+                management: None,
             }),
         })
     }
@@ -244,6 +247,22 @@ impl RowRun {
     /// Where a hello reads the phase from, so the row reports the one answer the supervisor's status gives.
     pub fn set_phase_source(&self, source: Box<dyn Fn() -> String + Send + Sync>) {
         self.lock().phase_source = Some(Arc::from(source));
+    }
+
+    /// Where the daemon's management calls go. A row with none answers them `unknown_op`.
+    pub fn set_management(&self, management: Box<dyn Management>) {
+        self.lock().management = Some(Arc::from(management));
+    }
+
+    pub(super) fn management(&self) -> Option<Arc<dyn Management>> {
+        self.lock().management.clone()
+    }
+
+    /// A connection's two threads have ended and its queue is drained: the management hears of it.
+    pub(super) fn released(&self, id: ConnId) {
+        if let Some(management) = self.management() {
+            management.conn_gone(id);
+        }
     }
 
     pub fn set_phase(&self, phase: &str) {

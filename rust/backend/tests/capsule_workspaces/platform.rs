@@ -308,7 +308,7 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
     .await
     .unwrap()
     .expect("query_status before stopping the daemon's own unit");
-    let leg_before = status.leg.expect("a leg epoch on a ready row");
+    let run_before = status.run.clone().expect("a run on a ready row");
     let pid = process.pid();
     drop(process);
 
@@ -348,16 +348,16 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
     let (mut conn2, mut next_id2) = connect_and_hello(&env.socket_path).await;
     poll_for_phase(&mut conn2, &mut next_id2, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
 
-    let leg_after = tokio::task::spawn_blocking({
+    let run_after = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status after restart").0.leg
+        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status after restart").0.run
     })
     .await
     .unwrap();
     assert_eq!(
-        leg_after,
-        Some(leg_before),
-        "the leg epoch changed across the daemon restart -- a fresh leg was spawned, not adopted"
+        run_after,
+        Some(run_before),
+        "the run changed across the daemon restart -- a fresh agent was started, not adopted"
     );
 
     env.kill_daemon_bounded().await;

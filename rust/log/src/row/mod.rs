@@ -3,22 +3,26 @@
 //! before an admitted hello. The row hello's `row` number, `ROW_PROTOCOL`, is the one gate between a row and a client:
 //! no reader here judges a frame's `v`, so a daemon update never strands a live row.
 //!
-//! Beside the old voyage lane in this landing: nothing in the supervisor's start path reads this socket yet except
-//! the run's output hook.
+//! The daemon's four management calls (`row.status`, `row.end_run`, `row.reset`, `row.stop`) ride the same socket: the
+//! row hands them to the [`Management`] its supervisor installs, and answers them `unknown_op` where none is.
 
 mod client;
+mod manage;
 mod input;
 mod proto;
 mod run;
 mod server;
 
-pub use client::{PlatformConn, RowClient, RowEvent, RowWaker};
+pub use client::{PlatformConn, RowCanceler, RowClient, RowEvent, RowWaker};
+pub use manage::Management;
 pub use proto::{
-    AttachReq, AttachRes, HelloReq, HelloRes, InputRes, ResizeReq, RowError, RowHelloExchange, SnapshotEvt, OP_ATTACH,
-    OP_DEMOTED, OP_HELLO, OP_INPUT, OP_OUTPUT, OP_RESIZE, OP_SNAPSHOT, OP_TAKE, OUTPUT_CHUNK, SNAPSHOT_CHUNK,
+    AttachReq, AttachRes, EndRunOutcome, EndRunReq, EndRunRes, HelloReq, HelloRes, InputRes, ResetOutcome, ResetRes,
+    ResizeReq, RowError, RowHelloExchange, SnapshotEvt, StatusRes, StopOutcome, StopRes, OP_ATTACH, OP_DEMOTED,
+    OP_END_RUN, OP_HELLO, OP_INPUT, OP_OUTPUT, OP_RESET, OP_RESIZE, OP_SNAPSHOT, OP_STATUS, OP_STOP, OP_TAKE,
+    OUTPUT_CHUNK, SNAPSHOT_CHUNK,
 };
 pub use input::InputPump;
-pub use run::{self_identity, RowRequest, RowRun};
+pub use run::{self_identity, ConnId, RowRequest, RowRun};
 pub use server::{row_socket_path, RowServer};
 #[cfg(unix)]
 pub use server::socket_path_in;

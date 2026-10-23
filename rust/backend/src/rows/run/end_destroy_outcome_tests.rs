@@ -22,13 +22,13 @@ fn already_ended_outcome_is_removable_and_distinct_from_record_verified() {
 }
 
 // Rounds out coverage of `capsule_destroy_outcome_of`'s remaining
-// variants: a real end_run's own two confirmed outcomes both map to
+// variants: a real end_run's confirmed outcome maps to
 // `Removable`, and `NotEnded` (failed/refused/outcome-unknown) maps
 // to `Kept`.
 #[test]
-fn record_verified_and_closed_are_removable_not_ended_is_kept() {
+fn ended_is_removable_not_ended_is_kept() {
     use crate::rows::run::end_run::EndRunOutcome as O;
-    for outcome in [O::RecordVerified, O::RecordClosed] {
+    for outcome in [O::Ended] {
         assert!(
             matches!(
                 capsule_destroy_outcome_of(outcome.clone()),

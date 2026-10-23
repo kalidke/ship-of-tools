@@ -15,7 +15,7 @@ use super::*;
 fn run_ended(outcome: &crate::rows::run::end_run::EndRunOutcome) -> Result<(), String> {
     use crate::rows::run::end_run::EndRunOutcome as O;
     match outcome {
-        O::RecordVerified | O::RecordClosed | O::AlreadyEnded | O::Terminal | O::Unheld | O::Orphaned => Ok(()),
+        O::Ended | O::AlreadyEnded | O::Terminal | O::Unheld | O::Orphaned => Ok(()),
         O::NotEnded(detail) => Err(detail.clone()),
     }
 }

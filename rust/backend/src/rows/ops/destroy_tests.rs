@@ -293,7 +293,7 @@ async fn default_capsule_workspace_with_no_state_dir_is_proven_orphaned_not_a_fl
 /// The refusing half of the same proof, for real (Fable review, item
 /// 6): a row with no state dir whose lane IS actually answered by
 /// something — a bare listener, bound at exactly this row's own
-/// `supervisor-<h>.sock`, that never speaks the protocol back — must
+/// `row-<h>.sock`, that never speaks the protocol back — must
 /// never be classified `is_definitely_orphaned`. `connect(2)` itself
 /// succeeds against a bound-and-listening socket even with nothing
 /// ever `accept`ing it, so `query_status`'s connect step does NOT
@@ -301,8 +301,7 @@ async fn default_capsule_workspace_with_no_state_dir_is_proven_orphaned_not_a_fl
 /// times out instead, waiting on a hello nobody answers — exactly the
 /// "something is there, but unresponsive" case that must keep
 /// refusing. `SOT_RUNTIME_DIR` is pinned to a fresh, private (owner-
-/// only) scratch dir so the real socket path (`sot_log::lane::socket_unix::
-/// supervisor_socket_path`) never collides with a real session.
+/// only) scratch dir so the real socket path (`sot_log::row::row_socket_path`) never collides with a real session.
 /// `cfg(unix)`: the assertion target is `rows::run::end_run::
 /// is_definitely_orphaned`'s refusing half, and the capsule runtime lost
 /// its platform gate in the macOS wiring lane — exactly the change
@@ -331,7 +330,7 @@ async fn a_reachable_listener_with_no_state_dir_still_refuses() {
     // itself falls back to when no private runtime dir exists, which
     // is the production shape on macOS -- so this keeps the test on
     // the same path length the real thing gets. Kept short for the
-    // same reason: the name below plus `supervisor-<16 hex>.sock`
+    // same reason: the name below plus `row-<16 hex>.sock`
     // must still fit.
     let runtime_dir = std::path::PathBuf::from("/tmp").join(format!("sot-wsdl-rt-{stamp}"));
     std::fs::create_dir_all(&runtime_dir).unwrap();
@@ -347,8 +346,7 @@ async fn a_reachable_listener_with_no_state_dir_still_refuses() {
     // to the SAME hash the production lane address is built from.
     let state_dir = crate::rows::spawn::state_root::state_dir_for(&canonical_root, &id);
     let h = sot_platform::host::state_dir::state_dir_hash(&state_dir);
-    let sock_path =
-        sot_log::lane::socket_unix::supervisor_socket_path(&h).expect("runtime dir was just pinned");
+    let sock_path = sot_log::row::row_socket_path(&h).expect("runtime dir was just pinned");
     let _listener = std::os::unix::net::UnixListener::bind(&sock_path)
         .unwrap_or_else(|e| panic!("bind the stand-in listener at {sock_path:?}: {e}"));
     // Never `accept()`s -- proves a merely-unresponsive lane, not an

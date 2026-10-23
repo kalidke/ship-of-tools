@@ -66,6 +66,16 @@ impl RowWaker {
     }
 }
 
+/// Cancels one connection's I/O, from any thread: what a caller removing a row interrupts a blocked call with.
+#[derive(Clone)]
+pub struct RowCanceler(Arc<dyn Fn() + Send + Sync>);
+
+impl RowCanceler {
+    pub fn cancel(&self) {
+        (self.0)();
+    }
+}
+
 pub struct RowClient<C: Client + 'static = PlatformConn> {
     conn: Arc<C>,
     incoming: mpsc::Receiver<Incoming>,
@@ -76,6 +86,8 @@ pub struct RowClient<C: Client + 'static = PlatformConn> {
     lost_output: bool,
     next_id: u64,
     run: String,
+    /// The `(pid, created)` the hello named, which the challenge proved.
+    peer: (u32, u64),
 }
 
 impl RowClient {
@@ -96,9 +108,19 @@ impl RowClient {
 impl<C: Client + 'static> RowClient<C> {
     /// Proves the peer on `conn` (already dialed through `endpoint`) and checks its row number, by `deadline`.
     pub fn over<E: Endpoint<Client = C>>(endpoint: &E, conn: C, build: &str, deadline: Instant) -> Result<Self, RowError> {
+        Self::over_proven(endpoint, conn, build, deadline).map(|(client, _process)| client)
+    }
+
+    /// As [`Self::over`], and the process the challenge proved: a caller that waits for the row's death holds it.
+    pub fn over_proven<E: Endpoint<Client = C>>(
+        endpoint: &E,
+        conn: C,
+        build: &str,
+        deadline: Instant,
+    ) -> Result<(Self, E::Process), RowError> {
         let mut hello = RowHelloExchange::new(build);
-        match endpoint.challenge(&conn, &mut hello, deadline) {
-            ChallengeOutcome::Proven(_) => {}
+        let process = match endpoint.challenge(&conn, &mut hello, deadline) {
+            ChallengeOutcome::Proven(process) => process,
             ChallengeOutcome::Foreign => {
                 return Err(match hello.mismatch() {
                     Some(theirs) => RowError::RowMismatch { ours: ROW_PROTOCOL, theirs },
@@ -109,8 +131,9 @@ impl<C: Client + 'static> RowClient<C> {
             // the clock tick of the connect on Linux) is that the peer could not be proven.
             ChallengeOutcome::Undetermined if Instant::now() >= deadline => return Err(RowError::Timeout("the row's hello")),
             ChallengeOutcome::Undetermined => return Err(RowError::Unproven),
-        }
+        };
         let run = hello.reply().map(|r| r.run.clone()).unwrap_or_default();
+        let peer = hello.reply().map_or((0, 0), |r| (r.pid, r.created));
         let conn = Arc::new(conn);
         let (tx, incoming) = mpsc::sync_channel(INCOMING_FRAMES);
         let waker = RowWaker(tx.clone());
@@ -131,7 +154,13 @@ impl<C: Client + 'static> RowClient<C> {
                 }
             }
         })?;
-        Ok(Self { conn, incoming, waker, events: VecDeque::new(), lost_output: false, next_id: 2, run })
+        Ok((Self { conn, incoming, waker, events: VecDeque::new(), lost_output: false, next_id: 2, run, peer }, process))
+    }
+
+    /// Ends a blocked call or event wait on this connection from any thread, and every later one.
+    pub fn canceler(&self) -> RowCanceler {
+        let conn = Arc::clone(&self.conn);
+        RowCanceler(Arc::new(move || conn.cancel()))
     }
 
     /// A handle that ends a blocked [`Self::next_event`] from another thread.
@@ -142,6 +171,11 @@ impl<C: Client + 'static> RowClient<C> {
     /// Whether output was dropped since the last call; the caller attaches again to be sent the screen as it is.
     pub fn take_lost_output(&mut self) -> bool {
         std::mem::take(&mut self.lost_output)
+    }
+
+    /// The row's process, as its hello named it and the challenge proved: `(pid, created)`.
+    pub fn peer(&self) -> (u32, u64) {
+        self.peer
     }
 
     /// The run the row declared in its hello.

@@ -105,17 +105,15 @@ impl OwnedRow {
                 match query_status(dir) {
                     Ok((report, _)) => {
                         self.seen = Some(format!(
-                            "its supervisor was pid {} (created {}), at leg {:?}",
-                            report.pid, report.created, report.leg
+                            "its supervisor was pid {} (created {}), at run {:?}",
+                            report.pid, report.created, report.run
                         ));
                         match report
-                            .voyage
+                            .run
                             .as_deref()
-                            .map(|voyage| end_run(dir, voyage, "sotd-bin test teardown"))
+                            .map(|run| end_run(dir, run, "sotd-bin test teardown"))
                         {
-                            Some(Ok(
-                                EndRunOutcome::RecordVerified | EndRunOutcome::RecordClosed,
-                            )) => {}
+                            Some(Ok(EndRunOutcome::Ended)) => {}
                             other => failed.push(format!("the row's run did not end: {other:?}")),
                         }
                     }

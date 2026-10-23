@@ -69,7 +69,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `<sd>/voyages/<id>/{writer.lock, leg, ended}` (the leg's fence, its number and its ending; no record) | disk, lock | capsule | `rust/log/src/capsule/fence.rs`; `rust/log/src/capsule/ended.rs`; names repeated `rust/backend/src/rows/run/end_run.rs` `absence_proof` |
 | `<sd>/screen` (the leg's latest screen, a vt100 checkpoint) | disk | capsule | `rust/log/src/capsule/screen.rs` |
 | `<sd>/row-scopes` and the row's systemd scope `sot-row-<hash>-<uuid>.scope` | disk, process | rows | `rust/backend/src/rows/spawn/row_scope.rs` `capture`, `listed`, `end`, `unit_name`; `rust/backend/src/rows/spawn/row_scope_aim.rs` `aim`, `v2_root` (shell twin of `v2_root`: `scripts/tests/rc-gate.sh` `R`) |
-| supervisor lane socket/pipe `supervisor-<hash>` | endpoint | capsule | `rust/log/src/lane/socket_unix/mod.rs`; `rust/log/src/lane/pipe_win/mod.rs` |
+| row socket/pipe `row-<hash>` (the daemon's management calls ride it since pass 6c-1b1; the supervisor lane `supervisor-<hash>` is no longer bound) | endpoint | capsule | `rust/log/src/row/server.rs` `row_socket_path`, `RowServer` |
 | voyage lane socket/pipe `voyage-<id>` | endpoint | capsule | `rust/log/src/lane/socket_unix/mod.rs`; `rust/log/src/lane/pipe_win/mod.rs` |
 | hub relay sockets `sot-host-<h>.sock`, relay units and the `zz-sot-relay-command.conf` drop-in | disk, endpoint | topology | `rust/topology/src/lib.rs` `relay_socket_path`, `runtime_relay_dir`; `rust/topology/src/relay_units.rs` `relay_service_unit`, `RELAY_COMMAND_DROPIN`; `rust/backend/src/topology/relay_units.rs` `apply`, `refresh` |
 | reverse-tunnel template `sot-relay-tunnel@.service` | disk | topology | `rust/backend/src/topology/relay_units.rs` `TUNNEL_TEMPLATE`; `rust/topology/src/relay_units.rs` `tunnel_unit` |
@@ -261,7 +261,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `topology.set` | op | topology | `rust/backend/src/topology/set.rs` `handle_topology_set` |
 | `topology.changed` | event, bus | topology | `rust/backend/src/topology/store.rs` `TopologyChanged`; `rust/backend/src/server/events.rs` `write_topology_changed` |
 | capsule lanes SOM0, SOSV | wire | capsule | `rust/log/src/lane/wire/mgmt.rs`; `rust/log/src/lane/wire/supervisor.rs` |
-| supervisor-lane build id `SUPERVISOR_LANE_BUILD_ID` (stamp `SOT_LOG_BUILD_SHA`: full sha, `-dirty`; carried in the lane hello and `version.query`, never compared) | wire (lane) | capsule | `rust/log/build.rs`; `rust/platform/src/identity/exchange.rs`; `rust/log/src/attach_client/supervisor_client.rs` `SUPERVISOR_LANE_BUILD_ID` |
+| supervisor-lane build id `SUPERVISOR_LANE_BUILD_ID` (stamp `SOT_LOG_BUILD_SHA`: full sha, `-dirty`; carried in the row hello and `version.query`, never compared) | wire (lane) | capsule | `rust/log/build.rs`; `rust/platform/src/identity/exchange.rs`; `rust/log/src/lane/exchange.rs` `SUPERVISOR_LANE_BUILD_ID` |
 | sotd subcommand `session-socket-path` | CLI | topology | `rust/backend/src/main.rs` `main`; `rust/topology/src/endpoint.rs` `session_socket_path` |
 | sotd subcommand `log-path` | CLI | server | `rust/backend/src/main.rs` `main`; `rust/platform/src/host/state_dir.rs` `daemon_state_dir` |
 | sotd subcommands `topology ...`, `status`, `stdio-bridge` | CLI | topology | `rust/backend/src/main.rs` `parse_args`; `rust/backend/src/topology/cli.rs` `run`; `rust/backend/src/topology/status.rs` `run`; `rust/backend/src/topology/stdio_bridge.rs` `run` |

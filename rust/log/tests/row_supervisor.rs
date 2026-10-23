@@ -1,5 +1,5 @@
 #![cfg(target_os = "linux")]
-//! The row socket on a real supervisor (pass 6c-1a1): the supervisor binds `row-<h>` beside its lane, an attach shows
+//! The row socket on a real supervisor (pass 6c-1a1): the supervisor binds `row-<h>`, an attach shows
 //! what the agent has already written, the agent's output follows in order, and a driver's input reaches the agent.
 
 use sot_log::row::{RowClient, RowEvent};
@@ -81,8 +81,8 @@ fn a_supervisor_serves_its_row_socket_and_the_agent_hears_a_driver() {
     read_until(&mut client, "agent-read:typed-by-the-driver:done", Duration::from_secs(10));
 }
 
-/// The runtime folder of a running supervisor holds its supervisor lane and its row socket and no attach lane: nothing
-/// dials one since the row socket became every viewer's way in, so none is bound (pass 6c-1a3).
+/// The runtime folder of a running supervisor holds its row socket and no attach lane: nothing dials one since the row
+/// socket became every viewer's way in, so none is bound (pass 6c-1a3).
 #[test]
 fn no_attach_lane_is_bound() {
     let runtime = tempfile::Builder::new().prefix("sot-r").tempdir_in("/tmp").unwrap();
@@ -123,7 +123,6 @@ fn no_attach_lane_is_bound() {
         .collect();
     names.sort();
     assert!(names.contains(&format!("row-{h}.sock")), "the row socket is bound: {names:?}");
-    assert!(names.contains(&format!("supervisor-{h}.sock")), "the supervisor lane is bound: {names:?}");
     let attach_lanes: Vec<&String> = names.iter().filter(|n| n.starts_with("voyage-")).collect();
     assert!(attach_lanes.is_empty(), "no attach lane is bound, but found {attach_lanes:?}");
 }

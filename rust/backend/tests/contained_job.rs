@@ -291,10 +291,13 @@ async fn end_leftover_row(r: &HashMap<String, String>) -> bool {
     } else {
         // The supervisor's lane socket lives in the child's private runtime folder.
         std::env::set_var("SOT_RUNTIME_DIR", &r["runtime"]);
-        let (d, v) = (state_dir.clone(), voyage.clone());
+        let d = state_dir.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            let ended =
-                sot_log::attach_client::supervisor_client::end_run(&d, &v, "contained_job cleanup");
+            let run = sot_log::attach_client::supervisor_client::query_status(&d)
+                .ok()
+                .and_then(|(report, _)| report.run)
+                .unwrap_or_default();
+            let ended = sot_log::attach_client::supervisor_client::end_run(&d, &run, "contained_job cleanup");
             let stopped = sot_log::attach_client::supervisor_client::stop(&d);
             eprintln!("cleanup: end_run {ended:?}, stop {stopped:?}");
         })

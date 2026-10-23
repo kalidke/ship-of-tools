@@ -210,14 +210,13 @@ pub struct WorkspaceListEntry {
     /// byte-for-byte unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_dir: Option<String>,
-    /// The capsule's supervisor-lane phase (ADR 0041 Lifecycle: STARTING |
+    /// The capsule's supervisor phase (STARTING |
     /// READY | ENDING | ENDED-NO-RESPAWN | TERMINAL, snake_case), `"stopped"`
     /// when its state directory was never created (no supervisor has ever
-    /// run for it), `"unreachable"` when the lane could not be queried at
+    /// run for it), `"unreachable"` when the row socket could not be queried at
     /// all, or `"foreign"` (ADR 0030 §8 decision 31c) when it WAS queried
-    /// and answered — but refused this daemon's own build
-    /// (`sot_log::lane::exchange::SUPERVISOR_LANE_BUILD_ID` mismatch,
-    /// `version_skew`): a row this daemon can never attach, adopt, end, or
+    /// and answered — but with a row number this daemon does not speak
+    /// (`sot_log::row::ROW_PROTOCOL` mismatch in the hello): a row this daemon can never attach, adopt, end, or
     /// destroy. Distinct from `"unreachable"` (no answer at all) even
     /// though both start from the same failed query — present only for
     /// `runtime == "capsule"` rows, same reasoning as `state_dir`.

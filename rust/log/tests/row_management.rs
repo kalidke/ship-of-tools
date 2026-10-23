@@ -221,3 +221,34 @@ fn a_reset_after_end_run_is_admitted() {
         std::thread::sleep(Duration::from_millis(100));
     }
 }
+
+/// A stop is answered before the supervisor exits: the reply is read off the row socket, not inferred from the exit,
+/// and the daemon's `stop` returns once it has seen both.
+#[test]
+fn a_stop_is_answered_before_the_supervisor_exits() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    std::env::set_var("SOT_RUNTIME_DIR", runtime.path());
+    let dir = tempfile::tempdir().unwrap();
+    let (mut raw, path) = supervisor(runtime.path(), &dir.path().join("state"), &[]);
+    let mut manager = dial(&path);
+    let reply = manager.call("row.stop", json!({}), Duration::from_secs(30)).expect("the stop's reply is read before the exit");
+    assert_eq!(reply.payload["outcome"], "stopping", "{reply:?}");
+    drop(manager);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let code = loop {
+        if let Some(status) = raw.0.try_wait().unwrap() {
+            break status.code();
+        }
+        assert!(Instant::now() < deadline, "the supervisor never exited after its stop");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(code, Some(0), "a stop ends the supervisor clean");
+
+    // The daemon's own call, on a second supervisor: it returns Ok once the reply and the exit are both seen.
+    let state_dir = dir.path().join("state2");
+    let (mut second, path) = supervisor(runtime.path(), &state_dir, &[]);
+    drop(dial(&path));
+    supervisor_client::stop(&state_dir).expect("the daemon's stop sees the reply and the exit");
+    assert!(second.0.try_wait().unwrap().is_some(), "the supervisor had exited when stop returned");
+}

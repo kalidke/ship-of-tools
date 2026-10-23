@@ -1,5 +1,5 @@
-//! One process per row (decision D2, pass 6b): the supervisor runs the agent itself, the agent ends with its
-//! supervisor, and a reset is admitted the moment an `end_run` has answered.
+//! One process per row (decision D2, pass 6b): the supervisor runs the agent itself, and the agent ends with its
+//! supervisor. (A reset's admission right after an `end_run` is `row_management.rs`'s.)
 
 use super::*;
 
@@ -153,37 +153,4 @@ fn the_agent_dies_with_its_supervisor() {
     let killed = Instant::now();
     let gone = watch.ended_within(Duration::from_secs(2));
     assert!(gone, "the agent outlived its killed supervisor by {:?}", killed.elapsed());
-}
-
-/// A reset is admitted the instant an `end_run` has answered: the answer means the run has ended, so the next
-/// command never meets an end still in progress.
-#[test]
-fn a_reset_after_end_run_is_admitted() {
-    let _serial = serial();
-    let _runtime = isolated_runtime_dir();
-    let dir = tempfile::tempdir().unwrap();
-    let state_dir = dir.path().join("state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
-    let conn = wait_for_lane(&state_dir_hash(&state_dir), Duration::from_secs(30));
-    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
-
-    let ended = command(&conn, "end-1", SupervisorOp::EndRun { reason: "test".into(), voyage: voyage.clone() });
-    assert!(
-        matches!(ended, SupervisorOperationState::RecordClosed | SupervisorOperationState::RecordVerified),
-        "end_run answered: {ended:?}"
-    );
-    let reset = command(&conn, "reset-1", SupervisorOp::Reset { voyage: Some(voyage.clone()) });
-    assert_eq!(reset, SupervisorOperationState::Accepted, "the reset right after the end_run's answer is admitted");
-    let done = poll_to_terminal(&conn, "reset-1", Duration::from_secs(30));
-    let SupervisorOperationState::ResetDone { new_voyage } = done else {
-        panic!("the reset completed: {done:?}");
-    };
-    assert_ne!(new_voyage, voyage, "the reset minted a new voyage");
-    let (now, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
-    assert_eq!(now, new_voyage, "a fresh agent runs under the new voyage");
-
-    let stop = command(&conn, "stop-1", SupervisorOp::Stop);
-    assert_eq!(stop, SupervisorOperationState::Stopping);
-    wait_for_exit(&mut guard, Duration::from_secs(30));
 }

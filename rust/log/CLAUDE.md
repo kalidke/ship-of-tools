@@ -9,32 +9,32 @@ challenge's OS steps, and re-exports none of it. The capsule's contract is writt
 true after the merge of the leg into the supervisor.
 
 ## Owns
-- Deviation, deferred to pass 6c-1b: the SOM0 management lane has no server since pass 6c-1a3 (no attach lane
-  `voyage-<id>` is bound), but its client side (`VoyageMgmtExchange`, `connect_voyage_*`) and the lane server's voyage
-  mode (`SocketServer::bind`, `PipeServer::bind`, with the wake callback no one registers) remain, used by this
-  crate's own transport tests. Limit: a screen
+- Deviation, deferred to pass 6c-1b2: the SOM0 management lane has no server since pass 6c-1a3 (no attach lane
+  `voyage-<id>` is bound), but its client side (`VoyageMgmtExchange`, `connect_voyage_*`) and the lane servers
+  (`SocketServer`, `PipeServer`, with the wake callback no one registers) remain, used by this crate's own transport
+  and challenge tests; since pass 6c-1b1 the supervisor binds no lane at all. Limit: a screen
   writer that timed out at a run's end (`ScreenFile::finish`) can still publish a stale snapshot over a later run's
   `screen` (queue item SCREEN-WRITER-SPAN: one writer whose ownership spans runs).
-- The supervisor, `sot-capsule supervise`: `supervisor.lock`, the pointer `drawer.voyage` and the supervisor lane
-  (`src/supervisor/`). It runs the agent itself, from its main thread (`capsule::run`), and a second thread serves
-  the lane.
+- The supervisor, `sot-capsule supervise`: `supervisor.lock`, the pointer `drawer.voyage` and the daemon's four
+  management calls (`src/supervisor/`). It runs the agent itself, from its main thread (`capsule::run`); a connection's
+  thread of the row socket answers a management call through `Shared`, and a third thread watches the row listener.
 - The agent's run: the terminal, the vt100 parser, the screen file
   `<state_dir>/screen` and the run's folder `<state_dir>/voyages/<id>/` with its `writer.lock`, `leg` (the number of
   the run that last started there) and `ended` (how the run ended: whether an end was asked for, the producer's uptime
   and exit; `src/capsule/fence.rs`, `src/capsule/ended.rs`). The folder holds no segments and no blobs.
-- The lanes' remnants (`src/lane/`): the supervisor lane SOSV with its per-platform server, and the management lane
-  SOM0's client side with nothing serving it; pass 6c-1b replaces both. The attach lane SOA0 (its protocol machine,
-  frames and listener) was deleted in pass 6c-1a3.
+- The lanes' remnants (`src/lane/`): the lane servers, the management lane SOM0's client side with nothing serving
+  it, and the supervisor lane SOSV's codec, which nothing dials or serves since pass 6c-1b1; pass 6c-1b2 deletes them.
+  The attach lane SOA0 (its protocol machine, frames and listener) was deleted in pass 6c-1a3.
 - The attach client every viewer uses (`src/attach_client/client.rs` over the worker in `attach.rs`, both on the row
-  socket), and the daemon's supervisor-lane calls (`supervisor_client.rs`, with what it still needs of the old lane in
-  `supervisor_wait/`) until 6c-1b.
-- The row socket (`src/row/`), the way in for every viewer: a blocking acceptor, `RowClient` and the input thread, in
-  wire's frames. Pass 6c-1a2 switched the window, the wake and the bridge to it; 6c-1b moves the daemon's calls and
-  deletes the lanes; 6c-1c adds the watch.
+  socket), and the daemon's calls on a row's supervisor (`supervisor_client.rs`, over `RowClient`).
+- The row socket (`src/row/`), the way in for every viewer and for the daemon: a blocking acceptor, `RowClient` and
+  the input thread, in wire's frames, and the four management ops (`row.status`, `row.end_run`, `row.reset`,
+  `row.stop`) a row hands to the `Management` its supervisor installs. Pass 6c-1a2 switched the window, the wake and
+  the bridge to it, and pass 6c-1b1 the daemon's calls; 6c-1b2 deletes the lanes; 6c-1c adds the watch.
 
 ## Promises
 - One process per row: the agent is the supervisor's own child. The supervisor takes `supervisor.lock` (or adopts the
-  claim it was born holding) before it binds a lane or starts the agent, and a held fence exits 70 with nothing bound.
+  claim it was born holding) before it binds the row socket or starts the agent, and a held fence exits 70 with nothing bound.
 - The agent dies with its supervisor. Linux: the agent forks from the supervisor's main thread, which lives as long as
   the process, and the kernel's parent-death signal (`PR_SET_PDEATHSIG`) fires when it ends, so a SIGKILL of the
   supervisor ends the agent (`tests/supervisor/one_process.rs`: the agent ignores SIGHUP, so only that signal can).
@@ -51,14 +51,26 @@ true after the merge of the leg into the supervisor.
   76, so the daemon's watchdog is the one restart budget (rows' contract). A `--resume` over a run that was asked to
   end (`ended.requested`) rests in `ended_no_respawn`; any other `--resume` starts a fresh agent, in a new run of the
   same voyage. A stop is not an end of the run: it leaves no request, so the next start runs the agent again.
-- An operation is answered while its supervisor lives and kept in memory for its resubmits: the same id and the same
-  command answers from its record, another command under it is `id_conflict`, a command naming another voyage is
-  `stale_voyage`. `end_run` is admitted only while an agent runs and answers `record_verified` once it has ended, so a
-  `reset` sent after the answer is admitted; an acknowledged `end_run` is recorded as a requested end on the voyage
-  before the answer even when the agent ended first (`mark_end_requested`), so a resume rests; a supervisor that
-  goes terminal sends its running agent `Stop` first; `reset` only from `ended_no_respawn`; `stop` ends the agent and the
-  process (exit 0, or 69 when it was terminal). Nothing outlives the supervisor to reconcile: a crash loses operation
-  records, and a client that lost a reply reads status.
+- The daemon's four calls are ops of the row socket, each answered in the calling connection's own thread, every outcome a
+  reply payload (an `error` reply is kept for a protocol fault: an unknown op, a bad payload): `row.status` answers at
+  once `{phase, run?, voyage?}`; `row.end_run {run, reason}` is fenced by the run, so another run's id is `stale_run`
+  and changes nothing, and is otherwise admitted only while that run is live and not already ending, answering `ended`
+  once the run has ended (so a `reset` sent after the answer is admitted), `failed` (no run is live, an end is in
+  progress, the supervisor is terminal, or the end could not be recorded), or `ending` when 25 s have passed; `row.reset`
+  is fenced by the phase alone, admitted only from `ended_no_respawn` and answering `reset {voyage}` once the new
+  voyage is published; `row.stop` ends the agent and answers `stopping` as its connection's last reply, and the
+  process exits (0, or 69 when it was terminal) once that connection has ended, or after 3 s. A requested end that
+  cannot be recorded on the voyage (`mark_end_requested`) is not an end: the run fails, the caller is answered
+  `failed`, the supervisor is terminal and starts no other agent, so a later `--resume` never runs an agent whose end
+  was acknowledged (`tests/supervisor/spawn.rs::a_requested_end_that_cannot_be_recorded_is_not_answered_ended`, over the
+  test seam `SOT_TEST_END_MARK_FAILS`); an acknowledged `end_run` is recorded as a requested end on the voyage before the
+  answer even when the agent ended first, so a resume rests; a supervisor that goes terminal sends its running agent
+  `Stop` first. No call carries an id and nothing is kept for a resubmit: a client that lost a reply reads status,
+  and the daemon's calls are bounded (status 5 s, end_run, reset and stop 30 s). Limit: management shares the row's
+  8 connections with the viewers (the observer holds one), so a ninth dial gets no slot, which the daemon reads as one
+  failed observation and never as an end. The dial checks the hello's row number alone (`ROW_PROTOCOL`, which freezes
+  at the 0.7.0 tag), so a row of another number is `VersionSkew`, which rows reads as `foreign`; a row from before this
+  pass answers the four ops `unknown_op`, which rows reads as `unreachable` (the dev-box limit).
 - The supervisor keeps `<state_dir>/screen`: the vt100 fork's checkpoint (format 2), handed every 5 s while the screen
   changed (and at the agent's end) to one writer thread, which writes it through platform's `write_durable`. The slot
   between them keeps only the newest snapshot, so a stalled or failing disk never reaches the output loop; a failed
@@ -132,11 +144,12 @@ true after the merge of the leg into the supervisor.
   120 s running; anything else is retried, and a daemon that cannot be reached starts that window over. The drawer's
   attach (dormant until 6c-2 deletes it) names a row no row has, so it ends terminal after those 120 s.
 - A row listener that dies (a permanent accept failure) does not leave a running agent nobody can reach. The supervisor
-  watches it every 100 ms and binds it once more; a second death, or a bind that fails, ends the live run unrequested
+  watches it, blocked on an event the acceptor sends as it dies (no clock), and binds it once more; a second death, or a
+  bind that fails, ends the live run unrequested
   (`Command::Stop`, no request recorded) and the supervisor exits 75, so rows' watchdog decides through its one restart
   budget (`tests/row_supervisor.rs::a_row_listener_that_keeps_dying_ends_the_supervisor_with_75`, over the test seam
-  `SOT_TEST_ROW_LISTENER_DIES`). Limit: the watch polls, so a viewer that dials in the gap sees a refused connection and
-  retries.
+  `SOT_TEST_ROW_LISTENER_DIES`; `the_row_listeners_watch_waits_on_an_event` proves the watch gains no wakeups). Limit: a
+  viewer that dials in the gap between the death and the rebind sees a refused connection and retries.
 - An end retires the row's request queue. When the loop leaves its main loop (or the agent could not start), `RowRun::end_run`
   closes admission and answers every queued request `run ended`; a request that arrives after is answered `run ended`
   at once, until the next run starts, so input sent to an ending or ended run never times out as `delivery unknown`
@@ -180,9 +193,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Folders
 - `src/capsule/`: a run, one producer under a live parser, its screen file and its ending.
-- `src/supervisor/`: the one process of a row: the fence, the pointer, the lane and the main thread's loop.
+- `src/supervisor/`: the one process of a row: the fence, the pointer, the management calls and the main thread's loop.
 - `src/lane/`: transport pieces, the client seam, the supervisor and management lanes' wire and the platform lane servers.
-- `src/attach_client/`: one client for every viewer of a row, and the daemon's supervisor-lane calls.
+- `src/attach_client/`: one client for every viewer of a row, and the daemon's calls on a row's supervisor.
 - `src/row/`: the row socket: `RowServer` (acceptor and connection threads), `RowRun` (the run's fan-out and request
   queue, what the loop feeds and drains), `RowClient` (the blocking client) and the hello's payloads and exchange.
 - `../platform/`: the platform crate, whose charter is `../platform/CLAUDE.md`.
@@ -200,10 +213,11 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
     (`main.rs`, `no_record.rs`, `screen_io.rs`, `output_end.rs`), what a `RowClient` on the row socket sees of a run
     (`row_run.rs`, over `rowside.rs`), the Unix and Windows mechanisms (`unix_only.rs`, `windows_only.rs`, which holds the ConPTY snapshot-fidelity proof on the row socket).
   - the row socket: `row.rs` (a fake loop), `row_limits.rs`, `row_flood.rs`, `row_switch.rs`, `row_pipe.rs` (Windows),
-    `row_supervisor.rs` (a real supervisor: the row socket serves, and no attach lane is bound), `fe_attach.rs`
-    (`FeAttachClient`), `fe_client/` (the client against a real supervisor, and the headless client).
-  - `supervisor/`: the real-process supervisor and its lane. `wire/`: the lanes' frames through the public API, with
-    `fixtures/supervisor-lane-v1*.bin` pinned.
+    `row_supervisor.rs` (a real supervisor: the row socket serves, no lane is bound, and the listener's watch waits on
+    an event), `row_management.rs` (the daemon's calls on the row socket), `fe_attach.rs` (`FeAttachClient`),
+    `fe_client/` (the client against a real supervisor, and the headless client).
+  - `supervisor/`: the real-process supervisor, driven over the row socket. `wire/`: the lanes' frames through the
+    public API, with `fixtures/supervisor-lane-v1*.bin` pinned.
   - the lane servers: `socket_unix/`, `pipe_win/`, `connect_own.rs`, `challenge_unix.rs`, `challenge_macos.rs`,
     `other_account.rs`, `winhandle_windows.rs`, `macos_kernel_facts/`.
   - `conpty.rs`, `isolation_guards.rs`, `test_body_fixture.rs`, and `support/` (`capsule_guard.rs`).
@@ -218,9 +232,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   tests, and `elevation_or_skip`, the one rule for a test that needs root: it skips only when `sudo -n true` fails (a
   failure on CI), and every later helper failure fails the test (feature `test-support`, Unix).
 - `src/capsule/`: a run's runtime, its screen and ended files, and the producers.
-- `src/supervisor/`: the supervisor, its fence and pointer, and the lane's thread.
+- `src/supervisor/`: the supervisor, its fence and pointer, and `Shared`, the state its management calls and its main thread share.
 - `src/lane/`: wire frames (`wire/`: SOM0 and SOSV), the platform lane servers (`socket_unix/`, `pipe_win/`), the client seam and the identity exchanges.
-- `src/attach_client/`: the attach client, its worker (`attach.rs`) and the supervisor-lane calls.
+- `src/attach_client/`: the attach client, its worker (`attach.rs`) and the daemon's calls on a row's supervisor.
 - `src/row/`: the row socket's server, run side, client and protocol types; tests `tests/row.rs`, `row_limits.rs`, `row_supervisor.rs`, `row_pipe.rs`.
 - `src/lane/exchange.rs`, `src/lane/connect_own.rs`: the lanes' identity exchanges, and the connect that asks platform's account check.
 - `src/storage.rs`: `storage_exhaustion`, the capsule's reading of platform's storage table.
@@ -229,7 +243,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Start here
 Read `src/supervisor/mod.rs` for the process and its exit codes, then `src/capsule/writer_loop/mod.rs` (`run`) for
-a run, `src/capsule/screen.rs` and `src/capsule/ended.rs` for the two files it leaves; for the supervisor lane, `src/lane/wire/`; for a viewer, `src/row/`.
+a run, `src/capsule/screen.rs` and `src/capsule/ended.rs` for the two files it leaves; for the daemon's calls, `src/attach_client/supervisor_client.rs` and `src/supervisor/authority.rs`; for a viewer, `src/row/`.
 
 ## Rules
 - Modules are `pub` where integration tests or other crates reach them: those see only pub items.

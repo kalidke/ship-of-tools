@@ -375,14 +375,6 @@ impl sot_platform::identity::challenge_macos::SocketChallengeable for SocketClie
 pub struct SocketEndpoint;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-impl SocketEndpoint {
-    /// The supervisor lane's raw connect, for `supervisor_client` until the row socket takes the daemon's calls (6c-1b).
-    pub(crate) fn connect_supervisor_unchallenged(&self, lane: &str) -> Result<SocketClient, TransportError> {
-        connect_supervisor_socket_unchallenged(lane)
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Endpoint for SocketEndpoint {
     type Client = SocketClient;
     type Process = challenge_os::ChallengedProcess;
@@ -517,26 +509,6 @@ pub(crate) fn connect_voyage_socket_unchallenged(
     #[allow(
         clippy::disallowed_methods,
         reason = "a voyage lane connector: the caller runs the lane's identity challenge"
-    )]
-    let client = connect_unix_socket_unchallenged(&path)?;
-    Ok(client)
-}
-
-/// The supervisor lane's own raw connect, with NO authentication — see
-/// `pipe_win::connect_supervisor_pipe_unchallenged`'s own doc for why
-/// this intentionally has no `_unchallenged`-free sibling: the supervisor
-/// lane needs the full five-step `challenge_os::challenge`,
-/// which the caller composes itself on top of this. L1-unix LU3b: now
-/// called on Linux AND macOS, via `Endpoint for SocketEndpoint`'s own
-/// `connect_supervisor_unchallenged` (`attach_client/client.rs` and
-/// `supervisor_client`, both generic over `Endpoint`, are its callers).
-pub(crate) fn connect_supervisor_socket_unchallenged(
-    h: &str,
-) -> Result<SocketClient, TransportError> {
-    let path = supervisor_socket_path(h)?;
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a supervisor lane connector: the caller runs the lane's identity challenge"
     )]
     let client = connect_unix_socket_unchallenged(&path)?;
     Ok(client)

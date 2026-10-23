@@ -1,5 +1,5 @@
 //! The supervisor: the one process of a row. `sot-capsule supervise` takes the row's fence (or adopts the claim it was
-//! born holding), binds its lane, restores the screen, starts the agent on a terminal from its main thread and serves
+//! born holding), binds its row socket, restores the screen, starts the agent on a terminal from its main thread and serves
 //! the row until the agent's end or a `stop`. The agent is the supervisor's own child: the supervisor holds the
 //! terminal and the parser, so its end ends the agent (Linux: the kernel's parent-death signal for the forking
 //! thread, which is this one; elsewhere the terminal's hangup or the job's close).
@@ -13,9 +13,10 @@
 //!
 //! # Threads
 //!
-//! The main thread owns the run (`capsule::run`: the parser, the agent, the row socket's requests) and the reset. A second
-//! thread serves the supervisor lane (`authority`) and reaches the run through `Shared`: it asks the run to end over
-//! the run's own channel and is told, by `Shared`, what became of it.
+//! The main thread owns the run (`capsule::run`: the parser, the agent, the row socket's requests) and the reset. A
+//! connection's thread of the row socket answers the daemon's management calls through `Shared` (`authority`): it asks
+//! the run to end over the run's own channel and is told, by `Shared`, what became of it. A third thread watches the
+//! row socket's listener and waits on an event, never on a clock.
 //!
 //! # Exit codes
 //!
@@ -26,14 +27,8 @@
 #![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 
 use crate::capsule::{CapsuleConfig, ExitKind, RunSignals};
-use crate::lane::client::{Endpoint, PlatformEndpoint};
-use crate::lane::transport::ConnId;
-use crate::lane::transport::{LaneEvent, PlatformLaneServer};
+use crate::lane::wire::{self, SupervisorPhase};
 use crate::row::{row_socket_path, RowRun, RowServer};
-use crate::lane::wire::{self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
-#[cfg(any(test, feature = "test-support"))]
-use sot_platform::identity::challenge::ChallengeOutcome;
-use std::collections::HashMap;
 use std::fmt;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -53,25 +48,8 @@ type Agent = crate::capsule::producer::conpty::producer::ConptyProducer;
 #[cfg(unix)]
 type Agent = crate::capsule::producer::pty::PtyProducer;
 
-#[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
-type Client = <PlatformEndpoint as Endpoint>::Client;
-#[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
-type Process = <PlatformEndpoint as Endpoint>::Process;
-type Lane = PlatformLaneServer;
-
-/// Connections to the supervisor's lane.
-const MAX_LANE_INSTANCES: u32 = 8;
-/// The lane's thread wakes at least this often, for the replies the main thread owes and for its own exit.
-const LANE_TICK: Duration = Duration::from_millis(50);
 /// The main thread's wait between looks at what a client asked.
 const MAIN_LOOP_POLL: Duration = Duration::from_millis(100);
-/// A supervisor-lane connection whose client has sent nothing for this long is closed, unless the supervisor owes it
-/// the deferred `end_run` reply. `pub` so a test crossing it names this value.
-pub const LANE_IDLE_DEADLINE: Duration = Duration::from_secs(5);
-/// Events the lane's thread takes per tick, so one busy connection cannot hold the reply it owes another.
-const LANE_EVENT_QUOTA: usize = 64;
-const REFUSAL_SENT_DEADLINE: Duration = Duration::from_secs(2);
-const REFUSAL_FLUSH_GRACE: Duration = Duration::from_millis(250);
 /// A terminal supervisor nobody stops lingers this long, serving status, and exits.
 const TERMINAL_EXIT_GRACE: Duration = Duration::from_secs(2);
 /// How long the exit waits for a `stop`'s reply to be delivered.
@@ -175,20 +153,13 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     };
 
     let h = sot_platform::host::state_dir::state_dir_hash(&config.state_dir);
-    let lane = match Lane::bind_supervisor(&h, MAX_LANE_INSTANCES) {
-        Ok(l) => l,
-        Err(e) => {
-            note(format_args!("could not bind the supervisor lane: {e}"));
-            return Ok(EXIT_TERMINAL);
-        }
-    };
-
-    let shared = Arc::new(Shared::new(config.state_dir.clone()));
+    let shared = Arc::new(Shared::new());
     let row = RowRun::new("", "starting");
     {
         let shared = Arc::clone(&shared);
         row.set_phase_source(Box::new(move || shared.phase_text().to_string()));
     }
+    row.set_management(Box::new(SharedHandle(Arc::clone(&shared))));
     // The row socket is the way in: a row nobody can reach is not worth an agent, so a bind failure ends this supervisor
     // before one starts, as a row that did not start: exit 75, which rows' watchdog counts against its one restart budget
     // (a failure that lasts ends the row terminal there, one that passes costs a restart).
@@ -199,72 +170,94 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             return Ok(EXIT_AGENT_NOT_STARTED);
         }
     };
-    let row_server = match RowServer::bind(&row_path, Arc::clone(&row)) {
+    let (watch_tx, watch_rx) = mpsc::channel();
+    let row_server = match RowServer::bind_watched(&row_path, Arc::clone(&row), death_event(&watch_tx)) {
         Ok(server) => server,
         Err(e) => {
             note(format_args!("could not bind the row socket: {e}"));
             return Ok(EXIT_AGENT_NOT_STARTED);
         }
     };
-    let lane_thread = {
-        let shared = Arc::clone(&shared);
-        std::thread::Builder::new()
-            .name("supervisor-lane".into())
-            .spawn(move || authority::serve(lane, &shared))
-            .map_err(crate::Error::Io)?
-    };
     // A listener that dies is bound once more; one that dies again, or cannot be bound, ends the run unrequested.
-    let watch_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let row_watch = {
-        let (shared, row, stop) = (Arc::clone(&shared), Arc::clone(&row), Arc::clone(&watch_stop));
+        let (shared, row, tx) = (Arc::clone(&shared), Arc::clone(&row), watch_tx.clone());
         let path = row_path;
         std::thread::Builder::new()
             .name("row-watch".into())
-            .spawn(move || watch_row_listener(row_server, &path, &row, &shared, &stop))
+            .spawn(move || watch_row_listener(row_server, &path, &row, &shared, &watch_rx, &tx))
             .map_err(crate::Error::Io)?
     };
     let code = drive(&config, &shared, &row);
     shared.finish();
-    watch_stop.store(true, std::sync::atomic::Ordering::Release);
+    let _ = watch_tx.send(Watch::Stop);
     if row_watch.join().is_err() {
         note(format_args!("the row listener's watch panicked"));
-    }
-    if lane_thread.join().is_err() {
-        note(format_args!("the lane's thread panicked"));
     }
     Ok(code)
 }
 
-/// Holds the row server for the supervisor's life and watches its acceptor. A dead acceptor is replaced once; a second
-/// death or a failed bind is `Shared::row_lost`, which ends the run unrequested so rows' watchdog decides through its one
-/// restart budget. Returns, dropping the server, when `stop` is set.
+/// What the row listener's watch waits on: the acceptor's death, or the end of the supervisor.
+enum Watch {
+    Died,
+    Stop,
+}
+
+fn death_event(tx: &mpsc::Sender<Watch>) -> impl Fn() + Send + Sync + 'static {
+    let tx = Mutex::new(tx.clone());
+    move || {
+        let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(Watch::Died);
+    }
+}
+
+/// The row socket's management, on the one `Shared`: the row owns a `Box`, the supervisor keeps its `Arc`.
+struct SharedHandle(Arc<Shared>);
+
+impl crate::row::Management for SharedHandle {
+    fn status(&self) -> crate::row::StatusRes {
+        self.0.status()
+    }
+    fn end_run(&self, run: &str, reason: &str) -> crate::row::EndRunRes {
+        self.0.end_run(run, reason)
+    }
+    fn reset(&self) -> crate::row::ResetRes {
+        self.0.reset()
+    }
+    fn stop(&self, conn: crate::row::ConnId) -> crate::row::StopRes {
+        self.0.stop(conn)
+    }
+    fn conn_gone(&self, conn: crate::row::ConnId) {
+        self.0.conn_gone(conn);
+    }
+}
+
+/// Holds the row server for the supervisor's life and watches its acceptor, blocked until it dies or the supervisor is
+/// done. A dead acceptor is replaced once; a second death or a failed bind is `Shared::row_lost`, which ends the run
+/// unrequested so rows' watchdog decides through its one restart budget. Returns, dropping the server, on `Stop`.
 fn watch_row_listener(
     mut server: RowServer,
     path: &Path,
     row: &Arc<RowRun>,
     shared: &Shared,
-    stop: &std::sync::atomic::AtomicBool,
+    events: &mpsc::Receiver<Watch>,
+    tx: &mpsc::Sender<Watch>,
 ) {
     let mut rebound = false;
-    while !stop.load(std::sync::atomic::Ordering::Acquire) {
-        if server.listener_died() {
-            note(format_args!("the row socket's listener died"));
-            drop(server);
-            if rebound {
+    while let Ok(Watch::Died) = events.recv() {
+        note(format_args!("the row socket's listener died"));
+        drop(server);
+        if rebound {
+            shared.row_lost();
+            return;
+        }
+        rebound = true;
+        match RowServer::bind_watched(path, Arc::clone(row), death_event(tx)) {
+            Ok(s) => server = s,
+            Err(e) => {
+                note(format_args!("could not bind the row socket again: {e}"));
                 shared.row_lost();
                 return;
             }
-            rebound = true;
-            match RowServer::bind(path, Arc::clone(row)) {
-                Ok(s) => server = s,
-                Err(e) => {
-                    note(format_args!("could not bind the row socket again: {e}"));
-                    shared.row_lost();
-                    return;
-                }
-            }
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -308,9 +301,9 @@ fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
         match shared.wait_after_run() {
             After::Stop => return finish(shared),
             After::TerminalGrace => return EXIT_TERMINAL,
-            After::Reset { operation_id, new_voyage } => match pointer::reset(&config.state_dir, &new_voyage) {
+            After::Reset { new_voyage } => match pointer::reset(&config.state_dir, &new_voyage) {
                 Ok(()) => {
-                    shared.reset_done(&operation_id, &new_voyage);
+                    shared.reset_done(&new_voyage);
                     voyage = new_voyage;
                 }
                 Err(e) => shared.terminal(bounded_detail(format!("reset: {e}"))),
@@ -358,9 +351,10 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, voyag
     let (kill, commands) = mpsc::channel();
     let signals = Arc::new(RunSignals::default());
     // Each agent start is a run of its own on the row socket, ordered by its UUIDv7.
-    row.set_run(uuid::Uuid::now_v7().to_string());
+    let run_id = uuid::Uuid::now_v7().to_string();
+    row.set_run(run_id.clone());
     signals.attach_row(Arc::clone(row));
-    if !shared.run_begins(kill, Arc::clone(&signals)) {
+    if !shared.run_begins(run_id, kill, Arc::clone(&signals)) {
         return RunEnd::NotStarted;
     }
     let capsule = CapsuleConfig {
@@ -373,9 +367,11 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, voyag
     };
     let result = crate::capsule::run::<Agent>(capsule, commands);
     // An acknowledged end_run is a requested end even if the agent ended first: the voyage records it before the answer.
+    // An end that cannot be recorded is not an end: a later `--resume` would read no request and start another agent,
+    // so the supervisor is terminal and the caller is told it failed.
     if shared.end_run_asked() {
-        if let Err(e) = crate::capsule::mark_end_requested(&voyage_root_path(&config.state_dir, voyage), "end_run") {
-            note(format_args!("could not record the requested end: {e}"));
+        if let Err(e) = mark_end_requested(&voyage_root_path(&config.state_dir, voyage)) {
+            return RunEnd::Failed(bounded_detail(format!("the requested end could not be recorded: {e}")));
         }
     }
     // The row socket was lost, so the run was told to stop: a row that did not start, whatever the agent did.
@@ -431,45 +427,6 @@ fn init_process_globals(config: &SuperviseConfig) -> crate::Result<()> {
 }
 
 // ---------------------------------------------------------------------
-// Test helpers: the supervisor lane's client side
-// ---------------------------------------------------------------------
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn connect_and_challenge_with_build_for_test(h: &str, build: &str) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
-    let conn = PlatformEndpoint::default().connect_supervisor_unchallenged(h)?;
-    let mut exchange = crate::lane::exchange::SupervisorLaneExchange::new(build.to_string());
-    let outcome = PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
-    Ok((conn, outcome))
-}
-
-/// The lane gate is the `proto` integer, not `build`: the one way to drive a genuine proto mismatch in a test.
-#[cfg(any(test, feature = "test-support"))]
-pub fn connect_and_challenge_with_proto_for_test(h: &str, proto: u32) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
-    let conn = PlatformEndpoint::default().connect_supervisor_unchallenged(h)?;
-    let mut exchange = crate::lane::exchange::SupervisorLaneExchange::with_proto_for_test(
-        crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID,
-        proto,
-    );
-    let outcome = PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
-    Ok((conn, outcome))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(Client, Process)> {
-    crate::attach_client::supervisor_client::connect_and_challenge(
-        &PlatformEndpoint::default(),
-        h,
-        crate::lane::exchange::SUPERVISOR_LANE_BUILD_ID,
-        Instant::now() + Duration::from_secs(2),
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn request_for_test(conn: &Client, request: &SupervisorRequest, deadline: Instant) -> crate::Result<SupervisorReply> {
-    crate::attach_client::supervisor_client::send_and_read(conn, request, deadline)
-}
-
-// ---------------------------------------------------------------------
 // Small shared helpers
 // ---------------------------------------------------------------------
 
@@ -500,6 +457,15 @@ fn discover_or_mint_voyage(state_dir: &Path, mode: StartMode) -> crate::Result<S
         PointerState::Corrupt => Err(crate::Error::State("drawer.voyage is corrupt".into())),
         PointerState::OtherIo(e) => Err(e.into()),
     }
+}
+
+/// Records on the voyage that the run was asked to end. Test seam: `SOT_TEST_END_MARK_FAILS` makes the write fail,
+/// inert unless named.
+fn mark_end_requested(voyage_root: &Path) -> crate::Result<()> {
+    if std::env::var_os("SOT_TEST_END_MARK_FAILS").is_some() {
+        return Err(crate::Error::State("test: the requested end cannot be written".into()));
+    }
+    crate::capsule::mark_end_requested(voyage_root, "end_run")
 }
 
 /// Truncate `detail` to fit within [`wire::MAX_SUPERVISOR_STRING_LEN`] bytes, on a UTF-8 boundary.

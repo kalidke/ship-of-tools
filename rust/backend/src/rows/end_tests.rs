@@ -6,7 +6,7 @@ use std::path::PathBuf;
 async fn end_with_retry_table() {
     // Kept twice (starting), then a confirmed end: ended.
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut script = vec![O::NotEnded("starting".into()), O::NotEnded("starting".into()), O::RecordVerified].into_iter();
+    let mut script = vec![O::NotEnded("starting".into()), O::NotEnded("starting".into()), O::Ended].into_iter();
     let got = retry_until(deadline, || {
         let o = script.next().expect("no attempt after a confirmed end");
         async move { confirmed(crate::rows::run::end::capsule_destroy_outcome_of(o)) }

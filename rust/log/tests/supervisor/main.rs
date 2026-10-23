@@ -1,28 +1,18 @@
 #![cfg(any(windows, target_os = "linux"))]
-//! Real cross-process integration tests for `sot_log::supervisor` (ADR
-//! 0041 step 6 U2; ADR 0043 decisions 20/21 for the Linux half) — spawns
-//! the REAL `sot-capsule` binary (`supervise`, and the no-supervisor
-//! `endrun`/`reset` in-process callers), talking to it exactly the way a
-//! real launcher/FE client would: connect the supervisor lane, run the
-//! full same-connection challenge, then `hello`/`status`/`command`/
-//! `query`. The classifier's own transition table (A1-A5/B0-B9) and the
-//! journal's own crash-durability are already proven scripted-only by
-//! `classify.rs`'s and `supervisor/journal/`'s own unit tests; what these tests
-//! add is proof the WIRING across a real process boundary is correct —
-//! on BOTH platforms now, driving a real Linux `sot-capsule supervise`
-//! spawning a real `sot-capsule run` over the socket lane, exactly as
-//! this file already did for Windows over the pipe lane.
+//! Real cross-process integration tests for `sot_log::supervisor`: they spawn the real `sot-capsule` binary
+//! (`supervise`) and talk to it as the daemon does, on the row socket: a dial that proves the peer and checks its row
+//! number, then `row.status`, `row.end_run`, `row.reset` and `row.stop`. The journal's own crash-durability is proven
+//! by `supervisor/journal/`'s unit tests; what these tests add is proof the wiring across a real process boundary is
+//! right, on every platform the supervisor runs on.
 //!
-//! Deterministic by construction: every wait below is a BOUNDED POLL for
-//! an external, observable fact (a pipe/socket answering, a process's
-//! own exit code) — never a sleep-and-hope, and never a lifetime-counter
-//! observation of kernel state.
+//! Deterministic by construction: every wait below is a bounded poll for an external, observable fact (a socket
+//! answering, a process's own exit code), never a sleep-and-hope.
 
-use sot_log::lane::client::{Endpoint, PlatformEndpoint};
+use serde_json::{json, Value};
+use sot_log::lane::wire::SupervisorPhase;
+use sot_log::row::{row_socket_path, RowClient};
 use sot_log::supervisor::journal;
 use sot_platform::host::state_dir::state_dir_hash;
-use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
-use sot_log::lane::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -30,13 +20,6 @@ use std::time::{Duration, Instant};
 #[path = "../support/capsule_guard.rs"]
 mod capsule_guard;
 use capsule_guard::CapsuleGuard;
-
-/// L1-unix LU3c: the lane's own client type, chosen once — the SAME
-/// platform-chosen alias `sot_log::supervisor`'s own production code
-/// is generic over, so this test names one type regardless of platform
-/// instead of `sot_log::lane::pipe_win::PipeClient` (Windows-only, as this
-/// whole file used to be).
-type Client = <PlatformEndpoint as Endpoint>::Client;
 
 /// An interactive shell on its pty stays open until EndRun, on both
 /// platforms — the process every "spawn and wait for Ready" test starts.
@@ -101,178 +84,89 @@ fn poll_until<T>(mut attempt: impl FnMut() -> Option<T>, timeout: Duration, what
     }
 }
 
-/// Bounded poll for the lane to accept a connection AND answer the
-/// challenge — the observable fact a real client waits on, never a
-/// sleep guessing how long `bind_supervisor` takes.
-fn wait_for_client(h: &str, timeout: Duration) -> Client {
-    poll_until(
-        || connect_and_challenge_for_test(h).ok().map(|(conn, _process)| conn),
-        timeout,
-        "the supervisor lane to accept and answer the challenge",
-    )
-}
-
-/// As [`wait_for_client`], held as the [`Lane`] the request helpers take.
-fn wait_for_lane(h: &str, timeout: Duration) -> Lane {
-    Lane::new(h, wait_for_client(h, timeout))
-}
-
-/// A supervisor-lane connection the request helpers may replace. The supervisor closes a connection whose client has
-/// sent nothing for `LANE_IDLE_DEADLINE`, so a host that stalls this test that long between two requests would cost
-/// the test its connection. Every helper request may be asked twice: `status` and `query` only read, and a command
-/// carries its operation id, which the journal answers again rather than running twice (ADR 0041). So a request that
-/// fails reconnects once and asks again, as the production client does (`attach_client/worker/quit.rs`); after a
-/// reconnect a command's reply is the journal's state for that id. A test of a raw connection's own behaviour uses
-/// `request_for_test` on [`Lane::client`].
-struct Lane {
-    h: String,
-    conn: std::cell::RefCell<Client>,
-}
+/// A connection to a row's supervisor: the daemon's own dial, then raw ops. A call that fails is a failed test.
+struct Lane(std::cell::RefCell<RowClient>);
 
 impl Lane {
-    fn new(h: &str, conn: Client) -> Lane {
-        Lane {
-            h: h.to_string(),
-            conn: std::cell::RefCell::new(conn),
-        }
+    /// The supervisor's `(pid, created)`, as its hello named them and the dial proved them.
+    fn peer(&self) -> (u32, u64) {
+        self.0.borrow().peer()
     }
 
-    /// The connection now held, for a test of a raw connection's own behaviour.
-    fn client(&self) -> std::cell::Ref<'_, Client> {
-        self.conn.borrow()
-    }
-
-    /// One reply to `request`, each attempt bounded by `budget`; a failed first attempt reconnects once.
-    fn request(
-        &self,
-        what: &str,
-        request: &SupervisorRequest,
-        budget: Duration,
-    ) -> SupervisorReply {
-        let first = match request_for_test(&self.conn.borrow(), request, Instant::now() + budget) {
-            Ok(reply) => return reply,
-            Err(e) => e,
-        };
-        eprintln!("{what}: {first}; reconnecting once");
-        *self.conn.borrow_mut() = wait_for_client(&self.h, Duration::from_secs(10));
-        request_for_test(&self.conn.borrow(), request, Instant::now() + budget)
-            .unwrap_or_else(|second| panic!("{what}: {first}, and after one reconnect: {second}"))
+    /// One op, its reply payload within `bound`.
+    fn call(&self, op: &str, payload: Value, bound: Duration) -> Value {
+        self.0.borrow_mut().call(op, payload, bound).unwrap_or_else(|e| panic!("{op}: {e}")).payload
     }
 }
 
-fn status(conn: &Lane) -> (Option<String>, Option<u64>, SupervisorPhase) {
-    match conn.request("status", &SupervisorRequest::Status, Duration::from_secs(5)) {
-        SupervisorReply::StatusOk {
-            voyage, leg, phase, ..
-        } => (voyage, leg, phase),
-        other => panic!("expected StatusOk, got {other:?}"),
-    }
+/// Bounded poll for the row socket to accept a connection AND answer the hello, the observable fact a real client waits
+/// on, never a sleep guessing how long the bind takes.
+fn wait_for_lane(h: &str, timeout: Duration) -> Lane {
+    let path = row_socket_path(h).expect("the row socket's path fits");
+    Lane(std::cell::RefCell::new(poll_until(
+        || RowClient::connect(&path, "test", Duration::from_secs(5)).ok(),
+        timeout,
+        "the row socket to accept and answer the hello",
+    )))
 }
 
-/// The lane binds BEFORE any adopt or spawn (ADR 0041), so answering
-/// `status` does not by itself mean a leg is READY yet — poll for the
-/// phase itself, the observable fact, rather than assuming spawn
-/// finished the instant the lane became reachable.
-fn wait_for_ready(conn: &Lane, timeout: Duration) -> (String, u64) {
+/// What `row.status` says.
+struct Status {
+    voyage: Option<String>,
+    run: Option<String>,
+    phase: SupervisorPhase,
+}
+
+fn status(conn: &Lane) -> Status {
+    let reply = conn.call("row.status", json!({}), Duration::from_secs(5));
+    let text = |key: &str| reply[key].as_str().map(str::to_string);
+    let phase = match reply["phase"].as_str() {
+        Some("starting") => SupervisorPhase::Starting,
+        Some("ready") => SupervisorPhase::Ready,
+        Some("ending") => SupervisorPhase::Ending,
+        Some("ended_no_respawn") => SupervisorPhase::EndedNoRespawn,
+        Some("terminal") => SupervisorPhase::Terminal,
+        other => panic!("a status with no known phase: {other:?}"),
+    };
+    Status { voyage: text("voyage"), run: text("run"), phase }
+}
+
+/// The row socket binds before the agent starts, so answering `status` does not by itself mean the agent is running:
+/// poll for the phase itself, the observable fact. Returns the voyage and the run.
+fn wait_for_ready(conn: &Lane, timeout: Duration) -> (String, String) {
     poll_until(
         || match status(conn) {
-            (Some(voyage), Some(leg), SupervisorPhase::Ready) => Some((voyage, leg)),
+            Status { voyage: Some(voyage), run: Some(run), phase: SupervisorPhase::Ready } => Some((voyage, run)),
             _ => None,
         },
         timeout,
-        "the leg to reach phase Ready",
+        "the agent to reach phase ready",
     )
 }
 
-fn command(conn: &Lane, operation_id: &str, op: SupervisorOp) -> SupervisorOperationState {
-    match conn.request(
-        "command",
-        &SupervisorRequest::Command {
-            operation_id: operation_id.to_string(),
-            op,
-        },
-        // Generous: an EndRun's own reply is DEFERRED to record_closed
-        // (B3) -- the mgmt-lane exchange plus the leg writing its own
-        // marker, both real OS work on a background thread, not a bound
-        // this crate itself pins tighter than "well within the ADR's own
-        // per-op budgets stacked together". The supervisor keeps the
-        // connection it owes that reply however long it takes
-        // (`authority/lane.rs` `service_lane`).
-        Duration::from_secs(30),
-    ) {
-        SupervisorReply::Operation(state) => state,
-        other => panic!("expected Operation, got {other:?}"),
-    }
+/// Asks for the end of `run` and returns the outcome. Generous bound: the answer comes when the run has ended.
+fn end_run(conn: &Lane, run: &str, reason: &str) -> Value {
+    conn.call("row.end_run", json!({"run": run, "reason": reason}), Duration::from_secs(40))
 }
 
-fn query(conn: &Lane, operation_id: &str) -> SupervisorOperationState {
-    match conn.request(
-        "query",
-        &SupervisorRequest::Query {
-            operation_id: operation_id.to_string(),
-        },
-        Duration::from_secs(5),
-    ) {
-        SupervisorReply::Operation(state) => state,
-        other => panic!("expected Operation, got {other:?}"),
-    }
+/// Asserts `end_run`'s own reply is `ended`: it comes once the run has ended, so the supervisor rests in
+/// `ended_no_respawn` when the client reads it.
+fn end_run_and_expect_ended(conn: &Lane, run: &str, reason: &str) {
+    let reply = end_run(conn, run, reason);
+    assert_eq!(reply["outcome"], "ended", "end_run's reply arrives when the run has ended: {reply}");
 }
 
-/// Poll `query` past both pre-terminal milestones to whatever terminal
-/// state follows. Callers that already PROVED `record_closed` via the
-/// `end_run` command's own deferred reply (B3) use this only for the
-/// remaining `record_closed -> record_verified`/`failed` step.
-fn poll_to_terminal(
-    conn: &Lane,
-    operation_id: &str,
-    timeout: Duration,
-) -> SupervisorOperationState {
-    poll_until(
-        || match query(conn, operation_id) {
-            SupervisorOperationState::Accepted | SupervisorOperationState::RecordClosed => None,
-            other => Some(other),
-        },
-        timeout,
-        "the operation to reach a terminal state",
-    )
+/// A reset from a resting supervisor, answered once the new voyage is published: returns it.
+fn reset(conn: &Lane) -> String {
+    let reply = conn.call("row.reset", json!({}), Duration::from_secs(40));
+    assert_eq!(reply["outcome"], "reset", "{reply}");
+    reply["voyage"].as_str().expect("a reset names its new voyage").to_string()
 }
 
-/// Submits `end_run` and asserts its own reply is `record_verified`: the reply is sent once the run has ended, so
-/// the supervisor rests in `ended_no_respawn` when the client reads it.
-fn end_run_and_expect_ended(conn: &Lane, operation_id: &str, reason: &str, voyage: String) {
-    let reply = command(
-        conn,
-        operation_id,
-        SupervisorOp::EndRun {
-            reason: reason.into(),
-            voyage,
-        },
-    );
-    assert_eq!(reply, SupervisorOperationState::RecordVerified, "end_run's reply arrives when the run has ended");
-}
-
-/// Blocks on `conn.read` in a scoped thread so an EOF (or any other
-/// outcome) can be awaited with a bounded timeout — `Client` is
-/// `Sync` by design (its own doc: a second thread may `cancel` a
-/// blocking call in flight), and a read still blocked at the timeout is
-/// cancelled before the scope joins it. Used to verify a connection
-/// the supervisor is EXPECTED to close actually does.
-fn expect_connection_closes(conn: &Client, timeout: Duration) {
-    std::thread::scope(|scope| {
-        let (tx, rx) = std::sync::mpsc::channel();
-        scope.spawn(move || {
-            let mut buf = [0u8; 16];
-            let _ = tx.send(conn.read(&mut buf));
-        });
-        match rx.recv_timeout(timeout) {
-            Ok(Ok(0)) => {} // ordered EOF -- the connection closed, exactly as claimed
-            Ok(other) => panic!("expected the connection to close (EOF), got {other:?}"),
-            Err(_) => {
-                conn.cancel();
-                panic!("the connection never closed within {timeout:?}");
-            }
-        }
-    });
+/// `row.stop`: the supervisor ends its agent and exits once this connection has ended.
+fn stop(conn: &Lane) {
+    let reply = conn.call("row.stop", json!({}), Duration::from_secs(30));
+    assert_eq!(reply["outcome"], "stopping", "{reply}");
 }
 
 fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> CapsuleGuard {
@@ -407,19 +301,17 @@ fn capsule_gone_within(state_dir: &Path, bound: Duration) -> bool {
     )
 }
 
-/// A red's cleanup, run on every path after the kill: ends a supervisor that outlived its test, over its lane. It never panics, so the assert that follows it still reports.
+/// A red's cleanup, run on every path after the kill: ends a supervisor that outlived its test, over its row socket. It never panics, so the assert that follows it still reports.
 fn end_what_outlived(state_dir: &Path) {
-    let voyage = recorded_voyage(state_dir);
     if state_dir.exists() && !fence_free(state_dir) {
-        if let Ok((conn, _)) = connect_and_challenge_for_test(&state_dir_hash(state_dir)) {
-            let ask = |operation_id: &str, op: SupervisorOp| {
-                let command = SupervisorRequest::Command { operation_id: operation_id.to_string(), op };
-                let _ = request_for_test(&conn, &command, Instant::now() + Duration::from_secs(30));
-            };
-            if let Some(voyage) = &voyage {
-                ask("cleanup-end", SupervisorOp::EndRun { reason: "test cleanup".into(), voyage: voyage.clone() });
+        let path = row_socket_path(&state_dir_hash(state_dir)).ok();
+        if let Some(mut client) = path.and_then(|p| RowClient::connect(&p, "test", Duration::from_secs(5)).ok()) {
+            if let Ok(frame) = client.call("row.status", json!({}), Duration::from_secs(5)) {
+                if let Some(run) = frame.payload["run"].as_str() {
+                    let _ = client.call("row.end_run", json!({"run": run, "reason": "test cleanup"}), Duration::from_secs(40));
+                }
             }
-            ask("cleanup-stop", SupervisorOp::Stop);
+            let _ = client.call("row.stop", json!({}), Duration::from_secs(30));
         }
         free_within(|| fence_free(state_dir), Duration::from_secs(60));
     }

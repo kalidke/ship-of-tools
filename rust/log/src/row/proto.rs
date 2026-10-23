@@ -16,6 +16,10 @@ pub const OP_TAKE: &str = "row.take";
 pub const OP_INPUT: &str = "row.input";
 pub const OP_RESIZE: &str = "row.resize";
 pub const OP_DEMOTED: &str = "row.demoted";
+pub const OP_STATUS: &str = "row.status";
+pub const OP_END_RUN: &str = "row.end_run";
+pub const OP_RESET: &str = "row.reset";
+pub const OP_STOP: &str = "row.stop";
 
 /// A snapshot event's blob is at most this; a longer screen goes in several, the last flagged.
 pub const SNAPSHOT_CHUNK: usize = 1024 * 1024;
@@ -88,6 +92,71 @@ pub struct ResizeReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputRes {
     pub written: u64,
+}
+
+/// `row.status`: what the supervisor is now. `run` and `voyage` are absent while there is none.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusRes {
+    pub phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voyage: Option<String>,
+}
+
+/// `row.end_run`: ends the run `run` names, for `reason`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndRunReq {
+    pub run: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndRunOutcome {
+    /// The run ended and its requested end is recorded.
+    Ended,
+    /// `run` is not the current run: nothing changed.
+    StaleRun,
+    /// No run is live, an end is in progress, or the supervisor is terminal.
+    Failed,
+    /// The run has not ended within the supervisor's bound: the caller reads status.
+    Ending,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndRunRes {
+    pub outcome: EndRunOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetOutcome {
+    /// The new voyage is published; the next run starts under it.
+    Reset,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetRes {
+    pub outcome: ResetOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voyage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopOutcome {
+    Stopping,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopRes {
+    pub outcome: StopOutcome,
 }
 
 /// The hello as the challenge's steps 4 and 5: the request is `row.hello`, the reply is the one frame that names the
