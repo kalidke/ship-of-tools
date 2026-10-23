@@ -30,7 +30,7 @@ pub(crate) fn observe(ws: &Workspace, observation: Observation) {
     }
 }
 
-fn identity_of(peer: (u32, u64)) -> SupervisorIdentity {
+fn supervisor_of(peer: (u32, u64)) -> SupervisorIdentity {
     SupervisorIdentity { pid: peer.0, created: peer.1 }
 }
 
@@ -146,7 +146,7 @@ fn watch_round(workspace_id: &str, state_dir: &Path, cancel: &CancelHandle, work
         }
     };
     let began = Instant::now();
-    let supervisor = identity_of(held.peer());
+    let supervisor = supervisor_of(held.peer());
     match workspaces.resolve(Some(workspace_id)) {
         Some(ws) => feed_first(&ws, supervisor, held.first()),
         None => return Round::Unwatched,
@@ -172,6 +172,9 @@ fn watch_round(workspace_id: &str, state_dir: &Path, cancel: &CancelHandle, work
         return Round::Unwatched;
     }
     let process_ended = held.end(EXIT_WAIT);
+    if process_ended {
+        feed(Observation::Gone);
+    }
     Round::Ended { code, process_ended, lasted: began.elapsed() }
 }
 

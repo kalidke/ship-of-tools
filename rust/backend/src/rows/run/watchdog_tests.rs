@@ -32,7 +32,7 @@ fn restart_budget_numbers_match_adr_0041s_own_launcher_table() {
 }
 
 #[test]
-fn supervisors_that_never_reached_ready_are_a_count_not_a_rate() {
+fn supervisors_that_never_were_told_ready_are_a_count_not_a_rate() {
     let mut budget = Budget::default();
     let t0 = Instant::now();
     // Hours between exits change nothing: five restarts, backing off 1, 3, 7, 15 and 30 s, then the give-up.
@@ -45,7 +45,7 @@ fn supervisors_that_never_reached_ready_are_a_count_not_a_rate() {
 }
 
 #[test]
-fn a_supervisor_that_reached_ready_resets_the_count_and_keeps_the_window() {
+fn a_supervisor_that_was_told_ready_resets_the_count_and_keeps_the_window() {
     let mut budget = Budget::default();
     let t0 = Instant::now();
     for _ in 0..4 {

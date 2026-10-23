@@ -58,6 +58,9 @@ pub(crate) enum Observation {
     Stopped,
     Foreign,
     Failed,
+    /// The watch ended and the supervisor's process with it: nothing answers now, whatever its last report said. A rest
+    /// (`ended_no_respawn`) does not outlive its supervisor; `terminal` does, since the watchdog or the next start owns it.
+    Gone,
 }
 
 /// What the observer's watch told of the supervisor the row last watched: who it was, and whether it said `ready`
@@ -214,7 +217,7 @@ impl Workspace {
 
     /// Whether the last watched supervisor told `ready`: false for one that died before any watch named it, or whose agent
     /// had not lived 2 s.
-    pub(crate) fn reached_ready(&self) -> bool {
+    pub(crate) fn watch_said_ready(&self) -> bool {
         self.watched().is_some_and(|w| w.ready)
     }
 
@@ -318,6 +321,14 @@ impl Workspace {
                     return false;
                 }
                 cell.phase = if matches!(observation, Observation::Stopped) { Phase::Stopped } else { Phase::Foreign };
+                cell.consecutive_failures = 0;
+                true
+            }
+            Observation::Gone => {
+                if cell.phase == Phase::Terminal {
+                    return false;
+                }
+                cell.phase = Phase::Unreachable;
                 cell.consecutive_failures = 0;
                 true
             }

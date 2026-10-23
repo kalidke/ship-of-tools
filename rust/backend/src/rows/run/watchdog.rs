@@ -57,8 +57,8 @@ struct Budget {
 impl Budget {
     /// Judges an exit of a supervisor that was (or never was) told `ready`: the backoff before its restart, `None`
     /// when the budget is spent.
-    fn on_exit(&mut self, reached_ready: bool, now: Instant) -> Option<std::time::Duration> {
-        self.last_exit_was_ready = reached_ready;
+    fn on_exit(&mut self, said_ready: bool, now: Instant) -> Option<std::time::Duration> {
+        self.last_exit_was_ready = said_ready;
         let restarts = if self.last_exit_was_ready {
             self.never_ready = 0;
             self.ready_restarts.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
@@ -357,8 +357,8 @@ pub(super) fn install_watchdog(
                 }
                 LegOutcome::Crash | LegOutcome::AgentEnded => {
                     // Decided before taking the guard -- giving up needs no recheck (R4a).
-                    let reached_ready = workspaces.resolve(Some(&workspace_id)).is_some_and(|ws| ws.reached_ready());
-                    let Some(backoff) = budget.on_exit(reached_ready, Instant::now()) else {
+                    let said_ready = workspaces.resolve(Some(&workspace_id)).is_some_and(|ws| ws.watch_said_ready());
+                    let Some(backoff) = budget.on_exit(said_ready, Instant::now()) else {
                         tracing::error!(
                             workspace_id = %workspace_id, window = ?RESTART_WINDOW, max = MAX_RESTARTS_PER_WINDOW,
                             "capsule supervisor watchdog: restart budget exhausted -- giving up, marking terminal"

@@ -201,23 +201,23 @@ fn activation_error_is_independent_of_phase_and_clears_on_the_next_attempt() {
 /// The watch record: a supervisor reached `ready` iff its watch said so, in the first reply or in a `row.phase` of the
 /// same supervisor, never another's; a spawn clears it, and an event with no record names nobody.
 #[test]
-fn a_supervisor_reached_ready_only_if_its_watch_said_so() {
+fn a_supervisor_was_told_ready_only_if_its_watch_said_so() {
     let a = identity(1, 100);
     let b = identity(2, 200);
     let ws = unclaimed_capsule_row();
-    assert!(!ws.reached_ready(), "no watch, no record");
+    assert!(!ws.watch_said_ready(), "no watch, no record");
     ws.record_watch(a, false);
-    assert!(!ws.reached_ready(), "a first reply that said starting");
+    assert!(!ws.watch_said_ready(), "a first reply that said starting");
     ws.note_watch_ready(b);
-    assert!(!ws.reached_ready(), "another supervisor's event is not this record's");
+    assert!(!ws.watch_said_ready(), "another supervisor's event is not this record's");
     ws.note_watch_ready(a);
-    assert!(ws.reached_ready(), "the same supervisor told ready");
+    assert!(ws.watch_said_ready(), "the same supervisor told ready");
     ws.clear_watched();
-    assert!(!ws.reached_ready(), "a spawn clears the record");
+    assert!(!ws.watch_said_ready(), "a spawn clears the record");
     ws.note_watch_ready(a);
-    assert!(!ws.reached_ready(), "an event with no record names nobody");
+    assert!(!ws.watch_said_ready(), "an event with no record names nobody");
     ws.record_watch(b, true);
-    assert!(ws.reached_ready(), "a first reply that said ready");
+    assert!(ws.watch_said_ready(), "a first reply that said ready");
 }
 
 /// With no wake sent, a fence file that appears under a running observer is still found: the observer's own wait rule,
@@ -252,4 +252,23 @@ async fn a_fence_that_appears_without_a_wake_is_observed() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert_eq!(ws.phase(), Phase::Unreachable, "a fence file with nothing answering reads unreachable within 10 s");
+}
+
+/// A supervisor whose process ended is not answering, whatever its last report said: a rest does not outlive it. A
+/// `terminal` mark does (the watchdog or the next start owns it), and a new supervisor's first report begins its epoch.
+#[test]
+fn a_supervisor_that_is_gone_reads_unreachable_over_a_rest_but_not_over_terminal() {
+    let a = identity(1, 100);
+    let ws = seeded_capsule_row(a);
+    let r1 = uuid::Uuid::from_u128(1);
+    observe(&ws, Observation::Phase { phase: Phase::EndedNoRespawn, supervisor: a, run: Some(r1) });
+    assert_eq!(ws.phase(), Phase::EndedNoRespawn);
+    observe(&ws, Observation::Gone);
+    assert_eq!(ws.phase(), Phase::Unreachable, "the rest ended with its supervisor");
+
+    let b = identity(2, 200);
+    ws.begin_supervisor_epoch(b);
+    observe(&ws, phase_obs(Phase::Terminal, b));
+    observe(&ws, Observation::Gone);
+    assert_eq!(ws.phase(), Phase::Terminal, "a terminal mark outlives its supervisor");
 }
