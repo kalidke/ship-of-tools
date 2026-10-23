@@ -82,12 +82,17 @@ true after the merge of the leg into the supervisor.
   says so (`Unproven`), apart from a deadline that expired (`Timeout`).
 - Eight connections are eight real ones. A connection has two threads, a reader and a writer; its slot returns only
   after both have ended, and `RowServer::shutdown` stops the acceptor, ends every connection's stream and joins every
-  connection thread. A viewer whose queue of 256 frames fills is evicted: its stream is shut down so its blocked
-  threads return, and its slot returns when they end. On Unix that is `shutdown(2)`; on Windows it is `CancelIoEx` on
-  the pipe's handle, with later calls failing at once. Limits: a Windows pipe has no read timeout, so a peer that
+  connection thread. A viewer that cannot keep up is resynced, not cut: when 256 output frames wait for it they are all
+  dropped, it is taken out of the live set, and the next ground state sends it a fresh snapshot, after which output
+  follows in order; its answers (a request's reply, a demotion, a snapshot) are never dropped, so a driver that types
+  under a flood keeps its connection and gets every reply (`tests/row_flood.rs`). A viewer whose answers alone fill 64
+  frames, or that makes no progress writing for 5 s, is cut: its stream is shut down so its blocked threads return,
+  and its slot returns when they end. On Unix that is `shutdown(2)`; on Windows it is `CancelIoEx` on the pipe's
+  handle, with later calls failing at once. Limits: a Windows pipe has no read timeout, so a peer that
   never says hello holds its two threads and a slot until it closes or the row ends; a write blocked in the
   supervisor's own terminal (below) is not a row thread's. The client's incoming queue is bounded (256 frames), so a
-  caller that stops pumping stops the client reading and the row evicts it; a request's write is under its deadline.
+  caller that stops pumping stops the client reading, and the row drops its output and resyncs it; a request's write is
+  under its deadline.
 - `row.attach` sends the screen as a snapshot cut at a parser ground state, in blobs of at most 1 MiB with the last
   flagged, then the output in order in blobs of at most 64 KiB. One connection at a time is the driver. A driver's
   attach applies its own size to the terminal first, waiting for the loop's answer, so the snapshot is cut at that
@@ -102,29 +107,44 @@ true after the merge of the leg into the supervisor.
 - Limits of this landing: the attach lane `voyage-<id>` and its server are still bound and served and nothing dials
   them (pass 6c-1a2 switched every viewer; deleting `attach_proto`, `wire/attach.rs` and the loop's lane serving is
   left, queue item ATTACH-LANE-SERVER); a live 6b row on a dev box is not served by the row socket, and no candidate is
-  cut from main until 6c-2. Typed input reaches the terminal on a thread of its own (`src/row/input.rs`), at most 16
-  writes waiting behind it and one more refused as `busy`, so the loop's own write is no longer blocking; that old
-  lane's `write_all` stays until the lane goes. On Linux the challenge refuses a peer that started in the clock tick the client connects in
+  cut from main until 6c-2. The old lane's own `ForwardInput` still does a blocking `write_all` on the loop, on a
+  path nothing reaches, and goes with the lane. On Linux the challenge refuses a peer that started in the clock tick the client connects in
   (`validate_pin`), so a supervisor dialed within 10 ms of its start can be `Unproven`; a later connection, with a
   fresh anchor, is proven, and a test binary that is both ends waits out one tick first. The row socket is the
   capsule's first dependency on `sot-protocol`.
-- The row socket is the only way in (pass 6c-1a2). `FeAttachClient` is one worker thread over `RowClient`: it waits until
-  the row is viewed and the endpoint's link is up, dials once, restores the snapshot into its parser and then follows
-  the output; a lost connection is redialed on platform's `Redial` (250 ms doubling to 4 s, started over only after a
-  connection that lasted `STABLE`). The window attaches as the driver, the wake and the dialog tick as watchers that
-  take the pen only to type; a client that was demoted takes it again on its next input. Input typed before the attach
-  is held and sent after it, 8 KiB at most, and a count of the inputs dropped for want of room is kept. The worker
-  stops reading the row once 4 MiB of output sit unconsumed, so a viewer that does not pump is evicted by the row and
-  shown a fresh snapshot on its redial. A failure ends the episode only when it cannot get better (another account's
-  socket, a row number this client does not speak, a refusal by the daemon, access denied) or when the row's socket has
-  been absent, though the daemon answers, for 120 s running; anything else is retried, and a daemon that cannot be
-  reached starts that window over. A bind failure of the row socket ends the supervisor terminal before
-  any agent starts. Input to the terminal is written without blocking the run's loop, so an agent that reads nothing
-  until its output drains cannot stop that drain (`a_paste_the_agent_has_not_read_does_not_stop_its_output`).
+- The row socket is the way in for every shipped viewer (pass 6c-1a2; the drawer's attach and the old lane's own clients
+  are not shipped). `FeAttachClient` is one worker thread over `RowClient`: it waits until the row is viewed and the
+  endpoint's link is up, dials once, restores the snapshot into its parser and then follows the output, restoring any
+  resync snapshot the row sends; a lost connection is redialed on platform's `Redial` (250 ms doubling to 4 s, started
+  over only after a connection that lasted `STABLE`). A login (an ssh one has topology's 30 s) and the row's hello (10 s,
+  from the stream being up) have budgets of their own. The window attaches as the driver, the wake and the dialog tick
+  as watchers that take the pen only to type; a client that was demoted, also while its snapshot was on its way, takes
+  it again on its next input. Input typed before the attach is held and sent after it, 8 KiB at most; each queued input
+  is tagged with the run it was typed into, and one left over when the connection comes back to another run is answered
+  `run ended`, counted and never written. A headless client takes the pen once per run: its Enter never takes it in a
+  replacement run, and in the same run after a reconnect it does not take it again. Unknown delivery (`delivery unknown`,
+  `run ended`) is the outcome the window says in its status line. The worker stops reading the row once 4 MiB of
+  output sit unconsumed, so a viewer that does not pump is resynced by the row. A failure ends the episode only when it
+  cannot get better (another account's socket, a row number this client does not speak, a refusal by the daemon, access
+  denied, a socket path that can never fit) or when the row's socket has been absent, though the daemon answers, for
+  120 s running; anything else is retried, and a daemon that cannot be reached starts that window over. The drawer's
+  attach (dormant until 6c-2 deletes it) names a row no row has, so it ends terminal after those 120 s.
+- A bind failure of the row socket ends the supervisor with 75 (`EXIT_AGENT_NOT_STARTED`), before any agent starts:
+  it is a row that did not start, so rows' watchdog counts it against its one restart budget and ends the row terminal
+  only when the failure lasts through the budget (`capsule_workspaces::a_row_socket_that_cannot_be_bound_ends_the_row_terminal_through_the_budget`).
+  The Unix bind reclaims a socket file left behind without probing for a listener: the fence is held, so the file is
+  this row's own.
+- Every write to the terminal has one owner (`src/row/input.rs`): one thread, started with the run's terminal, writes
+  typed input and the host's DA1 reply in the order they were handed over, so the main loop never blocks on the terminal
+  (`a_paste_the_agent_has_not_read_does_not_stop_its_output`: a paste fills the input buffer, the agent then asks DA1 and
+  writes more output than the run queues before reading). Up to 16 typed writes wait behind it and one more is refused
+  `busy`. The run retires it at its end, within 2 s: what waits is answered `run ended` and never written, and the thread
+  is joined; a write blocked in the terminal returns when the agent's terminal is hung up. Limit: a thread that still
+  does not end within the bound is noted and left; it holds the cloned terminal until the write fails.
 - Attach is ground-gated (`writer_loop::output_path::ground_check`), so a viewer joins only at a parser ground
   boundary, after every byte the parser has seen was published.
-- `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot serve the row), 70 (`EXIT_CONTENDED`, the
-  fence was already held), 75 (`EXIT_AGENT_NOT_STARTED`: the agent could not be spawned) or 76 (`EXIT_AGENT_ENDED`: it
+- `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot take its fence or its lane), 70 (`EXIT_CONTENDED`, the
+  fence was already held), 75 (`EXIT_AGENT_NOT_STARTED`: the agent could not be spawned, or the row socket could not be bound) or 76 (`EXIT_AGENT_ENDED`: it
   started and ended by itself), the last two with no stop or end asked for (`tests/supervisor/spawn.rs`). A supervisor
   killed has no code. Limits: a supervisor that fails to take over an inherited claim (a wrong or unlocked descriptor)
   also exits 70, which does not prove another live authority; and on Unix an executable that passes preflight but fails

@@ -437,3 +437,83 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     client.shutdown(Duration::from_secs(5)); drop(client);
     guard.finish();
 }
+
+// -----------------------------------------------------------------------
+// (iv) The row number is the one gate: a row that writes an older wire integer in every envelope attaches through the
+// bridge, which pipes bytes and judges neither.
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_row_that_writes_an_older_wire_integer_attaches_through_the_bridge() {
+    use sot_protocol::codec::{read_frame_blocking_blob, write_frame_blocking_blob};
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("lb10");
+    // A row that was never started, whose socket this test serves itself.
+    env.seed_capsule_toml("ws-lb10-standin", "lb10-standin", &env.workspace_project_root, "none");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let _ = next_id;
+    let row = find_row(&list_payload, "ws-lb10-standin").expect("the seeded row is registered");
+    let target = row["session_name"].as_str().expect("session_name").to_string();
+    let state_dir = env.state_root.join("sot").join("workspaces").join("ws-lb10-standin");
+    let path = sot_log::row::socket_path_in(env._runtime_tmp.path(), &sot_platform::host::state_dir::state_dir_hash(&state_dir))
+        .expect("the row socket path fits");
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the stand-in row");
+    let older = sot_protocol::PROTOCOL_VERSION - 1;
+    std::thread::spawn(move || {
+        // The daemon's own dial connects and authenticates first, and says nothing; the client's connection is the next.
+        while let Ok((stream, _)) = listener.accept() {
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut out = stream;
+            while let Ok((frame, _)) = read_frame_blocking_blob(&mut reader) {
+                let mut reply = match frame.op.as_str() {
+                    "row.hello" => {
+                        let (pid, created) = sot_log::row::self_identity().expect("own identity");
+                        sot_protocol::Frame::res(
+                            frame.id,
+                            "row.hello",
+                            serde_json::json!({"pid": pid, "created": created, "phase": "ready", "run": "run-old-v", "row": sot_log::row::ROW_PROTOCOL}),
+                        )
+                    }
+                    "row.attach" => sot_protocol::Frame::res(frame.id, "row.attach", serde_json::json!({"run": "run-old-v"})),
+                    _ => sot_protocol::Frame::res(frame.id, &frame.op, serde_json::json!({})),
+                };
+                reply.v = older;
+                if write_frame_blocking_blob(&mut out, &reply, None).is_err() {
+                    break;
+                }
+                if frame.op == "row.attach" {
+                    let mut parser = vt100_ctt::Parser::new(24, 80, 0);
+                    parser.process(b"older wire, same row number");
+                    let checkpoint = parser.screen().checkpoint().expect("a checkpoint");
+                    let mut evt = sot_protocol::Frame::evt(
+                        "row.snapshot",
+                        serde_json::json!({"last": true, "blob": {"len": checkpoint.len(), "mime": "application/octet-stream"}}),
+                    );
+                    evt.v = older;
+                    if write_frame_blocking_blob(&mut out, &evt, Some(&checkpoint)).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let relay = Relay::start(env.socket_path.clone()).await;
+    let (_woke, wake) = wake_flag_for_test();
+    let mut client = FeAttachClient::attach(daemon_lane_endpoint(&relay), target, 80, 24, wake).expect("attach");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !client.is_checkpointed() {
+        client.pump();
+        assert!(!client.is_dead(), "a row on an older wire integer was refused through the bridge: {}", client.status_line());
+        assert!(Instant::now() < deadline, "never checkpointed through the bridge; status {:?}", client.status_line());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(client.screen().contents().contains("older wire, same row number"), "{}", client.screen().contents());
+    assert_eq!(client.run(), "run-old-v");
+    drop(client);
+    relay.cut();
+    env.kill_daemon_bounded().await;
+}

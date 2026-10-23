@@ -74,8 +74,8 @@ of each.
 6. **A close of the gate ends the login a dial is waiting on.** A login's start and its `LinkWatch` are taken under the
    one admission lock (`LinkGate::spawn_sync` and `spawn_async` return both; `watch` alone for a relay dial that
    starts no ssh here), so a close either finds the watch and ends the dial (`LinkDown`, the handshake cancelled
-   through the stream's own cancel) or finds the link down and no login starts. Limit: a login that does not honor its
-   cancel still waits for its own bound.
+   through the stream's own cancel) or finds the link down and no login starts. Limits: the close ends a login that is still pending, not an established attach: closing that stream ends it (the
+   client's drop tears the child down); a login that does not honor its cancel still waits for its own bound.
 7. **A lane dial is bounded, typed and its child's end is bounded.** A local dial goes through `connect_own` (only
    an endpoint this OS account serves) and its fixed `CONNECT_BOUND` retry budget, which an attempt in progress
    finishes; its handshake is bounded separately (2 s) and cancellable; on an ssh or relay route the handshake waits
@@ -152,7 +152,7 @@ The window (`rust/frontend`): `LinkGate`, `SshRecipe`, `DaemonLaneEndpoint`, `re
 read `SSH_OPTS` and run `sotd topology pin|plan|sync` and `sotd same-version`.
 
 ## Does not
-Hold a connection beyond one dial (the lane client keeps its streams and a parked login; fe-net and the daemon's link hold the long-lived ones), decide when anything ends (lifecycle), start a daemon child
+Hold a connection beyond one dial (the lane client keeps its streams; fe-net and the daemon's link hold the long-lived ones), decide when anything ends (lifecycle), start a daemon child
 outside containment except through the named exceptions, run a shell on this end, decide who may send `topology.set`
 (server's admission), or interpret a daemon's replies beyond the lane handshake.
 
