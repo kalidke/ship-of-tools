@@ -107,3 +107,37 @@ fn a_terminal_supervisor_admits_no_run() {
     assert!(!shared.run_begins("run-a".into(), kill, Arc::new(RunSignals::default())));
     assert!(shared.is_terminal());
 }
+
+/// The change hook reads the status, which takes `Shared`'s lock: every method that changes the phase or the run calls it
+/// after releasing that lock, or the announcement deadlocks.
+#[test]
+fn the_change_hook_runs_with_the_lock_released() {
+    let shared = Arc::new(Shared::new());
+    let told = Arc::new(Mutex::new(Vec::new()));
+    {
+        let (reading, told) = (Arc::clone(&shared), Arc::clone(&told));
+        shared.set_change_hook(Box::new(move || {
+            let status = reading.status();
+            told.lock().unwrap().push((status.phase, status.run));
+        }));
+    }
+    let (done, finished) = mpsc::channel();
+    let worker = Arc::clone(&shared);
+    std::thread::spawn(move || {
+        let (kill, _commands) = mpsc::channel();
+        assert!(worker.run_begins("run-one".into(), kill, Arc::new(RunSignals::default())));
+        let admission = worker.admit_end("run-one").expect("the end is admitted");
+        worker.run_ended();
+        assert_eq!(worker.wait_end(admission).outcome, EndRunOutcome::Ended);
+        let reset = worker.admit_reset().expect("a resting supervisor admits a reset");
+        worker.reset_done();
+        let _ = reset;
+        worker.terminal("test".into());
+        let _ = done.send(());
+    });
+    assert!(finished.recv_timeout(Duration::from_secs(5)).is_ok(), "a change hook that reads the status deadlocked");
+    let told = told.lock().unwrap().clone();
+    let phases: Vec<_> = told.iter().map(|(phase, _)| phase.as_str()).collect();
+    assert_eq!(phases, ["starting", "ending", "ended_no_respawn", "starting", "starting", "terminal"], "{told:?}");
+    assert_eq!(told[0].1.as_deref(), Some("run-one"), "the first report already names the run it began");
+}

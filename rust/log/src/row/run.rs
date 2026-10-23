@@ -1,7 +1,10 @@
 //! The run side of the row socket: what the supervisor's main loop feeds and drains.
 
 use super::manage::Management;
-use super::proto::{AttachRes, OP_ATTACH, OP_DEMOTED, OP_OUTPUT, OP_SNAPSHOT, OUTPUT_CHUNK, SNAPSHOT_CHUNK};
+use super::proto::{
+    AttachRes, ExitingEvt, StatusRes, OP_ATTACH, OP_DEMOTED, OP_EXITING, OP_OUTPUT, OP_PHASE, OP_SNAPSHOT, OP_WATCH, OUTPUT_CHUNK,
+    SNAPSHOT_CHUNK,
+};
 use super::MAX_CONNECTIONS;
 use serde_json::json;
 use sot_protocol::Frame;
@@ -30,7 +33,7 @@ enum Class {
     Output,
     /// A piece of a screen, `first` on its first: a screen the writer has not begun is superseded by a resync's.
     Screen { first: bool },
-    /// A request's reply or a demotion.
+    /// A request's reply, a demotion or a watch's report: never dropped.
     Answer,
 }
 
@@ -148,6 +151,8 @@ struct Conn {
     live: bool,
     /// Ends the connection's stream, so a reader or writer blocked on it returns.
     closer: Arc<dyn Fn() + Send + Sync>,
+    /// The connection holds a watch: it is told each change of phase or run, and the exit.
+    watching: bool,
 }
 
 /// A connection's slot. It is released when both of the connection's threads have ended, never earlier, so at most
@@ -203,6 +208,12 @@ struct Inner {
 /// and drains [`RowRun::take_requests`]; connections never touch the parser or the terminal.
 pub struct RowRun {
     inner: Mutex<Inner>,
+    /// The status last told to the watchers. Held across a read of the status and the queueing of what it says, so
+    /// reports leave in the order of the states they report; never held while `inner` is asked for anything but the
+    /// queueing itself, and never taken under the management's own lock.
+    announced: Mutex<Option<StatusRes>>,
+    /// A connection was released.
+    released: std::sync::Condvar,
 }
 
 impl RowRun {
@@ -225,6 +236,8 @@ impl RowRun {
                 wake: None,
                 management: None,
             }),
+            announced: Mutex::new(None),
+            released: std::sync::Condvar::new(),
         })
     }
 
@@ -261,6 +274,7 @@ impl RowRun {
     /// A connection's two threads have ended and its queue is drained: the management hears of it.
     pub(super) fn released(&self, id: ConnId) {
         self.lock().conns.remove(&id);
+        self.released.notify_all();
         if let Some(management) = self.management() {
             management.conn_gone(id);
         }
@@ -315,8 +329,10 @@ impl RowRun {
         inner.serve_pending(parser);
     }
 
-    /// Serves attaches waiting for a ground state.
+    /// Serves attaches waiting for a ground state, and tells the watchers of a change the run made on its own (`ready`
+    /// is a clock).
     pub fn tick(&self, parser: &vt100_ctt::Parser) {
+        self.announce();
         let mut inner = self.lock();
         if !inner.pending.is_empty() {
             inner.serve_pending(parser);
@@ -334,6 +350,72 @@ impl RowRun {
             inner.arm_wake();
         }
         taken
+    }
+
+    /// Tells every watcher the status if it differs from the one last told: one `row.phase` per change of phase or run.
+    /// Returns at once when nothing watches. The caller holds no lock of the management it reads, so a change hook calls
+    /// it only after the lock that guards the change is released.
+    pub fn announce(&self) {
+        if !self.lock().conns.values().any(|c| c.watching) {
+            return;
+        }
+        let Some(management) = self.management() else { return };
+        let mut announced = self.announced.lock().unwrap_or_else(|p| p.into_inner());
+        let now = management.status();
+        self.tell_watchers(&mut announced, now);
+    }
+
+    /// Queues `now` to every watcher when it differs from the one last told.
+    fn tell_watchers(&self, announced: &mut Option<StatusRes>, now: StatusRes) {
+        if announced.as_ref() == Some(&now) {
+            return;
+        }
+        let mut inner = self.lock();
+        let watchers: Vec<ConnId> = inner.conns.iter().filter(|(_, c)| c.watching).map(|(id, _)| *id).collect();
+        for id in watchers {
+            inner.send(id, Frame::evt(OP_PHASE, serde_json::to_value(&now).unwrap_or_default()), None);
+        }
+        *announced = Some(now);
+    }
+
+    /// Makes `id` a watcher: its reply is the status the row has now, and every change after it is a `row.phase`. The
+    /// watchers there already hear first of any change this read finds, so nobody is told out of order.
+    pub(super) fn watch(&self, id: ConnId, req_id: u64, management: &dyn Management) {
+        let mut announced = self.announced.lock().unwrap_or_else(|p| p.into_inner());
+        let now = management.status();
+        self.tell_watchers(&mut announced, now.clone());
+        let mut inner = self.lock();
+        if let Some(conn) = inner.conns.get_mut(&id) {
+            conn.watching = true;
+        }
+        inner.send(id, Frame::res(req_id, OP_WATCH, serde_json::to_value(&now).unwrap_or_default()), None);
+    }
+
+    /// The supervisor leaves with `code`: every watcher is sent `row.exiting` as its last frame and its stream ends once it
+    /// is written. Waits, at most `bound`, until those connections are released, so that the server's shutdown, which
+    /// aborts what is still queued, cannot lose the frame. Returns at once when nothing watches.
+    pub fn exiting(&self, code: i32, bound: Duration) {
+        {
+            let _announced = self.announced.lock().unwrap_or_else(|p| p.into_inner());
+            let mut inner = self.lock();
+            let watchers: Vec<ConnId> = inner.conns.iter().filter(|(_, c)| c.watching).map(|(id, _)| *id).collect();
+            for id in watchers {
+                let evt = Frame::evt(OP_EXITING, serde_json::to_value(ExitingEvt { code }).unwrap_or_default());
+                inner.send(id, evt, None);
+                if let Some(conn) = inner.conns.get_mut(&id) {
+                    conn.queue.finish();
+                }
+            }
+        }
+        let deadline = std::time::Instant::now() + bound;
+        let mut inner = self.lock();
+        while inner.conns.values().any(|c| c.watching) {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            inner = self.released.wait_timeout(inner, left).unwrap_or_else(|p| p.into_inner()).0;
+        }
     }
 
     /// Connections open now, counted until both of a connection's threads have ended.
@@ -376,7 +458,7 @@ impl RowRun {
         let id = inner.next_conn;
         inner.next_conn += 1;
         let queue = OutQueue::new();
-        inner.conns.insert(id, Conn { queue: Arc::clone(&queue), live: false, closer });
+        inner.conns.insert(id, Conn { queue: Arc::clone(&queue), live: false, closer, watching: false });
         Some((id, queue, Slot(Arc::clone(self))))
     }
 

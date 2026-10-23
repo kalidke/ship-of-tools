@@ -54,6 +54,8 @@ const MAIN_LOOP_POLL: Duration = Duration::from_millis(100);
 const TERMINAL_EXIT_GRACE: Duration = Duration::from_secs(2);
 /// How long the exit waits for a `stop`'s reply to be delivered.
 const STOP_REPLY_BOUND: Duration = Duration::from_secs(3);
+/// How long the exit waits for the watchers to be sent `row.exiting` before the row socket is dropped.
+const EXITING_TOLD_BOUND: Duration = Duration::from_secs(1);
 
 /// The launcher's contract: `0` clean end, do not restart; `69` terminal, do not restart, surface it; `70` the
 /// fence was already held by a live supervisor, so look for it and never start a third; `75` the agent could not be
@@ -166,6 +168,11 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         row.set_phase_source(Box::new(move || shared.phase_text().to_string()));
     }
     row.set_management(Box::new(SharedHandle(Arc::clone(&shared))));
+    {
+        // A change of phase or run reaches the row's watchers from here, after the lock that guards it is released.
+        let row = Arc::clone(&row);
+        shared.set_change_hook(Box::new(move || row.announce()));
+    }
     // The row socket is the way in: a row nobody can reach is not worth an agent, so a bind failure ends this supervisor
     // before one starts, as a row that did not start: exit 75, which rows' watchdog counts against its one restart budget
     // (a failure that lasts ends the row terminal there, one that passes costs a restart).
@@ -195,6 +202,8 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     };
     let code = drive(&config, &shared, &row);
     shared.finish();
+    // The watchers hear the exit before the row socket is dropped: the server's end aborts what is still queued.
+    row.exiting(code, EXITING_TOLD_BOUND);
     let _ = watch_tx.send(Watch::Stop);
     if row_watch.join().is_err() {
         note(format_args!("the row listener's watch panicked"));

@@ -99,3 +99,136 @@ fn a_closed_connection_stays_reachable_until_its_threads_have_ended() {
     run.close_all();
     assert!(closed.load(Ordering::SeqCst), "close_all did not reach a connection whose writer has yet to end");
 }
+
+/// A management whose status the test sets.
+struct Scripted(Mutex<StatusRes>);
+
+impl Scripted {
+    fn new(phase: &str, run: Option<&str>) -> Arc<Self> {
+        Arc::new(Scripted(Mutex::new(StatusRes { phase: phase.into(), run: run.map(str::to_string) })))
+    }
+    fn set(&self, phase: &str, run: Option<&str>) {
+        *self.0.lock().unwrap() = StatusRes { phase: phase.into(), run: run.map(str::to_string) };
+    }
+}
+
+impl Management for Arc<Scripted> {
+    fn status(&self) -> StatusRes {
+        self.0.lock().unwrap().clone()
+    }
+    fn end_run(&self, _: &str, _: &str) -> super::super::proto::EndRunRes {
+        unreachable!()
+    }
+    fn reset(&self) -> super::super::proto::ResetRes {
+        unreachable!()
+    }
+    fn stop(&self, _: ConnId) -> super::super::proto::StopRes {
+        unreachable!()
+    }
+    fn conn_gone(&self, _: ConnId) {}
+}
+
+/// The frames a watcher's queue holds, as `(op, payload)`, oldest first.
+fn drained(queue: &OutQueue) -> Vec<(String, serde_json::Value)> {
+    let mut frames = Vec::new();
+    queue.finish();
+    while let Some(Out::Frame(frame, _)) = queue.pop() {
+        frames.push((frame.op, frame.payload));
+    }
+    frames
+}
+
+/// A watch answers the status the row has; after it, one `row.phase` leaves for each change of phase or run and none for
+/// a status that is the same, and a second watcher joining hears the first's changes in order.
+#[test]
+fn a_watch_is_told_each_change_once_and_in_order() {
+    let run = RowRun::new("r", "starting");
+    let status = Scripted::new("starting", None);
+    run.set_management(Box::new(Arc::clone(&status)));
+    let (id, queue, slot) = run.open(Arc::new(|| {})).expect("a slot");
+    run.watch(id, 7, &Arc::clone(&status));
+    run.announce();
+    status.set("starting", Some("run-one"));
+    run.announce();
+    run.announce();
+    status.set("ready", Some("run-one"));
+    run.announce();
+    let frames = drained(&queue);
+    let ops: Vec<_> = frames.iter().map(|(op, _)| op.as_str()).collect();
+    assert_eq!(ops, ["row.watch", "row.phase", "row.phase"], "{frames:?}");
+    assert_eq!(frames[0].1["phase"], "starting");
+    assert_eq!(frames[1].1["run"], "run-one");
+    assert_eq!(frames[2].1["phase"], "ready");
+    drop(slot);
+}
+
+/// A row nobody watches reads no status: the loop's every tick costs nothing.
+#[test]
+fn announce_returns_at_once_when_nothing_watches() {
+    struct Panics;
+    impl Management for Panics {
+        fn status(&self) -> StatusRes {
+            panic!("the status was read for no watcher")
+        }
+        fn end_run(&self, _: &str, _: &str) -> super::super::proto::EndRunRes {
+            unreachable!()
+        }
+        fn reset(&self) -> super::super::proto::ResetRes {
+            unreachable!()
+        }
+        fn stop(&self, _: ConnId) -> super::super::proto::StopRes {
+            unreachable!()
+        }
+        fn conn_gone(&self, _: ConnId) {}
+    }
+    let run = RowRun::new("r", "ready");
+    run.set_management(Box::new(Panics));
+    let (_id, _queue, _slot) = run.open(Arc::new(|| {})).expect("a slot");
+    run.announce();
+}
+
+/// `row.exiting` is the watcher's last frame, and the server's shutdown, which aborts what is still queued, never loses
+/// it: `exiting` waits, bounded, until the watcher's connection has been released.
+#[test]
+fn exiting_is_sent_before_the_shutdown_and_waits_for_the_watchers() {
+    let run = RowRun::new("r", "ready");
+    let status = Scripted::new("ready", Some("run-one"));
+    run.set_management(Box::new(Arc::clone(&status)));
+    let (id, queue, slot) = run.open(Arc::new(|| {})).expect("a slot");
+    run.watch(id, 1, &Arc::clone(&status));
+    let writer_queue = Arc::clone(&queue);
+    let writer_run = Arc::clone(&run);
+    let writer = std::thread::spawn(move || {
+        // The connection's threads: the writer drains the queue, then the reader's end releases the connection.
+        let mut ops = Vec::new();
+        while let Some(Out::Frame(frame, _)) = writer_queue.pop() {
+            std::thread::sleep(Duration::from_millis(100));
+            ops.push((frame.op.clone(), frame.payload.clone()));
+        }
+        writer_run.close(id);
+        writer_run.released(id);
+        ops
+    });
+    run.exiting(76, Duration::from_secs(5));
+    // The connection is gone by the time `exiting` returns, so the shutdown that follows aborts nothing of it.
+    run.close_all();
+    let ops = writer.join().unwrap();
+    drop(slot);
+    let names: Vec<_> = ops.iter().map(|(op, _)| op.as_str()).collect();
+    assert_eq!(names, ["row.watch", "row.exiting"], "{ops:?}");
+    assert_eq!(ops[1].1["code"], 76);
+}
+
+/// A watcher that never drains cannot hold the exit past its bound.
+#[test]
+fn exiting_gives_up_on_a_watcher_that_does_not_drain() {
+    let run = RowRun::new("r", "ready");
+    let status = Scripted::new("ready", Some("run-one"));
+    run.set_management(Box::new(Arc::clone(&status)));
+    let (id, _queue, slot) = run.open(Arc::new(|| {})).expect("a slot");
+    run.watch(id, 1, &Arc::clone(&status));
+    let started = std::time::Instant::now();
+    run.exiting(0, Duration::from_millis(200));
+    assert!(started.elapsed() < Duration::from_secs(2), "the exit waited past its bound");
+    std::mem::forget(slot);
+}

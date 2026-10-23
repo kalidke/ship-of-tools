@@ -350,7 +350,8 @@ where
                 // Another connection took the pen while the screen was on its way: this client is a watcher, and its next
                 // key takes the pen again.
                 Some(RowEvent::Demoted) => driver = false,
-                Some(RowEvent::Output(_)) => {}
+                // An attach is no watch: the row sends it neither of the watch's reports.
+                Some(RowEvent::Output(_) | RowEvent::Phase(_) | RowEvent::Exiting(_)) => {}
                 None => {
                     if Instant::now() >= deadline {
                         return Err(Attempt::Retry { reason: "the row sent no screen".into(), absent: false });
@@ -389,7 +390,7 @@ where
                             (self.sink)(WorkerEvent::Checkpoint(std::mem::take(&mut resync)));
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None | Some(RowEvent::Phase(_) | RowEvent::Exiting(_))) => {}
                     Err(_) => return Ended::Lost,
                 }
             }

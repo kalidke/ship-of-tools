@@ -58,6 +58,9 @@ struct Inner {
 pub(super) struct Shared {
     inner: Mutex<Inner>,
     changed: Condvar,
+    /// Called, once the lock is released, by every method that changes the phase or the run the status reports: the row
+    /// socket's watchers are told from it. It reads the status, so it can never run under the lock.
+    on_change: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 /// What the main thread does once the agent's run ended.
@@ -98,6 +101,18 @@ impl Shared {
                 row_lost: false,
             }),
             changed: Condvar::new(),
+            on_change: OnceLock::new(),
+        }
+    }
+
+    /// Installs the hook the changing methods call after releasing the lock; set once, before the row socket serves.
+    pub(super) fn set_change_hook(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.on_change.set(hook);
+    }
+
+    fn announce_change(&self) {
+        if let Some(hook) = self.on_change.get() {
+            hook();
         }
     }
 
@@ -117,6 +132,8 @@ impl Shared {
         inner.run_over = false;
         inner.last_run = Some(id.clone());
         inner.run = Some(LiveRun { id, kill, signals });
+        drop(inner);
+        self.announce_change();
         true
     }
 
@@ -129,6 +146,8 @@ impl Shared {
             inner.end_answers.insert(admission, EndRunRes { outcome: EndRunOutcome::Ended, detail: None });
         }
         self.changed.notify_all();
+        drop(inner);
+        self.announce_change();
     }
 
     /// The supervisor can go no further: the agent could not run, or an internal step failed. Sticky.
@@ -152,6 +171,8 @@ impl Shared {
             inner.reset_answers.insert(admission, failed_reset(&detail));
         }
         self.changed.notify_all();
+        drop(inner);
+        self.announce_change();
     }
 
     /// The reset is published, the end record replaced: the next run starts clean.
@@ -161,6 +182,8 @@ impl Shared {
             inner.reset_answers.insert(admission, ResetRes { outcome: ResetOutcome::Reset, detail: None });
         }
         self.changed.notify_all();
+        drop(inner);
+        self.announce_change();
     }
 
     /// Blocks until the supervisor has something to do after the run: a stop, a reset, or the terminal grace over.
@@ -293,6 +316,8 @@ impl Shared {
                 let _ = kill.send(Command::Kill);
             }
         }
+        drop(inner);
+        self.announce_change();
         Ok(admission)
     }
 
@@ -332,6 +357,8 @@ impl Shared {
         inner.resetting = Some(admission);
         inner.phase = SupervisorPhase::Starting;
         self.changed.notify_all();
+        drop(inner);
+        self.announce_change();
         Ok(admission)
     }
 

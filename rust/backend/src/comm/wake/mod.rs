@@ -102,7 +102,7 @@ mod attempt;
 pub(crate) mod screen;
 mod unread;
 
-use attempt::{wake_if_free, WakeOutcome};
+use attempt::{wake_if_free, Owed, WakeOutcome};
 use screen::{prompt_glyphs, prompt_of, Prompt};
 use unread::scan;
 
@@ -125,12 +125,15 @@ const OP_BUDGET: Duration = Duration::from_secs(3);
 const STILL_FOR: Duration = Duration::from_millis(1500);
 
 /// When a handle was last woken: the inbox's complete-line count then.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Woken {
     line: u64,
     at: Instant,
     /// The line was typed and no Enter went: a later tick may send Enter alone ([`Decision::Complete`]), never type again.
     enter_owed: bool,
+    /// The run the attempt attached to, which is the run whose box holds the line: an attach that names another run
+    /// drops the debt.
+    run: String,
 }
 
 /// One look at `inbox/<h>.jsonl` against `read/<h>.cursor`.
@@ -209,7 +212,7 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
             }
             let state_dir = crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id);
             let home = comm_home.clone();
-            let prior = woken.get(&handle).copied();
+            let prior = woken.get(&handle).cloned();
             let h = handle.clone();
             let first = !looked.contains(&handle);
             // Concurrent: each wake holds the screen for STILL_FOR, so N rows
@@ -298,7 +301,7 @@ fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Stre
 /// is left alone and not looked at again for this reason. While the row is not Ready or cannot be read the look stays
 /// pending ([`Step::LookPending`]) and the next tick is `first` again; once it is made, [`Step::Looked`].
 fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Option<Woken>, first: bool) -> Step {
-    let s = scan(home, handle, prior.map_or(0, |w| w.line));
+    let s = scan(home, handle, prior.as_ref().map_or(0, |w| w.line));
     let look = first && prior.is_none() && s.unread == 0;
     let decision = if look { Decision::Complete } else { decide(&s, prior.as_ref(), Instant::now()) };
     let complete = match decision {
@@ -318,7 +321,7 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         return Step::Skip;
     }
     let seen: std::cell::RefCell<(Option<&'static str>, String)> = Default::default();
-    let free = |l: &[String], c: Option<(u16, u16)>, a: &str| -> Option<Prompt> {
+    let free = |l: &[String], c: Option<(u16, u16)>, a: &str, completes: bool| -> Option<Prompt> {
         // The registry, then the clock: a mark the read sees was stamped no later than `now`.
         let registry = crate::comm::registry::registry::read_registry_fresh(&home.join("registry.json")).unwrap_or_default();
         let now = crate::comm::registry::registry::unix_now_secs();
@@ -326,15 +329,21 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         let reason = match prompt {
             Err(reason) => Some(reason),
             // A Complete tick sends Enter to a line already in the box; an empty box is not its business.
-            Ok(Prompt::Empty) if complete => Some(LINE_NOT_SHOWN),
+            Ok(Prompt::Empty) if completes => Some(LINE_NOT_SHOWN),
             Ok(_) => stop_hook_running(&registry, handle, now).then_some("stop hook running"),
         };
         let border = c.and_then(|(row, _)| l.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
         *seen.borrow_mut() = (reason, border);
         prompt.ok().filter(|_| reason.is_none())
     };
-    let out = wake_if_free(state_dir, CONTROLLER_ID, handle, WAKE_LINE, &free, agent, STILL_FOR, OP_BUDGET);
+    // A boot look owes the run it finds; a tick owes the run its line was typed into.
+    let owed = complete.then(|| Owed { run: prior.as_ref().filter(|w| w.enter_owed).map(|w| w.run.as_str()), mail_unread: s.unread > 0 });
+    let out = wake_if_free(state_dir, CONTROLLER_ID, handle, WAKE_LINE, owed, &free, agent, STILL_FOR, OP_BUDGET);
     let seen = seen.take();
+    let (out, run) = match out {
+        Ok(attempted) => (Ok(attempted.outcome), attempted.run),
+        Err(e) => (Err(e), String::new()),
+    };
     if look {
         match (&out, seen.0) {
             (Err(_), _) => return Step::LookPending("the row could not be read"),
@@ -347,7 +356,7 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         tracing::info!(handle, "comm wake: main's input box is empty and the mail is read; the unsent wake line is no longer owed its Enter");
         return Step::Clear;
     }
-    step_of(handle, out, seen, s.total, Instant::now())
+    step_of(handle, out, &run, seen, s.total, Instant::now())
 }
 
 /// Whether a Complete tick that found main's box empty ([`LINE_NOT_SHOWN`]) ends the debt: the mail is read and
@@ -364,28 +373,31 @@ fn line_gone(s: &Scan, prior: Option<&Woken>, reason: Option<&str>, now: Instant
 /// and warned once per streak ([`settle`]); any other text-write failure may have landed, so it counts as typed and
 /// owes its Enter ([`WakeOutcome::TextUnknown`]). An Enter refused as stale wrote nothing, so it is owed
 /// ([`WakeOutcome::EnterRefused`]), and so is one whose delivery is unknown: if it was lost the line is still in the box.
+/// An Enter owed for another run's box, with no mail unread, is over ([`WakeOutcome::RunChanged`]).
 /// An attach or checkpoint failure is no row this tick.
-fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, seen: (Option<&'static str>, String), total: u64, now: Instant) -> Step {
+fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, run: &str, seen: (Option<&'static str>, String), total: u64, now: Instant) -> Step {
     let (reason, border) = seen;
     match out {
-        Ok(WakeOutcome::Woke) => Step::Woke(Woken { line: total, at: now, enter_owed: false }),
+        Ok(WakeOutcome::Woke) => Step::Woke(Woken { line: total, at: now, enter_owed: false, run: run.to_string() }),
         Ok(WakeOutcome::NotFree { row }) => Step::Refused(Refusal { reason: reason.unwrap_or("moved during the hold"), border, detail: None, row }),
         Ok(WakeOutcome::TypedNoEnter { reason, border, row }) => {
             tracing::warn!(handle, border = ?border, row = ?row, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
-            Step::Woke(Woken { line: total, at: now, enter_owed: true })
+            Step::Woke(Woken { line: total, at: now, enter_owed: true, run: run.to_string() })
         }
         Ok(WakeOutcome::TextUnknown { detail }) => {
             tracing::warn!(handle, border = ?border, "comm wake: text not confirmed ({detail}); the line may have landed, so it is not typed again and its Enter is owed");
-            Step::Woke(Woken { line: total, at: now, enter_owed: true })
+            Step::Woke(Woken { line: total, at: now, enter_owed: true, run: run.to_string() })
         }
         Ok(WakeOutcome::EnterRefused { detail }) => {
             tracing::warn!(handle, border = ?border, "comm wake: Enter refused ({detail}); the line was typed, so it is not typed again and its Enter is owed");
-            Step::Woke(Woken { line: total, at: now, enter_owed: true })
+            Step::Woke(Woken { line: total, at: now, enter_owed: true, run: run.to_string() })
         }
         Ok(WakeOutcome::Unconfirmed { step: "enter", detail }) => {
             tracing::warn!(handle, border = ?border, "comm wake: enter not confirmed ({detail}); the line was typed, so it is not typed again and its Enter is owed");
-            Step::Woke(Woken { line: total, at: now, enter_owed: true })
+            Step::Woke(Woken { line: total, at: now, enter_owed: true, run: run.to_string() })
         }
+        // Another run's box owes nothing, and no mail is unread: the debt is over.
+        Ok(WakeOutcome::RunChanged) => Step::Clear,
         Ok(WakeOutcome::Unconfirmed { detail, .. }) => Step::Refused(Refusal { reason: "text not confirmed", border, detail: Some(detail), row: String::new() }),
         Err(e) => {
             tracing::debug!(handle, phase = e.phase, detail = %e.detail, "comm wake: row not typeable this tick");

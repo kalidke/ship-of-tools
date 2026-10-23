@@ -26,8 +26,9 @@ true after the merge of the leg into the supervisor.
   socket), and the daemon's calls on a row's supervisor (`supervisor_client.rs`, over `RowClient`).
 - The row socket (`src/row/`), the way in for every viewer and for the daemon: a blocking acceptor, `RowClient` and
   the input thread, in wire's frames, and the four management ops (`row.status`, `row.end_run`, `row.reset`,
-  `row.stop`) a row hands to the `Management` its supervisor installs. Pass 6c-1a2 switched the window, the wake and
-  the bridge to it, and pass 6c-1b1 the daemon's calls; 6c-1c adds the watch.
+  `row.stop`) a row hands to the `Management` its supervisor installs, and the watch (`row.watch`, `row.phase`,
+  `row.exiting`). Pass 6c-1a2 switched the window, the wake and the bridge to it, and pass 6c-1b1 the daemon's calls;
+  pass 6c-1c3a serves the watch (the daemon does not yet hold one: 6c-1c3b).
 
 ## Promises
 - One process per row: the agent is the supervisor's own child. The supervisor takes `supervisor.lock` (or adopts the
@@ -54,6 +55,25 @@ true after the merge of the leg into the supervisor.
   on (`row.status`'s `run`), held in memory, and one restarted with `--resume` that rests on a requested end names no
   run, so the daemon's cell latches on no run and releases on the first (`tests/supervisor/spawn.rs::a_run_asked_to_end_rests_after_a_supervisor_restart`).
   A stop is not an end of the run: it leaves no request, so the next start runs the agent again.
+- A watch is a held connection the supervisor tells its phase on (`supervisor_client::watch`, a `Watch` over `RowClient`).
+  `row.watch` answers the status the row has, `{phase, run?}`, and each change of phase or run after it is one
+  `row.phase` event carrying the new status, in the order the changes happened and never twice for one status: `Shared`
+  calls a hook after releasing its lock in every method that changes either (an announcement made under the lock would
+  deadlock on the status it reads, `supervisor/authority_tests.rs::the_change_hook_runs_with_the_lock_released`), the
+  run's loop calls it each tick (`ready` is a clock), and one lock of the row's own is held across the read of the status
+  and the queueing of what it says (`row/run_tests.rs::a_watch_is_told_each_change_once_and_in_order`;
+  `tests/row_management.rs::a_watch_reports_each_phase_change_in_order`). A row nobody watches reads no status. A watch
+  takes no pen, needs no attach and is never closed as idle. A controlled exit (0, 69, 75 or 76, whichever `drive`
+  returns) is told, `row.exiting {code}` as the watcher's last frame and then the end of the stream: the supervisor sends
+  it right after `drive` returns and waits, at most 1 s, until the watchers' connections are released before it drops the
+  row socket, whose shutdown aborts what is still queued (`row/run_tests.rs::exiting_is_sent_before_the_shutdown_and_waits_for_the_watchers`,
+  `tests/row_management.rs::a_watch_reports_exiting_with_the_code_before_a_controlled_end`). A stream that ends with no
+  `row.exiting` is a kill, a lost listener (its 75 comes after the listener's server was dropped) or an exit before the
+  bind, and carries no code: a reader treats 75 and no code alike. A cancel handle gates every watch's publication, so a
+  cancel that lands during the dial leaves no connection behind and every watch on a cancelled handle is refused
+  (`tests/row_management.rs::a_cancelled_watch_never_publishes_a_connection`). Limit: an event still being written when
+  the connection is cut is lost with it; the next watch's first reply is the status then. The row protocol stays 1: no
+  release has shipped it.
 - The daemon's four calls are ops of the row socket, each answered in the calling connection's own thread, every outcome a
   reply payload (an `error` reply is kept for a protocol fault: an unknown op, a bad payload): `row.status` answers at
   once `{phase, run?}`; `row.end_run {run, reason}` is fenced by the run, so another run's id is `stale_run`

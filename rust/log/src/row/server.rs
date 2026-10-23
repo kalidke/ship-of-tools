@@ -6,7 +6,7 @@
 
 use super::proto::{
     AttachReq, EndRunReq, HelloReq, HelloRes, InputRes, ResizeReq, RowError, OP_ATTACH, OP_END_RUN, OP_HELLO, OP_INPUT,
-    OP_RESET, OP_RESIZE, OP_STATUS, OP_STOP, OP_TAKE,
+    OP_RESET, OP_RESIZE, OP_STATUS, OP_STOP, OP_TAKE, OP_WATCH,
 };
 use super::run::{code_of, ConnId, Out, OutQueue, RowRun, Slot};
 use super::ROW_PROTOCOL;
@@ -560,13 +560,14 @@ fn requests<R: std::io::BufRead>(reader: &mut R, id: ConnId, run: &Arc<RowRun>) 
                 Ok(()) => run.send(id, Frame::res(frame.id, OP_RESIZE, json!({})), None),
                 Err(msg) => refuse_with(run, id, &frame, &msg),
             },
-            OP_STATUS | OP_END_RUN | OP_RESET | OP_STOP => {
+            OP_STATUS | OP_WATCH | OP_END_RUN | OP_RESET | OP_STOP => {
                 let Some(management) = run.management() else {
                     refuse(run, id, &frame, "unknown_op", &format!("no row op {}", frame.op));
                     continue;
                 };
                 match frame.op.as_str() {
                     OP_STATUS => answer(run, id, &frame, &management.status()),
+                    OP_WATCH => run.watch(id, frame.id, &*management),
                     OP_END_RUN => match payload::<EndRunReq>(&frame) {
                         Ok(req) => answer(run, id, &frame, &management.end_run(&req.run, &req.reason)),
                         Err(msg) => refuse(run, id, &frame, "bad_payload", &msg),

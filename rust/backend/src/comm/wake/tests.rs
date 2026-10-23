@@ -4,7 +4,7 @@ use super::*;
 fn batches() {
     let t0 = Instant::now();
     let later = t0 + Duration::from_secs(601);
-    let w = Woken { line: 3, at: t0, enter_owed: false };
+    let w = Woken { line: 3, at: t0, enter_owed: false, run: "r".into() };
     let mail = |unread, fresh| Scan { total: 3, unread, fresh };
     // After a restart the map is empty: unread mail is a new batch.
     assert_eq!(decide(&mail(3, 3), None, t0), Decision::Wake);
@@ -18,7 +18,7 @@ fn batches() {
     assert_eq!(decide(&mail(0, 0), Some(&w), later), Decision::Clear);
     // A typed line owed its Enter: only Enter alone, fresh mail or not, until REPEAT_AFTER; then a new line; read,
     // still only Enter alone (`an_owed_enter_outlives_the_mail`).
-    let owed = Woken { enter_owed: true, ..w };
+    let owed = Woken { enter_owed: true, ..w.clone() };
     assert_eq!(decide(&mail(3, 0), Some(&owed), t0), Decision::Complete);
     assert_eq!(decide(&mail(4, 1), Some(&owed), t0), Decision::Complete);
     assert_eq!(decide(&mail(4, 1), Some(&owed), later), Decision::Wake);
@@ -31,11 +31,11 @@ fn batches() {
 #[test]
 fn an_owed_enter_outlives_the_mail() {
     let t0 = Instant::now();
-    let owed = Woken { line: 3, at: t0, enter_owed: true };
+    let owed = Woken { line: 3, at: t0, enter_owed: true, run: "r".into() };
     let read = Scan { total: 3, unread: 0, fresh: 0 };
     assert_eq!(decide(&read, Some(&owed), t0), Decision::Complete);
     assert_eq!(decide(&read, Some(&owed), t0 + REPEAT_AFTER * 3), Decision::Complete);
-    assert_eq!(decide(&read, Some(&Woken { enter_owed: false, ..owed }), t0), Decision::Clear);
+    assert_eq!(decide(&read, Some(&Woken { enter_owed: false, ..owed.clone() }), t0), Decision::Clear);
 }
 
 /// The debt ends on an empty box only with the mail read and REPEAT_AFTER past the typing; a box that holds the
@@ -45,7 +45,7 @@ fn an_owed_enter_outlives_the_mail() {
 fn an_empty_box_ends_the_debt_only_with_the_mail_read_and_repeat_after_past() {
     let t0 = Instant::now();
     let later = t0 + REPEAT_AFTER;
-    let owed = Woken { line: 3, at: t0, enter_owed: true };
+    let owed = Woken { line: 3, at: t0, enter_owed: true, run: "r".into() };
     let (read, unread) = (Scan { total: 3, unread: 0, fresh: 0 }, Scan { total: 3, unread: 3, fresh: 0 });
     assert!(line_gone(&read, Some(&owed), Some(LINE_NOT_SHOWN), later));
     assert!(!line_gone(&read, Some(&owed), Some(LINE_NOT_SHOWN), later - Duration::from_secs(1)));
@@ -53,7 +53,7 @@ fn an_empty_box_ends_the_debt_only_with_the_mail_read_and_repeat_after_past() {
     for other in [None, Some("cursor not at the prompt"), Some("stop hook running")] {
         assert!(!line_gone(&read, Some(&owed), other, later), "{other:?}");
     }
-    assert!(!line_gone(&read, Some(&Woken { enter_owed: false, ..owed }), Some(LINE_NOT_SHOWN), later));
+    assert!(!line_gone(&read, Some(&Woken { enter_owed: false, ..owed.clone() }), Some(LINE_NOT_SHOWN), later));
     assert!(!line_gone(&read, None, Some(LINE_NOT_SHOWN), later));
 }
 
@@ -98,7 +98,7 @@ fn a_refusal_streak_logs_one_line_and_a_wake_or_a_read_ends_it() {
     let t = text();
     assert!(t.contains("handle=h ") && t.contains("reason=\"input not empty\"") && t.contains("border=\"──── named-session ─\"") && t.contains("row=\"col 2: a\""), "{t}");
     // A wake ends the streak. Fails if it does not (the old streak is logged, so the count stays 1).
-    at(REFUSED_FOR * 6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false }));
+    at(REFUSED_FOR * 6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false, run: "r".into() }));
     at(REFUSED_FOR * 7, refused());
     assert_eq!(count(), 1, "a new streak waits its own bound");
     at(REFUSED_FOR * 8, refused());
@@ -113,7 +113,7 @@ fn a_refusal_streak_logs_one_line_and_a_wake_or_a_read_ends_it() {
 #[test]
 fn an_attach_failure_skips_the_row() {
     let out: Result<WakeOutcome, HeadlessError> = Err(HeadlessError { phase: "attach", detail: "no supervisor".into(), submitted: false });
-    assert!(matches!(step_of("h", out, (None, String::new()), 1, Instant::now()), Step::Skip));
+    assert!(matches!(step_of("h", out, "", (None, String::new()), 1, Instant::now()), Step::Skip));
 }
 
 /// The one text refusal left: `send_and_wait_recorded`'s phase `input`, in the wake's `phase: detail` shape.
@@ -124,12 +124,12 @@ fn a_typed_line_counts_as_the_wake_and_a_write_refused_as_stale_is_tried_again()
     let now = Instant::now();
     let seen = || (None, "b".to_string());
     let typed_no_enter = WakeOutcome::TypedNoEnter { reason: "typed text not in main's input box", border: String::new(), row: String::new() };
-    assert!(matches!(step_of("h", Ok(typed_no_enter), seen(), 7, now), Step::Woke(Woken { line: 7, enter_owed: true, .. })));
+    assert!(matches!(step_of("h", Ok(typed_no_enter), "r", seen(), 7, now), Step::Woke(Woken { line: 7, enter_owed: true, .. })));
     // An Enter of unknown delivery may have been lost, leaving the line in the box: owed, so a later tick finishes it.
     let enter = WakeOutcome::Unconfirmed { step: "enter", detail: "record: input delivery unknown".into() };
-    assert!(matches!(step_of("h", Ok(enter), seen(), 7, now), Step::Woke(Woken { line: 7, enter_owed: true, .. })));
+    assert!(matches!(step_of("h", Ok(enter), "r", seen(), 7, now), Step::Woke(Woken { line: 7, enter_owed: true, .. })));
     let text = WakeOutcome::Unconfirmed { step: "text", detail: STALE.into() };
-    match step_of("h", Ok(text), seen(), 7, now) {
+    match step_of("h", Ok(text), "r", seen(), 7, now) {
         Step::Refused(r) => {
             assert_eq!(r.reason, "text not confirmed");
             assert_eq!(r.detail.as_deref(), Some(STALE));
@@ -145,14 +145,14 @@ fn a_typed_line_counts_as_the_wake_and_a_write_refused_as_stale_is_tried_again()
 fn an_enter_refused_as_stale_is_still_owed() {
     let stale = HeadlessError { phase: "input", detail: "input refused as stale (the take epoch changed); this op is never retried".into(), submitted: true };
     let out = attempt::wake_outcome(Err(stale));
-    let step = step_of("h", Ok(out), (None, "b".to_string()), 7, Instant::now());
+    let step = step_of("h", Ok(out), "r", (None, "b".to_string()), 7, Instant::now());
     assert!(matches!(step, Step::Woke(Woken { line: 7, enter_owed: true, .. })), "an Enter refused as stale must stay owed");
 }
 
 #[test]
 fn a_text_write_of_unknown_delivery_owes_its_enter_and_is_not_typed_again() {
     let out = WakeOutcome::TextUnknown { detail: "record: input delivery unknown".into() };
-    assert!(matches!(step_of("h", Ok(out), (None, "b".to_string()), 7, Instant::now()), Step::Woke(Woken { line: 7, enter_owed: true, .. })));
+    assert!(matches!(step_of("h", Ok(out), "r", (None, "b".to_string()), 7, Instant::now()), Step::Woke(Woken { line: 7, enter_owed: true, .. })));
 }
 
 #[test]
@@ -167,7 +167,7 @@ fn an_unconfirmed_write_warns_once_per_streak() {
         at(secs, u());
     }
     assert_eq!(count(), 1);
-    at(6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false }));
+    at(6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false, run: "r".into() }));
     at(8, u());
     assert_eq!(count(), 2);
 }
@@ -193,8 +193,26 @@ fn a_typed_line_refusal_logs_the_row_the_gate_read() {
     let undimmed = screen_of(" try this");
     let Some(reason) = gate(&undimmed) else { panic!("the undimmed tail must refuse") };
     let outcome = WakeOutcome::TypedNoEnter { reason, border: String::new(), row: super::screen::cursor_row_trace(undimmed.screen()) };
-    assert!(matches!(step_of("h", Ok(outcome), (None, String::new()), 1, Instant::now()), Step::Woke(_)));
+    assert!(matches!(step_of("h", Ok(outcome), "r", (None, String::new()), 1, Instant::now()), Step::Woke(_)));
     // The row as the gate read it: the glyph, the NBSP, the wake line, then the tail, with the cursor after the line.
     let row = "col 44: U+276F U+00A0 [ s o t - c o m m ] U+0020 y o u U+0020 h a v e U+0020 m a i l : U+0020 r u n U+0020 c o m m - p o l l . s h U+0020 t r y U+0020 t h i s";
     assert!(log.text().contains(row), "{}", log.text());
+}
+
+/// A wake remembers the run it attached to, which an owed Enter belongs to; an Enter owed for another run's box, with no
+/// mail unread, is not owed at all.
+#[test]
+fn a_wake_keeps_its_run_and_a_changed_run_ends_the_debt() {
+    let now = Instant::now();
+    let seen = || (None, "b".to_string());
+    match step_of("h", Ok(WakeOutcome::Woke), "run-b", seen(), 7, now) {
+        Step::Woke(w) => assert_eq!((w.run.as_str(), w.enter_owed), ("run-b", false)),
+        _ => panic!("a woken row is remembered"),
+    }
+    let owed = WakeOutcome::EnterRefused { detail: "input: x".into() };
+    match step_of("h", Ok(owed), "run-b", seen(), 7, now) {
+        Step::Woke(w) => assert_eq!((w.run.as_str(), w.enter_owed), ("run-b", true)),
+        _ => panic!("a typed line is remembered with its run"),
+    }
+    assert!(matches!(step_of("h", Ok(WakeOutcome::RunChanged), "run-c", seen(), 7, now), Step::Clear));
 }

@@ -1,8 +1,8 @@
 //! The blocking row client: one connection, a reader thread, requests answered in order.
 
 use super::proto::{
-    AttachReq, AttachRes, InputRes, ResizeReq, RowError, RowHelloExchange, SnapshotEvt, OP_ATTACH, OP_DEMOTED, OP_INPUT,
-    OP_OUTPUT, OP_RESIZE, OP_SNAPSHOT, OP_TAKE,
+    AttachReq, AttachRes, ExitingEvt, InputRes, ResizeReq, RowError, RowHelloExchange, SnapshotEvt, StatusRes, OP_ATTACH,
+    OP_DEMOTED, OP_EXITING, OP_INPUT, OP_OUTPUT, OP_PHASE, OP_RESIZE, OP_SNAPSHOT, OP_TAKE, OP_WATCH,
 };
 use super::ROW_PROTOCOL;
 use crate::lane::client::{Client, Endpoint, PlatformEndpoint};
@@ -28,6 +28,10 @@ pub enum RowEvent {
     Output(Vec<u8>),
     /// Another connection took the driver's place.
     Demoted,
+    /// A watch's report: the row's phase or run changed.
+    Phase(StatusRes),
+    /// A watch's last frame: the supervisor is leaving with this exit code.
+    Exiting(i32),
 }
 
 /// Frames the reader thread holds for the caller. Past it the reader stops reading the socket, so a caller that stops
@@ -214,6 +218,13 @@ impl<C: Client + 'static> RowClient<C> {
         }
     }
 
+    /// Holds this connection as a watch: answers the status the row has now, and the changes after it arrive as
+    /// [`RowEvent::Phase`], ending with [`RowEvent::Exiting`] before a controlled exit.
+    pub fn watch(&mut self) -> Result<StatusRes, RowError> {
+        let res = self.request(OP_WATCH, serde_json::json!({}), None)?;
+        serde_json::from_value(res.payload).map_err(|e| RowError::Protocol(e.to_string()))
+    }
+
     /// Becomes the driver; the one before is demoted.
     pub fn take(&mut self) -> Result<(), RowError> {
         self.request(OP_TAKE, serde_json::json!({}), None).map(|_| ())
@@ -313,6 +324,11 @@ fn event_of(frame: Frame, blob: Option<Vec<u8>>) -> Result<Option<RowEvent>, Row
         }
         OP_OUTPUT => Some(RowEvent::Output(blob.unwrap_or_default())),
         OP_DEMOTED => Some(RowEvent::Demoted),
+        OP_PHASE => Some(RowEvent::Phase(serde_json::from_value(frame.payload).map_err(|e| RowError::Protocol(e.to_string()))?)),
+        OP_EXITING => {
+            let evt: ExitingEvt = serde_json::from_value(frame.payload).map_err(|e| RowError::Protocol(e.to_string()))?;
+            Some(RowEvent::Exiting(evt.code))
+        }
         _ => None,
     })
 }

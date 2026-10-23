@@ -90,12 +90,14 @@ Waking:
   Enter for it. Enter goes only after a fresh read shows the wake line alone in main's input box; a box that holds
   anything else gets nothing. A line the wake typed that did not send is sent by a later tick, Enter alone, only once
   main's box holds just that line. That owed Enter belongs to the run whose box held the line: a new run (its agent died
-  with its supervisor) has a fresh box and owes nothing, so a restarted daemon's boot look at a new run sends no Enter
-  and types nothing; a daemon-only restart keeps the box and its owed Enter (WAKE-RESTART-LOOK, `comm_wake::a_restarted_daemon_completes_a_wake_line_left_typed`;
-  `comm_wake::a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_box_alone`). Limit: the daemon keeps
-  the debt by handle in its own memory, not by run, so a daemon that survives a supervisor restart carries it to the
-  replacement's empty box and a wake can wait until the repeat interval (queue item WAKE-DEBT-PER-RUN, for pass 6c-1,
-  which gives each run an identity on the row socket).
+  with its supervisor) has a fresh box and owes nothing. The debt keeps the run the typing's attach named (the headless
+  client's `run()`), and a later tick whose attach names another run drops it: with mail unread the same attempt goes on
+  as a wake of the new run, so a new run's empty box is woken within one tick and a hold, never after the repeat
+  interval; with none the debt simply ends and nothing is typed (`comm_wake::a_new_run_drops_the_owed_enter_and_wakes_in_the_same_tick`,
+  a daemon whose watchdog restarts the killed supervisor). A restarted daemon's boot look knows no run, so it sends Enter
+  alone only into a box that holds the wake line, and types nothing else (WAKE-RESTART-LOOK,
+  `comm_wake::a_restarted_daemon_completes_a_wake_line_left_typed`;
+  `comm_wake::a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_box_alone`).
   Each typing, the line or Enter alone, is one INFO log event: the handle, what was
   sent, the cursor's row and the box's rows as the gate read them (escaped), and the outcome.
 - A busy session needs no typing: its end-of-turn check (the Stop hook, through `sotd comm unread`) does not let a turn

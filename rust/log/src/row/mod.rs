@@ -5,6 +5,12 @@
 //!
 //! The daemon's four management calls (`row.status`, `row.end_run`, `row.reset`, `row.stop`) ride the same socket: the
 //! row hands them to the [`Management`] its supervisor installs, and answers them `unknown_op` where none is.
+//!
+//! `row.watch` holds a connection open as the daemon's view of the row: it answers the status the row has, then each
+//! change of phase or run is one `row.phase` event carrying the new status, in the order the changes happened, and a
+//! controlled exit is told by `row.exiting {code}`, the last frame, before the stream ends. A watch takes no pen and needs
+//! no attach, and is never closed as idle. A stream that ends with no `row.exiting` is a kill, a lost listener or an
+//! exit before the bind: it carries no code.
 
 mod client;
 mod manage;
@@ -16,10 +22,10 @@ mod server;
 pub use client::{PlatformConn, RowCanceler, RowClient, RowEvent, RowWaker};
 pub use manage::Management;
 pub use proto::{
-    AttachReq, AttachRes, EndRunOutcome, EndRunReq, EndRunRes, HelloReq, HelloRes, InputRes, ResetOutcome, ResetRes,
-    ResizeReq, RowError, RowHelloExchange, SnapshotEvt, StatusRes, StopOutcome, StopRes, OP_ATTACH, OP_DEMOTED,
-    OP_END_RUN, OP_HELLO, OP_INPUT, OP_OUTPUT, OP_RESET, OP_RESIZE, OP_SNAPSHOT, OP_STATUS, OP_STOP, OP_TAKE,
-    OUTPUT_CHUNK, SNAPSHOT_CHUNK,
+    AttachReq, AttachRes, EndRunOutcome, EndRunReq, EndRunRes, ExitingEvt, HelloReq, HelloRes, InputRes, ResetOutcome,
+    ResetRes, ResizeReq, RowError, RowHelloExchange, SnapshotEvt, StatusRes, StopOutcome, StopRes, OP_ATTACH, OP_DEMOTED,
+    OP_END_RUN, OP_EXITING, OP_HELLO, OP_INPUT, OP_OUTPUT, OP_PHASE, OP_RESET, OP_RESIZE, OP_SNAPSHOT, OP_STATUS, OP_STOP,
+    OP_TAKE, OP_WATCH, OUTPUT_CHUNK, SNAPSHOT_CHUNK,
 };
 pub use input::InputPump;
 pub use run::{self_identity, ConnId, RowRequest, RowRun};

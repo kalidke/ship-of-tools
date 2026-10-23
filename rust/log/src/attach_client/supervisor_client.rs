@@ -1,8 +1,9 @@
 #![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 //! The daemon's calls on one row's supervisor: `status`, `end_run`, `reset` and `stop`, each one connection on the row
-//! socket (`row-<h>`): the row client's dial, hello and challenge, then one request with its bound. The exception is
-//! [`Persistent`], which holds one connection across status calls and reconnects when it fails. A call that loses its
-//! reply is answered by reading status again; no call carries an id.
+//! socket (`row-<h>`): the row client's dial, hello and challenge, then one request with its bound. The exceptions are
+//! [`Persistent`], which holds one connection across status calls and reconnects when it fails, and [`watch`], which
+//! holds one connection as the row's phase reports. A call that loses its reply is answered by reading status again; no
+//! call carries an id.
 //!
 //! The dial checks the row number the hello carries and never the frames' wire integer, so a daemon update never
 //! strands a live row: a row of another row number is [`crate::Error::VersionSkew`], which rows reads as `foreign`.
@@ -11,8 +12,8 @@ use crate::lane::client::{Endpoint, PlatformEndpoint};
 use crate::lane::connect_own::connect_own;
 use crate::SupervisorPhase;
 use crate::row::{
-    row_socket_path, EndRunOutcome as RowEndRun, EndRunRes, ResetOutcome, ResetRes, RowCanceler, RowClient, RowError, StatusRes,
-    StopRes, OP_END_RUN, OP_RESET, OP_STATUS, OP_STOP,
+    row_socket_path, EndRunOutcome as RowEndRun, EndRunRes, ResetOutcome, ResetRes, RowCanceler, RowClient, RowError, RowEvent,
+    StatusRes, StopRes, OP_END_RUN, OP_RESET, OP_STATUS, OP_STOP,
 };
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -245,7 +246,7 @@ pub fn reset(state_dir: &Path) -> crate::Result<()> {
     }
 }
 
-/// [`Persistent`]'s way to be interrupted, and whether it was.
+/// [`Persistent`]'s and [`watch`]'s way to be interrupted, and whether it was.
 struct Shared {
     canceler: Option<RowCanceler>,
     /// Latched by [`CancelHandle::cancel`]; never cleared, so a cancelled client never reconnects.
@@ -266,7 +267,31 @@ pub struct Persistent {
 #[derive(Clone)]
 pub struct CancelHandle(Arc<Mutex<Shared>>);
 
+impl Default for CancelHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CancelHandle {
+    /// A handle nothing is published through yet, for [`watch`].
+    pub fn new() -> Self {
+        CancelHandle(Arc::new(Mutex::new(Shared { canceler: None, cancelled: false })))
+    }
+
+    /// Installs `client`'s canceler as the published connection, unless `cancelled` is already set under the same lock,
+    /// in which case the connection is cancelled and refused: the one gate a connect becomes visible through.
+    fn publish(&self, client: &RowClient) -> crate::Result<()> {
+        let mut shared = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if shared.cancelled {
+            drop(shared);
+            client.canceler().cancel();
+            return Err(err_state("cancelled".to_string()));
+        }
+        shared.canceler = Some(client.canceler());
+        Ok(())
+    }
+
     /// Sets `cancelled` and takes and cancels the published connection under the same lock, so a concurrent
     /// [`Persistent::publish`] either installs first (and gets cancelled here) or sees `cancelled` and never installs.
     pub fn cancel(&self) {
@@ -343,14 +368,7 @@ impl Persistent {
         }
         // The process handle is dropped: a held status connection has no use for the row's death signal.
         let (client, _process) = fresh;
-        let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if shared.cancelled {
-            drop(shared);
-            client.canceler().cancel();
-            return Err(err_state("cancelled".to_string()));
-        }
-        shared.canceler = Some(client.canceler());
-        drop(shared);
+        CancelHandle(Arc::clone(&self.shared)).publish(&client)?;
         self.conn = Some(client);
         Ok(())
     }
@@ -364,4 +382,90 @@ impl Persistent {
         let status: StatusRes = request(client, OP_STATUS, json!({}), STATUS_BUDGET)?;
         report(status, client.peer())
     }
+}
+
+/// What one look at a [`Watch`] gave.
+#[derive(Debug, Clone)]
+pub enum WatchStep {
+    /// The phase or the run changed.
+    Phase(StatusReport),
+    /// The supervisor is leaving with this exit code; the stream ends after it.
+    Exiting(i32),
+    /// Nothing within the wait (or the caller's waker): look again.
+    Quiet,
+    /// The stream ended: a controlled exit that was told ends here after [`WatchStep::Exiting`]; one that was not is a
+    /// kill, a lost listener or a transport failure, and carries no code.
+    Ended,
+}
+
+/// One held connection that a supervisor tells its phase on: the status it had at the hello's reply, then each change.
+pub struct Watch {
+    client: RowClient,
+    first: StatusReport,
+    /// The process the challenge proved, held while the watch lives.
+    _process: ChallengedProcess,
+}
+
+impl Watch {
+    /// The supervisor's `(pid, created)`, off its hello.
+    pub fn peer(&self) -> (u32, u64) {
+        self.client.peer()
+    }
+
+    /// The status the supervisor answered `row.watch` with.
+    pub fn first(&self) -> &StatusReport {
+        &self.first
+    }
+
+    /// The next report, within `wait`.
+    pub fn next(&mut self, wait: Duration) -> WatchStep {
+        let deadline = Instant::now() + wait;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.client.next_event(left) {
+                Ok(Some(RowEvent::Phase(status))) => {
+                    return match report(status, self.client.peer()) {
+                        Ok(report) => WatchStep::Phase(report),
+                        // A phase this client does not know is a supervisor it cannot follow.
+                        Err(_) => WatchStep::Ended,
+                    }
+                }
+                Ok(Some(RowEvent::Exiting(code))) => return WatchStep::Exiting(code),
+                // A watcher is sent no screen: anything else is not for it.
+                Ok(Some(_)) => {}
+                Ok(None) => return WatchStep::Quiet,
+                Err(_) => return WatchStep::Ended,
+            }
+        }
+    }
+}
+
+/// Dials the row socket of `state_dir`, proves the peer and holds the connection as a watch. The connection is published
+/// through `cancel`'s gate, so a cancel that lands during the dial leaves no connection behind and every watch on a
+/// cancelled handle is refused.
+pub fn watch(state_dir: &Path, cancel: &CancelHandle) -> crate::Result<Watch> {
+    watch_through(state_dir, cancel, &mut || {})
+}
+
+/// [`watch`], with `between` run once between the dial and the publication, to land a cancel there.
+#[cfg(any(test, feature = "test-support"))]
+pub fn watch_with_test_hook(state_dir: &Path, cancel: &CancelHandle, between: impl FnOnce() + Send + 'static) -> crate::Result<Watch> {
+    let mut between = Some(between);
+    watch_through(state_dir, cancel, &mut || {
+        if let Some(hook) = between.take() {
+            hook();
+        }
+    })
+}
+
+fn watch_through(state_dir: &Path, cancel: &CancelHandle, between: &mut dyn FnMut()) -> crate::Result<Watch> {
+    if cancel.0.lock().unwrap_or_else(|e| e.into_inner()).cancelled {
+        return Err(err_state("cancelled".to_string()));
+    }
+    let (mut client, process) = connect(state_dir, HELLO_BUDGET)?;
+    between();
+    cancel.publish(&client)?;
+    let status = client.watch().map_err(row_error)?;
+    let first = report(status, client.peer())?;
+    Ok(Watch { client, first, _process: process })
 }

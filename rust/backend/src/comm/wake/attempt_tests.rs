@@ -22,9 +22,9 @@ fn a_text_write_that_may_have_landed_is_not_a_clean_refusal() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_wake_without_a_lane_is_a_checkpoint_error() {
-    let free = |_: &[String], _: Option<(u16, u16)>, _: &str| Some(Prompt::Empty);
+    let free = |_: &[String], _: Option<(u16, u16)>, _: &str, _: bool| Some(Prompt::Empty);
     let d = Duration::from_secs(5);
-    let err = wake_if_free(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", "h", "x", &free, "claude", d, d)
+    let err = wake_if_free(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", "h", "x", None, &free, "claude", d, d)
         .expect_err("no lane to wake");
     assert_eq!(err.phase, "checkpoint");
     assert!(!err.submitted);

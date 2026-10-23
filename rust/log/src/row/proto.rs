@@ -20,6 +20,9 @@ pub const OP_STATUS: &str = "row.status";
 pub const OP_END_RUN: &str = "row.end_run";
 pub const OP_RESET: &str = "row.reset";
 pub const OP_STOP: &str = "row.stop";
+pub const OP_WATCH: &str = "row.watch";
+pub const OP_PHASE: &str = "row.phase";
+pub const OP_EXITING: &str = "row.exiting";
 
 /// A snapshot event's blob is at most this; a longer screen goes in several, the last flagged.
 pub const SNAPSHOT_CHUNK: usize = 1024 * 1024;
@@ -94,12 +97,19 @@ pub struct InputRes {
     pub written: u64,
 }
 
-/// `row.status`: what the supervisor is now. `run` is absent while there is none.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `row.status`: what the supervisor is now. `run` is absent while there is none. `row.watch` answers it, and each
+/// `row.phase` event carries one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusRes {
     pub phase: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+}
+
+/// `row.exiting`: the last frame of a watch before the supervisor's controlled exit, with the exit code it leaves by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExitingEvt {
+    pub code: i32,
 }
 
 /// `row.end_run`: ends the run `run` names, for `reason`.

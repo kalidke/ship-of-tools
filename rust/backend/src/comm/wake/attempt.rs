@@ -26,6 +26,25 @@ pub enum WakeOutcome {
     /// The text write failed in a phase other than `"input"`, or its delivery is unknown: the line may have reached
     /// the agent (and may draw later), so it counts as typed.
     TextUnknown { detail: String },
+    /// An Enter was owed for another run's box and no mail is unread: the attach found a different run, whose box owes
+    /// nothing, so nothing was typed and the debt is over.
+    RunChanged,
+}
+
+/// A wake attempt's result: what it did, and the run it attached to, which an owed Enter then belongs to.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Attempted {
+    pub outcome: WakeOutcome,
+    pub run: String,
+}
+
+/// A Complete attempt's debt: an Enter owed for the line typed into the box of `run` (`None`: a boot look, whose daemon
+/// cannot tell which run it was typed into). An attach that names another run drops the debt; with `mail_unread` the
+/// attempt then goes on as a wake of the new run, without it the attempt ends [`WakeOutcome::RunChanged`].
+#[derive(Debug, Clone, Copy)]
+pub struct Owed<'a> {
+    pub run: Option<&'a str>,
+    pub mail_unread: bool,
 }
 
 /// The outcome once the line is typed and the gate passed: the Enter write's result. Only the stale refusal (phase
@@ -63,18 +82,26 @@ pub(crate) fn unconfirmed(step: &'static str, e: HeadlessError) -> WakeOutcome {
 /// under it) for `still_for`, else it is a working row and nothing is
 /// typed. `is_free` is asked of the first frame and again immediately
 /// before typing. Never takes the pen unless the prompt is free and
-/// still, and never retries.
+/// still, and never retries. `owed` is an Enter owed for a line typed earlier ([`Owed`]); `is_free` is told, as its
+/// last argument, whether the attempt completes that line (an empty box is not free then), which is known only once the
+/// attach has named the run.
 pub fn wake_if_free(
     state_dir: &Path,
     controller_id: &str,
     handle: &str,
     line: &str,
-    is_free: &dyn Fn(&[String], Option<(u16, u16)>, &str) -> Option<Prompt>,
+    owed: Option<Owed>,
+    is_free: &dyn Fn(&[String], Option<(u16, u16)>, &str, bool) -> Option<Prompt>,
     agent: &str,
     still_for: Duration,
     op_budget: Duration,
-) -> Result<WakeOutcome, HeadlessError> {
+) -> Result<Attempted, HeadlessError> {
     let mut client = checkpointed(attach(state_dir, controller_id)?, Instant::now() + op_budget)?;
+    // The debt is the run's: another run's box holds no line, whatever this daemon typed into the one before it.
+    let run = client.run();
+    let completes = owed.is_some_and(|o| o.run.map_or(true, |owed_run| owed_run == run));
+    let run_changed = owed.is_some() && !completes;
+    let ends_here = run_changed && owed.is_some_and(|o| !o.mail_unread);
     let cursor = client.screen().cursor_position();
     let first = wake_lines(client.screen());
     let seen = free_test_lines(client.screen());
@@ -92,8 +119,10 @@ pub fn wake_if_free(
             }
         }
     };
-    let first_prompt = is_free(&seen, Some(cursor), agent);
-    let out = if first_prompt.is_none() {
+    let first_prompt = if ends_here { None } else { is_free(&seen, Some(cursor), agent, completes) };
+    let out = if ends_here {
+        Ok(WakeOutcome::RunChanged)
+    } else if first_prompt.is_none() {
         Ok(WakeOutcome::NotFree { row: cursor_row_trace(client.screen()) })
     } else {
         mark("hold");
@@ -105,7 +134,7 @@ pub fn wake_if_free(
             still = client.screen().cursor_position() == cursor && held_rows(&wake_lines(client.screen()), cursor.0) == held_rows(&first, cursor.0);
         }
         // The live screen, not `seen`: the rows through the box can hold still while focus moves below them.
-        let live = if still { is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent) } else { None };
+        let live = if still { is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent, completes) } else { None };
         match live {
             Some(prompt) if Some(prompt) == first_prompt => {
                 mark("final-ok");
@@ -124,7 +153,7 @@ pub fn wake_if_free(
     };
     client.shutdown(SHUTDOWN_WAIT);
     mark("done");
-    out
+    out.map(|outcome| Attempted { outcome, run })
 }
 
 /// What the gate read at the moment of typing: the cursor's row ([`cursor_row_trace`]) and the rows of the box around
