@@ -81,6 +81,8 @@ lib() {
 # 0. A failing case shows what the child printed: `lib` and `sent` keep the child's output, and a FAIL line carries it.
 lib "$PATH" bash -c 'echo hidden-by-lib >&2; exit 3' > /dev/null
 has "a failing lib call shows the child's stderr in the FAIL line" "$(bad probe)" "hidden-by-lib"
+lib "$PATH" bash -c 'echo diagnosis-on-stdout; exit 3' > /dev/null
+has "a failing lib call shows the child's stdout in the FAIL line" "$(bad probe)" "diagnosis-on-stdout"
 
 # 1. The rule, one table: ROOT, PATH and the answer, in each spelling.
 while IFS='|' read -r arm root path want; do

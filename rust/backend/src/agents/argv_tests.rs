@@ -471,6 +471,46 @@ fn a_callers_settings_json_is_merged_with_the_recipes_hooks() {
     assert!(!twice.iter().any(|a| a.contains("\"hooks\"")), "{twice:?}");
 }
 
+/// A recipe hook the caller's JSON already carries (the same command) is not added a second time; its other events
+/// still gain theirs.
+#[test]
+#[cfg(unix)]
+fn a_recipe_hook_the_caller_already_has_is_not_added_twice() {
+    let _guard = self_file_env_guarded();
+    let (comm, _layer) = comm_home_with_layer();
+    let ours = layer::hooks_settings(comm.path());
+    let caller = serde_json::json!({"hooks": {"PostToolUse": ours["hooks"]["PostToolUse"].clone()}}).to_string();
+    let argv = claude_recipe(&["--settings".to_string(), caller], None, Some(comm.path()));
+    let at = argv.iter().position(|a| a == "--settings").unwrap();
+    let json: serde_json::Value = serde_json::from_str(&argv[at + 1]).unwrap();
+    assert_eq!(json["hooks"]["PostToolUse"].as_array().unwrap().len(), 1, "{json}");
+    for event in ["UserPromptSubmit", "PreToolUse"] {
+        assert_eq!(json["hooks"][event].as_array().unwrap().len(), 1, "{event}: {json}");
+    }
+}
+
+/// The shape rule: a caller's `--settings` is merged into only when it is a JSON object whose `hooks`, if it has any,
+/// is an object whose every event the recipe also names is an array. Anything else is passed as given, with no hooks.
+#[test]
+#[cfg(unix)]
+fn a_callers_settings_of_another_shape_is_passed_as_given() {
+    let _guard = self_file_env_guarded();
+    let (comm, _layer) = comm_home_with_layer();
+    for value in [
+        "{",
+        "[1]",
+        "\"text\"",
+        r#"{"hooks":null}"#,
+        r#"{"hooks":[]}"#,
+        r#"{"hooks":{"PostToolUse":{}}}"#,
+    ] {
+        let argv = claude_recipe(&["--settings".to_string(), value.to_string()], None, Some(comm.path()));
+        let at = argv.iter().position(|a| a == "--settings").unwrap();
+        assert_eq!(argv[at + 1], value, "{argv:?}");
+        assert!(!argv.iter().any(|a| a.contains("heartbeat")), "{value}: {argv:?}");
+    }
+}
+
 #[test]
 #[cfg(unix)]
 fn the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec() {

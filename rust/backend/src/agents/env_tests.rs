@@ -249,3 +249,22 @@ fn sotd_bin_value_gives_nothing_for_an_explicit_path_that_does_not_run() {
         assert_eq!(sotd_bin_value(plain.as_os_str(), None), None);
     }
 }
+
+/// A session's `SOTD_BIN` is always set by the leg: this daemon's runnable start path, or empty when there is none, which
+/// every shell ladder reads as unset. An inherited value never reaches a leg whose start path was rejected.
+#[test]
+fn the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected() {
+    assert_eq!(sotd_bin_pair(None), ("SOTD_BIN".to_string(), String::new()));
+    assert_eq!(
+        sotd_bin_pair(Some("/x/sotd")),
+        ("SOTD_BIN".to_string(), "/x/sotd".to_string())
+    );
+    // The leg's environment is the daemon's own with the row's pairs over it (`rows::spawn::detach`).
+    let mut env: std::collections::BTreeMap<String, String> =
+        [("SOTD_BIN".to_string(), "/inherited/sotd".to_string())].into();
+    let (name, value) = sotd_bin_pair(None);
+    env.insert(name, value);
+    assert_eq!(env["SOTD_BIN"], "");
+    let pairs = capsule_supervisor_env("ws-1", "slug", Path::new("/tmp"), "claude");
+    assert_eq!(pairs.iter().filter(|(k, _)| k == "SOTD_BIN").count(), 1, "{pairs:?}");
+}

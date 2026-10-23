@@ -7,6 +7,7 @@
 # Usage: agents/tests/test-sot-fe-endpoint-once.sh     Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-wait.sh" || exit 2
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-fe-endpoint-once-test-XXXXXX")"
 if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
@@ -36,8 +37,7 @@ while True:
     s.accept()[0].close()
 ' "$SOCK" &
 SOCK_PID=$!
-for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.1; done
-[ -S "$SOCK" ] || { echo "FATAL: the socket did not bind" >&2; exit 2; }
+await test -S "$SOCK" || { echo "FATAL: the socket did not bind" >&2; exit 2; }
 ASKED="$WORK/asked"
 cat > "$WORK/sotd" <<EOF
 #!/usr/bin/env bash
