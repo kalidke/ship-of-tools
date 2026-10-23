@@ -37,3 +37,39 @@ fn a_drivers_input_reaches_the_terminal_and_a_watchers_is_refused() {
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
 }
+
+/// An end retires the row's request queue: input sent once a requested end is in progress is answered `run ended` at
+/// once, not left to time out as `delivery unknown` while the run tears down and the supervisor rests.
+#[test]
+fn input_sent_while_a_requested_end_is_in_progress_is_answered_run_ended() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let side = RowSide::new();
+    let mut cfg = config(dir.path(), "rowend1", vec![SHELL_ARGV.to_string()], 80, 25);
+    cfg.signals = Some(Arc::clone(&side.signals));
+    let (tx, rx) = mpsc::channel();
+    let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
+
+    let mut driver = side.driver(80, 25);
+    driver.send_input(b"echo SOT_BEFORE_END_5\r").expect("input before the end is written");
+    tx.send(Command::Kill).unwrap();
+    // Input typed from here on is written until the loop sees the end, and answered `run ended` after it.
+    let started = Instant::now();
+    let refusal = loop {
+        match driver.send_input(b"x") {
+            Ok(_) => assert!(started.elapsed() < Duration::from_secs(10), "the end never closed the row to input"),
+            Err(e) => break e,
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(
+        matches!(&refusal, RowError::Refused(m) if m.contains("run ended")),
+        "input at the end is answered `run ended`, got {refusal:?}"
+    );
+    assert!(started.elapsed() < Duration::from_millis(1500), "the answer waited out the input bound: {:?}", started.elapsed());
+
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return within the teardown bound")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+}

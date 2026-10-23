@@ -127,3 +127,61 @@ fn no_attach_lane_is_bound() {
     let attach_lanes: Vec<&String> = names.iter().filter(|n| n.starts_with("voyage-")).collect();
     assert!(attach_lanes.is_empty(), "no attach lane is bound, but found {attach_lanes:?}");
 }
+
+/// Starts a supervisor on a fresh state folder with `SOT_TEST_ROW_LISTENER_DIES` set to `dies`, and the row socket's path.
+fn supervisor_with_dying_listener(dies: &str) -> (Supervisor, std::path::PathBuf, tempfile::TempDir, tempfile::TempDir) {
+    let runtime = tempfile::Builder::new().prefix("sot-r").tempdir_in("/tmp").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sot-capsule"));
+    cmd.arg("supervise")
+        .arg(&state_dir)
+        .arg("--start")
+        .arg("--assume-no-rollback-target")
+        .arg("--")
+        .args(["/bin/sh", "-c", "echo agent-was-here; exec cat"])
+        .env("SOT_RUNTIME_DIR", runtime.path())
+        .env("SOT_TEST_ROW_LISTENER_DIES", dies)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let supervisor = Supervisor(cmd.spawn().expect("start a supervisor"));
+    let path = sot_log::row::socket_path_in(runtime.path(), &state_dir_hash(&state_dir)).expect("the path fits");
+    (supervisor, path, runtime, dir)
+}
+
+/// A row listener that dies is bound again once: a viewer that retries gets in and sees the agent.
+#[test]
+fn a_dead_row_listener_is_bound_again_once() {
+    let (_supervisor, path, _runtime, _dir) = supervisor_with_dying_listener("first");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut client = loop {
+        match RowClient::connect(&path, "test", Duration::from_secs(5)) {
+            Ok(c) => break c,
+            Err(e) => assert!(Instant::now() < deadline, "the row socket never came back: {e}"),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    client.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut client, "agent-was-here", Duration::from_secs(20));
+}
+
+/// A row listener that dies again, or cannot be bound, does not leave the supervisor running unreachable: it ends the
+/// run unrequested and exits 75, so rows' watchdog decides through its one restart budget.
+#[test]
+fn a_row_listener_that_keeps_dying_ends_the_supervisor_with_75() {
+    let (mut supervisor, _path, _runtime, _dir) = supervisor_with_dying_listener("always");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = supervisor.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "the supervisor kept running with no row socket");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(status.code(), Some(75), "a row that cannot be reached is a row that did not start");
+}
