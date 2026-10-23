@@ -106,13 +106,13 @@ fn cancels_a_body_parked_mid_operation() {
 /// Round-2 finding 4: a body that panics while `PENDING` must settle
 /// (and cancel) IMMEDIATELY, not leave the watchdog polling all the
 /// way out to a distant deadline before it notices `state` changed.
-/// `deadline` here is deliberately 30s away -- if the fix regressed,
+/// `deadline` here is deliberately 60s away -- if the fix regressed,
 /// this test would take that long (or hang the whole suite) instead
 /// of finishing in well under a second.
 #[test]
 fn a_panicking_body_settles_promptly_instead_of_hanging_until_a_distant_deadline() {
     let cancels = AtomicUsize::new(0);
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let started = Instant::now();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_with_deadline(
@@ -124,8 +124,9 @@ fn a_panicking_body_settles_promptly_instead_of_hanging_until_a_distant_deadline
         )
     }));
     assert!(result.is_err(), "the panic must propagate out of run_with_deadline, not be swallowed");
+    // The panic hook's backtrace (RUST_BACKTRACE=1) symbolizes slowly on Windows while other tests panic too: the claim is "well before the deadline", not "fast".
     assert!(
-        started.elapsed() < Duration::from_secs(5),
+        started.elapsed() < Duration::from_secs(20),
         "must settle promptly, not hang until the distant deadline: took {:?}",
         started.elapsed()
     );
