@@ -145,11 +145,12 @@ fn a_read_clears_done_and_restamps_nothing() {
     assert!(!write);
 }
 
-/// A registry under a temporary comm home, named by `SOT_COMM_HOME` while the guards live; the host is `host-4`.
+/// A registry under a temporary comm home, named by `SOT_COMM_HOME` while the guards live; the host is `host-4`. Fields
+/// drop in the order written, so the variables are put back and the folder removed before the lock is let go.
 struct Home {
-    _serial: std::sync::MutexGuard<'static, ()>,
     _env: [crate::paths::EnvGuard; 2],
     dir: tempfile::TempDir,
+    _serial: std::sync::MutexGuard<'static, ()>,
 }
 
 impl Home {
