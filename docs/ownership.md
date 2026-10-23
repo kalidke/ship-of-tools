@@ -174,8 +174,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `sot-term-reader` | thread | fe-ui | `rust/frontend/src/ui/drawer/terminal/pty.rs` `run_reader` |
 | proxy manager task | thread | pages | `rust/frontend/src/pages.rs` `spawn_proxy_manager`, `serve_browser` |
 | lease holder and reader tasks | thread | lifecycle | `rust/frontend/src/lease.rs` `spawn_holder`, `Leases` |
-| attach worker, reader, supervisor probe threads | thread | capsule | `rust/log/src/attach_client/worker/mod.rs`; `rust/log/src/attach_client/worker/steady.rs`; `rust/log/src/supervisor/probe/mod.rs` |
-| supervisor worker per operation | thread | capsule | `rust/log/src/supervisor/lifecycle.rs` `Lifecycle`; `rust/log/src/supervisor/oneshot.rs` `endrun_inner`, `reset_inner` |
+| attach worker and reader threads | thread | capsule | `rust/log/src/attach_client/attach.rs` |
+| a management call, in its connection's reader thread (`row.end_run` and `row.reset` wait there) | thread | capsule | `rust/log/src/supervisor/authority.rs` `Shared` (`admit_end`, `wait_end`, `admit_reset`, `wait_reset`); `rust/log/src/row/server.rs` `requests` |
 | the leg's screen writer (one thread, newest snapshot only) | thread | capsule | `rust/log/src/capsule/screen.rs` `ScreenFile` |
 | lane accept and reaper threads | thread | capsule | `rust/log/src/lane/socket_unix/accept.rs`; `rust/log/src/lane/socket_unix/conn.rs`; `rust/log/src/lane/pipe_win/accept.rs`; `rust/log/src/lane/pipe_win/conn.rs`; `rust/log/src/lane/pending.rs` `PendingJoins`, `Claimed` |
 | frame format, codec, 1 MiB cap | wire | wire | `rust/protocol/src/lib.rs` `Frame`; `rust/protocol/src/codec.rs` `read_frame`, `write_frame`, `MAX_ENVELOPE_BYTES` |

@@ -260,6 +260,7 @@ impl RowRun {
 
     /// A connection's two threads have ended and its queue is drained: the management hears of it.
     pub(super) fn released(&self, id: ConnId) {
+        self.lock().conns.remove(&id);
         if let Some(management) = self.management() {
             management.conn_gone(id);
         }
@@ -379,10 +380,14 @@ impl RowRun {
         Some((id, queue, Slot(Arc::clone(self))))
     }
 
+    /// The connection's reader has ended: what is queued is still sent, and nothing more is queued for it. It stays
+    /// registered until [`Self::released`], so a shutdown's `close_all` still reaches a writer a peer that does not
+    /// read has stuck in a flush.
     pub(super) fn close(&self, id: ConnId) {
         let mut inner = self.lock();
-        if let Some(conn) = inner.conns.remove(&id) {
+        if let Some(conn) = inner.conns.get_mut(&id) {
             conn.queue.finish();
+            conn.live = false;
         }
         inner.pending.retain(|p| *p != id);
         if inner.driver == Some(id) {

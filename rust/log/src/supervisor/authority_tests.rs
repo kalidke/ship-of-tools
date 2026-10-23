@@ -41,3 +41,29 @@ fn a_run_is_not_admitted_once_the_row_listener_is_lost() {
     let (kill, _commands) = mpsc::channel();
     assert!(!shared.run_begins("run-one".into(), kill, Arc::new(RunSignals::default())));
 }
+
+/// An admitted end's answer belongs to its own run: after run A ended, a reset and run B's admission leave A's answer
+/// for A's waiter, however late that waiter reads it.
+#[test]
+fn a_completion_answer_belongs_to_the_run_it_was_admitted_for() {
+    let shared = Arc::new(Shared::new());
+    let begin = |id: &str| {
+        let (kill, commands) = mpsc::channel();
+        assert!(shared.run_begins(id.into(), kill, Arc::new(RunSignals::default())));
+        commands
+    };
+    let _a = begin("run-a");
+    let first = shared.admit_end("run-a").expect("run A's end is admitted");
+    shared.run_ended();
+    // The reset and the next run come before A's waiter has read its answer.
+    let resetter = Arc::clone(&shared);
+    let reset = std::thread::spawn(move || resetter.reset());
+    let After::Reset { new_voyage } = shared.wait_after_run() else { panic!("a reset was admitted") };
+    shared.reset_done(&new_voyage);
+    assert_eq!(reset.join().unwrap().outcome, ResetOutcome::Reset);
+    let _b = begin("run-b");
+    let second = shared.admit_end("run-b").expect("run B's end is admitted");
+    assert_eq!(shared.wait_end(first).outcome, EndRunOutcome::Ended, "run A's waiter got its own answer");
+    shared.run_ended();
+    assert_eq!(shared.wait_end(second).outcome, EndRunOutcome::Ended);
+}

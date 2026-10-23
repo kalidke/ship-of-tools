@@ -155,34 +155,93 @@ pub fn stop(state_dir: &Path) -> crate::Result<()> {
     }
 }
 
+/// How long a lost or unfinished answer is settled by reading status, from the answer's loss on.
+const RECOVER_BUDGET: Duration = Duration::from_secs(10);
+const RECOVER_POLL: Duration = Duration::from_millis(250);
+
+/// Status from the supervisor `peer` names: a fresh dial, read again until `settled` says what it means or the budget
+/// passes. A dial that reaches another process, or none, settles nothing: the answer was the original supervisor's,
+/// so a replacement's status never stands for it.
+fn recover<T>(state_dir: &Path, peer: (u32, u64), mut settled: impl FnMut(StatusRes) -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + RECOVER_BUDGET;
+    loop {
+        if let Ok((mut client, _process)) = connect(state_dir, HELLO_BUDGET) {
+            if client.peer() != peer {
+                return None;
+            }
+            if let Ok(status) = request::<StatusRes>(&mut client, OP_STATUS, json!({}), STATUS_BUDGET) {
+                if let Some(answer) = settled(status) {
+                    return Some(answer);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(RECOVER_POLL);
+    }
+}
+
 /// Connect, challenge, and ask the supervisor to end the run `run` names. `run` is the run the caller most recently
 /// read from [`query_status`]: the end is fenced by it, so another run's id is refused and nothing changes.
 ///
-/// A connection that fails after the request was sent is [`EndRunOutcome::OutcomeUnknown`], as is an `ending` answer:
-/// the caller reads status.
+/// An answer that was lost, or the supervisor's `ending` (the run had not ended in its bound), is settled by reading
+/// status from the same supervisor: the run gone means it ended (or, with the supervisor terminal, that the end failed),
+/// the run still there means it did not. No end is asked a second time, and a replacement run's status never stands
+/// for this one: what is still unsettled is [`EndRunOutcome::OutcomeUnknown`].
 pub fn end_run(state_dir: &Path, run: &str, reason: &str) -> crate::Result<EndRunOutcome> {
     let (mut client, _process) = connect(state_dir, HELLO_BUDGET)?;
+    let peer = client.peer();
     let reply: crate::Result<EndRunRes> = request(&mut client, OP_END_RUN, json!({"run": run, "reason": reason}), END_RUN_BUDGET);
-    Ok(match reply {
-        Ok(res) => match res.outcome {
-            RowEndRun::Ended => EndRunOutcome::Ended,
-            RowEndRun::StaleRun => EndRunOutcome::Refused("stale_run: the run named is not the current run".into()),
-            RowEndRun::Failed => EndRunOutcome::Failed(res.detail.unwrap_or_default()),
-            RowEndRun::Ending => EndRunOutcome::OutcomeUnknown,
-        },
-        Err(_) => EndRunOutcome::OutcomeUnknown,
+    drop(client);
+    if let Ok(res) = &reply {
+        match res.outcome {
+            RowEndRun::Ended => return Ok(EndRunOutcome::Ended),
+            RowEndRun::StaleRun => return Ok(EndRunOutcome::Refused("stale_run: the run named is not the current run".into())),
+            RowEndRun::Failed => return Ok(EndRunOutcome::Failed(res.detail.clone().unwrap_or_default())),
+            RowEndRun::Ending => {}
+        }
+    }
+    Ok(recover(state_dir, peer, |status| match (status.run.as_deref() == Some(run), phase_of(&status.phase)) {
+        (false, Ok(SupervisorPhase::Terminal)) => Some(EndRunOutcome::Failed("the supervisor went terminal".into())),
+        (false, Ok(_)) => Some(EndRunOutcome::Ended),
+        // The run is there: while its end is in progress, wait for it; with none in progress, none was admitted.
+        (true, Ok(SupervisorPhase::Ending)) => None,
+        (true, _) => Some(EndRunOutcome::OutcomeUnknown),
+        (_, Err(_)) => None,
     })
+    .unwrap_or(EndRunOutcome::OutcomeUnknown))
 }
 
 /// Connect, challenge, and send `reset`: the one operation a supervisor resting in `ended_no_respawn` admits. It mints
 /// a fresh voyage and the next run starts under it, the deliberate alternative to `--resume`, which never resurrects a
 /// voyage whose run was asked to end. Returns the new voyage id.
+///
+/// A reply that was lost is settled by reading status from the same supervisor: a voyage other than the one it was
+/// resting on is the reset's, published; the same voyage, with the supervisor still resting or terminal, is not.
 pub fn reset(state_dir: &Path) -> crate::Result<String> {
     let (mut client, _process) = connect(state_dir, HELLO_BUDGET)?;
-    let res: ResetRes = request(&mut client, OP_RESET, json!({}), RESET_BUDGET)?;
-    match res.outcome {
-        ResetOutcome::Reset => res.voyage.ok_or_else(|| err_state("reset: the reply names no voyage")),
-        ResetOutcome::Failed => Err(err_state(format!("reset did not complete: {}", res.detail.unwrap_or_default()))),
+    let peer = client.peer();
+    let before: StatusRes = request(&mut client, OP_STATUS, json!({}), STATUS_BUDGET)?;
+    let reply: crate::Result<ResetRes> = request(&mut client, OP_RESET, json!({}), RESET_BUDGET);
+    drop(client);
+    let lost = match reply {
+        Ok(res) => {
+            return match res.outcome {
+                ResetOutcome::Reset => res.voyage.ok_or_else(|| err_state("reset: the reply names no voyage")),
+                ResetOutcome::Failed => Err(err_state(format!("reset did not complete: {}", res.detail.unwrap_or_default()))),
+            }
+        }
+        Err(e) => e,
+    };
+    let settled = recover(state_dir, peer, |status| match (&status.voyage, phase_of(&status.phase)) {
+        (Some(now), Ok(_)) if Some(now) != before.voyage.as_ref() => Some(Ok(now.clone())),
+        (_, Ok(SupervisorPhase::Terminal | SupervisorPhase::EndedNoRespawn)) => Some(Err(())),
+        _ => None,
+    });
+    match settled {
+        Some(Ok(voyage)) => Ok(voyage),
+        _ => Err(err_state(format!("reset was not answered and no new voyage was found published: {lost}"))),
     }
 }
 

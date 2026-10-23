@@ -32,16 +32,17 @@ struct Inner {
     /// `starting`, `ending`, `ended_no_respawn` or `terminal`; `ready` is derived (`wire_phase`).
     phase: SupervisorPhase,
     voyage: Option<String>,
-    /// Why the supervisor is terminal.
-    detail: Option<String>,
     run: Option<LiveRun>,
-    /// An admitted `end_run` waits for the run to end; its answer is left here by `run_ended` or `terminal`.
-    ending: bool,
-    end_answer: Option<EndRunRes>,
-    /// An admitted `reset`: the new voyage the main thread publishes, and the answer it leaves.
+    /// An admitted `end_run` waits for its run to end; the answer `run_ended` or `terminal` leaves is kept under the
+    /// admission's number, so another run's admission never clears it. `ending` is the admission waiting now.
+    ending: Option<u64>,
+    end_answers: HashMap<u64, EndRunRes>,
+    /// An admitted `reset`: the new voyage the main thread publishes, and the answers it leaves, by admission number.
     reset: Option<String>,
-    resetting: bool,
-    reset_answer: Option<ResetRes>,
+    resetting: Option<u64>,
+    reset_answers: HashMap<u64, ResetRes>,
+    /// The last admission number given to an `end_run` or a `reset`.
+    admissions: u64,
     stop: Option<StopRequest>,
     terminal_since: Option<Instant>,
     /// The main thread is done; every wait ends.
@@ -59,6 +60,8 @@ pub(super) struct Shared {
 pub(super) enum After {
     Stop,
     Reset { new_voyage: String },
+    /// The row socket's listener is lost for good: nothing can reach this supervisor, so it ends with 75.
+    RowLost,
     /// A terminal supervisor with no stop asked lingers `TERMINAL_EXIT_GRACE` and exits.
     TerminalGrace,
 }
@@ -77,13 +80,13 @@ impl Shared {
             inner: Mutex::new(Inner {
                 phase: SupervisorPhase::Starting,
                 voyage: None,
-                detail: None,
                 run: None,
-                ending: false,
-                end_answer: None,
+                ending: None,
+                end_answers: HashMap::new(),
                 reset: None,
-                resetting: false,
-                reset_answer: None,
+                resetting: None,
+                reset_answers: HashMap::new(),
+                admissions: 0,
                 stop: None,
                 terminal_since: None,
                 exiting: false,
@@ -105,7 +108,8 @@ impl Shared {
     /// was asked before the agent started: nothing is started.
     pub(super) fn run_begins(&self, id: String, kill: mpsc::Sender<Command>, signals: Arc<RunSignals>) -> bool {
         let mut inner = self.lock();
-        if inner.stop.is_some() {
+        // A lost listener admits no run: an agent nobody can reach is not worth starting.
+        if inner.stop.is_some() || inner.row_lost {
             return false;
         }
         inner.phase = SupervisorPhase::Starting;
@@ -118,8 +122,8 @@ impl Shared {
         let mut inner = self.lock();
         inner.run = None;
         inner.phase = SupervisorPhase::EndedNoRespawn;
-        if std::mem::take(&mut inner.ending) {
-            inner.end_answer = Some(EndRunRes { outcome: EndRunOutcome::Ended, detail: None });
+        if let Some(admission) = inner.ending.take() {
+            inner.end_answers.insert(admission, EndRunRes { outcome: EndRunOutcome::Ended, detail: None });
         }
         self.changed.notify_all();
     }
@@ -137,14 +141,13 @@ impl Shared {
         }
         inner.phase = SupervisorPhase::Terminal;
         inner.terminal_since = Some(Instant::now());
-        if std::mem::take(&mut inner.ending) {
-            inner.end_answer = Some(failed_end(&detail));
+        if let Some(admission) = inner.ending.take() {
+            inner.end_answers.insert(admission, failed_end(&detail));
         }
         inner.reset = None;
-        if std::mem::take(&mut inner.resetting) {
-            inner.reset_answer = Some(failed_reset(&detail));
+        if let Some(admission) = inner.resetting.take() {
+            inner.reset_answers.insert(admission, failed_reset(&detail));
         }
-        inner.detail = Some(detail);
         self.changed.notify_all();
     }
 
@@ -152,8 +155,12 @@ impl Shared {
     pub(super) fn reset_done(&self, new_voyage: &str) {
         let mut inner = self.lock();
         inner.voyage = Some(new_voyage.to_string());
-        inner.resetting = false;
-        inner.reset_answer = Some(ResetRes { outcome: ResetOutcome::Reset, voyage: Some(new_voyage.to_string()), detail: None });
+        if let Some(admission) = inner.resetting.take() {
+            inner.reset_answers.insert(
+                admission,
+                ResetRes { outcome: ResetOutcome::Reset, voyage: Some(new_voyage.to_string()), detail: None },
+            );
+        }
         self.changed.notify_all();
     }
 
@@ -163,6 +170,9 @@ impl Shared {
         loop {
             if inner.stop.is_some() {
                 return After::Stop;
+            }
+            if inner.row_lost {
+                return After::RowLost;
             }
             if let Some(new_voyage) = inner.reset.take() {
                 return After::Reset { new_voyage };
@@ -179,12 +189,12 @@ impl Shared {
     /// An `end_run` is in flight or a stop was asked: the run's end is not the agent's own.
     pub(super) fn end_asked(&self) -> bool {
         let inner = self.lock();
-        inner.ending || inner.stop.is_some()
+        inner.ending.is_some() || inner.stop.is_some()
     }
 
     /// An `end_run` is in flight (a stop is not one).
     pub(super) fn end_run_asked(&self) -> bool {
-        self.lock().ending
+        self.lock().ending.is_some()
     }
 
     /// The row socket is gone for good: the live run, if any, is told to end with no request recorded, and no run
@@ -196,6 +206,11 @@ impl Shared {
             let _ = run.kill.send(Command::Stop);
         }
         self.changed.notify_all();
+    }
+
+    /// The supervisor is done: a listener that dies now is no loss to rebind.
+    pub(super) fn is_exiting(&self) -> bool {
+        self.lock().exiting
     }
 
     pub(super) fn is_row_lost(&self) -> bool {
@@ -243,6 +258,100 @@ impl Shared {
         }
     }
 
+    /// Admits an `end_run`: the admission number its answer is kept under, or the answer to give at once.
+    pub(super) fn admit_end(&self, run: &str) -> Result<u64, EndRunRes> {
+        let mut inner = self.lock();
+        if inner.phase == SupervisorPhase::Terminal {
+            return Err(failed_end("the supervisor is in a terminal state"));
+        }
+        let Some(live) = inner.run.as_ref() else {
+            return Err(failed_end("no run is currently live"));
+        };
+        if live.id != run {
+            return Err(EndRunRes { outcome: EndRunOutcome::StaleRun, detail: None });
+        }
+        let kill = live.kill.clone();
+        if inner.phase != SupervisorPhase::Starting {
+            return Err(failed_end("an end_run is currently in progress"));
+        }
+        inner.admissions += 1;
+        let admission = inner.admissions;
+        inner.phase = SupervisorPhase::Ending;
+        inner.ending = Some(admission);
+        // Test seam: the run learns of the request this many milliseconds after it was admitted, so a test can end the
+        // agent in between. Inert unless named.
+        match std::env::var("SOT_TEST_END_RUN_HOLD_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
+            Some(ms) => {
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(ms));
+                    let _ = kill.send(Command::Kill);
+                });
+            }
+            None => {
+                let _ = kill.send(Command::Kill);
+            }
+        }
+        Ok(admission)
+    }
+
+    /// Waits for the answer kept under `admission`: the run's own end, never another run's.
+    pub(super) fn wait_end(&self, admission: u64) -> EndRunRes {
+        let deadline = Instant::now() + END_RUN_BOUND;
+        let mut inner = self.lock();
+        loop {
+            if let Some(answer) = inner.end_answers.remove(&admission) {
+                return answer;
+            }
+            if inner.exiting {
+                return failed_end("the supervisor is ending");
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return EndRunRes { outcome: EndRunOutcome::Ending, detail: None };
+            }
+            inner = self.changed.wait_timeout(inner, left).unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+
+    /// Admits a `reset`: the admission number its answer is kept under, or the answer to give at once.
+    pub(super) fn admit_reset(&self) -> Result<u64, ResetRes> {
+        let mut inner = self.lock();
+        if inner.phase != SupervisorPhase::EndedNoRespawn {
+            return Err(failed_reset(match inner.phase {
+                _ if inner.resetting.is_some() => "a reset is already in progress",
+                SupervisorPhase::Ending => "an end_run is currently in progress",
+                SupervisorPhase::Terminal => "the supervisor is in a terminal state",
+                _ => "a run is currently live; end the run before resetting",
+            }));
+        }
+        inner.admissions += 1;
+        let admission = inner.admissions;
+        inner.reset = Some(uuid::Uuid::now_v7().to_string());
+        inner.resetting = Some(admission);
+        inner.phase = SupervisorPhase::Starting;
+        self.changed.notify_all();
+        Ok(admission)
+    }
+
+    /// Waits for the answer kept under `admission`.
+    pub(super) fn wait_reset(&self, admission: u64) -> ResetRes {
+        let deadline = Instant::now() + RESET_BOUND;
+        let mut inner = self.lock();
+        loop {
+            if let Some(answer) = inner.reset_answers.remove(&admission) {
+                return answer;
+            }
+            if inner.exiting {
+                return failed_reset("the supervisor is ending");
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return failed_reset("the reset did not complete in time");
+            }
+            inner = self.changed.wait_timeout(inner, left).unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+
     fn phase_name(phase: SupervisorPhase) -> &'static str {
         match phase {
             SupervisorPhase::Starting => "starting",
@@ -272,82 +381,18 @@ impl Management for Shared {
     /// Admits an `end_run` for the live run `run` names, then waits for the run to end. The run fences it: another
     /// run's id changes nothing.
     fn end_run(&self, run: &str, _reason: &str) -> EndRunRes {
-        let mut inner = self.lock();
-        if inner.phase == SupervisorPhase::Terminal {
-            return failed_end("the supervisor is in a terminal state");
-        }
-        let Some(live) = inner.run.as_ref() else {
-            return failed_end("no run is currently live");
-        };
-        if live.id != run {
-            return EndRunRes { outcome: EndRunOutcome::StaleRun, detail: None };
-        }
-        let kill = live.kill.clone();
-        if inner.phase != SupervisorPhase::Starting {
-            return failed_end("an end_run is currently in progress");
-        }
-        inner.phase = SupervisorPhase::Ending;
-        inner.ending = true;
-        inner.end_answer = None;
-        // Test seam: the run learns of the request this many milliseconds after it was admitted, so a test can end the
-        // agent in between. Inert unless named.
-        match std::env::var("SOT_TEST_END_RUN_HOLD_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
-            Some(ms) => {
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(ms));
-                    let _ = kill.send(Command::Kill);
-                });
-            }
-            None => {
-                let _ = kill.send(Command::Kill);
-            }
-        }
-        let deadline = Instant::now() + END_RUN_BOUND;
-        loop {
-            if let Some(answer) = inner.end_answer.take() {
-                return answer;
-            }
-            if inner.exiting {
-                return failed_end("the supervisor is ending");
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return EndRunRes { outcome: EndRunOutcome::Ending, detail: None };
-            }
-            inner = self.changed.wait_timeout(inner, left).unwrap_or_else(|e| e.into_inner()).0;
+        match self.admit_end(run) {
+            Ok(admission) => self.wait_end(admission),
+            Err(answer) => answer,
         }
     }
 
     /// Admits a `reset` from a resting supervisor, then waits for the main thread to publish the new voyage. The phase
     /// fences it: only `ended_no_respawn` admits one, and none while another is in progress.
     fn reset(&self) -> ResetRes {
-        let mut inner = self.lock();
-        if inner.phase != SupervisorPhase::EndedNoRespawn {
-            return failed_reset(match inner.phase {
-                _ if inner.resetting => "a reset is already in progress",
-                SupervisorPhase::Ending => "an end_run is currently in progress",
-                SupervisorPhase::Terminal => "the supervisor is in a terminal state",
-                _ => "a run is currently live; end the run before resetting",
-            });
-        }
-        inner.reset = Some(uuid::Uuid::now_v7().to_string());
-        inner.resetting = true;
-        inner.reset_answer = None;
-        inner.phase = SupervisorPhase::Starting;
-        self.changed.notify_all();
-        let deadline = Instant::now() + RESET_BOUND;
-        loop {
-            if let Some(answer) = inner.reset_answer.take() {
-                return answer;
-            }
-            if inner.exiting {
-                return failed_reset("the supervisor is ending");
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return failed_reset("the reset did not complete in time");
-            }
-            inner = self.changed.wait_timeout(inner, left).unwrap_or_else(|e| e.into_inner()).0;
+        match self.admit_reset() {
+            Ok(admission) => self.wait_reset(admission),
+            Err(answer) => answer,
         }
     }
 

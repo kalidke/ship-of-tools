@@ -65,6 +65,14 @@ Supervisor:
   row's id and feeds the row registered under it at each round (`run::observer`), so a refreshed row's phase follows
   its new supervisor.
 
+The daemon's calls on a row's supervisor are ops of the row socket, through `sot_log::attach_client::supervisor_client`
+(`query_status`, `end_run`, `reset`, `stop`, and the observer's `Persistent`), each bounded; a row of another row number
+is `foreign` and one that answers no such op, or none, is `unreachable`. An outcome the call could not settle is
+settled by reading the same supervisor's status, never by asking again: a lost end whose run is gone is `Ended`, a
+lost reset whose new voyage is published is `Ok` with it, and what stays unsettled is `NotEnded` (an `end_run`) or an
+error (a `reset`), so the row is kept and lifecycle's or the caller's retry reads the true state. Management shares
+the row's 8 connections with the viewers; a dial that gets no slot is one failed observation, never an end.
+
 Ends:
 - A row is reported ended only after the destroy proof: no authority and no leg answers for its state folder
   (`run::end_run`). Then its comm entries are pruned, its toml removed durably, the row unregistered and

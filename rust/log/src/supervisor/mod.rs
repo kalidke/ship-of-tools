@@ -29,6 +29,7 @@
 use crate::capsule::{CapsuleConfig, ExitKind, RunSignals};
 use crate::lane::wire::{self, SupervisorPhase};
 use crate::row::{row_socket_path, RowRun, RowServer};
+use std::collections::HashMap;
 use std::fmt;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -243,6 +244,10 @@ fn watch_row_listener(
 ) {
     let mut rebound = false;
     while let Ok(Watch::Died) = events.recv() {
+        // A death that races the end of the supervisor is not worth a rebind.
+        if shared.is_exiting() {
+            return;
+        }
         note(format_args!("the row socket's listener died"));
         drop(server);
         if rebound {
@@ -301,6 +306,7 @@ fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
         match shared.wait_after_run() {
             After::Stop => return finish(shared),
             After::TerminalGrace => return EXIT_TERMINAL,
+            After::RowLost => return EXIT_AGENT_NOT_STARTED,
             After::Reset { new_voyage } => match pointer::reset(&config.state_dir, &new_voyage) {
                 Ok(()) => {
                     shared.reset_done(&new_voyage);
@@ -316,6 +322,7 @@ fn drive(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>) -> i32 {
 fn leave(shared: &Shared) -> i32 {
     match shared.wait_after_run() {
         After::Stop => finish(shared),
+        After::RowLost => EXIT_AGENT_NOT_STARTED,
         _ => EXIT_TERMINAL,
     }
 }

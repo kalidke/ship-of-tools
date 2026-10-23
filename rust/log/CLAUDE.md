@@ -59,14 +59,28 @@ true after the merge of the leg into the supervisor.
   progress, the supervisor is terminal, or the end could not be recorded), or `ending` when 25 s have passed; `row.reset`
   is fenced by the phase alone, admitted only from `ended_no_respawn` and answering `reset {voyage}` once the new
   voyage is published; `row.stop` ends the agent and answers `stopping` as its connection's last reply, and the
-  process exits (0, or 69 when it was terminal) once that connection has ended, or after 3 s. A requested end that
+  process exits (0, or 69 when it was terminal) once that connection has ended, or after 3 s, and its shutdown then ends every
+  connection: a closed connection stays registered until both of its threads have ended, so `close_all` reaches a writer
+  that a peer which does not read has stuck (on Windows a pipe flush blocks until the peer reads, and `CancelIoEx` ends
+  it). Proofs: `row/run_tests.rs::a_closed_connection_stays_reachable_until_its_threads_have_ended` on every system;
+  `tests/row_pipe.rs::a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown` on the hosted Windows run only (on
+  Linux the same test in `tests/row_management.rs` passes at the base too, since the reply fits the socket buffer).
+  `tests/row_management.rs` and the supervisor suite run on Linux only; on Windows and macOS they are cross-checked. A requested end that
   cannot be recorded on the voyage (`mark_end_requested`) is not an end: the run fails, the caller is answered
   `failed`, the supervisor is terminal and starts no other agent, so a later `--resume` never runs an agent whose end
   was acknowledged (`tests/supervisor/spawn.rs::a_requested_end_that_cannot_be_recorded_is_not_answered_ended`, over the
   test seam `SOT_TEST_END_MARK_FAILS`); an acknowledged `end_run` is recorded as a requested end on the voyage before the
   answer even when the agent ended first, so a resume rests; a supervisor that goes terminal sends its running agent
-  `Stop` first. No call carries an id and nothing is kept for a resubmit: a client that lost a reply reads status,
-  and the daemon's calls are bounded (status 5 s, end_run, reset and stop 30 s). Limit: management shares the row's
+  `Stop` first. No call carries an id and nothing is kept for a resubmit. A completion answer is kept under its own
+  admission, so another run's admission never clears it. A client that lost a reply, or got `ending`, settles it by
+  reading status from the same supervisor (the dial's `(pid, created)` must match), for at most 10 s: for `end_run` the
+  run gone means ended (with the supervisor terminal, failed) and the run still there means unknown, and for `reset` a
+  voyage other than the one it rested on means published and the same voyage with the supervisor resting or terminal
+  means not; nothing is ever asked a second time, and a replacement run's status never stands for the original
+  (`tests/row_management.rs::{an_end_run_whose_reply_is_lost_after_the_run_ended_reports_ended,
+  a_reset_whose_reply_is_lost_after_publication_reports_reset}`, over a stand-in row that drops the connection). The
+  daemon's calls are bounded from the request (status 5 s, end_run, reset and stop 30 s; a dial adds up to 2 s before
+  it, and a recovery up to 10 s after). Limit: management shares the row's
   8 connections with the viewers (the observer holds one), so a ninth dial gets no slot, which the daemon reads as one
   failed observation and never as an end. The dial checks the hello's row number alone (`ROW_PROTOCOL`, which freezes
   at the 0.7.0 tag), so a row of another number is `VersionSkew`, which rows reads as `foreign`; a row from before this
@@ -84,7 +98,7 @@ true after the merge of the leg into the supervisor.
 - One run per voyage folder (`writer.lock`, taken by `fence::take_fence`); one authority per state dir
   (`supervisor.lock`, taken by `lock_supervisor`).
 - The row socket `row-<h>` (`<runtime dir>/row-<h>.sock`, a pipe `\\.\pipe\sot-row-<h>` on Windows) is served by the
-  supervisor for as long as its run lives, in wire's frames. A connection is served nothing before its `row.hello`
+  supervisor for as long as the supervisor lives (it outlives each run it serves), in wire's frames. A connection is served nothing before its `row.hello`
   is admitted: the challenge's OS steps first, then the hello's reply naming the row's `(pid, created)`. The hello
   has one absolute deadline (Unix) and its framing keeps wire's envelope cap on the whole line. A peer of another
   account is dropped at accept. The runtime folder must be private (`runtime_dir` checks it; `RowServer::bind` on a
@@ -148,7 +162,11 @@ true after the merge of the leg into the supervisor.
   bind that fails, ends the live run unrequested
   (`Command::Stop`, no request recorded) and the supervisor exits 75, so rows' watchdog decides through its one restart
   budget (`tests/row_supervisor.rs::a_row_listener_that_keeps_dying_ends_the_supervisor_with_75`, over the test seam
-  `SOT_TEST_ROW_LISTENER_DIES`; `the_row_listeners_watch_waits_on_an_event` proves the watch gains no wakeups). Limit: a
+  `SOT_TEST_ROW_LISTENER_DIES`); a listener lost while the supervisor rests (its run ended, nothing else can stop or
+  reset it) ends it the same way, with 75, and frees its fence, and no run is admitted once the listener is lost
+  (`tests/row_supervisor.rs::a_listener_lost_while_the_supervisor_rests_ends_it_with_75`, over
+  `SOT_TEST_ROW_LISTENER_DIES_ON=<file>`, and `supervisor/authority_tests.rs`; a death that races the end of the
+  supervisor is not rebound; `the_row_listeners_watch_waits_on_an_event` proves the watch gains no wakeups). Limit: a
   viewer that dials in the gap between the death and the rebind sees a refused connection and retries.
 - An end retires the row's request queue. When the loop leaves its main loop (or the agent could not start), `RowRun::end_run`
   closes admission and answers every queued request `run ended`; a request that arrives after is answered `run ended`

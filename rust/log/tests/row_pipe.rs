@@ -87,3 +87,56 @@ fn every_pipe_instance_is_owner_only() {
     drop(clients);
     server.shutdown();
 }
+
+/// A peer that sends `row.stop` and never reads its reply cannot hold the shutdown: the writer's flush on a pipe blocks
+/// until the peer reads, and the connection stays registered until it ends, so `close_all` cancels that flush.
+#[test]
+fn a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown() {
+    use std::io::Write;
+    struct Stopper;
+    impl sot_log::row::Management for Stopper {
+        fn status(&self) -> sot_log::row::StatusRes {
+            sot_log::row::StatusRes { phase: "ready".into(), run: None, voyage: None }
+        }
+        fn end_run(&self, _: &str, _: &str) -> sot_log::row::EndRunRes {
+            unreachable!()
+        }
+        fn reset(&self) -> sot_log::row::ResetRes {
+            unreachable!()
+        }
+        fn stop(&self, _: sot_log::row::ConnId) -> sot_log::row::StopRes {
+            sot_log::row::StopRes { outcome: sot_log::row::StopOutcome::Stopping }
+        }
+        fn conn_gone(&self, _: sot_log::row::ConnId) {}
+    }
+    let h = format!("stop{}", std::process::id());
+    let path = row_socket_path(&h).expect("the pipe name");
+    let run = RowRun::new("run-one", "ready");
+    run.set_management(Box::new(Stopper));
+    let server = RowServer::bind(&path, run).expect("bind the pipe");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut peer = loop {
+        match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) && std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            r => break r.expect("open an instance"),
+        }
+    };
+    for (id, op, payload) in [
+        (1, "row.hello", serde_json::json!({"build": "t", "row": sot_log::row::ROW_PROTOCOL})),
+        (2, "row.stop", serde_json::json!({})),
+    ] {
+        let mut text = serde_json::to_vec(&sot_protocol::Frame::req(id, op, payload)).unwrap();
+        text.push(b'\n');
+        peer.write_all(&text).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let (done, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        server.shutdown();
+        let _ = done.send(());
+    });
+    assert!(ended.recv_timeout(Duration::from_secs(10)).is_ok(), "the shutdown never ended with a peer that does not read");
+    drop(peer);
+}
