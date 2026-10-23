@@ -199,12 +199,22 @@ impl<C: Client + 'static> RowClient<C> {
         self.request(OP_RESIZE, req, None).map(|_| ())
     }
 
+    /// One request with no blob, its reply read within `bound`. A reply that carries an `error` is `RowError::Refused`
+    /// (or `DeliveryUnknown`); every other reply is returned whole.
+    pub fn call(&mut self, op: &str, payload: serde_json::Value, bound: Duration) -> Result<Frame, RowError> {
+        self.request_within(op, payload, None, bound)
+    }
+
     fn request(&mut self, op: &str, payload: serde_json::Value, blob: Option<&[u8]>) -> Result<Frame, RowError> {
+        self.request_within(op, payload, blob, REQUEST_BOUND)
+    }
+
+    fn request_within(&mut self, op: &str, payload: serde_json::Value, blob: Option<&[u8]>, bound: Duration) -> Result<Frame, RowError> {
         let id = self.next_id;
         self.next_id += 1;
         let mut bytes = Vec::new();
         write_frame_blocking_blob(&mut bytes, &Frame::req(id, op, payload), blob).map_err(|e| RowError::Protocol(e.to_string()))?;
-        let deadline = Instant::now() + REQUEST_BOUND;
+        let deadline = Instant::now() + bound;
         // The write is under the request's own deadline: a row that stops reading cannot park the caller.
         let conn = Arc::clone(&self.conn);
         match run_with_deadline(deadline, || self.conn.cancel(), move || conn.write_all(&bytes)) {

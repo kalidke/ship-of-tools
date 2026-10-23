@@ -463,3 +463,33 @@ fn an_end_run_the_agent_beat_is_still_a_requested_end_after_a_stop_and_a_resume(
     let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
     let _ = wait_for_exit(&mut second, Duration::from_secs(30));
 }
+
+/// A requested end that cannot be recorded is not an end: the supervisor does not answer `ended`, starts no other agent
+/// and ends terminal. The record is the only thing a later `--resume` reads, so an end it never read would run again.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_requested_end_that_cannot_be_recorded_is_not_answered_ended() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let mut guard = spawn_supervisor_with_env(&state_dir, "--start", SHELL, &[("SOT_TEST_END_MARK_FAILS", "1")]);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    drop(conn);
+
+    let outcome = sot_log::attach_client::supervisor_client::end_run(&state_dir, &voyage, "test").expect("the end_run call is answered");
+    match outcome {
+        sot_log::attach_client::supervisor_client::EndRunOutcome::Failed(detail) => {
+            assert!(detail.contains("record"), "the failure names the record: {detail}");
+        }
+        other => panic!("an end that was not recorded was answered {other:?}"),
+    }
+    let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&state_dir).expect("the terminal supervisor still answers");
+    assert_eq!(report.phase, SupervisorPhase::Terminal);
+    let status = wait_for_exit(&mut guard, Duration::from_secs(30));
+    assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_TERMINAL), "exit status: {status:?}");
+}

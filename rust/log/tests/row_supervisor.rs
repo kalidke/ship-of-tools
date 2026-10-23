@@ -185,3 +185,82 @@ fn a_row_listener_that_keeps_dying_ends_the_supervisor_with_75() {
     };
     assert_eq!(status.code(), Some(75), "a row that cannot be reached is a row that did not start");
 }
+
+/// The runtime folder of a running supervisor holds its row socket and nothing else: the daemon's management calls ride
+/// the row socket, so no supervisor lane is bound (pass 6c-1b1).
+#[test]
+fn no_supervisor_lane_is_bound() {
+    let (_supervisor, path, runtime, _dir) = supervisor_with_dying_listener("never");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut client = loop {
+        match RowClient::connect(&path, "test", Duration::from_secs(5)) {
+            Ok(c) => break c,
+            Err(e) => assert!(Instant::now() < deadline, "the row socket never answered: {e}"),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    client.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut client, "agent-was-here", Duration::from_secs(20));
+    let mut names: Vec<String> = std::fs::read_dir(runtime.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let h = path.file_name().unwrap().to_string_lossy().trim_start_matches("row-").trim_end_matches(".sock").to_string();
+    assert!(names.contains(&format!("row-{h}.sock")), "the row socket is bound: {names:?}");
+    let lanes: Vec<&String> = names.iter().filter(|n| n.starts_with("supervisor-") || n.starts_with("voyage-")).collect();
+    assert!(lanes.is_empty(), "no lane is bound beside the row socket, but found {lanes:?}");
+}
+
+/// The thread whose name is `name` in the process `pid`, and its voluntary context switches so far.
+fn voluntary_switches(pid: u32, name: &str) -> u64 {
+    for entry in std::fs::read_dir(format!("/proc/{pid}/task")).unwrap() {
+        let task = entry.unwrap().path();
+        if std::fs::read_to_string(task.join("comm")).unwrap_or_default().trim() != name {
+            continue;
+        }
+        let status = std::fs::read_to_string(task.join("status")).unwrap_or_default();
+        let line = status.lines().find(|l| l.starts_with("voluntary_ctxt_switches:")).expect("the thread reports its switches");
+        return line.split_whitespace().nth(1).unwrap().parse().unwrap();
+    }
+    panic!("the supervisor has no thread named {name:?}");
+}
+
+/// The thread that watches the row listener waits for an event: a thread blocked on a channel gains no voluntary
+/// context switches, where a poll gains ten a second. A listener that dies is still bound again, and a dial after the
+/// death is served at once, with no status that reads `terminal` in between.
+#[test]
+fn the_row_listeners_watch_waits_on_an_event() {
+    let (supervisor, path, _runtime, _dir) = supervisor_with_dying_listener("never");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut client = loop {
+        match RowClient::connect(&path, "test", Duration::from_secs(5)) {
+            Ok(c) => break c,
+            Err(e) => assert!(Instant::now() < deadline, "the row socket never answered: {e}"),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    client.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut client, "agent-was-here", Duration::from_secs(20));
+    let pid = supervisor.0.id();
+    let before = voluntary_switches(pid, "row-watch");
+    std::thread::sleep(Duration::from_secs(1));
+    let after = voluntary_switches(pid, "row-watch");
+    assert_eq!(after, before, "the watch woke {} times in a second with nothing to watch", after - before);
+    drop(client);
+
+    let (_supervisor, path, _runtime, _dir) = supervisor_with_dying_listener("first");
+    let started = Instant::now();
+    let mut served = None;
+    while started.elapsed() < Duration::from_secs(30) && served.is_none() {
+        if let Ok(mut c) = RowClient::connect(&path, "test", Duration::from_secs(5)) {
+            let status = c.call("row.status", serde_json::json!({}), Duration::from_secs(5)).expect("a served dial answers a status");
+            assert_ne!(status.payload["phase"], "terminal", "the rebound listener's row is not terminal");
+            served = Some(started.elapsed());
+        } else {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    let served = served.expect("the rebound listener served a dial");
+    assert!(served < Duration::from_secs(5), "the dial after the death was served after {served:?}");
+}
