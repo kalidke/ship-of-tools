@@ -8,7 +8,7 @@ use sot_log::row::{row_socket_path, RowClient, RowRun, RowServer};
 use std::os::windows::io::AsRawHandle;
 use std::sync::Arc;
 use std::time::Duration;
-use windows_sys::Win32::Foundation::{HANDLE, LocalFree};
+use windows_sys::Win32::Foundation::{ERROR_PIPE_BUSY, HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT};
 use windows_sys::Win32::Security::{
     EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl, GetTokenInformation, AclSizeInformation,
@@ -61,9 +61,20 @@ fn every_pipe_instance_is_owner_only() {
     let user = token_user();
     let owner = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
     // Four connections held at once force the listener to create further instances after the first; each is read back.
-    let raw: Vec<std::fs::File> = (0..4)
-        .map(|_| std::fs::OpenOptions::new().read(true).write(true).open(&path).expect("open an instance"))
-        .collect();
+    // The listener creates the next instance only after it accepted the one before, so an open that finds every
+    // instance busy tries again, as the lane's pipe client does (bounded).
+    let open = || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                r => break r.expect("open an instance"),
+            }
+        }
+    };
+    let raw: Vec<std::fs::File> = (0..4).map(|_| open()).collect();
     for f in &raw {
         assert_owner_only(f.as_raw_handle() as HANDLE, owner);
     }
