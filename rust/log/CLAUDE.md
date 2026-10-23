@@ -86,8 +86,10 @@ true after the merge of the leg into the supervisor.
   after both have ended, and `RowServer::shutdown` stops the acceptor, ends every connection's stream and joins every
   connection thread. A viewer that cannot keep up is resynced, not cut: when 256 output frames wait for it they are all
   dropped, it is taken out of the live set, and the next ground state sends it a fresh snapshot, after which output
-  follows in order; its answers (a request's reply, a demotion, a snapshot) are never dropped, so a driver that types
-  under a flood keeps its connection and gets every reply (`tests/row_flood.rs`). A viewer whose answers alone fill 64
+  follows in order; its answers (a request's reply, a demotion) are never dropped, and a snapshot it has not begun to
+  receive is replaced by the fresh one, so a viewer held back through many resyncs keeps one screen queued, not one per
+  resync, and a driver that types under a flood keeps its connection and gets every reply (`tests/row_flood.rs`,
+  `row::run`'s resync test). A viewer whose answers alone fill 64
   frames, or that makes no progress writing for 5 s, is cut: its stream is shut down so its blocked threads return,
   and its slot returns when they end. On Unix that is `shutdown(2)`; on Windows it is `CancelIoEx` on the pipe's
   handle, with later calls failing at once. Limits: a Windows pipe has no read timeout, so a peer that

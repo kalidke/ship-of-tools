@@ -23,9 +23,20 @@ pub(super) enum Push {
     Cut,
 }
 
-/// One connection's queue of frames, in order. Output is droppable: when too much of it waits, all of it is dropped and
-/// the viewer is resynced with a fresh snapshot. Answers (a request's reply, a demotion, a snapshot) are never dropped;
-/// a viewer that cannot even drain those is cut. Memory per connection is bounded either way.
+/// What a queued frame is to its queue.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Class {
+    Output,
+    /// A piece of a screen, `first` on its first: a screen the writer has not begun is superseded by a resync's.
+    Screen { first: bool },
+    /// A request's reply or a demotion.
+    Answer,
+}
+
+/// One connection's queue of frames, in order. Output is droppable: when too much of it waits, all of it is dropped,
+/// with every screen the writer has not begun, and the viewer is resynced with a fresh snapshot. Answers (a request's
+/// reply, a demotion) are never dropped; a viewer that cannot even drain those is cut. Memory per connection is bounded
+/// either way.
 pub(super) struct OutQueue {
     state: Mutex<OutState>,
     ready: std::sync::Condvar,
@@ -33,7 +44,7 @@ pub(super) struct OutQueue {
 
 #[derive(Default)]
 struct OutState {
-    items: VecDeque<(Out, bool)>,
+    items: VecDeque<(Out, Class)>,
     droppable: usize,
     /// No more frames are taken; the writer drains what is queued, then ends.
     finished: bool,
@@ -50,14 +61,19 @@ impl OutQueue {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn push(&self, frame: Frame, blob: Option<Vec<u8>>, droppable: bool) -> Push {
+    fn push(&self, frame: Frame, blob: Option<Vec<u8>>, class: Class) -> Push {
         let mut state = self.lock();
         if state.finished || state.aborted {
             return Push::Queued;
         }
-        if droppable {
+        if class == Class::Output {
             if state.droppable >= QUEUE_FRAMES {
-                state.items.retain(|(_, d)| !d);
+                // Only the queue's front can be a screen the writer has begun; its rest is still sent.
+                let mut begun = true;
+                state.items.retain(|(_, c)| {
+                    begun &= *c == Class::Screen { first: false };
+                    begun || *c == Class::Answer
+                });
                 state.droppable = 0;
                 return Push::Resync;
             }
@@ -65,7 +81,7 @@ impl OutQueue {
         } else if state.items.len() - state.droppable >= ANSWER_FRAMES {
             return Push::Cut;
         }
-        state.items.push_back((Out::Frame(frame, blob), droppable));
+        state.items.push_back((Out::Frame(frame, blob), class));
         self.ready.notify_one();
         Push::Queued
     }
@@ -77,8 +93,8 @@ impl OutQueue {
             if state.aborted {
                 return None;
             }
-            if let Some((out, droppable)) = state.items.pop_front() {
-                if droppable {
+            if let Some((out, class)) = state.items.pop_front() {
+                if class == Class::Output {
                     state.droppable -= 1;
                 }
                 return Some(out);
@@ -427,13 +443,17 @@ impl Inner {
     /// the next ground state; a connection that cannot even drain its answers is cut, never waited for: its stream is
     /// shut down, so its blocked threads return and end.
     fn send(&mut self, id: ConnId, frame: Frame, blob: Option<Vec<u8>>) {
+        let class = if frame.op == OP_OUTPUT { Class::Output } else { Class::Answer };
+        self.send_as(id, frame, blob, class);
+    }
+
+    fn send_as(&mut self, id: ConnId, frame: Frame, blob: Option<Vec<u8>>, class: Class) {
         let Some(conn) = self.conns.get(&id) else { return };
-        let droppable = frame.op == OP_OUTPUT;
-        if droppable && !conn.live {
+        if class == Class::Output && !conn.live {
             // Not live: it is waiting for its screen, which already holds this output.
             return;
         }
-        match conn.queue.push(frame, blob, droppable) {
+        match conn.queue.push(frame, blob, class) {
             Push::Queued => {}
             Push::Resync => {
                 if let Some(conn) = self.conns.get_mut(&id) {
@@ -516,7 +536,7 @@ impl Inner {
             for (i, piece) in pieces.into_iter().enumerate() {
                 let last = i + 1 == n;
                 let frame = Frame::evt(OP_SNAPSHOT, blob_payload(json!({"last": last}), piece.len()));
-                self.send(id, frame, Some(piece.to_vec()));
+                self.send_as(id, frame, Some(piece.to_vec()), Class::Screen { first: i == 0 });
             }
             if let Some(conn) = self.conns.get_mut(&id) {
                 conn.live = true;
