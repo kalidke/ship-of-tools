@@ -1,6 +1,6 @@
 //! The capsule: a row's terminal outlives the window and the daemon (decision D2). One supervisor per state dir is
-//! the authority over its runs, one leg runs the agent on a real terminal and keeps its screen, and every viewer
-//! attaches through one client over typed lanes. No append-only record of the terminal is kept.
+//! the authority over its runs, runs the agent on a real terminal and keeps its screen, and every viewer attaches
+//! through one client over the row socket. No append-only record of the terminal is kept.
 
 pub mod attach_client;
 pub mod capsule;
@@ -52,21 +52,11 @@ pub enum Error {
     Schema(String),
     #[error("state: {0}")]
     State(String),
-    /// The supervisor lane answered but refused this client
-    /// (`SupervisorReply::Refused { reason: VersionSkew }`, ADR 0030 §8
-    /// decision 31c) — typed so a caller (`sot-backend`'s `phase_of`) can
-    /// match on it directly instead of substring-matching the generic
-    /// `Foreign`-challenge `State` text, which also covers a malformed
-    /// reply, trailing bytes, or a wrong pid/creation and does NOT mean
-    /// this. `supervisor_client::connect_and_challenge` is the only place
-    /// this is constructed. Display text is deliberately non-committal
-    /// about the cause (Codex review, 2026-09-11): ADR 0045 decision 7
-    /// retired the build-boundary gate this used to mean exclusively, so
-    /// during the migration window the SAME refusal can come from either
-    /// a genuinely different lane protocol or an OLD, pre-ADR-0045
-    /// supervisor still refusing on build — the wire alone can't say
-    /// which, so this never claims to.
-    #[error("supervisor lane refused: another lane protocol, or a supervisor from before the protocol-only gate")]
+    /// The row's hello declared another row number than this client speaks (`RowError::RowMismatch`, seen by
+    /// `supervisor_client`'s dial). Typed so a caller (`sot-backend`'s `phase_of`) can match on it directly instead
+    /// of substring-matching the generic `Foreign` text, which also covers a malformed reply, trailing bytes, or a
+    /// wrong pid or creation and does NOT mean this.
+    #[error("the row speaks another row protocol number")]
     VersionSkew,
     /// A ConPTY/job OPERATION failed (Windows-only: `conpty` module) — a
     /// spawn stage, or a later runtime call (`terminate`, `active_processes`,

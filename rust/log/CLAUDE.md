@@ -238,13 +238,10 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
     adversarial cases are the exchanges in `support/row_challenge.rs`), with `other_account.rs`,
     `winhandle_windows.rs` and `macos_kernel_facts/`.
   - `conpty.rs`, `isolation_guards.rs`, `test_body_fixture.rs`, and `support/` (`capsule_guard.rs`, `row_challenge.rs`).
-- `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`), `BUILD_ID`,
-  `SupervisorPhase` and `Error`/`Result`.
+- `src/lib.rs`: the module tree, the `storage_exhaustion` re-export, `BUILD_ID`, `SupervisorPhase` and `Error`/`Result`.
 - `src/secret.rs`: `redact` and `RedactingWriter`, the masking of page secrets in both binaries' logs.
 - `src/test_barrier.rs`: `hold`, a named phase barrier a real process can be held at (Unix, feature `native-barrier`, which no installed build enables; inert unless `SOT_TEST_BARRIER_DIR` names a folder).
 - `src/test_copy.rs`: `copy_release_folder`, the one copy of a project folder for a test, leaving out every Julia manifest (feature `test-support`).
-- `src/test_isolated.rs`: shared exact-body isolation, scoped direct-fixture supervision and bounded child/output waits (feature `test-support`); `Draining::wait_and_read` returns child and stream observations without panicking; `try_wait_within` returns a checked tuple or failure text so a caller can scrub it before reporting, and `wait_within` is its panicking adapter. Both checked forms retain the child's status or wait failure, both stream failures and each stream's last 8 KiB. Readiness errors retain termination/entry checks, and byte-captured output renders invalid UTF-8 with explicit byte escapes. Wrapped fixtures retain launcher status and both streams, validate the native role/PID witness against exact entry, and share direct fixtures' wait/drain/finalization implementation.
-- `src/test_wait.rs`: the bounded form of a test's wait (feature `test-support`): `run_within` runs a child to its end and returns `Ran` (its status and both streams), whose `Display` is the account every failure about it carries, each stream cut to its last 8 KiB by `tail`, which `test_isolated`'s drained waits share; `try_run_within` is its form that never panics, for a caller that takes the failure as a value (a cleanup, a probe whose failure a skip names); `within` bounds any other blocking wait on a thread of its own.
 - `src/test_log.rs`: timestamp-free `capture()` and formatting-preserving `install()` (feature `test-support`), with behavioral tests of the capture format, first-callsite routing, parallel isolation and guard restoration.
 - `src/test_foreign.rs`: `ForeignListener`, a socket another OS account (`nobody`) listens on, for the User isolation
   tests, and `elevation_or_skip`, the one rule for a test that needs root: it skips only when `sudo -n true` fails (a
@@ -265,7 +262,6 @@ a run, `src/capsule/screen.rs` and `src/capsule/ended.rs` for the two files it l
 
 ## Rules
 - Modules are `pub` where integration tests or other crates reach them: those see only pub items.
-- `host` is a `pub` module; `lock_writer` and `owner_protected_pipe_descriptor` are also named at the crate root.
 - A change to a wire tag, magic or limit, or to an exit code, is an interface change with other processes and versions.
 - A fixture selects its executable on the child command. T2's actual SSH fixtures compare the parent PATH and SHELL before, during and after execution; no lexical allowlist proves environment preservation.
 - Every subscriber a test installs goes through `test_log`: `capture()` reads this thread's events without formatter timestamps or colour; `install()` preserves the supplied subscriber's formatting and timer. Behavioral tests exercise first-callsite routing, parallel captures and guard restoration; new callers use this owner. The two binaries' `main` functions install production subscribers.

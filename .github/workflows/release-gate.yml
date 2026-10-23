@@ -640,8 +640,8 @@ jobs:
   #
   # ADR 0041 step 6, unit U2 (L1-unix LU3c: `supervisor_win.rs` renamed
   # `supervisor/` and ungated to run on Linux too): `supervisor` spawns
-  # the real `sot-capsule` binary and drives it as a real client (the
-  # supervisor lane, a real cross-process authority) — belongs here for
+  # the real `sot-capsule` binary and drives it as a real client (over the
+  # row socket, a real cross-process authority) — belongs here for
   # the identical "real named pipes, a real cross-process server" reason
   # `pipe_win` does, at the ADR's own pinned 15-minute cap.
   #
@@ -707,12 +707,12 @@ jobs:
       - name: Test pipe_win (named-pipe client + same-connection challenge)
         timeout-minutes: 10
         run: cargo test -p sot-log --test pipe_win -- --nocapture
-      # --test supervisor: the real-process supervisor authority --
-      # spawn/adopt, the anti-flap bound, end_run's record_closed then
-      # record_verified, and the version-skew refusal, all against a real
+      # --test supervisor: the real-process supervisor --
+      # start, end_run and reset, the exit codes, and the row-number refusal,
+      # all over the row socket against a real
       # `sot-capsule supervise` child. L1-unix LU3c: renamed from
       # `tests/supervisor_win.rs` when the suite ungated to run on Linux
-      # too (over a real socket lane, a real `/bin/sh` producer) -- this
+      # too (over the row socket, a real `/bin/sh` producer) -- this
       # job proves Windows behavior is unchanged; the Linux half runs in
       # the `rest` shard of `test-linux`.
       - name: Test supervisor (the supervisor authority, real process)
@@ -721,7 +721,7 @@ jobs:
       # --test fe_client: ADR 0041 step 6 U3, the FE attach-only
       # client -- attach as a watcher and receive the checkpoint;
       # take-on-first-input (the echo of the first input reaching the screen); end_run from the quit dispatcher
-      # reaching record_closed; and reconnect after the capsule is
+      # reaching the ended run; and reconnect after the capsule is
       # killed and a fresh supervisor takes over restoring the screen
       # from the new checkpoint -- the last of which spawns a SECOND
       # real supervisor process and rides the client's own real

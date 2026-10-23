@@ -89,8 +89,16 @@ fn challenge_cancels_a_genuinely_pending_read_when_the_deadline_expires() {
     }
     let (path, _server, _run) = bind_row();
     let client = connect_own(&path).expect("connect");
-    // A short but real deadline: the row never replies, so this can only resolve via the watchdog's own cancel.
-    let outcome = challenge(&client, &mut Unanswered, Instant::now() + Duration::from_millis(300));
+    // A short but real deadline: the row never replies and holds the connection open, so the challenge is still
+    // pending until the watchdog's cancel ends it, well before the row's own 5 s hello timeout could close the stream.
+    let started = Instant::now();
+    let outcome = std::thread::scope(|scope| {
+        let challenge_handle = scope.spawn(|| challenge(&client, &mut Unanswered, started + Duration::from_millis(300)));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!challenge_handle.is_finished(), "the challenge ended before its deadline: the peer did not hold it pending");
+        challenge_handle.join().expect("challenge thread panicked")
+    });
+    assert!(started.elapsed() < Duration::from_secs(3), "the cancel completed only after {:?}: the row's own timeout may have ended it", started.elapsed());
     assert!(matches!(outcome, ChallengeOutcome::Undetermined), "{outcome:?}");
 }
 
