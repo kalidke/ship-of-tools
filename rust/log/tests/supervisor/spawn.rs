@@ -52,11 +52,12 @@ fn a_resume_with_nothing_to_resume_starts_the_agent() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// A folder that LOST its pointer is not a folder never used: a requested end recorded in a voyage's `ended` is not
-/// resurrected by a `--resume`, which rests in `ended_no_respawn` and starts no agent.
+/// A run asked to end stays ended across supervisor restarts: the record is `<state_dir>/ended`, a `--resume` over it
+/// rests in `ended_no_respawn` naming no run (a supervisor names only the runs it began) and starts no agent, and a
+/// second restart reads it again.
 #[cfg(unix)]
 #[test]
-fn a_lost_pointer_does_not_resurrect_a_requested_end() {
+fn a_run_asked_to_end_rests_after_a_supervisor_restart() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -66,41 +67,101 @@ fn a_lost_pointer_does_not_resurrect_a_requested_end() {
     let starts = dir.path().join("starts");
     let script = format!("echo started >> {}; exec cat", starts.display());
     let argv = ["/bin/sh", "-c", script.as_str()];
+    let started = || std::fs::read_to_string(&starts).unwrap().lines().count();
 
     let mut first = spawn_supervisor(&state_dir, "--start", &argv);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(30));
     end_run_and_expect_ended(&conn, &run, "cleanup");
-    stop(&conn);
-    let _ = wait_for_exit(&mut first, Duration::from_secs(30));
-    assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 1, "one agent ran");
+    let record = std::fs::read(state_dir.join("ended")).expect("the end is recorded in <state_dir>/ended");
+    let record: Value = serde_json::from_slice(&record).expect("the record is JSON");
+    assert_eq!(record["requested"], true, "the record says the end was asked for: {record}");
+    first.child_mut().kill().unwrap();
+    first.child_mut().wait().unwrap();
+    drop(conn);
+    assert_eq!(started(), 1, "one agent ran");
 
-    std::fs::remove_file(state_dir.join("drawer.voyage")).expect("lose the pointer");
-    let mut second = spawn_supervisor(&state_dir, "--resume", &argv);
-    let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let rested = poll_until(
-        || Some(status(&conn)).filter(|s| s.phase != SupervisorPhase::Starting),
-        Duration::from_secs(30),
-        "the resumed supervisor to settle",
-    );
-    assert_eq!(rested.phase, SupervisorPhase::EndedNoRespawn, "a requested end is not resurrected");
-    assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 1, "no second agent started");
+    for restart in ["second", "third"] {
+        let mut resumed = spawn_supervisor(&state_dir, "--resume", &argv);
+        let conn = wait_for_lane(&h, Duration::from_secs(30));
+        let rested = poll_until(
+            || Some(status(&conn)).filter(|s| s.phase != SupervisorPhase::Starting),
+            Duration::from_secs(30),
+            "the resumed supervisor to settle",
+        );
+        assert_eq!(rested.phase, SupervisorPhase::EndedNoRespawn, "the {restart} supervisor rests on the requested end");
+        assert_eq!(rested.run, None, "a supervisor restarted onto an end names no run");
+        assert_eq!(started(), 1, "no second agent started under the {restart} supervisor");
+        if restart == "second" {
+            resumed.child_mut().kill().unwrap();
+            resumed.child_mut().wait().unwrap();
+        } else {
+            stop(&conn);
+            let _ = wait_for_exit(&mut resumed, Duration::from_secs(30));
+        }
+    }
+}
 
-    // The resting supervisor dies and the watchdog's next `--resume` reads the pointer the first one left: the end
-    // is still read, never lost with the pointer.
-    second.child_mut().kill().unwrap();
-    second.child_mut().wait().unwrap();
-    let mut third = spawn_supervisor(&state_dir, "--resume", &argv);
+/// A supervisor leaves a state folder holding its fence, the screen and the end record, and no voyage folder.
+#[test]
+fn no_voyage_folder_is_written() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
-    let rested = poll_until(
-        || Some(status(&conn)).filter(|s| s.phase != SupervisorPhase::Starting),
-        Duration::from_secs(30),
-        "the second resumed supervisor to settle",
-    );
-    assert_eq!(rested.phase, SupervisorPhase::EndedNoRespawn, "the requested end survives a second restart");
-    assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 1, "still no second agent");
+    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    end_run_and_expect_ended(&conn, &run, "cleanup");
     stop(&conn);
-    let _ = wait_for_exit(&mut third, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
+
+    let mut names: Vec<String> =
+        std::fs::read_dir(&state_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    let allowed = ["supervisor.lock", "screen", "ended"];
+    assert!(names.iter().all(|n| allowed.contains(&n.as_str())), "the state folder holds {names:?}, beyond {allowed:?}");
+}
+
+/// A record of how the last run ended that cannot be read is not a record of no end: a `--resume` over it is terminal
+/// before any run and starts no agent.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_end_record_starts_no_agent_on_resume() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let starts = dir.path().join("starts");
+    let script = format!("echo started >> {}; exec cat", starts.display());
+    let argv = ["/bin/sh", "-c", script.as_str()];
+    std::fs::write(state_dir.join("ended"), b"this is not json").unwrap();
+
+    let mut guard = spawn_supervisor(&state_dir, "--resume", &argv);
+    let status = wait_for_exit(&mut guard, Duration::from_secs(30));
+    assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_TERMINAL), "exit status: {status:?}");
+    assert!(!starts.exists(), "no agent started over a record that could not be read");
+}
+
+/// The supervisor makes its own state folder: on Windows the start creates nothing before it.
+#[test]
+fn a_supervisor_creates_its_own_state_folder() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
+    poll_until(|| state_dir.is_dir().then_some(()), Duration::from_secs(30), "the supervisor to make its state folder");
+    let conn = wait_for_lane(&state_dir_hash(&state_dir), Duration::from_secs(30));
+    let (_voyage, run) = wait_for_ready(&conn, Duration::from_secs(90));
+    end_run_and_expect_ended(&conn, &run, "cleanup");
+    stop(&conn);
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// The supervisor-epoch rule's whole Linux safety argument, in
