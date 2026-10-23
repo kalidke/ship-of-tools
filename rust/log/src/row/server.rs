@@ -7,7 +7,7 @@
 use super::proto::{
     AttachReq, HelloReq, HelloRes, InputRes, ResizeReq, RowError, OP_ATTACH, OP_HELLO, OP_INPUT, OP_RESIZE, OP_TAKE,
 };
-use super::run::{code_of, ConnId, Out, RowRun, Slot};
+use super::run::{code_of, ConnId, Out, OutQueue, RowRun, Slot};
 use super::ROW_PROTOCOL;
 use crate::lane::accept_policy::{accept_policy, AcceptAction, ACCEPT_SLEEP};
 use serde::de::DeserializeOwned;
@@ -300,7 +300,7 @@ impl std::io::Read for HelloDeadline {
 }
 
 #[cfg(unix)]
-fn serve(stream: std::os::unix::net::UnixStream, id: ConnId, rx: std::sync::mpsc::Receiver<Out>, slot: Slot, hello_bound: Duration, run: &Arc<RowRun>) {
+fn serve(stream: std::os::unix::net::UnixStream, id: ConnId, rx: Arc<OutQueue>, slot: Slot, hello_bound: Duration, run: &Arc<RowRun>) {
     let Ok(write_half) = stream.try_clone() else {
         run.close(id);
         return;
@@ -381,7 +381,7 @@ impl Write for PipeHalf {
 /// holds its two threads and one of the eight slots until it closes or the row ends. Every other end goes through
 /// `cancel_pipe_io`, which wakes a blocked read or write.
 #[cfg(windows)]
-fn serve(stream: Arc<PipeStream>, closed: Arc<AtomicBool>, id: ConnId, rx: std::sync::mpsc::Receiver<Out>, slot: Slot, run: &Arc<RowRun>) {
+fn serve(stream: Arc<PipeStream>, closed: Arc<AtomicBool>, id: ConnId, rx: Arc<OutQueue>, slot: Slot, run: &Arc<RowRun>) {
     let closer_stream = Arc::clone(&stream);
     let closer_flag = Arc::clone(&closed);
     serve_io(
@@ -405,19 +405,14 @@ fn serve_io<R: BufRead, W: Write + Send + 'static>(
     closer: impl FnOnce() + Send + 'static,
     after_admit: impl FnOnce(),
     id: ConnId,
-    rx: std::sync::mpsc::Receiver<Out>,
+    rx: Arc<OutQueue>,
     slot: Slot,
     run: &Arc<RowRun>,
 ) {
     let spawned = std::thread::Builder::new().name("row-write".into()).spawn(move || {
-        while let Ok(out) = rx.recv() {
-            match out {
-                Out::Frame(frame, blob) => {
-                    if write_frame_blocking_blob(&mut write_half, &frame, blob.as_deref()).is_err() {
-                        break;
-                    }
-                }
-                Out::Close => break,
+        while let Some(Out::Frame(frame, blob)) = rx.pop() {
+            if write_frame_blocking_blob(&mut write_half, &frame, blob.as_deref()).is_err() {
+                break;
             }
         }
         closer();
@@ -431,8 +426,8 @@ fn serve_io<R: BufRead, W: Write + Send + 'static>(
         after_admit();
         requests(&mut reader, id, run);
     }
-    // Closing the connection drops its queue's sender: the writer sends what is queued (a refused hello's reply
-    // included), then ends the stream.
+    // Closing the connection finishes its queue: the writer sends what is queued (a refused hello's reply included),
+    // then ends the stream.
     run.close(id);
     let _ = writer.join();
     drop(slot);

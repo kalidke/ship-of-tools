@@ -146,9 +146,10 @@ fn handle_output<P: Producer>(bytes: Vec<u8>, leg: &mut Leg<'_, P>) -> Result<()
     if matches > 0 {
         if !leg.dsr_answered {
             leg.dsr_answered = true;
-            // Answer the query: a failed write is noted, never fatal (the producer may be gone already).
-            if let Err(e) = leg.producer.input().write_all(host_handshake::DA1_REPLY) {
-                leg_note(format_args!("sot-capsule: the host handshake reply was not written: {e}"));
+            // Answer the query, through the one owner of terminal writes (the loop never blocks on the terminal): a reply
+            // that cannot be queued is noted, never fatal (the producer may be gone already).
+            if !leg.input.write_detached(host_handshake::DA1_REPLY.to_vec()) {
+                leg_note(format_args!("sot-capsule: the host handshake reply was not queued"));
             }
             // Any FURTHER matches in this SAME chunk are already "later" than the one just answered.
             leg.handshake_suppressed_matches += (matches - 1) as u64;

@@ -189,13 +189,14 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         let shared = Arc::clone(&shared);
         row.set_phase_source(Box::new(move || shared.phase_text().to_string()));
     }
-    // The row socket is the way in: a row nobody can reach is not worth an agent, so a bind failure ends this
-    // supervisor before one starts.
+    // The row socket is the way in: a row nobody can reach is not worth an agent, so a bind failure ends this supervisor
+    // before one starts, as a row that did not start: exit 75, which rows' watchdog counts against its one restart budget
+    // (a failure that lasts ends the row terminal there, one that passes costs a restart).
     let row_server = match row_socket_path(&h).and_then(|path| RowServer::bind(&path, Arc::clone(&row))) {
         Ok(server) => server,
         Err(e) => {
             note(format_args!("could not bind the row socket: {e}"));
-            return Ok(EXIT_TERMINAL);
+            return Ok(EXIT_AGENT_NOT_STARTED);
         }
     };
     let lane_thread = {

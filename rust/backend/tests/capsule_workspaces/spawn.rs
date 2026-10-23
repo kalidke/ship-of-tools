@@ -670,3 +670,57 @@ async fn a_slow_failing_supervisor_that_never_reaches_ready_still_counts_toward_
 
     env.kill_daemon_bounded().await;
 }
+
+/// A row socket that cannot be bound, and keeps failing, is a row that does not start: its supervisor exits 75 before
+/// any agent starts and rows' watchdog counts each one against its one restart budget, which ends the row terminal.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_row_socket_that_cannot_be_bound_ends_the_row_terminal_through_the_budget() {
+    let _serial = SERIAL.lock().await;
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first", sot_capsule_exe());
+
+    let env = Env::new("rsb");
+    env.seed_default_capsule_toml("claude");
+    let fake_claude_dir = env.seed_fake_unlaunchable_claude();
+    env.spawn_sotd_with_path_and_env(&fake_claude_dir, &[SHORT_BACKOFF]);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let default_row = list_payload["workspaces"]
+        .as_array()
+        .expect("workspaces array")
+        .iter()
+        .find(|w| w["is_default"].as_bool() == Some(true))
+        .cloned()
+        .expect("a default workspace row");
+    let workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
+    let target = default_row["session_name"].as_str().expect("session_name").to_string();
+    // A folder where the row's socket belongs: every supervisor of this row fails to bind it.
+    let state_dir = env.state_root.join("sot").join("workspaces").join(&workspace_id);
+    let blocker = sot_log::row::socket_path_in(env._runtime_tmp.path(), &sot_platform::host::state_dir::state_dir_hash(&state_dir))
+        .expect("the row socket path fits");
+    std::fs::create_dir(&blocker).expect("block the row socket");
+
+    let pty_req = serde_json::json!({"cols": 80, "rows": 24, "user_switch": true, "target": target});
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+
+    let terminal_deadline = Instant::now() + BUDGET_WAIT;
+    loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, &workspace_id) {
+            if row["phase"].as_str() == Some("terminal") {
+                break;
+            }
+        }
+        assert!(Instant::now() < terminal_deadline, "a row whose socket cannot be bound never reached \"terminal\" through the budget");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let log = env.daemon_log_since(0);
+    assert!(log.contains("restart budget exhausted"), "the budget, not the first failure, ended the row; the daemon's log:\n{log}");
+    assert!(log.contains("could not bind the row socket"), "the supervisor said why:\n{log}");
+    env.kill_daemon_bounded().await;
+}

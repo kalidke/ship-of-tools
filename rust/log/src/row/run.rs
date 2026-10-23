@@ -9,10 +9,101 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-/// What a connection's writer sends: a frame with its blob, or the end of the connection.
+/// What a connection's writer sends: a frame with its blob.
 pub(super) enum Out {
     Frame(Frame, Option<Vec<u8>>),
-    Close,
+}
+
+/// What queuing a frame did to the connection.
+pub(super) enum Push {
+    Queued,
+    /// The output queued for it was dropped: it has to be shown the screen again.
+    Resync,
+    /// Even its answers cannot drain: it is cut.
+    Cut,
+}
+
+/// One connection's queue of frames, in order. Output is droppable: when too much of it waits, all of it is dropped and
+/// the viewer is resynced with a fresh snapshot. Answers (a request's reply, a demotion, a snapshot) are never dropped;
+/// a viewer that cannot even drain those is cut. Memory per connection is bounded either way.
+pub(super) struct OutQueue {
+    state: Mutex<OutState>,
+    ready: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct OutState {
+    items: VecDeque<(Out, bool)>,
+    droppable: usize,
+    /// No more frames are taken; the writer drains what is queued, then ends.
+    finished: bool,
+    /// The writer ends now.
+    aborted: bool,
+}
+
+impl OutQueue {
+    pub(super) fn new() -> Arc<Self> {
+        Arc::new(Self { state: Mutex::new(OutState::default()), ready: std::sync::Condvar::new() })
+    }
+
+    fn lock(&self) -> MutexGuard<'_, OutState> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn push(&self, frame: Frame, blob: Option<Vec<u8>>, droppable: bool) -> Push {
+        let mut state = self.lock();
+        if state.finished || state.aborted {
+            return Push::Queued;
+        }
+        if droppable {
+            if state.droppable >= QUEUE_FRAMES {
+                state.items.retain(|(_, d)| !d);
+                state.droppable = 0;
+                return Push::Resync;
+            }
+            state.droppable += 1;
+        } else if state.items.len() - state.droppable >= ANSWER_FRAMES {
+            return Push::Cut;
+        }
+        state.items.push_back((Out::Frame(frame, blob), droppable));
+        self.ready.notify_one();
+        Push::Queued
+    }
+
+    /// The writer's next frame, waiting for one; `None` once the queue is finished and drained, or aborted.
+    pub(super) fn pop(&self) -> Option<Out> {
+        let mut state = self.lock();
+        loop {
+            if state.aborted {
+                return None;
+            }
+            if let Some((out, droppable)) = state.items.pop_front() {
+                if droppable {
+                    state.droppable -= 1;
+                }
+                return Some(out);
+            }
+            if state.finished {
+                return None;
+            }
+            state = self.ready.wait(state).unwrap_or_else(|p| p.into_inner());
+        }
+    }
+
+    /// The connection is closed: what is queued is still sent.
+    fn finish(&self) {
+        self.lock().finished = true;
+        self.ready.notify_all();
+    }
+
+    /// The writer ends now, what is queued unsent.
+    fn abort(&self) {
+        let mut state = self.lock();
+        state.aborted = true;
+        state.items.clear();
+        state.droppable = 0;
+        self.ready.notify_all();
+    }
 }
 
 /// A request a connection hands the main loop; the loop does it and answers.
@@ -27,13 +118,15 @@ const INPUT_BOUND: Duration = Duration::from_secs(2);
 const HELLO_BOUND: Duration = Duration::from_secs(5);
 /// The frames a connection may have queued; a viewer that does not drain them is dropped.
 pub(super) const QUEUE_FRAMES: usize = 256;
+/// The answers (replies, demotions, snapshots) a connection may have queued at most; a viewer past it is cut.
+pub(super) const ANSWER_FRAMES: usize = 64;
 /// Requests the main loop has not yet taken, at most; one more is refused as busy.
 pub(super) const REQUEST_QUEUE: usize = 64;
 
 pub(super) type ConnId = u64;
 
 struct Conn {
-    tx: mpsc::SyncSender<Out>,
+    queue: Arc<OutQueue>,
     /// The snapshot was sent: output flows to it.
     live: bool,
     /// Ends the connection's stream, so a reader or writer blocked on it returns.
@@ -208,7 +301,7 @@ impl RowRun {
     pub fn close_all(&self) {
         let mut inner = self.lock();
         for conn in inner.conns.values() {
-            let _ = conn.tx.try_send(Out::Close);
+            conn.queue.abort();
             (conn.closer)();
         }
         inner.conns.clear();
@@ -217,7 +310,7 @@ impl RowRun {
     }
 
     /// A slot for a new connection, `None` while eight are held. The slot goes back when the guard drops.
-    pub(super) fn open(self: &Arc<Self>, closer: Arc<dyn Fn() + Send + Sync>) -> Option<(ConnId, mpsc::Receiver<Out>, Slot)> {
+    pub(super) fn open(self: &Arc<Self>, closer: Arc<dyn Fn() + Send + Sync>) -> Option<(ConnId, Arc<OutQueue>, Slot)> {
         let mut inner = self.lock();
         if inner.slots >= MAX_CONNECTIONS {
             return None;
@@ -225,14 +318,16 @@ impl RowRun {
         inner.slots += 1;
         let id = inner.next_conn;
         inner.next_conn += 1;
-        let (tx, rx) = mpsc::sync_channel(QUEUE_FRAMES);
-        inner.conns.insert(id, Conn { tx, live: false, closer });
-        Some((id, rx, Slot(Arc::clone(self))))
+        let queue = OutQueue::new();
+        inner.conns.insert(id, Conn { queue: Arc::clone(&queue), live: false, closer });
+        Some((id, queue, Slot(Arc::clone(self))))
     }
 
     pub(super) fn close(&self, id: ConnId) {
         let mut inner = self.lock();
-        inner.conns.remove(&id);
+        if let Some(conn) = inner.conns.remove(&id) {
+            conn.queue.finish();
+        }
         inner.pending.retain(|p| *p != id);
         if inner.driver == Some(id) {
             inner.driver = None;
@@ -328,16 +423,34 @@ fn blob_payload(mut payload: serde_json::Value, len: usize) -> serde_json::Value
 }
 
 impl Inner {
-    /// Queues a frame for a connection; a connection whose queue is full is cut, never waited for: its stream is shut
-    /// down, so its blocked threads return and end.
+    /// Queues a frame for a connection. Output that piles up is dropped and the viewer resynced with a fresh snapshot at
+    /// the next ground state; a connection that cannot even drain its answers is cut, never waited for: its stream is
+    /// shut down, so its blocked threads return and end.
     fn send(&mut self, id: ConnId, frame: Frame, blob: Option<Vec<u8>>) {
         let Some(conn) = self.conns.get(&id) else { return };
-        if conn.tx.try_send(Out::Frame(frame, blob)).is_err() {
-            (conn.closer)();
-            self.conns.remove(&id);
-            self.pending.retain(|p| *p != id);
-            if self.driver == Some(id) {
-                self.driver = None;
+        let droppable = frame.op == OP_OUTPUT;
+        if droppable && !conn.live {
+            // Not live: it is waiting for its screen, which already holds this output.
+            return;
+        }
+        match conn.queue.push(frame, blob, droppable) {
+            Push::Queued => {}
+            Push::Resync => {
+                if let Some(conn) = self.conns.get_mut(&id) {
+                    conn.live = false;
+                }
+                if !self.pending.contains(&id) {
+                    self.pending.push(id);
+                }
+            }
+            Push::Cut => {
+                conn.queue.abort();
+                (conn.closer)();
+                self.conns.remove(&id);
+                self.pending.retain(|p| *p != id);
+                if self.driver == Some(id) {
+                    self.driver = None;
+                }
             }
         }
     }

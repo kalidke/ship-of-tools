@@ -28,8 +28,8 @@ pub const REDIAL_CAP: Duration = Duration::from_secs(4);
 /// How long a row may stay absent (its socket not there, though the daemon answers), attempt after attempt, before the
 /// episode ends. A daemon that cannot be reached says nothing about the row, so such an attempt starts the window over.
 pub const ABSENT_WINDOW: Duration = Duration::from_secs(120);
-/// How long one dial, hello included, may take.
-const DIAL_BOUND: Duration = Duration::from_secs(10);
+/// How long the row's hello may take once the stream is up, and the row's screen after it.
+const HELLO_BOUND: Duration = Duration::from_secs(10);
 /// How often an idle worker looks at its flags; a connected one wakes on the row's frames and on its caller.
 const IDLE_TICK: Duration = Duration::from_millis(20);
 /// How long a connected worker waits for a frame before it looks at its caller's commands.
@@ -55,10 +55,13 @@ pub enum InputOutcome {
     RefusedStale,
     /// The row may or may not have written the bytes; they are never sent again.
     DeliveryUnknown,
+    /// The input was typed into a run that has ended; it was not written into the one that replaced it.
+    RunEnded,
 }
 
 enum Command {
-    Input(Vec<u8>),
+    /// Bytes, and the run they were typed into (`None` before the first attach).
+    Input(Vec<u8>, Option<String>),
     Resize(u16, u16),
 }
 
@@ -77,9 +80,32 @@ struct Shared {
     outcome: Mutex<Option<InputOutcome>>,
     run: Mutex<String>,
     size: Mutex<(u16, u16)>,
+    /// The run in which a headless client has taken the pen: its transaction is that run's alone.
+    taken_run: Mutex<Option<String>>,
 }
 
 impl Shared {
+    fn new(cols: u16, rows: u16, viewed: bool) -> Self {
+        Self {
+            viewed: AtomicBool::new(viewed),
+            shutdown: AtomicBool::new(false),
+            attached: AtomicBool::new(false),
+            queued_input: AtomicUsize::new(0),
+            discarded: AtomicUsize::new(0),
+            sink_bytes: AtomicUsize::new(0),
+            waker: Mutex::new(None),
+            recorded: AtomicU64::new(0),
+            outcome: Mutex::new(None),
+            run: Mutex::new(String::new()),
+            size: Mutex::new((cols, rows)),
+            taken_run: Mutex::new(None),
+        }
+    }
+
+    fn current_run(&self) -> String {
+        self.run.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
     fn wake(&self) {
         if let Some(w) = self.waker.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
             w.wake();
@@ -103,19 +129,7 @@ impl AttachWorker {
         E::Client: 'static,
         S: Fn(WorkerEvent) + Send + 'static,
     {
-        let shared = Arc::new(Shared {
-            viewed: AtomicBool::new(true),
-            shutdown: AtomicBool::new(false),
-            attached: AtomicBool::new(false),
-            queued_input: AtomicUsize::new(0),
-            discarded: AtomicUsize::new(0),
-            sink_bytes: AtomicUsize::new(0),
-            waker: Mutex::new(None),
-            recorded: AtomicU64::new(0),
-            outcome: Mutex::new(None),
-            run: Mutex::new(String::new()),
-            size: Mutex::new((cols, rows)),
-        });
+        let shared = Arc::new(Shared::new(cols, rows, true));
         let (commands, inbox) = mpsc::channel();
         let handle = {
             let shared = Arc::clone(&shared);
@@ -128,19 +142,7 @@ impl AttachWorker {
     #[cfg(test)]
     pub(crate) fn inert() -> Self {
         let (commands, _inbox) = mpsc::channel();
-        let shared = Arc::new(Shared {
-            viewed: AtomicBool::new(false),
-            shutdown: AtomicBool::new(false),
-            attached: AtomicBool::new(false),
-            queued_input: AtomicUsize::new(0),
-            discarded: AtomicUsize::new(0),
-            sink_bytes: AtomicUsize::new(0),
-            waker: Mutex::new(None),
-            recorded: AtomicU64::new(0),
-            outcome: Mutex::new(None),
-            run: Mutex::new(String::new()),
-            size: Mutex::new((80, 24)),
-        });
+        let shared = Arc::new(Shared::new(80, 24, false));
         Self { shared, commands, handle: Mutex::new(None) }
     }
 
@@ -161,7 +163,8 @@ impl AttachWorker {
         self.shared.queued_input.fetch_add(bytes.len(), Ordering::AcqRel);
         // The answer to the most recent input: none until this one is answered.
         *self.shared.outcome.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        if self.commands.send(Command::Input(bytes)).is_err() {
+        let typed_into = Some(self.shared.current_run()).filter(|r| !r.is_empty());
+        if self.commands.send(Command::Input(bytes, typed_into)).is_err() {
             return false;
         }
         self.shared.wake();
@@ -320,17 +323,19 @@ where
 
     /// Dials, proves the row, attaches and sends the snapshot to the sink.
     fn attempt(&self) -> Result<(RowClient<E::Client>, bool), Attempt> {
-        let deadline = Instant::now() + DIAL_BOUND;
+        // The login (an ssh one has a budget of its own, topology's) is the endpoint's to bound; the row's hello has its
+        // own, which starts when the stream is up.
         let conn = self.endpoint.connect_row_unchallenged(&self.row).map_err(dial_error)?;
+        let deadline = Instant::now() + HELLO_BOUND;
         let mut client = RowClient::over(&self.endpoint, conn, "fe-attach", deadline).map_err(row_error)?;
         let (cols, rows) = *self.shared.size.lock().unwrap_or_else(|p| p.into_inner());
-        let driver = !self.headless;
+        let mut driver = !self.headless;
         let run = client.attach(cols, rows, driver).map_err(row_error)?;
         *self.shared.run.lock().unwrap_or_else(|p| p.into_inner()) = run;
         *self.shared.waker.lock().unwrap_or_else(|p| p.into_inner()) = Some(client.waker());
         // The snapshot comes before the first output, in chunks the last of which is flagged.
         let mut snapshot = Vec::new();
-        let deadline = Instant::now() + DIAL_BOUND;
+        let deadline = Instant::now() + HELLO_BOUND;
         loop {
             if self.stopping() {
                 return Err(Attempt::Retry { reason: "ending".into(), absent: false });
@@ -342,7 +347,10 @@ where
                         break;
                     }
                 }
-                Some(RowEvent::Demoted) | Some(RowEvent::Output(_)) => {}
+                // Another connection took the pen while the screen was on its way: this client is a watcher, and its next
+                // key takes the pen again.
+                Some(RowEvent::Demoted) => driver = false,
+                Some(RowEvent::Output(_)) => {}
                 None => {
                     if Instant::now() >= deadline {
                         return Err(Attempt::Retry { reason: "the row sent no screen".into(), absent: false });
@@ -358,8 +366,9 @@ where
 
     /// Follows the row until the connection ends or the worker is told to.
     fn serve(&self, client: &mut RowClient<E::Client>, mut driver: bool) -> Ended {
-        let mut taken = false;
-        loop {
+        // A viewer the row resynced (it fell behind, and its queued output was dropped) is sent a fresh screen at the next
+        // ground state: the chunks are gathered here and handed over whole.
+        let mut resync: Vec<u8> = Vec::new();        loop {
             if self.stopping() {
                 return Ended::Shutdown;
             }
@@ -374,15 +383,28 @@ where
                         (self.sink)(WorkerEvent::Output(bytes));
                     }
                     Ok(Some(RowEvent::Demoted)) => driver = false,
-                    Ok(Some(RowEvent::Snapshot { .. })) | Ok(None) => {}
+                    Ok(Some(RowEvent::Snapshot { bytes, last })) => {
+                        resync.extend_from_slice(&bytes);
+                        if last {
+                            (self.sink)(WorkerEvent::Checkpoint(std::mem::take(&mut resync)));
+                        }
+                    }
+                    Ok(None) => {}
                     Err(_) => return Ended::Lost,
                 }
             }
             while let Ok(command) = self.inbox.try_recv() {
                 match command {
-                    Command::Input(bytes) => {
+                    Command::Input(bytes, typed_into) => {
                         self.shared.queued_input.fetch_sub(bytes.len(), Ordering::AcqRel);
-                        if let Err(ended) = self.type_input(client, &bytes, &mut driver, &mut taken) {
+                        // Typed into a run that is not this one (the connection was lost, and the row's agent started
+                        // again): never written here.
+                        if typed_into.is_some_and(|run| run != self.shared.current_run()) {
+                            self.shared.discarded.fetch_add(1, Ordering::AcqRel);
+                            self.settle(InputOutcome::RunEnded);
+                            continue;
+                        }
+                        if let Err(ended) = self.type_input(client, &bytes, &mut driver) {
                             return ended;
                         }
                     }
@@ -397,17 +419,19 @@ where
     }
 
     /// Types `bytes`, taking the pen first when this client does not hold it.
-    fn type_input(&self, client: &mut RowClient<E::Client>, bytes: &[u8], driver: &mut bool, taken: &mut bool) -> Result<(), Ended> {
+    fn type_input(&self, client: &mut RowClient<E::Client>, bytes: &[u8], driver: &mut bool) -> Result<(), Ended> {
         if !*driver {
-            // A watcher that typed once gives up the pen to whoever took it after, and does not fight for it.
-            if self.headless && *taken {
+            // A watcher that typed once in a run gives up the pen to whoever took it after, and does not fight for it,
+            // not even over a new connection to the same run; in another run it has not typed.
+            let run = self.shared.current_run();
+            if self.headless && self.shared.taken_run.lock().unwrap_or_else(|p| p.into_inner()).as_deref() == Some(run.as_str()) {
                 self.settle(InputOutcome::RefusedStale);
                 return Ok(());
             }
             match client.take() {
                 Ok(()) => {
                     *driver = true;
-                    *taken = true;
+                    *self.shared.taken_run.lock().unwrap_or_else(|p| p.into_inner()) = Some(run);
                     if !self.headless {
                         let (cols, rows) = *self.shared.size.lock().unwrap_or_else(|p| p.into_inner());
                         let _ = client.resize(cols, rows);
@@ -427,6 +451,10 @@ where
             Ok(written) => {
                 self.shared.recorded.fetch_add(written as u64, Ordering::AcqRel);
                 self.settle(InputOutcome::Recorded);
+                Ok(())
+            }
+            Err(RowError::Refused(msg)) if msg.starts_with("run ended") => {
+                self.settle(InputOutcome::RunEnded);
                 Ok(())
             }
             Err(RowError::Refused(_)) => {
@@ -454,6 +482,8 @@ where
 fn dial_error(e: TransportError) -> Attempt {
     match e {
         TransportError::Foreign => Attempt::Terminal("the row's socket belongs to another account".into()),
+        // A path that can never fit is the same on every try.
+        TransportError::PathTooLong(path) => Attempt::Terminal(format!("the row socket path is too long: {}", path.display())),
         TransportError::Refused { code, detail } => Attempt::Terminal(format!("the daemon refused the row ({code}): {detail}")),
         TransportError::Io { source, .. } if source.kind() == std::io::ErrorKind::PermissionDenied => {
             Attempt::Terminal(format!("access to the row was denied: {source}"))

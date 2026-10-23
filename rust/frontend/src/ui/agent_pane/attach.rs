@@ -61,8 +61,13 @@ fn shutdown_detached(clients: Vec<PaneAttachClient>) {
 }
 
 /// What the pane says when a key's delivery is not known: the row was cut, or the run changed, with the key unanswered.
-pub(in crate::ui) fn input_outcome_notice(_outcome: Option<sot_log::attach_client::client::InputOutcome>) -> Option<&'static str> {
-    None
+pub(in crate::ui) fn input_outcome_notice(outcome: Option<sot_log::attach_client::client::InputOutcome>) -> Option<&'static str> {
+    use sot_log::attach_client::client::InputOutcome;
+    match outcome {
+        Some(InputOutcome::DeliveryUnknown) => Some("delivery unknown: the last key may not have reached the agent; type it again if it did not"),
+        Some(InputOutcome::RunEnded) => Some("run ended: keys typed before the agent restarted were not sent to the new run"),
+        Some(InputOutcome::Recorded | InputOutcome::RefusedStale) | None => None,
+    }
 }
 
 impl State {
@@ -391,7 +396,8 @@ impl State {
             }
         }
         if changed {
-            self.status = t.status_line().to_string();
+            // A key whose delivery is unknown is said so over the connection's own status: a person types it again.
+            self.status = input_outcome_notice(t.last_input_outcome()).map_or_else(|| t.status_line().to_string(), str::to_string);
         }
     }
 

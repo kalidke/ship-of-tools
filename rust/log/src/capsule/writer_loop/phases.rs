@@ -349,6 +349,10 @@ pub(super) fn join_workers<P: Producer>(
     // not prove every worker stopped — an `Err` here propagates before
     // `w.seal`/`store.advance_chain` are ever reached.
     let teardown_deadline = Instant::now() + TEARDOWN_AGGREGATE_DEADLINE;
+    // The terminal's input thread: what waits is answered `run ended`, and a write blocked in the hung-up terminal returns.
+    if !leg.input.retire(Duration::from_secs(2)) {
+        leg_note(format_args!("sot-capsule: the terminal's input thread did not end within its bound"));
+    }
     let transport_ok = leg.transport.0.shutdown_all(teardown_deadline);
     let closer_ok = join_within(closer_handle, teardown_deadline);
     let reader_ok = join_within(reader_handle, teardown_deadline);
