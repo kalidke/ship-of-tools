@@ -580,3 +580,32 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
 
     env.kill_daemon_bounded().await;
 }
+
+/// A row's state folder is known to have held a supervisor by its fence file, not by a pointer: the folder holds
+/// `supervisor.lock` and no `drawer.voyage`, as one whose supervisor died before it published anything does. A daemon
+/// that boots finds it unreachable, resumes it, and the row reaches `ready` with no selection.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_row_with_a_fence_file_and_no_pointer_resumes_at_boot() {
+    let _serial = SERIAL.lock().await;
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first", sot_capsule_exe());
+
+    let env = Env::new("fnp");
+    let workspace_id = "ws-fence-only";
+    env.seed_capsule_toml(workspace_id, "fence_only", &env.workspace_project_root, "none");
+    let state_dir = env.state_root.join("sot").join("workspaces").join(workspace_id);
+    std::fs::create_dir_all(&state_dir).expect("mkdir the row's state folder");
+    std::fs::write(state_dir.join("supervisor.lock"), b"").expect("the fence file a supervisor left");
+    assert!(!state_dir.join("drawer.voyage").exists(), "the premise: no pointer");
+
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    poll_for_phase(&mut conn, &mut next_id, workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
+
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir.clone();
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
+    })
+    .await;
+    env.kill_daemon_bounded().await;
+}

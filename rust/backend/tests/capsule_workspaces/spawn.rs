@@ -673,15 +673,8 @@ async fn a_slow_failing_supervisor_that_never_reaches_ready_still_counts_toward_
 
 /// A row socket that cannot be bound, and keeps failing, is a row that does not start: its supervisor exits 75 before
 /// any agent starts and rows' watchdog counts each one against its one restart budget, which ends the row terminal.
-///
-/// NOT YET TRUE, so ignored: a supervisor that dies at the bind has written no pointer and answered no lane, so the
-/// watchdog's recheck (`watchdog_may_act`: `phase_of` must read unreachable) reads the row as already resumed by another
-/// actor and does nothing ("row was already resumed by another actor", debug log). Rows' watchdog needs to treat that
-/// state as unreachable before a first-start failure counts against the budget; it is rows' to change (queue item
-/// WATCHDOG-FIRST-START-RECHECK).
 #[tokio::test]
 #[cfg(target_os = "linux")]
-#[ignore = "rows' watchdog does not restart a supervisor that died before its first answer (WATCHDOG-FIRST-START-RECHECK)"]
 async fn a_row_socket_that_cannot_be_bound_ends_the_row_terminal_through_the_budget() {
     let _serial = SERIAL.lock().await;
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first", sot_capsule_exe());

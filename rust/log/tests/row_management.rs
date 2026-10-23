@@ -222,6 +222,43 @@ fn a_reset_after_end_run_is_admitted() {
     }
 }
 
+/// A resting supervisor reports the run whose end it rests on, so the daemon's cell can latch `ended_no_respawn` for that
+/// run, release it on a newer one, and tell a stale resting observation from a current one.
+#[test]
+fn a_resting_supervisor_reports_the_run_it_rests_on() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let (_supervisor, path) = supervisor(runtime.path(), &dir.path().join("state"), &[]);
+    let mut driver = dial(&path);
+    driver.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
+
+    let mut manager = dial(&path);
+    let live = status(&mut manager);
+    let run = live["run"].as_str().expect("a live run has an id").to_string();
+    let ended = manager.call("row.end_run", json!({"run": run, "reason": "test"}), Duration::from_secs(30)).expect("end_run answers");
+    assert_eq!(ended.payload["outcome"], "ended", "{ended:?}");
+
+    let resting = status(&mut manager);
+    assert_eq!(resting["phase"], "ended_no_respawn", "{resting:?}");
+    assert_eq!(resting["run"], run.as_str(), "a resting supervisor names the run it rests on: {resting:?}");
+
+    // A reset starts a new run, which the next status names, higher than the one it replaces.
+    let reset = manager.call("row.reset", json!({}), Duration::from_secs(30)).expect("reset answers");
+    assert_eq!(reset.payload["outcome"], "reset", "{reset:?}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let now = status(&mut manager);
+        if now["phase"] == "ready" && now["run"] != resting["run"] {
+            assert!(now["run"].as_str().unwrap() > run.as_str(), "the new run orders after the old: {now:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "no new run after the reset: {now:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// A stop is answered before the supervisor exits: the reply is read off the row socket, not inferred from the exit,
 /// and the daemon's `stop` returns once it has seen both.
 #[test]

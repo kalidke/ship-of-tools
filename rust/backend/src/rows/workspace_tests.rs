@@ -34,3 +34,49 @@ fn every_phase_has_a_distinct_wire_string() {
     let strings: std::collections::HashSet<&str> = all.iter().map(|p| p.as_wire_str()).collect();
     assert_eq!(strings.len(), all.len(), "every Phase must have its own distinct wire string");
 }
+
+fn observed(phase: Phase, supervisor: SupervisorIdentity, run: Option<uuid::Uuid>) -> Observation {
+    Observation::Phase { phase, supervisor, run }
+}
+
+/// The cell orders on the run, not on a voyage: a supervisor that rested on run R1 latches `ended_no_respawn`, a reset's
+/// run R2 releases the latch, and a stale resting observation of R1 that arrives after R2 is lower and is rejected.
+#[test]
+fn the_cell_on_the_run_never_latches_a_resting_row_after_a_reset() {
+    let ws = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());
+    let supervisor = SupervisorIdentity { pid: 7, created: 70 };
+    let (r1, r2) = (uuid::Uuid::now_v7(), uuid::Uuid::now_v7());
+    assert!(r1 < r2, "runs of one supervisor order by time");
+    ws.begin_supervisor_epoch(supervisor);
+
+    assert!(ws.apply_phase_observation(observed(Phase::Ready, supervisor, Some(r1))));
+    assert!(ws.apply_phase_observation(observed(Phase::EndedNoRespawn, supervisor, Some(r1))));
+    assert_eq!(ws.phase(), Phase::EndedNoRespawn);
+    // The latch holds against the run it rests on.
+    assert!(!ws.apply_phase_observation(observed(Phase::Ready, supervisor, Some(r1))));
+    assert_eq!(ws.phase(), Phase::EndedNoRespawn);
+
+    // A reset starts R2: its first observation releases the latch.
+    assert!(ws.apply_phase_observation(observed(Phase::Ready, supervisor, Some(r2))));
+    assert_eq!(ws.phase(), Phase::Ready);
+
+    // A stale resting observation of R1, read before the reset and delivered after it, is lower and is rejected.
+    assert!(!ws.apply_phase_observation(observed(Phase::EndedNoRespawn, supervisor, Some(r1))));
+    assert_eq!(ws.phase(), Phase::Ready);
+    // So is a resting observation that names no run at all, once the cell holds one.
+    assert!(!ws.apply_phase_observation(observed(Phase::EndedNoRespawn, supervisor, None)));
+    assert_eq!(ws.phase(), Phase::Ready);
+}
+
+/// A supervisor that rests before any run (a `--resume` over a requested end) names no run: its latch is released by the
+/// first run of the reset that follows.
+#[test]
+fn a_latch_on_no_run_is_released_by_the_first_run() {
+    let ws = Workspace::from_label("beta", PathBuf::from("/p/beta"), false, "none".into(), String::new(), String::new());
+    let supervisor = SupervisorIdentity { pid: 8, created: 80 };
+    ws.begin_supervisor_epoch(supervisor);
+    assert!(ws.apply_phase_observation(observed(Phase::EndedNoRespawn, supervisor, None)));
+    assert!(!ws.apply_phase_observation(observed(Phase::Ready, supervisor, None)));
+    assert!(ws.apply_phase_observation(observed(Phase::Ready, supervisor, Some(uuid::Uuid::now_v7()))));
+    assert_eq!(ws.phase(), Phase::Ready);
+}

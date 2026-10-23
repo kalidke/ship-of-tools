@@ -669,3 +669,40 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
 
     env.kill_daemon_bounded().await;
 }
+
+/// The daemon's cell orders on the run: a row ended and then selected is reset to a new run, and the observer's rounds
+/// after it, which can read the resting supervisor's old answer, never latch it `ended_no_respawn` again.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_row_that_is_ended_then_selected_stays_live_through_two_observer_rounds() {
+    let _serial = SERIAL.lock().await;
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first", sot_capsule_exe());
+
+    let env = Env::new("rr2");
+    env.spawn_sotd();
+    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_voyage) = setup_ended_row(&env, "rr2-workspace").await;
+
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+    assert_ends_in_a_fresh_voyage(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_voyage).await;
+
+    // The observer polls every 2 s: two full rounds, each read through `workspace.list`.
+    let until = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < until {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        let row = find_row(&payload, &workspace_id).expect("the row stays listed");
+        assert_eq!(row["phase"].as_str(), Some("ready"), "the row latched after its reset: {row:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
+    })
+    .await;
+    env.kill_daemon_bounded().await;
+}

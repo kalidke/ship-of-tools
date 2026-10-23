@@ -67,3 +67,15 @@ fn a_completion_answer_belongs_to_the_run_it_was_admitted_for() {
     shared.run_ended();
     assert_eq!(shared.wait_end(second).outcome, EndRunOutcome::Ended);
 }
+
+/// The daemon's cell orders a supervisor's runs by their ids: one supervisor mints each run's id with `now_v7`, so every
+/// id is strictly greater than the last, whatever the clock's resolution.
+#[test]
+fn runs_minted_by_one_supervisor_order_by_time() {
+    let mut last = uuid::Uuid::now_v7();
+    for _ in 0..10_000 {
+        let next = uuid::Uuid::now_v7();
+        assert!(next > last, "{next} does not order after {last}");
+        last = next;
+    }
+}

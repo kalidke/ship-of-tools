@@ -39,56 +39,25 @@ fn a_still_starting_authority_is_stopped_then_proven() {
     assert!(matches!(got, Ok(super::super::EndRunOutcome::NotEnded(ref d)) if d == "scope still holds a process"));
 }
 
-// Field defect (v0.6.0-rc.12): a supervisor that died out from under
-// a row (e.g. a daemon-pair converge that ended the old build's
-// supervisor) left the state dir holding only a lock FILE, and
-// `end_run` used to treat every unreachable lane identically -- kept
-// forever, with no way to tell a merely-unresponsive live holder
-// from no holder at all. `query_status` fails against this temp dir
-// in every case below (nothing is listening on its lane) -- decision
-// 33 needs BOTH the fence AND the leg independently proven absent
-// before `Unheld`; a missing pointer (nothing to check the leg
-// against), a present leg, or a still-held fence each keep the row
-// instead.
+// Field defect (v0.6.0-rc.12): a supervisor that died out from under a row (e.g. a daemon-pair converge that ended the old
+// build's supervisor) left the state dir holding only a lock FILE, and `end_run` used to treat every unreachable lane
+// identically -- kept forever, with no way to tell a merely-unresponsive live holder from no holder at all. The proof is
+// the supervisor fence and the row socket (the supervisor holds the fence for its whole life and its agent ends with
+// it); no voyage is read.
 #[test]
-fn end_run_is_unheld_only_when_both_the_fence_and_the_leg_are_proven_absent() {
+fn the_destroy_proof_needs_no_voyage() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path();
 
-    // No supervisor.lock AND no published pointer at all -- the
-    // fence is free, but there is nothing to prove the leg absent
-    // against: uncertain, never fabricated as `Unheld`.
-    match end_run(state_dir, "test reason", true) {
-        Err(_) => {}
-        Ok(outcome) => panic!("expected Err with no pointer to check the leg against: {outcome:?}"),
-    }
-
-    // A published pointer naming a real voyage root whose own
-    // `writer.lock` exists and is free -- BOTH halves now proven
-    // absent.
-    let voyage_id = "a1b2c3d4-e5f6-4890-9abc-def012345678";
-    sot_log::supervisor::journal::pointer::publish(state_dir, voyage_id).expect("publish the pointer");
-    let voyage_root = sot_log::supervisor::voyage_root_path(state_dir, voyage_id);
-    std::fs::create_dir_all(&voyage_root).expect("voyage root");
-    std::fs::write(voyage_root.join("writer.lock"), b"").expect("writer.lock file");
+    // A fence free and nothing answering the row's socket: proved, with no pointer and no voyage in the folder.
     match end_run(state_dir, "test reason", true) {
         Ok(super::EndRunOutcome::Unheld) => {}
-        other => panic!("expected Ok(Unheld) with no authority and no leg: {other:?}"),
+        other => panic!("expected Ok(Unheld) with a free fence and no row socket: {other:?}"),
     }
+    assert!(!state_dir.join("drawer.voyage").exists() && !state_dir.join("voyages").exists(), "the proof wrote a voyage");
 
-    // A leg holds the voyage's own `writer.lock` -- reported
-    // instead of silently orphaned.
-    let leg = sot_platform::host::lock_writer(&voyage_root.join("writer.lock")).expect("take the writer lock");
-    match end_run(state_dir, "test reason", true) {
-        Err(_) => {}
-        Ok(outcome) => panic!("expected Err while a leg holds the row with no authority: {outcome:?}"),
-    }
-    drop(leg);
-
-    // Something else holds the SUPERVISOR fence right now -- the
-    // lock attempt must fail regardless of the leg, so `end_run`
-    // keeps the unreachable-lane refusal (Err) rather than
-    // fabricating `Unheld` out from under a live holder.
+    // Something else holds the SUPERVISOR fence right now: `end_run` keeps the unreachable-lane refusal (Err) rather
+    // than fabricating `Unheld` out from under a live holder.
     let holder = sot_log::supervisor::journal::fence::lock_supervisor(state_dir).expect("take the fence");
     match end_run(state_dir, "test reason", true) {
         Err(_) => {}
@@ -99,17 +68,8 @@ fn end_run_is_unheld_only_when_both_the_fence_and_the_leg_are_proven_absent() {
     drop(holder);
 }
 
-// The direct writer.lock cases (`leg_absent`'s own Ok(true)/Ok(false)
-// on a real held/free lock) are already exercised through `end_run`
-// by `end_run_is_unheld_only_when_both_the_fence_and_the_leg_are_proven_absent`
-// above (including the no-pointer-published Err case) -- this test
-// instead targets what `leg_absent` cannot organically produce on
-// Linux at all: the OTHER, non-contention refusal `lock_writer` can
-// report (Windows' reparse-point check, `host/`) sharing the SAME
-// `Error::State` shape as genuine contention. `is_lock_contention` is
-// the pure predicate that tells them apart (Codex review,
-// 2026-09-11); this is its regression test -- pure string matching,
-// independent of any real lock file.
+// `is_lock_contention` tells the non-contention refusal `lock_writer` can report (Windows' reparse-point check, `host/`)
+// from genuine contention: both share one `Error::State` shape. Pure string matching, independent of any real lock file.
 #[test]
 fn lock_contention_is_recognized_only_by_its_own_message() {
     assert!(
