@@ -191,13 +191,23 @@ jobs:
         run: sudo dpkg -i "$HOME"/apt-debs/*.deb
       - name: Install preview tool dependencies
         if: steps.apt-cache.outputs.cache-hit != 'true'
-        timeout-minutes: 5
+        timeout-minutes: 7
         # apt needs the archive folder's partial/; --download-only keeps every fetched file whatever the image's
-        # Keep-Downloaded-Packages setting, then the install reads them from there.
+        # Keep-Downloaded-Packages setting, then the install reads them from there. A mirror that has not delivered
+        # within APT_FETCH_BOUND seconds is replaced once by archive.ubuntu.com (the runner's sources read their mirror
+        # from /etc/apt/apt-mirrors.txt); what the first mirror fetched resumes from partial/.
+        env:
+          APT_FETCH_BOUND: 140
         run: |
           mkdir -p "$HOME/apt-debs/partial"
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends --download-only -o Dir::Cache::archives="$HOME/apt-debs" ${{ steps.apt.outputs.packages }}
+          fetch() { sudo timeout "$APT_FETCH_BOUND" apt-get install -y --no-install-recommends --download-only -o Dir::Cache::archives="$HOME/apt-debs" ${{ steps.apt.outputs.packages }}; }
+          sudo timeout 90 apt-get update
+          if ! fetch; then
+            echo "::warning::the apt mirror did not deliver within ${APT_FETCH_BOUND}s; trying archive.ubuntu.com"
+            printf 'http://archive.ubuntu.com/ubuntu/\n' | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+            sudo timeout 90 apt-get update
+            APT_FETCH_BOUND=140 fetch
+          fi
           sudo apt-get install -y --no-install-recommends -o Dir::Cache::archives="$HOME/apt-debs" ${{ steps.apt.outputs.packages }}
       - name: Test ConceptExplorerCore
         timeout-minutes: 5
