@@ -253,7 +253,7 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
             "a never-started row's bridge dial must not go terminal on its own: {}",
             client.status_line()
         );
-        if client.status_line().contains("reconnecting") {
+        if client.status_line().contains("redialing") {
             saw_absent_answer = true;
         }
         assert_eq!(

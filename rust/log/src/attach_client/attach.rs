@@ -271,7 +271,7 @@ where
                     if matches!(ended, Ended::Shutdown) {
                         return;
                     }
-                    (self.sink)(WorkerEvent::Status("reconnecting\u{2026}".into()));
+                    (self.sink)(WorkerEvent::Status("redialing\u{2026}".into()));
                     started.elapsed()
                 }
                 Err(Attempt::Terminal(reason)) => {
@@ -284,7 +284,7 @@ where
                         (self.sink)(WorkerEvent::Terminal(format!("the row did not answer for {UNREACHABLE_WINDOW:?}: {reason}")));
                         return;
                     }
-                    (self.sink)(WorkerEvent::Status(format!("reconnecting\u{2026} ({reason})")));
+                    (self.sink)(WorkerEvent::Status(format!("redialing\u{2026} ({reason})")));
                     Duration::ZERO
                 }
             };
