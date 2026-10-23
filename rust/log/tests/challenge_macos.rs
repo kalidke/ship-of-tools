@@ -1,11 +1,8 @@
 #![cfg(target_os = "macos")]
-//! Integration tests for the macOS identity challenge
-//! (`src/identity/challenge_macos.rs`) and the `SocketClient` construction path it
-//! authenticates (`connect_voyage_socket`, whose non-Linux stub this
-//! milestone replaced for macOS alone). The sibling Linux file
-//! (`tests/challenge_unix.rs`) is the shape this copies -- including its
-//! `SOT_RUNTIME_DIR`-per-test device verbatim, for one source of truth rather
-//! than two silently diverging ones; both isolate a test through
+//! Integration tests for the macOS identity challenge (`sot_platform::identity::challenge_macos`) and the
+//! `SocketClient` it authenticates, driven against the row socket: a real `RowServer` over a fake `RowRun` answers the
+//! hello, and a reply naming another process is made by the exchange the client drives (`support/row_challenge.rs`).
+//! The sibling Linux file (`tests/challenge_unix.rs`) is the shape this copies; both isolate a test through
 //! `sot_platform::test_isolated::run_isolated`.
 //!
 //! Deliberately ABSENT, because macOS needs neither: the Linux file's
@@ -22,37 +19,27 @@
 //! that cannot run they say so and pass, except on CI (`GITHUB_ACTIONS`), where
 //! that fails.
 
-use sot_platform::test_isolated::{run_isolated, ISOLATION_TIMEOUT};
-use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
-use sot_platform::identity::challenge_macos::{authenticate_server, challenge, self_pidversion};
-use sot_platform::identity::challenge_macos::peer_euid_pid_created;
-use sot_log::lane::exchange::VoyageMgmtExchange;
-use sot_log::lane::transport::ConnId;
-use sot_log::lane::socket_unix::{connect_voyage_socket, SocketServer};
+#[path = "support/row_challenge.rs"]
+mod row_challenge;
+
+use row_challenge::Lying;
+use sot_log::lane::connect_own::connect_own;
 use sot_log::lane::socket_unix::SocketClient;
-use sot_log::lane::transport::LaneEvent;
-use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
+use sot_log::row::{socket_path_in, RowHelloExchange, RowRun, RowServer};
+use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
+use sot_platform::identity::challenge_macos::peer_euid_pid_created;
+use sot_platform::identity::challenge_macos::{authenticate_server, challenge, self_pidversion};
+use sot_platform::test_isolated::{run_isolated, ISOLATION_TIMEOUT};
 use std::os::fd::AsRawFd;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// A per-event bound used throughout (well inside `sot_platform::test_isolated::ISOLATION_TIMEOUT`, so
 /// a stalled event always trips before the parent's own kill fires).
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A fresh, canonical lowercase-hyphenated UUID for one test's voyage id.
-fn fresh_voyage_id() -> String {
-    uuid::Uuid::now_v7().to_string()
-}
-
-/// Points `SOT_RUNTIME_DIR` at a fresh, mode-0700 tempdir for the
-/// lifetime of the returned guard -- mirrors `tests/socket_unix/`'s
-/// identical helper, `tempdir_in("/tmp")` and all: `$TMPDIR` on the
-/// macOS runner is ~56 bytes and `sun_path` is 104 there, so the default
-/// would overflow the address for real on this leg.
-struct RuntimeDirGuard {
-    _tmp: tempfile::TempDir,
-}
-
+/// A fresh mode-0700 folder under `/tmp`, `tempdir_in("/tmp")` and all: `$TMPDIR` on the macOS runner is ~56 bytes and
+/// `sun_path` is 104 there, so the default would overflow the address for real on this leg.
 fn private_tmp() -> tempfile::TempDir {
     let tmp = tempfile::Builder::new()
         .prefix("sot-t")
@@ -65,81 +52,26 @@ fn private_tmp() -> tempfile::TempDir {
     tmp
 }
 
-fn isolated_runtime_dir() -> RuntimeDirGuard {
-    let tmp = private_tmp();
-    std::env::set_var("SOT_RUNTIME_DIR", tmp.path());
-    RuntimeDirGuard { _tmp: tmp }
+/// A row server over a fake run, and the folder it lives in.
+fn bind_row() -> (tempfile::TempDir, PathBuf, RowServer) {
+    let dir = private_tmp();
+    let path = socket_path_in(dir.path(), "0123456789abcdef").expect("a short path fits");
+    let server = RowServer::bind(&path, RowRun::new("run-one", "ready")).expect("bind");
+    (dir, path, server)
 }
 
-fn next_event(server: &SocketServer, timeout: Duration) -> LaneEvent {
-    server
-        .events()
-        .recv_timeout(timeout)
-        .unwrap_or_else(|e| panic!("expected a transport event within {timeout:?}, got {e}"))
-}
-
-fn expect_accepted(server: &SocketServer, timeout: Duration) -> ConnId {
-    match next_event(server, timeout) {
-        LaneEvent::Accepted(id) => id,
-        other => panic!("expected Accepted, got {other:?}"),
-    }
-}
-
-/// The `status` request has no body, so its ENCODED length alone is what
-/// we wait for; the stream is byte-type, so a single write is not
-/// guaranteed to surface as a single `Bytes` event.
-fn await_status_request(server: &SocketServer, conn_id: ConnId, timeout: Duration) {
-    let expected = wire::encode_mgmt_request(&MgmtRequest::Status).unwrap();
-    let mut got = Vec::new();
-    let deadline = Instant::now() + timeout;
-    while got.len() < expected.len() {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(!remaining.is_zero(), "timed out waiting for the status request");
-        match server.events().recv_timeout(remaining) {
-            Ok(LaneEvent::Bytes(cid, bytes)) if cid == conn_id => got.extend(bytes),
-            Ok(other) => panic!("unexpected event waiting for status: {other:?}"),
-            Err(_) => panic!("timed out waiting for the status request"),
-        }
-    }
-    assert_eq!(got, expected);
-}
-
-/// Run one full five-step challenge against a REAL socket whose server
-/// is this very process -- a genuine same-user peer -- answering with
-/// whatever `reply` says. Uses `connect_voyage_socket` (the FULL
-/// constructor, which already runs `authenticate_server` internally, and
-/// whose macOS body is itself under test here) rather than a raw
-/// unchallenged connect, exactly mirroring `tests/challenge_unix.rs`'s
-/// own `self_proven_challenge`: running `challenge` on top afterward is
-/// legal because `authenticate_server` never consumes anything from the
-/// wire.
-fn challenge_with_reply(
-    reply: MgmtReply,
+/// Run one full five-step challenge against a REAL row server in this very process (a genuine same-user peer), with
+/// the identity the hello names replaced by `claimed` when one is given. The row answers its own hello, so a reply
+/// naming another process is made by the exchange (`support/row_challenge.rs`).
+fn challenge_claiming(
+    claimed: Option<(u32, u64)>,
 ) -> ChallengeOutcome<sot_platform::identity::challenge_macos::ChallengedProcess> {
-    let voyage_id = fresh_voyage_id();
-    let server = SocketServer::bind(&voyage_id, 1).expect("bind");
-    let client = connect_voyage_socket(&voyage_id).expect("connect");
-
-    std::thread::scope(|scope| {
-        let challenge_handle = scope.spawn(|| {
-            let mut exchange = VoyageMgmtExchange::default();
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30))
-        });
-
-        let conn_id = expect_accepted(&server, TIMEOUT);
-        await_status_request(&server, conn_id, TIMEOUT);
-        let encoded = wire::encode_mgmt_reply(&reply).unwrap();
-        server.send(conn_id, encoded, None).expect("send status_ok");
-
-        challenge_handle.join().expect("challenge thread panicked")
-    })
-}
-
-fn self_status_ok(pid: u32, created: u64) -> MgmtReply {
-    MgmtReply::StatusOk {
-        pid,
-        created,
-        survival: Survival::Normal,
+    let (_dir, path, _server) = bind_row();
+    let client = connect_own(&path).expect("connect");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    match claimed {
+        Some((pid, created)) => challenge(&client, &mut Lying::new(pid, created), deadline),
+        None => challenge(&client, &mut RowHelloExchange::new("test"), deadline),
     }
 }
 
@@ -151,10 +83,9 @@ fn challenge_proves_a_genuine_same_user_server() {
     if !run_isolated("challenge_proves_a_genuine_same_user_server") {
         return;
     }
-    let _rt = isolated_runtime_dir();
     let pid = std::process::id();
     let created = u64::from(self_pidversion().expect("self_pidversion"));
-    match challenge_with_reply(self_status_ok(pid, created)) {
+    match challenge_claiming(None) {
         ChallengeOutcome::Proven(p) => {
             assert_eq!(p.pid(), pid);
             assert_eq!(p.created(), created);
@@ -171,8 +102,7 @@ fn challenge_rejects_a_pid_creation_mismatch_as_foreign() {
     if !run_isolated("challenge_rejects_a_pid_creation_mismatch_as_foreign") {
         return;
     }
-    let _rt = isolated_runtime_dir();
-    let outcome = challenge_with_reply(self_status_ok(1, 0));
+    let outcome = challenge_claiming(Some((1, 0)));
     assert!(matches!(outcome, ChallengeOutcome::Foreign), "{outcome:?}");
 }
 
@@ -188,10 +118,9 @@ fn challenge_rejects_a_wrong_pid_even_when_created_is_right() {
     if !run_isolated("challenge_rejects_a_wrong_pid_even_when_created_is_right") {
         return;
     }
-    let _rt = isolated_runtime_dir();
     let created = u64::from(self_pidversion().expect("self_pidversion"));
     let wrong_pid = std::process::id().wrapping_add(1);
-    let outcome = challenge_with_reply(self_status_ok(wrong_pid, created));
+    let outcome = challenge_claiming(Some((wrong_pid, created)));
     assert!(matches!(outcome, ChallengeOutcome::Foreign), "{outcome:?}");
 }
 
@@ -208,10 +137,8 @@ fn self_pidversion_agrees_with_the_peer_token_for_a_self_connect() {
     if !run_isolated("self_pidversion_agrees_with_the_peer_token_for_a_self_connect") {
         return;
     }
-    let _rt = isolated_runtime_dir();
-    let voyage_id = fresh_voyage_id();
-    let _server = SocketServer::bind(&voyage_id, 1).expect("bind");
-    let client = connect_voyage_socket(&voyage_id).expect("connect");
+    let (_dir, path, _server) = bind_row();
+    let client = connect_own(&path).expect("connect");
 
     let mine = self_pidversion().expect("task_info(TASK_AUDIT_TOKEN) -- is the flavor 15?");
     match authenticate_server(&client) {
@@ -241,9 +168,8 @@ fn challenge_rejects_a_wrong_created_even_when_the_pid_is_right() {
     if !run_isolated("challenge_rejects_a_wrong_created_even_when_the_pid_is_right") {
         return;
     }
-    let _rt = isolated_runtime_dir();
     let created = u64::from(self_pidversion().expect("self_pidversion"));
-    let outcome = challenge_with_reply(self_status_ok(std::process::id(), created + 1));
+    let outcome = challenge_claiming(Some((std::process::id(), created + 1)));
     assert!(matches!(outcome, ChallengeOutcome::Foreign), "{outcome:?}");
 }
 

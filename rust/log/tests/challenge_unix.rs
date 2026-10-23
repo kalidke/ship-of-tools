@@ -1,32 +1,26 @@
 #![cfg(target_os = "linux")]
-//! Integration tests for the ADR 0043 L1-unix LU1c Linux identity
-//! challenge (`src/identity/challenge_unix.rs`) and the `SocketClient` construction
-//! path it authenticates (`connect_voyage_socket`). Mirrors the
-//! analogous section of `tests/pipe_win/` almost line for line — see
-//! that file's own module doc for the process-isolation rationale
-//! (both use `sot_platform::test_isolated::run_isolated`), and
-//! `tests/socket_unix/`'s own doc for the
-//! `SOT_RUNTIME_DIR`-per-test isolation this also copies (including its
-//! macOS `/tmp`-not-`$TMPDIR` fix — irrelevant here, since this whole
-//! file is Linux-only, but kept for one copy-paste source of truth with
-//! that file rather than a second, silently-diverging one).
+//! The Linux identity challenge (`sot_platform::identity::challenge_unix`) and the `SocketClient` it authenticates,
+//! driven against the row socket: a real `RowServer` over a fake `RowRun` answers the hello, and the adversarial cases
+//! are made by the exchange the client drives (`support/row_challenge.rs`), since the row answers its own hello.
+//! Each case runs in its own process (`sot_platform::test_isolated::run_isolated`).
 
-use sot_platform::test_isolated::run_isolated;
+#[path = "support/row_challenge.rs"]
+mod row_challenge;
+
+use row_challenge::{Lying, NotAFrame, Unanswered};
+use sot_log::lane::connect_own::connect_own;
+use sot_log::lane::socket_unix::SocketClient;
+use sot_log::row::{socket_path_in, RowHelloExchange, RowRun, RowServer};
 use sot_platform::identity::challenge::{ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome};
 use sot_platform::identity::challenge_unix::{
-    self, authenticate_server, challenge, self_start_ticks, ChallengedProcess, PeerCredentials,
-    SocketChallengeable,
+    self, authenticate_server, challenge, self_start_ticks, ChallengedProcess, PeerCredentials, SocketChallengeable,
 };
-use sot_log::lane::exchange::VoyageMgmtExchange;
-use sot_log::lane::transport::ConnId;
-use sot_log::lane::socket_unix::{
-    connect_voyage_socket, voyage_socket_path, SocketClient, SocketServer,
-};
-use sot_log::lane::transport::LaneEvent;
-use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
+use sot_platform::identity::exchange::{ExchangeDecode, IdentityExchange};
+use sot_platform::test_isolated::run_isolated;
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -34,122 +28,48 @@ use std::time::{Duration, Instant};
 /// a stalled event always trips before the parent's own kill fires).
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A fresh, canonical lowercase-hyphenated UUID for one test's voyage id.
-fn fresh_voyage_id() -> String {
-    uuid::Uuid::now_v7().to_string()
-}
-
-/// Points `SOT_RUNTIME_DIR` at a fresh, mode-0700 tempdir for the
-/// lifetime of the returned guard — mirrors `tests/socket_unix/`'s
-/// identical helper.
-struct RuntimeDirGuard {
-    _tmp: tempfile::TempDir,
-}
-
-fn isolated_runtime_dir() -> RuntimeDirGuard {
-    // `tempdir_in("/tmp")`, never the default `$TMPDIR` -- see
-    // `tests/socket_unix/`'s own doc for the macOS CI runner history
-    // this guards against (this file is Linux-only, but the helper is
-    // copied verbatim rather than silently drifting from its sibling).
-    let tmp = tempfile::Builder::new()
-        .prefix("sot-t")
-        .tempdir_in("/tmp")
-        .expect("tempdir under /tmp");
+/// A fresh mode-0700 folder under `/tmp` (the row's folder must be private, and `$TMPDIR` may overflow `sun_path`).
+fn private_tmp() -> tempfile::TempDir {
+    let tmp = tempfile::Builder::new().prefix("sot-t").tempdir_in("/tmp").expect("tempdir under /tmp");
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     }
-    std::env::set_var("SOT_RUNTIME_DIR", tmp.path());
-    RuntimeDirGuard { _tmp: tmp }
+    tmp
 }
 
-fn next_event(server: &SocketServer, timeout: Duration) -> LaneEvent {
-    server
-        .events()
-        .recv_timeout(timeout)
-        .unwrap_or_else(|e| panic!("expected a transport event within {timeout:?}, got {e}"))
+fn row_path(dir: &Path) -> PathBuf {
+    socket_path_in(dir, "0123456789abcdef").expect("a short path fits")
 }
 
-fn expect_accepted(server: &SocketServer, timeout: Duration) -> ConnId {
-    match next_event(server, timeout) {
-        LaneEvent::Accepted(id) => id,
-        other => panic!("expected Accepted, got {other:?}"),
-    }
+/// A row server over a fake run, and the folder it lives in.
+fn bind_row() -> (tempfile::TempDir, PathBuf, RowServer) {
+    let dir = private_tmp();
+    let path = row_path(dir.path());
+    let server = RowServer::bind(&path, RowRun::new("run-one", "ready")).expect("bind");
+    (dir, path, server)
 }
 
-/// The `status` request has no body, so its ENCODED length alone is what
-/// we wait for; the stream is byte-type, so a single write is not
-/// guaranteed to surface as a single `Bytes` event.
-fn await_status_request(server: &SocketServer, conn_id: ConnId, timeout: Duration) {
-    let expected = wire::encode_mgmt_request(&MgmtRequest::Status).unwrap();
-    let mut got = Vec::new();
-    let deadline = Instant::now() + timeout;
-    while got.len() < expected.len() {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(!remaining.is_zero(), "timed out waiting for the status request");
-        match server.events().recv_timeout(remaining) {
-            Ok(LaneEvent::Bytes(cid, bytes)) if cid == conn_id => got.extend(bytes),
-            Ok(other) => panic!("unexpected event waiting for status: {other:?}"),
-            Err(_) => panic!("timed out waiting for the status request"),
-        }
-    }
-    assert_eq!(got, expected);
-}
-
-/// `connect_voyage_socket`'s own race-free pin (ADR 0043 decision 8)
-/// requires the peer's observed start time to be STRICTLY before
-/// `established` (a tie is `Undetermined` by design). In a SAME-PROCESS
-/// self-connect test, both are measured within one process's own brief
-/// lifetime, both quantized to `sysconf(_SC_CLK_TCK)` (10 ms on this
-/// host) -- a `run_isolated` child that binds and connects almost
-/// immediately after starting can genuinely land `established` on the
-/// SAME tick as its own `process_start_ticks`, hitting the strict tie for
-/// real (reproduced while writing this suite). A real deployment never
-/// hits this: the server process already exists, with an earlier start
-/// time, long before any client dials it. This sleep is the test-only
-/// accommodation for the artificial "peer is myself, freshly started"
-/// topology these self-tests use — never a change to the production
-/// pinning logic itself, which stays exactly as strict as the ADR
-/// requires.
+/// The pin requires the peer's observed start time to be STRICTLY before the connect's anchor (a tie is
+/// `Undetermined` by design). In a same-process self-connect test, both are measured within one process's own brief
+/// lifetime, both quantized to `sysconf(_SC_CLK_TCK)` (10 ms on this host), so a `run_isolated` child that binds and
+/// connects almost immediately after starting can land on the same tick. A real deployment never hits this: the
+/// server process already exists, with an earlier start time, long before any client dials it. This sleep is the
+/// test-only accommodation for the "peer is myself, freshly started" topology these self-tests use, never a change to
+/// the production pin, which stays exactly as strict as the ADR requires.
 fn ensure_established_gap() {
     std::thread::sleep(Duration::from_millis(50));
 }
 
-/// Real challenge, real socket, SAME process on both ends — a genuine
-/// same-user server, proven. Also this test's own shared "give me a real
-/// proven process" helper for the two tests below it. Uses
-/// `connect_voyage_socket` (the FULL constructor, which already runs
-/// `authenticate_server` internally) rather than a raw unchallenged
-/// connect, exactly mirroring `tests/pipe_win/`'s own
-/// `self_proven_challenge` — running the separately-typed
-/// `challenge_unix::challenge` on top afterward is legal because
-/// `authenticate_server` never consumes anything from the wire.
-fn self_proven_challenge() -> ChallengeOutcome<sot_platform::identity::challenge_unix::ChallengedProcess> {
-    let voyage_id = fresh_voyage_id();
-    let server = SocketServer::bind(&voyage_id, 1).expect("bind");
+/// Real challenge, real socket, SAME process on both ends: a genuine same-user server, proven. Also this file's shared
+/// "give me a real proven process" helper for the test below it.
+fn self_proven_challenge() -> (ChallengeOutcome<ChallengedProcess>, tempfile::TempDir, RowServer) {
+    let (dir, path, server) = bind_row();
     ensure_established_gap();
-    let client = connect_voyage_socket(&voyage_id).expect("connect");
-
-    std::thread::scope(|scope| {
-        let challenge_handle = scope.spawn(|| {
-            let mut exchange = VoyageMgmtExchange::default();
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30))
-        });
-
-        let conn_id = expect_accepted(&server, TIMEOUT);
-        await_status_request(&server, conn_id, TIMEOUT);
-        let pid = std::process::id();
-        let created = self_start_ticks().expect("self_start_ticks");
-        let reply = wire::encode_mgmt_reply(&MgmtReply::StatusOk {
-            pid,
-            created,
-            survival: Survival::Normal,
-        })
-        .unwrap();
-        server.send(conn_id, reply, None).expect("send status_ok");
-
-        challenge_handle.join().expect("challenge thread panicked")
-    })
+    let client = connect_own(&path).expect("connect");
+    let mut exchange = RowHelloExchange::new("test");
+    let outcome = challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30));
+    (outcome, dir, server)
 }
 
 #[test]
@@ -157,10 +77,9 @@ fn challenge_proves_a_genuine_same_user_server() {
     if !run_isolated("challenge_proves_a_genuine_same_user_server") {
         return;
     }
-    let _rt = isolated_runtime_dir();
     let pid = std::process::id();
     let created = self_start_ticks().expect("self_start_ticks");
-    match self_proven_challenge() {
+    match self_proven_challenge().0 {
         ChallengeOutcome::Proven(p) => {
             assert_eq!(p.pid(), pid);
             assert_eq!(p.created(), created);
@@ -174,8 +93,7 @@ fn challenged_process_reverify_and_wait_reflect_a_live_self_proof() {
     if !run_isolated("challenged_process_reverify_and_wait_reflect_a_live_self_proof") {
         return;
     }
-    let _rt = isolated_runtime_dir();
-    let ChallengeOutcome::Proven(p) = self_proven_challenge() else {
+    let (ChallengeOutcome::Proven(p), _dir, _server) = self_proven_challenge() else {
         panic!("expected Proven")
     };
     assert!(p.reverify().unwrap());
@@ -183,82 +101,33 @@ fn challenged_process_reverify_and_wait_reflect_a_live_self_proof() {
     assert!(!p.wait(Duration::from_millis(50)).unwrap());
 }
 
+/// Same account, wrong reply: a pid and creation that are not the server process's are `Foreign`, which the account
+/// check upstream cannot catch.
 #[test]
 fn challenge_rejects_a_pid_creation_mismatch_as_foreign() {
     if !run_isolated("challenge_rejects_a_pid_creation_mismatch_as_foreign") {
         return;
     }
-    let _rt = isolated_runtime_dir();
-    let voyage_id = fresh_voyage_id();
-    let server = SocketServer::bind(&voyage_id, 1).expect("bind");
+    let (_dir, path, _server) = bind_row();
     ensure_established_gap();
-    let client = connect_voyage_socket(&voyage_id).expect("connect");
-
-    let outcome = std::thread::scope(|scope| {
-        let challenge_handle = scope.spawn(|| {
-            let mut exchange = VoyageMgmtExchange::default();
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30))
-        });
-
-        let conn_id = expect_accepted(&server, TIMEOUT);
-        await_status_request(&server, conn_id, TIMEOUT);
-        // A well-formed status_ok, but a FABRICATED pid/creation that
-        // does not match the real server process (this test binary
-        // itself) -- the same-user check upstream cannot catch this:
-        // same account, wrong reply.
-        let reply = wire::encode_mgmt_reply(&MgmtReply::StatusOk {
-            pid: 1,
-            created: 0,
-            survival: Survival::Normal,
-        })
-        .unwrap();
-        server.send(conn_id, reply, None).expect("send status_ok");
-
-        challenge_handle.join().expect("challenge thread panicked")
-    });
-
+    let client = connect_own(&path).expect("connect");
+    let outcome = challenge(&client, &mut Lying::new(1, 0), Instant::now() + Duration::from_secs(30));
     assert!(matches!(outcome, ChallengeOutcome::Foreign), "{outcome:?}");
 }
 
-/// Real deadline expiry, real pending `read`, real `conn.cancel()` — as
-/// opposed to `challenge_classifies_connection_death_mid_challenge_as_undetermined`
-/// below (an ordered EOF, a DIFFERENT path entirely). The server accepts
-/// and receives `status`, but never replies and never closes: the
-/// client's `read` is genuinely blocked until the watchdog's deadline
-/// fires and `cancel()` unblocks it.
+/// Real deadline expiry, real pending `read`, real `conn.cancel()`, as opposed to the ordered EOF of the next test (a
+/// different path entirely). The row waits for the rest of a half frame and answers nothing, and never closes: the
+/// client's `read` is genuinely blocked until the watchdog's deadline fires and `cancel()` unblocks it.
 #[test]
 fn challenge_cancels_a_genuinely_pending_read_when_the_deadline_expires() {
     if !run_isolated("challenge_cancels_a_genuinely_pending_read_when_the_deadline_expires") {
         return;
     }
-    let _rt = isolated_runtime_dir();
-    let voyage_id = fresh_voyage_id();
-    let server = SocketServer::bind(&voyage_id, 1).expect("bind");
+    let (_dir, path, _server) = bind_row();
     ensure_established_gap();
-    let client = connect_voyage_socket(&voyage_id).expect("connect");
-
-    let outcome = std::thread::scope(|scope| {
-        let challenge_handle = scope.spawn(|| {
-            let mut exchange = VoyageMgmtExchange::default();
-            // A short but real deadline -- the server below never
-            // replies, so this can only resolve via the watchdog's own
-            // cancel.
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_millis(300))
-        });
-
-        let conn_id = expect_accepted(&server, TIMEOUT);
-        await_status_request(&server, conn_id, TIMEOUT);
-        // Deliberately never reply and never close -- the client's read
-        // stays genuinely pending until the deadline cancels it.
-
-        let outcome = challenge_handle.join().expect("challenge thread panicked");
-        // Keep the server (and the connection) alive until the challenge
-        // side has already concluded, so the server side is never what
-        // ends the connection here.
-        drop(server);
-        outcome
-    });
-
+    let client = connect_own(&path).expect("connect");
+    // A short but real deadline: the row never replies, so this can only resolve via the watchdog's own cancel.
+    let outcome = challenge(&client, &mut Unanswered, Instant::now() + Duration::from_millis(300));
     assert!(matches!(outcome, ChallengeOutcome::Undetermined), "{outcome:?}");
 }
 
@@ -267,109 +136,55 @@ fn challenge_classifies_connection_death_mid_challenge_as_undetermined() {
     if !run_isolated("challenge_classifies_connection_death_mid_challenge_as_undetermined") {
         return;
     }
-    let _rt = isolated_runtime_dir();
-    let voyage_id = fresh_voyage_id();
-    let server = SocketServer::bind(&voyage_id, 1).expect("bind");
+    let (_dir, path, _server) = bind_row();
     ensure_established_gap();
-    let client = connect_voyage_socket(&voyage_id).expect("connect");
-
-    let outcome = std::thread::scope(|scope| {
-        let challenge_handle = scope.spawn(|| {
-            let mut exchange = VoyageMgmtExchange::default();
-            challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30))
-        });
-
-        let conn_id = expect_accepted(&server, TIMEOUT);
-        await_status_request(&server, conn_id, TIMEOUT);
-        // The server closes without ever answering `status`.
-        server.close(conn_id);
-
-        challenge_handle.join().expect("challenge thread panicked")
-    });
-
+    let client = connect_own(&path).expect("connect");
+    // The row ends the connection on a first line that is no frame, without ever answering.
+    let outcome = challenge(&client, &mut NotAFrame, Instant::now() + Duration::from_secs(30));
     assert!(matches!(outcome, ChallengeOutcome::Undetermined), "{outcome:?}");
 }
 
-/// The "child" half of `cross_process_challenge_proves_a_real_child_server`
-/// below: binds a real socket server for the voyage id named by
-/// `CHALLENGE_UNIX_XPROC_VOYAGE_ID`, answers exactly one `status` request
-/// with THIS PROCESS's own real pid/creation time, then stays up (exiting
-/// only once the parent kills it) -- mirrors `tests/pipe_win/`'s own
-/// child role, except this one stays alive so the parent can assert on
-/// its still-live pid via `SO_PEERCRED` without a reap race. A normal
-/// test pass never sets that env var, so this is a silent no-op then.
+/// The "child" half of `cross_process_challenge_proves_a_real_child_server` below: binds a real row server at the
+/// socket named by `CHALLENGE_UNIX_XPROC_SOCKET`, which answers the hello with THIS PROCESS's own real pid and
+/// creation time, then stays up (exiting only once the parent kills it), so the parent can assert on its still-live
+/// pid via `SO_PEERCRED` without a reap race. A normal test pass never sets that env var, so this is a silent no-op.
 #[test]
 fn cross_process_challenge_server_role() {
-    let Ok(voyage_id) = std::env::var("CHALLENGE_UNIX_XPROC_VOYAGE_ID") else {
+    let Ok(path) = std::env::var("CHALLENGE_UNIX_XPROC_SOCKET") else {
         return;
     };
     sot_platform::test_isolated::enter("cross_process_challenge_server_role");
-    let pid = std::process::id();
     let created = self_start_ticks().expect("self_start_ticks");
-    // Review round fix: don't bind (hence don't become connectable) until
-    // this process's OWN clock has advanced strictly past its own start
-    // tick -- the parent's connect anchor is sampled essentially at the
-    // moment its `connect()` succeeds, which can only happen once THIS
-    // bind has already run, so this guarantees that anchor lands strictly
-    // after `created` rather than risking the same tick-quantization tie
-    // the self-connect tests hit (see `ensure_established_gap`'s own
-    // doc). Spinning on the OBSERVED tick, not a fixed sleep, means this
-    // never over- or under-shoots regardless of this kernel's own
-    // `CLK_TCK`.
+    // Don't bind (hence don't become connectable) until this process's OWN clock has advanced strictly past its own
+    // start tick: the parent's connect anchor is sampled essentially at the moment its `connect()` succeeds, which can
+    // only happen once THIS bind has run, so the anchor lands strictly after `created` instead of risking the
+    // tick-quantization tie the self-connect tests hit (see `ensure_established_gap`). Spinning on the OBSERVED tick,
+    // not a fixed sleep, never over- or under-shoots whatever this kernel's `CLK_TCK` is.
     while challenge_unix::boot_ticks_now().expect("boot_ticks_now") <= created {
         std::thread::sleep(Duration::from_millis(1));
     }
-    let server = SocketServer::bind(&voyage_id, 1).expect("server role: bind");
-    // Review round 2 fix: the tick-wait alone only orders THIS process's
-    // own start tick against boot time -- it says nothing about WHEN the
-    // parent's own connect anchor gets sampled relative to `bind` above.
-    // Announce readiness explicitly, only now that both the tick-wait AND
-    // a successful bind have happened, so the parent can wait for this
-    // exact line (bounded) before it ever samples its own anchor or
-    // starts its connect loop -- ordering the two processes properly
-    // instead of relying on incidental timing margin. A LEADING newline
-    // matters: the test harness itself has already written
-    // "test <name> ... " to this same stdout with NO trailing newline of
-    // its own (it only appends "ok"/"FAILED" once this function
-    // returns, which it never does before the parent kills it) -- a bare
-    // `println!("ready")` would land on that SAME incomplete line
-    // (verified: it reads back as "test ... ... ready", never "ready"
-    // alone) and the parent's own line-by-line reader would never see a
-    // line that equals "ready". The leading `\n` here closes out the
-    // harness's own pending line first, so "ready" arrives as its own,
-    // separate, matchable line.
+    let _server = RowServer::bind(Path::new(&path), RowRun::new("run-one", "ready")).expect("server role: bind");
+    // Announce readiness only now that the tick-wait AND a successful bind have happened, so the parent starts its
+    // own connect after both. A LEADING newline matters: the harness has already written "test <name> ... " to this
+    // stdout with no trailing newline, and a bare `println!("ready")` would land on that same line, never matching.
     println!("\nready");
     std::io::stdout().flush().expect("flush the ready line");
-    let conn_id = expect_accepted(&server, Duration::from_secs(30));
-    await_status_request(&server, conn_id, Duration::from_secs(30));
-    let reply = wire::encode_mgmt_reply(&MgmtReply::StatusOk {
-        pid,
-        created,
-        survival: Survival::Normal,
-    })
-    .unwrap();
-    server.send(conn_id, reply, None).expect("server role: send status_ok");
-    // Stay up: the parent asserts against this process's pid then kills
-    // it via its own `KillGuard`.
+    // Stay up: the parent asserts against this process's pid then kills it via its own `KillGuard`.
     std::thread::sleep(Duration::from_secs(30));
 }
 
-/// The real cross-process test (ADR 0043 decision 8's own acceptance
-/// row): `SO_PEERCRED`, read via the CLIENT's own fd, must resolve to a
-/// GENUINELY DIFFERENT process's real pid — the kernel-level fact this
-/// module's whole design depends on (see `challenge_unix.rs`'s own module
-/// doc for how this was verified empirically before writing the design).
+/// The real cross-process test (ADR 0043 decision 8's acceptance row): `SO_PEERCRED`, read via the CLIENT's own fd,
+/// must resolve to a GENUINELY DIFFERENT process's real pid, the kernel-level fact the design depends on.
 #[test]
 fn cross_process_challenge_proves_a_real_child_server() {
     if !run_isolated("cross_process_challenge_proves_a_real_child_server") {
         return;
     }
-    let _rt = isolated_runtime_dir();
-    let voyage_id = fresh_voyage_id();
-    let (mut role, role_entry) =
-        sot_platform::test_isolated::test_command("cross_process_challenge_server_role");
+    let dir = private_tmp();
+    let path = row_path(dir.path());
+    let (mut role, role_entry) = sot_platform::test_isolated::test_command("cross_process_challenge_server_role");
     let mut child = role
-        .env("CHALLENGE_UNIX_XPROC_VOYAGE_ID", &voyage_id)
+        .env("CHALLENGE_UNIX_XPROC_SOCKET", &path)
         .stdout(Stdio::piped())
         .spawn()
         .expect("failed to spawn the cross-process server child");
@@ -387,15 +202,10 @@ fn cross_process_challenge_proves_a_real_child_server() {
     }
     let mut guard = KillGuard(Some(child));
 
-    // Review round 2 fix: wait for the child's own explicit "ready" line
-    // (printed only after ITS OWN tick-wait AND a successful bind — see
-    // `cross_process_challenge_server_role`'s own doc) BEFORE starting
-    // our connect loop, exactly so the parent's own pre-connect anchor
-    // cannot be sampled before the child has bound at all. Bounded via a
-    // helper thread + channel (10s, loud on expiry) rather than a bare
-    // blocking `read_line`, which could hang forever against a genuinely
-    // wedged child. Any OTHER line the test harness itself prints first
-    // (e.g. "running 1 test") is skipped, not mistaken for readiness.
+    // Wait for the child's own "ready" line (printed only after ITS tick-wait AND a successful bind) BEFORE starting
+    // our connect, so the parent's own pre-connect anchor cannot be sampled before the child has bound at all. Bounded
+    // via a helper thread + channel (10s, loud on expiry) rather than a bare blocking `read_line`, which could hang
+    // forever against a wedged child. Any OTHER line the harness prints first is skipped.
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let reader_thread = std::thread::spawn(move || {
         let mut reader = BufReader::new(child_stdout);
@@ -404,9 +214,7 @@ fn cross_process_challenge_proves_a_real_child_server() {
             line.clear();
             match reader.read_line(&mut line) {
                 Ok(0) => {
-                    let _ = ready_tx.send(Err(
-                        "child stdout closed before printing its own \"ready\" line".to_string(),
-                    ));
+                    let _ = ready_tx.send(Err("child stdout closed before printing its own \"ready\" line".to_string()));
                     return;
                 }
                 Ok(_) => {
@@ -414,13 +222,9 @@ fn cross_process_challenge_proves_a_real_child_server() {
                         let _ = ready_tx.send(Ok(()));
                         return;
                     }
-                    // Test-harness noise (e.g. "running 1 test") --
-                    // ignore and keep reading.
                 }
                 Err(e) => {
-                    let _ = ready_tx.send(Err(format!(
-                        "reading the child's own readiness line: {e}"
-                    )));
+                    let _ = ready_tx.send(Err(format!("reading the child's own readiness line: {e}")));
                     return;
                 }
             }
@@ -434,8 +238,8 @@ fn cross_process_challenge_proves_a_real_child_server() {
     role_entry.assert_once(child_pid);
     reader_thread.join().expect("readiness reader thread panicked");
 
-    let client = connect_voyage_socket(&voyage_id).expect("connect to the cross-process server");
-    let mut exchange = VoyageMgmtExchange::default();
+    let client = connect_own(&path).expect("connect to the cross-process server");
+    let mut exchange = RowHelloExchange::new("test");
     let outcome = challenge(&client, &mut exchange, Instant::now() + Duration::from_secs(30));
 
     match outcome {
@@ -446,9 +250,6 @@ fn cross_process_challenge_proves_a_real_child_server() {
         other => panic!("expected Proven against a real cross-process server, got {other:?}"),
     }
 
-    // The child already answered and is expected to stay up until
-    // killed; reap it normally here, then defuse the guard's own kill (a
-    // no-op by then, kept only for the panic/early-return paths above).
     if let Some(c) = guard.0.as_mut() {
         let _ = c.kill();
         let _ = c.wait();
@@ -456,44 +257,37 @@ fn cross_process_challenge_proves_a_real_child_server() {
     guard.0 = None;
 }
 
-/// The pass case: against a genuine same-account server,
-/// `connect_voyage_socket`'s same-user authentication is a transparent
-/// pass-through -- the connection it hands back is fully usable for the
-/// caller's own intended protocol (an ordinary mgmt round trip here), not
-/// merely "connected".
+/// The pass case: against a genuine same-account row, `authenticate_server` is a transparent pass-through. The
+/// connection stays fully usable for the caller's own protocol (the hello round trip here), not merely "connected".
 #[test]
-fn connect_voyage_socket_authentication_pass_against_a_genuine_server() {
-    if !run_isolated("connect_voyage_socket_authentication_pass_against_a_genuine_server") {
+fn authenticate_server_passes_a_genuine_row_and_leaves_the_connection_usable() {
+    if !run_isolated("authenticate_server_passes_a_genuine_row_and_leaves_the_connection_usable") {
         return;
     }
-    let _rt = isolated_runtime_dir();
-    let voyage_id = fresh_voyage_id();
-    let server = SocketServer::bind(&voyage_id, 1).expect("bind");
+    let (_dir, path, _server) = bind_row();
     ensure_established_gap();
-    let client = connect_voyage_socket(&voyage_id)
-        .expect("authentication-enforced connect must pass against a genuine same-account server");
-
-    let conn_id = expect_accepted(&server, TIMEOUT);
-    let probe = wire::encode_mgmt_request(&MgmtRequest::Probe).unwrap();
-    client.write_all(&probe).expect("the connection must still be fully usable after authentication");
-    let mut got = Vec::new();
-    let deadline = Instant::now() + TIMEOUT;
-    while got.len() < probe.len() {
-        match server.events().recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(LaneEvent::Bytes(cid, bytes)) if cid == conn_id => got.extend(bytes),
-            other => panic!("unexpected event waiting for probe: {other:?}"),
-        }
+    let client = connect_own(&path).expect("connect");
+    match authenticate_server(&client) {
+        PeerAuthOutcome::Authenticated(peer) => assert_eq!(peer.pid, std::process::id()),
+        other => panic!("authentication must pass against a genuine same-account server, got {other:?}"),
     }
-    assert_eq!(got, probe);
-
-    let reply = wire::encode_mgmt_reply(&MgmtReply::ProbeOk).unwrap();
-    server.send(conn_id, reply.clone(), None).expect("send probe_ok");
-    let (buf, n) = sot_platform::test_wait::within(TIMEOUT, "the probe_ok read", move || {
-        let mut buf = [0u8; 512];
-        let n = client.read(&mut buf).expect("read probe_ok");
-        (buf, n)
+    let mut hello = RowHelloExchange::new("test");
+    client.write_all(&hello.encode_request()).expect("the connection must still be fully usable after authentication");
+    let named = sot_platform::test_wait::within(TIMEOUT, "the hello reply", move || {
+        let mut buf = [0u8; 4096];
+        let mut got = Vec::new();
+        loop {
+            let n = client.read(&mut buf).expect("read the hello reply");
+            assert!(n > 0, "the row closed before it answered");
+            got.extend_from_slice(&buf[..n]);
+            match hello.feed(&got[got.len() - n..]) {
+                ExchangeDecode::Incomplete => continue,
+                ExchangeDecode::Identity { pid, .. } => break Some(pid),
+                ExchangeDecode::Foreign => break None,
+            }
+        }
     });
-    assert_eq!(&buf[..n], reply.as_slice());
+    assert_eq!(named, Some(std::process::id()), "the row's hello names this process");
 }
 
 /// A `SocketChallengeable` whose `raw_fd()` is deliberately invalid (-1)
@@ -544,34 +338,19 @@ fn pin_rejects_a_peer_that_started_at_or_after_the_connection() {
     if !run_isolated("pin_rejects_a_peer_that_started_at_or_after_the_connection") {
         return;
     }
-    let _rt = isolated_runtime_dir();
-    let id = fresh_voyage_id();
-    let server = SocketServer::bind(&id, 2).expect("bind");
-    let path = voyage_socket_path(&id).unwrap();
-
+    let (_dir, path, server) = bind_row();
     let own_start = self_start_ticks().expect("self_start_ticks");
 
     {
         let stream = std::os::unix::net::UnixStream::connect(&path).unwrap();
-        let conn_id = expect_accepted(&server, TIMEOUT);
         let client = SocketClient::from_stream_for_test(stream, own_start);
         assert!(
             matches!(authenticate_server(&client), PeerAuthOutcome::Undetermined),
             "a tie between the peer's start time and `established` must be Undetermined, never Proven"
         );
-        drop(client);
-        // Drain this connection's own `Closed` before opening a second
-        // one below -- otherwise its (asynchronous) arrival can race the
-        // second connection's own `Accepted`, since both share one
-        // server-wide events channel.
-        match next_event(&server, TIMEOUT) {
-            LaneEvent::Closed(id, _) => assert_eq!(id, conn_id),
-            other => panic!("expected Closed for the first (dropped) connection, got {other:?}"),
-        }
     }
     {
         let stream = std::os::unix::net::UnixStream::connect(&path).unwrap();
-        expect_accepted(&server, TIMEOUT);
         let client = SocketClient::from_stream_for_test(stream, own_start + 1);
         assert!(
             matches!(authenticate_server(&client), PeerAuthOutcome::Authenticated(_)),
@@ -579,7 +358,7 @@ fn pin_rejects_a_peer_that_started_at_or_after_the_connection() {
         );
     }
 
-    drop(server);
+    server.shutdown();
 }
 
 /// Both pin paths (`SO_PEERPIDFD` where the kernel has it, `pidfd_open`
@@ -594,9 +373,8 @@ fn both_pin_paths_prove_a_live_child() {
     if !run_isolated("both_pin_paths_prove_a_live_child") {
         return;
     }
-    let _rt = isolated_runtime_dir();
-    let id = fresh_voyage_id();
-    let path = voyage_socket_path(&id).unwrap();
+    let dir = private_tmp();
+    let path = row_path(dir.path());
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
 
     // DEVIATION FROM THE BRIEF'S LITERAL "socketpair" WORDING, reported
