@@ -4,7 +4,7 @@
 //! integer; an `end_run` is fenced by the run it names.
 
 use serde_json::{json, Value};
-use sot_log::attach_client::supervisor_client;
+use sot_log::attach_client::supervisor_client::{self, CancelHandle, WatchStep};
 use sot_log::SupervisorPhase;
 use sot_log::row::{socket_path_in, RowClient, RowEvent, ROW_PROTOCOL};
 use sot_platform::host::state_dir::state_dir_hash;
@@ -41,6 +41,11 @@ impl Drop for Supervisor {
 /// A real supervisor on a fresh state folder, with an agent that writes and then echoes what it is typed. Returns it
 /// with the row socket's path.
 fn supervisor(runtime: &Path, state_dir: &Path, env: &[(&str, &str)]) -> (Supervisor, PathBuf) {
+    supervisor_running(runtime, state_dir, env, "echo agent-was-here; exec cat")
+}
+
+/// [`supervisor`] with the agent's own shell script.
+fn supervisor_running(runtime: &Path, state_dir: &Path, env: &[(&str, &str)], script: &str) -> (Supervisor, PathBuf) {
     std::fs::create_dir_all(state_dir).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sot-capsule"));
     cmd.arg("supervise")
@@ -48,7 +53,7 @@ fn supervisor(runtime: &Path, state_dir: &Path, env: &[(&str, &str)]) -> (Superv
         .arg("--start")
         .arg("--assume-no-rollback-target")
         .arg("--")
-        .args(["/bin/sh", "-c", "echo agent-was-here; exec cat"])
+        .args(["/bin/sh", "-c", script])
         .env("SOT_RUNTIME_DIR", runtime)
         .envs(env.iter().copied())
         .stdout(Stdio::inherit())
@@ -479,4 +484,126 @@ fn a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown() {
     });
     assert!(ended.recv_timeout(Duration::from_secs(10)).is_ok(), "the shutdown never ended with a peer that does not read");
     drop((peer, dir));
+}
+
+/// Reads the watch until `done` says a step is the one wanted; every phase report on the way is returned, in order.
+fn watch_until(watch: &mut supervisor_client::Watch, within: Duration, mut done: impl FnMut(&WatchStep) -> bool) -> Vec<WatchStep> {
+    let deadline = Instant::now() + within;
+    let mut seen = Vec::new();
+    while Instant::now() < deadline {
+        let step = watch.next(Duration::from_millis(200));
+        let stop = done(&step);
+        if !matches!(step, WatchStep::Quiet) {
+            seen.push(step);
+        }
+        if stop {
+            return seen;
+        }
+    }
+    panic!("the watch never reached the step wanted within {within:?}; saw {seen:?}");
+}
+
+/// A watch's first reply names the run; each change of phase or run after it is one event, in the order the changes
+/// happened: an `end_run` brings `ending` then `ended_no_respawn` naming the same run, and a reset brings `starting` on a
+/// newer run.
+#[test]
+fn a_watch_reports_each_phase_change_in_order() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    std::env::set_var("SOT_RUNTIME_DIR", runtime.path());
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let (_supervisor, path) = supervisor(runtime.path(), &state_dir, &[]);
+    let mut driver = dial(&path);
+    driver.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
+
+    let mut watch = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("the watch is served");
+    let first = watch.first().clone();
+    let run = first.run.clone().expect("the first reply names the run");
+    assert_eq!(first.phase, SupervisorPhase::Ready, "{first:?}");
+    assert_eq!(watch.peer(), (first.pid, first.created), "the watch's peer is the supervisor's hello identity");
+
+    let mut manager = dial(&path);
+    let ended = manager.call("row.end_run", json!({"run": run, "reason": "test"}), Duration::from_secs(30)).expect("end_run answers");
+    assert_eq!(ended.payload["outcome"], "ended", "{ended:?}");
+    let seen = watch_until(&mut watch, Duration::from_secs(20), |s| matches!(s, WatchStep::Phase(r) if r.phase == SupervisorPhase::EndedNoRespawn));
+    let phases: Vec<_> = seen.iter().map(|s| match s { WatchStep::Phase(r) => (r.phase, r.run.clone()), other => panic!("{other:?}") }).collect();
+    assert_eq!(
+        phases,
+        vec![(SupervisorPhase::Ending, Some(run.clone())), (SupervisorPhase::EndedNoRespawn, Some(run.clone()))],
+        "ending, then the rest, both naming the run"
+    );
+
+    let reset = manager.call("row.reset", json!({}), Duration::from_secs(30)).expect("reset answers");
+    assert_eq!(reset.payload["outcome"], "reset", "{reset:?}");
+    let seen = watch_until(&mut watch, Duration::from_secs(30), |s| matches!(s, WatchStep::Phase(r) if r.phase == SupervisorPhase::Ready));
+    let WatchStep::Phase(last) = seen.last().unwrap() else { unreachable!() };
+    let newer = last.run.clone().expect("the new run is named");
+    assert!(newer > run, "the reset's run orders after the old: {newer} after {run}");
+    assert!(
+        seen.iter().any(|s| matches!(s, WatchStep::Phase(r) if r.phase == SupervisorPhase::Starting && r.run.as_ref() == Some(&newer))),
+        "the reset's run is announced starting before it is ready: {seen:?}"
+    );
+}
+
+/// A controlled end is told: the watch's last frame is `row.exiting` with the exit code, then the stream ends. A stop
+/// ends 0; an agent that ends by itself ends 76.
+#[test]
+fn a_watch_reports_exiting_with_the_code_before_a_controlled_end() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    std::env::set_var("SOT_RUNTIME_DIR", runtime.path());
+    let dir = tempfile::tempdir().unwrap();
+
+    // A stop, on another connection: 0.
+    let state_dir = dir.path().join("stopped");
+    let (_supervisor, path) = supervisor(runtime.path(), &state_dir, &[]);
+    let mut driver = dial(&path);
+    driver.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
+    let mut watch = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("the watch is served");
+    let mut manager = dial(&path);
+    let stopped = manager.call("row.stop", json!({}), Duration::from_secs(30)).expect("stop answers");
+    assert_eq!(stopped.payload["outcome"], "stopping", "{stopped:?}");
+    let seen = watch_until(&mut watch, Duration::from_secs(30), |s| matches!(s, WatchStep::Exiting(_) | WatchStep::Ended));
+    assert!(matches!(seen.last(), Some(WatchStep::Exiting(0))), "a stop is told as exit 0: {seen:?}");
+    assert!(matches!(watch.next(Duration::from_secs(10)), WatchStep::Ended), "the stream ends after the exit is told");
+
+    // The agent ends by itself: 76.
+    let state_dir = dir.path().join("agent-ends");
+    let (_supervisor, path) = supervisor_running(runtime.path(), &state_dir, &[], "echo agent-was-here; read line; exit 0");
+    let mut driver = dial(&path);
+    driver.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
+    let mut watch = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("the watch is served");
+    driver.send_input(b"bye\r").expect("the driver types");
+    let seen = watch_until(&mut watch, Duration::from_secs(30), |s| matches!(s, WatchStep::Exiting(_) | WatchStep::Ended));
+    assert!(matches!(seen.last(), Some(WatchStep::Exiting(76))), "an agent that ends by itself is told as exit 76: {seen:?}");
+    assert!(matches!(watch.next(Duration::from_secs(10)), WatchStep::Ended), "the stream ends after the exit is told");
+}
+
+/// A cancel that lands between the dial and the publication of the connection is never missed: the watch is refused, and
+/// so is every later one on that handle (cancellation is latched), while the row stays served to a fresh handle.
+#[test]
+fn a_cancelled_watch_never_publishes_a_connection() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    std::env::set_var("SOT_RUNTIME_DIR", runtime.path());
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let (_supervisor, path) = supervisor(runtime.path(), &state_dir, &[]);
+    let mut driver = dial(&path);
+    driver.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
+
+    let cancel = CancelHandle::new();
+    let racing = cancel.clone();
+    let result = supervisor_client::watch_with_test_hook(&state_dir, &cancel, move || racing.cancel());
+    assert!(result.is_err(), "a connect published after a cancel landed inside the race window must still refuse");
+    for _ in 0..3 {
+        assert!(supervisor_client::watch(&state_dir, &cancel).is_err(), "a cancelled handle refuses every later watch");
+    }
+    let fresh = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("the row still serves a watch");
+    assert_eq!(fresh.first().phase, SupervisorPhase::Ready);
 }

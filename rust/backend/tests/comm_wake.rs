@@ -845,3 +845,25 @@ async fn a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_bo
     assert_eq!(daemon_log(&row.env).matches("boot look waits").count(), 1, "the wait should be logged once");
     row.env.kill_daemon_bounded().await;
 }
+
+/// An owed Enter belongs to the run whose box held the line, whether or not the daemon restarted. The agent's line is
+/// typed and its Enter owed (the echo comes after the attempt gave up); the supervisor is then killed and the daemon's
+/// watchdog restarts it, and the new run's box is empty. The mail is still unread, so the next tick's attach, which
+/// names another run, drops the debt and wakes anew in the same tick: the stub logs `ping` within a tick and a hold,
+/// never after `REPEAT_AFTER`.
+#[tokio::test]
+async fn a_new_run_drops_the_owed_enter_and_wakes_in_the_same_tick() {
+    let _serial = SERIAL.lock().await;
+    let row = start_with("cwnr", None, false, &["echo-after=5"], &[SHORT_BACKOFF]).await;
+    append_mail(&row.env, 1);
+    wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
+    assert_eq!(pings(&row.log), 0, "the first run's stub was sent the line's Enter");
+    // The new run's stub reads its lines as usual, and its box is empty.
+    std::fs::remove_file(row.env._tmp.path().join("ctl").join("echo-after")).unwrap();
+    kill_supervisor(&row.env.state_root);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the new run was not woken within {WAKE_WITHIN:?}: its box owed no Enter");
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 1, "one wake for one batch");
+    assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
+    row.env.kill_daemon_bounded().await;
+}
