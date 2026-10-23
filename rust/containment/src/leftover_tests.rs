@@ -64,13 +64,14 @@ impl Leftover {
         }
     }
 
-    /// Open the process as an identity while it is alive. Only `ESRCH` means it is already gone (seen gone); any other
+    /// Open the process as an identity while it is alive. Only `ESRCH` and `EINVAL` mean it is already gone (seen gone); any other
     /// refusal is no observation, and the test fails rather than read it as the process's end.
     #[cfg(target_os = "linux")]
     fn open_identity(&self, pid: i32) {
         match crate::watched::Watched::try_open(pid) {
             Ok(identity) => *self.identity.borrow_mut() = Some(identity),
-            Err(e) if e.raw_os_error() == Some(libc::ESRCH) => self.gone_at_open.set(true),
+            // EINVAL: the pid number was reused by a thread of another process, and a live process is its own group leader.
+            Err(e) if matches!(e.raw_os_error(), Some(libc::ESRCH | libc::EINVAL)) => self.gone_at_open.set(true),
             Err(e) => panic!("cannot observe pid {pid}: {e}"),
         }
     }
