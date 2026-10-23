@@ -1,9 +1,9 @@
 //! The capsule: one process babysitting one producer, the leg (`sot-capsule run`). The producer's output feeds a live
-//! `vt100_ctt` parser that every attach checkpoints from; the leg keeps no record of the terminal, only the screen
-//! file (`screen.rs`) and the small `ended` file (`ended.rs`). Generic over [`crate::capsule::producer::Producer`]:
-//! the writer loop below, with the output budget, the `AttachProto` service path and `ShutdownGuard`, is
-//! platform-neutral and drives whatever producer the caller names: `producer/conpty/producer.rs`'s `ConptyProducer`
-//! (Windows) and `producer/pty/`'s `PtyProducer` (Unix).
+//! `vt100_ctt` parser that the row socket's attaches checkpoint from; the leg keeps no record of the terminal, only the
+//! screen file (`screen.rs`) and the small `ended` file (`ended.rs`). Generic over
+//! [`crate::capsule::producer::Producer`]: the writer loop below, with the output budget and the row socket's
+//! requests, is platform-neutral and drives whatever producer the caller names: `producer/conpty/producer.rs`'s
+//! `ConptyProducer` (Windows) and `producer/pty/`'s `PtyProducer` (Unix).
 //!
 //! - **Teardown is a phase of the ordered loop, not a pause in it.** The reap poll keeps servicing the output channel
 //!   (publishing output, answering the ConPTY host handshake) while it polls; `close_pty()` runs on a dedicated
@@ -16,24 +16,17 @@
 //! - **Exit status is raw and unsigned end to end** (`ExitSummary`, `ended`): a high-bit NTSTATUS code stays a `u32`.
 //! - **A read error is never folded into a clean end.** The reader thread sends one terminal event carrying a real
 //!   `Result`; before `close_pty()` it is an anomaly that only the producer's own exit explains (`READER_END_EXIT_GRACE`).
-//! - **`run` owns no stdin.** It takes the caller's `commands` channel and the wire's events from the transport; once
-//!   the main loop is left for teardown, `commands` is never read again.
+//! - **`run` owns no stdin.** It takes the caller's `commands` channel; once the main loop is left for teardown,
+//!   `commands` is never read again.
 //!
-//! The pipe protocol runs through this loop: transport events go through [`crate::lane::attach_proto::AttachProto`],
-//! which owns the connection, role, lockstep, pen and keepalive state; the loop executes the actions it returns and
-//! feeds events back. Output is published to subscribers as it arrives, and a ground boundary promotes a pending attach.
+//! The row socket runs through this loop (`crate::row`): the loop feeds the run's `RowRun` every committed chunk and
+//! serves its requests (a waiting attach at a parser ground state, typed input, a resize) every pass.
 
-use crate::lane::attach_proto::{
-    Action as AttachAction, AttachProto, ConnId, InputOutcome, MgmtStatus, SentMarker,
-};
 use crate::capsule::producer::{ExitStatus, Producer};
 use crate::capsule::producer::host_handshake::{self, HostHandshake};
-// The shared-deadline poll-join primitive and the pinned aggregate bound `lane/pipe_win/` uses for its own worker
-// joins: one mechanism, one constant.
-use crate::lane::transport::{join_within, Transport, TransportEvent, TEARDOWN_AGGREGATE_DEADLINE};
-use crate::lane::wire::{self, Survival};
+// The shared-deadline poll-join primitive and the pinned aggregate bound the loop's own worker joins use.
+use crate::lane::transport::{join_within, TEARDOWN_AGGREGATE_DEADLINE};
 use crate::{Error, Result};
-use std::collections::{HashMap, VecDeque};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -92,17 +85,6 @@ const MAX_ROWS: u16 = 256;
 /// same way.
 pub const CAPSULE_SCROLLBACK_ROWS: usize = 200;
 
-/// The oldest checkpoint format version this build still writes on
-/// request (ADR 0041 "attach proto v2 bound to checkpoint v2") -- matches
-/// the vt100 fork's own `checkpoint::MIN_READABLE_VERSION` (`pub(crate)`
-/// there, unreachable from here, duplicated the same way `MIN_ROWS`/
-/// `MAX_COLS` above already are). `BeginCheckpoint`'s handling below
-/// requests this explicitly for a connection that negotiated
-/// `wire::ATTACH_PROTO_V1` -- an old client's own vt100 fork build
-/// refuses anything newer outright.
-const LEGACY_CHECKPOINT_VERSION: u16 = 1;
-
-
 /// Bounded wait for the containment job to reap every in-job process after
 /// `TerminateJobObject` (teardown Phase A). Generous because it covers an
 /// entire process TREE under load, not a single wait; a real failure to
@@ -132,27 +114,9 @@ const READER_END_EXIT_GRACE: Duration = Duration::from_secs(2);
 const TEARDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const TEARDOWN_DRAIN_POLL: Duration = Duration::from_millis(200);
 
-/// ADR 0041 bounds table ("ack grace", role "a final-poll request still
-/// gets its ack") / EndRun state machine item 4: a mgmt `shutdown` accepted
-/// in teardown's own FINAL service poll (the one Phase B runs the instant
-/// EOF ends the drain — see that call site's own doc) has its `ShutdownAck`
-/// queued but not yet reported physically written by the time the drain
-/// loop itself is done. This capsule's transport must not disappear out
-/// from under that unconfirmed ack — U1a defers the pipe's own teardown by
-/// up to this long, polling for the completion, before proceeding.
-const SHUTDOWN_ACK_GRACE: Duration = Duration::from_secs(2);
-/// Poll interval while waiting out [`SHUTDOWN_ACK_GRACE`] — no output
-/// channel to block on at this point (Phase B's own drain already reached
-/// reader EOF), so this is a plain sleep between non-blocking
-/// `Transport::try_recv_event` drains, the same granularity as
-/// [`TEARDOWN_REAP_POLL`].
-const SHUTDOWN_ACK_GRACE_POLL: Duration = Duration::from_millis(20);
-
 pub struct CapsuleConfig {
     /// The leg's folder (`<state_dir>/voyages/<id>/`): the fence and the `ended` file.
     pub voyage_root: PathBuf,
-    /// Names the leg's lane (`voyage-<id>`).
-    pub voyage_id: String,
     /// Where the leg keeps its screen (`<state_dir>/screen`); `None` keeps none.
     pub screen_path: Option<PathBuf>,
     /// argv[0] is the program; must be non-empty (`Producer::spawn`'s own
@@ -162,10 +126,6 @@ pub struct CapsuleConfig {
     /// a later resize is.
     pub cols: u16,
     pub rows: u16,
-    /// Supplied by the SPAWNER, never inferred (ADR 0041 decision 11: the
-    /// breakaway attempt is the real source). Transported verbatim in mgmt
-    /// `status`.
-    pub survival: Survival,
     /// What the run tells its owner while it lives (`RunSignals`); `None` for a caller that asks nothing.
     pub signals: Option<Arc<RunSignals>>,
 }
@@ -209,24 +169,13 @@ impl RunSignals {
     }
 }
 
-/// The caller-owned command surface `run` services, alongside the wire
-/// protocol. Step 5 DELETES this channel's raw `Input`/`Resize` variants
-/// (ADR 0041 spec gate): the wire lane replaces both — real input and
-/// resize now arrive as `AttachClient::Input`/`Resize` frames, handled
-/// through `AttachProto` and `execute_actions`'s `ForwardInput`/
-/// `ApplyResize` arms, never through this channel. `Kill` stays: it is the
-/// step-4-visible primitive behind `EndRun` (ADR 0041 Lifecycle) that BOTH
-/// the mgmt lane's `shutdown` (via `Action::Shutdown`) and a caller that
-/// bypasses the pipe entirely (the bin harness, a supervisor) can drive.
-/// `run` owns none of the sources that feed this channel — a caller is
-/// responsible for keeping the `Sender` alive for as long as it wants
-/// commands serviced.
+/// The caller-owned command surface `run` services. `Kill` is the primitive behind `EndRun` (ADR 0041 Lifecycle): a
+/// supervisor drives it, and it is the only way a run's end is requested. `run` owns none of the sources that feed this
+/// channel: a caller keeps the `Sender` alive for as long as it wants commands serviced.
 #[derive(Debug, Clone)]
 pub enum Command {
     /// An EXTERNALLY REQUESTED end. Never inferred from an exit code, a
-    /// channel disconnect, or anything else — only an explicit `Kill` (or
-    /// the wire's `Action::Shutdown`, which drives the identical
-    /// `ExitKind::Requested` path).
+    /// channel disconnect, or anything else — only an explicit `Kill`.
     Kill,
     /// The run ends because its supervisor is stopping, not because anyone ended the run: `ended` records no request,
     /// so a `--resume` of the row starts the agent again.
@@ -243,14 +192,8 @@ pub enum ExitKind {
     /// The producer exited on its own; this run's own program ending is
     /// what closed it — never treated as a request.
     ProducerExited,
-    /// `Command::Kill` was received, or a mgmt `shutdown` committed
-    /// the durable EndRun latch. The latch starts teardown without waiting
-    /// for physical ack completion; the ack grace bounds the wait for a
-    /// pending shutdown acknowledgement (ADR 0041 EndRun).
+    /// `Command::Kill` was received (the durable EndRun latch is set), or `Command::Stop`.
     Requested,
-    /// The attach lane's transport failed for good: nobody asked for this end, and the supervisor treats it as its own
-    /// failure. `ended` records no request.
-    TransportFailed,
     /// `P::spawn` failed, or the initial geometry was outside the
     /// budget — nothing ever ran. `producer_dead {spawn_failed:true}` was
     /// still committed and the segment still sealed.
@@ -290,22 +233,15 @@ enum ReaderEvent {
     /// error. Sent EXACTLY once, always, as the last thing this thread
     /// ever sends.
     Done(std::result::Result<(), std::io::Error>),
-    /// Switch-latency Phase 1 (c): a transport event (an accepted
-    /// connection, a readable frame, a completed send) may be waiting —
-    /// carries no data itself. Sent by `Transport::set_wake`'s own
-    /// callback (`run`'s own `wake_pending`-gated closure), NEVER by the
-    /// reader thread. Purely a wake: every `output_rx.recv_timeout` site
-    /// that matches this just clears `wake_pending` and loops back to its
-    /// own top, where `service_transport_events`/
-    /// `service_transport_events_teardown` (already run there,
-    /// unconditionally, every iteration) is what actually drains and
-    /// processes whatever the transport queued.
-    TransportActivity,
-    /// the reader thread's `tx` is no longer the
-    /// channel's only real sender — `Transport::set_wake`'s callback holds
-    /// a clone too (above) — so a bare channel disconnect can no longer be
+    /// A request on the row socket may be waiting: carries no data itself. Sent by the row's wake callback; every
+    /// `output_rx.recv_timeout` site that matches this just loops back to its own top, where the row's requests are
+    /// served.
+    Wake,
+    /// the reader thread's `tx` is not the
+    /// channel's only real sender — the row's wake callback holds
+    /// a clone too — so a bare channel disconnect cannot be
     /// trusted to mean "the reader thread dropped its sender". This event
-    /// restores that guarantee explicitly: `ReaderGoneGuard`, constructed
+    /// states it explicitly: `ReaderGoneGuard`, constructed
     /// as the reader thread's closure's first local, sends exactly this on
     /// every exit from that closure — the two designed `Done`-then-return
     /// exits above AND an unwind (a panic partway through a `read()` or a
@@ -317,83 +253,4 @@ enum ReaderEvent {
     /// said nothing" condition, just reached through an explicit send
     /// instead of a channel with zero senders left.
     ReaderGone,
-}
-
-
-/// This process's mgmt `status` fields (ADR 0041 attach protocol): pid and
-/// process CREATION TIME as the raw FILETIME bits — computed ONCE, here,
-/// because `attach_proto` must never make an OS call itself. `survival` is
-/// the spawner-supplied value (decision 11), never derived from
-/// `IsProcessInJob`.
-///
-/// Finding 14: `GetProcessTimes`' return value is CHECKED, not ignored — a
-/// failure becomes a loud `Err`, never a silent `created: 0`. A synthesized
-/// zero would be indistinguishable, to step 6's adoption identity
-/// challenge, from a process genuinely created at the Windows epoch; the
-/// challenge compares this value EXACTLY against `GetProcessTimes` called a
-/// second time (via `OpenProcess`) on a candidate handle, so a wrong-but
-/// -plausible value here is worse than an explicit failure the caller can
-/// act on.
-///
-/// Per-platform sibling (ADR 0043 decision 16: "per-platform siblings,
-/// not knobs") — the Linux sibling just below is
-/// `(getpid, challenge_unix::self_start_ticks())` and the macOS one
-/// `(getpid, challenge_macos::self_pidversion())`.
-#[cfg(windows)]
-pub(crate) fn self_status(survival: Survival) -> Result<MgmtStatus> {
-    use windows_sys::Win32::Foundation::FILETIME;
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
-    // SAFETY: `GetCurrentProcess` returns a pseudo-handle needing no close;
-    // the four FILETIME out-params are plain, stack-local structs, valid to
-    // write into regardless of the call's outcome.
-    let (pid, created) = unsafe {
-        let pid = GetCurrentProcessId();
-        let mut creation: FILETIME = std::mem::zeroed();
-        let mut exit: FILETIME = std::mem::zeroed();
-        let mut kernel: FILETIME = std::mem::zeroed();
-        let mut user: FILETIME = std::mem::zeroed();
-        if GetProcessTimes(GetCurrentProcess(), &mut creation, &mut exit, &mut kernel, &mut user) == 0 {
-            return Err(Error::State(format!(
-                "capsule_win: GetProcessTimes on the current process failed: {:?}",
-                std::io::Error::last_os_error()
-            )));
-        }
-        let created = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
-        (pid, created)
-    };
-    Ok(MgmtStatus { pid, created, survival })
-}
-
-/// ADR 0043 decision 16: the Linux arm — `getpid()` plus
-/// `challenge_unix::self_start_ticks()`, the SAME start-time identity the
-/// Linux socket challenge (`challenge_unix.rs`) reports for a supervisor's
-/// own adoption proof, so a capsule's `status` reply and its later
-/// adoption challenge, if any, describe the identical process the
-/// identical way.
-#[cfg(target_os = "linux")]
-pub(crate) fn self_status(survival: Survival) -> Result<MgmtStatus> {
-    let pid = std::process::id();
-    let created = sot_platform::identity::challenge_unix::self_start_ticks()
-        .map_err(|e| Error::State(format!("capsule: self_start_ticks failed: {e}")))?;
-    Ok(MgmtStatus { pid, created, survival })
-}
-
-/// ADR 0043 decision 16, the macOS arm — `getpid()` plus
-/// `challenge_macos::self_pidversion()`. The UNIT differs from Linux's
-/// and that is the whole point: every platform's `created` is "whatever
-/// this OS's own `status_ok.created` carries, compared for equality
-/// only" (`client::PeerIdentity::created`), and on macOS that unit is
-/// the `pidversion` the peer's audit token carries — NOT a start time.
-/// `challenge_macos`'s step 5 compares a reply's `created` against the
-/// pidversion it read out of the token, so a start time reported here
-/// would make every macOS adoption challenge `Foreign`. `self_pidversion`
-/// exists for exactly this call site: it is the self-facing twin of the
-/// value a client reads off its own socket, the same way
-/// `self_start_ticks` is on Linux.
-#[cfg(target_os = "macos")]
-pub(crate) fn self_status(survival: Survival) -> Result<MgmtStatus> {
-    let pid = std::process::id();
-    let created = sot_platform::identity::challenge_macos::self_pidversion()
-        .map_err(|e| Error::State(format!("capsule: self_pidversion failed: {e}")))?;
-    Ok(MgmtStatus { pid, created: u64::from(created), survival })
 }

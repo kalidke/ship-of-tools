@@ -162,7 +162,7 @@ impl Drop for Slot {
 /// Refusal texts; the server names each by its code.
 pub(super) const BUSY: &str = "busy: the row's request queue is full";
 pub(super) const UNKNOWN: &str = "delivery unknown: the terminal did not answer in time";
-pub(super) const RUN_ENDED: &str = "run ended: the input was sent to an earlier run";
+pub(super) const RUN_ENDED: &str = "run ended: the input was sent to a run that is over";
 
 pub(super) fn code_of(msg: &str) -> &'static str {
     if msg.starts_with("busy") {
@@ -192,6 +192,8 @@ struct Inner {
     /// Attached connections that wait for a parser ground state to be sent the screen.
     pending: Vec<ConnId>,
     requests: VecDeque<RowRequest>,
+    /// The run has ended: no request is admitted until the next run starts.
+    ended: bool,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -217,6 +219,7 @@ impl RowRun {
                 driver: None,
                 pending: Vec::new(),
                 requests: VecDeque::new(),
+                ended: false,
                 wake: None,
             }),
         })
@@ -252,7 +255,25 @@ impl RowRun {
     pub fn set_run(&self, run: impl Into<String>) {
         let mut inner = self.lock();
         inner.run = run.into();
+        inner.ended = false;
         inner.answer_stale_input();
+    }
+
+    /// The run is over (the loop calls it the moment the main loop is left): no request is admitted until the next run
+    /// starts, and every one still queued is answered `run ended` now, before the answer path closes.
+    pub fn end_run(&self) {
+        let mut inner = self.lock();
+        inner.ended = true;
+        for request in inner.requests.drain(..) {
+            match request {
+                RowRequest::Input { reply, .. } => {
+                    let _ = reply.send(Err(RUN_ENDED.into()));
+                }
+                RowRequest::Resize { reply, .. } => {
+                    let _ = reply.send(Err(RUN_ENDED.into()));
+                }
+            }
+        }
     }
 
     /// What the loop calls to be woken when a request arrives.
@@ -477,6 +498,9 @@ impl Inner {
 
     /// Queues a request for the loop, refused as busy when the queue is full.
     fn request(&mut self, req: RowRequest) -> Result<(), String> {
+        if self.ended {
+            return Err(RUN_ENDED.into());
+        }
         if self.requests.len() >= REQUEST_QUEUE {
             return Err(BUSY.into());
         }
@@ -547,8 +571,7 @@ impl Inner {
 
 /// This process's `(pid, created)`, the identity a hello answers with.
 pub fn self_identity() -> crate::Result<(u32, u64)> {
-    let status = crate::capsule::self_status(crate::lane::wire::Survival::Normal)?;
-    Ok((status.pid, status.created))
+    crate::supervisor::self_pid_and_created().map_err(crate::Error::Io)
 }
 
 impl std::fmt::Debug for RowRun {

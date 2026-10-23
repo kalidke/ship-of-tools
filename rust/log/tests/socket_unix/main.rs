@@ -33,7 +33,7 @@
 //! process, per above) never race another test's own env var mutation.
 
 use sot_platform::host::state_dir::current_uid;
-use sot_log::lane::attach_proto::ConnId;
+use sot_log::lane::transport::ConnId;
 #[cfg(target_os = "linux")]
 use sot_log::lane::socket_unix::connect_voyage_socket;
 use sot_log::lane::socket_unix::{voyage_socket_path, SocketClient, SocketServer};

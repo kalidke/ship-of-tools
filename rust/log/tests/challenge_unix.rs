@@ -18,7 +18,7 @@ use sot_platform::identity::challenge_unix::{
     SocketChallengeable,
 };
 use sot_log::lane::exchange::VoyageMgmtExchange;
-use sot_log::lane::attach_proto::ConnId;
+use sot_log::lane::transport::ConnId;
 use sot_log::lane::socket_unix::{
     connect_voyage_socket, voyage_socket_path, SocketClient, SocketServer,
 };

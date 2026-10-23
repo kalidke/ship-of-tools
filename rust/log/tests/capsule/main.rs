@@ -1,61 +1,20 @@
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
-//! Integration tests for the capsule runtime (`src/capsule/`, ADR 0041
-//! step 4; ADR 0043 "Decisions for LU2": ungated in LU2b once a real Unix
-//! producer existed to drive it). Lives
-//! in `tests/` for the same reason `tests/conpty.rs` does: one of these
-//! (the flood test) needs `env!("CARGO_BIN_EXE_...")` to find its helper
-//! binary, which Cargo only wires up for integration test binaries, and
-//! the rest are kept here too for one home and one
-//! `cargo test -p sot-log --test capsule` filter.
+//! Integration tests for the capsule runtime (`src/capsule/`): a run to its end, its `ended` and screen files, and
+//! what a viewer on the row socket sees of it. Lives in `tests/` for the same reason `tests/conpty.rs` does: some of
+//! these need `env!("CARGO_BIN_EXE_...")` to find a helper binary, which Cargo only wires up for integration test
+//! binaries, and the rest are kept here too for one home and one `cargo test -p sot-log --test capsule` filter.
 //!
-//! Three named targets, not bare `unix`/unconditional: `capsule::run`
-//! needs two things a platform either has or does not — a `self_status`
-//! (ADR 0043 decision 16) and a store rename arm — and on any Unix that
-//! is neither Linux nor macOS both still fail closed with
-//! `Error::Unsupported`, so a real `PtyProducer`-driven `capsule::run`
-//! call would panic there regardless of which test called it. Both of
-//! the reasons this gate ONCE excluded macOS are gone: M1 gave `fsutil`
-//! its `renamex_np` arm, and `self_status` has a macOS arm over the
-//! `pidversion` the audit token carries. The same two facts widened
-//! `capsule/`'s own internal `#[cfg(all(test, ...))] mod tests` gate,
-//! which was gated for the identical reason and still is.
+//! Nothing in this file reads `/proc`, opens a pidfd or expects PDEATHSIG: the Linux-kernel-specific mechanism lives in
+//! `tests/supervisor/`, which keeps its own gate. `unix_only` below is `cfg(unix)` because what it exercises (a real
+//! spawn failure, a real signal death, pty geometry) is Unix mechanism, not Linux mechanism.
 //!
-//! Nothing in this file reads `/proc`, opens a pidfd or expects
-//! PDEATHSIG: the Linux-kernel-specific mechanism lives in
-//! `tests/supervisor/`, which keeps its own gate. `unix_only` below is
-//! `cfg(unix)` because what it exercises — a real spawn failure, a real
-//! signal death, pty geometry — is Unix mechanism, not Linux mechanism,
-//! and it now runs on macOS too.
-//!
-//! The host-handshake byte state machine's own unit tests
-//! (`host_handshake.rs`) are pure and run everywhere already; what these
-//! tests add is proof the WIRING is correct on a real ConPTY — that a real
-//! DA1 answer becomes a well-formed, exactly-once `request`/`response`/
-//! `outcome` triple, that a real resize commits a real `outcome` and calls
-//! `ResizePseudoConsole` exactly when it should, and that a real spawn
-//! failure and a real requested kill both seal a verifiable voyage with
-//! `producer_dead` as the last frame in it.
-//!
-//! Discharge round (Codex review, finding 7): the previous version's flood
-//! test asserted byte-count equality across a lossy transform boundary
-//! (`hOutput` is conhost's own rendered VT stream, not raw child stdout)
-//! and ran `run` on the test's own thread, so a teardown deadlock consumed
-//! the whole CI job's timeout instead of failing locally; the handshake
-//! test checked membership, not a bijection; the resize test could pass
-//! even if every outcome targeted the same request or `ResizePseudoConsole`
-//! were never actually gated. All four are fixed below.
+//! A viewer is a `RowClient` on the row socket the run feeds (`rowside`), the way every shipped viewer attaches.
 
-#[path = "../support/transports.rs"]
-mod transports;
-
-use sot_log::lane::attach_proto::ConnId;
-use sot_log::capsule::{self, CapsuleConfig, Command, Ended, ExitKind};
 use sot_log::capsule::producer::ExitStatus;
-use sot_log::lane::wire::{self, Survival};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use sot_log::capsule::{self, CapsuleConfig, Command, Ended, ExitKind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
-use transports::{no_transport, TestTransport};
 
 /// The producer under test, selected in ONE place (ADR 0043 "Decisions for
 /// LU2"): every `capsule::run` call in this file names `P`, never a
@@ -78,16 +37,14 @@ mod producer_under_test {
     #[cfg(unix)]
     pub const SHELL_ARGV: &str = "/bin/sh";
 
-    /// The helper binary the flood/fidelity tests need —
-    /// `env!("CARGO_BIN_EXE_...")` only resolves inside an integration
-    /// test binary, which is why this lives here rather than in the
-    /// helper's own `src/bin/*.rs`.
+    /// The helper binary the flood test needs: `env!("CARGO_BIN_EXE_...")` only resolves inside an integration test
+    /// binary, which is why this lives here rather than in the helper's own `src/bin/*.rs`.
     #[cfg(windows)]
     pub const HELPER_EXE: &str = env!("CARGO_BIN_EXE_sot-conpty-helper");
-    #[cfg(unix)]
-    pub const HELPER_EXE: &str = env!("CARGO_BIN_EXE_sot-pty-helper");
 }
-use producer_under_test::{HELPER_EXE, SHELL_ARGV, P};
+#[cfg(windows)]
+use producer_under_test::HELPER_EXE;
+use producer_under_test::{SHELL_ARGV, P};
 
 /// A one-shot shell command's own argv, per platform — `cmd.exe /d /c
 /// <cmd>` on Windows, `/bin/sh -c <cmd>` on Unix — kept in ONE place so a
@@ -124,171 +81,17 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows: u16) -> CapsuleConfig {
     CapsuleConfig {
         voyage_root: dir.join(name),
-        voyage_id: name.to_string(),
         screen_path: Some(dir.join(format!("{name}.screen"))),
         argv,
         cols,
         rows,
-        survival: Survival::Normal,
         signals: None,
-    }
-}
-
-/// Encode helpers for the attach lane's client frames and the mgmt lane's
-/// requests — thin wrappers so tests read as protocol steps, not byte
-/// plumbing.
-mod frame {
-    use super::wire;
-
-    /// The MODERN client's own default (Codex round on #194): hellos at
-    /// the current attach proto, which is what every test in this file
-    /// that does not care about version negotiation itself should get,
-    /// so a checkpoint it collects carries a scrollback ring like a real
-    /// current client's would. [`hello_at`] is the explicit-version
-    /// escape hatch for tests that DO care (e.g. an old client's v1).
-    pub fn hello() -> Vec<u8> {
-        hello_at(wire::ATTACH_PROTO_V2)
-    }
-    pub fn hello_at(proto: u32) -> Vec<u8> {
-        wire::encode_attach_client(&wire::AttachClient::Hello { proto }).unwrap()
-    }
-    pub fn attach(controller_id: &str) -> Vec<u8> {
-        wire::encode_attach_client(&wire::AttachClient::Attach { controller_id: controller_id.into() }).unwrap()
-    }
-    pub fn take(controller_id: &str) -> Vec<u8> {
-        wire::encode_attach_client(&wire::AttachClient::Take { controller_id: controller_id.into() }).unwrap()
-    }
-    pub fn input(controller_id: &str, take_epoch: u64, idem_key: [u8; 16], payload: &[u8]) -> Vec<u8> {
-        wire::encode_attach_client(&wire::AttachClient::Input {
-            controller_id: controller_id.into(),
-            take_epoch,
-            idem_key,
-            payload: payload.to_vec(),
-        })
-        .unwrap()
-    }
-    pub fn resize(cols: u16, rows: u16) -> Vec<u8> {
-        wire::encode_attach_client(&wire::AttachClient::Resize { cols, rows }).unwrap()
-    }
-    pub fn mgmt_probe() -> Vec<u8> {
-        wire::encode_mgmt_request(&wire::MgmtRequest::Probe).unwrap()
-    }
-    pub fn mgmt_status() -> Vec<u8> {
-        wire::encode_mgmt_request(&wire::MgmtRequest::Status).unwrap()
-    }
-    pub fn mgmt_shutdown(reason: &str) -> Vec<u8> {
-        wire::encode_mgmt_request(&wire::MgmtRequest::Shutdown { reason: reason.into() }).unwrap()
-    }
-}
-
-/// Polls a `TestTransport`'s sent frames (cursor-based: never re-scans
-/// already-seen entries) for one matching `pred`, bounded — a protocol
-/// reply is asynchronous relative to the test's own thread, so this is the
-/// same "poll with a bound, never a fixed sleep" discipline the existing
-/// flood/resize tests already use for `run`'s own completion.
-struct FrameWatcher<'a> {
-    transport: &'a TestTransport,
-    /// One cursor PER CONNECTION into the shared send log. A single
-    /// shared cursor was the first version of this fix and regressed
-    /// both windows legs deterministically: a wait for conn B that
-    /// matches at log position N would advance the shared cursor past
-    /// conn A's frames interleaved before N, so a later wait for A
-    /// could never see them — the pre-fix full-rescan was
-    /// order-tolerant, a single cursor is not. Per-connection cursors
-    /// keep the O(new bytes) poll cost while preserving the rescan's
-    /// semantics for interleaved streams.
-    next_idx: std::collections::HashMap<ConnId, usize>,
-}
-
-impl<'a> FrameWatcher<'a> {
-    fn new(transport: &'a TestTransport) -> Self {
-        Self { transport, next_idx: std::collections::HashMap::new() }
-    }
-
-    /// `label` names WHICH expectation this call is waiting for, purely
-    /// for the timeout panic -- every wait used to say the same generic
-    /// "timed out waiting for an expected frame on conn N" regardless of
-    /// which of the dozens of call sites in this file it was, which cost
-    /// real time isolating the ground-gate bug (every failure looked
-    /// identical until the CI timeline was cross-referenced by hand).
-    fn wait_for<T>(
-        &mut self,
-        label: &'static str,
-        conn: ConnId,
-        timeout: Duration,
-        mut pred: impl FnMut(&wire::DecodedFrame) -> Option<T>,
-    ) -> T {
-        let deadline = Instant::now() + timeout;
-        loop {
-            // `sent_frames_from`, not `sent_frames`: this is a hot 10ms
-            // poll loop, and a full clone on every iteration turns into
-            // O(total accumulated bytes) PER POLL once a connection stays
-            // subscribed through a large volume (a flood's own driver,
-            // once correctly exempt from queue-overflow eviction) --
-            // exactly what turned this wait into a real CI timeout despite
-            // the underlying protocol machine being correct (PR #139
-            // discharge round; see `sent_frames_from`'s own doc).
-            let start = *self.next_idx.get(&conn).unwrap_or(&0);
-            let new_frames = self.transport.sent_frames_from(start);
-            let mut pos = start;
-            for (c, bytes) in &new_frames {
-                pos += 1;
-                if *c != conn {
-                    continue;
-                }
-                let mut s = wire::FrameSplitter::new();
-                let (decoded, err) = s.feed(bytes);
-                assert_eq!(err, None, "unexpected wire error in a self-encoded frame");
-                for f in &decoded {
-                    if let Some(v) = pred(f) {
-                        // Consume up to and including the matched entry
-                        // for THIS connection only; other connections'
-                        // cursors are untouched, so their interleaved
-                        // earlier frames stay findable.
-                        self.next_idx.insert(conn, pos);
-                        return v;
-                    }
-                }
-            }
-            self.next_idx.insert(conn, pos);
-            if Instant::now() >= deadline {
-                panic!("timed out waiting for {label:?} on conn {conn}");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    /// Collects a full checkpoint transfer's bytes for `conn` (one or more
-    /// `checkpoint_chunk` frames, concatenated through `last`). `label`
-    /// passes straight through to `wait_for`'s own timeout message.
-    fn collect_checkpoint(&mut self, label: &'static str, conn: ConnId, timeout: Duration) -> Vec<u8> {
-        let deadline = Instant::now() + timeout;
-        let mut out = Vec::new();
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
-            let (last, bytes) = self.wait_for(label, conn, remaining, |f| {
-                if let wire::DecodedFrame::AttachServer(wire::AttachServer::CheckpointChunk { last, bytes }) = f {
-                    Some((*last, bytes.clone()))
-                } else {
-                    None
-                }
-            });
-            out.extend(bytes);
-            if last {
-                return out;
-            }
-        }
     }
 }
 
 /// The `ended` file the leg left in the folder at `root`.
 fn ended_of(root: &std::path::Path) -> Ended {
     capsule::read_ended(root).unwrap().expect("the leg left no ended file")
-}
-
-/// Whether the leg's `ended` file says an end was asked for (written when the request is processed, while the leg runs).
-fn end_asked_for(root: &std::path::Path) -> bool {
-    capsule::read_ended(root).ok().flatten().is_some_and(|e| e.requested)
 }
 
 /// What the screen file the leg left for `name` shows, as text: the saved screen restored into a parser, rows joined
@@ -333,8 +136,7 @@ fn e2e_runs_and_leaves_its_ending_and_its_screen() {
     let cfg = config(dir.path(), "e2e1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let mut transport = no_transport();
-    let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+    let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
     assert_eq!(summary.exit_code, Some(ExitStatus::Code(0)));
 
@@ -356,8 +158,7 @@ fn spawn_failure_from_out_of_budget_initial_geometry() {
     let cfg = config(dir.path(), "fail2", argv, 1, 25); // cols=1 < the 2-column floor
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let mut transport = no_transport();
-    let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+    let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
     let ended = ended_of(&root);
     assert!(ended.finished && !ended.requested);
@@ -374,10 +175,7 @@ fn requested_kill_tears_down_and_says_so() {
     let cfg = config(dir.path(), "kill1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (tx, rx) = mpsc::channel();
-    let handle = std::thread::spawn(move || {
-        let mut transport = no_transport();
-        capsule::run::<P>(cfg, rx, &mut transport)
-    });
+    let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
     std::thread::sleep(Duration::from_millis(500));
     tx.send(Command::Kill).unwrap();
     let summary = wait_for_join(handle, Duration::from_secs(30))
@@ -399,17 +197,15 @@ fn requested_kill_tears_down_and_says_so() {
     }
 }
 
-mod attach;
-mod shutdown;
-mod v3_order;
 mod output_end;
+mod row_run;
+mod rowside;
 
 // ---------------------------------------------------------------------
-// ADR 0043 "Decisions for LU2": the five tests that exercise real
+// ADR 0043 "Decisions for LU2": the tests that exercise real
 // Windows-only mechanism (ConPTY spawn failure/geometry, ResizePseudoConsole,
-// the output budget's own blocking bound under a real flood, and a
-// reader-chunk-boundary replay) rather than the portable
-// writer-loop/AttachProto contract every other test in this file proves.
+// and the output budget's own blocking bound under a real flood) rather than the portable
+// writer-loop contract every other test in this file proves.
 // Grouped under ONE module (LU2b, per the plan this module's own doc
 // already stated): this module gains #[cfg(windows)], in place of the
 // file-level #![cfg(windows)] the file dropped.
@@ -432,27 +228,23 @@ mod unix_only;
 mod no_record;
 mod screen_io;
 
-/// A terminal failure of the attach lane's transport is not an end anyone asked for: `run` does not report `Requested`,
-/// and `ended` records no request, so the supervisor treats it as its own failure (terminal) and a resume starts again.
+/// A stop is not an end of the run: `run` returns `Requested`, and `ended` records no request, so a resume of the row
+/// starts the agent again.
 #[test]
-fn a_transport_that_fails_for_good_is_not_a_requested_end() {
+fn a_stop_ends_the_run_without_asking_for_an_end() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let cfg = config(dir.path(), "fatal1", vec![SHELL_ARGV.to_string()], 80, 25);
+    let cfg = config(dir.path(), "stop1", vec![SHELL_ARGV.to_string()], 80, 25);
     let root = cfg.voyage_root.clone();
-    let (_tx, rx) = mpsc::channel();
-    let transport = TestTransport::new();
-    let injector = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut transport = transport;
-        capsule::run::<P>(cfg, rx, &mut transport)
-    });
+    let (tx, rx) = mpsc::channel();
+    let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
     std::thread::sleep(Duration::from_millis(500));
-    injector.fatal("accept loop died");
+    tx.send(Command::Stop).unwrap();
     let summary = wait_for_join(handle, Duration::from_secs(30))
         .expect("run did not return within the teardown bound")
         .unwrap();
-    assert_ne!(summary.exit_kind, ExitKind::Requested, "nobody asked for this end");
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
     let ended = ended_of(&root);
-    assert!(ended.finished && !ended.requested, "{ended:?}");
+    assert!(ended.finished && !ended.requested, "a stop asks for no end: {ended:?}");
+    assert_eq!(ended.reason.as_deref(), Some("supervisor_stop"));
 }

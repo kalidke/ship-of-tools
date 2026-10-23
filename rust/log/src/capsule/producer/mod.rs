@@ -4,8 +4,8 @@
 //! process group on Unix (`capsule/producer/pty/`, LU2b). Parameterizing
 //! `capsule::run` over this trait is what lets ONE writer loop serve
 //! every platform (ADR 0043 "Decisions for LU2", decision 11): the
-//! output budget, the `AttachProto` service path, the screen file and
-//! `ShutdownGuard` are all platform-neutral and never touch this trait at
+//! output budget, the row socket's service path and the screen file
+//! are all platform-neutral and never touch this trait at
 //! all — only the verbs below do.
 //!
 //! **The EOF contract (decision 12) is universal, with no knob.** The

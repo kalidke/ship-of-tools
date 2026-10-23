@@ -260,7 +260,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | What may be armed into an install, and which pointer may apply onto it: strictly above `install.json`'s version for an automatic writer, a record of the install armed over | rule | distribution | `rust/updater/src/pending.rs` `arm`, `InstalledBuild`, `stale_reason`; `rust/backend/src/update.rs` `arm_refusal`, `apply_refusal`; `scripts/sot-apply.sh` `ptr_refusal`; `scripts/sot-apply.ps1` `Get-PointerRefusal` |
 | `topology.set` | op | topology | `rust/backend/src/topology/set.rs` `handle_topology_set` |
 | `topology.changed` | event, bus | topology | `rust/backend/src/topology/store.rs` `TopologyChanged`; `rust/backend/src/server/events.rs` `write_topology_changed` |
-| capsule lanes SOM0, SOA0 (v1-v3), SOSV | wire | capsule | `rust/log/src/lane/wire/mgmt.rs`; `rust/log/src/lane/wire/attach.rs`; `rust/log/src/lane/wire/supervisor.rs` |
+| capsule lanes SOM0, SOSV | wire | capsule | `rust/log/src/lane/wire/mgmt.rs`; `rust/log/src/lane/wire/supervisor.rs` |
 | supervisor-lane build id `SUPERVISOR_LANE_BUILD_ID` (stamp `SOT_LOG_BUILD_SHA`: full sha, `-dirty`; carried in the lane hello and `version.query`, never compared) | wire (lane) | capsule | `rust/log/build.rs`; `rust/platform/src/identity/exchange.rs`; `rust/log/src/attach_client/supervisor_client.rs` `SUPERVISOR_LANE_BUILD_ID` |
 | sotd subcommand `session-socket-path` | CLI | topology | `rust/backend/src/main.rs` `main`; `rust/topology/src/endpoint.rs` `session_socket_path` |
 | sotd subcommand `log-path` | CLI | server | `rust/backend/src/main.rs` `main`; `rust/platform/src/host/state_dir.rs` `daemon_state_dir` |

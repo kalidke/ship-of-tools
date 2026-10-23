@@ -3,7 +3,7 @@
 //! connection is claimed (a stream shut down, or two I/O slots cancelled) and what follows a retirement (nothing, or an
 //! instance recycle).
 
-use super::attach_proto::ConnId;
+use super::transport::ConnId;
 use super::test_progress::Progress;
 use super::transport::{ClosedReason, Joined, LaneEvent, JOIN_POLL_INTERVAL};
 use std::sync::atomic::{AtomicBool, Ordering};

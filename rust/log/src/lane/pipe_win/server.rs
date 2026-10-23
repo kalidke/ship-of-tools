@@ -194,20 +194,6 @@ impl PipeServer {
         &self.events_rx
     }
 
-    /// Switch-latency Phase 1 (c): register `wake` to be pinged (see
-    /// [`notify_wake`]) after every event this server successfully queues
-    /// from here on — `platform_transport::PlatformTransport::bind` is the one
-    /// real caller, immediately after this server itself is bound, so
-    /// `capsule::run`'s own `output_rx.recv_timeout` wakes on real voyage-
-    /// pipe activity. `pub(crate)`: an implementation detail of the
-    /// bridge, not part of this server's own public transport contract
-    /// (`events`/`send`/`close`/...). Idempotent-once: a second call is a
-    /// silent no-op (`OnceLock::set`'s own contract) — this server has
-    /// exactly one bridge owner, which calls it at most once.
-    pub(crate) fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-        let _ = self.shared.activity_wake.set(wake);
-    }
-
     /// Queue `bytes` for `conn_id`, tagged with `marker` if the caller
     /// wants a [`LaneEvent::Sent`] once the OS write physically
     /// completes. `bytes` must be non-empty and no larger than a single

@@ -174,7 +174,7 @@ pub type PlatformEndpoint = crate::lane::socket_unix::SocketEndpoint;
 /// merely for testability, and a pure mapping over
 /// already-constructed `PeerAuthOutcome` values needs no real pipe --
 /// exactly the kind of test this crate's OTHER pure-logic modules
-/// (`attach_proto`, `wire`, `exchange`) already keep inline.
+/// (`wire`, `exchange`) already keep inline.
 #[cfg(test)]
 #[path = "client_tests.rs"]
 mod tests;

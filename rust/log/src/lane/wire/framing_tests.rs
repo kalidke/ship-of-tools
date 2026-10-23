@@ -1,4 +1,4 @@
-//! Framing tests: lane binding, caps, unknown tags, trailing bytes, negotiation, chunk arithmetic, the failed latch.
+//! Framing tests: lane binding, caps, unknown tags, trailing bytes, the failed latch.
 
 use super::support_tests::*;
 use super::*;
@@ -6,33 +6,17 @@ use super::*;
 // ---- lane binding ---------------------------------------------------
 
 #[test]
-fn attach_then_mgmt_is_a_lane_mismatch() {
-    let attach = encode_attach_client(&AttachClient::Hello { proto: 1 }).unwrap();
+fn mgmt_then_supervisor_is_a_lane_mismatch() {
     let mgmt = encode_mgmt_request(&MgmtRequest::Probe).unwrap();
-    let mut s = FrameSplitter::new();
-    feed_ok(&mut s, &attach);
-    let err = feed_err(&mut s, &mgmt);
-    assert_eq!(
-        err,
-        WireError::LaneMismatch {
-            latched: ATTACH_MAGIC,
-            got: MGMT_MAGIC
-        }
-    );
-}
-
-#[test]
-fn mgmt_then_attach_is_a_lane_mismatch() {
-    let mgmt = encode_mgmt_request(&MgmtRequest::Probe).unwrap();
-    let attach = encode_attach_client(&AttachClient::Hello { proto: 1 }).unwrap();
+    let supervisor = wrap(SUPERVISOR_MAGIC, vec![TAG_SV_REQ_STATUS]).unwrap();
     let mut s = FrameSplitter::new();
     feed_ok(&mut s, &mgmt);
-    let err = feed_err(&mut s, &attach);
+    let err = feed_err(&mut s, &supervisor);
     assert_eq!(
         err,
         WireError::LaneMismatch {
             latched: MGMT_MAGIC,
-            got: ATTACH_MAGIC
+            got: SUPERVISOR_MAGIC
         }
     );
 }
@@ -83,13 +67,6 @@ fn unknown_mgmt_tag_errors() {
 }
 
 #[test]
-fn unknown_attach_tag_errors() {
-    let wire = wrap(ATTACH_MAGIC, vec![0x50]).unwrap();
-    let mut s = FrameSplitter::new();
-    assert_eq!(feed_err(&mut s, &wire), WireError::UnknownTag(0x50));
-}
-
-#[test]
 fn trailing_bytes_after_a_fixed_body_errors() {
     let wire = wrap(MGMT_MAGIC, vec![TAG_MGMT_REQ_PROBE, 0xff]).unwrap();
     let mut s = FrameSplitter::new();
@@ -113,132 +90,9 @@ fn unknown_survival_value_errors() {
     );
 }
 
-#[test]
-fn unknown_attach_refused_reason_errors() {
-    let wire = wrap(ATTACH_MAGIC, vec![TAG_ATTACH_REP_ATTACH_REFUSED, 7]).unwrap();
-    let mut s = FrameSplitter::new();
-    assert_eq!(
-        feed_err(&mut s, &wire),
-        WireError::UnknownEnumValue {
-            field: "attach_refused.reason",
-            value: 7
-        }
-    );
-}
-
-#[test]
-fn checkpoint_chunk_last_flag_must_be_0_or_1() {
-    let wire = wrap(ATTACH_MAGIC, vec![TAG_ATTACH_REP_CHECKPOINT_CHUNK, 5]).unwrap();
-    let mut s = FrameSplitter::new();
-    assert_eq!(
-        feed_err(&mut s, &wire),
-        WireError::UnknownEnumValue {
-            field: "checkpoint_chunk.last",
-            value: 5
-        }
-    );
-}
-
 // ---- hello negotiation ---------------------------------------------
 
-#[test]
-fn negotiate_accepts_v1() {
-    assert_eq!(negotiate(ATTACH_PROTO_V1), Negotiated::Accepted(ATTACH_PROTO_V1));
-}
-
-/// Codex round on #194: v2 landed alongside the scrollback ring, and
-/// `negotiate` echoes back exactly what a client asked for -- never
-/// silently upgrading v1 to v2, and accepting v2 as its own version,
-/// not the older one.
-#[test]
-fn negotiate_accepts_v2() {
-    assert_eq!(
-        negotiate(ATTACH_PROTO_V2),
-        Negotiated::Accepted(ATTACH_PROTO_V2)
-    );
-}
-
-/// ADR 0046 decision 3, lane B3b1: v3 lands alongside the owner-
-/// emitted pen/geometry events, with NO checkpoint-format
-/// consequence (unlike v1→v2) — `negotiate` still echoes back
-/// exactly what was asked, accepting v3 as its own version.
-#[test]
-fn negotiate_accepts_v3() {
-    assert_eq!(negotiate(ATTACH_PROTO_V3), Negotiated::Accepted(ATTACH_PROTO_V3));
-}
-
-#[test]
-fn negotiate_refuses_anything_else() {
-    assert_eq!(
-        negotiate(4),
-        Negotiated::Refused { supported: ATTACH_PROTO_V3 }
-    );
-    assert_eq!(
-        negotiate(0),
-        Negotiated::Refused {
-            supported: ATTACH_PROTO_V3
-        }
-    );
-}
-
 // ---- chunk arithmetic ------------------------------------------------
-
-#[test]
-fn greedy_chunking_of_the_max_checkpoint_uses_the_computed_count() {
-    assert_eq!(MAX_CHECKPOINT_CHUNK_PAYLOAD, 1_048_574);
-    assert_eq!(CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD, 12);
-
-    let mut remaining = MAX_CHECKPOINT_LEN;
-    let mut splitter = FrameSplitter::new();
-    let mut recovered_len = 0usize;
-    let mut chunk_count = 0usize;
-    while remaining > 0 {
-        let take = remaining.min(MAX_CHECKPOINT_CHUNK_PAYLOAD);
-        let is_last = take == remaining;
-        let bytes = vec![0xabu8; take];
-        let frame = AttachServer::CheckpointChunk {
-            last: is_last,
-            bytes,
-        };
-        let wire = encode_attach_server(&frame).expect("within the frame cap");
-        assert!(
-            wire.len() <= HEADER_LEN + MAX_BODY_LEN,
-            "checkpoint_chunk frame exceeds the outer 1 MiB cap"
-        );
-        let decoded = feed_ok(&mut splitter, &wire);
-        assert_eq!(decoded.len(), 1);
-        match &decoded[0] {
-            DecodedFrame::AttachServer(AttachServer::CheckpointChunk { last, bytes }) => {
-                assert_eq!(*last, is_last);
-                recovered_len += bytes.len();
-            }
-            other => panic!("expected a checkpoint_chunk, got {other:?}"),
-        }
-        remaining -= take;
-        chunk_count += 1;
-    }
-    assert_eq!(chunk_count, CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD);
-    assert_eq!(recovered_len, MAX_CHECKPOINT_LEN);
-}
-
-#[test]
-fn more_chunks_than_the_max_payload_count_decode_fine() {
-    // CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD is what a GREEDY encoder
-    // produces at the largest possible checkpoint -- it is NOT a
-    // protocol ceiling. A sender using smaller chunks may legally
-    // emit more of them; the wire never counts or caps
-    // `checkpoint_chunk` frames, only bytes-per-frame.
-    let mut splitter = FrameSplitter::new();
-    let total_chunks = CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD + 5;
-    for i in 0..total_chunks {
-        let wire = encode_attach_server(&AttachServer::CheckpointChunk {
-            last: i + 1 == total_chunks,
-            bytes: vec![0x11u8; 4],
-        })
-        .unwrap();
-        assert_eq!(feed_ok(&mut splitter, &wire).len(), 1);
-    }
-}
 
 // ---- should-fix 3: error semantics + the failed-state latch --------
 
@@ -284,15 +138,5 @@ fn frames_decoded_before_a_same_call_error_are_still_returned() {
         ]
     );
     assert_eq!(err, Some(WireError::UnknownTag(0x99)));
-}
-
-/// The pinned literal above must never drift from the fork's proven
-/// bound. The fork is a windows-gated dependency of this crate, so the
-/// cross-check runs on the windows CI legs — which is where the number
-/// is ever consumed.
-#[cfg(windows)]
-#[test]
-fn pinned_checkpoint_len_matches_the_fork() {
-    assert_eq!(MAX_CHECKPOINT_LEN, vt100_ctt::MAX_CHECKPOINT_LEN);
 }
 

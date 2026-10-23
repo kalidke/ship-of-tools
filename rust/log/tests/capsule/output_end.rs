@@ -211,8 +211,7 @@ fn run_fake(
     let cfg = config(dir, name, vec!["fake-producer".to_string()], 80, 25);
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let mut transport = no_transport();
-    (capsule::run::<FakeProducer>(cfg, rx, &mut transport), root)
+    (capsule::run::<FakeProducer>(cfg, rx), root)
 }
 
 /// How many finished endings the leg left (0 or 1) — the question "did this run end honestly" wants, tolerant of a leg
@@ -385,8 +384,7 @@ fn a_real_producer_never_records_an_early_output_end() {
     let cfg = config(dir.path(), "noearly1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let mut transport = no_transport();
-    let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+    let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
     let ended = ended_of(&root);
     assert!(
@@ -395,59 +393,45 @@ fn a_real_producer_never_records_an_early_output_end() {
     );
 }
 
-/// A probe for `config`'s voyage: true while another handle holds its
-/// writer lock (`lock_writer` retries 250 ms, then fails closed).
-fn writer_lock_held_probe(cfg: &CapsuleConfig) -> Arc<dyn Fn() -> bool + Send + Sync> {
-    let lock = cfg.voyage_root.join("writer.lock");
-    Arc::new(move || sot_platform::host::lock_writer(&lock).is_err())
+/// Whether the leg's writer fence is free: `lock_writer` retries 250 ms, then fails closed, and the guard it returns
+/// is dropped at once.
+fn writer_lock_free(cfg_root: &std::path::Path) -> bool {
+    sot_platform::host::lock_writer(&cfg_root.join("writer.lock")).is_ok()
 }
 
-/// `ShutdownGuard`'s fallback `shutdown_all` runs while the leg's writer
-/// fence is still held, on every way `run` ends. Pins the drop order `Leg`
-/// keeps: its transport field drops before its fence field.
+/// The writer fence is released on every way `run` ends: a natural exit, an error after the loop, a spawn failure and
+/// an error inside the main loop, so a later run of the same folder is never locked out by an earlier one.
 #[test]
-fn shutdown_guard_runs_while_the_writer_lock_is_held() {
+fn the_writer_fence_is_released_on_every_way_a_run_ends() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
 
-    // 1. A natural exit: `run`'s own call, then the guard's.
-    let cfg = config(dir.path(), "guard1", shell_command("exit 0"), 80, 25);
-    let transport = TestTransport::new();
-    transport.set_shutdown_probe(writer_lock_held_probe(&cfg));
+    // 1. A natural exit.
+    let cfg = config(dir.path(), "fence1", shell_command("exit 0"), 80, 25);
+    let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let summary = capsule::run::<P>(cfg, rx, &mut transport.clone()).unwrap();
+    let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
-    assert_eq!(transport.shutdown_probe_results(), vec![true, true]);
+    assert!(writer_lock_free(&root), "the fence is still held after a natural exit");
 
-    // 2. An error after the loop (the aggregate teardown expires): both calls still precede the lock's release.
-    let cfg = config(dir.path(), "guard2", shell_command("exit 0"), 80, 25);
-    let transport = TestTransport::new();
-    transport.force_shutdown_expiry();
-    transport.set_shutdown_probe(writer_lock_held_probe(&cfg));
+    // 2. A spawn failure (geometry out of budget).
+    let cfg = config(dir.path(), "fence2", shell_command("exit 0"), 1, 25);
+    let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    capsule::run::<P>(cfg, rx, &mut transport.clone()).unwrap_err();
-    assert_eq!(transport.shutdown_probe_results(), vec![true, true]);
-
-    // 3. A spawn failure (geometry out of budget): only the guard's call.
-    let cfg = config(dir.path(), "guard3", shell_command("exit 0"), 1, 25);
-    let transport = TestTransport::new();
-    transport.set_shutdown_probe(writer_lock_held_probe(&cfg));
-    let (_tx, rx) = mpsc::channel();
-    let summary = capsule::run::<P>(cfg, rx, &mut transport.clone()).unwrap();
+    let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
-    assert_eq!(transport.shutdown_probe_results(), vec![true]);
+    assert!(writer_lock_free(&root), "the fence is still held after a spawn failure");
 
-    // 4. An error inside the main loop (the output ended with the producer alive past the grace).
+    // 3. An error inside the main loop (the output ended with the producer alive past the grace).
     *FAKE_SCRIPT.lock().unwrap() = Some(FakeScript {
         output_ends_after: Duration::from_millis(50),
         output_end: OutputEnd::Eof,
         exit: ExitObservable::Never,
         domain: Domain::EmptyOnceExited,
     });
-    let cfg = config(dir.path(), "guard4", vec!["fake-producer".to_string()], 80, 25);
-    let transport = TestTransport::new();
-    transport.set_shutdown_probe(writer_lock_held_probe(&cfg));
+    let cfg = config(dir.path(), "fence3", vec!["fake-producer".to_string()], 80, 25);
+    let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    capsule::run::<FakeProducer>(cfg, rx, &mut transport.clone()).unwrap_err();
-    assert_eq!(transport.shutdown_probe_results(), vec![true]);
+    capsule::run::<FakeProducer>(cfg, rx).unwrap_err();
+    assert!(writer_lock_free(&root), "the fence is still held after an error in the main loop");
 }

@@ -623,17 +623,18 @@ jobs:
   # drain ordering, so `windows-latest` alone could pass it there too
   # without ever exercising the hang risk this job exists to catch.
   #
-  # ADR 0041 step 6, unit U0 round-1: `pipe_win` and `e2e_pipe` joined this
+  # ADR 0041 step 6, unit U0 round-1: `pipe_win` joined this
   # job too — the same-connection challenge's security-sensitive Windows
   # tests (real named pipes, a real cross-process server) belong in a named,
   # budgeted job, not folded anonymously into the general `windows-latest`
-  # matrix's blanket `cargo test --workspace`. This is the FULL adoption of
+  # matrix's blanket `cargo test --workspace`. This was the FULL adoption of
   # the ADR's pinned five-command table (conpty/capsule_win/pipe_win/
-  # e2e_pipe/supervisor, ~75 min total incl. checkout+build), each at
+  # e2e_pipe/supervisor, ~75 min total incl. checkout+build; `e2e_pipe` went
+  # with the attach lane in pass 6c-1a3), each at
   # its own ADR-pinned per-step cap, PLUS step 6 U3's own `fe_client`
   # addition below (~95 min total incl. checkout+build); the job-level
   # timeout leaves headroom for checkout+build plus every step's worst
-  # case. `pipe_win`/`e2e_pipe` ALSO still run via the main `test` job's
+  # case. `pipe_win` ALSO still runs via the main `test` job's
   # blanket `cargo test --workspace` on `windows-latest` — the duplication
   # is deliberate, not yet worth a special-case exclusion.
   #
@@ -642,7 +643,7 @@ jobs:
   # the real `sot-capsule` binary and drives it as a real client (the
   # supervisor lane, a real cross-process authority) — belongs here for
   # the identical "real named pipes, a real cross-process server" reason
-  # `pipe_win`/`e2e_pipe` do, at the ADR's own pinned 15-minute cap.
+  # `pipe_win` does, at the ADR's own pinned 15-minute cap.
   #
   # ADR 0041 step 6, unit U3 (L1-unix LU3c: `fe_client_win.rs` renamed
   # `fe_client/`, same ungating): `fe_client` drives the FE attach-only
@@ -696,9 +697,7 @@ jobs:
         run: cargo test -p sot-log --test conpty -- --nocapture
       # --test capsule: same reasoning, one test BINARY (tests/capsule/,
       # L1-unix LU2a: renamed from tests/capsule_win.rs when the writer
-      # loop became generic over `Producer`) — the DSR-presence finding in
-      # the e2e test is likewise logged, not asserted
-      # (host/build-version-dependent).
+      # loop became generic over `Producer`).
       - name: Test capsule (capsule runtime, ConPTY producer)
         timeout-minutes: 10
         run: cargo test -p sot-log --test capsule -- --nocapture
@@ -708,10 +707,6 @@ jobs:
       - name: Test pipe_win (named-pipe transport + same-connection challenge)
         timeout-minutes: 10
         run: cargo test -p sot-log --test pipe_win -- --nocapture
-      # --test e2e_pipe: the full real-pipe attach/mgmt end-to-end.
-      - name: Test e2e_pipe (real-pipe end-to-end)
-        timeout-minutes: 10
-        run: cargo test -p sot-log --test e2e_pipe -- --nocapture
       # --test supervisor: the real-process supervisor authority --
       # spawn/adopt, the anti-flap bound, end_run's record_closed then
       # record_verified, and the version-skew refusal, all against a real

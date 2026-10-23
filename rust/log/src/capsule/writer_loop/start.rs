@@ -1,42 +1,21 @@
-//! Starting a leg: take the fence, bind the transport, restore the screen, spawn the producer and its reader, and hand `run` the loop state.
+//! Starting a leg: take the fence, restore the screen, spawn the producer and its reader, and hand `run` the loop state.
 use super::output_path::spawn_reader;
 use super::*;
 
-pub(super) fn start<'t, P: Producer>(
+pub(super) fn start<P: Producer>(
     config: &CapsuleConfig,
-    transport: &'t mut dyn Transport,
-) -> Result<ControlFlow<ExitSummary, (Leg<'t, P>, std::thread::JoinHandle<()>, Instant)>> {
-    // Fail before any durable side effect: `self_status` can fail on Linux and macOS.
-    #[cfg(not(windows))]
-    let _ = self_status(config.survival)?;
+) -> Result<ControlFlow<ExitSummary, (Leg<P>, std::thread::JoinHandle<()>, Instant)>> {
     let fence = take_fence(config)?;
     // A former leg's `ended` is not this leg's: the supervisor reads it only after this leg ends. The leg's own
     // number is what a supervisor's status reports while it runs.
     ended::clear(&config.voyage_root)?;
     fence::next_leg_epoch(&config.voyage_root)?;
 
-    // `shutdown_all` must run before the fence releases (`fence`'s own drop) on EVERY exit path from this point on,
-    // not only the success one: an RAII guard is the only way to guarantee that whichever `?` returns early below.
-    // Declared AFTER `fence`, so this guard's `Drop` (closing the pipe) runs BEFORE the fence's release. Every
-    // fallible operation from here on that runs while the fence is held stays AFTER the guard.
-    //
-    // This guard is never explicitly disarmed. The ack-grace call site calls `transport.0.shutdown_all()` directly
-    // once its window resolves, so the pipe disappears promptly rather than staying live through the remaining
-    // process-exit wait; THIS Drop then calls it again regardless, on every exit path. That second call is safe only
-    // because `Transport::shutdown_all` is a documented idempotent contract (see that method's own doc).
-    let mut transport = ShutdownGuard(transport);
-
-    let (tx, output_rx, wake_pending) = bind_transport(config, &mut transport)?;
-
-    // The attach protocol: platform-neutral state machine (`attach_proto`);
-    // `pid`/`created` are OS values it must never compute itself.
-    let attach_proto = AttachProto::new(self_status(config.survival)?);
-    let splitters: HashMap<ConnId, wire::FrameSplitter> = HashMap::new();
-    // Keyed by (conn, id), not id alone: a transport's send ids are only ever meaningful scoped to the connection
-    // that issued them, and every entry for a connection is purged the moment it closes (see `execute_light_actions`'s
-    // `Close` arm), so a canceled write can never leak an entry, nor can a stale completion apply a marker meant for a
-    // connection that no longer exists.
-    let pending_sends: HashMap<(ConnId, u64), Option<SentMarker>> = HashMap::new();
+    // One channel for producer output, the reader thread's own death (`ReaderGone`) and the row's wakes: the reader
+    // thread (spawned below once `producer` exists) and its own `ReaderGoneGuard` are two of this channel's senders and
+    // the row's wake callback the third, so this loop's `output_rx.recv_timeout` wakes on any of them without a second
+    // channel or a select.
+    let (tx, output_rx) = mpsc::channel::<ReaderEvent>();
 
     // The live parser, bounded scrollback (`CAPSULE_SCROLLBACK_ROWS`): the ring rides in the checkpoint (vt100 fork
     // format version 2) and a restore REPLACES the client's ring rather than appending, so re-attaching does not
@@ -54,17 +33,22 @@ pub(super) fn start<'t, P: Producer>(
 
     let row = config.signals.as_ref().and_then(|s| s.row());
     if let Some(row) = &row {
-        // A request on the row socket wakes the loop as a transport event does.
+        // A request on the row socket wakes the loop.
         let wake_tx = tx.clone();
         row.set_wake(Box::new(move || {
-            let _ = wake_tx.send(ReaderEvent::TransportActivity);
+            let _ = wake_tx.send(ReaderEvent::Wake);
         }));
     }
 
     let spawn_result = spawn_producer::<P>(config);
     let mut producer = match spawn_result {
         Ok(p) => p,
-        Err(reason) => return spawn_failure(config, reason).map(ControlFlow::Break),
+        Err(reason) => {
+            if let Some(row) = &row {
+                row.end_run();
+            }
+            return spawn_failure(config, reason).map(ControlFlow::Break);
+        }
     };
     // The supervisor's anti-flap counter judges stability on the PRODUCER's lifetime, never on how long this
     // process's own teardown happens to take afterward. Captured the instant a real spawn succeeds (not before the
@@ -88,7 +72,7 @@ pub(super) fn start<'t, P: Producer>(
     // a connection the capsule itself closed with `PreAdmissionTimeout`, even though the test's `hello` had already
     // arrived on the wire). `output_rx.recv_timeout` never blocks, and so never yields this thread, for as long as
     // output keeps arriving faster than the timeout; on a CPU-constrained runner with a fast enough producer that
-    // starves whatever OS thread delivers transport bytes. `pace_output` sleeps 1 ms per `PACE_BYTES` of output
+    // starves whatever OS thread delivers a row connection's bytes. `pace_output` sleeps 1 ms per `PACE_BYTES` of output
     // processed; a timed sleep is a real scheduling point on every Windows build (a `yield_now` was not). The cost is
     // bounded: 1 ms per 256 KiB caps output throughput near 250 MiB/s, two orders of magnitude above anything conhost
     // delivers. Nothing about protocol ordering depends on it.
@@ -96,16 +80,8 @@ pub(super) fn start<'t, P: Producer>(
     Ok(ControlFlow::Continue((
         Leg {
             voyage_root: config.voyage_root.clone(),
-            take_epoch: 1,
-            holder: None,
-            attach_proto,
-            splitters,
-            pending_sends,
-            shutdown_requested: false,
-            transport_failed: false,
             shutdown_reason: None,
             run_end_latched: false,
-            wake_pending,
             parser,
             screen,
             handshake,
@@ -124,7 +100,6 @@ pub(super) fn start<'t, P: Producer>(
             _budget_guard,
             producer,
             output_rx,
-            transport,
             _fence: fence,
         },
         reader_handle,
@@ -139,50 +114,6 @@ fn take_fence(config: &CapsuleConfig) -> Result<sot_platform::host::WriterLock> 
         fence::bootstrap(&root)?;
     }
     fence::take_fence(&root)
-}
-
-fn bind_transport(
-    config: &CapsuleConfig,
-    transport: &mut ShutdownGuard<'_>,
-) -> Result<(mpsc::Sender<ReaderEvent>, mpsc::Receiver<ReaderEvent>, Arc<AtomicBool>)> {
-    // Switch-latency Phase 1 (c): ONE channel for producer output, the
-    // reader thread's own death (`ReaderGone`), and
-    // transport activity — the reader thread (spawned later once
-    // `producer` exists) and its own `ReaderGoneGuard` are two of this
-    // channel's three senders, so this loop's own `output_rx.
-    // recv_timeout` wait (below) wakes on any of the three without a
-    // second channel or a select. Created here, ahead of `bind`
-    // (`Transport::set_wake`'s own contract: register before binding)
-    // rather than at the reader thread's own spot further down.
-    let (tx, output_rx) = mpsc::channel::<ReaderEvent>();
-    // Coalescing: several transport events arriving between one drain
-    // and the next collapse into ONE queued wake, cleared the moment the
-    // loop actually consumes a `TransportActivity` (below) — a busy
-    // transport can never grow an unbounded backlog of these stacked on
-    // top of the real, separately-bounded queue `try_recv_event` drains.
-    let wake_pending = Arc::new(AtomicBool::new(false));
-    transport.0.set_wake({
-        let wake_tx = tx.clone();
-        let wake_pending = Arc::clone(&wake_pending);
-        Arc::new(move || {
-            if !wake_pending.swap(true, Ordering::AcqRel) {
-                // The peer send failing here means the loop already
-                // dropped `output_rx` (this run is past the point of
-                // caring) -- never a reason to panic a transport worker
-                // thread over.
-                let _ = wake_tx.send(ReaderEvent::TransportActivity);
-            }
-        })
-    });
-
-    // The pipe-lifetime invariant, enforced here by code order (see
-    // `Transport::bind`'s own doc): the writer lock is already held
-    // (`store`, above) and `ShutdownGuard` is already in place to close
-    // whatever `bind` DID manage to set up on any later early return, so
-    // `bind` runs before any OTHER fallible step gets a chance to leave
-    // the lock held with the transport in a half-set-up state.
-    transport.0.bind(&config.voyage_id)?;
-    Ok((tx, output_rx, wake_pending))
 }
 
 fn spawn_producer<P: Producer>(config: &CapsuleConfig) -> std::result::Result<P, String> {
