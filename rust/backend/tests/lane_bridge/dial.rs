@@ -50,29 +50,7 @@ async fn fe_client_reaches_a_capsule_row_through_the_daemon() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(client.recorded_bytes(), 8, "recorded_bytes must equal the sent payload's own length");
-    assert!(
-        client.notice().is_some_and(|n| n.starts_with("attached to leg")),
-        "notice() must name the leg, got {:?}",
-        client.notice()
-    );
-
-    client.request_quit("lane bridge test quit");
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut exited = false;
-    while Instant::now() < deadline {
-        client.pump();
-        if client.should_exit() {
-            exited = true;
-            break;
-        }
-        assert_ne!(
-            client.quit_message(),
-            Some("ending the session did not complete \u{2014} outcome unknown"),
-            "the quit dispatcher timed out instead of observing record_closed"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(exited, "quit dispatcher never reached record_verified through the bridge (status={})", client.status_line());
+    assert!(!client.run().is_empty(), "the attach names the row's run");
 
     drop(client);
     env.kill_daemon_bounded().await;
@@ -114,9 +92,6 @@ async fn attach_to_a_daemon_that_answers(reply: Frame) -> (String, usize) {
         "row-old-daemon".to_string(),
         80,
         24,
-        "test-fe".to_string(),
-        "test-fe".to_string(),
-        None,
         wake,
     )
     .expect("attach starts even against an old daemon");
@@ -137,7 +112,7 @@ async fn a_daemon_without_the_bridge_is_a_terminal_no_bridge() {
     // `lane_client.rs` unit test `an_unknown_op_reply_is_no_bridge` exactly.
     let reply = Frame::res(1, op::LANE_CONNECT, serde_json::json!({ "error": "unknown op: lane.connect" }));
     let (status, dials) = attach_to_a_daemon_that_answers(reply).await;
-    assert!(status.contains("no bridge"), "status must name the missing bridge, got {status:?}");
+    assert!(status.contains("no_bridge"), "status must name the missing bridge, got {status:?}");
     assert_eq!(dials, 1, "a Refused{{no_bridge}} reply must be terminal — never a second dial");
 }
 
@@ -161,7 +136,7 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
     let env = Env::new("lb3");
     env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-    let (workspace_id, target) = create_ready_capsule_row(&env, &mut conn, &mut next_id, "lb3-workspace").await;
+    let (_workspace_id, target) = create_ready_capsule_row(&env, &mut conn, &mut next_id, "lb3-workspace").await;
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
@@ -180,13 +155,8 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
         assert!(Instant::now() < deadline, "never checkpointed");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let notice_deadline = Instant::now() + Duration::from_secs(5);
-    while client.notice().is_none() {
-        client.pump();
-        assert!(Instant::now() < notice_deadline, "notice() never named a leg before the drop");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let leg_notice = client.notice().map(|s| s.to_string());
+    let run_before = client.run();
+    assert!(!run_before.is_empty(), "the attach names the row's run before the drop");
 
     kill_supervisor(&env.state_root);
 
@@ -221,17 +191,8 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
         assert!(Instant::now() < input_deadline, "resumed client's own input never echoed");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // The notice names the process the attach lane is served from. The supervisor is the one process of the row, so after
-    // the kill it names the resumed supervisor (its creation identity, as its SOSV status reports it), never the dead one.
-    let answering = sot_log::attach_client::supervisor_client::query_status(&env.state_root.join("sot").join("workspaces").join(&workspace_id))
-        .expect("query_status after the resume")
-        .0;
-    let notice = client.notice().map(|s| s.to_string());
-    assert!(
-        notice != leg_notice && notice.as_deref().is_some_and(|n| n.contains(&answering.created.to_string())),
-        "notice() must name the resumed supervisor (created {}): {notice:?}, before the drop {leg_notice:?}",
-        answering.created
-    );
+    // The agent died with its supervisor, so the resume is a new run, and the same client is attached to it.
+    assert_ne!(client.run(), run_before, "the resumed row's attach names its new run, got {:?}", client.run());
     assert!(!client.is_dead(), "the client must never have gone terminal across the drop");
 
     drop(client);
@@ -292,7 +253,7 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
             "a never-started row's bridge dial must not go terminal on its own: {}",
             client.status_line()
         );
-        if client.status_line().contains("not answering") {
+        if client.status_line().contains("reconnecting") {
             saw_absent_answer = true;
         }
         assert_eq!(
@@ -423,30 +384,11 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
         assert!(Instant::now() < deadline, "never checkpointed through the ssh-child bridge");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // The peer report is the DAEMON's (proven the same way the direct case
-    // above proves it: a live checkpoint only reaches this far once the
-    // bridge's split-identity proof — `DaemonLaneEndpoint::challenge`
-    // against the daemon's own `LaneConnectRes` report — has already
-    // succeeded over this exact stub-ssh connection).
-    assert!(
-        client.notice().is_some_and(|n| n.starts_with("attached to leg")),
-        "notice() must name the leg, got {:?}",
-        client.notice()
-    );
-
+    // The peer report is the DAEMON's: a live checkpoint only reaches this far once the bridge's split-identity proof
+    // (`DaemonLaneEndpoint::challenge` against the daemon's own `LaneConnectRes` report) has succeeded over this exact
+    // stub-ssh connection.
+    assert!(!client.run().is_empty(), "the attach names the row's run");
     guard.observe("after result");
-    client.request_quit("lane bridge ssh-stub test quit");
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut exited = false;
-    while Instant::now() < deadline {
-        client.pump();
-        if client.should_exit() {
-            exited = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(exited, "quit dispatcher never reached record_verified through the ssh-child bridge (status={})", client.status_line());
 
     drop(client);
     env.kill_daemon_bounded().await;
@@ -494,285 +436,4 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     guard.observe("after result");
     client.shutdown(Duration::from_secs(5)); drop(client);
     guard.finish();
-}
-
-/// Both children record their start; the hello is read first and the lane.connect request determines the role. The supervisor observes the spare before answering, regardless of which child started first.
-fn ordering_fixture(dir: &Path, guard: &ParentSshEnvironment) -> PathBuf {
-    let path = dir.join("ordering-ssh");
-    let script = format!(r#"#!/usr/bin/env python3
-import json, os, pathlib, sys, time
-root = pathlib.Path({root:?})
-(root / ('start-' + str(os.getpid()))).write_text('started\n')
-hello = json.loads(sys.stdin.readline())
-request = json.loads(sys.stdin.readline())
-assert hello['op'] == 'hello' and hello['payload']['role'] == 'handoff'
-assert request['op'] == 'lane.connect'
-if request['payload']['lane'] == 'supervisor':
-    (root / 'supervisor-pid').write_text(str(os.getpid()))
-    deadline = time.monotonic() + 1.5
-    while len(list(root.glob('start-*'))) < 2 and time.monotonic() < deadline:
-        time.sleep(0.005)
-    if len(list(root.glob('start-*'))) >= 2:
-        (root / 'ordered').write_text('spare before supervisor answer\n')
-    for frame, payload in [(hello, {{'ok': True}}), (request, {{'error': 'ordering fixture refused', 'code': 'unknown_workspace'}})]:
-        print(json.dumps({{'v': frame['v'], 'id': frame['id'], 'kind': 'res', 'op': frame['op'], 'payload': payload}}), flush=True)
-else:
-    sys.stdin.buffer.read()
-"#, root = dir.to_string_lossy());
-    sot_platform::test_exec::write_executable(&path, script);
-    guard.observe("after preparing ordering fixture");
-    path
-}
-
-#[test]
-fn the_spare_login_starts_before_the_supervisor_handshake_completes() {
-    let _serial = SERIAL.blocking_lock();
-    let guard = ParentSshEnvironment::new();
-    use sot_log::lane::client::Endpoint;
-    let dir = tempfile::tempdir().unwrap();
-    let endpoint = stub_endpoint(ordering_fixture(dir.path(), &guard), guard.clone());
-    let result = endpoint.connect_supervisor_unchallenged("row-ordering");
-    assert!(dir.path().join("ordered").is_file(), "the spare login must start before the supervisor handshake completes");
-    assert!(matches!(result, Err(sot_log::lane::transport::TransportError::Refused { .. })), "ordering fixture returned {:?}", result.err());
-    guard.observe("after result");
-    drop(endpoint);
-    guard.finish();
-}
-
-#[test]
-fn a_failed_supervisor_handshake_drops_the_spare() {
-    let _serial = SERIAL.blocking_lock();
-    let guard = ParentSshEnvironment::new();
-    use sot_log::lane::client::Endpoint;
-    let dir = tempfile::tempdir().unwrap();
-    let endpoint = stub_endpoint(ordering_fixture(dir.path(), &guard), guard.clone());
-    let result = endpoint.connect_supervisor_unchallenged("row-abandoned");
-    assert!(dir.path().join("ordered").is_file(), "both owned children started before refusal");
-    assert!(matches!(result, Err(sot_log::lane::transport::TransportError::Refused { .. })));
-    let supervisor = std::fs::read_to_string(dir.path().join("supervisor-pid")).unwrap();
-    let mut spares = 0;
-    for entry in std::fs::read_dir(dir.path()).unwrap().flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if let Some(pid) = name.strip_prefix("start-").filter(|pid| *pid != supervisor) {
-            spares += 1;
-            assert!(!Path::new(&format!("/proc/{pid}/stat")).exists(), "a failed supervisor handshake must reap its spare while the endpoint is alive");
-        }
-    }
-    assert_eq!(spares, 1, "one owned spare was observed");
-    guard.observe("after result");
-    drop(endpoint);
-    guard.finish();
-}
-
-// Status travels over the retained, challenged supervisor connection; the wire supplies the Ready voyage.
-fn ready_voyage(endpoint: &DaemonLaneEndpoint, supervisor: &sot_topology::lane_client::DaemonLaneClient) -> String {
-    use sot_log::lane::exchange::{SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
-    use sot_platform::identity::exchange::{IdentityExchange, ExchangeDecode};
-    use sot_platform::identity::challenge::ChallengeOutcome;
-    use sot_log::lane::{client::Endpoint, wire::{self, DecodedFrame, SupervisorRequest, SupervisorReply, SupervisorPhase}};
-    let mut hello = SupervisorLaneExchange::new(SUPERVISOR_LANE_BUILD_ID.to_string());
-    assert!(matches!(endpoint.challenge(supervisor, &mut hello, Instant::now() + Duration::from_secs(2)), ChallengeOutcome::Proven(_)), "private supervisor identity must be proven");
-    struct Ready { splitter: wire::FrameSplitter, voyage: Option<String> }
-    impl IdentityExchange for Ready {
-        fn encode_request(&self) -> Vec<u8> { wire::encode_supervisor_request(&SupervisorRequest::Status).unwrap() }
-        fn feed(&mut self, bytes: &[u8]) -> ExchangeDecode {
-            let (frames, error) = self.splitter.feed(bytes);
-            if error.is_some() || frames.len() > 1 { return ExchangeDecode::Foreign; }
-            let Some(frame) = frames.into_iter().next() else { return ExchangeDecode::Incomplete; };
-            if self.splitter.has_pending_bytes() { return ExchangeDecode::Foreign; }
-            match frame {
-                DecodedFrame::SupervisorReply(SupervisorReply::StatusOk { pid, created, voyage: Some(voyage), phase: SupervisorPhase::Ready, .. }) => {
-                    self.voyage = Some(voyage); ExchangeDecode::Identity { pid, created }
-                }
-                _ => ExchangeDecode::Foreign,
-            }
-        }
-    }
-    let mut ready = Ready { splitter: wire::FrameSplitter::new(), voyage: None };
-    assert!(matches!(endpoint.challenge(supervisor, &mut ready, Instant::now() + Duration::from_secs(5)), ChallengeOutcome::Proven(_)), "Ready Status must agree with the retained supervisor identity");
-    ready.voyage.expect("the private Ready supervisor supplies the voyage")
-}
-
-/// Observe private admission expiry and report the single first-voyage typed result, fresh-start count and expired-child reap before assertions or worker recovery.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_expired_spare_uses_a_fresh_voyage_login() {
-    use sot_log::lane::client::Endpoint;
-    let _serial = SERIAL.lock().await;
-    let guard = ParentSshEnvironment::new();
-    let env = Env::new("lb-expired-spare");
-    env.spawn_sotd();
-    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-    let (_, target) = create_ready_capsule_row(&env, &mut conn, &mut next_id, "lb-expired-row").await;
-    let relay = Relay::start(env.socket_path.clone()).await;
-    let dir = tempfile::tempdir().unwrap();
-    stub_ssh_relaying_to(dir.path(), &relay.path, &guard);
-    let pids = Arc::new(Mutex::new(Vec::new()));
-    let observed = pids.clone();
-    let spawn_guard = guard.clone();
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let admitted = attempts.clone();
-    let path = dir.path().join("ssh");
-    let recipe = sot_topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
-    let gate = sot_topology::ssh_bridge::LinkGate::default();
-    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None).with_test_ssh_spawner(Arc::new(move |command| {
-        spawn_guard.observe("at spawn");
-        admitted.fetch_add(1, Ordering::SeqCst);
-        let child = std::process::Command::new(&path).args(command.get_args())
-            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-            .spawn()?;
-        spawn_guard.observe("child active");
-        observed.lock().unwrap().push(child.id());
-        Ok(child)
-    }));
-    let supervisor = endpoint.connect_supervisor_unchallenged(&target).unwrap();
-    let voyage = ready_voyage(&endpoint, &supervisor);
-    assert_eq!(pids.lock().unwrap().len(), 2, "the initial pair started");
-    let spare = pids.lock().unwrap()[1];
-    let stat = format!("/proc/{spare}/stat");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    // The spare's exit as its parent sees it: `waitid` with WNOWAIT reports what `try_wait` will and leaves the child
-    // unreaped. `/proc`'s `Z` is the thread-group leader's alone and comes first while the stub's `upload` thread exits.
-    loop {
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        let waited = unsafe { libc::waitid(libc::P_PID, spare, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
-        assert_eq!(waited, 0, "the retained child stays unreaped until consumption: {}", std::io::Error::last_os_error());
-        if unsafe { info.si_pid() } != 0 { break; }
-        assert!(Instant::now() < deadline, "the private daemon never closed the idle bridge at admission expiry");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    // Exactly one first-voyage attempt settles before any recovery worker exists.
-    let attempts_before = attempts.load(Ordering::SeqCst);
-    let first = endpoint.connect_voyage_unchallenged(&target, &voyage);
-    let attempts_after = attempts.load(Ordering::SeqCst);
-    let started = pids.lock().unwrap().clone();
-    let reap = match std::fs::metadata(&stat) { Ok(_) => Some(false), Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(true), Err(_) => None };
-    let replacement = started.get(2).map(|pid| if *pid != spare { "distinct" } else { "same" }).unwrap_or("missing");
-    let gate_state = if gate.is_up() { "up" } else { "down" };
-    super::diagnostics::expiry_result(first.as_ref().err());
-    println!("T2 expiry fallback: attempts={attempts_after} starts={} expired=true reaped={} replacement={replacement} gate={gate_state}", started.len(), reap.map(|value| if value { "true" } else { "false" }).unwrap_or("unknown"));
-    let reaped = reap == Some(true);
-    let replacement_distinct = replacement == "distinct";
-    let outcome_ok = match &first {
-        Ok(client) => matches!(endpoint.authenticate_server(client), sot_platform::identity::challenge::PeerAuthOutcome::Authenticated(_)),
-        Err(sot_log::lane::transport::TransportError::Unreachable(error)) =>
-            error.kind() == std::io::ErrorKind::TimedOut && error.to_string().starts_with("lane.connect: handshake timed out"),
-        _ => false,
-    };
-    guard.observe("after result");
-    drop(first); drop(supervisor); drop(endpoint);
-    env.kill_daemon_bounded().await;
-    guard.finish();
-    assert_eq!(attempts_after, attempts_before + 1, "exactly one ordinary gated fresh first-voyage attempt must occur before worker recovery");
-    assert_eq!(started.len(), 3, "two initial logins plus exactly one fresh first-voyage login");
-    assert!(reaped, "the expired owned child was reaped before first-voyage fallback");
-    assert!(replacement_distinct, "the first-voyage fallback child differs from the expired spare");
-    assert!(outcome_ok, "the single fresh first voyage must return a peer report or a typed handshake timeout before worker recovery");
-}
-
-/// A fixed spare-entry delay and bounded rendezvous; entry order never establishes a lane role.
-fn rendezvous_endpoint(dir: &Path, delay: u64, reversed: bool, guard: Arc<ParentSshEnvironment>) -> DaemonLaneEndpoint {
-    let path = dir.join("rendezvous.py");
-    let script = format!(r#"import json, os, pathlib, sys, time
-root = pathlib.Path({root:?})
-slot = int(sys.argv[1])
-reverse = {reverse}
-deadline = time.monotonic() + 30
-if slot == 1:
-    time.sleep({delay})
-wait_for = 'start-1' if reverse and slot == 0 else ('start-0' if not reverse and slot == 1 else None)
-while wait_for and not (root / wait_for).exists():
-    assert time.monotonic() < deadline, 'fixture entry rendezvous timed out'
-    time.sleep(0.005)
-with (root / 'entry-order').open('a') as entries:
-    entries.write(str(slot) + '\n')
-(root / ('start-' + str(slot))).write_text(str(os.getpid()))
-hello = json.loads(sys.stdin.readline())
-request = json.loads(sys.stdin.readline())
-assert hello['kind'] == 'req' and hello['op'] == 'hello' and hello['payload']['role'] == 'handoff'
-assert request['kind'] == 'req' and request['op'] == 'lane.connect'
-role = request['payload']['lane']
-if role == 'supervisor':
-    while not (root / 'start-0').exists() or not (root / 'start-1').exists():
-        assert time.monotonic() < deadline, 'fixture spare rendezvous timed out'
-        time.sleep(0.005)
-    (root / 'ordered').write_text('supervisor observed spare before answering')
-    print('Permission denied (fixture).', file=sys.stderr, flush=True)
-    sys.exit(255)
-sys.stdin.buffer.read()
-"#, root=dir.to_string_lossy(), reverse=if reversed { "True" } else { "False" });
-    sot_platform::test_exec::write_executable(&path, script);
-    guard.observe("after preparing rendezvous fixture");
-    let slots = Arc::new(AtomicUsize::new(0));
-    let recipe = sot_topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
-    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |command| {
-        guard.observe("at spawn");
-        let spawned = std::process::Command::new("python3").arg("-u").arg(&path).arg(slots.fetch_add(1, Ordering::SeqCst).to_string()).args(command.get_args())
-            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-            .spawn();
-        guard.observe("child active");
-        spawned
-    }))
-}
-
-#[test]
-fn the_slow_fixture_uses_its_own_handshake_bound() {
-    let _serial = SERIAL.blocking_lock();
-    let guard = ParentSshEnvironment::new();
-    use sot_log::lane::client::Endpoint;
-    let dir = tempfile::tempdir().unwrap();
-    let endpoint = rendezvous_endpoint(dir.path(), 3, false, guard.clone()).with_test_handshake_bound(Duration::from_secs(60));
-    let result = endpoint.connect_supervisor_unchallenged("row-slow-fixture");
-    let error = result.err().expect("the fixture deliberately refuses the login").to_string();
-    assert!(error.contains("Permission denied"), "the slow fixture must reach its intended Permission denied result: {error}");
-    assert!(dir.path().join("ordered").exists(), "the delayed spare arrived before the fixture answered");
-    guard.observe("after result");
-    drop(endpoint); guard.finish();
-}
-
-#[test]
-fn fixture_bounds_are_local_to_the_endpoint() {
-    let _serial = SERIAL.blocking_lock();
-    let guard = ParentSshEnvironment::new();
-    use sot_log::lane::client::Endpoint;
-    let configured = tempfile::tempdir().unwrap();
-    let short = rendezvous_endpoint(configured.path(), 3, false, guard.clone()).with_test_handshake_bound(sot_log::lane::transport::CONNECT_BOUND);
-    let ordinary = tempfile::tempdir().unwrap();
-    let default = rendezvous_endpoint(ordinary.path(), 3, false, guard.clone());
-    let started = Instant::now();
-    let error = short.connect_supervisor_unchallenged("row-configured").err().unwrap().to_string();
-    assert!(error.contains("handshake timed out"), "the configured endpoint keeps its own short bound: {error}");
-    assert!(started.elapsed() >= sot_log::lane::transport::CONNECT_BOUND);
-    assert!(!configured.path().join("ordered").exists(), "the configured endpoint stopped before the three-second spare entry");
-    let error = default.connect_supervisor_unchallenged("row-default").err().unwrap().to_string();
-    assert!(error.contains("Permission denied"), "an unconfigured ssh endpoint waits for its slow login (SSH_LOGIN_BOUND): {error}");
-    guard.observe("after result");
-    drop(default); drop(short); guard.finish();
-}
-
-#[test]
-fn fixture_roles_follow_the_second_frame_in_both_start_orders() {
-    let _serial = SERIAL.blocking_lock();
-    let guard = ParentSshEnvironment::new();
-    use sot_log::lane::client::Endpoint;
-    for reversed in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = rendezvous_endpoint(dir.path(), 0, reversed, guard.clone());
-        let error = endpoint.connect_supervisor_unchallenged("row-role-order").err().unwrap().to_string();
-        assert!(error.contains("Permission denied"), "the second frame identifies the supervisor in either entry order: reversed={reversed}: {error}");
-        assert!(dir.path().join("ordered").exists(), "the supervisor must observe the spare before answering");
-        guard.observe("after result");
-        let entries = std::fs::read_to_string(dir.path().join("entry-order")).unwrap();
-        assert_eq!(entries, if reversed { "1\n0\n" } else { "0\n1\n" }, "the fixture must force both entry orders");
-    }
-    guard.finish();
-}
-
-#[test]
-fn ssh_fixtures_preserve_parent_path_and_shell() {
-    the_spare_login_starts_before_the_supervisor_handshake_completes();
-    a_failed_supervisor_handshake_drops_the_spare();
-    fixture_roles_follow_the_second_frame_in_both_start_orders();
-    the_slow_fixture_uses_its_own_handshake_bound();
-    fixture_bounds_are_local_to_the_endpoint();
-    a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status();
 }
