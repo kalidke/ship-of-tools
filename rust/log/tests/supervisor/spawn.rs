@@ -73,6 +73,39 @@ fn a_watch_reports_ready_only_after_the_agent_lived_two_seconds() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
+/// An agent that exits before it has lived 2 s is never reported `ready`, whatever the clock says afterwards: the
+/// supervisor judges the two seconds on a pass that found the agent alive.
+#[cfg(unix)]
+#[test]
+fn an_agent_that_exits_before_two_seconds_is_never_reported_ready() {
+    use sot_log::attach_client::supervisor_client::{watch, CancelHandle, WatchStep};
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let mut guard = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "echo hello; sleep 1"]);
+    let _conn = wait_for_lane(&h, Duration::from_secs(30));
+    let mut held = watch(&state_dir, &CancelHandle::new()).expect("the watch");
+    assert_ne!(held.first().phase, SupervisorPhase::Ready, "ready on the first reply");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match held.next(Duration::from_millis(100)) {
+            WatchStep::Phase(report) => assert_ne!(report.phase, SupervisorPhase::Ready, "an agent that lived 1 s was reported ready"),
+            WatchStep::Exiting(code) => {
+                assert_eq!(code, 76);
+                break;
+            }
+            WatchStep::Ended => break,
+            WatchStep::Quiet => {}
+        }
+        assert!(Instant::now() < deadline, "the supervisor never exited");
+    }
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
+}
+
 /// A `--resume` over a state folder with no record of an end (the supervisor that left it died before any run) starts
 /// the agent like a `--start` does, rather than ending with an error.
 #[test]

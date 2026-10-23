@@ -184,3 +184,32 @@ async fn a_killed_adopted_supervisor_is_restarted_and_a_stopped_one_is_not() {
     }
     env.kill_daemon_bounded().await;
 }
+
+/// A supervisor the daemon adopted at boot (not a replacement the daemon launched) that is stopped stays down: the
+/// stop exits 0, which nothing restarts, and the row reads `unreachable` because nothing answers. Five seconds with no
+/// supervisor process.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_stopped_adopted_supervisor_is_not_restarted_and_reads_unreachable() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("stopadopted");
+    let (mut conn, mut next_id, workspace_id, state_dir) =
+        super::resume::ready_row_adopted_by_a_new_daemon(&env, &[], &[SHORT_BACKOFF], "stopadopted-workspace").await;
+    assert!(super::resume::supervisor_pid(&state_dir).await.is_some(), "the adopted supervisor answers");
+
+    stop_supervisor(&state_dir).await;
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "unreachable", BOUND.max(Duration::from_secs(30))).await;
+    let until = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < until {
+        assert!(own_supervisor_pids(&env.state_root).is_empty(), "a stopped adopted supervisor was restarted");
+        let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        next_id += 1;
+        assert_eq!(
+            find_row(&payload, &workspace_id).map(|row| row["phase"].clone()),
+            Some(serde_json::json!("unreachable")),
+            "the stopped adopted row stopped reading unreachable"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    env.kill_daemon_bounded().await;
+}

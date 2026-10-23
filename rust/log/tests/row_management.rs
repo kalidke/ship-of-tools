@@ -639,6 +639,34 @@ fn a_watch_ends_by_waiting_for_the_supervisors_process() {
     }
 }
 
+/// `Watch::end` gives its place in the cancel handle back before it waits for the process, so the handle does not keep
+/// the connection (a Windows pipe stays open until its last owner lets go) through the wait.
+#[test]
+fn a_watch_end_withdraws_its_publication_before_waiting() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    std::env::set_var("SOT_RUNTIME_DIR", runtime.path());
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let (mut supervisor, path) = supervisor(runtime.path(), &state_dir, &[("SOT_TEST_EXIT_HOLD_MS", "3000")]);
+    let mut driver = dial(&path);
+    driver.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
+    let cancel = CancelHandle::new();
+    let mut watch = supervisor_client::watch(&state_dir, &cancel).expect("the watch is served");
+    assert!(cancel.is_published(), "a live watch is published");
+    let mut manager = dial(&path);
+    manager.call("row.stop", json!({}), Duration::from_secs(30)).expect("stop answers");
+    let seen = watch_until(&mut watch, Duration::from_secs(30), |s| matches!(s, WatchStep::Exiting(_) | WatchStep::Ended));
+    assert!(matches!(seen.last(), Some(WatchStep::Exiting(0))), "{seen:?}");
+    let ending = std::thread::spawn(move || watch.end(Duration::from_secs(30)));
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(!ending.is_finished(), "the supervisor holds its exit for 3 s: the wait is still going");
+    assert!(!cancel.is_published(), "the handle still owns the connection during the process wait");
+    assert!(ending.join().unwrap());
+    assert_eq!(exit_code(&mut supervisor), Some(0));
+}
+
 /// A cancel that lands between the dial and the publication of the connection is never missed: the watch is refused, and
 /// so is every later one on that handle (cancellation is latched), while the row stays served to a fresh handle.
 #[test]

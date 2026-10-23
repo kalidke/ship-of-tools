@@ -72,6 +72,15 @@ pub(crate) struct Watched {
     pub ready: bool,
 }
 
+/// The watch record and the row's spawn generation, under one lock. The generation counts the spawns this daemon has made
+/// for the row ([`Workspace::begin_spawn`]); everything that outlives a spawn (an observer's round, a watchdog's exit)
+/// carries the generation it began under and acts on its outcome only while the row is still at that generation.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct WatchState {
+    generation: u64,
+    record: Option<Watched>,
+}
+
 /// One lock: a rejection check and the write it gates share one critical section.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct PhaseCell {
@@ -147,7 +156,7 @@ impl Workspace {
             account: Mutex::new(String::new()),
             agent_handle: crate::rows::handle::Declared::default(),
             phase_cell: Mutex::new(PhaseCell::default()),
-            watched: Mutex::new(None),
+            watched: Mutex::new(WatchState::default()),
             watchdog_owner: Mutex::new(None),
             activation_error: Mutex::new(None),
             files_mode: OnceLock::new(),
@@ -192,33 +201,51 @@ impl Workspace {
         *cell = PhaseCell { supervisor: Some(identity), ..PhaseCell::default() };
     }
 
-    /// The watch record (see [`Watched`]).
-    pub(crate) fn watched(&self) -> Option<Watched> {
-        *self.watched.lock().unwrap_or_else(|e| e.into_inner())
+    /// The row's spawn generation: how many spawns this daemon has made for it.
+    pub(crate) fn spawn_generation(&self) -> u64 {
+        self.watched.lock().unwrap_or_else(|e| e.into_inner()).generation
     }
 
-    /// A watch's first reply: the record now names `supervisor`, `ready` as that reply said.
-    pub(crate) fn record_watch(&self, supervisor: SupervisorIdentity, ready: bool) {
-        *self.watched.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watched { supervisor, ready });
+    /// Under the row's guard, just before each spawn: a new generation begins and the supervisor about to start has been
+    /// watched by no one, so the record is cleared. Returns the new generation, which the spawn's watchdog carries.
+    pub(crate) fn begin_spawn(&self) -> u64 {
+        let mut state = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        state.generation += 1;
+        state.record = None;
+        state.generation
+    }
+
+    /// The watch record (see [`Watched`]), the current generation's.
+    pub(crate) fn watched(&self) -> Option<Watched> {
+        self.watched.lock().unwrap_or_else(|e| e.into_inner()).record
+    }
+
+    /// A watch's first reply, from a round that began at `generation`: the record now names `supervisor`, `ready` as that
+    /// reply said or as the record already held for the same supervisor (a reconnect does not forget it). Refused, and
+    /// `false`, once a spawn has begun a newer generation: the reply may be a supervisor the spawn is replacing.
+    pub(crate) fn record_watch(&self, generation: u64, supervisor: SupervisorIdentity, ready: bool) -> bool {
+        let mut state = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        if state.generation != generation {
+            return false;
+        }
+        let kept = state.record.is_some_and(|w| w.supervisor == supervisor && w.ready);
+        state.record = Some(Watched { supervisor, ready: ready || kept });
+        true
     }
 
     /// A `row.phase {ready}` of `supervisor`: it counts only while the record names that supervisor (a spawn may have
     /// cleared it since).
     pub(crate) fn note_watch_ready(&self, supervisor: SupervisorIdentity) {
-        if let Some(watched) = self.watched.lock().unwrap_or_else(|e| e.into_inner()).as_mut().filter(|w| w.supervisor == supervisor) {
+        if let Some(watched) = self.watched.lock().unwrap_or_else(|e| e.into_inner()).record.as_mut().filter(|w| w.supervisor == supervisor) {
             watched.ready = true;
         }
     }
 
-    /// Under the row's guard, just before each spawn: the supervisor about to start has been watched by no one.
-    pub(crate) fn clear_watched(&self) {
-        *self.watched.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
-    /// Whether the last watched supervisor told `ready`: false for one that died before any watch named it, or whose agent
-    /// had not lived 2 s.
-    pub(crate) fn watch_said_ready(&self) -> bool {
-        self.watched().is_some_and(|w| w.ready)
+    /// Whether the supervisor spawned at `generation` told `ready` on a watch: false for one that died before any watch
+    /// named it, whose agent had not lived 2 s, or whose generation a later spawn has replaced.
+    pub(crate) fn watch_said_ready(&self, generation: u64) -> bool {
+        let state = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        state.generation == generation && state.record.is_some_and(|w| w.ready)
     }
 
     /// The watchdog's give-up, under the row's guard: the restart budget is spent, so the row is `terminal` whatever

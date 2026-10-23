@@ -111,8 +111,90 @@ async fn an_adopted_exit_owns_the_row_before_install_returns() {
         PathBuf::from("/tmp"),
         String::new(),
         ws.slug.clone(),
-        First::Exited(None),
+        First::Exited(None, ws.spawn_generation()),
         workspaces.clone(),
     );
     assert!(ws.watchdog_owner().is_some(), "the adopted exit's watchdog owns the row when install returns");
+}
+
+fn registered_row(label: &str) -> (Workspaces, std::sync::Arc<crate::rows::Workspace>) {
+    let workspaces = Workspaces::new();
+    let mut row = crate::rows::Workspace::from_label(
+        label,
+        PathBuf::from(format!("/tmp/sot-{label}")),
+        false,
+        "none".to_string(),
+        String::new(),
+        String::new(),
+    );
+    row.runtime = "capsule".to_string();
+    let ws = workspaces.insert(row);
+    (workspaces, ws)
+}
+
+fn watch_exit(ws: &crate::rows::Workspace, workspaces: &Workspaces, state: &Path, code: Option<i32>, generation: u64) {
+    install_watchdog(
+        ws.workspace_id.clone(),
+        PathBuf::from("sot-capsule"),
+        state.to_path_buf(),
+        Vec::new(),
+        PathBuf::from("/tmp"),
+        String::new(),
+        ws.slug.clone(),
+        First::Exited(code, generation),
+        workspaces.clone(),
+    );
+}
+
+/// A watchdog's outcome names the spawn it came from. S1 exits 69 and S1's watchdog has not yet handled it when a
+/// replacement S2 is launched and watched: the exit must not latch S2 terminal. The control is the same exit handled at
+/// its own generation, with S1 the supervisor the record names, which does latch.
+#[tokio::test]
+async fn an_exit_69_of_a_superseded_supervisor_latches_nothing_of_its_replacement() {
+    use crate::rows::workspace::{Observation, Phase, SupervisorIdentity};
+    let state = tempfile::tempdir().unwrap();
+    let id = |pid| SupervisorIdentity { pid, created: 100 };
+
+    let (workspaces, ws) = registered_row("superseded-69");
+    let g1 = ws.begin_spawn();
+    assert!(ws.record_watch(g1, id(1), true));
+    ws.begin_supervisor_epoch(id(1));
+    // S1's exit is in flight; reauth launches S2 and the observer records it.
+    let g2 = ws.begin_spawn();
+    assert!(ws.record_watch(g2, id(2), true));
+    ws.begin_supervisor_epoch(id(2));
+    observe(&ws, Observation::Phase { phase: Phase::Ready, supervisor: id(2), run: None });
+    watch_exit(&ws, &workspaces, state.path(), Some(69), g1);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(ws.phase(), Phase::Ready, "S1's exit 69 latched S2 terminal");
+    assert_eq!(ws.watched().map(|w| w.supervisor), Some(id(2)));
+
+    let (workspaces, ws) = registered_row("own-69");
+    let g = ws.begin_spawn();
+    assert!(ws.record_watch(g, id(1), true));
+    ws.begin_supervisor_epoch(id(1));
+    observe(&ws, Observation::Phase { phase: Phase::Ready, supervisor: id(1), run: None });
+    watch_exit(&ws, &workspaces, state.path(), Some(69), g);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(ws.phase(), Phase::Terminal, "a supervisor's own exit 69 marks it terminal");
+}
+
+/// A 69 no watch ever named (the record is empty) is latched under the guard once nothing answers, at its own generation
+/// only.
+#[tokio::test]
+async fn an_exit_69_with_no_record_latches_a_row_nothing_answers_at_its_own_generation_only() {
+    use crate::rows::workspace::Phase;
+    let state = tempfile::tempdir().unwrap();
+    let (workspaces, ws) = registered_row("unnamed-69");
+    let g1 = ws.begin_spawn();
+    let _g2 = ws.begin_spawn();
+    watch_exit(&ws, &workspaces, state.path(), Some(69), g1);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_ne!(ws.phase(), Phase::Terminal, "a superseded spawn's 69 latched the row");
+
+    let (workspaces, ws) = registered_row("unnamed-69-own");
+    let g = ws.begin_spawn();
+    watch_exit(&ws, &workspaces, state.path(), Some(69), g);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(ws.phase(), Phase::Terminal, "a 69 no watch named, with nothing answering, latches the row");
 }

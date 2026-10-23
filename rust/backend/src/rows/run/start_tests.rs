@@ -19,3 +19,14 @@ fn closed_gate_refuses_start_and_reset() {
     assert_eq!(reset, Err(refusal), "reset_run with the gate closing");
     assert!(!state_dir_for(root.path(), "ws-gate-1").exists(), "a refused start claimed nothing: no state folder was made");
 }
+
+/// The settle ends at the first answer of a supervisor, `starting` included: it is a bound on reachability under the
+/// guard, and a start reads `starting` until the agent has lived 2 s. Only an unanswering row keeps it waiting.
+#[test]
+fn a_settle_ends_at_the_first_answer() {
+    use crate::rows::workspace::Phase;
+    for phase in [Phase::Starting, Phase::Ready, Phase::Ending, Phase::EndedNoRespawn, Phase::Terminal, Phase::Foreign, Phase::Stopped] {
+        assert!(settled(phase.as_wire_str()), "{phase:?} is an answer");
+    }
+    assert!(!settled(Phase::Unreachable.as_wire_str()), "nothing answered yet");
+}

@@ -138,7 +138,7 @@ pub struct Workspace {
     /// Never persisted; written only through [`Workspace::apply_phase_observation`].
     phase_cell: Mutex<PhaseCell>,
     /// The last supervisor the observer's watch named and whether it told `ready`; the watchdog's budget reads it.
-    watched: Mutex<Option<workspace::Watched>>,
+    watched: Mutex<workspace::WatchState>,
     /// `Some(token)` for exactly as long as a watchdog task owns
     /// restarting this row's own daemon-spawned child. An OWNERSHIP
     /// TOKEN, not an identity: every read is `is_some()` plus a

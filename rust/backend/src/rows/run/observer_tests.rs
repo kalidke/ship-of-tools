@@ -198,26 +198,63 @@ fn activation_error_is_independent_of_phase_and_clears_on_the_next_attempt() {
     assert_eq!(ws.activation_error(), None);
 }
 
-/// The watch record: a supervisor reached `ready` iff its watch said so, in the first reply or in a `row.phase` of the
+/// The watch record: a supervisor was told ready iff its watch said so, in the first reply or in a `row.phase` of the
 /// same supervisor, never another's; a spawn clears it, and an event with no record names nobody.
 #[test]
 fn a_supervisor_was_told_ready_only_if_its_watch_said_so() {
     let a = identity(1, 100);
     let b = identity(2, 200);
     let ws = unclaimed_capsule_row();
-    assert!(!ws.watch_said_ready(), "no watch, no record");
-    ws.record_watch(a, false);
-    assert!(!ws.watch_said_ready(), "a first reply that said starting");
+    let g = ws.spawn_generation();
+    assert!(!ws.watch_said_ready(g), "no watch, no record");
+    assert!(ws.record_watch(g, a, false));
+    assert!(!ws.watch_said_ready(g), "a first reply that said starting");
     ws.note_watch_ready(b);
-    assert!(!ws.watch_said_ready(), "another supervisor's event is not this record's");
+    assert!(!ws.watch_said_ready(g), "another supervisor's event is not this record's");
     ws.note_watch_ready(a);
-    assert!(ws.watch_said_ready(), "the same supervisor told ready");
-    ws.clear_watched();
-    assert!(!ws.watch_said_ready(), "a spawn clears the record");
+    assert!(ws.watch_said_ready(g), "the same supervisor told ready");
+    let g = ws.begin_spawn();
+    assert!(!ws.watch_said_ready(g), "a spawn clears the record");
     ws.note_watch_ready(a);
-    assert!(!ws.watch_said_ready(), "an event with no record names nobody");
-    ws.record_watch(b, true);
-    assert!(ws.watch_said_ready(), "a first reply that said ready");
+    assert!(!ws.watch_said_ready(g), "an event with no record names nobody");
+    assert!(ws.record_watch(g, b, true));
+    assert!(ws.watch_said_ready(g), "a first reply that said ready");
+}
+
+/// A first reply from a round that began before a spawn is refused (it may be the supervisor the spawn replaces), and a
+/// reconnect to the same supervisor keeps what its earlier watch told.
+#[test]
+fn a_first_reply_from_before_a_spawn_is_refused_and_a_reconnect_keeps_ready() {
+    let a = identity(1, 100);
+    let b = identity(2, 200);
+    let ws = unclaimed_capsule_row();
+    let before = ws.spawn_generation();
+    assert!(ws.record_watch(before, a, true));
+    assert!(ws.record_watch(before, a, false), "the same supervisor again");
+    assert!(ws.watch_said_ready(before), "a reconnect's first reply said starting and erased ready");
+    assert!(ws.record_watch(before, b, false), "another supervisor's reply starts its own record");
+    assert!(!ws.watch_said_ready(before));
+
+    let after = ws.begin_spawn();
+    assert_ne!(before, after);
+    assert!(!ws.record_watch(before, a, true), "a reply that round began before the spawn repopulated the cleared record");
+    assert_eq!(ws.watched(), None);
+    assert!(ws.record_watch(after, a, false));
+}
+
+/// An exit is adopted only by the generation it was watched under, and only while nothing owns the row: after a spawn
+/// the exit was already handled (by the watchdog of the spawn that replaced it).
+#[test]
+fn an_exit_is_adopted_only_at_the_generation_it_was_watched_under() {
+    let ws = unclaimed_capsule_row();
+    let watched_under = ws.spawn_generation();
+    assert!(super::exit_is_unhandled(&ws, watched_under));
+    ws.set_watchdog_owner(7);
+    assert!(!super::exit_is_unhandled(&ws, watched_under), "a watchdog owns the row");
+    ws.clear_watchdog_owner_if(7);
+    assert!(super::exit_is_unhandled(&ws, watched_under));
+    ws.begin_spawn();
+    assert!(!super::exit_is_unhandled(&ws, watched_under), "a spawn has replaced the supervisor whose exit this was");
 }
 
 /// With no wake sent, a fence file that appears under a running observer is still found: the observer's own wait rule,
