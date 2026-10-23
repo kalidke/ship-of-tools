@@ -224,7 +224,8 @@ rc=0
   bash "$GH_AUTH" poll >"$TMP/slow.out" 2>"$TMP/slow.err" ) || rc=$?
 check "a slow GitHub ends the poll at the code's expiry, by elapsed time" "$rc" "7"
 check "after one request, not three" "$(cat "$TMP/tok.count" 2>/dev/null)" "1"
-check "its line names the time" "$(grep -c 'timed out after 3s' "$TMP/slow.err" || true)" "1"
+# The age is counted on the shell's whole-second clock, so a 2 s request counts 2 s or 3 and the line names 3 s or 4.
+check "its line names the time" "$(grep -c -E 'timed out after [34]s' "$TMP/slow.err" || true)" "1"
 
 rm -rf "${TMP:?}"
 printf 'PASS=%s FAIL=%s\n' "$PASS" "$FAIL"

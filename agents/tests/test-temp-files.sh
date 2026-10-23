@@ -114,13 +114,13 @@ gh_request() {
         || { echo "FATAL: sot-gh-auth.sh request failed" >&2; exit 2; }
     rm -f -- "$TF_DIR/token-calls" "$TF_DIR/dc-stdin" "$TF_DIR/dc-file"
 }
-gh_check() {  # the state file is gone, one token call per lap counted by the caller, the code came on stdin whole
-    local bad=0
+gh_check() {  # the state file is gone, one token call per lap (from $1 to ${2:-$1}), the code came on stdin whole
+    local bad=0 n
     [ ! -e "$SOT_COMM_HOME/gh-device-auth.json" ] || { echo "    the state file is still there"; bad=1; }
     [ "$(cat "$TF_DIR/dc-stdin" 2>/dev/null)" = DC-FAKE-0000 ] \
         || { echo "    curl did not read the device code whole from stdin (a file: $(cat "$TF_DIR/dc-file" 2>/dev/null))"; bad=1; }
-    [ "$(wc -l < "$TF_DIR/token-calls")" -eq "$1" ] \
-        || { echo "    $(wc -l < "$TF_DIR/token-calls" | tr -d ' ') token calls, want $1"; bad=1; }
+    n=$(wc -l < "$TF_DIR/token-calls" | tr -d ' ')
+    [ "$n" -ge "$1" ] && [ "$n" -le "${2:-$1}" ] || { echo "    $n token calls, want ${1}${2:+ to $2}"; bad=1; }
     return "$bad"
 }
 for s in TERM HUP INT; do
@@ -129,9 +129,11 @@ for s in TERM HUP INT; do
     gh_check 1 || { echo "FAIL: G1 sot-gh-auth poll (a signal ends it) $s: after the signal"; TF_FAILED=$((TF_FAILED + 1)); }
 done
 gh_request
+# The poll counts the code's age on the shell's whole-second clock (bash 3.2 has no finer one), and a lap whose request
+# crosses a second boundary counts a second it did not spend, so a 3 s code gives up after two laps or three.
 g2_check() {
     grep -q "timed out" "$TF_DIR/err" || { echo "    no 'timed out' line"; return 1; }
-    gh_check 3
+    gh_check 2 3
 }
 TF_WANT_RC=7 TF_CHECK=g2_check tf_row "G2 sot-gh-auth poll (the network down)" ok env PATH="$GH:$PATH" TF_GH=down \
     bash "$SCRIPTS_DIR/sot-gh-auth.sh" poll
