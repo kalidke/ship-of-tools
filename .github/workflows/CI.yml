@@ -192,11 +192,13 @@ jobs:
       - name: Install preview tool dependencies
         if: steps.apt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 5
+        # apt needs the archive folder's partial/; --download-only keeps every fetched file whatever the image's
+        # Keep-Downloaded-Packages setting, then the install reads them from there.
         run: |
-          mkdir -p "$HOME/apt-debs"
+          mkdir -p "$HOME/apt-debs/partial"
           sudo apt-get update
+          sudo apt-get install -y --no-install-recommends --download-only -o Dir::Cache::archives="$HOME/apt-debs" ${{ steps.apt.outputs.packages }}
           sudo apt-get install -y --no-install-recommends -o Dir::Cache::archives="$HOME/apt-debs" ${{ steps.apt.outputs.packages }}
-          ls "$HOME"/apt-debs/*.deb > /dev/null
       - name: Test ConceptExplorerCore
         timeout-minutes: 5
         run: julia --project=core -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
