@@ -255,6 +255,18 @@ async fn restart_daemon_and_prove_adoption(
     (conn2, next_id2)
 }
 
+/// Ends the row's supervisor with a stop: it exits 0, which nothing restarts (a stop is not a crash and leaves no requested
+/// end), so the row reads `unreachable` with no watchdog and no owner -- the state the operations that resume a row act on.
+/// A kill would be restarted by the daemon that adopted the row.
+#[cfg(target_os = "linux")]
+async fn stop_supervisor(state_dir: &Path) {
+    let dir = state_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::stop(&dir))
+        .await
+        .unwrap()
+        .expect("stop the supervisor");
+}
+
 /// One `workspace.list` round trip's `state_dir` for `workspace_id` —
 /// factored out of the big test above so its own long body reads as one
 /// story rather than three inlined polls of the same shape.

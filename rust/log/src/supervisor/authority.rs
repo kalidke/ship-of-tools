@@ -285,14 +285,14 @@ impl Shared {
         self.changed.notify_all();
     }
 
-    /// The phase the wire reports: `starting` becomes `ready` once the agent has started and has written, or has
-    /// lived `READY_AFTER`.
+    /// The phase the wire reports: `starting` becomes `ready` once the agent has lived `READY_AFTER`: an agent that
+    /// writes its error and exits within that time was never ready.
     fn wire_phase(inner: &Inner) -> SupervisorPhase {
         if inner.phase != SupervisorPhase::Starting {
             return inner.phase;
         }
         match inner.run.as_ref().map(|r| &r.signals) {
-            Some(s) if s.spawned_at().is_some_and(|at| s.output_seen() || at.elapsed() >= READY_AFTER) => {
+            Some(s) if s.spawned_at().is_some_and(|at| at.elapsed() >= READY_AFTER) => {
                 SupervisorPhase::Ready
             }
             _ => SupervisorPhase::Starting,

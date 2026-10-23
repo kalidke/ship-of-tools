@@ -32,12 +32,11 @@ pub const LANE_CONCURRENCY: usize = 4;
 /// daemon lifetime, spawned detached by ADR 0042 design, outliving
 /// the daemon that just restarted) reports its own current phase and
 /// spawns nothing — no second `--resume` leg races the live one's
-/// `supervisor.lock`, and no watchdog is installed for a process this
-/// daemon did not itself launch (decision 33: "a watchdog exists only
-/// for a `Child` the daemon launched"). If that authority later goes
-/// quiet, the next attach's own `resume_if_absent`/`ensure_started`
-/// spawns and watches a FRESH leg under the SAME row's guard —
-/// reactive, same as every other resume path (a list never resumes).
+/// `supervisor.lock`. The row's observer, started for every capsule
+/// row here, holds a watch on it: the live supervisor is adopted, and
+/// if it later exits the observer hands the row to a watchdog that
+/// restarts it within rows' budget, with no selection (a list never
+/// resumes).
 /// A genuinely unreachable row spawns `--resume`, settling before
 /// this task returns (`resume_locked` -> `start_supervisor` ->
 /// `settle_after_spawn`).
@@ -155,7 +154,7 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
 /// `workspace.list`'s own phase, which deliberately does not either —
 /// decision 33's Rule B: "neither has ever had a real run"); it only
 /// NAMES every such row, once, at boot — never from the per-row
-/// lifecycle observer's own `POLL_INTERVAL` loop, which would
+/// lifecycle observer's own redial loop, which would
 /// otherwise repeat the same line forever — so an operator staring at
 /// `sotd.log` after the field defect this closes (a leaked scratch-
 /// daemon registry row) has a lead to start from. Removal is still

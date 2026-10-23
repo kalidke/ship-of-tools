@@ -40,33 +40,47 @@ Supervisor:
   (`spawn/durable/`), so neither the daemon's death nor a second birth takes an accepted birth's fence.
 - The watchdog's restart budget is the one restart budget for a row's agent: the supervisor never starts the agent a
   second time on its own. An agent that cannot start is a count, not a rate: after five consecutive restarts of
-  supervisors that never reached `ready` (the row's phase never read `ready` at least two seconds after the cell adopted
-  that supervisor; one that died before any observation named it, or flashed `ready` and was gone, never did) the next exit marks the row `terminal`,
-  however long the starts and settles take, and the count resets when one reaches `ready`; restarts of supervisors that
-  did reach `ready` keep five within 60 s (`RESTART_BACKOFFS` 1, 3, 7, 15, 30 s either way). The watchdog reads the
-  supervisor's exit: 0 ends it, 69 marks the row `terminal`, 70 leaves the row to the next attach, and every other end
-  restarts it with `--resume` within the budget: 75 (the agent could not be spawned), 76 (it started and ended by
-  itself) and a killed supervisor (no code), which takes its agent with it. 75 and 76 are one path for the restart and
-  differ only in the log; a restart spawns the row's own recipe, never a reauth's `--resume`. Limits: readiness is a heuristic (the row's phase read `ready` two seconds after adoption; a delayed observation, or a
-  supervisor that died before settling and was never named, reads never-ready, and a flash read late can read ready), and
-  the watchdog's identity for a supervisor comes only from its settle and is not refreshed by a later observation or
-  cleared by a failed spawn (queue item RUN-IDENTITY-READY, pass 6c-1: each run gets an identity on the row socket);
-  a replacement's exit 69 before it answered is latched only by a give-up, not by `TerminalUnclaimed`, which a claimed
-  cell refuses. The give-up latches
-  `terminal` under the row's guard, whichever supervisor the cell was last claimed by. Limit, accepted for pass 6b and
-  closed by pass 6c-1 with a guarantee and its red test: a supervisor found alive at boot has no watchdog (`resume_all`
-  adopts it and never watches it), so after its agent ends by itself the row stays `unreachable` until it is selected,
-  whose attach restarts it.
+  supervisors that never reached `ready` (the supervisor's own word: its watch told `ready`, which it does once the agent
+  has lived 2 s, before it ended; one that died before any watch named it, or whose agent ended sooner, never did) the
+  next exit marks the row `terminal`, however long the starts and settles take, and the count resets when one reaches
+  `ready`; restarts of supervisors that did reach `ready` keep five within 60 s (`RESTART_BACKOFFS` 1, 3, 7, 15, 30 s
+  either way). The watchdog reads the supervisor's exit: 0 ends it, 69 marks the row `terminal`, 70 leaves the row to
+  the next attach, and every other end restarts it with `--resume` within the budget: 75 (the agent could not be
+  spawned), 76 (it started and ended by itself) and a killed supervisor (no code), which takes its agent with it. 75 and
+  76 are one path for the restart and differ only in the log; a restart spawns the row's own recipe, never a reauth's
+  `--resume`. The watch record (`Workspace::watched`: the supervisor the row's watch last named and whether it told
+  `ready`) is written by the observer, cleared under the row's guard just before each spawn, and read by the watchdog
+  at an exit; an event still in flight when the watchdog reads is not counted, which matters only for an agent that ends
+  within the observer's latency of its 2 s mark. A 69 marks the supervisor the record names `terminal` on its own word;
+  a 69 with no record (the supervisor exited before it answered, as every bootstrap failure does) and the give-up mark
+  the row `terminal` under the row's guard, rechecked once (`may_mark_terminal`: registered, not already `terminal`, and
+  nothing answers: `unreachable`, or `stopped`, which only Windows can read of a first start whose supervisor has not
+  taken its fence).
+- A supervisor this daemon did not launch (found alive at boot) is watched all the same, and its exit is restarted
+  within the same budget with no selection. At a watch's end the observer waits for the supervisor's process to end
+  (`Watch::end`, at most 5 s), so a decision is not taken while the exiting supervisor still answers or holds its fence;
+  if nothing owns the row and the watch did not carry exit 0 (a stop, which nothing restarts), it takes the row's guard,
+  checks again that nothing owns it, and installs a watchdog whose first outcome is the exit the watch carried (none for
+  a kill), exactly as a child's. The watchdog announces its ownership before the install returns, under that guard.
+  Limit: a supervisor that outlives a told exit by 5 s reads `unreachable` until it is selected; a row whose recipe
+  cannot be built is logged and left as such.
 - No start begins once the close has begun: `Workspaces::begin_start` refuses after `close_gate_and_settle`, which waits
   for the starts already admitted (`gate.rs`).
-- A row's phase follows its current supervisor. The phase cell changes only through
+- A row's phase follows its current supervisor, run by run. The phase cell changes only through
   `Workspace::apply_phase_observation`, which rejects an observation from a supervisor other than the cell's epoch and
   latches `terminal` (for its supervisor) and `ended_no_respawn` (for its run: a supervisor's runs order by their ids, a
   resting supervisor reports the run it rests on, a lower or unnamed run is a stale observation and a strictly newer run
   releases the latch; a supervisor restarted onto a requested end names no run, and the latch on no run is released by
   its first run: the capsule's `ended` record carries no run, by decision, so the cell never compares runs across
-  supervisors). Each row's one observer task holds the row's id and feeds the row registered under it at each
-  round (`run::observer`), so a refreshed row's phase follows its new supervisor.
+  supervisors). Each row's one observer task holds the row's id and one watch on its supervisor
+  (`supervisor_client::watch`: the status at the first reply, then a report at each change of phase or run, and the exit
+  code before a controlled exit), and is the cell's one writer: every report is fed to the row registered under the id,
+  so a refreshed row's phase follows its new supervisor, and a hello that names a supervisor other than the cell's
+  begins its epoch. A start's settle writes nothing and wakes the observer; a settle returns at the supervisor's first
+  answer, so a start reads `starting` until the agent has lived 2 s. Redials follow platform's `Redial` (250 ms doubling
+  to 4 s, cut short by a wake), after an absent fence file, a failed dial or a watch's end alike, so a fence that appears
+  with no wake is found. Between a start's return and the observer's first report (milliseconds) the cell keeps its
+  earlier phase.
 - A state folder had a supervisor iff it holds the fence file `supervisor.lock`: on Unix the daemon claims it before it
   forks and a supervisor takes it before anything else, so such a folder whose row socket does not answer reads
   `unreachable`, not `stopped`, including a start whose fork failed after the claim, and the boot resume and the
@@ -78,7 +92,7 @@ Supervisor:
   leaves no marker for the recheck or the boot resume.
 
 The daemon's calls on a row's supervisor are ops of the row socket, through `sot_log::attach_client::supervisor_client`
-(`query_status`, `end_run`, `reset`, `stop`, and the observer's `Persistent`), each bounded; a row of another row number
+(`query_status`, `end_run`, `reset`, `stop`, each bounded, and the observer's `watch`); a row of another row number
 is `foreign` and one that answers no such op, or none, is `unreachable`. An outcome the call could not settle is
 settled by reading the same supervisor's status, never by asking again: a lost end whose run is gone is `Ended`, a
 lost reset after which status names a run other than the one the supervisor rested on (possibly none) is `Ok`, one

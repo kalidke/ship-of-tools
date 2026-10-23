@@ -427,8 +427,8 @@ async fn a_selection_that_waits_through_several_reprobe_cycles_still_resets() {
 /// Case 4 (Codex review round 8 BLOCKER, round 9's own convergence
 /// fix): an ended row's supervisor was ADOPTED at boot
 /// (`restart_daemon_and_prove_adoption`'s own `Alive` scenario below),
-/// so no watchdog owns it (ADR 0043 decision 33); that supervisor is
-/// then killed outright; a Selection probes `unreachable` with no
+/// so no watchdog owns it; that supervisor is then stopped (exit 0,
+/// which nothing restarts); a Selection probes `unreachable` with no
 /// watchdog -- resting, per `is_resting_phase` -- and picks `Resume`;
 /// the fresh `--resume` supervisor's own recovery
 /// (`sot_log::supervisor::spawn_recovery`, wired externally through
@@ -464,17 +464,22 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
     // watchdog at all, so ONLY a Selection can ever act on it again.
     drop(conn);
     env.kill_daemon_bounded().await;
-    env.spawn_sotd_with_env(&[("SOT_TEST_RECOVERY_DELAY_MS", "3000")]);
+    // The barrier file exists up front, so nothing waits on it: it only turns on the activation's per-cycle markers.
+    let barrier = env._tmp.path().join("arr-activation-barrier");
+    std::fs::write(&barrier, b"go").expect("release the activation barrier");
+    env.spawn_sotd_with_env(&[
+        ("SOT_TEST_RECOVERY_DELAY_MS", "3000"),
+        ("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy()),
+    ]);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND.max(Duration::from_secs(60))).await;
 
-    // Kill the resident (adopted) supervisor itself -- no watchdog exists
-    // to notice or restart it, and an already-resting `ended_no_respawn`
-    // row gets no background reprobe cadence either, so `workspace.list`
-    // alone would never notice this kill: go straight to `pty.open`
-    // (as cases 1 and 3 above do) and let ITS OWN fresh probe discover
-    // the row is now unreachable, exactly like a real Selection would.
-    kill_supervisor(&env.state_root);
+    // Stop the resident (adopted) supervisor itself: it exits 0, which nothing
+    // restarts (a kill would be restarted by the daemon that adopted it), so
+    // the row reads `unreachable` with no owner. Go straight to `pty.open`
+    // (as cases 1 and 3 above do) and let ITS OWN fresh probe resume the row,
+    // exactly like a real Selection would.
+    stop_supervisor(&state_dir_path).await;
 
     // A Selection now finds `unreachable` with no watchdog -- resting --
     // and picks `Resume`. The fresh `--resume` supervisor's own recovery
@@ -491,13 +496,13 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
     // run, never the original, never stuck `ended_no_respawn`.
     assert_ends_in_a_fresh_run(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_run).await;
 
-    // Prove this test actually hit the transient-settle
-    // window it exists to exercise, not merely that the row eventually
-    // recovered some other way.
-    let log_path = env.state_root.join("sot").join("sotd.log");
+    // Prove this test actually hit the transient-settle window it exists to exercise, not merely that the row eventually
+    // recovered some other way: the activation's loop waited out `starting` at least once (the settle itself ends at the
+    // first answer, so it no longer warns).
+    let waitforsettle_dir = PathBuf::from(format!("{}.waitforsettle", barrier.to_string_lossy()));
     assert!(
-        count_log_occurrences(&log_path, "did not settle within the post-spawn deadline") >= 1,
-        "expected at least one post-spawn settle-deadline warning in sotd.log"
+        count_dir_entries(&waitforsettle_dir) >= 1,
+        "expected at least one WaitForSettle cycle in the activation's loop"
     );
 
     let _ = tokio::task::spawn_blocking({
@@ -686,7 +691,7 @@ async fn a_row_that_is_ended_then_selected_stays_live_through_two_observer_round
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
     assert_ends_in_a_fresh_run(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_run).await;
 
-    // The observer polls every 2 s: two full rounds, each read through `workspace.list`.
+    // Two watch-free seconds more, each read through `workspace.list`: a row that rests at a settled phase stays there.
     let until = Instant::now() + Duration::from_secs(5);
     while Instant::now() < until {
         let id = next_id;

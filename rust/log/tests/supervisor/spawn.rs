@@ -1,4 +1,4 @@
-//! Supervisor start tests: start readiness, the identity it reports, first_leg_only, client survival, cancel, exit codes.
+//! Supervisor start tests: start readiness, the identity it reports, first_leg_only, the watch, exit codes.
 
 use super::*;
 
@@ -6,8 +6,8 @@ use super::*;
 /// paying the full [`sot_log::lane::transport::CONNECT_BOUND`] on an absent
 /// run's pipe (it fails fast on `ENOENT`/`ECONNREFUSED` now, retried
 /// only at [`sot_log::supervisor`]'s own 250ms `ATTEMPT_INTERVAL`), a
-/// fresh `--start` should reach `Ready` in well under a second rather
-/// than the 2+ seconds the old fixed wait alone used to cost. Asserted
+/// fresh `--start` should reach `Ready` in the two seconds the agent
+/// must live to be ready, not the old fixed wait on top of them. Asserted
 /// against a GENEROUS 30s bound — this proves behaviour (Ready is
 /// reached at all, promptly), not a tight perf gate; the actual measured
 /// time is printed for the report.
@@ -316,93 +316,6 @@ fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_
     assert_eq!(lines[1], "", "a run after an agent ran must not carry the first-leg-only token");
 
     let run = wait_for_ready(&conn, Duration::from_secs(30));
-    end_run_and_expect_ended(&conn, &run, "cleanup");
-    stop(&conn);
-    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
-}
-
-/// `sot_log::attach_client::supervisor_client::Persistent` reconnects transparently across real processes: the held
-/// connection survives the supervisor process being killed and a fresh one resuming over the same state
-/// dir. (The row socket has no idle close, so the idle-expiry half of the old lane's test has nothing to cross.)
-#[test]
-fn persistent_client_survives_a_supervisor_restart() {
-    let _serial = serial();
-    let _runtime = isolated_runtime_dir();
-    let dir = tempfile::tempdir().unwrap();
-    let state_dir = dir.path().join("state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    let h = state_dir_hash(&state_dir);
-
-    let mut first_guard = spawn_supervisor(&state_dir, "--start", SHELL);
-    // Wait for the row socket over the raw helper first, proving the row is up before `Persistent` connects.
-    let raw_conn = wait_for_lane(&h, Duration::from_secs(30));
-    let run = wait_for_ready(&raw_conn, Duration::from_secs(90));
-    drop(raw_conn);
-
-    let mut persistent = sot_log::attach_client::supervisor_client::Persistent::new(&state_dir);
-    let report = persistent.status().expect("first status on a freshly-ready row");
-    assert_eq!(report.run.as_deref(), Some(run.as_str()));
-    assert_eq!(report.phase, SupervisorPhase::Ready);
-
-    // Kill the supervisor (its agent ends with it) and resume a second one over the same state dir.
-    first_guard.child_mut().kill().unwrap();
-    first_guard.child_mut().wait().unwrap();
-
-    let mut second_guard = spawn_supervisor(&state_dir, "--resume", SHELL);
-    // The old connection is now dead; give the new supervisor's row socket a moment to bind.
-    let raw_conn2 = wait_for_lane(&h, Duration::from_secs(30));
-    let run2 = wait_for_ready(&raw_conn2, Duration::from_secs(30));
-    drop(raw_conn2);
-    assert_ne!(run2, run, "a fresh agent runs in the resumed supervisor");
-
-    let report2 = persistent.status().expect("Persistent must transparently reconnect across a supervisor restart");
-    assert_eq!(report2.run.as_deref(), Some(run2.as_str()));
-    assert_eq!(report2.phase, SupervisorPhase::Ready);
-
-    // Clean up through the raw helper -- `Persistent`'s own internals are private.
-    let conn3 = wait_for_lane(&h, Duration::from_secs(30));
-    end_run_and_expect_ended(&conn3, &run2, "cleanup");
-    stop(&conn3);
-    let _ = wait_for_exit(&mut second_guard, Duration::from_secs(60));
-}
-
-/// `cancel()` and publishing a fresh connection share one lock, so a
-/// cancel landing inside that race window is never missed — proven
-/// deterministically via a test-support hook, with no thread or sleep.
-#[test]
-fn a_cancel_landing_between_connect_and_publish_is_never_missed() {
-    let _serial = serial();
-    let _runtime = isolated_runtime_dir();
-    let dir = tempfile::tempdir().unwrap();
-    let state_dir = dir.path().join("state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    let h = state_dir_hash(&state_dir);
-
-    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
-    let raw_conn = wait_for_lane(&h, Duration::from_secs(30));
-    let run = wait_for_ready(&raw_conn, Duration::from_secs(90));
-    drop(raw_conn);
-
-    let mut persistent = sot_log::attach_client::supervisor_client::Persistent::new(&state_dir);
-    let cancel_handle = persistent.cancel_handle();
-    persistent.set_test_hook_after_connect_before_publish(move || cancel_handle.cancel());
-
-    let result = persistent.status();
-    assert!(
-        result.is_err(),
-        "a connect published after a cancel landed inside the race window must still refuse"
-    );
-
-    // Cancellation is persistent, never a one-shot refusal of just the racing call.
-    for _ in 0..3 {
-        assert!(
-            persistent.status().is_err(),
-            "a cancelled Persistent must refuse every subsequent status() too, not just the one that raced"
-        );
-    }
-
-    drop(persistent);
-    let conn = wait_for_lane(&h, Duration::from_secs(30));
     end_run_and_expect_ended(&conn, &run, "cleanup");
     stop(&conn);
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));

@@ -608,6 +608,37 @@ fn a_watch_reports_exiting_with_the_code_before_a_controlled_end() {
     assert_eq!(exit_code(&mut supervisor), Some(76), "the code the watch was told is the one the process left with");
 }
 
+/// A watch's end waits for the supervisor's process, so a reader that acts on a told exit does not decide while the
+/// exiting supervisor still answers or holds its fence: `end` closes the connection first, then waits for the process,
+/// and reports whether it ended within the bound. The seam holds the exit two seconds with the row socket bound.
+#[test]
+fn a_watch_ends_by_waiting_for_the_supervisors_process() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    std::env::set_var("SOT_RUNTIME_DIR", runtime.path());
+    let dir = tempfile::tempdir().unwrap();
+
+    for (name, bound, ended) in [("short", Duration::from_millis(300), false), ("long", Duration::from_secs(30), true)] {
+        let state_dir = dir.path().join(name);
+        let (mut supervisor, path) = supervisor(runtime.path(), &state_dir, &[("SOT_TEST_EXIT_HOLD_MS", "2000")]);
+        let mut driver = dial(&path);
+        driver.attach(80, 24, true).expect("attach as the driver");
+        read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
+        let mut watch = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("the watch is served");
+        let mut manager = dial(&path);
+        manager.call("row.stop", json!({}), Duration::from_secs(30)).expect("stop answers");
+        let seen = watch_until(&mut watch, Duration::from_secs(30), |s| matches!(s, WatchStep::Exiting(_) | WatchStep::Ended));
+        assert!(matches!(seen.last(), Some(WatchStep::Exiting(0))), "a stop is told as exit 0: {seen:?}");
+        drop((manager, driver));
+        let began = Instant::now();
+        assert_eq!(watch.end(bound), ended, "{name}: the process had {bound:?} to end while it held its exit for 2 s");
+        if ended {
+            assert!(began.elapsed() >= Duration::from_secs(1), "the end returned at once, without waiting for the process");
+        }
+        assert_eq!(exit_code(&mut supervisor), Some(0));
+    }
+}
+
 /// A cancel that lands between the dial and the publication of the connection is never missed: the watch is refused, and
 /// so is every later one on that handle (cancellation is latched), while the row stays served to a fresh handle.
 #[test]

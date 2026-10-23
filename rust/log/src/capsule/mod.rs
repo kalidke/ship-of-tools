@@ -29,7 +29,6 @@ use crate::lane::transport::{join_within, TEARDOWN_AGGREGATE_DEADLINE};
 use crate::{Error, Result};
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -128,12 +127,11 @@ pub struct CapsuleConfig {
     pub signals: Option<Arc<RunSignals>>,
 }
 
-/// What a run tells its owner while it lives: when the agent was started and whether it has written yet. The owner
-/// reads it to tell `starting` from `ready` (the supervisor's status).
+/// What a run tells its owner while it lives: when the agent was started. The owner reads it to tell `starting` from
+/// `ready` (the supervisor's status).
 #[derive(Debug, Default)]
 pub struct RunSignals {
     spawned_at: std::sync::OnceLock<Instant>,
-    output_seen: AtomicBool,
     /// The row socket's fan-out for this run, when the owner serves one: the run feeds it and services its requests.
     row: std::sync::OnceLock<Arc<crate::row::RowRun>>,
 }
@@ -153,17 +151,8 @@ impl RunSignals {
         self.spawned_at.get().copied()
     }
 
-    /// The agent has written something since it started.
-    pub fn output_seen(&self) -> bool {
-        self.output_seen.load(Ordering::Acquire)
-    }
-
     fn spawned(&self, at: Instant) {
         let _ = self.spawned_at.set(at);
-    }
-
-    fn output(&self) {
-        self.output_seen.store(true, Ordering::Release);
     }
 }
 

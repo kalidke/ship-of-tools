@@ -1,9 +1,9 @@
 //! The watchdog: one task per daemon-spawned supervisor that classifies its exit and restarts a crash within a budget.
 
-use super::observer::observe_with_adoption;
+use super::observer::observe;
 use super::probe::phase_of;
 use super::start::settle_after_spawn;
-use super::UNREACHABLE_PHASE;
+use super::{NEVER_STARTED_PHASE, UNREACHABLE_PHASE};
 use crate::rows::spawn::detach::{spawn_detached_supervisor, Spawn, SupervisorChild};
 use crate::rows::Workspaces;
 use sot_log::supervisor::{StartMode, EXIT_AGENT_ENDED, EXIT_CLEAN, EXIT_CONTENDED, EXIT_TERMINAL};
@@ -42,9 +42,9 @@ fn backoff_for(restarts: usize) -> std::time::Duration {
 
 /// The restart budget, one per watchdog. An agent that cannot start is a count, not a rate: consecutive restarts of
 /// supervisors that never reached `ready` are counted without a window, so how long each start, settle or life takes
-/// never decides it, and the count resets when one reaches `ready`. Rows knows `ready` by observation: the row's phase
-/// read `ready` while that supervisor was the cell's epoch, `READY_STABLE` after the cell adopted it; one that died
-/// before any observation named it, or flashed `ready` and was gone, never did. Restarts of supervisors that did
+/// never decides it, and the count resets when one reaches `ready`. Rows knows `ready` by the supervisor's word: its
+/// watch told `ready` (the agent lived 2 s) before it ended; one that died before any watch named it, or whose agent
+/// ended sooner, never did. Restarts of supervisors that did
 /// reach `ready` keep `MAX_RESTARTS_PER_WINDOW` within `RESTART_WINDOW`. Either way the exit after the fifth restart
 /// is the give-up.
 #[derive(Default)]
@@ -55,7 +55,7 @@ struct Budget {
 }
 
 impl Budget {
-    /// Judges an exit of a supervisor that was (or never was) observed `ready`: the backoff before its restart, `None`
+    /// Judges an exit of a supervisor that was (or never was) told `ready`: the backoff before its restart, `None`
     /// when the budget is spent.
     fn on_exit(&mut self, reached_ready: bool, now: Instant) -> Option<std::time::Duration> {
         self.last_exit_was_ready = reached_ready;
@@ -129,18 +129,16 @@ fn classify_exit_code(code: Option<i32>) -> LegOutcome {
     }
 }
 
-/// Waits for `child` to end and classifies the result.
-/// The wait is trusted outright: the daemon is the sole, unambiguous
-/// owner of a supervisor it launched itself (its durable parent reports
-/// the exit, on Unix) -- ADR 0043 decision 33, "a watchdog exists only
-/// for a child the daemon launched." There is no adopted twin any more:
-/// an authority `resume_all` merely finds already alive at boot is never
-/// watched at all (see that function's own doc); if it later goes quiet,
-/// the next attach's `resume_if_absent`/`ensure_started` spawns and
-/// watches a FRESH leg, which this function then does own. A parent
-/// lost before it could report is a crash here: the restart's own
-/// recheck (`watchdog_may_act`) finds out whether anything is still
-/// serving.
+/// What starts a watchdog's loop: a child this daemon launched, whose wait it trusts outright (the daemon is its durable
+/// parent, so on Unix the exit is reported), or the exit of a supervisor it did not launch, which the observer's watch
+/// carried (the code `row.exiting` told, none for a kill). Every later leg is the watchdog's own child.
+pub(super) enum First {
+    Child(SupervisorChild),
+    Exited(Option<i32>),
+}
+
+/// Waits for `child` to end and classifies the result. A parent lost before it could report is a crash here: the
+/// restart's own recheck (`watchdog_may_act`) finds out whether anything is still serving.
 async fn wait_and_classify(child: SupervisorChild, workspace_id: &str) -> LegOutcome {
     let code = match child.wait().await {
         Ok(code) => code,
@@ -189,21 +187,6 @@ fn watchdog_may_act(workspace_id: &str, state_dir: &Path, workspaces: &Workspace
     true
 }
 
-/// The identity a settle learned, if its lane answered at all — the
-/// ONE place a daemon-spawned supervisor's identity now comes from
-/// (supervisor-epoch rule: the supervisor authors it, this daemon
-/// only learns it over the lane, on every platform). Every caller
-/// OVERWRITES with this, never merely sets: a settle that came back
-/// anything other than `Phase` must clear the previous leg's
-/// identity too, or a later terminal mark could be credited to a
-/// prior, now-dead spawn.
-pub(super) fn identity_of(observation: &crate::rows::workspace::Observation) -> Option<crate::rows::workspace::SupervisorIdentity> {
-    match observation {
-        crate::rows::workspace::Observation::Phase { supervisor, .. } => Some(*supervisor),
-        _ => None,
-    }
-}
-
 /// Mints an ownership token for one watchdog install — unique for
 /// this daemon's lifetime, which is the whole guarantee
 /// `Workspace::watchdog_owner` needs (see that field's own doc).
@@ -212,24 +195,60 @@ fn next_watchdog_owner() -> u64 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// A watchdog's exit-classification observation; no guard needed.
-/// `Some` judges the mark against the identity the leg's own settle
-/// learned, exactly as before. `None` — a leg that exited before
-/// ever answering its lane, which `sot-capsule supervise` does on
-/// every bootstrap failure (it returns `EXIT_TERMINAL` from three
-/// sites ahead of its own accept loop) — marks
-/// [`crate::rows::workspace::Observation::TerminalUnclaimed`] instead, so
-/// the row still latches `terminal` rather than reading `stopped`
-/// and re-spawning the same instant failure on every attach.
-fn observe_terminal(workspaces: &Workspaces, workspace_id: &str, identity: Option<crate::rows::workspace::SupervisorIdentity>) {
-    if let Some(ws) = workspaces.resolve(Some(workspace_id)) {
-        let observation = match identity {
-            Some(supervisor) => {
-                crate::rows::workspace::Observation::Phase { phase: crate::rows::workspace::Phase::Terminal, supervisor, run: None }
-            }
-            None => crate::rows::workspace::Observation::TerminalUnclaimed,
-        };
-        super::observer::observe(&ws, observation);
+/// Whether a phase is one nothing answers: `unreachable`, or `stopped`, which only Windows can read of a first start
+/// whose supervisor has not yet taken its fence.
+fn nothing_answers(phase: &str) -> bool {
+    phase == UNREACHABLE_PHASE || phase == NEVER_STARTED_PHASE
+}
+
+/// Whether it is still this watchdog's business to mark `workspace_id` terminal without a supervisor's word, checked under
+/// the row's guard: the row is registered, not already terminal, and nothing answers (see [`nothing_answers`]). A terminal
+/// mark on a row a fresh supervisor is serving would misreport it. BLOCKING (`phase_of`): callers run it via
+/// `spawn_blocking`.
+fn may_mark_terminal(workspace_id: &str, state_dir: &Path, workspaces: &Workspaces) -> bool {
+    let Some(ws) = workspaces.resolve(Some(workspace_id)) else {
+        return false;
+    };
+    ws.phase() != crate::rows::workspace::Phase::Terminal && nothing_answers(phase_of(state_dir))
+}
+
+/// The give-up's and the unwatched 69's terminal mark, under the guard the caller holds: latched only if
+/// [`may_mark_terminal`].
+async fn latch_terminal_if_nothing_answers(workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) {
+    let (dir, wsid, registry) = (state_dir.to_path_buf(), workspace_id.to_string(), workspaces.clone());
+    let may = tokio::task::spawn_blocking(move || may_mark_terminal(&wsid, &dir, &registry)).await.unwrap_or(false);
+    if may {
+        if let Some(ws) = workspaces.resolve(Some(workspace_id)) {
+            ws.latch_terminal();
+        }
+    }
+}
+
+/// The one place the row's `watchdog_owner` fact is announced (constructor) and retracted (Drop): a compare-and-clear
+/// against this watchdog's own token, never a plain clear, so a superseded watchdog's belated cleanup can never erase a
+/// replacement's ownership set after it. One token per watchdog, minted once: ownership is a property of the watchdog, not
+/// of whichever leg it currently holds, so a respawn has nothing to announce.
+struct WatchdogOwnerGuard {
+    workspaces: Workspaces,
+    workspace_id: String,
+    token: u64,
+}
+
+impl WatchdogOwnerGuard {
+    fn new(workspaces: Workspaces, workspace_id: String) -> Self {
+        let token = next_watchdog_owner();
+        if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
+            ws.set_watchdog_owner(token);
+        }
+        Self { workspaces, workspace_id, token }
+    }
+}
+
+impl Drop for WatchdogOwnerGuard {
+    fn drop(&mut self) {
+        if let Some(ws) = self.workspaces.resolve(Some(&self.workspace_id)) {
+            ws.clear_watchdog_owner_if(self.token);
+        }
     }
 }
 
@@ -258,23 +277,18 @@ async fn wait_for_test_watchdog_restart_barrier() {
     }
 }
 
-/// The watchdog itself: waits for the leg to exit, classifies it, and
-/// on a crash restarts with `--resume` under ADR 0041's own launcher
-/// restart sequence (`RESTART_BACKOFFS`, at most `MAX_RESTARTS_PER_
-/// WINDOW` within `RESTART_WINDOW`), then observes the workspace `Terminal` (latched — `workspace.list` reads
-/// it from memory, rule F). A `Contended` leg (decision 33) logs and returns outright.
+/// The watchdog itself: waits for the supervisor to exit (or takes the exit the observer's watch carried), classifies it,
+/// and on a crash restarts with `--resume` under ADR 0041's own launcher restart sequence (`RESTART_BACKOFFS`, at most
+/// `MAX_RESTARTS_PER_WINDOW` within `RESTART_WINDOW`), then marks the workspace `Terminal` (latched, `workspace.list` reads
+/// it from memory). A `Contended` leg logs and returns outright.
 ///
-/// ADR 0043 decision 33: "a watchdog exists only for a `Child` the
-/// daemon launched" — `child` starts as [`spawn_and_watch`]'s own
-/// freshly-spawned process, and every SUBSEQUENT leg (a crash
-/// restart) is a fresh spawn too. There is no adopted counterpart —
-/// see `resume_all`'s own doc for what an already-alive authority
-/// gets instead (nothing, until it goes quiet and a fresh attach
-/// resumes and watches it). `None` from [`Workspaces::capsule_guard`]
-/// at entry (the row already gone by the time this task got to ask)
-/// means there is nothing to watch at all.
+/// `first` is [`spawn_and_watch`]'s own freshly spawned child, or the exit of a supervisor this daemon found alive at boot
+/// and the observer's watch saw end ([`First::Exited`]); every later leg (a crash restart) is a fresh child of the
+/// watchdog. `None` from [`Workspaces::capsule_guard`] at entry (the row already gone) means there is nothing to watch. The
+/// row's `watchdog_owner` is announced before this returns.
 ///
-/// R4a: `Terminal` reports immediately, no guard, identity-judged; `Crash` holds the guard across recheck/backoff/spawn.
+/// `Terminal` reports immediately for a supervisor the watch named, judged by its identity; `Crash` holds the guard across
+/// recheck/backoff/spawn.
 #[allow(clippy::too_many_lines, reason = "the per-row watchdog task: recheck, back off and respawn; predates the 100-line limit")]
 pub(super) fn install_watchdog(
     workspace_id: String,
@@ -284,55 +298,23 @@ pub(super) fn install_watchdog(
     cwd: PathBuf,
     agent_name: String,
     slug: String,
-    child: SupervisorChild,
-    initial_identity: Option<crate::rows::workspace::SupervisorIdentity>,
+    first: First,
     workspaces: Workspaces,
 ) {
+    // Ownership is announced here, before this returns and so under the caller's guard: a task that announced it would leave
+    // the row ownerless for a moment, and every resume path defers to an owner.
+    let Some(capsule_guard) = workspaces.capsule_guard(&workspace_id) else {
+        return;
+    };
+    let watchdog_owner_guard = WatchdogOwnerGuard::new(workspaces.clone(), workspace_id.clone());
     tokio::spawn(async move {
-        let Some(capsule_guard) = workspaces.capsule_guard(&workspace_id) else {
-            return;
-        };
-        // Rule: the watchdog is the single writer of restarts for a
-        // child this daemon spawned. This guard is the ONE place the
-        // row's `watchdog_owner` fact is announced (constructor) and
-        // retracted (Drop) -- a compare-and-clear against THIS
-        // task's own token, never a plain clear, so a superseded
-        // watchdog's belated cleanup can never erase a replacement's
-        // ownership set after it. One token per task, minted once:
-        // ownership is a property of the WATCHDOG, not of whichever
-        // leg it currently holds, so a respawn has nothing to
-        // announce here.
-        struct WatchdogOwnerGuard {
-            workspaces: Workspaces,
-            workspace_id: String,
-            token: u64,
-        }
-        impl WatchdogOwnerGuard {
-            fn new(workspaces: Workspaces, workspace_id: String) -> Self {
-                let token = next_watchdog_owner();
-                if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
-                    ws.set_watchdog_owner(token);
-                }
-                Self { workspaces, workspace_id, token }
-            }
-        }
-        impl Drop for WatchdogOwnerGuard {
-            fn drop(&mut self) {
-                if let Some(ws) = self.workspaces.resolve(Some(&self.workspace_id)) {
-                    ws.clear_watchdog_owner_if(self.token);
-                }
-            }
-        }
-        let _watchdog_owner_guard = WatchdogOwnerGuard::new(workspaces.clone(), workspace_id.clone());
-        // What each exit classification is judged against: the
-        // identity the CURRENT leg's own settle learned, or `None`
-        // when its lane never answered.
-        let mut current_identity = initial_identity;
-        let mut leg_opt = Some(child);
+        let _watchdog_owner_guard = watchdog_owner_guard;
+        let mut first = Some(first);
         let mut budget = Budget::default();
         loop {
-            let outcome = match leg_opt.take() {
-                Some(c) => wait_and_classify(c, &workspace_id).await,
+            let outcome = match first.take() {
+                Some(First::Child(c)) => wait_and_classify(c, &workspace_id).await,
+                Some(First::Exited(code)) => classify_exit_code(code),
                 // A previous restart attempt itself found nothing to
                 // wait on -- counts as another crash against the
                 // same budget.
@@ -346,7 +328,24 @@ pub(super) fn install_watchdog(
                         workspace_id = %workspace_id,
                         "capsule supervisor watchdog: leg exited terminal (69) -- marking terminal, no restart"
                     );
-                    observe_terminal(&workspaces, &workspace_id, current_identity);
+                    // The supervisor the row's watch named is marked on its own word; a supervisor no watch named (it
+                    // exited 69 before it answered, as every bootstrap failure does) is marked under the guard, if
+                    // nothing answers, so the row latches `terminal` rather than reading `stopped` and starting the same
+                    // instant failure on every attach.
+                    match workspaces.resolve(Some(&workspace_id)).and_then(|ws| ws.watched().map(|watched| (ws, watched))) {
+                        Some((ws, watched)) => observe(
+                            &ws,
+                            crate::rows::workspace::Observation::Phase {
+                                phase: crate::rows::workspace::Phase::Terminal,
+                                supervisor: watched.supervisor,
+                                run: None,
+                            },
+                        ),
+                        None => {
+                            let _held = capsule_guard.lock().await;
+                            latch_terminal_if_nothing_answers(&workspaces, &workspace_id, &state_dir).await;
+                        }
+                    }
                     return;
                 }
                 LegOutcome::Contended => {
@@ -358,25 +357,15 @@ pub(super) fn install_watchdog(
                 }
                 LegOutcome::Crash | LegOutcome::AgentEnded => {
                     // Decided before taking the guard -- giving up needs no recheck (R4a).
-                    let reached_ready = workspaces.resolve(Some(&workspace_id)).is_some_and(|ws| ws.reached_ready(current_identity));
+                    let reached_ready = workspaces.resolve(Some(&workspace_id)).is_some_and(|ws| ws.reached_ready());
                     let Some(backoff) = budget.on_exit(reached_ready, Instant::now()) else {
                         tracing::error!(
                             workspace_id = %workspace_id, window = ?RESTART_WINDOW, max = MAX_RESTARTS_PER_WINDOW,
                             "capsule supervisor watchdog: restart budget exhausted -- giving up, marking terminal"
                         );
-                        // The same recheck as a restart's, under the guard: nothing else has started the row since.
+                        // Rechecked under the guard: nothing else has started the row since.
                         let _held = capsule_guard.lock().await;
-                        let may_act = {
-                            let dir = state_dir.clone();
-                            let wsid = workspace_id.clone();
-                            let workspaces = workspaces.clone();
-                            tokio::task::spawn_blocking(move || watchdog_may_act(&wsid, &dir, &workspaces)).await.unwrap_or(false)
-                        };
-                        if may_act {
-                            if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
-                                ws.latch_terminal();
-                            }
-                        }
+                        latch_terminal_if_nothing_answers(&workspaces, &workspace_id, &state_dir).await;
                         return;
                     };
                     wait_for_test_watchdog_restart_barrier().await;
@@ -439,6 +428,10 @@ pub(super) fn install_watchdog(
                         crate::agents::argv::agent_argv(&agent_kind_for_spawn, Some(cwd_for_spawn.as_path())),
                         &argv,
                     );
+                    // The supervisor about to start has been watched by no one.
+                    if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
+                        ws.clear_watched();
+                    }
                     let spawn_result = tokio::task::spawn_blocking(move || {
                         spawn_detached_supervisor(
                             &permit,
@@ -467,33 +460,21 @@ pub(super) fn install_watchdog(
                             return;
                         }
                         Ok(Ok((Spawn::Started(child), permit))) => {
-                            // Settle BEFORE this guard drops — the
+                            // Settle BEFORE this guard drops -- the
                             // SAME shared wait `spawn_and_watch`
                             // itself uses; see `settle_after_spawn`'s
                             // own doc for why a fresh spawn cannot
                             // skip this without reopening the exact
                             // guard-release race this restart's own
-                            // recheck above just closed. A fresh leg
-                            // begins a fresh epoch exactly as the
-                            // first spawn does: by being adopted
-                            // from what it answers.
+                            // recheck above just closed. The fresh
+                            // supervisor is then the observer's to
+                            // watch.
                             let settle_dir = state_dir.clone();
                             let settle_wsid = workspace_id.clone();
-                            let settled = tokio::task::spawn_blocking(move || settle_after_spawn(&settle_dir, &settle_wsid)).await;
-                            // Always OVERWRITE, never merely set: a
-                            // settle that yields no `Phase` clears
-                            // the PREVIOUS leg's identity, or the
-                            // next terminal mark would be credited
-                            // to a spawn that is already dead.
-                            current_identity = match &settled {
-                                Ok((_phase, observation)) => identity_of(observation),
-                                Err(_join_err) => None,
-                            };
-                            if let (Ok((_phase, observation)), Some(ws)) = (settled, workspaces.resolve(Some(&workspace_id))) {
-                                observe_with_adoption(&ws, observation);
-                            }
+                            let _ = tokio::task::spawn_blocking(move || settle_after_spawn(&settle_dir, &settle_wsid)).await;
+                            workspaces.wake_observer(&workspace_id);
                             drop(permit);
-                            leg_opt = Some(child);
+                            first = Some(First::Child(child));
                         }
                         Ok(Err(e)) if e.kind() == ErrorKind::Unsupported => {
                             // `qualified_state_root` refused (ADR 0043
@@ -503,7 +484,7 @@ pub(super) fn install_watchdog(
                             // that without operator action -- mark terminal
                             // now (the error names the recovery).
                             tracing::error!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: unqualified state root -- marking terminal, no restart");
-                            observe_terminal(&workspaces, &workspace_id, current_identity);
+                            latch_terminal_if_nothing_answers(&workspaces, &workspace_id, &state_dir).await;
                             return;
                         }
                         Ok(Err(e)) => {

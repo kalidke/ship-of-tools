@@ -138,7 +138,16 @@ impl Workspaces {
     /// A finished handle reads as absent.
     pub(crate) fn has_observer(&self, workspace_id: &str) -> bool {
         let g = self.inner.read().expect("workspaces lock");
-        g.observers.get(workspace_id).map(|(h, _)| !h.is_finished()).unwrap_or(false)
+        g.observers.get(workspace_id).map(|(h, _, _)| !h.is_finished()).unwrap_or(false)
+    }
+
+    /// Wakes the row's observer out of its wait, or leaves a permit for its next one: a supervisor has been settled that
+    /// the observer should watch now. Nothing for a row with no observer.
+    pub(crate) fn wake_observer(&self, workspace_id: &str) {
+        let g = self.inner.read().expect("workspaces lock");
+        if let Some((_, _, wake)) = g.observers.get(workspace_id) {
+            wake.notify_one();
+        }
     }
 
     /// Checked against the SAME registry lock `remove_by_id` uses: a row removed
@@ -148,6 +157,7 @@ impl Workspaces {
         workspace_id: &str,
         handle: tokio::task::JoinHandle<()>,
         cancel: Arc<dyn Fn() + Send + Sync>,
+        wake: Arc<tokio::sync::Notify>,
     ) -> bool {
         let mut g = self.inner.write().expect("workspaces lock");
         if !g.by_id.contains_key(workspace_id) {
@@ -155,7 +165,7 @@ impl Workspaces {
             handle.abort();
             return false;
         }
-        if let Some((prev, prev_cancel)) = g.observers.insert(workspace_id.to_string(), (handle, cancel)) {
+        if let Some((prev, prev_cancel, _)) = g.observers.insert(workspace_id.to_string(), (handle, cancel, wake)) {
             prev_cancel();
             prev.abort();
         }
@@ -321,7 +331,7 @@ impl Workspaces {
         // starts with a fresh one.
         g.capsule_guards.remove(id);
         // Cancel before abort: a round blocked in `spawn_blocking` only returns via the cancelled connection.
-        if let Some((h, cancel)) = g.observers.remove(id) {
+        if let Some((h, cancel, _)) = g.observers.remove(id) {
             cancel();
             h.abort();
         }

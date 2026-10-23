@@ -1,9 +1,8 @@
 //! Starting a capsule row's supervisor: spawn and hand to a watchdog, the run gate, and the post-spawn settle.
 
 use super::admission::{is_pending, pending, PENDING_AUTHORITY};
-use super::observer::observe_with_adoption;
-use super::probe::probe;
-use super::watchdog::{identity_of, install_watchdog};
+use super::probe::phase_of;
+use super::watchdog::{install_watchdog, First};
 use super::UNREACHABLE_PHASE;
 use crate::rows::gate::StartPermit;
 use crate::rows::spawn::detach::{sot_capsule_exe, spawn_detached_supervisor, Spawn};
@@ -27,14 +26,10 @@ use std::time::{Duration, Instant};
 /// here needs to signal "the launch is no longer in flight" the way
 /// the old `starting` claim did.
 ///
-/// Order (supervisor-epoch rule): spawn, SETTLE, adopt, install
-/// the watchdog — the settle moved inward by one frame from
-/// [`start_supervisor`], where it used to sit. Same 2s bound, same
-/// caller's guard, same total latency; what changes is that the
-/// window between spawn and first answered status now contains no
-/// watchdog at all, so no terminal mark and no second spawn can
-/// land inside it. The phase this settles to is what the caller
-/// reports.
+/// Order: spawn, SETTLE, install the watchdog, wake the observer. The settle is a bound on how long the caller's guard
+/// waits for the supervisor to be reachable; the window between spawn and first answered status contains no watchdog at
+/// all, so no terminal mark and no second spawn can land inside it. The phase this settles to is what the caller reports;
+/// the row's cell is the observer's to write, from the supervisor's watch.
 pub fn spawn_and_watch(
     permit: &StartPermit,
     sot_capsule_exe: &Path,
@@ -64,6 +59,10 @@ pub fn spawn_and_watch(
         .resolve(Some(&workspace_id))
         .map(|ws| (ws.agent(), ws.account()))
         .unwrap_or_default();
+    // The supervisor about to start has been watched by no one.
+    if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
+        ws.clear_watched();
+    }
     let child = match spawn_detached_supervisor(
         permit, sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug, &agent_kind, &account,
     )? {
@@ -71,28 +70,21 @@ pub fn spawn_and_watch(
         // The row's fence is claimed: nothing was started, and no watchdog is installed for a launch that never was.
         Spawn::Contended => return Err(pending()),
     };
-    // The supervisor authors its own identity; this daemon only
-    // LEARNS it, here, from the first status the settle draws out.
-    // A settle that yields no `Phase` leaves the row unclaimed --
-    // best-effort by design, since the background observer adopts
-    // whenever the lane does answer.
-    let (phase, observation) = settle_after_spawn(state_dir, &workspace_id);
-    let identity = identity_of(&observation);
-    if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
-        observe_with_adoption(&ws, observation);
-    }
+    let phase = settle_after_spawn(state_dir, &workspace_id);
     install_watchdog(
-        workspace_id,
+        workspace_id.clone(),
         sot_capsule_exe.to_path_buf(),
         state_dir.to_path_buf(),
         agent_argv.to_vec(),
         cwd.to_path_buf(),
         agent_name.to_string(),
         slug,
-        child,
-        identity,
-        workspaces,
+        First::Child(child),
+        workspaces.clone(),
     );
+    // The supervisor authors its own identity and this daemon learns it from the observer's watch, which the settle's end
+    // wakes: the settle itself writes nothing.
+    workspaces.wake_observer(&workspace_id);
     Ok(phase)
 }
 
@@ -197,8 +189,9 @@ fn spawn_settle_deadline() -> Duration {
     override_ms.map(Duration::from_millis).unwrap_or(SPAWN_SETTLE_DEADLINE)
 }
 
-/// Waits under the caller's guard for a spawn to settle, polling until [`spawn_settle_deadline`] (timeout WARNS). BLOCKING.
-pub(super) fn settle_after_spawn(state_dir: &Path, workspace_id: &str) -> (&'static str, crate::rows::workspace::Observation) {
+/// Waits under the caller's guard for a spawn to settle: until its supervisor answers at all (`starting` included), polling
+/// until [`spawn_settle_deadline`] (timeout WARNS). BLOCKING.
+pub(super) fn settle_after_spawn(state_dir: &Path, workspace_id: &str) -> &'static str {
     let settled = settle_probe(state_dir, workspace_id);
     // Test seam: a settle that takes this many more milliseconds, so a test proves the restart budget does not depend on
     // how long settles take. Inert unless named.
@@ -208,21 +201,20 @@ pub(super) fn settle_after_spawn(state_dir: &Path, workspace_id: &str) -> (&'sta
     settled
 }
 
-fn settle_probe(state_dir: &Path, workspace_id: &str) -> (&'static str, crate::rows::workspace::Observation) {
+fn settle_probe(state_dir: &Path, workspace_id: &str) -> &'static str {
     let settle = spawn_settle_deadline();
-    let starting_phase = super::phase_str(sot_log::SupervisorPhase::Starting);
     let deadline = Instant::now() + settle;
     loop {
-        let (phase, observation) = probe(state_dir);
-        if phase != UNREACHABLE_PHASE && phase != starting_phase {
-            return (phase, observation);
+        let phase = phase_of(state_dir);
+        if phase != UNREACHABLE_PHASE {
+            return phase;
         }
         if Instant::now() >= deadline {
             tracing::warn!(
                 workspace_id = %workspace_id, phase, deadline = ?settle,
                 "capsule workspace: lane did not settle within the post-spawn deadline"
             );
-            return (phase, observation);
+            return phase;
         }
         std::thread::sleep(Duration::from_millis(50));
     }

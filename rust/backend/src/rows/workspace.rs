@@ -58,27 +58,18 @@ pub(crate) enum Observation {
     Stopped,
     Foreign,
     Failed,
-    /// A leg this daemon spawned exited terminal (69) before ANY
-    /// authority ever claimed the row -- the supervisor died inside its
-    /// own bootstrap (lane bind, parent-death lease), so no `status`
-    /// was ever served and there is no identity to mark against.
-    /// Applied ONLY to an empty cell: `begin_supervisor_epoch` never
-    /// writes `None`, so a cell claimed at any point in this daemon's
-    /// life is closed to it and a stale watchdog cannot latch a row it
-    /// no longer owns. Latches like any `Terminal` -- the operator
-    /// signal a bootstrap failure must leave behind, rather than a
-    /// `stopped` row that re-spawns the same instant failure on every
-    /// attach -- while leaving the cell claimable, so a genuine
-    /// authority answering later adopts and clears it.
-    TerminalUnclaimed,
+}
+
+/// What the observer's watch told of the supervisor the row last watched: who it was, and whether it said `ready`
+/// (the supervisor's word, once its agent lived 2 s). The watchdog's budget reads it after the supervisor's end, so the
+/// observer does not clear it at the watch's end; the spawn paths clear it just before each spawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Watched {
+    pub supervisor: SupervisorIdentity,
+    pub ready: bool,
 }
 
 /// One lock: a rejection check and the write it gates share one critical section.
-/// A supervisor counts as having reached `ready` only if the row's phase read `ready` while it held the cell at least this
-/// long after the cell adopted it (the supervisor's own `READY_AFTER`: it reports `ready` once its agent has written *or*
-/// lived this long), so an agent that prints its error and exits is not ready for having written it.
-pub(crate) const READY_STABLE: std::time::Duration = std::time::Duration::from_secs(2);
-
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct PhaseCell {
     phase: Phase,
@@ -86,11 +77,6 @@ pub(super) struct PhaseCell {
     run: Option<uuid::Uuid>,
     /// Reaching 2 sets `Unreachable` (unless already latched).
     consecutive_failures: u8,
-    /// When the cell adopted its supervisor.
-    adopted_at: Option<std::time::Instant>,
-    /// This epoch's supervisor was observed `ready` at least `READY_STABLE` after it was adopted: the watchdog's budget
-    /// counts the ones that never were.
-    ready_seen: bool,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -158,6 +144,7 @@ impl Workspace {
             account: Mutex::new(String::new()),
             agent_handle: crate::rows::handle::Declared::default(),
             phase_cell: Mutex::new(PhaseCell::default()),
+            watched: Mutex::new(None),
             watchdog_owner: Mutex::new(None),
             activation_error: Mutex::new(None),
             files_mode: OnceLock::new(),
@@ -195,18 +182,40 @@ impl Workspace {
         self.phase_cell.lock().unwrap_or_else(|e| e.into_inner()).phase
     }
 
-    /// The ONLY way `phase_cell.supervisor` changes. Resets phase/run/failure-count
+    /// The way `phase_cell.supervisor` changes (beside an empty cell's first prover). Resets phase/run/failure-count
     /// fresh — the only thing that clears a `Terminal` latch.
     pub(crate) fn begin_supervisor_epoch(&self, identity: SupervisorIdentity) {
         let mut cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
-        *cell = PhaseCell { supervisor: Some(identity), adopted_at: Some(std::time::Instant::now()), ..PhaseCell::default() };
+        *cell = PhaseCell { supervisor: Some(identity), ..PhaseCell::default() };
     }
 
-    /// Whether `supervisor` was observed `ready` while it was the cell's epoch and had outlived `READY_STABLE`: false for
-    /// one that died before any observation named it, or flashed `ready` and was gone.
-    pub(crate) fn reached_ready(&self, supervisor: Option<SupervisorIdentity>) -> bool {
-        let cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
-        supervisor.is_some() && cell.supervisor == supervisor && cell.ready_seen
+    /// The watch record (see [`Watched`]).
+    pub(crate) fn watched(&self) -> Option<Watched> {
+        *self.watched.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A watch's first reply: the record now names `supervisor`, `ready` as that reply said.
+    pub(crate) fn record_watch(&self, supervisor: SupervisorIdentity, ready: bool) {
+        *self.watched.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watched { supervisor, ready });
+    }
+
+    /// A `row.phase {ready}` of `supervisor`: it counts only while the record names that supervisor (a spawn may have
+    /// cleared it since).
+    pub(crate) fn note_watch_ready(&self, supervisor: SupervisorIdentity) {
+        if let Some(watched) = self.watched.lock().unwrap_or_else(|e| e.into_inner()).as_mut().filter(|w| w.supervisor == supervisor) {
+            watched.ready = true;
+        }
+    }
+
+    /// Under the row's guard, just before each spawn: the supervisor about to start has been watched by no one.
+    pub(crate) fn clear_watched(&self) {
+        *self.watched.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Whether the last watched supervisor told `ready`: false for one that died before any watch named it, or whose agent
+    /// had not lived 2 s.
+    pub(crate) fn reached_ready(&self) -> bool {
+        self.watched().is_some_and(|w| w.ready)
     }
 
     /// The watchdog's give-up, under the row's guard: the restart budget is spent, so the row is `terminal` whatever
@@ -247,8 +256,10 @@ impl Workspace {
     }
 
     /// The observer's single write path. One sentence: an EMPTY cell
-    /// takes the first prover; a non-empty cell changes epoch only
-    /// under the row guard (through [`Workspace::begin_supervisor_epoch`]).
+    /// takes the first prover; a non-empty cell changes epoch only where
+    /// the observer's watch names another supervisor (through
+    /// [`Workspace::begin_supervisor_epoch`]; one fence means hellos
+    /// arrive in supervisor order).
     /// So a `Phase` observation is rejected unless `supervisor` EQUALS
     /// the cell's current epoch (never an ordering comparison) -- with
     /// `supervisor: None` meaning "unclaimed", which the observation
@@ -262,13 +273,9 @@ impl Workspace {
             Observation::Phase { phase, supervisor, run } => {
                 // An unclaimed cell adopts its first prover, on exactly
                 // the terms `begin_supervisor_epoch` would -- a fresh
-                // epoch, judged below like any other. This is what keeps
-                // the post-spawn settle bound BEST-EFFORT rather than
-                // correctness-critical: a supervisor that first answers
-                // after the deadline is adopted by the next background
-                // poll instead of being rejected forever.
+                // epoch, judged below like any other.
                 if cell.supervisor.is_none() {
-                    *cell = PhaseCell { supervisor: Some(supervisor), adopted_at: Some(std::time::Instant::now()), ..PhaseCell::default() };
+                    *cell = PhaseCell { supervisor: Some(supervisor), ..PhaseCell::default() };
                 }
                 if cell.supervisor != Some(supervisor) {
                     return false;
@@ -300,7 +307,6 @@ impl Workspace {
                     return false;
                 }
                 cell.phase = phase;
-                cell.ready_seen |= phase == Phase::Ready && cell.adopted_at.is_some_and(|at| at.elapsed() >= READY_STABLE);
                 if let Some(r) = run {
                     cell.run = Some(r);
                 }
@@ -312,15 +318,6 @@ impl Workspace {
                     return false;
                 }
                 cell.phase = if matches!(observation, Observation::Stopped) { Phase::Stopped } else { Phase::Foreign };
-                cell.consecutive_failures = 0;
-                true
-            }
-            // Claimed rows are closed to it -- see the variant's own doc.
-            Observation::TerminalUnclaimed => {
-                if cell.supervisor.is_some() {
-                    return false;
-                }
-                cell.phase = Phase::Terminal;
                 cell.consecutive_failures = 0;
                 true
             }

@@ -114,83 +114,8 @@ async fn phase_stays_unreachable_for_a_malformed_reply() {
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "unreachable", BOUND.max(Duration::from_secs(60))).await;
 
-    let _ = fixture.join();
-    env.kill_daemon_bounded().await;
-}
-
-/// Kills only the supervisor authority (leg survives); adopted first so no
-/// watchdog exists, proving the observer alone carries ready -> unreachable -> ready.
-#[tokio::test]
-#[cfg(target_os = "linux")]
-async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_pty_open_recovers_it() {
-    let _serial = SERIAL.lock().await;
-    assert!(
-        sot_capsule_exe().is_file(),
-        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
-         this test's own sotd[.exe] was built into",
-        sot_capsule_exe()
-    );
-
-    let env = Env::new("obskill");
-    env.spawn_sotd();
-    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-
-    let create_req = serde_json::json!({
-        "label": "obskill-workspace",
-        "project_root": env.workspace_project_root.to_string_lossy(),
-        "runtime": "capsule",
-    });
-    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
-    next_id += 1;
-    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
-    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
-
-    let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
-    let state_dir = loop {
-        let id = next_id;
-        next_id += 1;
-        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
-        if let Some(row) = find_row(&payload, &workspace_id) {
-            if let (Some(sd), Some("ready")) = (row["state_dir"].as_str(), row["phase"].as_str()) {
-                break sd.to_string();
-            }
-        }
-        assert!(Instant::now() < list_deadline, "timed out waiting for the new capsule workspace to reach \"ready\"");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    };
-    let state_dir_path = PathBuf::from(&state_dir);
-
-    let run_before = tokio::task::spawn_blocking({
-        let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status before killing the supervisor").0.run
-    })
-    .await
-    .unwrap()
-    .expect("a ready capsule has a run");
-
-    // Adopts first, stripping this lifetime's own watchdog.
-    let (mut conn, mut next_id) = restart_daemon_and_prove_adoption(
-        &env,
-        conn,
-        &workspace_id,
-        &state_dir,
-        &state_dir_path,
-        run_before,
-        AuthorityAtRestart::Alive,
-    )
-    .await;
-
-    kill_supervisor(&env.state_root);
-
-    // No watchdog exists (adopted, not spawned); killing just the authority
-    // never marks the row terminal along the way.
-    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "unreachable", BOUND.max(Duration::from_secs(30))).await;
-
-    // ADR 0046 decision 2: workspace.list reads pure memory -- even with the
-    // row genuinely unreachable, back-to-back calls keep reading it from
-    // memory.
+    // ADR 0046 decision 2: workspace.list reads pure memory -- even with the row genuinely unreachable, back-to-back
+    // calls keep reading it from memory. (Nothing restarts this row: its supervisor was stopped, which exits 0.)
     let log_path_for_list_check = env.state_root.join("sot").join("sotd.log");
     let unreachable_lines_before = count_log_occurrences(&log_path_for_list_check, "supervisor lane unreachable");
     for _ in 0..10 {
@@ -203,8 +128,7 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
             "the row must keep reading \"unreachable\" from memory across the burst"
         );
     }
-    // The burst must not itself provoke a new lane probe; +2 slack covers
-    // the observer's own background cadence landing during the window.
+    // The burst must not itself provoke a new lane probe; +2 slack covers the observer's own redial landing during the window.
     let unreachable_lines_after = count_log_occurrences(&log_path_for_list_check, "supervisor lane unreachable");
     assert!(
         unreachable_lines_after <= unreachable_lines_before + 2,
@@ -212,23 +136,7 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
          occurrences of the phase_of debug line across a 10-call burst"
     );
 
-    // Resumes via `ensure_started`, answering attach_direct regardless of phase.
-    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
-    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
-    next_id += 1;
-    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
-
-    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(30))).await;
-
-    // Recovery is a fresh leg (ADR 0043 decision 33 spawns anew, never resurrects).
-    let run_after = tokio::task::spawn_blocking({
-        let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status after recovery").0.run
-    })
-    .await
-    .unwrap();
-    assert!(run_after.is_some(), "the recovered row must have a live run");
-
+    let _ = fixture.join();
     env.kill_daemon_bounded().await;
 }
 

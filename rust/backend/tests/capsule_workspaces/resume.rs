@@ -10,12 +10,12 @@ use super::*;
 ///
 /// Codex review (2026-09-11): the authority is first ADOPTED across a
 /// daemon restart (`restart_daemon_and_prove_adoption`,
-/// `AuthorityAtRestart::Alive`) BEFORE it is killed — an authority this
-/// daemon merely adopted at boot gets no watchdog at all (decision 33),
-/// so the ONLY thing that can bring the row back is whatever
-/// `pty.input` itself does. Without this, the row's ORIGINAL watchdog
-/// (installed by `workspace.create`) would race to restart it on its
-/// own, and this test could pass even with `resume_if_absent` deleted.
+/// `AuthorityAtRestart::Alive`) BEFORE it is ended, and it is ended by a
+/// stop (exit 0, which nothing restarts), so the ONLY thing that can bring
+/// the row back is whatever `pty.input` itself does. Without this, the
+/// row's ORIGINAL watchdog (installed by `workspace.create`) would race to
+/// restart it on its own, and this test could pass even with
+/// `resume_if_absent` deleted.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 #[allow(clippy::too_many_lines, reason = "one test scenario: headless input resumes a row whose supervisor died")]
@@ -84,7 +84,7 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     )
     .await;
 
-    kill_supervisor(&env.state_root);
+    stop_supervisor(&state_dir_path).await;
 
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
@@ -348,7 +348,7 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     )
     .await;
 
-    kill_capsule(&env.state_root);
+    stop_supervisor(&state_dir_path).await;
 
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;

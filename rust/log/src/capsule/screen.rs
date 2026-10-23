@@ -1,5 +1,6 @@
 //! The screen file: the leg's latest screen, kept so a restarted leg can show it again.
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How often, at most, the screen is written while output arrives.
 pub(super) const SCREEN_PACE: Duration = Duration::from_secs(5);

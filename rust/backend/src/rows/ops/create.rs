@@ -454,7 +454,7 @@ async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateR
     match spawn_result {
         Ok(()) => {
             tracing::info!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule supervisor spawned");
-            // Starts this row's lifecycle observer for its ongoing periodic poll.
+            // Starts this row's lifecycle observer, which holds a watch on its supervisor (or wakes the one that runs).
             crate::rows::run::observer::ensure_running(&workspaces, &ws_handle);
         }
         Err(detail) => {

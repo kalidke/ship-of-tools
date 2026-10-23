@@ -1,8 +1,7 @@
 //! Activation: the one boundary that starts, resumes or (for a selection) retires and resets a capsule row's run.
 
 use super::admission::{is_pending_text, PENDING_AUTHORITY};
-use super::observer::observe_with_adoption;
-use super::probe::probe;
+use super::probe::{phase_of, probe};
 use super::start::{reset_run, start_supervisor};
 use super::{FOREIGN_PHASE, NEVER_STARTED_PHASE, UNREACHABLE_PHASE};
 use crate::agents::argv::agent_argv;
@@ -117,10 +116,9 @@ fn resume_locked_spawned(
         return Ok((super::phase_str(sot_log::SupervisorPhase::Terminal), false));
     }
     let state_dir = super::state_dir_for(state_root, workspace_id);
-    let (phase, observation) = probe(&state_dir);
+    let phase = phase_of(&state_dir);
     if phase != UNREACHABLE_PHASE {
-        // Already answering -- no spawn, but still an adoption if this row had none yet.
-        observe_with_adoption(&ws, observation);
+        // Already answering -- no spawn.
         return Ok((phase, false));
     }
     // Rule: the watchdog is the single writer of restarts for a
@@ -339,7 +337,10 @@ fn ensure_started_locked(
     };
     let state_dir = super::state_dir_for(state_root, workspace_id);
     let (initial_phase, initial_observation) = probe(&state_dir);
-    observe_with_adoption(&ws, initial_observation);
+    let initial_supervisor = match &initial_observation {
+        crate::rows::workspace::Observation::Phase { supervisor, .. } => Some(*supervisor),
+        _ => None,
+    };
     // Rule: never drop the caller's intent, and never decide from
     // a transient snapshot -- see `is_resting_phase`'s own doc for
     // the invariant, and `ensure_started`'s own loop for what
@@ -421,7 +422,7 @@ fn ensure_started_locked(
         // memory of the spawn it just made, stopping and respawning
         // AGAIN -- a row whose recovery consistently outlasts
         // `SPAWN_SETTLE_DEADLINE` would then never converge.
-        let already_fresh = own_spawn.is_some_and(|identity| ws.current_supervisor() == Some(identity));
+        let already_fresh = own_spawn.is_some_and(|identity| initial_supervisor == Some(identity));
         if !already_fresh {
             // Retire the resting authority (attach's own job, not
             // resume's) before minting a new run over it: the WAITING
@@ -482,7 +483,7 @@ fn ensure_started_locked(
         // `reauth::reset_replacement_run`; both go through
         // [`reset_run`]. Its doc comment carries the long form.
         return LockedStep::Done(match reset_run(&workspaces, workspace_id, &state_dir) {
-            // A new run on the SAME epoch; the observer's next round supersedes the latch.
+            // A new run on the SAME epoch; the watch's next report supersedes the latch.
             Ok(_) => Ok(()),
             Err(e) => Err(format!("capsule workspace reset (after retiring an ended run) failed: {e}")),
         });

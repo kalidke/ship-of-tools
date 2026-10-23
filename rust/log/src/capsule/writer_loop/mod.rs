@@ -36,8 +36,6 @@ struct Leg<P> {
     handshake_suppressed_matches: u64,
     /// Resize calls that reached the producer (`ExitSummary`).
     resize_os_calls: u64,
-    /// Tells the run's owner the agent started and wrote (`CapsuleConfig::signals`).
-    signals: Option<Arc<RunSignals>>,
     /// The row socket's fan-out, when the owner serves one: fed every committed chunk, and asked for its requests every pass.
     row: Option<Arc<crate::row::RowRun>>,
     /// Typed input to the terminal, written off this loop's thread.

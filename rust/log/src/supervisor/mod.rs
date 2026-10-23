@@ -6,7 +6,7 @@
 //!
 //! # Phases
 //!
-//! `starting` (until the agent has written or lived two seconds), `ready`, `ending` (an `end_run` asked, the run
+//! `starting` (until the agent has lived two seconds), `ready`, `ending` (an `end_run` asked, the run
 //! ending), `ended_no_respawn` (the agent is gone because an end was asked for; only a reset or a stop remains) and
 //! `terminal` (sticky). The supervisor never starts the agent a second time on its own: an agent that ends unasked
 //! ends the supervisor with a code the daemon's watchdog reads, and the watchdog's budget is the one restart budget.
@@ -224,6 +224,11 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         note(format_args!("the row announcer panicked"));
     }
     row.exiting(code, EXITING_TOLD_BOUND);
+    // Test seam: the exit waits this many milliseconds with the row socket still bound and the fence still held, so a test
+    // can take a decision while the supervisor still answers. Inert unless named.
+    if let Some(ms) = std::env::var("SOT_TEST_EXIT_HOLD_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
     let _ = watch_tx.send(Watch::Stop);
     if row_watch.join().is_err() {
         note(format_args!("the row listener's watch panicked"));

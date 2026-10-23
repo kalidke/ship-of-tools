@@ -137,6 +137,8 @@ pub struct Workspace {
     pub(crate) agent_handle: handle::Declared,
     /// Never persisted; written only through [`Workspace::apply_phase_observation`].
     phase_cell: Mutex<PhaseCell>,
+    /// The last supervisor the observer's watch named and whether it told `ready`; the watchdog's budget reads it.
+    watched: Mutex<Option<workspace::Watched>>,
     /// `Some(token)` for exactly as long as a watchdog task owns
     /// restarting this row's own daemon-spawned child. An OWNERSHIP
     /// TOKEN, not an identity: every read is `is_some()` plus a
@@ -213,8 +215,9 @@ struct Inner {
     /// comment.
     watch_bus: Option<broadcast::Sender<PreviewChanged>>,
     /// One lifecycle-observer task per capsule row; the paired closure cancels its
-    /// held connection since `abort()` alone can't stop a round blocked in `spawn_blocking`.
-    observers: HashMap<String, (tokio::task::JoinHandle<()>, Arc<dyn Fn() + Send + Sync>)>,
+    /// held watch since `abort()` alone can't stop a round blocked in `spawn_blocking`, and the `Notify` wakes the
+    /// observer out of its wait (a settle has made a supervisor to watch).
+    observers: HashMap<String, (tokio::task::JoinHandle<()>, Arc<dyn Fn() + Send + Sync>, Arc<tokio::sync::Notify>)>,
     /// ADR 0043 decision 33: one guard per capsule row. Every lifecycle
     /// mutation of a row — spawn, resume, a watchdog's restart, destroy —
     /// holds this mutex for its WHOLE duration and rechecks membership

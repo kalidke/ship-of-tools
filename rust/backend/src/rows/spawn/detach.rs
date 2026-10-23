@@ -563,7 +563,7 @@ fn spawn_detached(
 /// matches what this daemon's own `query_status` sees for it, that a
 /// `setsid` capsule survives its spawning `sotd` under launchd, that a
 /// row reaches `ready` with a real agent attached, and that a
-/// bootstrap-failing capsule latches `TerminalUnclaimed`.
+/// bootstrap-failing capsule latches the row `terminal`.
 /// macOS: the Linux twin's body minus the probe. There is no
 /// transient-scope equivalent to attempt — `systemd-run --user
 /// --scope` is a systemd mechanism, not a Unix one — and none is

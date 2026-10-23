@@ -336,10 +336,9 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
 /// happens to run as root.
 ///
 /// Note what CANNOT explain a pass here: with no answered status there
-/// is no `Observation::Phase` to carry a `Terminal`, so the only path to
-/// this row's phase is `Observation::TerminalUnclaimed`. Before the
-/// rule the mark rode the identity the daemon read off the OS at
-/// spawn; this test is the guard on the replacement.
+/// is no watch record naming the supervisor, so the mark is the
+/// watchdog's own, under the row's guard, once nothing answers. This
+/// test is the guard on it.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_capsule_that_dies_before_its_lane_answers_still_latches_the_row_terminal() {

@@ -1,8 +1,7 @@
 #![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 //! The daemon's calls on one row's supervisor: `status`, `end_run`, `reset` and `stop`, each one connection on the row
-//! socket (`row-<h>`): the row client's dial, hello and challenge, then one request with its bound. The exceptions are
-//! [`Persistent`], which holds one connection across status calls and reconnects when it fails, and [`watch`], which
-//! holds one connection as the row's phase reports. A call that loses its reply is answered by reading status again; no
+//! socket (`row-<h>`): the row client's dial, hello and challenge, then one request with its bound. The exception is
+//! [`watch`], which holds one connection as the row's phase reports. A call that loses its reply is answered by reading status again; no
 //! call carries an id.
 //!
 //! The dial checks the row number the hello carries and never the frames' wire integer, so a daemon update never
@@ -17,7 +16,7 @@ use crate::row::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -246,24 +245,13 @@ pub fn reset(state_dir: &Path) -> crate::Result<()> {
     }
 }
 
-/// [`Persistent`]'s and [`watch`]'s way to be interrupted, and whether it was.
+/// [`watch`]'s way to be interrupted, and whether it was.
 struct Shared {
     canceler: Option<RowCanceler>,
     /// Which publication `canceler` is: a connection that ends unpublishes only its own.
     generation: u64,
     /// Latched by [`CancelHandle::cancel`]; never cleared, so a cancelled client never reconnects.
     cancelled: bool,
-}
-
-/// A held connection to one row, reused across [`Persistent::status`] calls. It holds one of the row's connections.
-pub struct Persistent {
-    state_dir: PathBuf,
-    conn: Option<RowClient>,
-    /// Lets [`Persistent::cancel_handle`] reach the current connection from another thread.
-    shared: Arc<Mutex<Shared>>,
-    /// Test-support only: fires between connect and publish, to land a cancel deterministically.
-    #[cfg(any(test, feature = "test-support"))]
-    after_connect_before_publish: Option<Box<dyn FnMut() + Send>>,
 }
 
 #[derive(Clone)]
@@ -306,94 +294,13 @@ impl CancelHandle {
     }
 
     /// Sets `cancelled` and takes and cancels the published connection under the same lock, so a concurrent
-    /// [`Persistent::publish`] either installs first (and gets cancelled here) or sees `cancelled` and never installs.
+    /// publication either installs first (and gets cancelled here) or sees `cancelled` and never installs.
     pub fn cancel(&self) {
         let mut shared = self.0.lock().unwrap_or_else(|e| e.into_inner());
         shared.cancelled = true;
         if let Some(canceler) = shared.canceler.take() {
             canceler.cancel();
         }
-    }
-}
-
-impl Persistent {
-    pub fn new(state_dir: &Path) -> Self {
-        Persistent {
-            state_dir: state_dir.to_path_buf(),
-            conn: None,
-            shared: Arc::new(Mutex::new(Shared { canceler: None, generation: 0, cancelled: false })),
-            #[cfg(any(test, feature = "test-support"))]
-            after_connect_before_publish: None,
-        }
-    }
-
-    pub fn cancel_handle(&self) -> CancelHandle {
-        CancelHandle(self.shared.clone())
-    }
-
-    /// Test-support only: runs `hook` once, synchronously, between connect and publish.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_test_hook_after_connect_before_publish(&mut self, hook: impl FnMut() + Send + 'static) {
-        self.after_connect_before_publish = Some(Box::new(hook));
-    }
-
-    fn is_cancelled(&self) -> bool {
-        self.shared.lock().unwrap_or_else(|e| e.into_inner()).cancelled
-    }
-
-    /// One `status` round; retried once on a fresh connection if the held one fails.
-    pub fn status(&mut self) -> crate::Result<StatusReport> {
-        if self.is_cancelled() {
-            return Err(err_state("cancelled".to_string()));
-        }
-        if self.conn.is_none() {
-            let fresh = self.fresh_connection()?;
-            self.publish(fresh)?;
-        }
-        match self.status_on_held_connection() {
-            Ok(report) => Ok(report),
-            Err(_first_attempt_err) => {
-                // Presume the held connection is dead; a second failure is reported as-is, below.
-                self.clear_conn();
-                let fresh = self.fresh_connection()?;
-                self.publish(fresh)?;
-                let result = self.status_on_held_connection();
-                if result.is_err() {
-                    self.clear_conn();
-                }
-                result
-            }
-        }
-    }
-
-    /// Discards the held connection without touching `cancelled`: never a cancellation path.
-    fn clear_conn(&mut self) {
-        self.shared.lock().unwrap_or_else(|e| e.into_inner()).canceler = None;
-        self.conn = None;
-    }
-
-    /// Installs a fresh client as held and published, unless `cancelled` is already set under the same lock, in which
-    /// case the connection is cancelled and discarded: the one gate a connect becomes visible through.
-    fn publish(&mut self, fresh: (RowClient, ChallengedProcess)) -> crate::Result<()> {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(hook) = self.after_connect_before_publish.as_mut() {
-            hook();
-        }
-        // The process handle is dropped: a held status connection has no use for the row's death signal.
-        let (client, _process) = fresh;
-        CancelHandle(Arc::clone(&self.shared)).publish(&client)?;
-        self.conn = Some(client);
-        Ok(())
-    }
-
-    fn fresh_connection(&self) -> crate::Result<(RowClient, ChallengedProcess)> {
-        connect(&self.state_dir, HELLO_BUDGET)
-    }
-
-    fn status_on_held_connection(&mut self) -> crate::Result<StatusReport> {
-        let client = self.conn.as_mut().expect("status_on_held_connection: caller just ensured a connection");
-        let status: StatusRes = request(client, OP_STATUS, json!({}), STATUS_BUDGET)?;
-        report(status, client.peer())
     }
 }
 
@@ -416,10 +323,22 @@ pub enum WatchStep {
 pub struct Watch {
     client: RowClient,
     first: StatusReport,
+    /// Withdrawn after the connection is closed (fields drop in order).
+    _publication: Publication,
+    /// The process the challenge proved, held while the watch lives; [`Watch::end`] takes it to wait for its death.
+    process: Option<ChallengedProcess>,
+}
+
+/// A watch's place in its cancel handle, given back when the watch goes.
+struct Publication {
     cancel: CancelHandle,
-    published: u64,
-    /// The process the challenge proved, held while the watch lives.
-    _process: ChallengedProcess,
+    generation: u64,
+}
+
+impl Drop for Publication {
+    fn drop(&mut self) {
+        self.cancel.unpublish(self.generation);
+    }
 }
 
 impl Watch {
@@ -431,6 +350,16 @@ impl Watch {
     /// The status the supervisor answered `row.watch` with (the hello's status is not read).
     pub fn first(&self) -> &StatusReport {
         &self.first
+    }
+
+    /// Ends the watch and waits for the supervisor's process to end, at most `bound`: whether it ended. The connection is
+    /// closed first, so a supervisor that holds its exit until its watchers have gone is released at once. A watch that
+    /// ended while its supervisor lives (a cut watcher, a rebound listener) reports `false` after the bound.
+    pub fn end(mut self, bound: Duration) -> bool {
+        let process = self.process.take();
+        let Watch { client, .. } = self;
+        drop(client);
+        process.is_some_and(|process| process.wait(bound).unwrap_or(false))
     }
 
     /// The next report, within `wait`.
@@ -488,11 +417,5 @@ fn watch_through(state_dir: &Path, cancel: &CancelHandle, between: &mut dyn FnMu
             return Err(e);
         }
     };
-    Ok(Watch { client, first, cancel: cancel.clone(), published, _process: process })
-}
-
-impl Drop for Watch {
-    fn drop(&mut self) {
-        self.cancel.unpublish(self.published);
-    }
+    Ok(Watch { client, first, _publication: Publication { cancel: cancel.clone(), generation: published }, process: Some(process) })
 }

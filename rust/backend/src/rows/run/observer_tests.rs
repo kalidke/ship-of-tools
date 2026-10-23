@@ -159,38 +159,6 @@ fn an_empty_cell_adopts_its_first_prover_and_then_judges_strangers() {
     assert_eq!(ws.current_supervisor(), Some(a));
 }
 
-/// Addition (b): a bootstrap-failing leg latches its row `terminal`
-/// without an identity, and a later genuine authority adopts and
-/// clears it -- a row whose lane answers is not terminal.
-#[test]
-fn terminal_unclaimed_latches_an_empty_cell_and_a_later_authority_clears_it() {
-    let ws = unclaimed_capsule_row();
-    assert!(ws.apply_phase_observation(Observation::TerminalUnclaimed));
-    assert_eq!(ws.phase(), Phase::Terminal);
-    assert_eq!(ws.current_supervisor(), None, "the mark leaves the cell claimable");
-
-    observe(&ws, Observation::Stopped);
-    assert_eq!(ws.phase(), Phase::Terminal, "the latch holds against a plain stopped read");
-
-    let a = identity(7, 700);
-    observe(&ws, phase_obs(Phase::Ready, a));
-    assert_eq!(ws.phase(), Phase::Ready, "an authority that actually answers clears the latch");
-    assert_eq!(ws.current_supervisor(), Some(a));
-}
-
-/// The other half of (b): a cell claimed at any point in this
-/// daemon's life is closed to it, so a stale watchdog can never
-/// latch a row it no longer owns.
-#[test]
-fn terminal_unclaimed_is_refused_by_a_claimed_cell() {
-    let a = identity(1, 100);
-    let ws = seeded_capsule_row(a);
-    observe(&ws, phase_obs(Phase::Ready, a));
-
-    assert!(!ws.apply_phase_observation(Observation::TerminalUnclaimed));
-    assert_eq!(ws.phase(), Phase::Ready);
-}
-
 /// The watchdog's give-up, with its restart budget spent, latches a cell claimed by an earlier supervisor (the last
 /// one died before it answered, so no observation can name it); the next start's epoch clears the latch.
 #[test]
@@ -206,26 +174,6 @@ fn the_watchdogs_give_up_latches_a_claimed_cell_and_a_later_start_clears_it() {
     ws.begin_supervisor_epoch(b);
     observe(&ws, phase_obs(Phase::Ready, b));
     assert_eq!(ws.phase(), Phase::Ready);
-}
-
-/// The budget counts supervisors never observed `ready`: only the supervisor that held the cell while its phase read
-/// `ready` reached it, and one the cell never named did not.
-#[test]
-fn a_supervisor_reached_ready_only_if_the_cell_named_it_while_ready() {
-    let a = identity(1, 100);
-    let b = identity(2, 200);
-    let ws = seeded_capsule_row(a);
-    observe(&ws, phase_obs(Phase::Starting, a));
-    assert!(!ws.reached_ready(Some(a)), "starting is not ready");
-    observe(&ws, phase_obs(Phase::Ready, a));
-    assert!(!ws.reached_ready(Some(a)), "ready the moment it was adopted is a flash, not ready");
-    std::thread::sleep(crate::rows::workspace::READY_STABLE + std::time::Duration::from_millis(100));
-    observe(&ws, phase_obs(Phase::Ready, a));
-    assert!(ws.reached_ready(Some(a)));
-    assert!(!ws.reached_ready(Some(b)), "another supervisor is not the one observed");
-    assert!(!ws.reached_ready(None), "a supervisor that died before any observation named it never reached ready");
-    ws.begin_supervisor_epoch(b);
-    assert!(!ws.reached_ready(Some(b)), "a new epoch starts unready");
 }
 
 /// `activation_error` is retained until the next attempt; orthogonal to phase.

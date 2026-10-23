@@ -2,17 +2,17 @@
 
 use super::*;
 
-/// Decision 33: an ADOPTED row (`resume_all`'s boot scan found the
-/// authority already alive and simply logged it — "a watchdog exists
-/// only for a `Child` the daemon launched") gets no watchdog at all.
+/// An ADOPTED row (`resume_all`'s boot scan found the authority already
+/// alive) is watched by its observer, which hands it to a watchdog only if
+/// the supervisor exits and nothing restarts: a destroy's stop exits 0.
 /// Destroying it must leave nothing behind that could respawn it: no
 /// lingering `supervise` process sustained over a real window (not a
 /// single point-in-time check), the fence freely acquirable again
 /// afterward, and — the regression this specifically guards against —
 /// `sotd.log` never carries the watchdog's own "treating as a crash"
-/// text, which could only appear if some future change re-attached a
-/// watchdog to an adopted leg (or the old `starting` claim's stale-
-/// backoff window came back).
+/// text, which could only appear if a watchdog waited on a child that
+/// was gone (or the old `starting` claim's stale-backoff window came
+/// back).
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_destroy_after_adoption_leaves_no_respawn() {
@@ -138,13 +138,12 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
 ///
 /// Codex review (2026-09-11): the authority is first ADOPTED across a
 /// daemon restart (`restart_daemon_and_prove_adoption`,
-/// `AuthorityAtRestart::Alive`) BEFORE it is killed — an authority this
-/// daemon merely adopted at boot gets no watchdog at all (decision 33),
-/// so the ONLY thing that can bring the row back for `end_run` to reach
-/// is `destroy_capsule_workspace`'s own resume call below. Without this,
-/// the row's ORIGINAL watchdog (installed by `workspace.create`) could
-/// race to restart it on its own, and this test could pass even with
-/// that resume call deleted. The restart itself proves the surviving
+/// `AuthorityAtRestart::Alive`) BEFORE it is ended, and it is ended by a
+/// stop (exit 0, which nothing restarts), so the ONLY thing that can bring
+/// the row back for `end_run` to reach is `destroy_capsule_workspace`'s own
+/// resume call below. Without this, the row's ORIGINAL watchdog (installed
+/// by `workspace.create`) could race to restart it on its own, and this test
+/// could pass even with that resume call deleted. The restart itself proves the surviving
 /// leg's identity is unchanged (`restart_daemon_and_prove_adoption`'s own
 /// leg-epoch assertion) before the supervisor is ever killed.
 ///
@@ -222,7 +221,7 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
     )
     .await;
 
-    kill_supervisor(&env.state_root);
+    stop_supervisor(&state_dir_path).await;
 
     // `destroy_capsule_workspace`'s own resume pre-step re-establishes
     // the authority before `end_run` ever runs; a lane still settling
@@ -277,12 +276,12 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
 ///
 /// Codex review (2026-09-11): the authority is first ADOPTED across a
 /// daemon restart (`restart_daemon_and_prove_adoption`,
-/// `AuthorityAtRestart::Alive`) BEFORE it (and its leg) are killed, so no
-/// watchdog exists for this row and the ONLY thing that can re-execute
+/// `AuthorityAtRestart::Alive`) BEFORE it (and its leg) are ended by a stop
+/// (exit 0, which nothing restarts), so the ONLY thing that can re-execute
 /// the leg and then end it is `destroy_capsule_workspace`'s own resume
 /// call — the row's ORIGINAL watchdog (installed by `workspace.create`)
 /// could otherwise race to recover it first, and this test could pass
-/// even with that resume call deleted. The "no end marker" precondition
+/// even with that resume call deleted. (A stop leaves no requested end.) The "no end marker" precondition
 /// this test's own name claims is checked directly
 /// (the leg's `ended` file, `sot_log::capsule::read_ended`) right after both
 /// SIGKILLs, rather than only inferred from the recovery behaviour
@@ -358,7 +357,7 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     )
     .await;
 
-    kill_capsule(&env.state_root);
+    stop_supervisor(&state_dir_path).await;
 
     // The "markerless" precondition this test is named for, checked
     // directly rather than only inferred from the recovery behaviour

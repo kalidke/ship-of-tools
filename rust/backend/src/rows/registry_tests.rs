@@ -226,7 +226,7 @@ async fn remove_by_id_aborts_the_row_s_observer_task() {
     let cancel: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
         cancelled_for_closure.store(true, std::sync::atomic::Ordering::SeqCst);
     });
-    reg.install_observer(&id, handle, cancel);
+    reg.install_observer(&id, handle, cancel, Arc::new(tokio::sync::Notify::new()));
     assert!(reg.has_observer(&id));
 
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
@@ -247,7 +247,7 @@ async fn remove_by_id_aborts_the_row_s_observer_task() {
 }
 
 /// A same-slug `workspace.create` of a stopped capsule row replaces the row's `Arc` under its id
-/// (`insert_replacing`), observes its settle into the new row, and calls `observer::ensure_running`, which finds
+/// (`insert_replacing`) and calls `observer::ensure_running`, which finds
 /// the id's observer already running. That observer's rounds must land on the row the registry holds, and the row
 /// it replaced must be let go, with its watcher and its kernel and REPL children.
 #[tokio::test]
@@ -268,9 +268,9 @@ async fn a_running_observer_feeds_the_row_a_same_slug_insert_registers() {
         reg.insert(ws)
     };
     let ready = |pid| Observation::Phase { phase: Phase::Ready, supervisor: SupervisorIdentity { pid, created: 100 }, run: None };
-    // Three of the observer's rounds (`observer::POLL_INTERVAL`, 2 s).
+    // `ensure_running` on a running observer wakes it, so its next round lands within 2 s whatever its wait had grown to.
     let stops = |ws: Arc<Workspace>| async move {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
         while ws.phase() != Phase::Stopped && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
@@ -280,7 +280,7 @@ async fn a_running_observer_feeds_the_row_a_same_slug_insert_registers() {
     let old = register();
     observe(&old, ready(1));
     ensure_running(&reg, &old);
-    assert!(stops(old.clone()).await, "test setup: the observer polls the loaded row");
+    assert!(stops(old.clone()).await, "test setup: the observer watches the loaded row");
 
     let new = register();
     let registered = reg.resolve(Some(&old.workspace_id)).expect("the row");
@@ -290,7 +290,7 @@ async fn a_running_observer_feeds_the_row_a_same_slug_insert_registers() {
     ensure_running(&reg, &new);
     assert!(
         stops(new.clone()).await,
-        "the refreshed row is never observed: it still reads {:?} after three rounds, the row it replaced {:?}",
+        "the refreshed row is never observed: it still reads {:?} 2 s after the wake, the row it replaced {:?}",
         new.phase(),
         old.phase()
     );

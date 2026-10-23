@@ -28,7 +28,7 @@ true after the merge of the leg into the supervisor.
   the input thread, in wire's frames, and the four management ops (`row.status`, `row.end_run`, `row.reset`,
   `row.stop`) a row hands to the `Management` its supervisor installs, and the watch (`row.watch`, `row.phase`,
   `row.exiting`). Pass 6c-1a2 switched the window, the wake and the bridge to it, and pass 6c-1b1 the daemon's calls;
-  pass 6c-1c3a serves the watch (the daemon does not yet hold one: 6c-1c3b).
+  pass 6c-1c3a serves the watch and pass 6c-1c3b has the daemon hold one.
 
 ## Promises
 - One process per row: the agent is the supervisor's own child. The supervisor takes `supervisor.lock` (or adopts the
@@ -43,7 +43,7 @@ true after the merge of the leg into the supervisor.
   is tested on macOS (`tests/macos_kernel_facts/kqueue.rs`), the SIGHUP-ignoring case on Linux and Windows only; a
   descendant that leaves the session survives on Unix, and one in another job (Windows)
   or session (Unix) is not the supervisor's to end.
-- Phases: `starting` (until the agent has written or lived two seconds), `ready`, `ending`, `ended_no_respawn` (the
+- Phases: `starting` (until the agent has lived two seconds: an agent that writes its error and exits sooner was never ready), `ready`, `ending`, `ended_no_respawn` (the
   agent is gone because an end was asked for; only a reset or a stop remains) and `terminal` (sticky: run admission refuses a terminal supervisor, so none begins and no agent starts). The supervisor
   rests only after a requested end: an agent that cannot be started or ends by itself ends the supervisor with 75 or
   76, so the daemon's watchdog is the one restart budget (rows' contract). A `--resume` over a run that was asked to
@@ -73,7 +73,9 @@ true after the merge of the leg into the supervisor.
   (`row/run_tests.rs::exiting_is_sent_before_the_shutdown_and_waits_for_the_watchers`,
   `tests/row_management.rs::a_watch_reports_exiting_with_the_code_before_a_controlled_end`, which also reads the process's own
   exit status). A stream that ends with no `row.exiting` is a kill, a lost listener (its 75 comes after the listener's server
-  was dropped), a cut watcher or an exit before the bind, and carries no code: a reader treats 75 and no code alike. A cancel
+  was dropped), a cut watcher or an exit before the bind, and carries no code: a reader treats 75 and no code alike. `Watch::end` closes the connection and then waits for the supervisor's process, at most its bound, and says whether
+  it ended: a reader that acts on a told exit must not decide while the exiting supervisor still answers
+  (`tests/row_management.rs::a_watch_ends_by_waiting_for_the_supervisors_process`). A cancel
   handle gates every watch's publication, so a cancel that lands during the dial leaves no connection behind and every watch
   on a cancelled handle is refused (`tests/row_management.rs::a_cancelled_watch_never_publishes_a_connection`); a dropped
   watch withdraws its own publication, and no newer one, so its connection is not kept open by the handle
@@ -144,7 +146,7 @@ true after the merge of the leg into the supervisor.
   `SOT_TEST_END_MARK_FAILS`, `SOT_TEST_SUPERVISOR_BOOT_FAILS` (the supervisor fails right after making its state
   folder, exit 69, before its fence), `SOT_TEST_RESET_HOLD_MS` (the main thread waits that long after a reset is
   answered, before the next run), `SOT_TEST_RESET_CLEAR_FAILS` (the reset's publication fails) and
-  `SOT_TEST_RUN_OVER_HOLD_MS` (the main thread waits that long after a run returned, after it recorded an asked end and
+  `SOT_TEST_EXIT_HOLD_MS` (the exit waits that long after `row.exiting`, with the row socket still bound and the fence still held, so a test can take a decision while the supervisor still answers), `SOT_TEST_RUN_OVER_HOLD_MS` (the main thread waits that long after a run returned, after it recorded an asked end and
   before it decides how the run ended).
 - The row socket `row-<h>` (`<runtime dir>/row-<h>.sock`, a pipe `\\.\pipe\sot-row-<h>` on Windows) is served by the
   supervisor for as long as the supervisor lives (it outlives each run it serves), in wire's frames. A connection is served nothing before its `row.hello`
