@@ -44,7 +44,11 @@ struct FakeLoop {
 
 impl FakeLoop {
     fn new(screen: &[u8]) -> Self {
-        let run = RowRun::new("run-one", "ready");
+        Self::with_run(screen, "run-one")
+    }
+
+    fn with_run(screen: &[u8], run_id: &str) -> Self {
+        let run = RowRun::new(run_id, "ready");
         let parser = Arc::new(Mutex::new(vt100_ctt::Parser::new(24, 80, 200)));
         parser.lock().unwrap().process(screen);
         let written = Arc::new(Mutex::new(Vec::new()));
@@ -177,4 +181,158 @@ fn a_redial_waits_on_the_doubling_pace() {
         assert!(*gap < Duration::from_millis(floor * 3 + 500), "redialed after {gap:?}, past the {floor} ms pace");
     }
     client.shutdown(Duration::from_millis(500));
+}
+
+#[test]
+fn input_queued_for_an_earlier_run_is_never_written_into_the_next() {
+    let row = fresh_row();
+    let path = row_socket_path(&row).unwrap();
+    let first = FakeLoop::new(b"");
+    let server = RowServer::bind(&path, Arc::clone(&first.run)).expect("bind");
+    let mut win = window(&row);
+    pump_until(&mut win, "the checkpoint of the first run", |c| c.is_checkpointed());
+    server.shutdown();
+    pump_until(&mut win, "the client noticing the row is gone", |c| c.status_line().contains("redialing"));
+    // Typed while the connection is down: it was typed into the first run.
+    win.send_input(b"stale");
+    let second = FakeLoop::with_run(b"", "run-two");
+    let server = RowServer::bind(&path, Arc::clone(&second.run)).expect("bind the replacement");
+    pump_until(&mut win, "the attach to the second run", |c| c.status_line() == "attached" && c.run() == "run-two");
+    pump_until(&mut win, "the stale input counted", |c| c.inputs_discarded() >= 1);
+    assert!(second.written().is_empty(), "input typed into the first run reached the second: {:?}", second.written());
+    // Input typed in the second run goes through.
+    win.send_input(b"fresh");
+    pump_until(&mut win, "the fresh input recorded", |c| c.recorded_bytes() == 5);
+    assert_eq!(second.written(), b"fresh");
+    win.shutdown(Duration::from_millis(500));
+    server.shutdown();
+    drop(first);
+}
+
+/// A dial that takes `delay` before it hands the connection over, as a slow ssh login does.
+struct SlowEndpoint {
+    inner: PlatformEndpoint,
+    delay: Duration,
+}
+
+impl sot_log::lane::client::Endpoint for SlowEndpoint {
+    type Client = <PlatformEndpoint as sot_log::lane::client::Endpoint>::Client;
+    type Process = <PlatformEndpoint as sot_log::lane::client::Endpoint>::Process;
+
+    fn connect_row_unchallenged(&self, row: &str) -> Result<Self::Client, sot_log::lane::transport::TransportError> {
+        std::thread::sleep(self.delay);
+        self.inner.connect_row_unchallenged(row)
+    }
+
+    fn challenge(
+        &self,
+        conn: &Self::Client,
+        exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
+        reply_deadline: Instant,
+    ) -> sot_platform::identity::challenge::ChallengeOutcome<Self::Process> {
+        self.inner.challenge(conn, exchange, reply_deadline)
+    }
+
+    fn authenticate_server(&self, conn: &Self::Client) -> sot_platform::identity::challenge::PeerAuthOutcome {
+        self.inner.authenticate_server(conn)
+    }
+}
+
+#[test]
+fn a_login_that_takes_twelve_seconds_still_attaches() {
+    use sot_log::lane::client::Endpoint as _;
+    let _ = PlatformEndpoint::default().link_up();
+    let row = fresh_row();
+    let looped = FakeLoop::new(b"slow but there");
+    let server = RowServer::bind(&row_socket_path(&row).unwrap(), Arc::clone(&looped.run)).expect("bind");
+    let slow = SlowEndpoint { inner: PlatformEndpoint::default(), delay: Duration::from_secs(12) };
+    let mut client = FeAttachClient::attach(slow, row.clone(), 80, 24, Box::new(|| {})).expect("start");
+    let deadline = Instant::now() + Duration::from_secs(40);
+    while !client.is_checkpointed() {
+        client.pump();
+        assert!(Instant::now() < deadline, "a 12 s login never attached; status {:?}", client.status_line());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(client.screen().contents().contains("slow but there"));
+    client.shutdown(Duration::from_millis(500));
+    server.shutdown();
+}
+
+/// A row stand-in that demotes the attaching driver before it sends the snapshot, and records the ops it is sent.
+fn demoting_standin(path: &std::path::Path) -> Arc<Mutex<Vec<String>>> {
+    use sot_protocol::codec::{read_frame_blocking_blob, write_frame_blocking_blob};
+    use sot_protocol::Frame;
+    let listener = std::os::unix::net::UnixListener::bind(path).expect("bind the stand-in");
+    let ops = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&ops);
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut out = stream;
+        while let Ok((frame, blob)) = read_frame_blocking_blob(&mut reader) {
+            seen.lock().unwrap().push(frame.op.clone());
+            let id = frame.id;
+            let mut send = |f: Frame, blob: Option<&[u8]>| write_frame_blocking_blob(&mut out, &f, blob).is_ok();
+            let ok = match frame.op.as_str() {
+                "row.hello" => {
+                    let (pid, created) = sot_log::row::self_identity().expect("own identity");
+                    send(
+                        Frame::res(
+                            id,
+                            "row.hello",
+                            serde_json::json!({"pid": pid, "created": created, "phase": "ready", "run": "run-one", "row": sot_log::row::ROW_PROTOCOL}),
+                        ),
+                        None,
+                    )
+                }
+                "row.attach" => {
+                    let mut parser = vt100_ctt::Parser::new(24, 80, 0);
+                    parser.process(b"taken while the snapshot was on its way");
+                    let checkpoint = parser.screen().checkpoint().expect("a checkpoint");
+                    send(Frame::res(id, "row.attach", serde_json::json!({"run": "run-one"})), None)
+                        && send(Frame::evt("row.demoted", serde_json::json!({})), None)
+                        && send(
+                            Frame::evt(
+                                "row.snapshot",
+                                serde_json::json!({"last": true, "blob": {"len": checkpoint.len(), "mime": "application/octet-stream"}}),
+                            ),
+                            Some(&checkpoint),
+                        )
+                }
+                "row.input" => send(Frame::res(id, "row.input", serde_json::json!({"written": blob.map_or(0, |b| b.len())})), None),
+                _ => send(Frame::res(id, &frame.op, serde_json::json!({})), None),
+            };
+            if !ok {
+                break;
+            }
+        }
+    });
+    ops
+}
+
+#[test]
+fn a_demotion_during_attach_leaves_a_watcher_whose_next_key_takes_the_pen() {
+    let row = fresh_row();
+    let ops = demoting_standin(&row_socket_path(&row).unwrap());
+    let mut win = window(&row);
+    pump_until(&mut win, "the checkpoint", |c| c.is_checkpointed());
+    win.send_input(b"k");
+    pump_until(&mut win, "the key recorded", |c| c.recorded_bytes() == 1);
+    let ops = ops.lock().unwrap().clone();
+    let take = ops.iter().position(|o| o == "row.take").unwrap_or(usize::MAX);
+    let input = ops.iter().position(|o| o == "row.input").expect("the key was sent");
+    assert!(take < input, "the client was demoted before its snapshot, so its key takes the pen first: {ops:?}");
+    win.shutdown(Duration::from_millis(500));
+}
+
+#[test]
+fn a_row_socket_path_too_long_ends_the_attach_with_a_named_error() {
+    let mut client = window(&"x".repeat(300));
+    let deadline = Instant::now() + BOUND;
+    while !client.is_dead() {
+        client.pump();
+        assert!(Instant::now() < deadline, "a path that can never fit was retried: {:?}", client.status_line());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(client.status_line().contains("too long"), "{:?}", client.status_line());
 }

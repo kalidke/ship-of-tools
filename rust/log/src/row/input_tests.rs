@@ -62,3 +62,46 @@ fn writes_arrive_in_the_order_they_were_handed_over_and_a_full_pump_says_busy() 
     let got = got.lock().unwrap().clone();
     assert!(got.windows(2).all(|w| w[0] < w[1]), "in the order handed over: {got:?}");
 }
+
+#[test]
+fn retiring_answers_the_pending_writes_run_ended_and_ends_the_thread() {
+    let open = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let pump = InputPump::new(Gated { open: Arc::clone(&open), got: Arc::clone(&got) }).unwrap();
+    let (first, first_answer) = mpsc::sync_channel(1);
+    let (second, second_answer) = mpsc::sync_channel(1);
+    pump.write(b"one".to_vec(), first);
+    std::thread::sleep(Duration::from_millis(50));
+    pump.write(b"two".to_vec(), second);
+    // The terminal takes nothing until the run's end hangs it up: the blocked write fails, as a closed terminal's does.
+    let release = {
+        let open = Arc::clone(&open);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            *open.0.lock().unwrap() = true;
+            open.1.notify_all();
+        })
+    };
+    assert!(pump.retire(Duration::from_secs(5)), "the input thread ends within its bound");
+    release.join().unwrap();
+    let answer = second_answer.recv_timeout(Duration::from_secs(1)).expect("a pending write is answered at the end");
+    assert!(matches!(&answer, Err(m) if m.starts_with("run ended")), "{answer:?}");
+    let _ = first_answer.recv_timeout(Duration::from_secs(1));
+    assert!(!got.lock().unwrap().ends_with(b"two"), "a write that was pending at the end is never written");
+}
+
+#[test]
+fn a_detached_write_goes_through_the_same_queue_in_order() {
+    let open = Arc::new((Mutex::new(true), std::sync::Condvar::new()));
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let pump = InputPump::new(Gated { open, got: Arc::clone(&got) }).unwrap();
+    let (reply, answered) = mpsc::sync_channel(1);
+    pump.write(b"typed ".to_vec(), reply);
+    pump.write_detached(b"da1".to_vec());
+    assert_eq!(answered.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(6));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while got.lock().unwrap().len() < 9 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(*got.lock().unwrap(), b"typed da1");
+}

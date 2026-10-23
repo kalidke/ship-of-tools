@@ -7,6 +7,7 @@
 
 use std::io::Write;
 use std::sync::mpsc;
+use std::time::Duration;
 
 /// Writes the pump has not yet started, at most; one more is refused as busy.
 const PENDING_WRITES: usize = 16;
@@ -46,6 +47,16 @@ impl InputPump {
                 let _ = job.reply.send(Err("the terminal's input is closed".into()));
             }
         }
+    }
+}
+
+impl InputPump {
+    /// Writes `bytes` in order with the typed input, answering nobody (the host's own replies on the terminal).
+    pub fn write_detached(&self, _bytes: Vec<u8>) {}
+
+    /// The run is over: pending writes are answered `run ended`, and the thread is joined within `bound`.
+    pub fn retire(self, _bound: Duration) -> bool {
+        false
     }
 }
 

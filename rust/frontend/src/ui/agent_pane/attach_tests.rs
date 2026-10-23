@@ -68,3 +68,12 @@ fn a_switch_back_to_a_warm_row_takes_the_parked_client_without_a_new_dial() {
     assert_eq!(pool.retain_rows(&host(), |row| row == "sot-be-c"), vec!["client-a"]);
     assert!(pool.take(&a).is_none());
 }
+
+#[test]
+fn a_key_whose_delivery_is_unknown_is_said_so() {
+    use sot_log::attach_client::client::InputOutcome;
+    assert_eq!(input_outcome_notice(None), None);
+    assert_eq!(input_outcome_notice(Some(InputOutcome::Recorded)), None);
+    let unknown = input_outcome_notice(Some(InputOutcome::DeliveryUnknown)).expect("unknown delivery has words");
+    assert!(unknown.contains("delivery unknown"), "{unknown}");
+}
