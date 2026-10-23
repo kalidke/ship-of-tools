@@ -23,10 +23,12 @@ true after the merge of the leg into the supervisor.
 - The three lockstep lanes (management, attach, supervisor) and their per-platform transports (`src/lane/`). The
   management lane is only the attach lane's identity exchange (`status`) and an end request nobody sends any more;
   pass 6c replaces all three.
-- The attach client every viewer uses, and the daemon's supervisor-lane calls (`src/attach_client/`).
-- The row socket (`src/row/`, pass 6c-1a1), served beside the lanes above and read by nobody in the product yet: a
-  blocking acceptor and `RowClient`, in wire's frames. Pass 6c-1a2 switches the window, the wake and the bridge to it
-  and deletes the attach lane; 6c-1b moves the daemon's calls; 6c-1c adds the watch.
+- The attach client every viewer uses (`src/attach_client/client.rs` over the worker in `attach.rs`, both on the row
+  socket), and the daemon's supervisor-lane calls (`supervisor_client.rs`, with what it still needs of the old lane in
+  `supervisor_wait/`) until 6c-1b.
+- The row socket (`src/row/`), the way in for every viewer: a blocking acceptor, `RowClient` and the input thread, in
+  wire's frames. Pass 6c-1a2 switched the window, the wake and the bridge to it; 6c-1b moves the daemon's calls and
+  deletes the lanes; 6c-1c adds the watch.
 
 ## Promises
 - One process per row: the agent is the supervisor's own child. The supervisor takes `supervisor.lock` (or adopts the
@@ -97,11 +99,12 @@ true after the merge of the leg into the supervisor.
   flood. Input is acknowledged as written, or reported `delivery unknown` when the loop did not answer in 2 s (it may
   still write it; the client never sends it again), and input queued for one run is answered `run ended` when the run
   changes and never written into the next. The run id is a UUIDv7 minted at each agent start.
-- Limits of this landing: nothing in the product dials the row socket until 6c-1a2, so a bind failure is noted and
-  the supervisor serves on without it; a live 6b row on a dev box is not served by it, and no candidate is cut from
-  main until 6c-2. The loop's own write of a driver's input to the terminal is still a blocking `write_all` on the
-  main thread, as the old lane's is (queue item CAPSULE-INPUT-BLOCKS-LOOP, for 6c-1a2, which makes the row path the
-  only input path). On Linux the challenge refuses a peer that started in the clock tick the client connects in
+- Limits of this landing: the attach lane `voyage-<id>` and its server are still bound and served and nothing dials
+  them (pass 6c-1a2 switched every viewer; deleting `attach_proto`, `wire/attach.rs` and the loop's lane serving is
+  left, queue item ATTACH-LANE-SERVER); a live 6b row on a dev box is not served by the row socket, and no candidate is
+  cut from main until 6c-2. Typed input reaches the terminal on a thread of its own (`src/row/input.rs`), at most 16
+  writes waiting behind it and one more refused as `busy`, so the loop's own write is no longer blocking; that old
+  lane's `write_all` stays until the lane goes. On Linux the challenge refuses a peer that started in the clock tick the client connects in
   (`validate_pin`), so a supervisor dialed within 10 ms of its start can be `Unproven`; a later connection, with a
   fresh anchor, is proven, and a test binary that is both ends waits out one tick first. The row socket is the
   capsule's first dependency on `sot-protocol`.
@@ -110,9 +113,13 @@ true after the merge of the leg into the supervisor.
   the output; a lost connection is redialed on platform's `Redial` (250 ms doubling to 4 s, started over only after a
   connection that lasted `STABLE`). The window attaches as the driver, the wake and the dialog tick as watchers that
   take the pen only to type; a client that was demoted takes it again on its next input. Input typed before the attach
-  is held and sent after it; a count of the inputs dropped for want of room is kept. A bind failure of the row socket
-  ends the supervisor terminal before any agent starts. Input to the terminal is written without blocking the run's
-  loop, so an agent that reads nothing until its output drains cannot stop that drain.
+  is held and sent after it, 8 KiB at most, and a count of the inputs dropped for want of room is kept. The worker
+  stops reading the row once 4 MiB of output sit unconsumed, so a viewer that does not pump is evicted by the row and
+  shown a fresh snapshot on its redial. A failure ends the episode only when it cannot get better (another account's
+  socket, a row number this client does not speak, a refusal by the daemon, access denied) or when the row has not
+  answered for 120 s; anything else is retried. A bind failure of the row socket ends the supervisor terminal before
+  any agent starts. Input to the terminal is written without blocking the run's loop, so an agent that reads nothing
+  until its output drains cannot stop that drain (`a_paste_the_agent_has_not_read_does_not_stop_its_output`).
 - Attach is ground-gated (`writer_loop::output_path::ground_check`), so a viewer joins only at a parser ground
   boundary, after every byte the parser has seen was published.
 - `sot-capsule supervise` exits 0 (a stop), 69 (`EXIT_TERMINAL`: it cannot serve the row), 70 (`EXIT_CONTENDED`, the
@@ -139,7 +146,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/capsule/`: a run, one producer under a live parser, its screen file and its ending.
 - `src/supervisor/`: the one process of a row: the fence, the pointer, the lane and the main thread's loop.
 - `src/lane/`: transport contract, client seam and the platform bridge for the lanes.
-- `src/attach_client/`: one client for every viewer of a capsule.
+- `src/attach_client/`: one client for every viewer of a row, and the daemon's supervisor-lane calls.
 - `src/row/`: the row socket: `RowServer` (acceptor and connection threads), `RowRun` (the run's fan-out and request
   queue, what the loop feeds and drains), `RowClient` (the blocking client) and the hello's payloads and exchange.
 - `../platform/`: the platform crate, whose charter is `../platform/CLAUDE.md`.
@@ -166,7 +173,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/capsule/`: a run's runtime, its screen and ended files, and the producers.
 - `src/supervisor/`: the supervisor, its fence and pointer, and the lane's thread.
 - `src/lane/`: wire frames, transports and the attach protocol.
-- `src/attach_client/`: the attach client and its worker.
+- `src/attach_client/`: the attach client, its worker (`attach.rs`) and the supervisor-lane calls.
 - `src/row/`: the row socket's server, run side, client and protocol types; tests `tests/row.rs`, `row_limits.rs`, `row_supervisor.rs`, `row_pipe.rs`.
 - `src/lane/exchange.rs`, `src/lane/connect_own.rs`: the lanes' identity exchanges, and the connect that asks platform's account check.
 - `src/storage.rs`: `storage_exhaustion`, the capsule's reading of platform's storage table.

@@ -123,10 +123,10 @@ Work-state. A row with a joined agent has one work-state, which the window shows
 Owns: the registry (`Workspaces`) and the row (`Workspace`) with its phase cell, guards, run gate and the default row's
 rule; on disk `<config>/workspaces-<host>/<slug>.toml`, `<state>/workspaces/<id>/` with its tombstones, and
 `workspaces/.registries-of`; the ops `workspace.create`, `workspace.destroy`, `workspace.list`, `workspace.activate`,
-`workspace.reauth`, `agent.join`, `pty.open`, `pty.input`, `pty.screen` and `lane.connect`, and the `workspace.changed`
+`workspace.reauth`, `agent.join`, `pty.open`, `pty.input`, `pty.screen` and `lane.connect` (which pipes the row's one socket, `row-<h>`, after resuming an absent one), and the `workspace.changed`
 event; the supervisor's launch (state root, detached spawn per OS, durable parent, the Linux row scope), its start,
-watchdog, observer, end and boot resume (`spawn/`, `run/`); the daemon's headless attach client (`run/headless.rs`),
-which the wake uses too; the liveness stamp's choice of handles (the rows that run); work-state: the reduction and
+watchdog, observer, end and boot resume (`spawn/`, `run/`); the daemon's headless attach client (`run/headless.rs`, a watcher over the row socket that takes the pen once, only
+to type), which the wake uses too; the liveness stamp's choice of handles (the rows that run); work-state: the reduction and
 `sotd work-state`, the dialog tick and the poll (`work_state/`), and the scripts in `comm/work_state/`
 (`comm-status.sh`, `comm-turn-auditor.sh`, the status hooks), with the reference page
 `comm/adapters/claude/sot-comm/references/work-state.md`. Housed there and messaging's: the Stop hook's mail gate and

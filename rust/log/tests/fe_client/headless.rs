@@ -176,8 +176,8 @@ fn headless_attach_against_a_pointerless_state_dir_waits_and_shutdown_closes_the
     }
     assert!(!client.is_checkpointed(), "no checkpoint can exist without a supervisor");
     assert!(
-        client.status_line().contains("not answering"),
-        "the wait must be the designed one (supervisor lane not answering), got: {}",
+        client.status_line().contains("reconnecting"),
+        "the wait must be the designed one (the row socket not there yet, redialing), got: {}",
         client.status_line()
     );
     assert!(

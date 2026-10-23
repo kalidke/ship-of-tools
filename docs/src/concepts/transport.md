@@ -76,7 +76,7 @@ second, independent guess at how to reach it. Each of these connections
 starts with a `hello` whose role is `handoff` and carries its
 `lane.connect` or `proxy.connect` in the same write, so the hello costs no
 extra round trip.
-An SSH pane needs a supervisor login and a voyage login for its initial cold attach; a proxied browser connection uses one login. Cold attach may start a voyage login alongside its supervisor login as an optional optimization. Local endpoints park no SSH login. If spare creation fails or the parked login expires, the first voyage uses its ordinary gated fresh dial, so overlap is not guaranteed. After first voyage consumption, every later dial uses one login. Pre-voyage retries follow ADR 0045's retry exception. A page served by a remote daemon pays once per browser connection, not once per file: the daemon's page servers keep a connection for the next request, so a browser's few connections to a page carry all of its files, and a connection with no whole request head within 30 s of its wait's start is closed, as is one whose client takes more than 30 s to accept 64 KiB of a reply. A port the daemon answers as not served (`bad_port`) is parked: its listener stays bound but closes each browser
+An SSH pane attaches to its row's one socket through one `lane.connect`, so one login; a proxied browser connection uses one login. Local endpoints start no SSH login, and nothing is parked for a second dial. A page served by a remote daemon pays once per browser connection, not once per file: the daemon's page servers keep a connection for the next request, so a browser's few connections to a page carry all of its files, and a connection with no whole request head within 30 s of its wait's start is closed, as is one whose client takes more than 30 s to accept 64 KiB of a reply. A port the daemon answers as not served (`bad_port`) is parked: its listener stays bound but closes each browser
 connection at once, with no login and no log line, until a page on that port is opened again from the frontend. A
 tab left open on a dead page therefore stops costing a login per retry after the daemon's first refusal. The daemon
 logs a refused port once, until that port is served again. While the host's link is down, a browser connection
@@ -106,9 +106,8 @@ stops dialing, shows "host offline, waiting for the link", and checks every
 transport's hello reply reopens the gate, so the viewed pane dials within a
 tick of it; parked panes keep their last screen and dial when next viewed.
 A resize read while paused is the size of the next attach. The pass bar is
-therefore: at the link's return, the transport's one login plus two lane
-logins (supervisor and voyage) per viewed row, and no login of any kind while
-the link is down.
+therefore: at the link's return, the transport's one login plus one lane
+login per viewed row, and no login of any kind while the link is down.
 
 **Residual.** After a silent network drop the transport can take up to its
 keepalive window (about 45 s) to notice, so a lane that dies first may still

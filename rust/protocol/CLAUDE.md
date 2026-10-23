@@ -25,11 +25,13 @@ name is in this crate's one op table.
    reader judges a row by its hello's row number (the capsule's `ROW_PROTOCOL`), never by a frame's `v`.
 3. **A payload grows only by defaulted fields; any other change raises `PROTOCOL_VERSION`, and hello refuses the
    mismatch.** Payload types are plain serde structs, so a client in another language needs only the op name and the
-   JSON shape. The integer (3) is declared by every hello (`HelloReq::this_process`), by the shell client's literal
+   JSON shape. The integer (4 since pass 6c-1a2, which changed what `lane.connect` pipes: its request is `{target, token}` and
+   `DaemonVersion` lost its lane protocol integer, keeping an always-empty `lane_build` so an older reader still parses the
+   answer, `an_older_readers_daemon_version_parses_a_new_answer`) is declared by every hello (`HelloReq::this_process`), by the shell client's literal
    (held to it by a test that runs it), and refused on mismatch by the daemon's hello, the server's check of this
-   integer (`rust/backend/src/server/hello_protocol_gate_tests.rs`, `rust/backend/tests/admission.rs`). serde does not
+   integer (`rust/backend/src/server/hello_protocol_gate_tests.rs`, where `hello_refuses_protocol_3` pins the last release's integer as refused, and `rust/backend/tests/admission.rs`). serde does not
    enforce the defaulted-field rule: it is a maintenance obligation, held by review and by previous-shape tests only for
-   the hello and version query (`ops/session_tests.rs`) and the lease (`ops/lease_wire_tests.rs`). The families with
+   the hello and version query (`ops/session_tests.rs`, where the last release's `DaemonVersion` is frozen) and the lease (`ops/lease_wire_tests.rs`). The families with
    none are agent, browse, lane, monitor, pages, pty, repl, update, workspace and the preview payloads (`ir.rs`).
 4. **A child's output is read by lines, lossily, so no byte ends a reader.** A line is the bytes up to `\n`, less a
    `\r` before it, decoded lossily, through `ChildLines` or `blocking_child_lines` only; `rust/clippy.toml`'s
