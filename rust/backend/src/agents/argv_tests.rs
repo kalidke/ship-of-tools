@@ -427,6 +427,47 @@ fn the_layer_rides_the_recipe_and_a_plain_claude_has_none() {
     assert!(!caller.iter().any(|a| a.contains("\"hooks\"")), "{caller:?}");
 }
 
+/// A caller's own `--settings` JSON keeps its own keys and gains the recipe's hooks beside its own: per event the
+/// caller's groups come first. A value that is not a JSON object (a file path) and a second `--settings` are passed as
+/// given, with no hooks, and say so.
+#[test]
+#[cfg(unix)]
+fn a_callers_settings_json_is_merged_with_the_recipes_hooks() {
+    let _guard = self_file_env_guarded();
+    let (comm, _layer) = comm_home_with_layer();
+    let mine = r#"{"model":"opus","hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"mine"}]}],"Stop":[{"hooks":[{"type":"command","command":"stop"}]}]}}"#;
+    for flags in [
+        vec!["--settings".to_string(), mine.to_string()],
+        vec![format!("--settings={mine}")],
+    ] {
+        let argv = claude_recipe(&flags, None, Some(comm.path()));
+        let value = argv
+            .iter()
+            .find_map(|a| a.strip_prefix("--settings="))
+            .or_else(|| argv.iter().position(|a| a == "--settings").map(|i| argv[i + 1].as_str()))
+            .unwrap_or_else(|| panic!("no --settings: {argv:?}"));
+        assert_eq!(argv.iter().filter(|a| a.starts_with("--settings")).count(), 1, "{argv:?}");
+        let json: serde_json::Value = serde_json::from_str(value).unwrap();
+        assert_eq!(json["model"], "opus", "{json}");
+        assert_eq!(json["hooks"]["Stop"].as_array().unwrap().len(), 1, "{json}");
+        let post = json["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(post.len(), 2, "{json}");
+        assert_eq!(post[0]["hooks"][0]["command"], "mine", "{json}");
+        assert!(post[1]["hooks"][0]["command"].as_str().unwrap().contains("heartbeat"), "{json}");
+        for event in ["UserPromptSubmit", "PreToolUse"] {
+            assert_eq!(json["hooks"][event].as_array().unwrap().len(), 1, "{event}: {json}");
+        }
+    }
+    let path = claude_recipe(&["--settings".to_string(), "/some/file.json".to_string()], None, Some(comm.path()));
+    assert!(!path.iter().any(|a| a.contains("\"hooks\"")), "{path:?}");
+    let twice = claude_recipe(
+        &["--settings".to_string(), "{}".to_string(), "--settings".to_string(), "{}".to_string()],
+        None,
+        Some(comm.path()),
+    );
+    assert!(!twice.iter().any(|a| a.contains("\"hooks\"")), "{twice:?}");
+}
+
 #[test]
 #[cfg(unix)]
 fn the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec() {

@@ -27,6 +27,7 @@ export SOTD_BIN="$(guard_bridge_stub "$WORK/bridge")"
 [ -x "$SOTD_BIN" ] || exit 2
 SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 
+SYSROOT_AT_START="${SYSTEMROOT-<unset>}"
 export SOT_COMM_TEST_HOST="test-host"
 unset SOT_WORKSPACE_ID   # never let an ambient row leak into the self-file slot
 mkdir -p "$WORK/repo"
@@ -433,6 +434,19 @@ check "--agent none: a bash row with no handle, registry row or inbox; waits for
     case_bash_row_spawns_with_no_handle
 check "--agent none refuses --name, a name argument and --task before any create or write" \
     case_bash_row_refuses_a_handle_or_a_task
+# A case that cannot run here is a SKIP in the count, never a PASS; and a case leaves the suite's own SYSTEMROOT as it
+# found it (a Windows case hands its stand-in to the spawn call only).
+case_skipped() { return 2; }
+case_a_skipped_case_is_counted_as_a_skip() {
+    local out; out="$(check probe case_skipped)"
+    [ "$out" = "SKIP: probe" ] || { echo "  a skipped case reads: $out"; return 1; }
+}
+case_system_root_is_the_suites_own() {
+    [ "${SYSTEMROOT-<unset>}" = "$SYSROOT_AT_START" ] || { echo "  SYSTEMROOT is '${SYSTEMROOT-}', was '$SYSROOT_AT_START'"; return 1; }
+}
+check "a skipped case is counted as a skip, never as a pass" case_a_skipped_case_is_counted_as_a_skip
+check "no case leaves SYSTEMROOT set for the cases after it" case_system_root_is_the_suites_own
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

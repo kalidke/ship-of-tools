@@ -178,8 +178,11 @@ fn sotd_bin_value_makes_the_start_path_absolute_as_its_start_found_it() {
         sotd_bin_value(bin.join(&file).as_os_str(), None),
         Some(shown(&bin.join(&file)))
     );
-    // Relative: against the working folder, with no lookup.
-    let relative = Path::new("target").join("release").join(&file);
+    // Relative: against the working folder, with no lookup, to a file that runs.
+    let inside = tempfile::tempdir_in(&cwd).expect("a folder in the working folder");
+    sot_platform::test_exec::write_executable(&inside.path().join(&file), "#!/bin/sh\n");
+    let inside_name = inside.path().file_name().expect("a folder name").to_os_string();
+    let relative = Path::new(&inside_name).join(&file);
     assert_eq!(
         sotd_bin_value(relative.as_os_str(), None),
         Some(shown(&cwd.join(&relative)))
@@ -210,8 +213,8 @@ fn sotd_bin_value_makes_the_start_path_absolute_as_its_start_found_it() {
             .filter(char::is_ascii_alphabetic);
         let drive = drive.expect("a working folder on a lettered drive");
         assert_eq!(
-            sotd_bin_value(OsStr::new(&format!("{drive}:{file}")), None),
-            Some(shown(&cwd.join(&file)))
+            sotd_bin_value(OsStr::new(&format!("{drive}:{}/{file}", inside_name.to_string_lossy())), None),
+            Some(shown(&cwd.join(&relative)))
         );
     }
     // Unix: a link on PATH is the path given, never its target.
@@ -225,5 +228,24 @@ fn sotd_bin_value_makes_the_start_path_absolute_as_its_start_found_it() {
             sotd_bin_value(OsStr::new(name), Some(&link_path)),
             Some(shown(&link.join(name)))
         );
+    }
+}
+
+/// An explicit start path is checked to run, as a bare name is: a file that is not there, a folder, and (Unix) a file
+/// that cannot be executed give no value, so a session's shell finds `sotd` by its own ladder instead of a path that
+/// would fail at its first call.
+#[test]
+fn sotd_bin_value_gives_nothing_for_an_explicit_path_that_does_not_run() {
+    let work = tempfile::tempdir().expect("a work folder");
+    let missing = work.path().join("missing-sotd");
+    assert_eq!(sotd_bin_value(missing.as_os_str(), None), None);
+    assert_eq!(sotd_bin_value(work.path().as_os_str(), None), None);
+    let relative_missing = Path::new("no-such-folder").join("sotd");
+    assert_eq!(sotd_bin_value(relative_missing.as_os_str(), None), None);
+    #[cfg(unix)]
+    {
+        let plain = work.path().join("plain-sotd");
+        std::fs::write(&plain, "#!/bin/sh\n").expect("write a plain file");
+        assert_eq!(sotd_bin_value(plain.as_os_str(), None), None);
     }
 }

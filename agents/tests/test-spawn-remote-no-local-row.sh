@@ -209,8 +209,9 @@ case_remote_derived_handle_names_target_host() {
     return 0
 }
 
-# (c) The local case is untouched: row + inbox exactly as before.
-case_local_daemon_still_writes_both() {
+# (c) The local case writes its registry row through the daemon and touches no inbox file: the inbox is the daemon's
+#     (agents/CLAUDE.md, guarantee 9), and its first append makes it.
+case_local_daemon_writes_the_row_and_no_inbox() {
     local wsid="ws-local" slug="local1"
     start_stub_daemon "$SELF_HOST_NAME" "$wsid" "$slug" "$(entry "$wsid" "$slug" ready)"
     SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn --name spawn-local
@@ -218,7 +219,7 @@ case_local_daemon_still_writes_both() {
 
     [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
     registry_has_row "spawn-local" || { echo "  registry row missing after a LOCAL spawn"; return 1; }
-    inbox_exists_for "spawn-local" || { echo "  inbox file missing after a LOCAL spawn"; return 1; }
+    ! inbox_exists_for "spawn-local" || { echo "  the spawn made the inbox file itself"; return 1; }
     return 0
 }
 
@@ -261,8 +262,8 @@ check "daemon declares ANOTHER host: no local registry row, no local inbox" \
     case_remote_daemon_writes_nothing_local
 check "daemon declares ANOTHER host: a derived handle names the TARGET host" \
     case_remote_derived_handle_names_target_host
-check "daemon declares THIS host: registry row + inbox written, unchanged" \
-    case_local_daemon_still_writes_both
+check "daemon declares THIS host: registry row written through the daemon, no inbox file touched" \
+    case_local_daemon_writes_the_row_and_no_inbox
 check "FAILED local spawn: provisional row rolled back and reported" \
     case_failed_local_spawn_rolls_back
 check "FAILED remote spawn: no rollback verdict on a row that was never written" \
