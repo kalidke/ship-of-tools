@@ -169,9 +169,34 @@ jobs:
       # video-file extracts poster frames via ffmpeg. Their suites skip
       # gracefully when the tools are absent — install them so CI runs the
       # real code paths instead of the skips.
+      # The one package list: the cache key and both install paths read it.
+      # A hit installs the cached .deb files with no mirror; a miss installs
+      # as before, keeping the downloaded files for the cache's save.
+      - name: Key the preview tool packages
+        id: apt
+        env:
+          APT_PACKAGES: ghostscript poppler-utils ffmpeg
+        run: |
+          echo "packages=$APT_PACKAGES" >> "$GITHUB_OUTPUT"
+          echo "key=apt-debs-${ImageOS}-${ImageVersion}-$(echo "$APT_PACKAGES" | tr ' ' '-')" >> "$GITHUB_OUTPUT"
+      - name: Restore preview tool packages
+        id: apt-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-debs/*.deb
+          key: ${{ steps.apt.outputs.key }}
+      - name: Install preview tool dependencies (cached)
+        if: steps.apt-cache.outputs.cache-hit == 'true'
+        timeout-minutes: 2
+        run: sudo dpkg -i "$HOME"/apt-debs/*.deb
       - name: Install preview tool dependencies
+        if: steps.apt-cache.outputs.cache-hit != 'true'
         timeout-minutes: 5
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript poppler-utils ffmpeg
+        run: |
+          mkdir -p "$HOME/apt-debs"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::archives="$HOME/apt-debs" ${{ steps.apt.outputs.packages }}
+          ls "$HOME"/apt-debs/*.deb > /dev/null
       - name: Test ConceptExplorerCore
         timeout-minutes: 5
         run: julia --project=core -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'

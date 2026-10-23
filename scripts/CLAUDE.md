@@ -41,7 +41,8 @@ Guarantees, each with the mechanism it rests on:
   with `RCG_FULL` set.
 - The hosted runs are two. rust.yml, at each landing, is the build and the unit tests sharded on all three systems by
   `.github/test-shards.txt`, each job bound by `timeout-minutes`, with a check that every test of a named target runs in
-  exactly one shard (`tests/shards.py check`), in five to seven minutes. release-gate.yml, dispatched by hand at the
+  exactly one shard (`tests/shards.py check`), in five to seven minutes. CI.yml's preview tools (ghostscript, poppler, ffmpeg) come from a cache keyed by the runner
+  image and the package list, so a landing does not wait on a package mirror. release-gate.yml, dispatched by hand at the
   release gate (pass 11 and before each final release), never on a tag, holds the rest: the `gate-*` shards (the tests
   that sleep, the WGL page test with its depot), the native window proofs (minimized, closed, pane timing), the daemon
   lifetime harness, the hermetic comm and agents suites, the gate's own parity tests, the
