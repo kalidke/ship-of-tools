@@ -30,8 +30,7 @@ fn a_run_writes_no_voyage_record() {
     let cfg = config(dir.path(), "norec1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let mut transport = no_transport();
-    let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+    let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
 
     let files = files_under(dir.path());

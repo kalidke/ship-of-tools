@@ -19,12 +19,10 @@
 //! per-frame inline-byte goldens don't provide.
 
 use sot_log::lane::wire::{
-    encode_attach_client, encode_attach_server, encode_keepalive, encode_mgmt_reply,
-    encode_mgmt_request, encode_supervisor_reply, encode_supervisor_request, AttachClient,
-    AttachRefusedReason, AttachServer, DecodedFrame, FrameSplitter, MgmtReply, MgmtRequest,
-    ResizeRefusedReason, SupervisorOp, SupervisorOperationState, SupervisorPhase,
-    SupervisorRefusedReason, SupervisorReply, SupervisorRequest, Survival, TakeRefusedReason,
-    WireError, ATTACH_PROTO_V3, MGMT_MAGIC, SUPERVISOR_PROTO_V1,
+    encode_mgmt_reply, encode_mgmt_request, encode_supervisor_reply, encode_supervisor_request,
+    DecodedFrame, FrameSplitter, MgmtReply, MgmtRequest, SupervisorOp, SupervisorOperationState,
+    SupervisorPhase, SupervisorRefusedReason, SupervisorReply, SupervisorRequest, Survival,
+    WireError, MGMT_MAGIC, SUPERVISOR_PROTO_V1,
 };
 
 /// xorshift64* -- a fixed seed reproduces a failure exactly, with the
@@ -51,16 +49,6 @@ impl Rng {
     }
 }
 
-fn random_ascii_string(rng: &mut Rng, max_len: usize) -> String {
-    let len = rng.below((max_len + 1) as u32) as usize;
-    (0..len)
-        .map(|_| (b'a' + (rng.below(26) as u8)) as char)
-        .collect()
-}
-
-/// Like `random_ascii_string`, but never empty -- for `controller_id`,
-/// which the wire refuses at length 0 (see the module doc's "Field
-/// minimums" section).
 fn random_nonempty_ascii_string(rng: &mut Rng, max_len: usize) -> String {
     let len = 1 + rng.below(max_len as u32) as usize;
     (0..len)
@@ -68,30 +56,18 @@ fn random_nonempty_ascii_string(rng: &mut Rng, max_len: usize) -> String {
         .collect()
 }
 
-fn random_bytes(rng: &mut Rng, max_len: usize) -> Vec<u8> {
+fn random_ascii_string(rng: &mut Rng, max_len: usize) -> String {
     let len = rng.below((max_len + 1) as u32) as usize;
-    (0..len).map(|_| rng.below(256) as u8).collect()
+    (0..len)
+        .map(|_| (b'a' + (rng.below(26) as u8)) as char)
+        .collect()
 }
 
-fn random_idem_key(rng: &mut Rng) -> [u8; 16] {
-    let mut key = [0u8; 16];
-    for b in &mut key {
-        *b = rng.below(256) as u8;
-    }
-    key
-}
-
-/// One frame, tagged by which encoder it rides. `Keepalive` is its own
-/// variant, not nested under `AttachClient`/`AttachServer`: the wire has
-/// exactly one direction-neutral `keepalive` shape (see `wire`'s module
-/// doc), encoded by the single `encode_keepalive` function.
+/// One frame, tagged by which encoder it rides.
 #[derive(Debug, Clone)]
 enum GeneratedFrame {
     MgmtRequest(MgmtRequest),
     MgmtReply(MgmtReply),
-    AttachClient(AttachClient),
-    AttachServer(AttachServer),
-    Keepalive(u64),
     SupervisorRequest(SupervisorRequest),
     SupervisorReply(SupervisorReply),
 }
@@ -101,9 +77,6 @@ impl GeneratedFrame {
         match self {
             Self::MgmtRequest(f) => encode_mgmt_request(f).expect("generator stays in-bounds"),
             Self::MgmtReply(f) => encode_mgmt_reply(f).expect("generator stays in-bounds"),
-            Self::AttachClient(f) => encode_attach_client(f).expect("generator stays in-bounds"),
-            Self::AttachServer(f) => encode_attach_server(f).expect("generator stays in-bounds"),
-            Self::Keepalive(nonce) => encode_keepalive(*nonce),
             Self::SupervisorRequest(f) => encode_supervisor_request(f).expect("generator stays in-bounds"),
             Self::SupervisorReply(f) => encode_supervisor_reply(f).expect("generator stays in-bounds"),
         }
@@ -113,9 +86,6 @@ impl GeneratedFrame {
         match self {
             Self::MgmtRequest(f) => DecodedFrame::MgmtRequest(f.clone()),
             Self::MgmtReply(f) => DecodedFrame::MgmtReply(f.clone()),
-            Self::AttachClient(f) => DecodedFrame::AttachClient(f.clone()),
-            Self::AttachServer(f) => DecodedFrame::AttachServer(f.clone()),
-            Self::Keepalive(nonce) => DecodedFrame::Keepalive { nonce: *nonce },
             Self::SupervisorRequest(f) => DecodedFrame::SupervisorRequest(f.clone()),
             Self::SupervisorReply(f) => DecodedFrame::SupervisorReply(f.clone()),
         }
@@ -147,98 +117,6 @@ fn random_mgmt_frame(rng: &mut Rng) -> GeneratedFrame {
             _ => MgmtReply::ShutdownOk,
         };
         GeneratedFrame::MgmtReply(f)
-    }
-}
-
-fn random_attach_frame(rng: &mut Rng) -> GeneratedFrame {
-    match rng.below(3) {
-        0 => {
-            let f = match rng.below(5) {
-                0 => AttachClient::Hello {
-                    proto: rng.next_u32(),
-                },
-                1 => AttachClient::Attach {
-                    controller_id: random_nonempty_ascii_string(rng, 128),
-                },
-                2 => AttachClient::Take {
-                    controller_id: random_nonempty_ascii_string(rng, 128),
-                },
-                3 => AttachClient::Input {
-                    controller_id: random_nonempty_ascii_string(rng, 128),
-                    take_epoch: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
-                    idem_key: random_idem_key(rng),
-                    payload: random_bytes(rng, 200), // small -- bounds are tested separately
-                },
-                _ => AttachClient::Resize {
-                    cols: rng.below(513) as u16,
-                    rows: rng.below(257) as u16,
-                },
-            };
-            GeneratedFrame::AttachClient(f)
-        }
-        1 => {
-            let f = match rng.below(15) {
-                0 => AttachServer::HelloOk {
-                    proto: rng.next_u32(),
-                },
-                1 => AttachServer::HelloRefused {
-                    supported: rng.next_u32(),
-                },
-                2 => AttachServer::CheckpointChunk {
-                    last: rng.bool(),
-                    bytes: random_bytes(rng, 300),
-                },
-                3 => AttachServer::AttachRefused {
-                    reason: if rng.bool() {
-                        AttachRefusedReason::GroundTimeout
-                    } else {
-                        AttachRefusedReason::SubscriberCap
-                    },
-                },
-                4 => AttachServer::Output {
-                    bytes: random_bytes(rng, 300),
-                },
-                5 => AttachServer::TakeOk {
-                    take_epoch: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
-                },
-                6 => AttachServer::TakeRefused {
-                    reason: if rng.bool() {
-                        TakeRefusedReason::NotAttached
-                    } else {
-                        TakeRefusedReason::CheckpointInFlight
-                    },
-                },
-                7 => AttachServer::InputRecorded,
-                8 => AttachServer::InputRefusedStale,
-                9 => AttachServer::InputDeliveryUnknown,
-                10 => AttachServer::ResizeOk,
-                11 => AttachServer::ResizeRefused {
-                    reason: if rng.bool() {
-                        ResizeRefusedReason::OutOfBudget
-                    } else {
-                        ResizeRefusedReason::NotDriver
-                    },
-                },
-                // ADR 0046 decision 3 (lane B3b1): owner-emitted pen/
-                // geometry events.
-                12 => AttachServer::PenSnapshot {
-                    holder: if rng.bool() { Some(random_nonempty_ascii_string(rng, 128)) } else { None },
-                    take_epoch: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
-                },
-                13 => AttachServer::PenChanged {
-                    holder: if rng.bool() { Some(random_nonempty_ascii_string(rng, 128)) } else { None },
-                    take_epoch: (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
-                },
-                _ => AttachServer::Geometry {
-                    cols: rng.below(513) as u16,
-                    rows: rng.below(257) as u16,
-                },
-            };
-            GeneratedFrame::AttachServer(f)
-        }
-        _ => GeneratedFrame::Keepalive(
-            (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32()),
-        ),
     }
 }
 
@@ -325,14 +203,12 @@ fn random_supervisor_frame(rng: &mut Rng) -> GeneratedFrame {
 #[derive(Debug, Clone, Copy)]
 enum Lane {
     Mgmt,
-    Attach,
     Supervisor,
 }
 
 fn random_lane(rng: &mut Rng) -> Lane {
-    match rng.below(3) {
+    match rng.below(2) {
         0 => Lane::Mgmt,
-        1 => Lane::Attach,
         _ => Lane::Supervisor,
     }
 }
@@ -341,7 +217,6 @@ fn random_sequence(rng: &mut Rng, lane: Lane, count: usize) -> Vec<GeneratedFram
     (0..count)
         .map(|_| match lane {
             Lane::Mgmt => random_mgmt_frame(rng),
-            Lane::Attach => random_attach_frame(rng),
             Lane::Supervisor => random_supervisor_frame(rng),
         })
         .collect()
@@ -396,7 +271,7 @@ fn accumulate_feed(chunks: &[&[u8]]) -> (Vec<DecodedFrame>, Option<WireError>) {
 #[test]
 fn splitter_decodes_identically_at_every_two_way_split_point() {
     let mut rng = Rng(0xC0FF_EE00_D15E_A5E1);
-    let frames = random_sequence(&mut rng, Lane::Attach, 12);
+    let frames = random_sequence(&mut rng, Lane::Supervisor, 12);
     let bytes: Vec<u8> = frames.iter().flat_map(|f| f.encode()).collect();
     let expected = decode_all_at_once(&bytes);
     assert_eq!(expected.len(), frames.len());
@@ -405,7 +280,7 @@ fn splitter_decodes_identically_at_every_two_way_split_point() {
         let got = decode_in_chunks(&bytes, &[split]);
         assert_eq!(
             got, expected,
-            "mismatch splitting the attach-lane stream at byte {split} of {}",
+            "mismatch splitting the supervisor-lane stream at byte {split} of {}",
             bytes.len()
         );
     }
@@ -431,7 +306,7 @@ fn splitter_decodes_identically_at_every_two_way_split_point_mgmt_lane() {
 #[test]
 fn splitter_decodes_identically_fed_one_byte_at_a_time() {
     let mut rng = Rng(0x1111_2222_3333_4444);
-    let frames = random_sequence(&mut rng, Lane::Attach, 15);
+    let frames = random_sequence(&mut rng, Lane::Supervisor, 15);
     let bytes: Vec<u8> = frames.iter().flat_map(|f| f.encode()).collect();
     let expected = decode_all_at_once(&bytes);
 

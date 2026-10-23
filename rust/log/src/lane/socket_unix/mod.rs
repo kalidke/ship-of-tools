@@ -141,7 +141,7 @@ use crate::lane::client::Endpoint;
 use sot_platform::identity::challenge_macos as challenge_os;
 #[cfg(target_os = "linux")]
 use sot_platform::identity::challenge_unix as challenge_os;
-use crate::lane::attach_proto::ConnId;
+use crate::lane::transport::ConnId;
 use crate::lane::pending::{
     self, report_server_teardown_failed, Claimed, ReaperMsg, ThreadJoins, REAPER_INBOX_SLACK,
 };
@@ -320,22 +320,9 @@ struct ServerShared {
     next_id: AtomicU64,
     reaper_tx: SyncSender<ReaperMsg>,
     events_tx: SyncSender<LaneEvent>,
-    /// Switch-latency Phase 1 (c): the bridging `Transport` impl's own
-    /// wake callback (`PlatformTransport::bind`, via [`SocketServer::
-    /// set_wake`]) — invoked, if set, every time [`send_lifecycle_event`]/
-    /// [`deliver_bytes`] successfully push a fresh event, AFTER the push
-    /// (so a caller woken by it is guaranteed the event is already
-    /// sitting in `events_tx` for `events()`'s own `try_recv` to find).
-    /// `OnceLock`, not a `Mutex`: set at most once, by the ONE caller
-    /// that ever calls `set_wake` (immediately after `bind`/
-    /// `bind_supervisor` returns) — every read after that is wait-free.
-    /// Never set at all for the supervisor lane (`bind_supervisor`'s own
-    /// caller, `supervisor/`, wakes its main loop by blocking on
-    /// `events()` directly — see that module's own `MAIN_LOOP_POLL`
-    /// comment — so it has no need of this). NOT to be confused with
-    /// `wake_write`/`wake_read` below — this server's OWN internal
-    /// accept-loop self-pipe, an unrelated mechanism (module doc: "the
-    /// accept loop wakes via poll(2) over a self-pipe").
+    /// A wake callback pinged after every event this server queues, if one was registered. Nothing registers one since
+    /// the capsule stopped serving a lane through this server, so it stays empty (the supervisor lane never had one);
+    /// it goes with the lanes in pass 6c-1b.
     activity_wake: OnceLock<Arc<dyn Fn() + Send + Sync>>,
     max_connections: u32,
     /// TWO jobs, both won via `compare_exchange` (Codex review finding 1):

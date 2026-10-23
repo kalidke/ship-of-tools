@@ -591,7 +591,7 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
 }
 
 #[cfg(windows)]
-pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
+pub(crate) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessTimes};
     // SAFETY: `GetCurrentProcess` returns a pseudo-handle needing no close; the four FILETIME out-params are plain,
@@ -612,14 +612,14 @@ pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
 
 /// This process's `(pid, start identity)` pair: on Linux the start-time ticks the socket challenge reports for a peer.
 #[cfg(target_os = "linux")]
-pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
+pub(crate) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
     Ok((std::process::id(), sot_platform::identity::challenge_unix::self_start_ticks()?))
 }
 
 /// On macOS the identity is the kernel's `pidversion`, the value the challenge reads out of the peer's audit token;
 /// a start time here would make every challenge `Foreign`.
 #[cfg(target_os = "macos")]
-pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
+pub(crate) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
     Ok((std::process::id(), u64::from(sot_platform::identity::challenge_macos::self_pidversion()?)))
 }
 

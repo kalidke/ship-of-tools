@@ -13,8 +13,7 @@
         let cfg = config(dir.path(), "failunix1", argv, 80, 25);
         let root = cfg.voyage_root.clone();
         let (_tx, rx) = mpsc::channel();
-        let mut transport = no_transport();
-        let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+        let summary = capsule::run::<P>(cfg, rx).unwrap();
         assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
         assert_eq!(summary.exit_code, None);
         let ended = ended_of(&root);
@@ -42,8 +41,7 @@
         let cfg = config(dir.path(), "exitcode3", argv, 80, 25);
         let root = cfg.voyage_root.clone();
         let (_tx, rx) = mpsc::channel();
-        let mut transport = no_transport();
-        let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+        let summary = capsule::run::<P>(cfg, rx).unwrap();
         assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
         assert_eq!(summary.exit_code, Some(ExitStatus::Code(3)));
         assert_eq!(ended_of(&root).exit_code, Some(3));
@@ -69,8 +67,7 @@
         let argv = shell_command(script);
         let cfg = config(dir.path(), "slavereopen1", argv, 80, 25);
         let (_tx, rx) = mpsc::channel();
-        let mut transport = no_transport();
-        let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+        let summary = capsule::run::<P>(cfg, rx).unwrap();
         assert_eq!(summary.exit_kind, ExitKind::ProducerExited);
         assert_eq!(summary.exit_code, Some(ExitStatus::Code(0)));
         let text = saved_screen_text(dir.path(), "slavereopen1");
@@ -90,10 +87,7 @@
         let cfg = config(dir.path(), "signaldeath1", argv, 80, 25);
         let root = cfg.voyage_root.clone();
         let (tx, rx) = mpsc::channel();
-        let handle = std::thread::spawn(move || {
-            let mut transport = no_transport();
-            capsule::run::<P>(cfg, rx, &mut transport)
-        });
+        let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
         std::thread::sleep(Duration::from_millis(300));
         tx.send(Command::Kill).unwrap();
         let summary = wait_for_join(handle, Duration::from_secs(30))
@@ -106,83 +100,34 @@
         assert!(ended.exit_code.is_none(), "a signal death must never also carry an exit code: {ended:?}");
     }
 
-    /// Test: after a wire `Resize`, the ACTUAL pty geometry moved -- not
-    /// merely the wire's own recorded disposition string. Writes `stty
-    /// size\n` through the driver connection (the same protocol path a
-    /// real attach client uses) and reads the shell's own echoed answer
-    /// back off the live output stream, asserting it names the resized
-    /// geometry exactly (an asymmetric rows/cols pair, so a transposed
-    /// readback cannot pass by accident).
+    /// Test: after a driver's resize on the row socket, the ACTUAL pty geometry moved, not merely the row's own answer.
+    /// Writes `stty size\n` through the driver and reads the shell's own echoed answer back off the live output,
+    /// asserting it names the resized geometry exactly (an asymmetric rows/cols pair, so a transposed readback cannot
+    /// pass by accident). An out-of-budget resize is refused, and the pty is asked once.
     #[test]
     fn resize_reaches_the_pty() {
         let _serial = serial();
         let dir = tempfile::tempdir().unwrap();
+        let side = rowside::RowSide::new();
         let argv = vec![SHELL_ARGV.to_string()]; // bare interactive shell
-        let cfg = config(dir.path(), "resizepty1", argv, 80, 24);
-        let transport = TestTransport::new();
+        let mut cfg = config(dir.path(), "resizepty1", argv, 80, 24);
+        cfg.signals = Some(Arc::clone(&side.signals));
         let (tx, rx) = mpsc::channel();
-        let run_transport = transport.clone();
-        let handle = std::thread::spawn(move || {
-            let mut t = run_transport;
-            capsule::run::<P>(cfg, rx, &mut t)
-        });
+        let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
 
-        const CONN: ConnId = 1;
-        transport.open(CONN);
-        transport.feed(CONN, frame::hello());
-        let mut watcher = FrameWatcher::new(&transport);
-        watcher.wait_for("driver hello_ok", CONN, Duration::from_secs(10), |f| {
-            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-        });
-        transport.feed(CONN, frame::attach("driver"));
-        watcher.collect_checkpoint("driver checkpoint", CONN, Duration::from_secs(10));
-        transport.feed(CONN, frame::take("driver"));
-        let epoch = watcher.wait_for("driver take_ok", CONN, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
-            _ => None,
-        });
-
-        // An asymmetric, in-budget geometry.
-        transport.feed(CONN, frame::resize(100, 40));
-        let resize_ok = watcher.wait_for("resize outcome", CONN, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeOk) => Some(true),
-            wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeRefused { .. }) => Some(false),
-            _ => None,
-        });
-        assert!(resize_ok, "an in-budget resize must succeed");
-
-        let idem_key = [0x77u8; 16];
-        transport.feed(CONN, frame::input("driver", epoch, idem_key, b"stty size\n"));
-        watcher.wait_for("stty input outcome", CONN, Duration::from_secs(10), |f| match f {
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRecorded) => Some(()),
-            wire::DecodedFrame::AttachServer(wire::AttachServer::InputRefusedStale) => {
-                panic!("stty input unexpectedly refused stale")
-            }
-            _ => None,
-        });
-
-        // `stty size` prints "<rows> <cols>" -- proof the ACTUAL pty
-        // geometry (not merely the wire's own recorded disposition)
-        // moved.
-        let mut seen = String::new();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            seen.push_str(&watcher.wait_for("stty output", CONN, Duration::from_secs(10), |f| {
-                if let wire::DecodedFrame::AttachServer(wire::AttachServer::Output { bytes }) = f {
-                    Some(String::from_utf8_lossy(bytes).into_owned())
-                } else {
-                    None
-                }
-            }));
-            if seen.contains("40 100") {
-                break;
-            }
-            assert!(Instant::now() < deadline, "never saw the resized geometry echoed back: {seen:?}");
-        }
+        let mut driver = side.driver(80, 24);
+        // An asymmetric, in-budget geometry; then two the budget refuses.
+        driver.resize(100, 40).expect("an in-budget resize must succeed");
+        assert!(driver.resize(9999, 40).is_err(), "more than 512 columns is refused, never clamped");
+        assert!(driver.resize(40, 1).is_err(), "fewer than 2 rows is refused, never clamped");
+        driver.send_input(b"stty size\n").expect("the driver types");
+        // `stty size` prints "<rows> <cols>": proof the pty's geometry moved.
+        rowside::read_until(&mut driver, "the resized geometry", Duration::from_secs(10), |seen| seen.contains("40 100"));
 
         tx.send(Command::Kill).unwrap();
         let summary = wait_for_join(handle, Duration::from_secs(30))
             .expect("run did not return within the teardown bound")
             .unwrap();
         assert_eq!(summary.exit_kind, ExitKind::Requested);
+        assert_eq!(summary.resize_os_calls, 1, "the pty was asked once: the in-budget resize only");
     }

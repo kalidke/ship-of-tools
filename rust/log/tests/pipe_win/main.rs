@@ -44,7 +44,7 @@ use sot_platform::host::wide_null;
 use sot_platform::identity::challenge::ChallengeOutcome;
 use sot_platform::identity::challenge_win::challenge;
 use sot_log::lane::exchange::VoyageMgmtExchange;
-use sot_log::lane::attach_proto::ConnId;
+use sot_log::lane::transport::ConnId;
 use sot_log::lane::pipe_win::{connect_voyage_pipe, PipeServer};
 use sot_log::lane::transport::{
     ClosedReason, LaneEvent, TransportError, CONNECT_BOUND, TEARDOWN_AGGREGATE_DEADLINE,

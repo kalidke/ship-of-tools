@@ -1,14 +1,10 @@
-//! The capsule's lanes: the transport contract (`transport`), the client
-//! seam (`client`) and the one platform bridge (`platform_transport`)
-//! that the platform's lane server rides on.
+//! The capsule's lanes: the transport contract (`transport`) and the client seam (`client`).
 pub mod accept_policy;
-pub mod attach_proto;
 pub mod client;
 pub mod connect_own;
 pub mod exchange;
 pub(crate) mod pending;
 pub mod pipe_win;
-pub mod platform_transport;
 #[cfg(test)]
 mod reaper_tests;
 pub mod socket_unix;

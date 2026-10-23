@@ -13,7 +13,7 @@
 //!
 //! # Threads
 //!
-//! The main thread owns the run (`capsule::run`: the parser, the agent, the attach lane) and the reset. A second
+//! The main thread owns the run (`capsule::run`: the parser, the agent, the row socket's requests) and the reset. A second
 //! thread serves the supervisor lane (`authority`) and reaches the run through `Shared`: it asks the run to end over
 //! the run's own channel and is told, by `Shared`, what became of it.
 //!
@@ -26,12 +26,11 @@
 #![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 
 use crate::capsule::{CapsuleConfig, ExitKind, RunSignals};
-use crate::lane::attach_proto::ConnId;
 use crate::lane::client::{Endpoint, PlatformEndpoint};
-use crate::lane::platform_transport::PlatformTransport;
+use crate::lane::transport::ConnId;
 use crate::lane::transport::{LaneEvent, PlatformLaneServer};
 use crate::row::{row_socket_path, RowRun, RowServer};
-use crate::lane::wire::{self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest, Survival};
+use crate::lane::wire::{self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 #[cfg(any(test, feature = "test-support"))]
 use sot_platform::identity::challenge::ChallengeOutcome;
 use std::collections::HashMap;
@@ -45,6 +44,7 @@ mod authority;
 #[cfg(unix)]
 pub mod birth_claim;
 pub mod journal;
+pub(crate) use authority::self_pid_and_created;
 use authority::{After, Shared};
 use journal::pointer::{self, PointerState};
 
@@ -59,7 +59,7 @@ type Client = <PlatformEndpoint as Endpoint>::Client;
 type Process = <PlatformEndpoint as Endpoint>::Process;
 type Lane = PlatformLaneServer;
 
-/// Connections to each lane (the supervisor's own and the agent's attach lane).
+/// Connections to the supervisor's lane.
 const MAX_LANE_INSTANCES: u32 = 8;
 /// The lane's thread wakes at least this often, for the replies the main thread owes and for its own exit.
 const LANE_TICK: Duration = Duration::from_millis(50);
@@ -309,17 +309,13 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, voyag
     }
     let capsule = CapsuleConfig {
         voyage_root: voyage_root_path(&config.state_dir, voyage),
-        voyage_id: voyage.to_string(),
         screen_path: Some(config.state_dir.join("screen")),
         argv: agent_argv(config, agent_ran),
         cols: config.cols,
         rows: config.rows,
-        survival: Survival::Normal,
         signals: Some(Arc::clone(&signals)),
     };
-    let mut transport = PlatformTransport::new(MAX_LANE_INSTANCES);
-    let result = crate::capsule::run::<Agent>(capsule, commands, &mut transport);
-    drop(transport);
+    let result = crate::capsule::run::<Agent>(capsule, commands);
     // An acknowledged end_run is a requested end even if the agent ended first: the voyage records it before the answer.
     if shared.end_run_asked() {
         if let Err(e) = crate::capsule::mark_end_requested(&voyage_root_path(&config.state_dir, voyage), "end_run") {
@@ -328,7 +324,6 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, voyag
     }
     match result {
         Ok(summary) => match summary.exit_kind {
-            ExitKind::TransportFailed => RunEnd::Failed("the attach lane failed".into()),
             ExitKind::SpawnFailed if shared.end_asked() => RunEnd::Ended { started: false },
             ExitKind::SpawnFailed => {
                 note(format_args!("the agent could not be started"));

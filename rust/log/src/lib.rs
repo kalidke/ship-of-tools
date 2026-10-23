@@ -65,16 +65,9 @@ pub enum Error {
     /// variant (`pipe_win::PipeError`) and Unix-only `Socket` variant
     /// (`socket_unix::SocketError`) merged into one ungated variant (ADR
     /// 0043 decisions 17/19: one `transport::TransportError` now serves
-    /// both platforms). Binding the transport (`PipeServer::bind`/
-    /// `SocketServer::bind`, inside `PlatformTransport::bind`) is the ONLY
-    /// place `platform_transport.rs` converts one of these into this crate's own
-    /// `Error`. A LATER, background failure on an already-bound transport
+    /// both platforms). A LATER, background failure on an already-bound server
     /// (`LaneEvent::AcceptError`, the accept loop's persistent-failure
-    /// signal) never reaches this type at all — the bridge translates it
-    /// to `transport::TransportEvent::TransportFatal` instead, delivered
-    /// through `Transport::try_recv_event` like any other transport
-    /// event, since by then `run` is already past `bind` and mid-loop, not
-    /// somewhere a `Result` could propagate to.
+    /// signal) never reaches this type: it arrives as an event.
     #[error("transport: {0}")]
     Transport(#[from] lane::transport::TransportError),
 }

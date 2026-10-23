@@ -1,5 +1,4 @@
-//! The loop's output path: the reader thread, handling and pacing output, and the ground gate. The byte budget is capsule/output.rs.
-use super::lanes::execute_light_actions;
+//! The loop's output path: the reader thread and handling and pacing output. The byte budget is capsule/output.rs.
 use super::*;
 
 pub(super) fn spawn_reader<P: Producer>(
@@ -8,18 +7,14 @@ pub(super) fn spawn_reader<P: Producer>(
     tx: mpsc::Sender<ReaderEvent>,
 ) -> std::thread::JoinHandle<()> {
     // Three senders share this channel, not one: the reader thread below,
-    // `Transport::set_wake`'s callback (registered earlier, sends
-    // `TransportActivity`), and this thread's own `ReaderGoneGuard` (sends
+    // the row's wake callback (registered earlier, sends
+    // `Wake`), and this thread's own `ReaderGoneGuard` (sends
     // `ReaderGone` on every exit, including a panic unwind). No bridging
     // threads for input/control though (see the module doc): `commands`
     // is serviced directly, by this loop, from its own separate receiver.
     // `take_output` runs EXACTLY here — before this thread starts, per its
     // own doc — so `producer` itself stays a live, fully-owned binding for
     // every other call this function makes (`input`/`resize`/`wait`/...).
-    // `tx`/`output_rx` themselves were created earlier, ahead of
-    // `transport.0.bind` (switch-latency Phase 1 (c)) — `tx` is moved
-    // into this thread's closure below exactly as before; only its
-    // CREATION moved, not its ownership story.
     let mut reader = producer.take_output();
     let budget = Arc::clone(&output_budget);
     std::thread::spawn(move || {
@@ -88,18 +83,9 @@ pub(super) fn spawn_reader<P: Producer>(
     })
 }
 
-/// Evaluates the ground gate: a pending attach is promoted at a parser ground boundary, after every byte the parser
-/// has seen was published (`handle_output` publishes before it asks), so the checkpoint and the bytes after it
-/// agree on where they meet.
-pub(super) fn ground_check<P: Producer>(leg: &mut Leg<'_, P>) {
-    if leg.parser.is_ground() {
-        execute_light_actions(leg.attach_proto.ground_reached(Instant::now()), leg);
-    }
-}
-
 /// Handles one chunk of output, and offers a scheduling window to another ready thread every `PACE_BYTES` worth of
 /// output: a timed sleep (see the doc at `bytes_since_yield`'s initialization in `start`), not a bound.
-pub(super) fn pace_output<P: Producer>(bytes: Vec<u8>, leg: &mut Leg<'_, P>) -> Result<()> {
+pub(super) fn pace_output<P: Producer>(bytes: Vec<u8>, leg: &mut Leg<P>) -> Result<()> {
     leg.bytes_since_yield += bytes.len();
     handle_output(bytes, leg)?;
     if leg.bytes_since_yield >= PACE_BYTES {
@@ -109,25 +95,11 @@ pub(super) fn pace_output<P: Producer>(bytes: Vec<u8>, leg: &mut Leg<'_, P>) -> 
     Ok(())
 }
 
-/// Attaching to an idle session (real CI failure, windows-latest only): the ground gate was fed only by fresh output,
-/// so an attach landing on an already-idle, already-at-ground session (a shell sitting at its prompt, the ordinary
-/// case) pended for the full 5 s `GroundTimeout` and was refused instead of completing on the very next iteration.
-///
-/// Called every iteration, right after `tick`, so it runs in the SAME iteration an attach was just admitted in and on
-/// every subsequent iteration while one still pends. Scoped behind `ground_gate_pending()` (a cheap check) so the
-/// vastly more common "nothing pending" iteration pays nothing beyond it. Every byte the parser has seen was already
-/// published, so NOW is a valid boundary whenever the parser is at ground.
-pub(super) fn eager_ground_check<P: Producer>(leg: &mut Leg<'_, P>) {
-    if leg.attach_proto.ground_gate_pending() {
-        ground_check(leg);
-    }
-}
-
 // One producer-output handler, used identically pre-teardown AND during BOTH teardown phases, so "the handshake
 // keeps answering through the drain" (ADR 0041) can't be missed by one call site and not the other. Feeds the live
-// parser, publishes the bytes to the attached viewers, answers the FIRST DA1 query ever seen, and marks the screen
+// parser, publishes the bytes to the row's viewers, answers the FIRST DA1 query ever seen, and marks the screen
 // file's content changed.
-fn handle_output<P: Producer>(bytes: Vec<u8>, leg: &mut Leg<'_, P>) -> Result<()> {
+fn handle_output<P: Producer>(bytes: Vec<u8>, leg: &mut Leg<P>) -> Result<()> {
     leg.parser.process(&bytes);
     leg.output_budget.release(bytes.len() as u64);
     if let Some(signals) = &leg.signals {
@@ -136,8 +108,6 @@ fn handle_output<P: Producer>(bytes: Vec<u8>, leg: &mut Leg<'_, P>) -> Result<()
     if let Some(screen) = &mut leg.screen {
         screen.output_arrived();
     }
-    execute_light_actions(leg.attach_proto.output_committed(&bytes, Instant::now()), leg);
-    ground_check(leg);
     if let Some(row) = &leg.row {
         row.output(&bytes, &leg.parser);
     }

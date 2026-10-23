@@ -547,8 +547,7 @@ impl Inner {
 
 /// This process's `(pid, created)`, the identity a hello answers with.
 pub fn self_identity() -> crate::Result<(u32, u64)> {
-    let status = crate::capsule::self_status(crate::lane::wire::Survival::Normal)?;
-    Ok((status.pid, status.created))
+    crate::supervisor::self_pid_and_created().map_err(crate::Error::Io)
 }
 
 impl std::fmt::Debug for RowRun {

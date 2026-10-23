@@ -27,7 +27,7 @@ use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
 use sot_platform::identity::challenge_macos::{authenticate_server, challenge, self_pidversion};
 use sot_platform::identity::challenge_macos::peer_euid_pid_created;
 use sot_log::lane::exchange::VoyageMgmtExchange;
-use sot_log::lane::attach_proto::ConnId;
+use sot_log::lane::transport::ConnId;
 use sot_log::lane::socket_unix::{connect_voyage_socket, SocketServer};
 use sot_log::lane::socket_unix::SocketClient;
 use sot_log::lane::transport::LaneEvent;

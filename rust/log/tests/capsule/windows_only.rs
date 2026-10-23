@@ -12,8 +12,7 @@ fn spawn_failure_is_compensated() {
     let cfg = config(dir.path(), "fail1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let mut transport = no_transport();
-    let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+    let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_kind, ExitKind::SpawnFailed);
     assert_eq!(summary.exit_code, None);
     let ended = ended_of(&root);
@@ -25,56 +24,23 @@ fn spawn_failure_is_compensated() {
 /// Test 4: resize rejects out-of-budget requests rather than clamping them, and `ResizePseudoConsole` is
 /// actually invoked exactly once (the in-budget request only — review
 /// finding: the disposition string alone doesn't prove the OS call was
-/// really gated). Step 5 deletes `Command::Resize` (ADR 0041 spec gate: the
-/// wire lane replaces it) — this test now drives resize the same way a real
-/// driver would: hello -> attach -> wait for the attach checkpoint -> take
-/// -> three `resize` wire frames -> `resize_ok`/`resize_refused` replies.
+/// really gated). Drives resize the way a real driver does: attach as the
+/// driver on the row socket, then three `resize` requests.
 #[test]
 fn resize_commits_and_rejects() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
+    let side = rowside::RowSide::new();
     let argv = vec![SHELL_ARGV.to_string()];
-    let cfg = config(dir.path(), "resize1", argv, 80, 25);
-    let transport = TestTransport::new();
+    let mut cfg = config(dir.path(), "resize1", argv, 80, 25);
+    cfg.signals = Some(Arc::clone(&side.signals));
     let (tx, rx) = mpsc::channel();
-    let run_transport = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut t = run_transport;
-        capsule::run::<P>(cfg, rx, &mut t)
-    });
+    let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
 
-    const CONN: ConnId = 1;
-    transport.open(CONN);
-    transport.feed(CONN, frame::hello());
-    let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for("driver hello_ok", CONN, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-    });
-    transport.feed(CONN, frame::attach("driver"));
-    watcher.collect_checkpoint("driver checkpoint", CONN, Duration::from_secs(10));
-    transport.feed(CONN, frame::take("driver"));
-    watcher.wait_for("driver take_ok", CONN, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { .. })).then_some(())
-    });
-
-    transport.feed(CONN, frame::resize(100, 40)); // in budget
-    let ok1 = watcher.wait_for("resize1 in-budget outcome", CONN, Duration::from_secs(10), |f| match f {
-        wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeOk) => Some(true),
-        wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeRefused { .. }) => Some(false),
-        _ => None,
-    });
-    transport.feed(CONN, frame::resize(9999, 40)); // > 512 cols
-    let ok2 = watcher.wait_for("resize2 over-512-cols outcome", CONN, Duration::from_secs(10), |f| match f {
-        wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeOk) => Some(true),
-        wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeRefused { .. }) => Some(false),
-        _ => None,
-    });
-    transport.feed(CONN, frame::resize(40, 1)); // < 2 rows
-    let ok3 = watcher.wait_for("resize3 under-2-rows outcome", CONN, Duration::from_secs(10), |f| match f {
-        wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeOk) => Some(true),
-        wire::DecodedFrame::AttachServer(wire::AttachServer::ResizeRefused { .. }) => Some(false),
-        _ => None,
-    });
+    let mut driver = side.driver(80, 25);
+    let ok1 = driver.resize(100, 40).is_ok(); // in budget
+    let ok2 = driver.resize(9999, 40).is_ok(); // > 512 cols
+    let ok3 = driver.resize(40, 1).is_ok(); // < 2 rows
     assert!(ok1 && !ok2 && !ok3, "expected ok, refused, refused, got {ok1} {ok2} {ok3}");
 
     tx.send(Command::Kill).unwrap();
@@ -106,10 +72,7 @@ fn flood_drains_without_deadlock() {
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
     let start = Instant::now();
-    let handle = std::thread::spawn(move || {
-        let mut transport = no_transport();
-        capsule::run::<P>(cfg, rx, &mut transport)
-    });
+    let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
     let summary = wait_for_join(handle, Duration::from_secs(60))
         .expect("run did not return within the local deadline (deadlock?)")
         .unwrap();
@@ -133,311 +96,9 @@ fn exit_code_high_bit_status_preserved_through_ended() {
     let cfg = config(dir.path(), "exitcode1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let (_tx, rx) = mpsc::channel();
-    let mut transport = no_transport();
-    let summary = capsule::run::<P>(cfg, rx, &mut transport).unwrap();
+    let summary = capsule::run::<P>(cfg, rx).unwrap();
     assert_eq!(summary.exit_code, Some(ExitStatus::Code(0xC000_0005)));
     assert_eq!(ended_of(&root).exit_code, Some(0xC000_0005u32));
-}
-
-
-/// Test 7: attach mid-stream, on a producer emitting escape sequences and
-/// multibyte UTF-8 continuously, reproduces a from-scratch replay
-/// byte-for-byte.
-///
-/// Rebuilt (finding 13 — the review's own diagnosis of the prior version's
-/// CI failure): the producer is now `sot-conpty-helper --script`, a
-/// deterministic byte-emitting helper (see its module doc), not a
-/// `cmd.exe /d /c for /l ... echo` loop whose own startup latency and
-/// console rendering the test could not predict or control. One-byte
-/// pacing across 1000 repeats of a block containing a CSI pair, a
-/// BEL-terminated OSC, an ST-terminated DCS, and a 3-byte codepoint
-/// immediately followed by a 4-byte one (no ASCII separator) makes it
-/// likely some ConPTY read lands inside one of those sequence classes
-/// somewhere across the run — but likely is not proof, and round-2 review
-/// correctly called out that this test used to just assert probability in
-/// prose and stop there. It no longer does: below, replaying the output
-/// frames of a connection attached from the start one at a time (each one IS a real
-/// reader-chunk boundary — see that assertion's own comment) and checking
-/// `Parser::is_ground()` after each PROVES at least one interior cut
-/// actually happened this run, failing loudly if it somehow didn't rather
-/// than silently passing a run that exercised less than it claims to. The
-/// vt100 fork's own unit tests already prove `is_ground` is safe to cut
-/// any of these classes at any byte boundary (U0); what THIS test proves
-/// is the WIRING.
-///
-/// Three things get proved, all stronger than the prior version's:
-///
-/// 1. Finding 8: an interior CSI/OSC/DCS/UTF-8 cut is observed to have
-///    actually happened somewhere in this run — not merely asserted
-///    likely — via the reader-chunk-boundary `is_ground()` replay below.
-/// 2. Finding 3 (queuing, not dropping): this connection's sends are held
-///    from before `attach` through a window where the producer keeps
-///    emitting, so whichever chunk is last never completes yet — proving
-///    newly committed output queues behind an in-flight checkpoint transfer
-///    (`sent_frames` must show zero `output` frames for this connection
-///    while held) rather than being sent ahead of it or dropped. Releasing
-///    then delivers the transfer followed immediately by every queued
-///    frame, in order — the FIFO contract documented on `TestTransport`
-///    above.
-/// 3. Finding 13 (the U0 oracle): rather than compare rendered
-///    `Screen::contents()` strings — which cannot see cursor position,
-///    attributes, or mode bits that aren't in the current viewport — this
-///    compares raw bytes twice: the exact tail-byte-equality of what this
-///    connection received against the stream of a connection attached
-///    from the start, and the wire checkpoint against an independently computed
-///    `Screen::checkpoint()` of the exact same prefix. Checkpoint bytes are
-///    a pure function of screen state (magic/version/geometry/modes/attrs/
-///    grid — see `vt100_ctt::Screen::checkpoint`), so two parsers fed
-///    identical byte prefixes must produce identical checkpoints; anything
-///    else is either a wiring bug or a checkpoint-format non-determinism
-///    this crate depends on not existing.
-#[test]
-#[allow(clippy::too_many_lines, reason = "one test scenario: a mid-stream attach reproduces the reference screen from the checkpoint")]
-fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
-    let _serial = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let helper = HELPER_EXE.to_string();
-    // --linger: the producer must be ALIVE for every step below (this test
-    // ends the run with an explicit `Kill`, never by producer exit). The
-    // previous version relied on 1000 repeats taking long enough — false
-    // on a fast conhost: the emission finished in milliseconds, the
-    // capsule entered teardown before the test's hello was serviced, and
-    // the first wait timed out with the abandoned capsule later logging
-    // PreAdmissionTimeout. Producer lifetime is now explicit, not an
-    // emission-speed assumption.
-    let argv = vec![helper, "--script".to_string(), "1000".to_string(), "--linger".to_string()];
-    let (rows, cols) = (25u16, 80u16);
-    let cfg = config(dir.path(), "midattach1", argv, cols, rows);
-    let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
-    let run_transport = transport.clone();
-    let handle = std::thread::spawn(move || {
-        let mut t = run_transport;
-        capsule::run::<P>(cfg, rx, &mut t)
-    });
-
-    // The reference stream: a connection attached at the very start, never held, sees the checkpoint of the nearly
-    // empty first screen and then every output byte in order. It stands where the voyage's own record stood as the
-    // from-scratch reference.
-    const EARLY: ConnId = 2;
-    transport.open(EARLY);
-    transport.feed(EARLY, frame::hello());
-    let mut early_watcher = FrameWatcher::new(&transport);
-    early_watcher.wait_for("early hello_ok", EARLY, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-    });
-    transport.feed(EARLY, frame::attach("early"));
-    let early_checkpoint = early_watcher.collect_checkpoint("early checkpoint", EARLY, Duration::from_secs(10));
-
-    // Attach WHILE the producer is still actively emitting -- no attempt to
-    // engineer a precise cut point; is_ground's own unit tests already
-    // cover that. Real elapsed time only, no fixed assumption about where
-    // the loop's ground boundary lands.
-    //
-    // Long enough that the scrollback-ring assertion below (added with the
-    // ring itself) has real content to find: `SCRIPT_BLOCK` writes one
-    // line roughly every 59 ms (one byte per 1 ms sleep, ~59 bytes/line),
-    // so at this 25-row screen a nominal run scrolls a couple hundred
-    // lines off in 15 s -- comfortably more than a screenful even if a
-    // loaded runner's per-byte sleep runs several times its nominal length
-    // (the windows-latest-vs-windows-2022 conhost timing gap measured
-    // elsewhere in this file was ~2x, not 10x). Still not an engineered
-    // cut point: nothing here pins how MANY lines land in the checkpoint,
-    // only that it is comfortably more than a screenful.
-    std::thread::sleep(Duration::from_millis(15_000));
-
-    const CONN: ConnId = 1;
-    transport.open(CONN);
-    transport.feed(CONN, frame::hello());
-    let mut watcher = FrameWatcher::new(&transport);
-    watcher.wait_for("conn hello_ok", CONN, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-    });
-
-    // Finding 3: hold every send to this connection from before `attach`
-    // through a window where the producer keeps emitting, so the
-    // checkpoint transfer's own completion(s) never get reported while
-    // more output is committed behind it.
-    transport.set_hold_for(CONN, true);
-    transport.feed(CONN, frame::attach("watcher"));
-    // A throwaway cursor: only confirms a checkpoint chunk was actually
-    // constructed and queued (`sent_frames` records the bytes at `send`
-    // time, held or not) without disturbing `watcher`'s own cursor -- which
-    // still needs to find that SAME chunk itself, below, once released.
-    FrameWatcher::new(&transport).wait_for("checkpoint chunk queued (throwaway probe)", CONN, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::CheckpointChunk { .. })).then_some(())
-    });
-
-    // The producer keeps emitting while the transfer sits unconfirmed.
-    std::thread::sleep(Duration::from_millis(500));
-    let output_frames_while_held = transport
-        .sent_frames()
-        .into_iter()
-        .filter(|(c, _)| *c == CONN)
-        .flat_map(|(_, bytes)| wire::FrameSplitter::new().feed(&bytes).0)
-        .filter(|f| matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::Output { .. })))
-        .count();
-    assert_eq!(
-        output_frames_while_held, 0,
-        "post-watermark output must queue behind an unconfirmed checkpoint transfer, never be sent ahead of it"
-    );
-
-    transport.set_hold_for(CONN, false);
-    transport.release_held();
-    let checkpoint_bytes = watcher.collect_checkpoint("post-hold checkpoint", CONN, Duration::from_secs(10));
-
-    // Let more output flow post-watermark, then end the run.
-    std::thread::sleep(Duration::from_millis(300));
-    tx.send(Command::Kill).unwrap();
-    let summary = wait_for_join(handle, Duration::from_secs(30))
-        .expect("run did not return within the teardown bound")
-        .unwrap();
-
-    // Every `output` frame this connection ever received, in arrival order
-    // (the FrameWatcher's cursor already sits right after the checkpoint).
-    let mut post_watermark = Vec::new();
-    for (c, bytes) in transport.sent_frames() {
-        if c != CONN {
-            continue;
-        }
-        let mut s = wire::FrameSplitter::new();
-        let (decoded, _) = s.feed(&bytes);
-        for f in decoded {
-            if let wire::DecodedFrame::AttachServer(wire::AttachServer::Output { bytes }) = f {
-                post_watermark.push(bytes);
-            }
-        }
-    }
-    assert!(!post_watermark.is_empty(), "expected at least some post-watermark output");
-    let suffix: Vec<u8> = post_watermark.into_iter().flatten().collect();
-
-    // The full reference: the early connection's checkpoint, then every output frame it ever received, in order. Each
-    // frame IS exactly one real ConPTY-read chunk (`handle_output` publishes one frame per `ReaderEvent::Output`,
-    // unmodified).
-    let mut early_frames: Vec<Vec<u8>> = Vec::new();
-    for (c, bytes) in transport.sent_frames() {
-        if c != EARLY {
-            continue;
-        }
-        let mut s = wire::FrameSplitter::new();
-        let (decoded, _) = s.feed(&bytes);
-        for f in decoded {
-            if let wire::DecodedFrame::AttachServer(wire::AttachServer::Output { bytes }) = f {
-                early_frames.push(bytes);
-            }
-        }
-    }
-    let total: Vec<u8> = early_frames.iter().flatten().copied().collect();
-
-    // Round-2 review, finding 8: PROVE an interior CSI/OSC/DCS/UTF-8 cut actually occurred, rather than asserting
-    // repetition makes one "all but certain". Replaying the frames one at a time into a fresh parser restored from
-    // the early checkpoint and checking `Parser::is_ground()` after each one finds every point a REAL read boundary
-    // fell in this run: `is_ground() == false` right after a frame means that frame's own end sits strictly inside an
-    // unterminated sequence, which only an interior cut produces. This does not touch the attach checkpoint's own
-    // cut point (which `ground_reached` guarantees is ALWAYS ground-safe) -- it is an independent, run-wide proof that
-    // at least one real reader-chunk boundary landed inside one of these classes somewhere in the run.
-    let mut fragmentation_probe = vt100_ctt::Parser::new(rows, cols, 0);
-    fragmentation_probe.restore_screen(&early_checkpoint).expect("the early checkpoint must decode");
-    let mut interior_cut_found = false;
-    for frame in &early_frames {
-        fragmentation_probe.process(frame);
-        if !fragmentation_probe.is_ground() {
-            interior_cut_found = true;
-            break;
-        }
-    }
-    // A loud MARKER, deliberately not an assertion: both CI images turned
-    // out to deliver conhost's rendered writes sequence-atomically and
-    // aligned with the capsule's reads — zero interior cuts across 1000
-    // repeats on BOTH, deterministically — so a panic here would be a
-    // permanent red about conhost's internals, not about this capsule.
-    // The mid-sequence carry property is pinned DETERMINISTICALLY where
-    // it can be: the fork's ground/checkpoint tests cut inside every
-    // sequence class by construction, and the wire splitter is fuzzed at
-    // every byte boundary. What this e2e proves is end-to-end fidelity
-    // over whatever chunking the real conhost produced; the marker below
-    // records honestly how much fragmentation this run exercised.
-    if !interior_cut_found {
-        eprintln!(
-            "capsule_win fidelity finding: NO reader-chunk boundary landed inside a \
-             CSI/OSC/DCS/UTF-8 sequence this run — interior-cut coverage came only \
-             from the deterministic parser/splitter suites, not this e2e"
-        );
-    }
-
-    // Finding 13, part 1: the post-watermark stream this connection
-    // received must be the EXACT byte-for-byte tail of the reference
-    // connection's total output -- proves nothing was dropped, duplicated, or
-    // reordered across the watermark boundary.
-    assert!(suffix.len() <= total.len(), "received more post-watermark bytes than the reference connection ever saw");
-    let split = total.len() - suffix.len();
-    assert_eq!(
-        &total[split..],
-        suffix.as_slice(),
-        "post-watermark output must be the exact byte-for-byte tail of the reference stream"
-    );
-    let prefix = &total[..split];
-
-    // Finding 13, part 2 (the U0 oracle): the wire checkpoint must be
-    // byte-identical to one computed independently by feeding a fresh
-    // reference parser exactly the prefix. The reference's own scrollback
-    // capacity must match the capsule's own live parser
-    // (`CAPSULE_SCROLLBACK_ROWS`) -- the checkpoint now carries a
-    // scrollback ring, so a reference built at a different capacity would
-    // disagree about how much of it survives, independent of any real
-    // divergence in what was actually recorded.
-    let mut reference_at_watermark =
-        vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
-    reference_at_watermark.restore_screen(&early_checkpoint).expect("the early checkpoint must decode");
-    reference_at_watermark.process(prefix);
-    let reference_checkpoint = reference_at_watermark
-        .screen()
-        .checkpoint()
-        .expect("prefix screen must be representable");
-    assert_eq!(
-        checkpoint_bytes, reference_checkpoint,
-        "the wire checkpoint must be byte-identical to an independently computed checkpoint of the same prefix"
-    );
-
-    // The scrollback ring itself must actually have arrived -- the defect
-    // this fixed was an attach handing the client an empty ring every
-    // time (`ring_len = 0` on every attach, regardless of how much had
-    // scrolled off). Not a fixed expected count: real elapsed time drives
-    // how many lines the producer got through before this checkpoint's cut
-    // (see the sleep above), so this asserts only that SOME history rode
-    // along, which is what the defect actually broke.
-    let mut ring_check = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
-    ring_check
-        .restore_screen(&checkpoint_bytes)
-        .expect("checkpoint must decode");
-    ring_check.screen_mut().set_scrollback(usize::MAX);
-    assert!(
-        ring_check.screen().scrollback() > 0,
-        "attach must hand over a nonempty scrollback ring; got an empty one"
-    );
-
-    // And the full round trip, at the same checkpoint-byte granularity: a
-    // fresh parser restored from the wire checkpoint and replayed with the
-    // exact suffix must reach a state whose OWN checkpoint is
-    // byte-identical to a from-scratch parser's, fed the entire reference stream --
-    // both at the SAME scrollback capacity as the capsule's own parser,
-    // for the same reason as above.
-    let mut restored = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
-    restored
-        .restore_screen(&checkpoint_bytes)
-        .expect("checkpoint must decode");
-    restored.process(&suffix);
-
-    let mut reference = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
-    reference.restore_screen(&early_checkpoint).expect("the early checkpoint must decode");
-    reference.process(&total);
-
-    assert_eq!(
-        restored.screen().checkpoint().expect("restored screen must be representable"),
-        reference.screen().checkpoint().expect("reference screen must be representable"),
-        "checkpoint + subsequent stream must reproduce the reference session byte-for-byte"
-    );
-    assert_eq!(summary.exit_kind, ExitKind::Requested);
 }
 
 
