@@ -20,6 +20,7 @@ fi
 WORK="$(cd "$WORK" && pwd -P)" || exit 1
 trap 'rm -rf "${WORK:?}"' EXIT
 guard_fresh_home "$WORK"
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) echo "SKIP: sotd agent-exec is Unix only"; exit 0 ;; esac
 [ -n "${GUARD_SOTD:-}" ] || { echo "FATAL: no built sotd (set SOT_TEST_SOTD or CARGO_TARGET_DIR)" >&2; exit 2; }
 command -v jq > /dev/null 2>&1 || { echo "FATAL: jq is needed to read the settings" >&2; exit 2; }
 
