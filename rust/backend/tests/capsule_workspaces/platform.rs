@@ -521,9 +521,14 @@ async fn capsule_launch_degrades_when_no_user_scope_is_available() {
     let cmdline = std::fs::read(format!("/proc/{}/cmdline", status.pid))
         .unwrap_or_else(|e| panic!("read /proc/{}/cmdline of the degraded row's supervisor: {e}", status.pid));
     let argv: Vec<String> = cmdline.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-    // `sot-capsule supervise <state_dir> <mode> -- <agent argv>`: no flag between the mode and the agent's argv.
+    // `sot-capsule supervise <state_dir> <mode> [claim flags] -- <agent argv>`: the claim descriptors the durable parent
+    // injects are the only flags between the mode and the agent's argv.
     assert_eq!(argv.get(1).map(String::as_str), Some("supervise"), "{argv:?}");
-    assert_eq!(argv.get(4).map(String::as_str), Some("--"), "the supervisor's argv carries a flag the launch no longer passes: {argv:?}");
+    let flags: Vec<&str> = argv.iter().skip(4).map(String::as_str).take_while(|a| *a != "--").collect();
+    assert!(
+        flags.iter().all(|a| matches!(*a, "--claim-fd" | "--takeover-fd") || a.bytes().all(|b| b.is_ascii_digit())),
+        "the supervisor's argv carries a flag the launch no longer passes: {argv:?}"
+    );
     // The witness of the degrade is the supervisor's own cgroup: it is not in a row scope.
     let cgroup = cgroup_rel(status.pid);
     let last_segment = cgroup.rsplit('/').next().unwrap_or("");
