@@ -223,6 +223,25 @@ fn a_retired_voyages_folder_goes_a_day_later_and_not_before() {
     assert!(sweep_with(root.path(), &reg, &unreadable, later()).is_empty());
 }
 
+/// A retire that has not finished (the 0.6 layout is still in the row's folder) may be moving more into `.retired-voyages/`,
+/// and a retire holds the row's guard: the sweep removes the folder only with the layout gone and the guard free.
+#[test]
+fn a_retired_voyages_folder_is_kept_while_a_retire_may_be_filling_it() {
+    let (root, reg, retired) = registered_with_retired("ws-live-1");
+    let folder = retired.parent().unwrap().to_path_buf();
+    std::fs::create_dir(folder.join("voyages")).unwrap();
+    sweep_with(root.path(), &reg, &none_named(), later());
+    assert!(retired.is_dir(), "kept while the 0.6 layout is still in the row's folder");
+    std::fs::remove_dir(folder.join("voyages")).unwrap();
+    let guard = reg.capsule_guard("ws-live-1").expect("a registered row's guard");
+    let held = guard.try_lock().expect("the guard is free");
+    sweep_with(root.path(), &reg, &none_named(), later());
+    assert!(retired.is_dir(), "kept while the row's guard is held (a retire may be running)");
+    drop(held);
+    sweep_with(root.path(), &reg, &none_named(), later());
+    assert!(!retired.exists(), "removed once the layout is gone and the guard is free");
+}
+
 #[test]
 fn a_link_named_retired_voyages_is_kept_and_its_target_untouched() {
     let (root, folder) = root_with("ws-live-1");
