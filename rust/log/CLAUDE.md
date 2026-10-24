@@ -250,6 +250,9 @@ true after the merge of the leg into the supervisor.
   no storage hold and no exit 71. `supervise` takes the flags its usage names and no other: the three retired
   spellings are usage errors (exit 2) before the fence is taken (`tests/supervisor/argv.rs`, which names them).
 - Only linux, macos and windows build.
+- Limit: inside the `sotd` and `sot` binaries, which modules name the capsule (rows, topology's lane client, the
+  window's agent pane) is convention until rows and the agent pane are crates of their own; the graph guard sees crates
+  only.
 - A reply on a local connection is trusted only after the challenge in platform (`../platform/src/identity/`); the
   row hello's request and reply are `RowHelloExchange` (`src/row/proto.rs`).
 
@@ -294,8 +297,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
     `RowServer` answers the hello, and the adversarial cases are the exchanges in `support/row_challenge.rs`), with
     `macos_kernel_facts/` (which runs the `sot-capsule` binary). `connect_own.rs`, `other_account.rs` and
     `winhandle_windows.rs` moved to `rust/platform/tests/`.
-  - `dependents.rs`: who names the capsule (rows, topology's lane client and the window's agent pane alone) and what the
-    capsule depends on (platform and wire).
+  - `dependents.rs`: a guard on the dependency graph, read through cargo: only `sot-backend`, `sot-frontend` and
+    `sot-topology` depend on the capsule, and it depends on no crate of ours but platform and wire.
   - `conpty.rs`, `isolation_guards.rs`, `test_body_fixture.rs`, and `support/` (`capsule_guard.rs`, `row_challenge.rs`).
 - `src/lib.rs`: the module tree, the `storage_exhaustion` re-export, `BUILD_ID`, `SupervisorPhase` and `Error`/`Result`.
 - `src/capsule/`: a run's runtime, its screen and ended files, its bounded join (`join.rs`) and the producers.

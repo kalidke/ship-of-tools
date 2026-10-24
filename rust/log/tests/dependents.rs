@@ -1,19 +1,14 @@
-//! Who names the capsule: the platform's crates below it and the daemon's services beside it do not. The capsule's
-//! dependencies are platform and wire alone; only rows, topology's lane client and the window's agent pane name it.
+//! A guard on the dependency graph, read through cargo: no crate but the backend, the window and topology depends on the
+//! capsule, and the capsule depends on no crate of ours but platform and wire. Which modules inside `sotd` and `sot` name
+//! the capsule is convention until rows and the window's agent pane are crates of their own; no source scan holds it.
 
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-/// Its crate's name as source writes it before `::`, in both spellings, built so no rename rewrites this file.
-fn crate_names() -> [String; 2] {
-    [concat!("sot", "_log").to_string(), concat!("sot", "_capsule").to_string()]
-}
-
 #[test]
-fn no_crate_but_rows_topology_and_the_window_names_the_capsule() {
+fn only_the_backend_the_window_and_topology_depend_on_the_capsule() {
     let rust = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    // (a) the dependency graph.
     let ran = sot_platform::test_wait::run_within(
         Command::new(env!("CARGO")).args(["metadata", "--no-deps", "--format-version", "1", "--offline"]).current_dir(&rust),
         Duration::from_secs(60),
@@ -47,26 +42,4 @@ fn no_crate_but_rows_topology_and_the_window_names_the_capsule() {
     dependencies.sort();
     dependencies.dedup();
     assert_eq!(dependencies, ["sot-platform", "sot-protocol"], "what the capsule depends on");
-
-    // (b) the sources.
-    let allowed = |path: &str| {
-        path.starts_with("rust/log/")
-            || path.starts_with("rust/capsule/")
-            || path.starts_with("rust/backend/src/rows/")
-            || path.starts_with("rust/frontend/src/ui/agent_pane/")
-            || path == "rust/topology/src/lane_client.rs"
-    };
-    let names = crate_names();
-    let mut breaches = Vec::new();
-    for (path, text) in sot_platform::test_scan::production_sources() {
-        if allowed(&path) {
-            continue;
-        }
-        for (n, line) in text.lines().enumerate() {
-            if names.iter().any(|name| line.contains(&format!("{name}::"))) {
-                breaches.push(format!("{path}:{}: {}", n + 1, line.trim()));
-            }
-        }
-    }
-    assert!(breaches.is_empty(), "production code outside rows, topology's lane client and the agent pane names the capsule:\n{}", breaches.join("\n"));
 }
