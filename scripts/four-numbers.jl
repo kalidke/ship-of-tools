@@ -19,7 +19,7 @@ const PREFIXES = [
     "rust/backend/src/rows/" => "rows",
     "agents/" => "agents", "rust/backend/src/agents/" => "agents",
     "rust/platform/" => "platform", "rust/containment/" => "containment",
-    "rust/log/" => "capsule",
+    "rust/log/" => "capsule", "rust/capsule/" => "capsule",
     "rust/vt100/" => "vt100",
     "comm/" => "messaging", "rust/backend/src/comm/" => "messaging",
     "comm/work_state/" => "rows", "comm/work_state/hooks/comm-subagent-guard.sh" => "messaging",
@@ -50,7 +50,7 @@ const TEST_STEMS = Dict{String,Vector{String}}(
     "topology" => ["topology_set", "topology_sync", "relay_refresh"],
     "platform" => ["challenge_unix", "challenge_macos", "connect_own", "other_account", "winhandle_windows",
                    "macos_kernel_facts"],
-    "capsule" => ["lane_bridge", "switch_latency", "keystroke_latency", "socket_unix", "pipe_win", "wire", "e2e_socket",
+    "capsule" => ["dependents", "lane_bridge", "switch_latency", "keystroke_latency", "socket_unix", "pipe_win", "wire", "e2e_socket",
                   "e2e_pipe", "capsule", "supervisor", "conpty", "fe_client", "attach_worker", "row", "row_limits",
                   "row_pipe", "row_supervisor", "fe_attach", "row_flood", "row_switch",
                   "row_management"],
@@ -60,10 +60,10 @@ const TEST_STEMS = Dict{String,Vector{String}}(
     "agents" => ["trust_declare", "trust_premises", "agent_exec"],
 )
 const STEM_SUBSYSTEM = Dict(s => sub for (sub, v) in TEST_STEMS for s in v)
-const TEST_DIRS = ("rust/backend/tests/", "rust/log/tests/")
+const TEST_DIRS = ("rust/backend/tests/", "rust/log/tests/", "rust/capsule/tests/")
 
 # Rust crates by name as `use` paths spell them, to the folder of their source.
-const CRATE_DIR = Dict("sot_platform" => "rust/platform", "sot_containment" => "rust/containment", "sot_protocol" => "rust/protocol", "sot_topology" => "rust/topology", "sot_updater" => "rust/updater", "sot_log" => "rust/log",
+const CRATE_DIR = Dict("sot_platform" => "rust/platform", "sot_containment" => "rust/containment", "sot_protocol" => "rust/protocol", "sot_topology" => "rust/topology", "sot_updater" => "rust/updater", "sot_log" => "rust/log", "sot_capsule" => "rust/capsule",
                        "sot_backend" => "rust/backend", "sot_frontend" => "rust/frontend")
 const CODE_EXT = (".rs", ".jl", ".sh", ".ps1", ".ts", ".js", ".mjs", ".py")
 const GENERIC = Set(["main", "new", "run", "default", "fmt", "from", "drop", "clone", "eq", "hash", "parse", "usage",
@@ -243,7 +243,7 @@ function main(args)
         end
         st.test += test_chars; st.product += total - test_chars
         if test_chars > 0
-            kind = startswith(path, TEST_DIRS[1]) || startswith(path, TEST_DIRS[2]) ? "integration" : test_file ? "test files" : "inline"
+            kind = any(t -> startswith(path, t), TEST_DIRS) ? "integration" : test_file ? "test files" : "inline"
             KINDS[kind] = get(KINDS, kind, 0) + test_chars
         end
         isempty(body) && continue
