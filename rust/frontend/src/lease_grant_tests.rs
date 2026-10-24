@@ -273,7 +273,6 @@ async fn lease_wire_round_trip() {
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
     assert_eq!(leases.before_data_connection(&host, &path, Some("tok"), |_| {}).await.unwrap(), 1);
-    assert_eq!(leases.granted_state_roots(), vec!["r".to_string()]);
     leases.notice_seen(&host, 1);
     let seen = tokio::time::timeout(Duration::from_secs(2), seen_rx).await.unwrap().unwrap();
     assert_eq!(seen.op, op::FE_NOTICE_SEEN);

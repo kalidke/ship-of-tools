@@ -109,8 +109,8 @@ Supervisor:
   (`challenge_macos.rs`: about 10^5 process creations between two adjacent syscalls), and nowhere promises an
   unconditional proven-process kill there; an unregistered 0.6 folder is never retired and the whole-folder sweep keeps
   its rules; a 0.6 session's comm commands are refused between the install and its row's retire; rows of main builds
-  from 6a to 6c-1c1 are not read; the legacy drawer's end (`end.rs`) calls the retire without the row's guard until
-  6c-2b removes the drawer.
+  from 6a to 6c-1c1 are not read; a 0.6 window's attach-only drawer (an opt-in the product never wrote, Windows only)
+  ran a capsule on the state root itself, which no 0.7 code ends: it ends at the next reboot or by hand.
 - No start begins once the close has begun: `Workspaces::begin_start` refuses after `close_gate_and_settle`, which waits
   for the starts already admitted (`gate.rs`).
 - A row's phase follows its current supervisor, run by run. The phase cell is written by the observer through
@@ -159,7 +159,7 @@ Ends:
   `workspace.changed` sent. `workspace.destroy` renames a non-default row's state folder to `.closed-<id>` and removes
   it on a thread; a row the end API ends keeps its folder for a later start's sweep; the default row ends its run and
   stays registered.
-- Lifecycle ends rows only through the end API (`end.rs`): `end_every` ends the rows it is given and the drawer
+- Lifecycle ends rows only through the end API (`end.rs`): `end_every` ends the rows it is given
   concurrently, at most `LANE_CONCURRENCY` at a time, tries a refused end again once a second until the deadline it is
   given, and reports each row ended, not ended, or to forget; `forget` drops the rows a past end could not remove. With
   `run::resume::resume_all` and `Workspaces::close_gate_and_settle` that is all lifecycle calls.

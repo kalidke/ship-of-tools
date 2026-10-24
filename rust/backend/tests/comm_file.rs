@@ -252,7 +252,7 @@ fn join_in_row(env: &Env, ws: &str, raw: &str, declared: &str) {
     // Beneath a stand-in for the row's capsule (the process walk reads only the command line), as the session is.
     sot_platform::test_wait::run_within(
         Command::new("bash")
-            .args(["-c", "exec -a sot-capsule bash -c 'shift; \"$@\"; exit $?' _ \"/in-row/state/workspaces/$0/voyages/v0\" timeout 60 bash \"$1\""])
+            .args(["-c", "exec -a sot-capsule bash -c 'shift; \"$@\"; exit $?' _ \"/in-row/state/workspaces/$0\" timeout 60 bash \"$1\""])
             .arg(ws)
             .arg(bin.join("comm-join.sh"))
             .env_clear()

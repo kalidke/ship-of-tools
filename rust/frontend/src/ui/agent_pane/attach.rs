@@ -309,8 +309,8 @@ impl State {
     }
 
     /// ADR 0042 slice L1b: drains checkpoint/output/notice/status/
-    /// terminal events from the session pane's `pane_attach_term` —
-    /// mirrors `pump_attach_term`'s own drain/status contract. The
+    /// terminal events from the session pane's `pane_attach_term`.
+    /// The
     /// scrollback offset is the emulator's own (see `scroll_ring`), so
     /// pumping never touches it. Called EVERY redraw regardless of what's on screen
     /// (the session pane, unlike the drawer, is always visible — there is

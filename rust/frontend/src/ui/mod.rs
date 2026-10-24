@@ -74,11 +74,9 @@ use nav::*;
 pub(crate) mod chrome;
 use chrome::*;
 pub(crate) mod drawer;
-#[cfg(windows)]
-use drawer::terminal::backend::drawer_uses_attach;
 use drawer::repl::lines::{ReplImage, ReplImageSlot};
 use drawer::repl::log::{ReplEntry, ReplRows};
-use drawer::terminal::backend::scroll_drawer_ring;
+use drawer::terminal::pump::scroll_drawer_ring;
 use drawer::terminal::vt::{key_to_pty_bytes, paint_terminal, scroll_ring};
 
 mod agent_pane;
@@ -366,10 +364,6 @@ struct State {
     hosts: crate::net::hosts::HostTable,
     // lease.rs (lifecycle): the window's leases and its leave.
     leases: Arc<crate::lease::Leases>,
-    /// This window's own state root, as the daemon names it in a granted
-    /// lease; the attach-only drawer needs a lease that carries it (ADR 0050).
-    #[cfg(windows)]
-    own_state_root: Option<String>,
     /// The not-ended line a lease grant reported once a frame showed it, and
     /// when it stops showing.
     not_ended_shown: Option<(String, std::time::Instant)>,
@@ -999,16 +993,6 @@ struct State {
     /// from the ratatui `terminal` so the draw closure's `self.terminal`
     /// borrow and this terminal's `screen()` borrow are disjoint.
     local_term: Option<crate::ui::drawer::terminal::pty::LocalTerminal>,
-    /// ADR 0041 step 6 U3: the attach-only alternative to `local_term`,
-    /// live only when `settings.attach_only` is on (Windows only — see
-    /// `sot_log::attach_client::client`). Mutually exclusive with `local_term`:
-    /// the Terminal drawer's lazy-spawn site picks exactly one backend
-    /// at creation time and never both. `None` on every non-Windows
-    /// build target (the field itself still exists there so the rest of
-    /// this struct's layout doesn't fork by platform) since attach-only
-    /// has nothing to attach to off Windows.
-    #[cfg(windows)]
-    attach_term: Option<sot_log::attach_client::client::FeAttachClient>,
     /// Last `(cols, rows)` the local terminal's PTY was sized to. `None`
     /// until the drawer rect is first observed; drives resize-on-change
     /// (mirrors `pty_size` for the LLM pane).
@@ -1048,10 +1032,10 @@ struct State {
     llm_drag_active: bool,
     /// ADR 0042 slice L1b: the session (BL) pane's OWN attach client —
     /// live when the selected workspace row's cached `runtime ==
-    /// "capsule"`. A SEPARATE client from `attach_term`: the drawer and
-    /// the session pane are different terminal surfaces with different
-    /// tenants (ADR 0041 "one drawer, tenant fixed" vs every workspace
-    /// being an ordinary peer session, ADR 0042). Set/cleared by
+    /// "capsule"`. The drawer holds no attach client: it is the local
+    /// terminal, and the session pane is a different surface with a
+    /// different tenant (ADR 0041 "one drawer, tenant fixed" vs every
+    /// workspace being an ordinary peer session, ADR 0042). Set/cleared by
     /// `attach_session_to_bl` (dropped on every selection change) and the
     /// `PtyAttachDirect` handler (the only place it is ever spawned, ADR
     /// 0042 shrink round rule A). ADR 0045 decision 1: attaches through

@@ -98,15 +98,10 @@ impl State {
                 &blank_pty_screen
             }
         };
-        #[cfg(windows)]
-        let attach_screen = self.attach_term.as_ref().map(|t| t.screen());
-        #[cfg(not(windows))]
-        let attach_screen: Option<&vt100::Screen> = None;
         let term_screen = if drawer == DrawerContent::Terminal {
             self.local_term
                 .as_ref()
                 .map(|t| t.screen())
-                .or(attach_screen)
         } else {
             None
         };

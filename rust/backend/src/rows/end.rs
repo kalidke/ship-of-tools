@@ -1,11 +1,10 @@
-//! The end API lifecycle calls: [`end_every`] ends rows and the drawer by one deadline without resuming any, and
+//! The end API lifecycle calls: [`end_every`] ends rows by one deadline without resuming any, and
 //! [`forget`] drops the rows a past end could not remove.
 //!
 //! Each row is ended as `workspace.destroy` ends it, but with no resume first, retrying a refused end once a second;
 //! any other runtime's row, and what could not be ended by the deadline, is counted, never guessed.
 
 use std::future::Future;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,8 +20,7 @@ const RETRY_EVERY: Duration = Duration::from_secs(1);
 /// What [`end_every`] did. `ended` and `forget` are both ended runs;
 /// `forget` holds the rows whose registration files would not go, for the
 /// next start to drop (#26). The anchor's row is kept on purpose and shows
-/// in `ended`. The drawer has no workspace id, so it shows only in
-/// `not_ended`.
+/// in `ended`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct EndReport {
     pub ended: Vec<String>,
@@ -37,14 +35,13 @@ enum Ended {
     Row(String),
     /// Ended, but its registration files would not go.
     Forget(String),
-    Drawer,
     /// Already removed by another end: not ours to end, and not counted.
     Gone,
     /// Not confirmed ended by the deadline.
     Not,
 }
 
-/// End `rows`, and the drawer iff its pointer exists (#17), without
+/// End `rows` without
 /// resuming any: concurrently at `resume_all`'s limit, each
 /// retried while refused until `deadline`. An end still running at the
 /// deadline is abandoned and counted not ended; it dies with the process.
@@ -55,14 +52,12 @@ pub(crate) async fn end_every(
     rows: Vec<Arc<Workspace>>,
     workspaces: &Workspaces,
     ws_events: &broadcast::Sender<WorkspaceChanged>,
-    state_root: &Path,
     reason: &'static str,
     deadline: Instant,
 ) -> EndReport {
-    let drawer = drawer_is_target(state_root);
     let anchor = workspaces.default_id();
     let limit = Arc::new(tokio::sync::Semaphore::new(crate::rows::run::resume::LANE_CONCURRENCY));
-    let mut joins = Vec::with_capacity(rows.len() + 1);
+    let mut joins = Vec::with_capacity(rows.len());
     for ws in rows {
         let is_anchor = anchor.as_deref() == Some(ws.workspace_id.as_str());
         let (limit, workspaces, ws_events) = (limit.clone(), workspaces.clone(), ws_events.clone());
@@ -75,15 +70,6 @@ pub(crate) async fn end_every(
                 return Ended::Not;
             };
             end_row(&ws, is_anchor, &workspaces, &ws_events, reason, deadline).await
-        })));
-    }
-    if drawer {
-        let (limit, state_root) = (limit.clone(), state_root.to_path_buf());
-        joins.push(("the drawer".to_string(), tokio::spawn(async move {
-            let Ok(Ok(_permit)) = tokio::time::timeout_at(deadline, limit.acquire_owned()).await else {
-                return Ended::Not;
-            };
-            end_drawer(state_root, reason, deadline).await
         })));
     }
     join_by(deadline, joins).await
@@ -111,7 +97,7 @@ async fn join_by(deadline: Instant, joins: Vec<(String, tokio::task::JoinHandle<
         match tokio::time::timeout_at(deadline, j).await {
             Ok(Ok(Ended::Row(id))) => report.ended.push(id),
             Ok(Ok(Ended::Forget(id))) => report.forget.push(id),
-            Ok(Ok(Ended::Drawer | Ended::Gone)) => {}
+            Ok(Ok(Ended::Gone)) => {}
             Ok(Ok(Ended::Not)) | Ok(Err(_)) => report.not_ended += 1,
             Err(_) => {
                 tracing::warn!(%target, "row end: still running at the deadline; not ended");
@@ -120,11 +106,6 @@ async fn join_by(deadline: Instant, joins: Vec<(String, tokio::task::JoinHandle<
         }
     }
     report
-}
-
-/// The drawer is a target iff its fence file exists in the state root (#17).
-fn drawer_is_target(state_root: &Path) -> bool {
-    sot_log::supervisor::journal::fence::supervisor_lock_path(state_root).is_file()
 }
 
 /// One row, as `workspace.destroy` ends it but with no resume first (#11).
@@ -195,38 +176,6 @@ async fn end_row(
         workspace_id: ws.workspace_id.clone(),
     });
     ended
-}
-
-/// The drawer: `end_run` on the state root itself, which stops its
-/// authority after a confirmed end.
-async fn end_drawer(state_root: PathBuf, reason: &'static str, deadline: Instant) -> Ended {
-    // Canonicalized as `destroy_capsule_workspace` does, and for its reason.
-    let (state_root, root_canonicalized) = match state_root.canonicalize() {
-        Ok(canonical) => (canonical, true),
-        Err(_) => (state_root, false),
-    };
-    let ended = retry_until(deadline, || {
-        let state_root = state_root.clone();
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                crate::rows::run::end_run::end_run(&state_root, reason, root_canonicalized)
-            })
-            .await
-            {
-                Ok(Ok(o)) => confirmed(crate::rows::run::end::capsule_destroy_outcome_of(o)).map(|_| ()),
-                Ok(Err(e)) => Err(e.to_string()),
-                Err(join_err) => Err(format!("end_run task panicked: {join_err}")),
-            }
-        }
-    })
-    .await;
-    match ended {
-        Ok(()) => Ended::Drawer,
-        Err(detail) => {
-            tracing::warn!(%detail, "{reason}: the drawer was not ended by the deadline; it stays running");
-            Ended::Not
-        }
-    }
 }
 
 /// A confirmed end is done (`true`), and so is a row another end already

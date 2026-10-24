@@ -73,11 +73,5 @@ pub(in crate::ui) fn forward_clipboard_paste_to_local_term(state: &mut State) {
     if let Some(t) = state.local_term.as_mut() {
         t.send_input(&bytes);
         t.screen_mut().set_scrollback(0);
-    } else {
-        #[cfg(windows)]
-        if let Some(t) = state.attach_term.as_mut() {
-            t.send_input(&bytes);
-            t.screen_mut().set_scrollback(0);
-        }
     }
 }

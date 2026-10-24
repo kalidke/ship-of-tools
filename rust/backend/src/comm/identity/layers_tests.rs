@@ -82,18 +82,18 @@ fn a_process_that_names_a_row_must_run_inside_it() {
     let away = |recs: &[&str]| req(recs, None, "ws-a").unwrap_err();
     for recs in [
         &["bash", "claude"][..],
-        &["bash", "claude", "sot-capsule|run|/s/workspaces/ws-b/voyages/v1|v1|--cols|80"],
+        &["bash", "claude", "sot-capsule|supervise|/s/workspaces/ws-b|--start|--|claude"],
         &["bash", "claude", "sot-capsule"],
-        &["bash", "claude", "sot-capsule|supervise|/s/workspaces/ws-b|--start|--|/s/workspaces/ws-a/voyages/v1"],
-        &["bash", "claude", "sot-capsule|run|/s/workspaces/ws-ab/voyages/v1|v1"],
+        &["bash", "claude", "sot-capsule|supervise|/s/workspaces/ws-b|--start|--|/s/workspaces/ws-a"],
+        &["bash", "claude", "sot-capsule|supervise|/s/workspaces/ws-ab|--start|--|claude"],
     ] {
         let (rc, why) = away(recs);
         assert!(rc == 2 && why.contains("is not shown to run inside that row's capsule"), "{recs:?}: {why}");
     }
     for recs in [
-        &["bash", "claude", "sot-capsule|run|/s/workspaces/ws-a/voyages/v1|v1|--cols|80"][..],
+        &["bash", "claude", "sot-capsule|supervise|/s/workspaces/ws-a|--start|--|claude"][..],
         &["bash", "sot-capsule|supervise|/s/workspaces/ws-a|--start|--|claude"],
-        &["bash", "claude", r"sot-capsule|run|C:\s\workspaces\ws-a\voyages\v1"],
+        &["bash", "claude", r"sot-capsule|supervise|C:\s\workspaces\ws-a|--start|--|claude"],
     ] {
         assert_eq!(req(recs, None, "ws-a"), Ok(()), "{recs:?}");
     }
@@ -122,7 +122,7 @@ fn linux_reads_proc_to_the_top() {
 
 #[test]
 fn macos_reads_ps_as_the_scripts_did() {
-    let table = "  1     0 /sbin/launchd\n 10     1 sot-capsule run /x/workspaces/ws-a/voyages/v\n 20    10 (claude)\n 30    20 bash -c x\n";
+    let table = "  1     0 /sbin/launchd\n 10     1 sot-capsule supervise /x/workspaces/ws-a --start\n 20    10 (claude)\n 30    20 bash -c x\n";
     let c = macos::records(table, 30);
     assert_eq!(c[1], Rec::Proc(vec!["claude".into(), UNKNOWN_ARGS.into()]));
     assert_eq!(c.last(), Some(&Rec::End));

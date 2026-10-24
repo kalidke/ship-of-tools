@@ -205,8 +205,6 @@ impl State {
             start_path_fired: None,
             conns,
             leases,
-            #[cfg(windows)]
-            own_state_root: sot_platform::host::state_dir::sot_state_dir().map(|d| sot_platform::host::state_dir::state_dir_hash(&d)),
             not_ended_shown: None,
             leaving: None,
             last_declared_sessions: None,
@@ -264,8 +262,6 @@ impl State {
             monitor_aspect: initial_monitor_aspect(event_loop),
             drawer: initial_drawer(cli, want_terminal_init),
             local_term: None,
-            #[cfg(windows)]
-            attach_term: None,
             pane_attach_term: None,
             warm_attach: WarmAttachPool::new(),
             pane_hold: None,

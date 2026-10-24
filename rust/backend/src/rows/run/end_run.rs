@@ -421,8 +421,7 @@ pub(crate) enum NotProven {
 /// This proof only observes, so it never creates the fence file, which is the row's start marker
 /// ([`super::fence_file_exists`]): a row that never started and stays registered must not read `unreachable` and resume
 /// at the next boot because it was asked to end. Every caller holds the row's guard and no start begins without it, so a
-/// missing file proves never started with nothing taken and nothing created (the drawer is an end target only when its
-/// file exists).
+/// missing file proves never started with nothing taken and nothing created.
 fn absence_proof(state_dir: &Path) -> Result<bool, NotProven> {
     if !super::fence_file_exists(state_dir) {
         return Ok(true);

@@ -194,8 +194,7 @@ true after the merge of the leg into the supervisor.
   (`validate_pin`), so a supervisor dialed within 10 ms of its start can be `Unproven`; a later connection, with a
   fresh anchor, is proven, and a test binary that is both ends waits out one tick first. The row socket is the
   capsule's first dependency on `sot-protocol`.
-- The row socket is the way in for every shipped viewer (pass 6c-1a2; the drawer's attach and the old lane's own clients
-  are not shipped). `FeAttachClient` is one worker thread over `RowClient`: it waits until the row is viewed and the
+- The row socket is the way in for every shipped viewer (pass 6c-1a2; the old lane's own clients are not shipped). `FeAttachClient` is one worker thread over `RowClient`: it waits until the row is viewed and the
   endpoint's link is up, dials once, restores the snapshot into its parser and then follows the output, restoring any
   resync snapshot the row sends; a lost connection is redialed on platform's `Redial` (250 ms doubling to 4 s, started
   over only after a connection that lasted `STABLE`). A login (an ssh one has topology's 30 s) and the row's hello (10 s,
@@ -209,8 +208,7 @@ true after the merge of the leg into the supervisor.
   output sit unconsumed, so a viewer that does not pump is resynced by the row. A failure ends the episode only when it
   cannot get better (another account's socket, a row number this client does not speak, a refusal by the daemon, access
   denied, a socket path that can never fit) or when the row's socket has been absent, though the daemon answers, for
-  120 s running; anything else is retried, and a daemon that cannot be reached starts that window over. The drawer's
-  attach (dormant until 6c-2 deletes it) names a row no row has, so it ends terminal after those 120 s.
+  120 s running; anything else is retried, and a daemon that cannot be reached starts that window over.
 - A row listener that dies (a permanent accept failure) does not leave a running agent nobody can reach. The supervisor
   watches it, blocked on an event the acceptor sends as it dies (no clock), and binds it once more; a second death, or a
   bind that fails, ends the live run unrequested

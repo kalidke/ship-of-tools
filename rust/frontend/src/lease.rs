@@ -371,20 +371,6 @@ impl Leases {
         lease_notice(self.exempt, &standings).or_else(|| book.stayed.map(exit::stay_line))
     }
 
-    /// The state roots of every granted lease.
-    pub fn granted_state_roots(&self) -> Vec<String> {
-        self.book
-            .lock()
-            .unwrap()
-            .slots
-            .values()
-            .filter_map(|s| match Self::resolved(s) {
-                Standing::Granted { state_root } => state_root,
-                _ => None,
-            })
-            .collect()
-    }
-
     /// The not-ended counts owed, one per daemon, keyed as each grant named it.
     pub fn owed(&self) -> Vec<(HostKey, u32)> {
         self.book.lock().unwrap().owed.iter().map(|(k, n)| (k.clone(), *n)).collect()

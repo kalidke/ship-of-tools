@@ -161,28 +161,16 @@ fn wheel_terminal(state: &mut State, rows_above: i32) {
     // walk our vt100 scrollback ring (the emulator owns
     // the offset). Sign: positive rows_above = up =
     // older = larger offset, matching the REPL pane.
-    #[cfg(windows)]
-    let attach_mouse_on =
-        state.attach_term.as_ref().map(|t| t.mouse_tracking_on());
-    #[cfg(not(windows))]
-    let attach_mouse_on: Option<bool> = None;
     let mouse_on = state
         .local_term
         .as_ref()
         .map(|t| t.mouse_tracking_on())
-        .or(attach_mouse_on)
         .unwrap_or(false);
     if mouse_on {
         let button = if rows_above > 0 { 64 } else { 65 };
         let n = rows_above.unsigned_abs().min(8);
         let seq = format!("\x1b[<{button};1;1M");
         if let Some(t) = state.local_term.as_mut() {
-            for _ in 0..n {
-                t.send_input(seq.as_bytes());
-            }
-        }
-        #[cfg(windows)]
-        if let Some(t) = state.attach_term.as_mut() {
             for _ in 0..n {
                 t.send_input(seq.as_bytes());
             }

@@ -72,7 +72,7 @@ pub(crate) fn begin(
             // meanwhile, and a row a window creates is never this Cleanup's to end.
             let rows = workspaces.list();
             let claims: Vec<_> = rows.iter().filter_map(|ws| workspaces.claim_create(&ws.slug)).collect();
-            let run = cleanup(leases.clone(), rows, state_root, workspaces.clone(), ws_events.clone());
+            let run = cleanup(leases.clone(), rows, workspaces.clone(), ws_events.clone());
             tokio::spawn(async move {
                 run.await;
                 drop(claims);
@@ -88,12 +88,11 @@ pub(crate) fn begin(
 async fn cleanup(
     leases: Arc<Leases>,
     rows: Vec<Arc<Workspace>>,
-    state_root: PathBuf,
     workspaces: Workspaces,
     ws_events: broadcast::Sender<WorkspaceChanged>,
 ) {
     let deadline = tokio::time::Instant::now() + crate::lifecycle::shutdown::shutdown_bound();
-    let report = crate::rows::end::end_every(rows, &workspaces, &ws_events, &state_root, crate::lifecycle::shutdown::REASON, deadline).await;
+    let report = crate::rows::end::end_every(rows, &workspaces, &ws_events, crate::lifecycle::shutdown::REASON, deadline).await;
     tracing::info!(
         ended = report.ended.len(),
         not_ended = report.not_ended,

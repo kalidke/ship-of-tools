@@ -33,15 +33,6 @@ async fn end_with_retry_table() {
     assert_eq!(Instant::now(), deadline);
 }
 
-#[test]
-fn drawer_is_an_end_target() {
-    let root = tempfile::tempdir().expect("tempdir");
-    assert!(!drawer_is_target(root.path()), "no fence file, no drawer to end");
-
-    std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(root.path()), "").expect("fence file");
-    assert!(drawer_is_target(root.path()), "a drawer's fence file makes the drawer an end target");
-}
-
 #[tokio::test(start_paused = true)]
 async fn forget_on_unremovable_registration() {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -85,7 +76,7 @@ async fn non_capsule_row_is_counted_not_ended() {
     row.runtime = "tmux".to_string();
     reg.insert(row);
     let (events, _rx) = broadcast::channel(4);
-    let report = end_every(reg.list(), &reg, &events, root.path(), "window closed", Instant::now() + Duration::from_secs(3)).await;
+    let report = end_every(reg.list(), &reg, &events, "window closed", Instant::now() + Duration::from_secs(3)).await;
     assert_eq!(report.not_ended, 1, "a row the shutdown cannot end was not counted");
 }
 
@@ -112,7 +103,7 @@ async fn end_every_ends_only_the_rows_it_is_given() {
     let reg = Workspaces::new();
     let (events, _rx) = broadcast::channel(4);
     let started = Instant::now();
-    let report = end_every(Vec::new(), &reg, &events, root.path(), "window closed", started + Duration::from_secs(5)).await;
+    let report = end_every(Vec::new(), &reg, &events, "window closed", started + Duration::from_secs(5)).await;
     assert_eq!(report.not_ended, 0, "a fence file in the state root was counted as a target");
     assert!(started.elapsed() < Duration::from_secs(1), "the end waited on something that is not a row");
 }

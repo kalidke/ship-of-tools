@@ -1,7 +1,7 @@
 //! shutdown.rs — ending this computer's sessions without resuming any,
 //! and the one terminal every controlled daemon exit goes through.
 //!
-//! The close asks rows to end every row and the drawer by one deadline
+//! The close asks rows to end every row by one deadline
 //! (`rows::end::end_every`); what rows could not end comes back counted,
 //! never guessed. The daemon's own children
 //! receive checked termination requests through `sot_containment`:
@@ -73,9 +73,7 @@ pub(crate) async fn run(
     }
 
     let report = match sot_platform::host::state_dir::sot_state_dir() {
-        Some(state_root) => {
-            crate::rows::end::end_every(workspaces.list(), &workspaces, &ws_events, &state_root, REASON, rows_deadline).await
-        }
+        Some(_) => crate::rows::end::end_every(workspaces.list(), &workspaces, &ws_events, REASON, rows_deadline).await,
         None => {
             // No state root: nothing can be ended, so every row is counted.
             let rows = workspaces.list().len() as u32;

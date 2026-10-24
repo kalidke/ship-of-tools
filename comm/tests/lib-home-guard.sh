@@ -223,5 +223,5 @@ guard_stage_bin() {  # DIR : prints DIR/staged-bin, the comm scripts laid out fl
 
 in_row() {  # ID CMD... : run CMD beneath a stand-in for row ID's capsule
     local id="$1"; shift
-    ( exec -a sot-capsule bash -c 'shift; "$@"; exit $?' _ "/in-row/state/workspaces/$id/voyages/v0" "$@" )
+    ( exec -a sot-capsule bash -c 'shift; "$@"; exit $?' _ "/in-row/state/workspaces/$id" "$@" )
 }

@@ -68,14 +68,10 @@ fn agent_of(arg: &str) -> Option<&'static str> {
     p.contains("@openai/codex").then_some("codex")
 }
 
-/// Whether a capsule's arguments before `--` name row `row`'s state: one ends in `/workspaces/<row>` or holds
-/// `/workspaces/<row>/voyages/`.
+/// Whether a capsule's arguments before `--` name row `row`'s state: one ends in `/workspaces/<row>`.
 fn capsule_of_row(args: &[String], row: &str) -> bool {
     let k = format!("/workspaces/{row}");
-    args.iter().skip(1).take_while(|a| a.as_str() != "--").any(|a| {
-        let a = a.replace('\\', "/");
-        a.ends_with(&k) || a.contains(&format!("{k}/voyages/"))
-    })
+    args.iter().skip(1).take_while(|a| a.as_str() != "--").any(|a| a.replace('\\', "/").ends_with(&k))
 }
 
 /// The agent layers of `chain`, nearest first, and how the chain ends; `row` is the row the process names (`""` for

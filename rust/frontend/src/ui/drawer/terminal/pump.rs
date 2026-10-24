@@ -1,6 +1,14 @@
-//! The Terminal drawer's frame work: lazy spawn and pump of the shell before the draw, and the pty resize after it.
+//! The Terminal drawer's frame work: lazy spawn and pump of the shell before the draw, and the pty resize after it;
+//! and the scrollback ring's step.
 
 use crate::ui::*;
+
+/// `scroll_ring` for the Terminal drawer's local terminal; three call sites share it.
+pub(in crate::ui) fn scroll_drawer_ring(state: &mut State, delta: i32) {
+    if let Some(t) = state.local_term.as_mut() {
+        scroll_ring(t.screen_mut(), delta);
+    }
+}
 
 impl State {
     pub(in crate::ui) fn pump_drawer_terminals(&mut self) {
@@ -9,43 +17,8 @@ impl State {
         // output into its parser before we borrow its screen for the draw.
         // All mutation happens here, before the `self.terminal.draw`
         // borrow and the immutable `local_term` screen borrow below.
-        // ADR 0041 step 6 U3: `drawer.attach_only` picks the Terminal
-        // drawer's BACKEND, once, the first time the drawer opens this
-        // session. Off (the default) or off-Windows: `use_attach_only`
-        // is always `false` and every line below behaves exactly as it
-        // did before this unit — "When off, NOTHING the FE does today
-        // changes."
-        #[cfg(windows)]
-        let use_attach_only = drawer_uses_attach(
-            self.settings.attach_only,
-            self.attach_term.is_some(),
-            self.local_term.is_some(),
-            &self.leases.granted_state_roots(),
-            self.own_state_root.as_deref(),
-        );
-        #[cfg(not(windows))]
-        let use_attach_only = false;
-
-        // ADR 0041 step 6 U3 ruling (a), Codex review round finding 2:
-        // spawn (gated on the drawer being open) is separate from pump
-        // (which runs on EVERY redraw regardless of drawer visibility).
-        #[cfg(windows)]
-        if self.drawer == DrawerContent::Terminal && use_attach_only && self.attach_term.is_none() {
-            self.spawn_attach_term();
-        }
-        #[cfg(windows)]
-        if self.attach_term.is_some() {
-            self.pump_attach_term();
-        }
-
-        if self.drawer == DrawerContent::Terminal && !use_attach_only {
+        if self.drawer == DrawerContent::Terminal {
             if self.local_term.is_none() {
-                #[cfg(windows)]
-                if self.settings.attach_only {
-                    self.status =
-                        "attach-only terminal needs this computer's backend to hold this window; opened a plain terminal"
-                            .to_string();
-                }
                 let shell = crate::ui::drawer::terminal::pty::resolve_shell(self.settings.terminal_shell.as_deref());
                 let wake = self.wake.clone();
                 // cwd = repo root, so the plain shell starts in the
@@ -116,10 +89,6 @@ impl State {
                 .unwrap_or(true);
             if changed {
                 if let Some(t) = self.local_term.as_mut() {
-                    t.resize(tcols, trows);
-                }
-                #[cfg(windows)]
-                if let Some(t) = self.attach_term.as_mut() {
                     t.resize(tcols, trows);
                 }
                 self.term_size = Some((tcols, trows));

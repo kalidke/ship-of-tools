@@ -45,10 +45,6 @@ impl State {
             session: self.tree.rows.get(self.tree.selected).is_some_and(|r| r.node.kind == "session"),
             alternate_screen: match pane {
                 help::Pane::Terminal => {
-                    #[cfg(windows)]
-                    let screen = self.local_term.as_ref().map(|t| t.screen())
-                        .or_else(|| self.attach_term.as_ref().map(|t| t.screen()));
-                    #[cfg(not(windows))]
                     let screen = self.local_term.as_ref().map(|t| t.screen());
                     screen.is_some_and(|s| s.alternate_screen())
                 }

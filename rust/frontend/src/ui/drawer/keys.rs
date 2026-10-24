@@ -74,18 +74,10 @@ fn terminal_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlF
         // plain key. One-third-pane step like the REPL pane.
         let h = state.pane_rects.repl.height as i32;
         let page_step = (h / 3).max(1);
-        #[cfg(windows)]
-        let attach_alt_screen = state
-            .attach_term
-            .as_ref()
-            .map(|t| t.screen().alternate_screen());
-        #[cfg(not(windows))]
-        let attach_alt_screen: Option<bool> = None;
         let alt_screen = state
             .local_term
             .as_ref()
             .map(|t| t.screen().alternate_screen())
-            .or(attach_alt_screen)
             .unwrap_or(false);
         if !alt_screen {
             match &event.logical_key {
@@ -107,11 +99,6 @@ fn terminal_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlF
             // cursor/prompt is visible (standard emulator
             // behaviour).
             if let Some(t) = state.local_term.as_mut() {
-                t.send_input(&bytes);
-                t.screen_mut().set_scrollback(0);
-            }
-            #[cfg(windows)]
-            if let Some(t) = state.attach_term.as_mut() {
                 t.send_input(&bytes);
                 t.screen_mut().set_scrollback(0);
             }
