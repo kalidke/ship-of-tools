@@ -7,8 +7,8 @@
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        // The lane build id this binary answers the supervisor hello with: a diagnostic, since the lane gate is the
-        // protocol integer.
+        // The build id this binary answers the row hello with: a diagnostic, never compared, since the row number is
+        // the gate.
         Some("build-id") => println!("{}", sot_capsule::BUILD_ID),
         Some("supervise") => cmd_supervise(&args[1..]),
         _ => {

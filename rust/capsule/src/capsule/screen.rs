@@ -1,4 +1,4 @@
-//! The screen file: the leg's latest screen, kept so a restarted leg can show it again.
+//! The screen file: the run's latest screen, kept so a restarted run can show it again.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -11,22 +11,10 @@ type WriteFn = Box<dyn FnMut(&std::path::Path, &[u8]) -> std::io::Result<()> + S
 #[cfg(any(test, feature = "test-support"))]
 static HOOK: Mutex<Option<(WriteFn, Duration)>> = Mutex::new(None);
 
-/// Test seam: the next leg writes its screen through `write` at `pace` instead of `write_durable` every 5 s.
+/// Test seam: the next run writes its screen through `write` at `pace` instead of `write_durable` every 5 s.
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_screen_hook_for_test(write: WriteFn, pace: Duration) {
     *HOOK.lock().unwrap() = Some((write, pace));
-}
-
-/// Test seam (feature `test-support`): with `SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN` naming a file, the leg exits abruptly
-/// (as a crash does) right after the next screen save that finds the file, removing it first: a test crashes the leg
-/// it spawned without aiming at its pid. `SOT_TEST_SCREEN_PACE_MS` shortens the pace.
-#[cfg(feature = "test-support")]
-fn crash_if_asked() {
-    if let Some(go) = std::env::var_os("SOT_TEST_LEG_CRASH_AFTER_SAVE_WHEN") {
-        if std::fs::remove_file(&go).is_ok() {
-            std::process::abort();
-        }
-    }
 }
 
 /// The newest snapshot waiting for the writer thread, and whether the thread should end.
@@ -89,8 +77,6 @@ impl ScreenFile {
                     };
                     match write(&path, &bytes) {
                         Ok(()) => {
-                            #[cfg(feature = "test-support")]
-                            crash_if_asked();
                             failing = false;
                             shared.failed.store(false, Ordering::SeqCst);
                         }
@@ -107,13 +93,7 @@ impl ScreenFile {
                 }
             })
         };
-        #[allow(unused_mut)]
-        let mut pace = SCREEN_PACE;
-        #[cfg(feature = "test-support")]
-        if let Some(ms) = std::env::var("SOT_TEST_SCREEN_PACE_MS").ok().and_then(|v| v.parse().ok()) {
-            pace = Duration::from_millis(ms);
-        }
-        Self { pace, last_write: now, dirty: false, shared, thread: Some(thread) }
+        Self { pace: SCREEN_PACE, last_write: now, dirty: false, shared, thread: Some(thread) }
     }
 
     /// The screen changed since the last snapshot was handed over.

@@ -241,7 +241,7 @@ folder trust); sidecars (`Kernel`, `Repl`); files (`FilesMode`, `ConceptStore`, 
 `read_comm_agents`, `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, the wake's `dialog_of`);
 platform (dirs, the declared host, durable writes, locks); containment (`Signal`).
 
-Does not: run the agent's terminal or keep its record (capsule); decide when rows end (lifecycle asks); read a screen for
+Does not: run the agent's terminal or keep its screen (capsule); decide when rows end (lifecycle asks); read a screen for
 mail or type into a prompt (messaging's wake); build an agent's argv (agents); write the registry's address-book fields
 or deliver mail (messaging); judge a turn's text (the turn auditor's Haiku call nudges the session; only the session's
 own stamp changes a fact).

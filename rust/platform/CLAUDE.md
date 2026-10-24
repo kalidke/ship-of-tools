@@ -47,11 +47,11 @@ where each lives).
    handles (`harden_own_stdio`) and makes owner-only descriptors at birth (`owner_protected_pipe_descriptor`).
 6. **A local reply is trusted only after the challenge.** The OS steps (the peer's account and pid as the OS
    recorded them, then equality of identity) precede the wire steps (`exchange_identity`, over an
-   `IdentityExchange` the lane provides); `run_with_deadline` bounds the wire steps, and the OS steps read kernel
+   `IdentityExchange` the caller's protocol provides: the capsule's `RowHelloExchange`); `run_with_deadline` bounds the wire steps, and the OS steps read kernel
    records without waiting on the peer. Two outcomes differ: the full challenge earns `Proven` (OS identity and the
    wire's pid and creation time agree), while `authenticate_server` proves the account alone (`PeerAuthenticated`).
    A wrong, partial or late reply is `Foreign` or `Undetermined`; a second complete reply inside the same read is
-   `Foreign`, and bytes after a conclusive answer are the exchange's to refuse (the lanes' do). On macOS the peer is
+   `Foreign`, and bytes after a conclusive answer are the exchange's to refuse (the row hello's do). On macOS the peer is
    attributed by `LOCAL_PEERPID` and its start time; the assumptions are stated in `challenge_macos.rs`'s module doc. A TCP connection on loopback is admitted only when the OS names this account as its owner
    (`peer_owner::serve_own`). Rests on SO_PEERCRED/pidfd, LOCAL_PEERPID/kqueue, the pipe's SID and impersonation
    level, the TCP owner tables.
@@ -153,7 +153,7 @@ ExchangeDecode}`, `identity::deadline::run_with_deadline`, `identity::os_account
 rules and are owned by them.
 
 ## Does not
-Know a row, a voyage, a lane's frames or an op (the `TransportError` variants for an endpoint reached
+Know a row, the row socket's frames or an op (the `TransportError` variants for an endpoint reached
 through a daemon, and for a resolved row path, are built by those endpoints, topology's and the capsule's, never here). Decide what a challenge outcome means for readiness or adoption
 (the caller does). Decide when to restart (callers pass the floor and cap). Hold connections or children. Parse
 TOML.
@@ -196,3 +196,6 @@ Windows or macOS arm runs on the hosted runner for its OS.
   (`test_scan_tests.rs`: `no_scan_cuts_a_file_at_its_first_cfg_test`); an existing scan is never extended, and no new
   test proves what code does by reading source text. One exception, not edited here: `backend/tests/admission.rs` reads
   the op module's source directly (`op_names`).
+- A fixture selects its executable on the child command. T2's actual SSH fixtures compare the parent PATH and SHELL before, during and after execution; no lexical allowlist proves environment preservation.
+- Test-program writers use `sot_platform::test_exec::write_executable` (feature `test-support`; its Linux FIFO proof observes actual parent descriptors while the child writer is active), a copy of a built program included (`write_executable(&to, std::fs::read(&from)?)`, never `std::fs::copy`, whose writer is the test process); its separate Unix writer leaves no writable program descriptor in the test process. The retained real descriptor test proves this owner property; `std::fs::copy` is in `rust/clippy-tests/clippy.toml`'s disallowed methods, so a copy of a program is a compile error in the clippy all-targets run, and a data copy carries `#[allow(clippy::disallowed_methods, reason = ...)]` on its statement.
+- Named test reruns use `test_isolated`; direct fixtures retain child wait/status, termination, entry and separate output observations before raising failures. Regression proofs require observed prerequisites and the selected failure's exact cause; wrong-cause controls use the same verifier. Duration/deadline APIs share one wait implementation; byte output preserves valid text and escapes invalid UTF-8. Wrapped fixtures retain launcher status and both streams, validate the native role/PID witness against exact entry, and share direct fixtures' wait/drain/finalization implementation; ordinary direct fixtures still validate their spawned child PID.
