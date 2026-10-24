@@ -69,18 +69,19 @@ impl Drop for RowSide {
 }
 
 /// Reads events until `done` says what has been seen is enough, and returns it: the screen of each snapshot that ended
-/// and every live output byte, in order. Panics with what was seen when `within` passes.
+/// with its retained history and every live output byte, in order. Panics with what was seen when `within` passes.
 pub fn read_until(client: &mut RowClient, what: &str, within: Duration, done: impl Fn(&str) -> bool) -> String {
     let deadline = Instant::now() + within;
     let mut seen = Vec::new();
+    let mut snapshot = Vec::new();
     while Instant::now() < deadline {
         match client.next_event(Duration::from_millis(100)).expect("the row stays up") {
             Some(RowEvent::Output(bytes)) => seen.extend_from_slice(&bytes),
             Some(RowEvent::Snapshot { bytes, last }) => {
+                snapshot.extend_from_slice(&bytes);
                 if last {
-                    let mut parser = vt100_ctt::Parser::new(24, 80, 0);
-                    parser.restore_screen(&bytes).expect("the snapshot restores");
-                    seen.extend_from_slice(parser.screen().contents().as_bytes());
+                    seen.extend_from_slice(snapshot_text(&snapshot).as_bytes());
+                    snapshot.clear();
                 }
             }
             _ => {}
@@ -90,6 +91,35 @@ pub fn read_until(client: &mut RowClient, what: &str, within: Duration, done: im
         }
     }
     panic!("no {what} within {within:?}; saw {:?}", String::from_utf8_lossy(&seen));
+}
+
+/// Windows restores the old screen into history before ConPTY repaints the visible grid.
+fn snapshot_text(bytes: &[u8]) -> String {
+    let mut parser = vt100_ctt::Parser::new(24, 80, capsule::CAPSULE_SCROLLBACK_ROWS);
+    parser.restore_screen(bytes).expect("the snapshot restores");
+    let screen = parser.screen_mut();
+    screen.set_scrollback(usize::MAX);
+    let history = screen.scrollback();
+    let (_, cols) = screen.size();
+    let mut text = String::new();
+    for offset in (1..=history).rev() {
+        screen.set_scrollback(offset);
+        text.push_str(&screen.rows(0, cols).next().unwrap_or_default());
+        text.push('\n');
+    }
+    screen.set_scrollback(0);
+    text.push_str(&screen.contents());
+    text
+}
+
+#[test]
+fn a_snapshot_keeps_restored_history_after_a_startup_clear() {
+    let mut parser = vt100_ctt::Parser::new(4, 40, capsule::CAPSULE_SCROLLBACK_ROWS);
+    parser.process(b"old screen\r\n[restarted]\r\n");
+    parser.process(b"\r\n\r\n\r\n\r\n\x1b[2J\x1b[Hstartup output");
+    let text = snapshot_text(&parser.screen().checkpoint().unwrap());
+    assert!(text.find("old screen").expect("the history survives") < text.find("[restarted]").unwrap(), "{text:?}");
+    assert!(text.contains("startup output"), "the visible grid is included: {text:?}");
 }
 
 /// Reads until `needle` shows.

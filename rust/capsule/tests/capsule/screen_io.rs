@@ -73,7 +73,7 @@ fn a_full_volume_never_stops_output() {
 }
 
 /// A run over a state folder that holds an earlier run's screen starts its parser from it: a viewer that attaches to the
-/// new run is shown the old screen with a restart line below it, before the agent has written a byte.
+/// new run is shown the old screen with a restart line below it, including history retained across ConPTY's repaint.
 #[test]
 fn a_run_over_a_saved_screen_shows_it_above_a_restart_line() {
     let _serial = serial();
