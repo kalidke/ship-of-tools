@@ -192,3 +192,12 @@ fn the_windows_walk_crosses_msys_execs_through_the_wrapper_table() {
     assert_eq!(layers(&c, "ws-a").1, End::NoRow);
     assert!(MsysTable::parse("garbage").is_none());
 }
+
+/// A capsule's own state folder is the row's; a folder inside it, of a voyage no 0.7 capsule makes, is not.
+#[test]
+fn a_capsule_naming_a_voyage_folder_is_not_the_rows() {
+    assert_eq!(
+        req(&["bash", "claude", "sot-capsule|run|/s/workspaces/ws-a/voyages/v1|v1|--cols|80"], None, "ws-a").unwrap_err().0,
+        2
+    );
+}

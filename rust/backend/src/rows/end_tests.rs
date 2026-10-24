@@ -103,3 +103,16 @@ async fn already_removed_row_is_not_kept() {
     assert_eq!(ended, Ended::Gone);
     assert!(started.elapsed() < RETRY_EVERY, "an already-removed row was retried");
 }
+
+/// With no row to end, the end has no other target: a held fence file in the state root (a 0.6 drawer's) is not one.
+#[tokio::test]
+async fn end_every_ends_only_the_rows_it_is_given() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let _fence = sot_log::supervisor::journal::fence::lock_supervisor(root.path()).expect("the test holds the fence");
+    let reg = Workspaces::new();
+    let (events, _rx) = broadcast::channel(4);
+    let started = Instant::now();
+    let report = end_every(Vec::new(), &reg, &events, root.path(), "window closed", started + Duration::from_secs(5)).await;
+    assert_eq!(report.not_ended, 0, "a fence file in the state root was counted as a target");
+    assert!(started.elapsed() < Duration::from_secs(1), "the end waited on something that is not a row");
+}
