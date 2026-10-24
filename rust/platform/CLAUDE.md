@@ -96,7 +96,7 @@ where each lives).
     error: retry, sleep `ACCEPT_SLEEP` on resource exhaustion, or end. Rests on `shutdown(2)`/`CancelIoEx`, the
     kernel's peer records (SO_PEERCRED, LOCAL_PEERCRED, the pipe's SID) and the identification impersonation level.
     Limits: on Windows a write that fails synchronously does not latch the pipe client (the slot stays idle and
-    a later call reaches the OS again; the latch test, `log/tests/socket_unix/client.rs`, is Unix-only); an attempt or wait in progress finishes before the bound is read (a 20 ms sleep, a 200 ms pipe wait), so
+    a later call reaches the OS again; the latch test, `rust/capsule/tests/socket_unix/client.rs`, is Unix-only); an attempt or wait in progress finishes before the bound is read (a 20 ms sleep, a 200 ms pipe wait), so
     the bound is not an exact elapsed time; Windows `connect_own` opens at identification level but cannot refuse a
     pipe before that open.
 14. **A page secret is masked in the logs written through `RedactingWriter`.** `secret::redact` replaces the value after every
@@ -165,7 +165,7 @@ LockFileEx, GetExtendedTcpTable, impersonation-level probe). No fourth OS builds
 
 ## Tests
 One per guarantee. Paths are under `rust/platform/src/` unless they start `tests/` (platform's own integration tests) or
-`log/`: those are tests that need the capsule's row server or its `sot-capsule` binary (a real `RowServer` answering
+`rust/capsule/`: those are tests that need the capsule's row server or its `sot-capsule` binary (a real `RowServer` answering
 the hello, `CARGO_BIN_EXE_sot-capsule`), which platform cannot depend on, and stay in `rust/capsule/tests/`. A test of a
 Windows or macOS arm runs on the hosted runner for its OS.
 
@@ -176,14 +176,14 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | 3 | kernel lock | `host/lock_tests.rs`: `a_dropped_writer_lock_is_free_while_a_forked_child_waits_to_exec`, `a_dropped_daemon_lock_is_free_while_a_forked_child_waits_to_exec`, `a_child_spawned_while_the_daemon_lock_is_held_never_holds_it`, `try_lock_daemon_excludes_a_second_holder`, `lock_supervisor_refuses_a_second_concurrent_holder` |
 | 4 | held folder | `host/held_dir_tests.rs`: `a_held_folder_goes_once_its_maker_has_ended_and_only_then`, `a_held_folder_goes_while_a_removal_holds_its_lock_file_open` |
 | 5 | cloexec births | `host/fd_tests.rs` (socket, pipe, pty, the fork birth lock); `tests/winhandle_windows.rs` |
-| 6 | challenge | `identity/challenge_unix_tests.rs`, `identity/challenge_identity_tests.rs`, `identity/deadline_tests.rs`, `identity/peer_owner/tests.rs`, `identity/exit_watch_macos_tests.rs`; `log/tests/challenge_unix.rs`, `challenge_macos.rs`, `macos_kernel_facts/`; `tests/other_account.rs` |
-| 7 | storage codes | `host/storage_tests.rs`: `storage_codes_are_recognized_by_native_code_only`; `log/src/storage_tests.rs`: `a_transport_error_is_never_storage_exhaustion` |
+| 6 | challenge | `identity/challenge_unix_tests.rs`, `identity/challenge_identity_tests.rs`, `identity/deadline_tests.rs`, `identity/peer_owner/tests.rs`, `identity/exit_watch_macos_tests.rs`; `rust/capsule/tests/challenge_unix.rs`, `challenge_macos.rs`, `macos_kernel_facts/`; `tests/other_account.rs` |
+| 7 | storage codes | `host/storage_tests.rs`: `storage_codes_are_recognized_by_native_code_only`; `rust/capsule/src/storage_tests.rs`: `a_transport_error_is_never_storage_exhaustion` |
 | 8 | volume preflight | `host/volume_tests.rs` |
 | 9 | redial | `host/redial_tests.rs`: `a_short_connection_keeps_the_doubling`, `a_connection_that_lasted_stable_starts_over`, `a_reset_starts_over` |
 | 10 | dir pin | `host/pinned_dir_tests.rs`: `a_fifo_fails_at_once_and_never_waits_for_a_writer` |
 | 11 | private dir | `host/state_dir_is_private_dir_tests.rs`; `host/paths_secure_private_dir_tests.rs`: `a_missing_parent_is_created_and_the_leaf_is_private`, `ensure_private_dir_makes_an_owner_only_folder_that_is_private` |
 | 12 | job ends at last close (Windows) | `rust/capsule/tests/conpty.rs`: `containment_kills_child_and_grandchild` (`:147`); `rust/capsule/tests/capsule/windows_only.rs`: `the_agent_job_refuses_a_breakaway` (`:488`); containment's `contain_tests.rs` `contain_job_permits_no_breakaway` reads the flags only |
-| 13 | local connection | `transport/accept_policy_tests.rs`; `tests/connect_own.rs`: `a_socket_this_account_listens_on_is_reached_wherever_it_is`, `a_socket_another_account_listens_on_is_refused`, `a_full_backlog_ends_the_connect_within_its_bound`, `a_missing_socket_is_not_found` (and the Windows pipe cases); the capsule's `log/tests/socket_unix/` and `log/tests/pipe_win/` (cancel, concurrent submit, the connector's bounds), `log/tests/socket_unix/cloexec.rs` |
+| 13 | local connection | `transport/accept_policy_tests.rs`; `tests/connect_own.rs`: `a_socket_this_account_listens_on_is_reached_wherever_it_is`, `a_socket_another_account_listens_on_is_refused`, `a_full_backlog_ends_the_connect_within_its_bound`, `a_missing_socket_is_not_found` (and the Windows pipe cases); the capsule's `rust/capsule/tests/socket_unix/` and `rust/capsule/tests/pipe_win/` (cancel, concurrent submit, the connector's bounds), `rust/capsule/tests/socket_unix/cloexec.rs` |
 | 14 | secret masking | `secret_tests.rs`: `a_logged_secret_is_masked_in_the_file`, `only_a_run_of_exactly_32_lowercase_hex_characters_is_masked`, `one_write_call_masks_the_whole_buffer_and_reports_it_all_written` |
 
 ## Rules
