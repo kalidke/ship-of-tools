@@ -99,11 +99,12 @@ where each lives).
     a later call reaches the OS again; the latch test, `log/tests/socket_unix/client.rs`, is Unix-only); an attempt or wait in progress finishes before the bound is read (a 20 ms sleep, a 200 ms pipe wait), so
     the bound is not an exact elapsed time; Windows `connect_own` opens at identification level but cannot refuse a
     pipe before that open.
-14. **A page secret is masked before any log line leaves a binary.** `secret::redact` replaces the value after every
+14. **A page secret is masked in the logs written through `RedactingWriter`.** `secret::redact` replaces the value after every
     `secret=` (up to the first delimiter) and every maximal run of exactly 32 lowercase hex characters with
     `<redacted>`, and leaves every other byte unchanged (borrowed when nothing matched); `RedactingWriter` applies it
-    to each write and reports the whole buffer written. Limit: a secret split across two writes is not seen (each
-    write is masked alone).
+    to each write and reports the whole buffer written. Wired through it: the daemon's log and the window's log. Limits:
+    the supervisor's own diagnostics go straight to its stderr and are not masked; a secret split across two writes is
+    not seen (each write is masked alone).
 
 Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MSYS program that execs another is a
 new Windows process whose Windows parent has exited, so a native parent walk alone stops short of the session (Git
