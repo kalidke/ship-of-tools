@@ -86,15 +86,17 @@ where each lives).
     to a socket or pipe by path and then proves, before the caller writes, that this OS account serves it (the
     listener's account as the kernel recorded it at `listen()`, or the pipe server's SID); a different account's
     listener is refused. The connect is bounded by `CONNECT_BOUND` (2 s): a busy endpoint (a full backlog, a claimed
-    pipe instance, an interrupted attempt) is retried within it, an absent one (no listener, no pipe) is refused at the
+    pipe instance, an interrupted attempt) is retried within it (macOS may answer a full backlog with an immediate
+    `ConnectionRefused` instead, which reads as absent), an absent one (no listener, no pipe) is refused at the
     first attempt and never charged to the bound. A `Client` (`SocketClient`, `PipeClient`) reads and writes blocking
     but is cancelled from any thread: `cancel` ends a blocked read or write at once (Unix by `shutdown(2)`, Windows by
     `CancelIoEx`), and a cancelled client refuses every later call; a second same-direction call is refused as
-    `ConcurrentSubmit` before it touches the OS; `Ok(0)` is ordered EOF, never a spurious completion. A terminal write
+    `ConcurrentSubmit` before it touches the OS; `Ok(0)` is ordered EOF, never a spurious completion. On Unix a terminal write
     failure latches the client like a cancel. `accept_policy` is the one rule an accept loop applies to an accept
     error: retry, sleep `ACCEPT_SLEEP` on resource exhaustion, or end. Rests on `shutdown(2)`/`CancelIoEx`, the
     kernel's peer records (SO_PEERCRED, LOCAL_PEERCRED, the pipe's SID) and the identification impersonation level.
-    Limits: an attempt or wait in progress finishes before the bound is read (a 20 ms sleep, a 200 ms pipe wait), so
+    Limits: on Windows a write that fails synchronously does not latch the pipe client (the slot stays idle and
+    a later call reaches the OS again; the latch test, `log/tests/socket_unix/client.rs`, is Unix-only); an attempt or wait in progress finishes before the bound is read (a 20 ms sleep, a 200 ms pipe wait), so
     the bound is not an exact elapsed time; Windows `connect_own` opens at identification level but cannot refuse a
     pipe before that open.
 14. **A page secret is masked before any log line leaves a binary.** `secret::redact` replaces the value after every
