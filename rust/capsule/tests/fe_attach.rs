@@ -209,6 +209,41 @@ fn input_queued_for_an_earlier_run_is_never_written_into_the_next() {
     drop(first);
 }
 
+/// A headless client (the wake's) takes the pen once in a run: after the window took it back it does not fight for it,
+/// and in a replacement run, where it has not typed, it takes it again.
+#[test]
+fn a_headless_client_takes_the_pen_once_per_run() {
+    use sot_capsule::attach_client::attach::InputOutcome;
+    let row = fresh_row();
+    let path = row_socket_path(&row).unwrap();
+    let first = FakeLoop::new(b"");
+    let server = RowServer::bind(&path, Arc::clone(&first.run)).expect("bind");
+    let mut win = window(&row);
+    pump_until(&mut win, "the window's checkpoint", |c| c.is_checkpointed());
+    let mut waker = wake(&row);
+    pump_until(&mut waker, "the wake's checkpoint", |c| c.is_checkpointed());
+    waker.send_input(b"a");
+    pump_until(&mut waker, "the wake's first input recorded", |c| c.recorded_bytes() == 1);
+    // The window takes the pen back; the wake's second input in the same run is refused, not forced through.
+    win.send_input(b"b");
+    pump_until(&mut win, "the window's input recorded", |c| c.recorded_bytes() == 1);
+    waker.send_input(b"c");
+    pump_until(&mut waker, "the wake's second input refused", |c| c.last_input_outcome() == Some(InputOutcome::RefusedStale));
+    assert_eq!(first.written(), b"ab", "the wake took the pen twice in one run");
+    win.shutdown(Duration::from_millis(500));
+    server.shutdown();
+    pump_until(&mut waker, "the wake noticing the row is gone", |c| c.status_line().contains("redialing"));
+    let second = FakeLoop::with_run(b"", "run-two");
+    let server = RowServer::bind(&path, Arc::clone(&second.run)).expect("bind the replacement");
+    pump_until(&mut waker, "the attach to the second run", |c| c.status_line() == "attached" && c.run() == "run-two");
+    waker.send_input(b"d");
+    pump_until(&mut waker, "the wake's input in the new run recorded", |c| c.recorded_bytes() == 2);
+    assert_eq!(second.written(), b"d");
+    waker.shutdown(Duration::from_millis(500));
+    server.shutdown();
+    drop(first);
+}
+
 /// A dial that takes `delay` before it hands the connection over, as a slow ssh login does.
 struct SlowEndpoint {
     inner: PlatformEndpoint,

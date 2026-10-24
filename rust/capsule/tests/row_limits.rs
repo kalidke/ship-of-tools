@@ -98,3 +98,25 @@ fn after_shutdown_no_connection_thread_is_left() {
     }
     drop(clients);
 }
+
+/// The supervisor holds the row's fence when it binds, so a socket file a dead supervisor left is its own and is replaced;
+/// anything that is not a socket is not removed, and the bind refuses.
+#[test]
+fn a_bind_replaces_a_socket_file_a_dead_supervisor_left_and_nothing_else() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    // The challenge refuses a peer that started in the tick it connects in; this binary is both ends.
+    std::thread::sleep(Duration::from_millis(50));
+    let path = socket_path_in(dir.path(), "0123456789abcdef").unwrap();
+    drop(std::os::unix::net::UnixListener::bind(&path).expect("a listener that leaves its file behind"));
+    assert!(path.exists(), "the premise: the dead supervisor's socket file is still there");
+    let run = RowRun::new("run-one", "ready");
+    let server = RowServer::bind(&path, Arc::clone(&run)).expect("the stale socket file is replaced");
+    drop(RowClient::connect(&path, "t", BOUND).expect("the new server answers"));
+    server.shutdown();
+    assert!(!path.exists(), "a shut-down server removes its socket file");
+
+    std::fs::write(&path, b"not a socket").unwrap();
+    assert!(RowServer::bind(&path, RowRun::new("run-one", "ready")).is_err(), "a file that is not a socket stops the bind");
+    assert_eq!(std::fs::read(&path).unwrap(), b"not a socket", "and is left as it was");
+}
