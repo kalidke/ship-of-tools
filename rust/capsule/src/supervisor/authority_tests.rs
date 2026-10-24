@@ -132,9 +132,9 @@ fn every_change_is_recorded_in_order_with_its_value() {
     assert!(told.iter().all(|(_, run)| run.as_deref() == Some("run-one")), "{told:?}");
 }
 
-/// A clock's change (`ready`) is recorded when asked, once, and a status that did not change records nothing.
+/// Polling a status that did not change records nothing.
 #[test]
-fn a_poll_records_a_clock_change_once() {
+fn polling_an_unchanged_status_records_nothing() {
     let shared = Shared::new();
     let (notes, record) = mpsc::channel();
     shared.set_announcer(notes);

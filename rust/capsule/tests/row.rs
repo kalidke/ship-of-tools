@@ -360,6 +360,22 @@ fn a_failed_os_resize_is_a_failure() {
 }
 
 #[test]
+fn a_drivers_attach_is_refused_when_its_os_resize_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = socket_in(dir.path());
+    let looped = FakeLoop::with(b"", Behavior { fail_resize_cols: Some(99), ..Behavior::default() });
+    let server = RowServer::bind(&path, Arc::clone(&looped.run)).expect("bind");
+    let mut client = RowClient::connect(&path, "test", BOUND).expect("connect");
+    let err = client.attach(99, 24, true).unwrap_err();
+    assert!(matches!(err, RowError::Refused(_)), "a failed attach resize is refused: {err:?}");
+    assert!(matches!(client.send_input(b"a"), Err(RowError::Refused(_))), "a refused attach takes no pen");
+    assert!(looped.written().is_empty(), "a refused driver writes nothing");
+    client.attach(80, 24, true).expect("a later attach whose resize succeeds");
+    assert_eq!(client.send_input(b"b").expect("the admitted driver types"), 1);
+    server.shutdown();
+}
+
+#[test]
 fn a_drivers_attach_gets_its_own_geometry_in_the_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let path = socket_in(dir.path());

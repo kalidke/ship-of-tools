@@ -46,8 +46,9 @@ Supervisor:
   `ready`; restarts of supervisors that did reach `ready` keep five within 60 s (`RESTART_BACKOFFS` 1, 3, 7, 15, 30 s
   either way). The watchdog reads the supervisor's exit: 0 ends it, 69 marks the row `terminal`, 70 leaves the row to
   the next attach, and every other end restarts it with `--resume` within the budget: 75 (the agent could not be
-  spawned), 76 (it started and ended by itself) and a killed supervisor (no code), which takes its agent with it. 75 and
-  76 are one path for the restart and differ only in the log; a restart spawns the row's own recipe, never a reauth's
+  spawned), 76 (it started and ended by itself) and a killed supervisor (no code). The agent dies with a killed
+  supervisor within capsule guarantee 2's limits: on macOS an agent that ignores SIGHUP can outlive it. 75 and 76
+  are one path for the restart and differ only in the log; a restart spawns the row's own recipe, never a reauth's
   `--resume`. The watch record (`Workspace::watched`: the supervisor the row's watch last named and whether it told
   `ready`) is written by the observer, kept when a watch reconnects to the same supervisor, and read by the watchdog at
   an exit. Every outcome is bound to the spawn it came from: the row counts the spawns this daemon makes
@@ -124,8 +125,9 @@ Supervisor:
   releases the latch; a supervisor restarted onto a requested end names no run, and the latch on no run is released by
   its first run: the capsule's `ended` record carries no run, by decision, so the cell never compares runs across
   supervisors). Each row's one observer task holds the row's id and one watch on its supervisor
-  (`supervisor_client::watch`: the status at the first reply, then a report at each change of phase or run, and the exit
-  code before a controlled exit), and is the writer of every report: each is fed to the row registered under the id,
+  (`supervisor_client::watch`: the status at the first reply, then recorded changes of phase or run, and the exit
+  code before a controlled exit, within capsule guarantee 11's limits, including a derived `ready` skipped when
+  an end is admitted first), and is the writer of every report: each is fed to the row registered under the id,
   so a refreshed row's phase follows its new supervisor, and a hello that names a supervisor other than the cell's
   begins its epoch. A start's settle writes nothing and wakes the observer; a settle returns at the supervisor's first
   answer, so a start reads `starting` until the agent has lived 2 s. Redials follow platform's `Redial` (250 ms doubling
@@ -147,10 +149,12 @@ Supervisor:
 The daemon's calls on a row's supervisor are ops of the row socket, through `sot_capsule::attach_client::supervisor_client`
 (`query_status`, `end_run`, `reset`, `stop`, each bounded, and the observer's `watch`); a row of another row number
 is `foreign` and one that answers no such op, or none, is `unreachable`. An outcome the call could not settle is
-settled by reading the same supervisor's status, never by asking again: a lost end whose run is gone is `Ended`, a
-lost reset after which status names a run other than the one the supervisor rested on (possibly none) is `Ok`, one
-still resting or terminal on that run is an error, and what stays unsettled is `NotEnded` (an `end_run`) or an error (a
-`reset`), so the row is kept and lifecycle's or the caller's retry reads the true state. Management shares
+settled by reading the same supervisor's status, never by asking again, within capsule guarantee 10's component
+budgets: a lost end is `Ended` when a nonterminal status names another run or none, or the supervisor is resting
+even on the same run; terminal means failed. A lost reset is `Ok` only when status names a new run, different from
+the one read before the request; an absent run is not success. Resting or terminal without a new run is an error,
+and what stays unsettled is `NotEnded` (an `end_run`) or an error (a `reset`), so the row is kept and lifecycle's or
+the caller's retry reads the true state. Management shares
 the row's 8 connections with the viewers; a dial that gets no slot is one failed observation, never an end.
 
 Ends:
@@ -250,10 +254,13 @@ Crate: not drawn in this pass. Rows' target dependencies are capsule, agents, si
 and platform; capsule (`sot-capsule`), containment and platform are crates, and agents, sidecars, files and messaging are
 not. A `sot-rows` crate needs those four as crates first (the server's reply type, `HandlerOutput`, is wire's already).
 
-Platforms: Linux runs the durable parent and a systemd scope per row (`spawn/row_scope.rs`), the one way a destroy ends
-a child that left the agent's process group; macOS runs the durable parent and no scope, so only controlled ends end a
-row's children; Windows creates the supervisor directly, breaking away from the daemon's job, and reads a held fence as
-the supervisor's own exit 70. `sotd work-state` and the dialog tick run on all three. The scripts run under bash 3.2 and
+Platforms: Linux runs the durable parent and tries a systemd scope per row (`spawn/row_scope.rs`), the one way a
+destroy ends a child that left the agent's process group. When a transient scope is unavailable, a supervisor can
+start without one and the durable parent can remain in the daemon's cgroup, so those processes can end with the
+daemon's cgroup (capsule guarantee 3). macOS runs the durable parent and no scope; an agent that ignores SIGHUP can
+outlive a killed supervisor (capsule guarantee 2). Windows creates the supervisor directly, trying breakaway from
+the daemon's job; when that job forbids breakaway it retries inside the job, so the supervisor cannot outlive it.
+A held fence is the supervisor's own exit 70. `sotd work-state` and the dialog tick run on all three. The scripts run under bash 3.2 and
 Git Bash (messaging's rule, comm/CLAUDE.md).
 
 Tests: one unit test per guarantee, `cargo test -p sot-backend rows::` (each named in the pass's result); the row half

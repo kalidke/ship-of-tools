@@ -7,8 +7,8 @@
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        // The build id this binary answers the row hello with: a diagnostic, never compared, since the row number is
-        // the gate.
+        // This binary's build id. Management clients put theirs in HelloReq's diagnostic build field;
+        // HelloRes has no build field, and the row number alone is the compatibility gate.
         Some("build-id") => println!("{}", sot_capsule::BUILD_ID),
         Some("supervise") => cmd_supervise(&args[1..]),
         _ => {
@@ -133,4 +133,3 @@ fn cmd_supervise(args: &[String]) {
     let _ = birth;
     std::process::exit(sot_capsule::supervisor::supervise(config));
 }
-

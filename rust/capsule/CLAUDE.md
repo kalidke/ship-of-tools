@@ -12,8 +12,8 @@ folder (`supervisor.lock`, `screen`, `ended`) and its row socket.
 
 ## Guarantees
 Each states what the rest may rely on, the mechanism it rests on, its limit, and the test that holds it (the Tests table
-lists where each lives). A test of a Windows or macOS arm runs on the hosted runner for its OS; the suites that start a
-real supervisor (`tests/supervisor/`, `tests/row_management.rs`) run on Linux only and are cross-checked elsewhere.
+lists where each lives). A test of a Windows or macOS arm runs on the hosted runner for its OS;
+`tests/supervisor/` runs on Linux and Windows, and `tests/row_management.rs` on Linux only.
 
 1. **One authority per state folder.** The supervisor takes `<state_dir>/supervisor.lock` (platform's kernel lock,
    `fence::lock_supervisor`) before it binds the row socket or starts an agent, and holds it for its whole life. A held
@@ -36,10 +36,13 @@ real supervisor (`tests/supervisor/`, `tests/row_management.rs`) run on Linux on
    SIGHUP-ignoring case on Linux and Windows only); a descendant that leaves the session (Unix) or the job (Windows) is
    not the supervisor's to end.
 3. **A row outlives its viewers and the daemon.** The supervisor serves its row socket for as long as it lives, across
-   every run, and no connection's end, the daemon's end or a window's close ends it; its agent is its child, so it
-   outlives them too. That the supervisor is outside the daemon's kill domain is rows' mechanism (the durable parent on
-   Unix, breakaway on Windows). Limit: nothing in the capsule restarts a supervisor that died; rows' watchdog and boot
-   resume do.
+   every run, and no connection's end or window's close ends it. Rows places the supervisor outside the daemon's kill
+   domain (a durable parent and transient scopes on Linux, a detached session on macOS, breakaway on Windows), so a
+   daemon's end leaves the supervisor and its agent running when that separation succeeds. Limits: Windows retries
+   without breakaway when the daemon's job forbids it, so the supervisor cannot outlive that job; Linux permits a start
+   without a transient scope, and the durable parent can also remain in the daemon's cgroup when its scope is
+   unavailable. Such processes can end with that cgroup. Nothing in the capsule restarts a supervisor that died;
+   rows' watchdog and boot resume do. The service-stop test requires a granted scope and can skip without a user manager.
 4. **One socket per row, this account only, nothing before an admitted hello, the row number the one gate.** The socket
    is `<runtime dir>/row-<h>.sock` (`h` is platform's `state_dir_hash`; a pipe `\\.\pipe\sot-row-<h>` on Windows). Unix:
    the runtime folder must be private, the socket is mode 0600, a peer of another uid is dropped at accept before a byte
@@ -50,8 +53,9 @@ real supervisor (`tests/supervisor/`, `tests/row_management.rs`) run on Linux on
    record of the peer and the hello's `(pid, created)` agree); one that cannot prove the peer says `Unproven`, apart
    from a deadline that expired (`Timeout`). The hello's `row` number (`ROW_PROTOCOL`, now 1) is the one gate: no reader
    judges a frame's `v`, so a daemon update never strands a live row; the number rises only when a row op changes, and
-   a client refuses another number by name, never by a hang. The reply carries the build id as a diagnostic that is never
-   compared. Limits: a window attaching through the daemon's bridge binds the OS half to the daemon's report
+   a client refuses another number by name, never by a hang. The request (`HelloReq`) carries `build`, an arbitrary
+   diagnostic label that is never compared; our management client sends its build id. The reply (`HelloRes`) has no
+   build field. Limits: a window attaching through the daemon's bridge binds the OS half to the daemon's report
    (`PeerAuthenticated`, steps 1 to 3 of topology's bridge); a Windows pipe has no read timeout, so a peer that never
    says hello holds two threads and a slot until it closes or the row ends; on Linux the challenge refuses a peer that
    started in the clock tick the client connects in, so a supervisor dialed within 10 ms of its own start can be
@@ -66,8 +70,10 @@ real supervisor (`tests/supervisor/`, `tests/row_management.rs`) run on Linux on
    resynced, never cut for output: when 256 output frames wait for it they are all dropped, it leaves the live set, and
    the next ground state sends it a fresh screen (one that it has not begun to receive is replaced, so a viewer held
    back through many resyncs keeps one screen queued); its answers (a reply, a demotion) are never dropped. A viewer
-   whose answers alone fill 64 frames, or that makes no progress writing for 5 s, is cut (Unix `shutdown(2)`, Windows
-   `CancelIoEx`). The one client every viewer uses, `FeAttachClient` (the window as driver; the wake and the dialog
+   whose answers alone fill 64 frames is cut. Unix also gives a blocked stream write a 5 s timeout and cuts the
+   connection with `shutdown(2)`. Windows has no writer deadline: a stalled pipe write or flush can remain blocked
+   until another path closes the connection and calls `CancelIoEx`, including shutdown. The one client every viewer
+   uses, `FeAttachClient` (the window as driver; the wake and the dialog
    tick as headless watchers), is one worker over `RowClient`: it waits until the row is viewed and its endpoint's link
    is up, dials once, restores the screen into its parser and follows the output, restoring any resync screen; a lost
    connection is redialed on platform's `Redial` (250 ms doubling to 4 s, started over only after a connection that
@@ -108,7 +114,9 @@ real supervisor (`tests/supervisor/`, `tests/row_management.rs`) run on Linux on
    into the history, because the ConPTY host repaints the visible screen); a file that does not restore (torn, another
    format version) is removed and the screen starts empty. Limits: the file can be 5 s old and a failing disk can leave
    it old for good; the end waits for the writer at most 2 s, and a writer that timed out at a run's end can still
-   publish a stale snapshot over a later run's file (queue item SCREEN-WRITER-SPAN).
+   publish a stale snapshot over a later run's file (queue item SCREEN-WRITER-SPAN); content held only in the alternate
+   grid is hidden when restore switches to the normal grid and is not shown above the restart line. Both grids remain
+   encoded, but restore does not copy the alternate grid's content into the normal grid.
 9. **No disk write stops output.** Output never waits on the screen file: a stalled disk blocks only the writer thread
    and a failing one is noted once per failing streak and tried again at the next pace.
 10. **Status, end, reset and stop are bounded replies fenced by the run, and an end answered `ended` was recorded
@@ -126,9 +134,10 @@ real supervisor (`tests/supervisor/`, `tests/row_management.rs`) run on Linux on
       supervisor is terminal, or the end could not be recorded) or `ending` after 25 s. `row.reset` is fenced by the
       phase alone: admitted only from `ended_no_respawn`, answering `reset` once the end record is replaced, `failed`
       otherwise or after 25 s. `row.stop` ends the agent and answers `stopping` as its connection's last reply; the
-      process exits (0, or 69 when terminal) once that connection has ended or after 3 s, and its shutdown then ends
-      every connection (a closed connection stays registered until both its threads have ended, so a peer that does
-      not read cannot hold the exit).
+      supervisor tears down the run, waits at most 3 s for that connection to end, then exits (0, or 69 when terminal).
+      Teardown has separate budgets, including a 30 s output drain; the 3 s is not a stop-to-exit bound. Its shutdown
+      then ends every connection (a closed connection stays registered until both its threads have ended, so a peer
+      that does not read cannot hold the exit).
     - `<state_dir>/ended` is the one record of how the last run ended (`requested`, the agent's uptime and exit). A
       requested end is written to it, durably, before `ended` is answered, even when the agent ended first: admission
       closes under the lock that reads whether an end was admitted (`Shared::close_run`), so an end admitted before is
@@ -136,27 +145,35 @@ real supervisor (`tests/supervisor/`, `tests/row_management.rs`) run on Linux on
       told `failed`, the supervisor is terminal and starts no other agent. Each run's start clears `ended`; a reset
       publishes by a durable write of a record that asks for no end (a removal is not flushed on Windows), so a
       supervisor killed after the answer resumes into an agent on every system, and a publication that fails makes the
-      supervisor terminal. A stop leaves no request, so the next start runs the agent again. A `--resume` over a
+      supervisor terminal. A stop creates no end request, so the next start runs the agent again unless an earlier
+      requested end remains; stop preserves that request. A `--resume` over a
       requested end rests in `ended_no_respawn`; over no record or one that asks for none it starts an agent; a record
       that cannot be read is not a record of no end, so the supervisor is terminal before any run. A supervisor that goes
       terminal sends its running agent `Stop` first, with no request recorded.
     - No call carries an id and nothing is kept for a resubmit; a completion answer is kept under its own admission, so
-      another run's admission never clears it. The daemon's client (`attach_client/supervisor_client.rs`) is bounded
-      from the request (status 5 s, `end_run`, `reset` and `stop` 30 s; a dial adds up to 2 s before it and a recovery
-      up to 10 s after). A client that lost a reply, or got `ending`, settles it by reading status from the same
-      supervisor (the dial's `(pid, created)` must match): for `end_run` the run gone means ended (with the supervisor
-      terminal, failed) and the run still there means unknown; for `reset` a run other than the one it rested on, or
-      none, means done and the same run with the supervisor resting or terminal means not; nothing is asked a second
-      time, and a replacement run's status never stands for the original. The dial checks the hello's row number alone,
+      another run's admission never clears it. The daemon's client (`attach_client/supervisor_client.rs`) uses component
+      budgets: a 2 s dial/hello deadline, a 5 s status request, and 30 s for an `end_run` or reset request. Reset first
+      makes its own 5 s status request. Stop shares a 30 s deadline between connection, reply and process wait.
+      Recovery checks a 10 s clock after each independently budgeted dial/status round, so an in-flight round and
+      the 250 ms poll sleep can overrun that clock; these are not additive guarantees of total elapsed time. A client
+      that lost a reply, or got `ending`, settles it by reading status from the same supervisor (the dial's
+      `(pid, created)` must match): for `end_run`, terminal means failed; `ended_no_respawn` means ended even when it
+      names the same run, as does another run or no run in a known nonterminal phase. The same run still `ending`
+      remains unsettled; the same run in another phase means unknown. Reset recovery succeeds only when status names
+      a new run, different from the one read before the request; an absent run is not success. Still resting or
+      terminal without a new run means failure, and an unsettled recovery is an error. Nothing is asked a second
+      time, and a replacement supervisor's status never stands for the original. The dial checks the hello's row number alone,
       so a row of another number is `VersionSkew`, which rows reads as `foreign`.
     - Limit: a ninth dial gets no slot, which the daemon reads as one failed observation and never as an end.
-11. **A watch tells every change in order, and the exit code before a controlled exit.** `row.watch` holds a
-    connection as the daemon's view of the row and answers the status last told; each change of phase or run after it
-    is one `row.phase` event carrying the new status, in the order the changes happened and never twice for one status.
-    Every change is recorded with its value under `Shared`'s lock (a send down an unbounded channel, which never
+11. **A watch tells recorded changes in order, and the exit code before a controlled exit.** `row.watch` holds a
+    connection as the daemon's view of the row and answers the status last told; each recorded change of phase or run
+    after it is one `row.phase` event carrying the new status, in record order and never twice for an unchanged status.
+    Each is recorded with its value under `Shared`'s lock (a send down an unbounded channel, which never
     blocks) and one announcing thread tells the watchers from that record, so a change the run has already moved past
     is still told. `ready` is a clock, so the run's loop asks the management each tick to note it, only while something
-    watches. A watch takes no pen, needs no attach and is never closed as idle. A controlled exit (0, 69, 75 or 76,
+    watches. The readiness flag is published before that poll: an end admitted between them can record `ending`
+    first and skip the transient derived `ready` status. A watch takes no pen, needs no attach and is never closed
+    as idle. A controlled exit (0, 69, 75 or 76,
     whichever the supervisor returns) is told: the record is closed and delivered, the code committed, and each watcher
     is sent `row.exiting {code}` as its last frame and then the end of the stream; a watch admitted after the commit is
     answered its status and then told the same. The supervisor waits at most 1 s for the watchers' connections to be
@@ -247,13 +264,13 @@ start `rust/` or name the backend; the integration binaries are named by their f
 | 2 | the agent dies with it | `tests/supervisor/one_process.rs::{one_process_per_row, the_agent_dies_with_its_supervisor}`; `tests/macos_kernel_facts/kqueue.rs`; `tests/macos_kernel_facts/pty_hangup.rs`; `src/capsule/producer/pty/drop_and_domain_tests.rs::drop_kills_surviving_descendants_when_the_leader_already_exited`; `tests/capsule/windows_only.rs::the_agent_job_refuses_a_breakaway`; `tests/conpty.rs::containment_kills_child_and_grandchild` |
 | 3 | outlives viewers and daemon | `tests/supervisor/guards.rs::a_supervisor_and_its_agent_outlive_every_connection` (a guard); backend `capsule_workspaces::platform::capsule_supervisor_survives_a_real_user_service_stop` |
 | 4 | one socket, this account, hello, row number | `tests/row.rs`: `a_peer_of_another_uid_is_dropped_at_accept`, `a_peer_that_trickles_bytes_before_hello_is_dropped_at_the_deadline`, `a_row_that_declares_an_older_wire_integer_and_the_current_row_number_still_attaches`, `a_row_with_a_newer_row_number_is_refused_by_name`, `a_peer_that_cannot_be_proven_is_not_reported_as_a_timeout`, `a_row_socket_path_past_sun_path_is_refused_by_name`; `tests/row_limits.rs::a_bind_replaces_a_socket_file_a_dead_supervisor_left_and_nothing_else` (a guard); `tests/row_pipe.rs::every_pipe_instance_is_owner_only` (hosted Windows); `src/row/proto_tests.rs` (13); `tests/row_management.rs::a_daemon_dial_checks_the_row_number_not_the_wire_integer`; the challenge against a real `RowServer`: `tests/challenge_unix.rs`, `tests/challenge_macos.rs`, `tests/pipe_win/challenge.rs` |
-| 5 | attach shows the screen | `tests/row.rs::attach_shows_the_screen_at_once`; `tests/fe_attach.rs::attach_shows_the_screen_at_once`; `src/row/run_tests.rs::{a_viewer_joins_only_at_a_ground_state_and_is_then_sent_the_output_in_order, a_viewer_that_falls_behind_is_resynced_with_one_screen_not_cut}` (the first a guard); `tests/row_flood.rs::a_driver_that_pumps_slowly_under_a_flood_keeps_its_connection_and_gets_every_reply`; `tests/row.rs::{a_drivers_attach_gets_its_own_geometry_in_the_snapshot, a_failed_os_resize_is_a_failure}`; `tests/fe_attach.rs`: `a_redial_waits_on_the_doubling_pace`, `a_login_that_takes_twelve_seconds_still_attaches`, `a_row_socket_path_too_long_ends_the_attach_with_a_named_error`; `src/attach_client/client_tests.rs` (5); `tests/fe_client/headless.rs::headless_attach_adopts_capsule_geometry_and_types_without_resizing`; `tests/capsule/windows_only.rs::attach_mid_stream_snapshot_reproduces_reference_screen` (hosted Windows) |
+| 5 | attach shows the screen | `tests/row.rs::attach_shows_the_screen_at_once`; `tests/fe_attach.rs::attach_shows_the_screen_at_once`; `src/row/run_tests.rs::{a_viewer_joins_only_at_a_ground_state_and_is_then_sent_the_output_in_order, a_viewer_that_falls_behind_is_resynced_with_one_screen_not_cut}` (the first a guard); `tests/row_flood.rs::a_driver_that_pumps_slowly_under_a_flood_keeps_its_connection_and_gets_every_reply`; `tests/row.rs::{a_drivers_attach_gets_its_own_geometry_in_the_snapshot, a_failed_os_resize_is_a_failure, a_drivers_attach_is_refused_when_its_os_resize_fails}`; `tests/fe_attach.rs`: `a_redial_waits_on_the_doubling_pace`, `a_login_that_takes_twelve_seconds_still_attaches`, `a_row_socket_path_too_long_ends_the_attach_with_a_named_error`; `src/attach_client/client_tests.rs` (5); `tests/fe_client/headless.rs::headless_attach_adopts_capsule_geometry_and_types_without_resizing`; `tests/capsule/windows_only.rs::attach_mid_stream_snapshot_reproduces_reference_screen` (hosted Windows) |
 | 6 | one driver, eight connections | `tests/row.rs`: `a_watcher_cannot_type`, `a_new_driver_demotes_the_old`, `reattaching_as_a_watcher_gives_up_the_driver`; `tests/capsule/row_run.rs::a_drivers_input_reaches_the_terminal_and_a_watchers_is_refused`; `tests/row_limits.rs`: `a_ninth_connection_is_refused_while_eight_are_held`, `an_evicted_viewer_gives_its_slot_back_only_when_its_threads_have_ended`, `after_shutdown_no_connection_thread_is_left`; `src/row/run_tests.rs::a_closed_connection_stays_reachable_until_its_threads_have_ended`; `tests/fe_attach.rs::{a_demoted_window_types_again_after_a_wake, a_demotion_during_attach_leaves_a_watcher_whose_next_key_takes_the_pen}` |
 | 7 | input once or unknown | `tests/row.rs`: `input_that_times_out_is_delivery_unknown`, `a_request_left_over_when_the_run_changes_is_answered_run_ended`; `tests/row_management.rs::a_row_refuses_input_meant_for_another_run`; `tests/fe_attach.rs`: `input_queued_for_an_earlier_run_is_never_written_into_the_next`, `a_headless_client_takes_the_pen_once_per_run` (a guard); `src/row/run_tests.rs::{a_full_request_queue_refuses_input_as_busy, a_wake_is_coalesced_and_the_drain_is_under_a_quota}`; `src/row/input_tests.rs` (4); `tests/row_switch.rs::a_paste_the_agent_has_not_read_does_not_stop_its_output`; `tests/capsule/row_run.rs::input_sent_while_a_requested_end_is_in_progress_is_answered_run_ended`; `tests/fe_client/headless.rs::headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input` |
-| 8 | a restart shows the last screen | `src/capsule/screen_tests.rs` (3); `tests/capsule/main.rs::e2e_runs_and_leaves_its_ending_and_its_screen`; `tests/capsule/screen_io.rs::a_run_over_a_saved_screen_shows_it_above_a_restart_line` (a guard) |
+| 8 | a restart shows the last screen | `src/capsule/screen_tests.rs` (3); `tests/capsule/main.rs::e2e_runs_and_leaves_its_ending_and_its_screen`; `tests/capsule/screen_io.rs::a_run_over_a_saved_screen_shows_it_above_a_restart_line` (a guard, including history on Windows); `tests/capsule/rowside.rs::a_snapshot_keeps_restored_history_after_a_startup_clear` |
 | 9 | no write stops output | `tests/capsule/screen_io.rs::{a_stalled_screen_write_never_stalls_output, a_full_volume_never_stops_output}` |
 | 10 | status, end, reset, stop | `tests/row_management.rs` (the daemon's calls on the row socket, over a real supervisor and a stand-in that drops replies: `an_end_run_naming_another_run_is_refused_with_no_change`, `a_reset_after_end_run_is_admitted`, `a_resting_supervisor_reports_the_run_it_rests_on`, `a_stop_is_answered_before_the_supervisor_exits`, `an_end_run_whose_reply_is_lost_after_the_run_ended_reports_ended`, `a_lost_end_reply_is_settled_by_the_run_a_rest_or_a_terminal_status_names`, `a_reset_whose_reply_is_lost_is_settled_by_the_run_status_names`, `a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown`); `tests/supervisor/authority.rs` (5: `reset_is_refused_while_a_run_is_live`, `reset_from_ended_no_respawn_starts_an_agent_in_a_new_run`, `a_reset_right_after_a_reset_is_refused_while_its_run_is_live`, `a_reset_answered_before_a_kill_is_not_undone_by_the_resume`, `a_reset_whose_publication_fails_leaves_the_supervisor_terminal_and_starts_no_run`); `tests/supervisor/lifecycle.rs` (2); `tests/supervisor/spawn.rs`: `start_reaches_ready_promptly`, `a_watch_reports_ready_only_after_the_agent_lived_two_seconds`, `an_agent_that_exits_before_two_seconds_is_never_reported_ready`, `a_resume_with_nothing_to_resume_starts_the_agent`, `a_run_asked_to_end_rests_after_a_supervisor_restart`, `an_unreadable_end_record_starts_no_agent_on_resume`, `a_stop_leaves_no_end_request_so_the_next_start_runs_the_agent_again`, `an_end_run_the_agent_beat_is_still_a_requested_end_after_a_stop_and_a_resume`, `a_requested_end_that_cannot_be_recorded_is_not_answered_ended`, `an_end_run_asked_after_the_agent_ended_by_itself_is_never_answered_ended_unrecorded`; `src/supervisor/authority_tests.rs` (9); `src/capsule/ended_tests.rs` (2); `tests/row_pipe.rs::a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown` (hosted Windows) |
-| 11 | the watch | `src/row/run_tests.rs`: `a_watch_is_told_each_change_once_and_in_order`, `a_tick_asks_nothing_when_nothing_watches`, `exiting_is_sent_before_the_shutdown_and_waits_for_the_watchers`, `exiting_gives_up_on_a_watcher_that_does_not_drain`, `a_watch_admitted_during_the_exit_is_told_the_code`; `tests/row_management.rs`: `a_watch_reports_each_phase_change_in_order`, `a_watch_reports_exiting_with_the_code_before_a_controlled_end`, `a_watch_ends_by_waiting_for_the_supervisors_process`, `a_watch_end_withdraws_its_publication_before_waiting`, `a_cancelled_watch_never_publishes_a_connection`, `a_transition_is_told_though_the_run_ends_before_its_announcement`, `a_dropped_watch_gives_its_slot_back`; `src/supervisor/authority_tests.rs::{every_change_is_recorded_in_order_with_its_value, a_poll_records_a_clock_change_once}` |
+| 11 | the watch | `src/row/run_tests.rs`: `a_watch_is_told_each_change_once_and_in_order`, `a_tick_asks_nothing_when_nothing_watches`, `exiting_is_sent_before_the_shutdown_and_waits_for_the_watchers`, `exiting_gives_up_on_a_watcher_that_does_not_drain`, `a_watch_admitted_during_the_exit_is_told_the_code`; `tests/row_management.rs`: `a_watch_reports_each_phase_change_in_order`, `a_watch_reports_exiting_with_the_code_before_a_controlled_end`, `a_watch_ends_by_waiting_for_the_supervisors_process`, `a_watch_end_withdraws_its_publication_before_waiting`, `a_cancelled_watch_never_publishes_a_connection`, `a_transition_is_told_though_the_run_ends_before_its_announcement`, `a_dropped_watch_gives_its_slot_back`; `src/supervisor/authority_tests.rs::{every_change_is_recorded_in_order_with_its_value, polling_an_unchanged_status_records_nothing}` |
 | 12 | the exit code | `tests/supervisor/spawn.rs`: `an_agent_that_ends_by_itself_ends_the_supervisor_with_76`, `an_agent_that_cannot_be_started_ends_the_supervisor_with_75`; `tests/supervisor/lifecycle.rs::full_lifecycle_status_end_run_and_clean_exit` (0); `tests/supervisor/guards.rs` (70); `tests/supervisor/authority.rs::a_reset_whose_publication_fails_leaves_the_supervisor_terminal_and_starts_no_run` (69); `tests/row_switch.rs::a_row_socket_that_cannot_be_bound_exits_75_before_the_agent_starts`; `tests/row_supervisor.rs`: `a_supervisor_serves_its_row_socket_and_the_agent_hears_a_driver`, `a_dead_row_listener_is_bound_again_once`, `a_row_listener_that_keeps_dying_ends_the_supervisor_with_75`, `a_listener_lost_while_the_supervisor_rests_ends_it_with_75`, `the_row_listeners_watch_waits_on_an_event`; `src/supervisor/authority_tests.rs`: `a_terminal_supervisor_ends_its_running_agent`, `a_lost_row_listener_wakes_a_resting_supervisor`, `a_run_is_not_admitted_once_the_row_listener_is_lost`, `an_end_admitted_after_the_run_is_closed_is_refused_and_one_before_is_reported`; backend `capsule_workspaces::spawn::a_row_socket_that_cannot_be_bound_ends_the_row_terminal_through_the_budget` |
 | 13 | argv and first-run-only | `tests/supervisor/argv.rs::a_retired_flag_is_a_usage_error`; `tests/supervisor/spawn.rs`: `first_run_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_ran`, `a_reauths_reset_leg_keeps_its_first_run_only_token_and_its_respawn_drops_it`; backend `rows/spawn/detach_start_mode_tests.rs` (`only_a_resume_by_id_is_first_run_only`, `mode_flag_matches_the_sot_capsule_cli`) and `comm/identity/layers_tests.rs::a_capsule_naming_a_voyage_folder_is_not_the_rows` |
 
@@ -300,13 +317,18 @@ guarantees 4, 5, 6 and 10 are proved by the hosted Windows run alone, and the Li
 - A change to a wire tag, magic or limit, to the row number, or to an exit code is an interface change with other
   processes and versions.
 - The test support (`test_exec`, `test_isolated`, `test_wait`, `test_log`, `test_scan`, `test_copy`) and its rules are
-  platform's (`../platform/CLAUDE.md`, Rules). No test here proves what code does by reading source text.
+  platform's (`../platform/CLAUDE.md`, Rules). Add no test that proves behavior by reading source text. Inherited
+  exceptions in `tests/isolation_guards.rs` are `no_browser_opener_outside_browser_open` and
+  `the_macos_peer_token_has_one_reader` (opener calls and macOS token spellings); never extend them.
 - A `SOT_TEST_*` seam read by a production binary is inert unless named: `SOT_TEST_END_MARK_FAILS`,
   `SOT_TEST_SUPERVISOR_BOOT_FAILS`, `SOT_TEST_RESET_HOLD_MS`, `SOT_TEST_RESET_CLEAR_FAILS`, `SOT_TEST_EXIT_HOLD_MS`,
   `SOT_TEST_RUN_OVER_HOLD_MS`, `SOT_TEST_RECOVERY_DELAY_MS`, `SOT_TEST_END_RUN_HOLD_MS`, `SOT_TEST_ANNOUNCE_HOLD_MS`,
   `SOT_TEST_ROW_LISTENER_DIES` and `SOT_TEST_ROW_LISTENER_DIES_ON`.
-- Every supervisor a test starts runs under an isolated `SOT_RUNTIME_DIR` and inside `CapsuleGuard`
-  (`tests/support/capsule_guard.rs`), and kills go through a pidfd or a process handle.
+- The Linux/Windows supervisor suite uses `CapsuleGuard` (`tests/support/capsule_guard.rs`), with an isolated
+  `SOT_RUNTIME_DIR` on Linux (Windows uses named pipes). Existing direct-child cases include `tests/row_switch.rs`
+  and `tests/macos_kernel_facts/kqueue.rs`; they do not use that guard. Process-handle and pidfd paths retain the
+  process identity; direct-child tests also use their own `Child` handle. New tests isolate their runtime and keep
+  every process they start in their test's container.
 - Another crate can reach the processes this crate starts (the agent) through its public items: `capsule::run`,
   `capsule::producer::Producer::spawn`, `capsule::producer::conpty::ConptySpawn::spawn` and `supervisor::supervise`.
   `rust/clippy.toml` lists none of them, so its process-spawn lint does not see a call from another crate; today none
