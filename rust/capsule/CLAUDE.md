@@ -210,7 +210,7 @@ The OS (pty and process groups, `prctl`, ConPTY and job objects, sockets and nam
 vt100 fork (`../vt100/`: the parser and its checkpoint); platform: `host::{lock_supervisor, lock_supervisor_for_handover,
 HandoverLock, write_durable, remove_durable, preflight_volume, owner_protected_pipe_descriptor, harden_own_stdio, Redial,
 native_storage_code}`, `host::state_dir::{state_dir_hash, runtime_dir, current_uid}`, `host::fd::{openpty_cloexec,
-fork_guard, inherit_none}`, `host::winjob::AnonymousJob`, `host::process_tree::Launch` (the native birth launcher),
+fork_guard}`, `host::winjob::AnonymousJob`,
 `identity::{challenge::*, exchange::IdentityExchange, deadline::run_with_deadline}` and the per-OS challenge steps,
 `transport::{Client, TransportError, connect_own}` and the two clients; wire: `Frame`, `Kind` and the blocking codec with
 its envelope cap; serde_json, uuid, tracing, libc (Unix), interprocess (Windows).
