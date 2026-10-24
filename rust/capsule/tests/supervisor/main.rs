@@ -1,9 +1,9 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! Real cross-process integration tests for `sot_capsule::supervisor`: they spawn the real `sot-capsule` binary
 //! (`supervise`) and talk to it as the daemon does, on the row socket: a dial that proves the peer and checks its row
-//! number, then `row.status`, `row.end_run`, `row.reset` and `row.stop`. The journal's own crash-durability is proven
-//! by `supervisor/journal/`'s unit tests; what these tests add is proof the wiring across a real process boundary is
-//! right, on every platform the supervisor runs on.
+//! number, then `row.status`, `row.end_run`, `row.reset` and `row.stop`. The fence's own cases are `supervisor/fence_tests.rs`'s
+//! unit tests; what these tests add is proof the wiring across a real process boundary is right, on every platform the
+//! supervisor runs on.
 //!
 //! Deterministic by construction: every wait below is a bounded poll for an external, observable fact (a socket
 //! answering, a process's own exit code), never a sleep-and-hope.
