@@ -154,41 +154,50 @@ impl Relay {
                     }
                     let (mut front_r, mut front_w) = tokio::io::split(front);
                     let (mut unix_r, mut unix_w) = tokio::io::split(unix);
-                    let up = tokio::io::copy(&mut front_r, &mut unix_w);
+                    // Each direction half-closes its destination as it returns, as `copy_bidirectional` does: the end
+                    // of one side is the other side's end of stream.
+                    let up = async {
+                        let _ = tokio::io::copy(&mut front_r, &mut unix_w).await;
+                        let _ = unix_w.shutdown().await;
+                    };
                     let down = async {
-                        let mut buf = [0u8; 4096];
-                        let mut tokens: f64 = 0.0;
-                        let mut last = tokio::time::Instant::now();
-                        loop {
-                            let n = match unix_r.read(&mut buf).await {
-                                Ok(0) | Err(_) => return,
-                                Ok(n) => n,
-                            };
-                            let mut off = 0;
-                            while off < n {
-                                let rate = rate_state.rate.load(Ordering::SeqCst);
-                                if rate == 0 {
-                                    if front_w.write_all(&buf[off..n]).await.is_err() {
+                        let pump = async {
+                            let mut buf = [0u8; 4096];
+                            let mut tokens: f64 = 0.0;
+                            let mut last = tokio::time::Instant::now();
+                            loop {
+                                let n = match unix_r.read(&mut buf).await {
+                                    Ok(0) | Err(_) => return,
+                                    Ok(n) => n,
+                                };
+                                let mut off = 0;
+                                while off < n {
+                                    let rate = rate_state.rate.load(Ordering::SeqCst);
+                                    if rate == 0 {
+                                        if front_w.write_all(&buf[off..n]).await.is_err() {
+                                            return;
+                                        }
+                                        off = n;
+                                        continue;
+                                    }
+                                    let now = tokio::time::Instant::now();
+                                    tokens = (tokens + now.duration_since(last).as_secs_f64() * rate as f64).min(rate as f64);
+                                    last = now;
+                                    if tokens < 1.0 {
+                                        tokio::time::sleep(Duration::from_millis(20)).await;
+                                        continue;
+                                    }
+                                    let take = ((n - off) as f64).min(tokens) as usize;
+                                    if front_w.write_all(&buf[off..off + take]).await.is_err() {
                                         return;
                                     }
-                                    off = n;
-                                    continue;
+                                    tokens -= take as f64;
+                                    off += take;
                                 }
-                                let now = tokio::time::Instant::now();
-                                tokens = (tokens + now.duration_since(last).as_secs_f64() * rate as f64).min(rate as f64);
-                                last = now;
-                                if tokens < 1.0 {
-                                    tokio::time::sleep(Duration::from_millis(20)).await;
-                                    continue;
-                                }
-                                let take = ((n - off) as f64).min(tokens) as usize;
-                                if front_w.write_all(&buf[off..off + take]).await.is_err() {
-                                    return;
-                                }
-                                tokens -= take as f64;
-                                off += take;
                             }
-                        }
+                        };
+                        pump.await;
+                        let _ = front_w.shutdown().await;
                     };
                     let _ = tokio::join!(up, down);
                 });
