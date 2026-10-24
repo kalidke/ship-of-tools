@@ -298,8 +298,7 @@ impl State {
                     // request for a capsule row (the daemon refuses both
                     // with `attach_direct`). This arm only keeps an
                     // ALREADY-LIVE client's viewport in sync with the pane
-                    // rect, mirroring the drawer's own attach-client
-                    // resize (`term_size_observed`).
+                    // rect.
                     if need_open || need_resize {
                         if let Some(t) = self.pane_attach_term.as_mut() {
                             t.resize(cols, rows);

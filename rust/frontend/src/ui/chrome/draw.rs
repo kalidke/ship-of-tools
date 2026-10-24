@@ -168,10 +168,9 @@ impl State {
         // `drawer` was bound above (after the terminal lazy-spawn/close).
         let drawer_open = drawer.is_open();
         let (preview_name, monitor_host_label, monitor_host_connected) = self.pane_title_inputs();
-        // Borrowed LAST, after every `&mut self` pump above (the Windows-only
-        // attach-term pumps included): the draw closure captures these two
-        // references, so taking them any earlier spans those mutations and
-        // fails the borrow check on the platform that has them.
+        // Borrowed LAST, after every `&mut self` pump above: the draw closure
+        // captures these two references, so taking them any earlier spans
+        // those mutations and fails the borrow check.
         let help_state = &self.help;
         let help_bindings = &self.bindings;
         let mut view = ChromeView {

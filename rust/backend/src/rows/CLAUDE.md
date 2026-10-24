@@ -108,7 +108,9 @@ Supervisor:
   limit); on macOS the retire inherits platform's residual that a kill by number may meet a reused number
   (`challenge_macos.rs`: about 10^5 process creations between two adjacent syscalls), and nowhere promises an
   unconditional proven-process kill there; an unregistered 0.6 folder is never retired and the whole-folder sweep keeps
-  its rules; a 0.6 session's comm commands are refused between the install and its row's retire; rows of main builds
+  its rules; between the install and its row's retire a 0.6 session's `send` and `poll` fail (`FAILED`, exit 1) and never file mail or
+  move a cursor, and `start` prints its refusal, while an identity lookup may still answer the row's own old name from its
+  self file; rows of main builds
   from 6a to 6c-1c1 are not read; a 0.6 window's attach-only drawer (an opt-in the product never wrote, Windows only)
   ran a capsule on the state root itself, which no 0.7 code ends: it ends at the next reboot or by hand.
 - No start begins once the close has begun: `Workspaces::begin_start` refuses after `close_gate_and_settle`, which waits

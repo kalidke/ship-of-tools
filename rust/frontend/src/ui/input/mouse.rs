@@ -192,8 +192,7 @@ fn wheel_agent_pane(state: &mut State, rows_above: i32) {
         return;
     }
     // ADR 0042 slice L1b: a capsule pane keeps REAL
-    // local scrollback (its own `vt100-ctt` parser,
-    // same as the drawer's attach client) — unlike
+    // local scrollback (its own `vt100-ctt` parser) — unlike
     // tmux's in-place-repaint model below, there's no
     // remote ring to forward to, so this mirrors the
     // drawer's own Repl-focus wheel arm: forward as
