@@ -51,7 +51,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `HostTable`, `lane_dial`, `ResolvedDial`, Dial::Relay, ResolvedDial::Relay. Uses: sot_topology::relay_host_for_path, `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`,
 `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
 `SshRecipe::new`, `is_plain_host_name`, `LinkGate`, `Redial`, `STABLE`, `Leases::before_data_connection`, `sot_state_dir`,
-`sot_config_dir`, `host_name`, `state_dir_hash`, `tree.root`, `tree.children`, `directory.list`, `nav.toggle_hidden`,
+`sot_config_dir`, `host_name`, `tree.root`, `tree.children`, `directory.list`, `nav.toggle_hidden`,
 `preview.get`, `preview.set_scale`, `image.crop`, `concept.read`, `concept.write`, `concept.list`, `file.read`,
 `file.write`, `file.delete`, `file.download`, `file.upload`, `dir.create`, `repl.eval`, `repl.run_file`,
 `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`, `monitor.subscribe`,
