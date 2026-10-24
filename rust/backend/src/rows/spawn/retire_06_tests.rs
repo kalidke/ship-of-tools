@@ -239,6 +239,10 @@ impl Old for Script {
     fn pause(&mut self, _: Duration) {
         self.calls.push("pause".into());
     }
+    fn record_rest(&mut self, _: Option<&str>) -> Result<bool, String> {
+        self.calls.push("record_rest".into());
+        Ok(true)
+    }
 }
 
 fn status(phase: Phase, voyage: Option<&str>) -> Status {
@@ -264,7 +268,8 @@ fn the_retire_ends_a_ready_run_before_it_stops_the_supervisor() {
     // Ending, then resting after an end somebody asked for: no end of ours, and the rest is live.
     let mut s = Script { statuses: [Ok(status(Phase::Ending, Some(V))), Ok(status(Phase::EndedNoRespawn, Some(V)))].into(), ..Script::default() };
     let driven = run(&mut s, QUIT_CUTOFF).unwrap();
-    assert_eq!(s.calls, ["status", "pause", "status", "stop", "exited"]);
+    // The person's end is recorded before the supervisor, its one witness, is stopped.
+    assert_eq!(s.calls, ["status", "pause", "status", "record_rest", "stop", "exited"]);
     assert!(driven.live_rest && !driven.ended_run);
 
     // Terminal: stopped, nothing to end.
@@ -338,7 +343,7 @@ fn the_old_layout_moves_while_the_fence_is_held() {
     let dir = old_folder();
     let found = layout(dir.path()).unwrap();
     let _fence = sot_log::supervisor::journal::fence::lock_supervisor(dir.path()).unwrap();
-    let moved = move_layout(dir.path(), false, &found).unwrap();
+    let moved = move_layout(dir.path(), &found).unwrap();
     assert_eq!(moved.names.len(), 5);
     assert!(!moved.requested);
     assert!(layout(dir.path()).unwrap().is_empty());
@@ -349,19 +354,32 @@ fn the_old_layout_moves_while_the_fence_is_held() {
     assert!(!dir.path().join("ended").exists());
 }
 
+/// A closed `end_run` on `V` in `dir`'s journal under operation id `id`, record `n`.
+fn add_end(dir: &Path, n: u8, id: &str) {
+    let journal = dir.join("supervisor-journal");
+    std::fs::write(
+        journal.join(format!("{}.active", digest(n))),
+        format!(r#"{{"schema_version":1,"operation_id":"{id}","digest":"{}","op":{{"op":"end_run","voyage":"{V}","epoch":3}}}}"#, digest(n)),
+    )
+    .unwrap();
+    std::fs::write(journal.join(format!("{}.closed", digest(n))), r#"{"schema_version":1}"#).unwrap();
+}
+
 #[test]
 fn a_requested_end_is_recorded_before_the_files_move_and_a_held_terminal_stops_the_move() {
     let dir = old_folder();
+    add_end(dir.path(), 1, "sot-backend-end-run-a");
     let found = layout(dir.path()).unwrap();
-    let moved = move_layout(dir.path(), true, &found).unwrap();
+    let moved = move_layout(dir.path(), &found).unwrap();
     assert!(moved.requested);
     assert!(sot_log::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
 
     // A terminal that holds its writer lock: nothing moves and nothing is recorded.
     let dir = old_folder();
+    add_end(dir.path(), 1, "sot-backend-end-run-a");
     let found = layout(dir.path()).unwrap();
     let _held = sot_platform::host::lock_writer(&dir.path().join("voyages").join(V).join("writer.lock")).unwrap();
-    let err = move_layout(dir.path(), true, &found).unwrap_err();
+    let err = move_layout(dir.path(), &found).unwrap_err();
     assert!(err.contains("a 0.6 terminal still runs"), "{err}");
     assert_eq!(layout(dir.path()).unwrap().len(), 5);
     assert!(!dir.path().join("ended").exists());
@@ -370,5 +388,113 @@ fn a_requested_end_is_recorded_before_the_files_move_and_a_held_terminal_stops_t
     drop(_held);
     std::fs::create_dir(dir.path().join(RETIRED_DIR)).unwrap();
     std::fs::write(dir.path().join(RETIRED_DIR).join("voyages"), b"").unwrap();
-    assert!(move_layout(dir.path(), false, &found).unwrap_err().contains("already exists"));
+    assert!(move_layout(dir.path(), &found).unwrap_err().contains("already exists"));
+}
+
+/// The record comes before the first rename: a move that fails at its first rename (a name already retired) still leaves
+/// the requested end written, so a retry cannot start the row.
+#[test]
+fn the_requested_end_is_written_before_the_first_rename_can_fail() {
+    let dir = old_folder();
+    add_end(dir.path(), 1, "sot-backend-end-run-a");
+    let found = layout(dir.path()).unwrap();
+    std::fs::create_dir(dir.path().join(RETIRED_DIR)).unwrap();
+    std::fs::write(dir.path().join(RETIRED_DIR).join("drawer.voyage"), b"").unwrap();
+    assert!(move_layout(dir.path(), &found).unwrap_err().contains("already exists"));
+    assert_eq!(layout(dir.path()).unwrap().len(), 5, "nothing moved");
+    assert!(sot_log::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
+}
+
+/// A live 0.6 supervisor's rest is decided before it is stopped: a person's unless the journal shows it is the retire's own
+/// end (a retire whose `end_run` landed and whose stop failed), which resumes the row on retry.
+#[test]
+fn a_live_rest_is_a_persons_unless_the_journal_shows_it_is_the_retires_own() {
+    // No journal evidence: the live supervisor is the only witness, and the end is recorded at once.
+    let dir = old_folder();
+    assert_eq!(record_live_rest(dir.path(), Some(V)), Ok(true));
+    assert!(sot_log::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
+    // The retire's own end: nothing is recorded.
+    let dir = old_folder();
+    add_end(dir.path(), 1, "sot-retire-end-abc");
+    assert_eq!(record_live_rest(dir.path(), Some(V)), Ok(false));
+    assert!(!dir.path().join("ended").exists());
+    assert_eq!(move_layout(dir.path(), &layout(dir.path()).unwrap()).unwrap().requested, false);
+    // Both: a person's end is in the journal too.
+    let dir = old_folder();
+    add_end(dir.path(), 1, "sot-retire-end-abc");
+    add_end(dir.path(), 2, "sot-backend-end-run-a");
+    assert_eq!(record_live_rest(dir.path(), Some(V)), Ok(true));
+    // A status that names no voyage falls back to the pointer.
+    let dir = old_folder();
+    add_end(dir.path(), 1, "sot-retire-end-abc");
+    assert_eq!(record_live_rest(dir.path(), None), Ok(false));
+}
+
+// --- the retire through its two callers, and its boundaries ---
+
+/// A fake cgroup root with this row's remembered scope: a process (populated) the retire must kill. The scope is named
+/// in the durable `row-scopes` record only; no supervisor lives to be captured.
+#[cfg(target_os = "linux")]
+#[test]
+fn remembered_scopes_are_ended_when_no_supervisor_lives() {
+    let (dir, root) = (old_folder(), tempfile::tempdir().unwrap());
+    let rel = format!("/a/app.slice/sot-row-{}-x.scope", sot_platform::host::state_dir::state_dir_hash(dir.path()));
+    let scope = root.path().join(rel.trim_start_matches('/'));
+    std::fs::create_dir_all(&scope).unwrap();
+    std::fs::write(scope.join("cgroup.kill"), "").unwrap();
+    std::fs::write(scope.join("cgroup.events"), "populated 0\nfrozen 0\n").unwrap();
+    std::fs::write(dir.path().join("row-scopes"), format!("{rel}\n")).unwrap();
+    crate::rows::spawn::row_scope::TEST_ROOT.with(|r| *r.borrow_mut() = Some(root.path().to_path_buf()));
+    let result = retire_06(dir.path());
+    crate::rows::spawn::row_scope::TEST_ROOT.with(|r| *r.borrow_mut() = None);
+    result.unwrap();
+    assert_eq!(std::fs::read_to_string(scope.join("cgroup.kill")).unwrap(), "1", "the remembered scope was not killed");
+    assert!(layout(dir.path()).unwrap().is_empty());
+}
+
+/// A scope that will not empty is an error, and nothing moves.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_remembered_scope_that_will_not_empty_keeps_the_layout_in_place() {
+    let (dir, root) = (old_folder(), tempfile::tempdir().unwrap());
+    let rel = format!("/a/app.slice/sot-row-{}-x.scope", sot_platform::host::state_dir::state_dir_hash(dir.path()));
+    let scope = root.path().join(rel.trim_start_matches('/'));
+    std::fs::create_dir_all(&scope).unwrap();
+    std::fs::write(scope.join("cgroup.kill"), "").unwrap();
+    std::fs::write(scope.join("cgroup.events"), "populated 1\n").unwrap();
+    std::fs::write(dir.path().join("row-scopes"), format!("{rel}\n")).unwrap();
+    crate::rows::spawn::row_scope::TEST_ROOT.with(|r| *r.borrow_mut() = Some(root.path().to_path_buf()));
+    let result = retire_06(dir.path());
+    crate::rows::spawn::row_scope::TEST_ROOT.with(|r| *r.borrow_mut() = None);
+    assert!(result.unwrap_err().contains("did not empty"));
+    assert_eq!(layout(dir.path()).unwrap().len(), 5);
+}
+
+/// A folder that holds the 0.6 layout and no fence file never started: the retire moves the layout and does not make the
+/// fence file, the start marker. Reached through `end_run`, the close path.
+#[test]
+fn the_retire_never_creates_the_start_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("voyages").join(V)).unwrap();
+    let outcome = crate::rows::run::end_run::end_run(dir.path(), "close", false).unwrap();
+    assert!(matches!(outcome, crate::rows::run::end_run::EndRunOutcome::Unheld), "{outcome:?}");
+    assert!(layout(dir.path()).unwrap().is_empty(), "the layout moved");
+    assert!(dir.path().join(RETIRED_DIR).join("voyages").is_dir());
+    assert!(!dir.path().join("supervisor.lock").exists(), "the retire made the start marker");
+}
+
+/// `end_run` meets an old row first: it retires it (a Cleanup boot ends rows through here) and keeps the person's end.
+#[test]
+fn end_run_retires_an_old_row_it_meets() {
+    let dir = old_folder();
+    add_end(dir.path(), 1, "sot-backend-end-run-a");
+    let outcome = crate::rows::run::end_run::end_run(dir.path(), "close", false).unwrap();
+    assert!(matches!(outcome, crate::rows::run::end_run::EndRunOutcome::Unheld), "{outcome:?}");
+    assert!(layout(dir.path()).unwrap().is_empty());
+    assert!(sot_log::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
+    // One that cannot be retired is not ended.
+    let dir = old_folder();
+    let _held = sot_platform::host::lock_writer(&dir.path().join("voyages").join(V).join("writer.lock")).unwrap();
+    let outcome = crate::rows::run::end_run::end_run(dir.path(), "close", false).unwrap();
+    assert!(matches!(outcome, crate::rows::run::end_run::EndRunOutcome::NotEnded(ref d) if d.contains("0.6 terminal")), "{outcome:?}");
 }

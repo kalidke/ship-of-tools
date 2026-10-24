@@ -281,6 +281,9 @@ pub(crate) trait Old {
     fn exited(&mut self, bound: Duration) -> Result<bool, String>;
     /// Re-verifies the process and ends it.
     fn terminate(&mut self) -> Result<(), String>;
+    /// The supervisor rests after an end: decides, before it is stopped (it is the only witness of a requested end that
+    /// no journal holds), whether that end is a person's, and records it durably if so. `Ok(true)` is a person's end.
+    fn record_rest(&mut self, voyage: Option<&str>) -> Result<bool, String>;
     fn pause(&mut self, d: Duration);
 }
 
@@ -289,7 +292,7 @@ pub(crate) trait Old {
 pub(crate) struct Driven {
     /// The phase the old supervisor reported when settled.
     pub phase: &'static str,
-    /// It was resting after an end somebody asked for.
+    /// It was resting after an end a person asked for, which is recorded.
     pub live_rest: bool,
     /// The retire's own `end_run` ended a run.
     pub ended_run: bool,
@@ -329,7 +332,7 @@ pub(crate) fn drive(old: &mut dyn Old, budget: Duration, settle_pause: Duration)
                 break;
             }
             Phase::EndedNoRespawn => {
-                driven.live_rest = true;
+                driven.live_rest = old.record_rest(status.voyage.as_deref())?;
                 break;
             }
             Phase::Terminal => break,
@@ -520,6 +523,32 @@ impl Old for Real {
     fn pause(&mut self, d: Duration) {
         std::thread::sleep(d);
     }
+
+    fn record_rest(&mut self, voyage: Option<&str>) -> Result<bool, String> {
+        record_live_rest(&self.state_dir, voyage)
+    }
+}
+
+/// A resting 0.6 supervisor's end is the retire's own when the journal holds a closed or verified `end_run` on that voyage
+/// with a retire's operation id and none that is not; otherwise it is a person's, and `ended` is written before the
+/// supervisor is stopped. `Ok(true)` is a person's end.
+fn record_live_rest(state_dir: &Path, voyage: Option<&str>) -> Result<bool, String> {
+    let voyage = match voyage {
+        Some(v) => Some(v.to_string()),
+        None => pointer_voyage(state_dir).unwrap_or(None),
+    };
+    let own = voyage.is_some_and(|v| match journal_ends(state_dir, &v) {
+        Ok(ends) => ends.retire && !ends.person,
+        Err(e) => {
+            tracing::warn!(error = %e, "retiring a 0.6 row: the old journal could not be read; the rest is kept as a person's");
+            false
+        }
+    });
+    if own {
+        return Ok(false);
+    }
+    sot_log::capsule::mark_end_requested(state_dir, "ended under 0.6").map_err(|e| format!("record the requested end: {e}"))?;
+    Ok(true)
 }
 
 // ----------------------------------------------------------------------------------------------------------------
@@ -568,32 +597,36 @@ fn read_record(path: &Path) -> Result<serde_json::Value, String> {
     }
 }
 
-/// Whether a person asked for the end of the row's last 0.6 run, read from the 0.6 journal when no supervisor lives to say.
-/// `Ok(false)` is no evidence of one. Anything present that cannot be read is an `Err` naming the file: the caller rests
-/// the row, since a wrong rest is undone by one selection and a wrong start cannot be undone.
-pub(crate) fn journal_says_requested(state_dir: &Path) -> Result<bool, String> {
-    let pointer = state_dir.join("drawer.voyage");
-    let voyage = match std::fs::symlink_metadata(&pointer) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(format!("{pointer:?}: {e}")),
-        Ok(m) if !m.file_type().is_file() => return Err(format!("{pointer:?}: not a regular file")),
-        Ok(_) => {
-            let bytes = std::fs::read(&pointer).map_err(|e| format!("{pointer:?}: {e}"))?;
-            let text = String::from_utf8(bytes).map_err(|_| format!("{pointer:?}: not UTF-8"))?;
-            let parsed = uuid::Uuid::parse_str(&text).map_err(|e| format!("{pointer:?}: {e}"))?;
-            if text.len() != 36 || text != parsed.hyphenated().to_string() {
-                return Err(format!("{pointer:?}: not a canonical lowercase UUID"));
-            }
-            text
-        }
-    };
+/// A completion entry of the 0.6 journal (`.closed` or `.terminal`) beside an `.active` record: `None` when absent, an
+/// `Err` when present and not a regular file of schema 1.
+fn completion(path: &Path) -> Result<Option<serde_json::Value>, String> {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{path:?}: {e}")),
+        Ok(_) => read_record(path).map(Some),
+    }
+}
+
+/// Who asked for the ends the 0.6 journal records on one voyage.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Ends {
+    /// A closed or verified `end_run` that is not this retire's.
+    pub person: bool,
+    /// A closed or verified `end_run` whose operation id starts [`RETIRE_ID_PREFIX`].
+    pub retire: bool,
+}
+
+/// The closed or verified `end_run`s the journal holds on `voyage`, told apart by their operation ids. Anything present
+/// that cannot be read is an `Err` naming the file.
+pub(crate) fn journal_ends(state_dir: &Path, voyage: &str) -> Result<Ends, String> {
     let dir = state_dir.join("supervisor-journal");
     let entries = match std::fs::symlink_metadata(&dir) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Ends::default()),
         Err(e) => return Err(format!("{dir:?}: {e}")),
         Ok(m) if !m.file_type().is_dir() => return Err(format!("{dir:?}: not a directory")),
         Ok(_) => std::fs::read_dir(&dir).map_err(|e| format!("{dir:?}: {e}"))?,
     };
+    let mut ends = Ends::default();
     for entry in entries {
         let name = entry.map_err(|e| format!("{dir:?}: {e}"))?.file_name();
         let name = name.to_string_lossy();
@@ -607,21 +640,51 @@ pub(crate) fn journal_says_requested(state_dir: &Path) -> Result<bool, String> {
             return Err(format!("{:?}: no operation", dir.join(name.as_ref())));
         };
         let id = record.get("operation_id").and_then(serde_json::Value::as_str).unwrap_or_default();
-        let on_pointer = op.and_then(|o| o.get("voyage")).and_then(serde_json::Value::as_str) == Some(voyage.as_str());
-        if kind != "end_run" || !on_pointer || id.starts_with(RETIRE_ID_PREFIX) {
+        let on_voyage = op.and_then(|o| o.get("voyage")).and_then(serde_json::Value::as_str) == Some(voyage);
+        if kind != "end_run" || !on_voyage {
             continue;
         }
-        let closed = dir.join(format!("{stem}.closed"));
-        if is_regular_file(&closed)? {
-            read_record(&closed)?;
-            return Ok(true);
-        }
-        let terminal = dir.join(format!("{stem}.terminal"));
-        if is_regular_file(&terminal)? && read_record(&terminal)?.get("state").and_then(serde_json::Value::as_str) == Some("record_verified") {
-            return Ok(true);
+        let ended = completion(&dir.join(format!("{stem}.closed")))?.is_some()
+            || completion(&dir.join(format!("{stem}.terminal")))?
+                .is_some_and(|t| t.get("state").and_then(serde_json::Value::as_str) == Some("record_verified"));
+        if ended {
+            if id.starts_with(RETIRE_ID_PREFIX) {
+                ends.retire = true;
+            } else {
+                ends.person = true;
+            }
         }
     }
-    Ok(false)
+    Ok(ends)
+}
+
+/// The voyage the 0.6 pointer names: `None` when there is no pointer, an `Err` when it is not a canonical lowercase UUID.
+fn pointer_voyage(state_dir: &Path) -> Result<Option<String>, String> {
+    let pointer = state_dir.join("drawer.voyage");
+    match std::fs::symlink_metadata(&pointer) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{pointer:?}: {e}")),
+        Ok(m) if !m.file_type().is_file() => Err(format!("{pointer:?}: not a regular file")),
+        Ok(_) => {
+            let bytes = std::fs::read(&pointer).map_err(|e| format!("{pointer:?}: {e}"))?;
+            let text = String::from_utf8(bytes).map_err(|_| format!("{pointer:?}: not UTF-8"))?;
+            let parsed = uuid::Uuid::parse_str(&text).map_err(|e| format!("{pointer:?}: {e}"))?;
+            if text.len() != 36 || text != parsed.hyphenated().to_string() {
+                return Err(format!("{pointer:?}: not a canonical lowercase UUID"));
+            }
+            Ok(Some(text))
+        }
+    }
+}
+
+/// Whether a person asked for the end of the row's last 0.6 run, read from the 0.6 journal when no supervisor lives to say.
+/// `Ok(false)` is no evidence of one. Anything present that cannot be read is an `Err` naming the file: the caller rests
+/// the row, since a wrong rest is undone by one selection and a wrong start cannot be undone.
+pub(crate) fn journal_says_requested(state_dir: &Path) -> Result<bool, String> {
+    match pointer_voyage(state_dir)? {
+        None => Ok(false),
+        Some(voyage) => Ok(journal_ends(state_dir, &voyage)?.person),
+    }
 }
 
 /// Takes and drops each 0.6 terminal's writer lock: a held one is a terminal still running. Each is dropped at once, since
@@ -657,15 +720,14 @@ struct Moved {
     names: Vec<String>,
 }
 
-/// Under the fence: no 0.6 terminal runs; a requested end is made durable before anything moves; then the layout moves
+/// Under the fence: no 0.6 terminal runs; a requested end the journal holds is made durable before anything moves; then the layout moves
 /// into [`RETIRED_DIR`].
-fn move_layout(state_dir: &Path, live_rest: bool, found: &[OsString]) -> Result<Moved, String> {
+fn move_layout(state_dir: &Path, found: &[OsString]) -> Result<Moved, String> {
     prove_no_terminal(state_dir)?;
-    let requested = live_rest
-        || journal_says_requested(state_dir).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "retiring a 0.6 row: the old journal could not be read; the row rests until selected");
-            true
-        });
+    let requested = journal_says_requested(state_dir).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "retiring a 0.6 row: the old journal could not be read; the row rests until selected");
+        true
+    });
     if requested {
         sot_log::capsule::mark_end_requested(state_dir, "ended under 0.6").map_err(|e| format!("record the requested end: {e}"))?;
     }
@@ -695,26 +757,39 @@ pub(crate) fn retire_06(state_dir: &Path) -> Result<(), String> {
     if found.is_empty() {
         return Ok(());
     }
-    let (mut phase, mut ended_run, mut live_rest) = ("no live supervisor", false, false);
+    let (mut phase, mut ended_run) = ("no live supervisor", false);
+    // The row's own scopes (Linux): the supervisor's, captured before it is stopped, and every one the durable `row-scopes`
+    // record remembers, which a retry after a daemon's death has no live supervisor to find again.
+    #[cfg(target_os = "linux")]
+    let (root, own) = (crate::rows::spawn::row_scope::root(), crate::rows::spawn::row_scope::own_rel().unwrap_or_default());
+    #[cfg(target_os = "linux")]
+    let mut captured = None;
     if let Found::Proven(conn, process) = dial(state_dir) {
         #[cfg(target_os = "linux")]
-        let (root, own, captured) = {
-            let root = crate::rows::spawn::row_scope::root();
-            let own = crate::rows::spawn::row_scope::own_rel().unwrap_or_default();
-            let captured = crate::rows::spawn::row_scope::capture(&root, state_dir, process.pid())?;
-            (root, own, captured)
-        };
+        {
+            captured = crate::rows::spawn::row_scope::capture(&root, state_dir, process.pid())?;
+        }
         let mut old = Real { state_dir: state_dir.to_path_buf(), conn: Some(conn), process, pending: Vec::new() };
         let driven = drive(&mut old, QUIT_CUTOFF, SETTLE_PAUSE)?;
-        #[cfg(target_os = "linux")]
-        crate::rows::spawn::row_scope::end(&root, &own, state_dir, captured.as_deref(), crate::rows::spawn::row_scope::SCOPE_EMPTY_BOUND)?;
-        (phase, ended_run, live_rest) = (driven.phase, driven.ended_run, driven.live_rest);
+        (phase, ended_run) = (driven.phase, driven.ended_run);
     }
-    let moved = match absence_proof_then(state_dir, row_socket_silent, || move_layout(state_dir, live_rest, &found)) {
-        Ok(Some(moved)) => moved?,
-        Ok(None) => return Err("a row socket answers and no 0.6 supervisor ended it".to_string()),
-        Err(NotProven::FenceUnavailable) => return Err("a process holds this row's fence and no 0.6 supervisor ended it".to_string()),
-        Err(NotProven::RowSocketUnjudged(detail)) => return Err(detail),
+    #[cfg(target_os = "linux")]
+    crate::rows::spawn::row_scope::end(&root, &own, state_dir, captured.as_deref(), crate::rows::spawn::row_scope::SCOPE_EMPTY_BOUND)?;
+    let moved = if sot_log::supervisor::journal::fence::supervisor_lock_path(state_dir).is_file() {
+        match absence_proof_then(state_dir, row_socket_silent, || move_layout(state_dir, &found)) {
+            Ok(Some(moved)) => moved?,
+            Ok(None) => return Err("a row socket answers and no 0.6 supervisor ended it".to_string()),
+            Err(NotProven::FenceUnavailable) => return Err("a process holds this row's fence and no 0.6 supervisor ended it".to_string()),
+            Err(NotProven::RowSocketUnjudged(detail)) => return Err(detail),
+        }
+    } else {
+        // No fence file: a start was never made here, and nothing can hold an absent fence. The creating fence is not
+        // taken, since the file it would make is the start marker a boot resume reads.
+        match row_socket_silent(state_dir) {
+            Ok(true) => move_layout(state_dir, &found)?,
+            Ok(false) => return Err("a row socket answers and no 0.6 supervisor ended it".to_string()),
+            Err(detail) => return Err(detail),
+        }
     };
     tracing::info!(
         folder = ?state_dir, old_phase = phase, ended_run, requested_end = moved.requested, moved = ?moved.names,
