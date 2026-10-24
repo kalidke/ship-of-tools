@@ -186,7 +186,9 @@ true after the merge of the leg into the supervisor.
   flood. Input is acknowledged as written, or reported `delivery unknown` when the loop did not answer in 2 s (it may
   still write it; the client never sends it again), and input queued for one run is answered `run ended` when the run
   changes and never written into the next. The run id is a UUIDv7 minted at each agent start.
-- Limits of this landing: a 0.6 row is retired by rows before its first 0.7 start (`rows/CLAUDE.md`); rows of main builds
+- Limits of this landing: a 0.6 row is retired by rows before its first 0.7 start or end (`rows/CLAUDE.md`: the person's
+  end kept, live or journaled and decided before the stop; Linux scopes ended with or without a live supervisor; the
+  start marker never created; the macOS kill-by-number residual and the other platform limits stated there); rows of main builds
   from 6a to 6c-1c1 are not served by the row socket and are not retired, and no candidate is cut from main until 6c-2
   lands whole. On Linux the challenge refuses a peer that started in the clock tick the client connects in
   (`validate_pin`), so a supervisor dialed within 10 ms of its start can be `Unproven`; a later connection, with a

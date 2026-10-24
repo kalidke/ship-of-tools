@@ -374,3 +374,28 @@ async fn old_rows_are_retired_together_at_boot() {
     }
     env.kill_daemon_bounded().await;
 }
+
+/// A close that meets an old row (a Cleanup boot ends rows the same way): `workspace.destroy` reaches `end_run`, which
+/// retires the row first, asking the old supervisor to end its run and stopping it, and only then judges the row ended.
+/// The folder holds no fence file at boot, so the boot resume leaves the row alone; the stand-in starts afterwards.
+#[tokio::test]
+async fn a_close_retires_an_old_row_it_meets() {
+    let _serial = SERIAL.lock().await;
+    require_capsule();
+    let env = Env::new("rt5");
+    let mut row = OldRow::seed(&env, "ws-old-5", "old_five");
+    std::fs::remove_file(row.state_dir.join("supervisor.lock")).unwrap();
+
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    assert_eq!(phase_of_row(&mut conn, &mut next_id, &row.id).await.as_deref(), Some("stopped"));
+    row.standin(&env, None);
+
+    let destroy = call(&mut conn, next_id, op::WORKSPACE_DESTROY, serde_json::json!({ "workspace_id": row.id })).await;
+    assert!(destroy.payload.get("error").is_none(), "workspace.destroy failed: {:?}", destroy.payload);
+    let seen = row.seen();
+    assert_eq!(seen.len(), 4, "{seen:?}");
+    assert!(seen[2].starts_with(&format!("EndRun {V} sot-retire-")), "{seen:?}");
+    assert!(seen[3].starts_with("Stop sot-retire-"), "{seen:?}");
+    env.kill_daemon_bounded().await;
+}

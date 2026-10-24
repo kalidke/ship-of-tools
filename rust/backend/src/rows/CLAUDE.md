@@ -79,27 +79,38 @@ Supervisor:
   anything starts) and by `end_run` (before it judges a row; a Cleanup boot ends rows without resuming them), does
   the rest under the row's guard. It dials the old supervisor's frozen lane (`supervisor-<h>.sock`, the pipe on Windows;
   the frames are restated in the file, with the two 0.6 fixtures beside it as test data) through the challenge,
-  sending nothing to a peer that does not prove; asks a `ready` run to end (`end_run` on the voyage its status names,
-  waiting out a starting or ending supervisor, 90 s for the whole wait); sends `stop` (5 s for its reply), drops the
-  connection and waits 20 s for the process to exit, else re-verifies and terminates it and waits 10 s more; on Linux
-  ends the supervisor's scope after it exits. Then under the fence, with the row socket silent: every 0.6 terminal's
-  `writer.lock` is tried and dropped at once (a held one is an error naming it, since a terminal that outlives its
-  supervisor is 0.6's design and only the person can end it), a requested end is made durable (`ended`, by
-  `mark_end_requested`) before anything moves, and the layout moves into `.retired-voyages/`. An end the retire asked
-  for is not a person's, so such a row starts fresh and resumes the conversation; an end a person asked for under 0.6
-  is kept, so the row rests until selected: it is read from the live supervisor's `ended_no_respawn` or, when none
-  lives, from the 0.6 journal (an `end_run` on the pointer's voyage whose record closed or verified, never one with
-  the retire's operation id `sot-retire-`; anything present that cannot be read rests the row, since a wrong rest is
-  undone by one selection and a wrong start cannot be undone). A retire that fails leaves the row `unreachable`,
-  retried at every start, never latched `terminal`. The boot resume retires every such row at once, each in its own
-  task, before the semaphore that bounds spawns: a retire spawns nothing, so twenty 0.6 rows cost the slowest one
-  (about 135 s worst case, a few seconds usually), plus the resume. Limits: ends are in waves of `LANE_CONCURRENCY` (a
-  close or a Cleanup boot that meets 0.6 rows ends them four at a time inside `SHUTDOWN_BOUND`; a row not ended by the
-  bound is counted not ended, stays registered and is retired at the next start); a 0.6 agent that outlives its terminal
-  (a descendant that ignores SIGHUP, 0.6's limit) is ended only on Linux, by the scope; an unregistered 0.6 folder is
-  never retired and the whole-folder sweep keeps its rules; a 0.6 session's comm commands are refused between the
-  install and its row's retire; rows of main builds from 6a to 6c-1c1 are not read; a retire retried after its own
-  `end_run` landed and its stop failed reads the rest it caused as the person's.
+  sending nothing to a peer that does not prove. A `ready` run is asked to end (`end_run` on the voyage its status
+  names; a starting or ending supervisor is waited out, 90 s for the whole wait). A supervisor resting after an end is
+  decided before it is stopped: it is the retire's own end when the 0.6 journal holds a closed or verified `end_run` on
+  that voyage with the retire's operation id (`sot-retire-`) and no other, and otherwise a person's, which is written
+  as the row's `ended` (`mark_end_requested`) before `stop`, since the live supervisor is the only witness of an end
+  that no journal holds. Then `stop` (5 s for its reply), the connection dropped, and 20 s for the process to exit,
+  else it is re-verified and terminated and given 10 s more. On Linux the row's scopes are then ended, whether or not a
+  supervisor answered: the supervisor's own, captured before it is stopped, and every one the durable `row-scopes`
+  record remembers, so a retry after a daemon's death still ends a descendant that left the process group; a scope that
+  will not empty is an error. Last, with the row socket silent, every 0.6 terminal's `writer.lock` is tried and dropped
+  at once (a held one is an error naming it, since a terminal that outlives its supervisor is 0.6's design and only
+  the person can end it), a requested end the journal holds is made durable before anything moves, and the layout moves
+  into `.retired-voyages/`. The fence is taken for that step only when `supervisor.lock` exists: a folder that holds
+  the layout and no fence file never started, and the retire never creates the start marker (it moves the layout
+  without the creating fence). An end the retire asked for is not a person's, so such a row starts fresh and resumes
+  the conversation; an end a person asked for under 0.6 is kept, so the row rests until selected: it is read from the
+  live supervisor's rest (decided before the stop, above) or, when none lives, from the 0.6 journal (a closed or
+  verified `end_run` on the pointer's voyage whose id is not the retire's; a completion entry that is present and not a
+  regular file, or anything else that cannot be read, rests the row, since a wrong rest is undone by one selection and
+  a wrong start cannot be undone). A retire that fails leaves the row `unreachable`, retried at every start, never
+  latched `terminal`. The boot resume retires every such row at once, each in its own task, before the semaphore that
+  bounds spawns: a retire spawns nothing, so twenty 0.6 rows cost the slowest one (about 135 s worst case, a few
+  seconds usually), plus the resume. Limits: ends are in waves of `LANE_CONCURRENCY` (a close or a Cleanup boot that
+  meets 0.6 rows ends them four at a time inside `SHUTDOWN_BOUND`; a row not ended by the bound is counted not ended,
+  stays registered and is retired at the next start); a descendant of a 0.6 agent that left its process group is ended
+  only on Linux by the scope, on Windows by the old ConPTY job and on macOS by the process-group hangup (0.6's own
+  limit); on macOS the retire inherits platform's residual that a kill by number may meet a reused number
+  (`challenge_macos.rs`: about 10^5 process creations between two adjacent syscalls), and nowhere promises an
+  unconditional proven-process kill there; an unregistered 0.6 folder is never retired and the whole-folder sweep keeps
+  its rules; a 0.6 session's comm commands are refused between the install and its row's retire; rows of main builds
+  from 6a to 6c-1c1 are not read; the legacy drawer's end (`end.rs`) calls the retire without the row's guard until
+  6c-2b removes the drawer.
 - No start begins once the close has begun: `Workspaces::begin_start` refuses after `close_gate_and_settle`, which waits
   for the starts already admitted (`gate.rs`).
 - A row's phase follows its current supervisor, run by run. The phase cell is written by the observer through
@@ -126,7 +137,8 @@ Supervisor:
   row creates the file: `end_run` under the row's guard (every caller holds it, and no start begins without it) reads a
   missing file as never started and takes nothing; only the state-folder sweep and retirement, which work on folders no
   registered row names (the boot resume reads registered rows only), and the 0.6 retire, which works on a folder that
-  already holds the file, take the fence with the creating API. Limit
+  holds the file, take the fence with the creating API; the retire of a folder with the 0.6 layout and no fence file
+  takes no fence, so it never creates the marker. Limit
   (Windows): the supervisor is spawned before it takes its fence (`spawn/detach.rs`), so one that exits in that window
   leaves no marker for the recheck or the boot resume.
 
@@ -155,8 +167,10 @@ Ends:
   registry, when nothing runs in it, it holds no `row-scopes` record and nothing in it was written for 24 hours; a link
   at or inside the `workspaces` folder is never followed (`state_folder.rs`).
   It also removes, in every row folder, registered or not, the `.retired-voyages/` a 0.6 retire made once its own time
-  is 24 hours old (the sweep never looks inside a registered row's folder otherwise); a failure is tried again at the
-  next start, and a link of that name is kept.
+  is 24 hours old (creating it and each move into it set the time, so the age counts from the last move; the sweep never
+  looks inside a registered row's folder otherwise). A registered row's is removed only under the row's guard (a retire
+  holds it while it fills the folder; busy is skipped until the next start) and only when no 0.6 layout name is left in
+  the row's folder; a failure is tried again at the next start, and a link of that name is kept.
 
 Work-state. A row with a joined agent has one work-state, which the window shows as the color of its name:
 

@@ -435,8 +435,8 @@ fn absence_proof(state_dir: &Path) -> Result<bool, NotProven> {
 /// that answers (the act did not run); `Err` is absence not proven. The act runs under the fence so nothing can take it
 /// between the proof and the act (a removal's rename). It takes the fence with the creating API, so it is for folders no
 /// registered row names (the state-folder sweep and retirement: the boot resume reads registered rows only, so a marker
-/// left by a retirement that failed cannot start an agent) and for a registered row's folder that already holds the
-/// marker, a 0.6 row's (`spawn::retire_06`). [`absence_proof`] is the observing form.
+/// left by a retirement that failed cannot start an agent) and for a registered row's folder that holds the
+/// marker, a 0.6 row's (`spawn::retire_06`, which takes no fence when the marker is absent). [`absence_proof`] is the observing form.
 pub(crate) fn absence_proof_then<T>(
     state_dir: &Path,
     silent: impl FnOnce(&Path) -> Result<bool, String>,
