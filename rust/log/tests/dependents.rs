@@ -6,8 +6,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-#[test]
-fn only_the_backend_the_window_and_topology_depend_on_the_capsule() {
+/// The workspace's packages, read through cargo from `rust/`.
+fn workspace_packages() -> Vec<serde_json::Value> {
     let rust = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let ran = sot_platform::test_wait::run_within(
         Command::new(env!("CARGO")).args(["metadata", "--no-deps", "--format-version", "1", "--offline"]).current_dir(&rust),
@@ -15,13 +15,26 @@ fn only_the_backend_the_window_and_topology_depend_on_the_capsule() {
     )
     .ok();
     let meta: serde_json::Value = serde_json::from_str(&ran.stdout).expect("cargo metadata is JSON");
-    let packages = meta["packages"].as_array().expect("packages");
+    meta["packages"].as_array().expect("packages").clone()
+}
+
+/// The crate is `sot-capsule`, in `rust/capsule/`, and no package is still named for the log it no longer keeps.
+#[test]
+fn the_capsule_is_sot_capsule_in_rust_capsule() {
+    let packages = workspace_packages();
+    let manifest = |p: &serde_json::Value| p["manifest_path"].as_str().unwrap_or("").replace('\\', "/");
+    let capsule = packages.iter().find(|p| p["name"] == "sot-capsule").expect("a package named sot-capsule");
+    assert!(manifest(capsule).ends_with("rust/capsule/Cargo.toml"), "sot-capsule lives in rust/capsule/: {}", manifest(capsule));
+    let old = concat!("sot-", "log");
+    assert!(packages.iter().all(|p| p["name"] != old), "a package is still named {old}");
+}
+
+#[test]
+fn only_the_backend_the_window_and_topology_depend_on_the_capsule() {
+    let packages = workspace_packages();
     let capsule = packages
         .iter()
-        .find(|p| {
-            let manifest = p["manifest_path"].as_str().unwrap_or("").replace('\\', "/");
-            manifest.ends_with("rust/log/Cargo.toml") || manifest.ends_with("rust/capsule/Cargo.toml")
-        })
+        .find(|p| p["manifest_path"].as_str().unwrap_or("").replace('\\', "/").ends_with("rust/log/Cargo.toml"))
         .expect("the capsule's package");
     let capsule_name = capsule["name"].as_str().expect("its name");
     let normal = |dep: &serde_json::Value| dep["kind"].is_null();

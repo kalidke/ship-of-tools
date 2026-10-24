@@ -248,6 +248,7 @@ fn direct_children_of(pid: u32) -> Vec<u32> {
 mod lifecycle;
 mod argv;
 mod authority;
+mod guards;
 mod one_process;
 mod spawn;
 

@@ -240,3 +240,4 @@ mod diagnostics;
 mod dial;
 mod outage;
 mod pane;
+mod relay;
