@@ -23,7 +23,8 @@ processes that serve them, and the window holds one connection to each daemon it
 What each guarantees to the rest. Sizes are `scripts/four-numbers.jl` (version 2) at a25f3c39f: product and test tokens
 (characters / 4, comments included; integration tests assigned by file), names implemented twice, and cross-subsystem
 module references (the baseline for the fourth number until each subsystem is its own crate). A pass loads the package
-page, every contract and one subsystem whole; that leaves room for about 200 thousand tokens of code and tests.
+page's paragraphs it touches, the contracts of the subsystems it edits and of those that cite them, and its own code
+and tests whole; Order of passes says how a load is counted.
 
 | subsystem | guarantees to the rest | product k | test k | twice | cross | fits |
 |---|---|---:|---:|---:|---:|---|
@@ -348,9 +349,14 @@ Work runs continuously, paced by milestones: each pass starts when the previous 
 contract gates its landing on main, not its start. Rate assumed: about 20 dollars a session hour at high effort (the
 package page: 15 minutes, 5 dollars). Each estimate is replaced by the measured figure when its pass lands. A pass
 launches only on what loads within 250 thousand tokens; a larger subsystem is split by concept or shrunk by deletion
-first, in a short pass of its own. A load counts every file the pass reads or writes, whole and once (`wc -c` / 4),
-beside the package page and the contracts (about 60k), so about 190k of code and tests. Files the pass deletes
-without reading are not counted. A plan sizes its passes the same way: the capsule plan sized all of 6c at 160k, by
+first, in a short pass of its own. A load counts every file the pass reads or writes, whole and once (`wc -c` / 4);
+a scripted edit (a rename map) counts by its reviewed diff, and the pass opens such a file only at a compiler error,
+its result file listing every file it opened. Beside its code a pass loads the package page's paragraphs it touches,
+the contracts of the subsystems it edits and the contracts that cite them, found by search and named in its brief
+(decided 2026-10-24: the package page and every contract measured about 102k at 61e5daaf2, not the 60k first
+assumed). The planner check reads that whole base and names in the brief any other contract the pass must read; the
+outside review reads whole. Passes near 180k are preferred, since those near 190k and above cost three to five times
+more. Files the pass deletes without reading are not counted. A plan sizes its passes the same way: the capsule plan sized all of 6c at 160k, by
 the parts it expected to edit, and counted whole, 6c-1 alone is about 540k. Each guarantee gets one test, red before
 the change; a pass gets one outside review
 at its end and one round for its findings; a class of breaks stops it, and the subsystem is split and run again.
