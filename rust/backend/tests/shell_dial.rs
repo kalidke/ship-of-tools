@@ -92,7 +92,7 @@ fn a_shell_request_to_a_socket_another_account_listens_on_writes_nothing() {
             r#"( . "${1%/comm/lib/comm-lib.sh}/scripts/lib/sot-daemon.sh" && sot_socket_open "$SOTD_BIN" "${2#unix:}" )"#,
         ),
     ] {
-        let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
+        let Some(foreign) = sot_platform::test_foreign::ForeignListener::start(false) else {
             return;
         };
         let script = format!(". \"$1\" || exit 1\n{line} && echo reached || echo refused\n");

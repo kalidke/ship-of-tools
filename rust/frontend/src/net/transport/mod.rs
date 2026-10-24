@@ -375,7 +375,7 @@ pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> 
 
     let owned = path.to_path_buf();
     let client =
-        tokio::task::spawn_blocking(move || sot_log::lane::connect_own::connect_own(&owned))
+        tokio::task::spawn_blocking(move || sot_platform::transport::connect_own::connect_own(&owned))
             .await
             .context("socket connect task")?
             .with_context(|| format!("connect {path:?}"))?;
@@ -398,7 +398,7 @@ pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> 
     use interprocess::os::windows::named_pipe::local_socket::tokio::Stream as PipeStream;
 
     let owned = path.to_path_buf();
-    let client = tokio::task::spawn_blocking(move || sot_log::lane::connect_own::connect_own(&owned))
+    let client = tokio::task::spawn_blocking(move || sot_platform::transport::connect_own::connect_own(&owned))
         .await
         .context("pipe connect task")?
         .with_context(|| format!("connect {path:?}"))?;

@@ -23,8 +23,8 @@
 mod row_challenge;
 
 use row_challenge::Lying;
-use sot_log::lane::connect_own::connect_own;
-use sot_log::lane::socket_unix::SocketClient;
+use sot_platform::transport::connect_own::connect_own;
+use sot_platform::transport::socket_unix::SocketClient;
 use sot_log::row::{socket_path_in, RowHelloExchange, RowRun, RowServer};
 use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
 use sot_platform::identity::challenge_macos::peer_euid_pid_created;

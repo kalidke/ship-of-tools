@@ -1,13 +1,25 @@
-//! The platform subsystem: one answer per machine fact and one primitive per OS mechanism (`CLAUDE.md` is its
-//! contract). It depends on nothing of ours; every other crate names its items by path (`sot_platform::host::...`),
+//! The platform subsystem: one answer per machine fact and one primitive per OS mechanism, the local connection and
+//! the log masking among them (`CLAUDE.md` is its contract). It depends on nothing of ours; every other crate names its items by path (`sot_platform::host::...`),
 //! and nothing re-exports them.
 
 pub mod host;
 pub mod identity;
+pub mod secret;
+pub mod transport;
+#[cfg(all(unix, feature = "native-barrier"))]
+pub mod test_barrier;
+#[cfg(feature = "test-support")]
+pub mod test_copy;
 #[cfg(feature = "test-support")]
 pub mod test_exec;
+#[cfg(all(unix, feature = "test-support"))]
+pub mod test_foreign;
 #[cfg(feature = "test-support")]
 pub mod test_isolated;
+#[cfg(feature = "test-support")]
+pub mod test_log;
+#[cfg(feature = "test-support")]
+pub mod test_scan;
 #[cfg(feature = "test-support")]
 pub mod test_wait;
 

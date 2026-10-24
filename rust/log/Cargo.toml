@@ -6,18 +6,11 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-# ADR 0041 U0 round-1, minor finding 9: gates ScriptedProbeOps (and its
-# dummy OS-object stand-ins) out of the production API. Enabled for this
-# crate's OWN unit tests via `cfg(test)` directly (see supervisor/probe/); this
-# feature is the SEPARATE path a `tests/*.rs` integration-test crate in
-# this same package needs, since those compile the library WITHOUT
-# `cfg(test)` on it. Never enabled by a normal consumer (the frontend, or
-# a future `sot-capsule` caller) unless it explicitly opts in. It also brings
-# `test_log`, `test_copy`, `test_scan`, `test_isolated`, `test_wait` and, on Unix, `test_foreign`: the way a
-# test installs a subscriber, the one way it copies a release folder, the
-# walker the source scans share, the one way it re-runs its binary, the bounded form of its wait, and a socket another
-# account listens on.
-test-support = ["dep:tracing-subscriber", "dep:tempfile", "sot-platform/test-support"]
+# Gates the capsule's own test hooks (the screen writer's) out of the production API.
+# Enabled for this crate's OWN unit tests via `cfg(test)` directly; this feature is the SEPARATE path a `tests/*.rs`
+# integration-test crate in this package needs, since those compile the library WITHOUT `cfg(test)` on it. It also
+# brings platform's test helpers (`sot_platform::test_*`). Never enabled by a normal consumer.
+test-support = ["sot-platform/test-support"]
 # Test-only phase barriers (the native launcher's child branch, the supervisor's fence claim). Never in an installed
 # build: the backend's `daemon-lifetime-faults` feature forwards it, and nothing else enables it.
 native-barrier = ["sot-platform/native-barrier"]
@@ -37,8 +30,6 @@ tokio = { workspace = true }
 # string -- this crate had no tracing dep before this. Same version the
 # rest of the workspace pins.
 tracing = { workspace = true }
-# `test_log` and secret.rs's log-writer test (feature `test-support`) use it: the subscribers' formatter.
-tracing-subscriber = { workspace = true, optional = true }
 # The live vt100 parser the unified capsule runtime keeps across the run
 # (ADR 0041 "Terminal state"). Ungated as of ADR 0043 "Decisions for LU2"
 # (L1-unix LU2a): `capsule/` is no longer
@@ -53,8 +44,6 @@ vt100-ctt = "0.17"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-# The Unix test-support listener allocates its own directory atomically.
-tempfile = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # The row socket's pipe listener, with its owner-only descriptor on every instance.
@@ -68,7 +57,7 @@ interprocess = { workspace = true }
 # calls. Plus the owned-ConPTY layer (ADR 0041 "Containment and the owned
 # ConPTY layer"): Win32_System_Console for CreatePseudoConsole/Resize/Close,
 # Win32_System_JobObjects for the anonymous containment job, Win32_System_Pipes
-# for CreatePipe. Plus the ADR 0041 step 5 pipe transport (`lane/pipe_win/`):
+# for CreatePipe. Plus the pipe transport (platform's `transport/pipe_win/`):
 # Win32_System_Pipes also for CreateNamedPipeW/ConnectNamedPipe/WaitNamedPipeW,
 # Win32_System_IO for OVERLAPPED/CancelIoEx/GetOverlappedResult — the pinned
 # cancellation mechanism a dedicated thread alone cannot provide. Same

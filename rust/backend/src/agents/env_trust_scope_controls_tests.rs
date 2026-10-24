@@ -36,7 +36,7 @@ fn scope_case(kind: &str) {
         "outside" => outside,
         _ => inside,
     };
-    let capture = sot_log::test_log::capture();
+    let capture = sot_platform::test_log::capture();
     let extra = account_spawn_env("claude", "default", &cwd, "fixture-row").unwrap();
     assert!(extra.is_empty());
     assert!(

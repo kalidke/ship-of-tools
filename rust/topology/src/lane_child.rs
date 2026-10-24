@@ -1,8 +1,8 @@
 //! The owned piped lane child: I/O diagnosis, cancellation and teardown.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use sot_log::lane::client::Client;
-use sot_log::lane::transport::TransportError;
+use sot_platform::transport::Client;
+use sot_platform::transport::TransportError;
 
 /// The `Ssh` dial's client: a spawned `ssh … sotd stdio-bridge`
 /// child whose stdin/stdout carry the lane bridge's own frames.
@@ -193,7 +193,6 @@ impl BridgedClient {
     }
 }
 
-sot_log::challengeable_client!(BridgedClient);
 
 impl Client for BridgedClient {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {

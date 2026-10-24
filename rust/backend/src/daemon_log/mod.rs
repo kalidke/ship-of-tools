@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use sot_log::secret::RedactingWriter;
+use sot_platform::secret::RedactingWriter;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
@@ -180,7 +180,7 @@ fn copies_to_stdout(file_open: bool, stdout_is_file: bool) -> bool {
 }
 
 /// The daemon's log: events at the level `filter` passes (`main` gives the `RUST_LOG` level, default `info`), each masked of page secrets
-/// (`sot_log::secret`) and written, without colour codes, through `TeeWriter` to the private file and, unless that file is
+/// (`sot_platform::secret`) and written, without colour codes, through `TeeWriter` to the private file and, unless that file is
 /// open and stdout is a regular file, to stdout.
 fn log_subscriber(filter: EnvFilter, file: Option<Arc<Mutex<LogFile>>>) -> impl tracing::Subscriber + Send + Sync {
     let stdout = copies_to_stdout(file.is_some(), stdout_is_file());

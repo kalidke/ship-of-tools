@@ -1,8 +1,8 @@
 //! PipeClient tests: cancel from another thread, concurrent submit.
 
 use super::*;
-use sot_log::lane::connect_own::connect_own;
-use sot_log::lane::transport::TransportError;
+use sot_platform::transport::connect_own::connect_own;
+use sot_platform::transport::TransportError;
 use std::sync::Arc;
 
 /// A `PipeClient::read` blocked on one thread is unblocked by `cancel()` called from another, returning

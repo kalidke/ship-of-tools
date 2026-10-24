@@ -175,7 +175,7 @@ mod unix {
                 },
             )
             .expect_err("installation failure was silently accepted");
-            let log = sot_log::test_log::capture();
+            let log = sot_platform::test_log::capture();
             tracing::error!(%error, "signal watcher installation failed");
             let observed =
                 shutdown::terminal(signal, 1, |_| {}, |code| (code, signal.is_fired(), log.text()));

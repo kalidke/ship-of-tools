@@ -8,7 +8,7 @@ fn the_window_log_masks_page_secrets() {
     let file = std::fs::File::create(&path).unwrap();
     let subscriber = log_subscriber(EnvFilter::new("trace"), move || file.try_clone().unwrap());
     let token = "0123456789abcdef0123456789abcdef";
-    let _log = sot_log::test_log::install(subscriber);
+    let _log = sot_platform::test_log::install(subscriber);
     tracing::error!(%token, "open http://127.0.0.1:1/x?secret=Ab12Cd34");
     let written = std::fs::read_to_string(&path).unwrap();
     let _ = std::fs::remove_file(&path);

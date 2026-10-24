@@ -2,14 +2,14 @@
 //! only when this OS account serves it. Unix tests pin the listener's account and the connect's retry budget; Windows
 //! tests pin the serving-process check and the connect's retry budget.
 
-use sot_log::lane::connect_own::connect_own;
-use sot_log::lane::transport::TransportError;
+use sot_platform::transport::connect_own::connect_own;
+use sot_platform::transport::TransportError;
 
 #[cfg(unix)]
 mod unix {
     use super::*;
-    use sot_log::lane::transport::CONNECT_BOUND;
-    use sot_log::test_foreign::ForeignListener;
+    use sot_platform::transport::CONNECT_BOUND;
+    use sot_platform::test_foreign::ForeignListener;
     use sot_platform::test_isolated::run_isolated;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
@@ -212,7 +212,7 @@ mod unix {
 mod windows {
     use super::*;
     use sot_platform::host::wide_null;
-    use sot_log::lane::transport::CONNECT_BOUND;
+    use sot_platform::transport::CONNECT_BOUND;
     use sot_platform::test_isolated::run_isolated;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};

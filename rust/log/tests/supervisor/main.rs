@@ -177,7 +177,6 @@ fn spawn_supervisor_with_env(state_dir: &Path, mode: &str, argv: &[&str], env: &
     cmd.arg("supervise")
         .arg(state_dir)
         .arg(mode)
-        .arg("--assume-no-rollback-target")
         .arg("--")
         .args(argv)
         // `inherit()`, not `piped()`: nothing in this file ever reads
@@ -367,8 +366,8 @@ fn a_killed_test_process_leaves_no_capsule_process() {
     assert!(gone, "the capsule outlived its killed test process (the fence was still held 5 s after the kill)");
 }
 
-/// A panicking test must leave no capsule process: not the supervisor, and not the `--survival normal` leg that
-/// outlives it by design.
+/// A panicking test must leave no capsule process: not the supervisor, and not its agent, which the guard's process
+/// group or job ends with the test process.
 #[test]
 fn a_panicking_test_leaves_no_capsule_process() {
     let _serial = serial();

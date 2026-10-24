@@ -8,7 +8,7 @@
 
 use crate::attach_client::attach::{AttachWorker, HELD_INPUT_CAP};
 pub use crate::attach_client::attach::{InputOutcome, WorkerEvent};
-use crate::lane::client::Endpoint;
+use crate::endpoint::Endpoint;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 

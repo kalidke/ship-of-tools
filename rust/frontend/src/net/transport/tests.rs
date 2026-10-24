@@ -604,11 +604,11 @@ async fn a_full_foreign_backlog_ends_connect_pipe_within_its_bound() {
     ) {
         return;
     }
-    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(true) else {
+    let Some(foreign) = sot_platform::test_foreign::ForeignListener::start(true) else {
         return;
     };
     let result = tokio::time::timeout(
-        sot_log::lane::transport::CONNECT_BOUND + std::time::Duration::from_secs(2),
+        sot_platform::transport::CONNECT_BOUND + std::time::Duration::from_secs(2),
         connect_pipe(&foreign.path),
     )
     .await
@@ -636,7 +636,7 @@ async fn connect_pipe_refuses_a_socket_another_account_listens_on() {
     ) {
         return;
     }
-    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
+    let Some(foreign) = sot_platform::test_foreign::ForeignListener::start(false) else {
         return;
     };
     let refused = match connect_pipe(&foreign.path).await {

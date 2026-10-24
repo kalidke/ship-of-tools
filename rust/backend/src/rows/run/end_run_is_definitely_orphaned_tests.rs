@@ -1,5 +1,5 @@
 use super::*;
-use sot_log::lane::transport::TransportError;
+use sot_platform::transport::TransportError;
 
 fn io_transport(kind: std::io::ErrorKind) -> sot_log::Error {
     sot_log::Error::Transport(TransportError::Io {

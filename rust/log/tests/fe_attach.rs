@@ -3,7 +3,7 @@
 //! the way the supervisor serves it. A fake main loop owns a parser and answers the requests, as the real loop does.
 
 use sot_log::attach_client::client::FeAttachClient;
-use sot_log::lane::client::PlatformEndpoint;
+use sot_log::endpoint::PlatformEndpoint;
 use sot_log::row::{row_socket_path, RowRequest, RowRun, RowServer};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -215,11 +215,11 @@ struct SlowEndpoint {
     delay: Duration,
 }
 
-impl sot_log::lane::client::Endpoint for SlowEndpoint {
-    type Client = <PlatformEndpoint as sot_log::lane::client::Endpoint>::Client;
-    type Process = <PlatformEndpoint as sot_log::lane::client::Endpoint>::Process;
+impl sot_log::endpoint::Endpoint for SlowEndpoint {
+    type Client = <PlatformEndpoint as sot_log::endpoint::Endpoint>::Client;
+    type Process = <PlatformEndpoint as sot_log::endpoint::Endpoint>::Process;
 
-    fn connect_row_unchallenged(&self, row: &str) -> Result<Self::Client, sot_log::lane::transport::TransportError> {
+    fn connect_row_unchallenged(&self, row: &str) -> Result<Self::Client, sot_platform::transport::TransportError> {
         std::thread::sleep(self.delay);
         self.inner.connect_row_unchallenged(row)
     }
@@ -240,7 +240,7 @@ impl sot_log::lane::client::Endpoint for SlowEndpoint {
 
 #[test]
 fn a_login_that_takes_twelve_seconds_still_attaches() {
-    use sot_log::lane::client::Endpoint as _;
+    use sot_log::endpoint::Endpoint as _;
     let _ = PlatformEndpoint::default().link_up();
     let row = fresh_row();
     let looped = FakeLoop::new(b"slow but there");

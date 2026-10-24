@@ -300,7 +300,7 @@ async fn default_capsule_workspace_with_no_state_dir_is_proven_orphaned_not_a_fl
 /// is_definitely_orphaned`'s refusing half, and the capsule runtime lost
 /// its platform gate in the macOS wiring lane — exactly the change
 /// this gate's predecessor said it would widen with. The socket half
-/// was never the constraint (`sot_log::lane::socket_unix` and
+/// was never the constraint (`sot_platform::transport::socket_unix` and
 /// `supervisor_client` both compile for Darwin).
 #[tokio::test]
 #[cfg(unix)]

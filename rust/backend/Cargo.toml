@@ -79,7 +79,6 @@ sot-topology = { path = "../topology", features = ["test-handshake-bound"] }
 # `test_log`, `sot_platform::test_exec::write_executable` and `test_scan::rust_sources()` (dev-only: resolver 2 keeps the feature out of builds).
 sot-platform = { path = "../platform", features = ["test-support"] }
 sot-containment = { path = "../containment", features = ["test-support"] }
-sot-log = { path = "../log", features = ["test-support"] }
 # `start_paused` test runtime (pages::site's bind-fallback test collapses the
 # 10x300ms preferred-port retry loop instead of really sleeping through it).
 tokio = { workspace = true, features = ["test-util"] }

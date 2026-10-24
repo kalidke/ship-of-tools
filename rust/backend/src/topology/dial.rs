@@ -6,7 +6,7 @@
 // this sends a plain unauthenticated `hello` (role `cli`) the same way any
 // other one-shot shell caller would.
 //
-// Deliberately NOT the supervisor lane's `sot_log::lane::client::Client` (pipe/
+// Deliberately NOT the supervisor lane's `sot_platform::transport::Client` (pipe/
 // socket challenge-auth trio): that machinery proves a CAPSULE's identity
 // for the attach protocol, a different, heavier contract this plain
 // control-socket hello has never needed.
@@ -17,7 +17,7 @@ enum Conn {
     #[cfg(unix)]
     Unix(std::os::unix::net::UnixStream),
     #[cfg(windows)]
-    Pipe(std::sync::Arc<sot_log::lane::pipe_win::PipeClient>),
+    Pipe(std::sync::Arc<sot_platform::transport::pipe_win::PipeClient>),
     /// An `ssh:` endpoint's connection IS the spawned child (C2/C3,
     /// `sot_topology::ssh_bridge`) -- there is no separate "connect" step
     /// the way a socket has one, so this variant holds the not-yet-split
@@ -29,7 +29,7 @@ enum Conn {
 /// share one `Arc<PipeClient>`; `read` and `write_all` are blocking from the caller's view and reject a concurrent
 /// same-direction submission, so the writer and the reply reader never share one slot.
 #[cfg(windows)]
-struct PipeIo(std::sync::Arc<sot_log::lane::pipe_win::PipeClient>);
+struct PipeIo(std::sync::Arc<sot_platform::transport::pipe_win::PipeClient>);
 
 #[cfg(windows)]
 impl std::io::Read for PipeIo {
@@ -200,7 +200,7 @@ fn connect(endpoint: &str, sig: &'static sot_containment::Signal) -> Result<Conn
         {
             // ADR 0049, User isolation: `connect_own` checks the listener's cached account after its fixed-budget
             // connect, before client I/O.
-            return sot_log::lane::connect_own::connect_own(std::path::Path::new(p))
+            return sot_platform::transport::connect_own::connect_own(std::path::Path::new(p))
                 .map(|client| Conn::Unix(client.into_stream()))
                 .map_err(|e| format!("{endpoint}: {e}"));
         }
@@ -215,7 +215,7 @@ fn connect(endpoint: &str, sig: &'static sot_containment::Signal) -> Result<Conn
         {
             // ADR 0049, User isolation: `connect_own` opens the pipe at identification level and checks the serving
             // process's account before a byte is written.
-            let client = sot_log::lane::connect_own::connect_own(std::path::Path::new(p))
+            let client = sot_platform::transport::connect_own::connect_own(std::path::Path::new(p))
                 .map_err(|e| format!("{endpoint}: {e}"))?;
             return Ok(Conn::Pipe(std::sync::Arc::new(client)));
         }

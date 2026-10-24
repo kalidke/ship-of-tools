@@ -14,7 +14,7 @@ fn held_book_does_not_extend_forced_delivery() {
         let _ = gate.recv_timeout(Duration::from_millis(2400));
     });
     entered.recv_timeout(Duration::from_secs(5)).unwrap();
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let start = Instant::now();
     leases.deliver_queued(LEAVE_WRITE_WAIT);
     let elapsed = start.elapsed();
@@ -59,7 +59,7 @@ fn frozen_worker_and_multiple_holders_share_one_deadline() {
     entered.recv_timeout(Duration::from_secs(5)).unwrap();
     let keep = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
     let close = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let start = Instant::now();
     leases.deliver_queued(LEAVE_WRITE_WAIT);
     let elapsed = start.elapsed();

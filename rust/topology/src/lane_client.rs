@@ -1,5 +1,5 @@
 //! ADR 0045 decision 3: `DaemonLaneEndpoint`, the attach client's own
-//! `sot_log::lane::client::Endpoint` for the lane bridge — a capsule row's
+//! `sot_log::endpoint::Endpoint` for the lane bridge — a capsule row's
 //! one socket, piped through the row's OWN daemon
 //! (`lane.connect`, `sot_protocol::ops::LANE_CONNECT`) instead of a loopback
 //! named pipe or Unix socket the platform endpoints dial directly. Lives
@@ -23,11 +23,11 @@
 //! # One bounded, cancellable dial+handshake, one stream adapter
 //!
 //! [`LaneStream`] is the ONE adapter every transport (`Unix`/`Pipe`/
-//! `Bridged`) goes through, implementing `sot_log::lane::client::Client`
+//! `Bridged`) goes through, implementing `sot_platform::transport::Client`
 //! directly — [`DaemonLaneClient`] is just `{stream: LaneStream, peer}`,
 //! delegating every `Client` call straight to `stream`. `Unix` reuses
-//! `sot_log::lane::socket_unix::SocketClient` and `Pipe` reuses `sot_log::
-//! pipe_win::PipeClient` verbatim (both already bounded, cancellable
+//! `sot_platform::transport::socket_unix::SocketClient` and `Pipe` reuses
+//! `sot_platform::transport::pipe_win::PipeClient` verbatim (both already bounded, cancellable
 //! connectors with real `cancel()`s); `Bridged` is the ssh child.
 //! [`DaemonLaneEndpoint::dial`] then runs in two ABSOLUTE-deadline phases sharing this one
 //! adapter: connect (2 s, each transport's own bounded connector — never
@@ -67,10 +67,10 @@ use lane_child::BridgedClient;
 use std::time::Instant;
 
 use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome, PeerAuthenticated, StatusFailure};
-use sot_log::lane::client::{Client, Endpoint};
+use sot_log::endpoint::Endpoint;
 use sot_platform::identity::peer::PeerIdentity;
 use sot_platform::identity::exchange::IdentityExchange;
-use sot_log::lane::transport::{TransportError, CONNECT_BOUND};
+use sot_platform::transport::{Client, TransportError, CONNECT_BOUND};
 
 use sot_protocol::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
 
@@ -108,7 +108,7 @@ pub enum LaneDial {
 ///
 /// ```no_run
 /// use sot_topology::lane_client::{DaemonLaneEndpoint, LaneDial};
-/// use sot_log::lane::client::Endpoint;
+/// use sot_log::endpoint::Endpoint;
 /// fn dial(route: LaneDial) {
 ///     let ep = DaemonLaneEndpoint::new(route, None);
 ///     let _ = ep.connect_row_unchallenged("row");
@@ -164,13 +164,12 @@ impl PeerIdentity for BridgedPeer {
 /// through.
 enum LaneStream {
     #[cfg(unix)]
-    Unix(sot_log::lane::socket_unix::SocketClient),
+    Unix(sot_platform::transport::socket_unix::SocketClient),
     #[cfg(windows)]
-    Pipe(sot_log::lane::pipe_win::PipeClient),
+    Pipe(sot_platform::transport::pipe_win::PipeClient),
     Bridged(BridgedClient),
 }
 
-sot_log::challengeable_client!(LaneStream);
 
 impl Client for LaneStream {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
@@ -210,7 +209,6 @@ pub struct DaemonLaneClient {
     peer: PeerAuthenticated,
 }
 
-sot_log::challengeable_client!(DaemonLaneClient);
 
 impl Client for DaemonLaneClient {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
@@ -335,7 +333,7 @@ fn classify_reply(frame: Frame) -> Result<(u32, u64), TransportError> {
         // `Unreachable`, never a generic `Io` a caller could charge to
         // the absence window.
         Some("dial_failed") => Err(TransportError::Unreachable(std::io::Error::other(werr.error))),
-        Some("undetermined") => Err(TransportError::Undetermined { via: "bridge", detail: werr.error }),
+        Some("undetermined") => Err(TransportError::Undetermined { detail: werr.error }),
         Some(code) => Err(TransportError::Refused { code: code.to_string(), detail: werr.error }),
         None => Err(TransportError::Refused { code: "no_bridge".to_string(), detail: werr.error }),
     }
@@ -343,7 +341,7 @@ fn classify_reply(frame: Frame) -> Result<(u32, u64), TransportError> {
 
 /// `PipeClient`/`SocketClient`/`BridgedClient`'s `write_all`/`read` are
 /// `&self` methods returning `Result<_, TransportError>`
-/// (`sot_log::lane::client::Client`'s own shape), not `std::io::{Read,
+/// (`sot_platform::transport::Client`'s own shape), not `std::io::{Read,
 /// Write}` — this is the ONE adapter that lets `write_frame_blocking`/
 /// `read_frame_blocking` drive ANY of them, so every transport speaks
 /// byte-identical framing rather than a per-transport reimplementation.
@@ -538,15 +536,15 @@ impl DaemonLaneEndpoint {
                 // User isolation). An attempt or wait in progress finishes
                 // first, including a 20 ms retry sleep; this is not an
                 // exact elapsed-time limit.
-                let client = sot_log::lane::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
+                let client = sot_platform::transport::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
                 LaneStream::Unix(client)
             }
             #[cfg(windows)]
             LaneDial::Local(path) | LaneDial::Relay(path, _) => {
-                // `connect_own`: `sot_log::lane::pipe_win`'s bounded pipe
+                // `connect_own`: `sot_platform::transport::pipe_win`'s bounded pipe
                 // connector, then the check that this OS account serves the
                 // pipe (ADR 0049, User isolation), before the first byte.
-                let client = sot_log::lane::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
+                let client = sot_platform::transport::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
                 LaneStream::Pipe(client)
             }
             LaneDial::Ssh(recipe, gate) => {

@@ -5,8 +5,9 @@ use super::proto::{
     OP_DEMOTED, OP_EXITING, OP_INPUT, OP_OUTPUT, OP_PHASE, OP_RESIZE, OP_SNAPSHOT, OP_TAKE, OP_WATCH,
 };
 use super::ROW_PROTOCOL;
-use crate::lane::client::{Client, Endpoint, PlatformEndpoint};
-use crate::lane::connect_own::connect_own;
+use crate::endpoint::{Endpoint, PlatformEndpoint};
+use sot_platform::transport::Client;
+use sot_platform::transport::connect_own::connect_own;
 use sot_platform::identity::challenge::ChallengeOutcome;
 use sot_platform::identity::deadline::run_with_deadline;
 use sot_protocol::codec::{read_frame_blocking_blob, write_frame_blocking_blob};
@@ -55,7 +56,7 @@ struct ConnReader<C>(Arc<C>);
 
 impl<C: Client> Read for ConnReader<C> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read(buf).map_err(crate::lane::client::transport_error_to_io)
+        self.0.read(buf).map_err(sot_platform::transport::transport_error_to_io)
     }
 }
 
@@ -317,8 +318,8 @@ impl<C: Client + 'static> Drop for RowClient<C> {
     }
 }
 
-fn transport(e: crate::lane::transport::TransportError) -> RowError {
-    RowError::Io(crate::lane::client::transport_error_to_io(e))
+fn transport(e: sot_platform::transport::TransportError) -> RowError {
+    RowError::Io(sot_platform::transport::transport_error_to_io(e))
 }
 
 /// A frame as an event; a reply with no request waiting is not one.

@@ -18,9 +18,10 @@ true after the merge of the leg into the supervisor.
   `<state_dir>/screen` and `<state_dir>/ended` (how the last run ended: whether an end was asked for, the producer's
   uptime and exit; `src/capsule/ended.rs`). Each run's start clears `ended`, and a reset replaces it with a record that asks for no end. The state folder holds
   nothing else of the capsule's: no segments, no blobs, no voyage folder, no pointer.
-- The transports' client half (`src/lane/`): `SocketClient` and `PipeClient`, the bounded connect they come from, the
-  client seam (`Client`, `Endpoint`) and the one local connect, `connect_own`. Every server is the row socket's: the
-  lane servers, the management lane SOM0, the supervisor lane SOSV and the attach lane SOA0 are gone (passes 6c-1a3 and
+- The endpoint seam (`src/endpoint.rs`): `Endpoint` and the two endpoints (`SocketEndpoint`, `PipeEndpoint`) that
+  resolve a row's socket path and hand back platform's client. The clients themselves, the bounded connect and
+  `connect_own` are platform's (`sot_platform::transport`, pass 6d-1). Every server is the row socket's: the lane
+  servers, the management lane SOM0, the supervisor lane SOSV and the attach lane SOA0 are gone (passes 6c-1a3 and
   6c-1b2).
 - The attach client every viewer uses (`src/attach_client/client.rs` over the worker in `attach.rs`, both on the row
   socket), and the daemon's calls on a row's supervisor (`supervisor_client.rs`, over `RowClient`).
@@ -246,8 +247,8 @@ true after the merge of the leg into the supervisor.
   killed has no code. Limits: a supervisor that fails to take over an inherited claim (a wrong or unlocked descriptor)
   also exits 70, which does not prove another live authority; and on Unix an executable that passes preflight but fails
   at exec can read as an aborted child, so 76 for a program that never started (the exec-error pipe is closed). There is
-  no storage hold and no exit 71. `--survival` and `--assume-no-rollback-target` are
-  accepted and ignored.
+  no storage hold and no exit 71. `supervise` takes the flags its usage names and no other: the three retired
+  spellings are usage errors (exit 2) before the fence is taken (`tests/supervisor/argv.rs`, which names them).
 - Only linux, macos and windows build.
 - A reply on a local connection is trusted only after the challenge in platform (`../platform/src/identity/`); the
   row hello's request and reply are `RowHelloExchange` (`src/row/proto.rs`).
@@ -256,14 +257,14 @@ true after the merge of the leg into the supervisor.
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot-capsule supervise`,
 `supervisor_client`, `FeAttachClient`, `rust/backend/src/rows/run/headless.rs`,
 `rust/frontend/src/ui/agent_pane/attach.rs`, `ended`, `screen`, `Endpoint`, `DaemonLaneEndpoint`. Uses:
-`DaemonLaneEndpoint`, `lane.connect`, `try_lock_daemon`, `preflight_volume`,
+`DaemonLaneEndpoint`, `lane.connect`, `sot_platform::transport::{Client, TransportError, connect_own}`, `try_lock_daemon`, `preflight_volume`,
 `owner_protected_pipe_descriptor`, `harden_own_stdio`, `inherit_none`, `boot_identity`, `process_created`, `IdentityExchange`, `write_durable`, `remove_durable`, `storage_exhaustion`,
 `Redial`, `STABLE`.
 
 ## Folders
 - `src/capsule/`: a run, one producer under a live parser, its screen file and its ending.
 - `src/supervisor/`: the one process of a row: the fence, the management calls and the main thread's loop.
-- `src/lane/`: transport pieces (the connect bound, the error type), the client seam and the two platform clients.
+- `src/endpoint.rs`: the endpoint seam over platform's clients (`../platform/src/transport/`).
 - `src/attach_client/`: one client for every viewer of a row, and the daemon's calls on a row's supervisor.
 - `src/row/`: the row socket: `RowServer` (acceptor and connection threads), `RowRun` (the run's fan-out and request
   queue, what the loop feeds and drains), `RowClient` (the blocking client) and the hello's payloads and exchange.
@@ -273,9 +274,10 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `../vt100/`: the project's fork of vt100-ctt, the terminal-state parser.
 
 ## Files
-- `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and brings
-  `test_log`, `test_copy`, `test_scan` and, on Unix, `test_foreign`, and turns on platform's `test_isolated` and `test_wait` (the
-  backend, frontend and updater turn it on in their dev-dependencies, and platform's own beside it).
+- `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and turns on
+  platform's (`test_log`, `test_copy`, `test_scan`, `test_isolated`, `test_wait` and, on Unix, `test_foreign`; the
+  backend, frontend, topology and updater turn platform's on in their dev-dependencies). `native-barrier` forwards
+  platform's, and the supervisor holds its barriers under it (`sot_platform::test_barrier::hold`).
 - `build.rs`: stamps the build id (`SOT_LOG_BUILD_SHA`, `sot_log::BUILD_ID`) from the full git sha, or `SOT_BUILD_ID`.
 - `tests/`: integration and whole-process tests, by target:
   - `capsule/`: `capsule::run` over a real producer or a fake one: the run to its end, `ended` and the screen file
@@ -286,28 +288,22 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
     an event), `row_management.rs` (the daemon's calls on the row socket), `fe_attach.rs` (`FeAttachClient`),
     `fe_client/` (the client against a real supervisor, and the headless client).
   - `supervisor/`: the real-process supervisor, driven over the row socket.
-  - the transports' clients, against the row acceptor: `socket_unix/` and `pipe_win/` (cancel, concurrent submit, the
-    connector's bounds and descriptor flags, an excess connection), `connect_own.rs`, and the identity challenge
-    (`challenge_unix.rs`, `challenge_macos.rs`, `pipe_win/challenge.rs`: a real `RowServer` answers the hello, and the
-    adversarial cases are the exchanges in `support/row_challenge.rs`), with `other_account.rs`,
-    `winhandle_windows.rs` and `macos_kernel_facts/`.
+  - platform's transport clients, against the row acceptor (they need a real `RowServer`, so they stay here):
+    `socket_unix/` and `pipe_win/` (cancel, concurrent submit, the connector's bounds and descriptor flags, an excess
+    connection), and the identity challenge (`challenge_unix.rs`, `challenge_macos.rs`, `pipe_win/challenge.rs`: a real
+    `RowServer` answers the hello, and the adversarial cases are the exchanges in `support/row_challenge.rs`), with
+    `macos_kernel_facts/` (which runs the `sot-capsule` binary). `connect_own.rs`, `other_account.rs` and
+    `winhandle_windows.rs` moved to `rust/platform/tests/`.
+  - `dependents.rs`: who names the capsule (rows, topology's lane client and the window's agent pane alone) and what the
+    capsule depends on (platform and wire).
   - `conpty.rs`, `isolation_guards.rs`, `test_body_fixture.rs`, and `support/` (`capsule_guard.rs`, `row_challenge.rs`).
 - `src/lib.rs`: the module tree, the `storage_exhaustion` re-export, `BUILD_ID`, `SupervisorPhase` and `Error`/`Result`.
-- `src/secret.rs`: `redact` and `RedactingWriter`, the masking of page secrets in both binaries' logs.
-- `src/test_barrier.rs`: `hold`, a named phase barrier a real process can be held at (Unix, feature `native-barrier`, which no installed build enables; inert unless `SOT_TEST_BARRIER_DIR` names a folder).
-- `src/test_copy.rs`: `copy_release_folder`, the one copy of a project folder for a test, leaving out every Julia manifest (feature `test-support`).
-- `src/test_log.rs`: timestamp-free `capture()` and formatting-preserving `install()` (feature `test-support`), with behavioral tests of the capture format, first-callsite routing, parallel isolation and guard restoration.
-- `src/test_foreign.rs`: `ForeignListener`, a socket another OS account (`nobody`) listens on, for the User isolation
-  tests, and `elevation_or_skip`, the one rule for a test that needs root: it skips only when `sudo -n true` fails (a
-  failure on CI), and every later helper failure fails the test (feature `test-support`, Unix).
-- `src/capsule/`: a run's runtime, its screen and ended files, and the producers.
+- `src/capsule/`: a run's runtime, its screen and ended files, its bounded join (`join.rs`) and the producers.
 - `src/supervisor/`: the supervisor, its fence, and `Shared`, the state its management calls and its main thread share.
-- `src/lane/`: the platform clients (`socket_unix/`, `pipe_win/`), the client seam and the error type.
+- `src/endpoint.rs`: `Endpoint`, `PlatformEndpoint`, `SocketEndpoint` and `PipeEndpoint`.
 - `src/attach_client/`: the attach client, its worker (`attach.rs`) and the daemon's calls on a row's supervisor.
 - `src/row/`: the row socket's server, run side, client and protocol types; tests `tests/row.rs`, `row_limits.rs`, `row_supervisor.rs`, `row_pipe.rs`.
-- `src/lane/connect_own.rs`: the connect that asks platform's account check.
 - `src/storage.rs`: `storage_exhaustion`, the capsule's reading of platform's storage table.
-- `src/test_scan.rs`: the source scans' one walker, `rust_sources()` (every workspace member's `src/` and `tests/`), and its production view `production_sources()` with `without_test_modules`, and `enclosing` and `is_ident` (the `fn` or `struct` a match lies in, and the identifier test at its edges) (feature `test-support`).
 - `src/bin/`: `sot-capsule` and the two test-fixture helpers.
 
 ## Start here
@@ -318,10 +314,10 @@ a run, `src/capsule/screen.rs` and `src/capsule/ended.rs` for the two files it l
 - Modules are `pub` where integration tests or other crates reach them: those see only pub items.
 - A change to a wire tag, magic or limit, or to an exit code, is an interface change with other processes and versions.
 - A fixture selects its executable on the child command. T2's actual SSH fixtures compare the parent PATH and SHELL before, during and after execution; no lexical allowlist proves environment preservation.
-- Every subscriber a test installs goes through `test_log`: `capture()` reads this thread's events without formatter timestamps or colour; `install()` preserves the supplied subscriber's formatting and timer. Behavioral tests exercise first-callsite routing, parallel captures and guard restoration; new callers use this owner. The two binaries' `main` functions install production subscribers.
 - Test-program writers use `sot_platform::test_exec::write_executable` (platform's, feature `test-support`; its Linux FIFO proof observes actual parent descriptors while the child writer is active), a copy of a built program included (`write_executable(&to, std::fs::read(&from)?)`, never `std::fs::copy`, whose writer is the test process); its separate Unix writer leaves no writable program descriptor in the test process. The retained real descriptor test proves this owner property; `std::fs::copy` is in `rust/clippy-tests/clippy.toml`'s disallowed methods, so a copy of a program is a compile error in the clippy all-targets run, and a data copy carries `#[allow(clippy::disallowed_methods, reason = ...)]` on its statement.
+- The workspace test rules for `test_log` (every subscriber a test installs goes through it) and `test_scan` (every
+  source-text scan reads through it) are platform's, with the code (`../platform/CLAUDE.md`, Rules).
 - Named test reruns use `test_isolated`; direct fixtures retain child wait/status, termination, entry and separate output observations before raising failures. Regression proofs require observed prerequisites and the selected failure's exact cause; wrong-cause controls use the same verifier. Duration/deadline APIs share one wait implementation; byte output preserves valid text and escapes invalid UTF-8. Wrapped fixtures retain launcher status and both streams, validate the native role/PID witness against exact entry, and share direct fixtures' wait/drain/finalization implementation; ordinary direct fixtures still validate their spawned child PID.
-- Every Rust source-text scan reads through `test_scan`, and none cuts a file at its first `#[cfg(test)]` (`test_scan::tests::no_scan_cuts_a_file_at_its_first_cfg_test`).
 - Helper binaries `sot-pty-helper` and `sot-conpty-helper` are test fixtures and never ship.
 - Another crate can reach the processes this crate starts (the capsule's agent) through its public items, as read on 2026-10-05: `capsule::run`, `capsule::producer::Producer::spawn`,
   `capsule::producer::conpty::ConptySpawn::spawn`, `supervisor::supervise` and, on

@@ -4,21 +4,10 @@
 
 pub mod attach_client;
 pub mod capsule;
-pub mod lane;
+pub mod endpoint;
 pub mod row;
-pub mod secret;
 pub mod storage;
 pub mod supervisor;
-#[cfg(all(unix, feature = "native-barrier"))]
-pub mod test_barrier;
-#[cfg(feature = "test-support")]
-pub mod test_log;
-#[cfg(feature = "test-support")]
-pub mod test_scan;
-#[cfg(feature = "test-support")]
-pub mod test_copy;
-#[cfg(all(unix, feature = "test-support"))]
-pub mod test_foreign;
 
 pub use storage::storage_exhaustion;
 
@@ -70,15 +59,10 @@ pub enum Error {
     #[cfg(windows)]
     #[error("conpty: {0}")]
     Conpty(#[from] capsule::producer::conpty::ConptyError),
-    /// A transport OPERATION failed — the former Windows-only `Pipe`
-    /// variant (`pipe_win::PipeError`) and Unix-only `Socket` variant
-    /// (`socket_unix::SocketError`) merged into one ungated variant (ADR
-    /// 0043 decisions 17/19: one `transport::TransportError` now serves
-    /// both platforms). A LATER, background failure on an already-bound server
-    /// (`LaneEvent::AcceptError`, the accept loop's persistent-failure
-    /// signal) never reaches this type: it arrives as an event.
+    /// A transport operation failed: platform's one `TransportError`, which serves both platforms' clients. A later,
+    /// background failure on an already-bound server never reaches this type.
     #[error("transport: {0}")]
-    Transport(#[from] lane::transport::TransportError),
+    Transport(#[from] sot_platform::transport::TransportError),
 }
 
 impl From<sot_platform::Error> for Error {

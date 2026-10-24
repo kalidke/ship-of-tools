@@ -155,7 +155,7 @@ async fn an_open_behind_a_server_still_starting_says_so_and_the_next_joins_it() 
     if !isolated(name, Duration::from_secs(60)) {
         return;
     }
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let dir = tempfile::Builder::new().prefix("sot-pluto-start-").tempdir().unwrap();
     let (stub, starts, go) = (dir.path().join("stub-julia"), dir.path().join("starts"), dir.path().join("go"));
     let said = dir.path().join("said");

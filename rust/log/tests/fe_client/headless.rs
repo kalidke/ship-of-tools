@@ -304,7 +304,7 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
     use std::os::fd::AsRawFd;
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let dir = tempfile::tempdir().unwrap();
     let fill = "i=0; while [ $i -lt 400 ]; do echo scrollback line $i; i=$((i+1)); done; exec sleep 600";
 
@@ -316,7 +316,7 @@ fn a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded() {
         let err = dir.path().join(format!("capsule-{n}.err"));
         let mut cmd = Command::new(capsule_exe());
         cmd.arg("supervise").arg(&state_dir).arg("--start").args(["--cols", "200", "--rows", "50"])
-            .arg("--assume-no-rollback-target").arg("--").args(["/bin/sh", "-c", fill])
+            .arg("--").args(["/bin/sh", "-c", fill])
             .stdout(Stdio::inherit())
             .stderr(std::fs::File::create(&err).unwrap());
         let guard = CapsuleGuard::spawn(&mut cmd);

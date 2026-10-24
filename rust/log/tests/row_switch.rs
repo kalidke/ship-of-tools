@@ -29,7 +29,6 @@ fn supervise(state_dir: &std::path::Path, runtime: &std::path::Path, agent: &[&s
         .arg("supervise")
         .arg(state_dir)
         .arg("--start")
-        .arg("--assume-no-rollback-target")
         .arg("--")
         .args(agent)
         .env("SOT_RUNTIME_DIR", runtime)

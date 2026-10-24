@@ -40,7 +40,7 @@ fn no_scan_cuts_a_file_at_its_first_cfg_test() {
     let needle = concat!("#[cfg(", "test)]", "\"");
     let hits: Vec<String> = rust_sources()
         .into_iter()
-        .filter(|(path, text)| path != "rust/log/src/test_scan.rs" && text.contains(needle))
+        .filter(|(path, text)| path != "rust/platform/src/test_scan.rs" && text.contains(needle))
         .map(|(path, _)| path)
         .collect();
     assert!(hits.is_empty(), "a scan cuts a file at its first test attribute (use test_scan::without_test_modules): {hits:?}");

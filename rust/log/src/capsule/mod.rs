@@ -25,7 +25,7 @@
 use crate::capsule::producer::{ExitStatus, Producer};
 use crate::capsule::producer::host_handshake::{self, HostHandshake};
 // The shared-deadline poll-join primitive and the pinned aggregate bound the loop's own worker joins use.
-use crate::lane::transport::{join_within, TEARDOWN_AGGREGATE_DEADLINE};
+use join::{join_within, TEARDOWN_AGGREGATE_DEADLINE};
 use crate::{Error, Result};
 use std::io::Read;
 use std::path::PathBuf;
@@ -35,6 +35,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod ended;
+mod join;
 mod output;
 pub mod producer;
 mod screen;

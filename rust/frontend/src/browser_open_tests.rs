@@ -14,7 +14,7 @@ const PAGE: &str = "http://127.0.0.1:9/0123456789abcdef0123456789abcdef?secret=s
 /// outside this check.
 #[test]
 fn the_opener_hands_its_child_no_inherited_stdio() {
-    let source = sot_log::test_scan::without_test_modules(include_str!("browser_open.rs"));
+    let source = sot_platform::test_scan::without_test_modules(include_str!("browser_open.rs"));
     let mut lines = source.lines().skip_while(|l| !l.starts_with("pub fn spawn_opener("));
     let mut body = String::new();
     for line in lines.by_ref() {

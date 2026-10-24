@@ -1,5 +1,5 @@
 //! The Windows named-pipe transport's client half: [`PipeClient`], the bounded connect it comes from, and its
-//! `Client`/`Endpoint` impls. The server half is the row socket's (`crate::row`). It moves bytes; every frame shape is
+//! `Client` impl. Every server is its owner's (the row socket). It moves bytes; every frame shape is
 //! the row socket's.
 //!
 //! # The I/O slot: one state machine, every direction
@@ -29,9 +29,8 @@
 
 #![cfg(windows)]
 
-use crate::lane::client::{Client, Endpoint};
-use crate::lane::transport::{TransportError, CONNECT_BOUND};
-use sot_platform::host::wide_null;
+use super::{Client, TransportError, CONNECT_BOUND};
+use crate::host::wide_null;
 use std::cell::UnsafeCell;
 use std::os::windows::io::{FromRawHandle, OwnedHandle, RawHandle};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,5 +65,5 @@ mod client;
 mod slot;
 
 pub(crate) use client::connect_pipe_path_unchallenged;
-pub use client::{PipeClient, PipeEndpoint};
+pub use client::PipeClient;
 use slot::*;

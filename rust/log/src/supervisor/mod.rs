@@ -79,10 +79,10 @@ pub struct SuperviseConfig {
     pub producer_argv: Vec<String>,
     pub cols: u16,
     pub rows: u16,
-    /// Tokens (`--first-leg-only <token>`) kept in `producer_argv` until an agent has started in this process and
+    /// Tokens (`--first-run-only <token>`) kept in `producer_argv` until an agent has started in this process and
     /// stripped from every run after: the daemon passes a reauth's `--resume <id>` this way, so only the reauth's own
     /// run resumes by id. This module knows nothing about the agent or `--resume`.
-    pub first_leg_only: Vec<String>,
+    pub first_run_only: Vec<String>,
     /// The fence claim this supervisor was born holding, and the channel it answers on once the claim is its own
     /// (`--claim-fd`, `--takeover-fd`). `None` for a supervisor nobody claimed for: it takes the fence itself.
     #[cfg(unix)]
@@ -121,7 +121,7 @@ fn take_authority(config: &SuperviseConfig) -> crate::Result<Fence> {
     if let Some(birth) = config.birth {
         let claim = birth_claim::BirthClaim::adopt(birth.claim_fd, &config.state_dir)?;
         #[cfg(feature = "native-barrier")]
-        crate::test_barrier::hold("claim_adopted");
+        sot_platform::test_barrier::hold("claim_adopted");
         let (pid, created) = authority::self_pid_and_created().unwrap_or((0, 0));
         // The acknowledgement is the parent's bookkeeping: a parent that is gone has nothing to be told, and one that
         // missed it keeps its own copy of the claim until this process ends. The claim is this supervisor's either way.
@@ -144,7 +144,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     }
 
     #[cfg(all(unix, feature = "native-barrier"))]
-    crate::test_barrier::hold("pre_fence");
+    sot_platform::test_barrier::hold("pre_fence");
 
     let _fence = match take_authority(&config) {
         Ok(f) => f,
@@ -464,11 +464,11 @@ fn run_agent(config: &SuperviseConfig, shared: &Shared, row: &Arc<RowRun>, agent
     }
 }
 
-/// The agent's argv for the next run: `first_leg_only` tokens stay while no agent has started in this process (so a
+/// The agent's argv for the next run: `first_run_only` tokens stay while no agent has started in this process (so a
 /// first run that failed before running anything is retried with them) and go from every run after.
 fn agent_argv(config: &SuperviseConfig, agent_ran: bool) -> Vec<String> {
     if agent_ran {
-        config.producer_argv.iter().filter(|a| !config.first_leg_only.contains(a)).cloned().collect()
+        config.producer_argv.iter().filter(|a| !config.first_run_only.contains(a)).cloned().collect()
     } else {
         config.producer_argv.clone()
     }

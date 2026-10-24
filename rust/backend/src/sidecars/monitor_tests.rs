@@ -374,7 +374,7 @@
     /// appends a line to `starts`; the first writes its pid, which `exec` keeps for the sleep. Returns what was logged.
     #[cfg(unix)]
     async fn a_silent_sampler_is_restarted_after(name: &str, script: &str) -> String {
-        let log = sot_log::test_log::capture();
+        let log = sot_platform::test_log::capture();
         let dir = tempfile::tempdir().unwrap();
         let stub = dir.path().join("sampler");
         let starts = dir.path().join("starts");

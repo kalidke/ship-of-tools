@@ -686,7 +686,6 @@ fn an_agent_that_does_not_ignore_sighup_dies_with_its_killed_supervisor() {
         .arg("supervise")
         .arg(&state_dir)
         .arg("--start")
-        .arg("--assume-no-rollback-target")
         .arg("--")
         .args(["/bin/sh", "-c", script.as_str()])
         .env("SOT_RUNTIME_DIR", tmp.path())

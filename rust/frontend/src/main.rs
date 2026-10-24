@@ -20,7 +20,7 @@ mod ui;
 use std::sync::mpsc;
 
 use anyhow::Result;
-use sot_log::secret::RedactingWriter;
+use sot_platform::secret::RedactingWriter;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -52,7 +52,7 @@ fn set_app_user_model_id() {
 }
 
 /// The window's log: events at the level `filter` passes (`main` gives the `RUST_LOG` level, default `info`), each masked of page secrets
-/// (`sot_log::secret`) and written, without colour codes, to a writer from `make`.
+/// (`sot_platform::secret`) and written, without colour codes, to a writer from `make`.
 fn log_subscriber<W: std::io::Write + 'static>(
     filter: EnvFilter,
     make: impl Fn() -> W + Send + Sync + 'static,

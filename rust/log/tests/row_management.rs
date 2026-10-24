@@ -51,7 +51,6 @@ fn supervisor_running(runtime: &Path, state_dir: &Path, env: &[(&str, &str)], sc
     cmd.arg("supervise")
         .arg(state_dir)
         .arg("--start")
-        .arg("--assume-no-rollback-target")
         .arg("--")
         .args(["/bin/sh", "-c", script])
         .env("SOT_RUNTIME_DIR", runtime)

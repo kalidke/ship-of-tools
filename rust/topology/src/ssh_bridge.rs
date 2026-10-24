@@ -163,7 +163,7 @@ fn keep_no_descriptor(cmd: &mut std::process::Command) {
 }
 
 /// Spawn the child for a synchronous caller — the lane client, which
-/// implements `sot_log::lane::client::Client`'s blocking `&self` methods and so
+/// implements `sot_platform::transport::Client`'s blocking `&self` methods and so
 /// cannot hold a tokio `Child`.
 fn spawn_sync(mut command: std::process::Command) -> std::io::Result<std::process::Child> {
     #[allow(clippy::disallowed_methods, reason = "the window's and the lane client's ssh; the daemon starts ssh only through LinkGate::command and lifecycle's containment")]

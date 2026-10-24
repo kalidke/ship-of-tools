@@ -10,7 +10,7 @@ use super::proto::{
 };
 use super::run::{code_of, ConnId, Out, OutQueue, RowRun, Slot};
 use super::ROW_PROTOCOL;
-use crate::lane::accept_policy::{accept_policy, AcceptAction, ACCEPT_SLEEP};
+use sot_platform::transport::accept_policy::{accept_policy, AcceptAction, ACCEPT_SLEEP};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use sot_protocol::codec::{read_frame_blocking, read_frame_blocking_blob, write_frame_blocking_blob};

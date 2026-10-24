@@ -28,7 +28,7 @@ pub fn repo_file(rel: &str) -> PathBuf {
 pub fn pluto_resource_root(case: &Path, julia: &str) -> PathBuf {
     let root = case.join("resources");
     let dir = root.join("julia").join("pluto");
-    sot_log::test_copy::copy_release_folder(&repo_file("julia/pluto"), &dir);
+    sot_platform::test_copy::copy_release_folder(&repo_file("julia/pluto"), &dir);
     let options = std::fs::read_to_string(repo_file("julia/pluto/session_options.jl"))
         .expect("read session_options.jl");
     let marker = "    session.options.evaluation.workspace_use_distributed_stdlib = true\n";

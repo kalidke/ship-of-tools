@@ -170,7 +170,7 @@ No page address goes on a command line, where another account could read
 it. The frontend hands the browser only the address of a one-use loopback
 listener of its own. That listener serves this account alone, answers the
 browser's first request with a redirect to the page, and then closes. Log
-files mask page secrets (`sot_log::secret`), and a `BrowserView` displays
+files mask page secrets (`sot_platform::secret`), and a `BrowserView` displays
 only a page's host and port. The logs and the screen are this account's own;
 the channels another account can read are command lines and ports, and
 neither carries a page secret.

@@ -205,7 +205,7 @@ fn a_start_probe_of_a_full_backlog_returns_within_the_bound_and_refuses() {
             socket_answers(&probe_path),
         ));
     });
-    let bound = sot_log::lane::transport::CONNECT_BOUND * 2 + std::time::Duration::from_secs(3);
+    let bound = sot_platform::transport::CONNECT_BOUND * 2 + std::time::Duration::from_secs(3);
     let (refusal, answers) = rx
         .recv_timeout(bound)
         .expect("a start probe did not return within its bound");

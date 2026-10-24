@@ -11,7 +11,7 @@
 // `URL` already carries `?secret=...` — Julia holds `session.secret` and
 // builds the full URL itself. This supervisor relays that URL in the
 // `pluto.open` reply and never logs it; the log writer masks any secret
-// (`sot_log::secret`).
+// (`sot_platform::secret`).
 //
 // Same lazy-respawn shape as mathjax.rs: on child death the
 // supervisor drops the submission channel; the next caller respawns.

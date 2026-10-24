@@ -36,7 +36,7 @@ fn redraw_exit_table() {
 }
 #[test]
 fn quit_transitions_log_only_finite_fields() {
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let mut prompt = None;
     open_quit_prompt(&mut prompt, false);
     let _ = quit_prompt_step(false, &Key::Character("typed-fixture-text".into()), false, false);

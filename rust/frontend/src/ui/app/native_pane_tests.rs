@@ -208,7 +208,7 @@ fn verdict(kind: RouteKind, runs: &[ChildRun]) -> Result<()> {
     }
     let mut totals: Vec<u128> = ready.iter().map(|r| r.1).collect();
     totals.sort_unstable();
-    let bound = sot_log::lane::transport::CONNECT_BOUND.as_nanos();
+    let bound = sot_platform::transport::CONNECT_BOUND.as_nanos();
     let ok = totals.iter().all(|t| *t <= bound);
     println!(
         "pane-timing route={route} ready_pane_total_fits_connect_bound samples=12 max_ms={} p50_ms={} ok={ok}",
@@ -267,7 +267,7 @@ struct Seen {
 
 struct PaneDriver<'a> {
     app: &'a mut App,
-    capture: &'a sot_log::test_log::Capture,
+    capture: &'a sot_platform::test_log::Capture,
     role: String,
     plan: Vec<Plan>,
     idx: usize,
@@ -529,7 +529,7 @@ fn child(role: &str, scenario_path: &std::path::Path) -> Result<()> {
         let _ = std::fs::remove_dir_all(&root);
         std::process::exit(70);
     });
-    let capture = sot_log::test_log::capture();
+    let capture = sot_platform::test_log::capture();
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let message = info.to_string();

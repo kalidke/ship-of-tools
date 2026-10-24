@@ -25,9 +25,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use sot_platform::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
-use sot_log::lane::client::{Endpoint, PlatformEndpoint};
+use sot_log::endpoint::{Endpoint, PlatformEndpoint};
 use sot_platform::host::state_dir::state_dir_hash;
-use sot_log::lane::transport::TransportError;
+use sot_platform::transport::TransportError;
 use sot_protocol::{codec, op, Frame, LaneConnectReq};
 use tokio::io::{AsyncBufRead, AsyncWrite};
 
@@ -240,7 +240,7 @@ where
 /// alias picks it for Linux and macOS alike), and a Unix stream adopted
 /// from a raw fd is the same operation on both.
 #[cfg(unix)]
-async fn pipe_upstream<R, W>(rx: R, tx: W, conn: sot_log::lane::socket_unix::SocketClient, what: &str) -> Result<()>
+async fn pipe_upstream<R, W>(rx: R, tx: W, conn: sot_platform::transport::socket_unix::SocketClient, what: &str) -> Result<()>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -258,7 +258,7 @@ where
 /// a named pipe opened for overlapped I/O, which it is here by
 /// construction.
 #[cfg(windows)]
-async fn pipe_upstream<R, W>(rx: R, tx: W, conn: sot_log::lane::pipe_win::PipeClient, what: &str) -> Result<()>
+async fn pipe_upstream<R, W>(rx: R, tx: W, conn: sot_platform::transport::pipe_win::PipeClient, what: &str) -> Result<()>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,

@@ -7,8 +7,8 @@
 //! The dial checks the row number the hello carries and never the frames' wire integer, so a daemon update never
 //! strands a live row: a row of another row number is [`crate::Error::VersionSkew`], which rows reads as `foreign`.
 
-use crate::lane::client::{Endpoint, PlatformEndpoint};
-use crate::lane::connect_own::connect_own;
+use crate::endpoint::{Endpoint, PlatformEndpoint};
+use sot_platform::transport::connect_own::connect_own;
 use crate::SupervisorPhase;
 use crate::row::{
     row_socket_path, EndRunOutcome as RowEndRun, EndRunRes, ResetOutcome, ResetRes, RowCanceler, RowClient, RowError, RowEvent,

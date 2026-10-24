@@ -128,7 +128,7 @@ jobs:
           workspaces: rust
           shared-key: test-windows-latest
       # The vendored vt100 crate is excluded: it denies clippy::all in its own source, which beats -A on the command
-      # line. CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_log::test_wait (docs/ownership.md).
+      # line. CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_platform::test_wait (docs/ownership.md).
       - name: Test children
         env:
           CLIPPY_CONF_DIR: "${{ github.workspace }}/rust/clippy-tests"

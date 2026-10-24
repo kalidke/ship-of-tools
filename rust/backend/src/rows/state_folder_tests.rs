@@ -89,7 +89,7 @@ fn a_close_of_an_absent_folder_does_nothing() {
 fn a_close_that_keeps_the_folder_logs_why_at_info() {
     let (root, folder) = root_with(ID);
     let held = sot_log::supervisor::journal::fence::lock_supervisor(&folder).unwrap();
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     close_row_folder(root.path(), ID);
     let text = log.text();
     assert!(text.contains(" INFO ") && text.contains("was kept") && text.contains("supervisor.lock is held"), "{text}");
@@ -168,7 +168,7 @@ fn the_sweep_removes_tombstones_without_a_registry_and_keeps_a_registered_row() 
     ws.workspace_id = "ws-live-1".to_string();
     reg.insert(ws);
     let unreadable: Result<HashSet<String>, String> = Err("a registry did not read".into());
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let left = sweep_with(root.path(), &reg, &unreadable, later());
     assert!(left.is_empty(), "{left:?}");
     assert!(!tomb.exists(), "a tombstone goes with no registry read");
@@ -273,7 +273,7 @@ fn a_failure_in_one_folder_logs_and_the_sweep_goes_on() {
     let second = tombstone_of(&root, "ws-zzz-2");
     std::fs::create_dir_all(&second).unwrap();
     let _blocked = block_removal(&first.join("inner"));
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let left = sweep_with(root.path(), &Workspaces::new(), &none_named(), later());
     let text = log.text();
     assert_eq!(left, vec![".closed-ws-aaa-1".to_string()]);
@@ -458,7 +458,7 @@ fn an_unreadable_registry_folder_removes_no_folder() {
     let (_id, folder, toml) = registered_row();
     let dir = toml.parent().unwrap().to_path_buf();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     start(&Workspaces::new());
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(folder.is_dir(), "a registry read failure removes nothing");

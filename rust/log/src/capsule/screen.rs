@@ -140,7 +140,7 @@ impl ScreenFile {
         self.shared.wake.notify_all();
         if let Some(thread) = self.thread.take() {
             // A writer still stalled at the bound is left behind: the leg's end never waits on a disk.
-            crate::lane::transport::join_within(thread, Instant::now() + bound);
+            crate::capsule::join::join_within(thread, Instant::now() + bound);
         }
     }
 

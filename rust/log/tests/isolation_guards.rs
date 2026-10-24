@@ -14,11 +14,11 @@ const OPENER_LITERALS: [&str; 8] = [
 const OPENER_HOME: &str = "rust/frontend/src/browser_open.rs";
 
 /// Every line of the production source, as `(repo-relative path, line number, text)`: the workspace's one
-/// definition, `sot_log::test_scan::production_sources()`, which leaves out test files, test modules and comment
+/// definition, `sot_platform::test_scan::production_sources()`, which leaves out test files, test modules and comment
 /// lines. Empty lines are skipped.
 fn production_source() -> Vec<(String, usize, String)> {
     let mut out = Vec::new();
-    for (rel, text) in sot_log::test_scan::production_sources() {
+    for (rel, text) in sot_platform::test_scan::production_sources() {
         for (n, line) in text.lines().enumerate() {
             if !line.trim().is_empty() {
                 out.push((rel.clone(), n + 1, line.to_string()));

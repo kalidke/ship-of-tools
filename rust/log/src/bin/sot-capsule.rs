@@ -1,7 +1,7 @@
-//! `sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] [--rows <n>] [--first-leg-only <token>]...
+//! `sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] [--rows <n>] [--first-run-only <token>]...
 //! [--claim-fd <n> --takeover-fd <n>] -- <cmd> [args...]`: the one process of a row (`sot_log::supervisor`). It runs
-//! the agent on a real terminal and serves the row until the agent ends or a `stop` arrives. `--survival` and
-//! `--assume-no-rollback-target` are accepted and ignored.
+//! the agent on a real terminal and serves the row until the agent ends or a `stop` arrives. A flag not listed is a
+//! usage error (exit 2), the three retired spellings included (`tests/supervisor/argv.rs` names them).
 
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn main() {
@@ -54,15 +54,14 @@ fn birth_from_flags(claim_fd: Option<i32>, takeover_fd: Option<i32>, usage: &str
     None
 }
 
-/// `sot-capsule supervise`: the argv grammar (the daemon's detach builds it; `--survival` and
-/// `--assume-no-rollback-target` are accepted and ignored). `--first-leg-only` is repeatable and agent-agnostic: this
+/// `sot-capsule supervise`: the argv grammar (the daemon's detach builds it). `--first-run-only` is repeatable and agent-agnostic: this
 /// binary knows nothing about `claude` or `--resume`, only that the caller wants a given token on the first run and on
-/// none after; see `SuperviseConfig::first_leg_only`.
+/// none after; see `SuperviseConfig::first_run_only`.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn cmd_supervise(args: &[String]) {
     let usage = "usage: sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
-[--rows <n>] [--survival <normal|degraded>] [--first-leg-only <token>]... \
-[--claim-fd <n> --takeover-fd <n>] --assume-no-rollback-target -- <cmd> [args...]";
+[--rows <n>] [--first-run-only <token>]... \
+[--claim-fd <n> --takeover-fd <n>] -- <cmd> [args...]";
     if args.len() < 3 {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -79,7 +78,7 @@ fn cmd_supervise(args: &[String]) {
     let mut rest = &args[2..];
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
-    let mut first_leg_only: Vec<String> = Vec::new();
+    let mut first_run_only: Vec<String> = Vec::new();
     // The claim a spawning parent took on the fence for this birth, and the channel to answer it on (Unix).
     let mut claim_fd: Option<i32> = None;
     let mut takeover_fd: Option<i32> = None;
@@ -107,17 +106,9 @@ fn cmd_supervise(args: &[String]) {
                 });
                 rest = &rest[2..];
             }
-            // Accepted and ignored: the spawner's breakaway outcome is not reported by this supervisor.
-            Some("--survival") if rest.len() > 1 => {
+            Some("--first-run-only") if rest.len() > 1 => {
+                first_run_only.push(rest[1].clone());
                 rest = &rest[2..];
-            }
-            Some("--first-leg-only") if rest.len() > 1 => {
-                first_leg_only.push(rest[1].clone());
-                rest = &rest[2..];
-            }
-            // Accepted and ignored: the rollout gate it answered is gone.
-            Some("--assume-no-rollback-target") => {
-                rest = &rest[1..];
             }
             _ => break,
         }
@@ -134,7 +125,7 @@ fn cmd_supervise(args: &[String]) {
         producer_argv,
         cols,
         rows,
-        first_leg_only,
+        first_run_only,
         #[cfg(unix)]
         birth,
     };

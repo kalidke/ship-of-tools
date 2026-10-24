@@ -2,7 +2,7 @@
 //! retry, an excess connection at capacity.
 
 use super::*;
-use sot_log::lane::connect_own::connect_own;
+use sot_platform::transport::connect_own::connect_own;
 use sot_log::row::RowClient;
 
 /// A `SocketClient::read` blocked on one thread is unblocked by `cancel()` called from another, returning

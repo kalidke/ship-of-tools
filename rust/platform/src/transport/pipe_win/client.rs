@@ -1,4 +1,4 @@
-//! The pipe client: `PipeClient`, the unchallenged connect `connect_own` builds on, and `PipeEndpoint`.
+//! The pipe client: `PipeClient` and the unchallenged connect `connect_own` builds on.
 
 use super::*;
 
@@ -95,23 +95,13 @@ pub(super) fn connect_named_pipe_unchallenged(name: Vec<u16>, cancel: &AtomicBoo
     }
 }
 
-/// ADR 0045 decision 3: the lane bridge dials a pipe PATH handed to it on the wire (`LaneDial::Local`
-/// carries whatever path the daemon's `lane.connect` reply implies),
-/// never a name this crate derives from a voyage id or a state-dir hash
-/// itself — so this is the raw connect by an arbitrary caller-supplied
-/// path, wide-encoded and handed to the SAME bounded-retry connect every
-/// other named-pipe client gets, never a parallel implementation. Crate-
-/// private like every sibling raw connect above: other crates
-/// (`sot-protocol`'s `DaemonLaneEndpoint`, `sotd stdio-bridge`) reach a pipe
-/// by name only through `identity::connect_own::connect_own`, which checks
-/// who serves it (ADR 0049, User isolation). NO authentication, exactly like
-/// [`connect_named_pipe_unchallenged`] itself — the lane bridge's own
-/// identity proof is decision 3's split (the daemon ran steps 1-3 on ITS
-/// dial; this client runs steps 4-5 over the pipe this returns). `cancel`
-/// is threaded straight through to [`connect_named_pipe_unchallenged`]'s
-/// own bounded poll loop — see that function's own doc for why a checked
-/// flag between its already-bounded waits is the only mid-dial
-/// cancellation a synchronous `CreateFileW`/`WaitNamedPipeW` pair admits.
+/// The raw connect by an arbitrary caller-supplied path, wide-encoded and handed to the same bounded-retry connect every
+/// named-pipe client gets, never a parallel implementation. Crate-private like [`connect_named_pipe_unchallenged`]:
+/// every other crate reaches a pipe by name only through [`connect_own`](super::connect_own::connect_own), which checks
+/// who serves it (ADR 0049, User isolation). NO authentication, exactly like [`connect_named_pipe_unchallenged`]
+/// itself. `cancel` is threaded straight through to its bounded poll loop, whose doc says why a checked flag between
+/// its already-bounded waits is the only mid-dial cancellation a synchronous `CreateFileW`/`WaitNamedPipeW` pair
+/// admits.
 pub(crate) fn connect_pipe_path_unchallenged(path: &str, cancel: &AtomicBool) -> Result<PipeClient, TransportError> {
     #[allow(clippy::disallowed_methods, reason = "the connector connect_own wraps")]
     let client = connect_named_pipe_unchallenged(wide_null(path), cancel)?;
@@ -231,9 +221,8 @@ impl PipeClient {
         self.write_slot.cancel(self.raw.0);
     }
 
-    /// ADR 0045 decision 2 (the daemon-side lane bridge): hand the raw
-    /// pipe handle off to a caller that will pipe raw bytes on its own
-    /// runtime — the client's cancel contract ends here. Moves `handle`
+    /// Hands the raw pipe handle off to a caller that will pipe raw bytes on its own
+    /// runtime (the daemon's lane bridge); the client's cancel contract ends here. Moves `handle`
     /// out (opened `FILE_FLAG_OVERLAPPED` above, so it is valid for a
     /// Tokio named-pipe client to adopt); `raw`/the two `IoSlot`s simply
     /// drop — there is no manual `Drop` on this type, so nothing else
@@ -242,16 +231,6 @@ impl PipeClient {
         self.handle
     }
 }
-
-// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
-// client implements — `write_all`/`read`/`cancel` already have this
-// exact signature (modulo the error type, unified by decision 17), so
-// this is pure delegation. The blanket `impl<C: Client>
-// ChallengeableConnection for C` in `crate::lane::client` is what makes
-// `PipeClient` challengeable now — the hand-written façade this impl
-// used to be (`pipe_error_to_io`, its own `TransportError -> io::Error`
-// mapping) is gone; `crate::lane::client`'s ONE mapping replaces it.
-crate::challengeable_client!(PipeClient);
 
 impl Client for PipeClient {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
@@ -269,49 +248,10 @@ impl Client for PipeClient {
 
 /// L1-unix LU1a: the Windows-shaped extension half of the same-connection
 /// challenge — see `challenge_win.rs`'s own doc for why this is a separate
-/// trait from [`sot_platform::identity::challenge::ChallengeableConnection`] above.
-impl sot_platform::identity::challenge_win::PipeChallengeable for PipeClient {
+/// trait from [`crate::identity::challenge::ChallengeableConnection`] above.
+impl crate::identity::challenge_win::PipeChallengeable for PipeClient {
     fn raw_handle(&self) -> HANDLE {
         self.raw.0
-    }
-}
-
-/// L1-unix LU3a (ADR 0043 decision 19): the Windows `Endpoint` — a unit
-/// struct (the concrete pipe/socket family is the type itself, not a
-/// value any instance carries) delegating straight to the free functions
-/// this module already exposes.
-#[derive(Clone, Copy, Default)]
-pub struct PipeEndpoint;
-
-/// A row socket path that could not be made, as the lane's own error.
-fn row_error_to_transport(e: crate::row::RowError) -> TransportError {
-    match e {
-        crate::row::RowError::PathTooLong(path) => TransportError::PathTooLong(path),
-        crate::row::RowError::Io(source) => TransportError::RuntimeDir(source),
-        other => TransportError::RuntimeDir(std::io::Error::other(other)),
-    }
-}
-
-impl Endpoint for PipeEndpoint {
-    type Client = PipeClient;
-    type Process = sot_platform::identity::challenge_win::ChallengedProcess;
-
-    fn connect_row_unchallenged(&self, row: &str) -> Result<Self::Client, TransportError> {
-        let path = crate::row::row_socket_path(row).map_err(row_error_to_transport)?;
-        crate::lane::connect_own::connect_own(&path)
-    }
-
-    fn challenge(
-        &self,
-        conn: &Self::Client,
-        exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
-        reply_deadline: Instant,
-    ) -> sot_platform::identity::challenge::ChallengeOutcome<Self::Process> {
-        sot_platform::identity::challenge_win::challenge(conn, exchange, reply_deadline)
-    }
-
-    fn authenticate_server(&self, conn: &Self::Client) -> sot_platform::identity::challenge::PeerAuthOutcome {
-        sot_platform::identity::challenge_win::authenticate_server(conn)
     }
 }
 

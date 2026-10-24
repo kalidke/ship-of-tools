@@ -206,7 +206,7 @@ async fn a_run_behind_a_repl_still_starting_says_so() {
     if !isolated("sidecars::repl::execute::tests::a_run_behind_a_repl_still_starting_says_so", Duration::from_secs(60)) {
         return;
     }
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let dir = scratch_dir();
     let resources = dir.join("resources");
     std::fs::create_dir_all(resources.join("julia").join("repl")).unwrap();

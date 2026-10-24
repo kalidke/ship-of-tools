@@ -17,8 +17,8 @@
 //! state folder's hash. The frozen bytes are the two fixtures beside this file.
 
 use crate::rows::run::end_run::{absence_proof_then, row_socket_silent, NotProven};
-use sot_log::lane::client::{Endpoint, PlatformEndpoint};
-use sot_log::lane::connect_own::connect_own;
+use sot_log::endpoint::{Endpoint, PlatformEndpoint};
+use sot_platform::transport::connect_own::connect_own;
 use sot_platform::identity::challenge::ChallengeOutcome;
 use sot_platform::identity::deadline::run_with_deadline;
 use sot_platform::identity::exchange::{ExchangeDecode, IdentityExchange};

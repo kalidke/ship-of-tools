@@ -146,7 +146,7 @@ async fn dropping_the_handle_during_a_start_ends_the_child() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_pluto_that_fails_its_boot_logs_its_stderr_at_warn() {
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let dir = tempfile::tempdir().unwrap();
     let stub = dir.path().join("stub-julia");
     sot_platform::test_exec::write_executable(&stub, "#!/bin/sh\necho 'ERROR: LoadError: (pluto-boot-red)' >&2\nexit 1\n");

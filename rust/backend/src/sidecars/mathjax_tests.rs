@@ -7,7 +7,7 @@ use super::*;
 async fn a_mathjax_child_that_fails_its_start_logs_its_stderr_at_warn() {
     use crate::sidecars::contract_tests::within;
     use std::time::Duration;
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("render.sh");
     std::fs::write(&script, "echo 'Error: Cannot find module (mathjax-boot-red)' >&2\nexit 1\n").unwrap();

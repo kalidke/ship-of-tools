@@ -36,7 +36,7 @@ async fn a_kernel_reply_holding_an_invalid_byte_keeps_its_generation() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_kernel_that_fails_its_start_logs_its_stderr_at_warn() {
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let dir = tempfile::tempdir().unwrap();
     let (project, _) = stub_kernel(dir.path(), "kp", "echo 'ERROR: LoadError: (kernel-boot-red)' >&2\nexit 1\n");
     let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));

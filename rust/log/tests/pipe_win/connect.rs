@@ -2,8 +2,8 @@
 //! is refused by the row pipe.
 
 use super::*;
-use sot_log::lane::connect_own::connect_own;
-use sot_log::lane::transport::{TransportError, CONNECT_BOUND};
+use sot_platform::transport::connect_own::connect_own;
+use sot_platform::transport::{TransportError, CONNECT_BOUND};
 
 /// ADR 0043 decision 27: an ABSENT pipe, with no instance created for this name, fails the connect on the FIRST
 /// `CreateFileW` attempt with `ERROR_FILE_NOT_FOUND`, never retried within [`CONNECT_BOUND`]: absence is the caller's

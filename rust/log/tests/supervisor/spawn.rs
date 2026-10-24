@@ -1,9 +1,9 @@
-//! Supervisor start tests: start readiness, the identity it reports, first_leg_only, the watch, exit codes.
+//! Supervisor start tests: start readiness, the identity it reports, first_run_only, the watch, exit codes.
 
 use super::*;
 
 /// ADR 0043 decision 27/30: with the InitialProbe's connect no longer
-/// paying the full [`sot_log::lane::transport::CONNECT_BOUND`] on an absent
+/// paying the full [`sot_platform::transport::CONNECT_BOUND`] on an absent
 /// run's pipe (it fails fast on `ENOENT`/`ECONNREFUSED` now, retried
 /// only at [`sot_log::supervisor`]'s own 250ms `ATTEMPT_INTERVAL`), a
 /// fresh `--start` should reach `Ready` in the two seconds the agent
@@ -283,13 +283,13 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// `--first-leg-only <token>` keeps the token on the first run this supervisor process starts and strips it from every
+/// `--first-run-only <token>` keeps the token on the first run this supervisor process starts and strips it from every
 /// run after an agent has run: the daemon passes a reauth's `--resume <id>` this way, so only the reauth's own run
 /// resumes by id. The agent appends its own argv to a file and sleeps, so each run's own line is unambiguous; the run
 /// is ended after Ready and reset, for a fast second run.
 #[cfg(target_os = "linux")]
 #[test]
-fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_ran() {
+fn first_run_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_ran() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -306,9 +306,8 @@ fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_
     cmd.arg("supervise")
         .arg(&state_dir)
         .arg("--start")
-        .arg("--first-leg-only")
+        .arg("--first-run-only")
         .arg("--resume")
-        .arg("--assume-no-rollback-target")
         .arg("--")
         .arg("/bin/sh")
         .arg("-c")
@@ -328,7 +327,7 @@ fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_
         Duration::from_secs(30),
         "the first leg to record its own argv",
     );
-    assert_eq!(lines[0], "--resume", "the first leg must keep its first-leg-only token");
+    assert_eq!(lines[0], "--resume", "the first leg must keep its first-run-only token");
 
     // Ready first: that is the agent having run, after which no run carries the token.
     let conn = wait_for_lane(&h, Duration::from_secs(30));
@@ -346,7 +345,7 @@ fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_
         Duration::from_secs(30),
         "the run after the reset to record its own argv",
     );
-    assert_eq!(lines[1], "", "a run after an agent ran must not carry the first-leg-only token");
+    assert_eq!(lines[1], "", "a run after an agent ran must not carry the first-run-only token");
 
     let run = wait_for_ready(&conn, Duration::from_secs(30));
     end_run_and_expect_ended(&conn, &run, "cleanup");
@@ -355,11 +354,11 @@ fn first_leg_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_
 }
 
 /// The reauth's real path: a supervisor started `--resume` on a state dir whose run has ended rests at
-/// `EndedNoRespawn` with no producer run, and the reset's leg is the reauth's own leg, so it keeps its first-leg-only
+/// `EndedNoRespawn` with no producer run, and the reset's leg is the reauth's own leg, so it keeps its first-run-only
 /// token; once that leg has reached Ready, the respawn after it does not.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it() {
+fn a_reauths_reset_leg_keeps_its_first_run_only_token_and_its_respawn_drops_it() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -377,15 +376,14 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
     let _ = wait_for_exit(&mut first, Duration::from_secs(30));
     drop(conn);
 
-    // The reauth's supervisor: `--resume` mode with the id first-leg-only.
+    // The reauth's supervisor: `--resume` mode with the id first-run-only.
     let script = format!("printf '%s\\n' \"$*\" >> '{}'; exec sleep 300", log_path.display());
     let mut cmd = Command::new(capsule_exe());
     cmd.arg("supervise")
         .arg(&state_dir)
         .arg("--resume")
-        .arg("--first-leg-only")
+        .arg("--first-run-only")
         .arg("--resume")
-        .arg("--assume-no-rollback-target")
         .arg("--")
         .arg("/bin/sh")
         .arg("-c")
@@ -408,7 +406,7 @@ fn a_reauths_reset_leg_keeps_its_first_leg_only_token_and_its_respawn_drops_it()
         std::fs::read_to_string(path).ok().map(|c| c.lines().map(str::to_string).collect())
     };
     let lines = poll_until(|| read_lines(&log_path).filter(|l| !l.is_empty()), Duration::from_secs(30), "the reset's leg argv");
-    assert_eq!(lines[0], "--resume", "the reauth's own leg (the reset's) must keep its first-leg-only token");
+    assert_eq!(lines[0], "--resume", "the reauth's own leg (the reset's) must keep its first-run-only token");
 
     end_run_and_expect_ended(&conn, &new_run, "test");
     poll_until(

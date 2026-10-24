@@ -80,7 +80,7 @@ fn a_stop_mark_holds_only_inside_the_bound() {
 
 #[test]
 fn a_refusal_streak_logs_one_line_and_a_wake_or_a_read_ends_it() {
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let text = || log.text();
     let count = || text().matches("keeps refusing the wake").count();
     let refused = || Step::Refused(Refusal { reason: "input not empty", border: "──── named-session ─".to_string(), detail: None, row: "col 2: a".to_string() });
@@ -157,7 +157,7 @@ fn a_text_write_of_unknown_delivery_owes_its_enter_and_is_not_typed_again() {
 
 #[test]
 fn an_unconfirmed_write_warns_once_per_streak() {
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let count = || log.text().matches(&format!("text not confirmed ({STALE})")).count();
     let u = || Step::Refused(Refusal { reason: "text not confirmed", border: "b".to_string(), detail: Some(STALE.to_string()), row: String::new() });
     let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
@@ -176,7 +176,7 @@ fn an_unconfirmed_write_warns_once_per_streak() {
 fn a_typed_line_refusal_logs_the_row_the_gate_read() {
     // The box holds the wake line and the tail after it is undimmed: a dim tail reads blank to the gate, so only
     // an undimmed one refuses on Linux (the control below). The NBSP after the glyph is the box's own mark.
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let line = "[sot-comm] you have mail: run comm-poll.sh";
     let rule = "\u{2500}".repeat(80);
     let screen_of = |tail: &str| {

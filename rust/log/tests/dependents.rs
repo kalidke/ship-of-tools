@@ -58,7 +58,7 @@ fn no_crate_but_rows_topology_and_the_window_names_the_capsule() {
     };
     let names = crate_names();
     let mut breaches = Vec::new();
-    for (path, text) in sot_log::test_scan::production_sources() {
+    for (path, text) in sot_platform::test_scan::production_sources() {
         if allowed(&path) {
             continue;
         }

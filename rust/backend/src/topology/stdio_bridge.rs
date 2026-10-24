@@ -45,7 +45,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
-use sot_log::lane::transport::TransportError;
+use sot_platform::transport::TransportError;
 use sot_topology as topology;
 
 /// The usage line, printed on a bad argument and for `--help`.
@@ -63,12 +63,12 @@ const CHUNK: usize = 64 * 1024;
 /// connector written here. `connect_own` connects only to an endpoint this
 /// OS account serves (ADR 0049, User isolation).
 #[cfg(unix)]
-type Bridged = sot_log::lane::socket_unix::SocketClient;
+type Bridged = sot_platform::transport::socket_unix::SocketClient;
 #[cfg(windows)]
-type Bridged = sot_log::lane::pipe_win::PipeClient;
+type Bridged = sot_platform::transport::pipe_win::PipeClient;
 
 fn connect(path: &Path) -> Result<Bridged, TransportError> {
-    sot_log::lane::connect_own::connect_own(path)
+    sot_platform::transport::connect_own::connect_own(path)
 }
 
 /// The one local scheme on this platform: a Unix socket here, a named pipe on Windows.

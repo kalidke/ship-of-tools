@@ -50,7 +50,7 @@ fn config_case(kind: &str) {
     .unwrap();
     std::fs::write(config.join("settings.toml"), declaration).unwrap();
     let expected_env = crate::agents::accounts::account_env("claude", account, &home).unwrap();
-    let capture = sot_log::test_log::capture();
+    let capture = sot_platform::test_log::capture();
     assert_eq!(
         account_spawn_env("claude", account, &cwd, "fixture-row").unwrap(),
         expected_env

@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 /// invented when a command carries neither; every line still passes the standard redactor.
 #[tokio::test]
 async fn relay_log_names_the_forwarded_result() {
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let clients = Clients::new();
     let _fe = clients.register(
         "c-fe",
@@ -71,7 +71,7 @@ async fn relay_log_names_the_forwarded_result() {
         relaunch.contains(r#"path="/x/relaunch""#) && relaunch.contains("delivered_to=0"),
         "{relaunch}"
     );
-    let masked = sot_log::secret::redact(text.as_bytes());
+    let masked = sot_platform::secret::redact(text.as_bytes());
     assert!(
         !String::from_utf8_lossy(&masked).contains(secret),
         "the redactor masks the sentinel"

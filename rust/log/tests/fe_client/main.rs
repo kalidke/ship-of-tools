@@ -1,7 +1,7 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! ADR 0041 step 6 U3 (ADR 0043 decisions 20/21 for the Linux half):
 //! real cross-process integration tests for
-//! `sot_log::attach_client::client::FeAttachClient` — the FE attach-only client,
+//! `sot_log::attach_client::client::FeAttachClient` — the window's attach client,
 //! driven exactly the way the real frontend drives it, against a REAL
 //! `sot-capsule supervise` and a REAL capsule leg. `tests/supervisor/`
 //! already proves the supervisor's OWN lifecycle wiring across a real
@@ -25,7 +25,7 @@
 
 use serde_json::{json, Value};
 use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
-use sot_log::lane::client::PlatformEndpoint;
+use sot_log::endpoint::PlatformEndpoint;
 use sot_log::row::{row_socket_path, RowClient};
 use sot_platform::host::state_dir::state_dir_hash;
 use std::path::{Path, PathBuf};
@@ -105,7 +105,6 @@ fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> CapsuleGuard
     cmd.arg("supervise")
         .arg(state_dir)
         .arg(mode)
-        .arg("--assume-no-rollback-target")
         .arg("--")
         .args(argv)
         .stdout(Stdio::inherit())
@@ -125,7 +124,6 @@ fn spawn_supervisor_sized(state_dir: &Path, mode: &str, cols: u16, rows: u16, ar
         .arg(cols.to_string())
         .arg("--rows")
         .arg(rows.to_string())
-        .arg("--assume-no-rollback-target")
         .arg("--")
         .args(argv)
         .stdout(Stdio::inherit())

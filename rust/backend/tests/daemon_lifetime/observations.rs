@@ -1,5 +1,5 @@
 //! What the harness reads of the real processes it runs: a bounded poll, and the report a process held at a named
-//! phase barrier (`sot_log::test_barrier`) leaves in the barrier folder; and the daemon's held points
+//! phase barrier (`sot_platform::test_barrier`) leaves in the barrier folder; and the daemon's held points
 //! (`lifecycle::test_gates`), which a case engages and opens.
 
 use std::path::{Path, PathBuf};

@@ -176,15 +176,15 @@ fn gate_start(mode: &str, gate: &LinkGate) -> bool {
             }
         }
         "fixture" => {
-            use sot_log::lane::client::Endpoint;
+            use sot_log::endpoint::Endpoint;
             use super::super::lane_client::{DaemonLaneEndpoint, LaneDial};
             let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None)
                 .with_test_ssh_spawner(std::sync::Arc::new(|mut command| command.spawn()))
-                .with_test_handshake_bound(sot_log::lane::transport::CONNECT_BOUND);
+                .with_test_handshake_bound(sot_platform::transport::CONNECT_BOUND);
             hook.phase("endpoint-handshake");
             let result = endpoint.connect_row_unchallenged("fixture-row");
             hook.phase("cleanup"); hook.wait_entry("endpoint-reaped");
-            let refused = matches!(result, Err(sot_log::lane::transport::TransportError::LinkDown));
+            let refused = matches!(result, Err(sot_platform::transport::TransportError::LinkDown));
             drop(result); drop(endpoint);
             refused
         }

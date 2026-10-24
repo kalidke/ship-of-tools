@@ -27,7 +27,7 @@ of each.
    on Windows the argv keeps the literal name `claude`, found by the daemon's own `PATH`;
    `agent-exec` is Unix only; `"none"` is the bare platform shell and every other kind is refused, never substituted.
 2. **A leg starts a fresh conversation unless a reauth or a person resumes one.** The capsule recipes carry no resume
-   token. The reauth leg carries `--resume <id>`, handed to the supervisor as `--first-leg-only`, so no later leg or
+   token. The reauth leg carries `--resume <id>`, handed to the supervisor as `--first-run-only`, so no later leg or
    watchdog restart carries it. `--continue` is a person's flag (`ccb --continue`, `ccx --continue`), passed through
    `extra` and never added. A fresh session reads its handoff from the `HANDOFF:` line that `sotd comm handoff-line`
    gives `comm-session-start.sh` and `ccx`. Limit: the recipe cannot tell a person's `--resume` in `extra` from a

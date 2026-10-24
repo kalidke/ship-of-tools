@@ -1,5 +1,5 @@
 use super::*;
-use crate::lane::transport::TransportError;
+use sot_platform::transport::TransportError;
 
 #[test]
 fn a_transport_error_is_never_storage_exhaustion() {

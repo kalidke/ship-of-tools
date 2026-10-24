@@ -3,7 +3,7 @@
 use super::conn::handle_connection;
 use super::*;
 use sot_platform::identity::challenge::PeerAuthenticated;
-use sot_log::lane::accept_policy::{accept_policy, AcceptAction, ACCEPT_SLEEP};
+use sot_platform::transport::accept_policy::{accept_policy, AcceptAction, ACCEPT_SLEEP};
 
 use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
 #[cfg(unix)]
@@ -98,11 +98,11 @@ pub(super) async fn take_daemon_lock(
 #[cfg(unix)]
 fn nobody_listens(
     result: &Result<
-        sot_log::lane::socket_unix::SocketClient,
-        sot_log::lane::transport::TransportError,
+        sot_platform::transport::socket_unix::SocketClient,
+        sot_platform::transport::TransportError,
     >,
 ) -> bool {
-    use sot_log::lane::transport::TransportError;
+    use sot_platform::transport::TransportError;
     matches!(
         result,
         Err(TransportError::Io { op: "connect", source })
@@ -120,7 +120,7 @@ const REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 /// back before `REPLY_BOUND` has passed in all (one absolute deadline, so a listener that trickles a byte before each
 /// read gains nothing).
 #[cfg(unix)]
-fn replies(client: sot_log::lane::socket_unix::SocketClient) -> bool {
+fn replies(client: sot_platform::transport::socket_unix::SocketClient) -> bool {
     use std::io::Read as _;
     let mut stream = client.into_stream();
     let deadline = std::time::Instant::now() + REPLY_BOUND;
@@ -155,7 +155,7 @@ fn replies(client: sot_log::lane::socket_unix::SocketClient) -> bool {
 /// connect and never replies is waited on by the lock, never read as a live daemon.
 fn socket_answers(path: &std::path::Path) -> bool {
     #[cfg(unix)]
-    return match sot_log::lane::connect_own::connect_own(path) {
+    return match sot_platform::transport::connect_own::connect_own(path) {
         Ok(client) => replies(client),
         other => !nobody_listens(&other),
     };
@@ -181,7 +181,7 @@ fn socket_answers(path: &std::path::Path) -> bool {
 /// is fenced by its state lock, which a start takes before it reaches here (`take_daemon_lock`).
 #[cfg(unix)]
 pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
-    let attempt = sot_log::lane::connect_own::connect_own(path);
+    let attempt = sot_platform::transport::connect_own::connect_own(path);
     if nobody_listens(&attempt) {
         return Ok(());
     }
@@ -380,7 +380,7 @@ pub(super) async fn run_local(
     crate::lifecycle::shutdown::run(leases, workspaces, ws_events_tx, decided).await
 }
 
-/// What the session loop does with an accept error, by the one accept policy (`sot_log::lane::accept_policy::accept_policy`): a
+/// What the session loop does with an accept error, by the one accept policy (`sot_platform::transport::accept_policy::accept_policy`): a
 /// transient error returns at once, a resource error after a short sleep, and only a dead listener is an `Err`, which
 /// ends the daemon.
 async fn survive_accept_error(e: std::io::Error) -> Result<()> {

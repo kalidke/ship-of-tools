@@ -4,7 +4,7 @@
 
 use super::row_challenge::{Lying, NotAFrame, Unanswered};
 use super::*;
-use sot_log::lane::connect_own::connect_own;
+use sot_platform::transport::connect_own::connect_own;
 use sot_log::row::{RowHelloExchange, RowRun, RowServer};
 use sot_platform::identity::challenge::ChallengeOutcome;
 use sot_platform::identity::challenge_win::challenge;

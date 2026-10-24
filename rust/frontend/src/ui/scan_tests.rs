@@ -1,8 +1,8 @@
 //! The window crate's own source, for the tests that scan it (00-common item 18), read through
-//! `sot_log::test_scan::rust_sources()`.
+//! `sot_platform::test_scan::rust_sources()`.
 
 pub(super) fn crate_source() -> String {
-    let mut files: Vec<(String, String)> = sot_log::test_scan::rust_sources()
+    let mut files: Vec<(String, String)> = sot_platform::test_scan::rust_sources()
         .into_iter()
         .filter(|(rel, _)| rel.starts_with("rust/frontend/src/"))
         .collect();

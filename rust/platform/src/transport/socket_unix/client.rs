@@ -1,4 +1,4 @@
-//! The client: `SocketClient`, its `Client`/`Endpoint` impls, and the unchallenged connect `connect_own` builds on.
+//! The client: `SocketClient`, its `Client` impl, and the unchallenged connect `connect_own` builds on.
 
 use super::connect::{capture_connect_anchor_boot_ticks, one_connect_attempt, ConnectAttempt};
 use super::*;
@@ -77,7 +77,7 @@ impl std::fmt::Debug for SocketClient {
 }
 
 impl SocketClient {
-    /// The connected socket, for a check that reads it without I/O (`identity::connect_own`'s account check).
+    /// The connected socket, for a check that reads it without I/O (`connect_own`'s account check).
     pub(crate) fn socket_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         std::os::fd::AsFd::as_fd(&self.stream)
     }
@@ -235,10 +235,8 @@ impl SocketClient {
         unsafe { libc::shutdown(self.stream.as_raw_fd(), libc::SHUT_RDWR) };
     }
 
-    /// ADR 0045 decision 2 (the daemon-side lane bridge): hand the raw
-    /// socket off to a caller that will pipe raw bytes on its own
-    /// runtime — for a caller that will pipe raw bytes on its own
-    /// runtime; the client's cancel contract ends here. Moves `stream`
+    /// Hands the raw socket off to a caller that will pipe raw bytes on its
+    /// own runtime (the daemon's lane bridge); the client's cancel contract ends here. Moves `stream`
     /// out; the slots/flags (`cancelled`, `read_slot`, `write_slot`, the
     /// test-only entered flags, `connect_anchor_boot_ticks`) simply drop
     /// — nothing about them survives past this call, and nothing needs
@@ -294,16 +292,6 @@ impl SocketClient {
     }
 }
 
-// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
-// client implements — `write_all`/`read`/`cancel` already have this
-// exact signature (modulo the error type, unified by decision 17), so
-// this is pure delegation. The blanket `impl<C: Client>
-// ChallengeableConnection for C` in `crate::lane::client` is what makes
-// `SocketClient` challengeable now — the hand-written façade this impl
-// used to be (`socket_error_to_io`, its own `TransportError -> io::Error`
-// mapping) is gone; `crate::lane::client`'s ONE mapping replaces it.
-crate::challengeable_client!(SocketClient);
-
 impl Client for SocketClient {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
         SocketClient::write_all(self, bytes)
@@ -323,7 +311,7 @@ impl Client for SocketClient {
 /// `challenge_unix.rs`'s own doc for why this is the Linux twin of
 /// `challenge_win::PipeChallengeable`.
 #[cfg(target_os = "linux")]
-impl sot_platform::identity::challenge_unix::SocketChallengeable for SocketClient {
+impl crate::identity::challenge_unix::SocketChallengeable for SocketClient {
     fn raw_fd(&self) -> RawFd {
         self.stream.as_raw_fd()
     }
@@ -340,56 +328,9 @@ impl sot_platform::identity::challenge_unix::SocketChallengeable for SocketClien
 /// need"). The `connect_anchor_boot_ticks` field this `SocketClient`
 /// still carries is therefore never read on this target.
 #[cfg(target_os = "macos")]
-impl sot_platform::identity::challenge_macos::SocketChallengeable for SocketClient {
+impl crate::identity::challenge_macos::SocketChallengeable for SocketClient {
     fn raw_fd(&self) -> RawFd {
         self.stream.as_raw_fd()
-    }
-}
-
-/// L1-unix LU3a (ADR 0043 decision 19): the Unix-socket `Endpoint` — a
-/// unit struct (the concrete pipe/socket family is the type itself, not a
-/// value any instance carries) delegating straight to the free functions
-/// this module already exposes. ONE implementation for both targets that
-/// have a trusted peer-identity mechanism: everything that differs
-/// between Linux and macOS is already behind the `challenge_os` alias
-/// above, so there is no second `Endpoint` to keep in step with this one.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[derive(Clone, Copy, Default)]
-pub struct SocketEndpoint;
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl Endpoint for SocketEndpoint {
-    type Client = SocketClient;
-    type Process = challenge_os::ChallengedProcess;
-
-    fn connect_row_unchallenged(&self, row: &str) -> Result<Self::Client, TransportError> {
-        let path = crate::row::row_socket_path(row).map_err(row_error_to_transport)?;
-        crate::lane::connect_own::connect_own(&path)
-    }
-
-    fn challenge(
-        &self,
-        conn: &Self::Client,
-        exchange: &mut dyn sot_platform::identity::exchange::IdentityExchange,
-        reply_deadline: Instant,
-    ) -> sot_platform::identity::challenge::ChallengeOutcome<Self::Process> {
-        challenge_os::challenge(conn, exchange, reply_deadline)
-    }
-
-    fn authenticate_server(
-        &self,
-        conn: &Self::Client,
-    ) -> sot_platform::identity::challenge::PeerAuthOutcome {
-        challenge_os::authenticate_server(conn)
-    }
-}
-
-/// A row socket path that could not be made, as the lane's own error.
-pub(crate) fn row_error_to_transport(e: crate::row::RowError) -> TransportError {
-    match e {
-        crate::row::RowError::PathTooLong(path) => TransportError::PathTooLong(path),
-        crate::row::RowError::Io(source) => TransportError::RuntimeDir(source),
-        other => TransportError::RuntimeDir(std::io::Error::other(other)),
     }
 }
 
@@ -422,22 +363,13 @@ pub(crate) fn row_error_to_transport(e: crate::row::RowError) -> TransportError 
 /// outer retry, once this whole call returns `Undetermined` up through
 /// `authenticate_server`/`challenge`).
 ///
-/// ADR 0045 decision 3: the lane bridge dials a socket PATH handed to it
-/// on the wire (`LaneDial::Local`), never a name this crate derives from a
-/// voyage id or a state-dir hash itself. Crate-private: other crates
-/// (`sot-protocol`'s `DaemonLaneEndpoint`, `sotd stdio-bridge`, `sotd
-/// topology`'s dial, the window) reach a socket by name only through
-/// `identity::connect_own::connect_own`, which checks the listener's account
-/// after this connect, before client I/O (ADR 0049, User isolation). The
-/// retry budget is fixed at `CONNECT_BOUND`; an attempt or wait in progress
-/// finishes first, including the 20 ms retry sleep, so it is not an exact
-/// elapsed-time limit. Reused
-/// rather than reimplemented: this is the SAME bounded,
-/// non-blocking, pid-anchored connector every other Unix caller gets —
-/// a caller that rolled its own blocking `UnixStream::connect` wrapped
-/// in an external deadline would leak the blocked connect thread past
-/// that deadline on a full listen backlog, which this loop's own
-/// non-blocking `connect(2)` + bounded poll never does.
+/// Dials a socket PATH the caller hands it, never a name this crate derives. Crate-private: every other crate reaches
+/// a socket by name only through [`connect_own`](super::connect_own::connect_own), which checks the listener's
+/// account after this connect, before client I/O (ADR 0049, User isolation). The retry budget is fixed at
+/// `CONNECT_BOUND`; an attempt or wait in progress finishes first, including the 20 ms retry sleep, so it is not an
+/// exact elapsed-time limit. This is the one bounded, non-blocking, pid-anchored connector: a caller that rolled its
+/// own blocking `UnixStream::connect` wrapped in an external deadline would leak the blocked connect thread past that
+/// deadline on a full listen backlog, which this loop's own non-blocking `connect(2)` + bounded poll never does.
 pub(crate) fn connect_unix_socket_unchallenged(
     path: &Path,
 ) -> Result<SocketClient, TransportError> {

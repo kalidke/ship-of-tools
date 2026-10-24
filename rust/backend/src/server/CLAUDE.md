@@ -106,7 +106,7 @@ of each.
     `unknown_workspace` with no job run (`canonicalize_workspace_id`). Job replies come back in the order the jobs
     finish, each under its own request id. A job runs to its end after its connection closes (`Jobs` detaches, never
     aborts), and only its reply is lost.
-11. **An accept error is survived by one policy.** `survive_accept_error` follows `sot_log::lane::accept_policy`, the
+11. **An accept error is survived by one policy.** `survive_accept_error` follows `sot_platform::transport::accept_policy`, the
     policy the capsule's lane acceptors use too: a transient error accepts again, a resource error (EMFILE and kin)
     waits `ACCEPT_SLEEP` first, and only a dead listener ends the daemon with an error. Accepting stops at the
     deciding lease departure, before any row is touched (`run_local`'s loop breaks on `Leases::gone` and drops the
@@ -164,7 +164,7 @@ of each.
 ## Calls in
 `sot_protocol` (`Frame`, `codec`, `reply::{HandlerOutput, write_frame_to, write_frame_within, reject}`,
 `pipe::pipe_bidirectional`, the op names and payloads, `PROTOCOL_VERSION`), `sot_platform` (`try_lock_daemon`,
-`sot_state_dir`, `host_name`, `owner_protected_pipe_descriptor`, the peer challenge), `sot_log::lane`
+`sot_state_dir`, `host_name`, `owner_protected_pipe_descriptor`, the peer challenge), `sot_platform::transport`
 (`connect_own`, `accept_policy`), lifecycle (`startup::begin`, `lease::ticker`, `Leases::gone`, `lease::hold`,
 `shutdown::run`), and every service's handler named in `serve` and `dispatch` of `dispatch.rs`, with
 `handle_proxy_connect` and `handle_lane_connect` for the handoffs.

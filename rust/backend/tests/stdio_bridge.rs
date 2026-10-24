@@ -246,7 +246,7 @@ fn dash_dash_endpoint_refuses_a_socket_another_account_listens_on() {
         return;
     }
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
+    let Some(foreign) = sot_platform::test_foreign::ForeignListener::start(false) else {
         return;
     };
     let endpoint = format!("unix:{}", foreign.path.display());
@@ -283,14 +283,14 @@ fn a_full_foreign_backlog_ends_the_bridge_within_its_bound() {
         return;
     }
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(true) else {
+    let Some(foreign) = sot_platform::test_foreign::ForeignListener::start(true) else {
         return;
     };
     let endpoint = format!("unix:{}", foreign.path.display());
     let mut child = spawn_bridge(&["--endpoint", &endpoint]);
     drop(child.stdin.take());
     let (status, stdout, stderr) = sot_platform::test_isolated::drain(child)
-        .wait_within(sot_log::lane::transport::CONNECT_BOUND + Duration::from_secs(5));
+        .wait_within(sot_platform::transport::CONNECT_BOUND + Duration::from_secs(5));
     let said = format!("{status}; stdout {stdout:?}; stderr {stderr:?}");
     assert!(
         !status.success(),

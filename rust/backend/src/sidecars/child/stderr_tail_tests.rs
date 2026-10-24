@@ -16,7 +16,7 @@ async fn run(sig: &'static Signal, script: &str, what: &str) {
 /// nothing.
 #[tokio::test]
 async fn a_child_s_last_lines_are_logged_at_warn() {
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let warned = |needle: &str| crate::sidecars::warned(&log.text(), needle);
     let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
     run(sig, "i=0; while [ $i -lt 40 ]; do echo \"line-$i.\" >&2; i=$((i + 1)); done", "the child ended").await;

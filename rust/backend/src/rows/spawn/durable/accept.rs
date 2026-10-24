@@ -39,7 +39,7 @@ pub struct Accepted {
 /// Hold the test harness's barrier for `phase` (a build with the daemon-lifetime faults only).
 pub fn barrier(phase: &str) {
     #[cfg(feature = "daemon-lifetime-faults")]
-    sot_log::test_barrier::hold(phase);
+    sot_platform::test_barrier::hold(phase);
     #[cfg(not(feature = "daemon-lifetime-faults"))]
     let _ = phase;
 }

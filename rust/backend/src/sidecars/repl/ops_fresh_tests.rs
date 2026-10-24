@@ -179,7 +179,7 @@ async fn a_run_waiting_when_fresh_restarts_the_repl_is_answered_and_closed() {
 /// still logs it: `contract_tests::a_repl_child_that_fails_its_start_logs_its_stderr_at_warn`.)
 #[tokio::test]
 async fn a_restart_logs_no_stderr_tail_at_warn() {
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let r = row(BUSY_NOISY);
     let first = json!({ "workspace_id": r.id, "eval_id": 1, "code": "1" });
     handle_repl_eval(1, first, &r.session, &r.workspaces, &Default::default()).await.expect("setup: the eval starts the child");

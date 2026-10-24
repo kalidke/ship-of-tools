@@ -5,8 +5,8 @@
 //! resizes to the row. A lost connection is redialed on platform's `Redial`; some failures end the episode for good.
 //! The worker holds no screen: the sink's owner restores the snapshot into its parser.
 
-use crate::lane::client::Endpoint;
-use crate::lane::transport::TransportError;
+use crate::endpoint::Endpoint;
+use sot_platform::transport::TransportError;
 use crate::row::{RowClient, RowError, RowEvent, RowWaker};
 use sot_platform::host::redial::Redial;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -496,7 +496,6 @@ where
 /// A failed dial: some are final, the rest are tried again.
 fn dial_error(e: TransportError) -> Attempt {
     match e {
-        TransportError::Foreign => Attempt::Terminal("the row's socket belongs to another account".into()),
         // A path that can never fit is the same on every try.
         TransportError::PathTooLong(path) => Attempt::Terminal(format!("the row socket path is too long: {}", path.display())),
         TransportError::Refused { code, detail } => Attempt::Terminal(format!("the daemon refused the row ({code}): {detail}")),
@@ -505,7 +504,7 @@ fn dial_error(e: TransportError) -> Attempt {
         }
         // The daemon (or the ssh login to it) did not answer: said in those words, since a person reads it.
         TransportError::Unreachable(e) => Attempt::Retry { reason: format!("daemon unreachable: {e}"), absent: false },
-        TransportError::Undetermined { detail, .. } => Attempt::Retry { reason: format!("daemon unreachable: {detail}"), absent: false },
+        TransportError::Undetermined { detail } => Attempt::Retry { reason: format!("daemon unreachable: {detail}"), absent: false },
         TransportError::LinkDown => Attempt::Retry { reason: "daemon unreachable: the host's link is down".into(), absent: false },
         other => Attempt::Retry { absent: other.is_endpoint_absent(), reason: other.to_string() },
     }

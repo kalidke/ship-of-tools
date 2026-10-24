@@ -27,7 +27,7 @@ fn preparation_case(invalid: bool) {
         )
     };
     std::fs::write(&settings, text).unwrap();
-    let capture = sot_log::test_log::capture();
+    let capture = sot_platform::test_log::capture();
     let additions = account_spawn_env("claude", "default", &cwd, "fixture-row").unwrap();
     assert!(
         additions.is_empty(),

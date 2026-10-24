@@ -2,7 +2,7 @@
 //! supervisor fence is taken before a capsule birth is accepted and is carried unbroken to the supervisor's first
 //! act, so a successor that activates the row while the original is held finds the claim, starts no second
 //! supervisor, and later attaches to the original. Real `sotd` and `sot-capsule` on real roots; the original is held
-//! by a phase barrier (`sot_log::test_barrier`) with the held process watched through an identity first, the
+//! by a phase barrier (`sot_platform::test_barrier`) with the held process watched through an identity first, the
 //! predecessor (a process the case spawned) is ended by SIGKILL, and nothing the product does is used to clean up.
 //!
 //! The barrier is one of five places on the birth's way to its first act: in the durable parent after the claim and

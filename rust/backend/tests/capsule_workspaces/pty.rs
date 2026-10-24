@@ -115,7 +115,7 @@ async fn capsule_pty_input_and_screen_reach_a_real_row_and_leave_the_lane_clean(
     let state_dir = crate::state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
     let (_woke, wake) = wake_flag_for_test();
     let mut test_client = sot_log::attach_client::client::FeAttachClient::attach(
-        sot_log::lane::client::PlatformEndpoint::default(),
+        sot_log::endpoint::PlatformEndpoint::default(),
         sot_platform::host::state_dir::state_dir_hash(&state_dir),
         80,
         24,
@@ -332,7 +332,7 @@ async fn capsule_pty_input_enter_not_sent_on_a_pen_steal_between_text_and_enter(
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
 
     let mut stealer = sot_log::attach_client::client::FeAttachClient::attach_headless(
-        sot_log::lane::client::PlatformEndpoint::default(),
+        sot_log::endpoint::PlatformEndpoint::default(),
         sot_platform::host::state_dir::state_dir_hash(&state_dir),
     )
     .expect("attach the stealer client");

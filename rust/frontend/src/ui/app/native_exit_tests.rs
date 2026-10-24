@@ -285,7 +285,7 @@ fn child(role: &str) -> Result<()> {
         }
     }
     // The backstop thread logs its event to the sink the arming thread logs to; the parent reads it from stdout.
-    let _log = sot_log::test_log::install(tracing_subscriber::fmt().with_ansi(false).with_writer(std::io::stdout).finish());
+    let _log = sot_platform::test_log::install(tracing_subscriber::fmt().with_ansi(false).with_writer(std::io::stdout).finish());
     let event_loop = EventLoop::new().map_err(|e| anyhow::anyhow!("not runnable here: {e}"))?;
     let capture = role == "capture";
     event_loop.set_control_flow(if capture { ControlFlow::Poll } else { ControlFlow::Wait });

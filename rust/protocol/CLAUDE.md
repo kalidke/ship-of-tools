@@ -2,7 +2,7 @@
 
 The wire is what the window, the daemon, the shell clients and the daemon's other-computer links speak: the frame, its
 codec and size cap, every op's payload, the protocol integer and the product version. It does not own the capsule's
-lane frames (`rust/log/src/lane/`, `lane/exchange.rs`: capsule's) or the sidecars' own protocols (the kernel's and the
+row frames (`rust/log/src/row/`: capsule's) or the sidecars' own protocols (the kernel's and the
 REPL's JSON lines: sidecars'). The crate (`sot-protocol`) is shared by the window and the
 daemon and owns no runtime state. It depends on platform only, for the host name and the OS account a hello
 declares. Topology (hosts.toml, endpoints, the ssh recipe and the lane client) is the crate `sot-topology`, which

@@ -18,7 +18,7 @@ pub(crate) fn own_daemon(env: &crate::comm::Env) -> Option<String> {
     #[cfg(windows)]
     {
         let path = ep.strip_prefix("pipe:")?;
-        sot_log::lane::connect_own::connect_own(std::path::Path::new(path)).ok()?;
+        sot_platform::transport::connect_own::connect_own(std::path::Path::new(path)).ok()?;
         Some(ep)
     }
 }

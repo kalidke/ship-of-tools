@@ -1,12 +1,12 @@
     use super::*;
 
 #[test]
-fn only_a_resume_by_id_is_first_leg_only() {
+fn only_a_resume_by_id_is_first_run_only() {
     let ordinary: Vec<String> = ["claude", "--permission-mode", "auto", "/sot-session-start"].map(String::from).to_vec();
-    assert!(first_leg_only(&ordinary).is_empty());
+    assert!(first_run_only(&ordinary).is_empty());
     let reauth: Vec<String> =
         ["claude", "--permission-mode", "auto", "--resume", "abc", "/sot-session-start"].map(String::from).to_vec();
-    assert_eq!(first_leg_only(&reauth), ["--first-leg-only", "--resume", "--first-leg-only", "abc"]);
+    assert_eq!(first_run_only(&reauth), ["--first-run-only", "--resume", "--first-run-only", "abc"]);
 }
 
 #[test]

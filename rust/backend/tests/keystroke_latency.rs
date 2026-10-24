@@ -377,6 +377,6 @@ async fn k5_cold_switch_over_ssh() {
     guard.finish();
     assert!(pass, "cold switch over ssh costs {excess_p50:.1}ms over a local dial, more than 1.5 x one login ({login_p50:.1}ms)");
     for total in locals.iter().chain(&ssh_times) {
-        assert!(*total <= sot_log::lane::transport::CONNECT_BOUND, "headless request-to-checkpoint switch missed CONNECT_BOUND: {total:?}");
+        assert!(*total <= sot_platform::transport::CONNECT_BOUND, "headless request-to-checkpoint switch missed CONNECT_BOUND: {total:?}");
     }
 }

@@ -1,5 +1,5 @@
 //! The Unix-domain-socket transport's client half: [`SocketClient`], the bounded non-blocking connect it comes from, and
-//! its `Client`/`Endpoint` impls. The server half is the row socket's (`crate::row`).
+//! its `Client` impl. Every server is its owner's (the row socket, the daemon's listener).
 //!
 //! # Cancellation: `shutdown(2)`, no per-op cancel primitive
 //!
@@ -16,19 +16,7 @@
 
 #![cfg(unix)]
 
-use crate::lane::client::Client;
-// `Endpoint`'s only implementor here (`SocketEndpoint`) exists on the two Unix targets that have a peer-identity
-// mechanism this crate trusts; a plain, unconditional `use` would warn "unused import" on any OTHER Unix build.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::lane::client::Endpoint;
-// The platform's own challenge module for THIS transport, chosen ONCE by an alias, as `client::PlatformEndpoint` does.
-// Linux reads `SO_PEERCRED` plus a pidfd pin; macOS reads `getpeereid` for the account and one `LOCAL_PEERTOKEN` audit
-// token carrying the peer's pid AND the kernel's own reuse generation together. No other Unix has one.
-#[cfg(target_os = "macos")]
-use sot_platform::identity::challenge_macos as challenge_os;
-#[cfg(target_os = "linux")]
-use sot_platform::identity::challenge_unix as challenge_os;
-use crate::lane::transport::{TransportError, CONNECT_BOUND};
+use super::{Client, TransportError, CONNECT_BOUND};
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -44,12 +32,10 @@ mod connect;
 
 pub(crate) use client::connect_unix_socket_unchallenged;
 pub use client::SocketClient;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub use client::SocketEndpoint;
 
 /// Set O_NONBLOCK with a checked read-modify-write fcntl pair.
 pub(super) fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    if let Some(injected) = sot_platform::host::fd::flag_call() {
+    if let Some(injected) = crate::host::fd::flag_call() {
         return Err(injected);
     }
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };

@@ -133,7 +133,7 @@ fn trash_timeout_reports_cleanup_before_fallback() {
     let worker_cleanup = cleanup.clone();
     let (worker_source, worker_root) = (source.clone(), root.clone());
     let worker = std::thread::spawn(move || {
-        let log = sot_log::test_log::capture();
+        let log = sot_platform::test_log::capture();
         contain::REQUEST_EVENTS.with(|events| events.borrow_mut().clear());
         let result = trash_with_command(
             signal,
@@ -196,7 +196,7 @@ fn trash_timeout_reports_cleanup_before_fallback() {
 #[test]
 fn confirmed_zero_is_system_trash() {
     let fixture = Fixture::exit(0);
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let result = trash_with_command(
         signal(),
         &mut fixture.command(),
@@ -220,7 +220,7 @@ fn confirmed_zero_is_system_trash() {
 fn nonzero_and_missing_commands_take_recoverable_fallback() {
     for missing in [false, true] {
         let fixture = Fixture::exit(7);
-        let log = sot_log::test_log::capture();
+        let log = sot_platform::test_log::capture();
         let mut command = if missing {
             std::process::Command::new(fixture.dir.path().join("absent"))
         } else {
@@ -255,7 +255,7 @@ fn an_unconfirmed_trash_that_left_no_file_is_not_reported_as_trashed() {
         ("moved", "#!/bin/sh\nD=${1%/*}\nmkdir -p \"$D/system-trash\"\nmv \"$D/source.txt\" \"$D/system-trash/\"\nwhile [ ! -e \"$2\" ]; do sleep 0.02; done\n"),
     ] {
         let fixture = Fixture::new(body);
-        let log = sot_log::test_log::capture();
+        let log = sot_platform::test_log::capture();
         let result = trash_with_command(
             signal(),
             &mut fixture.command(),
@@ -283,7 +283,7 @@ fn failed_fallback_remains_an_error() {
         b"blocks the destination directory",
     )
     .unwrap();
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let error = trash_with_command(
         signal(),
         &mut fixture.command(),
@@ -305,7 +305,7 @@ fn cleanup_failure(kind: &str, reason: &str) {
     let fixture = Fixture::live();
     let signal = signal();
     let ready = fixture.ready_hook(signal);
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     #[cfg(unix)]
     let request = 3;
     #[cfg(windows)]

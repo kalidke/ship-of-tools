@@ -207,7 +207,7 @@ const BACKSTOP_EVENT: &str = "final teardown exceeded its bound";
 fn backstop_child() {
     let Ok(scenario) = std::env::var(SCENARIO) else { return; };
     enter(BACKSTOP_BODY);
-    let _log = sot_log::test_log::install(tracing_subscriber::fmt().with_ansi(false).with_writer(std::io::stdout).finish());
+    let _log = sot_platform::test_log::install(tracing_subscriber::fmt().with_ansi(false).with_writer(std::io::stdout).finish());
     let mut app = fixture_app(None);
     app.deadline = ExitDeadline::new();
     let deadline = app.deadline.clone();

@@ -4,7 +4,7 @@
 //! its own tests and the hosted macOS run cover.
 
 use super::*;
-use sot_log::lane::connect_own::connect_own;
+use sot_platform::transport::connect_own::connect_own;
 use sot_platform::host::fd::{observe_births, Birth};
 
 fn birth_of<'a>(births: &'a [Birth], role: &str) -> &'a Birth {

@@ -14,12 +14,12 @@ pub(crate) const CHILD_ENV: &str = "SOT_TEST_SIDECAR_ISOLATED";
 
 /// What `f` logs on this thread at every level, as text: the one capture the sidecars' log-content tests share.
 pub(crate) fn logged_by(f: impl FnOnce()) -> String {
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     f();
     log.text()
 }
 
-/// Whether a line of `logged` (one event a line, as `logged_by` and `sot_log::test_log::capture` write it) is at warn
+/// Whether a line of `logged` (one event a line, as `logged_by` and `sot_platform::test_log::capture` write it) is at warn
 /// and holds `needle`.
 #[cfg(unix)]
 pub(crate) fn warned(logged: &str, needle: &str) -> bool {
@@ -96,7 +96,7 @@ pub(crate) fn require_mathjax_modules() {
 pub(crate) fn owned_julia_env(root: &Path) -> PathBuf {
     let resources = root.join("resources");
     let shim = resources.join("julia").join("repl");
-    sot_log::test_copy::copy_release_folder(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../julia/repl"), &shim);
+    sot_platform::test_copy::copy_release_folder(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../julia/repl"), &shim);
     std::env::set_var("SOT_RESOURCE_ROOT", &resources);
     std::env::set_var("SOT_JULIA_BIN", executable("julia"));
     std::env::set_var("JULIA_DEPOT_PATH", depot_path(&root.join("depot"), None));
@@ -454,7 +454,7 @@ async fn repl_uses_private_signal() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_repl_child_that_fails_its_start_logs_its_stderr_at_warn() {
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let dir = tempfile::tempdir().expect("owned fixture root");
     let resources = dir.path().join("resources");
     std::fs::create_dir_all(resources.join("julia").join("repl")).expect("the REPL project folder");

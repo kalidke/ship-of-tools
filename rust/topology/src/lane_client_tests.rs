@@ -264,7 +264,7 @@ fn an_undetermined_reply_is_undetermined() {
     let result = dial_against(|conn| {
         respond_with(conn, serde_json::json!({ "error": "could not authenticate", "code": "undetermined" }));
     });
-    assert!(matches!(result, Err(TransportError::Undetermined { via: "bridge", .. })), "got {result:?}");
+    assert!(matches!(result, Err(TransportError::Undetermined { .. })), "got {result:?}");
 }
 
 #[test]
@@ -414,7 +414,7 @@ fn a_socket_another_account_listens_on_is_refused_by_the_lane_dial() {
     if !sot_platform::test_isolated::run_isolated("lane_client::tests::a_socket_another_account_listens_on_is_refused_by_the_lane_dial") {
         return;
     }
-    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
+    let Some(foreign) = sot_platform::test_foreign::ForeignListener::start(false) else {
         return;
     };
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Local(foreign.path.clone()), None);
@@ -443,7 +443,7 @@ fn a_full_foreign_backlog_ends_the_lane_dial_within_its_bound() {
     ) {
         return;
     }
-    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(true) else {
+    let Some(foreign) = sot_platform::test_foreign::ForeignListener::start(true) else {
         return;
     };
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Local(foreign.path.clone()), None);

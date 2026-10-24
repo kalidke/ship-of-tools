@@ -287,7 +287,7 @@ async fn expired_pluto_grant_refuses_its_port() {
 async fn a_refused_port_is_logged_once_per_streak() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let warns = || {
         log.text()
             .lines()

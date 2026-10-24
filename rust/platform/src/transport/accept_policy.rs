@@ -1,4 +1,4 @@
-//! What an accept loop does with an accept error: the one policy the daemon's session listener and both capsule lane
+//! What an accept loop does with an accept error: the one policy the daemon's session listener and the row socket's
 //! acceptors share.
 
 use std::io;

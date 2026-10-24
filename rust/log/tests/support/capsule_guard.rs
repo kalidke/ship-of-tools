@@ -1,17 +1,16 @@
 //! A spawned `sot-capsule` that no test, panicking or killed, can leave behind.
 //!
-//! A `--survival normal` `run` leg outlives its supervisor by design (ADR 0041's adoption), so ending the
-//! supervisor is not enough, and a `Drop` never runs in a test process that is killed. The capsule therefore runs
-//! in something the kernel ends with the TEST PROCESS:
+//! The supervisor's agent dies with its supervisor (one process per row), but a `Drop` never runs in a test process
+//! that is killed, and a test may start a supervisor in its own session. The capsule therefore runs in something the
+//! kernel ends with the TEST PROCESS:
 //! - Unix: the capsule joins a process group led by a watcher, a shell that reads its stdin to EOF and then
 //!   SIGKILLs its own group. Its stdin is a pipe whose write end the guard holds; the kernel closes that end when
-//!   the test process dies by any means, so the watcher kills the group, itself last. A leg inherits the group
-//!   (nothing in `rust/log/src` sets another), so it ends with the test process, though not with its supervisor;
-//!   the producer has its own session and dies with its leg through `PR_SET_PDEATHSIG`. `Drop` closes the same
-//!   end and reaps the watcher. The group id cannot be reused before the kill: the watcher is reaped only after
-//!   it. No binary that includes this file builds on macOS, so nothing is claimed for it there.
-//! - Windows: the supervise child is put in a kill-on-close job right after it starts, and its legs, which
-//!   inherit the job, end when the test process's last handle to it closes.
+//!   the test process dies by any means, so the watcher kills the group, itself last. The agent inherits the group
+//!   (nothing in `rust/log/src` sets another), so it ends with the test process. `Drop` closes the same end and
+//!   reaps the watcher. The group id cannot be reused before the kill: the watcher is reaped only after it. No
+//!   binary that includes this file builds on macOS, so nothing is claimed for it there.
+//! - Windows: the supervise child is put in a kill-on-close job right after it starts, and its agent, which
+//!   inherits the job, ends when the test process's last handle to it closes.
 //! "Ends" means signalled: `Drop` returns once the kill is sent, so a leg may still hold its fence for a few
 //! milliseconds; a test that restarts on the same state folder waits on `supervisor.lock`. A leg adopted by a second
 //! guard's supervisor stays in the FIRST guard's group (or job), so it ends when the first guard drops.

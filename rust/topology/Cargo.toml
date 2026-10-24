@@ -17,13 +17,12 @@ tokio = { workspace = true }
 sot-protocol = { path = "../protocol" }
 # Platform: the host name, config and runtime folders, the descriptor sweep and the peer identity.
 sot-platform = { path = "../platform" }
-# The capsule's lane client trait and local connectors, which the lane dial implements.
+# The capsule's `Endpoint`, which the lane dial implements (the client trait and the connectors are platform's).
 sot-log = { path = "../log" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 sot-platform = { path = "../platform", features = ["test-support"] }
-sot-log = { path = "../log", features = ["test-support"] }
 # The lane client's tests dial a fake daemon on a local socket or pipe, the one transport it has.
 interprocess = { workspace = true }
 # The descriptor test clears a pipe's close-on-exec flag, which std has no call for.

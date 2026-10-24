@@ -156,7 +156,7 @@ fn every_registry_write_takes_the_registry_lock() {
     let file = concat!("registry", ".json");
     let calls = [concat!("wri", "te("), concat!("rena", "me("), concat!("registry", ".json", ".")];
     let mut found = Vec::new();
-    for (rel, text) in sot_log::test_scan::rust_sources() {
+    for (rel, text) in sot_platform::test_scan::rust_sources() {
         if !rel.starts_with("rust/backend/tests/") || rel == "rust/backend/tests/support/registry.rs" {
             continue;
         }

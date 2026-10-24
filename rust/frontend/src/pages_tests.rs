@@ -122,7 +122,7 @@ async fn a_down_link_never_parks_the_port() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let port = listener.local_addr().unwrap().port();
     // #[tokio::test] runs every task on this thread, so the capture sees the listener's spawned tasks.
-    let log = sot_log::test_log::capture();
+    let log = sot_platform::test_log::capture();
     let warns = || log.text().lines().filter(|l| l.contains(" WARN ")).count();
     let dials = Arc::new(AtomicUsize::new(0));
     let arm = Arc::new(super::Arm::default());

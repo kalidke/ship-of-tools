@@ -7,8 +7,8 @@
 //! Every test runs in its own process (`sot_platform::test_isolated::run_isolated`): a real process boundary bounds
 //! every hang path, including one inside a wedged server's `drop` running after an earlier assertion panicked.
 
-use sot_log::lane::socket_unix::SocketClient;
-use sot_log::lane::transport::{TransportError, CONNECT_BOUND};
+use sot_platform::transport::socket_unix::SocketClient;
+use sot_platform::transport::{TransportError, CONNECT_BOUND};
 use sot_log::row::{socket_path_in, RowRun, RowServer};
 use sot_platform::test_isolated::run_isolated;
 use std::os::unix::net::UnixStream;
