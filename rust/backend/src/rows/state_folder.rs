@@ -133,12 +133,19 @@ fn finish_tombstone(workspaces_dir: &Path, tombstone: &str) -> Removal {
     }
 }
 
-/// Remove the `.retired-voyages/` a 0.6 retire left in a row's folder, registered or not, a day after it was made (creating
-/// it sets its time and nothing else writes into it). The folder is not followed if it is a link, and the row's own
-/// folder is untouched. A failure is tried again at the next start.
+/// Remove the `.retired-voyages/` a 0.6 retire left in a row's folder, registered or not, a day after the last move into it
+/// (creating it sets its time, and so does each rename into it, so the age counts from the last move). The caller holds
+/// the row's guard when the row is registered, since a retire holds it while it fills the folder, and it is kept while
+/// any 0.6 layout name is still in the row's folder (the retire has not finished). The folder is not followed if it is a
+/// link, and the row's own folder is untouched. A failure is tried again at the next start.
 fn finish_retired_voyages(workspaces_dir: &Path, id: &str, now: SystemTime) -> Removal {
     if let Err(removal) = check_real_dirs(workspaces_dir, id) {
         return removal;
+    }
+    match crate::rows::spawn::retire_06::layout(&workspaces_dir.join(id)) {
+        Ok(found) if found.is_empty() => {}
+        Ok(_) => return Removal::Kept("the 0.6 layout is still in the row's folder"),
+        Err(_) => return Removal::Kept("the row's folder cannot be read"),
     }
     let retired = workspaces_dir.join(id).join(RETIRED_DIR);
     match std::fs::symlink_metadata(&retired) {
@@ -245,7 +252,13 @@ pub(crate) fn sweep_with(
         }
     }
     for name in names.iter().filter(|n| is_row_folder_name(n)) {
-        let removal = finish_retired_voyages(&workspaces_dir, name, now);
+        // A registered row's guard excludes a retire that is filling the folder; busy is skipped until the next start.
+        let guard = workspaces.capsule_guard(name);
+        let held = guard.as_ref().map(|g| g.try_lock());
+        let removal = match held {
+            Some(Err(_)) => Removal::Kept("the row's guard is busy"),
+            _ => finish_retired_voyages(&workspaces_dir, name, now),
+        };
         log_removal(&workspaces_dir.join(name).join(RETIRED_DIR), "a 0.6 retire moved it aside", &removal);
     }
     let named = match named {
