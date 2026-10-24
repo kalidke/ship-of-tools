@@ -102,9 +102,9 @@ Every session, on every host, runs as a capsule row (ADR 0042). On Linux, a
 capsule supervisor runs in its own transient user scope
 (`systemctl --user list-units --type=scope` lists it, not under `sotd`'s
 own unit) and survives a daemon restart. On a host with no
-reachable `systemd --user` manager it runs `--survival degraded` instead
-(a warn line in `sotd.log` names why) and shares the daemon's own kill
-domain there.
+reachable `systemd --user` manager it starts in the daemon's own control
+group instead (a warn line in `sotd.log` names why) and shares the daemon's own
+kill domain there.
 
 ## Windows: never launch the daemon from an agent's shell
 

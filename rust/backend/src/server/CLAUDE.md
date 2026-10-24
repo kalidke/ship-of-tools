@@ -107,7 +107,7 @@ of each.
     finish, each under its own request id. A job runs to its end after its connection closes (`Jobs` detaches, never
     aborts), and only its reply is lost.
 11. **An accept error is survived by one policy.** `survive_accept_error` follows `sot_platform::transport::accept_policy`, the
-    policy the capsule's lane acceptors use too: a transient error accepts again, a resource error (EMFILE and kin)
+    policy the row socket's acceptors use too: a transient error accepts again, a resource error (EMFILE and kin)
     waits `ACCEPT_SLEEP` first, and only a dead listener ends the daemon with an error. Accepting stops at the
     deciding lease departure, before any row is touched (`run_local`'s loop breaks on `Leases::gone` and drops the
     listener before `shutdown::run`): that is lifecycle's guarantee 5, held there. Limit: the accept `select!` is not

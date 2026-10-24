@@ -259,7 +259,7 @@ true after the merge of the leg into the supervisor.
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot-capsule supervise`,
 `supervisor_client`, `FeAttachClient`, `rust/backend/src/rows/run/headless.rs`,
-`rust/frontend/src/ui/agent_pane/attach.rs`, `ended`, `screen`, `Endpoint`, `DaemonLaneEndpoint`. Uses:
+`rust/frontend/src/ui/agent_pane/attach.rs`, `ended`, `screen`, `Endpoint`. Uses:
 `DaemonLaneEndpoint`, `lane.connect`, `sot_platform::transport::{Client, TransportError, connect_own}`, `try_lock_daemon`, `preflight_volume`,
 `owner_protected_pipe_descriptor`, `harden_own_stdio`, `inherit_none`, `boot_identity`, `process_created`, `IdentityExchange`, `write_durable`, `remove_durable`, `storage_exhaustion`,
 `Redial`, `STABLE`.
