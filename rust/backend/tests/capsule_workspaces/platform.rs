@@ -470,11 +470,11 @@ fn scope_guard_refuses_everything_the_aim_rule_refuses() {
 /// `systemd --user` manager", so this runs deterministically regardless
 /// of whether a REAL one exists here too), the row still reaches "ready"
 /// — contained, degraded, but never refused — and the daemon reports
-/// exactly why: the supervisor it started carries `--survival degraded`
-/// in its argv (read from `/proc/<pid>/cmdline` for the pid its own
-/// status reports; the degrade is rows' decision, made in
-/// `rows/spawn/detach.rs`), and the daemon's own log names the probe's
-/// stderr.
+/// exactly why: the supervisor it started carries neither
+/// retired flag in its argv (read from `/proc/<pid>/cmdline` for the pid its own
+/// status reports) and its own cgroup is not a `sot-row-*.scope` (the
+/// degrade, rows' decision made in `rows/spawn/detach.rs`), and the
+/// daemon's own log names the probe's stderr.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_launch_degrades_when_no_user_scope_is_available() {
@@ -520,11 +520,17 @@ async fn capsule_launch_degrades_when_no_user_scope_is_available() {
 
     let cmdline = std::fs::read(format!("/proc/{}/cmdline", status.pid))
         .unwrap_or_else(|e| panic!("read /proc/{}/cmdline of the degraded row's supervisor: {e}", status.pid));
-    let argv: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+    let argv: Vec<String> = cmdline.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
     assert!(
-        argv.windows(2).any(|pair| pair == [b"--survival".as_slice(), b"degraded".as_slice()]),
-        "the supervisor's argv must carry --survival degraded when the user scope is denied: {:?}",
-        argv.iter().map(|a| String::from_utf8_lossy(a)).collect::<Vec<_>>()
+        !argv.iter().any(|a| a == "--survival" || a == "--assume-no-rollback-target"),
+        "the supervisor's argv carries a retired flag: {argv:?}"
+    );
+    // The witness of the degrade is the supervisor's own cgroup: it is not in a row scope.
+    let cgroup = cgroup_rel(status.pid);
+    let last_segment = cgroup.rsplit('/').next().unwrap_or("");
+    assert!(
+        !(last_segment.starts_with("sot-row-") && last_segment.ends_with(".scope")),
+        "a denied user scope must leave the supervisor out of a sot-row-*.scope: {cgroup:?}"
     );
 
     let log_path = env.state_root.join("sot").join("sotd.log");

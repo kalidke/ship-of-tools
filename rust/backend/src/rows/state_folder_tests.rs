@@ -195,6 +195,50 @@ fn the_sweep_removes_an_unnamed_folder_and_keeps_one_another_registry_names() {
     assert_eq!(sweep_with(root.path(), &Workspaces::new(), &none_named(), SystemTime::now()), vec!["ws-elsewhere-3".to_string()]);
 }
 
+/// A registered row whose folder holds a `.retired-voyages/` with one file in it.
+fn registered_with_retired(id: &str) -> (tempfile::TempDir, Workspaces, PathBuf) {
+    let (root, folder) = root_with(id);
+    let retired = folder.join(".retired-voyages");
+    std::fs::create_dir_all(retired.join("voyages")).unwrap();
+    std::fs::write(retired.join("drawer.voyage"), b"x").unwrap();
+    let reg = Workspaces::new();
+    let mut ws = Workspace::from_label("live", PathBuf::from("/p/live"), false, "none".into(), String::new(), String::new());
+    ws.workspace_id = id.to_string();
+    reg.insert(ws);
+    (root, reg, retired)
+}
+
+#[test]
+fn a_retired_voyages_folder_goes_a_day_later_and_not_before() {
+    let (root, reg, retired) = registered_with_retired("ws-live-1");
+    let unreadable: Result<HashSet<String>, String> = Err("a registry did not read".into());
+    // Within the floor: kept, whatever the registries say.
+    assert!(sweep_with(root.path(), &reg, &unreadable, SystemTime::now() + Duration::from_secs(3600)).is_empty());
+    assert!(retired.is_dir(), "kept before the day is out");
+    // A day later: removed, and the row's own folder stays.
+    assert!(sweep_with(root.path(), &reg, &unreadable, SystemTime::now() + Duration::from_secs(25 * 3600)).is_empty());
+    assert!(!retired.exists(), "removed a day later");
+    assert!(retired.parent().unwrap().join("ended").is_file(), "the row's own folder is untouched");
+    // Nothing to remove the second time: no error.
+    assert!(sweep_with(root.path(), &reg, &unreadable, later()).is_empty());
+}
+
+#[test]
+fn a_link_named_retired_voyages_is_kept_and_its_target_untouched() {
+    let (root, folder) = root_with("ws-live-1");
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("precious"), b"x").unwrap();
+    let link = folder.join(".retired-voyages");
+    make_link(outside.path(), &link);
+    let reg = Workspaces::new();
+    let mut ws = Workspace::from_label("live", PathBuf::from("/p/live"), false, "none".into(), String::new(), String::new());
+    ws.workspace_id = "ws-live-1".to_string();
+    reg.insert(ws);
+    sweep_with(root.path(), &reg, &none_named(), later());
+    assert!(std::fs::symlink_metadata(&link).is_ok(), "the link stays");
+    assert!(outside.path().join("precious").is_file(), "its target is never entered");
+}
+
 #[test]
 fn the_sweep_with_no_workspaces_folder_does_nothing() {
     let root = tempfile::tempdir().unwrap();

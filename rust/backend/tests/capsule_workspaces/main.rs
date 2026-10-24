@@ -84,6 +84,8 @@ mod platform;
 mod pty;
 #[cfg(target_os = "linux")]
 mod resume;
+#[cfg(target_os = "linux")]
+mod retire;
 mod session_env;
 mod spawn;
 #[cfg(target_os = "linux")]
