@@ -71,3 +71,29 @@ fn a_full_volume_never_stops_output() {
     assert!(arrived, "output stopped while every screen write failed");
     assert!(calls.load(Ordering::SeqCst) >= 2, "the leg did not keep trying: {} writes", calls.load(Ordering::SeqCst));
 }
+
+/// A run over a state folder that holds an earlier run's screen starts its parser from it: a viewer that attaches to the
+/// new run is shown the old screen with a restart line below it, before the agent has written a byte.
+#[test]
+fn a_run_over_a_saved_screen_shows_it_above_a_restart_line() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let marker = "SOT_SAVED_SCREEN_81";
+    let first = config(dir.path(), "restart1", shell_command(&format!("echo {marker}")), 80, 25);
+    let (_tx, rx) = mpsc::channel();
+    capsule::run::<P>(first, rx).expect("the first run ends on its own");
+    assert!(saved_screen_text(dir.path(), "restart1").contains(marker), "the first run saved its screen");
+
+    let side = rowside::RowSide::new();
+    let mut second = config(dir.path(), "restart1", vec![SHELL_ARGV.to_string()], 80, 25);
+    second.signals = Some(Arc::clone(&side.signals));
+    let (tx, rx) = mpsc::channel();
+    let handle = std::thread::spawn(move || capsule::run::<P>(second, rx));
+    let mut viewer = side.watcher(80, 25);
+    let seen = rowside::read_until(&mut viewer, "the old screen above the restart line", Duration::from_secs(20), |seen| {
+        seen.contains("[restarted") && seen.contains(marker)
+    });
+    assert!(seen.find(marker).unwrap() < seen.find("[restarted").unwrap(), "the restart line is below the old screen: {seen:?}");
+    tx.send(Command::Kill).unwrap();
+    let _ = wait_for_join(handle, Duration::from_secs(30)).expect("the second run ends");
+}

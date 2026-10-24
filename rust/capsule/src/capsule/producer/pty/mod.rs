@@ -16,7 +16,7 @@
 //!   closes its own stdio and reopens its controlling tty (legal, real
 //!   producer behavior) yields `EIO` MID-RUN, and the gate then treated
 //!   that first `EIO` as terminal, silently losing every byte written
-//!   after the reopen (a verified voyage with zero producer frames).
+//!   after the reopen (a run whose agent wrote output that the capsule never saw).
 //!   FIX: the capsule itself keeps ONE slave
 //!   `OwnedFd` (opened alongside the master in `spawn`, `CLOEXEC`, never
 //!   read from or written to) for as long as the run lasts. With the

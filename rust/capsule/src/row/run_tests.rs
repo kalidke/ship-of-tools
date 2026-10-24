@@ -86,6 +86,41 @@ fn a_viewer_that_falls_behind_is_resynced_with_one_screen_not_cut() {
     drop(slot);
 }
 
+/// A viewer is sent the screen only at a parser ground state (never inside an escape sequence), as the screen that holds
+/// every byte the parser has seen, and the output after it in order.
+#[test]
+fn a_viewer_joins_only_at_a_ground_state_and_is_then_sent_the_output_in_order() {
+    let run = RowRun::new("r", "ready");
+    let (id, queue, slot) = run.open(Arc::new(|| {})).expect("a slot");
+    let mut parser = vt100_ctt::Parser::new(24, 80, 0);
+    // Half an escape sequence: the parser is not at a ground state.
+    parser.process(b"one\r\n\x1b[3");
+    assert!(!parser.is_ground(), "the premise: a split escape sequence is not a ground state");
+    run.attach(id, 2, 80, 24, false).expect("attach");
+    run.tick(&parser);
+    let ops = |queue: &OutQueue| -> Vec<String> {
+        queue.lock().items.iter().map(|(Out::Frame(f, _), _)| f.op.clone()).collect()
+    };
+    assert_eq!(ops(&queue), [OP_ATTACH], "no screen is cut inside an escape sequence");
+    // The chunk that ends the sequence is already in the parser when the screen is cut, so it is in the screen.
+    parser.process(b"1mtwo");
+    run.output(b"1mtwo", &parser);
+    assert_eq!(ops(&queue), [OP_ATTACH, OP_SNAPSHOT], "the screen is sent at the first ground state");
+    parser.process(b"\r\nthree");
+    run.output(b"\r\nthree", &parser);
+    assert_eq!(ops(&queue), [OP_ATTACH, OP_SNAPSHOT, OP_OUTPUT], "the output after the screen follows in order");
+    let items = queue.lock();
+    let screen = items.items.iter().find_map(|(Out::Frame(f, blob), _)| (f.op == OP_SNAPSHOT).then(|| blob.clone())).flatten();
+    let mut restored = vt100_ctt::Parser::new(24, 80, 0);
+    restored.restore_screen(&screen.expect("the screen has its bytes")).expect("the screen restores");
+    let text = restored.screen().contents();
+    assert!(text.contains("one") && text.contains("two") && !text.contains("three"), "the screen is the parser's at the cut: {text:?}");
+    let output = items.items.iter().find_map(|(Out::Frame(f, blob), _)| (f.op == OP_OUTPUT).then(|| blob.clone())).flatten();
+    assert_eq!(output.as_deref(), Some(&b"\r\nthree"[..]));
+    drop(items);
+    drop(slot);
+}
+
 /// A connection whose reader has ended is still registered while its writer may be flushing, so a shutdown's
 /// `close_all` reaches its stream: a peer that never reads cannot hold the supervisor's exit.
 #[test]
