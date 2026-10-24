@@ -4,6 +4,7 @@ pub(crate) mod detach;
 /// The capsule-only birth parent (Unix): a supervisor is forked after the row's fence is claimed.
 #[cfg(unix)]
 pub(crate) mod durable;
+pub(crate) mod retire_06;
 pub(crate) mod state_root;
 
 /// A4b: a row's own systemd scope is the kill domain of everything the row

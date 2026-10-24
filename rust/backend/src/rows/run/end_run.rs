@@ -107,6 +107,12 @@ pub fn end_run(
     use sot_log::attach_client::supervisor_client::EndRunOutcome as O;
     use sot_log::SupervisorPhase;
 
+    // A row a 0.6 release left is retired first: its old terminal and agent outlive its supervisor, and the row socket
+    // below would answer nothing for it. A Cleanup boot ends rows through here without resuming them.
+    if let Err(e) = crate::rows::spawn::retire_06::retire_06(state_dir) {
+        return Ok(R::NotEnded(format!("retiring the 0.6 row: {e}")));
+    }
+
     // A4b: the row's remembered scopes (`row_scope::SCOPES_FILE`)
     // are ended after the graceful end when a supervisor answers, and
     // before `Unheld` when none does, so no retry and no restarted
@@ -428,8 +434,9 @@ fn absence_proof(state_dir: &Path) -> Result<bool, NotProven> {
 /// `Ok(Some(_))` is the act's result when the fence was free and `silent` found nothing answering; `Ok(None)` is a socket
 /// that answers (the act did not run); `Err` is absence not proven. The act runs under the fence so nothing can take it
 /// between the proof and the act (a removal's rename). It takes the fence with the creating API, so it is for folders no
-/// registered row names (the state-folder sweep and retirement): the boot resume reads registered rows only, so a marker
-/// left by a retirement that failed cannot start an agent. [`absence_proof`] is the observing form.
+/// registered row names (the state-folder sweep and retirement: the boot resume reads registered rows only, so a marker
+/// left by a retirement that failed cannot start an agent) and for a registered row's folder that already holds the
+/// marker, a 0.6 row's (`spawn::retire_06`). [`absence_proof`] is the observing form.
 pub(crate) fn absence_proof_then<T>(
     state_dir: &Path,
     silent: impl FnOnce(&Path) -> Result<bool, String>,

@@ -91,6 +91,8 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
         })
         .collect();
 
+    retire_old_rows_together(&state_root, &workspaces, &candidates).await;
+
     let semaphore = Arc::new(tokio::sync::Semaphore::new(LANE_CONCURRENCY));
     let mut joins = Vec::with_capacity(candidates.len());
     for (workspace_id, agent_kind, project_root, agent_name, slug) in candidates {
@@ -135,6 +137,47 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
     let (sweep_root, sweep_workspaces) = (state_root.clone(), workspaces.clone());
     let _ = tokio::task::spawn_blocking(move || crate::rows::state_folder::sweep_state_folders(&sweep_root, &sweep_workspaces)).await;
     log_orphaned_state_dirs(&state_root, &workspaces);
+}
+
+/// Every candidate whose folder holds the 0.6 layout is retired at once, each in its own task: the semaphore below bounds
+/// spawns, and a retire spawns nothing (its waits are on other processes), so twenty 0.6 rows cost the slowest one, not
+/// five waves of four. A row whose guard is busy is skipped (its holder's launch retires it); a retire that fails is
+/// logged, and the row's resume still runs, where the launch's own retire tries again and the row reads `unreachable`.
+/// Every retire is joined before the resumes start.
+async fn retire_old_rows_together(
+    state_root: &Path,
+    workspaces: &Workspaces,
+    candidates: &[(String, String, PathBuf, String, String)],
+) {
+    let mut joins = Vec::new();
+    for (workspace_id, ..) in candidates {
+        let state_dir = super::state_dir_for(state_root, workspace_id);
+        if matches!(crate::rows::spawn::retire_06::layout(&state_dir), Ok(found) if found.is_empty()) {
+            continue;
+        }
+        let (workspace_id, workspaces) = (workspace_id.clone(), workspaces.clone());
+        joins.push(tokio::spawn(async move {
+            let Some(guard) = workspaces.capsule_guard(&workspace_id) else {
+                return;
+            };
+            let Ok(_held) = guard.try_lock() else {
+                tracing::debug!(workspace_id = %workspace_id, "capsule workspace resume-scan: row's guard busy; its launch retires it");
+                return;
+            };
+            match tokio::task::spawn_blocking(move || crate::rows::spawn::retire_06::retire_06(&state_dir)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(workspace_id = %workspace_id, error = %e, "capsule workspace resume-scan: row resolution failed (retiring the 0.6 row)");
+                }
+                Err(join_err) => {
+                    tracing::warn!(workspace_id = %workspace_id, error = %join_err, "capsule workspace resume-scan: retire task panicked");
+                }
+            }
+        }));
+    }
+    for j in joins {
+        let _ = j.await;
+    }
 }
 
 /// The reverse of the sweep above: a REGISTERED

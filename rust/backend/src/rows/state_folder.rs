@@ -1,6 +1,7 @@
 //! Removing a row's state folder: a close renames it to a tombstone and removes that; the start sweep removes tombstones and any folder no registry names (an older daemon's, a window close's, one a close kept).
 
 use crate::rows::run::end_run::{absence_proof_then, row_socket_silent, NotProven};
+use crate::rows::spawn::retire_06::RETIRED_DIR;
 use crate::rows::Workspaces;
 use std::collections::HashSet;
 use std::io;
@@ -132,6 +133,32 @@ fn finish_tombstone(workspaces_dir: &Path, tombstone: &str) -> Removal {
     }
 }
 
+/// Remove the `.retired-voyages/` a 0.6 retire left in a row's folder, registered or not, a day after it was made (creating
+/// it sets its time and nothing else writes into it). The folder is not followed if it is a link, and the row's own
+/// folder is untouched. A failure is tried again at the next start.
+fn finish_retired_voyages(workspaces_dir: &Path, id: &str, now: SystemTime) -> Removal {
+    if let Err(removal) = check_real_dirs(workspaces_dir, id) {
+        return removal;
+    }
+    let retired = workspaces_dir.join(id).join(RETIRED_DIR);
+    match std::fs::symlink_metadata(&retired) {
+        Ok(m) if m.file_type().is_dir() => {
+            let aged = m.modified().ok().and_then(|made| now.duration_since(made).ok()).is_some_and(|age| age >= AGE_FLOOR);
+            if !aged {
+                return Removal::Kept("made within the age floor");
+            }
+        }
+        Ok(_) => return Removal::Kept("not a real directory"),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Removal::Gone,
+        Err(_) => return Removal::Kept("cannot be read"),
+    }
+    match std::fs::remove_dir_all(&retired) {
+        Ok(()) => Removal::Removed,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Removal::Gone,
+        Err(e) => Removal::Failed(e.to_string()),
+    }
+}
+
 /// The newest modification time of `root` and everything under it, reading each entry's own metadata and never
 /// following a link.
 fn newest_write(root: &Path) -> io::Result<SystemTime> {
@@ -216,6 +243,10 @@ pub(crate) fn sweep_with(
         if matches!(removal, Removal::Kept(_) | Removal::Failed(_)) {
             kept.push(name.clone());
         }
+    }
+    for name in names.iter().filter(|n| is_row_folder_name(n)) {
+        let removal = finish_retired_voyages(&workspaces_dir, name, now);
+        log_removal(&workspaces_dir.join(name).join(RETIRED_DIR), "a 0.6 retire moved it aside", &removal);
     }
     let named = match named {
         Ok(named) => named,

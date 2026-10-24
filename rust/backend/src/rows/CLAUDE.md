@@ -71,6 +71,35 @@ Supervisor:
   guard. Limits: a supervisor whose death is not confirmed within `Watch::end`'s 5 s (a slow teardown, a listener lost
   for good) is left to the redial, whose failed dials establish no exit, so it reads `unreachable` or keeps its rest
   until it is selected; a row whose recipe cannot be built is logged and left as such.
+- A row a 0.6 release left is retired before it is started or ended (`spawn/retire_06.rs`, deleted in the release after
+  0.7.0). A 0.6 `stop` ends only the supervisor: its terminal (`sot-capsule run`) and the agent under it live on, so a
+  start over such a folder would run a second agent beside the old one. The folder is known by its layout (an entry
+  named `voyages`, `drawer.voyage`, `supervisor-journal` or `rollout-evidence.json`, or `drawer.voyage.` and more; a
+  0.7 folder costs one directory read), and one function, called by the launch (`spawn_detached_supervisor`, before
+  anything starts) and by `end_run` (before it judges a row; a Cleanup boot ends rows without resuming them), does
+  the rest under the row's guard. It dials the old supervisor's frozen lane (`supervisor-<h>.sock`, the pipe on Windows;
+  the frames are restated in the file, with the two 0.6 fixtures beside it as test data) through the challenge,
+  sending nothing to a peer that does not prove; asks a `ready` run to end (`end_run` on the voyage its status names,
+  waiting out a starting or ending supervisor, 90 s for the whole wait); sends `stop` (5 s for its reply), drops the
+  connection and waits 20 s for the process to exit, else re-verifies and terminates it and waits 10 s more; on Linux
+  ends the supervisor's scope after it exits. Then under the fence, with the row socket silent: every 0.6 terminal's
+  `writer.lock` is tried and dropped at once (a held one is an error naming it, since a terminal that outlives its
+  supervisor is 0.6's design and only the person can end it), a requested end is made durable (`ended`, by
+  `mark_end_requested`) before anything moves, and the layout moves into `.retired-voyages/`. An end the retire asked
+  for is not a person's, so such a row starts fresh and resumes the conversation; an end a person asked for under 0.6
+  is kept, so the row rests until selected: it is read from the live supervisor's `ended_no_respawn` or, when none
+  lives, from the 0.6 journal (an `end_run` on the pointer's voyage whose record closed or verified, never one with
+  the retire's operation id `sot-retire-`; anything present that cannot be read rests the row, since a wrong rest is
+  undone by one selection and a wrong start cannot be undone). A retire that fails leaves the row `unreachable`,
+  retried at every start, never latched `terminal`. The boot resume retires every such row at once, each in its own
+  task, before the semaphore that bounds spawns: a retire spawns nothing, so twenty 0.6 rows cost the slowest one
+  (about 135 s worst case, a few seconds usually), plus the resume. Limits: ends are in waves of `LANE_CONCURRENCY` (a
+  close or a Cleanup boot that meets 0.6 rows ends them four at a time inside `SHUTDOWN_BOUND`; a row not ended by the
+  bound is counted not ended, stays registered and is retired at the next start); a 0.6 agent that outlives its terminal
+  (a descendant that ignores SIGHUP, 0.6's limit) is ended only on Linux, by the scope; an unregistered 0.6 folder is
+  never retired and the whole-folder sweep keeps its rules; a 0.6 session's comm commands are refused between the
+  install and its row's retire; rows of main builds from 6a to 6c-1c1 are not read; a retire retried after its own
+  `end_run` landed and its stop failed reads the rest it caused as the person's.
 - No start begins once the close has begun: `Workspaces::begin_start` refuses after `close_gate_and_settle`, which waits
   for the starts already admitted (`gate.rs`).
 - A row's phase follows its current supervisor, run by run. The phase cell is written by the observer through
@@ -96,7 +125,8 @@ Supervisor:
   watchdog's recheck act on it. A folder without the file reads `stopped` (never started). Nothing that only observes a
   row creates the file: `end_run` under the row's guard (every caller holds it, and no start begins without it) reads a
   missing file as never started and takes nothing; only the state-folder sweep and retirement, which work on folders no
-  registered row names (the boot resume reads registered rows only), take the fence with the creating API. Limit
+  registered row names (the boot resume reads registered rows only), and the 0.6 retire, which works on a folder that
+  already holds the file, take the fence with the creating API. Limit
   (Windows): the supervisor is spawned before it takes its fence (`spawn/detach.rs`), so one that exits in that window
   leaves no marker for the recheck or the boot resume.
 
@@ -124,6 +154,9 @@ Ends:
 - The start sweep removes every tombstone, and removes a state folder no registry names only on a whole load of every
   registry, when nothing runs in it, it holds no `row-scopes` record and nothing in it was written for 24 hours; a link
   at or inside the `workspaces` folder is never followed (`state_folder.rs`).
+  It also removes, in every row folder, registered or not, the `.retired-voyages/` a 0.6 retire made once its own time
+  is 24 hours old (the sweep never looks inside a registered row's folder otherwise); a failure is tried again at the
+  next start, and a link of that name is kept.
 
 Work-state. A row with a joined agent has one work-state, which the window shows as the color of its name:
 
@@ -238,7 +271,7 @@ restarts a live one in place.
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`.
 - `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `end_default_row_run`, `default_row_launch_seed`,
   `seed_default_row`.
-- `state_folder.rs`: `close_row_folder`, the start sweep (`sweep_with`, `sweep_state_folders`), `retire`,
+- `state_folder.rs`: `close_row_folder`, the start sweep (`sweep_with`, `sweep_state_folders`), `retire`, `finish_retired_voyages`,
   `is_row_folder_name`, `AGE_FLOOR`.
 
 ## Start here

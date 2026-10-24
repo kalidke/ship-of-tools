@@ -180,23 +180,20 @@ pub(crate) fn supervisor_stderr_std() -> Stdio {
 }
 
 /// Launch `sot-capsule supervise <state_dir> <--start|--resume>
-/// --survival <normal|degraded> --assume-no-rollback-target
 /// [--first-leg-only <tok>]... -- <agent argv>` DETACHED, so the supervisor authority survives the
 /// daemon's own exit — the daemon must not be its kill domain (ADR
 /// 0042 L1a). On Unix the durable parent forks it after claiming the
 /// row's authority fence (`durable`, ADR 0043 decision 37): a claimed
-/// fence is [`Spawn::Contended`] and nothing is started. `--survival`
-/// is decided by [`spawn_detached`]'s own escape attempt, never
-/// guessed here; on Linux that SAME attempt also decides `scoped`,
-/// `line`'s second parameter — whether the command line starts with
+/// fence is [`Spawn::Contended`] and nothing is started. On Linux
+/// [`spawn_detached`]'s own escape attempt decides `scoped`, `line`'s
+/// parameter — whether the command line starts with
 /// `systemd-run --user --scope … --` (the escape) or with
 /// `<sot-capsule>` directly (bare) — so the shared tail (`supervise`,
-/// `state_dir`, mode, survival, `--assume-no-rollback-target`,
-/// [`first_leg_only`]'s pairs, argv)
+/// `state_dir`, mode, [`first_leg_only`]'s pairs, argv)
 /// is written ONCE regardless of which head it lands on. `scoped` is
-/// always `false` on Windows (no scope concept there).
-/// `--assume-no-rollback-target` is accepted and ignored by `sot-capsule supervise` (the gate it answered is gone);
-/// the launch still passes it until the row socket pass drops it. The nesting env vars
+/// always `false` on Windows (no scope concept there). A supervisor
+/// launched outside a scope is known by its own cgroup, which is not a
+/// `sot-row-*.scope`; no flag says so. The nesting env vars
 /// are scrubbed, and a row created with a handle has it in its pinned
 /// self file before the leg starts (`self_file::pin_row`).
 ///
@@ -215,6 +212,10 @@ pub(crate) fn supervisor_stderr_std() -> Stdio {
 /// against `cwd` (every caller passes its `project_root` here) —
 /// unlike the root check above this one DOES need `state_dir`, since
 /// nesting is a property of THIS row, not of the machine.
+///
+/// A third step before anything starts: a row a 0.6 release left is retired
+/// ([`super::retire_06`]), or the launch fails and nothing starts. The caller
+/// holds the row's guard.
 pub(crate) fn spawn_detached_supervisor(
     _permit: &StartPermit,
     sot_capsule_exe: &Path,
@@ -241,6 +242,8 @@ pub(crate) fn spawn_detached_supervisor(
             ),
         ));
     }
+    super::retire_06::retire_06(state_dir)
+        .map_err(|e| std::io::Error::other(format!("retiring the 0.6 row: {e}")))?;
     let account_env_extra = crate::agents::env::account_spawn_env(agent_kind, account, cwd, workspace_id)?;
     let supervisor_env = capsule_supervisor_env(workspace_id, slug, cwd, agent_kind);
     // A row created with a handle keeps it: its pinned self file names it before the session first joins. A file that
@@ -249,7 +252,7 @@ pub(crate) fn spawn_detached_supervisor(
         crate::comm::identity::self_file::pin_row(Path::new(&self_file), agent_name, cwd).map_err(std::io::Error::other)?;
     }
     // The command line: the scope head when a scope is granted, then `sot-capsule supervise <state_dir> <mode> ...`.
-    let line = |survival: &str, scoped: bool| -> Line {
+    let line = |scoped: bool| -> Line {
         let mut args: Vec<std::ffi::OsString> = Vec::new();
         let program = if scoped {
             args.extend(
@@ -269,11 +272,6 @@ pub(crate) fn spawn_detached_supervisor(
         };
         args.extend(["supervise".into(), state_dir.into(), mode_flag(mode).into()]);
         let inject_at = args.len();
-        args.extend([
-            "--survival".into(),
-            survival.into(),
-            "--assume-no-rollback-target".into(),
-        ]);
         args.extend(first_leg_only(agent_argv).into_iter().map(std::ffi::OsString::from));
         args.push("--".into());
         args.extend(agent_argv.iter().map(std::ffi::OsString::from));
@@ -336,9 +334,9 @@ fn systemd_run_path() -> Option<PathBuf> {
 /// `std::process::Command`). A denied breakaway
 /// (`ERROR_ACCESS_DENIED` — this daemon's own job forbids it: CI, or
 /// a terminal that is itself inside a job) is not refused: the SAME
-/// spawn is retried without the flag, logged once, and launched
-/// `--survival degraded` — the daemon reports its containment, it
-/// never fabricates it as an error (ADR 0043 decision 32, revised).
+/// spawn is retried without the flag and logged once — the daemon
+/// reports its containment, it never fabricates it as an error (ADR
+/// 0043 decision 32, revised).
 /// Any OTHER spawn error propagates unchanged. `scoped` has no
 /// Windows meaning (no scope concept there) — `line` is always
 /// called with `false`; `workspace_id` is the Linux twin's own
@@ -346,15 +344,15 @@ fn systemd_run_path() -> Option<PathBuf> {
 /// shared across the signature both platforms call through.
 #[cfg(windows)]
 fn spawn_detached(
-    line: impl Fn(&str, bool) -> Line,
+    line: impl Fn(bool) -> Line,
     env: impl Fn() -> Vec<(std::ffi::OsString, std::ffi::OsString)>,
     state_dir: &Path,
     cwd: &Path,
     workspace_id: &str,
 ) -> std::io::Result<Spawn> {
     let _ = workspace_id;
-    let build = |survival: &str| -> Command {
-        let l = line(survival, false);
+    let build = || -> Command {
+        let l = line(false);
         let mut cmd = Command::new(&l.program);
         cmd.args(&l.args)
             .current_dir(cwd)
@@ -367,7 +365,7 @@ fn spawn_detached(
         }
         cmd
     };
-    let mut cmd = build("normal");
+    let mut cmd = build();
     cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
     #[allow(clippy::disallowed_methods, reason = "a capsule supervisor outlives the daemon by design (ADR 0043, ADR 0046)")]
     let first = cmd.spawn();
@@ -378,7 +376,7 @@ fn spawn_detached(
                 "capsule supervisor: this daemon's own job forbids breakaway; the supervisor \
                  is contained in it and will not outlive it (ADR 0043 decision 32)"
             );
-            let mut cmd = build("degraded");
+            let mut cmd = build();
             cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
             #[allow(clippy::disallowed_methods, reason = "a capsule supervisor outlives the daemon by design (ADR 0043, ADR 0046)")]
             let degraded = cmd.spawn();
@@ -484,10 +482,8 @@ pub(crate) fn user_scope_available() -> std::io::Result<()> {
 
 /// Linux: attempts the platform's escape from the daemon's own kill
 /// domain — a transient user scope, probed once per launch by
-/// [`user_scope_available`]. A granted probe launches `line("normal",
-/// true)` — the `systemd-run … --scope` head in front of the same
-/// supervisor command line; a denied probe launches `line("degraded",
-/// false)`, one warn line naming `workspace_id`, `state_dir` and the
+/// [`user_scope_available`]. A granted probe launches `line(true)` — the `systemd-run … --scope` head in front of the same
+/// supervisor command line; a denied probe launches `line(false)`, one warn line naming `workspace_id`, `state_dir` and the
 /// denial (ADR 0043 decision 32). `systemd-run --scope` execs the
 /// supervisor in place (verified on systemd 249), so the session set by
 /// the launcher's `setsid` and the claim descriptors the durable parent
@@ -501,7 +497,7 @@ pub(crate) fn user_scope_available() -> std::io::Result<()> {
 /// doc for why that platform needs no escape.
 #[cfg(target_os = "linux")]
 fn spawn_detached(
-    line: impl Fn(&str, bool) -> Line,
+    line: impl Fn(bool) -> Line,
     env: impl Fn() -> Vec<(std::ffi::OsString, std::ffi::OsString)>,
     state_dir: &Path,
     cwd: &Path,
@@ -528,7 +524,7 @@ fn spawn_detached(
         }
     };
     launch_through_durable_parent(
-        line(if scoped { "normal" } else { "degraded" }, scoped),
+        line(scoped),
         env(),
         state_dir,
         cwd,
@@ -567,8 +563,7 @@ fn spawn_detached(
 /// macOS: the Linux twin's body minus the probe. There is no
 /// transient-scope equivalent to attempt — `systemd-run --user
 /// --scope` is a systemd mechanism, not a Unix one — and none is
-/// needed, so `"normal"` is the honest survival value here rather
-/// than a concession: launchd reaps a stopped job by killing its
+/// needed: launchd reaps a stopped job by killing its
 /// process group unless `AbandonProcessGroup` is set, and `setsid`
 /// puts the supervisor in a brand-new session and process group
 /// before the exec, already outside that domain. `line`'s `scoped`
@@ -582,13 +577,13 @@ fn spawn_detached(
 /// why this arm is plausible, not why it is proven.
 #[cfg(target_os = "macos")]
 fn spawn_detached(
-    line: impl Fn(&str, bool) -> Line,
+    line: impl Fn(bool) -> Line,
     env: impl Fn() -> Vec<(std::ffi::OsString, std::ffi::OsString)>,
     state_dir: &Path,
     cwd: &Path,
     _workspace_id: &str,
 ) -> std::io::Result<Spawn> {
-    launch_through_durable_parent(line("normal", false), env(), state_dir, cwd)
+    launch_through_durable_parent(line(false), env(), state_dir, cwd)
 }
 
 /// The Unix launch: the durable parent claims the row's fence, forks the supervisor into a session of its own (the

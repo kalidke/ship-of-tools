@@ -171,7 +171,7 @@ async fn capsule_create_is_refused_on_an_unqualified_state_root() {
 /// ADR 0043 decision 32 (revised): a daemon that finds itself inside a job
 /// forbidding breakaway is never refused the launch over its own
 /// containment — it retries the spawn without `CREATE_BREAKAWAY_FROM_JOB`,
-/// logs once, and the row still reaches "ready" (`--survival degraded`).
+/// logs once, and the row still reaches "ready", contained.
 /// Honest for a hosted CI runner too, which keeps its own processes inside
 /// a job lacking `JOB_OBJECT_LIMIT_BREAKAWAY_OK` regardless of this test's
 /// own explicit assignment below — the row reaching ready is asserted
@@ -521,10 +521,9 @@ async fn capsule_launch_degrades_when_no_user_scope_is_available() {
     let cmdline = std::fs::read(format!("/proc/{}/cmdline", status.pid))
         .unwrap_or_else(|e| panic!("read /proc/{}/cmdline of the degraded row's supervisor: {e}", status.pid));
     let argv: Vec<String> = cmdline.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-    assert!(
-        !argv.iter().any(|a| a == "--survival" || a == "--assume-no-rollback-target"),
-        "the supervisor's argv carries a retired flag: {argv:?}"
-    );
+    // `sot-capsule supervise <state_dir> <mode> -- <agent argv>`: no flag between the mode and the agent's argv.
+    assert_eq!(argv.get(1).map(String::as_str), Some("supervise"), "{argv:?}");
+    assert_eq!(argv.get(4).map(String::as_str), Some("--"), "the supervisor's argv carries a flag the launch no longer passes: {argv:?}");
     // The witness of the degrade is the supervisor's own cgroup: it is not in a row scope.
     let cgroup = cgroup_rel(status.pid);
     let last_segment = cgroup.rsplit('/').next().unwrap_or("");
