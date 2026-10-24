@@ -11,8 +11,7 @@ that. Messaging reads one fact of it, the supervisor's argv (guarantee 13). It h
 folder (`supervisor.lock`, `screen`, `ended`) and its row socket.
 
 ## Guarantees
-Each states what the rest may rely on, the mechanism it rests on, its limit, and the test that holds it (the Tests table
-lists where each lives). A test of a Windows or macOS arm runs on the hosted runner for its OS;
+A test of a Windows or macOS arm runs on the hosted runner for its OS;
 `tests/supervisor/` runs on Linux and Windows, and `tests/row_management.rs` on Linux only.
 
 1. **One authority per state folder.** The supervisor takes `<state_dir>/supervisor.lock` (platform's kernel lock,
@@ -97,8 +96,9 @@ lists where each lives). A test of a Windows or macOS arm runs on the hosted run
    behind the one input thread, `delivery unknown` when the loop did not answer in 2 s (it may still write; the client
    never sends it again), and `run ended` for input that names another run than the current one, input still queued
    when the run changes, and input that arrives once the run's loop has been left (a request arriving after the end is
-   answered at once, until the next run starts). Every write to the terminal, typed input and the host's DA1 reply, goes
-   through that one thread (`row/input.rs`), so the main loop never blocks on a terminal whose agent reads nothing; the
+   answered at once, until the next run starts). The wire input's `run` field is optional: an unnamed input targets
+   the current run at admission and is fenced to it while queued. Every write to the terminal, typed input and the
+   host's DA1 reply, goes through that one thread (`row/input.rs`), so the main loop never blocks on a terminal whose agent reads nothing; the
    run retires it within 2 s of its end. The loop drains at most 16 requests a pass and keeps at most one wake pending,
    so output, ticks and exit checks still run under a flood. The client tags each input with the run it was typed into
    and answers one left over when the connection comes back to another run `run ended`, counted, never written; input
@@ -218,7 +218,7 @@ the terminal and its producers, the vt100 parser, the screen file `<state_dir>/s
 `RowClient`, the input thread, the hello's exchange and payloads, the four management ops and the watch); the attach
 client every viewer uses and the daemon's calls on a row's supervisor (`src/attach_client/`); the endpoint seam
 (`src/endpoint.rs`: `Endpoint` and the two endpoints that resolve a row's socket path and hand back platform's
-client). The state folder holds nothing else of the capsule's. The crate's `Error` is `Io`, `Json`, `Schema`, `State`
+client). The crate's `Error` is `Io`, `Json`, `Schema`, `State`
 (a held lock and other refusals the caller acts on), `VersionSkew`, `Transport` and, on Windows, the ConPTY and job
 failures; `storage_exhaustion` reads it through platform's native storage table.
 
@@ -255,7 +255,7 @@ kill-on-close job and a named pipe with the owner-only descriptor on every insta
 supervisor itself. The helper binaries `sot-pty-helper` and `sot-conpty-helper` are test fixtures and never ship.
 
 ## Tests
-One row per guarantee. Paths are under `rust/capsule/` (`src/` for unit tests, `tests/` for integration) unless they
+Paths are under `rust/capsule/` (`src/` for unit tests, `tests/` for integration) unless they
 start `rust/` or name the backend; the integration binaries are named by their file or folder.
 
 | # | guarantee | test |
