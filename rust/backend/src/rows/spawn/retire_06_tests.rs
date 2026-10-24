@@ -186,6 +186,20 @@ fn a_0_6_requested_end_is_read_from_the_journal() {
     bad_closed.active(1, "sot-backend-end-run-a", "end_run", V);
     bad_closed.put(&format!("{}.closed", digest(1)), "[]");
     assert!(bad_closed.says().is_err());
+    // A matching end's completion entry that is present and not a regular file rests the row, never starts it.
+    let closed_dir = Folder::new(Some(V));
+    closed_dir.active(1, "sot-backend-end-run-a", "end_run", V);
+    std::fs::create_dir(closed_dir.dir.path().join("supervisor-journal").join(format!("{}.closed", digest(1)))).unwrap();
+    assert!(closed_dir.says().is_err());
+    #[cfg(unix)]
+    {
+        let terminal_link = Folder::new(Some(V));
+        terminal_link.active(1, "sot-backend-end-run-a", "end_run", V);
+        terminal_link.terminal(2, "record_verified");
+        let journal = terminal_link.dir.path().join("supervisor-journal");
+        std::os::unix::fs::symlink(journal.join(format!("{}.terminal", digest(2))), journal.join(format!("{}.terminal", digest(1)))).unwrap();
+        assert!(terminal_link.says().is_err());
+    }
     let no_op = Folder::new(Some(V));
     no_op.put(&format!("{}.active", digest(1)), r#"{"schema_version":1,"operation_id":"x","op":{}}"#);
     assert!(no_op.says().is_err());
