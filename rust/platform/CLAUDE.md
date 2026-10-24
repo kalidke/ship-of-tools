@@ -188,6 +188,10 @@ Windows or macOS arm runs on the hosted runner for its OS.
 ## Rules
 - Every subscriber a test installs goes through `test_log`: `capture()` reads this thread's events without formatter
   timestamps or colour; `install()` preserves the supplied subscriber's formatting and timer. Behavioral tests exercise
-  first-callsite routing, parallel captures and guard restoration; new callers use this owner.
-- Every Rust source-text scan reads through `test_scan`, and none cuts a file at its first `#[cfg(test)]`
-  (`test_scan_tests.rs`: `no_scan_cuts_a_file_at_its_first_cfg_test`).
+  first-callsite routing, parallel captures and guard restoration; new callers use this owner. Existing exceptions, not
+  edited here: the wake's `comm/wake/attempt_tests.rs` and the updater's `update_tests.rs` install a `tracing_subscriber`
+  directly.
+- A Rust source-text scan that exists reads through `test_scan`, and none cuts a file at its first `#[cfg(test)]`
+  (`test_scan_tests.rs`: `no_scan_cuts_a_file_at_its_first_cfg_test`); an existing scan is never extended, and no new
+  test proves what code does by reading source text. One exception, not edited here: `backend/tests/admission.rs` reads
+  the op module's source directly (`op_names`).
