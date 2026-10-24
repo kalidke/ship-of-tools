@@ -1,8 +1,8 @@
 use super::*;
 use sot_platform::transport::TransportError;
 
-fn io_transport(kind: std::io::ErrorKind) -> sot_log::Error {
-    sot_log::Error::Transport(TransportError::Io {
+fn io_transport(kind: std::io::ErrorKind) -> sot_capsule::Error {
+    sot_capsule::Error::Transport(TransportError::Io {
         op: "connect",
         source: std::io::Error::new(kind, "test"),
     })
@@ -22,8 +22,8 @@ fn a_reachable_but_refusing_lane_is_never_orphaned() {
     // The lane DID answer (a foreign build, a version skew, or
     // some other live-but-unresponsive shape) -- none of these
     // may ever be folded into "nothing is running here".
-    assert!(!is_definitely_orphaned(&sot_log::Error::VersionSkew));
-    assert!(!is_definitely_orphaned(&sot_log::Error::State(
+    assert!(!is_definitely_orphaned(&sot_capsule::Error::VersionSkew));
+    assert!(!is_definitely_orphaned(&sot_capsule::Error::State(
         "supervisor lane challenge: foreign".to_string()
     )));
 }

@@ -7,7 +7,7 @@ use super::UNREACHABLE_PHASE;
 use crate::rows::gate::StartPermit;
 use crate::rows::spawn::detach::{sot_capsule_exe, spawn_detached_supervisor, Spawn};
 use crate::rows::Workspaces;
-use sot_log::supervisor::StartMode;
+use sot_capsule::supervisor::StartMode;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -99,7 +99,7 @@ pub fn spawn_and_watch(
 ///
 /// Rule C (shrink round): does NOT create the state directory —
 /// `sot-capsule supervise` creates its own (`supervise_inner`'s first
-/// act, `rust/log/src/supervisor/`) once it actually runs, so a
+/// act, `rust/capsule/src/supervisor/`) once it actually runs, so a
 /// synchronous spawn failure here leaves nothing behind at all, not
 /// even an empty directory a later `phase_of` could misread.
 ///
@@ -168,7 +168,7 @@ pub fn start_supervisor(
 /// `reauth::reset_replacement_run` both come through here.
 pub(crate) fn reset_run(workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<(), String> {
     let _permit = workspaces.begin_start(workspace_id)?;
-    sot_log::attach_client::supervisor_client::reset(state_dir).map_err(|e| e.to_string())
+    sot_capsule::attach_client::supervisor_client::reset(state_dir).map_err(|e| e.to_string())
 }
 
 /// Bound for [`settle_after_spawn`] — the ONE deadline every spawn

@@ -3,7 +3,7 @@
 //! real `sotd`, prints `filed` only for a handle whose `last_seen` is under ten minutes old,
 //! and the daemon that runs a row keeps that stamp fresh, so an idle row stays live.
 //!
-//! Run `cargo build -p sot-log --bin sot-capsule` into the same target dir first, as for
+//! Run `cargo build -p sot-capsule --bin sot-capsule` into the same target dir first, as for
 //! `capsule_workspaces`.
 
 use std::path::{Path, PathBuf};
@@ -136,7 +136,7 @@ fn write_sleeping_claude(dir: &Path) {
 #[tokio::test]
 async fn an_idle_row_stays_live_while_its_daemon_is_down() {
     let _serial = SERIAL.lock().await;
-    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-log --bin sot-capsule)");
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-capsule --bin sot-capsule)");
     let env = Env::new("cs2");
     let stub_dir = env._tmp.path().join("stubbin");
     write_sleeping_claude(&stub_dir);

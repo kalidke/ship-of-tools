@@ -296,13 +296,13 @@ fn daemon_log(env: &Env) -> String {
 async fn status_of(state_dir: &std::path::Path) -> Option<(i32, u64, bool)> {
     let dir = state_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        sot_log::attach_client::supervisor_client::query_status(&dir)
+        sot_capsule::attach_client::supervisor_client::query_status(&dir)
             .ok()
             .map(|(report, _)| {
                 (
                     report.pid as i32,
                     report.created,
-                    report.phase == sot_log::SupervisorPhase::Ready,
+                    report.phase == sot_capsule::SupervisorPhase::Ready,
                 )
             })
     })

@@ -92,7 +92,7 @@ fn standin_process() {
         (PathBuf::from(dir), std::env::var("SOT_RETIRE_STANDIN_COUNT").unwrap().parse::<usize>().unwrap())
     });
 
-    let mut fence = Some(sot_log::supervisor::journal::fence::lock_supervisor(&state_dir).expect("hold the fence"));
+    let mut fence = Some(sot_capsule::supervisor::fence::lock_supervisor(&state_dir).expect("hold the fence"));
     let mut writer = Some(sot_platform::host::lock_writer(&state_dir.join("voyages").join(V).join("writer.lock")).expect("hold the writer lock"));
     let listener = UnixListener::bind(&sock).expect("bind the old supervisor's socket");
     let pid = std::process::id();
@@ -228,7 +228,7 @@ impl OldRow {
 
     async fn stop_new_supervisor(&self) {
         let dir = self.state_dir.clone();
-        let _ = tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::stop(&dir)).await;
+        let _ = tokio::task::spawn_blocking(move || sot_capsule::attach_client::supervisor_client::stop(&dir)).await;
     }
 }
 
@@ -293,7 +293,7 @@ async fn a_0_6_rows_requested_end_is_kept_at_boot() {
     poll_for_phase(&mut conn, &mut next_id, &row.id, "ended_no_respawn", BOUND.max(Duration::from_secs(90))).await;
 
     row.assert_layout_retired();
-    let ended = sot_log::capsule::read_ended(&row.state_dir).expect("read the ended record").expect("an ended record");
+    let ended = sot_capsule::capsule::read_ended(&row.state_dir).expect("read the ended record").expect("an ended record");
     assert!(ended.requested, "{ended:?}");
 
     row.stop_new_supervisor().await;

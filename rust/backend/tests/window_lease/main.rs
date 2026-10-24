@@ -312,7 +312,7 @@ fn stamped(log: &str, needle: &str) -> f64 {
 #[cfg(target_os = "linux")]
 async fn stop_supervisor(state_dir: &Path) {
     let dir = state_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::stop(&dir))
+    tokio::task::spawn_blocking(move || sot_capsule::attach_client::supervisor_client::stop(&dir))
         .await
         .unwrap()
         .expect("stop the ready row's supervisor through its lane");
@@ -321,10 +321,10 @@ async fn stop_supervisor(state_dir: &Path) {
 /// The "slow row": its supervisor stopped through its lane, then its fence
 /// held here, so no end of it can be proven.
 #[cfg(target_os = "linux")]
-async fn slow_row(state_dir: &Path) -> sot_log::supervisor::journal::fence::SupervisorLock {
+async fn slow_row(state_dir: &Path) -> sot_capsule::supervisor::fence::SupervisorLock {
     stop_supervisor(state_dir).await;
     let dir = state_dir.to_path_buf();
-    poll_until(|| { let dir = dir.clone(); async move { sot_log::supervisor::journal::fence::lock_supervisor(&dir).ok() } }, BOUND, "the row's fence").await
+    poll_until(|| { let dir = dir.clone(); async move { sot_capsule::supervisor::fence::lock_supervisor(&dir).ok() } }, BOUND, "the row's fence").await
 }
 
 #[cfg(target_os = "linux")]

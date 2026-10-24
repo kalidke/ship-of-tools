@@ -5,8 +5,8 @@ use super::*;
 /// ADR 0042 amendment (2026-09-07), "a session types into and reads a
 /// sibling row": the daemon-side proof that `pty.input`/`pty.screen`
 /// actually reach a real capsule row over the wire, end to end — the
-/// `sot_log::attach_client::client` mechanics themselves are proven directly in
-/// `rust/log/tests/fe_client/`'s own `headless_*` tests; this test's
+/// `sot_capsule::attach_client::client` mechanics themselves are proven directly in
+/// `rust/capsule/tests/fe_client/`'s own `headless_*` tests; this test's
 /// job is only "does the WIRE OP reach that machinery and answer
 /// correctly for a real daemon."
 #[tokio::test]
@@ -16,7 +16,7 @@ async fn capsule_pty_input_and_screen_reach_a_real_row_and_leave_the_lane_clean(
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -114,8 +114,8 @@ async fn capsule_pty_input_and_screen_reach_a_real_row_and_leave_the_lane_clean(
     // either.
     let state_dir = crate::state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
     let (_woke, wake) = wake_flag_for_test();
-    let mut test_client = sot_log::attach_client::client::FeAttachClient::attach(
-        sot_log::endpoint::PlatformEndpoint::default(),
+    let mut test_client = sot_capsule::attach_client::client::FeAttachClient::attach(
+        sot_capsule::endpoint::PlatformEndpoint::default(),
         sot_platform::host::state_dir::state_dir_hash(&state_dir),
         80,
         24,
@@ -331,8 +331,8 @@ async fn capsule_pty_input_enter_not_sent_on_a_pen_steal_between_text_and_enter(
 
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
 
-    let mut stealer = sot_log::attach_client::client::FeAttachClient::attach_headless(
-        sot_log::endpoint::PlatformEndpoint::default(),
+    let mut stealer = sot_capsule::attach_client::client::FeAttachClient::attach_headless(
+        sot_capsule::endpoint::PlatformEndpoint::default(),
         sot_platform::host::state_dir::state_dir_hash(&state_dir),
     )
     .expect("attach the stealer client");

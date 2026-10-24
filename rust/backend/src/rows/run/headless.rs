@@ -4,8 +4,8 @@ use std::path::Path;
 use sot_protocol::PtyEnter;
 use std::time::{Duration, Instant};
 
-use sot_log::endpoint::PlatformEndpoint;
-use sot_log::attach_client::client::{FeAttachClient, InputOutcome, TAKE_QUEUE_CAP};
+use sot_capsule::endpoint::PlatformEndpoint;
+use sot_capsule::attach_client::client::{FeAttachClient, InputOutcome, TAKE_QUEUE_CAP};
 use sot_platform::host::state_dir::state_dir_hash;
 
 /// This daemon build's own concrete attach client — always the real

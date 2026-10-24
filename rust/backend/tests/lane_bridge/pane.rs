@@ -105,7 +105,7 @@ async fn a_busy_pane_over_a_slow_link_converges() {
 }
 
 // -----------------------------------------------------------------------
-// (viii) `rust/log/tests/fe_client/`'s own pen-contention proof,
+// (viii) `rust/capsule/tests/fe_client/`'s own pen-contention proof,
 // repeated through the bridge: a headless write via the daemon's OWN
 // `pty.input` demotes the bridged FE; its next input retakes; watcher
 // screen reads never take.

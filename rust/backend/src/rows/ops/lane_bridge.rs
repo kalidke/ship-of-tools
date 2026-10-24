@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use sot_platform::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
-use sot_log::endpoint::{Endpoint, PlatformEndpoint};
+use sot_capsule::endpoint::{Endpoint, PlatformEndpoint};
 use sot_platform::host::state_dir::state_dir_hash;
 use sot_platform::transport::TransportError;
 use sot_protocol::{codec, op, Frame, LaneConnectReq};

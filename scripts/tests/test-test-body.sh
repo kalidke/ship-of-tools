@@ -251,7 +251,7 @@ def cargo_parity():
         ('absent','absent',['absent','--exact'],101),
         ('substring','near',['near'],101)]:
         p=fresh('cargo parity'); (p/'go').touch(); a=adapter(p)
-        r=run([native_bash,'-c','exec \"$@\"','_',str(a),'test','-p','sot-log','--test','test_body_fixture',name,'--']+args[1:]+pretty,p)
+        r=run([native_bash,'-c','exec \"$@\"','_',str(a),'test','-p','sot-capsule','--test','test_body_fixture',name,'--']+args[1:]+pretty,p)
         direct_names=re.findall(r'^test (.*?) \.\.\. (?:ok|FAILED|ignored)',r.stdout,re.M)
         cargo_log=(records/key/'cargo.log').read_text(encoding='utf-8', errors='strict')
         cargo_names=re.findall(r'^test (.*?) \.\.\. (?:ok|FAILED|ignored)',cargo_log,re.M)

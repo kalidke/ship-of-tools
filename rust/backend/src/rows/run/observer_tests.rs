@@ -283,7 +283,7 @@ async fn a_fence_that_appears_without_a_wake_is_observed() {
     let root = sot_platform::host::state_dir::sot_state_dir().expect("a state root");
     let dir = crate::rows::spawn::state_root::state_dir_for(&root, &ws.workspace_id);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(&dir), b"").unwrap();
+    std::fs::write(sot_capsule::supervisor::fence::supervisor_lock_path(&dir), b"").unwrap();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     while ws.phase() != Phase::Unreachable && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

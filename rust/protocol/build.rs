@@ -51,7 +51,7 @@ fn git(args: &[&str]) -> Option<String> {
 
 /// `true` iff the working tree has uncommitted changes, OR cleanliness
 /// itself could not be determined — fails closed, same reasoning as
-/// `rust/log/build.rs`'s own `is_dirty` (an unverifiable tree is never
+/// `rust/capsule/build.rs`'s own `is_dirty` (an unverifiable tree is never
 /// silently assumed clean): a version string that CAN'T prove it is the
 /// commit it names must not claim to be.
 fn is_dirty() -> bool {

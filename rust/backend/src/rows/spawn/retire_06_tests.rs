@@ -342,7 +342,7 @@ fn the_layout_is_what_0_6_leaves_and_nothing_a_0_7_row_has() {
 fn the_old_layout_moves_while_the_fence_is_held() {
     let dir = old_folder();
     let found = layout(dir.path()).unwrap();
-    let _fence = sot_log::supervisor::journal::fence::lock_supervisor(dir.path()).unwrap();
+    let _fence = sot_capsule::supervisor::fence::lock_supervisor(dir.path()).unwrap();
     let moved = move_layout(dir.path(), &found).unwrap();
     assert_eq!(moved.names.len(), 5);
     assert!(!moved.requested);
@@ -372,7 +372,7 @@ fn a_requested_end_is_recorded_before_the_files_move_and_a_held_terminal_stops_t
     let found = layout(dir.path()).unwrap();
     let moved = move_layout(dir.path(), &found).unwrap();
     assert!(moved.requested);
-    assert!(sot_log::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
+    assert!(sot_capsule::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
 
     // A terminal that holds its writer lock: nothing moves and nothing is recorded.
     let dir = old_folder();
@@ -402,7 +402,7 @@ fn the_requested_end_is_written_before_the_first_rename_can_fail() {
     std::fs::write(dir.path().join(RETIRED_DIR).join("drawer.voyage"), b"").unwrap();
     assert!(move_layout(dir.path(), &found).unwrap_err().contains("already exists"));
     assert_eq!(layout(dir.path()).unwrap().len(), 5, "nothing moved");
-    assert!(sot_log::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
+    assert!(sot_capsule::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
 }
 
 /// A live 0.6 supervisor's rest is decided before it is stopped: a person's unless the journal shows it is the retire's own
@@ -412,7 +412,7 @@ fn a_live_rest_is_a_persons_unless_the_journal_shows_it_is_the_retires_own() {
     // No journal evidence: the live supervisor is the only witness, and the end is recorded at once.
     let dir = old_folder();
     assert_eq!(record_live_rest(dir.path(), Some(V)), Ok(true));
-    assert!(sot_log::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
+    assert!(sot_capsule::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
     // The retire's own end: nothing is recorded.
     let dir = old_folder();
     add_end(dir.path(), 1, "sot-retire-end-abc");
@@ -491,7 +491,7 @@ fn end_run_retires_an_old_row_it_meets() {
     let outcome = crate::rows::run::end_run::end_run(dir.path(), "close", false).unwrap();
     assert!(matches!(outcome, crate::rows::run::end_run::EndRunOutcome::Unheld), "{outcome:?}");
     assert!(layout(dir.path()).unwrap().is_empty());
-    assert!(sot_log::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
+    assert!(sot_capsule::capsule::read_ended(dir.path()).unwrap().is_some_and(|e| e.requested));
     // One that cannot be retired is not ended.
     let dir = old_folder();
     let _held = sot_platform::host::lock_writer(&dir.path().join("voyages").join(V).join("writer.lock")).unwrap();

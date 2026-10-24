@@ -16,7 +16,7 @@
 mod support;
 use support::*;
 
-use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
+use sot_capsule::attach_client::client::{FeAttachClient, InputOutcome};
 use sot_topology::lane_client::{DaemonLaneEndpoint, LaneDial};
 use sot_protocol::{op, Frame};
 

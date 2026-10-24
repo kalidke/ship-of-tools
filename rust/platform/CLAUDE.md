@@ -3,7 +3,7 @@
 The bottom of the workspace: one answer per machine fact and one primitive per OS mechanism, for every crate above it:
 the local connection (a bounded client of a socket or pipe on this box, reaching only this account) and the masking of
 page secrets in logs among them.
-The crate (`sot-platform`) depends on nothing of ours; sot-log (the capsule), sot-protocol (wire), the backend, the
+The crate (`sot-platform`) depends on nothing of ours; sot-capsule (the capsule), sot-protocol (wire), the backend, the
 window and the updater depend on it, and nothing re-exports it. It holds no runtime state and starts no process for
 anyone but the native launcher it hands out.
 
@@ -166,7 +166,7 @@ LockFileEx, GetExtendedTcpTable, impersonation-level probe). No fourth OS builds
 ## Tests
 One per guarantee. Paths are under `rust/platform/src/` unless they start `tests/` (platform's own integration tests) or
 `log/`: those are tests that need the capsule's row server or its `sot-capsule` binary (a real `RowServer` answering
-the hello, `CARGO_BIN_EXE_sot-capsule`), which platform cannot depend on, and stay in `rust/log/tests/`. A test of a
+the hello, `CARGO_BIN_EXE_sot-capsule`), which platform cannot depend on, and stay in `rust/capsule/tests/`. A test of a
 Windows or macOS arm runs on the hosted runner for its OS.
 
 | # | guarantee | test |
@@ -182,7 +182,7 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | 9 | redial | `host/redial_tests.rs`: `a_short_connection_keeps_the_doubling`, `a_connection_that_lasted_stable_starts_over`, `a_reset_starts_over` |
 | 10 | dir pin | `host/pinned_dir_tests.rs`: `a_fifo_fails_at_once_and_never_waits_for_a_writer` |
 | 11 | private dir | `host/state_dir_is_private_dir_tests.rs`; `host/paths_secure_private_dir_tests.rs`: `a_missing_parent_is_created_and_the_leaf_is_private`, `ensure_private_dir_makes_an_owner_only_folder_that_is_private` |
-| 12 | job ends at last close (Windows) | `rust/log/tests/conpty.rs`: `containment_kills_child_and_grandchild` (`:147`); `rust/log/tests/capsule/windows_only.rs`: `the_agent_job_refuses_a_breakaway` (`:488`); containment's `contain_tests.rs` `contain_job_permits_no_breakaway` reads the flags only |
+| 12 | job ends at last close (Windows) | `rust/capsule/tests/conpty.rs`: `containment_kills_child_and_grandchild` (`:147`); `rust/capsule/tests/capsule/windows_only.rs`: `the_agent_job_refuses_a_breakaway` (`:488`); containment's `contain_tests.rs` `contain_job_permits_no_breakaway` reads the flags only |
 | 13 | local connection | `transport/accept_policy_tests.rs`; `tests/connect_own.rs`: `a_socket_this_account_listens_on_is_reached_wherever_it_is`, `a_socket_another_account_listens_on_is_refused`, `a_full_backlog_ends_the_connect_within_its_bound`, `a_missing_socket_is_not_found` (and the Windows pipe cases); the capsule's `log/tests/socket_unix/` and `log/tests/pipe_win/` (cancel, concurrent submit, the connector's bounds), `log/tests/socket_unix/cloexec.rs` |
 | 14 | secret masking | `secret_tests.rs`: `a_logged_secret_is_masked_in_the_file`, `only_a_run_of_exactly_32_lowercase_hex_characters_is_masked`, `one_write_call_masks_the_whole_buffer_and_reports_it_all_written` |
 

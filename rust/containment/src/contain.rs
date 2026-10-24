@@ -4,7 +4,7 @@
 //! Unix: each child runs in its own process group, killed with `killpg`, and its leader by pid as well.
 //! Windows: each child runs in its own anonymous job (no breakaway),
 //! created suspended, assigned, and only then resumed, so no instruction
-//! runs outside the job (the ADR 0041 rule `sot_log::capsule::producer::conpty` follows),
+//! runs outside the job (the ADR 0041 rule `sot_capsule::capsule::producer::conpty` follows),
 //! and in a console process group of its own, which an interrupt (`interrupt`) reaches alone.
 //! On Unix a group's number is its leader's pid, retained until reap, so requests
 //! run before the owner reaps that leader. On Windows wait/try_wait can obtain

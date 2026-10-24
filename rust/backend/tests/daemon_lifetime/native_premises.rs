@@ -9,7 +9,7 @@ use crate::fixture_owner::Fixture;
 use crate::kill_probe::{assert_kill_end, kill_control, with_usr1, Usr1, KILL_PROBE};
 use crate::observations::wait_for;
 use sot_platform::host::process_tree::{Birth, BirthError, Group, Launch, Stage};
-use sot_log::supervisor::birth_claim::BirthClaim;
+use sot_capsule::supervisor::birth_claim::BirthClaim;
 #[cfg(feature = "daemon-lifetime-faults")]
 use std::io::Write as _;
 use std::os::fd::{AsRawFd, OwnedFd};

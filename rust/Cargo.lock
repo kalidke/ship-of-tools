@@ -3847,8 +3847,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sot-capsule",
  "sot-containment",
- "sot-log",
  "sot-platform",
  "sot-protocol",
  "sot-topology",
@@ -3858,6 +3858,28 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+ "vt100-ctt",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "sot-capsule"
+version = "0.7.0-dev"
+dependencies = [
+ "getrandom 0.3.4",
+ "interprocess",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sot-capsule",
+ "sot-platform",
+ "sot-protocol",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "uuid",
  "vt100-ctt",
  "windows-sys 0.59.0",
@@ -3901,7 +3923,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
- "sot-log",
+ "sot-capsule",
  "sot-platform",
  "sot-protocol",
  "sot-topology",
@@ -3925,28 +3947,6 @@ dependencies = [
  "windows-sys 0.59.0",
  "winit",
  "winresource",
-]
-
-[[package]]
-name = "sot-log"
-version = "0.7.0-dev"
-dependencies = [
- "getrandom 0.3.4",
- "interprocess",
- "libc",
- "serde",
- "serde_json",
- "sha2",
- "sot-log",
- "sot-platform",
- "sot-protocol",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "vt100-ctt",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3989,7 +3989,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
- "sot-log",
+ "sot-capsule",
  "sot-platform",
  "sot-protocol",
  "tempfile",

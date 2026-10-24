@@ -176,7 +176,7 @@ fn gate_start(mode: &str, gate: &LinkGate) -> bool {
             }
         }
         "fixture" => {
-            use sot_log::endpoint::Endpoint;
+            use sot_capsule::endpoint::Endpoint;
             use super::super::lane_client::{DaemonLaneEndpoint, LaneDial};
             let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None)
                 .with_test_ssh_spawner(std::sync::Arc::new(|mut command| command.spawn()))

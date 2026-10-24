@@ -20,7 +20,7 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -47,8 +47,8 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
 
     let (status, _process) =
-        sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
-    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
+        sot_capsule::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
+    sot_capsule::attach_client::supervisor_client::end_run(&state_dir_path, status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
     // Wait for the daemon's observer, not a raw lane probe -- pty.open decides
     // from that cached phase, so a stale read here would skip activation entirely.
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
@@ -159,7 +159,7 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;
@@ -189,9 +189,9 @@ async fn setup_ended_row(env: &Env, label: &str) -> (Conn, u64, String, String, 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
 
     let (status, _process) =
-        sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
+        sot_capsule::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
     let original_run = status.run.clone().expect("a ready capsule has a run");
-    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
+    sot_capsule::attach_client::supervisor_client::end_run(&state_dir_path, status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
     // The daemon's own observer, not a raw lane probe -- `pty.open`
     // decides from that cached phase.
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
@@ -211,7 +211,7 @@ async fn assert_ends_in_a_fresh_run(
 ) {
     poll_for_phase(conn, next_id, workspace_id, "ready", BOUND.max(Duration::from_secs(60))).await;
     let (status2, _process2) =
-        sot_log::attach_client::supervisor_client::query_status(state_dir_path).expect("query_status after the race resolved");
+        sot_capsule::attach_client::supervisor_client::query_status(state_dir_path).expect("query_status after the race resolved");
     let new_run = status2.run.expect("a ready capsule has a run");
     assert_ne!(
         new_run, original_run,
@@ -247,7 +247,7 @@ async fn a_selection_that_reaches_the_guard_first_still_retires_and_resets() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -293,7 +293,7 @@ async fn a_selection_that_reaches_the_guard_first_still_retires_and_resets() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;
@@ -309,7 +309,7 @@ async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -357,7 +357,7 @@ async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;
@@ -377,7 +377,7 @@ async fn a_selection_that_waits_through_several_reprobe_cycles_still_resets() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -418,7 +418,7 @@ async fn a_selection_that_waits_through_several_reprobe_cycles_still_resets() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;
@@ -431,7 +431,7 @@ async fn a_selection_that_waits_through_several_reprobe_cycles_still_resets() {
 /// which nothing restarts); a Selection probes `unreachable` with no
 /// watchdog -- resting, per `is_resting_phase` -- and picks `Resume`;
 /// the fresh `--resume` supervisor's own recovery
-/// (`sot_log::supervisor::spawn_recovery`, wired externally through
+/// (`sot_capsule::supervisor::spawn_recovery`, wired externally through
 /// `Lifecycle::Recovering` as `Starting`) is held open past
 /// `SPAWN_SETTLE_DEADLINE` (2s) by `SOT_TEST_RECOVERY_DELAY_MS` (its own
 /// env var, inert unless set, applies to EVERY spawn -- round 9 deleted
@@ -448,7 +448,7 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -508,7 +508,7 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;
@@ -530,7 +530,7 @@ impl FailingStopLane {
         use std::io::{BufRead, BufReader, Write};
         use std::sync::atomic::Ordering;
         let hash = sot_platform::host::state_dir::state_dir_hash(state_dir);
-        let path = sot_log::row::row_socket_path(&hash).expect("row socket path");
+        let path = sot_capsule::row::row_socket_path(&hash).expect("row socket path");
         let _ = std::fs::remove_file(&path);
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture row socket");
         listener.set_nonblocking(true).expect("nonblocking listener");
@@ -556,11 +556,11 @@ impl FailingStopLane {
                             let Ok(req) = serde_json::from_str::<sot_protocol::Frame>(line.trim_end()) else { return };
                             line.clear();
                             let payload = match req.op.as_str() {
-                                sot_log::row::OP_HELLO => serde_json::json!({
+                                sot_capsule::row::OP_HELLO => serde_json::json!({
                                     "pid": pid, "created": created, "phase": "ended_no_respawn", "run": "",
-                                    "row": sot_log::row::ROW_PROTOCOL,
+                                    "row": sot_capsule::row::ROW_PROTOCOL,
                                 }),
-                                sot_log::row::OP_STATUS => {
+                                sot_capsule::row::OP_STATUS => {
                                     serde_json::json!({"phase": "ended_no_respawn"})
                                 }
                                 other => {
@@ -600,7 +600,7 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -663,11 +663,11 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
     );
     let commands = lane.finish();
     assert!(
-        commands.iter().any(|op| op == sot_log::row::OP_STOP),
+        commands.iter().any(|op| op == sot_capsule::row::OP_STOP),
         "the retire must have asked the supervisor to stop: {commands:?}"
     );
     assert!(
-        !commands.iter().any(|op| op == sot_log::row::OP_RESET),
+        !commands.iter().any(|op| op == sot_capsule::row::OP_RESET),
         "no reset may follow a failed stop: {commands:?}"
     );
 
@@ -705,7 +705,7 @@ async fn a_row_that_is_ended_then_selected_stays_live_through_two_observer_round
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;

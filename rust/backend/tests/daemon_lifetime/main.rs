@@ -13,7 +13,7 @@
 //! (`fixture_owner`, `native`).
 //!
 //! The cases that hold a real process at a phase barrier (`successor`, the pause cases of `native_premises`) need
-//! the barrier build: `cargo build -p sot-log --features native-barrier --bin sot-capsule` into the target the
+//! the barrier build: `cargo build -p sot-capsule --features native-barrier --bin sot-capsule` into the target the
 //! tests run from, then `cargo test -p sot-backend --features daemon-lifetime-faults --test daemon_lifetime`.
 
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]

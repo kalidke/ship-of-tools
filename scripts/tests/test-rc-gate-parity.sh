@@ -40,8 +40,8 @@ new_repo() {
   mkdir -p "$repo/rust/clippy-tests" "$repo/comm/tests" "$repo/agents/tests" "$repo/scripts/tests"
   cp "$root/rust/clippy.toml" "$repo/rust/clippy.toml"
   cp "$root/rust/clippy-tests/clippy.toml" "$repo/rust/clippy-tests/clippy.toml"
-  printf '[workspace]\nresolver = "2"\nmembers = ["sot-log", "sot-backend", "sot-frontend", "vt100-ctt"]\n' > "$repo/rust/Cargo.toml"
-  crate sot-log; crate sot-backend daemon-lifetime-faults; crate sot-frontend test-pane-timing test-window-close; crate vt100-ctt
+  printf '[workspace]\nresolver = "2"\nmembers = ["sot-capsule", "sot-backend", "sot-frontend", "vt100-ctt"]\n' > "$repo/rust/Cargo.toml"
+  crate sot-capsule; crate sot-backend daemon-lifetime-faults; crate sot-frontend test-pane-timing test-window-close; crate vt100-ctt
   (cd "$repo/rust" && "$cargo" generate-lockfile --offline > /dev/null 2>&1) || { echo "no lockfile" >&2; exit 2; }
   mkdir -p "$work/L-$1/home" "$work/L-$1/steps" "$work/L-$1/rust" "$work/julia-bin"
 }
@@ -71,7 +71,7 @@ check "clean: windows-tests green" 'winis clean 0'
 
 # a test that runs a child through Command::output: the test-children rule, only in rust/clippy-tests
 new_repo child
-cat > "$repo/rust/sot-log/tests/t.rs" <<'EOF'
+cat > "$repo/rust/sot-capsule/tests/t.rs" <<'EOF'
 #[test]
 fn t() {
     let _ = std::process::Command::new("true").output();
@@ -84,7 +84,7 @@ check "test child: windows-tests goes red" 'winis child red'
 
 # std::fs::copy in a test, then with the sanctioned allow
 new_repo copy
-cat > "$repo/rust/sot-log/tests/t.rs" <<'EOF'
+cat > "$repo/rust/sot-capsule/tests/t.rs" <<'EOF'
 #[test]
 fn t() {
     let _ = std::fs::copy("a", "b");
@@ -93,7 +93,7 @@ EOF
 lints copy
 check "fs::copy: all-targets goes red" 'redby copy lint-all-targets'
 new_repo copy-allowed
-cat > "$repo/rust/sot-log/tests/t.rs" <<'EOF'
+cat > "$repo/rust/sot-capsule/tests/t.rs" <<'EOF'
 #[test]
 fn t() {
     #[allow(clippy::disallowed_methods, reason = "a data copy")]
@@ -158,7 +158,7 @@ STUB
 pipe pipe "$bash32"
 check "pipeline: lib-bins line runs without the test config" 'grep -qx "clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods conf=" "$work/stub-pipe/log"'
 check "pipeline: all-targets line runs under rust/clippy-tests" 'grep -q "clippy --workspace --exclude vt100-ctt --all-targets --features .*daemon-lifetime-faults.* conf=$work/pipe/rust/clippy-tests$" "$work/stub-pipe/log"'
-check "pipeline: windows line runs over sot-log and sot-backend under rust/clippy-tests" 'grep -q "clippy -p sot-log -p sot-backend --target x86_64-pc-windows-gnu --all-targets .* conf=$work/pipe/rust/clippy-tests$" "$work/stub-pipe/log"'
+check "pipeline: windows line runs over sot-capsule and sot-backend under rust/clippy-tests" 'grep -q "clippy -p sot-capsule -p sot-backend --target x86_64-pc-windows-gnu --all-targets .* conf=$work/pipe/rust/clippy-tests$" "$work/stub-pipe/log"'
 check "pipeline: every lint has a result of its own" '[ "$(rcof pipe lint-lib-bins)$(rcof pipe lint-all-targets)$(rcof pipe lint-windows-tests)" = 000 ]'
 check "pipeline: the bash 3.2 job has a result" '[ -n "$(rcof pipe under-bash)" ] && [ "$(rcof pipe under-bash)" != unrun ]'
 pipe none ""

@@ -1,7 +1,7 @@
 //! The session's environment: a session the daemon spawns carries the daemon's own binary in `SOTD_BIN`.
 
 use super::*;
-use sot_log::attach_client::supervisor_client::{end_run, query_status, stop, EndRunOutcome};
+use sot_capsule::attach_client::supervisor_client::{end_run, query_status, stop, EndRunOutcome};
 
 /// What a test has made that it must end: nothing yet, a row `workspace.create` made whose state folder the daemon has
 /// not yet reported, or that row's state folder as the daemon reports it.

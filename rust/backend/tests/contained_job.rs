@@ -24,7 +24,7 @@ const CHILD: &str = "SOT_TEST_CONTAINED_CHILD";
 
 /// Whether the row's supervisor fence can be taken (it is dropped at once).
 fn state_lock_free(state_dir: &Path) -> bool {
-    sot_log::supervisor::journal::fence::lock_supervisor(state_dir).is_ok()
+    sot_capsule::supervisor::fence::lock_supervisor(state_dir).is_ok()
 }
 
 /// The row's own state folder and its supervisor's report, once ready.
@@ -62,11 +62,11 @@ async fn ready_row(env: &Env) -> (PathBuf, u32) {
             let dir = state_dir.clone();
             async move {
                 let (report, process) = tokio::task::spawn_blocking(move || {
-                    sot_log::attach_client::supervisor_client::query_status(&dir).ok()
+                    sot_capsule::attach_client::supervisor_client::query_status(&dir).ok()
                 })
                 .await
                 .ok()??;
-                (report.phase == sot_log::SupervisorPhase::Ready).then(|| process.pid())
+                (report.phase == sot_capsule::SupervisorPhase::Ready).then(|| process.pid())
             }
         },
         BOUND,
@@ -282,12 +282,12 @@ async fn end_leftover_row(r: &HashMap<String, String>) -> bool {
         std::env::set_var("SOT_RUNTIME_DIR", &r["runtime"]);
         let d = state_dir.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            let run = sot_log::attach_client::supervisor_client::query_status(&d)
+            let run = sot_capsule::attach_client::supervisor_client::query_status(&d)
                 .ok()
                 .and_then(|(report, _)| report.run)
                 .unwrap_or_default();
-            let ended = sot_log::attach_client::supervisor_client::end_run(&d, &run, "contained_job cleanup");
-            let stopped = sot_log::attach_client::supervisor_client::stop(&d);
+            let ended = sot_capsule::attach_client::supervisor_client::end_run(&d, &run, "contained_job cleanup");
+            let stopped = sot_capsule::attach_client::supervisor_client::stop(&d);
             eprintln!("cleanup: end_run {ended:?}, stop {stopped:?}");
         })
         .await;

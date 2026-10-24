@@ -538,9 +538,9 @@ async fn a_refused_os_peer_reaches_no_connection_handler() {
     }
 }
 
-/// Twin of `sot-log`'s own
+/// Twin of `sot-capsule`'s own
 /// `pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags`
-/// (`rust/log/tests/pipe_win/`) — same technique (`GetSecurityInfo` on
+/// (`rust/capsule/tests/pipe_win/`) — same technique (`GetSecurityInfo` on
 /// a LIVE handle, round-tripped to SDDL) — but against THIS crate's
 /// session pipe rather than a voyage/supervisor pipe: proves
 /// `bind_session`, the listener `run_local` binds, wires

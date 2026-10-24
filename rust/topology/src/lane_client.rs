@@ -1,10 +1,10 @@
 //! ADR 0045 decision 3: `DaemonLaneEndpoint`, the attach client's own
-//! `sot_log::endpoint::Endpoint` for the lane bridge — a capsule row's
+//! `sot_capsule::endpoint::Endpoint` for the lane bridge — a capsule row's
 //! one socket, piped through the row's OWN daemon
 //! (`lane.connect`, `sot_protocol::ops::LANE_CONNECT`) instead of a loopback
 //! named pipe or Unix socket the platform endpoints dial directly. Lives
-//! in `sot-protocol`, not `sot-log`, because it is a WIRE CLIENT of this
-//! crate's own `LaneConnectReq`/`LaneConnectRes` — `sot-log` has no
+//! in `sot-protocol`, not `sot-capsule`, because it is a WIRE CLIENT of this
+//! crate's own `LaneConnectReq`/`LaneConnectRes` — `sot-capsule` has no
 //! dependency the other way.
 //!
 //! # The split identity proof
@@ -46,7 +46,7 @@
 //!
 //! [`classify_reply`] never lets `lane.connect`'s wire outcome collapse
 //! into a bare `io::Error`: a `Refused` is terminal, `Unreachable`/
-//! `Undetermined` are retried by the caller (`sot_log::attach_client::client`'s
+//! `Undetermined` are retried by the caller (`sot_capsule::attach_client::client`'s
 //! three connect sites), and only `lane_absent` decodes onto
 //! `TransportError::Io` with a `NotFound`/`ConnectionRefused` kind — the
 //! one case `is_endpoint_absent()` recognizes.
@@ -67,7 +67,7 @@ use lane_child::BridgedClient;
 use std::time::Instant;
 
 use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome, PeerAuthenticated, StatusFailure};
-use sot_log::endpoint::Endpoint;
+use sot_capsule::endpoint::Endpoint;
 use sot_platform::identity::peer::PeerIdentity;
 use sot_platform::identity::exchange::IdentityExchange;
 use sot_platform::transport::{Client, TransportError, CONNECT_BOUND};
@@ -108,7 +108,7 @@ pub enum LaneDial {
 ///
 /// ```no_run
 /// use sot_topology::lane_client::{DaemonLaneEndpoint, LaneDial};
-/// use sot_log::endpoint::Endpoint;
+/// use sot_capsule::endpoint::Endpoint;
 /// fn dial(route: LaneDial) {
 ///     let ep = DaemonLaneEndpoint::new(route, None);
 ///     let _ = ep.connect_row_unchallenged("row");

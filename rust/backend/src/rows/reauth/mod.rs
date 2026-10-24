@@ -7,7 +7,7 @@
 // accept frame back to the caller to WRITE; only then end the leg and
 // spawn the replacement. A refusal therefore changes nothing at all — the
 // session that reads it is still the live one — and an accept is the last
-// thing that session ever prints. Same shape `sot_log::capsule`'s mgmt
+// thing that session ever prints. Same shape `sot_capsule::capsule`'s mgmt
 // lane already uses for the identical problem (it drives `Action::Shutdown`
 // only after its ack was physically written).
 //

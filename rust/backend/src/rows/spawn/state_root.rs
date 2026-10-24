@@ -108,7 +108,7 @@ pub fn qualified_state_root(row: Option<&Path>) -> Result<PathBuf, String> {
             ));
         }
     }
-    preflight_verdict(sot_platform::host::preflight_volume(&root).map_err(sot_log::Error::from), row.is_some_and(row_has_run))?;
+    preflight_verdict(sot_platform::host::preflight_volume(&root).map_err(sot_capsule::Error::from), row.is_some_and(row_has_run))?;
     Ok(root)
 }
 
@@ -117,10 +117,10 @@ pub fn qualified_state_root(row: Option<&Path>) -> Result<PathBuf, String> {
 /// row's supervisor would have to write before it holds either, so a new row
 /// on a full volume is refused with the volume named. Every other preflight
 /// failure is the refusal, with its words.
-fn preflight_verdict(r: sot_log::Result<()>, row_has_run: bool) -> Result<(), String> {
+fn preflight_verdict(r: sot_capsule::Result<()>, row_has_run: bool) -> Result<(), String> {
     match r {
         Ok(()) => Ok(()),
-        Err(e) if sot_log::storage_exhaustion(&e).is_some() => {
+        Err(e) if sot_capsule::storage_exhaustion(&e).is_some() => {
             if row_has_run {
                 Ok(())
             } else {
@@ -133,7 +133,7 @@ fn preflight_verdict(r: sot_log::Result<()>, row_has_run: bool) -> Result<(), St
 
 /// Whether the row at `state_dir` has run: its authority fence file exists.
 fn row_has_run(state_dir: &Path) -> bool {
-    sot_log::supervisor::journal::fence::supervisor_lock_path(state_dir).is_file()
+    sot_capsule::supervisor::fence::supervisor_lock_path(state_dir).is_file()
 }
 
 /// The invariant [`qualified_state_root`] alone cannot enforce (it never

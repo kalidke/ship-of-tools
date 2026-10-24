@@ -18,7 +18,7 @@ sot-topology = { path = "../topology" }
 sot-updater = { path = "../updater" }
 # The per-machine state-dir resolution rule lives in platform (`state_dir::sot_state_dir`); this crate calls it directly.
 sot-platform = { path = "../platform" }
-sot-log = { path = "../log" }
+sot-capsule = { path = "../capsule" }
 
 # Async + plumbing
 tokio = { workspace = true }

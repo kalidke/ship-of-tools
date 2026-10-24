@@ -83,7 +83,7 @@ pub use sotd::{label_endpoint, own_label, sotd_client_of, sotd_daemon_at};
 #[allow(unused_imports)] // only some suites ask for the Julia binary
 pub use sotd::julia_binary;
 pub use sotd::{end_daemon, sotd_command, sotd_command_at, sotd_program};
-/// Copy of `rust/log/tests/fe_client/`'s own `wake_flag` helper (a separate test
+/// Copy of `rust/capsule/tests/fe_client/`'s own `wake_flag` helper (a separate test
 /// binary; not worth a shared dependency for four lines).
 #[allow(dead_code)]
 pub fn wake_flag_for_test() -> (std::sync::Arc<std::sync::atomic::AtomicBool>, Box<dyn Fn() + Send + 'static>) {
@@ -288,9 +288,9 @@ pub fn find_row(payload: &serde_json::Value, workspace_id: &str) -> Option<serde
 /// `None` (not an error) when it is legitimately absent/unreachable,
 /// which two of this test's own polls treat as the fact they're waiting
 /// for (the old supervisor going away after `stop`).
-pub async fn try_query_status(state_dir: PathBuf) -> Option<sot_log::attach_client::supervisor_client::StatusReport> {
+pub async fn try_query_status(state_dir: PathBuf) -> Option<sot_capsule::attach_client::supervisor_client::StatusReport> {
     tokio::task::spawn_blocking(move || {
-        sot_log::attach_client::supervisor_client::query_status(&state_dir)
+        sot_capsule::attach_client::supervisor_client::query_status(&state_dir)
             .ok()
             .map(|(report, _process)| report)
     })
@@ -343,7 +343,7 @@ pub async fn create_ready_workspace_then_stop_its_supervisor(
 
     tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir).expect("stop the real supervisor authority")
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir).expect("stop the real supervisor authority")
     })
     .await
     .unwrap();

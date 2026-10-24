@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 # Test-only controls for tests/daemon_lifetime (phase barriers in the supervisor and the native launcher). Never in an
 # installed build: nothing enables it but a test run that asks for it by name.
-daemon-lifetime-faults = ["sot-log/native-barrier"]
+daemon-lifetime-faults = ["sot-capsule/native-barrier"]
 
 [dependencies]
 sot-protocol = { path = "../protocol" }
@@ -16,7 +16,7 @@ sot-topology = { path = "../topology" }
 sot-updater = { path = "../updater" }
 sot-platform = { path = "../platform" }
 sot-containment = { path = "../containment" }
-sot-log = { path = "../log" }
+sot-capsule = { path = "../capsule" }
 # The comm wake reads a cell's dim attribute off the capsule screen (`comm::wake::screen::free_test_lines`).
 vt100-ctt = "0.17"
 tokio = { workspace = true, features = ["signal"] }
@@ -46,14 +46,14 @@ crc32fast = "1"
 libc = "0.2"
 # ADR 0046 decision 2 R3: voyage ids compare as `Uuid` (UUIDv7 is
 # time-ordered) in the phase cell's own identity-based rejection.
-# Already in the lock as a transitive dep of `sot-log`, so direct use
+# Already in the lock as a transitive dep of `sot-capsule`, so direct use
 # compiles nothing new.
 uuid = { workspace = true }
 # A Julia child's own temporary folder (`sidecars::child`), removed after its reap. The release `sotd` links it:
 # before this it was a dev and `test-support` dependency only, so this line adds it to the release build.
 tempfile = { workspace = true }
 # A derived handle's hash qualifier (`comm::identity::derive::hash6`): the SHA-256 the 0.6.6 scripts took, so a
-# session keeps its handle. Already in the lock for sot-log and the updater.
+# session keeps its handle. Already in the lock for sot-capsule and the updater.
 sha2 = { workspace = true }
 
 # ADR 0046 decision 2 R3: the watchdog's own zero-network identity read
@@ -87,11 +87,11 @@ tokio = { workspace = true, features = ["test-util"] }
 # breakaway-containment test stands up a real job object, assigns the
 # spawned `sotd` to it directly (`AssignProcessToJobObject`/`CreateJobObjectW`),
 # and confirms the contained supervisor via `OpenProcess`/`IsProcessInJob` —
-# `sot-log` already depends on `windows-sys` with these same features, but a
+# `sot-capsule` already depends on `windows-sys` with these same features, but a
 # dependency is not transitively `use`-able, so the test needs its own.
 # `Win32_Storage_FileSystem`/`Win32_Security`/`Win32_Security_Authorization`
 # added for `server/listen.rs`'s own session-pipe ACL test (the `GetSecurityInfo`/
-# SDDL round-trip `sot-log`'s `tests/pipe_win/` already uses for its twin
+# SDDL round-trip `sot-capsule`'s `tests/pipe_win/` already uses for its twin
 # test on the voyage/supervisor pipes) — same feature set that crate's own
 # Cargo.toml lists for the identical purpose.
 [target.'cfg(windows)'.dev-dependencies]

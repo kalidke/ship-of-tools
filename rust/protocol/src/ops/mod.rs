@@ -360,21 +360,25 @@ pub mod op {
     /// ride the standard error payload (`bad_port`, `dial_failed`) and the
     /// connection closes.
     pub const PROXY_CONNECT: &str = "proxy.connect";
-    /// A capsule row's supervisor or voyage lane, piped through the row's
-    /// OWN daemon (ADR 0045 decision 2). Sent behind a `handoff` hello on a
-    /// DEDICATED connection, like `proxy.connect`, never inside the
-    /// connection's request loop: `LaneConnectReq { target, lane,
-    /// voyage_id?, token? }`. The daemon resolves `target` (the row's
-    /// `session_name`, as `pty.open` addresses it) to a capsule
-    /// workspace, dials that row's lane locally, resumes an absent
-    /// supervisor lane in place (`resume_if_absent`, never a voyage
-    /// lane), authenticates the peer it dialed, and answers
-    /// `LaneConnectRes { ok: true, pid, created }` before becoming a raw
-    /// byte pipe — the daemon never decodes a lane frame after the
-    /// reply. Rejections (`bad_request`, `unauthenticated`,
-    /// `unknown_workspace`, `not_capsule`, `bad_lane`, `lane_absent`,
-    /// `foreign`, `undetermined`, `dial_failed`) ride the standard error
-    /// payload and the connection closes.
+    /// A capsule row's socket, piped through the row's OWN daemon (ADR 0045
+    /// decision 2). Sent behind a `handoff` hello on a DEDICATED connection,
+    /// like `proxy.connect`, never inside the connection's request loop:
+    /// `LaneConnectReq { target, token? }`. The daemon resolves `target`
+    /// (the row's `session_name`, as `pty.open` addresses it) to a capsule
+    /// workspace, dials that row's socket locally (resuming an absent
+    /// socket's supervisor in place when the row is resumable),
+    /// authenticates the peer it dialed (steps 1-3 of the challenge), and
+    /// answers `{ ok: true, pid, created }` before becoming a raw byte
+    /// pipe: the daemon never decodes a row frame after the reply, and the
+    /// client runs its own end-to-end `row.hello` over the pipe. Refusals
+    /// ride the standard error payload and the connection closes:
+    /// `bad_request` (the payload did not parse), `unknown_workspace`
+    /// (`target` names no row), `lane_absent` (the row socket is not there
+    /// after a resume was tried or refused; the payload also carries
+    /// `kind`, the `io::ErrorKind` of the absence), `foreign` (the peer
+    /// failed identity authentication), `undetermined` (authentication
+    /// could not be completed) and `dial_failed` (any other error dialing
+    /// or authenticating, or no state root).
     pub const LANE_CONNECT: &str = "lane.connect";
     /// Every runtime answers what build it is (ADR 0030 §8 decision 31,
     /// cross-referenced as ADR 0043 decision 31). Empty request

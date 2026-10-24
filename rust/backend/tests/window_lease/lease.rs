@@ -208,7 +208,7 @@ async fn shutdown_ends_a_child_that_left_the_agents_process_group() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     let dir = state_dir.clone();
-    let (_status, process) = tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&dir))
+    let (_status, process) = tokio::task::spawn_blocking(move || sot_capsule::attach_client::supervisor_client::query_status(&dir))
         .await
         .unwrap()
         .expect("query_status on a ready row");

@@ -18,7 +18,7 @@ sot-protocol = { path = "../protocol" }
 # Platform: the host name, config and runtime folders, the descriptor sweep and the peer identity.
 sot-platform = { path = "../platform" }
 # The capsule's `Endpoint`, which the lane dial implements (the client trait and the connectors are platform's).
-sot-log = { path = "../log" }
+sot-capsule = { path = "../capsule" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

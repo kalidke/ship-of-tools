@@ -131,7 +131,7 @@ jobs:
         # it must run wherever `sotd` runs. v0.6.0/v0.6.1 shipped it from the
         # glibc-2.35 workspace build and every row died at spawn on the
         # glibc-2.31 fleet hosts (`GLIBC_2.34 not found`).
-        run: cd rust && cargo build --release -p sot-backend -p sot-log --bin sotd --bin sot-capsule --target x86_64-unknown-linux-musl --locked
+        run: cd rust && cargo build --release -p sot-backend -p sot-capsule --bin sotd --bin sot-capsule --target x86_64-unknown-linux-musl --locked
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash

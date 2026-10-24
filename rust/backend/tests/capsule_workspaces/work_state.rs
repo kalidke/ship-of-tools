@@ -136,7 +136,7 @@ async fn a_refreshed_loaded_row_follows_its_new_supervisor() {
     poll_for_phase(&mut conn, &mut next_id, "ws-cwrf-row-1", "ready", BOUND.max(Duration::from_secs(60))).await;
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, "ws-cwrf-row-1").await;
 
-    tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::stop(&state_dir).expect("stop the authority"))
+    tokio::task::spawn_blocking(move || sot_capsule::attach_client::supervisor_client::stop(&state_dir).expect("stop the authority"))
         .await
         .expect("the stop");
     let deadline = Instant::now() + Duration::from_secs(20);

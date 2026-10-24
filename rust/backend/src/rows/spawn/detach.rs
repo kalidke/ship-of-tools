@@ -5,7 +5,7 @@ use crate::rows::gate::StartPermit;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use sot_log::supervisor::StartMode;
+use sot_capsule::supervisor::StartMode;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 #[cfg(windows)]
@@ -534,7 +534,7 @@ fn spawn_detached(
 /// Every platform `sotd` ships for. The gate this module carried until
 /// the supervisor-epoch rule was never about what macOS can do:
 /// `sot-capsule supervise` is built and shipped in the macOS release
-/// archive, `sot_log::attach_client::supervisor_client` compiles there, the death watch
+/// archive, `sot_capsule::attach_client::supervisor_client` compiles there, the death watch
 /// is a kqueue `NOTE_EXIT` knote and the parent-death lease works. The
 /// single blocker was a daemon-side read of a FRESHLY SPAWNED
 /// supervisor's identity, in the unit that supervisor would later report
@@ -550,7 +550,7 @@ fn spawn_detached(
 /// provably: `challenge_unix::self_start_ticks` (what a supervisor
 /// reports) is literally `process_start_ticks(std::process::id())`, the
 /// same read the daemon used to perform on the same pid, asserted by
-/// `rust/log/tests/supervisor/`'s own equality test.
+/// `rust/capsule/tests/supervisor/`'s own equality test.
 ///
 /// What this module's macOS arm does NOT claim: that a capsule row
 /// actually works on a Mac. Nothing here has ever run on one. It

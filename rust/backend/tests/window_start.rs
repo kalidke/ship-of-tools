@@ -120,7 +120,7 @@ async fn ready_row_in(env: &Env, label: &str, agent: Option<&str>, root: &Path) 
 
 async fn supervisor_pid(state_dir: &Path) -> Option<u32> {
     let dir = state_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&dir).ok().map(|(_, p)| p.pid()))
+    tokio::task::spawn_blocking(move || sot_capsule::attach_client::supervisor_client::query_status(&dir).ok().map(|(_, p)| p.pid()))
         .await
         .unwrap()
 }
@@ -176,10 +176,10 @@ fn kill_row_capsule(row: &Row) {
 /// The "slow row": its legs killed, then its fence held here, so no end
 /// of it can be proven until the fence is dropped.
 #[cfg(target_os = "linux")]
-async fn hold_row_end(row: &Row) -> sot_log::supervisor::journal::fence::SupervisorLock {
+async fn hold_row_end(row: &Row) -> sot_capsule::supervisor::fence::SupervisorLock {
     kill_row_capsule(row);
     let dir = row.state_dir.clone();
-    poll_until(|| { let dir = dir.clone(); async move { sot_log::supervisor::journal::fence::lock_supervisor(&dir).ok() } }, BOUND, "the row's fence").await
+    poll_until(|| { let dir = dir.clone(); async move { sot_capsule::supervisor::fence::lock_supervisor(&dir).ok() } }, BOUND, "the row's fence").await
 }
 
 /// No sot-capsule leg of `row` appears for 3 s: the start never resumed it.

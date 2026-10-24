@@ -5,7 +5,7 @@
 //! queued), so the daemon reads the screen. Every [`DIALOG_EVERY`] one blocking task reads the registry once, then each
 //! Ready capsule row whose agent is `claude` and whose bound handle has an entry, but one red by its question ([`due`]:
 //! an AskUserQuestion menu, whose PreToolUse hook wrote the question before the menu drew, keeps that summary), one
-//! watcher attach each: it never takes the pen, resizes nothing, writes no record frame and logs nothing. sot-log's
+//! watcher attach each: it never takes the pen, resizes nothing, writes no record frame and logs nothing. sot-capsule's
 //! `a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded` shows that over twenty capsules and measures a sweep of
 //! them at 1.2-2.0 s (about 80 ms a read) in a debug build on Linux. [`dialog_of`] reads the screen; the row is
 //! written only where screen and registry disagree ([`stamp_for`]), through work-state's one write, in this process
@@ -159,7 +159,7 @@ enum Seen {
 /// The row's screen as the wake reads it, from one watcher attach, after one status probe.
 fn read_screen(state_dir: &Path) -> Seen {
     use crate::rows::run::probe::{phase_of, phase_str};
-    use sot_log::SupervisorPhase as SP;
+    use sot_capsule::SupervisorPhase as SP;
     let phase = phase_of(state_dir);
     if phase != phase_str(SP::Ready) {
         let ended = [phase_str(SP::EndedNoRespawn), phase_str(SP::Terminal), crate::rows::run::probe::NEVER_STARTED_PHASE];

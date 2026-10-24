@@ -54,7 +54,7 @@ commit="$(git rev-parse HEAD)"
     cd rust
     export CARGO_TARGET_DIR="$target"
     cargo build --release -p sot-frontend --locked
-    cargo build --release -p sot-backend -p sot-log --bin sotd --bin sot-capsule --target "$triple" --locked
+    cargo build --release -p sot-backend -p sot-capsule --bin sotd --bin sot-capsule --target "$triple" --locked
 )
 
 # The backend folder: musl static or gnu, whichever the triple above chose.

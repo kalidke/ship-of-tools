@@ -2,7 +2,7 @@
 
 The wire is what the window, the daemon, the shell clients and the daemon's other-computer links speak: the frame, its
 codec and size cap, every op's payload, the protocol integer and the product version. It does not own the capsule's
-row frames (`rust/log/src/row/`: capsule's) or the sidecars' own protocols (the kernel's and the
+row frames (`rust/capsule/src/row/`: capsule's) or the sidecars' own protocols (the kernel's and the
 REPL's JSON lines: sidecars'). The crate (`sot-protocol`) is shared by the window and the
 daemon and owns no runtime state. It depends on platform only, for the host name and the OS account a hello
 declares. Topology (hosts.toml, endpoints, the ssh recipe and the lane client) is the crate `sot-topology`, which
@@ -14,7 +14,7 @@ name is in this crate's one op table.
    `write_frame` and `write_frame_blocking` fail with `EnvelopeTooLarge` before writing a byte; `read_frame` refuses an
    envelope one byte past the cap, never reading a line with no newline to its end; `read_frame_blocking` caps while
    it reads. Rests on: one constant and one codec; the blocking envelope writer is the blob writer with no blob, and the
-   hand-decoded hello of the capsule's row socket (`sot-log`'s `RowHelloExchange`) keeps the same cap on its whole line.
+   hand-decoded hello of the capsule's row socket (`sot-capsule`'s `RowHelloExchange`) keeps the same cap on its whole line.
 2. **A blob is exactly its declared length.** A frame whose payload has `blob.len` is followed by exactly that many
    bytes; `write_frame` refuses a blob whose length differs from the declared one (or a blob the payload does not
    declare) before writing a byte; `read_frame` reads them and grows its buffer only with bytes that arrived, reserving

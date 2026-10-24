@@ -341,7 +341,7 @@ function Invoke-FreshnessPass {
         # the diagnostic split there).
         #
         # The pair spans TWO packages, not one: `sotd` is sot-backend's own
-        # [[bin]], `sot-capsule` is an auto-discovered src/bin of sot-log --
+        # [[bin]], `sot-capsule` is an auto-discovered src/bin of sot-capsule --
         # building sot-backend alone is NOT enough to produce sot-capsule.exe.
         #
         # Stop-first is REQUIRED here, not merely prudent: a RUNNING local
@@ -415,8 +415,8 @@ function Invoke-FreshnessPass {
         # The full pair build, unconditionally: the only difference a pinned
         # image makes is the rename above.
         Set-LaunchStatus 'Rebuilding backend pair...'
-        Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
-            $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
+        Write-SupLog "freshness: cargo build -p sot-backend -p sot-capsule"
+            $capOut = cargo build --release -p sot-backend -p sot-capsule --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
             if ($LASTEXITCODE -ne 0) {
                 $capExcerpt = @(Get-FailureExcerpt -Output $capOut -Kind 'cargo')
                 Write-SupLog "freshness: backend pair rebuild FAILED (non-fatal, continuing with whatever pair exists). message: $($capExcerpt -join ' / ')"

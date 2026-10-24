@@ -20,7 +20,7 @@ fn an_attach_to_a_terminal_row_reports_nothing_started() {
     // A fence file with nothing answering its lane: the lane reads unreachable, as after the exit 69.
     let state_dir = super::super::state_dir_for(state_root.path(), &id);
     std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(&state_dir), b"").unwrap();
+    std::fs::write(sot_capsule::supervisor::fence::supervisor_lock_path(&state_dir), b"").unwrap();
     let started = ensure_started(state_root.path(), &id, "none", "", &slug, Path::new("/p/t"), ActivationIntent::Selection, reg.clone());
     assert_eq!(started, Ok(None), "a terminal row was reported started");
     assert_eq!(row.phase(), Phase::Terminal);
@@ -41,7 +41,7 @@ fn a_wait_that_outlasts_the_settle_budget_fails_the_activation() {
     row.set_watchdog_owner(1);
     let state_dir = super::super::state_dir_for(state_root.path(), &id);
     std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(&state_dir), b"").unwrap();
+    std::fs::write(sot_capsule::supervisor::fence::supervisor_lock_path(&state_dir), b"").unwrap();
     let result = ensure_started(state_root.path(), &id, "none", "", &slug, Path::new("/p/u"), ActivationIntent::Selection, reg.clone());
     assert!(result.is_err(), "an exhausted settle wait was reported as resolved: {result:?}");
     assert_eq!(row.activation_error(), result.err(), "the row must carry the reason");

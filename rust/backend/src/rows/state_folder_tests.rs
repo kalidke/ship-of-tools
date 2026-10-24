@@ -88,7 +88,7 @@ fn a_close_of_an_absent_folder_does_nothing() {
 #[test]
 fn a_close_that_keeps_the_folder_logs_why_at_info() {
     let (root, folder) = root_with(ID);
-    let held = sot_log::supervisor::journal::fence::lock_supervisor(&folder).unwrap();
+    let held = sot_capsule::supervisor::fence::lock_supervisor(&folder).unwrap();
     let log = sot_platform::test_log::capture();
     close_row_folder(root.path(), ID);
     let text = log.text();
@@ -100,7 +100,7 @@ fn a_close_that_keeps_the_folder_logs_why_at_info() {
 #[test]
 fn a_held_lock_keeps_the_folder() {
     let (root, folder) = root_with(ID);
-    let held = sot_log::supervisor::journal::fence::lock_supervisor(&folder).unwrap();
+    let held = sot_capsule::supervisor::fence::lock_supervisor(&folder).unwrap();
     for floor in [Some(AGE_FLOOR), None] {
         assert!(matches!(remove_now(&workspaces_of(&root), ID, floor), Removal::Kept(_)));
     }

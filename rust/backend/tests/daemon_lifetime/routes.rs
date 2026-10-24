@@ -19,7 +19,7 @@ pub async fn supervisor_in(env: &Env, state_dir: &Path) -> Option<(i32, u64)> {
     std::env::set_var("SOT_RUNTIME_DIR", env._runtime_tmp.path());
     let dir = state_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        sot_log::attach_client::supervisor_client::query_status(&dir)
+        sot_capsule::attach_client::supervisor_client::query_status(&dir)
             .ok()
             .map(|(report, _)| (report.pid as i32, report.created))
     })

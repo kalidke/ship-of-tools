@@ -24,7 +24,7 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -62,7 +62,7 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     let run_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            let report = sot_log::attach_client::supervisor_client::query_status(&dir)
+            let report = sot_capsule::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before killing the supervisor")
                 .0;
             report.run.expect("a ready capsule has a run")
@@ -115,7 +115,7 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     let run_after = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            let report = sot_log::attach_client::supervisor_client::query_status(&dir)
+            let report = sot_capsule::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after the resume")
                 .0;
             report.run
@@ -131,7 +131,7 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir)
     })
     .await;
 
@@ -158,7 +158,7 @@ async fn capsule_resume_never_resets_an_ended_row() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -193,16 +193,16 @@ async fn capsule_resume_never_resets_an_ended_row() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let (original_status, _process) = sot_log::attach_client::supervisor_client::query_status(&state_dir_path)
+    let (original_status, _process) = sot_capsule::attach_client::supervisor_client::query_status(&state_dir_path)
         .expect("query_status before ending the run");
-    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, original_status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
+    sot_capsule::attach_client::supervisor_client::end_run(&state_dir_path, original_status.run.as_deref().expect("a ready capsule has a run"), "test end").expect("end_run over the lane");
 
     poll_until(
         || {
             let dir = state_dir_path.clone();
             async move {
                 let report = try_query_status(dir).await?;
-                (report.phase == sot_log::SupervisorPhase::EndedNoRespawn).then_some(())
+                (report.phase == sot_capsule::SupervisorPhase::EndedNoRespawn).then_some(())
             }
         },
         BOUND,
@@ -262,7 +262,7 @@ async fn capsule_resume_never_resets_an_ended_row() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir)
     })
     .await;
 
@@ -288,7 +288,7 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -326,7 +326,7 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     let run_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&dir)
+            let (report, _process) = sot_capsule::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before killing supervisor and leg");
             report.run.expect("a ready capsule has a run")
         }
@@ -379,7 +379,7 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     let run_after = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&dir)
+            let (report, _process) = sot_capsule::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after the re-execution");
             report.run
         }
@@ -393,7 +393,7 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir)
     })
     .await;
 
@@ -420,7 +420,7 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -559,7 +559,7 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
     );
 
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
-    let _ = tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::stop(&state_dir)).await;
+    let _ = tokio::task::spawn_blocking(move || sot_capsule::attach_client::supervisor_client::stop(&state_dir)).await;
 
     env.kill_daemon_bounded().await;
 }
@@ -586,7 +586,7 @@ async fn a_row_with_only_a_fence_file_resumes_at_boot() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;
@@ -678,7 +678,7 @@ async fn an_adopted_supervisor_whose_agent_exits_is_restarted_within_the_budget_
     }
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir)
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;

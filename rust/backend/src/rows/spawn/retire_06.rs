@@ -17,7 +17,7 @@
 //! state folder's hash. The frozen bytes are the two fixtures beside this file.
 
 use crate::rows::run::end_run::{absence_proof_then, row_socket_silent, NotProven};
-use sot_log::endpoint::{Endpoint, PlatformEndpoint};
+use sot_capsule::endpoint::{Endpoint, PlatformEndpoint};
 use sot_platform::transport::connect_own::connect_own;
 use sot_platform::identity::challenge::ChallengeOutcome;
 use sot_platform::identity::deadline::run_with_deadline;
@@ -547,7 +547,7 @@ fn record_live_rest(state_dir: &Path, voyage: Option<&str>) -> Result<bool, Stri
     if own {
         return Ok(false);
     }
-    sot_log::capsule::mark_end_requested(state_dir, "ended under 0.6").map_err(|e| format!("record the requested end: {e}"))?;
+    sot_capsule::capsule::mark_end_requested(state_dir, "ended under 0.6").map_err(|e| format!("record the requested end: {e}"))?;
     Ok(true)
 }
 
@@ -729,7 +729,7 @@ fn move_layout(state_dir: &Path, found: &[OsString]) -> Result<Moved, String> {
         true
     });
     if requested {
-        sot_log::capsule::mark_end_requested(state_dir, "ended under 0.6").map_err(|e| format!("record the requested end: {e}"))?;
+        sot_capsule::capsule::mark_end_requested(state_dir, "ended under 0.6").map_err(|e| format!("record the requested end: {e}"))?;
     }
     let dest = state_dir.join(RETIRED_DIR);
     match std::fs::symlink_metadata(&dest) {
@@ -775,7 +775,7 @@ pub(crate) fn retire_06(state_dir: &Path) -> Result<(), String> {
     }
     #[cfg(target_os = "linux")]
     crate::rows::spawn::row_scope::end(&root, &own, state_dir, captured.as_deref(), crate::rows::spawn::row_scope::SCOPE_EMPTY_BOUND)?;
-    let moved = if sot_log::supervisor::journal::fence::supervisor_lock_path(state_dir).is_file() {
+    let moved = if sot_capsule::supervisor::fence::supervisor_lock_path(state_dir).is_file() {
         match absence_proof_then(state_dir, row_socket_silent, || move_layout(state_dir, &found)) {
             Ok(Some(moved)) => moved?,
             Ok(None) => return Err("a row socket answers and no 0.6 supervisor ended it".to_string()),

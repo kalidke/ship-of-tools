@@ -1,7 +1,7 @@
 //! Which native errors mean the volume or quota is full.
 
 /// The one table: the native storage-exhaustion codes of this platform, read from an `io::Error`, never from its text.
-/// A caller with an error type of its own reads its `Io` variant through this (`sot_log::storage_exhaustion`).
+/// A caller with an error type of its own reads its `Io` variant through this (`sot_capsule::storage_exhaustion`).
 pub fn native_storage_code(e: &std::io::Error) -> Option<i32> {
     let code = e.raw_os_error()?;
     #[cfg(unix)]

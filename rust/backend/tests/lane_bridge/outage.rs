@@ -1,7 +1,7 @@
 //! A blackhole, a daemon outage past the window, and a terminal row after the window.
 
 use super::*;
-use sot_log::attach_client::attach::ABSENT_WINDOW as HEALTH_WINDOW;
+use sot_capsule::attach_client::attach::ABSENT_WINDOW as HEALTH_WINDOW;
 
 // -----------------------------------------------------------------------
 // (iv)+(v) A blackhole is unreachable and retried, never terminal; a cut

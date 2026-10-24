@@ -12,7 +12,7 @@ fn deadline() -> Instant {
 }
 
 fn oversized_detail() -> String {
-    let cap = sot_log::attach_client::client::TAKE_QUEUE_CAP;
+    let cap = sot_capsule::attach_client::client::TAKE_QUEUE_CAP;
     format!("payload is {} bytes, exceeding the take queue cap of {} bytes", cap + 1, cap)
 }
 
@@ -29,7 +29,7 @@ fn enter_outcome_tells_unknown_from_not_sent() {
 
 #[test]
 fn oversized_payload_is_refused_before_any_attach() {
-    let bytes = vec![b'x'; sot_log::attach_client::client::TAKE_QUEUE_CAP + 1];
+    let bytes = vec![b'x'; sot_capsule::attach_client::client::TAKE_QUEUE_CAP + 1];
     let err = type_into(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", &bytes, deadline())
         .expect_err("oversized payload must be refused");
     assert_eq!(err.phase, "size");
@@ -44,7 +44,7 @@ fn exactly_the_cap_is_not_oversized() {
     // some other way), which is enough to prove the size gate did
     // NOT reject it — that failure is expected and not asserted on
     // further than "it is not the size-gate error."
-    let bytes = vec![b'x'; sot_log::attach_client::client::TAKE_QUEUE_CAP];
+    let bytes = vec![b'x'; sot_capsule::attach_client::client::TAKE_QUEUE_CAP];
     let err = type_into(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", &bytes, deadline())
         .expect_err("a nonexistent state dir cannot succeed");
     assert_ne!(err.phase, "size", "the cap itself must not trip the size gate");
@@ -59,7 +59,7 @@ fn empty_payload_succeeds_with_no_attach() {
 
 #[test]
 fn write_and_enter_oversized_payload_is_refused_before_any_attach() {
-    let bytes = vec![b'x'; sot_log::attach_client::client::TAKE_QUEUE_CAP + 1];
+    let bytes = vec![b'x'; sot_capsule::attach_client::client::TAKE_QUEUE_CAP + 1];
     let budget = Duration::from_secs(5);
     let err = write_and_enter(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", &bytes, budget, budget, budget)
         .expect_err("oversized payload must be refused");

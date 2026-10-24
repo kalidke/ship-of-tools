@@ -42,7 +42,7 @@ struct EnvGuard {
     localappdata: Option<std::ffi::OsString>,
     sot_self_host: Option<std::ffi::OsString>,
     sot_comm_home: Option<std::ffi::OsString>,
-    // Added for the real-listener refusal proof below (`sot_log::
+    // Added for the real-listener refusal proof below (`sot_capsule::
     // state_dir::runtime_dir` trusts this once it is absolute and
     // private) -- captured/restored exactly like the other five so a
     // test that pins it never leaks the override past its own scope.
@@ -295,7 +295,7 @@ async fn default_capsule_workspace_with_no_state_dir_is_proven_orphaned_not_a_fl
 /// times out instead, waiting on a hello nobody answers — exactly the
 /// "something is there, but unresponsive" case that must keep
 /// refusing. `SOT_RUNTIME_DIR` is pinned to a fresh, private (owner-
-/// only) scratch dir so the real socket path (`sot_log::row::row_socket_path`) never collides with a real session.
+/// only) scratch dir so the real socket path (`sot_capsule::row::row_socket_path`) never collides with a real session.
 /// `cfg(unix)`: the assertion target is `rows::run::end_run::
 /// is_definitely_orphaned`'s refusing half, and the capsule runtime lost
 /// its platform gate in the macOS wiring lane — exactly the change
@@ -340,7 +340,7 @@ async fn a_reachable_listener_with_no_state_dir_still_refuses() {
     // to the SAME hash the production lane address is built from.
     let state_dir = crate::rows::spawn::state_root::state_dir_for(&canonical_root, &id);
     let h = sot_platform::host::state_dir::state_dir_hash(&state_dir);
-    let sock_path = sot_log::row::row_socket_path(&h).expect("runtime dir was just pinned");
+    let sock_path = sot_capsule::row::row_socket_path(&h).expect("runtime dir was just pinned");
     let _listener = std::os::unix::net::UnixListener::bind(&sock_path)
         .unwrap_or_else(|e| panic!("bind the stand-in listener at {sock_path:?}: {e}"));
     // Never `accept()`s -- proves a merely-unresponsive lane, not an

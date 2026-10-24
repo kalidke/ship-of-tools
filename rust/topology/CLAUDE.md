@@ -8,7 +8,7 @@ crate `sot-topology`; the daemon's half (`sotd topology`, `topology.set`, `sotd 
 stdio-bridge`, the dial) stays in the `sotd` binary under `rust/backend/src/topology/`, because it needs the roster,
 rows and the lease record, which are not crates yet (pass 5c moves the op table into the binary and gives each service
 a handler with an explicit context). The crate depends on `sot-protocol` (wire), `sot-platform` (which holds the
-local connectors and the `Client` trait) and `sot-log` (the capsule's `Endpoint`, which the lane client implements); `sot-protocol` depends on platform alone. The crate starts no child
+local connectors and the `Client` trait) and `sot-capsule` (the capsule's `Endpoint`, which the lane client implements); `sot-protocol` depends on platform alone. The crate starts no child
 the daemon owns: the daemon half of `sotd` depends on `sot-containment` and starts its ssh through it (guarantee 5), and
 the starts the crate makes itself are the named exceptions there. Nothing re-exports it.
 
@@ -141,7 +141,7 @@ drop-in per relayed host, the pins), the tunnel and relay unit names, and `apply
 ## Calls in
 `sot_protocol::{op, Frame, Kind, HelloReq, HANDOFF_ROLE, LaneConnectReq, LaneConnectRes, codec, child_lines}` (wire);
 `sot_platform::host::{state_dir, env, inherit_none}` and `sot_platform::identity::{challenge, peer, exchange}`;
-`sot_platform::transport::{Client, TransportError, connect_own, socket_unix, pipe_win}`, `sot_log::endpoint::Endpoint`; serde, tokio
+`sot_platform::transport::{Client, TransportError, connect_own, socket_unix, pipe_win}`, `sot_capsule::endpoint::Endpoint`; serde, tokio
 (oneshot, process, time). In `sotd`: `sot_containment::{process, Signal, Contained, ContainedStd, guard_pid}` and the
 server's roster and rows for `topology.set`.
 

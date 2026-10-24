@@ -5,7 +5,7 @@
 //! `<ms> ping` for the wake line. The daemon's comm home is the harness's own
 //! scratch `SOT_COMM_HOME`, never the live one.
 //!
-//! Run `cargo build -p sot-log --bin sot-capsule` into the same target dir
+//! Run `cargo build -p sot-capsule --bin sot-capsule` into the same target dir
 //! first, as for `capsule_workspaces`.
 
 use std::path::{Path, PathBuf};
@@ -223,7 +223,7 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
 /// [`start`], with `ctl` control files (see [`write_stub_claude`], `name` or `name=content`) created before the row starts, and `extra`
 /// env vars on the daemon. `SOT_TEST_WAKE_MARKS` is always set, to `ctl/marks`.
 async fn start_with(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)]) -> Row {
-    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-log --bin sot-capsule)");
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-capsule --bin sot-capsule)");
     let env = Env::new(tag);
     let log = log.unwrap_or_else(|| env._tmp.path().join("ping.log"));
     let dialog = env._tmp.path().join("dialog");

@@ -437,7 +437,7 @@ async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateR
                 crate::rows::run::start::start_supervisor(
                     &state_root,
                     &workspace_id,
-                    sot_log::supervisor::StartMode::Start,
+                    sot_capsule::supervisor::StartMode::Start,
                     &capsule_argv,
                     &project_root,
                     &agent_name,

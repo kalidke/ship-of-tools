@@ -24,7 +24,7 @@ async fn capsule_backend_test_env_drop_cleans_up_legs_and_daemon() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -236,7 +236,7 @@ async fn create_from_inside_a_job_that_forbids_breakaway_still_reaches_ready() {
 
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
     let (_status, process) =
-        tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&state_dir))
+        tokio::task::spawn_blocking(move || sot_capsule::attach_client::supervisor_client::query_status(&state_dir))
             .await
             .unwrap()
             .expect("query_status after ready");
@@ -272,7 +272,7 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -303,7 +303,7 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
 
     let (status, process) = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&dir)
+        move || sot_capsule::attach_client::supervisor_client::query_status(&dir)
     })
     .await
     .unwrap()
@@ -350,7 +350,7 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
 
     let run_after = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status after restart").0.run
+        move || sot_capsule::attach_client::supervisor_client::query_status(&dir).expect("query_status after restart").0.run
     })
     .await
     .unwrap();
@@ -377,7 +377,7 @@ async fn destroy_ends_a_child_that_left_the_agents_process_group() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -409,7 +409,7 @@ async fn destroy_ends_a_child_that_left_the_agents_process_group() {
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
     let (_status, process) = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&dir)
+        move || sot_capsule::attach_client::supervisor_client::query_status(&dir)
     })
     .await
     .unwrap()
@@ -482,7 +482,7 @@ async fn capsule_launch_degrades_when_no_user_scope_is_available() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -511,7 +511,7 @@ async fn capsule_launch_degrades_when_no_user_scope_is_available() {
 
     let (status, process) = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::query_status(&dir)
+        move || sot_capsule::attach_client::supervisor_client::query_status(&dir)
     })
     .await
     .unwrap()
@@ -557,7 +557,7 @@ async fn env_drop_leaves_no_capsule_of_its_own() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );

@@ -244,7 +244,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | guarantee | test |
 |---|---|
 | 1 | `argv::tests::every_claude_leg_runs_auto_mode_and_never_skips_permissions` |
-| 2 | `argv::tests::agent_argv_claude_starts_a_fresh_conversation`, `a_reauth_leg_resumes_by_id_and_never_continues`, `agent_exec_argv_claude_never_adds_continue`; the supervisor's stripping of a resume on later legs, `rust/log/src/supervisor/transitions_tests.rs` |
+| 2 | `argv::tests::agent_argv_claude_starts_a_fresh_conversation`, `a_reauth_leg_resumes_by_id_and_never_continues`, `agent_exec_argv_claude_never_adds_continue`; the supervisor's stripping of a resume on later legs, `rust/capsule/src/supervisor/transitions_tests.rs` |
 | 3 | `argv::tests::resolve_claude_*`, `resolve_ccx_*`; `env::tests::agent_env_prepends_local_bin_to_path_once`; `tests/agent_exec.rs` |
 | 4 | `env::tests::capsule_supervisor_env_*`, `nesting_env_scrub_list_matches_ccb`, `sotd_bin_value_*`, `the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected`; `tests/agent_exec.rs` |
 | 5 | `accounts::tests::*`, `account_links::tests::*` |

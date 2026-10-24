@@ -1,7 +1,7 @@
 use super::*;
 
-fn report(phase: sot_log::SupervisorPhase) -> sot_log::attach_client::supervisor_client::StatusReport {
-    sot_log::attach_client::supervisor_client::StatusReport { pid: 1, created: 1, phase, run: None }
+fn report(phase: sot_capsule::SupervisorPhase) -> sot_capsule::attach_client::supervisor_client::StatusReport {
+    sot_capsule::attach_client::supervisor_client::StatusReport { pid: 1, created: 1, phase, run: None }
 }
 
 /// An authority that reports `Starting` (a held row is one) is waited out
@@ -10,7 +10,7 @@ fn report(phase: sot_log::SupervisorPhase) -> sot_log::attach_client::supervisor
 /// keeps the row with an error naming the starting authority.
 #[test]
 fn a_still_starting_authority_is_stopped_then_proven() {
-    use sot_log::SupervisorPhase as P;
+    use sot_capsule::SupervisorPhase as P;
     // Starting, Starting, Ready: settled after two pauses.
     let mut script = vec![P::Starting, P::Starting, P::Ready].into_iter();
     let mut pauses = 0;
@@ -58,7 +58,7 @@ fn the_destroy_proof_needs_no_voyage() {
 
     // Something else holds the SUPERVISOR fence right now: `end_run` keeps the unreachable-lane refusal (Err) rather
     // than fabricating `Unheld` out from under a live holder.
-    let holder = sot_log::supervisor::journal::fence::lock_supervisor(state_dir).expect("take the fence");
+    let holder = sot_capsule::supervisor::fence::lock_supervisor(state_dir).expect("take the fence");
     match end_run(state_dir, "test reason", true) {
         Err(_) => {}
         Ok(outcome) => {

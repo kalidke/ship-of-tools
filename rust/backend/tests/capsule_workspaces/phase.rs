@@ -5,7 +5,7 @@ use super::*;
 /// A minimal row-socket FIXTURE standing in for a row of another row number
 /// (ADR 0030 §8 decision 31c) — binds the EXACT unix socket path
 /// `phase_of`'s own `query_status` will dial for `state_dir`
-/// (`sot_log::row::row_socket_path`, the same one this
+/// (`sot_capsule::row::row_socket_path`, the same one this
 /// process's own `SOT_RUNTIME_DIR` resolves it to), accepts ONE
 /// connection, and writes back `reply_bytes` verbatim before closing.
 /// Same-user peer credentials (the SID/`SO_PEERCRED` steps) pass for
@@ -20,7 +20,7 @@ use super::*;
 #[cfg(target_os = "linux")]
 fn spawn_lane_refusal_fixture(state_dir: &Path, reply_bytes: Vec<u8>) -> std::thread::JoinHandle<()> {
     let h = sot_platform::host::state_dir::state_dir_hash(state_dir);
-    let path = sot_log::row::row_socket_path(&h).expect("row socket path");
+    let path = sot_capsule::row::row_socket_path(&h).expect("row socket path");
     let _ = std::fs::remove_file(&path);
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture supervisor socket");
     std::thread::spawn(move || {
@@ -39,7 +39,7 @@ fn spawn_lane_refusal_fixture(state_dir: &Path, reply_bytes: Vec<u8>) -> std::th
 /// the gate itself is superseded by ADR 0045 decision 7 -- `proto`, not
 /// build): `phase_of` reports `"foreign"` for a capsule row whose
 /// row answered with another row number (typed as
-/// `sot_log::Error::VersionSkew`, never a text match). Reproduces the
+/// `sot_capsule::Error::VersionSkew`, never a text match). Reproduces the
 /// field incident's OBSERVABLE shape (a row an operator finds already
 /// held by a foreign lane, not one this daemon started that way -- this
 /// daemon would never spawn one itself) using
@@ -51,7 +51,7 @@ async fn phase_reports_foreign_for_a_version_skew_refusal() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -68,8 +68,8 @@ async fn phase_reports_foreign_for_a_version_skew_refusal() {
     // row of another row number would send.
     let hello = sot_protocol::Frame::res(
         1,
-        sot_log::row::OP_HELLO,
-        serde_json::json!({"pid": 1, "created": 1, "phase": "ready", "run": "", "row": sot_log::row::ROW_PROTOCOL + 1}),
+        sot_capsule::row::OP_HELLO,
+        serde_json::json!({"pid": 1, "created": 1, "phase": "ready", "run": "", "row": sot_capsule::row::ROW_PROTOCOL + 1}),
     );
     let mut reply = serde_json::to_vec(&hello).expect("a hello reply serializes");
     reply.push(b'\n');
@@ -98,7 +98,7 @@ async fn phase_stays_unreachable_for_a_malformed_reply() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -173,7 +173,7 @@ async fn a_killed_adopted_supervisor_is_restarted_and_a_stopped_one_is_not() {
 
     tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::attach_client::supervisor_client::stop(&dir).expect("stop the supervisor")
+        move || sot_capsule::attach_client::supervisor_client::stop(&dir).expect("stop the supervisor")
     })
     .await
     .unwrap();

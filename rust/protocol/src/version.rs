@@ -32,7 +32,7 @@ use super::*;
 /// on-tag but ALSO dirty is not that release, so it still falls through to
 /// the `-dirty` form rather than collapsing to the bare tag version). Two
 /// distinct dirty trees at one HEAD still alias on this sha — deferred,
-/// same as `rust/log/build.rs` already documents for its own build id.
+/// same as `rust/capsule/build.rs` already documents for its own build id.
 pub fn app_version() -> String {
     format_app_version(
         env!("CARGO_PKG_VERSION"),

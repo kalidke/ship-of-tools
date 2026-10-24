@@ -310,7 +310,7 @@ fn agent_exec_argv_in(env: &AgentEnv, kind: &str, extra: &[String]) -> Result<Ve
 /// tmux launchers' own full-path rule (a daemon-spawned process inherits
 /// the SERVICE's PATH, which lacks `~/.local/bin`; CLAUDE.md's own
 /// documented gotcha). Returns the ABSOLUTE path so the eventual capsule
-/// producer never repeats a PATH search of its own (`sot_log::capsule::producer::pty`'s
+/// producer never repeats a PATH search of its own (`sot_capsule::capsule::producer::pty`'s
 /// own `executable_is_resolvable` treats an absolute path as a direct
 /// existence+executable check, never a second PATH walk). Takes its
 /// inputs explicitly (never reads `std::env` itself) so it is testable
@@ -391,7 +391,7 @@ fn resolve_ccx(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Resul
 /// means "searchable," not "runnable as a program," so checking access
 /// alone let a same-named directory earlier in `PATH` win over a real
 /// executable later in it) that `access(2)` ALSO reports as executable
-/// by THIS process — mirrors `sot_log::capsule::producer::pty`'s own
+/// by THIS process — mirrors `sot_capsule::capsule::producer::pty`'s own
 /// `is_executable_file`'s `access` check (the same test the eventual pty
 /// producer performs before ever forking), so a path this returns is
 /// never rejected there for a reason this check could have caught

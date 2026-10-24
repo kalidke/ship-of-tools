@@ -144,7 +144,7 @@ Supervisor:
   (Windows): the supervisor is spawned before it takes its fence (`spawn/detach.rs`), so one that exits in that window
   leaves no marker for the recheck or the boot resume.
 
-The daemon's calls on a row's supervisor are ops of the row socket, through `sot_log::attach_client::supervisor_client`
+The daemon's calls on a row's supervisor are ops of the row socket, through `sot_capsule::attach_client::supervisor_client`
 (`query_status`, `end_run`, `reset`, `stop`, each bounded, and the observer's `watch`); a row of another row number
 is `foreign` and one that answers no such op, or none, is `unreachable`. An outcome the call could not settle is
 settled by reading the same supervisor's status, never by asking again: a lost end whose run is gone is `Ended`, a

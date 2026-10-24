@@ -5,7 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 /// Outcome of [`end_run`] — the daemon's own portable
-/// vocabulary over `sot_log::attach_client::supervisor_client::EndRunOutcome` (never
+/// vocabulary over `sot_capsule::attach_client::supervisor_client::EndRunOutcome` (never
 /// that raw, platform-specific type crossing into `rows/run/end.rs`). Defined
 /// here, apart from the platform-specific spawn code, so `rows/run/end.rs`'s outcome→response
 /// mapping stays plain and unit-testable on every platform.
@@ -41,7 +41,7 @@ pub enum EndRunOutcome {
     /// proof came back absent: a bounded, non-blocking attempt to take
     /// `supervisor.lock` on the same state dir succeeded — nobody holds
     /// the AUTHORITY over this row (the kernel released the fence the
-    /// instant its last holder died — `sot_log::supervisor::journal::fence`) — AND
+    /// instant its last holder died — `sot_capsule::supervisor::fence`) — AND
     /// [`row_socket_silent`] found nothing answering the row's socket
     /// (the agent ends with its supervisor). No authority AND nothing
     /// answering is safe to treat as `Removable`, same as `Terminal`.
@@ -104,8 +104,8 @@ pub fn end_run(
     root_canonicalized: bool,
 ) -> std::io::Result<super::EndRunOutcome> {
     use super::EndRunOutcome as R;
-    use sot_log::attach_client::supervisor_client::EndRunOutcome as O;
-    use sot_log::SupervisorPhase;
+    use sot_capsule::attach_client::supervisor_client::EndRunOutcome as O;
+    use sot_capsule::SupervisorPhase;
 
     // A row a 0.6 release left is retired first: its old terminal and agent outlive its supervisor, and the row socket
     // below would answer nothing for it. A Cleanup boot ends rows through here without resuming them.
@@ -122,7 +122,7 @@ pub fn end_run(
     #[cfg(not(target_os = "linux"))]
     let (root, own) = (PathBuf::new(), String::new());
 
-    let (status, scope) = match sot_log::attach_client::supervisor_client::query_status(state_dir) {
+    let (status, scope) = match sot_capsule::attach_client::supervisor_client::query_status(state_dir) {
         Ok((status, process)) => {
             // A4b: the challenged supervisor's own scope, captured
             // and listed durably before the end that makes it exit; a
@@ -238,7 +238,7 @@ pub fn end_run(
     // stopped and judged by the absence proof, as a terminal one is.
     let status = match status.phase {
         SupervisorPhase::Starting => {
-            let requery = || sot_log::attach_client::supervisor_client::query_status(state_dir).map(|(status, _)| status);
+            let requery = || sot_capsule::attach_client::supervisor_client::query_status(state_dir).map(|(status, _)| status);
             match settle_starting(requery, || std::thread::sleep(super::activation::ACTIVATION_REPROBE_INTERVAL)) {
                 Settle::Settled(status) => status,
                 Settle::StillStarting => {
@@ -318,7 +318,7 @@ pub fn end_run(
     let Some(run) = status.run else {
         return Ok(R::NotEnded("the supervisor reports no live run to end".to_string()));
     };
-    let outcome = sot_log::attach_client::supervisor_client::end_run(state_dir, &run, reason)
+    let outcome = sot_capsule::attach_client::supervisor_client::end_run(state_dir, &run, reason)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(match outcome {
         O::Ended => match stop_and_end_scope(state_dir, "end_run confirmed", scope.as_deref(), &root, &own) {
@@ -334,11 +334,11 @@ pub fn end_run(
 /// What waiting out an authority that reports `Starting` found.
 enum Settle {
     /// The phase left `Starting`.
-    Settled(sot_log::attach_client::supervisor_client::StatusReport),
+    Settled(sot_capsule::attach_client::supervisor_client::StatusReport),
     /// Still `Starting` after activation's bound of re-probes.
     StillStarting,
     /// The lane stopped answering while waiting.
-    Lost(sot_log::Error),
+    Lost(sot_capsule::Error),
 }
 
 /// Re-queries until the phase is not `Starting`, pausing between tries, at
@@ -346,10 +346,10 @@ enum Settle {
 /// transient phase out for): a settling authority gets the time activation
 /// gives one; a held one (the storage wait reports `Starting` too) does not.
 fn settle_starting(
-    mut requery: impl FnMut() -> sot_log::Result<sot_log::attach_client::supervisor_client::StatusReport>,
+    mut requery: impl FnMut() -> sot_capsule::Result<sot_capsule::attach_client::supervisor_client::StatusReport>,
     mut pause: impl FnMut(),
 ) -> Settle {
-    use sot_log::SupervisorPhase;
+    use sot_capsule::SupervisorPhase;
     for pauses in 0..=super::activation::ACTIVATION_MAX_REPROBES {
         match requery() {
             Ok(status) if status.phase != SupervisorPhase::Starting => return Settle::Settled(status),
@@ -442,7 +442,7 @@ pub(crate) fn absence_proof_then<T>(
     act: impl FnOnce() -> T,
 ) -> Result<Option<T>, NotProven> {
     let _fence =
-        sot_log::supervisor::journal::fence::lock_supervisor(state_dir).map_err(|_| NotProven::FenceUnavailable)?;
+        sot_capsule::supervisor::fence::lock_supervisor(state_dir).map_err(|_| NotProven::FenceUnavailable)?;
     if silent(state_dir).map_err(NotProven::RowSocketUnjudged)? {
         Ok(Some(act()))
     } else {
@@ -458,7 +458,7 @@ pub(crate) fn absence_proof_then<T>(
 /// their Windows equivalents, returned on the FIRST attempt — never
 /// the outcome of a retried-but-still-busy endpoint, which means a
 /// listener exists). Only the connect step itself produces a
-/// `sot_log::Error::Transport` — a challenge that answered `Foreign`/
+/// `sot_capsule::Error::Transport` — a challenge that answered `Foreign`/
 /// `Undetermined`/`VersionSkew`, or a reply-stage failure, is a
 /// DIFFERENT `Error` variant and correctly falls through to `false`
 /// here, because each of those means something DID answer. A `true`
@@ -467,8 +467,8 @@ pub(crate) fn absence_proof_then<T>(
 /// [`absence_proof`]: nowhere left for `supervisor.lock` to exist
 /// (it lives under `state_dir`), and no supervisor reachable at the one address that does not depend on
 /// the directory existing.
-fn is_definitely_orphaned(e: &sot_log::Error) -> bool {
-    matches!(e, sot_log::Error::Transport(te) if te.is_endpoint_absent())
+fn is_definitely_orphaned(e: &sot_capsule::Error) -> bool {
+    matches!(e, sot_capsule::Error::Transport(te) if te.is_endpoint_absent())
 }
 
 /// The row-socket half of decision 33's destroy proof: [`absence_proof`] calls this only once the supervisor fence is
@@ -479,7 +479,7 @@ fn is_definitely_orphaned(e: &sot_log::Error) -> bool {
 /// orphaned. `Err`: the socket could not be judged (a timeout, a challenge that proves nothing), so absence is NOT proven
 /// and the caller keeps the row rather than guesses.
 pub fn row_socket_silent(state_dir: &Path) -> Result<bool, String> {
-    match sot_log::attach_client::supervisor_client::query_status(state_dir) {
+    match sot_capsule::attach_client::supervisor_client::query_status(state_dir) {
         Ok(_) => Ok(false),
         Err(e) if is_definitely_orphaned(&e) => Ok(true),
         Err(e) => Err(e.to_string()),
@@ -490,7 +490,7 @@ pub fn row_socket_silent(state_dir: &Path) -> Result<bool, String> {
 /// leg to run — see that function's own doc for why this exists and
 /// why a failure here is only ever logged, never propagated.
 fn stop_and_warn(state_dir: &Path, why: &'static str) {
-    if let Err(e) = sot_log::attach_client::supervisor_client::stop(state_dir) {
+    if let Err(e) = sot_capsule::attach_client::supervisor_client::stop(state_dir) {
         tracing::warn!(
             state_dir = ?state_dir, error = %e, why,
             "capsule workspace: stop after end_run failed (resident supervisor leaked)"

@@ -6,7 +6,7 @@ use super::watchdog::{install_watchdog, First};
 use crate::rows::spawn::state_root::state_dir_for;
 use crate::rows::workspace::{Observation, Phase, SupervisorIdentity};
 use crate::rows::{Workspace, Workspaces};
-use sot_log::attach_client::supervisor_client::{watch, CancelHandle, StatusReport, WatchStep};
+use sot_capsule::attach_client::supervisor_client::{watch, CancelHandle, StatusReport, WatchStep};
 use sot_platform::host::redial::Redial;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -151,7 +151,7 @@ fn watch_round(workspace_id: &str, state_dir: &Path, cancel: &CancelHandle, work
     }
     let mut held = match watch(state_dir, cancel) {
         Ok(held) => held,
-        Err(sot_log::Error::VersionSkew) => {
+        Err(sot_capsule::Error::VersionSkew) => {
             feed(Observation::Foreign);
             return Round::Unwatched;
         }

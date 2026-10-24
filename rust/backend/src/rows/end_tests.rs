@@ -99,7 +99,7 @@ async fn already_removed_row_is_not_kept() {
 #[tokio::test]
 async fn end_every_ends_only_the_rows_it_is_given() {
     let root = tempfile::tempdir().expect("tempdir");
-    let _fence = sot_log::supervisor::journal::fence::lock_supervisor(root.path()).expect("the test holds the fence");
+    let _fence = sot_capsule::supervisor::fence::lock_supervisor(root.path()).expect("the test holds the fence");
     let reg = Workspaces::new();
     let (events, _rx) = broadcast::channel(4);
     let started = Instant::now();

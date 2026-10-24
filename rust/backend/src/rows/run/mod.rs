@@ -8,7 +8,7 @@ pub(crate) mod observer;
 
 /// ADR 0042 amendment (2026-09-07), "a session types into and reads a
 /// sibling row": the daemon's own HEADLESS client on a capsule lane — the
-/// same [`sot_log::attach_client::client::FeAttachClient`] the frontend's drawer
+/// same [`sot_capsule::attach_client::client::FeAttachClient`] the frontend's drawer
 /// uses, run on the daemon side with no viewport and no user watching.
 /// `type_into` takes the pen only long enough to deliver ONE `input` frame
 /// and never resizes the pane (ADR 0041's take-on-first-input semantics,

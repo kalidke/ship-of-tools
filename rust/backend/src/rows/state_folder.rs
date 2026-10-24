@@ -78,7 +78,7 @@ fn retire(workspaces_dir: &Path, id: &str, age_floor: Option<Duration>, now: Sys
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(_) => return Err(Removal::Kept("row-scopes cannot be read")),
     }
-    let lock_path = sot_log::supervisor::journal::fence::supervisor_lock_path(&folder);
+    let lock_path = sot_capsule::supervisor::fence::supervisor_lock_path(&folder);
     match std::fs::symlink_metadata(&lock_path) {
         Ok(m) if !m.file_type().is_file() => return Err(Removal::Kept("supervisor.lock is not a regular file")),
         Ok(_) => {}

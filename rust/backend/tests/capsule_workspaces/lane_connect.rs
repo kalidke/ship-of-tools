@@ -65,7 +65,7 @@ async fn lane_connect_pipes_the_row_hello_and_attach() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -90,7 +90,7 @@ async fn lane_connect_pipes_the_row_hello_and_attach() {
     // The connect envelope AND the first row frames are written in ONE call, BEFORE this test ever reads the
     // LaneConnectRes reply: the daemon's own `read_frame` must consume EXACTLY the envelope and hand everything past it,
     // untouched, to the raw pipe.
-    let mut payload = row_frame(1, "row.hello", serde_json::json!({"build": "test", "row": sot_log::row::ROW_PROTOCOL}));
+    let mut payload = row_frame(1, "row.hello", serde_json::json!({"build": "test", "row": sot_capsule::row::ROW_PROTOCOL}));
     payload.extend(row_frame(2, "row.attach", serde_json::json!({"cols": 80, "rows": 24, "driver": false})));
     let (mut lane_conn, res) = lane_connect_with_payload(&env, &target, &payload).await;
     assert!(res.get("error").is_none(), "lane.connect refused: {res:?}");
@@ -152,7 +152,7 @@ async fn lane_connect_closes_when_either_side_closes() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -244,7 +244,7 @@ async fn lane_connect_resumes_a_stopped_row() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -314,7 +314,7 @@ async fn lane_connect_refusals() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -409,7 +409,7 @@ async fn lane_connect_pipes_the_named_rows_own_socket() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -439,7 +439,7 @@ async fn lane_connect_pipes_the_named_rows_own_socket() {
     let (target_a, state_dir_a) = create_ready(&mut conn, &mut next_id, &env, "lcvm-a").await;
     let (target_b, state_dir_b) = create_ready(&mut conn, &mut next_id, &env, "lcvm-b").await;
     let pid_of = |dir: PathBuf| async move {
-        tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status on a ready row").0.pid)
+        tokio::task::spawn_blocking(move || sot_capsule::attach_client::supervisor_client::query_status(&dir).expect("query_status on a ready row").0.pid)
             .await
             .unwrap()
     };

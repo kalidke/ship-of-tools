@@ -4,7 +4,7 @@
 
 use super::wire::LaunchSpec;
 use sot_platform::host::process_tree::{Birth, Launch, Ready};
-use sot_log::supervisor::birth_claim::BirthClaim;
+use sot_capsule::supervisor::birth_claim::BirthClaim;
 use std::ffi::{OsStr, OsString};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -82,7 +82,7 @@ pub fn accept(
         .map_err(|e| failed("could not create the state folder", e))?;
     let claim = match BirthClaim::take(&spec.state_dir) {
         Ok(claim) => claim,
-        Err(sot_log::Error::State(_)) => return Err(Refusal::Contended),
+        Err(sot_capsule::Error::State(_)) => return Err(Refusal::Contended),
         Err(e) => return Err(failed("could not claim the row's authority fence", e)),
     };
     barrier("parent_accepted");

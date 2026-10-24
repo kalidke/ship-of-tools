@@ -1,6 +1,6 @@
 //! Issue-B split (2026-09-05): after a capsule checkpoint is restored into
 //! the frontend's parser (and reflowed to the pane, exactly as
-//! `sot_log::attach_client::client`'s `pump()` does), does ordinary newline-driven
+//! `sot_capsule::attach_client::client`'s `pump()` does), does ordinary newline-driven
 //! output still fill the scrollback ring? The field trace could not be
 //! taken (an instrumented FE build trips the build boundary), but this is a
 //! deterministic property of the parser, so it is proven here instead.
@@ -61,7 +61,7 @@ fn absolute_positioning_repaint_does_not_fill_the_ring() {
 
 #[test]
 fn checkpoint_carries_the_capsules_ring_into_the_restored_parser() {
-    // The capsule side (`CAPSULE_SCROLLBACK_ROWS` in `rust/log/src/capsule/mod.rs`)
+    // The capsule side (`CAPSULE_SCROLLBACK_ROWS` in `rust/capsule/src/capsule/mod.rs`)
     // after a long newline-driven reply: 100 lines scrolled off a 24-row
     // screen sit in its ring.
     let mut source = Parser::new(24, 80, 200);

@@ -59,7 +59,7 @@ const EXIT_FAILED: i32 = 1;
 const CHUNK: usize = 64 * 1024;
 
 /// This box's own already-hardened client for its own endpoint — the same
-/// two `sot-log` clients `LaneDial::Local` dials with, never a second
+/// two `sot-capsule` clients `LaneDial::Local` dials with, never a second
 /// connector written here. `connect_own` connects only to an endpoint this
 /// OS account serves (ADR 0049, User isolation).
 #[cfg(unix)]

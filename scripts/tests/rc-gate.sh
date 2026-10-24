@@ -5,7 +5,7 @@
 # covers what the old full gate covered: the Rust workspace tests (the four
 # slow binaries split per test), the doc tests, the windows-gnu and darwin
 # cross checks, the three clippy lines of rust.yml (lib-bins, all-targets with the test-children config, and the
-# all-targets line for x86_64-pc-windows-gnu over sot-log and sot-backend, which finds Windows-only test code from Linux),
+# all-targets line for x86_64-pc-windows-gnu over sot-capsule and sot-backend, which finds Windows-only test code from Linux),
 # every Julia suite, and the shell suites; not the tests release-gate.yml runs (the gate-* rows of .github/test-shards.txt:
 # the ones that sleep on the clock and the page test that needs a prepared depot), unless RCG_FULL is set; and, when the tree differs from `line` (a commit-ish; always when none is given)
 # under scripts/, comm/ or agents/, scripts/tests/under-bash.sh under a bash 3.2.57 that scripts/tests/bash32.sh builds
@@ -125,13 +125,13 @@ job_cargo_chain() {
   rc rust-doc "$r"
   st win-check
   logged "$L/win-check.log" "$L/win-check.log" "${TO[@]}" "${CE[@]}" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
-    cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-log -p sot-backend -p sot-frontend --locked &&
+    cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-capsule -p sot-backend -p sot-frontend --locked &&
   logged "$L/win-check.log" "$L/win-check.log" "${TO[@]}" "${CE[@]}" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
-    cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-backend -p sot-log --all-targets --locked
+    cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-backend -p sot-capsule --all-targets --locked
   fin win-check $?
   st darwin-check
   logged "$L/darwin-check.log" "$L/darwin-check.log" \
-    "${TO[@]}" "${CE[@]}" cargo check --manifest-path "$M" --target aarch64-apple-darwin -p sot-log -p sot-backend --all-targets --locked
+    "${TO[@]}" "${CE[@]}" cargo check --manifest-path "$M" --target aarch64-apple-darwin -p sot-capsule -p sot-backend --all-targets --locked
   fin darwin-check $?
 }
 
@@ -151,7 +151,7 @@ job_lint() {
       cmd=("${LNT[@]}" "${CE[@]}" "$conf" cargo clippy --workspace --exclude vt100-ctt --all-targets --features "$feats" --locked -- "${deny[@]}") ;;
     windows-tests)
       cmd=("${LNT[@]}" "${CE[@]}" "$conf" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
-        cargo clippy -p sot-log -p sot-backend --target x86_64-pc-windows-gnu --all-targets \
+        cargo clippy -p sot-capsule -p sot-backend --target x86_64-pc-windows-gnu --all-targets \
         --features sot-backend/daemon-lifetime-faults --locked -- "${deny[@]}") ;;
     *) echo "rc-gate: no lint line $1" > "$L/lint-$1.log"; fin "lint-$1" 2; return ;;
   esac
@@ -514,7 +514,7 @@ T0=$(date +%s)
 M=$D/rust/Cargo.toml
 BUILD_RC=0
 st build-capsule
-"${CE[@]}" cargo build --manifest-path "$M" -p sot-log --bin sot-capsule --locked > "$L/build-capsule.log" 2>&1
+"${CE[@]}" cargo build --manifest-path "$M" -p sot-capsule --bin sot-capsule --locked > "$L/build-capsule.log" 2>&1
 r=$?; rc build-capsule $r; [ $r -ne 0 ] && BUILD_RC=$r
 : > "$L/tests.tsv"
 if [ "$INTR" -eq 0 ]; then
@@ -538,7 +538,7 @@ RCG_LIFETIME=
 if [ "$INTR" -eq 0 ] && [ -n "${RCG_FULL:-}" ]; then
   echo unrun > "$L/rust/daemon_lifetime-faults.rc"
   st build-lifetime
-  "${CE[@]}" CARGO_TARGET_DIR="$CARGO_TARGET_DIR/daemon-lifetime" cargo build --manifest-path "$M" -p sot-log \
+  "${CE[@]}" CARGO_TARGET_DIR="$CARGO_TARGET_DIR/daemon-lifetime" cargo build --manifest-path "$M" -p sot-capsule \
     --features native-barrier --bin sot-capsule --locked > "$L/build-lifetime.log" 2>&1 &&
     "${CE[@]}" CARGO_TARGET_DIR="$CARGO_TARGET_DIR/daemon-lifetime" cargo test --manifest-path "$M" -p sot-backend \
       --features daemon-lifetime-faults --test daemon_lifetime --locked --no-run --message-format=json \

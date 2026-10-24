@@ -1,1 +1,1 @@
-Part of capsule: see ../log/CLAUDE.md.
+Part of capsule: see ../capsule/CLAUDE.md.

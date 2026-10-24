@@ -267,7 +267,7 @@ jobs:
       - name: Build the private daemon
         run: cargo build -p sot-backend --bin sotd --locked
       - name: Build the capsule
-        run: cargo build -p sot-log --bin sot-capsule --locked
+        run: cargo build -p sot-capsule --bin sot-capsule --locked
       - name: Time cold attaches over the stand-in route to the presented pane
         run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
 
@@ -289,7 +289,7 @@ jobs:
       - name: Build the private daemon
         run: cargo build -p sot-backend --bin sotd --locked
       - name: Build the capsule
-        run: cargo build -p sot-log --bin sot-capsule --locked
+        run: cargo build -p sot-capsule --bin sot-capsule --locked
       - name: Time cold attaches over the stand-in route to the presented pane
         run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
 
@@ -340,7 +340,7 @@ jobs:
           QUARTO_JULIA_PROJECT="$quarto_julia" quarto call engine julia kill
           echo "QUARTO_JULIA_PROJECT=$quarto_julia" >> "$GITHUB_ENV"
       - name: Build the capsule with its phase barriers
-        run: cargo build -p sot-log --locked --features native-barrier --bin sot-capsule
+        run: cargo build -p sot-capsule --locked --features native-barrier --bin sot-capsule
       - name: Prove the daemon's lifetime on real daemons
         run: cargo test -p sot-backend --locked --features daemon-lifetime-faults --test daemon_lifetime -- --include-ignored --test-threads=1
 
@@ -358,7 +358,7 @@ jobs:
         with:
           workspaces: rust
       - name: Build the capsule with its phase barriers
-        run: cargo build -p sot-log --locked --features native-barrier --bin sot-capsule
+        run: cargo build -p sot-capsule --locked --features native-barrier --bin sot-capsule
       - name: Prove the native launcher and the fence claim on real children
         run: cargo test -p sot-backend --locked --features daemon-lifetime-faults --test daemon_lifetime -- --test-threads=1
 
@@ -669,7 +669,7 @@ jobs:
       # behind that outlive their step (the runner reaps them at job end)
       # and a live sot-capsule.exe pins the file -- a rebuild after them
       # fails with 'Access is denied' as soon as the suites run fast enough.
-      # ADR 0042 slice L1a: `sot-capsule` lives in the sot-log package, a
+      # ADR 0042 slice L1a: `sot-capsule` lives in the sot-capsule package, a
       # DIFFERENT crate than `sotd` (sot-backend) — `cargo test -p
       # sot-backend` builds `sotd.exe` itself (CARGO_BIN_EXE_sotd, same
       # package as the test) but has no reason to build a binary from a
@@ -679,7 +679,7 @@ jobs:
       # (current_exe().parent()) assumes in production.
       - name: Build sot-capsule (for the backend capsule-workspace test below)
         timeout-minutes: 5
-        run: cargo build -p sot-log --bin sot-capsule
+        run: cargo build -p sot-capsule --bin sot-capsule
       # --test conpty: the one test BINARY (tests/conpty.rs), not a name
       # substring filter — nothing else in the workspace needs this image.
       # --nocapture: test 4's DA1-presence finding and the jobbed-probe
@@ -694,19 +694,19 @@ jobs:
       # waiting out the platform-wide default.
       - name: Test conpty (owned ConPTY + job containment)
         timeout-minutes: 5
-        run: cargo test -p sot-log --test conpty -- --nocapture
+        run: cargo test -p sot-capsule --test conpty -- --nocapture
       # --test capsule: same reasoning, one test BINARY (tests/capsule/,
       # L1-unix LU2a: renamed from tests/capsule_win.rs when the writer
       # loop became generic over `Producer`).
       - name: Test capsule (capsule runtime, ConPTY producer)
         timeout-minutes: 10
-        run: cargo test -p sot-log --test capsule -- --nocapture
+        run: cargo test -p sot-capsule --test capsule -- --nocapture
       # --test pipe_win: the named-pipe client plus the same-connection
       # challenge's real-pipe and real-cross-process tests, against the
       # row pipe (ADR 0041 U0 round-1).
       - name: Test pipe_win (named-pipe client + same-connection challenge)
         timeout-minutes: 10
-        run: cargo test -p sot-log --test pipe_win -- --nocapture
+        run: cargo test -p sot-capsule --test pipe_win -- --nocapture
       # --test supervisor: the real-process supervisor --
       # start, end_run and reset, the exit codes, and the row-number refusal,
       # all over the row socket against a real
@@ -717,7 +717,7 @@ jobs:
       # the `rest` shard of `test-linux`.
       - name: Test supervisor (the supervisor authority, real process)
         timeout-minutes: 15
-        run: cargo test -p sot-log --test supervisor -- --nocapture
+        run: cargo test -p sot-capsule --test supervisor -- --nocapture
       # --test fe_client: ADR 0041 step 6 U3, the FE attach-only
       # client -- attach as a watcher and receive the checkpoint;
       # take-on-first-input (the echo of the first input reaching the screen); end_run from the quit dispatcher
@@ -730,7 +730,7 @@ jobs:
       # `supervisor` above.
       - name: Test fe_client (FE attach-only client, real process)
         timeout-minutes: 20
-        run: cargo test -p sot-log --test fe_client -- --nocapture
+        run: cargo test -p sot-capsule --test fe_client -- --nocapture
       # --test capsule_workspaces: ADR 0042 slice L1a, the daemon's capsule
       # workspace runtime -- a real `sotd` spawning a real, DETACHED
       # `sot-capsule supervise` for workspace.create, workspace.list

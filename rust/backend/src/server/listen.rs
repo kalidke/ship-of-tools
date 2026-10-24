@@ -205,13 +205,13 @@ pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
 }
 
 /// The session pipe's security descriptor: protected, owner-only full
-/// access, no `OI`/`CI` inheritance — built from `sot_log::
+/// access, no `OI`/`CI` inheritance — built from `sot_capsule::
 /// owner_protected_pipe_descriptor` (the SAME SDDL `lane/pipe_win/` already
 /// uses for the voyage/supervisor pipes) rather than a second copy of that
 /// string. `interprocess` has no ACL-building of its own to reuse, and
 /// `PipeListenerOptions::security_descriptor` takes only its crate's own
 /// `SecurityDescriptor` type, so this borrows the raw
-/// descriptor `sot_log` built and clones it in (`to_owned_sd`) rather than
+/// descriptor `sot_capsule` built and clones it in (`to_owned_sd`) rather than
 /// hand-rolling a second SDDL string here.
 #[cfg(windows)]
 fn session_pipe_security_descriptor(

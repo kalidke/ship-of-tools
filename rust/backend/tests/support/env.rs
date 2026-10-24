@@ -132,7 +132,7 @@ impl Env {
                 .expect("chmod runtime tempdir to 0700");
         }
         // ADR 0043 decision 1 (propagation, not discovery): every direct
-        // `sot_log::attach_client::supervisor_client::*`/`sot_log::supervisor::journal::fence::*` call THIS
+        // `sot_capsule::attach_client::supervisor_client::*`/`sot_capsule::supervisor::fence::*` call THIS
         // TEST PROCESS ITSELF makes (never through the daemon's own wire
         // protocol) must resolve the SAME `SOT_RUNTIME_DIR` the spawned
         // `sotd` was launched with (`spawn_sotd`'s own `.env(...)`) — a

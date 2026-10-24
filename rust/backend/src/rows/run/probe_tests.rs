@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn phase_str_is_total_and_snake_case() {
-    use sot_log::SupervisorPhase;
+    use sot_capsule::SupervisorPhase;
     assert_eq!(phase_str(SupervisorPhase::Starting), "starting");
     assert_eq!(phase_str(SupervisorPhase::Ready), "ready");
     assert_eq!(phase_str(SupervisorPhase::Ending), "ending");
@@ -13,7 +13,7 @@ fn phase_str_is_total_and_snake_case() {
 #[test]
 fn wire_constants_and_phase_str_are_the_phases_strings() {
     use crate::rows::workspace::Phase;
-    use sot_log::SupervisorPhase;
+    use sot_capsule::SupervisorPhase;
     assert_eq!(UNREACHABLE_PHASE, "unreachable");
     assert_eq!(FOREIGN_PHASE, "foreign");
     assert_eq!(NEVER_STARTED_PHASE, "stopped");
@@ -37,7 +37,7 @@ fn never_started_phase_is_distinct_from_unreachable_and_every_answered_phase() {
     // started must read as quietly "stopped", not as the loud
     // "unreachable" a query FAILURE reports — the two must never
     // collide with each other or with any answered lifecycle phase.
-    use sot_log::SupervisorPhase;
+    use sot_capsule::SupervisorPhase;
     assert_ne!(NEVER_STARTED_PHASE, UNREACHABLE_PHASE);
     for p in [
         SupervisorPhase::Starting,
@@ -63,14 +63,14 @@ fn phase_for_missing_fence_only_fires_when_the_fence_file_is_absent() {
 fn a_folder_with_a_fence_file_and_no_supervisor_reads_unreachable_not_stopped() {
     let dir = tempfile::tempdir().expect("tempdir");
     assert_eq!(phase_of(dir.path()), NEVER_STARTED_PHASE, "nothing was ever started here");
-    std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(dir.path()), b"").expect("the fence file");
+    std::fs::write(sot_capsule::supervisor::fence::supervisor_lock_path(dir.path()), b"").expect("the fence file");
     assert!(fence_file_exists(dir.path()));
     assert_eq!(phase_of(dir.path()), UNREACHABLE_PHASE, "a start was made, and nothing answers it");
 }
 
 #[test]
 fn unreachable_phase_is_distinct_from_every_answered_phase() {
-    use sot_log::SupervisorPhase;
+    use sot_capsule::SupervisorPhase;
     for p in [
         SupervisorPhase::Starting,
         SupervisorPhase::Ready,

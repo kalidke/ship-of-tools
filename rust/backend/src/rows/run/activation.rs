@@ -5,7 +5,7 @@ use super::probe::{phase_of, probe};
 use super::start::{reset_run, start_supervisor};
 use super::{FOREIGN_PHASE, NEVER_STARTED_PHASE, UNREACHABLE_PHASE};
 use crate::agents::argv::agent_argv;
-use sot_log::supervisor::StartMode;
+use sot_capsule::supervisor::StartMode;
 use crate::rows::Workspaces;
 use std::path::Path;
 use std::time::Duration;
@@ -55,9 +55,9 @@ fn is_resting_phase(phase: &str, watchdog_owns_it: bool) -> bool {
     phase == NEVER_STARTED_PHASE
         || phase == FOREIGN_PHASE
         || phase == UNREACHABLE_PHASE && !watchdog_owns_it
-        || phase == super::phase_str(sot_log::SupervisorPhase::Ready)
-        || phase == super::phase_str(sot_log::SupervisorPhase::EndedNoRespawn)
-        || phase == super::phase_str(sot_log::SupervisorPhase::Terminal)
+        || phase == super::phase_str(sot_capsule::SupervisorPhase::Ready)
+        || phase == super::phase_str(sot_capsule::SupervisorPhase::EndedNoRespawn)
+        || phase == super::phase_str(sot_capsule::SupervisorPhase::Terminal)
 }
 
 /// The guard-HELD body shared by [`resume_if_absent`] (which takes
@@ -113,7 +113,7 @@ fn resume_locked_spawned(
         return Err("unknown workspace".to_string());
     };
     if ws.phase() == crate::rows::workspace::Phase::Terminal {
-        return Ok((super::phase_str(sot_log::SupervisorPhase::Terminal), false));
+        return Ok((super::phase_str(sot_capsule::SupervisorPhase::Terminal), false));
     }
     let state_dir = super::state_dir_for(state_root, workspace_id);
     let phase = phase_of(&state_dir);
@@ -406,7 +406,7 @@ fn ensure_started_locked(
     // resurrect it — ADR 0041's own no-resurrection rule). A new run
     // never starts on a resident authority; replacement requires a
     // confirmed stop (ADR 0043 decision 33's retirement clause).
-    let ended_phase = super::phase_str(sot_log::SupervisorPhase::EndedNoRespawn);
+    let ended_phase = super::phase_str(sot_capsule::SupervisorPhase::EndedNoRespawn);
     if settled_phase == ended_phase {
         // RB: a passive Reconnect never resets an ended run -- only a real Selection may retire+reset it below.
         if intent == ActivationIntent::Reconnect {
@@ -433,7 +433,7 @@ fn ensure_started_locked(
             // resident process (the prior behaviour) would let IT mint
             // the new run and spawn the new agent from whatever binary
             // it cached at its own start.
-            if let Err(e) = sot_log::attach_client::supervisor_client::stop(&state_dir) {
+            if let Err(e) = sot_capsule::attach_client::supervisor_client::stop(&state_dir) {
                 return LockedStep::Done(Err(format!("capsule workspace retire (stop before reset) failed: {e}")));
             }
             let argv = match agent_argv(agent_kind, Some(project_root)) {

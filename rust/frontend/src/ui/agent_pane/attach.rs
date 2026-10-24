@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(in crate::ui) type PaneAttachClient = sot_log::attach_client::client::FeAttachClient;
+pub(in crate::ui) type PaneAttachClient = sot_capsule::attach_client::client::FeAttachClient;
 
 /// Attach clients parked when the session pane leaves their row, so a
 /// switch back reuses the live lane instead of dialing again (a remote
@@ -61,8 +61,8 @@ fn shutdown_detached(clients: Vec<PaneAttachClient>) {
 }
 
 /// What the pane says when a key's delivery is not known: the row was cut, or the run changed, with the key unanswered.
-pub(in crate::ui) fn input_outcome_notice(outcome: Option<sot_log::attach_client::client::InputOutcome>) -> Option<&'static str> {
-    use sot_log::attach_client::client::InputOutcome;
+pub(in crate::ui) fn input_outcome_notice(outcome: Option<sot_capsule::attach_client::client::InputOutcome>) -> Option<&'static str> {
+    use sot_capsule::attach_client::client::InputOutcome;
     match outcome {
         Some(InputOutcome::DeliveryUnknown) => Some("delivery unknown: the last key may not have reached the agent; type it again if it did not"),
         Some(InputOutcome::RunEnded) => Some("run ended: keys typed before the agent restarted were not sent to the new run"),
@@ -276,7 +276,7 @@ impl State {
         };
         let endpoint = sot_topology::lane_client::DaemonLaneEndpoint::new(dial, token);
         let wake = self.wake.clone();
-        match sot_log::attach_client::client::FeAttachClient::attach(
+        match sot_capsule::attach_client::client::FeAttachClient::attach(
             endpoint,
             target.to_string(),
             cols,

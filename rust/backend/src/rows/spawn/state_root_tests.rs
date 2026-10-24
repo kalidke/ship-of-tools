@@ -8,16 +8,16 @@ fn a_full_volume_qualifies_only_a_row_that_has_run() {
     let full = || std::io::Error::from_raw_os_error(libc::ENOSPC);
     #[cfg(windows)]
     let full = || std::io::Error::from_raw_os_error(112);
-    assert_eq!(preflight_verdict(Err(sot_log::Error::Io(full())), true), Ok(()));
-    let refused = preflight_verdict(Err(sot_log::Error::Io(full())), false).unwrap_err();
+    assert_eq!(preflight_verdict(Err(sot_capsule::Error::Io(full())), true), Ok(()));
+    let refused = preflight_verdict(Err(sot_capsule::Error::Io(full())), false).unwrap_err();
     assert!(refused.contains("volume is full"), "{refused}");
     assert_eq!(preflight_verdict(Ok(()), false), Ok(()));
     let unsupported = || std::io::Error::new(std::io::ErrorKind::Unsupported, "incompatible volume");
-    assert!(preflight_verdict(Err(sot_log::Error::Io(unsupported())), true).is_err());
+    assert!(preflight_verdict(Err(sot_capsule::Error::Io(unsupported())), true).is_err());
 
     let dir = tempfile::tempdir().unwrap();
     assert!(!row_has_run(dir.path()));
-    std::fs::write(sot_log::supervisor::journal::fence::supervisor_lock_path(dir.path()), b"").unwrap();
+    std::fs::write(sot_capsule::supervisor::fence::supervisor_lock_path(dir.path()), b"").unwrap();
     assert!(row_has_run(dir.path()));
 }
 

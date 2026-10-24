@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 /// for a capsule workspace whose supervisor lane could not be reached at
 /// all — connect refused, an undetermined challenge, or a timeout (ADR
 /// 0042 L1a: "failure -> unreachable"). Distinct from every
-/// [`sot_log::SupervisorPhase`] variant, which are all states of a
+/// [`sot_capsule::SupervisorPhase`] variant, which are all states of a
 /// lane that DID answer, and from [`FOREIGN_PHASE`] (ADR 0030 §8 decision
 /// 31c) below — a challenge that specifically proves foreign now gets its
 /// own phase rather than folding in here.
@@ -33,7 +33,7 @@ pub const UNREACHABLE_PHASE: &str = crate::rows::workspace::Phase::Unreachable.a
 pub const FOREIGN_PHASE: &str = crate::rows::workspace::Phase::Foreign.as_wire_str();
 
 /// The wire phase string for a capsule workspace whose state folder holds no supervisor fence file
-/// (`<state_dir>/supervisor.lock`, `sot_log::supervisor::journal::fence`).
+/// (`<state_dir>/supervisor.lock`, `sot_capsule::supervisor::fence`).
 /// The fence file, not directory presence, is the discriminator: the daemon claims the fence before it forks a supervisor
 /// and a supervisor takes it before anything else, so a folder holding the file had a supervisor started in it, whether
 /// or not that supervisor got as far as publishing anything. A folder without one (the directory missing, or present and
@@ -56,22 +56,22 @@ pub fn phase_for_missing_fence(fence_exists: bool) -> Option<&'static str> {
 
 /// Whether `state_dir` holds the supervisor fence file: the one fact that a start was made in it.
 pub fn fence_file_exists(state_dir: &Path) -> bool {
-    sot_log::supervisor::journal::fence::supervisor_lock_path(state_dir).is_file()
+    sot_capsule::supervisor::fence::supervisor_lock_path(state_dir).is_file()
 }
 
 /// Map the supervisor's own phase to the wire string
 /// `workspace.list` reports — snake_case, matching every other
 /// wire-enum-as-string in this protocol (`repl_state`, `agent_state`).
-/// Portable: [`sot_log::SupervisorPhase`] has no OS dependency, so this needs no `#[cfg(windows)]` either, and the
+/// Portable: [`sot_capsule::SupervisorPhase`] has no OS dependency, so this needs no `#[cfg(windows)]` either, and the
 /// pure unit tests below exercise it directly on Linux.
-pub fn phase_str(phase: sot_log::SupervisorPhase) -> &'static str {
+pub fn phase_str(phase: sot_capsule::SupervisorPhase) -> &'static str {
     local_phase(phase).as_wire_str()
 }
 
 /// Converts to the local `Phase` (R10); [`phase_str`] stays for the wire mapping.
-pub(crate) fn local_phase(phase: sot_log::SupervisorPhase) -> crate::rows::workspace::Phase {
+pub(crate) fn local_phase(phase: sot_capsule::SupervisorPhase) -> crate::rows::workspace::Phase {
     use crate::rows::workspace::Phase;
-    use sot_log::SupervisorPhase as SP;
+    use sot_capsule::SupervisorPhase as SP;
     match phase {
         SP::Starting => Phase::Starting,
         SP::Ready => Phase::Ready,
@@ -87,7 +87,7 @@ pub fn probe(state_dir: &Path) -> (&'static str, crate::rows::workspace::Observa
     if let Some(phase) = super::phase_for_missing_fence(super::fence_file_exists(state_dir)) {
         return (phase, Observation::Stopped);
     }
-    match sot_log::attach_client::supervisor_client::query_status(state_dir) {
+    match sot_capsule::attach_client::supervisor_client::query_status(state_dir) {
         // The retained process handle (the second element) is not
         // this caller's concern -- a one-shot phase probe, dropped
         // (closing the handle) the instant this returns.
@@ -100,11 +100,11 @@ pub fn probe(state_dir: &Path) -> (&'static str, crate::rows::workspace::Observa
             (super::phase_str(report.phase), observation)
         }
         // Typed, not text (ADR 0030 §8 decision 31c): `VersionSkew`
-        // is the ONLY `sot_log::Error` variant `query_status` returns
+        // is the ONLY `sot_capsule::Error` variant `query_status` returns
         // for a lane that answered but refused this build. Every
         // other error -- a malformed reply, a timeout, connect
         // refused -- stays `UNREACHABLE_PHASE`.
-        Err(sot_log::Error::VersionSkew) => {
+        Err(sot_capsule::Error::VersionSkew) => {
             note_version_skew(state_dir);
             (super::FOREIGN_PHASE, Observation::Foreign)
         }
@@ -124,7 +124,7 @@ pub fn phase_of(state_dir: &Path) -> &'static str {
 /// supervisor refused this daemon's hello (ADR 0030 §8 decision 31c;
 /// the gate itself is superseded by ADR 0045 decision 7) — called
 /// only once the caller has ALREADY typed-matched
-/// `sot_log::Error::VersionSkew`, so this never fires on a merely
+/// `sot_capsule::Error::VersionSkew`, so this never fires on a merely
 /// unreachable lane. Wording covers BOTH migration-window causes
 /// (Codex review, 2026-09-11): a genuine lane-protocol mismatch, or
 /// an OLD (pre-ADR-0045) supervisor still refusing on build — this

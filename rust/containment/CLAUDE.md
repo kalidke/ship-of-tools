@@ -82,13 +82,13 @@ of each.
    `#[allow(clippy::disallowed_methods, reason = "...")]` that says why it stands, and rust.yml's "Disallowed methods"
    step fails any other. The starts outside `Signal` that stand today: the durable parent (`rows/spawn/durable/proxy.rs`),
    the Windows capsule supervisors (`rows/spawn/detach.rs`), the installer's steps (`install/cmd.rs`), the capsule's
-   ConPTY (`rust/log/src/capsule/producer/conpty/mod.rs`), the topology's ssh (`rust/topology/src/
+   ConPTY (`rust/capsule/src/capsule/producer/conpty/mod.rs`), the topology's ssh (`rust/topology/src/
    ssh_bridge.rs`), the window's updater and browser opener (`rust/frontend/src/selfupdate.rs`, `browser_open.rs`) and
    its drawer shell (`ui/drawer/terminal/pty.rs`), and the native launcher's fork in C
    (`rust/platform/src/host/process_tree/native_birth.c`), which no Rust lint sees. Not held either: libc's and
    windows-sys's other start functions (`popen`, `CreateProcessWithLogonW`, `ShellExecute*`, and the like, called nowhere
    today), a start inside a dependency (winresource's compile in a build script), a raw `syscall`, and the lane client's
-   ssh through sot-log's `Endpoint` trait. The updater starts nothing: its caller's `Spawner` does.
+   ssh through sot-capsule's `Endpoint` trait. The updater starts nothing: its caller's `Spawner` does.
 
 ## Owns
 The process-wide `Signal` and its registry of trees with the mutex held across creation and registration; `Contained`

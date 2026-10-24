@@ -111,7 +111,7 @@ pub(super) fn preflight(route: &Route, daemon: &Daemon) -> Result<()> {
 
 /// One headless attach over the route's recipe: waits for the checkpoint and returns the screen's text.
 fn attach_and_read(route: &Route, session: &str) -> Result<String> {
-    use sot_log::attach_client::client::FeAttachClient;
+    use sot_capsule::attach_client::client::FeAttachClient;
     use sot_topology::lane_client::{DaemonLaneEndpoint, LaneDial};
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(route.recipe(), LinkGate::default()), None);
     let mut client = FeAttachClient::attach(endpoint, session.to_string(), 80, 24, Box::new(|| {}))

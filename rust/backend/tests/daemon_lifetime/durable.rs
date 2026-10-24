@@ -73,7 +73,7 @@ async fn the_durable_parent_descends_from_nothing_the_daemon_started() {
             let dir = state_dir.clone();
             async move {
                 tokio::task::spawn_blocking(move || {
-                    sot_log::attach_client::supervisor_client::query_status(&dir)
+                    sot_capsule::attach_client::supervisor_client::query_status(&dir)
                         .ok()
                         .map(|(report, _)| report.pid as i32)
                 })

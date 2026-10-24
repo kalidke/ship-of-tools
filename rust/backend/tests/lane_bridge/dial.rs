@@ -11,7 +11,7 @@ use super::*;
 #[tokio::test]
 async fn fe_client_reaches_a_capsule_row_through_the_daemon() {
     let _serial = SERIAL.lock().await;
-    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-log --bin sot-capsule)");
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-capsule --bin sot-capsule)");
 
     let env = Env::new("lb1");
     env.spawn_sotd();
@@ -355,7 +355,7 @@ fn stub_ssh_dying_with(dir: &Path, stderr_line: &str, guard: &ParentSshEnvironme
 async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
     let _serial = SERIAL.lock().await;
     let guard = ParentSshEnvironment::new();
-    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-log --bin sot-capsule)");
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-capsule --bin sot-capsule)");
 
     let env = Env::new("lb-ssh1");
     env.spawn_sotd();
@@ -405,7 +405,7 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     let endpoint = stub_endpoint(stub_dir.path().join("ssh"), guard.clone());
     let (_woke, wake) = wake_flag_for_test();
     // `attach()`'s only `Err` is a failed OS thread spawn (`attach_inner`,
-    // `sot-log/src/attach_client/client.rs`) — the dial itself runs on the worker
+    // `sot-capsule/src/attach_client/client.rs`) — the dial itself runs on the worker
     // thread it spawns, and `Unreachable` (what a dying child classifies
     // as) retries rather than failing this call outright (ADR 0045
     // decision 4: "Unreachable must retry, never go terminal on its
@@ -458,7 +458,7 @@ async fn a_row_that_writes_an_older_wire_integer_attaches_through_the_bridge() {
     let row = find_row(&list_payload, "ws-lb10-standin").expect("the seeded row is registered");
     let target = row["session_name"].as_str().expect("session_name").to_string();
     let state_dir = env.state_root.join("sot").join("workspaces").join("ws-lb10-standin");
-    let path = sot_log::row::socket_path_in(env._runtime_tmp.path(), &sot_platform::host::state_dir::state_dir_hash(&state_dir))
+    let path = sot_capsule::row::socket_path_in(env._runtime_tmp.path(), &sot_platform::host::state_dir::state_dir_hash(&state_dir))
         .expect("the row socket path fits");
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the stand-in row");
     let older = sot_protocol::PROTOCOL_VERSION - 1;
@@ -470,11 +470,11 @@ async fn a_row_that_writes_an_older_wire_integer_attaches_through_the_bridge() {
             while let Ok((frame, _)) = read_frame_blocking_blob(&mut reader) {
                 let mut reply = match frame.op.as_str() {
                     "row.hello" => {
-                        let (pid, created) = sot_log::row::self_identity().expect("own identity");
+                        let (pid, created) = sot_capsule::row::self_identity().expect("own identity");
                         sot_protocol::Frame::res(
                             frame.id,
                             "row.hello",
-                            serde_json::json!({"pid": pid, "created": created, "phase": "ready", "run": "run-old-v", "row": sot_log::row::ROW_PROTOCOL}),
+                            serde_json::json!({"pid": pid, "created": created, "phase": "ready", "run": "run-old-v", "row": sot_capsule::row::ROW_PROTOCOL}),
                         )
                     }
                     "row.attach" => sot_protocol::Frame::res(frame.id, "row.attach", serde_json::json!({"run": "run-old-v"})),

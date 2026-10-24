@@ -9,7 +9,7 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );
@@ -77,13 +77,13 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     // also serves the boot-adopts-a-still-alive-supervisor test in this
     // same file) ---
     // Record the current leg epoch BEFORE stopping the supervisor
-    // authority over its own lane (sot_log::attach_client::supervisor_client::stop) --
+    // authority over its own lane (sot_capsule::attach_client::supervisor_client::stop) --
     // its capsule leg is deliberately outside the supervisor's own job
     // (ADR 0041 Lifecycle) and survives.
     let run_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            sot_log::attach_client::supervisor_client::query_status(&dir)
+            sot_capsule::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before stop")
                 .0
                 .run
@@ -173,7 +173,7 @@ async fn workspace_create_on_a_live_label_is_refused_and_leaves_the_row_untouche
     assert!(
         sot_capsule_exe().is_file(),
         "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         (cargo build -p sot-capsule --bin sot-capsule) into the SAME target dir \
          this test's own sotd[.exe] was built into",
         sot_capsule_exe()
     );

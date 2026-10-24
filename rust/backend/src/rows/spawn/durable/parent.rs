@@ -9,7 +9,7 @@
 
 use super::accept::{accept, barrier, parent_only_of, Accepted, Refusal};
 use super::wire::{decode, encode, Channel, LaunchSpec, Reply, Request};
-use sot_log::supervisor::birth_claim::read_takeover;
+use sot_capsule::supervisor::birth_claim::read_takeover;
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::ExitStatusExt;

@@ -14,7 +14,7 @@ runs:
     working-directory: rust
     run: |
       mkdir -p ../dev/output
-      cargo test -p sot-log --test test_body_fixture --locked --no-run --message-format=json > ../dev/output/iso-sh-ci-artifacts.json
+      cargo test -p sot-capsule --test test_body_fixture --locked --no-run --message-format=json > ../dev/output/iso-sh-ci-artifacts.json
       python3 - <<'PYFIXTURE'
       import json, os
       rows = [json.loads(line) for line in open('../dev/output/iso-sh-ci-artifacts.json') if line.startswith('{')]
@@ -49,6 +49,6 @@ runs:
           (directory / 'iso-sh-fixture-request').touch()
           (directory / 'go').touch()
           with (directory / 'cargo.log').open('w') as output:
-              subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-log', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
+              subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-capsule', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
       PYCARGO
       ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh ${{ inputs.proofs }} "$(cat ../dev/output/iso-sh-ci-path)"

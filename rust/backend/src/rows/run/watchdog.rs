@@ -6,7 +6,7 @@ use super::start::settle_after_spawn;
 use super::{NEVER_STARTED_PHASE, UNREACHABLE_PHASE};
 use crate::rows::spawn::detach::{spawn_detached_supervisor, Spawn, SupervisorChild};
 use crate::rows::Workspaces;
-use sot_log::supervisor::{StartMode, EXIT_AGENT_ENDED, EXIT_CLEAN, EXIT_CONTENDED, EXIT_TERMINAL};
+use sot_capsule::supervisor::{StartMode, EXIT_AGENT_ENDED, EXIT_CLEAN, EXIT_CONTENDED, EXIT_TERMINAL};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Instant;

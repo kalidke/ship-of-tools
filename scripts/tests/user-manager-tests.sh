@@ -44,7 +44,7 @@ M=$D/rust/Cargo.toml
 
 echo "head $(git -C "$D" rev-parse HEAD) tree $(git -C "$D" rev-parse 'HEAD^{tree}')" > "$L/summary.txt"
 # The tests start the sot-capsule built beside the sotd their own build makes.
-cargo build --manifest-path "$M" -p sot-log --bin sot-capsule --locked > "$L/build.log" 2>&1
+cargo build --manifest-path "$M" -p sot-capsule --bin sot-capsule --locked > "$L/build.log" 2>&1
 r=$?
 echo "build rc=$r" >> "$L/summary.txt"
 failed=$r
