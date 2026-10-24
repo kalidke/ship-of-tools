@@ -150,8 +150,8 @@ fn a_killed_checks_scratch_folder_goes_at_a_later_check_and_a_running_ones_stays
     let left = downloading(&tmp, &[kept.clone()]);
     killed.kill();
     assert!(tmp.join(&left).is_dir(), "a killed check runs no code: its scratch folder {left} stays");
-    // A later check, not always the next: Windows frees a killed process's lock after a delay with no stated bound
-    // (`sot_log`'s fault_terminate test waits it out the same way), so a check may still find it held.
+    // A later check, not always the next: Windows frees a killed process's lock after a delay with no stated bound,
+    // so a check may still find it held.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         finish_check(&tmp);

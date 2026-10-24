@@ -1,4 +1,4 @@
-/* native_birth.h -- the fixed C ABI of the two-phase process launcher (sot-log, platform).
+/* native_birth.h -- the fixed C ABI of the two-phase process launcher (platform).
  *
  * `sot_birth_begin` forks and returns to its caller at once with an OWNING result: the child's pid (its parent is
  * the caller, so only the caller can wait for it), the gate's write end, and the two status pipes. The child runs

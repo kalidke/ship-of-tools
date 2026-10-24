@@ -5,7 +5,7 @@
 //
 //   - `sot_platform::host`'s `preflight_nonce` is an independent `<pid>-<seq>`
 //     generator with its own counter and the same reasoning. It CANNOT share
-//     this one: `sot-log` is the LOWER crate and must not depend on
+//     this one: `sot-platform` is the LOWER crate and must not depend on
 //     `sot-updater`. Two, deliberately.
 //   - Everything whose name was the clock ALONE, or the clock plus a constant
 //     label, now draws from here: `lock`'s owner nonce and its graveyard path,

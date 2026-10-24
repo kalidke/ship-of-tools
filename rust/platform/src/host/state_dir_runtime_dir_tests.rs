@@ -28,7 +28,7 @@ fn a_private_sot_runtime_dir_wins_over_discovery() {
     use std::os::unix::fs::PermissionsExt;
     let _guard = guarded();
     let dir = std::env::temp_dir().join(format!(
-        "sot-log-runtime-dir-test-private-{}",
+        "sot-platform-runtime-dir-test-private-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
@@ -44,7 +44,7 @@ fn a_non_private_sot_runtime_dir_is_a_loud_permission_denied() {
     use std::os::unix::fs::PermissionsExt;
     let _guard = guarded();
     let dir = std::env::temp_dir().join(format!(
-        "sot-log-runtime-dir-test-world-readable-{}",
+        "sot-platform-runtime-dir-test-world-readable-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);

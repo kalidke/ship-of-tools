@@ -1,4 +1,4 @@
-/* native_birth.c -- the two-phase launcher behind sot-log's host::process_tree (see native_birth.h).
+/* native_birth.c -- the two-phase launcher behind platform's host::process_tree (see native_birth.h).
  *
  * What runs in the forked child before the target's execve, and nothing else: close, sigaction, sigprocmask,
  * setsid, setpgid, open, dup2, fchdir, fcntl, getpid, getpgrp, getsid, write, read, execve and _exit, over the

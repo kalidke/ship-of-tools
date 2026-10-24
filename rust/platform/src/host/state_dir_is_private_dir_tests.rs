@@ -7,7 +7,7 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 fn scratch_dir(name: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir().join(format!(
-        "sot-log-state-dir-test-{}-{}-{name}",
+        "sot-platform-state-dir-test-{}-{}-{name}",
         std::process::id(),
         n
     ))

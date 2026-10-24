@@ -247,7 +247,7 @@ or deliver mail (messaging); judge a turn's text (the turn auditor's Haiku call 
 own stamp changes a fact).
 
 Crate: not drawn in this pass. Rows' target dependencies are capsule, agents, sidecars, files, messaging, containment
-and platform; only capsule and platform (inside `sot-log`) are crates. A `sot-rows` crate needs agents, sidecars, files,
+and platform; only capsule (`sot-capsule`) and platform are crates. A `sot-rows` crate needs agents, sidecars, files,
 messaging and containment as crates first, and the server's reply type (`HandlerOutput`) moved to wire, since every op
 handler here returns it.
 

@@ -179,10 +179,10 @@ mod state_dir_hash_tests;
 // live sockets/pipes go, as opposed to `sot_state_dir`'s durable-state
 // tree above. Moved DOWN here from `sot-protocol`'s `topology::endpoint`
 // module (ADR 0042 L2b's original home): the daemon's own session
-// sockets and the Ship's Log Unix transport (`lane/socket_unix/`) both need
-// the identical derivation, and `sot-log` is the lower crate in the
-// dependency graph (the frontend and backend already depend on both;
-// `sot-protocol` gains a dependency on `sot-log`, never the reverse).
+// sockets and the Unix transport (`transport/socket_unix/`) both need
+// the identical derivation, and platform is the lowest crate in the
+// dependency graph (every other crate of ours depends on it, and it
+// depends on none of them).
 // `topology/endpoint.rs` now re-exports these three names verbatim so every
 // existing `sot_protocol::runtime_sot_dir()` / `topology::endpoint::
 // is_private_dir(...)` / `current_uid()` call site keeps compiling

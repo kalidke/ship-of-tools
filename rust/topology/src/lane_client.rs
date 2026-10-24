@@ -156,9 +156,9 @@ impl PeerIdentity for BridgedPeer {
 }
 
 /// The ONE stream adapter every transport this endpoint dials goes
-/// through — `Unix`/`Pipe` reuse `sot-log`'s own hardened clients
+/// through — `Unix`/`Pipe` reuse platform's own hardened clients
 /// verbatim (real bounded connectors, real `cancel()`s) rather than
-/// reimplementing either; `Bridged` needed a wrapper of its own (`sot-log`
+/// reimplementing either; `Bridged` needed a wrapper of its own (platform
 /// has no ssh-child client). `DaemonLaneClient` below is nothing more than
 /// `{stream: LaneStream, peer}` — every `Client` call delegates straight
 /// through.
@@ -530,7 +530,7 @@ impl DaemonLaneEndpoint {
         let stream = match &self.dial {
             #[cfg(unix)]
             LaneDial::Local(path) | LaneDial::Relay(path, _) => {
-                // `connect_own` uses sot-log's non-blocking connector and
+                // `connect_own` uses platform's non-blocking connector and
                 // fixed `CONNECT_BOUND` retry budget, then checks the
                 // listener's cached account before client I/O (ADR 0049,
                 // User isolation). An attempt or wait in progress finishes
