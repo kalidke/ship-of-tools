@@ -24,6 +24,18 @@ scan() { # $1 is a safe object/ref label; $2 contains bytes (never shell text).
     local rc line
     tr '\000' '\n' < "$2" > "$pg_tmp/text" || pg_fail 'cannot normalize object bytes'
     awk -v policy="$pg_tmp/list" '
+        function whole_word(text, entry,    start, p, after) {
+            start=1
+            while ((p=index(substr(text,start),entry)) > 0) {
+                p+=start-1
+                after=p+length(entry)
+                if ((p == 1 || substr(text,p-1,1) !~ /[A-Za-z0-9]/) &&
+                    (after > length(text) || substr(text,after,1) !~ /[A-Za-z0-9]/)) return 1
+                # A later occurrence can overlap one whose boundary did not match.
+                start=p+1
+            }
+            return 0
+        }
         BEGIN {
             n=0; na=0; nd=0
             while ((r=(getline s < policy)) > 0) {
@@ -38,7 +50,7 @@ scan() { # $1 is a safe object/ref label; $2 contains bytes (never shell text).
         {
             s=tolower($0)
             for (j=1;j<=na;j++) while ((p=index(s,a[j])) > 0) s=substr(s,1,p-1) substr(s,p+length(a[j]))
-            for (j=1;j<=nd;j++) if (index(s,d[j])) { print ln[j]; exit 1 }
+            for (j=1;j<=nd;j++) if (whole_word(s,d[j])) { print ln[j]; exit 1 }
         }
     ' "$pg_tmp/text" > "$pg_tmp/match"
     rc=$?

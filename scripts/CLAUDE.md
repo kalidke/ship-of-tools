@@ -281,10 +281,12 @@ Guarantees and boundaries:
   contribute their path and OID, not a fetched submodule repository. Objects are deduplicated; paths retain their tree
   context. Policy files must be valid UTF-8 without BOM or NUL; CR, LF and TAB are allowed. UTF-16 in either byte order,
   a UTF-8 BOM, NUL and invalid UTF-8 refuse at readiness and push, including errors in comment lines. Non-ASCII UTF-8
-  comments are allowed. Matching remains literal bytes under `LC_ALL=C`, case-insensitive for ASCII letters only:
-  a non-ASCII entry matches identical UTF-8 bytes, without Unicode case folding or normalization. Blank/comment lines
-  are ignored; `!span` erases literal permitted spans before matching. CRLF lists and an unterminated last line keep
-  original line numbers.
+  comments are allowed. Entries match as whole words, bounded by any character that is not a letter or digit
+  (ASCII `[A-Za-z0-9]`), or by the start or end of the text. This applies to every entry, including dotted names:
+  paths, host labels, `@`, hyphens and punctuation supply boundaries; longer words do not. Matching remains literal
+  bytes under `LC_ALL=C`, case-insensitive for ASCII letters only: a non-ASCII entry matches identical UTF-8 bytes,
+  without Unicode case folding or normalization. Blank/comment lines are ignored; `!span` erases literal permitted
+  spans before matching. CRLF lists and an unterminated last line keep original line numbers.
 - Only locally available old OIDs advertised by this destination bound commit history; unrelated remote-tracking refs
   never do. New branches/tags or unavailable old OIDs can conservatively recheck history. A retained denied file in a
   new snapshot still refuses after an ancestor was published. Raw parent traversal refuses missing shallow/promisor
