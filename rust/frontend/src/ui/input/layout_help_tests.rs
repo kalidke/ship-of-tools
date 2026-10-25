@@ -123,9 +123,9 @@ fn only_an_ordinary_drawer_toggle_requests_monitor_sync() {
     let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
     h.toggle(DrawerContent::Monitor); assert!(h.events.iter().any(|e| e == "monitor")); h.events.clear();
     h.open(); h.close();
-    let e = h.layout.show_repl_automatically(true, true); e.apply(&mut h, None);
-    let e = h.layout.show_demo_repl(); e.apply(&mut h, None);
-    let e = h.layout.terminal_spawn_failed(); e.apply(&mut h, None);
+    h.layout.show_repl_automatically(true, true);
+    h.layout.show_demo_repl();
+    h.layout.terminal_spawn_failed();
     assert!(!h.events.iter().any(|e| e == "monitor"));
 }
 #[test]
@@ -133,9 +133,9 @@ fn automatic_and_demo_repl_opening_keep_their_distinct_gates() {
     for enabled in [false, true] { for has_drawer in [false, true] { for drawer in DRAWERS {
         let mut h = Harness::new(drawer, PaneFocus::Llm, true);
         let before = retained(&h);
-        let e = h.layout.show_repl_automatically(enabled, has_drawer); e.apply(&mut h, None);
+        h.layout.show_repl_automatically(enabled, has_drawer);
         assert_eq!(h.layout.drawer(), if enabled && has_drawer { DrawerContent::Repl } else { drawer });
-        let e = h.layout.show_demo_repl(); e.apply(&mut h, None);
+        h.layout.show_demo_repl();
         assert_eq!(h.layout.drawer(), DrawerContent::Repl); assert_eq!(retained(&h), before);
         assert_eq!(h.focus.focus(), PaneFocus::Llm); assert!(h.events.is_empty());
     } } }
@@ -144,7 +144,7 @@ fn automatic_and_demo_repl_opening_keep_their_distinct_gates() {
 fn terminal_spawn_failure_closes_only_the_drawer() {
     let mut h = browsing();
     h.toggle(DrawerContent::Terminal); let before = retained(&h); let focus = h.focus.focus(); h.events.clear();
-    let e = h.layout.terminal_spawn_failed(); e.apply(&mut h, None);
+    h.layout.terminal_spawn_failed();
     assert_eq!(h.layout.drawer(), DrawerContent::Closed); assert_eq!(retained(&h), before);
     assert_eq!(h.focus.focus(), focus); assert!(h.events.is_empty());
 }
@@ -192,13 +192,24 @@ fn layout_and_focus_projections_use_the_same_effective_preset() {
     omitted.columns = vec![Column { slot: Slot::Nav, width: 0.4 }, Column { slot: Slot::Llm, width: 0.6 }];
     let mut custom = omitted.clone(); custom.drawer = Some(Slot::Preview);
     let mut drawerless = LayoutPreset::default_laptop(); drawerless.drawer = None;
-    for base in [LayoutPreset::default_laptop(), LayoutPreset::default_portrait(), omitted, custom, drawerless] {
+    for (base, wide_widths) in [
+        (LayoutPreset::default_laptop(), vec![0.18, 0.82]),
+        (LayoutPreset::default_portrait(), vec![0.30, 0.70]),
+        (omitted, vec![1.0]), (custom, vec![1.0]), (drawerless, vec![0.18, 0.82]),
+    ] {
         for wide in [false, true] { for drawer in DRAWERS {
             let mut h = Harness::new(drawer, PaneFocus::NavTree, true);
             if wide { h.action(Action::ToggleWidePreview); }
             let p = h.layout.effective_preset(&base); let (columns, slot) = h.layout.spatial_slots(&base);
             assert_eq!(columns, p.columns.iter().map(|c| c.slot).collect::<Vec<_>>());
             assert!((p.columns.iter().map(|c| c.width).sum::<f32>() - 1.0).abs() < 0.001);
+            let expected_widths: Vec<f32> = if wide { wide_widths.clone() }
+                else { base.columns.iter().map(|c| c.width).collect() };
+            assert_eq!(p.columns.len(), expected_widths.len());
+            for (column, expected_width) in p.columns.iter().zip(expected_widths) {
+                assert!((column.width - expected_width).abs() < 0.000_001,
+                    "{:?}: expected {expected_width}, got {}", column.slot, column.width);
+            }
             assert_eq!(columns, base.columns.iter().filter(|c| !wide || c.slot != Slot::Llm).map(|c| c.slot).collect::<Vec<_>>());
             assert_eq!(p.drawer_height, base.drawer_height);
             let expected = if drawer == DrawerContent::Help { base.drawer.or(Some(Slot::Repl)) } else { base.drawer };
@@ -226,9 +237,13 @@ fn help_close_restores_the_first_origin_once() {
 fn ordinary_drawer_toggle_abandons_help_return_but_automatic_opening_keeps_it() {
     for path in 0..4 {
         let mut h = Harness::new(DrawerContent::Monitor, PaneFocus::Llm, true); h.open();
-        let e = match path { 0 => h.layout.toggle_drawer(DrawerContent::Repl, h.focus.focus()),
-            1 => h.layout.show_repl_automatically(true, true), 2 => h.layout.show_demo_repl(), _ => h.layout.terminal_spawn_failed() };
-        e.apply(&mut h, None); h.close();
+        match path {
+            0 => { let e = h.layout.toggle_drawer(DrawerContent::Repl, h.focus.focus()); e.apply(&mut h, None); }
+            1 => h.layout.show_repl_automatically(true, true),
+            2 => h.layout.show_demo_repl(),
+            _ => h.layout.terminal_spawn_failed(),
+        }
+        h.close();
         assert_eq!(h.layout.drawer(), if path == 0 { DrawerContent::Closed } else { DrawerContent::Monitor });
         assert_eq!(h.focus.focus(), if path == 0 { PaneFocus::NavTree } else { PaneFocus::Llm });
         assert_eq!(h.layout.maximized(), path != 0);
@@ -236,7 +251,10 @@ fn ordinary_drawer_toggle_abandons_help_return_but_automatic_opening_keeps_it() 
 }
 #[test]
 fn help_open_resets_browsing_without_resetting_wide_preview() {
-    let mut h = browsing(); h.browse(Action::HelpScope); h.peek();
+    let mut h = browsing(); h.browse(Action::HelpScope);
+    h.layout.move_help_selection(1, &h.bindings);
+    assert_eq!(h.layout.help().selected(), 1);
+    h.peek();
     h.context = help::Context { pane: help::Pane::Terminal, ..Default::default() }; h.open();
     assert_eq!(h.layout.help().context(), &h.context); assert_eq!(h.layout.help().query(), "");
     assert_eq!((h.layout.help().selected(), h.layout.help().all_panes(), h.layout.peek().is_none(),

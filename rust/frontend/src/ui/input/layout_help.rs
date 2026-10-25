@@ -126,17 +126,14 @@ impl LayoutHelp {
             else if focus == PaneFocus::Repl { Some(PaneFocus::NavTree) } else { None },
             monitor_sync: true, redraw: true }
     }
-    pub(in crate::ui) fn show_repl_automatically(&mut self, enabled: bool, base_has_drawer: bool) -> LayoutEffect {
+    pub(in crate::ui) fn show_repl_automatically(&mut self, enabled: bool, base_has_drawer: bool) {
         if enabled && base_has_drawer && self.drawer != DrawerContent::Repl { self.drawer = DrawerContent::Repl; }
-        LayoutEffect::default()
     }
-    pub(in crate::ui) fn show_demo_repl(&mut self) -> LayoutEffect {
+    pub(in crate::ui) fn show_demo_repl(&mut self) {
         self.drawer = DrawerContent::Repl;
-        LayoutEffect::default()
     }
-    pub(in crate::ui) fn terminal_spawn_failed(&mut self) -> LayoutEffect {
+    pub(in crate::ui) fn terminal_spawn_failed(&mut self) {
         self.drawer = DrawerContent::Closed;
-        LayoutEffect::default()
     }
     pub(in crate::ui) fn restore_available(&self, focus: PaneFocus, gates: LayoutGates) -> bool {
         self.maximized() || self.wide_preview() && gates.reading(focus)
