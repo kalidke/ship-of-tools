@@ -27,8 +27,16 @@ fn quit_transitions_log_only_finite_fields() {
     assert_eq!(begin_leave(&leases, &mut prompt, &mut leaving, &mut should_exit,
         LeaveIntent::Keep, 0, std::time::Instant::now()), LeaveEffect::Finish(0));
     let text = log.text();
-    for message in ["quit prompt: open", "quit prompt: refused, another prompt is open", "quit prompt: key", "quit prompt: press", "window: leaving"] {
-        assert!(text.contains(message), "missing transition event: {message}");
+    for (message, target) in [
+        ("quit prompt: open", "sot::ui::app::exit"),
+        ("quit prompt: refused, another prompt is open", "sot::ui::app::exit"),
+        ("quit prompt: key", "sot::ui::app::exit"),
+        ("quit prompt: press", "sot::ui::app::dialog"),
+        ("window: leaving", "sot::ui::app::exit"),
+    ] {
+        let line = text.lines().find(|line| line.contains(message))
+            .unwrap_or_else(|| panic!("missing transition event: {message}"));
+        assert!(line.contains(&format!(" {target}: ")), "wrong target for {message}: {line}");
     }
     assert!(!text.contains("typed-fixture-text"));
 }
@@ -86,7 +94,7 @@ async fn only_a_successful_stay_updates_the_prompt_notices() {
     prompt.begin_scale("files:image.png".into());
     prompt.record_stay(LeaveIntent::Handover);
     let now = std::time::Instant::now();
-    prompt.show_hint("Fixture+Q", now);
+    prompt.show_hint("Fixture+Q", || now);
     let before = prompt.prompt().cloned();
     let mut leaving = None;
     let mut should_exit = false;

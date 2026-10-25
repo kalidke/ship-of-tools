@@ -89,11 +89,3 @@ fn raw_admission_and_repeat_controls() {
     assert_eq!(route(None, Key::Named(NamedKey::Control), modifiers(), false, false, true, false), (None, 0, vec![]));
     assert_eq!(route(None, Key::Character("text".into()), modifiers(), false, false, true, false), (None, 1, b"text".to_vec()));
 }
-
-#[test]
-fn quit_input_keeps_its_identity_and_admission_rules() {
-    quit_other_keys_cancel_and_are_consumed();
-    quit_enter_and_tab_use_identity_with_modifiers_and_rebindings();
-    a_second_quit_chord_leaves_the_question_open();
-    raw_admission_and_repeat_controls();
-}

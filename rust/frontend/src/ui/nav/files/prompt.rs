@@ -207,7 +207,6 @@ pub(in crate::ui) fn confirm_create(context: &mut impl FilePromptContext) {
     }
     if let Err(e) = context.send_create(&new_id, is_dir) {
         tracing::warn!(error = %e, %new_id, is_dir, "drop {kind} — channel closed");
-        context.prompts().complete_create(false);
         context.prompt_effect(PromptEffect::message(format!("{kind} · channel closed")));
         return;
     }
@@ -221,13 +220,13 @@ pub(in crate::ui) fn confirm_delete(context: &mut impl FilePromptContext) {
     let Some((node_id, label)) = context.prompts().delete_target() else { return; };
     if let Err(e) = context.send_delete(&node_id) {
         tracing::warn!(error = %e, %node_id, "drop file.delete — channel closed");
-        context.prompts().complete_delete(false);
+        context.prompts().complete_delete();
         context.prompt_effect(PromptEffect::message("delete · channel closed"));
         return;
     }
     tracing::info!(%node_id, "navtree.delete_file → file.delete");
     context.mark_deleted(node_id);
-    context.prompts().complete_delete(true);
+    context.prompts().complete_delete();
     context.prompt_effect(PromptEffect::message(format!("deleting {label}…")));
 }
 

@@ -109,7 +109,7 @@ impl FocusPrompts {
     pub(in crate::ui) fn complete_create(&mut self, sent: bool) {
         if sent { self.nav_prompt = None; }
     }
-    pub(in crate::ui) fn complete_delete(&mut self, _sent: bool) {
+    pub(in crate::ui) fn complete_delete(&mut self) {
         self.nav_prompt = None;
     }
     pub(in crate::ui) fn begin_scale(&mut self, node_id: String) -> PromptEffect {
@@ -138,11 +138,11 @@ impl FocusPrompts {
     }
     pub(in crate::ui) fn ask_quit(&mut self, keep: bool) -> bool {
         if matches!(self.prompt(), Some(p) if !matches!(p, NavPrompt::ConfirmQuit { .. })) {
-            tracing::info!("quit prompt: refused, another prompt is open");
+            tracing::info!(target: "sot::ui::app::exit", "quit prompt: refused, another prompt is open");
             return false;
         }
         self.nav_prompt = Some(NavPrompt::ConfirmQuit { keep });
-        tracing::info!(keep, "quit prompt: open");
+        tracing::info!(target: "sot::ui::app::exit", keep, "quit prompt: open");
         true
     }
     pub(in crate::ui) fn answer_quit(&mut self, step: QuitPromptStep) -> (PromptEffect, Option<LeaveIntent>) {
@@ -171,8 +171,9 @@ impl FocusPrompts {
     pub(in crate::ui) fn dismiss_stay_press(&mut self) -> bool {
         std::mem::take(&mut self.relaunch_stayed)
     }
-    pub(in crate::ui) fn show_hint(&mut self, chord: &str, now: Instant) {
-        self.quit_hint = Some((global_keys::quit_hint(chord), now + crate::ui::app::QUIT_HINT_HOLD));
+    pub(in crate::ui) fn show_hint(&mut self, chord: &str, now: impl FnOnce() -> Instant) {
+        let text = global_keys::quit_hint(chord);
+        self.quit_hint = Some((text, now() + crate::ui::app::QUIT_HINT_HOLD));
     }
     pub(in crate::ui) fn expire_hint(&mut self, now: Instant) -> bool {
         if self.hint_deadline().is_some_and(|until| now >= until) {

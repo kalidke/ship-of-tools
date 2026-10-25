@@ -30,9 +30,9 @@ fn quit_hint_deadlines_wake_and_expire_without_taking_input() {
     use crate::ui::input::keypress::{input_continuation, InputRoute};
     let start = Instant::now();
     let mut p = FocusPrompts::new(PaneFocus::Preview);
-    p.show_hint("Fixture+Q", start);
+    p.show_hint("Fixture+Q", || start);
     assert_eq!(p.hint_deadline(), Some(start + Duration::from_secs(4)));
-    p.show_hint("Replacement+Q", start + Duration::from_secs(1));
+    p.show_hint("Replacement+Q", || start + Duration::from_secs(1));
     let until = start + Duration::from_secs(5);
     assert_eq!(p.hint_deadline(), Some(until));
     let hint = p.hint().unwrap().to_string();
@@ -41,8 +41,9 @@ fn quit_hint_deadlines_wake_and_expire_without_taking_input() {
     assert_eq!(arm_idle(&mut slot, start, Duration::from_secs(20), p.hint_deadline()), until);
     assert!(!p.expire_hint(until - Duration::from_nanos(1)));
     p.set_focus(PaneFocus::Llm);
+    let keep = p.quit_choice();
     let mut seen = (p, 0);
-    input_continuation(&mut seen, &Key::Character("x".into()), false, false, true, None, false,
+    input_continuation(&mut seen, &Key::Character("x".into()), false, false, true, keep, false,
         |_| (None, ()), |s, route| match route {
             InputRoute::Next(_, ()) => s.1 += 1,
             InputRoute::Prompt(_) => panic!("a hint took input"),
@@ -53,6 +54,6 @@ fn quit_hint_deadlines_wake_and_expire_without_taking_input() {
     assert!(seen.0.expire_hint(until));
     assert!(seen.0.hint().is_none() && seen.0.hint_deadline().is_none());
     assert!(!seen.0.expire_hint(until + Duration::from_secs(1)));
-    seen.0.show_hint("Again+Q", start);
+    seen.0.show_hint("Again+Q", || start);
     assert!(seen.0.expire_hint(start + Duration::from_secs(6)));
 }

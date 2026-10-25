@@ -89,7 +89,7 @@ pub(in crate::ui) fn quit_chord(state: &mut State, event_loop: &ActiveEventLoop,
     let route = quit_chord_route(action, event.repeat, context.pane, bound_quit);
     quit_chord_continuation(state, route, |state| state.request_quit(event_loop, ExitReason::QuitKey), |state| {
         let chord = state.bindings.first_label(Action::Quit);
-        state.focus_prompts.show_hint(&chord, std::time::Instant::now());
+        state.focus_prompts.show_hint(&chord, std::time::Instant::now);
         state.window.request_redraw();
     }, |_| Continue(()))
 }

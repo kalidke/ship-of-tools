@@ -33,7 +33,7 @@ fn focus_changes_only_the_selected_pane() {
         assert!(p.prompt().is_none() && !p.stayed() && p.hint().is_none());
         p.begin_scale("files:prior.png".into()); p.begin_leave(); p.set_focus(initial);
         open_variant(&mut p, variant);
-        p.record_stay(LeaveIntent::Handover); p.show_hint("Fixture+Q", now);
+        p.record_stay(LeaveIntent::Handover); p.show_hint("Fixture+Q", || now);
         let before = p.prompt().cloned();
         let hint = p.hint().unwrap().to_string(); let deadline = p.hint_deadline();
         p.set_focus(to);
@@ -114,7 +114,9 @@ fn prompt_edits_keep_each_variants_input_rules() {
     assert!(!p.backspace() && !p.push_char('a'));
     p.open_create("files:".into()); assert!(p.backspace());
     assert!(!p.push_char('/') && !p.push_char('\\'));
-    type_text(&mut p, "sub"); assert!(p.push_char('/'));
+    type_text(&mut p, "sub");
+    assert!(!p.push_char('\\'));
+    assert!(p.push_char('/'));
     for c in ['/', '\\', 'x'] { assert!(!p.push_char(c)); }
     assert_eq!(p.create_draft(), Some(("files:".into(), "sub/".into())));
     assert!(p.backspace() && p.push_char('x'));
@@ -259,7 +261,7 @@ fn cancellation_reports_the_prompt_that_was_cancelled() {
         let mut p = owner(PaneFocus::Preview);
         open_variant(&mut p, variant);
         p.record_stay(LeaveIntent::Handover);
-        p.show_hint("Fixture+Q", Instant::now());
+        p.show_hint("Fixture+Q", Instant::now);
         p.set_focus(PaneFocus::Repl);
         assert_eq!(p.cancel(), PromptEffect::message(message));
         assert!(p.prompt().is_none() && p.stayed() && p.hint().is_some());
@@ -337,7 +339,7 @@ fn pointer_modals_precede_agent_focus_and_selection() {
 fn leave_clears_only_the_current_leave_prompt_state() {
     for initial in PANES {
         let mut p = owner(initial); p.begin_scale("files:image.png".into()); type_text(&mut p, "2");
-        p.record_stay(LeaveIntent::Handover); p.show_hint("Fixture+Q", Instant::now());
+        p.record_stay(LeaveIntent::Handover); p.show_hint("Fixture+Q", Instant::now);
         let hint = p.hint().unwrap().to_string(); let deadline = p.hint_deadline();
         p.set_focus(PaneFocus::Llm); p.begin_leave();
         assert!(p.prompt().is_none() && !p.stayed()); assert_eq!(p.focus(), PaneFocus::Llm);
@@ -384,7 +386,7 @@ fn a_rejected_quit_chord_shows_a_hint_and_continues() {
                     c.consumes_text(), |a| a == Action::Quit).is_some());
                 let mut s = (owner(PaneFocus::Llm), vec![]);
                 let result = quit_chord_continuation(&mut s, route, |s| s.1.push("request"), |s| {
-                    s.0.show_hint(&label, Instant::now()); s.1.push("hint");
+                    s.0.show_hint(&label, Instant::now); s.1.push("hint");
                 }, |s| { s.1.push("next"); Continue(()) });
                 let rejected = matches!(pane, help::Pane::Agent | help::Pane::Terminal);
                 assert_eq!(result, if rejected { Continue(()) } else { Break(()) });
@@ -406,7 +408,7 @@ fn a_rejected_quit_chord_shows_a_hint_and_continues() {
 #[test]
 fn dialog_priority_preserves_question_leave_stayed_and_hint() {
     let mut p = owner(PaneFocus::Preview);
-    p.show_hint("Fixture+Q", Instant::now());
+    p.show_hint("Fixture+Q", Instant::now);
     fn text<'a>(p: &'a FocusPrompts, line: Option<&'a str>, stay_notice: Option<&'a str>) -> Option<CloseDialogText<'a>> {
         close_dialog_text(p.prompt(), Some("standing"), line, p.stayed().then_some(stay_notice).flatten(), p.hint())
     }

@@ -152,8 +152,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   restores captured focus once; failures retain text/focus. Cancellation consumes saved focus even after leave
   removed its prompt. Quit alone refuses replacement. Begin leave clears only prompt/stayed; only successful lease
   stay reopens Yes for Keep or records Handover stayed. Text consumers keep a stayed dismissal key. Raw-key, picker,
-  pointer presence/modal/focus/selection ordering, finite diagnostics and dialog precedence remain unchanged. Hints
-  use bound labels, take no input and wake/expire at four seconds including equality. All fields are runtime only.
+  pointer presence/modal/focus/selection ordering and dialog precedence remain unchanged. Quit-open/refusal events
+  retain the `sot::ui::app::exit` target and finite fields; the other moved events retain their original modules.
+  Hints use bound labels, format text before sampling their clock, take no input and wake/expire at four seconds
+  including equality. All fields are runtime only.
   Behavior tests replace both focus scans: `input::focus_prompts_tests`, `input::keypress::tests`,
   `nav::files::prompt::tests`, `app::{exit,dialog}::tests`, `app::handler::idle_tests`, `chrome::panes::tests`.
   They drive production continuations. Native window-close retains its scenarios and hosted gate requirement.
