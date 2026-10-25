@@ -13,6 +13,8 @@
 # are in gate-* shards; the rest are cut so a landing shard runs under about four minutes of tests (seconds measured in
 # hosted run 39644482546 and the local gate: supervisor 141, lane_bridge 104, fe_client 59, capsule_workspaces 423 in
 # three groups, comm_wake 377 in three groups, the sotd unit binary 120).
+# `inst`, the installer's publish-guard units, runs real Git Bash enrollments: seconds on Linux and macOS, minutes on
+# Windows (more than five in hosted run 40181674093), so on Windows it is a job of its own with a 15-minute test step.
 
 sup        test supervisor
 fe         test fe_client --skip unresponsive_supervisor_expires_the_health_window
@@ -32,7 +34,8 @@ plat       lib  sot_containment
 ws2        test capsule_workspaces --skip destroy:: --skip spawn:: --skip create:: --skip session_env:: --skip ended_row:: --skip resume:: --skip attach::
 sotd-a     bin  sotd sidecars::repl:: --skip repl_page_secret_never_reaches_command_line
 sotd-b     bin  sotd sidecars:: --skip sidecars::repl:: --skip sidecars::kernel::deadline_tests:: --skip repl_page_secret_never_reaches_command_line
-sotd-c     bin  sotd --skip sidecars:: --skip repl_page_secret_never_reaches_command_line
+sotd-c     bin  sotd --skip sidecars:: --skip repl_page_secret_never_reaches_command_line --skip install::publish::
+inst       bin  sotd install::publish::
 
 gate-sleep test lane_bridge outage::
 gate-sleep test window_start
@@ -43,6 +46,6 @@ gate-wgl   bin  sotd repl_page_secret_never_reaches_command_line
 
 # The jobs of each system (seconds from run 39646399759; a job's tests run about four minutes at most). Linux and Windows
 # share 20 concurrent jobs with the checks, macOS has 5. rest-0 to rest-2 split the targets named nowhere above.
-fold linux   ws2+rest-2 sotd-a+sotd-b+sotd-c rest-0+rest-1 sup+fe+plat
-fold windows sotd-a+sotd-b+ws2 lane+ws+plat rest-0 rest-1 sotd-c+rest-2
-fold macos   sotd-c+plat sotd-b+lane+wake sotd-a rest-0 rest-1+rest-2 sup+fe+ws+ws2
+fold linux   ws2+rest-2 sotd-a+sotd-b+sotd-c+inst rest-0+rest-1 sup+fe+plat
+fold windows sotd-a+sotd-b+ws2 lane+ws+plat rest-0 rest-1 sotd-c+rest-2 inst
+fold macos   sotd-c+plat+inst sotd-b+lane+wake sotd-a rest-0 rest-1+rest-2 sup+fe+ws+ws2
