@@ -262,4 +262,127 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
     git -C "$R" config sot.publishList "$T/junction/publish-list.txt"
     reject 'Windows reparse directory refuses' 'sot.publishList' origin HEAD:refs/heads/junction
     ;; esac
+# A load failure cannot leave a permissive scanner running without its validators.
+fixture validator-load
+printf glimmerdeny > "$R/data"; commit
+VALIDATOR="$R/scripts/hooks/publish-guard-lib.sh"
+cp "$VALIDATOR" "$T/validator-original"
+restore_validator_access() {
+    case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
+        [ -f "$T/validator-acl" ] || return 0
+        SOT_TEST_VALIDATOR="$(cygpath -aw "$VALIDATOR")" SOT_TEST_ACL="$(cygpath -aw "$T/validator-acl")" \
+            powershell.exe -NoProfile -NonInteractive -Command '
+                $ErrorActionPreference = "Stop"
+                $a = Get-Acl -LiteralPath $env:SOT_TEST_VALIDATOR
+                $a.SetSecurityDescriptorSddlForm([IO.File]::ReadAllText($env:SOT_TEST_ACL), [Security.AccessControl.AccessControlSections]::Access)
+                Set-Acl -LiteralPath $env:SOT_TEST_VALIDATOR -AclObject $a' || return 1 ;;
+        *) chmod u+rw "$VALIDATOR" ;;
+    esac
+}
+trap 'restore_validator_access; rm -rf "${T:?}"' EXIT
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
+    SOT_TEST_VALIDATOR="$(cygpath -aw "$VALIDATOR")" SOT_TEST_ACL="$(cygpath -aw "$T/validator-acl")" \
+        powershell.exe -NoProfile -NonInteractive -Command '
+            $ErrorActionPreference = "Stop"
+            $a = Get-Acl -LiteralPath $env:SOT_TEST_VALIDATOR
+            [IO.File]::WriteAllText($env:SOT_TEST_ACL, $a.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access))
+            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            $r = [Security.AccessControl.FileSystemAccessRule]::new($sid, "ReadData", "Deny")
+            $a.AddAccessRule($r)
+            Set-Acl -LiteralPath $env:SOT_TEST_VALIDATOR -AclObject $a' || fail 'cannot deny scratch validator reads'
+    ;;
+    *) chmod 000 "$VALIDATOR" ;;
+esac
+if "$BASH" -c '. "$1"' fixture "$VALIDATOR" > "$T/source.out" 2>&1; then fail 'unreadable validator fixture is still readable'; fi
+reject 'unreadable validator refuses denied push' 'cannot load policy validator' origin main
+not_ready 'unreadable validator' 'cannot load policy validator'
+restore_validator_access || fail 'cannot restore scratch validator access'
+trap 'rm -rf "${T:?}"' EXIT
+cp "$T/validator-original" "$VALIDATOR"
+for fault in source-status incomplete list-status encoding-status alias-status; do
+    cp "$T/validator-original" "$VALIDATOR"
+    case "$fault" in
+        source-status) printf '\nreturn 73\n' >> "$VALIDATOR"; reason='cannot load policy validator'; ready_reason=$reason ;;
+        incomplete) : > "$VALIDATOR"; reason='policy validator is incomplete'; ready_reason=$reason ;;
+        list-status) printf '\npg_list() { return 73; }\n' >> "$VALIDATOR"; reason='policy validation failed'; ready_reason=$reason ;;
+        encoding-status) printf '\npg_list_encoding() { return 73; }\n' >> "$VALIDATOR"; reason='encoding validation failed'; ready_reason=$reason ;;
+        alias-status) printf '\npg_no_reparse() { return 73; }\n' >> "$VALIDATOR"; reason='unresolved directory alias'; ready_reason='unresolved alias' ;;
+    esac
+    reject "validator failure $fault" "$reason" origin main
+    not_ready "validator failure $fault" "$ready_reason"
+done
+cp "$T/validator-original" "$VALIDATOR"
+reject 'restored validator still denies content' 'line 3' origin main
+reset_case
+printf 'validator control\n' > "$R/data"; commit
+accept 'restored validator accepts clean update' origin main
+
+# The policy format is ASCII text, not whatever bytes an editor happens to save.
+fixture encodings
+printf glimmerdeny > "$R/data"; commit
+for encoding in utf8-bom utf16le utf16be utf16le-no-bom utf8-nonascii nul control; do
+    case "$encoding" in
+        utf8-bom) printf '\357\273\277glimmerdeny\n' > "$POLICY" ;;
+        utf16le) printf '\377\376g\000l\000i\000m\000m\000e\000r\000d\000e\000n\000y\000\n\000' > "$POLICY" ;;
+        utf16be) printf '\376\377\000g\000l\000i\000m\000m\000e\000r\000d\000e\000n\000y\000\n' > "$POLICY" ;;
+        utf16le-no-bom) printf 'g\000l\000i\000m\000m\000e\000r\000d\000e\000n\000y\000\n\000' > "$POLICY" ;;
+        utf8-nonascii) printf 'glimmerdeny\303\251\n' > "$POLICY" ;;
+        nul) printf 'glimmerdeny\000\n' > "$POLICY" ;;
+        control) printf 'glimmerdeny\001\n' > "$POLICY" ;;
+    esac
+    reject "unsupported policy encoding $encoding" 'must be ASCII text without a BOM' origin main
+    not_ready "unsupported policy encoding $encoding" 'must be ASCII text without a BOM'
+done
+printf '#\tASCII comment\r\n\r\nglimmerdeny\r\notherdeny\r\n!glimmerdeny.example/ok' > "$POLICY"
+reject 'ASCII policy denies intended entry' 'line 3' origin main
+reset_case
+printf 'ASCII control\n' > "$R/data"; commit
+"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --require-ready > "$T/setup.out" 2>&1 || fail 'ASCII policy readiness refused'
+accept 'ASCII policy ready and clean push accepted' origin main
+printf '%s\n' '# synthetic policy' '' 'glimmerdeny' 'otherdeny' '!glimmerdeny.example/ok' > "$POLICY"
+
+# Each inherited selector is hostile independently; the combined case includes
+# config injection and discovery knobs. The named clone alone may be enrolled.
+fixture selector-target
+SELECTOR_TARGET=$R; SELECTOR_REMOTE=$B
+fixture selector-decoy
+DECOY=$R
+# Leave the decoy's owned slot valid: a redirected setup could otherwise fail
+# merely because of a foreign-hook conflict, hiding the wrong-clone defect.
+cp "$DECOY/.git/hooks/pre-push" "$T/decoy-hook"
+cp "$POLICY" "$T/decoy-publish-list.txt"
+git -C "$DECOY" config --local sot.publishList "$T/decoy-publish-list.txt"
+cp "$DECOY/.git/config" "$T/decoy-config"
+git -C "$DECOY" config --file "$T/hostile-config" core.hooksPath "$T/hostile-hooks"
+R=$SELECTOR_TARGET; B=$SELECTOR_REMOTE
+printf glimmerdeny > "$R/data"; commit
+for selector in GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG combined; do
+    rm -f "$R/.git/hooks/pre-push"
+    git -C "$R" config --local --unset-all sot.publishList
+    case "$selector" in
+        GIT_DIR|GIT_COMMON_DIR) hostile="$DECOY/.git" ;;
+        GIT_WORK_TREE) hostile=$DECOY ;;
+        GIT_INDEX_FILE) hostile="$DECOY/.git/index" ;;
+        GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES) hostile="$DECOY/.git/objects" ;;
+        GIT_CONFIG) hostile="$T/hostile-config" ;;
+    esac
+    if [ "$selector" = combined ]; then
+        env GIT_DIR="$DECOY/.git" GIT_COMMON_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" \
+            GIT_INDEX_FILE="$DECOY/.git/index" GIT_OBJECT_DIRECTORY="$DECOY/.git/objects" \
+            GIT_ALTERNATE_OBJECT_DIRECTORIES="$DECOY/.git/objects" GIT_CONFIG="$T/hostile-config" \
+            GIT_NAMESPACE=decoy GIT_PREFIX=decoy/ GIT_SHALLOW_FILE="$T/absent-shallow" \
+            GIT_CEILING_DIRECTORIES="$T" GIT_DISCOVERY_ACROSS_FILESYSTEM=0 \
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$T/hostile-hooks" \
+            "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$POLICY" --require-ready > "$T/setup.out" 2>&1 || fail "selector enrollment $selector refused"
+    else
+        env "$selector=$hostile" "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$POLICY" --require-ready > "$T/setup.out" 2>&1 || fail "selector enrollment $selector refused"
+    fi
+    cmp "$T/decoy-hook" "$DECOY/.git/hooks/pre-push" || fail "selector $selector changed another clone's hook"
+    cmp "$T/decoy-config" "$DECOY/.git/config" || fail "selector $selector changed another clone's config"
+    # A real new-ref push demonstrates the named clone's hook is active.
+    reject "hostile selector $selector binds named clone" 'line 3' origin HEAD:refs/heads/selector-control
+    recorded=$(git -C "$R" config --local sot.publishList) || fail "selector $selector did not provision named clone"
+    case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) recorded=$(cygpath -u "$recorded") ;; esac
+    [ "$recorded" -ef "$POLICY" ] || fail "selector $selector did not provision named clone"
+done
 printf '1..%s\n' "$count"

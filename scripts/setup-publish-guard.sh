@@ -16,11 +16,21 @@ while [ $# -gt 0 ]; do
 done
 cd "$checkout" || fail 'cannot enter checkout'
 checkout=$(pwd -P) || fail 'cannot resolve checkout'
+# Discover from the named directory, never from a parent Git process's repository selectors.
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX GIT_SHALLOW_FILE GIT_GRAFT_FILE \
+    GIT_REPLACE_REF_BASE GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_CEILING_DIRECTORIES \
+    GIT_DISCOVERY_ACROSS_FILESYSTEM
+selectors=$(git rev-parse --local-env-vars 2>/dev/null) || fail 'cannot inspect Git repository selectors'
+for selector in $selectors; do unset "$selector"; done
 common=$(git rev-parse --git-common-dir 2>/dev/null) || fail 'checkout is not a Git repository'
 common=$(cd "$common" && pwd -P) || fail 'cannot resolve common Git directory'
 # The setup source may differ from the checkout being enrolled.
-[ -f "$here/hooks/publish-guard-lib.sh" ] || fail 'policy validator is missing'
-. "$here/hooks/publish-guard-lib.sh"
+[ -f "$here/hooks/publish-guard-lib.sh" ] && [ -r "$here/hooks/publish-guard-lib.sh" ] || fail 'cannot load policy validator'
+. "$here/hooks/publish-guard-lib.sh" 2>/dev/null || fail 'cannot load policy validator'
+for validator in pg_fail pg_list pg_list_encoding pg_no_reparse; do
+    declare -F "$validator" > /dev/null || fail 'policy validator is incomplete'
+done
 source_hook="$here/hooks/pre-push-shim"
 [ -f "$source_hook" ] && [ ! -L "$source_hook" ] || fail 'shipped hook shim is missing'
 setting=$(git config --show-origin --get core.hooksPath 2>/dev/null); status=$?
@@ -73,9 +83,7 @@ printf 'publish guard: enrolled %s\n' "$checkout"
 if [ "$ready" = 1 ]; then
     pg_tmp=$scratch
     export LC_ALL=C
-    [ -f "$here/hooks/publish-guard-lib.sh" ] || fail 'policy validator is missing'
-    . "$here/hooks/publish-guard-lib.sh"
-    pg_list
+    pg_list || fail 'policy validation failed'
     printf 'publish guard: policy ready\n'
 else
     printf 'publish guard: pushes require one valid external clone-local sot.publishList; installation automation is pending\n'

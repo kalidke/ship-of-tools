@@ -19,9 +19,6 @@ cd "$(dirname "$0")/.."
 [ $# -eq 1 ] || { echo "usage: scripts/pack-build.sh <out-dir>" >&2; exit 2; }
 [ "$(uname -sm)" = "Linux x86_64" ] || { echo "pack-build: Linux x86_64 only (this is $(uname -sm))" >&2; exit 1; }
 
-# Enroll this clone before any build, stamp, tag or publication.
-bash "$PWD/scripts/setup-publish-guard.sh" "$PWD"
-
 # The glibc of the fleet's oldest host: a glibc binary runs only on a host whose glibc is at least the one it was
 # linked against, and a glibc sotd that cannot start stops that host's mail. The floor is written in two places that
 # change together: here, and release.yml's Linux smoke test, whose container (ubuntu:20.04, glibc 2.31) boots the artifact.
@@ -40,6 +37,9 @@ fi
 [ -z "$(git status --porcelain)" ] || { echo "pack-build: the working tree is not clean; commit or stash first" >&2; exit 1; }
 [ -n "$(git branch -r --contains HEAD)" ] \
     || { echo "pack-build: HEAD is on no remote-tracking branch; push the line first" >&2; exit 1; }
+
+# Read-only platform/tree preflight is complete; enroll before creating output or building.
+bash "$PWD/scripts/setup-publish-guard.sh" "$PWD"
 
 # A version is the release artifact iff it has no `+`: an ambient SOT_BUILD_ORIGIN=ci must not make a local pack one.
 unset SOT_BUILD_ORIGIN

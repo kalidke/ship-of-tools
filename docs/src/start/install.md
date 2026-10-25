@@ -418,7 +418,9 @@ Installer enrollment is pending a separate landing; currently the release instal
 
 The person maintaining policy provisions a private `publish-list.txt` outside every repository: in
 `$XDG_CONFIG_HOME/sot` (or `$HOME/.config/sot`) on Linux/macOS, or `%LOCALAPPDATA%\sot\config` on Windows. Shared homes
-share the same file. The file contains literal denied strings, one per line; blank lines and lines beginning `#` are
+share the same file. Save it as ASCII text without a BOM (printable ASCII plus tabs and CR/LF); UTF-8 with non-ASCII
+characters, UTF-8 with a BOM, UTF-16, NUL and other control bytes refuse at readiness and push. The file contains
+literal denied strings, one per line; blank lines and lines beginning `#` are
 ignored, and `!literal span` permits that exact span, case-insensitively. Agents never print or copy the live list.
 Once provisioned, record its absolute location in this clone and check readiness:
 

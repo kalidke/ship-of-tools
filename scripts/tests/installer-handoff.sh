@@ -58,18 +58,40 @@ if mode="$(cd "$SRC" && git ls-files -s scripts/sot-apply.sh 2>/dev/null | cut -
 else
     printf '    NOT CHECKED git holds the mode (this tree is not a git checkout); the archive check below still runs\n'
 fi
-# pack-build.sh itself, with cargo, git and getconf stood in: it packs sot-apply.sh with `cp`, and the archive lists the mode.
+# pack-build.sh itself, with recording cargo and getconf, in a real scratch clone:
+# enrollment must work and the archive must still carry sot-apply's executable mode.
 if [ "$(uname -sm)" != "Linux x86_64" ]; then
     printf '    SKIP the packed archive (pack-build.sh runs on Linux x86_64 only)\n'
 else
     d="$WORK/ho-pack"; mk_pack_fixture "$d" 2.31
     mkdir -p "$d/tree/deploy"; cp "$SRC/deploy/sotd.service" "$d/tree/deploy/"
     install -m 0755 "$SRC/scripts/sot-apply.sh" "$d/tree/scripts/sot-apply.sh"  # git's 100755 checkout, no ACLs carried
-    mkdir -p "$d/tree/rust"
-    for t in cat mkdir cp tar gzip mktemp rm sha256sum chmod; do ln -sf "$(command -v "$t")" "$d/bin/$t"; done
-    printf '#!/bin/sh\nif [ "$1" = rev-parse ]; then echo 0123456789abcdef0123456789abcdef01234567; elif [ "$1 $2" = "branch -r" ]; then echo origin/main; fi\n' > "$d/bin/git"
+    mkdir -p "$d/tree/rust" "$d/tree/scripts/hooks" "$d/home"
+    cp "$SRC/scripts/setup-publish-guard.sh" "$d/tree/scripts/"
+    cp "$SRC/scripts/hooks/"* "$d/tree/scripts/hooks/"
+    for t in bash git cat mkdir cp tar gzip mktemp rm sha256sum chmod mv cmp sed awk grep tr; do ln -sf "$(command -v "$t")" "$d/bin/$t"; done
+    pack_git() {
+        env -i HOME="$d/home" PATH="$d/bin" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+            GIT_CONFIG_NOSYSTEM=1 GIT_ALLOW_PROTOCOL=file GIT_TERMINAL_PROMPT=0 \
+            GIT_AUTHOR_DATE=2020-01-01T00:00:00Z GIT_COMMITTER_DATE=2020-01-01T00:00:00Z \
+            "$d/bin/git" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false "$@"
+    }
+    pack_git init -q --bare "$d/origin.git"
+    pack_git init -q -b main "$d/tree"
+    pack_git -C "$d/tree" add .
+    pack_git -C "$d/tree" commit -qm base
+    pack_git -C "$d/tree" remote add origin "$d/origin.git"
+    pack_git -C "$d/tree" push -q origin main
+    printf 'glimmerdeny\n' > "$d/publish-list.txt"
+    pack_git -C "$d/tree" config --local sot.publishList "$d/publish-list.txt"
     cat > "$d/bin/cargo" <<'CG'
 #!/bin/sh
+# Observe a real guarded push at the build boundary, before recording any build.
+status=0
+git -C "$PG_PACK_TREE" push -q origin HEAD:refs/heads/glimmerdeny > "$PG_PACK_WITNESS" 2>&1 || status=$?
+[ "$status" -ne 0 ] || exit 91
+grep -F 'pre-push: branch update' "$PG_PACK_WITNESS" >/dev/null || exit 92
+printf 'enrolled\n' >> "$PG_PACK_ORDER"
 for t in release x86_64-unknown-linux-gnu/release; do
     mkdir -p "$CARGO_TARGET_DIR/$t"
     for b in sot sotd sot-capsule; do
@@ -77,10 +99,16 @@ for t in release x86_64-unknown-linux-gnu/release; do
     done
 done
 CG
-    chmod +x "$d/bin/git" "$d/bin/cargo"
+    chmod +x "$d/bin/cargo"
     PK_RC=0
-    PK_OUT="$(cd "$d/tree" && env -i PATH="$d/bin" CARGO_TARGET_DIR="$d/target" /bin/bash scripts/pack-build.sh "$d/out" 2>&1)" || PK_RC=$?
+    PK_OUT="$(cd "$d/tree" && env -i HOME="$d/home" PATH="$d/bin" CARGO_TARGET_DIR="$d/target" \
+        GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_ALLOW_PROTOCOL=file \
+        PG_PACK_TREE="$d/tree" PG_PACK_WITNESS="$d/push.err" PG_PACK_ORDER="$d/build-order" \
+        /bin/bash scripts/pack-build.sh "$d/out" 2>&1)" || PK_RC=$?
     check "the pack succeeds" "0" "$PK_RC"; [ "$PK_RC" = 0 ] || printf '%s\n' "$PK_OUT"
+    check "the guard refuses a real denied push before both recorded builds" "2" "$(grep -c '^enrolled$' "$d/build-order" 2>/dev/null || true)"
+    check "the denied build-boundary ref never lands" "absent" \
+        "$(pack_git -C "$d/origin.git" show-ref --verify --quiet refs/heads/glimmerdeny && echo present || echo absent)"
     check "the archive lists sot-apply executable" "-rwx" \
         "$(tar -tvzf "$d/out"/sot-*-linux-x86_64.tar.gz 2>/dev/null | awk '/\/sot-apply$/ { print substr($1, 1, 4) }')"
 fi

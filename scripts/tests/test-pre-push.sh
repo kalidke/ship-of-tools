@@ -200,22 +200,90 @@ for producer in catalog read tree; do
         reject "failed Git producer $producer" "$reason" origin main
     grep -Fx "$producer" "$T/producer-fault" > /dev/null || fail 'wrong Git producer fault was injected'
 done
-# A policy read failure is not treated as an empty, permissive policy.
+# The denied token is deliberately in this synthetic pathname: any utility error
+# repeating it must be caught by the same complete-stderr audit as a content leak.
 REAL_CAT=$(command -v cat)
+FAULT_POLICY="$T/glimmerdeny-policy.txt"
+cp "$POLICY" "$FAULT_POLICY"
+git -C "$R" config sot.publishList "$FAULT_POLICY"
 cat > "$T/git-wrapper/cat" <<'CAT'
-#!/bin/sh
-if [ "${1:-}" = "$PG_POLICY_FILE" ]; then
-    printf 'policy-read\n' >> "$PG_FAULT_LOG" || exit 98
+#!/bin/bash
+policy=$PG_POLICY_FILE
+real_cat=$PG_REAL_CAT
+fault_log=$PG_FAULT_LOG
+held=$PG_HELD_POLICY
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
+    # Git converts inherited paths to native spellings. The guard's argv uses
+    # cygpath -u; compare file identities after normalizing both path forms.
+    policy=$(cygpath -u "$policy") || exit 98
+    real_cat=$(cygpath -u "$real_cat") || exit 98
+    fault_log=$(cygpath -u "$fault_log") || exit 98
+    held=$(cygpath -u "$held") || exit 98
+    ;; esac
+if [ -n "${1:-}" ] && [ "$1" -ef "$policy" ]; then
+    printf 'policy-read\n' >> "$fault_log" || exit 98
+    if [ "$PG_POLICY_ACTION" = vanished ]; then
+        mv "$policy" "$held" || exit 98
+        exec "$real_cat" "$@" # a real ENOENT diagnostic, including the path
+    fi
+    printf 'cat: %s: injected read error\n' "$1" >&2
     exit 9
 fi
-exec "$PG_REAL_CAT" "$@"
+exec "$real_cat" "$@"
 CAT
 chmod +x "$T/git-wrapper/cat"
+for action in read-error vanished; do
+    : > "$T/producer-fault"
+    PG_POLICY_FILE=$FAULT_POLICY PG_REAL_CAT=$REAL_CAT PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
+        PG_POLICY_ACTION=$action PG_HELD_POLICY="$T/policy-held" \
+        GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
+        reject "failed policy read $action" 'cannot read sot.publishList' origin main
+    grep -Fx policy-read "$T/producer-fault" > /dev/null || fail 'policy read fault was not injected'
+    [ "$action" != vanished ] || mv "$T/policy-held" "$FAULT_POLICY"
+    : > "$T/producer-fault"
+    PG_POLICY_FILE=$FAULT_POLICY PG_REAL_CAT=$REAL_CAT PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
+        PG_POLICY_ACTION=$action PG_HELD_POLICY="$T/policy-held" \
+        GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
+        not_ready "failed policy read $action" 'cannot read sot.publishList'
+    grep -Fx policy-read "$T/producer-fault" > /dev/null || fail 'readiness read fault was not injected'
+    [ "$action" != vanished ] || mv "$T/policy-held" "$FAULT_POLICY"
+done
+git -C "$R" config sot.publishList "$POLICY"
+rm -f "$T/git-wrapper/cat"
+# Encoding validation has a checked producer too, on both readiness and push.
+cat > "$T/git-wrapper/tr" <<'TR'
+#!/bin/bash
+fault_log=$PG_FAULT_LOG
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) fault_log=$(cygpath -u "$fault_log") || exit 98 ;; esac
+printf 'policy-encoding\n' >> "$fault_log" || exit 98
+printf 'fixture encoding error: glimmerdeny-path\n' >&2
+exit 9
+TR
+chmod +x "$T/git-wrapper/tr"
 : > "$T/producer-fault"
-PG_POLICY_FILE=$POLICY PG_REAL_CAT=$REAL_CAT PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
+PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
     GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
-    reject 'failed policy read' 'cannot read sot.publishList' origin main
-grep -Fx policy-read "$T/producer-fault" > /dev/null || fail 'policy read fault was not injected'
+    reject 'failed encoding producer' 'cannot validate sot.publishList encoding' origin main
+grep -Fx policy-encoding "$T/producer-fault" > /dev/null || fail 'encoding producer fault was not injected'
+: > "$T/producer-fault"
+PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
+    GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
+    not_ready 'failed encoding producer' 'cannot validate sot.publishList encoding'
+grep -Fx policy-encoding "$T/producer-fault" > /dev/null || fail 'readiness encoding fault was not injected'
+# Prove the audit itself catches unprefixed stderr from a real refused push.
+cat > "$R/.git/hooks/pre-push.local" <<'LEAK'
+#!/bin/sh
+cat >/dev/null
+printf 'fixture utility: glimmerdeny-path: read error\n' >&2
+exit 17
+LEAK
+chmod +x "$R/.git/hooks/pre-push.local"
+audit_status=0
+(reject 'unprefixed stderr witness' 'fixture utility:' origin main) > "$T/audit.out" 2>&1 || audit_status=$?
+[ "$audit_status" -ne 0 ] || fail 'stderr audit ignored an unprefixed leak'
+grep -F 'unprefixed stderr witness leaked a policy entry' "$T/audit.out" > /dev/null || fail 'stderr audit failed for another reason'
+ok 'complete stderr audit catches unprefixed leak'
+rm -f "$R/.git/hooks/pre-push.local"
 accept 'producer controls remain clean' origin main
 accept 'deletion preparation' origin HEAD:old
 accept 'valid-list deletion' origin :old

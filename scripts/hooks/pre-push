@@ -10,9 +10,13 @@ trap 'rm -rf "${pg_tmp:?}"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 here=$(cd "${BASH_SOURCE[0]%/*}" && pwd -P) || exit 1
-[ -f "$here/publish-guard-lib.sh" ] || { echo 'pre-push: policy validator is missing; refusing the push' >&2; exit 1; }
-. "$here/publish-guard-lib.sh"
-pg_list
+pg_abort() { printf 'pre-push: %s; refusing the push\n' "$1" >&2; exit 1; }
+[ -f "$here/publish-guard-lib.sh" ] && [ -r "$here/publish-guard-lib.sh" ] || pg_abort 'cannot load policy validator'
+. "$here/publish-guard-lib.sh" 2>/dev/null || pg_abort 'cannot load policy validator'
+for validator in pg_fail pg_list pg_list_encoding pg_no_reparse; do
+    declare -F "$validator" > /dev/null || pg_abort 'policy validator is incomplete'
+done
+pg_list || pg_abort 'policy validation failed'
 [ "${SOT_PUBLISH_CHAIN_ACTIVE:-}" != 1 ] || pg_fail 'hook chain cycle'
 cat > "$pg_tmp/input" || pg_fail 'cannot preserve push input'
 

@@ -58,11 +58,23 @@ fixture() {
 commit() { git -C "$R" add -A; git -C "$R" commit -q --allow-empty -m "${1:-clean change}"; }
 reset_case() { git -C "$R" reset -q --hard "$BASE"; }
 refs() { git -C "$B" for-each-ref --format='%(refname) %(objectname)' | LC_ALL=C sort; }
+audit_stderr() {
+    if grep -iE 'glimmerdeny|otherdeny' "$1" > /dev/null; then fail "$2 leaked a policy entry"; fi
+}
+not_ready() { # readiness must reject for the intended reason, with sanitized stderr
+    local label=$1 reason=$2 status=0
+    "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --require-ready > "$T/ready.out" 2> "$T/ready.err" || status=$?
+    [ "$status" -ne 0 ] || fail "$label reported ready"
+    grep -F "$reason" "$T/ready.err" > /dev/null || fail "$label readiness wrong cause"
+    audit_stderr "$T/ready.err" "$label readiness"
+    ok "$label readiness"
+}
 reject() { # safe test label, expected hook diagnostic, push arguments
     local label=$1 reason=$2 before after push_status=0
     shift 2
     before=$(refs)
-    git -C "$R" push -q "$@" > "$T/push.out" 2>&1 || push_status=$?
+    git -C "$R" push -q "$@" > "$T/push.stdout" 2> "$T/push.err" || push_status=$?
+    cat "$T/push.stdout" "$T/push.err" > "$T/push.out"
     if [ -n "${PG_FAULT_LOG:-}" ]; then
         [ -s "$PG_FAULT_LOG" ] || fail "$label fault injection did not reach the producer"
     fi
@@ -70,9 +82,9 @@ reject() { # safe test label, expected hook diagnostic, push arguments
     after=$(refs)
     [ "$before" = "$after" ] || fail "$label changed destination refs"
     grep -F "$reason" "$T/push.out" > /dev/null || fail "$label did not reach its intended refusal"
-    # Git's own error can echo a refspec; audit only the hook's diagnostic lines.
-    sed -n '/^pre-push:/p' "$T/push.out" > "$T/diagnostic"
-    if grep -iE 'glimmerdeny|otherdeny' "$T/diagnostic" > /dev/null; then fail "$label leaked a policy entry"; fi
+    # Include utility/shell errors and chained stderr, even without a pre-push prefix.
+    cp "$T/push.err" "$T/diagnostic"
+    audit_stderr "$T/diagnostic" "$label"
     ok "$label"
 }
 accept() {

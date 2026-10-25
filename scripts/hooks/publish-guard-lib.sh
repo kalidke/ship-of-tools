@@ -22,6 +22,12 @@ pg_no_reparse() {
     esac
     return 0
 }
+pg_list_encoding() {
+    # ASCII text only: printable bytes, TAB, LF and CR. In particular no NUL, BOM or UTF-16.
+    { LC_ALL=C tr -d '\011\012\015\040-\176' < "$pg_tmp/list" > "$pg_tmp/invalid-encoding"; } 2>/dev/null ||
+        pg_fail 'cannot validate sot.publishList encoding'
+    [ ! -s "$pg_tmp/invalid-encoding" ] || pg_fail 'sot.publishList must be ASCII text without a BOM'
+}
 pg_list() {
     local value extra parent probe rc names name
     git config --local --no-includes --null --get-all sot.publishList > "$pg_tmp/config" 2>/dev/null ||
@@ -65,5 +71,7 @@ pg_list() {
         [ "$probe" != / ] || break
         probe=${probe%/*}; [ -n "$probe" ] || probe=/
     done
-    cat "$value" > "$pg_tmp/list" || pg_fail 'cannot read sot.publishList'
+    # Suppress both the utility's and the shell's diagnostics: either can repeat the private path.
+    { cat "$value" > "$pg_tmp/list"; } 2>/dev/null || pg_fail 'cannot read sot.publishList'
+    pg_list_encoding || pg_fail 'sot.publishList encoding validation failed'
 }
