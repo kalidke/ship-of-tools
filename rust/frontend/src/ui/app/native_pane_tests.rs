@@ -312,20 +312,20 @@ impl PaneDriver<'_> {
         let redraw_failed = text.lines().filter(|l| l.contains("redraw failed")).last().unwrap_or("none").trim().to_string();
         format!(
             "listed={listed} lists=[{}] frames={} pty_size={:?} active_host={} status={:?} last_redraw_failure={redraw_failed:?} {}",
-            lists.join(" "), state.frame_counter, state.pty_size, state.active_host, state.status, self.layout_state()
+            lists.join(" "), state.frame_counter, state.agent_pane.size(), state.active_host, state.status, self.layout_state()
         )
     }
 
     fn ready_to_switch(&self) -> Result<bool> {
         let Some(state) = self.app.state.as_ref() else { return Ok(false) };
         let listed = state.row_directory.rows(HOST_KEY).is_some_and(|rows| self.plan.iter().all(|p| rows.iter().any(|r| r.slug == p.slug)));
-        if !(listed && state.frame_counter >= 3 && state.pty_size.is_some()) {
+        if !(listed && state.frame_counter >= 3 && state.agent_pane.size().is_some()) {
             if self.begun.elapsed() >= SETUP_BOUND {
                 anyhow::bail!("pane-timing setup failure: the window was not ready to switch in {SETUP_BOUND:?}: {}", self.setup_state(listed));
             }
             return Ok(false);
         }
-        let (cols, rows) = state.pty_size.unwrap_or((0, 0));
+        let (cols, rows) = state.agent_pane.size().unwrap_or((0, 0));
         anyhow::ensure!(cols > 0 && rows > 0, "pane-timing setup failure: the agent pane has no area");
         println!("pane-timing pane cols={cols} rows={rows}");
         Ok(true)
@@ -382,7 +382,7 @@ impl PaneDriver<'_> {
 
     /// Every pane target this child has observed, at every step.
     fn note_target(&mut self) {
-        if let Some((_, session)) = self.app.state.as_ref().and_then(|s| s.bl_pane_target.clone()) {
+        if let Some((_, session)) = self.app.state.as_ref().and_then(|s| s.agent_pane.target()) {
             if !self.targets.contains(&session) {
                 self.targets.push(session);
             }
@@ -392,12 +392,13 @@ impl PaneDriver<'_> {
     /// The pty.open reply installing the client, from the request.
     fn open_ms(&self) -> Option<u128> {
         let state = self.app.state.as_ref()?;
-        Some(state.pane_attach_started_at?.saturating_duration_since(state.pane_attach_requested_at?).as_millis())
+        Some(state.agent_pane.client_open_elapsed()?.as_millis())
     }
 
     fn dead_client_outcome(&mut self, resume: bool) -> Option<String> {
-        let t = self.app.state.as_mut()?.pane_attach_term.as_mut()?;
-        (resume && t.is_dead()).then(|| format!("failed:{}", t.status_line().replace(' ', "_")))
+        if !resume { return None; }
+        self.app.state.as_mut()?.agent_pane.dead_client_status()
+            .map(|status| format!("failed:{}", status.replace(' ', "_")))
     }
 
     /// The fault child's order guard: a receipt line before the failure line means selection completed the attach.

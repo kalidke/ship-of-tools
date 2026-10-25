@@ -171,21 +171,13 @@ pub(in crate::ui) fn pane_discard_notice(pane: usize, client: usize) -> Option<S
 }
 
 
-impl State {
-    pub(in crate::ui) fn session_pane_view(&mut self) -> (PaneScreen, Vec<String>, Option<PaneFacts>) {
-        // Borrow the LLM terminal screen for the duration of the draw.
-        // `pane_attach_term`'s `vt100-ctt` `screen()` returns a `&Screen`
-        // tied to the client; since `terminal.draw` borrows a different
-        // field (self.terminal), Rust's split-borrow rules let us hold
-        // both at once. The local terminal's screen is borrowed the same
-        // way when the Terminal drawer is active. Unconditional on every
-        // platform since ADR 0045 decision 1 (a capsule row attaches
-        // through its own daemon everywhere).
-        //
-        // While awaiting a checkpoint, prefer the departing screen when a hold exists. With no hold a live client's initially empty parser can be selected; it cannot produce a presentation receipt. A client that becomes terminal before its first checkpoint falls through to blank.
-        // Three separate `let`s (rather than inlining each as a call
-        // argument) so the one `&mut` read (`is_dead`) never overlaps
-        // the `&ref` reads around it.
+/// A frame-local, opaque claim for the exact request and eligible client lent to the draw.
+pub(in crate::ui) struct PaintedClient(PresentationCandidate);
+
+impl<C: PaneClient> AgentPane<C> {
+    pub(in crate::ui) fn view(&mut self, mismatch: Option<&str>) -> (PaneScreen, Vec<String>, Option<PaintedClient>) {
+        // Pump precedes this operation. Drawing then borrows the chosen screen immutably,
+        // releases that borrow, synchronizes geometry and offers this frame's opaque claim.
         let pane_attach_has_client = self.pane_attach_term.is_some();
         let pane_attach_checkpointed =
             self.pane_attach_term.as_ref().is_some_and(|t| t.is_checkpointed());
@@ -197,39 +189,17 @@ impl State {
             self.pane_feed,
             self.pane_hold.is_some(),
         );
-        // ADR 0030 §8 "Where it is shown", widened by ADR 0045 decision 1
-        // (Codex review): paints whenever the client is alive but not
-        // honestly attached — dead-uncheckpointed (the original case),
-        // a mid-outage `Unreachable` retry, a refusal, or a failure AFTER
-        // checkpointing (the frozen screen underneath is real, but
-        // stale). Codex review: reads the RETAINED client's own
-        // `status_line()` directly, never `self.status` — that field is
-        // shared with every other status-bar message in the whole event
-        // loop and a later, unrelated write (autostart, a daemon
-        // reconnect, a drawer switch) would silently retitle this pane's
-        // own explanation to whatever last touched the status bar.
+        // The retained client's reason is independent of State's shared chrome status.
         let pane_attach_status = self.pane_attach_term.as_ref().map(|t| t.status_line());
         let pane_attach_is_attached = pane_attach_status == Some("attached");
         // A daemon that refused this frontend's protocol is the root cause of
         // whatever the client or the dial reports, so its line leads.
-        let pane_host = self
-            .bl_pane_target
-            .as_ref()
-            .map(|(h, _)| h)
-            .unwrap_or(&self.active_host);
         let pane_terminal_reason: Option<String> = pane_reason_line(
-            self.hello_refused
-                .get(pane_host)
-                .and_then(|m| m.lines().next()),
+            mismatch,
             pane_terminal_reason_text(
                 pane_shows_terminal_reason(pane_attach_has_client, pane_attach_is_attached),
                 pane_attach_status,
             ),
-        // SHOULD-FIX (Codex review, lane B5 discharge): no live client at
-        // all (a dial that never got to attach in the first place) still
-        // needs a persistent, non-clobberable reason when this row's
-        // host has a known-broken dial — same priority tier as a live
-        // client's own failure.
             self.pane_dial_error.as_deref(),
         );
         let pane_overlay = pane_overlay_lines(
@@ -240,16 +210,77 @@ impl State {
             ),
         );
         // Choosing a screen does not complete presentation. The frame carries a qualified candidate to the presentation owner and completes it only after submit/present.
-        let facts = (pane_screen == PaneScreen::Client)
-            .then_some(PaneFacts { checkpointed: pane_attach_checkpointed, attached: pane_attach_is_attached, live: !pane_attach_is_dead });
+        let facts = (pane_screen == PaneScreen::Client).then(|| PaneFacts {
+            checkpointed: pane_attach_checkpointed, attached: pane_attach_is_attached, live: !pane_attach_is_dead,
+        });
+        let facts = facts.and_then(|f| self.pane_presentation.candidate(f, (1, 1))).map(PaintedClient);
         (pane_screen, pane_overlay, facts)
+    }
+
+    pub(in crate::ui) fn painted_screen(&self, choice: PaneScreen) -> Option<&vt100::Screen> {
+        match choice {
+            PaneScreen::Client => self.pane_attach_term.as_ref().map(|c| c.screen()),
+            PaneScreen::Hold => self.pane_hold.as_ref().map(|h| h.screen()),
+            PaneScreen::Empty => None,
+        }
+    }
+
+    pub(in crate::ui) fn painted_candidate(&self, claim: PaintedClient, area: (u16, u16)) -> Option<PresentationCandidate> {
+        (area.0 > 0 && area.1 > 0).then_some(claim.0)
+    }
+
+    /// Called only after the frame has been submitted and presented.
+    pub(in crate::ui) fn presented(&mut self, candidate: PresentationCandidate, now: Instant) -> Presentation {
+        self.pane_presentation.complete(candidate, now)
+    }
+
+    pub(in crate::ui) fn sync_size(&mut self, pty_size_observed: (u16, u16)) {
+        // Geometry alone never sends an open. Pending remembers the latest valid size;
+        // Capsule resizes only an installed selected client, resetting scroll on a reshape.
+        let (cols, rows) = pty_size_observed;
+        if cols >= 2 && rows >= 2 {
+            let need_open = self.pty_size.is_none();
+            let need_resize = self
+                .pty_size
+                .map(|prev| prev != (cols, rows))
+                .unwrap_or(false);
+            match self.pane_feed {
+                PaneFeed::Capsule => {
+                    if need_open || need_resize {
+                        if let Some(t) = self.pane_attach_term.as_mut() {
+                            t.resize(cols, rows);
+                            if need_resize {
+                                // A resize reshapes the row map, so the old
+                                // offset means nothing: snap to live.
+                                t.reset_scroll();
+                            }
+                        }
+                        self.pty_size = Some((cols, rows));
+                    }
+                }
+                PaneFeed::Pending => {
+                    if need_open || need_resize {
+                        self.pty_size = Some((cols, rows));
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl State {
+    pub(in crate::ui) fn session_pane_view(&mut self) -> (PaneScreen, Vec<String>, Option<PaintedClient>) {
+        let target = self.agent_pane.target();
+        let host = target.as_ref().map(|(h, _)| h).unwrap_or(&self.active_host);
+        let mismatch = self.hello_refused.get(host).and_then(|m| m.lines().next());
+        self.agent_pane.view(mismatch)
     }
 
     /// Offers a candidate to the owner and logs its outcome. A receipt also gives, each since the request, when its
     /// frame began, had prepared its text, got its drawable, finished encoding and was submitted (`stamps`, in order).
     pub(in crate::ui) fn log_presentation(&mut self, candidate: PresentationCandidate, stamps: [Instant; 5]) {
         let now = Instant::now();
-        match self.pane_presentation.complete(candidate, now) {
+        match self.agent_pane.presented(candidate, now) {
             Presentation::Receipt { elapsed, .. } => {
                 let since = |at: Instant| elapsed.saturating_sub(now.saturating_duration_since(at)).as_millis();
                 tracing::info!(
@@ -268,57 +299,6 @@ impl State {
         }
     }
 
-    pub(in crate::ui) fn sync_pane_pty_size(&mut self, pty_size_observed: (u16, u16)) {
-        // Track the LLM-pane's size once the first redraw has a real BL
-        // content rect, and keep an already-live capsule client's
-        // viewport in sync when the rect grows/shrinks — the actual
-        // attach/open wire request is `attach_session_to_bl`'s, not
-        // this redraw's.
-        let (cols, rows) = pty_size_observed;
-        if cols >= 2 && rows >= 2 {
-            let need_open = self.pty_size.is_none();
-            let need_resize = self
-                .pty_size
-                .map(|prev| prev != (cols, rows))
-                .unwrap_or(false);
-            // ADR 0042 slice L1b fix 2: `pane_feed`, not the 2-way
-            // `pane_is_capsule` this used to branch on — `Pending` must
-            // send NOTHING to either backend (a resize routed by
-            // guesswork would be indistinguishable from the exact bug
-            // finding 2 fixed for input) while still tracking the
-            // latest size locally, since whichever backend eventually
-            // resolves reads its start/resize from `self.pty_size`.
-            match self.pane_feed {
-                PaneFeed::Capsule => {
-                    // The capsule client's connection is owned entirely
-                    // by the `PtyAttachDirect` handler's own
-                    // `spawn_pane_attach_term` call (the daemon's own
-                    // reply to the `pty.open` `attach_session_to_bl`
-                    // always sends) — there is no `pty.open`/`pty.resize` wire
-                    // request for a capsule row (the daemon refuses both
-                    // with `attach_direct`). This arm only keeps an
-                    // ALREADY-LIVE client's viewport in sync with the pane
-                    // rect.
-                    if need_open || need_resize {
-                        if let Some(t) = self.pane_attach_term.as_mut() {
-                            t.resize(cols, rows);
-                            if need_resize {
-                                // A resize reshapes the row map, so the old
-                                // offset means nothing: snap to live.
-                                t.screen_mut().set_scrollback(0);
-                            }
-                        }
-                        self.pty_size = Some((cols, rows));
-                    }
-                }
-                PaneFeed::Pending => {
-                    if need_open || need_resize {
-                        self.pty_size = Some((cols, rows));
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

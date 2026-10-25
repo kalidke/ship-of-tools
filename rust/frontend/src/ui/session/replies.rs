@@ -214,32 +214,8 @@ impl State {
             // reproduce the SAME `attach_direct` refusal on
             // every reconnect forever; a known-broken host is
             // not retried automatically.
-            let pane_is_capsule = self.pane_attach_term.is_some();
-            if !pane_is_capsule && self.pane_dial_error.is_none() {
-                // ADR 0042 L2a: only re-fire if the OWNING host
-                // is the one that just reconnected -- this
-                // whole arm is already gated on
-                // `event_host == self.active_host`, so in the
-                // normal case owner == event_host by
-                // construction, but a defensive check costs
-                // nothing and documents the invariant here too.
-                if let Some((owner, target)) = self.bl_pane_target.clone() {
-                    if owner == event_host {
-                        let (cols, rows) = self.pty_size.unwrap_or((80, 24));
-                        let _ = self.send_to(
-                            &owner,
-                            crate::net::transport::OutgoingReq::PtyOpen {
-                                cols,
-                                rows,
-                                target: Some(target),
-                                // #5 guard: a reconnect re-attach (sleep /
-                                // tunnel drop) is NOT a user switch — re-stream
-                                // the existing target, don't yank the foreground.
-                                user_switch: false,
-                            },
-                        );
-                    }
-                }
+            if let Some(open) = self.agent_pane.reconnect_open(&event_host) {
+                let _ = self.send_to(open.host(), open.request());
             }
             // And re-fire preview for the currently-cursored node
             // so any file changes that landed while we were
@@ -405,10 +381,7 @@ impl State {
                         .map(|s| s == info.slug || s == info.workspace_id)
                         .unwrap_or(false)
                 {
-                    self.pane_attach_term = None;
-                    self.pane_inputs_discarded = 0;
-                    self.bl_pane_target = None;
-                    self.pane_feed = PaneFeed::Pending;
+                    self.agent_pane.invalidate_kept_attachment();
                 }
                 let ws_key: WsKey = (
                     event_host.clone(),

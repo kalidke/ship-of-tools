@@ -6,11 +6,7 @@ use crate::ui::input::keypress::KeyPress;
 
 pub(in crate::ui) fn agent_pane_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     let KeyPress { event, action, ctrl, shift, super_, .. } = key;
-    // Forward keystrokes to the backend-side tmux pty.
-    // Esc, Tab, arrows, Ctrl+letter all reach the
-    // terminal so shell editing, tmux prefix
-    // (Ctrl+B), and TUI apps work. To leave this
-    // pane use Ctrl+Arrow.
+    // Unhandled keys reach the selected client; Ctrl+Arrow leaves this pane.
     //
     // Paste shortcut interception: Ctrl+V / Cmd+V /
     // Shift+Insert read the OS clipboard and forward
@@ -26,7 +22,7 @@ pub(in crate::ui) fn agent_pane_key(state: &mut State, key: KeyPress<'_>, label:
     // Ctrl+Shift+C still hits the pty.
     if !event.repeat
         && action == Some(Action::CopySelection)
-        && state.llm_selection.is_some()
+        && state.agent_pane.selection().is_some()
     {
         state.copy_llm_selection();
         state.last_key = Some(label);
@@ -48,9 +44,7 @@ pub(in crate::ui) fn agent_pane_key(state: &mut State, key: KeyPress<'_>, label:
         // view back to live so what the user is
         // typing is always at the bottom of the
         // LLM pane next to the prompt.
-        if let Some(t) = state.pane_attach_term.as_mut() {
-            t.screen_mut().set_scrollback(0);
-        }
+        state.agent_pane.reset_scroll();
         // ADR 0042 slice L1b fix 2/3: routed through
         // the ONE session-pane input dispatcher — see
         // `send_pane_input`'s own doc.
@@ -61,18 +55,8 @@ pub(in crate::ui) fn agent_pane_key(state: &mut State, key: KeyPress<'_>, label:
 
 fn agent_pane_page_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     let KeyPress { action, .. } = key;
-    // PgUp/PgDn page the REMOTE pane's scrollback from
-    // the keyboard: tmux owns the ring (our vt100 ring
-    // stays empty under tmux's in-place repaints), so
-    // the backend enters `copy-mode -e` and pages —
-    // exactly what the mouse wheel achieves via SGR
-    // events, minus the mouse. Alternate-screen apps
-    // (vim/less) get the raw key passed through
-    // backend-side so their own paging still works.
-    // Shift+PgUp/PgDn skip this and fall through as raw
-    // bytes — the escape hatch for a remote app that
-    // wants the key itself. Repeats allowed: holding
-    // PgUp keeps paging.
+    // Ordinary page actions scroll the client's local ring. Alternate-screen applications
+    // receive the original key; shifted page keys already fall through action resolution.
     if matches!(action, Some(Action::ScrollPageUp | Action::ScrollPageDown)) {
         let scroll = match action {
             Some(Action::ScrollPageUp) => Some(true),
@@ -80,50 +64,12 @@ fn agent_pane_page_key(state: &mut State, key: KeyPress<'_>, label: String) -> C
             _ => None,
         };
         if let Some(up) = scroll {
-            // ADR 0042 slice L1b: a capsule pane
-            // pages its OWN scrollback (the emulator's
-            // ring, see `scroll_ring`) — every row is a
-            // capsule on this build. ADR 0042 slice
-            // L1b fix 2: dropped entirely while
-            // `pane_feed == Pending` — routing it
-            // anywhere would be a guess before the
-            // attach resolves.
-            //
-            // ADR 0042 slice L1b fix 4: a capsule
-            // row's ALTERNATE-SCREEN app (vim, less)
-            // must receive the raw key instead of
-            // having it consumed as a local-ring
-            // page, matching the drawer's own
-            // PgUp/PgDn arm — `capsule_alt_screen`
-            // gates the early return below so that
-            // case falls through to the ordinary
-            // `key_to_pty_bytes` forward further
-            // down.
-            let capsule_alt_screen = state.pane_feed == PaneFeed::Capsule
-                && state
-                    .pane_attach_term
-                    .as_ref()
-                    .map(|t| t.screen().alternate_screen())
-                    .unwrap_or(false);
-            if !capsule_alt_screen {
-                match state.pane_feed {
-                    PaneFeed::Capsule => {
-                        let page_step =
-                            (state.pane_rects.llm.height as i32 / 3).max(1);
-                        let delta = if up { page_step } else { -page_step };
-                        if let Some(t) = state.pane_attach_term.as_mut() {
-                            scroll_ring(t.screen_mut(), delta);
-                        }
-                    }
-                    PaneFeed::Pending => {}
-                }
+            if state.agent_pane.page(up, state.pane_rects.llm.height) {
                 state.last_key = Some(label);
                 state.window.request_redraw();
                 return Break(());
             }
-            // `capsule_alt_screen`: fall through to the
-            // raw-byte forward below, exactly like the
-            // drawer's own escape hatch.
+            // Alternate screen: fall through to the raw-byte path.
         }
     }
     Continue(())

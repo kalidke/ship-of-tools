@@ -914,117 +914,15 @@ struct State {
     local_term: Option<crate::ui::drawer::terminal::pty::LocalTerminal>,
     /// Last `(cols, rows)` the local terminal's PTY was sized to. `None`
     /// until the drawer rect is first observed; drives resize-on-change
-    /// (mirrors `pty_size` for the LLM pane).
+    /// (mirrors the agent pane size).
     term_size: Option<(u16, u16)>,
     /// Local repo root (`$SOT_REPO_DIR`, set by the supervisor). Used as
     /// the Terminal drawer's working directory, so the plain shell it spawns
     /// starts in the project root. `None` when launched outside the
     /// supervisor (then the shell inherits the frontend's cwd). ADR 0017.
     repo_dir: Option<std::path::PathBuf>,
-    // ui/agent_pane: the agent pane's target, attach clients and selection.
-    /// Owning host + tmux session the BL pane is attached to (ADR 0042
-    /// L2a codex review, item D). `None` until the first `pty.open`
-    /// reply lands; defaults to `sot-llm` semantically. Sessions-mode
-    /// Enter (B3) updates this to the targeted backend session and
-    /// fires a fresh `pty.open` with the new target so the backend
-    /// kills + respawns the pty. MUST carry the host: two hosts can
-    /// both name a session "sot-be-sot", and a bare session name used
-    /// to make `attach_session_to_bl`'s "already attached" early
-    /// return fire on a same-named session on a DIFFERENT host,
-    /// leaving the pty open on the OLD host while every subsequent
-    /// write/resize/scroll routed (via `active_host`) to the new one.
-    bl_pane_target: Option<(HostKey, String)>,
-    /// Last (cols, rows) sent on the session pane's `pty.open`, and the
-    /// size a fresh `blank_pane_screen` draws at when nothing else is
-    /// live. `None` = no `pty.open` sent yet; first BL redraw with a
-    /// real rect fires the open.
-    pty_size: Option<(u16, u16)>,
-    /// Mouse selection in the LLM pane, as inclusive cell endpoints
-    /// `(row, col)` in pane-relative coords. Both stored unnormalised
-    /// (start = where the user pressed, end = follows the mouse);
-    /// the copy + render paths reorder before walking. `None` = no
-    /// selection.
-    llm_selection: Option<((u16, u16), (u16, u16))>,
-    /// True while the left mouse button is held down inside the LLM
-    /// pane. Drag-motion CursorMoved events update `llm_selection.end`
-    /// while this is set.
-    llm_drag_active: bool,
-    /// ADR 0042 slice L1b: the session (BL) pane's OWN attach client —
-    /// live when the selected workspace row's cached `runtime ==
-    /// "capsule"`. The drawer holds no attach client: it is the local
-    /// terminal, and the session pane is a different surface with a
-    /// different tenant (ADR 0041 "one drawer, tenant fixed" vs every
-    /// workspace being an ordinary peer session, ADR 0042). Set/cleared by
-    /// `attach_session_to_bl` (dropped on every selection change) and the
-    /// `PtyAttachDirect` handler (the only place it is ever spawned, ADR
-    /// 0042 shrink round rule A). ADR 0045 decision 1: attaches through
-    /// the row's own daemon (`DaemonLaneEndpoint`) on every platform, not
-    /// only Windows — `None` whenever the selected row is a tmux
-    /// workspace.
-    pane_attach_term: Option<PaneAttachClient>,
-    warm_attach: WarmAttachPool<PaneAttachClient>,
-    /// LU6a: the pane's last content, held across a capsule switch until
-    /// the new client's checkpoint lands — see `HeldPaneScreen`'s own doc
-    /// and `pane_screen_choice`. Captured by `attach_session_to_bl` when
-    /// dropping the departing feed; cleared the first time the new
-    /// client reports checkpointed, when the attach itself fails
-    /// (`spawn_pane_attach_term` returning false), or when the client goes terminal (`is_dead`) before it
-    /// EVER checkpointed (`pump_pane_attach_term`, alongside the episode-
-    /// failure warn line): a dead end is not a stall, and must not keep
-    /// showing the departed row's screen forever. Never left to outlive
-    /// the switch it belongs to.
-    pane_hold: Option<HeldPaneScreen>,
-    /// SHOULD-FIX (Codex review, lane B5 discharge): a genuine dial
-    /// CONFIGURATION error for the CURRENT `bl_pane_target`'s host —
-    /// `spawn_pane_attach_term` sets this only when the host has no
-    /// transport at all, or its resolved transport yields no usable
-    /// dial; never for "not yet connected" (transient, no persistent
-    /// reason set, ordinary retry stays enabled). Persistent and
-    /// terminal: rendered with priority in the pane (see
-    /// `pane_shows_terminal_reason`'s doc) and gates the daemon-
-    /// reconnect handler's `pty.open` re-fire (`Some` suppresses it — a
-    /// known-broken host must not be retried on every reconnect).
-    /// Cleared on every switch (`attach_session_to_bl`) and on a later
-    /// successful spawn for the same row.
-    pane_dial_error: Option<String>,
-    /// LU6a design-review amendment: when the SWITCH or CREATE that led
-    /// to the live `pane_attach_term` was REQUESTED — the one frontend
-    /// clock the attach-outcome log lines (`pump_pane_attach_term`)
-    /// report `since_request_ms` against (the acceptance metric: total
-    /// user-perceived latency, not merely "since the client object was
-    /// constructed"). Stamped at `attach_session_to_bl`'s entry for an
-    /// ordinary switch; for a workspace CREATE, inherited from
-    /// `pending_capsule_create_requested_at` instead, so the daemon round
-    /// trip to actually create the workspace counts too. `None` before
-    /// the very first switch.
-    pane_attach_requested_at: Option<std::time::Instant>,
-    /// LU6a: when `spawn_pane_attach_term` last installed the live
-    /// `pane_attach_term` — a SECOND, narrower clock the attach-outcome
-    /// log lines report as `since_client_ms` (how long the client itself
-    /// has been running), alongside `since_request_ms` above. `None`
-    /// before the very first spawn.
-    pane_attach_started_at: Option<std::time::Instant>,
-    /// LU6a: how many non-success status changes `pump_pane_attach_term`
-    /// has observed from the CURRENT `pane_attach_term` since it was
-    /// installed — the "episode count" its warn-level attach-outcome log
-    /// line reports (the observability gap this lane closes: the FE
-    /// otherwise only ever logged "attaching"). Reset to 0 on every new
-    /// spawn.
-    pane_attach_episode_warnings: u32,
-    /// Owns the current attach request's presentation generation and immutable origin; only its submitted and presented checkpoint frame can consume its receipt.
-    pane_presentation: PanePresentation,
-    /// ADR 0042 slice L1b fix 2: which state the session pane's input
-    /// routes to right now — see `PaneFeed`'s own doc for why this can't
-    /// just be derived from `pane_attach_term.is_some()`. Starts
-    /// `Pending`: the very first attach is exactly as unresolved as any
-    /// later switch.
-    pane_feed: PaneFeed,
-    /// Session-pane input discarded before the pane could take it: typed
-    /// while `pane_feed == PaneFeed::Pending`, or with no live client.
-    /// Never sent later. Cleared at the client's "attached" edge
-    /// (`pump_pane_attach_term`) and on a switch or reset of the row; the
-    /// pane's top line shows it plus the client's own count.
-    pane_inputs_discarded: usize,
+    // ui/agent_pane: selected client, warm storage, screen, input and receipt owner.
+    agent_pane: AgentPane,
     // ui/preview: the preview pane's buffers, concept slot, scroll and overlays.
     preview_svg: Option<Quad>,
     /// Tree-sitter-backed syntax highlighter for the markdown preview's

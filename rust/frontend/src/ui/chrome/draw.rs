@@ -77,23 +77,17 @@ impl State {
         let mut nav_scroll = self.tree_scroll;
         self.fire_due_read_mark();
         self.report_presence(false);
-        if self.pane_attach_term.is_some() {
-            self.pump_pane_attach_term();
-        }
+        self.pump_pane_attach_term();
         self.pump_drawer_terminals();
         // Re-read after a possible spawn-failure close above; this is the
         // value the renderer branches on.
         let drawer = self.drawer;
         let (pane_screen, pane_overlay, pane_facts) = self.session_pane_view();
         let blank_pty_screen;
-        let pty_screen = match match pane_screen {
-            PaneScreen::Client => self.pane_attach_term.as_ref().map(|t| t.screen()),
-            PaneScreen::Hold => self.pane_hold.as_ref().map(|h| h.screen()),
-            PaneScreen::Empty => None,
-        } {
+        let pty_screen = match self.agent_pane.painted_screen(pane_screen) {
             Some(s) => s,
             None => {
-                let (cols, rows) = self.pty_size.unwrap_or((80, 24));
+                let (cols, rows) = self.agent_pane.size().unwrap_or((80, 24));
                 blank_pty_screen = blank_pane_screen(cols, rows);
                 &blank_pty_screen
             }
@@ -105,7 +99,7 @@ impl State {
         } else {
             None
         };
-        let llm_selection = self.llm_selection;
+        let llm_selection = self.agent_pane.selection();
         // Captured by the closure and written when the LLM pane's
         // content rect is final; read after the closure to decide
         // whether to fire `pty.open` / `pty.resize`.
@@ -204,8 +198,8 @@ impl State {
         self.pane_rects = new_pane_rects;
         self.nav_spill_segments = nav_spill_segs_out;
 
-        self.sync_pane_pty_size(pty_size_observed);
-        let candidate = pane_facts.and_then(|facts| self.pane_presentation.candidate(facts, pty_size_observed));
+        self.agent_pane.sync_size(pty_size_observed);
+        let candidate = pane_facts.and_then(|facts| self.agent_pane.painted_candidate(facts, pty_size_observed));
 
         self.sync_terminal_drawer_size(term_size_observed);
         Ok((preview_cells, repl_cells, repl_scrollback_cells, repl_window, llm_selection, owed, owed_line, owed_drawn, leaving_drawn, candidate))

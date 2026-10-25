@@ -51,13 +51,8 @@ pub(in crate::ui) fn forward_clipboard_paste_to_llm(state: &mut State) -> bool {
         return false;
     };
     let bytes = bracketed_paste_bytes(&text);
-    if let Some(t) = state.pane_attach_term.as_mut() {
-        t.screen_mut().set_scrollback(0);
-    }
-    // ADR 0042 slice L1b fix 2/3: routed through the ONE session-pane
-    // input dispatcher (capsule client / pending buffer / daemon
-    // `pty.write`, keyed on `pane_feed`) — see `send_pane_input`'s own
-    // doc.
+    state.agent_pane.reset_scroll();
+    // The pane owner sends to its selected client or counts this call as discarded.
     state.send_pane_input(&bytes);
     true
 }

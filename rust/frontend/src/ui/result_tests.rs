@@ -174,7 +174,7 @@ impl State {
     ) -> Result<()> {
         self.cycle_workspace(1, false);
         anyhow::ensure!(
-            self.bl_pane_target.as_ref() == Some(&(b.clone(), "default-b".into())),
+            self.agent_pane.target().as_ref() == Some(&(b.clone(), "default-b".into())),
             "cycle derived an attachment name"
         );
         self.dispatch_fe_command(
@@ -204,12 +204,15 @@ impl State {
         self.tree
             .set_root(node("sessions:", "sessions", true), vec![selected]);
         self.tree.selected = 1;
-        self.bl_pane_target = None;
+        anyhow::ensure!(
+            self.agent_pane.target().as_ref() != Some(&(b.clone(), "stored-b".into())),
+            "Sessions-Enter needs a different departing attachment"
+        );
         let _ = session::keys::session_enter_key(self);
         anyhow::ensure!(
             self.active_host == *b
                 && self.active_workspace_id.as_deref() == Some("project")
-                && self.bl_pane_target.as_ref() == Some(&(b.clone(), "stored-b".into())),
+                && self.agent_pane.target().as_ref() == Some(&(b.clone(), "stored-b".into())),
             "Sessions-Enter reversed a session name into a slug"
         );
         self.on_workspace_created(
@@ -1331,6 +1334,39 @@ impl State {
             "control: returning to the kept default cleared its result before presentation"
         );
         self.switch_to_workspace(other_host.clone(), None, None, false);
+        Ok(())
+    }
+}
+
+impl State {
+    /// Drives the real wheel adapter on the isolated native State, including a sub-row step.
+    pub(in crate::ui) fn a_wheel_step_reports_presence(&mut self) -> Result<()> {
+        self.presence = PresenceClock::default();
+        self.set_focus(PaneFocus::Llm);
+        self.wheel_residue_y = 0.0;
+        let fresh = self.presence;
+        input::mouse::mouse_wheel(self, winit::keyboard::ModifiersState::empty(), MouseScrollDelta::LineDelta(0.0, 0.05));
+        anyhow::ensure!(self.presence != fresh, "fractional wheel step did not advance presence");
+        anyhow::ensure!(self.wheel_residue_y > 0.0 && self.wheel_residue_y < 1.0, "fractional control scrolled a whole row");
+        let first = self.presence;
+        input::mouse::mouse_wheel(self, winit::keyboard::ModifiersState::empty(), MouseScrollDelta::LineDelta(0.0, 1.0));
+        anyhow::ensure!(self.presence != first, "whole wheel step did not advance presence");
+
+        // Geometry stays with State: zero area refuses both a press and a clamped drag.
+        let saved = (self.pane_rects.llm, self.cell_w, self.cell_h, self.chrome_origin_x, self.chrome_origin_y);
+        self.pane_rects.llm = ratatui::layout::Rect::new(0, 0, 0, 3);
+        let empty = self.llm_cell_at_px((0.0, 0.0), true);
+        anyhow::ensure!(empty.is_none() && self.llm_cell_at_px((0.0, 0.0), false).is_none(), "zero-area pane mapped a cell");
+        self.agent_pane.press(empty);
+        anyhow::ensure!(self.agent_pane.selection().is_none(), "zero-area press began a selection");
+        self.pane_rects.llm = ratatui::layout::Rect::new(3, 4, 8, 3);
+        self.cell_w = 1.0;
+        self.cell_h = 1.0;
+        self.chrome_origin_x = 0.0;
+        self.chrome_origin_y = 0.0;
+        anyhow::ensure!(self.llm_cell_at_px((-1.0, -1.0), true).is_none()
+            && self.llm_cell_at_px((100.0, 100.0), false) == Some((2, 7)), "pane press/drag mapping lost rejection or clamping");
+        (self.pane_rects.llm, self.cell_w, self.cell_h, self.chrome_origin_x, self.chrome_origin_y) = saved;
         Ok(())
     }
 }

@@ -1,36 +1,23 @@
-//! The agent pane's attach client: dialing a row, pumping its events, and the warm pool of parked clients.
+//! Dialing, pumping and the bounded warm pool. State applies transport, logging and retirement effects.
 
 use super::*;
 
 pub(in crate::ui) type PaneAttachClient = sot_capsule::attach_client::client::FeAttachClient;
 
-/// Attach clients parked when the session pane leaves their row, so a
-/// switch back reuses the live lane instead of dialing again (a remote
-/// dial is several tunnel round trips). Newest last; per-host bound =
-/// that host's row count, capped at [`WARM_ATTACH_CAP`].
-pub(in crate::ui) struct WarmAttachPool<C> {
-    entries: Vec<((crate::net::dial::HostKey, String), C)>,
+/// Newest last; bounds are host-local attachment counts, capped at sixteen.
+pub(super) struct WarmAttachPool<C> {
+    entries: Vec<(WsKey, C)>,
 }
-
 const WARM_ATTACH_CAP: usize = 16;
-
 impl<C> WarmAttachPool<C> {
-    pub(in crate::ui) fn new() -> Self {
-        Self { entries: Vec::new() }
-    }
-
-    fn take(&mut self, key: &(crate::net::dial::HostKey, String)) -> Option<C> {
+    pub(super) fn new() -> Self { Self { entries: Vec::new() } }
+    fn take(&mut self, key: &WsKey) -> Option<C> {
         let i = self.entries.iter().position(|(k, _)| k == key)?;
         Some(self.entries.remove(i).1)
     }
-
-    /// Parks `client` under `key`; returns the clients evicted to keep
-    /// the key's host within `bound` — the caller shuts those down.
-    fn park(&mut self, key: (crate::net::dial::HostKey, String), client: C, bound: usize) -> Vec<C> {
+    fn park(&mut self, key: WsKey, client: C, bound: usize) -> Vec<C> {
         let mut evicted = Vec::new();
-        if let Some(old) = self.take(&key) {
-            evicted.push(old);
-        }
+        if let Some(old) = self.take(&key) { evicted.push(old); }
         let host = key.0.clone();
         self.entries.push((key, client));
         let bound = bound.clamp(1, WARM_ATTACH_CAP);
@@ -40,27 +27,20 @@ impl<C> WarmAttachPool<C> {
         }
         evicted
     }
-
-    /// Drops every entry of `host` whose row `is_live` rejects (destroyed
-    /// rows); returns them for shutdown.
-    fn retain_rows(&mut self, host: &crate::net::dial::HostKey, is_live: impl Fn(&str) -> bool) -> Vec<C> {
-        let (dead, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries)
-            .into_iter()
-            .partition(|(k, _)| &k.0 == host && !is_live(&k.1));
-        self.entries = live;
+    fn retain_rows(&mut self, host: &HostKey, live: &std::collections::HashSet<String>) -> Vec<C> {
+        let (dead, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries).into_iter()
+            .partition(|(k, _)| &k.0 == host && !live.contains(&k.1));
+        self.entries = kept;
         dead.into_iter().map(|(_, c)| c).collect()
     }
 }
 
-fn shutdown_detached(clients: Vec<PaneAttachClient>) {
+pub(in crate::ui) fn shutdown_detached(clients: Vec<PaneAttachClient>) {
     for mut c in clients {
-        std::thread::spawn(move || {
-            c.shutdown(std::time::Duration::from_millis(250));
-        });
+        std::thread::spawn(move || { c.shutdown(Duration::from_millis(250)); });
     }
 }
 
-/// What the pane says when a key's delivery is not known: the row was cut, or the run changed, with the key unanswered.
 pub(in crate::ui) fn input_outcome_notice(outcome: Option<sot_capsule::attach_client::client::InputOutcome>) -> Option<&'static str> {
     use sot_capsule::attach_client::client::InputOutcome;
     match outcome {
@@ -70,356 +50,257 @@ pub(in crate::ui) fn input_outcome_notice(outcome: Option<sot_capsule::attach_cl
     }
 }
 
-impl State {
-    /// Sessions-mode (ADR 0013) attach action (B3): re-target the BL pane
-    /// to the selected session. For a `session` row, attach to that
-    /// session's name; for a `pane` row, attach to the parent session
-    /// (selecting a specific pane within the session is left to tmux's
-    /// own default, which restores the most-recently-active pane).
-    /// Sends a `pty.open` carrying the new target; backend kills the
-    /// existing pty and respawns against the new session.
-    ///
-    /// `host` (ADR 0042 L2a) — the connection that owns `session_name`.
-    /// Every caller either IS `switch_to_workspace` (which sets
-    /// `active_host` to this same value immediately before calling here,
-    /// so `self.active_host.clone()` there is correct BY CONSTRUCTION —
-    /// not a default) or resolves it from the cursored row's own
-    /// `payload.host` (the Sessions-Enter foreign-session fallback below):
-    /// a row can be cursored without ever having been switched to, so
-    /// `active_host` alone would be wrong there.
-    ///
-    /// ADR 0042 shrink round (rule A): drops any live `pane_attach_term`
-    /// from the DEPARTING row, marks `pane_feed = Pending`, and ALWAYS
-    /// routes through `send_to(&host, ...)` (ADR 0042 L2a — was
-    /// `self.send`, i.e. `active_host`, before this row's own host was
-    /// threaded through) — the daemon decides whether a capsule's
-    /// supervisor needs starting via its `pty.open` reply, an
-    /// `attach_direct` refusal carrying `PtyAttachDirect{target}` (the
-    /// only kind this build's daemon sends), never a frontend-side
-    /// cache-hit guess.
-    pub(in crate::ui) fn attach_session_to_bl(&mut self, host: HostKey, session_name: String) {
-        // ADR 0042 L2a codex review, item D: compare the OWNER pair, not
-        // just the session name -- two hosts can both name a session
-        // "sot-be-sot", and a bare-name compare made switching to the
-        // same-named session on a DIFFERENT host early-return here,
-        // leaving the pty open on the OLD host.
-        if self.bl_pane_target.as_ref() == Some(&(host.clone(), session_name.clone())) {
-            // Already attached — no-op rather than churn the pty.
-            self.status = format!("already attached · {session_name}");
-            self.window.request_redraw();
-            return;
+/// Owned send intent; completion commits this intent only after the transport accepted it.
+pub(in crate::ui) struct PaneOpen {
+    target: WsKey,
+    size: (u16, u16),
+    user_switch: bool,
+}
+impl PaneOpen {
+    pub(in crate::ui) fn host(&self) -> &HostKey { &self.target.0 }
+    pub(in crate::ui) fn attachment(&self) -> &str { &self.target.1 }
+    pub(in crate::ui) fn request(&self) -> OutgoingReq {
+        OutgoingReq::PtyOpen { cols: self.size.0, rows: self.size.1,
+            target: Some(self.target.1.clone()), user_switch: self.user_switch }
+    }
+}
+pub(in crate::ui) struct PaneSwitch<C> {
+    pub open: Option<PaneOpen>,
+    pub retired: Vec<C>,
+    pub status: Option<String>,
+}
+
+/// State retires the replaced slot before asking the owner to look for a warm client.
+pub(in crate::ui) struct AttachRequest {
+    target: WsKey,
+    size: (u16, u16),
+}
+/// State retires rejected warm clients before the factory can dial.
+pub(in crate::ui) struct AttachPlan<C> {
+    target: WsKey,
+    size: (u16, u16),
+    warm: Option<C>,
+}
+#[derive(Debug)]
+pub(in crate::ui) enum AttachFailure { MissingConfig, Unresolved, Unusable, Startup(String) }
+pub(in crate::ui) struct AttachEffect {
+    pub status: String,
+    pub trace: AttachTrace,
+}
+pub(in crate::ui) enum AttachTrace { Warm(u64), Cold, Failed(AttachFailure) }
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::ui) enum AttachOutcome { Checkpoint { cols: u16, rows: u16 }, Attached, Warning { episode: u32, status: String } }
+pub(in crate::ui) struct PumpEffect {
+    pub status: Option<String>,
+    pub outcomes: Vec<AttachOutcome>,
+    pub since_request_ms: u64,
+    pub since_client_ms: u64,
+}
+
+impl<C: PaneClient> AgentPane<C> {
+    pub(in crate::ui) fn begin_switch(&mut self, next: WsKey, origin: Option<Instant>, bound: usize) -> PaneSwitch<C> {
+        if self.is_target(&next) {
+            return PaneSwitch { open: None, retired: vec![], status: Some(format!("already attached · {}", next.1)) };
         }
-        // A switch clears the departing row's discard count.
         self.pane_inputs_discarded = 0;
-        // ADR 0042 shrink round (rule A): the frontend ALWAYS asks the
-        // daemon first — no more cache-hit fast path that attached
-        // straight from a cached `workspace_runtime` entry. That fast
-        // path made the daemon's own decision (does this row's
-        // supervisor even need starting? — start-on-attach) unreachable:
-        // a cached "capsule, here's a state_dir" entry attached directly,
-        // never going through `pty.open` at all, to a supervisor that was
-        // never confirmed running. Every capsule attach now goes through
-        // `pty.open` and resolves via the `PtyAttachDirect` handler below
-        // — the daemon is the one place that decides whether a session
-        // must start.
-        //
-        // Still drop any live client from the DEPARTING row first
-        // ("deselecting detaches; a watcher leaving costs nothing") so a
-        // switch away from a capsule row never leaks the old attach
-        // client, and set `pane_feed = Pending`: the attach is still
-        // async until the daemon's `pty.open` reply (an `attach_direct`
-        // refusal, the only kind this build's daemon sends) lands.
-        //
-        // LU6a: before dropping it, capture whatever the DEPARTING feed
-        // was painting into `pane_hold` — the capsule client's own
-        // screen — so the pane keeps showing that until the new client's
-        // checkpoint lands, rather than the new client's freshly-
-        // constructed, still-empty parser (`pane_screen_choice`'s own
-        // doc). A departing `Pending` feed (no client yet) leaves
-        // whatever hold is already there alone — nothing new was ever
-        // painted for it to replace.
-        // LU6a design-review amendment: the "since request" clock
-        // starts HERE for an ordinary switch — or, for a switch that
-        // is really the tail of a workspace CREATE
-        // (`switch_to_workspace` from the `WorkspaceCreated` reply),
-        // inherits the earlier stamp `commit_workspace_create` took
-        // when it sent `workspace.create`, so the daemon's create
-        // round trip counts toward the acceptance metric too. Taken,
-        // not merely read, so it can't leak into a later, unrelated
-        // switch.
-        self.pane_attach_requested_at = Some(
-            self.pending_capsule_create_requested_at
-                .take()
-                .unwrap_or_else(std::time::Instant::now),
-        );
-        self.pane_presentation.begin(self.pane_attach_requested_at);
-        if let Some(mut t) = self.pane_attach_term.take() {
-            self.pane_hold = Some(HeldPaneScreen(t.screen().clone()));
+        self.pane_attach_requested_at = origin;
+        self.pane_presentation.begin(origin);
+        let mut retired = Vec::new();
+        if let Some(mut client) = self.pane_attach_term.take() {
+            self.pane_hold = Some(HeldPaneScreen(client.screen().clone()));
             match self.bl_pane_target.clone() {
-                Some(key) if t.is_checkpointed() && !t.is_dead() => self.park_warm_attach(key, t),
-                _ => {}
+                Some(key) if client.is_checkpointed() && !client.is_dead() => {
+                    client.set_viewed(false);
+                    retired = self.warm_attach.park(key, client, bound);
+                }
+                _ => {} // Preserve the departing uncheckpointed/dead client's ordinary drop.
             }
         }
-        // SHOULD-FIX (Codex review, lane B5 discharge): a dial
-        // configuration error belongs to the DEPARTING row only — the
-        // row we're switching to gets its own fresh attempt.
         self.pane_dial_error = None;
         self.pane_feed = PaneFeed::Pending;
-        let (cols, rows) = self.pty_size.unwrap_or((80, 24));
-        if let Err(e) = self.send_to(
-            &host,
-            crate::net::transport::OutgoingReq::PtyOpen {
-                cols,
-                rows,
-                target: Some(session_name.clone()),
-                // #5 guard: attach_session_to_bl is reached only via an explicit
-                // user workspace-switch (switch_to_workspace / Sessions-mode
-                // attach), so this open IS allowed to re-target the foreground pty.
-                user_switch: true,
-            },
-        ) {
-            tracing::warn!(error = %e, %session_name, "drop pty.open re-target request — channel closed");
-            return;
-        }
-        self.bl_pane_target = Some((host, session_name.clone()));
-        self.status = format!("attached BL → {session_name}");
-        // Claude boot is owned by the BE tmux start-command wrapper
-        // (`boot_wrapper_command`, ADR 0023 unified spawn): every
-        // `autostart_claude` workspace is created with the wait-for-attach
-        // wrapper as its pane command, so claude `exec`s the instant THIS
-        // attach flips `session_attached>0` — no FE-typed `ccb`, no prompt
-        // race. The old FE autostart-on-attach launch (pending_autostart →
-        // advance_autostart_scan → autostart_claude_in_pane) is retired; the
-        // single boot path is the wrapper.
-        self.window.request_redraw();
-        self.persist_resume_state();
+        PaneSwitch { open: Some(PaneOpen { target: next, size: self.open_size(), user_switch: true }), retired, status: None }
     }
 
-    /// ADR 0042 slice L1b, revised by ADR 0045 decision 1: constructs the
-    /// session pane's OWN attach client through `host`'s own daemon —
-    /// never a supervisor socket or a state-dir path directly. This
-    /// client's `fe_down_last_evidence` is always `None` (this client's
-    /// markers are the drawer's alone per ADR 0042 L1's own "fe_down
-    /// markers ... NOT written" — `FeDownBaseline::capture(None)` makes
-    /// `marker_for_attach` return `None` forever, so this client
-    /// never produces one), and the initial size is the
-    /// CALLER's `(cols, rows)` (the session pane's current rect) not the
-    /// drawer's 80×24 default — a freshly-selected row should show at
-    /// its real size on the very first paint, not resize a frame later.
-    ///
-    /// Replacement takes the old client out of the active pane slot before installing another. This slot owns at most one client; the warm pool may hold other live clients. Retirement runs asynchronously and does not establish an exit-before-replacement ordering.
-    ///
-    /// ADR 0042 slice L1b fix 2: returns whether the client actually
-    /// started — every caller must check this rather than assume success,
-    /// so a spawn failure's `self.status` (set here) is never immediately
-    /// overwritten by an "attached" message.
-    ///
-    /// An old client taken here is handed to a helper thread that calls shutdown with a 250 ms wait. This UI thread does not wait for the helper to start, send Shutdown or finish; the replacement may dial while the old worker is still alive. A shutdown timeout warns and may return before worker exit. Departing live checkpointed clients can instead be parked with viewed=false and reused.
-    pub(in crate::ui) fn spawn_pane_attach_term(&mut self, host: &HostKey, target: &str, cols: u16, rows: u16) -> bool {
-        if let Some(mut old) = self.pane_attach_term.take() {
-            std::thread::spawn(move || {
-                old.shutdown(std::time::Duration::from_millis(250));
-            });
-        }
-        if let Some(mut c) = self.warm_attach.take(&(host.clone(), target.to_string())) {
-            if c.is_dead() {
-                shutdown_detached(vec![c]);
-            } else {
-                if c.screen().size() != (rows, cols) {
-                    c.resize(cols, rows);
-                }
-                let since_request_ms = self
-                    .pane_attach_requested_at
-                    .map(|s| s.elapsed().as_millis() as u64)
-                    .unwrap_or(0);
-                tracing::info!(since_request_ms, "session pane: warm capsule client reused");
+    pub(in crate::ui) fn finish_open(&mut self, open: PaneOpen, sent: bool) -> Option<String> {
+        if !sent { return None; }
+        let status = format!("attached BL → {}", open.target.1);
+        self.bl_pane_target = Some(open.target);
+        Some(status)
+    }
+
+    pub(in crate::ui) fn prepare_attach(&mut self, target: AdmittedAttach) -> (AttachRequest, Vec<C>) {
+        let retired = self.pane_attach_term.take().into_iter().collect();
+        (AttachRequest { target: target.0, size: self.open_size() }, retired)
+    }
+
+    pub(in crate::ui) fn prepare_warm(&mut self, request: AttachRequest) -> (AttachPlan<C>, Vec<C>) {
+        let mut retired = Vec::new();
+        let warm = self.warm_attach.take(&request.target).and_then(|mut c| {
+            if c.is_dead() { retired.push(c); None } else { Some(c) }
+        });
+        (AttachPlan { target: request.target, size: request.size, warm }, retired)
+    }
+
+    pub(in crate::ui) fn start_attach(
+        &mut self, plan: AttachPlan<C>,
+        factory: impl FnOnce(&HostKey, &str, (u16, u16)) -> std::result::Result<C, AttachFailure>,
+        mut now: impl FnMut() -> Instant,
+    ) -> AttachEffect {
+        let AttachPlan { target: (host, target), size: (cols, rows), warm } = plan;
+        let result = match warm {
+            Some(mut c) => {
+                if c.screen().size() != (rows, cols) { c.resize(cols, rows); }
+                let elapsed = self.pane_attach_requested_at.map(|s| now().saturating_duration_since(s).as_millis() as u64).unwrap_or(0);
                 c.set_viewed(true);
-                if c.status_line() == "attached" {
-                    self.pane_inputs_discarded = 0;
+                if c.status_line() == "attached" { self.pane_inputs_discarded = 0; }
+                self.pane_attach_term = Some(c);
+                self.pane_dial_error = None;
+                self.pane_hold = None;
+                self.pane_attach_started_at = Some(now());
+                self.pane_attach_episode_warnings = 0;
+                AttachTrace::Warm(elapsed)
+            }
+            None => match factory(&host, &target, (cols, rows)) {
+                Ok(c) => {
+                    self.pane_attach_term = Some(c);
+                    self.pane_dial_error = None;
+                    self.pane_attach_started_at = Some(now());
+                    self.pane_attach_episode_warnings = 0;
+                    AttachTrace::Cold
                 }
-                self.pane_attach_term = Some(c);
-                self.pane_dial_error = None;
-                self.pane_hold = None;
-                self.pane_attach_started_at = Some(std::time::Instant::now());
-                self.pane_attach_episode_warnings = 0;
-                return true;
-            }
-        }
-        // SHOULD-FIX (Codex review, lane B5 discharge): distinguish a
-        // genuine configuration error (persistent, no auto-retry — set
-        // `pane_dial_error`) from "the control connection for this host
-        // hasn't resolved a transport yet" (transient — a `Connected` evt
-        // may land any moment; leaves `pane_dial_error` untouched so the
-        // ordinary reconnect retry, gated on it below, stays enabled).
-        let Some(config) = self.hosts.host_transports.get(host) else {
-            let msg = format!("'{host}' has no transport configured");
-            self.pane_dial_error = Some(msg.clone());
-            self.status = msg;
-            self.pane_hold = None;
-            return false;
+                Err(failure) => {
+                    let msg = match &failure {
+                        AttachFailure::MissingConfig => format!("'{host}' has no transport configured"),
+                        AttachFailure::Unresolved => format!("'{host}' not yet connected — capsule attach waiting"),
+                        AttachFailure::Unusable => format!("'{host}' has no usable transport for its resolved connection"),
+                        AttachFailure::Startup(e) => format!("session attach failed: {e}"),
+                    };
+                    if matches!(failure, AttachFailure::MissingConfig | AttachFailure::Unusable) {
+                        self.pane_dial_error = Some(msg.clone());
+                    }
+                    self.pane_hold = None;
+                    self.pane_feed = PaneFeed::Pending;
+                    return AttachEffect { status: msg, trace: AttachTrace::Failed(failure) };
+                }
+            },
         };
-        let Some(resolved) = self.hosts.host_resolved_dial.get(host).cloned() else {
-            self.status = format!("'{host}' not yet connected — capsule attach waiting");
-            self.pane_hold = None;
-            return false;
-        };
-        // ADR 0045 decision 1 (Codex review): dials the SAME endpoint the
-        // control transport already resolved for this host — never a
-        // second, independent preference guess (`lane_dial`'s own doc).
-        let gate = self.hosts.link_gates.entry(host.clone()).or_default().clone();
-        let Some((dial, token)) = lane_dial(config, resolved, &gate) else {
-            let msg = format!("'{host}' has no usable transport for its resolved connection");
-            self.pane_dial_error = Some(msg.clone());
-            self.status = msg;
-            self.pane_hold = None;
-            return false;
-        };
-        let endpoint = sot_topology::lane_client::DaemonLaneEndpoint::new(dial, token);
-        let wake = self.wake.clone();
-        match sot_capsule::attach_client::client::FeAttachClient::attach(
-            endpoint,
-            target.to_string(),
-            cols,
-            rows,
-            Box::new(move || wake.wake()),
-        ) {
-            Ok(c) => {
-                tracing::info!("session pane: capsule attach client attaching");
-                self.pane_attach_term = Some(c);
-                self.pane_dial_error = None;
-                // LU6a: the base every attach-outcome log line in
-                // `pump_pane_attach_term` reports `since_client_ms`
-                // against, and a fresh count for this client's own
-                // episode warnings.
-                self.pane_attach_started_at = Some(std::time::Instant::now());
-                self.pane_attach_episode_warnings = 0;
-                true
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "session pane: capsule attach client failed to start");
-                self.status = format!("session attach failed: {e}");
-                // LU6a: the attach itself failed — a hold captured for
-                // this switch has nothing left to wait for (see
-                // `pane_hold`'s own doc: "never left to outlive the
-                // switch it belongs to").
-                self.pane_hold = None;
-                false
-            }
-        }
+        self.pane_feed = PaneFeed::Capsule;
+        AttachEffect { status: format!("attached BL → {target} (capsule, corrected)"), trace: result }
     }
 
-    /// ADR 0042 slice L1b: drains checkpoint/output/notice/status/
-    /// terminal events from the session pane's `pane_attach_term`.
-    /// The
-    /// scrollback offset is the emulator's own (see `scroll_ring`), so
-    /// pumping never touches it. Called EVERY redraw regardless of what's on screen
-    /// (the session pane, unlike the drawer, is always visible — there is
-    /// no visibility gate to mirror here).
-    ///
-    /// Deliberately does NOT call `should_exit()`/`drain_fe_down_markers()`:
-    /// this client is never asked to quit (ending a capsule workspace is
-    /// `workspace.destroy`, Sessions-mode `D`, already routed through
-    /// `end_run` on the daemon side — ADR 0042 L1a — not an FE quit
-    /// dispatcher; the session pane is not the drawer's fixed tenant), and
-    /// `fe_down_last_evidence: None` at construction means
-    /// `pending_fe_down_markers` can never receive anything to drain.
-    ///
-    /// LU6a: also the one place the attach-outcome log lines fire, each
-    /// gated on an edge (this pump call's before/after, not the client's
-    /// raw `changed` flag — that also fires on ordinary output, which
-    /// would otherwise re-log every redraw) so each fires exactly once
-    /// per outcome: checkpoint applied (clears `pane_hold` — the pane may
-    /// now safely paint the client's own, now-restored screen), attached,
-    /// and — anything else the status line moves to — a warn carrying how
-    /// many such non-success moves this client has made so far — and, if
-    /// that move is a TERMINAL one (`is_dead`) that arrived before this
-    /// client ever checkpointed, also clears `pane_hold` (a dead end must not keep showing the departed row's
-    /// screen — see `pane_hold`'s own doc). Design-review amendment:
-    /// every line carries TWO clocks — `since_request_ms` (from
-    /// `pane_attach_requested_at`, the switch or create the user actually
-    /// asked for — the acceptance metric) and `since_client_ms` (from
-    /// `pane_attach_started_at`, narrower: since THIS client object was
-    /// installed).
-    pub(in crate::ui) fn pump_pane_attach_term(&mut self) {
-        let Some(t) = self.pane_attach_term.as_mut() else {
-            return;
-        };
+    pub(in crate::ui) fn reconnect_open(&self, host: &HostKey) -> Option<PaneOpen> {
+        if self.pane_attach_term.is_some() || self.pane_dial_error.is_some() { return None; }
+        let target = self.bl_pane_target.as_ref()?;
+        (target.0 == *host).then(|| PaneOpen { target: target.clone(), size: self.open_size(), user_switch: false })
+    }
+
+    pub(in crate::ui) fn pump(&mut self, mut now: impl FnMut() -> Instant) -> PumpEffect {
+        let mut effect = PumpEffect { status: None, outcomes: vec![], since_request_ms: 0, since_client_ms: 0 };
+        let Some(t) = self.pane_attach_term.as_mut() else { return effect };
         let was_checkpointed = t.is_checkpointed();
         let status_before = t.status_line().to_string();
         let changed = t.pump();
-        let since_request_ms = self
-            .pane_attach_requested_at
-            .map(|s| s.elapsed().as_millis() as u64)
-            .unwrap_or(0);
-        let since_client_ms = self
-            .pane_attach_started_at
-            .map(|s| s.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+        effect.since_request_ms = self.pane_attach_requested_at.map(|s| now().saturating_duration_since(s).as_millis() as u64).unwrap_or(0);
+        effect.since_client_ms = self.pane_attach_started_at.map(|s| now().saturating_duration_since(s).as_millis() as u64).unwrap_or(0);
         if !was_checkpointed && t.is_checkpointed() {
             self.pane_hold = None;
             let (rows, cols) = t.screen().size();
-            tracing::info!(
-                since_request_ms,
-                since_client_ms,
-                cols,
-                rows,
-                "session pane: capsule attach checkpoint applied"
-            );
+            effect.outcomes.push(AttachOutcome::Checkpoint { cols, rows });
         }
         let status_after = t.status_line().to_string();
         if status_after != status_before {
             if status_after == "attached" {
-                tracing::info!(since_request_ms, since_client_ms, "session pane: capsule attached");
+                effect.outcomes.push(AttachOutcome::Attached);
                 self.pane_inputs_discarded = 0;
             } else {
                 self.pane_attach_episode_warnings += 1;
-                tracing::warn!(
-                    since_request_ms,
-                    since_client_ms,
-                    episode = self.pane_attach_episode_warnings,
-                    status = %status_after,
-                    "session pane: capsule attach episode failure"
-                );
-                // A TERMINAL failure that never
-                // checkpointed is a dead end, not a stall — clear
-                // `pane_hold` right here, on the same path as the warn
-                // line above, so a dead new row can never keep showing
-                // the departed row's screen. `pane_screen_choice` also
-                // stops painting this dead client's own (blank) screen
-                // once `is_dead` is set, so the pane falls all the way
-                // through to blank instead of either. A client that
-                // checkpointed and only later
-                // died is untouched (its own last content keeps showing).
-                if t.is_dead() && !t.is_checkpointed() {
-                    self.pane_hold = None;
-                }
+                effect.outcomes.push(AttachOutcome::Warning { episode: self.pane_attach_episode_warnings, status: status_after });
+                if t.is_dead() && !t.is_checkpointed() { self.pane_hold = None; }
             }
         }
         if changed {
-            // A key whose delivery is unknown is said so over the connection's own status: a person types it again.
-            self.status = input_outcome_notice(t.last_input_outcome()).map_or_else(|| t.status_line().to_string(), str::to_string);
+            effect.status = Some(input_outcome_notice(t.last_input_outcome()).map_or_else(|| t.status_line().to_string(), str::to_string));
+        }
+        effect
+    }
+
+    pub(in crate::ui) fn prune_warm(&mut self, host: &HostKey, live: &std::collections::HashSet<String>) -> Vec<C> {
+        self.warm_attach.retain_rows(host, live)
+    }
+}
+
+impl State {
+    pub(in crate::ui) fn attach_session_to_bl(&mut self, host: HostKey, session_name: String) {
+        let key = (host, session_name);
+        // The create transaction stays with State and is consumed only for an actual switch.
+        let origin = if self.agent_pane.is_target(&key) { None } else {
+            Some(self.pending_capsule_create_requested_at.take().unwrap_or_else(Instant::now))
+        };
+        let bound = self.agent_pane.target().and_then(|(h, _)| self.row_directory.rows(&h)
+            .map(|l| l.iter().filter(|w| !w.is_inert_anchor()).count())).unwrap_or(1);
+        let plan = self.agent_pane.begin_switch(key, origin, bound);
+        shutdown_detached(plan.retired);
+        if let Some(status) = plan.status {
+            self.status = status;
+            self.window.request_redraw();
+        }
+        let Some(open) = plan.open else { return };
+        let sent = match self.send_to(open.host(), open.request()) {
+            Ok(()) => true,
+            Err(e) => {
+                let session_name = open.attachment();
+                tracing::warn!(error = %e, %session_name, "drop pty.open re-target request — channel closed");
+                false
+            }
+        };
+        if let Some(status) = self.agent_pane.finish_open(open, sent) {
+            self.status = status;
+            self.window.request_redraw();
+            self.persist_resume_state();
         }
     }
 
-    fn park_warm_attach(&mut self, key: (HostKey, String), client: PaneAttachClient) {
-        let bound = self
-            .row_directory
-            .rows(&key.0)
-            .map(|l| l.iter().filter(|w| !w.is_inert_anchor()).count())
-            .unwrap_or(1);
-        // A parked client's worker stays alive but must not dial after an
-        // outage; it resumes when the row is viewed again.
-        client.set_viewed(false);
-        shutdown_detached(self.warm_attach.park(key, client, bound));
+    pub(in crate::ui) fn spawn_pane_attach_term(&mut self, target: AdmittedAttach) {
+        let (request, retired) = self.agent_pane.prepare_attach(target);
+        shutdown_detached(retired);
+        let (plan, retired) = self.agent_pane.prepare_warm(request);
+        shutdown_detached(retired);
+        let hosts = &mut self.hosts;
+        let wake = self.wake.clone();
+        let effect = self.agent_pane.start_attach(plan, |host, target, (cols, rows)| {
+            let config = hosts.host_transports.get(host).ok_or(AttachFailure::MissingConfig)?;
+            let resolved = hosts.host_resolved_dial.get(host).cloned().ok_or(AttachFailure::Unresolved)?;
+            let gate = hosts.link_gates.entry(host.clone()).or_default().clone();
+            let (dial, token) = lane_dial(config, resolved, &gate).ok_or(AttachFailure::Unusable)?;
+            let endpoint = sot_topology::lane_client::DaemonLaneEndpoint::new(dial, token);
+            PaneAttachClient::attach(endpoint, target.to_string(), cols, rows, Box::new(move || wake.wake()))
+                .map_err(|e| AttachFailure::Startup(e.to_string()))
+        }, Instant::now);
+        match effect.trace {
+            AttachTrace::Warm(since_request_ms) => tracing::info!(since_request_ms, "session pane: warm capsule client reused"),
+            AttachTrace::Cold => tracing::info!("session pane: capsule attach client attaching"),
+            AttachTrace::Failed(AttachFailure::Startup(e)) => tracing::warn!(error = %e, "session pane: capsule attach client failed to start"),
+            AttachTrace::Failed(_) => {}
+        }
+        self.status = effect.status;
+    }
+
+    pub(in crate::ui) fn pump_pane_attach_term(&mut self) {
+        let effect = self.agent_pane.pump(Instant::now);
+        let (since_request_ms, since_client_ms) = (effect.since_request_ms, effect.since_client_ms);
+        for outcome in effect.outcomes {
+            match outcome {
+                AttachOutcome::Checkpoint { cols, rows } => tracing::info!(since_request_ms, since_client_ms, cols, rows, "session pane: capsule attach checkpoint applied"),
+                AttachOutcome::Attached => tracing::info!(since_request_ms, since_client_ms, "session pane: capsule attached"),
+                AttachOutcome::Warning { episode, status } => tracing::warn!(since_request_ms, since_client_ms, episode, %status, "session pane: capsule attach episode failure"),
+            }
+        }
+        if let Some(status) = effect.status { self.status = status; }
     }
 
     pub(in crate::ui) fn prune_warm_attach(&mut self, host: &HostKey) {
-        let live: std::collections::HashSet<String> = self
-            .row_directory
-            .rows(host)
-            .map(|l| l.iter().map(|w| w.session_name.clone()).collect())
-            .unwrap_or_default();
-        shutdown_detached(self.warm_attach.retain_rows(host, |row| live.contains(row)));
+        let live = self.row_directory.rows(host).map(|l| l.iter().map(|w| w.session_name.clone()).collect()).unwrap_or_default();
+        shutdown_detached(self.agent_pane.prune_warm(host, &live));
     }
 }
 

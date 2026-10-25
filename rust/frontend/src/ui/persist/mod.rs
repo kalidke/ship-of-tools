@@ -47,7 +47,7 @@ impl State {
             // gate is the read side of that pairing: it discards both
             // when the resumed active_host isn't the one they were
             // saved for).
-            last_bl_target: self.bl_pane_target.as_ref().map(|(_, s)| s.clone()),
+            last_bl_target: self.agent_pane.snapshot_target(),
             last_workspace_id: self.active_workspace_id.clone(),
             // ADR 0042 L2a codex review, item H: REPURPOSED. This field
             // was ADR 0015's "pick a host, Ctrl+Q + relaunch" signal to

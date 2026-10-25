@@ -4,7 +4,8 @@
 One UI thread owns all view state and every other thread reaches it only by waking the window; ratatui computes cells
 and one wgpu pass draws every pixel. The window's `State` (mod.rs) is driven by one winit loop. `session/row_directory.rs`
 owns authoritative rows and identity; `session/row_presentation.rs` owns their presentation;
-`session/result_ledger.rs` owns owed results and their attempts. The remaining concepts
+`session/result_ledger.rs` owns owed results and their attempts; `agent_pane::AgentPane` owns the selected agent pane.
+The remaining concepts
 below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -75,7 +76,7 @@ below still reach shared fields through `impl State` blocks and free functions u
   identities before directory commitment; State applies returned reveal cleanup and badge refresh effects.
   The owner never takes State or exposes mutable storage. State retains navigation, preview clocks, sends,
   presentation ordering and persistence. Behavior tests: `result_ledger::tests`; the retained badge status test is
-  `badge::tests::pending_nav_status_names_workspace_and_path`. The nine-fixture native registry also runs
+  `badge::tests::pending_nav_status_names_workspace_and_path`. The ten-fixture native registry also runs
   `replaced_result_rejects_old_tree_attempt_before_effects`, alongside the badge, retirement/disconnect and
   kept-default controls. Registration alone is not hosted execution evidence.
 - `State` applies nonempty REPL catch-up, migration on every applicable refresh, then status before attachments,
@@ -84,8 +85,27 @@ below still reach shared fields through `impl State` blocks and free functions u
 - Final window teardown has one shared three-second OS-clock process deadline, independent of the UI and transport runtime; it starts at the terminal decision, after any daemon acknowledgement and notice presentation.
 - `State::set_focus` (chrome/panes.rs) is the one write of `focus`; scan_tests.rs (`focus_written_only_by_set_focus`)
   fails any other.
-- Input reaches only the selected row's client or is counted: `State::send_pane_input` (agent_pane/input.rs) bumps
-  `pane_inputs_discarded` when there is no live client.
+- `AgentPane` privately owns the host/attachment target, size, selection/drag, selected client, host-bounded warm
+  pool, hold, dial reason, request/client clocks, warning count, feed, discarded-input count and composed
+  `PanePresentation`. Its operations never take State or expose mutable clients/screens/storage. The narrow
+  `PaneClient` port uses `FeAttachClient` in production and a scripted client in `agent_pane/owner_tests.rs`.
+  State applies owned effects for transport sends, asynchronous retirement, logging, redraw, clipboard and persistence;
+  it keeps host/dial configuration, pointer geometry/residue, create origins and multi-owner event ordering.
+- Switch compares the whole host/attachment pair, captures/parks the departing client and sets Pending before sending;
+  only a successful open send commits the target. Direct replies require that pair, the active host and an empty slot.
+  Exact warm reuse precedes dial configuration; pruning uses committed host-local stored attachment names, including
+  same-name canonical replacements. Unresolved dials stay retryable; missing/unusable configuration and matching
+  open failures retain reasons. Warnings count changed failure-status edges and reset on each installed client.
+- Input reaches only the selected pane client or is counted once per call; Pending input is discarded without replay.
+  Held pixels never receive input. Copy uses client-or-blank and clears selection only after clipboard success.
+  Pending resize tracks geometry without sending; page/wheel routing preserves local scrollback, alternate-screen
+  fallthrough and mouse tracking. Selection survives release, switches and resizing.
+- Pane draw preserves presence/read-mark, pane pump, drawer pump, immutable screen borrow, draw, geometry/resize and
+  painted-claim ordering. Only post-present completion can consume a live attached checkpoint's receipt; held pixels,
+  empty area, stale requests and missing origins cannot report success. The existing `agent_pane/presentation_tests.rs`
+  cases remain; `agent_pane/owner_tests.rs` characterizes the seventeen owner guarantees. The native State fixture
+  `a_wheel_step_reports_presence` replaces the wheel presence scan, including fractional steps and zero-area pointer
+  mapping controls, alongside the previous nine fixtures. Native execution still requires hosted evidence.
 - Text over 512 KiB, or binary, is summarized, never shaped: `PREVIEW_TEXT_CAP` in preview/pane.rs.
 - The window draws text from outside it (a daemon's reply, a REPL's output, an agent's words, a file's name, a
   paste) in a cell run, a strip name or the Monitor's chart only through `cell_lines`, one row per line, or
@@ -148,7 +168,7 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `nav/files/`: Files mode's prompts, reveal walk, transfers and re-lists.
 - `session/`: `RowDirectory` owns listings/identity, `RowPresentation` owns metadata/order/flashes and `ResultLedger`
   owns owed results/attempts; State coordinates effects, snapshots, switch, picker, presence and the badge floor.
-- `agent_pane/`: the agent pane's screen choice, attach client with warm pool, and input.
+- `agent_pane/`: `AgentPane` and its attach, input, screen and reply operations; thin State adapters apply effects.
 - `drawer/`: the bottom drawer and its tenants.
 - `drawer/repl/`: the REPL tenant (log, submit, history, display lines).
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).

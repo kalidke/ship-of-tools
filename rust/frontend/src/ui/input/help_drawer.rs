@@ -52,8 +52,7 @@ impl State {
                     // A capsule row in alternate-screen mode receives the
                     // original key instead of having it consumed as a
                     // local-ring scrollback page.
-                    self.pane_feed == PaneFeed::Capsule && self.pane_attach_term.as_ref()
-                        .is_some_and(|t| t.screen().alternate_screen())
+                    self.agent_pane.alternate_screen()
                 },
                 _ => false,
             },
