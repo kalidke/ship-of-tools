@@ -5,7 +5,8 @@ One UI thread owns all view state and every other thread reaches it only by waki
 and one wgpu pass draws every pixel. The window's `State` (mod.rs) is driven by one winit loop. `session/row_directory.rs`
 owns authoritative rows and identity; `session/row_presentation.rs` owns their presentation;
 `session/result_ledger.rs` owns owed results and their attempts; `agent_pane::AgentPane` owns the selected agent pane.
-`drawer/repl::ReplModel` owns REPL row state, submissions, history, routing and lifecycle.
+`drawer/repl::ReplModel` owns REPL row state, submissions, history, routing and lifecycle;
+`drawer/repl/presentation::ReplPresentation` owns window-wide REPL images, layout and scroll anchoring.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -82,8 +83,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
-  never take State or expose mutable storage. State retains image caches, geometry, build anchors, transport,
-  status, browser/proxy work and persistence. REPL records remain runtime memory, with no new resume format.
+  never take State or expose mutable storage. ReplPresentation owns image caches, geometry and build anchors;
+  State retains transport, status, browser/proxy work and persistence. REPL records remain runtime memory, with no new resume format.
 - Eval submission consumes whitespace without advancing the counter or resetting history; real submissions register
   before send and trim to 255 before appending. Delayed demo submission replaces the draft without moving scroll,
   including whitespace that submits nothing. Failed sends close the visible entry with an error and retain the
@@ -104,13 +105,40 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   same remembered set, and remembers only successful sends. Interrupt memory stays window-wide through restore,
   clear and fresh runs. With no run, Ctrl+C clears draft and exits pkg mode. Page/wheel integer conversion and
   saturating fine-line scroll retain their distinct arithmetic; rendering supplies the final clamp.
-- Ctrl+L clears log, scroll and State's image caches, retaining draft, prompt mode and history walk. A fresh file
+- Ctrl+L clears log, scroll and ReplPresentation's image caches, retaining draft, prompt mode and history walk. A fresh file
   run clears log, scroll, mode and history, retaining draft and image caches until normal pruning. Every restore
   requests a build-anchor reset, including a first visit. Behavior proofs: `drawer::repl::model_tests`, including
   demo scroll preservation and Started-frame dispatch, and the moved `drawer::repl::log::tests` characterizations.
   The two existing native REPL fixtures still run through the event queue with allocated ids, alongside the
   kept-default draft control; hosted
   Windows/macOS execution remains required.
+- `ReplPresentation<I = Quad>` privately owns decoded images, rebuilt image slots, the previous completed
+  scrollback pixel rectangle, the half-open visible line window and the build anchor. Image and slot records are
+  private too. State supplies the normalized row key, starting flag, immutable model entries and cell metrics;
+  the owner never takes State or mutable model storage. Real base64/image decoding uses a narrow upload port;
+  the same clipping and placement operation uses a narrow painter in production and portable recorder tests.
+- Image identity is (normalized WsKey, eval id, frame index). P7f-image-alias names the old cross-row cache hit;
+  its behavior witness is `images_follow_the_row_eval_and_frame_that_produced_them`, with the unqualified-identity
+  mutation run first before accepting the correction. Cache refresh decodes missing images before pruning;
+  successes are reused, failures retried and retention follows the active row's surviving eval ids, including
+  every cached frame index of each survivor. There is no parked texture cache, LRU or new image budget.
+- Chrome refreshes images and builds owned lines before ratatui, for every drawer tenant. Builds use the previous
+  pixel width/height (zero initially, with caption fallback), preserving the one-frame resize lag. The owner fits
+  figures to both dimensions without upscaling and replaces slots every build. Chrome computes capped multiline
+  input and tail-relative clamped scroll through the owner even for other drawer tenants. State commits model
+  scroll only after ratatui succeeds, preserves pane/terminal resize order, then commits the REPL pixel rectangle
+  and window before Monitor layout. Image painting remains after Monitor and before media/text, clipped to the
+  REPL scrollback with one-cell left inset and absolute slot/window offset; success restores the full-surface
+  scissor and painter errors propagate. Presentation and result acknowledgments remain after frame presentation.
+- Anchor geometry compares raw bits of width, height and both cell metrics, excluding rectangle position.
+  Matching geometry compensates signed growth from the previous newest entry's start, searches numeric eval ids
+  from the end and clamps to u16; tail zero follows output, vanished anchors leave scroll alone and reseed, and
+  empty builds remove the anchor. Restore resets only the anchor on found and missing rows. Pixel geometry stays
+  window-wide, outside row snapshots and persistence. Clear effects remove images/slots only; fresh file runs
+  leave them until normal pruning. Portable behavior tests: `drawer::repl::presentation::tests` and
+  `chrome::view::tests::repl_drawer_layout_uses_the_owner_window`; existing line and shaping controls remain.
+  These tests establish owner decisions; native REPL/result/rendering and the pre-present pane fault still require
+  the hosted Windows/macOS release gate before this rendering-owner pass lands.
 - `State` applies REPL catch-up, migration on every applicable refresh, then status before attachments,
   declarations, capture cycling and tree rebuild. Switching snapshots before host/default changes and restores
   REPL independently of the general UI snapshot. Connected reopening still precedes session on_connected;
@@ -208,7 +236,8 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
   owns owed results/attempts; State coordinates effects, snapshots, switch, picker, presence and the badge floor.
 - `agent_pane/`: `AgentPane` and its attach, input, screen and reply operations; thin State adapters apply effects.
 - `drawer/`: the bottom drawer and its tenants.
-- `drawer/repl/`: ReplModel and its submit, draft, history, routing and lifecycle operations; State adapters and line projection.
+- `drawer/repl/`: ReplModel owns row behavior; ReplPresentation owns image refresh, projection, layout, anchoring
+  and painting; thin State adapters apply transport and presentation effects.
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
 - `preview/`: the preview pane (fetch, replies, layout, concept, open).
 - `preview/image/`: bitmap previews as quads: figures, overlays, view, ROI.

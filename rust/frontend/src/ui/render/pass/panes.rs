@@ -2,6 +2,23 @@
 //! the chrome text and the nav-spill overlay.
 
 use super::*;
+use crate::ui::drawer::repl::presentation::ReplImagePainter;
+
+struct ReplQuadPainter<'a, 'pass> {
+    queue: &'a wgpu::Queue,
+    pipeline: &'a QuadPipeline,
+    pass: &'a mut wgpu::RenderPass<'pass>,
+}
+
+impl ReplImagePainter<Quad> for ReplQuadPainter<'_, '_> {
+    fn scissor(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        self.pass.set_scissor_rect(x, y, width, height);
+    }
+
+    fn image(&mut self, image: &Quad, rect: ScreenRect, surface: (u32, u32)) -> Result<()> {
+        image.render(self.queue, self.pipeline, self.pass, rect, surface)
+    }
+}
 
 impl State {
     pub(in crate::ui) fn paint_monitor_chart(&self, mut rpass: &mut wgpu::RenderPass<'_>) -> Result<()> {
@@ -22,53 +39,12 @@ impl State {
         Ok(())
     }
 
-    pub(in crate::ui) fn paint_repl_figures(&self, mut rpass: &mut wgpu::RenderPass<'_>) -> Result<()> {
-        // Inline REPL figures: paint each visible slot's quad over its
-        // reserved scrollback rows. Scissored to the scrollback rect so a
-        // partially-scrolled figure clips at the drawer edges instead of
-        // bleeding over the input line or pane borders.
-        if self.drawer == DrawerContent::Repl && !self.repl_image_slots.is_empty() {
-            let area = self.repl_scrollback_px;
-            let (win_start, win_end) = self.repl_window;
-            let sw = (area.w.max(0.0) as u32).min(self.config.width);
-            let sh = (area.h.max(0.0) as u32).min(self.config.height);
-            if sw > 0 && sh > 0 {
-                let sx = (area.x.max(0.0) as u32).min(self.config.width - 1);
-                let sy = (area.y.max(0.0) as u32).min(self.config.height - 1);
-                let sw = sw.min(self.config.width - sx);
-                let sh = sh.min(self.config.height - sy);
-                let mut painted = false;
-                for slot in &self.repl_image_slots {
-                    if slot.line + slot.rows as usize <= win_start || slot.line >= win_end {
-                        continue;
-                    }
-                    let Some(img) = self.repl_images.get(&slot.key) else {
-                        continue;
-                    };
-                    if !painted {
-                        rpass.set_scissor_rect(sx, sy, sw, sh);
-                        painted = true;
-                    }
-                    let rect = ScreenRect {
-                        x: area.x + self.cell_w,
-                        y: area.y + (slot.line as f32 - win_start as f32) * self.cell_h,
-                        w: slot.disp_w,
-                        h: slot.disp_h,
-                    };
-                    img.quad.render(
-                        &self.queue,
-                        &self.quad_pipeline,
-                        &mut rpass,
-                        rect,
-                        (self.config.width, self.config.height),
-                    )?;
-                }
-                if painted {
-                    rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
-                }
-            }
-        }
-        Ok(())
+    pub(in crate::ui) fn paint_repl_figures(&self, rpass: &mut wgpu::RenderPass<'_>) -> Result<()> {
+        let mut painter = ReplQuadPainter { queue: &self.queue, pipeline: &self.quad_pipeline, pass: rpass };
+        self.repl_presentation.paint(
+            self.drawer == DrawerContent::Repl, self.cell_w, self.cell_h,
+            (self.config.width, self.config.height), &mut painter,
+        )
     }
 
     pub(in crate::ui) fn paint_llm_selection(

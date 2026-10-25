@@ -2,6 +2,7 @@
 //! paint the panes' titles, the REPL drawer body, the wireframe, the clock, the stamp and the terminals.
 
 use super::*;
+use crate::ui::drawer::repl::presentation::ReplDrawerLayout;
 
 // Snapshot per-row chrome strings up-front so the ratatui closure
 // doesn't need to borrow `self.tree` (the closure captures `frame`
@@ -364,40 +365,13 @@ impl ChromeView<'_> {
         &mut self,
         repl_rect: ratatui::layout::Rect,
         repl_focus: bool,
-    ) -> (std::rc::Rc<[ratatui::layout::Rect]>, Paragraph<'static>, Paragraph<'static>) {
-        let ChromeView { repl_input, repl_lines, repl_pkg_mode, mut new_repl_scroll, .. } = *self;
-        let repl_scrollback_cells;
-        let repl_window;
-        // Input pane height tracks the number of newline-separated
-        // lines in `repl_input` so a multi-line buffer (built up
-        // via Shift+Enter) is fully visible while editing. Capped
-        // at `repl_rect.height - 1` so at least one row of
-        // scrollback is always on screen — a runaway buffer
-        // narrows scrollback but is still recoverable via Enter
-        // or Backspace.
+    ) -> (ReplDrawerLayout, Paragraph<'static>, Paragraph<'static>) {
+        let ChromeView { repl_input, repl_lines, repl_pkg_mode, new_repl_scroll, .. } = *self;
         let input_line_count = (repl_input.matches('\n').count() + 1) as u16;
-        let max_input_rows = repl_rect.height.saturating_sub(1).max(1);
-        let input_rows = input_line_count.min(max_input_rows).max(1);
-        let repl_split = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(input_rows)])
-            .split(repl_rect);
-        let scroll_h = repl_split[0].height as usize;
-        // Scrollback window: `repl_scroll` is the number of rows
-        // *back from the tail*. 0 = live; positive = older. Clamp
-        // so the user can't scroll past the top of the log, and
-        // write the clamped value back to State so the wheel
-        // handler doesn't accumulate dead range.
-        let total = repl_lines.len();
-        let max_scroll = total.saturating_sub(scroll_h) as u16;
-        let clamped = new_repl_scroll.min(max_scroll);
-        new_repl_scroll = clamped;
-        let end = total.saturating_sub(clamped as usize);
-        let start = end.saturating_sub(scroll_h);
-        // Export for the inline-image paint pass: which absolute
-        // lines are on screen, and the sub-rect they render into.
-        repl_scrollback_cells = repl_split[0];
-        repl_window = (start, end);
+        let repl_split = ReplPresentation::<Quad>::drawer_layout(
+            repl_rect, input_line_count, repl_lines.len(), new_repl_scroll,
+        );
+        let (start, end) = repl_split.window;
         let scroll_para = Paragraph::new(repl_lines[start..end].to_vec());
         // Mode-aware prompt: `julia> ` in cyan vs `pkg> ` in
         // blue (matches the standard Julia REPL palette). Dim
@@ -447,9 +421,9 @@ impl ChromeView<'_> {
             })
             .collect();
         let input_para = Paragraph::new(input_rt_lines);
-        self.new_repl_scroll = new_repl_scroll;
-        self.repl_scrollback_cells = repl_scrollback_cells;
-        self.repl_window = repl_window;
+        self.new_repl_scroll = repl_split.scroll;
+        self.repl_scrollback_cells = repl_split.scrollback;
+        self.repl_window = repl_split.window;
         (repl_split, scroll_para, input_para)
     }
 
@@ -459,15 +433,15 @@ impl ChromeView<'_> {
         repl_rect: ratatui::layout::Rect,
         scroll_para: Paragraph<'static>,
         input_para: Paragraph<'static>,
-        repl_split: std::rc::Rc<[ratatui::layout::Rect]>,
+        repl_split: ReplDrawerLayout,
     ) {
         let ChromeView { drawer, help_state, help_bindings, .. } = *self;
         if drawer == DrawerContent::Help {
             help::render(frame, repl_rect, help_state, help_bindings);
         }
         if drawer == DrawerContent::Repl {
-            frame.render_widget(scroll_para, repl_split[0]);
-            frame.render_widget(input_para, repl_split[1]);
+            frame.render_widget(scroll_para, repl_split.scrollback);
+            frame.render_widget(input_para, repl_split.input);
         }
     }
 

@@ -74,7 +74,7 @@ use nav::*;
 pub(crate) mod chrome;
 use chrome::*;
 pub(crate) mod drawer;
-use drawer::repl::lines::{ReplImage, ReplImageSlot};
+use drawer::repl::presentation::ReplPresentation;
 use drawer::repl::log::ReplEntry;
 use drawer::repl::{DraftEdit, ReplModel, ReplTarget};
 use drawer::terminal::pump::scroll_drawer_ring;
@@ -808,33 +808,8 @@ struct State {
     /// re-pick a different preset; the user explicitly avoided
     /// in-session reflow.
     monitor_aspect: f32,
-    // ui/drawer/repl: the REPL drawer's log, input, figures and history.
-    /// Inline REPL figures: decoded image frames keyed by
-    /// (eval_id, frame index within the entry). Built in the pre-draw pass
-    /// (never inside the draw closure — texture upload must not contend
-    /// with the text layer borrow); pruned when the entry ages out of
-    /// `repl_log`.
-    repl_images: std::collections::HashMap<(u64, usize), ReplImage>,
-    /// Row-slots the current frame's `build_repl_lines` reserved for
-    /// inline images: absolute line index of the first reserved row, row
-    /// count, display size, cache key. Rebuilt every draw.
-    repl_image_slots: Vec<ReplImageSlot>,
-    /// Scrollback sub-rect (px) + visible [start, end) line window of
-    /// the last REPL drawer draw — the coordinate frame the image quads
-    /// paint into.
-    repl_scrollback_px: ScreenRect,
-    repl_window: (usize, usize),
-    /// What the last REPL line-build produced, for `pinned_repl_scroll`:
-    /// the geometry it was laid out at (the raw bits of all four inputs the
-    /// build consumes, so an unchanged `f32` compares equal), the newest
-    /// entry's `eval_id`, and the span from that entry's first line to the
-    /// end of the build. Keyed on the whole geometry because the line count
-    /// moves with pane HEIGHT and cell metrics too, not just width — a
-    /// taller window reserves more rows for a figure, and a font-scale step
-    /// re-wraps — and compensating for that would jump the view. `None` =
-    /// nothing to measure against (first draw, empty log, or a workspace
-    /// swap replaced the log wholesale).
-    repl_build_anchor: Option<((u32, u32, u32, u32), u64, usize)>,
+    /// Window-wide REPL images, pixel geometry and line-build anchor.
+    repl_presentation: ReplPresentation,
     // ui/drawer/terminal: the terminal drawer's backends.
     /// Local PTY terminal hosting the OS shell (G2). Lazily spawned the
     /// first time the Terminal drawer opens (Ctrl+T); a separate field

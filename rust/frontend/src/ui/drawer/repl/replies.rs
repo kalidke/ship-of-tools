@@ -344,13 +344,7 @@ impl State {
     }
 
     pub(in crate::ui) fn apply_repl_effects(&mut self, effects: ReplEffects) {
-        if effects.clear_images {
-            self.repl_images.clear();
-            self.repl_image_slots.clear();
-        }
-        if effects.reset_build_anchor {
-            self.repl_build_anchor = None;
-        }
+        self.repl_presentation.apply_effects(&effects);
         if let Some(status) = effects.status {
             self.status = status;
         }

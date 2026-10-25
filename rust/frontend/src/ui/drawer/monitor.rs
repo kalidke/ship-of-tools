@@ -505,8 +505,7 @@ impl State {
         // Build into a local first so the immutable
         // `&self.device/queue/quad_pipeline` borrows don't collide with the
         // `self.monitor_quad` write.
-        self.repl_scrollback_px = cells_to_px(repl_scrollback_cells);
-        self.repl_window = repl_window;
+        self.repl_presentation.commit_layout(cells_to_px(repl_scrollback_cells), repl_window);
         self.monitor_rect_px = cells_to_px(repl_cells);
         if self.drawer == DrawerContent::Monitor {
             let mw = self.monitor_rect_px.w.max(1.0) as u32;

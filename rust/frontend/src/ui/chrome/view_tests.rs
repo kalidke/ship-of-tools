@@ -36,7 +36,7 @@ fn prompt_pinned_cells_have_attention_style() {
 /// The REPL log's lines for `untrusted_lines_stay_apart_in_the_chrome`: code holding a tab, output and an error
 /// holding a `\r\n`, and a value's MIME, an image's MIME and a page's address holding a `\n`.
 fn untrusted_repl_lines() -> Vec<RtLine<'static>> {
-    use crate::ui::drawer::repl::{lines::build_repl_lines, log::ReplEntry};
+    use crate::ui::drawer::repl::{presentation::ReplPresentation, log::ReplEntry};
     use sot_protocol::ReplFrame::{Browser, Error, Image, Stdout, Value};
     let frames = vec![
         Stdout {
@@ -70,13 +70,25 @@ fn untrusted_repl_lines() -> Vec<RtLine<'static>> {
         pkg_mode: false,
         origin: None,
     }];
-    build_repl_lines(&log, &HashMap::new(), 0.0, 0.0, 8.0, 16.0, false).0
+    let row = ("host".into(), "row".into());
+    ReplPresentation::<()>::default().build(&row, &log, false, 8.0, 16.0, 0).0
 }
 
 /// The chrome painted into a `size` buffer, row by row, with `status` and the nav rows `tree`, and every other
 /// text from outside the window holding a line break or a tab between a marker `AAnn` and its `BBnn`. The pinned
 /// preview's file name holds sixty more breaks, so its title is cut to fit.
 fn paint_chrome(size: (u16, u16), status: &str, tree: Vec<NavRow>) -> Vec<String> {
+    paint_chrome_repl(size, status, tree,
+        ("x = AA08\tBB08\ny".into(), untrusted_repl_lines(), 0, DrawerContent::Repl)).0
+}
+
+fn paint_chrome_repl(
+    size: (u16, u16),
+    status: &str,
+    tree: Vec<NavRow>,
+    repl: (String, Vec<RtLine<'static>>, u16, DrawerContent),
+) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize)) {
+    let (repl_input, repl_lines, scroll, drawer) = repl;
     let preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
     let status = status.to_string();
     let prompt = Some(("delete AA05\rBB05? [y/N]".to_string(), String::new()));
@@ -85,8 +97,6 @@ fn paint_chrome(size: (u16, u16), status: &str, tree: Vec<NavRow>) -> Vec<String
     let preview_name = Some(format!("dir/AA07\nBB07{}.jl", "\nzz".repeat(60)));
     let pinned = Some("files:dir".to_string());
     let host: HostKey = "local".to_string();
-    let repl_input = "x = AA08\tBB08\ny".to_string();
-    let repl_lines = untrusted_repl_lines();
     let (help_state, bindings, context) = (
         help::Help::default(),
         KeyBindings::defaults(),
@@ -116,7 +126,7 @@ fn paint_chrome(size: (u16, u16), status: &str, tree: Vec<NavRow>) -> Vec<String
         nav_spill_active: false,
         preview_name: &preview_name,
         pinned_preview_node_id: &pinned,
-        drawer: DrawerContent::Repl,
+        drawer,
         monitor_host_connected: true,
         monitor_host_label: &host,
         repl_input: &repl_input,
@@ -141,7 +151,7 @@ fn paint_chrome(size: (u16, u16), status: &str, tree: Vec<NavRow>) -> Vec<String
         preview_cells: Default::default(),
         repl_cells: Default::default(),
         new_pane_rects: PaneRects::default(),
-        new_repl_scroll: 0,
+        new_repl_scroll: scroll,
         repl_scrollback_cells: Default::default(),
         repl_window: (0, 0),
         pty_size_observed: (0, 0),
@@ -152,9 +162,36 @@ fn paint_chrome(size: (u16, u16), status: &str, tree: Vec<NavRow>) -> Vec<String
     term.draw(|frame| view.paint(frame, tree, &mut Vec::new()))
         .unwrap();
     let buf = term.backend().buffer();
-    (0..h)
+    let rows = (0..h)
         .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
-        .collect()
+        .collect();
+    (rows, view.new_repl_scroll, view.repl_scrollback_cells, view.repl_window)
+}
+
+#[test]
+fn repl_drawer_layout_uses_the_owner_window() {
+    for drawer in [DrawerContent::Repl, DrawerContent::Monitor, DrawerContent::Help, DrawerContent::Terminal] {
+        for proposed in [4, 999] {
+            let lines = (0..100).map(|i| RtLine::from(format!("log{i:02}"))).collect();
+            let (rows, scroll, area, window) = paint_chrome_repl((200, 60), "ready", Vec::new(),
+                ("aa\nbb\ncc".into(), lines, proposed, drawer));
+            let height = area.height as usize;
+            assert!(height > 0);
+            let expected = proposed.min((100 - height) as u16);
+            assert_eq!(scroll, expected);
+            let end = 100 - expected as usize;
+            assert_eq!(window, (end - height, end));
+            let mut model = ReplModel::default();
+            model.commit_rendered_scroll(scroll);
+            assert_eq!(model.scroll(), expected);
+            if drawer == DrawerContent::Repl {
+                for (i, y) in (area.y..area.bottom()).enumerate() {
+                    assert!(rows[y as usize].contains(&format!("log{:02}", window.0 + i)));
+                }
+                assert!(rows[area.bottom() as usize].contains("julia> aa"), "input starts after scrollback");
+            }
+        }
+    }
 }
 
 /// Text from outside the window (a daemon's error, an agent's summary, a file name, a paste) that holds a line

@@ -1,4 +1,4 @@
-//! The REPL model and routing owner; State applies transport and presentation effects.
+//! REPL model and presentation owners; State applies transport and presentation effects.
 
 use crate::net::dial::HostKey;
 use crate::net::transport::OutgoingReq;
@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 pub(in crate::ui) mod lines;
 pub(in crate::ui) mod log;
+pub(in crate::ui) mod presentation;
 mod replies;
 
 /// Row-local runtime state. The counter and interrupt memory deliberately do not travel with it.
