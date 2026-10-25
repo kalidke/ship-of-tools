@@ -242,7 +242,10 @@ system, records where the list lives without writing it, leaves a clone whose `c
 untouched, and names each checked clone in its verdict; every child the guard starts is bounded (a Git read 60 s, the
 setup script 300 s). Windows proves the real-enrollment units and the install witness once per release, in the release
 gate (minutes each under Git Bash on a hosted runner), and the three guard suites per landing. The installer's own process
-listing and `--version` asks stay unbounded until the observation pass, a 0.7.0 tag blocker. Since 2026-10-25 no entry stands as a whole word anywhere in main's tree (three
+listing and `--version` asks stay unbounded until the observation pass, a 0.7.0 tag blocker. A push scans only commits the
+destination does not hold: since 2026-10-25 the guard bounds its history scan by the push's old ids and by what the
+destination advertises at push time (one `ls-remote` per push, read only when it would dial exactly the URL git hands the
+hook; any error refuses), so a new branch or tag no longer rescans the history the server already has. Since 2026-10-25 no entry stands as a whole word anywhere in main's tree (three
 replaced in four files).
 
 **records.** Guarantees: the manual says what is true now; a design not built is marked unbuilt; no private names.
@@ -452,5 +455,6 @@ Pass 7f landed 2026-10-25: the REPL's presentation is `ReplPresentation`'s, priv
 landed 2026-10-25: a page the window opened reads row states, goes to a row and opens a row's decision page, through
 verbs checked against its site's capability and origin; its trust boundary is this OS account, the maintainer's
 decision. Pass 7g landed 2026-10-25: focus and the prompts are `FocusPrompts`'s, private, and no source scan guards
-focus any more. Nothing is half-done on main.
+focus any more. The publish guard's history bound landed 2026-10-25: a new branch or tag from an enrolled clone scans
+only what the destination does not hold. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
