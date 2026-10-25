@@ -260,7 +260,7 @@ mod tests {
         assert!((context.geometry.residue - 0.25).abs() < 0.00001);
 
         context.events.clear();
-        context.geometry.focus = PaneFocus::Preview;
+        context.geometry = WheelGeometry { focus: PaneFocus::Preview, ..context.geometry };
         dispatch_wheel(&mut context, ModifiersState::empty(), MouseScrollDelta::LineDelta(1.0, 0.0));
         assert_eq!(context.events, vec![Event::Presence, Event::Geometry, Event::Horizontal(6.0)]);
         assert!((context.geometry.residue - 0.25).abs() < 0.00001);
