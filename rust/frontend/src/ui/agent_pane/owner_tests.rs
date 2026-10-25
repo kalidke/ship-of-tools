@@ -458,7 +458,8 @@ fn copy_uses_client_or_blank_and_clears_only_after_success() {
     assert_eq!(pixels(&mut p).0, PaneScreen::Hold);
     assert!(p.copy_text(80).is_none(), "blank copy does not read the hold");
     install(&mut p, "h", "b", Scripted::new(b"new", false).0, t);
-    assert_eq!(pixels(&mut p).1, "abc\ndefgh");
+    // Painting keeps the held screen's spaces; only clipboard text is trimmed.
+    assert_eq!(pixels(&mut p).1, "abc  \ndefgh");
     assert_eq!(p.copy_text(80).as_deref(), Some("new"));
     let mut wrapped = Pane::new(None);
     select(&mut wrapped, "h", "wrapped", t, 2);
