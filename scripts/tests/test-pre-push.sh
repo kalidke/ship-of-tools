@@ -113,11 +113,19 @@ cat > "$T/diff-probe" <<'DIFF'
 printf invoked > "$HOME/diff-called"
 exit 0
 DIFF
-chmod +x "$T/diff-probe"
+fixture_executable "$T/diff-probe"
 git -C "$R" config diff.external "$T/diff-probe"
 git -C "$R" config diff.fixture.textconv "$T/diff-probe"
 printf 'data diff=fixture\n' > "$R/.gitattributes"
-printf clean2 > "$R/data"; commit
+printf clean2 > "$R/data"
+# Both native Git helper routes must really work before absence can prove anything.
+git -C "$R" diff --ext-diff HEAD -- data > "$T/diff-control.out" 2>&1 || fail 'external diff execution control failed'
+[ -s "$HOME/diff-called" ] || fail 'external diff probe did not run'
+rm -f "$HOME/diff-called"
+git -C "$R" diff --no-ext-diff --textconv HEAD -- data > "$T/diff-control.out" 2>&1 || fail 'textconv execution control failed'
+[ -s "$HOME/diff-called" ] || fail 'textconv probe did not run'
+rm -f "$HOME/diff-called"
+commit
 accept 'raw object read ignores diff/textconv configuration' origin main
 [ ! -e "$HOME/diff-called" ] || fail 'object scan executed a diff helper'
 printf glimmerdeny > "$R/data"; commit
@@ -148,8 +156,11 @@ cat > "$T/upload-pack" <<'STUB'
 printf 'fetch\n' >> "$HOME/fetch-called"
 exit 1
 STUB
-chmod +x "$T/upload-pack"
+fixture_executable "$T/upload-pack"
 git -C "$R" config remote.origin.uploadpack "$T/upload-pack"
+if git -C "$R" ls-remote --upload-pack="$T/upload-pack" origin > "$T/upload-control.out" 2>&1; then fail 'upload-pack execution control accepted'; fi
+[ -s "$HOME/fetch-called" ] || fail 'upload-pack probe did not run'
+rm -f "$HOME/fetch-called"
 reject 'missing promisor blob' 'unavailable locally' origin main
 [ ! -e "$HOME/fetch-called" ] || fail 'scanner attempted a lazy fetch'
 ok 'no lazy fetch'
@@ -185,7 +196,7 @@ case "$1:${PG_FAIL_PRODUCER:-}" in
 esac
 exec "$PG_REAL_GIT" "$@"
 WRAPPER
-chmod +x "$T/git-wrapper/git"
+fixture_executable "$T/git-wrapper/git"
 # Git prepends its execution directory to PATH before running hooks. Put the fixture
 # wrapper there, and retain the real execution directory on PATH for transport helpers.
 for producer in catalog read tree; do
@@ -231,7 +242,7 @@ if [ -n "${1:-}" ] && [ "$1" -ef "$policy" ]; then
 fi
 exec "$real_cat" "$@"
 CAT
-chmod +x "$T/git-wrapper/cat"
+fixture_executable "$T/git-wrapper/cat"
 for action in read-error vanished; do
     : > "$T/producer-fault"
     PG_POLICY_FILE=$FAULT_POLICY PG_REAL_CAT=$REAL_CAT PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
@@ -260,7 +271,7 @@ printf 'policy-encoding\n' >> "$fault_log" || exit 98
 printf 'fixture encoding error: glimmerdeny-path\n' >&2
 exit 9
 ENCODING
-    chmod +x "$T/git-wrapper/$encoding_producer"
+    fixture_executable "$T/git-wrapper/$encoding_producer"
     : > "$T/producer-fault"
     PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
         GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
@@ -280,7 +291,7 @@ cat >/dev/null
 printf 'fixture utility: glimmerdeny-path: read error\n' >&2
 exit 17
 LEAK
-chmod +x "$R/.git/hooks/pre-push.local"
+fixture_executable "$R/.git/hooks/pre-push.local"
 audit_status=0
 (reject 'unprefixed stderr witness' 'fixture utility:' origin main) > "$T/audit.out" 2>&1 || audit_status=$?
 [ "$audit_status" -ne 0 ] || fail 'stderr audit ignored an unprefixed leak'

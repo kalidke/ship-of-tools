@@ -22,7 +22,7 @@ printf '%s\n' "$*" >> "$HOME/build-calls"
 case "$1" in run|update) exit 0 ;; esac
 exit 73
 CARGO
-chmod +x "$T/tools/cargo"
+fixture_executable "$T/tools/cargo"
 # The release performs a real atomic push; a synthetic denied tag cannot reach the local destination.
 # Its fake comparator/lock updater are recording tools; no actual Rust build runs.
 unenroll
@@ -43,7 +43,7 @@ case "$(uname -s)" in
         grep -E 'rc-gate: (needs a cgroup|run it)' "$T/entry.out" > /dev/null || fail 'gate did not reach known container boundary'
         check_enrolled 'gate checkout argument'
         # The pack must pass platform/libc checks before the controlled build stop.
-        printf '#!/bin/sh\nexit 0\n' > "$T/tools/musl-gcc"; chmod +x "$T/tools/musl-gcc"
+        printf '#!/bin/sh\nexit 0\n' > "$T/tools/musl-gcc"; fixture_executable "$T/tools/musl-gcc"
         rm -f "$HOME/build-calls"
         unenroll
         if PATH="$T/tools:$PATH" "$BASH" "$R/scripts/pack-build.sh" "$T/pack-out" > "$T/entry.out" 2>&1; then fail 'pack passed controlled build stop'; fi
@@ -51,6 +51,8 @@ case "$(uname -s)" in
         check_enrolled 'shell pack'
         ;;
     MINGW*|MSYS*|CYGWIN*)
+        skip 'gate checkout argument enrollment: the gate requires Linux systemd cgroups'
+        skip 'shell pack enrollment: pack-build.sh is Linux-only; Windows exercises pack-build.ps1'
         # The real Windows PowerShell entry discovers Git for Windows bash itself.
         printf '@echo off\r\necho build-called>"%%USERPROFILE%%\\build-called"\r\nexit /b 73\r\n' > "$T/tools/cargo.cmd"
         unenroll
@@ -72,5 +74,7 @@ case "$(uname -s)" in Linux)
     [ ! -e "$HOME/build-calls" ] || fail 'pack built before conflict refusal'
     grep -F 'existing hooks configuration kept' "$T/entry.out" > /dev/null || fail 'pack conflict wrong cause'
     ok 'pack conflict stops before build'
-    ;; esac
+    ;;
+    MINGW*|MSYS*|CYGWIN*) skip 'shell pack conflict before build: pack-build.sh is Linux-only' ;;
+esac
 printf '1..%s\n' "$count"

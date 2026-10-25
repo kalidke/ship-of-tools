@@ -323,6 +323,26 @@ uses Windows PowerShell without profiles. Hook and shim check out at LF even wit
 bash 3.2 and rewrites only scratch hook shebangs; macOS uses `/bin/bash`; Windows retains shipped shebangs and actual
 Git-launched hooks. The matrix needs no product binary or secret and runs in `rust.yml` at landings and branch dispatch.
 
+Windows fixture limits are reported with named `skip:` lines, never counted as passing coverage:
+
+- Unreadable-validator push/readiness uses an `icacls` native Read deny, with its original ACL saved and restored by
+  the fixture's exit cleanup. The test first observes that Bash cannot source the file. A Windows volume/token that
+  cannot save/apply the ACL, or an MSYS runtime that still reads it, skips this condition; failed/incomplete libraries
+  and failed validator calls remain separate executing cases. Linux/macOS retain their permission-denial assertions.
+- Filesystem symlink cases (policy file/directory, hook slot and ownership record) require verified native links on
+  Windows; Developer Mode or symlink privilege and filesystem support are prerequisites. No copied file substitutes
+  for a link. The self-chain hardlink case requires observed file identity, and the Windows junction case requires a
+  real reparse directory reaching its policy. Unsupported Windows conditions skip by name.
+- The nonexecutable occupied hook-slot condition uses POSIX execute permissions on Linux/macOS and skips on Windows,
+  where that mode-bit condition is not portable. Positive script cases observe Git-launched hooks and recording
+  helpers; Windows does not use `chmod` as evidence of execution. Diff/textconv and upload-pack absence checks have
+  positive native-Git execution controls. Symlink blob and unusual-name scans use raw Git objects, not filesystem
+  symlinks or Windows-invalid filenames; numeric tree/index modes describe Git objects, not NTFS permissions.
+- Native Git reads real empty scratch configuration files; `/dev/null` is used only for Bash redirection. These suites
+  use no process substitution, signal/kill probes or filename pairs distinguished only by case. Exit cleanup restores
+  any active read deny before removing scratch files. The Linux cgroup gate and shell pack routes print Windows skips;
+  Windows runs its PowerShell pack route.
+
 Tests (all observe execution, not source spellings):
 
 | Entry | Guarantee |

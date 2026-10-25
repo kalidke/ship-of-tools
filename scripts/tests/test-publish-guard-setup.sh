@@ -23,8 +23,12 @@ for location in unset missing relative empty multiple directory worktree metadat
         metadata) cp "$POLICY" "$R/.git/inside-list"; git -C "$R" config sot.publishList "$R/.git/inside-list" ;;
         unrelated) git init -q "$T/unrelated"; cp "$POLICY" "$T/unrelated/list"; git -C "$R" config sot.publishList "$T/unrelated/list" ;;
         bare) cp "$POLICY" "$B/list"; git -C "$R" config sot.publishList "$B/list" ;;
-        file-link) ln -s "$R/inside-list" "$T/linked-list"; git -C "$R" config sot.publishList "$T/linked-list" ;;
-        directory-link) ln -s "$R" "$T/linked-dir"; git -C "$R" config sot.publishList "$T/linked-dir/inside-list" ;;
+        file-link)
+            fixture_link symlink 'list validation file-link' "$R/inside-list" "$T/linked-list" || continue
+            git -C "$R" config sot.publishList "$T/linked-list" ;;
+        directory-link)
+            fixture_link symlink 'list validation directory-link' "$R" "$T/linked-dir" || continue
+            git -C "$R" config sot.publishList "$T/linked-dir/inside-list" ;;
     esac
     reject "list validation $location" 'sot.publishList' origin main
 done
@@ -89,27 +93,37 @@ printf '#!/bin/sh\nexit 0\n' > "$R/.git/hooks/pre-push"
 if "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out" 2>&1; then fail 'modified owned slot overwritten'; fi
 grep -F 'locally modified' "$T/setup.out" > /dev/null || fail 'modified slot wrong cause'
 ok 'locally modified owned hook preserved'
-mv "$T/owned-shim" "$R/.git/hooks/pre-push"; chmod +x "$R/.git/hooks/pre-push"
+mv "$T/owned-shim" "$R/.git/hooks/pre-push"; fixture_executable "$R/.git/hooks/pre-push"
 rm -f "$R/.git/publish-guard/installed-hash"
 "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out"
 "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out"
 ok 'exact shipped shim recovers interrupted record and repeats'
 cp "$R/.git/hooks/pre-push" "$T/shim-copy"
 rm -f "$R/.git/hooks/pre-push"
-ln -s "$T/shim-copy" "$R/.git/hooks/pre-push"
-if "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out" 2>&1; then fail 'linked slot followed'; fi
-ok 'symlink slot refused'
+if fixture_link symlink 'symlink slot refused' "$T/shim-copy" "$R/.git/hooks/pre-push"; then
+    if "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out" 2>&1; then fail 'linked slot followed'; fi
+    ok 'symlink slot refused'
+fi
 rm -f "$R/.git/hooks/pre-push"
-printf 'foreign nonexecutable\n' > "$R/.git/hooks/pre-push"
-if "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out" 2>&1; then fail 'unknown nonexecutable hook overwritten'; fi
-ok 'unknown nonexecutable hook preserved'
+if [ "$PG_WINDOWS" = 1 ]; then
+    skip 'unknown nonexecutable hook preserved: Windows has no portable POSIX execute-bit condition for a hook script'
+else
+    printf 'foreign nonexecutable\n' > "$R/.git/hooks/pre-push"
+    chmod a-x "$R/.git/hooks/pre-push"
+    [ ! -x "$R/.git/hooks/pre-push" ] || fail 'nonexecutable hook fixture is executable'
+    if "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out" 2>&1; then fail 'unknown nonexecutable hook overwritten'; fi
+    ok 'unknown nonexecutable hook preserved'
+fi
 # An exact owned shim never authorizes following a linked ownership record.
 rm -f "$R/.git/hooks/pre-push"
-cp "$T/shim-copy" "$R/.git/hooks/pre-push"; chmod +x "$R/.git/hooks/pre-push"
+cp "$T/shim-copy" "$R/.git/hooks/pre-push"; fixture_executable "$R/.git/hooks/pre-push"
 mv "$R/.git/publish-guard/installed-hash" "$T/hash-record"
-ln -s "$T/hash-record" "$R/.git/publish-guard/installed-hash"
-if "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out" 2>&1; then fail 'linked ownership record accepted'; fi
-ok 'linked ownership record preserved'
+if fixture_link symlink 'linked ownership record preserved' "$T/hash-record" "$R/.git/publish-guard/installed-hash"; then
+    if "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out" 2>&1; then fail 'linked ownership record accepted'; fi
+    ok 'linked ownership record preserved'
+else
+    mv "$T/hash-record" "$R/.git/publish-guard/installed-hash"
+fi
 fixture worktrees
 # A linked worktree with no guard is still covered by the common shim.
 blob=$(printf clean | git -C "$R" hash-object -w --stdin)
@@ -124,7 +138,7 @@ R=$main_R
 W2="$T/current worktree"
 git -C "$R" worktree add -q --detach "$W2" HEAD
 { IFS= read -r first; printf '%s\nprintf "version marker\\n" >&2\n' "$first"; cat; } < "$W2/scripts/hooks/pre-push" > "$T/variant"
-cp "$T/variant" "$W2/scripts/hooks/pre-push"; chmod +x "$W2/scripts/hooks/pre-push"
+cp "$T/variant" "$W2/scripts/hooks/pre-push"; fixture_executable "$W2/scripts/hooks/pre-push"
 R=$W2
 accept 'linked worktree uses its checked-out guard' origin HEAD:refs/heads/versioned
 grep -F 'version marker' "$T/push.out" > /dev/null || fail 'wrong guard version'
@@ -153,7 +167,7 @@ printf 'chain stdout\n'
 printf 'chain ran\n' >&2
 exit 0
 CHAIN
-chmod +x "$CHAIN"
+fixture_executable "$CHAIN"
 printf clean2 > "$R/data"; commit
 head=$(git -C "$R" rev-parse HEAD)
 old=$(git -C "$B" rev-parse main)
@@ -167,12 +181,12 @@ cat > "$HOME/guard-input"
 printf '%s\n' "$#" "$1" "$2" > "$HOME/guard-args"
 exec "$HOME/original-shim" "$@" < "$HOME/guard-input"
 RECORDER
-chmod +x "$HOME/original-shim" "$R/.git/hooks/pre-push"
+fixture_executable "$HOME/original-shim" "$R/.git/hooks/pre-push"
 accept 'passing chain receives multi-update push' origin main clean-tag
 cmp "$HOME/guard-input" "$HOME/chain-input" || fail 'chain changed stdin bytes or order'
 cmp "$HOME/guard-args" "$HOME/chain-args" || fail 'chain changed original arguments'
 grep -F 'chain stdout' "$T/push.out" > /dev/null && grep -F 'chain ran' "$T/push.out" > /dev/null || fail 'chain streams were not forwarded'
-cp "$HOME/original-shim" "$R/.git/hooks/pre-push"; chmod +x "$R/.git/hooks/pre-push"
+cp "$HOME/original-shim" "$R/.git/hooks/pre-push"; fixture_executable "$R/.git/hooks/pre-push"
 # Keep the exact forwarding comparison above. This independent expected URL uses
 # Git's native spelling, including Git Bash's conversion of the fixture path.
 remote_url=$(git -C "$R" remote get-url --push origin)
@@ -201,10 +215,10 @@ chain_status=0
 [ "$chain_status" = 23 ] || fail 'guard lost the exact chained status'
 ok 'exact chained status'
 
-cp "$R/scripts/hooks/pre-push-shim" "$CHAIN"; chmod +x "$CHAIN"
+cp "$R/scripts/hooks/pre-push-shim" "$CHAIN"; fixture_executable "$CHAIN"
 reject 'chain recursion refuses' 'hook chain cycle' origin main
 rm -f "$CHAIN"
-printf '#!/bin/sh\necho veto >&2\nexit 29\n' > "$R/.git/hooks/pre-commit"; chmod +x "$R/.git/hooks/pre-commit"
+printf '#!/bin/sh\necho veto >&2\nexit 29\n' > "$R/.git/hooks/pre-commit"; fixture_executable "$R/.git/hooks/pre-commit"
 "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out"
 if git -C "$R" commit -q --allow-empty -m control > "$T/commit.out" 2>&1; then fail 'default pre-commit disabled'; fi
 grep -F veto "$T/commit.out" > /dev/null || fail 'pre-commit not reached'
@@ -213,15 +227,16 @@ ok 'default pre-commit preserved'
 fixture external-chain
 git -C "$R" config core.hooksPath "$R/scripts/hooks"
 printf '#!/bin/sh\ncat >/dev/null\necho "pre-push: default veto" >&2\nexit 19\n' > "$R/.git/hooks/pre-push"
-chmod +x "$R/.git/hooks/pre-push"
+fixture_executable "$R/.git/hooks/pre-push"
 reject 'external guard preserves distinct default hook' 'default veto' origin HEAD:refs/heads/external-veto
 printf '#!/bin/sh\ncat > "$HOME/external-input"\nexit 0\n' > "$R/.git/hooks/pre-push"
 accept 'external guard passing default hook' origin HEAD:refs/heads/external-pass
 [ -s "$HOME/external-input" ] || fail 'default hook lost input'
 ok 'external guard keeps stdin'
 rm -f "$R/.git/hooks/pre-push"
-ln "$R/scripts/hooks/pre-push" "$R/.git/hooks/pre-push"
-accept 'external guard cannot chain to its own file identity' origin HEAD:refs/heads/no-self-chain
+if fixture_link hardlink 'external guard cannot chain to its own file identity' "$R/scripts/hooks/pre-push" "$R/.git/hooks/pre-push"; then
+    accept 'external guard cannot chain to its own file identity' origin HEAD:refs/heads/no-self-chain
+fi
 
 # A fresh raw clone is unguarded until the supported setup entry enrolls it.
 fixture enrollment
@@ -252,7 +267,7 @@ if [ -n "${HOOK_SHELL:-}" ]; then
     { printf '#!%s\n' "$HOOK_SHELL"; tail -n +2 "$R/.git/hooks/pre-push.local"; } > "$T/probe"
     cp "$T/probe" "$R/.git/hooks/pre-push.local"
 fi
-chmod +x "$R/.git/hooks/pre-push.local"
+fixture_executable "$R/.git/hooks/pre-push.local"
 git -C "$R" reset -q --hard origin/main
 accept 'Git-launched interpreter probe' origin HEAD:refs/heads/interpreter
 [ -s "$HOME/interpreter" ] || fail 'Git-launched hook interpreter was not recorded'
@@ -266,46 +281,36 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
     accept 'native Windows absolute list path' origin HEAD:refs/heads/native-path
     mkdir "$T/policy-directory"
     cp "$POLICY" "$T/policy-directory/publish-list.txt"
-    SOT_TEST_JUNCTION="$(cygpath -aw "$T/junction")" SOT_TEST_TARGET="$(cygpath -aw "$T/policy-directory")" powershell.exe -NoProfile -NonInteractive -Command 'New-Item -ItemType Junction -Path $env:SOT_TEST_JUNCTION -Target $env:SOT_TEST_TARGET | Out-Null' > /dev/null
-    git -C "$R" config sot.publishList "$T/junction/publish-list.txt"
-    reject 'Windows reparse directory refuses' 'sot.publishList' origin HEAD:refs/heads/junction
+    if SOT_TEST_JUNCTION="$(cygpath -aw "$T/junction")" SOT_TEST_TARGET="$(cygpath -aw "$T/policy-directory")" \
+        powershell.exe -NoProfile -NonInteractive -Command '
+            $ErrorActionPreference = "Stop"
+            New-Item -ItemType Junction -Path $env:SOT_TEST_JUNCTION -Target $env:SOT_TEST_TARGET | Out-Null
+            $p = Get-Item -Force -LiteralPath $env:SOT_TEST_JUNCTION
+            if (($p.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) { exit 1 }
+        ' > "$T/junction.out" 2>&1; then
+        [ -f "$T/junction/publish-list.txt" ] || fail 'junction fixture does not reach its policy'
+        git -C "$R" config sot.publishList "$T/junction/publish-list.txt"
+        reject 'Windows reparse directory refuses' 'sot.publishList' origin HEAD:refs/heads/junction
+    else
+        skip 'Windows reparse directory refuses: native junction creation is unavailable on this volume/token'
+    fi
     ;; esac
 # A load failure cannot leave a permissive scanner running without its validators.
 fixture validator-load
 printf glimmerdeny > "$R/data"; commit
 VALIDATOR="$R/scripts/hooks/publish-guard-lib.sh"
 cp "$VALIDATOR" "$T/validator-original"
-restore_validator_access() {
-    case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
-        [ -f "$T/validator-acl" ] || return 0
-        SOT_TEST_VALIDATOR="$(cygpath -aw "$VALIDATOR")" SOT_TEST_ACL="$(cygpath -aw "$T/validator-acl")" \
-            powershell.exe -NoProfile -NonInteractive -Command '
-                $ErrorActionPreference = "Stop"
-                $a = Get-Acl -LiteralPath $env:SOT_TEST_VALIDATOR
-                $a.SetSecurityDescriptorSddlForm([IO.File]::ReadAllText($env:SOT_TEST_ACL), [Security.AccessControl.AccessControlSections]::Access)
-                Set-Acl -LiteralPath $env:SOT_TEST_VALIDATOR -AclObject $a' || return 1 ;;
-        *) chmod u+rw "$VALIDATOR" ;;
-    esac
-}
-trap 'restore_validator_access; rm -rf "${T:?}"' EXIT
-case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
-    SOT_TEST_VALIDATOR="$(cygpath -aw "$VALIDATOR")" SOT_TEST_ACL="$(cygpath -aw "$T/validator-acl")" \
-        powershell.exe -NoProfile -NonInteractive -Command '
-            $ErrorActionPreference = "Stop"
-            $a = Get-Acl -LiteralPath $env:SOT_TEST_VALIDATOR
-            [IO.File]::WriteAllText($env:SOT_TEST_ACL, $a.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access))
-            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-            $r = [Security.AccessControl.FileSystemAccessRule]::new($sid, "ReadData", "Deny")
-            $a.AddAccessRule($r)
-            Set-Acl -LiteralPath $env:SOT_TEST_VALIDATOR -AclObject $a' || fail 'cannot deny scratch validator reads'
-    ;;
-    *) chmod 000 "$VALIDATOR" ;;
-esac
-if "$BASH" -c '. "$1"' fixture "$VALIDATOR" > "$T/source.out" 2>&1; then fail 'unreadable validator fixture is still readable'; fi
-reject 'unreadable validator refuses denied push' 'cannot load policy validator' origin main
-not_ready 'unreadable validator' 'cannot load policy validator'
-restore_validator_access || fail 'cannot restore scratch validator access'
-trap 'rm -rf "${T:?}"' EXIT
+if fixture_deny_read "$VALIDATOR" 'unreadable validator push/readiness'; then
+    if "$BASH" -c '. "$1"' fixture "$VALIDATOR" > "$T/source.out" 2>&1; then
+        [ "$PG_WINDOWS" = 1 ] || fail 'unreadable validator fixture is still readable'
+        skip 'unreadable validator push/readiness: this Windows token/MSYS runtime can still read despite the NTFS deny'
+    else
+        reject 'unreadable validator refuses denied push' 'cannot load policy validator' origin main
+        not_ready 'unreadable validator' 'cannot load policy validator'
+    fi
+    fixture_restore_read || fail 'cannot restore scratch validator access'
+    "$BASH" -c '. "$1"' fixture "$VALIDATOR" > "$T/source.out" 2>&1 || fail 'restored validator is not readable'
+fi
 cp "$T/validator-original" "$VALIDATOR"
 for fault in source-status incomplete list-status encoding-status alias-status; do
     cp "$T/validator-original" "$VALIDATOR"
