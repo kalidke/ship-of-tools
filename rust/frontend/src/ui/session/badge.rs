@@ -37,14 +37,14 @@ impl State {
     pub(in crate::ui) fn begin_result_attempt(
         &mut self,
         target: &ResolvedWorkspace,
-    ) -> Option<(ResultAttemptId, String, u64)> {
+    ) -> Option<AttemptStart> {
         match self
             .result_ledger
             .begin_attempt(target, self.preview_req_gen)
         {
             Ok(Some(start)) => {
                 self.preview_req_gen = start.preview_gen;
-                Some((start.id, start.node_id, start.preview_gen))
+                Some(start)
             }
             Ok(None) => None,
             Err(reason) => {

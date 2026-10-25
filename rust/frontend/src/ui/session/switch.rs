@@ -351,7 +351,11 @@ impl State {
             return;
         };
         // Starting a matching result attempt keeps the badge until presentation acknowledges it.
-        let Some((attempt, node_id, generation)) = self.begin_result_attempt(&target) else {
+        let Some(AttemptStart {
+            id: attempt,
+            node_id,
+            preview_gen: generation,
+        }) = self.begin_result_attempt(&target) else {
             return;
         };
         // Through the store seam: a restored Modules view parks and its Files slot comes in.

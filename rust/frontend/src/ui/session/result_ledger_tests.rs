@@ -225,6 +225,15 @@ fn acknowledgment_requires_row_cursor_preview_and_presentation() {
     for replace in [true, false] {
         if replace {
             record(&mut ledger, &dir, &a, "project", "same.rs");
+            assert!(
+                !present(
+                    &mut ledger,
+                    Some(&target),
+                    Some(&old.node_id),
+                    Some(&old.node_id)
+                ),
+                "replacement inherited presentation certificates from the old result"
+            );
         }
         let current = start(&mut ledger, &target, generation);
         generation = current.preview_gen;
@@ -378,9 +387,11 @@ fn releasing_reveal_keeps_the_result_owed() {
     ledger.arm_reveal(retry.id.clone());
     // Abandonment of an obsolete issuance must not erase the current attempt.
     ledger.abandon_attempt(&dir, &a, &first.id);
+    assert!(ledger.reveal_attempt().is_none());
     ledger.arm_reveal(retry.id.clone());
     assert!(ledger.admits_attempt(&dir, &a, &a, &retry.id));
     ledger.abandon_attempt(&dir, &a, &retry.id);
+    assert!(ledger.reveal_attempt().is_none());
     ledger.arm_reveal(retry.id.clone());
     assert!(!ledger.admits_attempt(&dir, &a, &a, &retry.id));
     assert_eq!(ledger.path(target.identity()), Some("owed.rs"));

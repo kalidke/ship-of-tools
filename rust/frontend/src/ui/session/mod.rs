@@ -15,7 +15,7 @@ mod switch;
 mod workspace_key;
 mod workspace_list;
 
-pub(in crate::ui) use result_ledger::{ResultEffects, ResultLedger, ResultRowOutcome};
+pub(in crate::ui) use result_ledger::{AttemptStart, ResultEffects, ResultLedger, ResultRowOutcome};
 pub(in crate::ui) use picker::*;
 pub(in crate::ui) use presence::*;
 pub(in crate::ui) use snapshot::*;
