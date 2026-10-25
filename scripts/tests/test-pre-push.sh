@@ -19,12 +19,12 @@ case "${PUBLISH_GUARD_CASE:-}" in ''|tracking-*)
     git -C "$R" tag -a fetched-tag -m 'new clean tag'
     branch_update=refs/heads/fetched-branch:refs/heads/fetched-branch
     selected=0
-    for field in path url unrelated overlap replaced retained branch tag; do
+    for field in path url unrelated overlap replaced mirror bareword pushurl retained branch tag; do
         [ -z "${PUBLISH_GUARD_CASE:-}" ] || [ "$PUBLISH_GUARD_CASE" = "tracking-$field" ] || continue
         selected=$((selected + 1))
         case "$field" in
-            path) accept 'new branch by path excludes advertised history' "$B" "$branch_update" ;;
-            url) accept 'new branch by URL excludes advertised history' "file://$B" "$branch_update" ;;
+            path) accept 'new branch by path excludes advertised history' "$B" refs/heads/fetched-branch:refs/heads/by-path ;;
+            url) accept 'new branch by URL excludes advertised history' "file://$B" refs/heads/fetched-branch:refs/heads/by-url ;;
             unrelated)
                 destination=$B
                 B="$T/with spaces/other-destination.git"
@@ -58,11 +58,51 @@ case "${PUBLISH_GUARD_CASE:-}" in ''|tracking-*)
                 stale_child=$(printf 'clean descendant of the stale tip' | git -C "$R" commit-tree "$(git -C "$R" rev-parse 'refs/heads/fetched-branch^{tree}')" -p refs/heads/fetched-branch)
                 reject 'a force-replaced destination excludes nothing it no longer advertises' 'line 3' replaced "$stale_child:refs/heads/stale-descendant"
                 B=$destination ;;
+            mirror)
+                # Fetch through a mirror, push upstream: ls-remote would rewrite the URL again and read the mirror.
+                destination=$B
+                B="$T/with spaces/upstream.git"; mirror="$T/with spaces/mirror.git"
+                git init -q --bare "$B"; git init -q --bare "$mirror"
+                git -C "$R" push -q --no-verify "$B" refs/heads/fetched-branch:refs/heads/main > "$T/seed.out" 2>&1
+                printf 'glimmerdeny\n' > "$R/data"; commit 'mirror only'
+                git -C "$R" push -q --no-verify "$mirror" HEAD:refs/heads/private > "$T/seed.out" 2>&1
+                printf 'clean again\n' > "$R/data"; commit 'clean on mirror only'
+                git -C "$R" config "url.$mirror.insteadOf" "$B"
+                git -C "$R" config "url.$B.pushInsteadOf" "$B"
+                reject 'a mirror rewrite cannot supply the destination advertisement' 'would come from another URL' "$B" HEAD:refs/heads/mirror-child
+                git -C "$R" config --unset-all "url.$mirror.insteadOf"
+                git -C "$R" config --unset-all "url.$B.pushInsteadOf"
+                git -C "$R" reset -q --hard refs/heads/fetched-branch
+                B=$destination ;;
+            bareword)
+                # A URL that is a bare word equal to another configured remote's name must not read that remote.
+                destination=$B
+                B="$R/wordrepo"
+                git init -q --bare "$B"
+                holder="$T/with spaces/holder.git"
+                git init -q --bare "$holder"
+                git -C "$R" push -q --no-verify "$holder" refs/heads/fetched-branch:refs/heads/main > "$T/seed.out" 2>&1
+                git -C "$R" remote add wordrepo "$holder"
+                git -C "$R" remote add pubword wordrepo
+                reject 'a bare-word URL cannot read the remote of that name' 'would come from another URL' pubword "$branch_update"
+                git -C "$R" remote remove wordrepo
+                git -C "$R" remote remove pubword
+                rm -rf "${B:?}"
+                B=$destination ;;
+            pushurl)
+                # The hook asks the URL git pushes to, not the one the remote fetches from.
+                destination=$B
+                B="$T/with spaces/pushurl-empty.git"
+                git init -q --bare "$B"
+                git -C "$R" remote add split "$destination"
+                git -C "$R" remote set-url --push split "$B"
+                reject 'a push URL that holds none of the history excludes none of it' 'line 3' split "$branch_update"
+                B=$destination ;;
             retained)
                 printf 'glimmerdeny\n' > "$R/data"; commit 'new denied snapshot'
                 reject 'new snapshot on fetched history still scans retained content' 'line 3' origin HEAD:refs/heads/new-denied
                 git -C "$R" reset -q --hard refs/heads/fetched-branch ;;
-            branch) accept 'new branch excludes fetched destination history' origin "$branch_update" ;;
+            branch) accept 'new branch excludes fetched destination history' origin refs/heads/fetched-branch:refs/heads/by-name ;;
             tag) accept 'new tag excludes fetched destination history' origin refs/tags/fetched-tag ;;
         esac
     done
@@ -323,19 +363,21 @@ case "$1:${PG_FAIL_PRODUCER:-}" in
     cat-file:catalog) [ "${2:-}" != --batch-all-objects ] || fault ;;
     cat-file:read) [ "${2:-}" != commit ] || fault ;;
     ls-tree:tree) fault ;;
-    ls-remote:advertise) fault ;;
+    ls-remote:resolve) [ "${2:-}" != --get-url ] || fault ;;
+    ls-remote:advertise) [ "${2:-}" = --get-url ] || fault ;;
 esac
 exec "$PG_REAL_GIT" "$@"
 WRAPPER
 fixture_executable "$T/git-wrapper/git"
 # Git prepends its execution directory to PATH before running hooks. Put the fixture
 # wrapper there, and retain the real execution directory on PATH for transport helpers.
-for producer in catalog read tree advertise; do
+for producer in catalog read tree resolve advertise; do
     : > "$T/producer-fault"
     case "$producer" in
         catalog) reason='pre-push: cannot enumerate local objects' ;;
         read) reason='pre-push: cannot read object' ;;
         tree) reason='pre-push: cannot read tree' ;;
+        resolve) reason='pre-push: cannot resolve destination' ;;
         advertise) reason='pre-push: cannot read destination advertisement' ;;
     esac
     PG_FAIL_PRODUCER=$producer PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \

@@ -298,13 +298,18 @@ Guarantees and boundaries:
   without Unicode case folding or normalization. Blank/comment lines are ignored; `!span` erases literal permitted
   spans before matching. CRLF lists and an unterminated last line keep original line numbers.
 - Commit history is bounded by the push's old OIDs plus what the destination advertises at push time: one
-  `git ls-remote` on the URL git hands the hook, one round trip per push, which fetches no object. Any ls-remote error
-  (a non-zero exit, a malformed line) refuses the push; an empty advertisement from an empty remote is valid and
-  excludes nothing. The bound excludes only commits and tags available locally and their locally available commit
-  ancestry. Unrelated remote-tracking refs never bound the scan, and no tracking ref is read. A new branch or tag from
-  an enrolled clone scans only history that this destination does not advertise; new snapshots, ref names and tag
-  objects still receive their normal scans. A retained denied file in a new snapshot still refuses after an ancestor
-  was published. Unavailable old OIDs can conservatively recheck history.
+  `git ls-remote` per destination URL (git calls the hook once per URL), which fetches no object. The hook first
+  requires `git ls-remote --get-url -- <url>` to print exactly the URL git handed the hook, because ls-remote applies
+  `insteadOf` again and reads a configured remote named like a bare-word URL; any difference refuses
+  (`destination advertisement would come from another URL`), as does any ls-remote error. A fetch-through-a-mirror,
+  push-upstream configuration therefore refuses every push from an enrolled clone. A destination that needs
+  `remote.<name>.uploadpack` also refuses, since the option is not honored, and the read has no deadline beyond git's
+  own. An empty advertisement from an empty remote is valid and excludes nothing. The advertisement is trusted, within
+  "client hooks are an owner's protection, not a server security boundary". The bound excludes only commits and tags
+  available locally and their locally available commit ancestry. Unrelated remote-tracking refs never bound the scan,
+  and no tracking ref is read. A new branch or tag from an enrolled clone scans only history that this destination does
+  not advertise; new snapshots, ref names and tag objects still receive their normal scans. A retained denied file in a
+  new snapshot still refuses after an ancestor was published. Unavailable old OIDs can conservatively recheck history.
   Raw parent traversal refuses missing shallow/promisor objects; local object enumeration precedes reads, so the
   hook never fetches to complete a scan. No diff, textconv or replacement object changes its inspected bytes. NUL
   bytes delimit single-line matching, as paths use NUL records.
@@ -390,7 +395,7 @@ Tests (all observe execution, not source spellings):
 
 | Entry | Guarantee |
 |---|---|
-| `tests/test-pre-push.sh` | Full object/ref scope, matching and allowances, advertised-old and destination-advertisement exclusions for new branches/tags (name, URL and path pushes), a nested remote namespace and a force-replaced destination excluding nothing unadvertised, new denied snapshots on fetched history, missing shallow/promisor objects without fetch, witnessed producer/read failures (including the advertisement read, path-bearing stderr and disappearing policy), complete stderr audit and deletion behavior |
+| `tests/test-pre-push.sh` | Full object/ref scope, matching and allowances, advertised-old exclusions for new branches and tags pushed by path, URL and remote name, a nested remote namespace, a force-replaced destination, a mirror rewrite, a bare-word URL and a push URL holding none of the history excluding nothing unadvertised, missing shallow/promisor objects without fetch, witnessed producer/read failures (including the URL resolution and the advertisement read, path-bearing stderr and disappearing policy), complete stderr audit and deletion behavior |
 | `tests/test-publish-guard-setup.sh` | Policy placement/UTF-8 encoding at readiness and push, non-ASCII comments and literal entry matching with ASCII folding only, unreadable/failed/incomplete validators, hostile Git selectors, preserved configuration/hooks, repeated setup, common-worktree shim/version selection, fresh-clone limit, exact chaining and veto/cycles, default commit hooks, LF/native Windows paths/interpreter |
 | `tests/test-publish-guard-setup.sh` (installer cases) | Distinct ready/provisioning/conflict/write-failure statuses and read-only final checks, including a missing hook that stays missing |
 | `install::cmd::tests::*` | Concurrent large-stream draining, deadline through output completion after a leader exits, owned writer cessation, and partial output never supplying a successful/provisioning result; native stand-ins run on all three systems |

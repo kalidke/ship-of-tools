@@ -197,9 +197,17 @@ reject() { # safe test label, expected hook diagnostic, push arguments
 }
 accept() {
     local label=$1; shift
+    # An explicit update must not already be at the destination, or the push proves nothing.
+    local arg destination source expected actual before
+    for arg in "$@"; do
+        case "$arg" in -*|origin|/*|file://*|:*) continue ;; esac
+        case "$arg" in *:*) source=${arg%%:*}; destination=${arg#*:} ;; *) source=$arg; destination=$arg ;; esac
+        expected=$(git -C "$R" rev-parse "$source")
+        before=$(git -C "$B" rev-parse --verify -q "$destination" 2> /dev/null || true)
+        [ "$before" != "$expected" ] || fail "$label destination already held the update"
+    done
     git -C "$R" push -q "$@" > "$T/push.out" 2>&1 || fail "$label refused"
     # Every accepted explicit update must actually appear at the destination (not an up-to-date no-op).
-    local arg destination source expected actual
     for arg in "$@"; do
         case "$arg" in -*|origin|/*|file://*) continue ;; esac
         case "$arg" in

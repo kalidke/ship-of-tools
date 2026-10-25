@@ -100,13 +100,14 @@ while read -r lref local_oid rref old_oid extra; do
     if ! zero "$old_oid"; then printf '%s\n' "$old_oid" >> "$pg_tmp/old" || pg_fail 'cannot queue old object'; fi
 done < "$pg_tmp/input"
 [ -n "${2:-}" ] || pg_fail 'cannot determine destination'
+# ls-remote applies insteadOf again and reads a configured remote named like a bare-word URL, so it
+# must dial exactly the URL the push uses.
+reached=$(git ls-remote --get-url -- "$2" 2>/dev/null) || pg_fail 'cannot resolve destination'
+[ "$reached" = "$2" ] || pg_fail 'destination advertisement would come from another URL'
 git ls-remote -- "$2" > "$pg_tmp/advertised" 2>/dev/null || pg_fail 'cannot read destination advertisement'
-# An empty advertisement (an empty remote) is valid and excludes nothing.
-while IFS=$'\t' read -r adv_oid adv_ref adv_extra || [ -n "$adv_oid" ]; do
-    oid_ok "$adv_oid" && { [ "${#adv_oid}" = 40 ] || [ "${#adv_oid}" = 64 ]; } && [ -n "$adv_ref" ] && [ -z "$adv_extra" ] ||
-        pg_fail 'malformed destination advertisement'
-    printf '%s\n' "$adv_oid" >> "$pg_tmp/old" || pg_fail 'cannot queue advertised object'
-done < "$pg_tmp/advertised"
+# An empty advertisement (an empty remote) is valid and excludes nothing; the walk below refuses a
+# first field that is not an object id.
+cut -f1 "$pg_tmp/advertised" >> "$pg_tmp/old" || pg_fail 'cannot queue advertised objects'
 while IFS= read -r id; do
     [ ! -e "$pg_tmp/excluded/$id" ] || continue
     oid_ok "$id" || pg_fail 'invalid old object id'
