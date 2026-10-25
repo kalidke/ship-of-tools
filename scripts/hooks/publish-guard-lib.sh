@@ -23,10 +23,40 @@ pg_no_reparse() {
     return 0
 }
 pg_list_encoding() {
-    # ASCII text only: printable bytes, TAB, LF and CR. In particular no NUL, BOM or UTF-16.
-    { LC_ALL=C tr -d '\011\012\015\040-\176' < "$pg_tmp/list" > "$pg_tmp/invalid-encoding"; } 2>/dev/null ||
+    local rc=0
+    # Validate UTF-8 bytes independently of awk's character/locale behavior.
+    { LC_ALL=C od -An -v -tu1 < "$pg_tmp/list" > "$pg_tmp/list-bytes"; } 2>/dev/null ||
         pg_fail 'cannot validate sot.publishList encoding'
-    [ ! -s "$pg_tmp/invalid-encoding" ] || pg_fail 'sot.publishList must be ASCII text without a BOM'
+    LC_ALL=C awk '
+        {
+            for (i=1; i<=NF; i++) {
+                b=$i+0; offset++
+                if (offset == 1) first=b
+                if (offset == 2) second=b
+                if (offset == 3 && first == 239 && second == 187 && b == 191) exit 1
+                if (b == 0) exit 1
+                if (remaining) {
+                    if (b < low || b > high) exit 1
+                    remaining--; low=128; high=191
+                } else if (b < 128) {
+                    continue
+                } else if (b >= 194 && b <= 223) {
+                    remaining=1; low=128; high=191
+                } else if (b >= 224 && b <= 239) {
+                    # Exclude overlong encodings and UTF-16 surrogate code points.
+                    remaining=2; low=(b == 224 ? 160 : 128); high=(b == 237 ? 159 : 191)
+                } else if (b >= 240 && b <= 244) {
+                    remaining=3; low=(b == 240 ? 144 : 128); high=(b == 244 ? 143 : 191)
+                } else exit 1
+            }
+        }
+        END { if (remaining) exit 1 }
+    ' "$pg_tmp/list-bytes" > /dev/null 2>/dev/null || rc=$?
+    case "$rc" in
+        0) ;;
+        1) pg_fail 'sot.publishList must be valid UTF-8 without BOM or NUL' ;;
+        *) pg_fail 'cannot validate sot.publishList encoding' ;;
+    esac
 }
 pg_list() {
     local value extra parent probe rc names name

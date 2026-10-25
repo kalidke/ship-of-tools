@@ -251,25 +251,28 @@ done
 git -C "$R" config sot.publishList "$POLICY"
 rm -f "$T/git-wrapper/cat"
 # Encoding validation has a checked producer too, on both readiness and push.
-cat > "$T/git-wrapper/tr" <<'TR'
+for encoding_producer in od awk; do
+    cat > "$T/git-wrapper/$encoding_producer" <<'ENCODING'
 #!/bin/bash
 fault_log=$PG_FAULT_LOG
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) fault_log=$(cygpath -u "$fault_log") || exit 98 ;; esac
 printf 'policy-encoding\n' >> "$fault_log" || exit 98
 printf 'fixture encoding error: glimmerdeny-path\n' >&2
 exit 9
-TR
-chmod +x "$T/git-wrapper/tr"
-: > "$T/producer-fault"
-PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
-    GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
-    reject 'failed encoding producer' 'cannot validate sot.publishList encoding' origin main
-grep -Fx policy-encoding "$T/producer-fault" > /dev/null || fail 'encoding producer fault was not injected'
-: > "$T/producer-fault"
-PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
-    GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
-    not_ready 'failed encoding producer' 'cannot validate sot.publishList encoding'
-grep -Fx policy-encoding "$T/producer-fault" > /dev/null || fail 'readiness encoding fault was not injected'
+ENCODING
+    chmod +x "$T/git-wrapper/$encoding_producer"
+    : > "$T/producer-fault"
+    PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
+        GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
+        reject "failed encoding producer $encoding_producer" 'cannot validate sot.publishList encoding' origin main
+    grep -Fx policy-encoding "$T/producer-fault" > /dev/null || fail 'encoding producer fault was not injected'
+    : > "$T/producer-fault"
+    PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
+        GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
+        not_ready "failed encoding producer $encoding_producer" 'cannot validate sot.publishList encoding'
+    grep -Fx policy-encoding "$T/producer-fault" > /dev/null || fail 'readiness encoding fault was not injected'
+    rm -f "$T/git-wrapper/$encoding_producer"
+done
 # Prove the audit itself catches unprefixed stderr from a real refused push.
 cat > "$R/.git/hooks/pre-push.local" <<'LEAK'
 #!/bin/sh

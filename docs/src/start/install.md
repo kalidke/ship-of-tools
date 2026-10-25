@@ -418,10 +418,11 @@ Installer enrollment is pending a separate landing; currently the release instal
 
 The person maintaining policy provisions a private `publish-list.txt` outside every repository: in
 `$XDG_CONFIG_HOME/sot` (or `$HOME/.config/sot`) on Linux/macOS, or `%LOCALAPPDATA%\sot\config` on Windows. Shared homes
-share the same file. Save it as ASCII text without a BOM (printable ASCII plus tabs and CR/LF); UTF-8 with non-ASCII
-characters, UTF-8 with a BOM, UTF-16, NUL and other control bytes refuse at readiness and push. The file contains
-literal denied strings, one per line; blank lines and lines beginning `#` are
-ignored, and `!literal span` permits that exact span, case-insensitively. Agents never print or copy the live list.
+share the same file. Save it as valid UTF-8 without BOM or NUL (CR, LF and TAB allowed). UTF-16 in either byte order,
+a UTF-8 BOM, NUL and invalid UTF-8 refuse at readiness and push, including errors in comments. Non-ASCII UTF-8 comment
+text is allowed. The file contains literal denied strings, one per line; blank lines and lines beginning `#` are
+ignored, and `!literal span` permits that exact span. Matching folds ASCII letters only; a non-ASCII entry matches
+identical UTF-8 bytes, without Unicode case folding or normalization. Agents never print or copy the live list.
 Once provisioned, record its absolute location in this clone and check readiness:
 
 ```bash

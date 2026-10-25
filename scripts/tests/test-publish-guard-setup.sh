@@ -317,21 +317,35 @@ reset_case
 printf 'validator control\n' > "$R/data"; commit
 accept 'restored validator accepts clean update' origin main
 
-# The policy format is ASCII text, not whatever bytes an editor happens to save.
+# Validate the entire UTF-8 file, including ignored comments, before matching.
 fixture encodings
 printf glimmerdeny > "$R/data"; commit
-for encoding in utf8-bom utf16le utf16be utf16le-no-bom utf8-nonascii nul control; do
+for encoding in utf8-bom utf16le utf16be utf16le-no-bom utf16be-no-bom nul nul-comment \
+    invalid-lead stray-continuation bad-continuation truncated-two truncated-three truncated-four \
+    overlong-two overlong-three overlong-four surrogate above-unicode invalid-comment; do
     case "$encoding" in
         utf8-bom) printf '\357\273\277glimmerdeny\n' > "$POLICY" ;;
         utf16le) printf '\377\376g\000l\000i\000m\000m\000e\000r\000d\000e\000n\000y\000\n\000' > "$POLICY" ;;
         utf16be) printf '\376\377\000g\000l\000i\000m\000m\000e\000r\000d\000e\000n\000y\000\n' > "$POLICY" ;;
         utf16le-no-bom) printf 'g\000l\000i\000m\000m\000e\000r\000d\000e\000n\000y\000\n\000' > "$POLICY" ;;
-        utf8-nonascii) printf 'glimmerdeny\303\251\n' > "$POLICY" ;;
+        utf16be-no-bom) printf '\000g\000l\000i\000m\000m\000e\000r\000d\000e\000n\000y\000\n' > "$POLICY" ;;
         nul) printf 'glimmerdeny\000\n' > "$POLICY" ;;
-        control) printf 'glimmerdeny\001\n' > "$POLICY" ;;
+        nul-comment) printf '# comment\000\n\nglimmerdeny\n' > "$POLICY" ;;
+        invalid-lead) printf 'glimmerdeny\377\n' > "$POLICY" ;;
+        stray-continuation) printf 'glimmerdeny\200\n' > "$POLICY" ;;
+        bad-continuation) printf 'glimmerdeny\303x\n' > "$POLICY" ;;
+        truncated-two) printf 'glimmerdeny\302' > "$POLICY" ;;
+        truncated-three) printf 'glimmerdeny\342\202' > "$POLICY" ;;
+        truncated-four) printf 'glimmerdeny\360\237\222' > "$POLICY" ;;
+        overlong-two) printf 'glimmerdeny\300\200\n' > "$POLICY" ;;
+        overlong-three) printf 'glimmerdeny\340\200\200\n' > "$POLICY" ;;
+        overlong-four) printf 'glimmerdeny\360\200\200\200\n' > "$POLICY" ;;
+        surrogate) printf 'glimmerdeny\355\240\200\n' > "$POLICY" ;;
+        above-unicode) printf 'glimmerdeny\364\220\200\200\n' > "$POLICY" ;;
+        invalid-comment) printf '# caf\303\n\nglimmerdeny\n' > "$POLICY" ;;
     esac
-    reject "unsupported policy encoding $encoding" 'must be ASCII text without a BOM' origin main
-    not_ready "unsupported policy encoding $encoding" 'must be ASCII text without a BOM'
+    reject "unsupported policy encoding $encoding" 'must be valid UTF-8 without BOM or NUL' origin main
+    not_ready "unsupported policy encoding $encoding" 'must be valid UTF-8 without BOM or NUL'
 done
 printf '#\tASCII comment\r\n\r\nglimmerdeny\r\notherdeny\r\n!glimmerdeny.example/ok' > "$POLICY"
 reject 'ASCII policy denies intended entry' 'line 3' origin main
@@ -339,6 +353,36 @@ reset_case
 printf 'ASCII control\n' > "$R/data"; commit
 "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --require-ready > "$T/setup.out" 2>&1 || fail 'ASCII policy readiness refused'
 accept 'ASCII policy ready and clean push accepted' origin main
+
+# Non-ASCII comments are ignored by matching, but must be valid UTF-8. Include
+# the two/three/four-byte boundaries so validation does not reject legal scalars.
+printf '# caf\303\251\t\302\200\337\277\340\240\200\355\237\277\356\200\200\357\277\277\360\220\200\200\364\217\277\277\r\n\r\nglimmerdeny\r\notherdeny\r\n!glimmerdeny.example/ok' > "$POLICY"
+"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --require-ready > "$T/setup.out" 2> "$T/ready.err" || fail 'UTF-8 comment policy readiness refused'
+grep -F 'policy ready' "$T/setup.out" > /dev/null || fail 'UTF-8 comment policy did not report ready'
+audit_stderr "$T/ready.err" 'UTF-8 comment policy readiness'
+ok 'UTF-8 comment policy readiness'
+printf 'UTF-8 comment control\n' > "$R/data"; commit
+accept 'UTF-8 non-ASCII comment permits clean push' origin main
+BASE=$(git -C "$R" rev-parse HEAD)
+printf GLIMMERDENY > "$R/data"; commit
+reject 'UTF-8 comment preserves ASCII denial and line number' 'line 3' origin main
+reset_case
+
+# Existing LC_ALL=C matching folds ASCII letters only; the accent bytes are
+# literal. Neither Unicode case folding nor normalization is introduced.
+printf '# caf\303\251\n\nglimmerdeny\303\251\n!glimmerdeny\303\251.example/ok\n' > "$POLICY"
+"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --require-ready > "$T/setup.out" 2>&1 || fail 'UTF-8 entry policy readiness refused'
+ok 'UTF-8 entry policy readiness'
+printf 'GLIMMERDENY\303\211\n' > "$R/data"; commit
+accept 'non-ASCII entry does not Unicode case fold' origin main
+printf 'GLIMMERDENYe\314\201\n' > "$R/data"; commit
+accept 'non-ASCII entry does not normalize Unicode' origin main
+BASE=$(git -C "$R" rev-parse HEAD)
+printf 'GLIMMERDENY\303\251\n' > "$R/data"; commit
+reject 'non-ASCII entry matches literal UTF-8 bytes with ASCII folding' 'line 3' origin main
+reset_case
+printf 'GLIMMERDENY\303\251.example/ok\n' > "$R/data"; commit
+accept 'non-ASCII literal allowance retains matching behavior' origin main
 printf '%s\n' '# synthetic policy' '' 'glimmerdeny' 'otherdeny' '!glimmerdeny.example/ok' > "$POLICY"
 
 # Each inherited selector is hostile independently; the combined case includes

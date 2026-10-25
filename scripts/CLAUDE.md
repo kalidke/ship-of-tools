@@ -279,9 +279,12 @@ Guarantees and boundaries:
   and messages, full unquoted paths, blob bytes including binary and symlink targets, branch/tag destination names,
   raw annotated tag objects (including tagger identity and embedded name), nested tags and tree/blob targets. Gitlinks
   contribute their path and OID, not a fetched submodule repository. Objects are deduplicated; paths retain their tree
-  context. Policy files must be ASCII text without a BOM: printable ASCII plus TAB, CR and LF; NUL, other control bytes,
-  non-ASCII UTF-8 and UTF-16 refuse. Matching is ASCII case-insensitive and literal. Blank/comment lines are ignored;
-  `!span` erases literal permitted spans before matching. CRLF lists and an unterminated last line keep original line numbers.
+  context. Policy files must be valid UTF-8 without BOM or NUL; CR, LF and TAB are allowed. UTF-16 in either byte order,
+  a UTF-8 BOM, NUL and invalid UTF-8 refuse at readiness and push, including errors in comment lines. Non-ASCII UTF-8
+  comments are allowed. Matching remains literal bytes under `LC_ALL=C`, case-insensitive for ASCII letters only:
+  a non-ASCII entry matches identical UTF-8 bytes, without Unicode case folding or normalization. Blank/comment lines
+  are ignored; `!span` erases literal permitted spans before matching. CRLF lists and an unterminated last line keep
+  original line numbers.
 - Only locally available old OIDs advertised by this destination bound commit history; unrelated remote-tracking refs
   never do. New branches/tags or unavailable old OIDs can conservatively recheck history. A retained denied file in a
   new snapshot still refuses after an ancestor was published. Raw parent traversal refuses missing shallow/promisor
@@ -315,7 +318,7 @@ Guarantees and boundaries:
   this guarantee. Client hooks are an owner's protection, not a server security boundary. No discovery of arbitrary
   clones, live rows, or home directories occurs. Operations retirement and live migration remain the operator's work.
 
-Platforms: Bash 3.2 and ordinary Git/awk/tr/sed on Linux/macOS and Git for Windows Bash; Windows path validation also
+Platforms: Bash 3.2 and ordinary Git/awk/od/tr/sed on Linux/macOS and Git for Windows Bash; Windows path validation also
 uses Windows PowerShell without profiles. Hook and shim check out at LF even with autocrlf. The Linux CI matrix builds
 bash 3.2 and rewrites only scratch hook shebangs; macOS uses `/bin/bash`; Windows retains shipped shebangs and actual
 Git-launched hooks. The matrix needs no product binary or secret and runs in `rust.yml` at landings and branch dispatch.
@@ -325,7 +328,7 @@ Tests (all observe execution, not source spellings):
 | Entry | Guarantee |
 |---|---|
 | `tests/test-pre-push.sh` | Full object/ref scope, matching and allowances, destination exclusions, missing shallow/promisor objects without fetch, witnessed producer/read failures (including path-bearing stderr and disappearing policy), complete stderr audit and deletion behavior |
-| `tests/test-publish-guard-setup.sh` | Policy placement/ASCII encoding at readiness and push, unreadable/failed/incomplete validators, hostile Git selectors, preserved configuration/hooks, repeated setup, common-worktree shim/version selection, fresh-clone limit, exact chaining and veto/cycles, default commit hooks, LF/native Windows paths/interpreter |
+| `tests/test-publish-guard-setup.sh` | Policy placement/UTF-8 encoding at readiness and push, non-ASCII comments and literal entry matching with ASCII folding only, unreadable/failed/incomplete validators, hostile Git selectors, preserved configuration/hooks, repeated setup, common-worktree shim/version selection, fresh-clone limit, exact chaining and veto/cycles, default commit hooks, LF/native Windows paths/interpreter |
 | `tests/test-publish-guard-entries.sh` | Actual release push refusal; gate checkout enrollment at container boundary; shell/PowerShell pack enrollment at recording build boundary; entry conflicts before builds |
 | `tests/installer-apply.sh` (including `installer-handoff.sh`) | Git-less libc/tree preflight retains its cause; a real scratch clone enrolls before recording builds and packs an executable sot-apply |
 | `tests/test-release-cut.sh`, `tests/test-rc-gate-target.sh`, `tests/test-rc-gate-parity.sh`, `tests/test-native-stderr.ps1` | Existing entry contracts retain their intended executing fixtures after enrollment |

@@ -69,7 +69,7 @@ else
     mkdir -p "$d/tree/rust" "$d/tree/scripts/hooks" "$d/home"
     cp "$SRC/scripts/setup-publish-guard.sh" "$d/tree/scripts/"
     cp "$SRC/scripts/hooks/"* "$d/tree/scripts/hooks/"
-    for t in bash git cat mkdir cp tar gzip mktemp rm sha256sum chmod mv cmp sed awk grep tr; do ln -sf "$(command -v "$t")" "$d/bin/$t"; done
+    for t in bash git cat mkdir cp tar gzip mktemp rm sha256sum chmod mv cmp sed awk grep tr od; do ln -sf "$(command -v "$t")" "$d/bin/$t"; done
     pack_git() {
         env -i HOME="$d/home" PATH="$d/bin" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
             GIT_CONFIG_NOSYSTEM=1 GIT_ALLOW_PROTOCOL=file GIT_TERMINAL_PROMPT=0 \
