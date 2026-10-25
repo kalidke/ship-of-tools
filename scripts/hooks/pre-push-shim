@@ -1,0 +1,7 @@
+#!/bin/bash
+# Ship of Tools common-directory entry. The implementation belongs to the pushing checkout.
+root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo 'pre-push: a source checkout is required; refusing the push' >&2; exit 1; }
+guard="$root/scripts/hooks/pre-push"
+[ -f "$guard" ] && [ -x "$guard" ] || { echo 'pre-push: checked-out publish guard is missing; refusing the push' >&2; exit 1; }
+export SOT_PUBLISH_SHIM=1
+exec "$guard" "$@"

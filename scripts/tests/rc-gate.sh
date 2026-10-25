@@ -278,7 +278,7 @@ producer() {
   for f in "$D"/comm/tests/test-*.sh "$D"/agents/tests/test-*.sh; do
     SHELL_ALL+=("$f")
   done
-  SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/installer-wrapper.sh" "$D/scripts/tests/installer-apply.sh" "$D/scripts/tests/installer-shared-home.sh" "$D/scripts/tests/test-topology-plan.sh" "$D/scripts/tests/test-test-body.sh" "$D/scripts/tests/test-bash32.sh" "$D/scripts/tests/test-release-cut.sh")
+  SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/installer-wrapper.sh" "$D/scripts/tests/installer-apply.sh" "$D/scripts/tests/installer-shared-home.sh" "$D/scripts/tests/test-topology-plan.sh" "$D/scripts/tests/test-test-body.sh" "$D/scripts/tests/test-bash32.sh" "$D/scripts/tests/test-release-cut.sh" "$D/scripts/tests/test-pre-push.sh" "$D/scripts/tests/test-publish-guard-setup.sh" "$D/scripts/tests/test-publish-guard-entries.sh")
 
   [ -n "${RCG_LIFETIME:-}" ] && emit lifetime lifetime
   for s in julia-root "${JULIA_PKGS[@]/#/julia-}"; do echo unrun > "$L/steps/${s//\//-}.rc"; done
@@ -445,6 +445,8 @@ if [ -e "$CLAIM" ] && [ "$(cat "$CLAIM")" != "$D" ]; then
   exit 2
 fi
 mkdir -p "$CARGO_TARGET_DIR" && printf '%s\n' "$D" > "$CLAIM" || exit 2
+# The checkout argument is the enrollment target; --job and --pipeline return above this point.
+bash "$D/scripts/setup-publish-guard.sh" "$D" || exit $?
 R=/sys/fs/cgroup; [ -e "$R/cgroup.controllers" ] || R=/sys/fs/cgroup/unified
 CG=$R$(sed -n 's/^0:://p' /proc/self/cgroup)
 [ -r "$CG/cgroup.procs" ] || { echo "rc-gate: needs a cgroup v2 control group" >&2; exit 2; }

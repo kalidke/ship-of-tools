@@ -24,7 +24,7 @@
 # publish job and kills the whole release. Testing it only at tag time meant
 # the tag was the first place anyone learned it was broken, with no way to
 # fix it in place. Pre-merge is where that belongs.
-# Hosted runners run 20 jobs at once, 5 of them macOS: this workflow starts 18, 5 on macOS.
+# Hosted concurrency is shared; publish-guard adds one lightweight shell job per system.
 
 name: Rust
 
@@ -48,6 +48,43 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  publish-guard:
+    name: publish guard (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build bash 3.2 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          publish_bash=$(bash scripts/tests/bash32.sh "$RUNNER_TEMP/bash-3.2.57")
+          echo "HOOK_SHELL=$publish_bash" >> "$GITHUB_ENV"
+      - name: Use system bash 3.2 (macOS)
+        if: runner.os == 'macOS'
+        run: echo 'HOOK_SHELL=/bin/bash' >> "$GITHUB_ENV"
+      # Windows retains the shipped shebang. Git itself launches every fixture hook.
+      - name: Local pushes and clone enrollment
+        run: |
+          interpreter="${HOOK_SHELL:-bash}"
+          if [ -n "${HOOK_SHELL:-}" ]; then
+            "$interpreter" -c '[[ $BASH_VERSION == 3.2.* ]]'
+            mkdir -p "$RUNNER_TEMP/publish-shell"
+            ln -s "$HOOK_SHELL" "$RUNNER_TEMP/publish-shell/bash"
+            export PATH="$RUNNER_TEMP/publish-shell:$PATH"
+          fi
+          "$interpreter" -n scripts/hooks/pre-push
+          "$interpreter" -n scripts/hooks/pre-push-shim
+          "$interpreter" scripts/tests/test-pre-push.sh
+          "$interpreter" scripts/tests/test-publish-guard-setup.sh
+          "$interpreter" scripts/tests/test-publish-guard-entries.sh
+
   plan:
     name: plan the test shards
     runs-on: ubuntu-latest
@@ -300,7 +337,7 @@ jobs:
         run: |
           shopt -s globstar nullglob
           rc=0; n=0
-          for f in scripts/**/*.sh docs/tools/*.sh; do
+          for f in scripts/**/*.sh scripts/hooks/pre-push scripts/hooks/pre-push-shim docs/tools/*.sh; do
             n=$((n + 1))
             if bash -n "$f"; then echo "ok: $f"; else echo "PARSE ERROR: $f"; rc=1; fi
           done

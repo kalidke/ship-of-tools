@@ -402,6 +402,47 @@ git clone https://github.com/kalidke/ship-of-tools
 cd ship-of-tools
 ```
 
+### [Enroll the publish guard](@id publish-guard-setup)
+
+From the clone root, before building or publishing, run in Bash (Git Bash on Windows):
+
+```bash
+bash scripts/setup-publish-guard.sh "$PWD"
+```
+
+This installs a thin `hooks/pre-push` shim and `publish-guard/installed-hash` record under the clone's common Git
+folder. Every linked worktree uses the shim and its own checked-out `scripts/hooks/pre-push`; a missing implementation
+refuses the push. Other default hooks remain active. The development gate, release and pack entries also enroll their
+checkout. Direct Cargo commands do not perform setup, and a never-enrolled raw clone can push without this protection.
+Installer enrollment is pending a separate landing; currently the release installer enrolls no clones automatically.
+
+The person maintaining policy provisions a private `publish-list.txt` outside every repository: in
+`$XDG_CONFIG_HOME/sot` (or `$HOME/.config/sot`) on Linux/macOS, or `%LOCALAPPDATA%\sot\config` on Windows. Shared homes
+share the same file. The file contains literal denied strings, one per line; blank lines and lines beginning `#` are
+ignored, and `!literal span` permits that exact span, case-insensitively. Agents never print or copy the live list.
+Once provisioned, record its absolute location in this clone and check readiness:
+
+```bash
+bash scripts/setup-publish-guard.sh "$PWD" --list /absolute/external/publish-list.txt --require-ready
+```
+
+Use the actual native absolute config path on Windows. Setup does not create a permissive list. A missing, invalid or
+inside-repository `sot.publishList` refuses even a deletion-only push; only the common clone's local setting counts.
+The guard scans complete selected commit snapshots (including binary blobs, paths and identities), exact tag objects
+and destination branch/tag names. New refs can conservatively recheck previously published history. Missing local
+objects refuse without fetching.
+
+If setup reports an existing `core.hooksPath`, it leaves that configuration and its hooks alone and names the clone.
+The owner inspects the other hooks, preserves those still wanted, then runs the clone-local migration command setup
+prints (`git -C <checkout> config --local --unset-all core.hooksPath`) and checks for remaining global/worktree
+overrides before repeating setup. An occupied default pre-push slot is also preserved: the owner may explicitly place
+that hook at `<common>/hooks/pre-push.local` before enrollment. The guard runs this optional local hook only after its
+scan succeeds, preserving its veto. It never moves a foreign hook on the owner's behalf.
+
+This protection covers ordinary Git pushes after enrollment. `--no-verify`, removed/disabled hooks, overriding hook
+configuration, and `gh` text such as PR, issue and release bodies remain outside it. Keep the private policy deliberately
+when removing or reinstalling config folders; deleting the config folder deletes the list too.
+
 ### Build the Rust workspace
 
 The Rust workspace lives under `rust/` and has six members: `protocol`

@@ -27,6 +27,22 @@ function Invoke-Child([string]$Name, [string]$Text, [hashtable]$Env = @{}, [int]
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    # Git enrollment and build fixtures use an isolated home/configuration, never the caller's hooks or settings.
+    foreach ($k in @($psi.EnvironmentVariables.Keys)) {
+        if ($k -match '^(GIT_|SOT_|CLAUDE_|CODEX_)') { $psi.EnvironmentVariables.Remove($k) }
+    }
+    $fixtureHome = Join-Path $work 'home'
+    New-Item -ItemType Directory -Force -Path $fixtureHome | Out-Null
+    $emptyConfig = Join-Path $work 'empty.gitconfig'
+    [IO.File]::WriteAllText($emptyConfig, '')
+    $psi.EnvironmentVariables['HOME'] = $fixtureHome
+    $psi.EnvironmentVariables['USERPROFILE'] = $fixtureHome
+    $psi.EnvironmentVariables['APPDATA'] = Join-Path $fixtureHome 'roaming'
+    $psi.EnvironmentVariables['LOCALAPPDATA'] = Join-Path $fixtureHome 'local'
+    $psi.EnvironmentVariables['GIT_CONFIG_GLOBAL'] = $emptyConfig
+    $psi.EnvironmentVariables['GIT_CONFIG_SYSTEM'] = $emptyConfig
+    $psi.EnvironmentVariables['GIT_CONFIG_NOSYSTEM'] = '1'
+    $psi.EnvironmentVariables['GIT_TERMINAL_PROMPT'] = '0'
     foreach ($k in $Env.Keys) { $psi.EnvironmentVariables[$k] = [string]$Env[$k] }
     $p = [System.Diagnostics.Process]::Start($psi)
     $out = $p.StandardOutput.ReadToEndAsync()
@@ -47,21 +63,33 @@ function Invoke-Setup([string]$Dir) {
         $src = Join-Path $scripts $f
         Copy-Item -LiteralPath $src -Destination (Join-Path $root 'repo\scripts')
     }
+    Copy-Item -LiteralPath (Join-Path $scripts 'setup-publish-guard.sh') -Destination (Join-Path $root 'repo\scripts')
+    Copy-Item -LiteralPath (Join-Path $scripts 'hooks') -Destination (Join-Path $root 'repo\scripts\hooks') -Recurse
     $setup = Join-Path $root 'setup.ps1'
     Set-Content -LiteralPath $setup -Encoding ascii -Value @"
 `$ErrorActionPreference = 'Continue'
 Set-Location '$root\repo'
 git init -q 2>&1 | Out-Null
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 git config user.email t@t 2>&1 | Out-Null
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 git config user.name t 2>&1 | Out-Null
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 git add -A 2>&1 | Out-Null
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 git commit -qm one 2>&1 | Out-Null
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 git init -q --bare '$root\origin.git' 2>&1 | Out-Null
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 git remote add origin '$root\origin.git' 2>&1 | Out-Null
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 git push -q origin HEAD:refs/heads/main 2>&1 | Out-Null
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 git fetch -q origin 2>&1 | Out-Null
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 "@
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $setup 2>&1 | Out-Null
+    $prepared = Invoke-Child 'prepare-fixture' ([IO.File]::ReadAllText($setup))
+    if ($prepared.Code -ne 0) { throw "fixture setup failed: $($prepared.Out)" }
     return $root
 }
 function Set-Cargo([string]$Root, [int]$Exit) {

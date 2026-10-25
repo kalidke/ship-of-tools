@@ -15,8 +15,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/release-cut.XXXXXX")"
 trap 'rm -rf "${WORK:?}"' EXIT
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+for git_var in ${!GIT_@}; do unset "$git_var"; done
+mkdir "$WORK/home"
+export HOME="$WORK/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_AUTHOR_NAME=Fixture GIT_AUTHOR_EMAIL=fixture@example.invalid GIT_COMMITTER_NAME=Fixture GIT_COMMITTER_EMAIL=fixture@example.invalid
 fails=0
+payload() {
+    mkdir -p "$1/scripts/hooks"
+    cp "$ROOT/scripts/setup-publish-guard.sh" "$1/scripts/"
+    cp "$ROOT/scripts/hooks/"* "$1/scripts/hooks/"
+    chmod +x "$1/scripts/hooks/pre-push" "$1/scripts/hooks/pre-push-shim"
+}
+printf 'synthetic-denied-release\n' > "$WORK/publish-list.txt"
 
 check() {  # <description> <expected> <actual>
     if [ "$2" = "$3" ]; then
@@ -30,10 +40,11 @@ check() {  # <description> <expected> <actual>
 REPO="$WORK/repo"
 mkdir -p "$REPO/scripts"
 cp "$ROOT/scripts/release.sh" "$REPO/scripts/release.sh"
+payload "$REPO"
 (
     cd "$REPO"
     git init -q
-    git add scripts/release.sh
+    git add scripts
     git -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false commit -q -m "fixture: release.sh"
 )
 
@@ -76,6 +87,7 @@ CUT="$WORK/cut"
 git init -q --bare "$ORIGIN"
 mkdir -p "$CUT/scripts" "$CUT/rust"
 cp "$ROOT/scripts/release.sh" "$CUT/scripts/release.sh"
+payload "$CUT"
 printf '[workspace.package]\nversion = "0.6.6-dev"\n' > "$CUT/rust/Cargo.toml"
 printf 'version = 3\n' > "$CUT/rust/Cargo.lock"
 printf 'name = "Fixture"\nversion = "0.6.6-dev"\n' > "$CUT/Project.toml"
@@ -87,6 +99,7 @@ printf 'name = "Fixture"\nversion = "0.6.6-dev"\n' > "$CUT/Project.toml"
     git config user.email test@example.invalid
     git config commit.gpgsign false
     git config tag.gpgSign false
+    git config sot.publishList "$WORK/publish-list.txt"
     git remote add origin "$ORIGIN"
     git add .
     git commit -q -m "fixture"

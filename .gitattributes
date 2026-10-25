@@ -25,3 +25,11 @@ comm/bin-folders.txt text eol=lf
 # Windows checkout would rewrite them and the parser tests would fail there
 # for a reason that looks nothing like the cause.
 rust/vt100/tests/data/** -text
+
+# Git executes these directly, including the extensionless common-directory shim.
+scripts/hooks/* text eol=lf
+scripts/setup-publish-guard.sh text eol=lf
+scripts/tests/*publish-guard*.sh text eol=lf
+scripts/tests/test-pre-push.sh text eol=lf
+scripts/release.sh text eol=lf
+scripts/pack-build.sh text eol=lf

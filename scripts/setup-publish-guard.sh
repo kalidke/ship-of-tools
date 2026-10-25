@@ -1,0 +1,82 @@
+#!/bin/bash
+# One owner for clone enrollment. Installer/provisioning supplies --list; development only ensures placement.
+set -u
+set -o pipefail
+fail() { printf 'publish guard: %s\n' "$1" >&2; exit 1; }
+[ $# -ge 1 ] || fail 'usage: setup-publish-guard.sh CHECKOUT [--list ABSOLUTE_PATH] [--require-ready]'
+here=$(cd "${BASH_SOURCE[0]%/*}" && pwd -P) || fail 'cannot resolve setup source'
+checkout=$1; shift
+policy= supplied=0 ready=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --list) [ $# -ge 2 ] || fail '--list needs an absolute path'; policy=$2; supplied=1; shift 2 ;;
+        --require-ready) ready=1; shift ;;
+        *) fail 'unknown setup argument' ;;
+    esac
+done
+cd "$checkout" || fail 'cannot enter checkout'
+checkout=$(pwd -P) || fail 'cannot resolve checkout'
+common=$(git rev-parse --git-common-dir 2>/dev/null) || fail 'checkout is not a Git repository'
+common=$(cd "$common" && pwd -P) || fail 'cannot resolve common Git directory'
+# The setup source may differ from the checkout being enrolled.
+[ -f "$here/hooks/publish-guard-lib.sh" ] || fail 'policy validator is missing'
+. "$here/hooks/publish-guard-lib.sh"
+source_hook="$here/hooks/pre-push-shim"
+[ -f "$source_hook" ] && [ ! -L "$source_hook" ] || fail 'shipped hook shim is missing'
+setting=$(git config --show-origin --get core.hooksPath 2>/dev/null); status=$?
+if [ "$status" != 1 ]; then
+    # Any explicit setting is preserved, even an empty setting or a worktree/global override.
+    printf 'publish guard: existing hooks configuration kept for %s\n' "$checkout" >&2
+    printf 'publish guard: inspect preserved hooks, then migrate the clone-local override with: git -C %q config --local --unset-all core.hooksPath\n' "$checkout" >&2
+    fail 'effective core.hooksPath must be unset before enrollment; global/worktree overrides also need their owner'
+fi
+for dir in "$common/hooks" "$common/publish-guard"; do
+    if [ -e "$dir" ]; then pg_no_reparse "$dir" || fail 'hook or ownership directory is an unresolved alias'; fi
+    [ ! -L "$dir" ] || fail 'hook or ownership directory is a symlink'
+    [ ! -e "$dir" ] || [ -d "$dir" ] || fail 'hook or ownership directory is not a directory'
+done
+mkdir -p "$common/hooks" "$common/publish-guard" || fail 'cannot create hook directories'
+slot="$common/hooks/pre-push"
+record="$common/publish-guard/installed-hash"
+for file in "$slot" "$record"; do
+    if [ -e "$file" ]; then pg_no_reparse "$file" || fail 'hook slot or ownership record is an unresolved alias'; fi
+done
+[ ! -L "$slot" ] && [ ! -L "$record" ] || fail 'hook slot or ownership record is a symlink'
+[ ! -e "$record" ] || [ -f "$record" ] || fail 'ownership record is not a regular file'
+if [ -e "$slot" ]; then
+    [ -f "$slot" ] || fail 'pre-push slot is not a regular file'
+    if ! cmp -s "$slot" "$source_hook"; then
+        [ -f "$record" ] || fail 'occupied pre-push slot has no ownership record; preserve it explicitly as pre-push.local'
+        installed=$(cat "$record") || fail 'cannot read ownership record'
+        case "$installed" in ''|*[!0-9a-f]*) fail 'invalid ownership record' ;; esac
+        actual=$(git hash-object --no-filters "$slot") || fail 'cannot identify installed hook'
+        [ "$actual" = "$installed" ] || fail 'locally modified pre-push hook kept; inspect it before enrollment'
+    fi
+fi
+scratch=$(mktemp -d "$common/publish-guard/setup.XXXXXX") || fail 'cannot create setup scratch directory'
+trap 'rm -rf "${scratch:?}"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+cp "$source_hook" "$scratch/pre-push" && chmod +x "$scratch/pre-push" || fail 'cannot prepare hook shim'
+digest=$(git hash-object --no-filters "$scratch/pre-push") || fail 'cannot identify shipped hook'
+printf '%s\n' "$digest" > "$scratch/installed-hash" || fail 'cannot prepare ownership record'
+mv -f "$scratch/pre-push" "$slot" || fail 'cannot publish hook shim'
+mv -f "$scratch/installed-hash" "$record" || fail 'cannot publish ownership record'
+if [ "$supplied" = 1 ]; then
+    case "$policy" in /*|[a-zA-Z]:[\\/]*) ;; *) fail 'sot.publishList must be absolute' ;; esac
+    git config --local --replace-all sot.publishList "$policy" || fail 'cannot record sot.publishList'
+fi
+# Check effective selection after publication too; never set core.hooksPath.
+git config --get core.hooksPath > /dev/null 2>&1; status=$?
+[ "$status" = 1 ] && [ -x "$slot" ] || fail 'effective hook selection is not the common default slot'
+printf 'publish guard: enrolled %s\n' "$checkout"
+if [ "$ready" = 1 ]; then
+    pg_tmp=$scratch
+    export LC_ALL=C
+    [ -f "$here/hooks/publish-guard-lib.sh" ] || fail 'policy validator is missing'
+    . "$here/hooks/publish-guard-lib.sh"
+    pg_list
+    printf 'publish guard: policy ready\n'
+else
+    printf 'publish guard: pushes require one valid external clone-local sot.publishList; installation automation is pending\n'
+fi

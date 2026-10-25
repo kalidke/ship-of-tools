@@ -43,6 +43,10 @@ document — argue changes in the diff, not in side channels. See the
 
 ## Build and test
 
+Before a direct build or push, [enroll the clone's publish guard](start/install.md#publish-guard-setup) and provision
+its external policy. The gate, release and pack entries ensure enrollment before their substantive work. Raw Cargo
+commands and direct pushes from never-enrolled clones do not; installer automation is pending a separate landing.
+
 The repository is a Julia umbrella package with a Rust workspace inside it.
 
 Julia — run the umbrella suite and the core package suite:

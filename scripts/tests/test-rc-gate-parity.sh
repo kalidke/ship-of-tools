@@ -121,7 +121,7 @@ new_ub() {
   new_repo "$1"
   cp "$here/under-bash.sh" "$here/sigpipe-scan.awk" "$repo/scripts/tests/"
   for s in installer-state installer-wrapper installer-apply installer-shared-home test-topology-plan test-sigpipe-scan \
-      test-release-cut; do
+      test-release-cut test-pre-push test-publish-guard-setup test-publish-guard-entries; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/tests/$s.sh"
   done
   printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/comm/tests/test-ok.sh"

@@ -22,6 +22,19 @@ function Stop-Pack([string]$Why) {
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# Use Git for Windows' bash, never a WSL bash discovered by PATH.
+$gitExe = (Get-Command git.exe -ErrorAction Stop).Source
+$gitDir = Split-Path -Parent $gitExe
+$gitBash = @(
+    (Join-Path $gitDir '..\bin\bash.exe'),
+    (Join-Path $gitDir '..\..\bin\bash.exe'),
+    (Join-Path $gitDir 'bash.exe')
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+if (-not $gitBash) { Stop-Pack 'Git for Windows bash is required for publish guard setup' }
+$setup = (Join-Path $PSScriptRoot 'setup-publish-guard.sh').Replace('\', '/')
+$enroll = Invoke-SotNative $gitBash @('--', $setup, $root.Replace('\', '/')) -Echo
+if ($enroll.Code -ne 0) { Stop-Pack "publish guard setup failed ($($enroll.Code))" }
+
 if (-not [Environment]::Is64BitOperatingSystem) { Stop-Pack 'x86_64 Windows only' }
 if (@((Invoke-SotNative 'git' @('status', '--porcelain')).Out).Count -gt 0) { Stop-Pack 'the working tree is not clean; commit or stash first' }
 if (@((Invoke-SotNative 'git' @('branch', '-r', '--contains', 'HEAD')).Out).Count -eq 0) { Stop-Pack 'HEAD is on no remote-tracking branch; push the line first' }

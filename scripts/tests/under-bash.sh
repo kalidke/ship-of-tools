@@ -3,10 +3,11 @@
 # scripts/CLAUDE.md). First every tracked shell script outside a tests folder under comm/, agents/ and scripts/ must
 # parse under BASH. Then each SUITE (a path from the repository root) runs from its own folder with a folder holding
 # `bash -> BASH` first on PATH, so every script it starts through `#!/usr/bin/env bash`, `bash x.sh` or `bash -c` gets
-# BASH (a `#!/bin/bash` script gets it only where BASH is /bin/bash, as on macOS). A suite under scripts/tests sources
+# BASH (the publish suites rewrite only scratch hook shebangs through HOOK_SHELL; other `#!/bin/bash` scripts get it
+# only where BASH is /bin/bash, as on macOS). A suite under scripts/tests sources
 # the scripts it tests into its own shell, so it runs on BASH itself; any other suite runs on the bash running this
 # script, which must be 4 or later, since those suites use what 3.2 lacks. With no SUITE: every hermetic suite, each
-# comm/tests/test-*.sh and agents/tests/test-*.sh, and the seven scripts/tests suites. Prints `under-bash: PASS|FAIL SUITE` per suite and `under-bash: FAIL parse SCRIPT` per
+# comm/tests/test-*.sh and agents/tests/test-*.sh, and the explicit scripts/tests suites. Prints `under-bash: PASS|FAIL SUITE` per suite and `under-bash: FAIL parse SCRIPT` per
 # script that does not parse or runs a utility by the `command` builtin outside a pipeline (under bash 3.2 and set -e
 # that ends the shell when the utility fails, even where an if, ! or || handles it), and `under-bash: FAIL early-reader
 # SCRIPT:LINE:TEXT` per pipeline whose reader can stop early (sigpipe-scan.awk), and `under-bash: FAIL bare-in-place-sed
@@ -23,12 +24,15 @@ if [ $# -eq 0 ]; then
     done
     set -- "$@" scripts/tests/installer-state.sh scripts/tests/installer-wrapper.sh scripts/tests/installer-apply.sh \
         scripts/tests/installer-shared-home.sh scripts/tests/test-topology-plan.sh scripts/tests/test-sigpipe-scan.sh \
-        scripts/tests/test-release-cut.sh
+        scripts/tests/test-release-cut.sh scripts/tests/test-pre-push.sh scripts/tests/test-publish-guard-setup.sh \
+        scripts/tests/test-publish-guard-entries.sh
 fi
 shadow="$(mktemp -d "${TMPDIR:-/tmp}/under-bash-XXXXXX")" || exit 2
 trap 'rm -rf "${shadow:?}"' EXIT
 ln -s "$want" "$shadow/bash" || exit 2
 export PATH="$shadow:$PATH"
+# Git launches scratch copies of the persistent shim and guard under this exact shell.
+export HOOK_SHELL="$want"
 v="$("$want" -c 'echo "$BASH_VERSION"')" && [ "$(bash -c 'echo "$BASH_VERSION"')" = "$v" ] \
     || { echo "under-bash.sh: bash on PATH is not $want" >&2; exit 2; }
 echo "under-bash: scripts run by bash $v; suites outside scripts/tests by bash $BASH_VERSION"

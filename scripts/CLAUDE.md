@@ -138,7 +138,9 @@ Guarantees, each with the mechanism it rests on. Install:
 - The record last, whole, in its old shape. `install.json` is written last, beside itself and renamed in (no BOM), one
   key per line with schema 1's keys, the shape every earlier release's readers take (line readers in the scripts,
   `InstallManifest`). A repeat keeps the rollback: a `.prev` copy is made only of a binary that differs, and a prune
-  keeps the previous version folder and names and keeps any folder with local changes.
+  keeps the previous version folder and names and keeps any folder with local changes. Version cleanup removes only
+  the exact available worktree through Git; a refused removal keeps its folder, and unavailable worktree registrations
+  are never pruned (the common repository may serve checkouts on another computer).
 - A live daemon is asked before it ends. A daemon is restarted only when it runs another version (`sotd same-version`),
   only where this run owns it (Unix: an active `sotd.service` no window holds; Windows: the window's supervisor, by its
   converge), and stopped, whatever its version, only where the run's role has no daemon here (Unix: the retire of an
@@ -256,3 +258,69 @@ hands off to the staged release's), update-implicit (no arguments against the re
 release before that clears its pin, then the run's release stages as newer) and a repair run, each judged by its
 verdict and the state it left; the apply, library and wrapper suites (`tests/installer-*.sh`, `tests/test-*.ps1`); the
 integration tests `shell_dial`, `unit_pin`, `same_version`, `window_start`.
+
+## Publish guard (landing A; installer enrollment pending landing B)
+
+Distribution owns `hooks/pre-push` (the versioned scanner), `hooks/pre-push-shim` (the common-directory entry),
+`hooks/publish-guard-lib.sh` (policy-location validation), and `setup-publish-guard.sh` (the only enrollment owner).
+The private list and the private operations archive are never public repository assets.
+
+Guarantees and boundaries:
+- A supported development entry (`tests/rc-gate.sh` with its checkout argument, `release.sh`, `pack-build.sh`, or
+  `pack-build.ps1`) enrolls its clone before builds, stamps, tags or publication. Setup installs an executable thin shim
+  in the physical common Git directory's default `hooks/pre-push` slot. Linked worktrees share that shim, which runs
+  the pushing worktree's `scripts/hooks/pre-push` and refuses if that implementation is missing. Source setup follows
+  [the manual](../docs/src/start/install.md#publish-guard-setup) before raw Cargo commands. Installer discovery,
+  platform-path recording and verdict integration are pending landing B: an install does not yet enroll any clone.
+- For a normal push from an enrolled checkout, the guard scans exact selected commit snapshots: raw commit metadata
+  and messages, full unquoted paths, blob bytes including binary and symlink targets, branch/tag destination names,
+  raw annotated tag objects (including tagger identity and embedded name), nested tags and tree/blob targets. Gitlinks
+  contribute their path and OID, not a fetched submodule repository. Objects are deduplicated; paths retain their tree
+  context. Matching is ASCII case-insensitive and literal. Blank/comment lines are ignored; `!span` erases literal
+  permitted spans before matching. CRLF lists and an unterminated last line keep original line numbers.
+- Only locally available old OIDs advertised by this destination bound commit history; unrelated remote-tracking refs
+  never do. New branches/tags or unavailable old OIDs can conservatively recheck history. A retained denied file in a
+  new snapshot still refuses after an ancestor was published. Raw parent traversal refuses missing shallow/promisor
+  objects; local object enumeration precedes reads, so the hook never fetches to complete a scan. No diff, textconv or
+  replacement object changes its inspected bytes. NUL bytes delimit single-line matching, as paths use NUL records.
+- On every push, one raw common-clone-local `sot.publishList` value must name an absolute readable regular file outside
+  every repository and Git metadata. There is no global, system or command-config fallback. Missing, multiple,
+  relative, linked, inside-repository or unresolvable policy paths refuse, including deletion-only pushes. Directory
+  aliases are resolved physically on Unix; Windows reparse aliases refuse. Validation and every Git/read/scanner error
+  fail closed without echoing a policy path, private entry, offending file or denied ref name. Content refusals identify
+  an object OID and list line; ref refusals identify namespace, update ordinal, source OID and list line.
+- The provisioning location is `publish-list.txt` in platform's config folder: `$XDG_CONFIG_HOME/sot` or
+  `$HOME/.config/sot` on Linux/macOS, `%LOCALAPPDATA%\sot\config` on Windows. A shared Linux home shares that file.
+  Setup can record an explicitly supplied absolute `--list` path and check `--require-ready`; it never creates policy
+  entries. Development enrollment never invents a location or an empty replacement. Placement without provisioning is
+  reported explicitly and pushes remain refused. Landing B must aggregate pending provisioning/custom-hook migration
+  through the installer's existing `ONE STEP LEFT` verdict, including Windows updates merely armed for later apply.
+- Setup never changes `core.hooksPath`. Any effective explicit setting, including empty/default or worktree/global
+  overrides, is a named conflict with the clone-local migration command. An unknown/edited/nonregular/linked slot is
+  preserved. Replacement requires an exact shipped shim or a matching recorded installed hash; publication is whole
+  files with a common-directory ownership record. Other default hooks remain selected. A person's optional
+  `hooks/pre-push.local` runs after acceptance with the original arguments, complete stdin, streams and exit status;
+  denial never reaches it and chain cycles refuse. An externally configured direct guard chains to a distinct default
+  `hooks/pre-push` for compatibility. Setup never moves a foreign hook automatically.
+- Limits: a direct push before enrollment, a direct build that skips setup, `--no-verify`, a disabled/removed hook,
+  command/worktree configuration overriding hook selection, and `gh` text (PR, issue or release bodies) are outside
+  this guarantee. Client hooks are an owner's protection, not a server security boundary. No discovery of arbitrary
+  clones, live rows, or home directories occurs. Operations retirement and live migration remain the operator's work.
+
+Platforms: Bash 3.2 and ordinary Git/awk/tr/sed on Linux/macOS and Git for Windows Bash; Windows path validation also
+uses Windows PowerShell without profiles. Hook and shim check out at LF even with autocrlf. The Linux CI matrix builds
+bash 3.2 and rewrites only scratch hook shebangs; macOS uses `/bin/bash`; Windows retains shipped shebangs and actual
+Git-launched hooks. The matrix needs no product binary or secret and runs in `rust.yml` at landings and branch dispatch.
+
+Tests (all observe execution, not source spellings):
+
+| Entry | Guarantee |
+|---|---|
+| `tests/test-pre-push.sh` | Full object/ref scope, matching and allowances, destination exclusions, missing shallow/promisor objects without fetch, producer failures and deletion behavior |
+| `tests/test-publish-guard-setup.sh` | Policy validation, preserved configuration/hooks, repeated setup, common-worktree shim/version selection, fresh-clone limit, exact chaining and veto/cycles, default commit hooks, LF/native Windows paths/interpreter |
+| `tests/test-publish-guard-entries.sh` | Actual release push refusal; gate checkout enrollment at container boundary; shell/PowerShell pack enrollment at recording build boundary; entry conflicts before builds |
+| `tests/test-release-cut.sh`, `tests/test-rc-gate-target.sh`, `tests/test-rc-gate-parity.sh`, `tests/test-native-stderr.ps1` | Existing entry contracts retain their intended executing fixtures after enrollment |
+| `install::unix::tests::version_cleanup_keeps_unavailable_registrations_and_refused_worktrees` | Version cleanup preserves unavailable registrations and dirty/locked checkouts while removing available clean ones |
+
+The three publish suites are listed in `rc-gate.sh` and `under-bash.sh`, and run as real local pushes in rust.yml's
+three-system `publish-guard` job. No passing evidence is implied by this contract; the landing records the actual runs.

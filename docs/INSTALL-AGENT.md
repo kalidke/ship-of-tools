@@ -107,10 +107,37 @@ relying on them.
 
 The **source path** is for contributors or when release assets don't match the
 target platform: clone the repo to a working directory of the human's choice
-and follow https://kalidke.github.io/ship-of-tools/dev/start/setup/ (rustup +
+and first [enroll its publish guard](src/start/install.md#publish-guard-setup) from the clone root before the raw build.
+Provisioning is the person's job: agents never print or copy the live private list. Then
+follow https://kalidke.github.io/ship-of-tools/dev/start/setup/ (rustup +
 juliaup, `cargo build --release --manifest-path rust/Cargo.toml`, Julia env
 instantiation; a source build has a `+` in its version and never self-updates). Ask if their
 intent is ambiguous.
+
+## Publish guard enrollment (landing A)
+
+The supported development gate, release and pack entries enroll their checkout before substantive work. Source setup
+uses [the manual's one procedure](src/start/install.md#publish-guard-setup). The footprint is a common-Git-directory
+`hooks/pre-push` shim plus `publish-guard/installed-hash`, and the common clone-local `sot.publishList` setting. The
+versioned scanner stays in the pushing checkout. Other hook types remain selected; an optional `pre-push.local` retains
+its own veto. Verify readiness with the setup script's `--require-ready`, which reports status without printing policy.
+Keep local-bare-remote push evidence too: presence of the hook alone does not prove it ran.
+
+Installer automation is pending landing B: current installs enroll no clone automatically. That integration is scoped
+to the installed base clone and an identified same-repository caller clone, deduplicated by common Git directory. It
+will not discover other clones or a source clone named only by an absolute installer path from outside it. A Windows
+update merely armed for later application cannot imply that the staged checkout's hook has been placed. Provisioning
+or an existing foreign hook configuration must become a named `ONE STEP LEFT` through the existing verdict API in B.
+
+The person's private list belongs in the platform config folder under `publish-list.txt` (XDG/home on Linux/macOS,
+local app data's `sot\config` on Windows), outside every repository. Setup can record that absolute path but never
+creates the policy. Missing/invalid policy refuses ordinary pushes, including deletions. A custom `core.hooksPath` or
+unknown pre-push slot is preserved and enrollment refuses; setup names the clone and gives its clone-local migration
+command. The owner inspects/preserves desired hooks, removes the override deliberately, checks global/worktree
+selection, and repeats setup. An agent never migrates a live configuration as a side effect of an install.
+
+A raw never-enrolled clone, direct build commands skipping setup, `--no-verify`, disabled/overridden hooks and `gh`
+PR/issue/release text are stated limits. The public repository never contains the list or owns the private archive.
 
 ## 0. Ground rules
 
@@ -549,6 +576,8 @@ top line of the nav pane always shows the pane-switch keys.**
     transaction as the binaries (docs/history/adr/0030-versioning-release-and-auto-update.md's 2026-09-17 amendment).
   - A source build (a `+` in its version) never self-updates on any platform;
     they update by pulling and rebuilding.
+- Preserve the privately maintained `publish-list.txt` deliberately before uninstalling or deleting config folders;
+  removing `~/.config/sot` or Windows local app data also deletes the policy. Never ask an agent to print or copy it.
 - Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`;
   if a unit was installed, `systemctl --user stop sotd` and remove
   `~/.config/systemd/user/sotd.service`, its folder `sotd.service.d`, `~/.config/systemd/user/default.target.d/sotd.conf`

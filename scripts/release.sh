@@ -35,6 +35,9 @@ done
     || { echo "usage: scripts/release.sh <X.Y.Z[-pre]> [--dry-run] [--yes]" >&2; exit 2; }
 TAG="v$VERSION"
 
+# Enroll this clone before any build, stamp, tag or publication.
+bash "$PWD/scripts/setup-publish-guard.sh" "$PWD"
+
 # ---- preflight -------------------------------------------------------------
 # Every tag, candidate or final, is cut from main. Main is the -dev line: work merges to main, a cut is tagged from it,
 # and the stamp after the tag moves main to the next version (below). A tag from any other branch is a release whose

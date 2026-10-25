@@ -19,17 +19,19 @@ machine (Windows, Linux, or macOS). Done manually, these are the steps:
 
 1. **Install the toolchains.** Rust via [rustup](https://rustup.rs/) and Julia
    via [juliaup](https://github.com/JuliaLang/juliaup), where they are missing.
-2. **Build the Rust workspace** (`rust/`) — the frontend and backend binaries.
-3. **Ask a short Q&A** — your machine's role and, if it talks to a remote
+2. **[Enroll the publish guard](install.md#publish-guard-setup)** from the clone root before building. Provision
+   its external policy location before any push; a missing list refuses.
+3. **Build the Rust workspace** (`rust/`) — the frontend and backend binaries.
+4. **Ask a short Q&A** — your machine's role and, if it talks to a remote
    backend, that server's details (see below).
-4. **Instantiate Julia environments**: the repo root, `core`, `julia/kernel`,
+5. **Instantiate Julia environments**: the repo root, `core`, `julia/kernel`,
    `julia/repl`, and `julia/pluto`.
-5. **Write `hosts.toml`** (the hub's canonical copy, or a `sotd topology
+6. **Write `hosts.toml`** (the hub's canonical copy, or a `sotd topology
    sync --hub <alias>` fetch of it) **and `.sot/settings.toml`** from your
    answers.
-6. **Install agent comm resources**:
+7. **Install agent comm resources**:
    `julia --project=. -e 'using ShipTools; ShipTools.update_comm()'`.
-7. **Create a launcher / shortcut** so you can start the app without typing the
+8. **Create a launcher / shortcut** so you can start the app without typing the
    build paths.
 
 On Windows frontend machines, run `scripts\install-shortcut.ps1` after

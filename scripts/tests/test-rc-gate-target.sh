@@ -9,7 +9,17 @@ gate=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rc-gate.sh
 base="${TMPDIR:-/tmp}"
 work=$(mktemp -d "${base%/}/rc-gate-target-XXXXXX") || exit 2
 trap 'rm -rf "${work:?}"' EXIT
+# These are real repositories now because the main gate entry enrolls its checkout.
+for git_var in ${!GIT_@}; do unset "$git_var"; done
+mkdir "$work/home"
+export HOME="$work/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
 mkdir -p "$work/parent" "$work/head"
+for checkout in "$work/parent" "$work/head"; do
+  git init -q "$checkout"
+  mkdir -p "$checkout/scripts/hooks"
+  cp "$(dirname "$gate")/../setup-publish-guard.sh" "$checkout/scripts/" || exit 2
+  cp "$(dirname "$gate")/../hooks/"* "$checkout/scripts/hooks/" || exit 2
+done
 fail=0
 check() { if eval "$2"; then echo "PASS: $1"; else echo "FAIL: $1 (rc=$rc: $out)"; fail=$((fail + 1)); fi; }
 run() { out=$(CARGO_TARGET_DIR=$work/target bash "$gate" "$work/$1" "$work/logs-$1" 2>&1); rc=$?; }
