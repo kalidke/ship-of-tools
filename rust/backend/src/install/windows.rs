@@ -119,6 +119,7 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
         dir = super::direction(&new_sotd, &ctx.pack.version, &ctx.prefix, &installed);
         super::guard_direction(implicit, &installed, &dir, &ctx.pack.version, &ctx.prefix, "-Version")
     })?;
+    let publish = super::publish::Plan::capture()?;
     let pending = match way {
         super::Meet::Update => update_or_repair(&mut ctx, &new_sotd, &installed, &dir)?,
         super::Meet::Fresh => {
@@ -131,8 +132,10 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     if let Some(step) = pending {
         // The update stays armed for a start: the run ends with that step.
         found.step(step);
+        publish.pending(&ctx.version_dir, &ctx.pack.commit, &ctx.base, &mut found)?;
         return Ok((found, pin));
     }
+    let enrolled = publish.enroll(&ctx.version_dir, &ctx.pack.commit, &ctx.base, &mut found)?;
     if julia::which("julia").is_some() {
         step("julia");
         let facts = julia::facts(&ctx.version_dir, None).map_err(|why| Stop::new(1, why))?;
@@ -147,6 +150,7 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     let refusal = sync_hub(&ctx);
     write_record(&ctx)?;
     end_state(&ctx, &mut found);
+    enrolled.check(&mut found);
     if let Some(hub) = refusal {
         let me = sot_platform::host::state_dir::host_name().unwrap_or_else(|_| std::env::var("COMPUTERNAME").unwrap_or_default().to_lowercase());
         found.fail("enroll", format!("the hosts.toml on '{hub}' does not list this computer ('{me}'), so the window would open with no hosts: on '{hub}' run  sotd topology set add {me} --frontend  (the sotd of its install), then run this installer again"));

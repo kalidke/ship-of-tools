@@ -11,6 +11,7 @@ mod julia;
 mod options;
 mod pack;
 mod procs;
+mod publish;
 mod record;
 #[cfg(unix)]
 mod role;

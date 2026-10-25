@@ -20,7 +20,8 @@ machine (Windows, Linux, or macOS). Done manually, these are the steps:
 1. **Install the toolchains.** Rust via [rustup](https://rustup.rs/) and Julia
    via [juliaup](https://github.com/JuliaLang/juliaup), where they are missing.
 2. **[Enroll the publish guard](install.md#publish-guard-setup)** from the clone root before building. Provision
-   its external policy location before any push; a missing list refuses.
+   its external policy location before any push; a missing list refuses. Release installs enroll their base and a
+   recognized caller clone automatically; resolve any provisioning or hook-migration `ONE STEP LEFT` they report.
 3. **Build the Rust workspace** (`rust/`) — the frontend and backend binaries.
 4. **Ask a short Q&A** — your machine's role and, if it talks to a remote
    backend, that server's details (see below).

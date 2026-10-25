@@ -100,14 +100,17 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
             return Err(Stop::new(1, format!("refusing the {what} (named above)")));
         }
     }
+    let publish = super::publish::Plan::capture()?;
     let plan = decide(opts, prefix, home)?;
     lay_out(&plan)?;
     let mut found = Found::default();
+    let enrolled = publish.enroll(&plan.checkout, &plan.pack.commit, &plan.prefix.join("repo/base"), &mut found)?;
     julia_and_comm(&plan, &mut found)?;
     configure(&plan)?;
     let restarted = wire(&plan)?;
     write_record(&plan)?;
     check(&plan, restarted, &mut found);
+    enrolled.check(&mut found);
     let pin = if plan.named { verdict::pin_tail(&plan.pack.version) } else { String::new() };
     if found.fail.is_none() && plan.unit_managed() {
         let wired = lib(&plan.checkout, "sot_boot_wired", &[&plan.units().to_string_lossy()]).ok();

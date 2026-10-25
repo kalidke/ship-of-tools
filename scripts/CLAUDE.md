@@ -259,7 +259,7 @@ release before that clears its pin, then the run's release stages as newer) and 
 verdict and the state it left; the apply, library and wrapper suites (`tests/installer-*.sh`, `tests/test-*.ps1`); the
 integration tests `shell_dial`, `unit_pin`, `same_version`, `window_start`.
 
-## Publish guard (landing A; installer enrollment pending landing B)
+## Publish guard (landings A and B; B execution evidence pending)
 
 Distribution owns `hooks/pre-push` (the versioned scanner), `hooks/pre-push-shim` (the common-directory entry),
 `hooks/publish-guard-lib.sh` (policy-location and encoding validation), and `setup-publish-guard.sh` (the only enrollment owner).
@@ -271,8 +271,13 @@ Guarantees and boundaries:
   `pack-build.ps1`) enrolls its clone before builds, stamps, tags or publication. Setup installs an executable thin shim
   in the physical common Git directory's default `hooks/pre-push` slot. Linked worktrees share that shim, which runs
   the pushing worktree's `scripts/hooks/pre-push` and refuses if that implementation is missing. Source setup follows
-  [the manual](../docs/src/start/install.md#publish-guard-setup) before raw Cargo commands. Installer discovery,
-  platform-path recording and verdict integration are pending landing B: an install does not yet enroll any clone.
+  [the manual](../docs/src/start/install.md#publish-guard-setup) before raw Cargo commands. Landing B's installer
+  integration is implemented here but remains pending validation: no passing install or baseline-red evidence is
+  claimed by these edits. Its native owner (`install/publish.rs`) captures caller facts read-only before install
+  gates; after the verified target checkout exists it enrolls the installed base and the caller when its origin has
+  this repository's exact HTTPS/SSH identity (or the existing local test origin). Physical common directories
+  deduplicate linked worktrees. An unrelated caller is named and kept; a caller outside Git adds no clone. Absolute
+  installer invocation from outside a source clone cannot identify that source clone.
   The shell pack entry runs read-only platform, libc and tree preflight before enrollment; output creation and builds
   follow enrollment. Inherited Git repository selectors cannot redirect setup away from its named checkout.
 - For a normal push from an enrolled checkout, the guard scans exact selected commit snapshots: raw commit metadata
@@ -305,8 +310,18 @@ Guarantees and boundaries:
   `$HOME/.config/sot` on Linux/macOS, `%LOCALAPPDATA%\sot\config` on Windows. A shared Linux home shares that file.
   Setup can record an explicitly supplied absolute `--list` path and check `--require-ready`; it never creates policy
   entries. Development enrollment never invents a location or an empty replacement. Placement without provisioning is
-  reported explicitly and pushes remain refused. Landing B must aggregate pending provisioning/custom-hook migration
-  through the installer's existing `ONE STEP LEFT` verdict, including Windows updates merely armed for later apply.
+  reported explicitly and pushes remain refused. Installer provisioning/custom-hook migration aggregate through the
+  existing `ONE STEP LEFT` verdict. A Windows update left armed uses the verified staged setup when available to
+  enroll the known clones, and checks only the state it actually placed; it does not claim the release was applied.
+  If that setup is unavailable, the verdict names base/caller enrollment as pending until apply and a repeated install.
+  Every ordinary fresh/repair run enrolls again and checks readiness without repairing during the final check.
+- Setup's installer interface is `--installer --list ABSOLUTE_PATH`: exit 0 means placed and policy ready, 3 means
+  placed but policy needs provisioning/repair, 4 means preserved hook configuration/occupied slot needs its owner,
+  and 1 means an operational failure. Existing development invocation keeps its nonzero refusal behavior.
+  `--check-only` performs no enrollment/config writes: it verifies the shipped shim, executable selection, ownership
+  hash, exact recorded location and policy. A previously placed hook that changes before the final check is FAIL.
+  Unix uses Bash on PATH; Windows derives Bash from Git for Windows, never WSL's Bash. Native paths reach Bash as
+  forward-slash absolute paths; setup remains the only hook-placement and policy-validation owner.
 - Setup never changes `core.hooksPath`. Any effective explicit setting, including empty/default or worktree/global
   overrides, is a named conflict with the clone-local migration command. An unknown/edited/nonregular/linked slot is
   preserved. Replacement requires an exact shipped shim or a matching recorded installed hash; publication is whole
@@ -351,6 +366,10 @@ Tests (all observe execution, not source spellings):
 |---|---|
 | `tests/test-pre-push.sh` | Full object/ref scope, matching and allowances, destination exclusions, missing shallow/promisor objects without fetch, witnessed producer/read failures (including path-bearing stderr and disappearing policy), complete stderr audit and deletion behavior |
 | `tests/test-publish-guard-setup.sh` | Policy placement/UTF-8 encoding at readiness and push, non-ASCII comments and literal entry matching with ASCII folding only, unreadable/failed/incomplete validators, hostile Git selectors, preserved configuration/hooks, repeated setup, common-worktree shim/version selection, fresh-clone limit, exact chaining and veto/cycles, default commit hooks, LF/native Windows paths/interpreter |
+| `tests/test-publish-guard-setup.sh` (installer cases) | Distinct ready/provisioning/conflict/write-failure statuses and read-only final checks, including a missing hook that stays missing |
+| `install::publish::tests::*` | Distinct base/caller push behavior, platform location without policy creation, repair, preserved/edited hooks, read-only caller discovery, exact origin identity, common-worktree deduplication, native Bash/path execution, failed writes and pending-apply honesty |
+| `tests/installer-publish-guard.py --scenario fresh\|repair` | Real `sotd install` orchestration in isolated profiles, both clones' clean/denied pushes and destination refs, refused options without caller writes, hook migration in the verdict and missing-policy provisioning; synthetic Julia/shortcut recording steps only |
+| `tests/install-smoke.sh`, `tests/install-smoke.ps1` | Existing release smokes provision only synthetic policy, exclusively create it in their scratch config and invoke the absolute bootstrap outside the workflow checkout, so the smoke enrolls only its installed clone |
 | `tests/test-publish-guard-entries.sh` | Actual release push refusal; gate checkout enrollment at container boundary; shell/PowerShell pack enrollment at recording build boundary; entry conflicts before builds |
 | `tests/installer-apply.sh` (including `installer-handoff.sh`) | Git-less libc/tree preflight retains its cause; a real scratch clone enrolls before recording builds and packs an executable sot-apply |
 | `tests/test-release-cut.sh`, `tests/test-rc-gate-target.sh`, `tests/test-rc-gate-parity.sh`, `tests/test-native-stderr.ps1` | Existing entry contracts retain their intended executing fixtures after enrollment |
@@ -358,4 +377,6 @@ Tests (all observe execution, not source spellings):
 
 The three publish suites are listed in `rc-gate.sh` and `under-bash.sh`, and run as real local pushes in rust.yml's
 three-system `publish-guard` job. No passing evidence is implied by this contract; the landing records the actual runs.
+The native tests run in the existing sotd shard on every system; the process fixture runs fresh and repair once per
+system in rust.yml's existing build shard containing `sotd-c`. No new product build job is required.
 Native Windows/macOS success and signal behavior require execution evidence; the configured matrix alone does not establish them.

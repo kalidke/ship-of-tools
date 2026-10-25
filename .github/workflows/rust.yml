@@ -144,6 +144,19 @@ jobs:
       # sotd and sot-capsule sit in the target dir the backend tests spawn them from.
       - name: Build workspace
         run: cargo build --workspace --locked
+      # One existing build shard per OS drives the real installer in scratch homes. Its Julia and shortcut steps
+      # record locally; enrollment is proved by Git-launched hooks and unchanged local destination refs.
+      - name: Test installer publish enrollment (fresh and repair)
+        if: contains(matrix.shard, 'sotd-c')
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          ext=
+          if [ "$RUNNER_OS" = Windows ]; then ext=.exe; fi
+          for scenario in fresh repair; do
+            python3 ../scripts/tests/installer-publish-guard.py --repo .. --scenario "$scenario" \
+              --sotd "target/debug/sotd$ext" --sot "target/debug/sot$ext" --capsule "target/debug/sot-capsule$ext"
+          done
       # macOS runs, in the sup shard, the clippy gate and the portable selected-body proofs that `checks` runs on Linux:
       # cfg(macos) code is checked only where it compiles. Windows runs them, and both systems the disallowed-methods
       # gate, in release-gate.yml: Linux's run of that gate stays at each landing.

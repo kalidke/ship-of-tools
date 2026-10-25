@@ -114,7 +114,7 @@ juliaup, `cargo build --release --manifest-path rust/Cargo.toml`, Julia env
 instantiation; a source build has a `+` in its version and never self-updates). Ask if their
 intent is ambiguous.
 
-## Publish guard enrollment (landing A)
+## Publish guard enrollment
 
 The supported development gate, release and pack entries enroll their checkout before substantive work. Source setup
 uses [the manual's one procedure](src/start/install.md#publish-guard-setup). The footprint is a common-Git-directory
@@ -123,11 +123,17 @@ versioned scanner stays in the pushing checkout. Other hook types remain selecte
 its own veto. Verify readiness with the setup script's `--require-ready`, which reports status without printing policy.
 Keep local-bare-remote push evidence too: presence of the hook alone does not prove it ran.
 
-Installer automation is pending landing B: current installs enroll no clone automatically. That integration is scoped
-to the installed base clone and an identified same-repository caller clone, deduplicated by common Git directory. It
-will not discover other clones or a source clone named only by an absolute installer path from outside it. A Windows
-update merely armed for later application cannot imply that the staged checkout's hook has been placed. Provisioning
-or an existing foreign hook configuration must become a named `ONE STEP LEFT` through the existing verdict API in B.
+Landing B adds installer automation; execution validation is pending. Fresh and repair installs enroll the installed
+base clone and an identified same-repository caller clone, deduplicated by physical common Git directory. Run a source
+clone's installer from inside that clone so it can identify the caller. The pack/executable path identifies no caller,
+and an unrelated caller is named and kept. No other clones are discovered. Enrollment follows the install gates;
+refused options, role/ownership decisions or daemon questions never enroll a caller as a side effect.
+
+The installer records platform's absolute list location and reports each known clone's placement/readiness. Missing
+or invalid policy, or preserved foreign hooks, adds a named `ONE STEP LEFT` to the single final verdict. A Git/setup
+write error or damaged state at the final check is FAIL. A Windows update merely armed for later application uses
+verified staged setup when available; otherwise the verdict names enrollment as pending after apply and a repeated
+install. Neither case says that the staged release has been applied.
 
 The person's private list belongs in the platform config folder under `publish-list.txt` (XDG/home on Linux/macOS,
 local app data's `sot\config` on Windows), outside every repository. Setup can record that absolute path but never
@@ -433,6 +439,13 @@ wrapper + desktop entry (frontend roles) or a systemd user unit (backend
 roles, unless `--no-service`).
 
 ## 4. Verify (do not skip; report results)
+
+For each clone the installer names as enrolled, use its verified checkout's setup owner with `--check-only
+--require-ready` (Bash, or Git for Windows Bash). This checks the shim, ownership record, effective selection and
+policy without repairing installed state or printing policy. A readiness check alone does not prove push behavior;
+keep the synthetic-list/local-remote witnesses described in [publish guard setup](src/start/install.md#publish-guard-setup).
+Resolve any publish-guard `ONE STEP LEFT` before calling that clone ready to publish. An existing hooks-path conflict
+means the clone still selects its owner's hooks; the new guard has not been installed there.
 
 ### Windows (§2b installs)
 

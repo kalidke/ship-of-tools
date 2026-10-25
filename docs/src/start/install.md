@@ -414,7 +414,11 @@ This installs a thin `hooks/pre-push` shim and `publish-guard/installed-hash` re
 folder. Every linked worktree uses the shim and its own checked-out `scripts/hooks/pre-push`; a missing implementation
 refuses the push. Other default hooks remain active. The development gate, release and pack entries also enroll their
 checkout. Direct Cargo commands do not perform setup, and a never-enrolled raw clone can push without this protection.
-Installer enrollment is pending a separate landing; currently the release installer enrolls no clones automatically.
+Landing B adds automatic enrollment for release installs (validation pending). A fresh or repair run enrolls its
+installed base clone and a recognized caller clone, once per physical common Git directory, after the install gates.
+Run from inside the source clone to identify it: invoking its installer by absolute path from elsewhere does not
+identify that clone. An unrelated caller is named and kept. The installer reports the clones it considered and
+discovers no others.
 
 The person maintaining policy provisions a private `publish-list.txt` outside every repository: in
 `$XDG_CONFIG_HOME/sot` (or `$HOME/.config/sot`) on Linux/macOS, or `%LOCALAPPDATA%\sot\config` on Windows. Shared homes
@@ -426,7 +430,11 @@ character that is not a letter or digit (ASCII `[A-Za-z0-9]`), or by the start o
 entry, including dotted names: paths, host labels, `@`, hyphens and punctuation supply boundaries; longer words do not.
 Matching folds ASCII letters only; a non-ASCII entry matches identical UTF-8 bytes, without Unicode case folding or
 normalization. Agents never print or copy the live list.
-Once provisioned, record its absolute location in this clone and check readiness:
+The installer records that platform location without creating or changing the file. Its single final verdict is
+`ONE STEP LEFT` while policy needs provisioning or a preserved hook choice needs migration; a setup/Git-write or
+final-state failure is `FAIL`. A Windows update left armed uses verified staged setup if available; otherwise the
+verdict names enrollment as pending after apply and a repeated install. An armed update is never reported as applied.
+Once provisioned, record its absolute location in a clone enrolled manually and check readiness:
 
 ```bash
 bash scripts/setup-publish-guard.sh "$PWD" --list /absolute/external/publish-list.txt --require-ready
