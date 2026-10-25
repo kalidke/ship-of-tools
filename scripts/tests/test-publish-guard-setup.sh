@@ -284,8 +284,10 @@ R=$C
 printf glimmerdeny > "$R/data"; commit
 accept 'never-enrolled clone limit' origin HEAD:refs/heads/before-setup
 "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$POLICY" > "$T/setup.out"
-# A path push still scans the old commit even though origin's tracking ref names it.
-reject 'old unenrolled commit by path still refused after setup' 'line 3' "$B" HEAD:refs/heads/old-after-setup
+# A path destination that does not hold the old commit still has it scanned.
+E="$T/with spaces/empty-destination.git"
+git init -q --bare "$E"
+reject 'old unenrolled commit to a destination without it still refused after setup' 'line 3' "$E" HEAD:refs/heads/old-after-setup
 # Reuse the denied blob to prove the new commit's full snapshot is checked.
 commit 'new denied snapshot after setup'
 reject 'same clone protected after setup' 'line 3' origin HEAD:refs/heads/after-setup

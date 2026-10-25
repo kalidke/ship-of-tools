@@ -201,7 +201,7 @@ accept() {
     # Every accepted explicit update must actually appear at the destination (not an up-to-date no-op).
     local arg destination source expected actual
     for arg in "$@"; do
-        case "$arg" in -*|origin) continue ;; esac
+        case "$arg" in -*|origin|/*|file://*) continue ;; esac
         case "$arg" in
             :*) destination=${arg#:}; git -C "$B" rev-parse --verify "$destination" > /dev/null 2>&1 && fail "$label deletion did not land" ;;
             *:*) source=${arg%%:*}; destination=${arg#*:}

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Inspect exact local Git objects; bound history by this destination's known commits.
+# Inspect exact local Git objects; bound history by what this destination advertises.
 set -u
 set -o pipefail
 export LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1
@@ -90,8 +90,8 @@ raw() {
     object_type "$1"
     git cat-file "$kind" "$1" > "$pg_tmp/raw" 2>/dev/null || pg_fail "cannot read object $1"
 }
-# Advertised old ids and the pushed named remote's tracking refs bound history.
-# Missing local commits/tags give no exclusion; URL/path pushes use only advertised old ids.
+# The push input's old ids and what the destination advertises now (one ls-remote on the URL git
+# hands the hook, which never fetches objects) bound history. Ids missing locally give no exclusion.
 : > "$pg_tmp/old" || pg_fail 'cannot prepare history queue'
 ordinal=0
 while read -r lref local_oid rref old_oid extra; do
@@ -99,16 +99,14 @@ while read -r lref local_oid rref old_oid extra; do
     [ -n "$old_oid" ] && [ -z "$extra" ] && oid_ok "$local_oid" && oid_ok "$old_oid" || pg_fail 'invalid push input'
     if ! zero "$old_oid"; then printf '%s\n' "$old_oid" >> "$pg_tmp/old" || pg_fail 'cannot queue old object'; fi
 done < "$pg_tmp/input"
-git remote > "$pg_tmp/remotes" 2>/dev/null || pg_fail 'cannot read configured remotes'
-while IFS= read -r remote; do
-    [ "$remote" = "${1:-}" ] || continue
-    # A literal valid ref prefix cannot turn into a for-each-ref wildcard for another remote.
-    git check-ref-format "refs/remotes/$remote/tip" > /dev/null 2>&1 || pg_fail 'invalid destination tracking namespace'
-    git for-each-ref --format='%(objectname)' "refs/remotes/$remote/" > "$pg_tmp/tracking" 2>/dev/null ||
-        pg_fail 'cannot read destination tracking refs'
-    cat "$pg_tmp/tracking" >> "$pg_tmp/old" || pg_fail 'cannot queue destination tracking refs'
-    break
-done < "$pg_tmp/remotes"
+[ -n "${2:-}" ] || pg_fail 'cannot determine destination'
+git ls-remote -- "$2" > "$pg_tmp/advertised" 2>/dev/null || pg_fail 'cannot read destination advertisement'
+# An empty advertisement (an empty remote) is valid and excludes nothing.
+while IFS=$'\t' read -r adv_oid adv_ref adv_extra || [ -n "$adv_oid" ]; do
+    oid_ok "$adv_oid" && { [ "${#adv_oid}" = 40 ] || [ "${#adv_oid}" = 64 ]; } && [ -n "$adv_ref" ] && [ -z "$adv_extra" ] ||
+        pg_fail 'malformed destination advertisement'
+    printf '%s\n' "$adv_oid" >> "$pg_tmp/old" || pg_fail 'cannot queue advertised object'
+done < "$pg_tmp/advertised"
 while IFS= read -r id; do
     [ ! -e "$pg_tmp/excluded/$id" ] || continue
     oid_ok "$id" || pg_fail 'invalid old object id'
