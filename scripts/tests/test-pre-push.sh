@@ -33,15 +33,15 @@ case "${PUBLISH_GUARD_CASE:-}" in ''|tracking-*)
                 reject 'a destination that does not advertise the history excludes none of it' 'line 3' other "$branch_update"
                 B=$destination ;;
             overlap)
-                # Remote `aux` fetches into `pub`'s tracking namespace (refs/remotes/pub/aux/*); only what `pub` advertises counts.
+                # Remote `side` fetches into `pub`'s tracking namespace (refs/remotes/pub/side/*); only what `pub` advertises counts.
                 destination=$B
-                B="$T/with spaces/pub.git"; aux="$T/with spaces/aux.git"
-                git init -q --bare "$B"; git init -q --bare "$aux"
-                git -C "$R" remote add pub "$B"; git -C "$R" remote add aux "$aux"
-                git -C "$R" config remote.aux.fetch '+refs/heads/*:refs/remotes/pub/aux/*'
-                git -C "$R" push -q --no-verify aux refs/heads/main:refs/heads/main > "$T/seed.out" 2>&1
-                git -C "$R" fetch -q aux
-                git -C "$R" rev-parse --verify -q refs/remotes/pub/aux/main > /dev/null || fail 'overlap fixture lacks a nested tracking ref'
+                B="$T/with spaces/pub.git"; side="$T/with spaces/side.git"
+                git init -q --bare "$B"; git init -q --bare "$side"
+                git -C "$R" remote add pub "$B"; git -C "$R" remote add side "$side"
+                git -C "$R" config remote.side.fetch '+refs/heads/*:refs/remotes/pub/side/*'
+                git -C "$R" push -q --no-verify side refs/heads/main:refs/heads/main > "$T/seed.out" 2>&1
+                git -C "$R" fetch -q side
+                git -C "$R" rev-parse --verify -q refs/remotes/pub/side/main > /dev/null || fail 'overlap fixture lacks a nested tracking ref'
                 reject 'a nested remote namespace excludes nothing the pushed destination does not advertise' 'line 3' pub "$branch_update"
                 B=$destination ;;
             replaced)

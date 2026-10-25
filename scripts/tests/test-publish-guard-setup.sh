@@ -249,7 +249,7 @@ mv "$T/policy-for-chain" "$POLICY"
 printf '#!/bin/sh\ncat >/dev/null\necho "pre-push: local veto" >&2\nexit 23\n' > "$CHAIN"
 reject 'local veto propagates' 'local veto' origin main
 chain_status=0
-(cd "$R" && "$BASH" .git/hooks/pre-push origin "$B" < "$HOME/guard-input") > "$T/direct-chain.out" 2>&1 || chain_status=$?
+(cd "$R" && "$BASH" .git/hooks/pre-push origin "$(git -C "$R" remote get-url origin)" < "$HOME/guard-input") > "$T/direct-chain.out" 2>&1 || chain_status=$?
 [ "$chain_status" = 23 ] || fail 'guard lost the exact chained status'
 ok 'exact chained status'
 

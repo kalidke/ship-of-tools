@@ -107,7 +107,7 @@ reached=$(git ls-remote --get-url -- "$2" 2>/dev/null) || pg_fail 'cannot resolv
 git ls-remote -- "$2" > "$pg_tmp/advertised" 2>/dev/null || pg_fail 'cannot read destination advertisement'
 # An empty advertisement (an empty remote) is valid and excludes nothing; the walk below refuses a
 # first field that is not an object id.
-cut -f1 "$pg_tmp/advertised" >> "$pg_tmp/old" || pg_fail 'cannot queue advertised objects'
+awk -F '\t' '{ print $1 }' "$pg_tmp/advertised" >> "$pg_tmp/old" || pg_fail 'cannot queue advertised objects'
 while IFS= read -r id; do
     [ ! -e "$pg_tmp/excluded/$id" ] || continue
     oid_ok "$id" || pg_fail 'invalid old object id'
