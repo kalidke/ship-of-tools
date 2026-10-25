@@ -368,12 +368,25 @@ Tests (all observe execution, not source spellings):
 | `tests/test-publish-guard-setup.sh` | Policy placement/UTF-8 encoding at readiness and push, non-ASCII comments and literal entry matching with ASCII folding only, unreadable/failed/incomplete validators, hostile Git selectors, preserved configuration/hooks, repeated setup, common-worktree shim/version selection, fresh-clone limit, exact chaining and veto/cycles, default commit hooks, LF/native Windows paths/interpreter |
 | `tests/test-publish-guard-setup.sh` (installer cases) | Distinct ready/provisioning/conflict/write-failure statuses and read-only final checks, including a missing hook that stays missing |
 | `install::publish::tests::*` | Distinct base/caller push behavior, platform location without policy creation, repair, preserved/edited hooks, read-only caller discovery, exact origin identity, common-worktree deduplication, native Bash/path execution, failed writes and pending-apply honesty |
-| `tests/installer-publish-guard.py --scenario fresh\|repair` | Real `sotd install` orchestration in isolated profiles, both clones' clean/denied pushes and destination refs, refused options without caller writes, hook migration in the verdict and missing-policy provisioning; Unix records Julia steps, Windows records the shortcut and checks Julia's unavailable verdict step. Windows uses a unique scratch USERNAME, checks its pipe name and absence before installation, and bounds the probe at 15 s; commands have a 180 s bound with the named fixture step and captured progress on timeout. No daemon, window or Julia instantiation is exercised on Windows |
+| `tests/installer-publish-guard.py --scenario fresh\|repair` | Real `sotd install` orchestration in isolated profiles, both clones' clean/denied pushes and destination refs, refused options without caller writes, hook migration in the verdict and missing-policy provisioning; Unix records Julia steps, Windows records the shortcut and checks Julia's unavailable verdict step. Windows uses a unique scratch USERNAME, checks its pipe name and absence, and exercises CIM process query/serialization in the fixture environment, each with a 15 s command bound. No daemon, window or Julia instantiation is exercised on Windows |
 | `tests/install-smoke.sh`, `tests/install-smoke.ps1` | Existing release smokes provision only synthetic policy, exclusively create it in their scratch config and invoke the absolute bootstrap outside the workflow checkout, so the smoke enrolls only its installed clone |
 | `tests/test-publish-guard-entries.sh` | Actual release push refusal; gate checkout enrollment at container boundary; shell/PowerShell pack enrollment at recording build boundary; entry conflicts before builds |
 | `tests/installer-apply.sh` (including `installer-handoff.sh`) | Git-less libc/tree preflight retains its cause; a real scratch clone enrolls before recording builds and packs an executable sot-apply |
 | `tests/test-release-cut.sh`, `tests/test-rc-gate-target.sh`, `tests/test-rc-gate-parity.sh`, `tests/test-native-stderr.ps1` | Existing entry contracts retain their intended executing fixtures after enrollment |
 | `install::unix::tests::version_cleanup_keeps_unavailable_registrations_and_refused_worktrees` | Version cleanup preserves unavailable registrations and dirty/locked checkouts while removing available clean ones |
+
+The installer process fixture preserves Windows machine installation/data roots, system drive and computer name, and
+sets PSModulePath to Windows PowerShell's system modules alone. Profile/config/temp folders, PATH and the daemon
+identity stay isolated; the runner's user module paths are excluded. Its `installer_process.py` helper gives each
+command a Windows job (joined before the real command starts, kill on close, no breakaway) or a Unix process group.
+Output goes to an owned scratch file with a separate reader, so Windows progress is available while the child lives.
+At the command's timeout (180 s unless a probe names a shorter bound), it first prints captured progress and a
+descendant snapshot with PID, parent, elapsed time and full command line. The listing command uses the runner's full
+environment with no PowerShell profile and has its own 10 s bound; a failed/timed-out listing is reported explicitly.
+Only then does cleanup close the Windows job or send TERM to its own Unix group (the native installer ends its own
+recorded step groups), allowing 15 s on Unix before KILL and a final 5 s reap bound. Windows allows 5 s to drain/reap;
+if the Python trampoline never joined the job, its own spawn handle permits termination and a final 5 s reap.
+Snapshot PIDs are never used for termination. CIM/environment causation still needs hosted execution evidence.
 
 The three publish suites are listed in `rc-gate.sh` and `under-bash.sh`, and run as real local pushes in rust.yml's
 three-system `publish-guard` job. No passing evidence is implied by this contract; the landing records the actual runs.

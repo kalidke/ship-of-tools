@@ -16,21 +16,31 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
+
+# Importing the helper must not write a bytecode cache into the supplied source checkout.
+sys.dont_write_bytecode = True
+from installer_process import capture, descendants
 
 
 def run(argv, cwd, env, ok=True, input_text=None, *, step=None, timeout=180):
-    try:
-        result = subprocess.run([str(a) for a in argv], cwd=cwd, env=env, text=True,
-                                stdin=subprocess.DEVNULL if input_text is None else None, input=input_text,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-    except subprocess.TimeoutExpired as error:
+    def report_timeout(pid, error):
         # TimeoutExpired can carry bytes even with text=True. Keep the installer's last progress lines: the command
         # alone cannot distinguish enrollment, layout, a daemon query, or a converge waiting on a missing fixture.
         output = error.stdout or ""
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="replace")
-        raise AssertionError(f"{step or argv[0]}: timed out after {timeout} s\n{argv}\n{output}") from None
+        snapshot = descendants(pid, cwd)
+        print(f"{step or argv[0]}: timed out after {timeout} s\n{argv}\n"
+              f"captured output before termination:\n{output}\n"
+              f"process root {pid} and descendants before termination (listing bound 10 s):\n{snapshot}",
+              file=sys.stderr, flush=True)
+
+    try:
+        result = capture(argv, cwd, env, input_text, timeout=timeout, on_timeout=report_timeout)
+    except subprocess.TimeoutExpired:
+        raise AssertionError(f"{step or argv[0]}: timed out after {timeout} s; output and descendants printed before tree cleanup") from None
     if ok and result.returncode:
         raise AssertionError(f"{argv}: exit {result.returncode}\n{result.stdout}")
     return result
@@ -83,11 +93,21 @@ def main():
             # The Windows endpoint uses USERNAME, not USERPROFILE or LOCALAPPDATA. Without it, every stripped
             # environment probes the shared sot-user-local fallback rather than a fixture-owned daemon namespace.
             env["USERNAME"] = "sot-scratch-" + root.name
+            machine_keys = {
+                "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",  # PowerShell/.NET machine installation roots.
+                "PROGRAMDATA", "ALLUSERSPROFILE",  # Shared Windows data roots, not the account's profile.
+                "SYSTEMDRIVE",  # Drive for Windows/.NET default machine paths.
+                "COMPUTERNAME",  # CIM's local machine identity; SOT_SELF_HOST remains synthetic.
+            }
+            env.update({k: v for k, v in os.environ.items() if k.upper() in machine_keys})
             jq = shutil.which("jq.exe")
             if not jq:
                 raise RuntimeError("native jq.exe is a fixture prerequisite")
             shutil.copy2(jq, tools / "jq.exe")
             system = Path(env["SYSTEMROOT"]) / "System32"
+            # Retain the OS module root explicitly, including CimCmdlets. Never inherit PSModulePath's user module
+            # folders or let PowerShell rebuild it from the runner's known profile folders.
+            env["PSModulePath"] = str(system / "WindowsPowerShell/v1.0/Modules")
             # Keep native Git in its installation so the installer can find that installation's Bash.
             path = [tools, git.parent, system, system / "WindowsPowerShell/v1.0", system / "Wbem"]
         else:
@@ -117,6 +137,20 @@ def main():
                          step="Windows scratch daemon absence check", timeout=15)
             assert absent.returncode == 2, f"scratch pipe must have no daemon: exit {absent.returncode}\n{absent.stdout}"
             assert shutil.which("julia", path=env["PATH"]) is None, "Windows fixture must leave Julia as a named install step"
+            # Exercise the same CIM query/serialization the installer's process snapshot needs, in the fixture's
+            # repaired environment. Success shows that this prerequisite worked; a later hang still needs evidence.
+            cim = run([system / "WindowsPowerShell/v1.0/powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                       "-Command", r'''
+$ErrorActionPreference = 'Stop'
+$json = @(Get-CimInstance Win32_Process -ErrorAction Stop |
+    Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine) | ConvertTo-Json -Compress
+$rows = ConvertFrom-Json -InputObject $json
+$own = @($rows | Where-Object { $_.ProcessId -eq $PID })
+if ($own.Count -ne 1 -or [string]::IsNullOrEmpty($own[0].CommandLine)) { throw 'CIM did not observe its own process' }
+[Console]::WriteLine('CIM process snapshot ready')
+'''], root, env, step="Windows fixture CIM process snapshot", timeout=15)
+            assert cim.stdout.strip() == "CIM process snapshot ready", cim.stdout
+            print("Windows fixture: CIM process snapshot ready (15 s bound)", flush=True)
         version = version_line.split()[1]
         match = re.search(r"\(([0-9a-f]{7,40}) ", version_line)
         if not match:
