@@ -1,11 +1,12 @@
-//! How `sotd install` runs a program: the one place it starts one. It is a command a person or an agent runs in the
-//! foreground, not the daemon, so its children are the steps of the install, waited for here; none outlives the run,
-//! a stopped one included ([`Steps::stop`]).
+//! How the foreground `sotd install` runs its steps. Bounded output owns a group/job through output completion and
+//! bounded cleanup. Other output/shown calls retain their existing waits and stop handling; the observation and
+//! abnormal-exit limits are recorded in scripts/CLAUDE.md.
 
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// What a finished program said: its exit code (`None` when it did not start or a signal ended it), stdout and stderr.
@@ -33,12 +34,13 @@ impl Ran {
 }
 
 /// The steps a run starts, so a stop can end the one running, and every process it started, before the verdict is
-/// printed (scripts/CLAUDE.md, Installers: "One verdict"). On Unix each step leads a process group of its own, which a
-/// stop signals whole; on Windows Ctrl+C reaches the console's every process, and a step left after the grace is ended
-/// with its process tree.
+/// printed (scripts/CLAUDE.md, Installers: "One verdict"). Bounded steps retain their containment owner until cleanup;
+/// other steps use the existing Unix group or Windows Ctrl+C/tree stop path.
 pub(super) struct Steps {
     running: Mutex<Vec<u32>>,
     stopping: AtomicBool,
+    bounded: AtomicUsize,
+    contained: OnceLock<&'static sot_containment::Signal>,
 }
 
 /// The run's steps.
@@ -46,7 +48,7 @@ pub(super) static STEPS: Steps = Steps::new();
 
 impl Steps {
     pub(super) const fn new() -> Self {
-        Self { running: Mutex::new(Vec::new()), stopping: AtomicBool::new(false) }
+        Self { running: Mutex::new(Vec::new()), stopping: AtomicBool::new(false), bounded: AtomicUsize::new(0), contained: OnceLock::new() }
     }
 
     fn running(&self) -> std::sync::MutexGuard<'_, Vec<u32>> {
@@ -81,6 +83,21 @@ impl Steps {
 
     fn finished(&self, pid: u32) {
         self.running().retain(|p| *p != pid);
+    }
+
+    fn start_bounded(&self, cmd: &mut Command) -> std::io::Result<sot_containment::ContainedStd> {
+        let mut running = self.running();
+        while self.stopping.load(Ordering::SeqCst) {
+            drop(running);
+            std::thread::park();
+            running = self.running();
+        }
+        // Containment starts suspended on Windows, assigns its anonymous job, then resumes; Unix retains the
+        // unreaped leader's group identity. The registry lives for this foreground run, as its API requires.
+        let signal = *self.contained.get_or_init(|| Box::leak(Box::new(sot_containment::Signal::new())));
+        let child = signal.spawn_std(cmd)?;
+        self.bounded.fetch_add(1, Ordering::SeqCst);
+        Ok(child)
     }
 
     /// Run `cmd` to its end with its output read; a program that cannot start is a result (no code, the reason in
@@ -123,30 +140,56 @@ impl Steps {
     /// result has no code and says so.
     #[allow(clippy::disallowed_methods, reason = "the one waiter of sotd install's own steps (the test rule is for a test's own children)")]
     pub(super) fn output_within(&self, cmd: &mut Command, bound: Duration) -> Ran {
+        let deadline = Instant::now() + bound;
         cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = match self.start(cmd) {
+        let mut child = match self.start_bounded(cmd) {
             Ok(c) => c,
             Err(e) => return Ran { code: None, out: String::new(), err: format!("{}: {e}", program(cmd)) },
         };
-        let pid = child.id();
-        let t0 = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if t0.elapsed() < bound => std::thread::sleep(Duration::from_millis(20)),
-                _ => {
-                    end_group(pid, &mut child);
-                    self.finished(pid);
-                    return Ran { code: None, out: String::new(), err: format!("{} did not finish within {} ms", program(cmd), bound.as_millis()) };
-                }
+        let _active = BoundedRun(&self.bounded);
+        let (sent, done) = mpsc::channel();
+        let pipes: [Box<dyn Read + Send>; 2] = [Box::new(child.stdout.take().expect("piped stdout")), Box::new(child.stderr.take().expect("piped stderr"))];
+        for (index, mut pipe) in pipes.into_iter().enumerate() {
+            let sent = sent.clone();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let result = pipe.read_to_end(&mut bytes).map(|_| bytes);
+                let _ = sent.send((index, result));
+            });
+        }
+        drop(sent);
+        let mut bodies = [None, None];
+        let failure = loop {
+            while let Ok((index, body)) = done.try_recv() { bodies[index] = Some(body); }
+            if Instant::now() >= deadline {
+                break Some(format!("{} did not complete execution and output within {} ms", program(cmd), bound.as_millis()));
+            }
+            if self.is_stopping() { break Some(format!("{} stopped", program(cmd))); }
+            if bodies.iter().any(|body| matches!(body, Some(Err(_)))) { break Some(format!("{} output read failed", program(cmd))); }
+            match child.exited(false) {
+                Ok(true) if bodies.iter().all(Option::is_some) => break None,
+                Ok(_) => std::thread::sleep(Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now()))),
+                Err(error) => break Some(format!("{} exit observation failed: {error}", program(cmd))),
+            }
+        };
+        // One cleanup budget covers termination, reap, and both readers. No blocking join or wait follows it.
+        let cleanup = Instant::now() + Duration::from_secs(5);
+        let status = end_group(child, cleanup);
+        while bodies.iter().any(Option::is_none) && Instant::now() < cleanup {
+            match done.recv_timeout(cleanup.saturating_duration_since(Instant::now())) {
+                Ok((index, body)) => bodies[index] = Some(body),
+                Err(_) => break,
             }
         }
-        let done = child.wait_with_output();
-        self.finished(pid);
-        match done {
-            Ok(o) => Ran { code: o.status.code(), out: String::from_utf8_lossy(&o.stdout).into_owned(), err: String::from_utf8_lossy(&o.stderr).into_owned() },
-            Err(e) => Ran { code: None, out: String::new(), err: format!("{}: {e}", program(cmd)) },
-        }
+        let mut failures: Vec<String> = failure.into_iter().collect();
+        let code = match status {
+            Ok(status) => status.code(),
+            Err(error) => { failures.push(format!("cleanup: {error}")); None }
+        };
+        if bodies.iter().any(|body| !matches!(body, Some(Ok(_)))) { failures.push("output cleanup did not complete within 5 s".into()); }
+        if !failures.is_empty() { return Ran { code: None, out: String::new(), err: failures.join("; ") }; }
+        let [out, err] = bodies.map(|body| String::from_utf8_lossy(&body.unwrap().unwrap()).into_owned());
+        Ran { code, out, err }
     }
 
     /// A person stopped the run: no step starts again, the running one is sent `signal` with every process it started,
@@ -159,8 +202,11 @@ impl Steps {
             running.clone()
         };
         signal_groups(&groups, signal);
+        if let Some(contained) = self.contained.get() {
+            if let Err(error) = contained.fire() { eprintln!("installer bounded child termination: {error}"); }
+        }
         let t0 = Instant::now();
-        while !self.running().is_empty() && t0.elapsed() < grace {
+        while (!self.running().is_empty() || self.bounded.load(Ordering::SeqCst) != 0) && t0.elapsed() < grace {
             std::thread::sleep(Duration::from_millis(20));
         }
         // What is left is killed: on Unix its group; on Windows, where Ctrl+C was the signal, its process tree.
@@ -168,7 +214,7 @@ impl Steps {
         #[cfg(windows)]
         kill_trees(&self.running().clone());
         let t1 = Instant::now();
-        while !self.running().is_empty() && t1.elapsed() < Duration::from_secs(1) {
+        while (!self.running().is_empty() || self.bounded.load(Ordering::SeqCst) != 0) && t1.elapsed() < Duration::from_secs(1) {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -202,10 +248,20 @@ fn kill_trees(pids: &[u32]) {
 }
 
 /// End a step that outlived its bound, with its group, and reap it.
-fn end_group(pid: u32, child: &mut std::process::Child) {
-    signal_groups(&[pid], KILL);
-    let _ = child.kill();
-    let _ = child.wait();
+fn end_group(mut child: sot_containment::ContainedStd, deadline: Instant) -> std::io::Result<std::process::ExitStatus> {
+    let (sent, done) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = child.kill();
+        drop(child);
+        let _ = sent.send(result);
+    });
+    done.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "owned group/job did not end and reap within 5 s"))?
+}
+
+struct BoundedRun<'a>(&'a AtomicUsize);
+impl Drop for BoundedRun<'_> {
+    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
 }
 
 /// Run `cmd` as one of the run's steps; see [`Steps::output`].
@@ -253,3 +309,7 @@ pub(super) fn on_path(name: &str) -> bool {
     let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
     std::env::split_paths(&path).any(|d| exts.iter().any(|e| d.join(format!("{name}{e}")).is_file()))
 }
+
+#[cfg(test)]
+#[path = "cmd_tests.rs"]
+mod tests;

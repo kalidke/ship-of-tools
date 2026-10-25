@@ -56,6 +56,7 @@ pub(super) struct Found {
     pub fail: Option<String>,
     pub steps: Vec<String>,
     pub pass: String,
+    pub checked: Vec<String>,
 }
 
 impl Found {
@@ -69,6 +70,11 @@ impl Found {
     pub fn step(&mut self, text: impl Into<String>) {
         self.steps.push(text.into());
     }
+
+    pub fn checked(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if !self.checked.contains(&text) { self.checked.push(text); }
+    }
 }
 
 /// What a pinned install's lines end with.
@@ -81,10 +87,11 @@ pub(super) fn line(found: &Found, pin: &str) -> (String, i32) {
     if let Some(fail) = &found.fail {
         return (format!("FAIL: {fail}{pin}"), 1);
     }
+    let checked = if found.checked.is_empty() { String::new() } else { format!("; {}", found.checked.join("; ")) };
     if !found.steps.is_empty() {
-        return (format!("ONE STEP LEFT: {}{pin}", found.steps.join("; then ")), 0);
+        return (format!("ONE STEP LEFT: {}{checked}{pin}", found.steps.join("; then ")), 0);
     }
-    (format!("PASS: {}{pin}", found.pass), 0)
+    (format!("PASS: {}{checked}{pin}", found.pass), 0)
 }
 
 /// The verdict for a run that stopped, and its exit code.

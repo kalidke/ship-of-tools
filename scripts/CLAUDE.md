@@ -170,7 +170,10 @@ Guarantees, each with the mechanism it rests on. Install:
 - Bounded waits. curl runs with `--connect-timeout 15 --speed-limit 1000 --speed-time 60`, every git call with
   `http.lowSpeedLimit=1000` and `http.lowSpeedTime=60`, ssh with the tree's `SSH_OPTS` under a 30 s bound; a converge
   waits at most `SOT_INSTALL_CONVERGE_WAIT_S` (1800 s), a restarted daemon `SOT_INSTALL_RESTART_WAIT_S` (Unix, 30 s) or
-  `SOT_INSTALL_DAEMON_WAIT_S` (Windows, 60 s).
+  `SOT_INSTALL_DAEMON_WAIT_S` (Windows, 60 s). Publish enrollment's child commands have the stronger wall-clock and
+  output-completion bound below. Until the observation pass, the installer's own process listings (`procs.rs`) and
+  installed binaries' `--version` asks remain unbounded. Whole-install completion on Windows in an isolated profile
+  remains unproven; the diagnostic matrix measures that environment without repairing product observation.
 
 Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdate.rs`):
 - An automatic arm goes only strictly above install.json's version, never into a dev build, a pinned or unreadable
@@ -322,6 +325,18 @@ Guarantees and boundaries:
   hash, exact recorded location and policy. A previously placed hook that changes before the final check is FAIL.
   Unix uses Bash on PATH; Windows derives Bash from Git for Windows, never WSL's Bash. Native paths reach Bash as
   forward-slash absolute paths; setup remains the only hook-placement and policy-validation owner.
+- Every child started by `install/publish.rs` (caller discovery/origin/common-directory reads, source verification,
+  enrollment and the read-only check) has 30 s wall clock through exit and complete stdout/stderr. `install/cmd.rs`
+  drains both streams while waiting, observes the leader without releasing its owned group/job, and allows at most
+  5 s more for termination, reap and output cleanup. It ends only its own containment domain. A timeout, signal,
+  failed read or incomplete cleanup is an operational failure: discovery/enrollment return `Stop`, the final check
+  records `Found::fail`; partial output never becomes ready or setup status 3/4. This bound does not extend to the
+  separate installer observation calls noted above.
+- The last `PASS` or `ONE STEP LEFT` line retains the guard's checked results independently of the ordinary install
+  summary. It names the checked base and recognized caller (including a caller sharing the base's common directory),
+  readiness/provisioning or preserved conflict, and the limited discovery scope: installed base and recognized caller
+  only, other clones not discovered. Pending enrollment names its clones and remains pending until actually checked.
+  A failed check takes precedence over these results and human steps.
 - Setup never changes `core.hooksPath`. Any effective explicit setting, including empty/default or worktree/global
   overrides, is a named conflict with the clone-local migration command. An unknown/edited/nonregular/linked slot is
   preserved. Replacement requires an exact shipped shim or a matching recorded installed hash; publication is whole
@@ -367,8 +382,10 @@ Tests (all observe execution, not source spellings):
 | `tests/test-pre-push.sh` | Full object/ref scope, matching and allowances, destination exclusions, missing shallow/promisor objects without fetch, witnessed producer/read failures (including path-bearing stderr and disappearing policy), complete stderr audit and deletion behavior |
 | `tests/test-publish-guard-setup.sh` | Policy placement/UTF-8 encoding at readiness and push, non-ASCII comments and literal entry matching with ASCII folding only, unreadable/failed/incomplete validators, hostile Git selectors, preserved configuration/hooks, repeated setup, common-worktree shim/version selection, fresh-clone limit, exact chaining and veto/cycles, default commit hooks, LF/native Windows paths/interpreter |
 | `tests/test-publish-guard-setup.sh` (installer cases) | Distinct ready/provisioning/conflict/write-failure statuses and read-only final checks, including a missing hook that stays missing |
-| `install::publish::tests::*` | Distinct base/caller push behavior, platform location without policy creation, repair, preserved/edited hooks, read-only caller discovery, exact origin identity, common-worktree deduplication, native Bash/path execution, failed writes and pending-apply honesty |
-| `tests/installer-publish-guard.py --scenario fresh\|repair` | Real `sotd install` orchestration in isolated profiles, both clones' clean/denied pushes and destination refs, refused options without caller writes, hook migration in the verdict and missing-policy provisioning; Unix records Julia steps, Windows records the shortcut and checks Julia's unavailable verdict step. Windows uses a unique scratch USERNAME, checks its pipe name and absence, and exercises CIM process query/serialization in the fixture environment, each with a 15 s command bound. No daemon, window or Julia instantiation is exercised on Windows |
+| `install::cmd::tests::*` | Concurrent large-stream draining, deadline through output completion after a leader exits, owned writer cessation, and partial output never supplying a successful/provisioning result; native stand-ins run on all three systems |
+| `install::publish::tests::*` | Distinct base/caller push behavior, platform location without policy creation, repair, preserved/edited hooks, read-only caller discovery, exact origin identity, common-worktree deduplication, native Bash/path execution, failed writes and pending-apply honesty; healthy and Julia-only verdicts retain checked names/scope; stalled Unix Git/Bash commands produce operational failures, including the read-only check |
+| `tests/installer-publish-guard.py --scenario fresh\|repair` | Real `sotd install` orchestration in isolated profiles, both clones' clean/denied pushes and destination refs, refused options without caller writes, hook migration in the verdict and missing-policy provisioning; Unix's later role refusal witnesses recognized discovery before refusal and unchanged clone config/hooks and installed state. Unix records Julia steps, Windows records the shortcut and checks Julia's unavailable verdict step. Windows uses a unique scratch USERNAME and checks its pipe name and absence. No daemon, window or Julia instantiation is exercised on Windows |
+| `tests/installer-publish-guard.py --windows-diagnostics-only` | One Windows diagnostic matrix before the install scenarios: each variant prints label, elapsed time, exit/timeout and last phase, continuing after a timeout; diagnostic environments never become an install environment |
 | `tests/install-smoke.sh`, `tests/install-smoke.ps1` | Existing release smokes provision only synthetic policy, exclusively create it in their scratch config and invoke the absolute bootstrap outside the workflow checkout, so the smoke enrolls only its installed clone |
 | `tests/test-publish-guard-entries.sh` | Actual release push refusal; gate checkout enrollment at container boundary; shell/PowerShell pack enrollment at recording build boundary; entry conflicts before builds |
 | `tests/installer-apply.sh` (including `installer-handoff.sh`) | Git-less libc/tree preflight retains its cause; a real scratch clone enrolls before recording builds and packs an executable sot-apply |
@@ -383,13 +400,25 @@ Output goes to an owned scratch file with a separate reader, so Windows progress
 At the command's timeout (180 s unless a probe names a shorter bound), it first prints captured progress and a
 descendant snapshot with PID, parent, elapsed time and full command line. The listing command uses the runner's full
 environment with no PowerShell profile and has its own 10 s bound; a failed/timed-out listing is reported explicitly.
-Only then does cleanup close the Windows job or send TERM to its own Unix group (the native installer ends its own
-recorded step groups), allowing 15 s on Unix before KILL and a final 5 s reap bound. Windows allows 5 s to drain/reap;
+Only then does cleanup close the Windows job or send TERM to its own Unix group, allowing 15 s on Unix before KILL
+and a final 5 s reap bound. Unix cleanup after an abnormal installer exit is not guaranteed: installer steps take
+their own groups and can survive the harness's group. The enclosing lane container is the cleanup boundary where
+available; macOS containment remains unproven. Windows allows 5 s to drain/reap;
 if the Python trampoline never joined the job, its own spawn handle permits termination and a final 5 s reap.
-Snapshot PIDs are never used for termination. CIM/environment causation still needs hosted execution evidence.
+Snapshot PIDs are never used for termination. `capture` owns the file and process lifetime directly; there is no
+separate `capture_to_file` helper. CIM/environment causation still needs hosted execution evidence.
+
+The Windows matrix compares .NET startup, the exact product query, staged import/enumeration/projection/JSON and
+self-validation, a fresh-profile cold run (45 s) and its repeat (15 s), disabled module analysis cache, absolute
+system-module imports, independent USERNAME/PATH/TEMP changes, a near-full environment with scratch identity and
+profile/config/temp/cache and system-only modules, and restricted properties with a CIM operation timeout. Other
+variants have 15 s bounds. Repeated exact-current controls expose shared warming; a timed-out cold run does not
+prove that warming completed. Restoring one diagnostic variable changes no install scenario. These observations
+do not establish isolated Windows install completion, and do not bound the product's own observation calls.
 
 The three publish suites are listed in `rc-gate.sh` and `under-bash.sh`, and run as real local pushes in rust.yml's
 three-system `publish-guard` job. No passing evidence is implied by this contract; the landing records the actual runs.
 The native tests run in the existing sotd shard on every system; the process fixture runs fresh and repair once per
-system in rust.yml's existing build shard containing `sotd-c`. No new product build job is required.
+system in rust.yml's existing build shard containing `sotd-c`, after its Rust tests. The process step has 15 minutes
+for the matrix and scenarios; that job has 25 minutes. No new product build job is required.
 Native Windows/macOS success and signal behavior require execution evidence; the configured matrix alone does not establish them.

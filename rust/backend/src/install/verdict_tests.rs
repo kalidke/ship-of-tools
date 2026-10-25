@@ -1,7 +1,7 @@
 use super::*;
 
 fn found(fail: Option<&str>, steps: &[&str]) -> Found {
-    Found { fail: fail.map(String::from), steps: steps.iter().map(|s| (*s).to_string()).collect(), pass: "Ship of Tools 1.2.3 at 0123abcde on this computer".into() }
+    Found { fail: fail.map(String::from), steps: steps.iter().map(|s| (*s).to_string()).collect(), pass: "Ship of Tools 1.2.3 at 0123abcde on this computer".into(), ..Found::default() }
 }
 
 /// One verdict, in its words: a run that reached its checks ends PASS, ONE STEP LEFT (both exit 0, the install is whole)
@@ -43,10 +43,6 @@ fn a_run_ends_in_one_verdict() {
         for pid in std::fs::read_to_string(&pids).unwrap_or_default().lines().filter_map(|l| l.trim().parse::<i32>().ok()) {
             // SAFETY: signal 0 probes a pid this test's step wrote; it sends nothing.
             let alive = unsafe { libc::kill(pid, 0) } == 0;
-            if alive {
-                // SAFETY: the missed step this test started.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-            }
             assert!(!alive, "a step started as the stop landed outlived it");
         }
     }

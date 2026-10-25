@@ -128,6 +128,8 @@ fn installer_records_platform_location_without_creating_policy_and_reports_one_s
     let (line, code) = super::super::verdict::line(&found, "");
     assert_eq!(code, 0);
     assert!(line.starts_with("ONE STEP LEFT:") && line.contains("provision"), "{line}");
+    assert!(line.contains(&format!("caller {}: guard installed; policy needs provisioning", f.caller.display())), "{line}");
+    assert!(!line.contains(": ready"), "{line}");
     let denied = f.git(&f.caller, &["push", f.dir.path().join("remote").to_str().unwrap(), "HEAD:refs/heads/clean"]);
     assert_refused(&denied, "pre-push: sot.publishList must name a readable regular file without a symlink; refusing the push");
     assert!(f.git(&f.dir.path().join("remote"), &["for-each-ref"]).ok().stdout.is_empty());
@@ -145,6 +147,9 @@ fn installer_preserves_hooks_configuration_and_modified_owned_slots() {
     assert_eq!(std::fs::read(f.caller.join(".git/config")).unwrap(), config);
     assert!(found.fail.is_none() && found.steps.iter().any(|s| s.contains("preserved publish hook conflict")), "{found:?}");
     assert!(!f.caller.join(".git/hooks/pre-push").exists());
+    let (line, _) = super::super::verdict::line(&found, "");
+    assert!(line.contains(&format!("caller {}: preserved conflict", f.caller.display())), "{line}");
+    assert!(!line.contains(&format!("caller {}: ready", f.caller.display())), "{line}");
     f.git(&f.caller, &["config", "--unset-all", "core.hooksPath"]).ok();
     let mut found = Found::default();
     let enrolled = plan.enroll(&f.source, &f.commit, &f.base, &mut found).unwrap();
@@ -185,6 +190,8 @@ fn discovery_is_read_only_exact_and_deduplicates_linked_worktrees() {
     assert_eq!(enrolled.clones.len(), 1);
     enrolled.check(&mut found);
     assert!(found.fail.is_none() && found.steps.is_empty(), "{found:?}");
+    let (line, _) = super::super::verdict::line(&found, "");
+    assert!(line.contains(&format!("caller {}: ready (shares base)", linked.display())), "{line}");
     f.reject_push(&linked, "glimmerdeny");
     assert!(same_origin("git@github.com:owner/project.git", "https://github.com/Owner/Project"));
     assert!(same_origin("ssh://git@github.com/owner/project.git", "https://github.com/owner/project.git"));
@@ -200,6 +207,8 @@ fn pending_apply_never_claims_unavailable_setup_and_uses_verified_staged_setup_w
     let mut found = Found::default();
     plan.pending(&f.dir.path().join("unavailable"), &f.commit, &f.base, &mut found).unwrap();
     assert!(found.fail.is_none() && found.steps.iter().any(|s| s.contains("enrollment is pending")), "{found:?}");
+    let (line, _) = super::super::verdict::line(&found, "");
+    assert!(line.starts_with("ONE STEP LEFT:") && !line.contains(": ready"), "{line}");
     assert!(!f.base.join(".git/hooks/pre-push").exists());
     assert!(!f.caller.join(".git/hooks/pre-push").exists());
     assert!(plan.pending(&f.source, &"0".repeat(40), &f.base, &mut Found::default()).is_err(), "an available but unverified source is a failure, not pending enrollment");
@@ -223,3 +232,120 @@ fn missing_interpreter_unverified_source_and_git_write_errors_are_failures() {
     assert!(plan.enroll(&f.source, &f.commit, &f.base, &mut Found::default()).is_err());
     assert_eq!(std::fs::read_to_string(f.base.join(".git/config.lock")).unwrap(), "another writer\n");
 }
+
+fn checked_verdict(julia_step: bool) -> (Fixture, String) {
+    let f = Fixture::new();
+    let plan = f.plan(&f.caller);
+    f.policy(&plan);
+    let mut found = Found::default();
+    found.pass = "Ship of Tools fixture on this computer".into();
+    if julia_step { found.step("install Julia, then run this again"); }
+    plan.enroll(&f.source, &f.commit, &f.base, &mut found).unwrap().check(&mut found);
+    let (line, code) = super::super::verdict::line(&found, "");
+    assert_eq!(code, 0, "{line}");
+    (f, line)
+}
+
+#[test]
+fn healthy_verdict_names_checked_base_caller_and_limited_scope() {
+    let (f, line) = checked_verdict(false);
+    assert!(line.starts_with("PASS: "), "{line}");
+    for path in [&f.base, &f.caller] {
+        assert!(line.contains(&format!("{}: ready", path.display())), "{line}");
+    }
+    assert!(line.contains("installed base and recognized caller only") && line.contains("other clones not discovered"), "{line}");
+}
+
+#[test]
+fn julia_only_verdict_keeps_checked_guard_results() {
+    let (f, line) = checked_verdict(true);
+    assert!(line.starts_with("ONE STEP LEFT: install Julia"), "{line}");
+    for path in [&f.base, &f.caller] {
+        assert!(line.contains(&format!("{}: ready", path.display())), "{line}");
+    }
+    assert!(line.contains("installed base and recognized caller only"), "{line}");
+}
+
+#[test]
+fn guard_results_never_override_a_failed_check() {
+    let f = Fixture::new();
+    let plan = f.plan(&f.caller);
+    f.policy(&plan);
+    let mut found = Found::default();
+    plan.enroll(&f.source, &f.commit, &f.base, &mut found).unwrap().check(&mut found);
+    found.pass = "installed".into();
+    found.step("install Julia");
+    found.fail("record", "changed");
+    let (line, code) = super::super::verdict::line(&found, "; pinned");
+    assert_eq!((line.as_str(), code), ("FAIL: record: changed; pinned", 1));
+}
+
+#[cfg(unix)]
+fn stalled_publish_child(selector: &str, phase: &str, name: &str) {
+    use std::time::Instant;
+    if !sot_platform::test_isolated::run_isolated_until(name, Instant::now() + Duration::from_secs(45)).unwrap() { return; }
+    let mut f = Fixture::new();
+    let tools = f.dir.path().join("stall-tools");
+    std::fs::create_dir(&tools).unwrap();
+    let pulse = f.dir.path().join("pulse");
+    let switch = f.dir.path().join("switch");
+    let real_git = executable(&f.env, "git").unwrap();
+    let real_bash = executable(&f.env, "bash").unwrap();
+    let script = b"#!/bin/sh\ncase \" $* \" in *\" $SOT_BOUND_MATCH \"*) if [ -e \"$SOT_BOUND_SWITCH\" ]; then i=0; while [ \"$i\" -lt 720 ]; do printf . >> \"$SOT_BOUND_PULSE\"; sleep .05; i=$((i+1)); done; fi ;; esac\nexec \"$SOT_BOUND_REAL\" \"$@\"\n";
+    let wrapper = tools.join(if phase == "git" { "git" } else { "bash" });
+    sot_platform::test_exec::write_executable(&wrapper, script);
+    f.env = f.env.with("SOT_BOUND_MATCH", selector).with("SOT_BOUND_SWITCH", &switch).with("SOT_BOUND_PULSE", &pulse)
+        .with("SOT_BOUND_REAL", if phase == "git" { &real_git } else { &real_bash });
+    let mut dirs = vec![tools];
+    dirs.extend(std::env::split_paths(f.env.get("PATH").unwrap()));
+    f.env.set("PATH", std::env::join_paths(dirs).unwrap());
+    if phase == "git" && selector != "rev-parse HEAD" && selector != "diff --quiet" {
+        std::fs::write(&switch, "stall").unwrap();
+        let start = Instant::now();
+        let result = Plan::discover(&f.caller, f.source.to_str().unwrap(), f.env.clone());
+        let error = match result { Ok(_) => panic!("stalled discovery was accepted"), Err(error) => error };
+        assert_eq!(error.code, 1);
+        assert!(error.detail.contains("within"), "{error:?}");
+        assert!(start.elapsed() < Duration::from_secs(35));
+    } else {
+        let plan = if selector == "--check-only" { f.plan(&f.base) } else { f.plan(&f.caller) };
+        f.policy(&plan);
+        let mut found = Found::default();
+        let start = Instant::now();
+        if selector == "--check-only" {
+            let enrolled = plan.enroll(&f.source, &f.commit, &f.base, &mut found).unwrap();
+            std::fs::write(&switch, "stall").unwrap();
+            enrolled.check(&mut found);
+            assert!(found.fail.as_deref().is_some_and(|s| s.contains("within")), "{found:?}");
+            assert!(found.steps.is_empty(), "a cut check is not a provisioning/conflict step: {found:?}");
+        } else {
+            std::fs::write(&switch, "stall").unwrap();
+            let error = match plan.enroll(&f.source, &f.commit, &f.base, &mut found) {
+                Ok(_) => panic!("stalled enrollment was accepted"), Err(error) => error,
+            };
+            assert_eq!(error.code, 1);
+            assert!(error.detail.contains("within"), "{error:?}");
+            assert!(found.steps.is_empty(), "a cut child is not status 3 or 4: {found:?}");
+        }
+        assert!(start.elapsed() < Duration::from_secs(35));
+    }
+    let before = std::fs::read(&pulse).expect("stand-in must have entered");
+    assert!(!before.is_empty());
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(std::fs::read(&pulse).unwrap(), before, "the cut stand-in continued writing");
+}
+
+#[cfg(unix)]
+macro_rules! stalled_case {
+    ($name:ident, $selector:literal, $phase:literal) => {
+        #[test]
+        fn $name() { stalled_publish_child($selector, $phase, concat!("install::publish::tests::", stringify!($name))); }
+    };
+}
+#[cfg(unix)] stalled_case!(stalled_git_discovery_is_operational_failure, "--show-toplevel", "git");
+#[cfg(unix)] stalled_case!(stalled_git_origin_is_operational_failure, "remote.origin.url", "git");
+#[cfg(unix)] stalled_case!(stalled_git_common_directory_is_operational_failure, "--git-common-dir", "git");
+#[cfg(unix)] stalled_case!(stalled_source_head_is_operational_failure, "rev-parse HEAD", "git");
+#[cfg(unix)] stalled_case!(stalled_source_diff_is_operational_failure, "diff --quiet", "git");
+#[cfg(unix)] stalled_case!(stalled_bash_enrollment_is_operational_failure, "--installer", "bash");
+#[cfg(unix)] stalled_case!(stalled_bash_check_records_failure, "--check-only", "bash");

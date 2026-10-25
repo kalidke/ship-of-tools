@@ -1,6 +1,8 @@
 """Process containment and bounded timeout evidence for installer-publish-guard.py.
 
 Snapshot PIDs are diagnostic data only. Termination uses our spawn's process group or our Windows job handle.
+Unix cleanup after an abnormal installer exit is not guaranteed: installer steps take their own groups. Rely on an
+enclosing lane container where available; abnormal-exit containment on macOS remains unproven.
 """
 
 import ctypes
@@ -87,65 +89,59 @@ def read_output(path):
 
 
 def capture(argv, cwd, env, input_text=None, *, timeout, on_timeout=None):
-    """Keep the process alive for on_timeout, then end its container and drain/reap within a second bound."""
+    """Bound the wait and cleanup attempt; Unix's outer group cannot contain abnormal installer-exit leftovers."""
     with tempfile.TemporaryDirectory(prefix="installer-process-", dir=cwd) as scratch:
         output_path = Path(scratch) / "output"
         with open(output_path, "wb", buffering=0) as output:
-            return capture_to_file(argv, cwd, env, input_text, output, output_path, timeout, on_timeout)
-
-
-def capture_to_file(argv, cwd, env, input_text, output_file, output_path, timeout, on_timeout):
-    command = [str(a) for a in argv]
-    job = WindowsJob() if os.name == "nt" else None
-    child = None
-    try:
-        if job:
-            # Isolated Python startup loads no user site, sitecustomize, or PYTHON* configuration.
-            command = [sys.executable, "-I", "-S", "-B", str(Path(__file__).resolve()), "--job-child", job.name, *command]
-        child = subprocess.Popen(command, cwd=cwd, env=env, text=True,
-                                 stdin=subprocess.DEVNULL if input_text is None else subprocess.PIPE,
-                                 stdout=output_file, stderr=subprocess.STDOUT, start_new_session=job is None)
-        try:
-            child.communicate(input=input_text, timeout=timeout)
-            return subprocess.CompletedProcess(argv, child.returncode, read_output(output_path))
-        except subprocess.TimeoutExpired as error:
-            error.output = read_output(output_path)
-            if on_timeout:
-                on_timeout(child.pid, error)
-            raise
-    finally:
-        if job:
-            job.close()  # Ends this spawn's entire job, including children with separate process groups.
-        if child is not None:
+            command = [str(a) for a in argv]
+            job = WindowsJob() if os.name == "nt" else None
+            child = None
             try:
-                if child.returncode is None:
-                    if job is None:
-                        # The installer handles TERM by ending its own recorded step groups before exiting; other
-                        # fixture commands stay in this spawn's group. Its unreaped leader prevents group-ID reuse.
-                        try:
-                            os.killpg(child.pid, signal.SIGTERM)
-                        except ProcessLookupError:
-                            pass
-                    try:
-                        child.communicate(timeout=15 if job is None else 5)
-                    except subprocess.TimeoutExpired:
-                        if job is None:
-                            try:
-                                os.killpg(child.pid, signal.SIGKILL)
-                            except ProcessLookupError:
-                                pass
-                        else:
-                            # If isolated Python startup failed before joining the job, it has started no command.
-                            # This is still our own Popen child, held by its process handle, never a snapshot PID.
-                            child.kill()
-                        try:
-                            child.wait(timeout=5)
-                        except subprocess.TimeoutExpired as error:
-                            raise RuntimeError(f"owned process root {child.pid} did not reap within 5 s after container termination") from error
+                if job:
+                    command = [sys.executable, "-I", "-S", "-B", str(Path(__file__).resolve()), "--job-child", job.name, *command]
+                child = subprocess.Popen(command, cwd=cwd, env=env, text=True,
+                                         stdin=subprocess.DEVNULL if input_text is None else subprocess.PIPE,
+                                         stdout=output, stderr=subprocess.STDOUT, start_new_session=job is None)
+                try:
+                    child.communicate(input=input_text, timeout=timeout)
+                    return subprocess.CompletedProcess(argv, child.returncode, read_output(output_path))
+                except subprocess.TimeoutExpired as error:
+                    error.output = read_output(output_path)
+                    if on_timeout:
+                        on_timeout(child.pid, error)
+                    raise
             finally:
-                for stream in (child.stdin, child.stdout):
-                    if stream is not None:
-                        stream.close()
+                if job:
+                    job.close()
+                if child is not None:
+                    try:
+                        if child.returncode is None:
+                            if job is None:
+                                # Cooperative TERM lets the installer end its recorded step groups. If it died
+                                # abnormally, those groups can outlive this outer group; no PID-based repair here.
+                                try:
+                                    os.killpg(child.pid, signal.SIGTERM)
+                                except ProcessLookupError:
+                                    pass
+                            try:
+                                child.communicate(timeout=15 if job is None else 5)
+                            except subprocess.TimeoutExpired:
+                                if job is None:
+                                    try:
+                                        os.killpg(child.pid, signal.SIGKILL)
+                                    except ProcessLookupError:
+                                        pass
+                                else:
+                                    # Only our Popen handle: startup may have stalled before joining the job.
+                                    child.kill()
+                                try:
+                                    child.wait(timeout=5)
+                                except subprocess.TimeoutExpired as error:
+                                    raise RuntimeError(f"owned process root {child.pid} did not reap within 5 s after container termination") from error
+                    finally:
+                        for stream in (child.stdin, child.stdout):
+                            if stream is not None:
+                                stream.close()
 
 
 def descendants(root_pid, cwd):

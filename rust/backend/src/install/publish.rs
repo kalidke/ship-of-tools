@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use sot_platform::host::env::Env;
 
@@ -28,10 +29,21 @@ pub(super) struct Enrolled<'a> {
     source: PathBuf,
     commit: String,
     clones: Vec<Clone>,
+    base: PathBuf,
 }
 
 fn stop(detail: impl Into<String>) -> Stop {
     Stop::at("publish guard", 1, detail)
+}
+
+fn run(command: &mut Command, purpose: &str) -> Result<cmd::Ran, Stop> {
+    let ran = cmd::output_within(command, Duration::from_secs(30));
+    if ran.code.is_none() { return Err(stop(format!("{purpose}: {}", ran.last_said()))); }
+    Ok(ran)
+}
+
+fn scope(found: &mut Found) {
+    found.checked("publish guard scope: installed base and recognized caller only; other clones not discovered");
 }
 
 fn executable(env: &Env, name: &str) -> Option<PathBuf> {
@@ -131,7 +143,7 @@ impl Plan {
             return Err(stop("the platform config folder must be absolute"));
         }
         let mut plan = Self { env, git, bash, list: config.join("publish-list.txt"), caller: None };
-        let top = cmd::output(plan.git(cwd).args(["rev-parse", "--show-toplevel"]));
+        let top = run(plan.git(cwd).args(["rev-parse", "--show-toplevel"]), "caller discovery")?;
         if !top.ok() {
             if top.code == Some(128) && top.err.contains("not a git repository") {
                 say("publish guard: original working folder is outside Git; no caller clone enrolled");
@@ -140,7 +152,7 @@ impl Plan {
             return Err(stop("cannot identify the caller checkout"));
         }
         let checkout = PathBuf::from(top.first_line());
-        let url = cmd::output(plan.git(&checkout).args(["config", "--local", "--no-includes", "--get", "remote.origin.url"]));
+        let url = run(plan.git(&checkout).args(["config", "--local", "--no-includes", "--get", "remote.origin.url"]), "caller origin")?;
         if url.code == Some(1) || (url.ok() && !same_origin(&url.first_line(), origin)) {
             say(&format!("publish guard: unrelated caller checkout kept: {}", checkout.display()));
         } else if !url.ok() {
@@ -158,7 +170,7 @@ impl Plan {
     }
 
     fn clone_at(&self, checkout: &Path) -> Result<Clone, Stop> {
-        let ran = cmd::output(self.git(checkout).args(["rev-parse", "--git-common-dir"]));
+        let ran = run(self.git(checkout).args(["rev-parse", "--git-common-dir"]), "common Git directory")?;
         let path = PathBuf::from(ran.first_line());
         let path = if path.is_absolute() { path } else { checkout.join(path) };
         let common = if ran.ok() { path.canonicalize().ok() } else { None };
@@ -166,12 +178,12 @@ impl Plan {
         Ok(Clone { checkout: checkout.to_path_buf(), common })
     }
 
-    fn verified_source(&self, source: &Path, commit: &str) -> bool {
-        let head = cmd::output(self.git(source).args(["rev-parse", "HEAD"]));
+    fn verified_source(&self, source: &Path, commit: &str) -> Result<bool, Stop> {
+        let head = run(self.git(source).args(["rev-parse", "HEAD"]), "source HEAD verification")?;
         let paths = ["scripts/setup-publish-guard.sh", "scripts/hooks/pre-push", "scripts/hooks/pre-push-shim", "scripts/hooks/publish-guard-lib.sh"];
-        head.ok() && head.first_line() == commit
+        Ok(head.ok() && head.first_line() == commit
             && paths.iter().all(|p| std::fs::symlink_metadata(source.join(p)).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink()))
-            && cmd::output(self.git(source).args(["diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--"]).args(paths)).ok()
+            && run(self.git(source).args(["diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--"]).args(paths), "source diff verification")?.ok())
     }
 
     fn setup(&self, source: &Path, clone: &Clone, check: bool) -> Result<cmd::Ran, Stop> {
@@ -180,14 +192,14 @@ impl Plan {
             .arg(bash_path(&clone.checkout)?).arg("--list").arg(bash_path(&self.list)?).arg("--installer");
         if let Some(tmp) = self.env.get_nonempty("TMPDIR") { c.env("TMPDIR", bash_path(Path::new(tmp))?); }
         if check { c.arg("--check-only"); }
-        let ran = cmd::output(&mut c);
+        let ran = run(&mut c, if check { "read-only publish guard check" } else { "publish guard enrollment" })?;
         for line in ran.out.lines().chain(ran.err.lines()) { say(line); }
         Ok(ran)
     }
 
     pub(super) fn enroll<'a>(&'a self, source: &Path, commit: &str, base: &Path, found: &mut Found) -> Result<Enrolled<'a>, Stop> {
         super::verdict::step("publish guard");
-        if !self.verified_source(source, commit) {
+        if !self.verified_source(source, commit)? {
             return Err(stop("the target checkout has no verified publish guard setup"));
         }
         let mut clones = vec![self.clone_at(base)?];
@@ -195,18 +207,32 @@ impl Plan {
             if !clones.iter().any(|c| c.common == caller.common) { clones.push(caller.clone()); }
         }
         let mut placed = Vec::new();
+        scope(found);
         for clone in clones {
             if self.clone_at(&clone.checkout)?.common != clone.common {
                 return Err(stop("a clone's common Git directory changed since discovery"));
             }
             match self.setup(source, &clone, false)?.code {
                 Some(0 | 3) => placed.push(clone),
-                Some(4) => found.step(format!("resolve the preserved publish hook conflict in {} (see setup diagnostics above), then run this installer again", clone.checkout.display())),
+                Some(4) => {
+                    self.note(found, base, &clone, "preserved conflict");
+                    found.step(format!("resolve the preserved publish hook conflict in {} (see setup diagnostics above), then run this installer again", clone.checkout.display()));
+                }
                 _ => return Err(stop(format!("enrollment failed for {} (see setup diagnostics above)", clone.checkout.display()))),
             }
         }
         say("publish guard: only the installed base and recognized caller clones were considered; other clones were not discovered");
-        Ok(Enrolled { plan: self, source: source.to_path_buf(), commit: commit.to_string(), clones: placed })
+        Ok(Enrolled { plan: self, source: source.to_path_buf(), commit: commit.to_string(), clones: placed, base: base.to_path_buf() })
+    }
+
+    fn note(&self, found: &mut Found, base: &Path, clone: &Clone, state: &str) {
+        let role = if clone.checkout == base { "base" } else { "caller" };
+        found.checked(format!("publish guard checked {role} {}: {state}", clone.checkout.display()));
+        if let Some(caller) = &self.caller {
+            if clone.checkout == base && caller.common == clone.common {
+                found.checked(format!("publish guard checked caller {}: {state} (shares base)", caller.checkout.display()));
+            }
+        }
     }
 
     /// Windows may have only armed a target whose setup is not yet available. Never report it checked or applied.
@@ -218,6 +244,7 @@ impl Plan {
         } else {
             let caller = self.caller.as_ref().map_or(String::new(), |c| format!(" and caller {}", c.checkout.display()));
             found.step(format!("after applying the update, run this installer again to enroll and check publish guards for base {}{caller}; enrollment is pending", base.display()));
+            scope(found);
         }
         Ok(())
     }
@@ -226,18 +253,32 @@ impl Plan {
 impl Enrolled<'_> {
     pub(super) fn check(&self, found: &mut Found) {
         super::verdict::step("publish guard check");
-        if !self.plan.verified_source(&self.source, &self.commit) {
-            found.fail("publish guard", "the setup source changed during the install");
-            return;
+        match self.plan.verified_source(&self.source, &self.commit) {
+            Ok(true) => {}
+            Ok(false) => { found.fail("publish guard", "the setup source changed during the install"); return; }
+            Err(error) => { found.fail("publish guard", error.detail); return; }
         }
         for clone in &self.clones {
             // Check the common identity again too; never repair a changed/deleted hook during the final check.
-            let same = self.plan.clone_at(&clone.checkout).is_ok_and(|now| now.common == clone.common);
-            let code = if same { self.plan.setup(&self.source, clone, true).ok().and_then(|r| r.code) } else { None };
+            let now = match self.plan.clone_at(&clone.checkout) {
+                Ok(now) => now,
+                Err(error) => { found.fail("publish guard", error.detail); return; }
+            };
+            if now.common != clone.common { found.fail("publish guard", "a clone's common Git directory changed during the install"); return; }
+            let code = match self.plan.setup(&self.source, clone, true) {
+                Ok(ran) => ran.code,
+                Err(error) => { found.fail("publish guard", error.detail); return; }
+            };
             match code {
-                Some(0) => say(&format!("publish guard: ready for {}", clone.checkout.display())),
-                Some(3) => found.step(format!("provision a valid private publish-list.txt in the platform config folder, then run this installer again (guard installed for {}; pushes refuse until ready)", clone.checkout.display())),
-                _ => found.fail("publish guard", format!("enrolled state changed or could not be checked for {}", clone.checkout.display())),
+                Some(0) => {
+                    self.plan.note(found, &self.base, clone, "ready");
+                    say(&format!("publish guard: ready for {}", clone.checkout.display()));
+                }
+                Some(3) => {
+                    self.plan.note(found, &self.base, clone, "guard installed; policy needs provisioning");
+                    found.step(format!("provision a valid private publish-list.txt in the platform config folder, then run this installer again (guard installed for {}; pushes refuse until ready)", clone.checkout.display()));
+                }
+                _ => { found.fail("publish guard", format!("enrolled state changed or could not be checked for {}", clone.checkout.display())); return; }
             }
         }
     }
