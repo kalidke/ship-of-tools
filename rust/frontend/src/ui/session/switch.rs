@@ -46,25 +46,11 @@ impl State {
     /// — including the command file — could forge the ADR-0044 "a person
     /// stayed on this view" dwell signal.
     pub(in crate::ui) fn cycle_workspace(&mut self, direction: i32, person_driven: bool) {
-        if self.workspace_slugs.len() < 2 {
+        let Some((next_host, next_slug)) = self.row_presentation.next_row(
+            direction, &self.active_host, self.active_workspace_id.as_deref(),
+        ) else {
             return;
-        }
-        let current_slug = self
-            .active_workspace_id
-            .clone()
-            .or_else(|| self.default_workspace_slug.clone());
-        let n = self.workspace_slugs.len() as i32;
-        let idx = current_slug
-            .as_deref()
-            .and_then(|s| {
-                self.workspace_slugs
-                    .iter()
-                    .position(|(h, slug)| h == &self.active_host && slug == s)
-            })
-            .map(|p| p as i32)
-            .unwrap_or(0);
-        let next = ((idx + direction).rem_euclid(n)) as usize;
-        let (next_host, next_slug) = self.workspace_slugs[next].clone();
+        };
         let target = match self.row_directory.resolve(&next_host, &next_slug) {
             Ok(target) => target,
             Err(reason) => {
@@ -189,11 +175,7 @@ impl State {
         // snapshot-restore below has settled the entering mode.
         let old_tree_key = self.active_tree_key();
         self.active_host = host;
-        self.default_workspace_slug = self
-            .row_directory
-            .rows(&self.active_host)
-            .and_then(|rows| rows.iter().find(|row| row.is_default))
-            .map(|row| row.slug.clone());
+        self.row_presentation.select_host_default(&self.row_directory, &self.active_host);
         // (round 2, finding 14): project the declaration
         // into the status line HERE too, not only in `drain_events`'s own
         // `Connected` handling — switching to a host that is ALREADY

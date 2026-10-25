@@ -61,7 +61,7 @@ impl State {
     /// the active key and every reply key go through (see `ws_key_of` for
     /// the default-slug aliasing this collapses).
     pub(in crate::ui) fn reply_ws_key(&self, workspace_id: Option<&str>) -> String {
-        ws_key_of(workspace_id, self.default_workspace_slug.as_deref())
+        ws_key_of(workspace_id, self.row_presentation.default_slug())
     }
 
     /// Storage key (a `WsKey`) for a `lifecycle` repl.frame evt's workspace
@@ -71,7 +71,7 @@ impl State {
         self.row_directory.lifecycle_key(
             host,
             wire_hint,
-            self.default_workspace_slug.as_deref(),
+            self.row_presentation.default_slug(),
         )
     }
 
@@ -83,8 +83,8 @@ impl State {
     pub(in crate::ui) fn active_repl_starting(&self) -> bool {
         let key = self.current_workspace_key();
         let slug = if key == "<default>" {
-            match &self.default_workspace_slug {
-                Some(s) => s.clone(),
+            match self.row_presentation.default_slug() {
+                Some(s) => s.to_string(),
                 None => key,
             }
         } else {
@@ -106,18 +106,14 @@ impl State {
     /// drops the whole eval's stream). Collision rule: an existing
     /// `"<default>"`-keyed entry wins (both describe the same physical ws;
     /// the None-addressed one was already routed correctly).
-    pub(in crate::ui) fn migrate_default_slug_keys(&mut self) {
-        let Some(slug) = self.default_workspace_slug.clone() else {
-            return;
-        };
+    pub(in crate::ui) fn migrate_default_slug_keys(&mut self, from_key: WsKey) {
+        let (host, slug) = from_key.clone();
         const DEFAULT_KEY: &str = "<default>";
         // ADR 0042 L2a: `default_workspace_slug` is scoped to
         // `active_host`'s own default (its own doc comment) -- so this
         // migration operates on active_host's WsKey space specifically.
         // Every map it touches is host-qualified now; migrating the wrong
         // host's entries would be a silent no-op (miss) at best.
-        let host = self.active_host.clone();
-        let from_key: WsKey = (host.clone(), slug.clone());
         let to_key: WsKey = (host.clone(), DEFAULT_KEY.to_string());
         if let Some(v) = self.workspace_ui_snapshots.remove(&from_key) {
             self.workspace_ui_snapshots

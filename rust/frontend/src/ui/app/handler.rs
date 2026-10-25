@@ -296,7 +296,7 @@ impl ApplicationHandler for App {
             let fading_help = state.help.peek.as_ref().is_some_and(|p| p.started.elapsed() >= help::PEEK_HOLD);
             let interval = if fading_help {
                 std::time::Duration::from_millis(16)
-            } else if state.flash_starts.is_empty() {
+            } else if !state.row_presentation.has_flashes() {
                 std::time::Duration::from_secs(1)
             } else {
                 std::time::Duration::from_millis(80)

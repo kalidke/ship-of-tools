@@ -187,7 +187,7 @@ impl State {
         anyhow::ensure!(
             self.active_host == *a
                 && self.active_workspace_id.is_none()
-                && self.default_workspace_slug.as_deref() == Some("base-a"),
+                && self.row_presentation.default_slug() == Some("base-a"),
             "default resolved using another host's list"
         );
         let envelope = parse_nav_envelope(

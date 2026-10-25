@@ -375,57 +375,16 @@ fn build_preview_content(
 }
 
 fn apply_harness_flags(state: &mut State, cli: &crate::cli::Cli) {
-    // `--demo-sessions a,b:working,c` (capture harness): seed the
-    // workspace strip offline so the bottom session strip renders without
-    // a live backend. Middle entry is made active so both left + right
-    // neighbours show. A `:state` suffix on an entry also seeds
-    // `workspace_states[slug] = (state, now)` so its work-state tone
-    // renders; a bare slug carries no state (renders as before).
-    // ADR 0042 L2a: the harness has no real host, so every demo entry
-    // is seeded under one synthetic `"demo"` host — consistent with
-    // `active_host`'s own offline default (`"offline"` when `conns` is
-    // empty, which it always is for these harness flags).
-    let demo_host: HostKey = "demo".to_string();
-    if !cli.demo_sessions.is_empty() {
-        state.workspace_slugs = cli
-            .demo_sessions
-            .iter()
-            .map(|s| (demo_host.clone(), s.clone()))
-            .collect();
-        let now_rfc3339 = chrono::Utc::now().to_rfc3339();
-        for (i, s) in cli.demo_sessions.iter().enumerate() {
-            let key: WsKey = (demo_host.clone(), s.clone());
-            state.workspace_labels.insert(key.clone(), s.clone());
-            if let Some(Some(st)) = cli.demo_session_states.get(i) {
-                state
-                    .workspace_states
-                    .insert(key.clone(), (st.clone(), now_rfc3339.clone()));
-                // Mirror into prev so a later live transition off this
-                // seeded state would flash, not first-appear.
-                state.prev_workspace_states.insert(key, st.clone());
-            }
-        }
-        let mid = cli.demo_sessions.len() / 2;
-        state.active_workspace_id = cli.demo_sessions.get(mid).cloned();
-        state.active_host = demo_host.clone();
-    }
-    // `--demo-flash a,c` (capture harness): stamp a fresh status-change
-    // flash on the listed slugs at startup so a `--capture` shows the
-    // flash near full brightness. We also rewrite `prev_workspace_states`
-    // to a *different* synthetic state so the same slug reads as a real
-    // transition under the live diff path (rather than first-appearance).
-    for slug in &cli.demo_flash {
-        let key: WsKey = (demo_host.clone(), slug.clone());
-        state
-            .flash_starts
-            .insert(key.clone(), std::time::Instant::now());
-        // A prior state distinct from whatever was seeded above makes the
-        // transition look real; "idle" unless the current seed is idle.
-        let prior = match state.workspace_states.get(&key) {
-            Some((cur, _)) if cur == "idle" => "working",
-            _ => "idle",
-        };
-        state.prev_workspace_states.insert(key, prior.to_string());
+    // Capture presentation uses a synthetic host, independently of live directory listings.
+    if let Some((host, slug)) = state.row_presentation.seed_capture(
+        &cli.demo_sessions,
+        &cli.demo_session_states,
+        &cli.demo_flash,
+        &chrono::Utc::now().to_rfc3339(),
+        std::time::Instant::now(),
+    ) {
+        state.active_host = host;
+        state.active_workspace_id = Some(slug);
     }
     // `--start-monitor` (capture harness): the drawer was opened at
     // construction and holds its subscription from the start. The

@@ -1,28 +1,21 @@
-//! Colours and the status-change flash: brightness scaling, flash ramp, expiry.
+//! Color composition and State forwarding of shared presentation flash queries.
 
 use super::*;
 
 impl State {
     /// Status-change flash factor for `(host, slug)` at `now` (1.0 right at
-    /// the transition, fading to 0.0 over `FLASH_SECS`). `0.0` when the
+    /// the transition, fading to 0.0 over 600 ms). `0.0` when the
     /// slug has no live flash. Pure read so both the (immutable-borrow)
     /// nav-row build and the strip caller can use it.
     pub(in crate::ui) fn flash_factor_for(&self, host: &str, slug: &str, now: std::time::Instant) -> f32 {
-        let key: WsKey = (host.to_string(), slug.to_string());
-        self.flash_starts
-            .get(&key)
-            .map(|t| flash_factor(now.duration_since(*t).as_secs_f32()))
-            .unwrap_or(0.0)
+        self.row_presentation.flash_factor_for(host, slug, now)
     }
 
-    /// Drop `flash_starts` entries whose fade has fully elapsed so the map
+    /// Drop expired flash entries whose fade has fully elapsed so the map
     /// stays small and `about_to_wait` stops scheduling fast repaints once no
     /// flash is live. Returns true while any flash is still animating.
     pub(in crate::ui) fn prune_expired_flashes(&mut self, now: std::time::Instant) -> bool {
-        let window = std::time::Duration::from_secs_f32(FLASH_SECS);
-        self.flash_starts
-            .retain(|_, t| now.duration_since(*t) < window);
-        !self.flash_starts.is_empty()
+        self.row_presentation.prune_expired_flashes(now)
     }
 }
 
@@ -137,20 +130,6 @@ impl AgentTone {
 /// idle/waiting/done are resting states, and a long "blocked" stays loud on
 /// purpose.
 pub(in crate::ui) const AGENT_STALE_MINUTES: i64 = 10;
-
-/// Duration of the status-change flash (ADR 0023): when a session's
-/// work-state changes, its name brightens toward white and fades to its
-/// resting tone over this window. Short enough to read as a blink, long
-/// enough to catch the eye. Shared by the nav rows + the bottom strip.
-const FLASH_SECS: f32 = 0.6;
-
-/// Flash brightness factor for a name whose state changed `elapsed` ago:
-/// 1.0 right at the transition, ramping linearly to 0.0 at `FLASH_SECS`,
-/// clamped outside the window. Callers lerp the name colour toward white by
-/// this factor. Pulled out so the ramp stays unit-testable.
-fn flash_factor(elapsed_secs: f32) -> f32 {
-    (1.0 - elapsed_secs / FLASH_SECS).clamp(0.0, 1.0)
-}
 
 /// Lerp an RGB colour toward white by `t` (0.0 = unchanged, 1.0 = full
 /// white). Used to brighten a flashing session name; `t` is the

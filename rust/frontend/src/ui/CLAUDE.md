@@ -2,9 +2,9 @@
 
 ## Idea
 One UI thread owns all view state and every other thread reaches it only by waking the window; ratatui computes cells
-and one wgpu pass draws every pixel. The window's `State` (mod.rs) is driven by one winit loop. Its first extracted
-owner is `session/row_directory.rs`; the remaining concepts below still reach shared fields through `impl State`
-blocks and free functions using `use super::*`.
+and one wgpu pass draws every pixel. The window's `State` (mod.rs) is driven by one winit loop. `session/row_directory.rs`
+owns authoritative rows and identity; `session/row_presentation.rs` owns their presentation. The remaining concepts
+below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
 - The winit loop, frame pacing and the exit path: `app/`.
@@ -54,6 +54,16 @@ blocks and free functions using `use super::*`.
   fixture covers reconciliation effects and disconnect retention; its `kept_default_preserves_its_result_and_view`
   control checks the default row's own pending result, cached tree selection, preview source and REPL input through
   workspace switches. The native fixture runs on hosted Windows and macOS.
+- `RowPresentation` privately owns labels, canonical-root fallbacks, state/stamp pairs, transition history,
+  flashes, strip order and the active host's default. Projections use only `ordered_hosts` and listed host/slug keys;
+  inert defaults retain metadata. None selections use hello metadata; unknown nondefaults get no root fallback.
+  Stable host blocks rank blocked, badge, done, working, waiting, rest and pin the selection's previous slot.
+  Known changes flash; missing rows retain history. Sessions/strip share the 600 ms fade. Destroy forgets only
+  labels/roots; capture supports flashes without demo rows.
+  Behavior tests: `workspace_list::tests` and `row_presentation::tests`.
+- `State` applies nonempty REPL catch-up, migration on every applicable refresh, then status before attachments,
+  declarations, capture cycling and tree rebuild. Switching snapshots first, then changes hosts/defaults without
+  rebuild/migration. The owner never takes `State`; lifecycle/declarations, frame routing and persistence stay there.
 - Final window teardown has one shared three-second OS-clock process deadline, independent of the UI and transport runtime; it starts at the terminal decision, after any daemon acknowledgement and notice presentation.
 - `State::set_focus` (chrome/panes.rs) is the one write of `focus`; scan_tests.rs (`focus_written_only_by_set_focus`)
   fails any other.
@@ -119,8 +129,8 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `input/`: the action catalog, key and mouse routing, help and clipboard paste.
 - `nav/`: the navigation pane's trees (mode, store, Modules, Sessions, Hosts).
 - `nav/files/`: Files mode's prompts, reveal walk, transfers and re-lists.
-- `session/`: `RowDirectory` owns authoritative listings and identity resolution; State coordinates the projections,
-  snapshots, switch, picker, presence and badge floor.
+- `session/`: `RowDirectory` owns listings/identity and `RowPresentation` owns metadata/order/flashes; State
+  coordinates their effects, snapshots, switch, picker, presence and badge floor.
 - `agent_pane/`: the agent pane's screen choice, attach client with warm pool, and input.
 - `drawer/`: the bottom drawer and its tenants.
 - `drawer/repl/`: the REPL tenant (log, submit, history, display lines).

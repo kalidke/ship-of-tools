@@ -462,8 +462,7 @@ impl State {
                 // same-slug recreate starts clean (codex r2 #3).
                 self.tree_store.purge_workspace(&ws_key);
                 let destroyed_key: WsKey = (event_host.clone(), info.slug.clone());
-                self.workspace_labels.remove(&destroyed_key);
-                self.workspace_project_roots.remove(&destroyed_key);
+                self.row_presentation.forget_destroyed_metadata(&destroyed_key);
                 let tmux_note = if info.tmux_killed {
                     ""
                 } else {

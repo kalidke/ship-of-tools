@@ -1,378 +1,456 @@
+use super::super::row_presentation::PresentationEffects;
 use super::*;
+use crate::net::transport::WorkspaceInfo;
 
-/// Build the projection's input through the directory's real authoritative replacement operations.
-fn listed_directory(lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>>) -> RowDirectory {
-    let mut directory = RowDirectory::default();
-    for (host, rows) in lists {
-        let update = directory.prepare_replace(host, rows);
-        directory.commit_replace(update);
-    }
-    directory
+fn key(host: &str, slug: &str) -> WsKey {
+    (host.to_string(), slug.to_string())
+}
+
+fn row(slug: &str, state: &str, at: &str) -> WorkspaceInfo {
+    let mut row = ws_info(slug, &format!("attach-{slug}"));
+    row.agent_state = state.to_string();
+    row.agent_status_at = at.to_string();
+    row
+}
+
+fn replace(directory: &mut RowDirectory, host: &str, rows: Vec<WorkspaceInfo>) {
+    let update = directory.prepare_replace(host.to_string(), rows);
+    directory.commit_replace(update);
+}
+
+fn project(
+    p: &mut RowPresentation,
+    d: &RowDirectory,
+    hosts: &[&str],
+    active: &str,
+    slug: Option<&str>,
+) -> PresentationEffects {
+    let hosts: Vec<_> = hosts.iter().map(|h| h.to_string()).collect();
+    p.refresh(
+        d,
+        &hosts,
+        active,
+        slug,
+        Default::default(),
+        std::time::Instant::now(),
+    )
 }
 
 #[test]
 fn canonical_translation_includes_a_host_outside_ordered_hosts() {
-    let connected = "connected".to_string();
-    let synthetic = "synthetic".to_string();
-    // State derives ordered_hosts from its fixed conns. Only a synthetic listing can name an absent host.
-    let ordered_hosts = vec![connected.clone()];
-    let directory = listed_directory(HashMap::from([
-        (connected.clone(), vec![ws_info("connected-row", "connected-target")]),
-        (synthetic.clone(), vec![ws_info("synthetic-row", "synthetic-target")]),
-    ]));
-    let fresh = fresh_workspace_caches(&ordered_hosts, &directory, &connected);
-    assert_eq!(fresh.workspace_slugs, vec![(connected, "connected-row".into())]);
-    assert!(!fresh.workspace_project_roots.contains_key(&(synthetic.clone(), "synthetic-row".into())));
-    // Translation belongs to the authoritative listings, independently of display/projection order.
+    let mut directory = RowDirectory::default();
+    replace(
+        &mut directory,
+        "connected",
+        vec![row("connected-row", "", "")],
+    );
+    replace(
+        &mut directory,
+        "synthetic",
+        vec![row("synthetic-row", "", "")],
+    );
+    let mut p = RowPresentation::default();
+    project(&mut p, &directory, &["connected"], "connected", None);
+    assert_eq!(p.keys(), &[key("connected", "connected-row")]);
+    assert_eq!(p.project_root("synthetic", "synthetic-row"), None);
     assert_eq!(
-        directory.lifecycle_key(&synthetic, Some("ws-synthetic-row-0000"), None),
-        (synthetic, "synthetic-row".into())
+        directory.lifecycle_key("synthetic", Some("ws-synthetic-row-0000"), None),
+        key("synthetic", "synthetic-row")
     );
 }
 
-// ---- activity_order (bottom strip within-host ordering) ----
-
-fn ak(host: &str, slug: &str) -> WsKey {
-    (host.to_string(), slug.to_string())
-}
-
-fn astates(rows: &[(&WsKey, &str, &str)]) -> HashMap<WsKey, (String, String)> {
-    rows.iter()
-        .map(|(k, st, at)| ((*k).clone(), (st.to_string(), at.to_string())))
-        .collect()
-}
-
-fn nobadge() -> std::collections::HashSet<WsKey> {
-    std::collections::HashSet::new()
+#[test]
+fn projection_keeps_hosts_distinct_and_obeys_display_order() {
+    let mut d = RowDirectory::default();
+    let mut a = row("shared", "working", "alpha-stamp");
+    a.label = "Alpha".into();
+    a.project_root = "/projects/alpha".into();
+    let mut b = row("shared", "blocked", "beta-stamp");
+    b.label = "Beta".into();
+    b.project_root = "/projects/beta".into();
+    replace(&mut d, "alpha", vec![a]);
+    replace(&mut d, "beta", vec![b]);
+    replace(&mut d, "synthetic", vec![row("hidden", "done", "")]);
+    let mut p = RowPresentation::default();
+    project(&mut p, &d, &["beta", "unanswered", "alpha"], "alpha", None);
+    assert_eq!(p.keys(), &[key("beta", "shared"), key("alpha", "shared")]);
+    for (host, label, root, state, stamp) in [
+        (
+            "alpha",
+            "Alpha",
+            "/projects/alpha",
+            "working",
+            "alpha-stamp",
+        ),
+        ("beta", "Beta", "/projects/beta", "blocked", "beta-stamp"),
+    ] {
+        assert_eq!(p.label(host, "shared"), Some(label));
+        assert_eq!(p.project_root(host, "shared"), Some(root));
+        assert_eq!(p.state(host, "shared"), Some((state, stamp)));
+    }
+    assert_eq!(p.state("synthetic", "hidden"), None);
+    assert_eq!(p.label("synthetic", "hidden"), None);
+    assert_eq!(p.project_root("synthetic", "hidden"), None);
+    replace(
+        &mut d,
+        "alpha",
+        vec![row("replacement", "idle", "new-stamp")],
+    );
+    project(&mut p, &d, &["beta", "unanswered", "alpha"], "alpha", None);
+    assert_eq!(
+        p.keys(),
+        &[key("beta", "shared"), key("alpha", "replacement")]
+    );
+    assert_eq!(p.label("alpha", "shared"), None);
+    assert_eq!(p.project_root("alpha", "shared"), None);
+    assert_eq!(p.state("alpha", "shared"), None);
+    assert_eq!(p.label("beta", "shared"), Some("Beta"));
+    assert_eq!(p.project_root("beta", "shared"), Some("/projects/beta"));
+    assert_eq!(p.state("beta", "shared"), Some(("blocked", "beta-stamp")));
 }
 
 #[test]
-fn activity_order_tiers_red_white_blue_green_purple_gray() {
-    let red = ak("h", "red");
-    let white = ak("h", "white");
-    let blue = ak("h", "blue");
-    let green = ak("h", "green");
-    let purple = ak("h", "purple");
-    let gray = ak("h", "gray");
-    // Daemon order is the reverse of the list order; every stamp is newer
-    // than the one before, so a stamp-only sort would also be reversed.
-    let slugs = vec![
-        gray.clone(),
-        purple.clone(),
-        green.clone(),
-        blue.clone(),
-        white.clone(),
-        red.clone(),
+fn inert_defaults_are_hidden_but_keep_their_metadata_and_default() {
+    for runtime in ["capsule", "tmux"] {
+        let mut d = RowDirectory::default();
+        let mut anchor = row("anchor", "idle", "stamp");
+        anchor.is_default = true;
+        anchor.agent = "none".into();
+        anchor.runtime = runtime.into();
+        replace(&mut d, "local", vec![anchor]);
+        let mut p = RowPresentation::default();
+        project(&mut p, &d, &["local", "unanswered"], "local", None);
+        assert!(p.keys().is_empty(), "{runtime}");
+        assert_eq!(p.label("local", "anchor"), None);
+        assert_eq!(p.project_root("local", "anchor"), Some("/projects/anchor"));
+        assert_eq!(p.state("local", "anchor"), Some(("idle", "stamp")));
+        assert_eq!(p.default_slug(), Some("anchor"));
+    }
+}
+
+#[test]
+fn labels_keep_slug_and_hello_fallbacks() {
+    let mut d = RowDirectory::default();
+    let mut named = row("named", "", "");
+    named.label = "Friendly".into();
+    named.is_default = true;
+    replace(&mut d, "h", vec![named, row("bare", "", "")]);
+    let mut p = RowPresentation::default();
+    project(&mut p, &d, &["h"], "h", None);
+    assert_eq!(
+        p.active_label("h", Some("named"), Some("Hello")),
+        Some("Friendly".into())
+    );
+    assert_eq!(p.active_label("h", Some("bare"), None), Some("bare".into()));
+    assert_eq!(
+        p.active_label("h", Some("unknown"), Some("Hello")),
+        Some("unknown".into())
+    );
+    assert_eq!(
+        p.active_label("other", Some("named"), Some("Hello")),
+        Some("named".into())
+    );
+    assert_eq!(
+        p.active_label("h", None, Some("Hello")),
+        Some("Hello".into())
+    );
+    assert_eq!(p.active_label("h", None, None), None);
+}
+
+#[test]
+fn default_slug_tracks_the_selected_dial_host() {
+    let mut d = RowDirectory::default();
+    for (host, slug) in [("a", "home"), ("b", "root")] {
+        let mut r = row(slug, "", "");
+        r.is_default = true;
+        replace(&mut d, host, vec![r]);
+    }
+    let mut p = RowPresentation::default();
+    for _ in 0..2 {
+        let effects = project(&mut p, &d, &["a", "b"], "a", None);
+        assert_eq!(p.default_slug(), Some("home"));
+        assert_eq!(
+            effects.default_migration,
+            Some(key("a", "home")),
+            "every refresh exports migration, even without a default change"
+        );
+    }
+    let keys = p.keys().to_vec();
+    p.select_host_default(&d, "b");
+    assert_eq!(p.default_slug(), Some("root"));
+    assert_eq!(ws_key_of(Some("root"), p.default_slug()), "<default>");
+    assert_eq!(ws_key_of(Some("home"), p.default_slug()), "home");
+    assert_eq!(p.selected_key("b", None), Some(key("b", "root")));
+    assert_eq!(
+        p.keys(),
+        keys.as_slice(),
+        "switching does not rebuild projections"
+    );
+    p.select_host_default(&d, "unanswered");
+    assert_eq!(p.default_slug(), None);
+    assert_eq!(p.keys(), keys.as_slice());
+    replace(&mut d, "b", vec![]);
+    let effects = project(&mut p, &d, &["a", "b"], "b", None);
+    assert_eq!(
+        p.default_slug(),
+        None,
+        "another host's default must not win"
+    );
+    assert_eq!(effects.default_migration, None);
+    assert_eq!(ws_key_of(Some("root"), p.default_slug()), "root");
+}
+
+#[test]
+fn canonical_roots_and_missing_root_fallbacks_are_preserved() {
+    let mut d = RowDirectory::default();
+    let mut linked = row("alpha", "", "");
+    linked.project_root = "/t/link/repo".into();
+    linked.canonical_root = Some("/t/real/repo".into());
+    linked.is_default = true;
+    replace(&mut d, "h", vec![linked, row("older", "", "")]);
+    let mut p = RowPresentation::default();
+    project(&mut p, &d, &["h"], "h", None);
+    let root = p.active_project_root("h", Some("alpha"), Some("/hello"));
+    assert_eq!(root, Some("/t/real/repo"));
+    assert_eq!(
+        resolve_preview_changed(
+            Some("umbrella"),
+            Some("files:repo/src/a.jl"),
+            Some("/t/real/repo/src/a.jl"),
+            Some("alpha"),
+            root
+        ),
+        Some("files:src/a.jl".into())
+    );
+    assert_eq!(
+        p.active_project_root("h", Some("older"), Some("/hello")),
+        Some("/projects/older")
+    );
+    assert_eq!(
+        p.active_project_root("h", Some("unknown"), Some("/hello")),
+        None
+    );
+    assert_eq!(
+        p.active_project_root("h", None, Some("/hello")),
+        Some("/hello")
+    );
+    assert_eq!(p.active_project_root("h", None, None), None);
+    p.forget_destroyed_metadata(&key("h", "alpha"));
+    assert_eq!(
+        p.active_project_root("h", Some("alpha"), Some("/hello")),
+        Some("/hello")
+    );
+    assert_eq!(p.active_project_root("h", Some("alpha"), None), None);
+}
+
+#[test]
+fn activity_rank_keeps_red_then_badge_blue_green_purple_rest() {
+    let mut d = RowDirectory::default();
+    let rows = [
+        ("gray", "idle"),
+        ("purple", "waiting"),
+        ("green", "working"),
+        ("blue", "done"),
+        ("badge", "idle"),
+        ("red", "blocked"),
+        ("unknown", "unknown"),
+        ("empty", ""),
     ];
-    let states = astates(&[
-        (&gray, "idle", "2026-09-08T09:00:00Z"),
-        (&purple, "waiting", "2026-09-08T09:01:00Z"),
-        (&green, "working", "2026-09-08T09:02:00Z"),
-        (&blue, "done", "2026-09-08T09:03:00Z"),
-        (&white, "idle", "2026-09-08T09:04:00Z"),
-        (&red, "blocked", "2026-09-08T08:00:00Z"),
-    ]);
-    let badged = [white.clone()].into_iter().collect();
-    let got = activity_order(&slugs, &states, &badged, &[], None);
-    assert_eq!(got, vec![red, white, blue, green, purple, gray]);
-}
-
-#[test]
-fn activity_order_badge_lifts_any_row_but_red_stays_first() {
-    let red = ak("h", "red");
-    let busy = ak("h", "busy");
-    let blue = ak("h", "blue");
-    let slugs = vec![blue.clone(), busy.clone(), red.clone()];
-    let states = astates(&[
-        (&blue, "done", "2026-09-08T09:00:00Z"),
-        (&busy, "working", "2026-09-08T09:00:00Z"),
-        (&red, "blocked", "2026-09-08T09:00:00Z"),
-    ]);
-    // A badge on a working row lifts it above done; a badge on the red
-    // row changes nothing about its place.
-    let badged = [busy.clone(), red.clone()].into_iter().collect();
+    replace(
+        &mut d,
+        "h",
+        rows.iter()
+            .map(|(s, state)| row(s, state, "2026-09-08T09:00:00Z"))
+            .collect(),
+    );
+    let mut p = RowPresentation::default();
+    p.refresh(
+        &d,
+        &["h".into()],
+        "absent",
+        None,
+        [key("h", "badge")].into_iter().collect(),
+        std::time::Instant::now(),
+    );
+    let expected = |slugs: &[&str]| slugs.iter().map(|s| key("h", s)).collect::<Vec<_>>();
     assert_eq!(
-        activity_order(&slugs, &states, &badged, &[], None),
-        vec![red, busy, blue]
+        p.keys(),
+        expected(&["red", "badge", "blue", "green", "purple", "gray", "unknown", "empty"])
+    );
+    p.resort(
+        "absent",
+        None,
+        [key("h", "green"), key("h", "red")].into_iter().collect(),
+    );
+    assert_eq!(
+        p.keys(),
+        expected(&["red", "green", "blue", "purple", "badge", "gray", "unknown", "empty"])
+    );
+    p.resort("absent", None, Default::default());
+    assert_eq!(
+        p.keys(),
+        expected(&["red", "blue", "green", "purple", "badge", "gray", "unknown", "empty"])
     );
 }
 
 #[test]
-fn activity_order_ranks_by_tier_then_newest_stamp() {
-    let a = ak("h", "a");
-    let b = ak("h", "b");
-    let c = ak("h", "c");
-    let d = ak("h", "d");
-    let e = ak("h", "e");
-    let slugs = vec![a.clone(), b.clone(), c.clone(), d.clone(), e.clone()];
-    let states = astates(&[
-        (&a, "idle", "2026-09-08T09:00:00Z"),
-        (&b, "working", "2026-09-08T08:00:00Z"),
-        (&c, "done", "2026-09-08T09:30:00Z"),
-        (&d, "blocked", "2026-09-08T08:30:00Z"),
-        (&e, "", ""),
-    ]);
-    let got = activity_order(&slugs, &states, &nobadge(), &[], None);
-    // red, blue, green, then the resting rows by stamp with the
-    // stampless one last.
-    assert_eq!(got, vec![d, c, b, a, e]);
-}
-
-#[test]
-fn activity_order_never_mixes_host_blocks() {
-    let a1 = ak("alpha", "one");
-    let a2 = ak("alpha", "two");
-    let b1 = ak("beta", "one");
-    let b2 = ak("beta", "two");
-    let slugs = vec![a1.clone(), a2.clone(), b1.clone(), b2.clone()];
-    let states = astates(&[
-        (&a1, "idle", "2026-09-08T09:00:00Z"),
-        (&a2, "idle", "2026-09-08T10:00:00Z"),
-        (&b1, "idle", "2026-09-08T09:00:00Z"),
-        (&b2, "working", "2026-09-08T09:00:00Z"),
-    ]);
-    let got = activity_order(&slugs, &states, &nobadge(), &[], None);
-    assert_eq!(got, vec![a2, a1, b2, b1]);
+fn activity_order_preserves_host_blocks_and_stable_ties() {
+    let mut d = RowDirectory::default();
+    replace(
+        &mut d,
+        "a",
+        vec![
+            row("one", "idle", "2026-09-08T10:30:00+02:00"),
+            row("two", "idle", "2026-09-08T09:00:00Z"),
+            row("tie", "idle", "2026-09-08T09:00:00Z"),
+            row("bad", "idle", "invalid"),
+            row("missing", "idle", ""),
+        ],
+    );
+    replace(
+        &mut d,
+        "b",
+        vec![
+            row("one", "idle", "2026-09-08T09:00:00Z"),
+            row("two", "working", "2026-09-08T09:00:00Z"),
+        ],
+    );
+    let mut p = RowPresentation::default();
+    project(&mut p, &d, &["b", "a"], "absent", None);
+    let expected = vec![
+        key("b", "two"),
+        key("b", "one"),
+        key("a", "two"),
+        key("a", "tie"),
+        key("a", "one"),
+        key("a", "bad"),
+        key("a", "missing"),
+    ];
+    assert_eq!(p.keys(), expected);
     assert_eq!(
-        strip_items(&got, |h| h.clone())
+        strip_items(p.keys(), |h| h.clone())
             .iter()
             .filter(|i| matches!(i, StripItem::Bow { .. }))
             .count(),
-        2,
-        "still exactly two host groups, so two ships"
+        2
     );
+    let shuffled = d.rows("a").unwrap().iter().rev().cloned().collect();
+    replace(&mut d, "a", shuffled);
+    for _ in 0..2 {
+        project(&mut p, &d, &["b", "a"], "absent", None);
+        assert_eq!(p.keys(), expected);
+        p.resort("absent", None, Default::default());
+        assert_eq!(p.keys(), expected);
+    }
 }
 
 #[test]
-fn activity_order_is_stable_across_unchanged_rebuilds_and_daemon_shuffles() {
-    let a = ak("h", "a");
-    let b = ak("h", "b");
-    let c = ak("h", "c");
-    let states = astates(&[
-        (&a, "idle", "2026-09-08T09:00:00Z"),
-        (&b, "idle", "2026-09-08T09:00:00Z"),
-        (&c, "idle", "2026-09-08T09:00:00Z"),
-    ]);
-    let first = activity_order(&[a.clone(), b.clone(), c.clone()], &states, &nobadge(), &[], None);
-    assert_eq!(first, vec![a.clone(), b.clone(), c.clone()], "full ties keep daemon order");
-    let again = activity_order(&first, &states, &nobadge(), &first, None);
-    assert_eq!(again, first, "an unchanged rebuild is byte-identical");
-    // The daemon lists the same tied rows in a different order: the
-    // previous standing wins, so nothing jitters.
-    let shuffled =
-        activity_order(&[c.clone(), a.clone(), b.clone()], &states, &nobadge(), &first, None);
-    assert_eq!(shuffled, first);
-}
-
-#[test]
-fn activity_order_pins_the_selected_row_to_its_slot() {
-    let a = ak("h", "a");
-    let b = ak("h", "b");
-    let c = ak("h", "c");
-    let prev = vec![a.clone(), b.clone(), c.clone()];
-    // c goes working: it should leapfrog to the front, but the selected
-    // row b must stay where the cursor has it (index 1).
-    let states = astates(&[
-        (&a, "idle", "2026-09-08T09:00:00Z"),
-        (&b, "idle", "2026-09-08T09:00:00Z"),
-        (&c, "working", "2026-09-08T09:05:00Z"),
-    ]);
-    let got = activity_order(&prev, &states, &nobadge(), &prev, Some(&b));
-    assert_eq!(got, vec![c.clone(), b.clone(), a.clone()]);
-    // Unpinned, the same change re-ranks b too.
-    let free = activity_order(&prev, &states, &nobadge(), &prev, None);
-    assert_eq!(free, vec![c, a, b]);
-}
-
-#[test]
-fn activity_order_pin_clamps_when_the_block_shrinks() {
-    let a = ak("h", "a");
-    let b = ak("h", "b");
-    let c = ak("h", "c");
-    let prev = vec![a.clone(), b.clone(), c.clone()];
-    let states = astates(&[
-        (&a, "working", "2026-09-08T09:00:00Z"),
-        (&c, "idle", "2026-09-08T09:00:00Z"),
-    ]);
-    // b vanished; the selected c sat at index 2, now clamped to 1.
-    let got = activity_order(&[a.clone(), c.clone()], &states, &nobadge(), &prev, Some(&c));
-    assert_eq!(got, vec![a, c]);
-}
-
-#[test]
-fn activity_order_new_rows_rank_and_a_first_seen_pin_ranks_too() {
-    let a = ak("h", "a");
-    let b = ak("h", "b");
-    let n = ak("h", "new");
-    let prev = vec![a.clone(), b.clone()];
-    let states = astates(&[
-        (&a, "idle", "2026-09-08T09:00:00Z"),
-        (&b, "idle", "2026-09-08T09:00:00Z"),
-        (&n, "waiting", "2026-09-08T09:01:00Z"),
-    ]);
-    let slugs = vec![a.clone(), b.clone(), n.clone()];
+fn selected_row_keeps_its_previous_host_local_slot() {
+    let mut d = RowDirectory::default();
+    replace(&mut d, "other", vec![row("b", "blocked", "")]);
+    replace(
+        &mut d,
+        "h",
+        vec![
+            row("a", "idle", ""),
+            row("b", "idle", ""),
+            row("c", "idle", ""),
+        ],
+    );
+    let mut p = RowPresentation::default();
+    project(&mut p, &d, &["other", "h"], "h", Some("b"));
+    replace(
+        &mut d,
+        "h",
+        vec![
+            row("a", "idle", ""),
+            row("b", "idle", ""),
+            row("c", "working", ""),
+        ],
+    );
+    project(&mut p, &d, &["other", "h"], "h", Some("b"));
     assert_eq!(
-        activity_order(&slugs, &states, &nobadge(), &prev, None),
-        vec![n.clone(), a.clone(), b.clone()]
+        p.keys(),
+        &[
+            key("other", "b"),
+            key("h", "c"),
+            key("h", "b"),
+            key("h", "a")
+        ]
     );
-    // Selecting the brand-new row (no previous standing) doesn't pin it
-    // to a phantom slot — it ranks like any other row.
+    p.resort("h", Some("b"), [key("h", "a")].into_iter().collect());
     assert_eq!(
-        activity_order(&slugs, &states, &nobadge(), &prev, Some(&n)),
-        vec![n, a, b]
+        p.keys(),
+        &[
+            key("other", "b"),
+            key("h", "a"),
+            key("h", "b"),
+            key("h", "c")
+        ]
+    );
+    replace(
+        &mut d,
+        "h",
+        vec![row("b", "blocked", ""), row("c", "idle", "")],
+    );
+    project(&mut p, &d, &["other", "h"], "h", Some("c"));
+    assert_eq!(
+        p.keys(),
+        &[key("other", "b"), key("h", "b"), key("h", "c")],
+        "previous slot 2 clamps to 1"
+    );
+    let mut default = row("new", "waiting", "");
+    default.is_default = true;
+    replace(
+        &mut d,
+        "h",
+        vec![row("b", "idle", ""), row("c", "idle", ""), default],
+    );
+    project(&mut p, &d, &["other", "h"], "h", None);
+    assert_eq!(
+        p.keys(),
+        &[
+            key("other", "b"),
+            key("h", "new"),
+            key("h", "b"),
+            key("h", "c")
+        ],
+        "first-seen selection ranks normally"
+    );
+    let mut default = row("b", "blocked", "");
+    default.is_default = true;
+    replace(
+        &mut d,
+        "h",
+        vec![row("c", "working", ""), default, row("new", "idle", "")],
+    );
+    project(&mut p, &d, &["other", "h"], "h", None);
+    assert_eq!(
+        p.keys(),
+        &[
+            key("other", "b"),
+            key("h", "c"),
+            key("h", "b"),
+            key("h", "new")
+        ],
+        "pin uses the fresh default"
     );
 }
 
 #[test]
-fn fresh_workspace_caches_two_hosts_sharing_a_slug_do_not_collide() {
-    // The invariant this whole slice exists for: two hosts each
-    // reporting a workspace named "sot" must produce TWO distinct
-    // cache entries, not one clobbering the other.
-    let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
-    let mut alpha_ws = ws_info("sot", "sot-be-sot");
-    alpha_ws.project_root = "/projects/alpha-sot".to_string();
-    let mut beta_ws = ws_info("sot", "sot-be-sot");
-    beta_ws.project_root = "/projects/beta-sot".to_string();
-    lists.insert("alpha".to_string(), vec![alpha_ws]);
-    lists.insert("beta".to_string(), vec![beta_ws]);
-    let ordered = vec!["alpha".to_string(), "beta".to_string()];
-    let fresh = fresh_workspace_caches(&ordered, &listed_directory(lists), &"alpha".to_string());
-
-    assert_eq!(
-        fresh.workspace_slugs.len(),
-        2,
-        "one entry per host, not one merged entry"
-    );
-    let alpha_key: WsKey = ("alpha".to_string(), "sot".to_string());
-    let beta_key: WsKey = ("beta".to_string(), "sot".to_string());
-    assert_eq!(
-        fresh
-            .workspace_project_roots
-            .get(&alpha_key)
-            .map(String::as_str),
-        Some("/projects/alpha-sot")
-    );
-    assert_eq!(
-        fresh
-            .workspace_project_roots
-            .get(&beta_key)
-            .map(String::as_str),
-        Some("/projects/beta-sot")
-    );
-}
-
-#[test]
-fn a_rows_root_is_the_daemons_spelling_so_a_watched_path_resolves_under_it() {
-    // A row created through a link above its folder (macOS's /tmp and
-    // /var), or in another case or 8.3 name on Windows: the daemon's
-    // watcher spells its paths as `canonical_root`, and an umbrella
-    // row's copy of a change is matched against this root as strings.
-    let host = "h".to_string();
-    let mut linked = ws_info("alpha", "sot-be-alpha");
-    linked.project_root = "/t/link/repo".to_string();
-    linked.canonical_root = Some("/t/real/repo".to_string());
-    let older = ws_info("beta", "sot-be-beta");
-    let lists = HashMap::from([(host.clone(), vec![linked, older])]);
-    let fresh = fresh_workspace_caches(std::slice::from_ref(&host), &listed_directory(lists), &host);
-    let root = |slug: &str| fresh.workspace_project_roots.get(&(host.clone(), slug.to_string())).cloned();
-    assert_eq!(root("alpha").as_deref(), Some("/t/real/repo"));
-    assert_eq!(root("beta").as_deref(), Some("/projects/beta"), "a daemon that sends no canonical_root");
-    let event = Some("/t/real/repo/src/a.jl");
-    assert_eq!(
-        resolve_preview_changed(Some("umbrella"), Some("files:repo/src/a.jl"), event, Some("alpha"), root("alpha").as_deref()),
-        Some("files:src/a.jl".to_string())
-    );
-}
-
-#[test]
-fn fresh_workspace_caches_default_slug_is_scoped_to_active_host() {
-    // Each host's OWN `is_default` row exists; only active_host's
-    // should set `default_workspace_slug` (a bare slug — the pair
-    // with `active_host` is what the caller actually needs).
-    let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
-    let mut alpha_default = ws_info("home", "sot-be-home");
-    alpha_default.is_default = true;
-    let mut beta_default = ws_info("root", "sot-be-root");
-    beta_default.is_default = true;
-    lists.insert("alpha".to_string(), vec![alpha_default]);
-    lists.insert("beta".to_string(), vec![beta_default]);
-    let ordered = vec!["alpha".to_string(), "beta".to_string()];
-
-    let directory = listed_directory(lists);
-    let fresh_alpha = fresh_workspace_caches(&ordered, &directory, &"alpha".to_string());
-    assert_eq!(fresh_alpha.default_workspace_slug.as_deref(), Some("home"));
-
-    let fresh_beta = fresh_workspace_caches(&ordered, &directory, &"beta".to_string());
-    assert_eq!(fresh_beta.default_workspace_slug.as_deref(), Some("root"));
-}
-
-#[test]
-fn fresh_workspace_caches_skips_a_host_with_no_list_yet() {
-    // ordered_hosts includes every connection, but a host that hasn't
-    // answered workspace.list yet (still mid-hello) contributes no
-    // rows rather than panicking on a missing map entry.
-    let lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
-    let ordered = vec!["alpha".to_string(), "beta".to_string()];
-    let fresh = fresh_workspace_caches(&ordered, &listed_directory(lists), &"alpha".to_string());
-    assert!(fresh.workspace_slugs.is_empty());
-    assert!(fresh.default_workspace_slug.is_none());
-}
-
-#[test]
-fn fresh_workspace_caches_hides_the_inert_anchor_from_the_strip_but_keeps_its_default_slug() {
-    // The bottom session strip is built from workspace_slugs/labels,
-    // NOT from session_host_children's tree — so the same inert-anchor
-    // amendment (2026-09-04) must be applied here too, or the strip
-    // still shows a row the tree hides (the bug this test module is
-    // extended for). `default_workspace_slug` must still resolve to
-    // the anchor: it's the strip's own active-index fallback.
-    let host: HostKey = "local".to_string();
-    let mut anchor = ws_info("sot", "sot-be-sot");
-    anchor.is_default = true;
-    anchor.agent = "none".to_string();
-    anchor.runtime = "capsule".to_string();
-    let list = vec![anchor];
-    let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
-    lists.insert(host.clone(), list);
-    let ordered = vec![host.clone()];
-    let fresh = fresh_workspace_caches(&ordered, &listed_directory(lists), &host);
-
-    let anchor_key: WsKey = (host.clone(), "sot".to_string());
-    assert!(
-        fresh.workspace_slugs.is_empty(),
-        "the inert anchor must not be pushed into workspace_slugs: {:?}",
-        fresh.workspace_slugs
-    );
-    assert!(
-        !fresh.workspace_labels.contains_key(&anchor_key),
-        "the inert anchor must get no label"
-    );
-    assert_eq!(
-        fresh.default_workspace_slug.as_deref(),
-        Some("sot"),
-        "default_workspace_slug must still name the anchor — the strip's own \
-             active-index fallback needs it"
-    );
-}
-
-#[test]
-fn fresh_workspace_caches_hides_a_default_tmux_row_with_no_agent_from_the_strip_too() {
-    // Decided (2026-09-06, symmetry): same anchor rule as the tree,
-    // on every runtime -- the strip never lists the default row without
-    // an agent, but `default_workspace_slug` still names it (the strip's
-    // own active-index fallback).
-    let host: HostKey = "local".to_string();
-    let mut default_row = ws_info("sot", "sot-be-sot");
-    default_row.is_default = true;
-    default_row.agent = "none".to_string();
-    default_row.runtime = "tmux".to_string();
-    let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
-    lists.insert(host.clone(), vec![default_row]);
-    let ordered = vec![host.clone()];
-    let fresh = fresh_workspace_caches(&ordered, &listed_directory(lists), &host);
-
-    let key: WsKey = (host.clone(), "sot".to_string());
-    assert!(!fresh.workspace_slugs.contains(&key), "{:?}", fresh.workspace_slugs);
-    assert!(!fresh.workspace_labels.contains_key(&key));
-    assert_eq!(fresh.default_workspace_slug.as_deref(), Some("sot"));
+fn next_row_wraps_and_uses_host_and_default_selection() {
+    let mut d = RowDirectory::default();
+    let mut default = row("same", "", "");
+    default.is_default = true;
+    replace(&mut d, "a", vec![default.clone()]);
+    replace(&mut d, "b", vec![default]);
+    let mut p = RowPresentation::default();
+    assert_eq!(p.next_row(1, "a", None), None);
+    project(&mut p, &d, &["a"], "a", None);
+    assert_eq!(p.next_row(1, "a", None), None);
+    project(&mut p, &d, &["a", "b"], "b", None);
+    assert_eq!(p.next_row(1, "b", None), Some(key("a", "same")));
+    assert_eq!(p.next_row(-1, "a", Some("same")), Some(key("b", "same")));
+    assert_eq!(p.next_row(1, "unknown", None), Some(key("b", "same")));
+    assert_eq!(p.next_row(2, "b", None), Some(key("b", "same")));
 }

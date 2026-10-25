@@ -36,15 +36,3 @@ fn contrast_dim_fades_non_active_coloured_row() {
     );
     assert!(!na_bold);
 }
-
-#[test]
-fn flash_factor_ramps_down_over_window() {
-    // Full brightness at the instant of the change.
-    assert!((flash_factor(0.0) - 1.0).abs() < 1e-6);
-    // Half-faded at half the window.
-    assert!((flash_factor(FLASH_SECS / 2.0) - 0.5).abs() < 1e-6);
-    // Zero at (and past) the window end — clamped, never negative.
-    assert_eq!(flash_factor(FLASH_SECS), 0.0);
-    assert_eq!(flash_factor(FLASH_SECS * 2.0), 0.0);
-    assert_eq!(flash_factor(-1.0), 1.0);
-}

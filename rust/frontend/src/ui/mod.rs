@@ -369,7 +369,7 @@ struct State {
     not_ended_shown: Option<(String, std::time::Instant)>,
     /// Set once the window is on its way out and waiting for the daemons' acks.
     leaving: Option<crate::lease::Leaving>,
-    // ui/chrome: the status line, flashes, focus, pane rects, maximize and nav spill.
+    // ui/chrome: the status line, focus, pane rects, maximize and nav spill.
     /// One-line status string for the chrome.
     status: String,
     /// While `Some(t)` and `now < t`, the status line is holding a pushed
@@ -379,12 +379,6 @@ struct State {
     /// notify un-seeable while the user roamed workspaces). Cleared + the
     /// status rebuilt once elapsed (in `about_to_wait`, on the idle tick).
     notify_sticky_until: Option<std::time::Instant>,
-    /// `(host, slug)` → the `Instant` its work-state last changed, driving
-    /// the status-change *flash* (the name brightens toward white then
-    /// fades over `FLASH_SECS`). Entries are pruned once they age past the
-    /// fade so the map stays small, and while any entry is live
-    /// `about_to_wait` schedules a faster repaint so the fade animates.
-    flash_starts: HashMap<WsKey, std::time::Instant>,
     /// Selected-session contrast lever (`--contrast-mode`, ADR 0023). `false`
     /// = "bright" (default): the selected/active row pops by going brighter +
     /// bold. `true` = "dim": non-selected rows are dimmed so the selection
@@ -708,6 +702,8 @@ struct State {
     active_workspace_id: Option<String>,
     /// Authoritative host listings and canonical identity translation, owned by session/row_directory.rs.
     row_directory: RowDirectory,
+    /// Private listed-row projections, activity order and transition flashes.
+    row_presentation: RowPresentation,
     /// Two-press confirm for `D` (workspace destroy) in Sessions mode.
     /// First press arms with the cursor row's `(host, workspace_id)`;
     /// second press on the same row fires `workspace.destroy` via
@@ -725,9 +721,7 @@ struct State {
     /// per-host status the Sessions tree needs.
     host: Option<String>,
     /// Project_root basename from the hello response. Used as the label
-    /// when `active_workspace_id` is None (default workspace) and
-    /// `workspace_labels` hasn't been populated yet (no `workspace.list`
-    /// reply landed). Once workspaces arrive, the slug-keyed label wins.
+    /// whenever `active_workspace_id` is None; explicit slugs use presentation labels.
     daemon_root_basename: Option<String>,
     /// Full project_root path from the hello response. Joined with the
     /// `files:<rel>` node id by `copy_navtree_path` so Ctrl+C in NavTree
@@ -745,29 +739,6 @@ struct State {
     /// Tracked separately so post-connect events (workspace switches,
     /// preview.changed bumps) don't render a stale rev.
     last_revision: u64,
-    /// `(host, slug)` → label map populated from each host's own
-    /// `workspace.list` reply. Used by `rebuild_connection_status` to show
-    /// a friendly workspace name in the chrome status (e.g. "Alpha")
-    /// rather than the raw slug. ADR 0042 L2a: keyed by `WsKey`, not a bare
-    /// slug — two hosts each having a "sot" workspace must not collide.
-    workspace_labels: HashMap<WsKey, String>,
-    /// `(host, slug)` → root map populated from each host's own
-    /// `workspace.list` reply: the row's `canonical_root` (the daemon's
-    /// spelling, which every `preview.changed` path and the hello's
-    /// `project_root` are in), or its `project_root` from a daemon that
-    /// sends none. Used to resolve `files:<rel>` node ids to absolute
-    /// paths in the *active* workspace (not the daemon's startup
-    /// workspace) and to match a `preview.changed` path to it. Falls back
-    /// to `daemon_project_root` if the active workspace hasn't appeared in
-    /// a `workspace.list` reply yet.
-    workspace_project_roots: HashMap<WsKey, String>,
-    /// `(host, slug)` → (agent_state, agent_status_at) from each host's own
-    /// `workspace.list` reply, so the bottom session strip can colour each
-    /// name by its agent's work-state (the same data the Sessions-mode rows
-    /// carry in their node payload). Refreshes live on the daemon's
-    /// registry-watch `workspace.changed` push; empty entries render with
-    /// the default strip styling.
-    workspace_states: HashMap<WsKey, (String, String)>,
     /// `(host, slug)` → REPL child lifecycle ("not_started" | "starting" |
     /// "ready" | "dead"), fed by BOTH sources: live `lifecycle` repl.frame
     /// evts (the supervisor announces spawn/first-line/death) and
@@ -787,30 +758,6 @@ struct State {
     /// The attempt the in-flight reveal (`pending_reveal` or `pending_switch_reveal`) works for, when it
     /// is a result's; ordinary tree replies neither advance nor abort a reveal while it is set.
     result_reveal: Option<crate::net::transport::ResultAttemptId>,
-    /// `(host, slug)` → the *previous* work-state string we last saw, so
-    /// the `workspace_states` update site can tell a real transition (a
-    /// slug that had a known, different prior state) from a first-ever
-    /// appearance. Only real transitions flash; a slug showing up for the
-    /// first time does not.
-    prev_workspace_states: HashMap<WsKey, String>,
-    /// Ordered list of `(host, slug)` from the most recent per-host
-    /// `workspace.list` replies (union across every connected host, each
-    /// host's own slugs alphabetical). Drives the Shift+ArrowLeft /
-    /// Shift+ArrowRight cycle hotkey (D7) — the "next" workspace is the
-    /// next entry in this vec, wrapping at both ends. Empty until the
-    /// first reply lands.
-    workspace_slugs: Vec<WsKey>,
-    /// Bare slug of `active_host`'s workspace flagged `is_default` in its
-    /// `workspace.list`. Used to interpret `active_workspace_id == None`
-    /// as "we're on the default workspace". Deliberately NOT a `WsKey`
-    /// (unlike its sibling caches): every consumer (`ws_key_of`,
-    /// `TreeScope::Workspace`, `eval_id_workspace`, the UI/REPL snapshot
-    /// maps) is workspace-cache bookkeeping that predates hosts entirely
-    /// and stays scoped to "the active host's default slug" — out of ADR
-    /// 0042 L2a's named list, and retyping it would ripple into that
-    /// whole layer for no invariant this slice needs. `None` until the
-    /// reply lands.
-    default_workspace_slug: Option<String>,
     /// Sessions-mode workspace picker (ADR 0014). `Some(state)` while
     /// the user is browsing a directory tree to pick the project_root
     /// of a new workspace; `None` outside the picker. Supersedes the

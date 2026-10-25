@@ -408,7 +408,7 @@ impl State {
         let active_ws = self
             .active_workspace_id
             .as_deref()
-            .or(self.default_workspace_slug.as_deref());
+            .or(self.row_presentation.default_slug());
         let resolved = resolve_preview_changed(
             event_ws,
             event_node,

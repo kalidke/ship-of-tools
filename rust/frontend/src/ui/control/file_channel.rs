@@ -25,7 +25,7 @@ impl State {
         let active = self.active_workspace_id.clone();
         let host = self.host.clone();
         let rev = self.last_revision;
-        let workspaces = self.workspace_slugs.clone();
+        let workspaces = self.row_presentation.keys().to_vec();
         // ADR 0022: the active image preview, so the LLM pane knows what the
         // user is zoomed into. The signature buckets zoom (0.1) + ROI origin/
         // size (32 px) so a continuous pan/zoom gesture rewrites at a coarse

@@ -8,6 +8,7 @@ mod picker;
 mod presence;
 mod replies;
 mod row_directory;
+mod row_presentation;
 mod snapshot;
 mod switch;
 mod workspace_key;
@@ -23,3 +24,4 @@ pub(in crate::ui) use row_directory::{
     ResolvedWorkspace, ResultRowIdentity, RowDirectory, RowDirectoryUpdate,
 };
 pub(in crate::ui) use workspace_list::*;
+pub(in crate::ui) use row_presentation::RowPresentation;

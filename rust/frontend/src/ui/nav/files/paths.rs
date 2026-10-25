@@ -16,37 +16,17 @@ pub(in crate::ui) fn parent_files_node_id(node_id: &str) -> String {
 
 impl State {
     /// Project root for the active workspace, falling back to the
-    /// daemon-startup root (from the hello response) if no
-    /// `workspace.list` reply has populated `workspace_project_roots`
-    /// yet. The active workspace's root — *not* the daemon startup
+    /// hello root for a default selection. An unknown explicit nondefault
+    /// slug has no root fallback. The active workspace's root — *not* the daemon startup
     /// root — is the right base for joining `files:<rel>` ids on the
     /// backend, because a workspace swap changes the file tree's
     /// meaning of `<rel>` without changing the daemon startup root.
     pub(in crate::ui) fn active_project_root(&self) -> Option<&str> {
-        match self.active_workspace_id.as_deref() {
-            Some(slug) => {
-                let key: WsKey = (self.active_host.clone(), slug.to_string());
-                if let Some(root) = self.workspace_project_roots.get(&key) {
-                    return Some(root.as_str());
-                }
-                // Lookup miss for a known non-default slug (workspace.list
-                // not yet processed, or a session outside the registry):
-                // return None, NOT the daemon root — a wrong root is worse
-                // than none. The old fallback mistranslated paths here:
-                // `preview.changed` events from the daemon-root repo
-                // resolved as if they were the active workspace's files
-                // (phantom tree refreshes, observed live 2026-08-17), while
-                // the active workspace's own events missed translation and
-                // were dropped — the "nav never updates" bug. The default
-                // slug IS the daemon root, so it keeps the fallback.
-                if self.default_workspace_slug.as_deref() == Some(slug) {
-                    self.daemon_project_root.as_deref()
-                } else {
-                    None
-                }
-            }
-            None => self.daemon_project_root.as_deref(),
-        }
+        self.row_presentation.active_project_root(
+            &self.active_host,
+            self.active_workspace_id.as_deref(),
+            self.daemon_project_root.as_deref(),
+        )
     }
 
     /// Resolve the cursored NavTree row to a backend-absolute path,

@@ -19,7 +19,7 @@ impl State {
         // from `self.logo_quad` inside the render pass — the per-ship
         // layout it needs only exists in this block.
         let mut strip_logo_rects: Vec<ScreenRect> = Vec::new();
-        if !self.workspace_slugs.is_empty() {
+        if !self.row_presentation.keys().is_empty() {
             let (pendings, labels, active) = self.strip_labels();
             // The fleet (asks 2026-09-07 + 2026-09-24 + 2026-09-27, ADR
             // 0042 L2a): each HOST GROUP is a ship — a brand wheel at the bow,
@@ -41,7 +41,7 @@ impl State {
                 let logo_w = logo_h * (*nw as f32 / (*nh).max(1) as f32);
                 (logo_w, logo_h)
             });
-            let items: Vec<StripItem> = strip_items(&self.workspace_slugs, |h| {
+            let items: Vec<StripItem> = strip_items(self.row_presentation.keys(), |h| {
                 strip_truncate(host_label(&self.hosts.declared_host, h))
             });
             // Every wheel is full size, and the layout reserves exactly that
@@ -115,32 +115,28 @@ impl State {
         // of the label (`strip_label`): every width below, the hull's
         // included, is measured from the text that is drawn.
         let pendings: Vec<bool> = self
-            .workspace_slugs
+            .row_presentation.keys()
             .iter()
             .map(|(h, s)| self.pending_nav.contains_key(&(h.clone(), s.clone())))
             .collect();
         let labels: Vec<String> = self
-            .workspace_slugs
+            .row_presentation.keys()
             .iter()
             .zip(&pendings)
             .map(|((h, s), &pending)| {
                 strip_label(
-                    self.workspace_labels
-                        .get(&(h.clone(), s.clone()))
-                        .map(String::as_str)
+                    self.row_presentation.label(h, s)
                         .unwrap_or(s.as_str()),
                     pending,
                 )
             })
             .collect();
-        let current_key: Option<WsKey> = self
-            .active_workspace_id
-            .clone()
-            .or_else(|| self.default_workspace_slug.clone())
-            .map(|s| (self.active_host.clone(), s));
+        let current_key = self.row_presentation.selected_key(
+            &self.active_host, self.active_workspace_id.as_deref(),
+        );
         let active = current_key
             .as_ref()
-            .and_then(|k| self.workspace_slugs.iter().position(|x| x == k))
+            .and_then(|k| self.row_presentation.keys().iter().position(|x| x == k))
             .unwrap_or(0)
             .min(labels.len().saturating_sub(1));
         (pendings, labels, active)
@@ -160,18 +156,17 @@ impl State {
         // so the wilt re-evaluates on the existing 1 Hz idle redraw.
         let strip_now = chrono::Utc::now();
         let tones: Vec<Option<(AgentTone, bool)>> = self
-            .workspace_slugs
+            .row_presentation.keys()
             .iter()
             .map(|(h, s)| {
-                self.workspace_states
-                    .get(&(h.clone(), s.clone()))
+                self.row_presentation.state(h, s)
                     .and_then(|(st, at)| agent_tone_from(st, at, strip_now))
             })
             .collect();
         // Per-name status-change flash factor, parallel to `labels`.
         let flash_now = std::time::Instant::now();
         let flashes: Vec<f32> = self
-            .workspace_slugs
+            .row_presentation.keys()
             .iter()
             .map(|(h, s)| self.flash_factor_for(h, s, flash_now))
             .collect();
