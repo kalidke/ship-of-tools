@@ -33,7 +33,7 @@ impl RowPresentation {
         active_host: &str,
         active_slug: Option<&str>,
         badged: HashSet<WsKey>,
-        now: Instant,
+        mut flash_now: impl FnMut() -> Instant,
     ) -> PresentationEffects {
         let mut labels = HashMap::new();
         let mut roots = HashMap::new();
@@ -78,8 +78,10 @@ impl RowPresentation {
                 .get(key)
                 .is_some_and(|previous| previous != state)
             {
-                self.flash_starts.insert(key.clone(), now);
+                self.flash_starts.insert(key.clone(), flash_now());
             }
+        }
+        for (key, (state, _)) in &states {
             self.prev_workspace_states
                 .insert(key.clone(), state.clone());
         }
@@ -229,7 +231,7 @@ impl RowPresentation {
         states: &[Option<String>],
         flash_slugs: &[String],
         status_at: &str,
-        now: Instant,
+        mut flash_now: impl FnMut() -> Instant,
     ) -> Option<WsKey> {
         let host = "demo".to_string();
         if !sessions.is_empty() {
@@ -246,7 +248,7 @@ impl RowPresentation {
         }
         for slug in flash_slugs {
             let key = (host.clone(), slug.clone());
-            self.flash_starts.insert(key.clone(), now);
+            self.flash_starts.insert(key.clone(), flash_now());
             let prior = match self.workspace_states.get(&key) {
                 Some((current, _)) if current == "idle" => "working",
                 _ => "idle",

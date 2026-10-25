@@ -60,6 +60,8 @@ below still reach shared fields through `impl State` blocks and free functions u
   Stable host blocks rank blocked, badge, done, working, waiting, rest and pin the selection's previous slot.
   Known changes flash; missing rows retain history. Sessions/strip share the 600 ms fade. Destroy forgets only
   labels/roots; capture supports flashes without demo rows.
+  The clock is sampled separately at each changed-row insertion after projection and at each explicit demo flash
+  after capture seeding, preserving the timing of `1bc65e054`.
   Behavior tests: `workspace_list::tests` and `row_presentation::tests`.
 - `State` applies nonempty REPL catch-up, migration on every applicable refresh, then status before attachments,
   declarations, capture cycling and tree rebuild. Switching snapshots first, then changes hosts/defaults without

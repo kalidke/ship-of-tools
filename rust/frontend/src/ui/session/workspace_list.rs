@@ -52,7 +52,7 @@ impl State {
         let badged = self.badged_keys();
         let effects = self.row_presentation.refresh(
             &self.row_directory, &hosts, &self.active_host,
-            self.active_workspace_id.as_deref(), badged, std::time::Instant::now(),
+            self.active_workspace_id.as_deref(), badged, std::time::Instant::now,
         );
         // Insert only: empty old-daemon values must not erase frame-driven lifecycle entries.
         for (key, state) in effects.repl_catchup {

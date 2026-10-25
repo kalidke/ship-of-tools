@@ -32,7 +32,7 @@ fn project(
         active,
         slug,
         Default::default(),
-        std::time::Instant::now(),
+        std::time::Instant::now,
     )
 }
 
@@ -246,21 +246,22 @@ fn canonical_roots_and_missing_root_fallbacks_are_preserved() {
 #[test]
 fn activity_rank_keeps_red_then_badge_blue_green_purple_rest() {
     let mut d = RowDirectory::default();
+    // Blocked is oldest; newer lower-ranked rows must never outrank it.
     let rows = [
-        ("gray", "idle"),
-        ("purple", "waiting"),
-        ("green", "working"),
-        ("blue", "done"),
-        ("badge", "idle"),
-        ("red", "blocked"),
-        ("unknown", "unknown"),
-        ("empty", ""),
+        ("gray", "idle", "2026-09-08T09:07:00Z"),
+        ("purple", "waiting", "2026-09-08T09:06:00Z"),
+        ("green", "working", "2026-09-08T09:05:00Z"),
+        ("blue", "done", "2026-09-08T09:04:00Z"),
+        ("badge", "idle", "2026-09-08T09:03:00Z"),
+        ("red", "blocked", "2026-09-08T08:00:00Z"),
+        ("unknown", "unknown", "2026-09-08T09:02:00Z"),
+        ("empty", "", "2026-09-08T09:01:00Z"),
     ];
     replace(
         &mut d,
         "h",
         rows.iter()
-            .map(|(s, state)| row(s, state, "2026-09-08T09:00:00Z"))
+            .map(|(s, state, at)| row(s, state, at))
             .collect(),
     );
     let mut p = RowPresentation::default();
@@ -270,7 +271,7 @@ fn activity_rank_keeps_red_then_badge_blue_green_purple_rest() {
         "absent",
         None,
         [key("h", "badge")].into_iter().collect(),
-        std::time::Instant::now(),
+        std::time::Instant::now,
     );
     let expected = |slugs: &[&str]| slugs.iter().map(|s| key("h", s)).collect::<Vec<_>>();
     assert_eq!(
@@ -284,12 +285,12 @@ fn activity_rank_keeps_red_then_badge_blue_green_purple_rest() {
     );
     assert_eq!(
         p.keys(),
-        expected(&["red", "green", "blue", "purple", "badge", "gray", "unknown", "empty"])
+        expected(&["red", "green", "blue", "purple", "gray", "badge", "unknown", "empty"])
     );
     p.resort("absent", None, Default::default());
     assert_eq!(
         p.keys(),
-        expected(&["red", "blue", "green", "purple", "badge", "gray", "unknown", "empty"])
+        expected(&["red", "blue", "green", "purple", "gray", "badge", "unknown", "empty"])
     );
 }
 
@@ -443,14 +444,24 @@ fn next_row_wraps_and_uses_host_and_default_selection() {
     let mut default = row("same", "", "");
     default.is_default = true;
     replace(&mut d, "a", vec![default.clone()]);
-    replace(&mut d, "b", vec![default]);
+    replace(&mut d, "b", vec![default.clone()]);
     let mut p = RowPresentation::default();
     assert_eq!(p.next_row(1, "a", None), None);
     project(&mut p, &d, &["a"], "a", None);
     assert_eq!(p.next_row(1, "a", None), None);
+    replace(&mut d, "a", vec![default, row("other", "", "")]);
     project(&mut p, &d, &["a", "b"], "b", None);
+    assert_eq!(
+        p.keys(),
+        &[key("a", "same"), key("a", "other"), key("b", "same")]
+    );
+    assert_eq!(p.next_row(1, "a", Some("same")), Some(key("a", "other")));
+    assert_eq!(p.next_row(-1, "a", Some("other")), Some(key("a", "same")));
+    assert_eq!(p.next_row(1, "a", Some("other")), Some(key("b", "same")));
+    assert_eq!(p.next_row(-1, "b", None), Some(key("a", "other")));
+    // Forward from the last row and backward from the first both wrap.
     assert_eq!(p.next_row(1, "b", None), Some(key("a", "same")));
     assert_eq!(p.next_row(-1, "a", Some("same")), Some(key("b", "same")));
-    assert_eq!(p.next_row(1, "unknown", None), Some(key("b", "same")));
-    assert_eq!(p.next_row(2, "b", None), Some(key("b", "same")));
+    assert_eq!(p.next_row(1, "unknown", None), Some(key("a", "other")));
+    assert_eq!(p.next_row(3, "b", None), Some(key("b", "same")));
 }

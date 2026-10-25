@@ -15,7 +15,14 @@ fn replace(d: &mut RowDirectory, host: &str, rows: Vec<WorkspaceInfo>) {
 }
 
 fn refresh(p: &mut RowPresentation, d: &RowDirectory, now: Instant) -> PresentationEffects {
-    p.refresh(d, &["a".into(), "b".into()], "a", None, HashSet::new(), now)
+    p.refresh(
+        d,
+        &["a".into(), "b".into()],
+        "a",
+        None,
+        HashSet::new(),
+        || now,
+    )
 }
 
 fn factor(p: &RowPresentation, slug: &str, now: Instant, expected: f32) {
@@ -244,7 +251,7 @@ fn capture_seed_preserves_selection_states_and_flash_setup() {
     let sessions: Vec<String> = ["one", "two", "three"].map(str::to_string).into();
     let states = vec![Some("idle".into()), Some("working".into()), None];
     let mut p = RowPresentation::default();
-    let selection = p.seed_capture(&sessions, &states, &[], stamp, t);
+    let selection = p.seed_capture(&sessions, &states, &[], stamp, || t);
     assert_eq!(selection, Some(("demo".into(), "two".into())));
     let keys: Vec<_> = sessions
         .iter()
@@ -275,12 +282,25 @@ fn capture_seed_preserves_selection_states_and_flash_setup() {
             row("three", "done", stamp),
         ],
     );
-    p.refresh(&d, &["demo".into()], "demo", Some("two"), HashSet::new(), t);
+    p.refresh(
+        &d,
+        &["demo".into()],
+        "demo",
+        Some("two"),
+        HashSet::new(),
+        || t,
+    );
     assert_eq!(p.flash_factor_for("demo", "one", t), 1.0);
     assert_eq!(p.flash_factor_for("demo", "two", t), 0.0);
     assert_eq!(p.flash_factor_for("demo", "three", t), 0.0);
     let mut flashed = RowPresentation::default();
-    flashed.seed_capture(&sessions, &states, &["one".into(), "two".into()], stamp, t);
+    flashed.seed_capture(
+        &sessions,
+        &states,
+        &["one".into(), "two".into()],
+        stamp,
+        || t,
+    );
     for slug in ["one", "two"] {
         assert_eq!(flashed.flash_factor_for("demo", slug, t), 1.0);
     }
@@ -291,16 +311,85 @@ fn capture_seed_preserves_selection_states_and_flash_setup() {
         vec![row("one", "idle", stamp), row("two", "working", stamp)],
     );
     let later = t + Duration::from_millis(300);
-    flashed.refresh(&d, &["demo".into()], "demo", None, HashSet::new(), later);
+    flashed.refresh(&d, &["demo".into()], "demo", None, HashSet::new(), || later);
     for slug in ["one", "two"] {
         assert_eq!(flashed.flash_factor_for("demo", slug, later), 1.0);
     }
     let mut standalone = RowPresentation::default();
     assert_eq!(
-        standalone.seed_capture(&[], &[], &["alone".into()], stamp, t),
+        standalone.seed_capture(&[], &[], &["alone".into()], stamp, || t),
         None
     );
     assert!(standalone.keys().is_empty());
     assert!(standalone.has_flashes());
     assert_eq!(standalone.flash_factor_for("demo", "alone", t), 1.0);
+}
+
+#[test]
+fn refresh_samples_time_only_for_each_known_state_change() {
+    let t = Instant::now();
+    let mut d = RowDirectory::default();
+    let mut p = RowPresentation::default();
+    let hosts = ["a".into(), "b".into()];
+    replace(
+        &mut d,
+        "a",
+        vec![row("r", "idle", ""), row("unchanged", "working", "")],
+    );
+    replace(&mut d, "b", vec![row("r", "idle", "")]);
+    p.refresh(&d, &hosts, "a", None, HashSet::new(), || {
+        panic!("first appearances must not sample flash time")
+    });
+    p.refresh(&d, &hosts, "a", None, HashSet::new(), || {
+        panic!("unchanged states must not sample flash time")
+    });
+    replace(
+        &mut d,
+        "a",
+        vec![
+            row("r", "working", ""),
+            row("unchanged", "working", ""),
+            row("new", "done", ""),
+        ],
+    );
+    replace(&mut d, "b", vec![row("r", "blocked", "")]);
+    let mut calls = 0;
+    p.refresh(&d, &hosts, "a", None, HashSet::new(), || {
+        let sampled = t + Duration::from_millis(calls * 300);
+        calls += 1;
+        sampled
+    });
+    assert_eq!(calls, 2);
+    let at = t + Duration::from_millis(300);
+    // Transition iteration uses a map; either row may receive the first sample.
+    let mut factors = [
+        p.flash_factor_for("a", "r", at),
+        p.flash_factor_for("b", "r", at),
+    ];
+    factors.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert!((factors[0] - 0.5).abs() < 1e-6);
+    assert_eq!(factors[1], 1.0);
+    assert_eq!(p.flash_factor_for("a", "unchanged", at), 0.0);
+    assert_eq!(p.flash_factor_for("a", "new", at), 0.0);
+}
+
+#[test]
+fn capture_samples_time_only_for_each_explicit_flash() {
+    let t = Instant::now();
+    let mut p = RowPresentation::default();
+    let sessions = ["one".into(), "two".into()];
+    let states = [Some("idle".into()), Some("working".into())];
+    let _ = p.seed_capture(&sessions, &states, &[], "stamp", || {
+        panic!("seeding rows without explicit flashes must not sample flash time")
+    });
+    let mut calls = 0;
+    let _ = p.seed_capture(&sessions, &states, &sessions, "stamp", || {
+        let sampled = t + Duration::from_millis(calls * 300);
+        calls += 1;
+        sampled
+    });
+    assert_eq!(calls, 2);
+    let at = t + Duration::from_millis(300);
+    assert!((p.flash_factor_for("demo", "one", at) - 0.5).abs() < 1e-6);
+    assert_eq!(p.flash_factor_for("demo", "two", at), 1.0);
 }

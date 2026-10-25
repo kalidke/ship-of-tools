@@ -381,7 +381,7 @@ fn apply_harness_flags(state: &mut State, cli: &crate::cli::Cli) {
         &cli.demo_session_states,
         &cli.demo_flash,
         &chrono::Utc::now().to_rfc3339(),
-        std::time::Instant::now(),
+        std::time::Instant::now,
     ) {
         state.active_host = host;
         state.active_workspace_id = Some(slug);

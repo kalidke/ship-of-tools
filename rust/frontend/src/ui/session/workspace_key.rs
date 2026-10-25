@@ -107,7 +107,7 @@ impl State {
     /// `"<default>"`-keyed entry wins (both describe the same physical ws;
     /// the None-addressed one was already routed correctly).
     pub(in crate::ui) fn migrate_default_slug_keys(&mut self, from_key: WsKey) {
-        let (host, slug) = from_key.clone();
+        let (host, slug) = &from_key;
         const DEFAULT_KEY: &str = "<default>";
         // ADR 0042 L2a: `default_workspace_slug` is scoped to
         // `active_host`'s own default (its own doc comment) -- so this
@@ -124,7 +124,7 @@ impl State {
             self.repl_rows.parked.entry(to_key.clone()).or_insert(v);
         }
         for (k, v) in self.eval_id_workspace.iter_mut() {
-            if k.0 == host && *v == from_key {
+            if &k.0 == host && *v == from_key {
                 *v = to_key.clone();
             }
         }
