@@ -162,7 +162,7 @@ impl Steps {
         let failure = loop {
             while let Ok((index, body)) = done.try_recv() { bodies[index] = Some(body); }
             if Instant::now() >= deadline {
-                break Some(format!("{} did not complete execution and output within {} ms", program(cmd), bound.as_millis()));
+                break Some(format!("{} did not finish within {} ms", program(cmd), bound.as_millis()));
             }
             if self.is_stopping() { break Some(format!("{} stopped", program(cmd))); }
             if bodies.iter().any(|body| matches!(body, Some(Err(_)))) { break Some(format!("{} output read failed", program(cmd))); }
