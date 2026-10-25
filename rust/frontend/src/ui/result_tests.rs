@@ -1273,7 +1273,7 @@ impl State {
         self.preview_node_id_fired = Some(node_id.into());
         self.preview_src_node_id = Some(node_id.into());
         self.preview_src = Some(preview.clone());
-        self.repl_input = "kept_default_input = 42".into();
+        self.repl_model.edit_draft(DraftEdit::Replace("kept_default_input = 42".into()));
         // Park through the real switch so the tree, preview and REPL use their normal snapshot keys.
         self.switch_to_workspace(other_host.clone(), None, None, false);
         self.dispatch_fe_command(Some(kept_host), FeCommand::Preview {
@@ -1326,7 +1326,7 @@ impl State {
             "control: keeping the default row reset its cached preview"
         );
         anyhow::ensure!(
-            self.repl_input == "kept_default_input = 42",
+            self.repl_model.input() == "kept_default_input = 42",
             "control: keeping the default row reset its cached REPL input"
         );
         anyhow::ensure!(

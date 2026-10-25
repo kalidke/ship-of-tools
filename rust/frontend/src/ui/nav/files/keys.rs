@@ -155,80 +155,11 @@ fn run_file_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
         return Break(());
     }
     let fresh = action == Some(Action::RunFresh);
-    let basename = abs
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(abs.as_str())
-        .to_string();
-    // `r` resets the REPL *process* on the backend
-    // (fresh `julia --project=…`), so reset the
-    // drawer window to match — the old scrollback
-    // belongs to a now-dead session. `R` keeps the
-    // existing session and its scrollback. History
-    // derives from `repl_log`, so clearing the log
-    // clears it too; the eval counter keeps
-    // monotonically rising to avoid eval_id reuse
-    // with any still-draining replies.
-    if fresh {
-        state.repl_log.clear();
-        state.repl_scroll = 0;
-        state.repl_pkg_mode = false;
-        state.history_pos = None;
-        state.history_saved = None;
-    }
-    // Pre-register a `repl_log` entry exactly the way
-    // `submit_repl_input` does for repl.eval, so the
-    // ReplRunFileDone reply can splice frames in by
-    // eval_id and the drawer scrollback shows the
-    // run's output alongside everything else.
-    let eval_id = state.repl_rows.next_eval_id();
-    let owner_host = state.active_host.clone();
-    let workspace_key = state.active_ws_key();
-    state
-        .eval_id_workspace
-        .insert((owner_host, eval_id), workspace_key.clone());
-    if state.repl_log.len() >= 256 {
-        let excess = state.repl_log.len() - 255;
-        state.repl_log.drain(0..excess);
-    }
-    let synthetic_code = format!("{} {}", if fresh { "r" } else { "R" }, abs);
-    state.repl_log.push(ReplEntry {
-        eval_id,
-        code: synthetic_code,
-        frames: Vec::new(),
-        elapsed_ms: 0,
-        in_flight: true,
-        pkg_mode: false,
-        origin: None,
-    });
-    if let Err(e) =
-        state.send(crate::net::transport::OutgoingReq::ReplRunFile {
-            eval_id,
-            path: abs.clone(),
-            fresh,
-            workspace_id: state.active_workspace_id.clone(),
-        })
-    {
-        tracing::warn!(error = %e,
-            "failed to dispatch repl.run_file");
-        if let Some(entry) =
-            state.repl_log.iter_mut().find(|e| e.eval_id == eval_id)
-        {
-            entry.in_flight = false;
-            entry.frames.push(sot_protocol::ReplFrame::Error {
-                message: format!("transport channel closed: {e}"),
-                stacktrace: Vec::new(),
-            });
-        }
-        state.status = format!(
-            "repl.run_file '{basename}' failed · channel closed"
-        );
-    } else if fresh {
-        state.status =
-            format!("running '{basename}' (resetting REPL …)");
-    } else {
-        state.status = format!("running '{basename}' (existing repl)");
-    }
+    let target = state.repl_target();
+    let plan = state.repl_model.begin_file_run(target, abs, fresh);
+    let result = state.send_to(&plan.host, plan.request).map_err(|e| e.to_string());
+    let effects = state.repl_model.complete_submission(plan.submission, result);
+    state.apply_repl_effects(effects);
     auto_open_repl_drawer(state);
     state.window.request_redraw();
     Continue(())

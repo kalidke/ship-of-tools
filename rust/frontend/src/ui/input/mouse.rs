@@ -160,8 +160,7 @@ fn route_wheel_rows(state: &mut State, rows_above: i32) {
             wheel_terminal(state, rows_above);
         }
         PaneFocus::Repl => {
-            let new = (state.repl_scroll as i32 + rows_above).max(0);
-            state.repl_scroll = new as u16;
+            state.repl_model.scroll_rows(rows_above);
             state.window.request_redraw();
         }
         PaneFocus::Preview => {

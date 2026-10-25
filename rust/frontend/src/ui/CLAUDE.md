@@ -5,8 +5,8 @@ One UI thread owns all view state and every other thread reaches it only by waki
 and one wgpu pass draws every pixel. The window's `State` (mod.rs) is driven by one winit loop. `session/row_directory.rs`
 owns authoritative rows and identity; `session/row_presentation.rs` owns their presentation;
 `session/result_ledger.rs` owns owed results and their attempts; `agent_pane::AgentPane` owns the selected agent pane.
-The remaining concepts
-below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
+`drawer/repl::ReplModel` owns REPL row state, submissions, history, routing and lifecycle.
+The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
 - The winit loop, frame pacing and the exit path: `app/`.
@@ -79,9 +79,40 @@ below still reach shared fields through `impl State` blocks and free functions u
   `badge::tests::pending_nav_status_names_workspace_and_path`. The ten-fixture native registry also runs
   `replaced_result_rejects_old_tree_attempt_before_effects`, alongside the badge, retirement/disconnect and
   kept-default controls. Registration alone is not hosted execution evidence.
-- `State` applies nonempty REPL catch-up, migration on every applicable refresh, then status before attachments,
-  declarations, capture cycling and tree rebuild. Switching snapshots first, then changes hosts/defaults without
-  rebuild/migration. The owner never takes `State`; lifecycle/declarations, frame routing and persistence stay there.
+- `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
+  the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
+  and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
+  never take State or expose mutable storage. State retains image caches, geometry, build anchors, transport,
+  status, browser/proxy work and persistence. REPL records remain runtime memory, with no new resume format.
+- Eval submission consumes whitespace without advancing the counter or resetting history; real submissions register
+  before send and trim to 255 before appending. Failed sends close the visible entry with an error and retain the
+  route. Registered replies use (event dial host, eval id) and the normalized sending-row key, even across switches;
+  a recorded missing parked row drops output. Unknown owners keep the legacy live-log fallback. Acceptance leaves
+  routing and flight state intact; terminal replies append to streamed output. Done consumes run-file display
+  information and reports real elapsed time. Reconnect reopens only that host's named closed live/parked runs,
+  appends the link-back line and reinstalls routing.
+- Lifecycle and Browser are control frames, handled before eval mutation. State translates lifecycle hints through
+  RowDirectory and Started hints through reply_ws_key; Started admits only existing live/parked destinations and
+  skips duplicate ownership. Lifecycle refreshes the event host's listing. Presentation supplies nonempty listing
+  catch-up; insertion retains unmentioned values but may overwrite mentioned ones, without freshness arbitration.
+  Default migration preserves an existing destination record and rewrites only matching host-qualified routes;
+  lifecycle retains raw slugs. Destroy forgets only the named parked record at State's existing cleanup point.
+- Edits reset scroll to the tail without resetting a history walk; first Up saves the original draft and Down
+  beyond newest restores it. Only in-flight entries are excluded: completed session-originated runs participate.
+  Entry prompts keep their submission mode. Interrupt prepares every ordered live in-flight id, forces only the
+  same remembered set, and remembers only successful sends. Interrupt memory stays window-wide through restore,
+  clear and fresh runs. With no run, Ctrl+C clears draft and exits pkg mode. Page/wheel integer conversion and
+  saturating fine-line scroll retain their distinct arithmetic; rendering supplies the final clamp.
+- Ctrl+L clears log, scroll and State's image caches, retaining draft, prompt mode and history walk. A fresh file
+  run clears log, scroll, mode and history, retaining draft and image caches until normal pruning. Every restore
+  requests a build-anchor reset, including a first visit. Behavior proofs: `drawer::repl::model_tests` (eighteen
+  invariants) and the moved `drawer::repl::log::tests` characterizations. The two existing native REPL fixtures
+  still run through the event queue with allocated ids, alongside the kept-default draft control; hosted
+  Windows/macOS execution remains required.
+- `State` applies REPL catch-up, migration on every applicable refresh, then status before attachments,
+  declarations, capture cycling and tree rebuild. Switching snapshots before host/default changes and restores
+  REPL independently of the general UI snapshot. Connected reopening still precedes session on_connected;
+  destruction still reconciles the ledger before bounce/cache cleanup. The exhaustive router is unchanged.
 - Final window teardown has one shared three-second OS-clock process deadline, independent of the UI and transport runtime; it starts at the terminal decision, after any daemon acknowledgement and notice presentation.
 - `State::set_focus` (chrome/panes.rs) is the one write of `focus`; scan_tests.rs (`focus_written_only_by_set_focus`)
   fails any other.
@@ -175,7 +206,7 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
   owns owed results/attempts; State coordinates effects, snapshots, switch, picker, presence and the badge floor.
 - `agent_pane/`: `AgentPane` and its attach, input, screen and reply operations; thin State adapters apply effects.
 - `drawer/`: the bottom drawer and its tenants.
-- `drawer/repl/`: the REPL tenant (log, submit, history, display lines).
+- `drawer/repl/`: ReplModel and its submit, draft, history, routing and lifecycle operations; State adapters and line projection.
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
 - `preview/`: the preview pane (fetch, replies, layout, concept, open).
 - `preview/image/`: bitmap previews as quads: figures, overlays, view, ROI.

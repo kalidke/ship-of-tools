@@ -15,12 +15,8 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
     if !event.repeat
         && action == Some(Action::ReplClear)
     {
-        state.repl_log.clear();
-        state.repl_images.clear();
-        state.repl_image_slots.clear();
-        state.repl_scroll = 0;
-        state.status = "repl · scrollback cleared".to_string();
-        state.window.request_redraw();
+        let effects = state.repl_model.clear_scrollback();
+        state.apply_repl_effects(effects);
         return Break(());
     }
     // Paste shortcut (Ctrl+V / Cmd+V / Shift+Insert):
@@ -41,9 +37,7 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
             // `\n`; embedded newlines stay in the buffer
             // (Shift+Enter inserts them too) and the user
             // submits with Enter.
-            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-            state.repl_input.push_str(&normalized);
-            state.repl_scroll = 0;
+            state.repl_model.edit_draft(DraftEdit::Paste(&text));
         }
         state.last_key = Some(label);
         state.window.request_redraw();
@@ -127,26 +121,22 @@ fn repl_scroll_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
     let page_step = (h / 3).max(1);
     match &event.logical_key {
         _ if action == Some(Action::ScrollPageUp) => {
-            let new = (state.repl_scroll as i32 + page_step).max(0);
-            state.repl_scroll = new as u16;
+            state.repl_model.scroll_rows(page_step);
             state.window.request_redraw();
             return Break(());
         }
         _ if action == Some(Action::ScrollPageDown) => {
-            let new = (state.repl_scroll as i32 - page_step).max(0);
-            state.repl_scroll = new as u16;
+            state.repl_model.scroll_rows(-page_step);
             state.window.request_redraw();
             return Break(());
         }
         _ if action == Some(Action::PreviewHalfUp) => {
-            let new = (state.repl_scroll as i32 + h / 2).max(0);
-            state.repl_scroll = new as u16;
+            state.repl_model.scroll_rows(h / 2);
             state.window.request_redraw();
             return Break(());
         }
         _ if action == Some(Action::PreviewHalfDown) => {
-            let new = (state.repl_scroll as i32 - h / 2).max(0);
-            state.repl_scroll = new as u16;
+            state.repl_model.scroll_rows(-(h / 2));
             state.window.request_redraw();
             return Break(());
         }
@@ -159,34 +149,19 @@ fn repl_scroll_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
         // clears the input line (standard REPL UX) instead of
         // typing a literal 'c'.
         _ if action == Some(Action::ReplInterrupt) => {
-            let eval_ids = crate::ui::drawer::repl::log::in_flight_eval_ids(&state.repl_log);
-            if !eval_ids.is_empty() {
-                // A second Ctrl+C while the same evals still run forces the interrupt (stock Julia's repeated Ctrl-C).
-                let force = crate::ui::drawer::repl::log::repl_interrupt_forced(&state.repl_interrupted, &eval_ids);
-                if let Err(e) =
-                    state.send(crate::net::transport::OutgoingReq::ReplInterrupt {
-                        workspace_id: state.active_workspace_id.clone(),
-                        eval_ids: eval_ids.clone(),
-                        force,
-                    })
-                {
-                    tracing::warn!(error = %e, "drop repl.interrupt - channel closed");
-                } else {
-                    tracing::info!(force, "repl.interrupt dispatched (Ctrl+C)");
-                    state.status = if force {
-                        "forcing the interrupt... (can crash or hang the REPL inside C code; r on a .jl file restarts it)"
-                    } else {
-                        "interrupting... (Ctrl+C again forces it if the eval does not stop)"
+            let target = state.repl_target();
+            let plan = state.repl_model.prepare_interrupt(target);
+            let success = if let Some(plan) = &plan {
+                match state.send_to(&plan.host, plan.request()) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "drop repl.interrupt - channel closed");
+                        false
                     }
-                    .to_string();
-                    state.repl_interrupted = eval_ids;
                 }
-            } else {
-                state.repl_input.clear();
-                state.repl_pkg_mode = false;
-            }
-            state.repl_scroll = 0;
-            state.window.request_redraw();
+            } else { false };
+            let effects = state.repl_model.complete_interrupt(plan, success);
+            state.apply_repl_effects(effects);
             return Break(());
         }
         // Up/Down walk REPL history. Allowed to repeat
@@ -194,17 +169,13 @@ fn repl_scroll_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
         // early so the input-buffer match below
         // doesn't also see the keypress.
         _ if action == Some(Action::ReplHistoryPrev) => {
-            if let Some(prev) = state.history_step_back() {
-                state.repl_input = prev;
-                state.repl_scroll = 0;
+            if state.repl_model.history_back() {
                 state.window.request_redraw();
             }
             return Break(());
         }
         _ if action == Some(Action::ReplHistoryNext) => {
-            if let Some(next) = state.history_step_forward() {
-                state.repl_input = next;
-                state.repl_scroll = 0;
+            if state.repl_model.history_forward() {
                 state.window.request_redraw();
             }
             return Break(());
@@ -231,8 +202,7 @@ fn repl_input_key(state: &mut State, key: KeyPress<'_>) {
         // shells. Repeat is allowed so hold-down
         // appends multiple blank lines.
         _ if action == Some(Action::ReplNewline) => {
-            state.repl_input.push('\n');
-            state.repl_scroll = 0;
+            state.repl_model.edit_draft(DraftEdit::Newline);
         }
         _ if action == Some(Action::ReplSubmit) && !event.repeat => {
             state.submit_repl_input();
@@ -240,22 +210,13 @@ fn repl_input_key(state: &mut State, key: KeyPress<'_>) {
             // commits a line — the new entry is at
             // the tail and the user expects to see
             // its output.
-            state.repl_scroll = 0;
+            state.repl_model.scroll_to_tail();
         }
         Key::Named(NamedKey::Backspace) => {
-            // Backspace at start of empty input in
-            // pkg mode leaves pkg mode — mirrors
-            // the standard Julia REPL UX.
-            if state.repl_input.is_empty() && state.repl_pkg_mode {
-                state.repl_pkg_mode = false;
-            } else {
-                state.repl_input.pop();
-            }
-            state.repl_scroll = 0;
+            state.repl_model.edit_draft(DraftEdit::Backspace);
         }
         Key::Named(NamedKey::Space) => {
-            state.repl_input.push(' ');
-            state.repl_scroll = 0;
+            state.repl_model.edit_draft(DraftEdit::Space);
         }
         Key::Character(s) => {
             // A Command chord that didn't resolve to an
@@ -266,28 +227,8 @@ fn repl_input_key(state: &mut State, key: KeyPress<'_>) {
             // `key_to_pty_bytes` enforces for the ptys).
             if cfg!(target_os = "macos") && super_ {
                 // consumed, not typed
-            } else if s.as_str() == "]"
-                && state.repl_input.is_empty()
-                && !state.repl_pkg_mode
-            {
-                // `]` at start of empty input enters
-                // pkg mode and consumes the keypress —
-                // again mirroring the standard REPL.
-                state.repl_pkg_mode = true;
-                state.repl_scroll = 0;
             } else {
-                // Append the typed string verbatim.
-                // winit honours shift/IME so
-                // casing/accents already arrive
-                // correctly. Filter only control
-                // chars so stray sequences don't
-                // leak into the buffer.
-                for c in s.chars() {
-                    if !c.is_control() {
-                        state.repl_input.push(c);
-                    }
-                }
-                state.repl_scroll = 0;
+                state.repl_model.edit_draft(DraftEdit::Typed(s.as_str()));
             }
         }
         _ => {}

@@ -78,23 +78,10 @@ impl State {
     /// Whether the ACTIVE workspace's REPL child is in the `starting`
     /// (precompiling/booting) state — drives the drawer's in-flight line
     /// ("julia starting…" instead of "(running…)"). `current_workspace_key`
-    /// speaks "<default>" for the default workspace; `repl_lifecycle` keys
+    /// speaks "<default>" for the default workspace; the model keys lifecycle
     /// by raw slug, so resolve the collapse before the lookup.
     pub(in crate::ui) fn active_repl_starting(&self) -> bool {
-        let key = self.current_workspace_key();
-        let slug = if key == "<default>" {
-            match self.row_presentation.default_slug() {
-                Some(s) => s.to_string(),
-                None => key,
-            }
-        } else {
-            key
-        };
-        let ws_key: WsKey = (self.active_host.clone(), slug);
-        matches!(
-            self.repl_lifecycle.get(&ws_key).map(String::as_str),
-            Some("starting")
-        )
+        self.repl_model.starting(&self.active_ws_key(), self.row_presentation.default_slug())
     }
 
     /// Rename state keyed under the default workspace's RAW SLUG to the
@@ -120,14 +107,7 @@ impl State {
                 .entry(to_key.clone())
                 .or_insert(v);
         }
-        if let Some(v) = self.repl_rows.parked.remove(&from_key) {
-            self.repl_rows.parked.entry(to_key.clone()).or_insert(v);
-        }
-        for (k, v) in self.eval_id_workspace.iter_mut() {
-            if &k.0 == host && *v == from_key {
-                *v = to_key.clone();
-            }
-        }
+        self.repl_model.migrate_default_key(&from_key, to_key.clone());
         // The README-defaulted one-shot marker is keyed the same way (an
         // ADR-0017 resume can restore the active ws BY SLUG pre-learn); a
         // slug-keyed marker left behind would let the README default fire a

@@ -40,7 +40,7 @@ impl State {
         // mutable borrow inside the draw closure, then written back to
         // self after `draw` returns.
         let mut new_pane_rects = self.pane_rects;
-        let mut new_repl_scroll = self.repl_scroll;
+        let mut new_repl_scroll = self.repl_model.scroll();
         // Nav-spill overlay rows collected by this draw (same captured-
         // local pattern as `preview_cells`); written to
         // `self.nav_spill_segments` after `draw` returns for the render-
@@ -68,8 +68,8 @@ impl State {
         self.decode_repl_images();
         let repl_lines;
         (repl_lines, new_repl_scroll) = self.build_repl_view(new_repl_scroll);
-        let repl_input = self.repl_input.clone();
-        let repl_pkg_mode = self.repl_pkg_mode;
+        let repl_input = self.repl_model.input().to_string();
+        let repl_pkg_mode = self.repl_model.pkg_mode();
         let (nav_cursor_body_pos, nav_has_cursor) = self.nav_cursor_row();
         // Mutable copy of the persistent scroll. The draw closure updates
         // this in place based on the cursor's viewport position; the
@@ -194,7 +194,7 @@ impl State {
         // closure can't write to self.tree_scroll directly because the
         // ratatui draw API takes a &mut self method, not self.
         self.tree_scroll = nav_scroll;
-        self.repl_scroll = new_repl_scroll;
+        self.repl_model.commit_rendered_scroll(new_repl_scroll);
         self.pane_rects = new_pane_rects;
         self.nav_spill_segments = nav_spill_segs_out;
 

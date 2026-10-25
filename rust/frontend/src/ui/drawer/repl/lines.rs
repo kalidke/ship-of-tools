@@ -233,7 +233,7 @@ pub(in crate::ui) fn build_repl_lines(
                 // above, never as an output row (ADR 0033 phase 2).
                 ReplFrame::Started { .. } => {}
                 // Control frame — workspace-level lifecycle, consumed in
-                // drain_events (the `repl_lifecycle` map) and never appended
+                // drain_events (ReplModel lifecycle) and never appended
                 // to a log entry. Defensive arm, mirroring `Browser`.
                 ReplFrame::Lifecycle { .. } => {}
                 ReplFrame::Image { mime, bytes, .. } => {
@@ -327,7 +327,7 @@ impl State {
         // upload never contends with the frame's borrows.
         {
             let mut new_quads: Vec<((u64, usize), ReplImage)> = Vec::new();
-            for entry in &self.repl_log {
+            for entry in self.repl_model.entries() {
                 for (fi, fr) in entry.frames.iter().enumerate() {
                     if let sot_protocol::ReplFrame::Image { data_base64, .. } = fr {
                         let key = (entry.eval_id, fi);
@@ -361,7 +361,7 @@ impl State {
                 self.repl_images.insert(k, v);
             }
             if !self.repl_images.is_empty() {
-                let log = &self.repl_log;
+                let log = self.repl_model.entries();
                 self.repl_images
                     .retain(|k, _| log.iter().any(|e| e.eval_id == k.0));
             }
@@ -376,7 +376,7 @@ impl State {
         // One frame of lag on a resize, self-corrects; 0 before the
         // drawer's first draw, where the caption fallback covers the gap.
         let (repl_lines, repl_slots, repl_starts) = build_repl_lines(
-            &self.repl_log,
+            self.repl_model.entries(),
             &self.repl_images,
             self.repl_scrollback_px.w,
             self.repl_scrollback_px.h,

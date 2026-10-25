@@ -52,9 +52,7 @@ impl State {
             self.active_workspace_id.as_deref(), badged, std::time::Instant::now,
         );
         // Insert only: empty old-daemon values must not erase frame-driven lifecycle entries.
-        for (key, state) in effects.repl_catchup {
-            self.repl_lifecycle.insert(key, state);
-        }
+        self.repl_model.apply_listing_catchup(effects.repl_catchup);
         if let Some(target) = effects.default_migration {
             self.migrate_default_slug_keys(target);
         }

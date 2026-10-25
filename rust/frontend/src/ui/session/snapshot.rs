@@ -15,9 +15,8 @@ use super::*;
 /// expanded folders + scroll) lives in `State.tree_store`, keyed by
 /// (mode, scope) — see the tree-provenance redesign note on `mode`.
 ///
-/// REPL pane state (scrollback / input / history) lives in a sibling
-/// snapshot type so the per-workspace eval routing in [`State`] can
-/// land replies for non-active workspaces directly.
+/// REPL pane state (scrollback / input / history) lives in a private
+/// record in `ReplModel`, which routes replies for parked rows independently.
 ///
 /// Held in `State.workspace_ui_snapshots`, keyed by workspace slug
 /// (with `<default>` for the daemon-default workspace).
@@ -98,33 +97,6 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     /// snapshot — it gets re-shaped by `rebuild_edit_preview` from
     /// edit_state on restore.
     edit_state: Option<EditState>,
-}
-
-/// Per-workspace REPL pane state. Captured at swap-out and restored at
-/// swap-in alongside [`WorkspaceUiSnapshot`]. Lives in its own type so
-/// reply routing (`ReplEvalDone` for non-active workspaces) can mutate
-/// just this slice without touching general UI state. The eval count is
-/// not in it: one count serves every row (`ReplRows::next_eval_id`), so
-/// two rows' evals in flight on one host never share a number.
-#[derive(Clone, Default)]
-pub(in crate::ui) struct WorkspaceReplSnapshot {
-    /// Submitted evals + the kernel's reply frames. Bounded the same
-    /// way the live log is (last 256 entries) when captured.
-    pub(in crate::ui) repl_log: Vec<ReplEntry>,
-    /// Mid-typed input at swap time. Restored verbatim on swap-in so
-    /// the user can keep editing whatever they were composing.
-    repl_input: String,
-    /// `]`/Backspace prompt-mode toggle (julia> vs pkg>) is per-
-    /// workspace too — switching to a workspace mid-pkg-shell returns
-    /// you to pkg>.
-    repl_pkg_mode: bool,
-    /// Scrollback offset captured at swap-out.
-    repl_scroll: u16,
-    /// History-walk state. `Some` means the workspace was in the
-    /// middle of an Up/Down history walk; restoring puts the user
-    /// back exactly where they were.
-    history_pos: Option<usize>,
-    history_saved: Option<String>,
 }
 
 impl State {
@@ -245,43 +217,15 @@ impl State {
     /// (or mid-typing) survives the round trip.
     pub(in crate::ui) fn snapshot_current_workspace_repl(&mut self) {
         let key = self.active_ws_key();
-        self.repl_rows.park(
-            key,
-            WorkspaceReplSnapshot {
-                repl_log: self.repl_log.clone(),
-                repl_input: self.repl_input.clone(),
-                repl_pkg_mode: self.repl_pkg_mode,
-                repl_scroll: self.repl_scroll,
-                history_pos: self.history_pos,
-                history_saved: self.history_saved.clone(),
-            },
-        );
+        self.repl_model.capture_row(key);
     }
 
     /// Restore REPL state from a per-workspace snapshot. Returns true
     /// if a snapshot was found; otherwise resets to a clean REPL.
     pub(in crate::ui) fn restore_workspace_repl(&mut self, key: &WsKey) -> bool {
-        if let Some(snap) = self.repl_rows.unpark(key) {
-            self.repl_log = snap.repl_log;
-            self.repl_input = snap.repl_input;
-            self.repl_pkg_mode = snap.repl_pkg_mode;
-            self.repl_scroll = snap.repl_scroll;
-            // The incoming log is a different length: nothing to pin against.
-            self.repl_build_anchor = None;
-            self.history_pos = snap.history_pos;
-            self.history_saved = snap.history_saved;
-            true
-        } else {
-            // First visit — empty REPL.
-            self.repl_log.clear();
-            self.repl_input.clear();
-            self.repl_pkg_mode = false;
-            self.repl_scroll = 0;
-            self.repl_build_anchor = None;
-            self.history_pos = None;
-            self.history_saved = None;
-            false
-        }
+        let (found, effects) = self.repl_model.restore_row(key);
+        self.apply_repl_effects(effects);
+        found
     }
 }
 

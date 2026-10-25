@@ -75,7 +75,8 @@ pub(crate) mod chrome;
 use chrome::*;
 pub(crate) mod drawer;
 use drawer::repl::lines::{ReplImage, ReplImageSlot};
-use drawer::repl::log::{ReplEntry, ReplRows};
+use drawer::repl::log::ReplEntry;
+use drawer::repl::{DraftEdit, ReplModel, ReplTarget};
 use drawer::terminal::pump::scroll_drawer_ring;
 use drawer::terminal::vt::{key_to_pty_bytes, paint_terminal, scroll_ring};
 
@@ -739,16 +740,6 @@ struct State {
     /// Tracked separately so post-connect events (workspace switches,
     /// preview.changed bumps) don't render a stale rev.
     last_revision: u64,
-    /// `(host, slug)` → REPL child lifecycle ("not_started" | "starting" |
-    /// "ready" | "dead"), fed by BOTH sources: live `lifecycle` repl.frame
-    /// evts (the supervisor announces spawn/first-line/death) and
-    /// `workspace.list` replies (`repl_state`, the reconnect catch-up). The
-    /// point is the *starting* state: the first REPL per workspace
-    /// precompiles its project env (per-package env, #44) — minutes with
-    /// zero output frames, previously indistinguishable from a dead kernel.
-    /// NOT cleared on `workspace.list` — an old daemon sends empty
-    /// `repl_state`, and frame-driven entries must survive it.
-    repl_lifecycle: HashMap<WsKey, String>,
     /// Runtime results, attempts and presentation certificates for canonical rows.
     result_ledger: ResultLedger,
     /// Sessions-mode workspace picker (ADR 0014). `Some(state)` while
@@ -765,13 +756,8 @@ struct State {
     /// switching workspaces (or hosts) doesn't lose cursor position or
     /// the expanded-folder shape of the file tree.
     workspace_ui_snapshots: HashMap<WsKey, WorkspaceUiSnapshot>,
-    /// Per-workspace REPL snapshots (`ReplRows::parked`) and this window's
-    /// one eval count (`ReplRows::next_eval_id`). Captured separately from
-    /// the UI snapshot because `ReplEvalDone` replies can land for workspaces
-    /// the user has swapped away from, and those need to mutate the owning
-    /// workspace's log directly. Keyed the same way (`WsKey`, `"<default>"`
-    /// for the daemon-default workspace within a host).
-    repl_rows: ReplRows,
+    /// REPL row records, drafts, history, eval routing and lifecycle.
+    repl_model: ReplModel,
     /// The last `fe.sessions` projection this frontend sent out
     /// (session-listing brief decision 2) — `None` until the local
     /// daemon's first `workspace.list` reply. Compared against the next
@@ -849,63 +835,6 @@ struct State {
     /// nothing to measure against (first draw, empty log, or a workspace
     /// swap replaced the log wholesale).
     repl_build_anchor: Option<((u32, u32, u32, u32), u64, usize)>,
-    /// Tracks which host+workspace each in-flight eval belongs to. Set at
-    /// `submit_repl_input` time using the live `active_host`/
-    /// `active_workspace_id`; consumed by `ReplEvalDone`/`ReplFrameStreamed`/
-    /// `ReplRunFileDone` so a reply routes to the right workspace's log even
-    /// if the user has swapped away. Keyed by `(HostKey, eval_id)` (ADR 0042
-    /// L2a, Codex review PR #163): each host's daemon numbers the runs it
-    /// announces from its own counter, every daemon from the same start
-    /// (`next` in rust/backend/src/sidecars/repl/numbers.rs), so a bare
-    /// `eval_id` collides the moment two hosts both have a run with one
-    /// number in flight. The VALUE stays a `WsKey`, not a bare slug, for the
-    /// same reason every other cache in this file moved off bare slugs.
-    eval_id_workspace: HashMap<(HostKey, u64), WsKey>,
-    /// Per-eval display info for an in-flight streaming `repl.run_file`,
-    /// stashed when the *acceptance* ack lands (it carries the resolved
-    /// basename/project/fresh but a 0 elapsed — the run hasn't happened yet)
-    /// and consumed when the streamed `Done` frame finalizes, so the
-    /// completion status line shows the real elapsed. Keyed by `(HostKey,
-    /// eval_id)` -- same collision reasoning as `eval_id_workspace` (two
-    /// hosts' daemons independently assign eval ids). Value:
-    /// `(basename, project_dir, fresh)`.
-    repl_runfile_status: HashMap<(HostKey, u64), (String, Option<String>, bool)>,
-    /// Scrollback for the REPL pane — appended on Enter (in-flight entry)
-    /// and reconciled when the `ReplEvalDone` event lands. Bounded to the
-    /// last few hundred entries by a simple cap at drain time so a long
-    /// session doesn't grow unbounded.
-    repl_log: Vec<ReplEntry>,
-    /// Current single-line input buffer for the REPL pane. Submitted on
-    /// Enter in REPL focus; cleared after send. Multi-line input is a
-    /// follow-up.
-    repl_input: String,
-    /// The evals the last Ctrl+C interrupted: Ctrl+C again while the same ones still run forces the interrupt
-    /// (`repl_interrupt_forced`).
-    repl_interrupted: Vec<u64>,
-    /// Scroll offset (rows from the tail) of the REPL pane. 0 = live,
-    /// positive = looking at older lines. Reset to 0 whenever the user
-    /// types into the REPL so typing always snaps to live; otherwise
-    /// updated by the mouse wheel when the cursor is over the BR pane.
-    /// Clamped to [0, total_lines - viewport_h] at render time.
-    repl_scroll: u16,
-    /// REPL prompt mode. `false` = `julia>` (default), `true` = `pkg>`.
-    /// User toggles via `]` at start of empty input (enter) /
-    /// `Backspace` at start of empty input in pkg mode (leave). When
-    /// true, `repl.eval` requests carry `mode: "pkg"` so the backend
-    /// routes through `Pkg.REPLMode.do_cmds` (`b07b4f0`).
-    repl_pkg_mode: bool,
-    /// REPL history walk position. `None` = not walking; the user is
-    /// editing a fresh buffer. `Some(p)` indexes into the filtered list
-    /// of completed `repl_log` entries (oldest = 0, newest = len-1).
-    /// Set by ArrowUp/ArrowDown; cleared by submit. Edits to
-    /// `repl_input` while walking don't clear it — next Up/Down still
-    /// walks from the same position, matching standard shell behaviour
-    /// (the edit is lost, not preserved across the next history step).
-    history_pos: Option<usize>,
-    /// In-progress buffer saved on the first ArrowUp of a history walk.
-    /// Restored when Down walks past the newest entry. `None` outside
-    /// of a walk (mirrors `history_pos`).
-    history_saved: Option<String>,
     // ui/drawer/terminal: the terminal drawer's backends.
     /// Local PTY terminal hosting the OS shell (G2). Lazily spawned the
     /// first time the Terminal drawer opens (Ctrl+T); a separate field

@@ -411,12 +411,12 @@ pub(in crate::ui) fn scroll_line_chords(state: &mut State, key: KeyPress<'_>) ->
         let row_step: i32 = 1;
         match (state.focus, action) {
             (PaneFocus::Repl, Some(Action::ScrollLineUp)) => {
-                state.repl_scroll = state.repl_scroll.saturating_add(row_step as u16);
+                state.repl_model.scroll_line(true);
                 state.window.request_redraw();
                 return Break(());
             }
             (PaneFocus::Repl, Some(Action::ScrollLineDown)) => {
-                state.repl_scroll = state.repl_scroll.saturating_sub(row_step as u16);
+                state.repl_model.scroll_line(false);
                 state.window.request_redraw();
                 return Break(());
             }

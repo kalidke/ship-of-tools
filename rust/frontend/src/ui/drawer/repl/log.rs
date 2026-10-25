@@ -1,5 +1,9 @@
-//! The REPL log: one entry per submitted eval, the submit path and the Up/Down input history.
+//! REPL submissions, draft editing, history and interrupts, plus thin State send adapters.
 
+use super::{
+    DraftEdit, ReplEffects, ReplInterrupt, ReplModel, ReplSend, ReplTarget, Submission,
+    SubmissionKind,
+};
 use crate::ui::*;
 
 /// One submitted REPL eval — code typed by the user plus the frames the
@@ -19,127 +23,287 @@ pub(in crate::ui) struct ReplEntry {
     pub(in crate::ui) pkg_mode: bool,
     /// `Some(label)` for a run this FE did NOT originate — a session's
     /// `repl.execute` (ADR 0033 phase 2). Renders a distinct prompt line
-    /// (e.g. `⟨session ▸ run foo.jl⟩`) instead of the `julia>` echo, and is
-    /// kept out of the Up/Down input history. `None` for a local user eval.
+    /// (e.g. `⟨session ▸ run foo.jl⟩`) instead of the `julia>` echo, and participates
+    /// in Up/Down history once complete (including its empty synthetic code). `None` for a local user eval.
     pub(in crate::ui) origin: Option<String>,
 }
 
-/// The REPL drawer across rows: the pane each row left (`parked`, shown again when the row is), and this window's one
-/// eval count, which is no row's: a row switch never changes it, so no two of the window's runs in flight share a
-/// number, and the daemon writes each run to the window under its own number (ADR 0033, the one-numberer amendment).
-#[derive(Default)]
-pub(in crate::ui) struct ReplRows {
-    /// Each row's pane as the window left it, keyed like every per-row map (`WsKey`).
-    pub(in crate::ui) parked: HashMap<WsKey, WorkspaceReplSnapshot>,
-    count: u64,
-}
-
-impl ReplRows {
-    /// The number of this window's next eval or `r`/`R` run.
-    pub(in crate::ui) fn next_eval_id(&mut self) -> u64 {
+impl ReplModel {
+    fn next_eval_id(&mut self) -> u64 {
         self.count = self.count.saturating_add(1);
         self.count
     }
 
-    /// Parks the pane of `row`, which the window is leaving.
-    pub(in crate::ui) fn park(&mut self, row: WsKey, pane: WorkspaceReplSnapshot) {
-        self.parked.insert(row, pane);
-    }
-
-    /// The pane `row` was left with, to show it again; `None` on the row's first visit.
-    pub(in crate::ui) fn unpark(&self, row: &WsKey) -> Option<WorkspaceReplSnapshot> {
-        self.parked.get(row).cloned()
-    }
-}
-
-impl State {
-    /// Send the current REPL input buffer to the backend as a `repl.eval`
-    /// request, push an in-flight entry into the scrollback, and clear the
-    /// input. Empty input is a no-op (no point round-tripping whitespace).
-    /// The eval_id is locally generated; the response handler reconciles
-    /// by matching on it.
-    /// ADR 0042 L2a note: the drawer's Repl content, unlike Terminal and
-    /// Monitor, is deliberately NOT pinned to `default_host` — it's the
-    /// per-workspace Julia REPL (keyed by `active_workspace_id`, one per
-    /// workspace, `repl_lifecycle` tracks each host's independently), so it
-    /// correctly follows `active_host`/`self.send` like every other
-    /// workspace-scoped operation. "No drawer host switching" refers to the
-    /// drawer's fixed TENANT (ADR 0041: one drawer, terminal/monitor/julia
-    /// + the SoT LLM) and its Terminal/Monitor content's home connection —
-    /// not to which workspace's REPL the drawer happens to be showing.
-    pub(in crate::ui) fn submit_repl_input(&mut self) {
-        let code = std::mem::take(&mut self.repl_input);
-        if code.trim().is_empty() {
-            return;
+    fn register(&mut self, target: &ReplTarget, code: String, pkg_mode: bool) -> u64 {
+        let eval_id = self.next_eval_id();
+        self.routes
+            .insert((target.host.clone(), eval_id), target.view_key.clone());
+        if self.live.log.len() >= 256 {
+            let excess = self.live.log.len() - 255;
+            self.live.log.drain(0..excess);
         }
-        // Submit exits any active history walk — the saved buffer is
-        // discarded because the user committed to this line.
-        self.history_pos = None;
-        self.history_saved = None;
-        let eval_id = self.repl_rows.next_eval_id();
-        // Tag the eval with the host+workspace it belongs to so a
-        // `ReplEvalDone` reply arriving after a swap routes back to the
-        // right log -- and, since this key also disambiguates which
-        // HOST'S eval_id 1 this is, to the right host's log too.
-        let owner_key: HostKey = self.active_host.clone();
-        let workspace_key = self.active_ws_key();
-        self.eval_id_workspace
-            .insert((owner_key, eval_id), workspace_key.clone());
-        // Bound the scrollback at a reasonable cap so a long session
-        // doesn't accumulate forever. Trim from the front.
-        if self.repl_log.len() >= 256 {
-            let excess = self.repl_log.len() - 255;
-            self.repl_log.drain(0..excess);
-        }
-        let pkg_mode = self.repl_pkg_mode;
-        self.repl_log.push(ReplEntry {
+        self.live.log.push(ReplEntry {
             eval_id,
-            code: code.clone(),
+            code,
             frames: Vec::new(),
             elapsed_ms: 0,
             in_flight: true,
             pkg_mode,
             origin: None,
         });
-        let mode = if pkg_mode {
-            Some("pkg".to_string())
-        } else {
-            None
-        };
-        if let Err(e) = self.send(crate::net::transport::OutgoingReq::ReplEval {
+        eval_id
+    }
+
+    pub(in crate::ui) fn begin_eval(&mut self, target: ReplTarget) -> Option<ReplSend> {
+        let code = std::mem::take(&mut self.live.input);
+        if code.trim().is_empty() {
+            return None;
+        }
+        self.live.history_pos = None;
+        self.live.history_saved = None;
+        let pkg_mode = self.live.pkg_mode;
+        let eval_id = self.register(&target, code.clone(), pkg_mode);
+        let request = OutgoingReq::ReplEval {
             eval_id,
             code,
-            mode,
-            workspace_id: self.active_workspace_id.clone(),
-        }) {
-            tracing::warn!(error = %e, eval_id, "drop repl.eval request — channel closed");
-            // Mark the entry done with an error frame so the user sees
-            // why nothing happened.
-            if let Some(entry) = self.repl_log.iter_mut().find(|e| e.eval_id == eval_id) {
+            mode: pkg_mode.then(|| "pkg".to_string()),
+            workspace_id: target.workspace_id,
+        };
+        Some(ReplSend {
+            host: target.host,
+            request,
+            submission: Submission {
+                eval_id,
+                kind: SubmissionKind::Eval,
+            },
+        })
+    }
+
+    /// The caller validates the cursored .jl path before beginning a run.
+    pub(in crate::ui) fn begin_file_run(
+        &mut self,
+        target: ReplTarget,
+        path: String,
+        fresh: bool,
+    ) -> ReplSend {
+        if fresh {
+            self.live.log.clear();
+            self.live.scroll = 0;
+            self.live.pkg_mode = false;
+            self.live.history_pos = None;
+            self.live.history_saved = None;
+        }
+        let basename = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
+        let code = format!("{} {path}", if fresh { "r" } else { "R" });
+        let eval_id = self.register(&target, code, false);
+        ReplSend {
+            host: target.host,
+            request: OutgoingReq::ReplRunFile {
+                eval_id,
+                path,
+                fresh,
+                workspace_id: target.workspace_id,
+            },
+            submission: Submission {
+                eval_id,
+                kind: SubmissionKind::File { basename, fresh },
+            },
+        }
+    }
+
+    pub(in crate::ui) fn complete_submission(
+        &mut self,
+        submission: Submission,
+        result: Result<(), String>,
+    ) -> ReplEffects {
+        if let Err(message) = &result {
+            tracing::warn!(error = %message, eval_id = submission.eval_id(), "drop REPL request — channel closed");
+            if let Some(entry) = self
+                .live
+                .log
+                .iter_mut()
+                .find(|e| e.eval_id == submission.eval_id)
+            {
                 entry.in_flight = false;
-                entry.frames.push(sot_protocol::ReplFrame::Error {
-                    message: format!("transport channel closed: {e}"),
+                entry.frames.push(ReplFrame::Error {
+                    message: format!("transport channel closed: {message}"),
                     stacktrace: Vec::new(),
                 });
             }
         }
+        // A failed send historically retains its routing registration.
+        let status = match submission.kind {
+            SubmissionKind::Eval => None,
+            SubmissionKind::File { basename, fresh } => Some(if result.is_err() {
+                format!("repl.run_file '{basename}' failed · channel closed")
+            } else if fresh {
+                format!("running '{basename}' (resetting REPL …)")
+            } else {
+                format!("running '{basename}' (existing repl)")
+            }),
+        };
+        ReplEffects {
+            status,
+            ..Default::default()
+        }
     }
 
-    pub(in crate::ui) fn history_step_back(&mut self) -> Option<String> {
-        history_step_back(
-            &self.repl_log,
-            &mut self.history_pos,
-            &mut self.history_saved,
-            &self.repl_input,
-        )
+    pub(in crate::ui) fn edit_draft(&mut self, edit: DraftEdit<'_>) -> bool {
+        let before = (self.live.input.len(), self.live.pkg_mode, self.live.scroll);
+        let replacement_changed =
+            matches!(&edit, DraftEdit::Replace(text) if text != &self.live.input);
+        match edit {
+            DraftEdit::Typed("]") if self.live.input.is_empty() && !self.live.pkg_mode => {
+                self.live.pkg_mode = true
+            }
+            DraftEdit::Typed(text) => self
+                .live
+                .input
+                .extend(text.chars().filter(|c| !c.is_control())),
+            DraftEdit::Paste(text) => self
+                .live
+                .input
+                .push_str(&text.replace("\r\n", "\n").replace('\r', "\n")),
+            DraftEdit::Newline => self.live.input.push('\n'),
+            DraftEdit::Space => self.live.input.push(' '),
+            DraftEdit::Backspace if self.live.input.is_empty() && self.live.pkg_mode => {
+                self.live.pkg_mode = false
+            }
+            DraftEdit::Backspace => {
+                self.live.input.pop();
+            }
+            DraftEdit::Replace(text) => self.live.input = text,
+        }
+        self.scroll_to_tail();
+        replacement_changed
+            || before != (self.live.input.len(), self.live.pkg_mode, self.live.scroll)
     }
 
-    pub(in crate::ui) fn history_step_forward(&mut self) -> Option<String> {
-        history_step_forward(
-            &self.repl_log,
-            &mut self.history_pos,
-            &mut self.history_saved,
-        )
+    pub(in crate::ui) fn history_back(&mut self) -> bool {
+        let row = &mut self.live;
+        if let Some(line) = history_step_back(
+            &row.log,
+            &mut row.history_pos,
+            &mut row.history_saved,
+            &row.input,
+        ) {
+            row.input = line;
+            row.scroll = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(in crate::ui) fn history_forward(&mut self) -> bool {
+        let row = &mut self.live;
+        if let Some(line) =
+            history_step_forward(&row.log, &mut row.history_pos, &mut row.history_saved)
+        {
+            row.input = line;
+            row.scroll = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(in crate::ui) fn clear_scrollback(&mut self) -> ReplEffects {
+        self.live.log.clear();
+        self.live.scroll = 0;
+        ReplEffects {
+            clear_images: true,
+            status: Some("repl · scrollback cleared".into()),
+            redraw: true,
+            ..Default::default()
+        }
+    }
+
+    /// Page, half-page and wheel arithmetic converts after the integer calculation, as before.
+    pub(in crate::ui) fn scroll_rows(&mut self, rows_above: i32) {
+        self.live.scroll = (self.live.scroll as i32 + rows_above).max(0) as u16;
+    }
+    pub(in crate::ui) fn scroll_line(&mut self, older: bool) {
+        self.live.scroll = if older {
+            self.live.scroll.saturating_add(1)
+        } else {
+            self.live.scroll.saturating_sub(1)
+        };
+    }
+    pub(in crate::ui) fn commit_rendered_scroll(&mut self, scroll: u16) {
+        self.live.scroll = scroll;
+    }
+    pub(in crate::ui) fn scroll_to_tail(&mut self) {
+        self.live.scroll = 0;
+    }
+
+    pub(in crate::ui) fn in_flight_ids(&self) -> Vec<u64> {
+        self.live
+            .log
+            .iter()
+            .filter(|e| e.in_flight)
+            .map(|e| e.eval_id)
+            .collect()
+    }
+
+    pub(in crate::ui) fn prepare_interrupt(&mut self, target: ReplTarget) -> Option<ReplInterrupt> {
+        let ids = self.in_flight_ids();
+        if ids.is_empty() {
+            self.live.input.clear();
+            self.live.pkg_mode = false;
+            return None;
+        }
+        let force = self.interrupted == ids;
+        Some(ReplInterrupt {
+            host: target.host,
+            workspace_id: target.workspace_id,
+            ids,
+            force,
+        })
+    }
+
+    pub(in crate::ui) fn complete_interrupt(
+        &mut self,
+        sent: Option<ReplInterrupt>,
+        success: bool,
+    ) -> ReplEffects {
+        let mut effects = ReplEffects {
+            redraw: true,
+            ..Default::default()
+        };
+        if let Some(sent) = sent.filter(|_| success) {
+            tracing::info!(force = sent.force, "repl.interrupt dispatched (Ctrl+C)");
+            self.interrupted = sent.ids;
+            effects.status = Some(if sent.force {
+                "forcing the interrupt... (can crash or hang the REPL inside C code; r on a .jl file restarts it)"
+            } else {
+                "interrupting... (Ctrl+C again forces it if the eval does not stop)"
+            }.to_string());
+        }
+        self.scroll_to_tail();
+        effects
+    }
+}
+
+impl State {
+    pub(in crate::ui) fn repl_target(&self) -> ReplTarget {
+        ReplTarget {
+            host: self.active_host.clone(),
+            workspace_id: self.active_workspace_id.clone(),
+            view_key: self.active_ws_key(),
+        }
+    }
+
+    pub(in crate::ui) fn submit_repl_input(&mut self) {
+        let target = self.repl_target();
+        let Some(plan) = self.repl_model.begin_eval(target) else {
+            return;
+        };
+        let result = self
+            .send_to(&plan.host, plan.request)
+            .map_err(|e| e.to_string());
+        let effects = self.repl_model.complete_submission(plan.submission, result);
+        self.apply_repl_effects(effects);
     }
 }
 
@@ -203,22 +367,6 @@ fn history_step_forward(
     let new_pos = p + 1;
     *pos = Some(new_pos);
     Some(log[candidates[new_pos]].code.clone())
-}
-
-/// The eval ids of every entry still in flight: the evals a Ctrl+C means. An
-/// entry whose done frame was lost stays in flight, so the interrupt names them
-/// all and reaches the running eval if it is any of them.
-pub(in crate::ui) fn in_flight_eval_ids(log: &[ReplEntry]) -> Vec<u64> {
-    log.iter()
-        .filter(|e| e.in_flight)
-        .map(|e| e.eval_id)
-        .collect()
-}
-
-/// Whether this Ctrl+C forces the interrupt: the evals in flight are the ones the last Ctrl+C interrupted, so the
-/// ordinary signal it sent did not stop them.
-pub(in crate::ui) fn repl_interrupt_forced(last: &[u64], in_flight: &[u64]) -> bool {
-    !in_flight.is_empty() && last == in_flight
 }
 
 #[cfg(test)]

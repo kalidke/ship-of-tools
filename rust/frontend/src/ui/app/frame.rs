@@ -216,7 +216,7 @@ impl State {
             && !self.tree.rows.is_empty()
         {
             if let Some(code) = self.pending_demo_repl_eval.take() {
-                self.repl_input = code;
+                self.repl_model.edit_draft(DraftEdit::Replace(code));
                 self.submit_repl_input();
                 if self.drawer != DrawerContent::Repl {
                     self.drawer = DrawerContent::Repl;
