@@ -25,7 +25,7 @@ impl State {
         // Ctrl+M monitor chart: paint the rasterised SVG quad over the
         // drawer rect (ADR 0020), reusing the same resvg→wgpu-quad path as
         // the math SVG above.
-        if self.drawer == DrawerContent::Monitor {
+        if self.layout_help.drawer() == DrawerContent::Monitor {
             if let Some(q) = self.monitor_quad.as_ref() {
                 q.render(
                     &self.queue,
@@ -42,7 +42,7 @@ impl State {
     pub(in crate::ui) fn paint_repl_figures(&self, rpass: &mut wgpu::RenderPass<'_>) -> Result<()> {
         let mut painter = ReplQuadPainter { queue: &self.queue, pipeline: &self.quad_pipeline, pass: rpass };
         self.repl_presentation.paint(
-            self.drawer == DrawerContent::Repl, self.cell_w, self.cell_h,
+            self.layout_help.drawer() == DrawerContent::Repl, self.cell_w, self.cell_h,
             (self.config.width, self.config.height), &mut painter,
         )
     }

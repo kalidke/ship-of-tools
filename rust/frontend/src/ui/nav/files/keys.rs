@@ -173,14 +173,6 @@ fn auto_open_repl_drawer(state: &mut State) {
     // output lands. Keep NavTree focus so `r`/`R`
     // stay usable — unlike Ctrl+J this does not
     // steal focus.
-    if state.settings.repl_auto_open_drawer_on_run
-        && state.drawer != DrawerContent::Repl
-        && state
-            .settings
-            .resolve_preset(state.monitor_aspect)
-            .drawer
-            .is_some()
-    {
-        state.drawer = DrawerContent::Repl;
-    }
+    state.layout_help.show_repl_automatically(state.settings.repl_auto_open_drawer_on_run,
+        state.settings.resolve_preset(state.monitor_aspect).drawer.is_some());
 }

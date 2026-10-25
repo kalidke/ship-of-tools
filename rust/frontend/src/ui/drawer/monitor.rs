@@ -431,7 +431,7 @@ impl State {
     /// subscription, and one toggled to other content or closed releases it. Help, and a REPL run that takes the slot
     /// without the toggle, keep it. Sampling is always on; the subscription gates only this connection's ticks.
     pub(in crate::ui) fn sync_monitor_subscription(&mut self) {
-        let shown = self.drawer == DrawerContent::Monitor;
+        let shown = self.layout_help.drawer() == DrawerContent::Monitor;
         if shown && !self.monitor_view.subscribed {
             self.subscribe_monitor();
         } else if !shown && self.monitor_view.subscribed {
@@ -507,7 +507,7 @@ impl State {
         // `self.monitor_quad` write.
         self.repl_presentation.commit_layout(cells_to_px(repl_scrollback_cells), repl_window);
         self.monitor_rect_px = cells_to_px(repl_cells);
-        if self.drawer == DrawerContent::Monitor {
+        if self.layout_help.drawer() == DrawerContent::Monitor {
             let mw = self.monitor_rect_px.w.max(1.0) as u32;
             let mh = self.monitor_rect_px.h.max(1.0) as u32;
             // Scale the chart's text + gutters to match the chrome's

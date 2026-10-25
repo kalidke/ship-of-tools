@@ -15,10 +15,9 @@ fn nav_title_and_default_mode() {
 #[test]
 fn fade_holds_for_five_seconds_and_expires() {
     let start = Instant::now();
-    let p = Peek {
-        started: start,
-        context: Context::default(),
-    };
+    let mut owner = super::super::layout_help::LayoutHelp::new(crate::ui::DrawerContent::Closed, false, false, false);
+    owner.start_peek(Context::default(), start);
+    let p = owner.peek().unwrap();
     assert_eq!(p.opacity(start + PEEK_HOLD), 1.0);
     assert!((p.opacity(start + PEEK_HOLD + PEEK_FADE / 2) - 0.5).abs() < 0.01);
     assert_eq!(p.opacity(start + PEEK_HOLD + PEEK_FADE), 0.0);
@@ -35,11 +34,15 @@ fn pane_context_controls_actions_and_binding_search() {
     assert!(c.allows(Action::PreviewPngZoomIn));
     assert!(!c.allows(Action::RunFresh));
     assert!(!c.allows(Action::CopyCode));
-    let mut h = Help::default();
-    h.open(c.clone());
-    h.query = "zoom".into();
+    use crate::ui::input::layout_help::{LayoutHelp, HelpKey};
+    use crate::ui::{DrawerContent, PaneFocus, Key};
+    let mut owner = LayoutHelp::new(DrawerContent::Closed, false, false, false);
+    owner.open_help(c.clone(), PaneFocus::Preview);
+    owner.help_key(HelpKey { logical_key: &Key::Character("zoom".into()), action: None,
+        repeat: false, modifiers: crate::ui::Modifiers { ctrl: false, alt: false, shift: false, super_: false } }, c.clone(), PaneFocus::Repl, &b, Instant::now);
+    let h = owner.help();
     assert!(h.actions(&b).contains(&Action::PreviewPngZoomIn));
-    assert_eq!(h.context, c); // searching doesn't replace the origin context
+    assert_eq!(h.context(), &c); // searching doesn't replace the origin context
     assert!(border(&c, &b, 100).contains(&b.first_label(Action::PreviewPngZoomIn)));
 }
 /// A hidden folder (e.g. a Julia depot) is a legitimate workspace root,

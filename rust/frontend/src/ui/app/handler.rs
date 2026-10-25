@@ -222,8 +222,7 @@ impl ApplicationHandler for App {
         if state.focus_prompts.expire_hint(std::time::Instant::now()) {
             state.window.request_redraw();
         }
-        if state.help_peek_expired() {
-            state.help.peek = None;
+        if state.layout_help.expire_peek(std::time::Instant::now) {
             state.window.request_redraw();
         }
         // Notify toast expiry: once the sticky window elapses, restore the
@@ -292,15 +291,9 @@ impl ApplicationHandler for App {
             // over the fade, smooth enough to read as a blink) only while a
             // flash is live; `redraw` prunes finished flashes so we fall back
             // to the 1s idle tick automatically once none remain.
-            let fading_help = state.help.peek.as_ref().is_some_and(|p| p.started.elapsed() >= help::PEEK_HOLD);
-            let interval = if fading_help {
-                std::time::Duration::from_millis(16)
-            } else if !state.row_presentation.has_flashes() {
-                std::time::Duration::from_secs(1)
-            } else {
-                std::time::Duration::from_millis(80)
-            };
-            let fade_at = state.help.peek.as_ref().map(|peek| peek.started + help::PEEK_HOLD)
+            let fading_help = state.layout_help.peek_fading(std::time::Instant::now);
+            let interval = idle_interval(fading_help, state.row_presentation.has_flashes());
+            let fade_at = state.layout_help.peek_deadline()
                 .into_iter().chain(state.focus_prompts.hint_deadline()).min();
             let deadline = arm_idle(&mut self.idle_due, std::time::Instant::now(), interval, fade_at);
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
@@ -382,6 +375,12 @@ fn relaunch_if_requested(state: &mut State, event_loop: &ActiveEventLoop) {
             state.leave(event_loop, LeaveIntent::Handover, relaunch_code as i32);
         }
     }
+}
+
+fn idle_interval(fading_help: bool, flashes: bool) -> std::time::Duration {
+    if fading_help { std::time::Duration::from_millis(16) }
+    else if flashes { std::time::Duration::from_millis(80) }
+    else { std::time::Duration::from_secs(1) }
 }
 
 /// Arms the idle repaint in `slot` and returns its deadline: the one already armed while it is still ahead, brought

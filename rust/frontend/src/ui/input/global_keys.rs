@@ -4,6 +4,70 @@ use super::*;
 use std::ops::ControlFlow::{self, Break, Continue};
 use crate::ui::input::keypress::KeyPress;
 
+#[derive(Default, Debug, PartialEq, Eq)]
+pub(in crate::ui) struct LayoutEffect {
+    pub(super) focus: Option<PaneFocus>,
+    pub(super) monitor_sync: bool,
+    pub(super) redraw: bool,
+}
+/// Effect continuation shared by the window and portable recorders. Label feedback follows Monitor sync.
+pub(in crate::ui) trait LayoutPort {
+    fn layout_focus(&mut self, focus: PaneFocus);
+    fn layout_monitor_sync(&mut self);
+    fn layout_label(&mut self, label: String);
+    fn layout_redraw(&mut self);
+}
+impl LayoutEffect {
+    pub(in crate::ui) fn apply(self, port: &mut impl LayoutPort, label: Option<String>) {
+        if let Some(focus) = self.focus { port.layout_focus(focus); }
+        if self.monitor_sync { port.layout_monitor_sync(); }
+        if let Some(label) = label { port.layout_label(label); }
+        if self.redraw { port.layout_redraw(); }
+    }
+}
+
+#[derive(Default)]
+pub(in crate::ui) struct HelpKeyEffect {
+    pub(super) consumed: bool,
+    pub(super) dismissed_peek: bool,
+    pub(super) layout: Option<LayoutEffect>,
+    pub(super) browser: Option<HelpBrowser>,
+    pub(super) browsing_redraw: bool,
+}
+pub(in crate::ui) enum HelpBrowser { Manual(Action), CheatSheet(String) }
+pub(in crate::ui) trait HelpBrowserPort: LayoutPort {
+    fn help_manual(&mut self, url: &str) -> std::result::Result<(), String>;
+    fn help_html(&mut self, html: &[u8]) -> std::result::Result<(), String>;
+    fn help_status(&mut self, status: String);
+}
+/// Browser/status work runs before the browsing redraw, including on failure.
+pub(in crate::ui) fn finish_help_key(effect: HelpKeyEffect, port: &mut impl HelpBrowserPort) -> std::ops::ControlFlow<()> {
+    if effect.dismissed_peek { port.layout_redraw(); }
+    if let Some(layout) = effect.layout { layout.apply(port, None); }
+    match effect.browser {
+        Some(HelpBrowser::Manual(action)) => {
+            if let Err(e) = port.help_manual(help::manual_url(action)) {
+                port.help_status(format!("Open help manual failed: {e}"));
+            }
+        }
+        Some(HelpBrowser::CheatSheet(html)) => {
+            if let Err(e) = port.help_html(html.as_bytes()) {
+                tracing::warn!(target: "sot::ui::input::global_keys", error = %e, "help cheat sheet: open_html_in_browser failed");
+                port.help_status(format!("Print cheat sheet failed: {e}"));
+            } else { port.help_status("cheat sheet · opened in browser".to_string()); }
+        }
+        None => {}
+    }
+    if effect.browsing_redraw { port.layout_redraw(); }
+    if effect.consumed { std::ops::ControlFlow::Break(()) } else { std::ops::ControlFlow::Continue(()) }
+}
+
+pub(in crate::ui) trait AgentRevealPort: LayoutPort { fn layout_paste(&mut self, bytes: &[u8]); }
+pub(in crate::ui) fn finish_agent_reveal(effect: LayoutEffect, port: &mut impl AgentRevealPort, paste: Option<&[u8]>) {
+    effect.apply(port, None);
+    if let Some(bytes) = paste { port.layout_paste(bytes); }
+}
+
 pub(in crate::ui) fn confirm_quit_key(state: &mut State, event_loop: &ActiveEventLoop, step: QuitPromptStep) {
     let (effect, leave) = state.focus_prompts.answer_quit(step);
     state.apply_prompt_effect(effect);
@@ -11,71 +75,11 @@ pub(in crate::ui) fn confirm_quit_key(state: &mut State, event_loop: &ActiveEven
 }
 
 pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: help::Context) -> ControlFlow<()> {
-    let KeyPress { event, action, ctrl, super_, .. } = key;
-    if !event.repeat && action == Some(Action::ToggleHelpDrawer) {
-        if state.drawer == DrawerContent::Help { state.close_help_drawer(); }
-        else { state.open_help_drawer(context); }
-        return Break(());
-    }
-    if action == Some(Action::ToggleHelp) {
-        tracing::debug!(repeat = event.repeat, peek = state.help.peek.is_some(), ?context, "context help requested");
-        if event.repeat { return Break(()); }
-        if state.drawer == DrawerContent::Help && state.focus_prompts.focus() == PaneFocus::Repl {
-            state.close_help_drawer();
-        } else if let Some(peek) = state.help.peek.take() {
-            state.open_help_drawer(peek.context);
-        } else {
-            state.help.peek = Some(help::Peek { context, started: std::time::Instant::now() });
-            state.window.request_redraw();
-        }
-        return Break(());
-    }
-    if state.help.peek.take().is_some() {
-        state.window.request_redraw();
-        if event.logical_key == Key::Named(NamedKey::Escape) { return Break(()); }
-    }
-    // Browsing Help consumes its own input; no typed search leaks into Julia.
-    if state.drawer == DrawerContent::Help && state.focus_prompts.focus() == PaneFocus::Repl
-        && !action.is_some_and(|a| matches!(a.spec().scope,
-            crate::ui::input::keybindings::Scope::Global | crate::ui::input::keybindings::Scope::Workspace |
-            crate::ui::input::keybindings::Scope::Restore | crate::ui::input::keybindings::Scope::Quit))
-    {
-        tracing::debug!(?event.logical_key, ?action, "help drawer key");
-        match &event.logical_key {
-            _ if action == Some(Action::HelpClose) => state.close_help_drawer(),
-            _ if action == Some(Action::HelpUp) => state.help.move_selection(-1, &state.bindings),
-            _ if action == Some(Action::HelpDown) => state.help.move_selection(1, &state.bindings),
-            _ if action == Some(Action::HelpPageUp) => state.help.move_selection(-8, &state.bindings),
-            _ if action == Some(Action::HelpPageDown) => state.help.move_selection(8, &state.bindings),
-            _ if action == Some(Action::HelpScope) && !event.repeat => { state.help.all_panes = !state.help.all_panes; state.help.selected = 0; }
-            Key::Named(NamedKey::Backspace) => { state.help.query.pop(); state.help.selected = 0; }
-            _ if action == Some(Action::HelpManual) && !event.repeat => {
-                if let Some(a) = state.help.selected_action(&state.bindings) {
-                    if let Err(e) = crate::browser_open::spawn_opener(help::manual_url(a)) {
-                        state.status = format!("Open help manual failed: {e}");
-                    }
-                }
-            }
-            // Generated fresh from `state.bindings`, no fs source of its
-            // own -- same temp-file-then-browser route as the Quarto
-            // quick-render and sourceless-preview `o` (open_html_in_browser).
-            _ if action == Some(Action::HelpCheatSheet) && !event.repeat => {
-                let html = help::cheat_sheet_html(&state.bindings);
-                if let Err(e) = open_html_in_browser(html.as_bytes()) {
-                    tracing::warn!(error = %e, "help cheat sheet: open_html_in_browser failed");
-                    state.status = format!("Print cheat sheet failed: {e}");
-                } else {
-                    state.status = "cheat sheet · opened in browser".to_string();
-                }
-            }
-            Key::Character(c) if !ctrl && !super_ => { state.help.query.push_str(c); state.help.selected = 0; }
-            Key::Named(NamedKey::Space) => { state.help.query.push(' '); state.help.selected = 0; }
-            _ => {}
-        }
-        state.window.request_redraw();
-        return Break(());
-    }
-    Continue(())
+    let KeyPress { event, action, ctrl, super_, alt, shift } = key;
+    let effect = state.layout_help.help_key(layout_help::HelpKey {
+        logical_key: &event.logical_key, action, repeat: event.repeat, modifiers: Modifiers { ctrl, super_, alt, shift },
+    }, context, state.focus_prompts.focus(), &state.bindings, std::time::Instant::now);
+    layout_help::finish_help_key(effect, state)
 }
 
 /// Ctrl+Q: quit from any pane `Scope::Quit` allows. In the agent pane and the Terminal drawer a program keeps the
@@ -236,20 +240,7 @@ pub(in crate::ui) fn navigation_chords(state: &mut State, key: KeyPress<'_>, lab
             // move_in walks only laid-out panes, so focus never
             // reaches an invisible pty.
             let preset = state.settings.resolve_preset(state.monitor_aspect);
-            let columns: Vec<_> = if state.wide_preview {
-                preset.wide_preview().columns
-            } else {
-                preset.columns.clone()
-            }
-            .iter()
-            .map(|c| c.slot)
-            .collect();
-            // The slot redraw lays out in the drawer; Help borrows Repl's when the preset has none.
-            let drawer = match state.drawer {
-                DrawerContent::Closed => None,
-                DrawerContent::Help => preset.drawer.or(Some(crate::ui::persist::settings::Slot::Repl)),
-                _ => preset.drawer,
-            };
+            let (columns, drawer) = state.layout_help.spatial_slots(preset);
             state.focus_prompts.move_focus(dir, &columns, drawer);
             // Keymap-driven label (Ctrl+Arrow on Windows/Linux,
             // Cmd+Arrow on macOS) instead of a hard-coded
@@ -299,57 +290,10 @@ pub(in crate::ui) fn navigation_chords(state: &mut State, key: KeyPress<'_>, lab
 
 pub(in crate::ui) fn layout_chords(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     let KeyPress { action, .. } = key;
-    if action == Some(Action::MaximizePane) {
-        state.maximized = true;
-        state.last_key = Some(label);
-        state.window.request_redraw();
-        return Break(());
-    }
-    if state.maximized
-        && action == Some(Action::RestoreLayout)
-    {
-        state.maximized = false;
-        state.last_key = Some(label);
-        state.window.request_redraw();
-        return Break(());
-    }
-    // Esc also exits wide-preview — the same "get me back"
-    // gesture as un-maximize. Ordered after the maximize
-    // restore so layered states peel one at a time
-    // (un-maximize first, un-widen second). Unlike maximize,
-    // wide-preview is sticky — the user lives in it — so this
-    // is gated to the reading panes with no modal up: a
-    // vim/readline Esc in the drawer pty must keep reaching
-    // the pty, and picker / prompt / annotation-edit Esc must
-    // keep cancelling those first.
-    if state.wide_preview
-        && !state.maximized
-        && state.edit_state.is_none()
-        && state.focus_prompts.prompt().is_none()
-        && state.workspace_picker.is_none()
-        && matches!(state.focus_prompts.focus(), PaneFocus::NavTree | PaneFocus::Preview)
-        && action == Some(Action::RestoreLayout)
-    {
-        state.wide_preview = false;
-        state.last_key = Some(label);
-        state.window.request_redraw();
-        return Break(());
-    }
-    // Wide-preview toggle (layout.wide_preview, default
-    // Alt++ — the shifted neighbour of Alt+= maximize):
-    // hide the LLM column and hand its width to the
-    // preview. Global like maximize — fires from any focus,
-    // including LLM (pane management wins over forwarding
-    // the chord to the shell). Focus on the pane being
-    // hidden bounces to Preview, same rule as the
-    // drawer-close bounce.
-    if action == Some(Action::ToggleWidePreview) {
-        state.wide_preview = !state.wide_preview;
-        if state.wide_preview && state.focus_prompts.focus() == PaneFocus::Llm {
-            state.set_focus(PaneFocus::Preview);
-        }
-        state.last_key = Some(label);
-        state.window.request_redraw();
+    let context = state.help_context();
+    let gates = state.layout_gates();
+    if let Some(effect) = state.layout_help.layout_action(action, &context, state.focus_prompts.focus(), gates) {
+        effect.apply(state, Some(label));
         return Break(());
     }
     // Ctrl+Shift+S: whole-window selfie to a timestamped PNG.
@@ -379,7 +323,7 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
     // each opens its own drawer content, swaps to it if the
     // other is showing, and closes if its own is already
     // showing. Both share the `PaneFocus::Repl` drawer slot;
-    // `state.drawer` decides which content renders (and, per
+    // `state.layout_help.drawer()` decides which content renders (and, per
     // G4, where keystrokes route). When the drawer is open
     // focus moves into it; when it closes from the drawer,
     // focus bounces back to NavTree.
@@ -397,17 +341,8 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
         None
     };
     if let Some(slot) = drawer_key {
-        state.help_origin = None;
-        state.drawer = state.drawer.toggle(slot);
-        if state.drawer.is_open() {
-            state.set_focus(PaneFocus::Repl);
-        } else if state.focus_prompts.focus() == PaneFocus::Repl {
-            state.set_focus(PaneFocus::NavTree);
-        }
-        // The Monitor's subscription follows the toggle (ADR 0020).
-        state.sync_monitor_subscription();
-        state.last_key = Some(label);
-        state.window.request_redraw();
+        let effect = state.layout_help.toggle_drawer(slot, state.focus_prompts.focus());
+        effect.apply(state, Some(label));
         return Break(());
     }
     Continue(())

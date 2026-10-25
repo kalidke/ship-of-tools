@@ -17,7 +17,7 @@ impl State {
         // output into its parser before we borrow its screen for the draw.
         // All mutation happens here, before the `self.terminal.draw`
         // borrow and the immutable `local_term` screen borrow below.
-        if self.drawer == DrawerContent::Terminal {
+        if self.layout_help.drawer() == DrawerContent::Terminal {
             if self.local_term.is_none() {
                 let shell = crate::ui::drawer::terminal::pty::resolve_shell(self.settings.terminal_shell.as_deref());
                 let wake = self.wake.clone();
@@ -40,7 +40,7 @@ impl State {
                         self.status = format!("terminal spawn failed: {e}");
                         // Fall back to closing the drawer so the user isn't
                         // staring at an empty pane with no explanation.
-                        self.drawer = DrawerContent::Closed;
+                        self.layout_help.terminal_spawn_failed();
                     }
                 }
             }

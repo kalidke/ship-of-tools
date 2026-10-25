@@ -111,14 +111,8 @@ impl State {
     }
 
     fn frame_upkeep(&mut self) {
-        if self.help_peek_start_pending {
-            self.help_peek_start_pending = false;
-            self.help.peek = Some(help::Peek { context: self.help_context(), started: std::time::Instant::now() });
-        }
-        if self.help_start_pending {
-            self.help_start_pending = false;
-            self.open_help_drawer(self.help_context());
-        }
+        let requests = self.layout_help.take_startup_requests();
+        layout_help::start_pending(requests, self);
 
         self.drain_events();
         // Prune finished status-change flashes; while any is still fading,
@@ -217,9 +211,7 @@ impl State {
         {
             if let Some(code) = self.pending_demo_repl_eval.take() {
                 self.submit_demo_repl_input(code);
-                if self.drawer != DrawerContent::Repl {
-                    self.drawer = DrawerContent::Repl;
-                }
+                self.layout_help.show_demo_repl();
             }
         }
         // `--demo-function-methods` chain: once the target function row

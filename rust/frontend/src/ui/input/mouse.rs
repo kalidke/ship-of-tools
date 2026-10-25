@@ -149,9 +149,8 @@ impl WheelContext for State {
 }
 
 fn route_wheel_rows(state: &mut State, rows_above: i32) {
-    if state.drawer == DrawerContent::Help && state.focus_prompts.focus() == PaneFocus::Repl {
-        state.help.move_selection(-(rows_above as isize), &state.bindings);
-        state.window.request_redraw();
+    if let Some(effect) = state.layout_help.help_wheel(rows_above, state.focus_prompts.focus(), &state.bindings) {
+        effect.apply(state, None);
         return;
     }
 
@@ -160,7 +159,7 @@ fn route_wheel_rows(state: &mut State, rows_above: i32) {
     // pane's apply step so a single positive `rows_above`
     // feels like "show content above" everywhere.
     match state.focus_prompts.focus() {
-        PaneFocus::Repl if state.drawer == DrawerContent::Terminal => {
+        PaneFocus::Repl if state.layout_help.drawer() == DrawerContent::Terminal => {
             wheel_terminal(state, rows_above);
         }
         PaneFocus::Repl => {

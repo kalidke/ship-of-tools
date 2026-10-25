@@ -8,6 +8,7 @@ owns authoritative rows and identity; `session/row_presentation.rs` owns their p
 `drawer/repl::ReplModel` owns REPL row state, submissions, history, routing and lifecycle;
 `drawer/repl/presentation::ReplPresentation` owns window-wide REPL images, layout and scroll anchoring.
 `input::FocusPrompts` owns window-wide focus, nav prompts, captured scale focus, stayed notice and quit hint.
+`input::LayoutHelp` owns drawer selection, maximize/wide flags, Help browsing, return origin and startup requests.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -159,6 +160,22 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   Behavior tests replace both focus scans: `input::focus_prompts_tests`, `input::keypress::tests`,
   `nav::files::prompt::tests`, `app::{exit,dialog}::tests`, `app::handler::idle_tests`, `chrome::panes::tests`.
   They drive production continuations. Native window-close retains its scenarios and hosted gate requirement.
+- `LayoutHelp` privately owns drawer/maximize/wide flags, Help browsing, the first return origin and startup
+  requests, including private nested storage. It returns owned effects, never takes State and lends only immutable
+  observations. Ordinary toggles alone abandon the origin and request Monitor sync, after focus and before binding
+  feedback/redraw. Automatic REPL opening keeps setting/base-preset gates; demo opening ignores them; Terminal
+  failure closes only selection. These paths preserve other layout/Help state and keep held subscriptions.
+- Maximize follows focus, yields to a leave line without clearing, and leaves spatial navigation on the preset.
+  Context-admitted restore peels maximize before gated wide restoration. Wide enable bounces only Llm; admitted
+  agent reveal clears wide before focus/paste without dismissing prompts. Help resets browsing, saves only the first
+  focus/drawer/maximize origin (never wide), and consumes it once on close. Startup starts peek then drawer before
+  draining events. Peek keys retain captured context/repeat rules; focused browsing passes window action scopes.
+  Browser status precedes redraw; logs retain global_keys targets/fields/order. Overlay preparation stays after chrome
+  draw, suppresses dialog spill and clears stale/expired peeks or promotes for insufficient space. Idle retains the
+  five-second hold, 240 ms fade, 16 ms fading cadence and hint deadline. State retains settings, geometry, resources,
+  persistence and external effects. Behavior tests: `input::layout_help_tests`, the Help characterizations and
+  `app::handler::idle_tests::peek_deadlines_wake_fade_and_expire_without_postponement`. Native Monitor fixtures use
+  public selection operations with independent subscription setup; fresh Windows/macOS release gates cover 7g/7h.
 - `AgentPane` privately owns the host/attachment target, size, selection/drag, selected client, host-bounded warm
   pool, hold, dial reason, request/client clocks, warning count, feed, discarded-input count and composed
   `PanePresentation`. Its operations never take State or expose mutable clients/screens/storage. The narrow
@@ -242,7 +259,7 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `render/pass/`: the frame's render pass, one `State` method per section, called in order by `State::redraw`.
 - `chrome/`: pane geometry and focus delegation, the status line, nav spill, colours, the wireframe and the frame's chrome draw.
 - `chrome/strip/`: the session strip band under the panes.
-- `input/`: FocusPrompts, the action catalog, key and mouse routing, help and clipboard paste.
+- `input/`: FocusPrompts, LayoutHelp, the action catalog, key and mouse routing, help and clipboard paste.
 - `nav/`: the navigation pane's trees (mode, store, Modules, Sessions, Hosts).
 - `nav/files/`: Files mode's prompts, reveal walk, transfers and re-lists.
 - `session/`: `RowDirectory` owns listings/identity, `RowPresentation` owns metadata/order/flashes and `ResultLedger`
@@ -274,7 +291,7 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `control/`: agent control of the window (its own page).
 - `drawer/`: the bottom drawer (its own page).
 - `init/`: building the window's state at launch (its own page).
-- `input/`: FocusPrompts, its behavior tests, key bindings, help and paste (its own page).
+- `input/`: FocusPrompts, LayoutHelp, their behavior tests, key bindings, help rendering and paste (its own page).
 - `nav/`: the navigation pane's trees (its own page).
 - `persist/`: settings, discovery and resume state (its own page).
 - `preview/`: the preview pane (its own page).

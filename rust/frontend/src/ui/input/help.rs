@@ -8,7 +8,8 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
     Frame,
 };
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Pane {
@@ -156,79 +157,9 @@ impl Context {
     }
 }
 
-pub const PEEK_HOLD: Duration = Duration::from_secs(5);
-pub const PEEK_FADE: Duration = Duration::from_millis(240);
-#[derive(Debug, Clone)]
-pub struct Peek {
-    pub context: Context,
-    pub started: Instant,
-}
-impl Peek {
-    pub fn opacity(&self, now: Instant) -> f32 {
-        let elapsed = now.saturating_duration_since(self.started);
-        if elapsed <= PEEK_HOLD {
-            1.0
-        } else {
-            (1.0 - (elapsed - PEEK_HOLD).as_secs_f32() / PEEK_FADE.as_secs_f32()).clamp(0.0, 1.0)
-        }
-    }
-}
-#[derive(Default)]
-pub struct Help {
-    pub context: Context,
-    pub query: String,
-    pub selected: usize,
-    pub all_panes: bool,
-    pub peek: Option<Peek>,
-}
-impl Help {
-    pub fn open(&mut self, context: Context) {
-        self.context = context;
-        self.query.clear();
-        self.selected = 0;
-        self.all_panes = false;
-        self.peek = None;
-    }
-    pub fn actions(&self, bindings: &KeyBindings) -> Vec<Action> {
-        let query = self.query.to_lowercase();
-        let mut actions: Vec<_> = ACTIONS
-            .iter()
-            .filter(|s| self.all_panes || self.context.allows(s.action))
-            .filter(|s| {
-                query.split_whitespace().all(|word| {
-                    format!(
-                        "{} {} {} {} {}",
-                        s.label,
-                        s.detail,
-                        s.name,
-                        s.group,
-                        bindings.labels(s.action)
-                    )
-                    .to_lowercase()
-                    .contains(word)
-                })
-            })
-            .map(|s| s.action)
-            .collect();
-        actions.sort_by_key(|a| {
-            matches!(
-                a.spec().scope,
-                Scope::Global | Scope::Workspace | Scope::Restore
-            )
-        });
-        actions
-    }
-    pub fn move_selection(&mut self, delta: isize, bindings: &KeyBindings) {
-        let count = self.actions(bindings).len();
-        self.selected = self
-            .selected
-            .saturating_add_signed(delta)
-            .min(count.saturating_sub(1));
-    }
-    pub fn selected_action(&self, bindings: &KeyBindings) -> Option<Action> {
-        self.actions(bindings).get(self.selected).copied()
-    }
-}
+pub use super::layout_help::Help;
+#[cfg(test)]
+use super::layout_help::{PEEK_FADE, PEEK_HOLD};
 
 /// Fit complete hints. Keep the help entry even when the pane is narrow.
 pub fn border(context: &Context, bindings: &KeyBindings, width: usize) -> String {
@@ -330,7 +261,7 @@ pub fn render(frame: &mut Frame<'_>, rect: Rect, help: &Help, bindings: &KeyBind
     }
     let width = rect.width as usize;
     let actions = help.actions(bindings);
-    let selected = help.selected.min(actions.len().saturating_sub(1));
+    let selected = help.selected().min(actions.len().saturating_sub(1));
     let detail_rows = if rect.height >= 11 { 4 } else { 0 };
     let list_rows = (rect.height as usize)
         .saturating_sub(3 + detail_rows)
@@ -341,8 +272,8 @@ pub fn render(frame: &mut Frame<'_>, rect: Rect, help: &Help, bindings: &KeyBind
             truncate(
                 &format!(
                     "About: {}   ·   {}",
-                    help.context.title(),
-                    if help.all_panes {
+                    help.context().title(),
+                    if help.all_panes() {
                         "All panes"
                     } else {
                         "This pane"
@@ -354,12 +285,12 @@ pub fn render(frame: &mut Frame<'_>, rect: Rect, help: &Help, bindings: &KeyBind
                 .fg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(truncate(&format!("Search: {}▏", help.query), width)),
+        Line::from(truncate(&format!("Search: {}▏", help.query()), width)),
     ];
     for (i, a) in actions.iter().enumerate().skip(first).take(list_rows) {
         let s = a.spec();
-        let keys = bindings.active_labels(*a, help.context.consumes_text(), |a| help.context.allows(a));
-        let key_label = if help.all_panes && !help.context.allows(*a) {
+        let keys = bindings.active_labels(*a, help.context().consumes_text(), |a| help.context().allows(a));
+        let key_label = if help.all_panes() && !help.context().allows(*a) {
             bindings.labels(*a)
         } else if keys.is_empty() {
             "binding shadowed".into()
@@ -400,14 +331,14 @@ pub fn render(frame: &mut Frame<'_>, rect: Rect, help: &Help, bindings: &KeyBind
                     a.spec().group,
                     a.spec().name,
                     a.spec().detail,
-                    if help.all_panes && !help.context.allows(*a) {
+                    if help.all_panes() && !help.context().allows(*a) {
                         "Available in another pane or context."
                     } else {
-                        help.context.note()
+                        help.context().note()
                     }
                 )
             })
-            .unwrap_or_else(|| help.context.note().into());
+            .unwrap_or_else(|| help.context().note().into());
         frame.render_widget(
             Paragraph::new(detail)
                 .wrap(Wrap { trim: true })

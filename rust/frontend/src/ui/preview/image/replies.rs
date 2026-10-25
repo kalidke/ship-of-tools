@@ -118,8 +118,7 @@ impl State {
         // A hidden LLM pane can't show the paste it was just
         // handed — drop wide-preview so the pane (and the
         // focus move) are actually visible.
-        self.wide_preview = false;
-        self.set_focus(PaneFocus::Llm);
+        let reveal = self.layout_help.reveal_agent();
         // Focus moves leave an open quit question intact; its next key
         // still answers the dialog before reaching the agent pane.
         // ADR 0042 slice L1b fix 3: routed through the ONE
@@ -131,7 +130,7 @@ impl State {
         // the ROI paste always went straight to `pty.write`,
         // landing in whatever tmux pty the daemon still had
         // open even while a capsule was live and selected.
-        self.send_pane_input(&bytes);
+        layout_help::finish_agent_reveal(reveal, self, Some(&bytes));
         self.status = format!("ROI {w}×{h} of {name} → LLM pane · Enter to send");
         self.window.request_redraw();
     }

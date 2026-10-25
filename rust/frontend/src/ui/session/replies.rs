@@ -332,8 +332,8 @@ impl State {
                     .iter()
                     .any(|c| c.slot == crate::ui::persist::settings::Slot::Llm);
                 if has_llm {
-                    self.wide_preview = false;
-                    self.set_focus(PaneFocus::Llm);
+                    let effect = self.layout_help.reveal_agent();
+                    layout_help::finish_agent_reveal(effect, self, None);
                 }
                 self.window.request_redraw();
             }

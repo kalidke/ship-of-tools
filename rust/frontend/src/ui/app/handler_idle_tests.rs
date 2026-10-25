@@ -57,3 +57,40 @@ fn quit_hint_deadlines_wake_and_expire_without_taking_input() {
     seen.0.show_hint("Again+Q", || start);
     assert!(seen.0.expire_hint(start + Duration::from_secs(6)));
 }
+
+#[test]
+fn peek_deadlines_wake_fade_and_expire_without_postponement() {
+    use crate::ui::{DrawerContent, PaneFocus, FocusPrompts};
+    use crate::ui::input::{help, layout_help::LayoutHelp};
+    let start = Instant::now();
+    let mut layout = LayoutHelp::new(DrawerContent::Closed, false, false, false);
+    layout.start_peek(help::Context::default(), start);
+    let fade = start + Duration::from_secs(5);
+    let fade_span = Duration::from_millis(240);
+    assert_eq!(layout.peek_deadline(), Some(fade));
+    let mut focus = FocusPrompts::new(PaneFocus::Preview);
+    focus.show_hint("Fixture+Q", || start);
+    let deadline = || layout.peek_deadline().into_iter().chain(focus.hint_deadline()).min();
+    let mut slot = None;
+    assert_eq!(arm_idle(&mut slot, start, Duration::from_secs(20), deadline()), start + Duration::from_secs(4));
+    let mut slot = None;
+    for n in 0..100 {
+        let now = start + Duration::from_millis(40) * n;
+        assert_eq!(arm_idle(&mut slot, now, Duration::from_secs(20), layout.peek_deadline()), fade);
+    }
+    assert!(!layout.peek_fading(|| fade - Duration::from_nanos(1)));
+    assert!(layout.peek_fading(|| fade));
+    assert_eq!(super::idle_interval(false, false), Duration::from_secs(1));
+    assert_eq!(super::idle_interval(false, true), Duration::from_millis(80));
+    for flashes in [false, true] {
+        let interval = super::idle_interval(layout.peek_fading(|| fade), flashes);
+        assert_eq!(interval, Duration::from_millis(16));
+        assert_eq!(arm_idle(&mut slot, fade, interval, layout.peek_deadline()), fade + interval);
+    }
+    assert_eq!(layout.peek().unwrap().opacity(fade), 1.0);
+    assert!((layout.peek().unwrap().opacity(fade + fade_span / 2) - 0.5).abs() < 0.01);
+    assert!(!layout.expire_peek(|| fade + fade_span - Duration::from_nanos(1)));
+    assert!(layout.expire_peek(|| fade + fade_span));
+    assert!(layout.peek_deadline().is_none());
+    assert!(!layout.expire_peek(|| panic!("absent peek sampled the clock")));
+}

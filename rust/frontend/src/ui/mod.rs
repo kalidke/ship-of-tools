@@ -400,23 +400,8 @@ struct State {
     /// so keyboard handlers can size scroll steps to a real viewport
     /// (`PgUp/PgDn`, `Ctrl+u/d`). Updated at the end of every redraw.
     pane_rects: PaneRects,
-    /// When `true`, the currently-focused pane fills the whole window;
-    /// the other three are zero-sized and not drawn. Toggled with
-    /// `Action::MaximizePane` / `Action::RestoreLayout` (defaults
-    /// `Alt+=` / `Alt+-`). Maximisation tracks `focus` rather than
-    /// being pinned to a specific pane — Ctrl+Arrow while
-    /// maximised swaps which pane is on screen, which is what the user
-    /// wants when they're staring at one pane and want to peek at
-    /// another.
-    maximized: bool,
-    /// When `true`, the LLM column is hidden and its width handed to
-    /// the preview pane (nav keeps its width) — the "wide preview"
-    /// layout. Toggled with `Action::ToggleWidePreview` (default
-    /// `Alt++`); Esc also exits it from the reading panes (after
-    /// un-maximizing, and never over a pty or modal). Focus can't land
-    /// on the hidden LLM pane while active; a capture-ROI paste that
-    /// targets the LLM pane reveals it again.
-    wide_preview: bool,
+    /// Runtime drawer, layout flags, Help browsing, origin and startup requests.
+    layout_help: LayoutHelp,
     /// Transient nav spill (`[nav] spill_ms`): while the user is actively
     /// moving the nav cursor, nav rows whose text overflows the column
     /// float their FULL text over the preview pane's left edge (overlay
@@ -438,11 +423,6 @@ struct State {
     /// path. `None` until the first frame, which deliberately does not
     /// arm (boot isn't a user move).
     nav_spill_cursor: Option<(Mode, Option<String>, usize, Option<usize>, u64)>,
-    /// Bottom drawer state — `Closed`, `Repl` (Ctrl+J), or `Terminal`
-    /// (Ctrl+T). When open it takes its configured fraction of vertical
-    /// space and the columns shrink. The variant selects which content
-    /// renders; `layout::compute` only needs `drawer.is_open()`.
-    drawer: DrawerContent,
     // ui/chrome/strip: the session strip's scroll and wheel animation.
     /// Session-strip horizontal scroll, in strip-local pixels (the
     /// strip-local x that maps to screen-center). `None` = uninitialized
@@ -481,10 +461,6 @@ struct State {
     /// file format and discovery order. Read-only once loaded — the
     /// chrome doesn't reload mid-session.
     bindings: KeyBindings,
-    help: help::Help,
-    help_origin: Option<(PaneFocus, DrawerContent, bool)>,
-    help_start_pending: bool,
-    help_peek_start_pending: bool,
     help_back_quad: Option<(u8, Quad)>,
     // ui/control: the fe-commands queue and the fe-state.json signature.
     /// FE control commands (ADR 0019) enqueued by the command-file watcher

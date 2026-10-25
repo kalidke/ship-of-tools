@@ -56,7 +56,7 @@ impl State {
         let focus = self.focus_prompts.focus();
         let help_context = self.help_context();
         let maximize_slot =
-            maximize_slot(self.maximized, focus, self.leaving.as_ref().and_then(|l| l.line()).is_some());
+            self.layout_help.maximize_slot(focus, self.leaving.as_ref().and_then(|l| l.line()).is_some());
         // State-nav selected-session contrast lever, snapshotted for the draw
         // closure (it mustn't borrow `self`).
         let contrast_dim = self.contrast_dim;
@@ -81,7 +81,7 @@ impl State {
         self.pump_drawer_terminals();
         // Re-read after a possible spawn-failure close above; this is the
         // value the renderer branches on.
-        let drawer = self.drawer;
+        let drawer = self.layout_help.drawer();
         let (pane_screen, pane_overlay, pane_facts) = self.session_pane_view();
         let blank_pty_screen;
         let pty_screen = match self.agent_pane.painted_screen(pane_screen) {
@@ -158,14 +158,14 @@ impl State {
             .nav_spill_until
             .map(|u| std::time::Instant::now() < u)
             .unwrap_or(false);
-        let layout_preset = self.layout_preset_for(drawer);
+        let layout_preset = self.layout_help.effective_preset(self.settings.resolve_preset(self.monitor_aspect));
         // `drawer` was bound above (after the terminal lazy-spawn/close).
         let drawer_open = drawer.is_open();
         let (preview_name, monitor_host_label, monitor_host_connected) = self.pane_title_inputs();
         // Borrowed LAST, after every `&mut self` pump above: the draw closure
         // captures these two references, so taking them any earlier spans
         // those mutations and fails the borrow check.
-        let help_state = &self.help;
+        let help_state = self.layout_help.help();
         let help_bindings = &self.bindings;
         let mut view = ChromeView {
             layout_preset: &layout_preset, drawer_open, maximize_slot, nav_logo_row, focus, mode,
@@ -485,28 +485,6 @@ impl State {
             .collect();
         let empty = self.tree.rows.is_empty();
         (rows, empty)
-    }
-
-    fn layout_preset_for(&self, drawer: DrawerContent) -> crate::ui::persist::settings::LayoutPreset {
-        // Layout proportions from the user's settings file (or
-        // defaults). Snapshotted here so the ratatui closure doesn't
-        // borrow `self`. Maximisation overrides the geom inside the
-        // closure by passing a `maximize_slot`. Wide-preview rewrites
-        // the preset itself (Llm column dropped, width to Preview) so
-        // layout::compute needs no new inputs — the Llm-less path is
-        // the same one the portrait preset already exercises.
-        let mut layout_preset = {
-            let p = self.settings.resolve_preset(self.monitor_aspect);
-            if self.wide_preview {
-                p.wide_preview()
-            } else {
-                p.clone()
-            }
-        };
-        if drawer == DrawerContent::Help && layout_preset.drawer.is_none() {
-            layout_preset.drawer = Some(crate::ui::persist::settings::Slot::Repl);
-        }
-        layout_preset
     }
 
     fn pane_title_inputs(&self) -> (Option<String>, HostKey, bool) {

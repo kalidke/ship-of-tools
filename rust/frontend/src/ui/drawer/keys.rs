@@ -29,7 +29,7 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
     // literal "v" into the buffer.
     let is_paste_shortcut = !event.repeat && action == Some(Action::Paste);
     if is_paste_shortcut {
-        if state.drawer == DrawerContent::Terminal {
+        if state.layout_help.drawer() == DrawerContent::Terminal {
             forward_clipboard_paste_to_local_term(state);
         } else if let Some(text) = read_clipboard_text() {
             // REPL input is an editable buffer, not a pty
@@ -58,7 +58,7 @@ fn terminal_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlF
     // and Ctrl+Arrow are intercepted globally before this
     // arm, so they still exit/switch the pane; Tab falls
     // through to the PTY for shell completion.
-    if state.drawer == DrawerContent::Terminal {
+    if state.layout_help.drawer() == DrawerContent::Terminal {
         // Plain PageUp/PageDown page our scrollback ring —
         // same convention as the LLM pane, so claude in
         // the drawer scrolls like claude in the LLM pane.

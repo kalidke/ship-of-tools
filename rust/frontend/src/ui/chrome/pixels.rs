@@ -80,49 +80,46 @@ impl State {
         // The close dialog covers every pane; while it shows, the help peek and the nav spill, whose text would draw
         // over its backing, do not.
         let dialog = self.close_dialog();
-        if dialog.is_some() {
-            self.help.peek = None;
-            self.nav_spill_segments.clear();
-        }
         let mut help_overlay_rect = None;
         let mut help_overlay_lines = Vec::new();
         let mut help_opacity = 1.0;
-        if let Some(peek) = self.help.peek.clone() {
+        // Keep clock sampling after the peek observation and before current-context evaluation.
+        let mut rect = ratatui::layout::Rect::default();
+        let inputs = if dialog.is_none() && self.layout_help.peek().is_some() {
             let now = std::time::Instant::now();
-            help_opacity = peek.opacity(now);
-            if help_opacity <= 0.0 || peek.context != self.help_context() {
-                self.help.peek = None;
-            } else {
-                let rect = match peek.context.pane {
-                    help::Pane::Nav => self.pane_rects.nav,
-                    help::Pane::Preview => self.pane_rects.preview,
-                    help::Pane::Agent => self.pane_rects.llm,
-                    _ => self.pane_rects.repl,
-                };
-                let content = help::peek_lines(&peek.context, &self.bindings);
-                let text_width = rect.width.saturating_sub(4) as usize;
-                let longest = content.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.as_str())).max().unwrap_or(0);
-                if text_width < longest || rect.height < content.len() as u16 + 2 {
-                    self.open_help_drawer(peek.context);
-                } else {
-                    self.nav_spill_segments.clear();
-                    let px = ScreenRect {
-                        x: self.chrome_origin_x + rect.x as f32 * self.cell_w,
-                        y: self.chrome_origin_y + rect.y as f32 * self.cell_h,
-                        w: rect.width as f32 * self.cell_w,
-                        h: (content.len() as f32 + 2.0) * self.cell_h,
-                    };
-                    help_overlay_rect = Some(px);
-                    help_overlay_lines = content.into_iter().enumerate().map(|(i, text)| crate::ui::render::text::Line {
-                        text, x: px.x + 2.0 * self.cell_w, y: px.y + (i as f32 + 1.0) * self.cell_h,
-                        color: Some((167, 222, 231)), bold: i == 0, italic: false, dim: false,
-                    }).collect();
-                    let alpha = (help_opacity * 245.0).round() as u8;
-                    if self.help_back_quad.as_ref().map(|(a, _)| *a) != Some(alpha) {
-                        self.help_back_quad = Some((alpha, Quad::from_rgba8(&self.device, &self.queue,
-                            &self.quad_pipeline, &[14, 30, 46, alpha], 1, 1)?));
-                    }
-                }
+            let context = (self.layout_help.peek().expect("peek observed above").opacity(now) > 0.0)
+                .then(|| self.help_context());
+            let peek = self.layout_help.peek().expect("peek observed above");
+            rect = match peek.context().pane {
+                help::Pane::Nav => self.pane_rects.nav,
+                help::Pane::Preview => self.pane_rects.preview,
+                help::Pane::Agent => self.pane_rects.llm,
+                _ => self.pane_rects.repl,
+            };
+            Some(layout_help::PeekInputs { context, focus: self.focus_prompts.focus(),
+                width: rect.width, height: rect.height, now })
+        } else { None };
+        let prepared = self.layout_help.prepare_peek(dialog.is_some(), inputs, &self.bindings);
+        if prepared.clear_spill { self.nav_spill_segments.clear(); }
+        prepared.layout.apply(self, None);
+        if let Some(overlay) = prepared.overlay {
+            help_opacity = overlay.opacity;
+            let content = overlay.lines;
+            let px = ScreenRect {
+                x: self.chrome_origin_x + rect.x as f32 * self.cell_w,
+                y: self.chrome_origin_y + rect.y as f32 * self.cell_h,
+                w: rect.width as f32 * self.cell_w,
+                h: (content.len() as f32 + 2.0) * self.cell_h,
+            };
+            help_overlay_rect = Some(px);
+            help_overlay_lines = content.into_iter().enumerate().map(|(i, text)| crate::ui::render::text::Line {
+                text, x: px.x + 2.0 * self.cell_w, y: px.y + (i as f32 + 1.0) * self.cell_h,
+                color: Some((167, 222, 231)), bold: i == 0, italic: false, dim: false,
+            }).collect();
+            let alpha = (help_opacity * 245.0).round() as u8;
+            if self.help_back_quad.as_ref().map(|(a, _)| *a) != Some(alpha) {
+                self.help_back_quad = Some((alpha, Quad::from_rgba8(&self.device, &self.queue,
+                    &self.quad_pipeline, &[14, 30, 46, alpha], 1, 1)?));
             }
         }
 
