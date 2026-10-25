@@ -84,7 +84,7 @@ pub(super) async fn serve(site: Site) -> (std::net::SocketAddr, String, u64) {
     tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
             tokio::spawn(async move {
-                let _ = handle_conn(stream, ServeMode::Prefix).await;
+                let _ = handle_conn(stream, ServeMode::Prefix, PageVerbs::empty()).await;
             });
         }
     });

@@ -39,7 +39,7 @@ async fn a_secret_parameter_decides_alone_and_the_cookie_only_without_one() {
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 tokio::spawn(async move {
-                    let _ = handle_conn(stream, ServeMode::Pool(port)).await;
+                    let _ = handle_conn(stream, ServeMode::Pool(port), PageVerbs::empty()).await;
                 });
             }
         });

@@ -47,7 +47,7 @@ mod pool_tests {
         assert_ne!(s2_again, s2);
         assert!(s2_again.len() == 32 && s2_again.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
         assert_eq!(
-            pool_entry_for(p2).map(|(r, _)| r.content_root.clone()),
+            pool_entry_for(p2).map(|(_, r, _)| r.content_root.clone()),
             Some(PathBuf::from("/b2"))
         );
         // Fifth owner: exhausted while no owner holding a port is away.
@@ -58,7 +58,7 @@ mod pool_tests {
         let (p5, s5) = assign_pool_port(S + 5, Site::plain(PathBuf::from("/e")), || vec![S + 9, S + 3, S + 1]).unwrap();
         assert_eq!(p5, p3);
         assert_ne!(s5, s3);
-        assert_eq!(pool_entry_for(p3).map(|(r, s)| (r.content_root.clone(), s)), Some((PathBuf::from("/e"), s5)));
+        assert_eq!(pool_entry_for(p3).map(|(_, r, s)| (r.content_root.clone(), s)), Some((PathBuf::from("/e"), s5)));
         // An owner's end frees exactly its port; next claim gets it.
         remove_root(S + 4);
         assert_eq!(pool_in_use(), 3);
@@ -91,6 +91,20 @@ mod nonce_tests {
         assert!(nonce.len() == 32 && nonce.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
         remove_root(serial);
     }
+
+    #[test]
+    fn an_owner_keeps_eight_prefix_sites_and_removes_them_together() {
+        const OWNER: u64 = 8_000_000_102;
+        const OTHER: u64 = 8_000_000_103;
+        let other = set_root(OTHER, Site::plain(PathBuf::from("/other"))).unwrap();
+        let nonces: Vec<_> = (0..9).map(|_| set_root(OWNER, Site::plain(PathBuf::from("/site"))).unwrap()).collect();
+        assert!(root_for(&nonces[0]).is_none(), "the ninth open evicts the oldest");
+        assert!(nonces[1..].iter().all(|nonce| root_for(nonce).is_some()), "the last eight stay live");
+        remove_root(OWNER);
+        assert!(nonces.iter().all(|nonce| root_for(nonce).is_none()), "an owner's end removes every grant");
+        assert!(root_for(&other).is_some(), "another owner's grants survive");
+        remove_root(OTHER);
+    }
 }
 
 #[cfg(test)]
@@ -104,7 +118,7 @@ mod bind_fallback_tests {
     async fn spawn_falls_back_to_ephemeral_when_preferred_taken() {
         let squatter = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let taken = squatter.local_addr().unwrap().port();
-        spawn(taken).await.expect("fallback bind should succeed");
+        spawn(taken, PageVerbs::empty()).await.expect("fallback bind should succeed");
         let bound = bound_site_port().expect("actual port recorded");
         assert_ne!(bound, taken, "must not claim the squatted port");
     }
@@ -213,7 +227,7 @@ mod prefix_serve_tests {
                 match listener.accept().await {
                     Ok((stream, _)) => {
                         tokio::spawn(async move {
-                            let _ = handle_conn(stream, ServeMode::Prefix).await;
+                            let _ = handle_conn(stream, ServeMode::Prefix, PageVerbs::empty()).await;
                         });
                     }
                     Err(_) => break,
@@ -372,7 +386,7 @@ mod persistent_tests {
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 tokio::spawn(async move {
-                    let _ = handle_conn(stream, ServeMode::Prefix).await;
+                    let _ = handle_conn(stream, ServeMode::Prefix, PageVerbs::empty()).await;
                 });
             }
         });
@@ -402,7 +416,7 @@ mod kept_connection_tests {
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 tokio::spawn(async move {
-                    let _ = handle_conn(stream, mode).await;
+                    let _ = handle_conn(stream, mode, PageVerbs::empty()).await;
                 });
             }
         });
@@ -432,7 +446,7 @@ mod kept_connection_tests {
         head.split_whitespace().nth(1).unwrap().parse().unwrap()
     }
 
-    /// ADR 0029: nothing but the mode and the read buffer crosses requests, so a nonce, a secret or a cookie that
+    /// ADR 0029: every request rechecks its nonce, secret or cookie, so one that
     /// stopped being valid is refused on a connection that served it a moment before.
     #[tokio::test]
     async fn a_kept_connection_checks_every_request_on_its_own() {
@@ -443,6 +457,10 @@ mod kept_connection_tests {
         let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let a = one(&mut s, &format!("GET /{n1}/a.txt HTTP/1.1\r\n\r\n")).await;
         let n2 = set_root(OWNER, Site::plain(root.clone())).unwrap();
+        // All retained nonces are checked anew; only the oldest past eight becomes stale.
+        for _ in 0..SITES_PER_WINDOW - 1 {
+            set_root(OWNER, Site::plain(root.clone())).unwrap();
+        }
         let b = one(&mut s, &format!("GET /{n1}/a.txt HTTP/1.1\r\n\r\n")).await;
         let c = one(&mut s, &format!("GET /{n2}/a.txt HTTP/1.1\r\n\r\n")).await;
         assert_eq!((a, b, c), (200, 404, 200));

@@ -35,7 +35,39 @@ async fn pipelined_requests_are_read_in_turn() {
 }
 
 fn get(keep: bool) -> Request {
-    Request { method: "GET".into(), target: "/".into(), range: None, cookie: None, keep }
+    Request { method: "GET".into(), target: "/".into(), range: None, cookie: None, host: None, origin: None, content_length: None, transfer_encoding: false, keep }
+}
+
+/// The body's deadline is absolute, just as the head's is: trickled bytes do not renew it.
+#[tokio::test(start_paused = true)]
+async fn a_body_dripped_past_the_bound_is_refused_at_the_bound() {
+    let (mut client, mut server) = duplex(4096);
+    client.write_all(b"POST / HTTP/1.1\r\nContent-Length: 100\r\n\r\n").await.unwrap();
+    let mut buf = Vec::new();
+    let request = read_request(&mut server, &mut buf).await.unwrap().unwrap();
+    tokio::spawn(async move {
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            if client.write_all(b"x").await.is_err() { break; }
+        }
+    });
+    let start = tokio::time::Instant::now();
+    let result = read_body(&mut server, &mut buf, &request).await.unwrap();
+    let refusal = result.err().expect("incomplete body refused");
+    assert_eq!(refusal.status, "408 Request Timeout");
+    assert!(start.elapsed() >= IDLE_BOUND && start.elapsed() < IDLE_BOUND + Duration::from_secs(1));
+}
+
+#[tokio::test]
+async fn a_short_body_is_refused() {
+    let (mut client, mut server) = duplex(4096);
+    client.write_all(b"POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\nshort").await.unwrap();
+    client.shutdown().await.unwrap();
+    let mut buf = Vec::new();
+    let request = read_request(&mut server, &mut buf).await.unwrap().unwrap();
+    let refusal = read_body(&mut server, &mut buf, &request).await.unwrap().err().expect("short body refused");
+    assert_eq!(refusal.status, "400 Bad Request");
+    assert_eq!(refusal.code, "bad_request");
 }
 
 /// A file of a megabyte served through a 1 KiB pipe: the file is read at most a chunk ahead of the client.

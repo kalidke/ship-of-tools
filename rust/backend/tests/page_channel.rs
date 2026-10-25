@@ -1,0 +1,390 @@
+//! Page verbs through a real daemon, scratch registry, docs.open and HTTP listener.
+//! No agent is started: the target is an inert row with a declared handle.
+
+mod support;
+
+use serde_json::{json, Value};
+use sot_protocol::{codec, op, Frame, HelloReq, Kind};
+use std::path::Path;
+use std::time::Duration;
+use support::{call, Conn, Env, TEST_STATE_HOST};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+
+const BOUND: Duration = Duration::from_secs(30);
+const QUIET: Duration = Duration::from_secs(2);
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+const ROW: &str = "page-row";
+const HANDLE: &str = "row-here";
+
+async fn window(env: &Env, instance: &str) -> Conn {
+    let stream = support::poll_until(
+        || async { support::try_connect(&env.socket_path).await }, BOUND, "page daemon",
+    ).await;
+    let mut conn = tokio::io::BufReader::new(stream);
+    // Both windows deliberately share a name. Only the connection serial distinguishes them.
+    let hello = HelloReq {
+        instance: Some(instance.into()), name: Some("fe@test-window".into()),
+        ..HelloReq::this_process("page-test", "fe", Some("test-window".into())).unwrap()
+    };
+    let res = call(&mut conn, 1, op::HELLO, serde_json::to_value(hello).unwrap()).await;
+    assert!(res.payload.get("error").is_none(), "{res:?}");
+    conn
+}
+
+async fn setup(tag: &str) -> (Env, Conn) {
+    let env = Env::new(tag);
+    env.seed_capsule_toml(ROW, ROW, &env.workspace_project_root, "none");
+    // The page belongs to the default workspace; its actions target a different row.
+    let site = env.daemon_project_root.join("queue");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), include_str!("fixtures/page_channel/index.html")).unwrap();
+    std::fs::write(env.workspace_project_root.join("decision.html"), "<p>Decision</p>").unwrap();
+    env.spawn_sotd_with_env(&[("SOT_DOCS_PORT", "0"), ("SOT_VIDEO_PORT", "0")]);
+    let mut conn = window(&env, "window-a").await;
+    let joined = call(&mut conn, 2, op::AGENT_JOIN, json!({"workspace_id": ROW, "handle": HANDLE})).await;
+    assert_eq!(joined.payload["ok"], true, "{joined:?}");
+    set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "workspace_id": ROW, "state": "idle"}));
+    (env, conn)
+}
+
+fn set_entry(env: &Env, handle: &str, entry: Value) {
+    support::write_registry(&env.comm_root, |doc| { doc["agents"][handle] = entry; });
+}
+
+#[derive(Clone)]
+struct SiteUrl { host: String, target: String }
+
+impl SiteUrl {
+    fn parse(url: &str) -> Self {
+        let (host, path) = url.strip_prefix("http://").unwrap().split_once('/').unwrap();
+        Self { host: host.into(), target: format!("/{path}") }
+    }
+
+    async fn connect(&self) -> TcpStream {
+        tokio::time::timeout(BOUND, TcpStream::connect(self.host.as_str())).await.unwrap().unwrap()
+    }
+
+    fn foreign_origin(&self) -> String {
+        let port: u16 = self.host.rsplit_once(':').unwrap().1.parse().unwrap();
+        format!("http://127.0.0.1:{}", if port == 1 { 2 } else { 1 })
+    }
+
+    async fn post(&self, body: Value) -> Reply {
+        self.raw("POST", Some(&format!("http://{}", self.host)), "", &body.to_string()).await
+    }
+
+    async fn raw(&self, method: &str, origin: Option<&str>, extra: &str, body: &str) -> Reply {
+        let mut stream = self.connect().await;
+        let origin = origin.map(|s| format!("Origin: {s}\r\n")).unwrap_or_default();
+        let head = format!(
+            "{method} {} HTTP/1.1\r\nHost: {}\r\n{origin}{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            self.target, self.host, body.len(),
+        );
+        exchange(&mut stream, &head, method == "HEAD").await
+    }
+}
+
+struct Reply { status: u16, headers: String, body: Vec<u8> }
+
+impl Reply {
+    fn json(&self) -> Value {
+        assert!(self.headers.contains("Cache-Control: no-store\r\n"), "{}", self.headers);
+        assert!(self.headers.contains("Content-Type: application/json"), "{}", self.headers);
+        serde_json::from_slice(&self.body).expect("JSON reply")
+    }
+    fn code(&self, status: u16, code: &str) {
+        assert_eq!(self.status, status, "{}", String::from_utf8_lossy(&self.body));
+        let body = self.json();
+        assert_eq!(body["code"], code);
+        assert!(!body["error"].as_str().unwrap().is_empty());
+    }
+}
+
+async fn exchange<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(stream: &mut S, request: &str, head_only: bool) -> Reply {
+    tokio::time::timeout(BOUND, async {
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            assert_eq!(stream.read(&mut byte).await.unwrap(), 1, "closed mid-head");
+            head.push(byte[0]);
+            assert!(head.len() < 16 * 1024);
+        }
+        let headers = String::from_utf8(head).unwrap();
+        let status = headers.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let len: usize = headers.lines().find_map(|l| l.strip_prefix("Content-Length: ")).unwrap().parse().unwrap();
+        let mut body = vec![0; if head_only { 0 } else { len }];
+        stream.read_exact(&mut body).await.unwrap();
+        Reply { status, headers, body }
+    }).await.expect("whole HTTP exchange within bound")
+}
+
+async fn open(conn: &mut Conn, path: &Path) -> SiteUrl {
+    let res = call(conn, 10, op::DOCS_OPEN, json!({"path": path})).await;
+    assert!(res.payload.get("error").is_none(), "{res:?}");
+    SiteUrl::parse(res.payload["url"].as_str().unwrap())
+}
+
+async fn queue(env: &Env, conn: &mut Conn) -> SiteUrl {
+    open(conn, &env.daemon_project_root.join("queue/index.html")).await
+}
+
+async fn command(conn: &mut Conn, cmd: &str) -> Value {
+    tokio::time::timeout(BOUND, async {
+        loop {
+            let (frame, _) = codec::read_frame(conn).await.expect("window frame");
+            if frame.kind == Kind::Evt && frame.op == op::FE_COMMAND {
+                assert_eq!(frame.payload["cmd"], cmd);
+                assert_eq!(frame.payload["target"], "fe@test-window");
+                return frame.payload["args"].clone();
+            }
+        }
+    }).await.expect("command for page's window")
+}
+
+async fn no_command(conn: &mut Conn) {
+    let got = tokio::time::timeout(QUIET, async {
+        loop {
+            let (frame, _) = codec::read_frame(conn).await.expect("window still connected");
+            if frame.kind == Kind::Evt && frame.op == op::FE_COMMAND { return frame; }
+        }
+    }).await;
+    assert!(got.is_err(), "unexpected command: {got:?}");
+}
+
+#[tokio::test]
+async fn a_go_to_reaches_only_the_window_that_opened_the_page() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut old) = setup("page-route").await;
+    let site_a = queue(&env, &mut old).await;
+    let mut b = window(&env, "window-b").await;
+    let site_b = queue(&env, &mut b).await;
+    let mut newest = window(&env, "window-a").await;
+    assert_eq!(site_a.post(json!({"verb": "goto", "handle": HANDLE})).await.status, 202);
+    assert_eq!(command(&mut newest, "goto_workspace").await, json!({"workspace": ROW}));
+    tokio::join!(no_command(&mut old), no_command(&mut b));
+    assert_eq!(site_b.post(json!({"verb": "goto", "handle": HANDLE})).await.status, 202);
+    assert_eq!(command(&mut b, "goto_workspace").await, json!({"workspace": ROW}));
+    tokio::join!(no_command(&mut old), no_command(&mut newest));
+}
+
+#[tokio::test]
+async fn a_verb_without_its_sites_capability_or_from_another_origin_is_refused() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-auth").await;
+    let site = queue(&env, &mut a).await;
+    let body = json!({"verb": "goto", "handle": HANDLE});
+    assert_eq!(site.post(body.clone()).await.status, 202);
+    command(&mut a, "goto_workspace").await;
+    let unknown = SiteUrl { target: "/unknown/index.html".into(), ..site.clone() };
+    assert_eq!(unknown.post(body.clone()).await.status, 404);
+    let foreign = site.foreign_origin();
+    for origin in [None, Some("null"), Some(foreign.as_str())] {
+        site.raw("POST", origin, "", &body.to_string()).await.code(403, "forbidden");
+    }
+    // A pool site's cookie travels across loopback ports: Origin still has to match.
+    let pool_root = env.workspace_project_root.join("pool");
+    std::fs::create_dir_all(&pool_root).unwrap();
+    std::fs::write(pool_root.join("index.html"), "<script src=\"/a.js\"></script>").unwrap();
+    std::fs::write(pool_root.join("a.js"), "").unwrap();
+    let pool = open(&mut a, &pool_root.join("index.html")).await;
+    let first = pool.raw("GET", None, "", "").await;
+    assert_eq!(first.status, 200);
+    let cookie = first.headers.lines().find_map(|l| l.strip_prefix("Set-Cookie: ")).unwrap().split(';').next().unwrap();
+    let bare = SiteUrl { target: pool.target.split('?').next().unwrap().into(), ..pool.clone() };
+    bare.post(body.clone()).await.code(403, "forbidden");
+    let header = format!("Cookie: {cookie}\r\n");
+    bare.raw("POST", Some(&bare.foreign_origin()), &header, &body.to_string()).await.code(403, "forbidden");
+    no_command(&mut a).await;
+    let origin = format!("http://{}", bare.host);
+    assert_eq!(bare.raw("POST", Some(&origin), &header, &body.to_string()).await.status, 202);
+    command(&mut a, "goto_workspace").await;
+}
+
+#[tokio::test]
+async fn read_states_lists_every_session_with_its_question_parts() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-states").await;
+    let page = env.workspace_project_root.join("decision.html");
+    let question = format!("Land it? Options: (a) merge; (b) send back. Recommend (a). Page: {}", page.display());
+    set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST.to_uppercase(), "workspace_id": ROW, "repo": "demo",
+        "state": "blocked", "summary": question, "question": question, "waiting": "build",
+        "status_at": "status-time", "last_seen": "seen-time"}));
+    set_entry(&env, "outside", json!({"host": TEST_STATE_HOST, "state": "waiting", "waiting": "job"}));
+    set_entry(&env, "foreign", json!({"host": "other-daemon", "workspace_id": ROW, "state": "blocked"}));
+    set_entry(&env, "unknown-host", json!({"state": "idle"}));
+    let site = queue(&env, &mut a).await;
+    let res = site.post(json!({"verb": "states"})).await;
+    assert_eq!(res.status, 200);
+    let body = res.json();
+    assert_eq!(body["ok"], true);
+    let rows = body["rows"].as_array().unwrap();
+    assert_eq!(rows.iter().map(|r| r["handle"].as_str().unwrap()).collect::<Vec<_>>(), vec!["outside", HANDLE]);
+    let row = &rows[1];
+    assert_eq!(row["row"], ROW);
+    assert_eq!(row["question"], "Land it?");
+    assert_eq!(row["options"], json!([{"key": "a", "text": "merge"}, {"key": "b", "text": "send back"}]));
+    assert_eq!(row["recommend"], "a");
+    assert_eq!(row["page"], page.to_str().unwrap());
+    for (key, value) in [("repo", "demo"), ("state", "blocked"), ("waiting", "build"), ("status_at", "status-time"), ("last_seen", "seen-time")] {
+        assert_eq!(row[key], value);
+    }
+    assert_eq!(row["summary"], question);
+    for key in ["row", "repo", "summary", "question", "recommend", "page", "status_at", "last_seen"] {
+        assert_eq!(rows[0][key], "", "absent {key}");
+    }
+    assert_eq!(rows[0]["options"], json!([]));
+    // No cached answer: the next request reads the new question.
+    set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "question": "Changed?"}));
+    assert_eq!(site.post(json!({"verb": "states"})).await.json()["rows"][1]["question"], "Changed?");
+}
+
+#[tokio::test]
+async fn open_opens_only_the_page_the_rows_question_names_inside_its_folder() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-open").await;
+    let site = queue(&env, &mut a).await;
+    let page = env.workspace_project_root.join("decision.html");
+    set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "question": format!("Decide? Page: {}", page.display())}));
+    let res = site.post(json!({"verb": "open", "handle": HANDLE, "path": "ignored.html"})).await;
+    assert_eq!(res.status, 202);
+    assert_eq!(command(&mut a, "docs").await, json!({"workspace": ROW, "path": page.canonicalize().unwrap()}));
+    let outside = env.daemon_project_root.join("outside.html");
+    std::fs::write(&outside, "outside").unwrap();
+    let mut paths = vec![outside.clone(), "relative.html".into(), env.workspace_project_root.join("missing.html")];
+    #[cfg(unix)]
+    {
+        let link = env.workspace_project_root.join("linked.html");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        paths.push(link);
+    }
+    #[cfg(windows)]
+    {
+        let link = env.workspace_project_root.join("linked.html");
+        std::os::windows::fs::symlink_file(&outside, &link).expect("the test runner must allow a scratch symlink");
+        paths.push(link);
+    }
+    for path in paths {
+        set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "question": format!("Decide? Page: {}", path.display())}));
+        site.post(json!({"verb": "open", "handle": HANDLE})).await.code(403, "page_outside");
+    }
+    set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "question": "No page"}));
+    site.post(json!({"verb": "open", "handle": HANDLE})).await.code(409, "no_page");
+    no_command(&mut a).await;
+}
+
+#[tokio::test]
+async fn a_page_keeps_working_after_it_opens_another() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-sites").await;
+    let first = queue(&env, &mut a).await;
+    let decision = env.workspace_project_root.join("decision.html");
+    for _ in 0..7 { open(&mut a, &decision).await; }
+    assert_eq!(first.raw("GET", None, "", "").await.status, 200);
+    assert_eq!(first.post(json!({"verb": "states"})).await.status, 200);
+    open(&mut a, &decision).await;
+    assert_eq!(first.raw("GET", None, "", "").await.status, 404);
+    assert_eq!(first.post(json!({"verb": "states"})).await.status, 404);
+}
+
+#[tokio::test]
+async fn a_page_whose_window_is_away_is_answered_503() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-away").await;
+    let site = queue(&env, &mut a).await;
+    drop(a);
+    let refused = support::poll_until(|| async {
+        let res = site.post(json!({"verb": "goto", "handle": HANDLE})).await;
+        (res.status == 503).then_some(res)
+    }, BOUND, "window away").await;
+    refused.code(503, "window_gone");
+    assert_eq!(site.post(json!({"verb": "states"})).await.status, 200);
+    let mut back = window(&env, "window-a").await;
+    assert_eq!(site.post(json!({"verb": "goto", "handle": HANDLE})).await.status, 202);
+    command(&mut back, "goto_workspace").await;
+}
+
+#[tokio::test]
+async fn two_requests_ride_one_connection() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-keep").await;
+    let site = queue(&env, &mut a).await;
+    let mut stream = site.connect().await;
+    let body = json!({"verb": "states"}).to_string();
+    let request = format!("POST {} HTTP/1.1\r\nHost: {}\r\nOrigin: http://{}\r\nContent-Length: {}\r\n\r\n{body}", site.target, site.host, site.host, body.len());
+    // Pipeline a second request behind the first body to exercise bytes read past each head.
+    let res = exchange(&mut stream, &format!("{request}{request}"), false).await;
+    assert_eq!(res.status, 200);
+    assert!(!res.headers.contains("Connection: close"));
+    assert_eq!(exchange(&mut stream, "", false).await.status, 200);
+    let get = format!("GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", site.target, site.host);
+    assert_eq!(exchange(&mut stream, &get, false).await.status, 200);
+    let mut byte = [0; 1];
+    assert_eq!(tokio::time::timeout(BOUND, stream.read(&mut byte)).await.unwrap().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn page_verbs_work_through_the_page_proxy_with_the_windows_local_origin() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-proxy").await;
+    let site = queue(&env, &mut a).await;
+    let port: u16 = site.host.rsplit_once(':').unwrap().1.parse().unwrap();
+    let mut proxy = support::handoff(&env.socket_path, &Frame::req(2, op::PROXY_CONNECT, json!({"port": port}))).await;
+    let (res, _) = tokio::time::timeout(BOUND, codec::read_frame(&mut proxy)).await.unwrap().unwrap();
+    assert_eq!(res.payload["ok"], true, "{res:?}");
+    // The browser sees a port chosen by the window, not the daemon's listener port.
+    let local = "127.0.0.1:54321";
+    for verb in ["states", "goto"] {
+        let body = json!({"verb": verb, "handle": HANDLE}).to_string();
+        let request = format!("POST {} HTTP/1.1\r\nHost: {local}\r\nOrigin: http://{local}\r\nContent-Length: {}\r\n\r\n{body}", site.target, body.len());
+        let reply = exchange(&mut proxy, &request, false).await;
+        assert_eq!(reply.status, if verb == "states" { 200 } else { 202 });
+        assert_eq!(reply.json()["ok"], true);
+    }
+    command(&mut a, "goto_workspace").await;
+}
+
+#[tokio::test]
+async fn a_handle_that_binds_no_row_here_is_refused() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-not-row").await;
+    let site = queue(&env, &mut a).await;
+    set_entry(&env, "outside", json!({"host": TEST_STATE_HOST}));
+    set_entry(&env, "foreign", json!({"host": "other-daemon", "workspace_id": ROW}));
+    // Even a name declared on a local row may not borrow a foreign registry entry.
+    set_entry(&env, HANDLE, json!({"host": "other-daemon", "workspace_id": ROW}));
+    for verb in ["goto", "open"] {
+        for handle in ["outside", "missing", "foreign", HANDLE] {
+            let res = site.post(json!({"verb": verb, "handle": handle})).await;
+            res.code(409, "not_a_row");
+            if handle == "foreign" || handle == HANDLE {
+                assert!(res.json()["error"].as_str().unwrap().contains("other-daemon"));
+            }
+        }
+    }
+    no_command(&mut a).await;
+}
+
+#[tokio::test]
+async fn malformed_verbs_and_unframed_or_oversize_bodies_run_nothing() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-bodies").await;
+    let site = queue(&env, &mut a).await;
+    for body in ["[]", "null", "{", "{}", "{\"verb\":\"goto\"}", "{\"verb\":\"open\",\"handle\":1}", "{\"verb\":\"reply\",\"handle\":\"row-here\",\"text\":\"yes\"}", "{\"verb\":\"confirm\"}"] {
+        site.raw("POST", Some(&format!("http://{}", site.host)), "", body).await.code(400, "bad_request");
+    }
+    for (framing, status) in [("", 411), ("Transfer-Encoding: chunked\r\n", 411), ("Content-Length: 4097\r\n", 413), ("Content-Length: nope\r\n", 411), ("Content-Length: 2\r\nContent-Length: 2\r\n", 411)] {
+        let mut stream = site.connect().await;
+        let req = format!("POST {} HTTP/1.1\r\nHost: {}\r\nOrigin: http://{}\r\n{framing}\r\n", site.target, site.host, site.host);
+        assert_eq!(exchange(&mut stream, &req, false).await.status, status);
+    }
+    let body = format!("{{\"verb\":\"states\"}}{}", " ".repeat(4096 - 17));
+    assert_eq!(body.len(), 4096);
+    assert_eq!(site.raw("POST", Some(&format!("http://{}", site.host)), "", &body).await.status, 200);
+    for method in ["OPTIONS", "PUT", "DELETE", "PATCH"] {
+        assert_eq!(site.raw(method, None, "", "").await.status, 405);
+    }
+    assert_eq!(site.raw("HEAD", None, "", "").await.status, 200);
+    no_command(&mut a).await;
+}

@@ -232,6 +232,31 @@ fn row(label: &str, name: &str, declared: &str) -> Arc<Workspace> {
     Arc::new(ws)
 }
 
+#[test]
+fn page_states_and_lookup_share_the_windows_handle_and_host_rule() {
+    let named = row("old", "moved", "");
+    let declared = row("new", "stored", "moved");
+    let rows = [named.clone(), declared.clone()];
+    let agents = json!({
+        "moved": {"host": "HOST-A", "question": "Which? Options: (a) yes. Page: /p/context.html", "state": "blocked"},
+        "outside": {"host": "host-a", "state": "waiting"},
+        "foreign": {"host": "host-b", "workspace_id": declared.workspace_id},
+        "unknown": {"state": "idle"}
+    });
+    let view = states(&rows, Some(&agents), "host-a");
+    assert_eq!(view.iter().map(|r| r.handle.as_str()).collect::<Vec<_>>(), ["moved", "outside"]);
+    assert_eq!(view[0].row, declared.workspace_id);
+    assert_eq!(view[1].row, "");
+    assert_eq!(shown_of(&named, &rows, Some(&agents), "host-a"), Shown::default());
+    assert_eq!(shown_of(&declared, &rows, Some(&agents), "host-a").state, view[0].state);
+    let found = crate::rows::handle::row_of_handle(&rows, "moved", Some(&agents), "host-a").unwrap();
+    assert_eq!(found.workspace_id, declared.workspace_id);
+    assert_eq!(found.page, "/p/context.html");
+    assert!(crate::rows::handle::row_of_handle(&rows, "foreign", Some(&agents), "host-a").err().unwrap().contains("host-b"));
+    assert!(crate::rows::handle::row_of_handle(&rows, "outside", Some(&agents), "host-a").is_err());
+    assert!(states(&rows, None, "host-a").is_empty());
+}
+
 /// A person's read clears the row's own entry through its bound handle, keeps its summary and time, and never touches
 /// another host's same-named entry.
 #[test]

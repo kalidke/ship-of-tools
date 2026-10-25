@@ -99,3 +99,28 @@ fn windows_away_are_bounded_and_a_live_window_is_kept() {
     assert_eq!(connect(&clients, Some("away-0")).numbers().daemon_numbers(&[1]), vec![1], "the one away longest went");
     assert_eq!(connect(&clients, Some("live")).numbers().daemon_numbers(&[1]), vec![n], "the live window stays");
 }
+
+#[test]
+fn a_page_owner_resolves_only_to_its_newest_named_frontend() {
+    let clients = Clients::new();
+    let old = connect(&clients, Some("page"));
+    let owner = old.site_owner();
+    let another = connect(&clients, Some("other"));
+    clients.touch_person_input(another.serial());
+    let newest = connect(&clients, Some("page"));
+    let unnamed = clients.register("c", "test", 1, "fe".into(), Some("host-a".into()), Some("page".into()), Some("".into()));
+    let cli = clients.register("c", "test", 1, "cli".into(), Some("host-a".into()), Some("page".into()), Some("cli".into()));
+    assert_eq!(clients.window_connection(owner).map(|w| w.serial), Some(newest.serial()));
+    drop(newest);
+    assert_eq!(clients.window_connection(owner).map(|w| w.serial), Some(old.serial()));
+    drop(old);
+    assert_eq!(clients.window_connection(owner), None, "unnamed and non-frontend connections cannot receive a command");
+    drop((unnamed, cli));
+    assert_eq!(clients.window_connection(owner), None, "away");
+    let redial = connect(&clients, Some("page"));
+    assert_eq!(clients.window_connection(owner).map(|w| w.serial), Some(redial.serial()));
+    let alone = connect(&clients, None);
+    assert_eq!(clients.window_connection(alone.site_owner()).map(|w| w.serial), Some(alone.serial()));
+    drop(alone);
+    assert_eq!(clients.window_connection(another.site_owner()).map(|w| w.serial), Some(another.serial()));
+}

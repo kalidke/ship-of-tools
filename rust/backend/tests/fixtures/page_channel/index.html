@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page channel fixture</title>
+<style>
+body { font: 16px system-ui, sans-serif; max-width: 70rem; margin: 2rem auto; padding: 0 1rem; }
+article { border: 1px solid #aaa; border-radius: .4rem; padding: 1rem; margin: 1rem 0; }
+h2 { font-size: 1.1rem; margin: 0 0 .5rem; }
+p { white-space: pre-wrap; overflow-wrap: anywhere; }
+button, input { font: inherit; padding: .35rem .6rem; margin: .2rem; }
+input { width: min(32rem, 90%); }
+output { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+#status { min-height: 1.5rem; }
+</style>
+<h1>Page channel fixture</h1>
+<p>This page reads sessions every three seconds. Go to moves this window; Context opens the page the row's question names.
+Reply shows the daemon's answer here. Reply delivery becomes available with the confirm bar in a later landing.</p>
+<p id="status" role="status">Reading sessions…</p>
+<main id="rows"></main>
+<script>
+"use strict";
+const status = document.getElementById("status");
+const list = document.getElementById("rows");
+const views = new Map();
+async function verb(body) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const res = await fetch(location.pathname, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body), signal: controller.signal
+    });
+    const answer = await res.json();
+    if (!res.ok) throw new Error(`${res.status}: ${answer.code || "error"}: ${answer.error || "request refused"}`);
+    return answer;
+  } finally { clearTimeout(timer); }
+}
+function element(tag, parent, text = "") {
+  const node = document.createElement(tag);
+  node.textContent = text;
+  parent.appendChild(node);
+  return node;
+}
+function button(parent, text, action) {
+  const node = element("button", parent, text);
+  node.type = "button";
+  node.addEventListener("click", action);
+  return node;
+}
+function makeView(handle) {
+  const node = element("article", list);
+  const title = element("h2", node);
+  const summary = element("p", node);
+  const question = element("p", node);
+  const wait = element("p", node);
+  const seen = element("p", node);
+  const actions = element("div", node);
+  const result = element("output", node);
+  result.setAttribute("aria-live", "polite");
+  const run = async body => {
+    try { result.textContent = JSON.stringify(await verb(body)); }
+    catch (error) { result.textContent = error.message; }
+  };
+  const go = button(actions, "Go to", () => run({verb: "goto", handle}));
+  const context = button(actions, "Context", () => run({verb: "open", handle}));
+  const options = element("div", node);
+  const input = element("input", node);
+  input.placeholder = "Reply to this session";
+  input.setAttribute("aria-label", `Reply to ${handle}`);
+  const reply = button(node, "Reply", () => run({verb: "reply", handle, text: input.value}));
+  return {node, title, summary, question, wait, seen, go, context, options, input, reply};
+}
+async function poll() {
+  try {
+    const answer = await verb({verb: "states"});
+    const keep = new Set();
+    for (const row of answer.rows) {
+      keep.add(row.handle);
+      if (!views.has(row.handle)) views.set(row.handle, makeView(row.handle));
+      const view = views.get(row.handle);
+      view.title.textContent = `${row.handle} · ${row.state || "unknown"} · ${row.host}`;
+      view.summary.textContent = row.summary;
+      view.question.textContent = row.question;
+      view.wait.textContent = row.waiting ? `Waiting: ${row.waiting}` : "";
+      view.seen.textContent = `Last seen: ${row.last_seen || "unknown"} · State at: ${row.status_at || "unknown"}`;
+      view.go.disabled = !row.row;
+      view.context.hidden = !row.page;
+      view.context.disabled = !row.row;
+      view.reply.disabled = !row.row;
+      view.options.replaceChildren();
+      for (const option of row.options) {
+        const recommended = option.key === row.recommend ? " (recommended)" : "";
+        button(view.options, `(${option.key}) ${option.text}${recommended}`, () => {
+          view.input.value = `(${option.key}) ${option.text}`;
+          view.input.focus();
+        });
+      }
+    }
+    for (const [handle, view] of views) {
+      if (!keep.has(handle)) { view.node.remove(); views.delete(handle); }
+    }
+    status.textContent = `${answer.rows.length} sessions · updated ${new Date().toLocaleTimeString()}`;
+  } catch (error) { status.textContent = `Read failed: ${error.message}`; }
+  setTimeout(poll, 3000);
+}
+poll();
+</script>
+</html>
