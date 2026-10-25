@@ -143,7 +143,7 @@ new is added to the daemon, the protocol, or the workspace toml:
    → the capsule joins, arms its inbox Monitor, and a directed round trip
    proves receive → then, and only then, the machine-local `settings.toml`
    gets `resume_command = ""`. Doing it in the other order leaves the box
-   driverless after its next relaunch (the ryzen5 driver's objection on
+   driverless after its next relaunch (the other driver's objection on
    2026-09-06 was exactly this). When the last box has cut over, the
    built-in default (`DEFAULT_RESUME_COMMAND`) becomes none, the template
    line goes, `/sot-fe-session-start` (Claude and Codex copies) is deleted,

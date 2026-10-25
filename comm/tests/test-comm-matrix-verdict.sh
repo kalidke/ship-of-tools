@@ -145,12 +145,12 @@ check "the per-handle inbox is this handle's own, whatever a line's \`to\` says"
 
 # --- the reverse direction, judged from the other box's VERDICT line ---------
 
-inbox_reset; inbox_msg "ECHO $NONCE from @probe-asus2024 woke:typed"
+inbox_reset; inbox_msg "ECHO $NONCE from @probe-remote woke:typed"
 inbox_msg "VERDICT $NONCE @probe-peer->@$ME rc=0 filed -> @$ME"
 check "reverse: echo plus rc=0 is a PASS" "PASS" \
     "$(state_of "$(matrix_reverse_verdict "$INBOX" "$ME" "$NONCE")")"
 
-inbox_reset; inbox_msg "ECHO $NONCE from @probe-asus2024 woke:typed"
+inbox_reset; inbox_msg "ECHO $NONCE from @probe-remote woke:typed"
 inbox_msg "VERDICT $NONCE @probe-peer->@$ME rc=1 FAILED -> @$ME: the daemon did not answer at ssh:hub"
 v="$(matrix_reverse_verdict "$INBOX" "$ME" "$NONCE")"
 check "reverse: echo plus a non-zero rc is a FALSE FAILURE on that box" "FAIL" "$(state_of "$v")"
