@@ -68,7 +68,10 @@ before=$(git -C "$R" config core.hooksPath)
 if "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out" 2>&1; then fail 'foreign hooksPath overwritten'; fi
 [ "$(git -C "$R" config core.hooksPath)" = "$before" ] || fail 'foreign config changed'
 cmp "$T/foreign-hook" "$T/custom-hooks/pre-push" || fail 'foreign hook changed'
-grep -F "$R" "$T/setup.out" > /dev/null && grep -F 'config --local --unset-all core.hooksPath' "$T/setup.out" > /dev/null || fail 'migration instruction missing'
+reported_checkout=$(sed -n 's/^publish guard: existing hooks configuration kept for //p' "$T/setup.out")
+expected_checkout=$(path_for_comparison "$R") || fail 'cannot normalize expected checkout'
+reported_checkout=$(path_for_comparison "$reported_checkout") || fail 'migration instruction missing checkout'
+[ "$reported_checkout" = "$expected_checkout" ] && grep -F 'config --local --unset-all core.hooksPath' "$T/setup.out" > /dev/null || fail 'migration instruction missing'
 ok 'foreign hooksPath preserved and clone named'
 git -C "$R" config --unset core.hooksPath
 for choice in '' "$R/.git/hooks"; do
@@ -170,7 +173,10 @@ cmp "$HOME/guard-input" "$HOME/chain-input" || fail 'chain changed stdin bytes o
 cmp "$HOME/guard-args" "$HOME/chain-args" || fail 'chain changed original arguments'
 grep -F 'chain stdout' "$T/push.out" > /dev/null && grep -F 'chain ran' "$T/push.out" > /dev/null || fail 'chain streams were not forwarded'
 cp "$HOME/original-shim" "$R/.git/hooks/pre-push"; chmod +x "$R/.git/hooks/pre-push"
-printf '2\norigin\n%s\n' "$B" > "$T/expected-args"
+# Keep the exact forwarding comparison above. This independent expected URL uses
+# Git's native spelling, including Git Bash's conversion of the fixture path.
+remote_url=$(git -C "$R" remote get-url --push origin)
+printf '2\norigin\n%s\n' "$remote_url" > "$T/expected-args"
 cmp "$T/expected-args" "$HOME/chain-args" || fail 'chain arguments changed'
 # Git may order updates by ref; compare complete newline-terminated records in sorted order.
 printf 'refs/heads/main %s refs/heads/main %s\nrefs/tags/clean-tag %s refs/tags/clean-tag %s\n' "$head" "$old" "$head" "$zero_oid" | sort > "$T/expected-input"

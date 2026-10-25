@@ -19,6 +19,15 @@ printf '%s\n' '# synthetic policy' '' 'glimmerdeny' 'otherdeny' '!glimmerdeny.ex
 count=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { count=$((count + 1)); printf 'ok %s: %s\n' "$count" "$1"; }
+path_for_comparison() {
+    # Compare path fields, never whole diagnostics or records whose bytes must be preserved.
+    [ -n "$1" ] || return 1
+    if command -v cygpath > /dev/null 2>&1; then
+        cygpath -am -- "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
 payload() {
     mkdir -p "$1/scripts/hooks"
     cp "$ROOT/scripts/setup-publish-guard.sh" "$1/scripts/"
