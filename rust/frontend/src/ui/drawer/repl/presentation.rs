@@ -98,7 +98,7 @@ impl<I> ReplPresentation<I> {
         self.images.extend(new_images);
         // Keep all frame indices of each surviving eval, without a byte/texture budget or parked cache.
         self.images.retain(|key, _| {
-            log.iter().any(|entry| entry.eval_id == key.1 && image_key(row, entry.eval_id, key.2) == *key)
+            &key.0 == row && log.iter().any(|entry| entry.eval_id == key.1)
         });
     }
 

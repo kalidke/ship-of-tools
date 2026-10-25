@@ -19,6 +19,7 @@ impl Drop for Handle {
 #[derive(Default)]
 struct Upload {
     calls: Vec<(u32, u32, [u8; 4])>,
+    retired_at_upload: Vec<Vec<usize>>,
     fail_next: bool,
     retired: Rc<RefCell<Vec<usize>>>,
 }
@@ -26,6 +27,7 @@ struct Upload {
 impl ReplImageUpload<Handle> for Upload {
     fn upload(&mut self, rgba: &[u8], w: u32, h: u32) -> Result<Handle> {
         assert_eq!(rgba.len(), w as usize * h as usize * 4);
+        self.retired_at_upload.push(self.retired.borrow().clone());
         self.calls.push((w, h, rgba[..4].try_into().unwrap()));
         if std::mem::take(&mut self.fail_next) {
             anyhow::bail!("upload failed");
@@ -190,6 +192,56 @@ fn image_cache_reuses_successes_and_retries_failures() {
     owner.apply_effects(&effects);
     owner.refresh_images(&key, model.entries(), &mut upload);
     assert_eq!(upload.calls.len(), 5);
+}
+
+#[test]
+fn image_cache_retains_frames_of_a_surviving_eval_after_restore() {
+    let key = row("host", "row");
+    let (mut model, mut owner, mut upload) = (ReplModel::default(), Owner::default(), Upload::default());
+    owner.commit_layout(rect(400.0, 400.0), (0, 100));
+    start(&mut model, &key, 7);
+    model.capture_row(key.clone()); // The surviving eval has no image in this shorter snapshot.
+    frame(&mut model, &key, 7, image(32, 16, 1));
+    owner.refresh_images(&key, model.entries(), &mut upload);
+    build(&mut owner, &model, &key, 0);
+    assert_eq!(pictures(&paint(&owner)), [(1, 28.0, 46.0, 32.0, 16.0)]);
+
+    let (found, effects) = model.restore_row(&key);
+    assert!(found);
+    owner.apply_effects(&effects);
+    assert_eq!(model.entries().len(), 1);
+    assert!(model.entries()[0].frames.is_empty());
+    owner.refresh_images(&key, model.entries(), &mut upload);
+    assert!(upload.retired.borrow().is_empty(), "surviving eval retains its absent frame index");
+    build(&mut owner, &model, &key, 0);
+    assert!(paint(&owner).is_empty(), "retention does not preserve obsolete image slots");
+
+    frame(&mut model, &key, 7, image(32, 16, 1));
+    owner.refresh_images(&key, model.entries(), &mut upload);
+    build(&mut owner, &model, &key, 0);
+    assert_eq!(upload.calls.len(), 1, "the returning frame reuses the original upload");
+    assert_eq!(pictures(&paint(&owner)), [(1, 28.0, 46.0, 32.0, 16.0)]);
+}
+
+#[test]
+fn image_cache_uploads_before_retiring_old_evals() {
+    let key = row("host", "row");
+    let (mut model, mut owner, mut upload) = (ReplModel::default(), Owner::default(), Upload::default());
+    start(&mut model, &key, 7);
+    frame(&mut model, &key, 7, image(32, 16, 1));
+    owner.refresh_images(&key, model.entries(), &mut upload);
+
+    let plan = model.begin_file_run(target(&key), "next.jl".into(), true);
+    let id = plan.submission.eval_id();
+    let effects = model.complete_submission(plan.submission, Ok(()));
+    owner.apply_effects(&effects);
+    frame(&mut model, &key, id, image(16, 32, 2));
+    owner.refresh_images(&key, model.entries(), &mut upload);
+
+    assert_eq!(upload.calls, [(32, 16, [1, 0, 0, 255]), (16, 32, [2, 0, 0, 255])]);
+    assert_eq!(upload.retired_at_upload, [Vec::<usize>::new(), Vec::new()],
+        "the old eval's texture is still alive when the new image uploads");
+    assert_eq!(upload.retired.borrow().as_slice(), &[1], "the old texture retires after upload");
 }
 
 #[test]
