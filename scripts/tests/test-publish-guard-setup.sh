@@ -63,8 +63,10 @@ printf '#!/bin/sh\nexit 17\n' > "$T/foreign-hook"
 mkdir "$T/custom-hooks"
 cp "$T/foreign-hook" "$T/custom-hooks/pre-push"
 git -C "$R" config core.hooksPath "$T/custom-hooks"
+# Read back as git stores it: Git Bash hands git.exe a POSIX path in its Windows form.
+before=$(git -C "$R" config core.hooksPath)
 if "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" > "$T/setup.out" 2>&1; then fail 'foreign hooksPath overwritten'; fi
-[ "$(git -C "$R" config core.hooksPath)" = "$T/custom-hooks" ] || fail 'foreign config changed'
+[ "$(git -C "$R" config core.hooksPath)" = "$before" ] || fail 'foreign config changed'
 cmp "$T/foreign-hook" "$T/custom-hooks/pre-push" || fail 'foreign hook changed'
 grep -F "$R" "$T/setup.out" > /dev/null && grep -F 'config --local --unset-all core.hooksPath' "$T/setup.out" > /dev/null || fail 'migration instruction missing'
 ok 'foreign hooksPath preserved and clone named'
