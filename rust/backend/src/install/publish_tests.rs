@@ -65,16 +65,24 @@ impl Fixture {
         std::fs::write(&plan.list, "# synthetic only\nglimmerdeny\n").unwrap();
     }
 
-    fn push(&self, checkout: &Path, name: &str, denied: bool) {
+    fn accept_push(&self, checkout: &Path, name: &str) {
+        self.git(checkout, &["push", self.dir.path().join("remote").to_str().unwrap(), &format!("HEAD:refs/heads/{name}")]).ok();
+    }
+
+    fn reject_push(&self, checkout: &Path, name: &str) {
         let remote = self.dir.path().join("remote");
         let before = self.git(&remote, &["for-each-ref", "--format=%(refname) %(objectname)"]).ok().stdout;
         let ran = self.git(checkout, &["push", remote.to_str().unwrap(), &format!("HEAD:refs/heads/{name}")]);
-        if denied {
-            assert!(!ran.status.success() && ran.stderr.contains("list line 2"), "{ran}");
-            let after = self.git(&remote, &["for-each-ref", "--format=%(refname) %(objectname)"]).ok().stdout;
-            assert_eq!(before, after, "denied destination advanced");
-        } else { ran.ok(); }
+        assert_refused(&ran, &format!("pre-push: branch update 1 (object {}) holds the list entry at line 2; refusing the push", self.commit));
+        let after = self.git(&remote, &["for-each-ref", "--format=%(refname) %(objectname)"]).ok().stdout;
+        assert_eq!(before, after, "denied destination advanced");
     }
+}
+
+fn assert_refused(ran: &sot_platform::test_wait::Ran, expected: &str) {
+    assert_eq!(ran.status.code(), Some(1), "{ran}");
+    let guard_lines: Vec<_> = ran.stderr.lines().filter(|line| line.starts_with("pre-push: ")).collect();
+    assert_eq!(guard_lines, vec![expected], "{ran}");
 }
 
 #[test]
@@ -87,9 +95,9 @@ fn installer_enrolls_distinct_clones_and_repair_restores_its_missing_hook() {
     assert_eq!(enrolled.clones.len(), 2);
     enrolled.check(&mut found);
     assert!(found.fail.is_none() && found.steps.is_empty(), "{found:?}");
-    for clone in [&f.base, &f.caller] {
-        f.push(clone, "clean", false);
-        f.push(clone, "glimmerdeny", true);
+    for (clone, clean_name) in [(&f.base, "clean-base"), (&f.caller, "clean-caller")] {
+        f.accept_push(clone, clean_name);
+        f.reject_push(clone, "glimmerdeny");
         let location = f.git(clone, &["config", "--local", "--get", "sot.publishList"]).ok().stdout;
         assert_eq!(location.trim(), bash_path(&plan.list).unwrap());
     }
@@ -101,7 +109,7 @@ fn installer_enrolls_distinct_clones_and_repair_restores_its_missing_hook() {
     let mut repaired = Found::default();
     plan.enroll(&f.source, &f.commit, &f.base, &mut repaired).unwrap().check(&mut repaired);
     assert!(repaired.fail.is_none() && repaired.steps.is_empty(), "{repaired:?}");
-    f.push(&f.base, "glimmerdeny", true);
+    f.reject_push(&f.base, "glimmerdeny");
 }
 
 #[test]
@@ -121,7 +129,7 @@ fn installer_records_platform_location_without_creating_policy_and_reports_one_s
     assert_eq!(code, 0);
     assert!(line.starts_with("ONE STEP LEFT:") && line.contains("provision"), "{line}");
     let denied = f.git(&f.caller, &["push", f.dir.path().join("remote").to_str().unwrap(), "HEAD:refs/heads/clean"]);
-    assert!(!denied.status.success() && denied.stderr.contains("readable regular file"), "{denied}");
+    assert_refused(&denied, "pre-push: sot.publishList must name a readable regular file without a symlink; refusing the push");
     assert!(f.git(&f.dir.path().join("remote"), &["for-each-ref"]).ok().stdout.is_empty());
 }
 
@@ -177,7 +185,7 @@ fn discovery_is_read_only_exact_and_deduplicates_linked_worktrees() {
     assert_eq!(enrolled.clones.len(), 1);
     enrolled.check(&mut found);
     assert!(found.fail.is_none() && found.steps.is_empty(), "{found:?}");
-    f.push(&linked, "glimmerdeny", true);
+    f.reject_push(&linked, "glimmerdeny");
     assert!(same_origin("git@github.com:owner/project.git", "https://github.com/Owner/Project"));
     assert!(same_origin("ssh://git@github.com/owner/project.git", "https://github.com/owner/project.git"));
     for wrong in ["https://github.com.evil/owner/project", "https://github.com/owner/project/extra", "https://example.invalid/github.com/owner/project", "https://github.com/owner/project?query"] {
@@ -199,8 +207,8 @@ fn pending_apply_never_claims_unavailable_setup_and_uses_verified_staged_setup_w
     let mut found = Found::default();
     plan.pending(&f.source, &f.commit, &f.base, &mut found).unwrap();
     assert!(found.fail.is_none() && found.steps.is_empty(), "{found:?}");
-    f.push(&f.caller, "glimmerdeny", true);
-    f.push(&f.base, "glimmerdeny", true);
+    f.reject_push(&f.caller, "glimmerdeny");
+    f.reject_push(&f.base, "glimmerdeny");
 }
 
 #[test]

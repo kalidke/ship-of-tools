@@ -27,6 +27,11 @@ def run(argv, cwd, env, ok=True, input_text=None):
     return result
 
 
+def refused_with(result, expected_line):
+    guard_lines = [line for line in result.stdout.splitlines() if line.startswith("pre-push: ")]
+    return result.returncode == 1 and guard_lines == [expected_line]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
@@ -165,23 +170,25 @@ def main():
         result, _ = install()
         tree = g(caller, "mktree").stdout.strip()
         clean = g(caller, "commit-tree", tree, "-m", "fixture").stdout.strip()
-        for clone in ([caller, checkout] if args.case in ["all", "enrollment"] else []):
+        for clone, clean_name in ([(caller, "clean-caller"), (checkout, "clean-installed")] if args.case in ["all", "enrollment"] else []):
             # Tiny synthetic snapshots bound the proof; the Git-launched hook still belongs to the real checkout.
             tree = g(clone, "mktree").stdout.strip()
             clean = g(clone, "commit-tree", tree, "-m", "fixture").stdout.strip()
             # Positive execution control precedes refusal; no missing-interpreter failure counts as a scan.
-            g(clone, "push", remote, f"{clean}:refs/heads/clean")
+            g(clone, "push", remote, f"{clean}:refs/heads/{clean_name}")
             before_refs = g(remote, "for-each-ref", "--format=%(refname) %(objectname)").stdout
             refused = g(clone, "push", remote, f"{clean}:refs/heads/{denied_name}", ok=False)
             after_refs = g(remote, "for-each-ref", "--format=%(refname) %(objectname)").stdout
-            assert refused.returncode and "list line 2" in refused.stdout and before_refs == after_refs, (
+            expected = f"pre-push: branch update 1 (object {clean}) holds the list entry at line 2; refusing the push"
+            assert refused_with(refused, expected) and before_refs == after_refs, (
                 f"ref refusal: exit {refused.returncode}\n{refused.stdout}\nrefs before: {before_refs}\nrefs after: {after_refs}")
             blob = g(clone, "hash-object", "-w", "--stdin", data=denied_name + "\n").stdout.strip()
             tree = g(clone, "mktree", data=f"100644 blob {blob}\tpayload\n").stdout.strip()
             payload = g(clone, "commit-tree", tree, "-m", "fixture payload").stdout.strip()
             refused = g(clone, "push", remote, f"{payload}:refs/heads/payload", ok=False)
             after_refs = g(remote, "for-each-ref", "--format=%(refname) %(objectname)").stdout
-            assert refused.returncode and "list line 2" in refused.stdout and before_refs == after_refs, (
+            expected = f"pre-push: blob {blob} holds the list entry at line 2; refusing the push"
+            assert refused_with(refused, expected) and before_refs == after_refs, (
                 f"content refusal: exit {refused.returncode}\n{refused.stdout}\nrefs before: {before_refs}\nrefs after: {after_refs}")
             assert g(clone, "config", "--local", "--get", "sot.publishList").stdout.strip().replace("\\", "/") == str(policy).replace("\\", "/")
         if args.case in ["all", "enrollment"]:
@@ -212,8 +219,9 @@ def main():
             before_refs = g(remote, "for-each-ref", "--format=%(refname) %(objectname)").stdout
             refused = g(caller, "push", remote, f"{clean}:refs/heads/missing-policy", ok=False)
             after_refs = g(remote, "for-each-ref", "--format=%(refname) %(objectname)").stdout
+            expected = "pre-push: sot.publishList must name a readable regular file without a symlink; refusing the push"
             assert (verdict.startswith("ONE STEP LEFT:") and "provision" in verdict
-                    and refused.returncode and "readable regular file" in refused.stdout and before_refs == after_refs), (
+                    and refused_with(refused, expected) and before_refs == after_refs), (
                 f"{result.stdout}\npolicy refusal: exit {refused.returncode}\n{refused.stdout}"
                 f"\nrefs before: {before_refs}\nrefs after: {after_refs}")
         print(f"PASS: installer publish guard {args.scenario}, {args.case}: real orchestration and observed state")
