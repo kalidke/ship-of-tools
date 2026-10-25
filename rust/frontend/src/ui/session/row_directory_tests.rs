@@ -90,30 +90,35 @@ fn lifecycle_key_uses_the_event_host_and_keeps_legacy_fallbacks() {
         directory.commit_replace(update);
     }
     for (host, slug) in [("alpha", "one"), ("beta", "two")] {
-        let key = |hint, default| directory.lifecycle_key(host, hint, default);
-        assert_eq!(key(Some("legacy"), None), (host.into(), slug.into()));
         assert_eq!(
-            key(Some(&format!("canonical-{host}")), None),
+            directory.lifecycle_key(host, Some("legacy"), None),
+            (host.into(), slug.into())
+        );
+        assert_eq!(
+            directory.lifecycle_key(host, Some(&format!("canonical-{host}")), None),
             (host.into(), "project".into())
         );
         assert_eq!(
-            key(Some("unknown"), Some("home")),
+            directory.lifecycle_key(host, Some("unknown"), Some("home")),
             (host.into(), "unknown".into())
         );
         assert_eq!(
-            key(Some("already-a-slug"), None),
+            directory.lifecycle_key(host, Some("already-a-slug"), None),
             (host.into(), "already-a-slug".into())
         );
         assert_eq!(
-            key(Some(""), None),
+            directory.lifecycle_key(host, Some(""), None),
             (host.into(), "".into()),
             "an empty lifecycle hint is tolerated"
         );
         assert_eq!(
-            key(None, Some("caller-default")),
+            directory.lifecycle_key(host, None, Some("caller-default")),
             (host.into(), "caller-default".into())
         );
-        assert_eq!(key(None, None), (host.into(), "<default>".into()));
+        assert_eq!(
+            directory.lifecycle_key(host, None, None),
+            (host.into(), "<default>".into())
+        );
     }
     assert_eq!(
         directory.lifecycle_key("alpha", Some("canonical-beta"), None),
