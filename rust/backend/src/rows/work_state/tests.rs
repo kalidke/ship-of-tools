@@ -243,7 +243,7 @@ fn page_states_and_lookup_share_the_windows_handle_and_host_rule() {
         "foreign": {"host": "host-b", "workspace_id": declared.workspace_id},
         "unknown": {"state": "idle"}
     });
-    let view = states(&rows, Some(&agents), "host-a");
+    let view = states(&rows, agents.as_object().unwrap(), "host-a");
     assert_eq!(view.iter().map(|r| r.handle.as_str()).collect::<Vec<_>>(), ["moved", "outside"]);
     assert_eq!(view[0].row, declared.workspace_id);
     assert_eq!(view[1].row, "");
@@ -254,7 +254,7 @@ fn page_states_and_lookup_share_the_windows_handle_and_host_rule() {
     assert_eq!(found.page, "/p/context.html");
     assert!(crate::rows::handle::row_of_handle(&rows, "foreign", Some(&agents), "host-a").err().unwrap().contains("host-b"));
     assert!(crate::rows::handle::row_of_handle(&rows, "outside", Some(&agents), "host-a").is_err());
-    assert!(states(&rows, None, "host-a").is_empty());
+    assert!(states(&rows, &serde_json::Map::new(), "host-a").is_empty());
 }
 
 /// A person's read clears the row's own entry through its bound handle, keeps its summary and time, and never touches

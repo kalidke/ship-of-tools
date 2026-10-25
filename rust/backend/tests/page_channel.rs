@@ -213,7 +213,8 @@ async fn a_verb_without_its_sites_capability_or_from_another_origin_is_refused()
     bare.raw("POST", Some(&bare.foreign_origin()), &header, &body.to_string()).await.code(403, "forbidden");
     no_command(&mut a).await;
     let origin = format!("http://{}", bare.host);
-    assert_eq!(bare.raw("POST", Some(&origin), &header, &body.to_string()).await.status, 202);
+    bare.raw("POST", Some(&origin), &header, &body.to_string()).await.code(403, "forbidden");
+    assert_eq!(pool.raw("POST", Some(&origin), &header, &body.to_string()).await.status, 202);
     command(&mut a, "goto_workspace").await;
 }
 
@@ -264,7 +265,14 @@ async fn open_opens_only_the_page_the_rows_question_names_inside_its_folder() {
     set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "question": format!("Decide? Page: {}", page.display())}));
     let res = site.post(json!({"verb": "open", "handle": HANDLE, "path": "ignored.html"})).await;
     assert_eq!(res.status, 202);
-    assert_eq!(command(&mut a, "docs").await, json!({"workspace": ROW, "path": page.canonicalize().unwrap()}));
+    let args = command(&mut a, "docs").await;
+    assert_eq!(args["workspace"], ROW);
+    let mut b = window(&env, "other-open-window").await;
+    let wrong_owner = call(&mut b, 11, op::DOCS_OPEN, json!({"path": args["path"]})).await;
+    assert_eq!(wrong_owner.payload["code"], "page_gone", "{wrong_owner:?}");
+    let opened = call(&mut a, 11, op::DOCS_OPEN, json!({"path": args["path"]})).await;
+    let granted = SiteUrl::parse(opened.payload["url"].as_str().expect("granted page URL"));
+    assert_eq!(granted.raw("GET", None, "", "").await.body.as_slice(), b"<p>Decision</p>");
     let outside = env.daemon_project_root.join("outside.html");
     std::fs::write(&outside, "outside").unwrap();
     let mut paths = vec![outside.clone(), "relative.html".into(), env.workspace_project_root.join("missing.html")];
@@ -287,6 +295,97 @@ async fn open_opens_only_the_page_the_rows_question_names_inside_its_folder() {
     set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "question": "No page"}));
     site.post(json!({"verb": "open", "handle": HANDLE})).await.code(409, "no_page");
     no_command(&mut a).await;
+}
+
+/// Red at the first landing by behavior: its later docs.open follows the replacement into another known row.
+#[tokio::test]
+async fn a_decision_page_replaced_after_the_verb_cannot_escape_its_row() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-swap").await;
+    let site = queue(&env, &mut a).await;
+    let page = env.workspace_project_root.join("decision.html");
+    let outside = env.daemon_project_root.join("other-row.html");
+    std::fs::write(&outside, "other row's private page").unwrap();
+    set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "question": format!("Decide? Page: {}", page.display())}));
+    assert_eq!(site.post(json!({"verb": "open", "handle": HANDLE})).await.status, 202);
+    let args = command(&mut a, "docs").await;
+    std::fs::remove_file(&page).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, &page).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&outside, &page).expect("the runner must allow a scratch symlink");
+    let opened = call(&mut a, 12, op::DOCS_OPEN, json!({"path": args["path"]})).await;
+    let granted = SiteUrl::parse(opened.payload["url"].as_str().expect("row-confined page URL"));
+    let reply = granted.raw("GET", None, "", "").await;
+    assert_eq!(reply.status, 403, "{}", String::from_utf8_lossy(&reply.body));
+    assert!(!reply.body.windows(b"private page".len()).any(|w| w == b"private page"));
+    let nonce = granted.target.split('/').nth(1).unwrap();
+    for path in ["../other-row.html", ".git/config"] {
+        let forbidden = SiteUrl { target: format!("/{nonce}/{path}"), ..granted.clone() };
+        assert_eq!(forbidden.raw("GET", None, "", "").await.status, 403);
+    }
+}
+
+/// Red at the first landing by behavior: a damaged registry answered 200 with an empty rows array.
+#[tokio::test]
+async fn a_registry_failure_is_visible_and_recovers_on_the_next_read() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-registry-error").await;
+    let site = queue(&env, &mut a).await;
+    for bytes in [b"not JSON".as_slice(), b"{\"agents\":null}", b""] {
+        support::set_registry_fixture(&env.comm_root, support::RegistryFixture::Bytes(bytes));
+        site.post(json!({"verb": "states"})).await.code(500, "handler_error");
+    }
+    // A directory is unreadable as registry bytes even when tests run as root.
+    support::set_registry_fixture(&env.comm_root, support::RegistryFixture::Directory);
+    site.post(json!({"verb": "states"})).await.code(500, "handler_error");
+    support::set_registry_fixture(&env.comm_root, support::RegistryFixture::Missing);
+    site.post(json!({"verb": "states"})).await.code(500, "handler_error");
+    support::set_registry_fixture(&env.comm_root, support::RegistryFixture::Bytes(b"{\"agents\":{}}"));
+    let reply = site.post(json!({"verb": "states"})).await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.json()["rows"], json!([]));
+}
+
+/// Red at the first landing by behavior: the old document rides the new document's browser cookie.
+#[tokio::test]
+async fn a_reassigned_pool_port_refuses_the_old_document_with_the_new_cookie() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-pool-grant").await;
+    let root = env.workspace_project_root.join("pool");
+    std::fs::create_dir(&root).unwrap();
+    let entry = root.join("index.html");
+    std::fs::write(&entry, "<script src=\"/a.js\"></script>").unwrap();
+    let old = open(&mut a, &entry).await;
+    assert_eq!(old.raw("GET", None, "", "").await.status, 200, "A's document loads before A goes away");
+    let mut held = Vec::new();
+    for i in 0..3 {
+        let mut window = window(&env, &format!("pool-held-{i}")).await;
+        open(&mut window, &entry).await;
+        held.push(window);
+    }
+    drop(a);
+    // A successful states read needs no window; goto shows when the roster sees A away.
+    support::poll_until(|| async {
+        (old.post(json!({"verb": "goto", "handle": HANDLE})).await.status == 503).then_some(())
+    }, BOUND, "pool window A away").await;
+    let mut b = window(&env, "pool-new").await;
+    let new = open(&mut b, &entry).await;
+    assert_eq!(old.host, new.host, "B takes A's away port");
+    let first = new.raw("GET", None, "", "").await;
+    assert_eq!(first.status, 200);
+    let cookie = first.headers.lines().find_map(|l| l.strip_prefix("Set-Cookie: ")).unwrap().split(';').next().unwrap();
+    let headers = format!("Cookie: {cookie}\r\n");
+    let origin = format!("http://{}", new.host);
+    let body = json!({"verb": "goto", "handle": HANDLE}).to_string();
+    let bare = SiteUrl { target: old.target.split('?').next().unwrap().into(), ..old.clone() };
+    bare.raw("POST", Some(&origin), &headers, &body).await.code(403, "forbidden");
+    old.raw("POST", Some(&origin), &headers, &body).await.code(403, "forbidden");
+    no_command(&mut b).await;
+    let accepted = new.raw("POST", Some(&origin), &headers, &body).await;
+    assert_eq!(accepted.status, 202);
+    assert!(!accepted.headers.contains("Set-Cookie:"), "a verb never replaces the browser's file cookie");
+    command(&mut b, "goto_workspace").await;
 }
 
 #[tokio::test]

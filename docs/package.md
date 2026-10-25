@@ -130,7 +130,8 @@ boot; a folder
 had a supervisor iff it holds the fence file, which nothing that only observes a row creates (Windows limit: the
 supervisor takes it after its spawn); a row is reported ended only after a confirmed end or the destroy proof, and
 lifecycle ends rows only through the end API (`rows::end`). Work-state is rows': one writer path (`sotd
-work-state`, each write one step under the registry lock), one reader path (`workspace.list`), and a row waiting on
+work-state`, each write one step under the registry lock), two reader paths (`shown_of` for the window's
+`workspace.list` and poll; `states` for pages, including sessions outside rows), and a row waiting on
 its person reads red on every system. Rests on: capsule (supervisor, attach), agents (recipe), containment, platform
 (fence). Owns: the registry, row tomls, state folders, work-state. Does not: run the agent's terminal (capsule), decide
 when rows end (lifecycle asks), or read a screen for mail (messaging's wake). Its crate waits for agents, sidecars,

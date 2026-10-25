@@ -182,6 +182,17 @@ pub async fn handle_docs_open(
         )]
     };
 
+    // A page verb already granted a site confined to its target row. Keep that authority through the window's
+    // normal docs.open reply and proxy path; never turn it back into a pathname admitted under any workspace.
+    match crate::pages::site::granted_page_url(owner, &req.path) {
+        Ok(Some(url)) => {
+            let (_, rev) = session.snapshot().await;
+            return Ok(vec![(Frame::res(req_id, op::DOCS_OPEN, json!({ "url": url })).with_rev(rev), None)]);
+        }
+        Err(words) => return Ok(err(words.into(), "page_gone")),
+        Ok(None) => {}
+    }
+
     // `owner` keys the site internally (ADR 0029): the requesting connection's window's
     // (`ClientGuard::site_owner`), so a redial keeps it; `pages::site::set_root` mints the
     // unguessable nonce that actually becomes the URL's first path segment (security review —
@@ -311,8 +322,8 @@ pub async fn handle_docs_open(
 
     let url = if let Some((port, secret)) = pool_port {
         // Dedicated origin: root-relative links resolve, but the port itself
-        // has no auth (security review). The ONE-TIME secret in this URL
-        // authenticates the FIRST request; the pool server then sets an
+        // has no auth (security review). The per-open secret in this URL
+        // authenticates the first file request and every page verb; the pool server sets an
         // HttpOnly cookie so later same-page asset fetches — which can't
         // carry a query string — authenticate via the cookie instead. See
         // `pages/site/mod.rs`'s `ServeMode::Pool` auth check.

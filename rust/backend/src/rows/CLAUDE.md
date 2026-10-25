@@ -211,12 +211,15 @@ Work-state. A row with a joined agent has one work-state, which the window shows
   `page`, `waiting`, `status_at` and `last_seen`; absent strings are empty. Foreign and unknown-host entries are
   omitted. `row` is this daemon's row bound by `bound_handle`, else empty, never a registry-supplied row id alone.
   `handle::row_of_handle` applies the same binding and host rule for page actions; a known foreign entry refuses
-  naming its daemon. The server reads the registry fresh on a blocking thread for each call.
+  naming its daemon. The server reads the registry fresh on a blocking thread for each call. Pages' states reader
+  takes a successfully read agents object, so a registry failure cannot become an empty queue; the server propagates
+  the checked read's error instead. The window's optional read retains its defensive behavior.
 - Question grammar is rows': `work_state::question::parts` removes `Page:` plus whitespace and a non-space path first
   (one trailing period dropped), splits at the first `Options:`, then extracts `(letter) text` options, trimming
   whitespace, semicolons and periods. `Recommend` or `Recommended`, optional colon, and a letter with optional
   parentheses ends the options and supplies the recommendation. No `Options:` means no options or recommendation.
-  The page server requires an absolute page under the row's canonical project root before opening it.
+  The page server requires an absolute page under the row's canonical project root and grants a plain site there;
+  its file requests enforce that root again when serving bytes, even after a pathname is replaced.
 - How the window shows it: the row's name in the Sessions tree and the strip takes the state's color (Julia red, green,
   purple and blue, and gray), flashes at a change, and wilts when it is `working` and its time is ten minutes old; a busy
   turn's heartbeat restamps the time at most once a minute. The summary follows the name.

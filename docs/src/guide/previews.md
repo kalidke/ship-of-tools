@@ -85,7 +85,7 @@ A page opened by `W` or `sot-fe docs` can read session states and act on rows of
 posts JSON to its own URL:
 
 ```javascript
-const response = await fetch(location.pathname, {
+const response = await fetch(location.pathname + location.search, {
   method: "POST",
   headers: {"Content-Type": "application/json"},
   body: JSON.stringify({verb: "states"})
@@ -97,11 +97,13 @@ const answer = await response.json();
 `handle`, `host`, `repo`, `row`, `state`, `summary`, `question`, `options` (objects with `key` and `text`), `recommend`,
 `page`, `waiting`, `status_at` and `last_seen`. An absent string is empty, and `row` is empty for a session outside any
 row. A question's `Options:`, `Recommend` and `Page:` parts are separated into those fields. Only this daemon's host
-entries are listed.
+entries are listed. An unreadable or damaged registry answers 500 `handler_error`; an empty `rows` array means a
+successful read found no sessions of this daemon.
 
 Post `{verb: "goto", handle: "session-handle"}` to switch the window that opened the page to that row. Post
 `{verb: "open", handle: "session-handle"}` to open the page the row's question names. The daemon reads the question
-again and requires an absolute page under that row's project folder, resolving links before deciding. The page
+again and requires an absolute page under that row's project folder. It grants a site rooted at that row and checks
+each file request there, so replacing the page with a link out after the action is refused when fetched. The page
 script supplies a handle; it cannot select an arbitrary file. These actions need no confirmation and answer
 `202` with `{ok: true}`. They go to the page's own window even when another window is in use, locally and through a
 remote window's page proxy.
@@ -111,11 +113,17 @@ foreign session, whose daemon is named), `no_page` (409), `page_outside` (403), 
 works while the window is away. Missing fields, malformed JSON and unknown verbs answer `bad_request` (400).
 `reply` currently answers `bad_request`; reply delivery and the window's confirmation bar are not built yet.
 
-The channel requires the site's live nonce or pool secret/cookie and a matching browser Origin. Other origins and
+The channel requires the site's live nonce or explicit pool query secret and a matching browser Origin. Keep
+`location.search` in a pool page's POST URL: cookies alone do not authorize verbs, since another open may replace
+the browser's cookie while an old tab remains. Other origins and
 requests without Origin are refused (403); OPTIONS cannot authorize a cross-origin request (405). POST bodies need a
 Content-Length and fit within 4 KiB; valid requests reuse their connection for polling. The last eight prefix pages
 opened by a window keep working, so a queue page can open a decision page and keep polling. A site with root-relative
 links uses a pool port instead, with one site per window: opening another pool site replaces it.
+Decision pages opened by a verb use a prefix site rooted at the row; root-relative asset URLs are not rewritten.
+All page listeners share four handler slots; excess requests answer 503 `server_busy`. A handler exceeding five
+seconds answers 503 `handler_timeout`; stalled blocking work keeps its slot until it ends. These errors have the same
+JSON `error` and `code` fields and can be shown by the page.
 
 The fixture at `rust/backend/tests/fixtures/page_channel/index.html` lists states every three seconds and provides
 Go to, Context and reply controls for checking the channel in a local or remote window.

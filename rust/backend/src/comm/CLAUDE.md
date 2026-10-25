@@ -131,8 +131,10 @@ The registry:
 - Every registry write is one read-decide-write under the registry lock on a fresh read (`registry::lock::acquire`: a
   file naming its holder, made by a hard link; a holder proved dead on its own machine is reclaimed through one marker;
   any other is never forced, and the bounded wait fails naming the holder and the recovery), written to a synced temp
-  file and renamed. A read retries an NFS stale handle three times; an unreadable registry is never read as absent, and
-  never repaired.
+  file and renamed. A read retries an NFS stale handle three times; a writer never reads an unreadable registry as
+  absent and never repairs it. Daemon readers share those fresh bytes: `try_read_comm_agents` returns an agents
+  object or an error (missing/unreadable file, malformed JSON or absent/non-object agents), which the page queue
+  reports as a failure. The window's existing `read_comm_agents` wrapper deliberately turns a failure into `None`.
 
 The install (0.7.0):
 - The formats do not change: the inbox line, the cursor, the registry and its fields, the registry lock's record, the
@@ -187,7 +189,7 @@ on a Windows screen until one is captured (queue item 65).
 The environment: comm's identity and commands read variables only from an `Env` value they are given (`sot_platform::host::env`),
 one snapshot taken at `sotd comm`'s entry and at each daemon-side entry (`handle_comm_file`, the hub link, the boot
 record); nothing in comm writes the process environment. The daemon-side wrappers that rows and the server call
-(`read_comm_agents`, `remove_comm_agents_for_workspace`, `edit_entry`, `stamp_last_seen`) snapshot the process at their
+(`read_comm_agents`, `try_read_comm_agents`, `remove_comm_agents_for_workspace`, `edit_entry`, `stamp_last_seen`) snapshot the process at their
 call and pass it to their `_in` form. One read remains of the process: `wake`'s test-only `SOT_TEST_WAKE_MARKS`.
 
 Tests: every comm unit test builds its own `Env` (`test_home::TestHome::env`) and passes it, so none writes the

@@ -77,7 +77,7 @@ pub const TEST_STATE_HOST: &str = "testhost";
 mod registry;
 mod sotd;
 #[allow(unused_imports)] // likewise
-pub use registry::write_registry;
+pub use registry::{set_registry_fixture, write_registry, RegistryFixture};
 #[allow(unused_imports)] // only some suites start a daemon by label
 pub use sotd::{label_endpoint, own_label, sotd_client_of, sotd_daemon_at};
 #[allow(unused_imports)] // only some suites ask for the Julia binary

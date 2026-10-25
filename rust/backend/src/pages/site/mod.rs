@@ -40,9 +40,9 @@
 // aren't enumerable. The `:1237-1240` pool ports can't use a path-prefix
 // nonce (a root-relative site needs the whole path space), so THOSE get a
 // per-open SECRET instead (`assign_pool_port`): the URL's `?secret=`
-// authenticates the first request, which sets an HttpOnly cookie so later
-// same-page asset fetches — no query string on those — authenticate via the
-// cookie; anything else is a 403, not a silent serve.
+// authenticates the first request and every verb. It sets an HttpOnly cookie
+// so later same-page asset fetches — no query string on those — authenticate
+// via the cookie; a cookie alone never authenticates a verb.
 
 use std::collections::BTreeMap;
 #[cfg(unix)]
@@ -363,6 +363,43 @@ enum ServeMode {
     Pool(u16),
 }
 
+/// The particular grant a request presented, retained across its body and blocking work.
+pub(super) enum Capability {
+    Prefix { owner: u64, nonce: String },
+    Pool { owner: u64, port: u16, secret: String },
+}
+
+impl Capability {
+    fn owner(&self) -> u64 {
+        match self { Self::Prefix { owner, .. } | Self::Pool { owner, .. } => *owner }
+    }
+
+    fn live(&self) -> bool {
+        match self {
+            Self::Prefix { owner, nonce } => root_for(nonce).is_some_and(|(current, _)| current == *owner),
+            Self::Pool { owner, port, secret } => pool_entry_for(*port)
+                .is_some_and(|(current, _, key)| current == *owner && ct_eq(key.as_bytes(), secret.as_bytes())),
+        }
+    }
+}
+
+/// Pass an already-confined page through the existing docs command/reply route, which arms remote proxies.
+pub(super) fn page_grant_path(owner: u64, site: Site, relative: &str) -> Option<String> {
+    let nonce = set_root(owner, site)?;
+    Some(format!("sot-page:{nonce}/{}", encode_url_path(relative)))
+}
+
+/// Redeem only this window's live grant. No filesystem path is reinterpreted by docs.open.
+pub(crate) fn granted_page_url(owner: u64, path: &str) -> std::result::Result<Option<String>, &'static str> {
+    let Some(grant) = path.strip_prefix("sot-page:") else { return Ok(None) };
+    let (nonce, relative) = grant.split_once('/').ok_or("invalid page grant")?;
+    if !root_for(nonce).is_some_and(|(current, _)| current == owner) {
+        return Err("this window's page grant has ended");
+    }
+    let port = bound_site_port().ok_or("the page server is not running")?;
+    Ok(Some(format!("http://127.0.0.1:{port}/{nonce}/{relative}")))
+}
+
 /// Spawn the Option-B pool listeners: `POOL_SIZE` of them, each serving
 /// whichever root `assign_pool_port` has bound to it (404 until one is). The
 /// `pool_ports()` range is only a PREFERENCE (stable);
@@ -506,7 +543,7 @@ async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Requ
     // root-relative links resolve on that origin. `set_cookie`, if `Some`, is
     // a `Set-Cookie` header value the eventual 200 response must include.
     let raw_path = target.split(|c| c == '?' || c == '#').next().unwrap_or("");
-    let (owner, site, rest, set_cookie) = match mode {
+    let (capability, site, rest, set_cookie) = match mode {
         ServeMode::Pool(port) => {
             let Some((owner, site, secret)) = pool_entry_for(port) else {
                 return write_simple(
@@ -521,8 +558,8 @@ async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Requ
             // Auth (security review): this port has no auth of its own, and
             // root-relative asset links can't ride a path-prefix nonce the
             // way the shared `:1236` server does (a root-relative site needs
-            // the WHOLE path space). So the ONE-TIME secret `docs.open` put
-            // in the URL's query string authenticates the FIRST request; that
+            // the WHOLE path space). So the per-open secret `docs.open` put
+            // in the URL's query string authenticates the first file request; that
             // response sets an HttpOnly cookie named for this pool listener
             // (`pool_cookie_name`) so every later same-page
             // asset fetch — which can't carry a query string — authenticates
@@ -532,9 +569,9 @@ async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Requ
             // percent-decoding and in any case, and a key with no `=` is
             // present and empty): a stale entry URL must not ride the port's
             // new cookie (#38). The cookie decides only a request with none.
-            // The limit that stays: in-site navigation from an unreloaded
-            // stale tab carries no parameter, so it rides the cookie. Neither
-            // present or valid: 403.
+            // Cookies remain sufficient for files. A POST must present the
+            // per-open query secret itself: another document on this port can
+            // replace the browser's cookie while an old tab remains alive.
             let cookie_name = pool_cookie_name(pool_cookie_host(), port);
             let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
             let query_secret = query.split('&').find_map(|kv| {
@@ -553,7 +590,7 @@ async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Requ
             };
             let (ok, by_query) = match query_secret {
                 Some(v) => (ct_eq(v.as_bytes(), secret.as_bytes()), true),
-                None => (cookie_ok(), false),
+                None => (method != "POST" && cookie_ok(), false),
             };
             if !ok {
                 if method == "POST" {
@@ -568,9 +605,10 @@ async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Requ
                 )
                 .await;
             }
+            // A slow verb from an earlier grant must not replace a newer document's cookie when it finishes.
             let set_cookie =
-                by_query.then(|| format!("{cookie_name}={secret}; HttpOnly; SameSite=Strict; Path=/"));
-            (owner, site, raw_path.trim_start_matches('/').to_string(), set_cookie)
+                (by_query && method != "POST").then(|| format!("{cookie_name}={secret}; HttpOnly; SameSite=Strict; Path=/"));
+            (Capability::Pool { owner, port, secret }, site, raw_path.trim_start_matches('/').to_string(), set_cookie)
         }
         ServeMode::Prefix => {
             let trimmed = raw_path.trim_start_matches('/');
@@ -594,12 +632,12 @@ async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Requ
                 )
                 .await;
             };
-            (owner, site, rest.to_string(), None)
+            (Capability::Prefix { owner, nonce: token.into() }, site, rest.to_string(), None)
         }
     };
 
     if method == "POST" {
-        return verbs.serve(stream, buf, request, owner, set_cookie.as_deref()).await;
+        return verbs.serve(stream, buf, request, &capability, set_cookie.as_deref()).await;
     }
 
     // Percent-decode the per-root path and resolve it. `resolve_and_open` does

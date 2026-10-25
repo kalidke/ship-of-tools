@@ -219,18 +219,18 @@ pub async fn run(opts: Opts) -> Result<()> {
     let states_rows = workspaces.clone();
     let handle_rows = workspaces.clone();
     let page_windows = clients.clone();
-    start_page_servers(Arc::new(crate::pages::site::verbs::PageVerbs {
-        states: Arc::new(move || {
-            let agents = crate::comm::registry::registry::read_comm_agents();
-            crate::rows::work_state::states(&states_rows.list(), agents.as_ref(), &store::declared_host())
+    start_page_servers(Arc::new(crate::pages::site::verbs::PageVerbs::new(
+        Arc::new(move || {
+            let agents = crate::comm::registry::registry::try_read_comm_agents().map_err(anyhow::Error::msg)?;
+            Ok(crate::rows::work_state::states(&states_rows.list(), &agents, &store::declared_host()))
         }),
-        row_of: Arc::new(move |handle| {
-            let agents = crate::comm::registry::registry::read_comm_agents();
-            crate::rows::handle::row_of_handle(&handle_rows.list(), handle, agents.as_ref(), &store::declared_host())
+        Arc::new(move |handle| {
+            let agents = serde_json::Value::Object(crate::comm::registry::registry::try_read_comm_agents()?);
+            crate::rows::handle::row_of_handle(&handle_rows.list(), handle, Some(&agents), &store::declared_host())
         }),
-        window: Arc::new(move |owner| page_windows.window_connection(owner)),
-        fe: fe_command_tx.clone(),
-    })).await;
+        Arc::new(move |owner| page_windows.window_connection(owner)),
+        fe_command_tx.clone(),
+    ))).await;
 
     // Auto-updater (ADR 0030 §4, Phase C): daily check that, on a newer
     // release, pushes an `fe.command` `notify` over the bus above and runs

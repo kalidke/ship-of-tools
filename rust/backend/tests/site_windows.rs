@@ -1,7 +1,7 @@
 #![cfg(unix)]
 //! A window's pages outlive each of its connections, through a real `sotd`. A page `docs.open` granted a window keeps
 //! serving when the window redials (its hello's host and `instance`, which every connection of one window shares), a
-//! reopen still ends the page it replaces, and another window's opens never take it. A window's pages end when the
+//! window keeps its last eight prefix opens, and another window's opens never take them. A window's pages end when the
 //! daemon forgets the window, and a connection whose hello names no window keeps its pages only while it lasts. A pool
 //! port goes to a new open from a window with no live connection only when every port is held, and that window's old
 //! link is then refused (ADR 0029, 0.6.6 amendment).
@@ -107,7 +107,7 @@ fn pages(env: &Env) -> (PathBuf, PathBuf, PathBuf) {
 
 /// The field red (SITE-SURVIVES-REDIAL): a deck opened from a window was answered 404 after that window's link dropped
 /// and it redialed. A redial is the same window, so its pages serve on; another window's open takes none of them; a
-/// reopen still ends the page it replaces, so the old link is refused, never served the new page. The old connection's
+/// window keeps eight prefix opens, then evicts the oldest. The old connection's
 /// end never ends what its redial holds when the redial connects first.
 #[tokio::test]
 async fn a_window_that_redials_keeps_its_pages() {
@@ -128,7 +128,21 @@ async fn a_window_that_redials_keeps_its_pages() {
     assert_eq!((status(&page).await, status(&theirs).await), (200, 200), "another window's open takes none of them");
     let page_again = open(&mut b, 2, &deck).await;
     let pool_again = open(&mut b, 3, &rooted).await;
-    assert_eq!((status(&page).await, status(&page_again).await), (404, 200), "a reopen ends the page it replaces");
+    assert_eq!((status(&page).await, status(&page_again).await), (200, 200), "a reopen keeps earlier prefix pages");
+    let mut retained = vec![page.clone(), page_again.clone()];
+    for id in 4..10 {
+        retained.push(open(&mut b, id, &deck).await);
+    }
+    assert_eq!(retained.len(), 8);
+    for url in &retained {
+        assert_eq!(status(url).await, 200, "all eight opens survive the redial: {url}");
+    }
+    let ninth = open(&mut b, 10, &notes).await;
+    assert_eq!(status(&page).await, 404, "the ninth prefix open evicts the oldest");
+    for url in retained.iter().skip(1).chain(std::iter::once(&ninth)) {
+        assert_eq!(status(url).await, 200, "the newest eight remain: {url}");
+    }
+    assert_eq!(status(&theirs).await, 200, "another window keeps its page");
     let pools = (status(&pool).await, status(&pool_again).await);
     assert_eq!(pools, (403, 200), "a reopened pool site refuses its old secret");
     drop((b, j));

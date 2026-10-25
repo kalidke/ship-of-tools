@@ -72,9 +72,21 @@ pub(crate) fn read_comm_agents() -> Option<serde_json::Value> {
 
 /// [`read_comm_agents`] finding the folder through `env`.
 pub(crate) fn read_comm_agents_in(env: &crate::comm::Env) -> Option<serde_json::Value> {
-    let bytes = read_registry_fresh(&comm_registry_path(env)?).ok()?;
-    let root: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    root.get("agents").cloned()
+    try_read_comm_agents_in(env).ok().map(serde_json::Value::Object)
+}
+
+/// A page must distinguish an empty queue from a registry it could not read. The window's defensive read above
+/// keeps its existing Option contract; both take the same fresh bytes and parse. Call on a blocking thread.
+pub(crate) fn try_read_comm_agents() -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    try_read_comm_agents_in(&crate::comm::Env::process())
+}
+
+pub(crate) fn try_read_comm_agents_in(env: &crate::comm::Env) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let path = comm_registry_path(env).ok_or("the comm registry folder could not be resolved")?;
+    let bytes = read_registry_fresh(&path).map_err(|e| format!("the comm registry could not be read: {e}"))?;
+    let root: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("the comm registry is not valid JSON: {e}"))?;
+    root.get("agents").and_then(serde_json::Value::as_object).cloned()
+        .ok_or_else(|| "the comm registry has no agents object".into())
 }
 
 /// Write `bytes` to `path` and flush them to the server, so the rename that

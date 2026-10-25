@@ -284,8 +284,7 @@ pub(crate) fn shown_of(ws: &Workspace, rows: &[Arc<Workspace>], agents: Option<&
 
 /// The page view of this daemon's registry sessions, including sessions outside any row, sorted by handle.
 /// The server supplies a fresh registry read on a blocking thread, as it does for the window's read.
-pub(crate) fn states(rows: &[Arc<Workspace>], agents: Option<&Value>, host: &str) -> Vec<crate::pages::site::verbs::PageRow> {
-    let Some(agents) = agents.and_then(Value::as_object) else { return Vec::new() };
+pub(crate) fn states(rows: &[Arc<Workspace>], agents: &serde_json::Map<String, Value>, host: &str) -> Vec<crate::pages::site::verbs::PageRow> {
     let mut out = Vec::new();
     for (handle, entry) in agents.iter().filter(|(_, entry)| host_matches(entry, host)) {
         let field = |k: &str| entry.get(k).and_then(Value::as_str).unwrap_or("").to_string();

@@ -22,6 +22,41 @@ impl Drop for Held {
 /// the result through a temp file and renames it, then releases the lock. The lock record has no proof fields, the
 /// form a box that cannot prove a death writes, so no waiter ever forces it.
 pub fn write_registry(comm_root: &Path, update: impl FnOnce(&mut serde_json::Value)) {
+    let _held = take_registry_lock(comm_root);
+    let path = comm_root.join("registry.json");
+    let mut doc: serde_json::Value = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| serde_json::json!({ "agents": {} }));
+    update(&mut doc);
+    let tmp = comm_root.join("registry.json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(&doc).expect("encode")).expect("write registry tmp");
+    std::fs::rename(&tmp, &path).expect("rename registry");
+}
+
+/// A deliberately damaged or absent registry, only in a test's isolated comm folder.
+#[allow(dead_code)] // only the page channel suite injects registry failures
+pub enum RegistryFixture<'a> { Bytes(&'a [u8]), Directory, Missing }
+
+/// Fault injection takes the same lock as normal fixture updates, so the daemon cannot race the replacement.
+#[allow(dead_code)]
+pub fn set_registry_fixture(comm_root: &Path, fixture: RegistryFixture<'_>) {
+    let _held = take_registry_lock(comm_root);
+    let path = comm_root.join("registry.json");
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir(&path).expect("remove fixture directory"),
+        Ok(_) => std::fs::remove_file(&path).expect("remove fixture file"),
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => panic!("inspect registry fixture: {e}"),
+    }
+    match fixture {
+        RegistryFixture::Bytes(bytes) => std::fs::write(&path, bytes).expect("write registry fixture"),
+        RegistryFixture::Directory => std::fs::create_dir(&path).expect("create unreadable registry fixture"),
+        RegistryFixture::Missing => {}
+    }
+}
+
+fn take_registry_lock(comm_root: &Path) -> Held {
     std::fs::create_dir_all(comm_root).expect("mkdir comm root");
     let pid = std::process::id();
     let lock = comm_root.join(".registry.lock");
@@ -42,14 +77,5 @@ pub fn write_registry(comm_root: &Path, update: impl FnOnce(&mut serde_json::Val
             Err(e) => panic!("take the registry lock: {e}"),
         }
     }
-    let _held = Held(lock);
-    let path = comm_root.join("registry.json");
-    let mut doc: serde_json::Value = std::fs::read(&path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_else(|| serde_json::json!({ "agents": {} }));
-    update(&mut doc);
-    let tmp = comm_root.join("registry.json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(&doc).expect("encode")).expect("write registry tmp");
-    std::fs::rename(&tmp, &path).expect("rename registry");
+    Held(lock)
 }
