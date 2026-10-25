@@ -15,6 +15,9 @@ pub struct Site {
     bounds: Bounds,
     #[cfg(unix)]
     git: Option<GitState>,
+    /// Decision grants keep the row's original directory object for their whole lifetime.
+    #[cfg(unix)]
+    pin: Option<sot_platform::host::PinnedDir>,
 }
 
 /// The folders a tracked link may serve from, fixed by the operating systems,
@@ -253,7 +256,25 @@ impl Site {
             bounds: Bounds::of_process(),
             #[cfg(unix)]
             git: None,
+            #[cfg(unix)]
+            pin: None,
         }
+    }
+
+    /// A decision grant: pin the row object before resolving its path, then compare the resolved base to the pin
+    /// so a replacement during preparation refuses too. Windows retains its existing path-based open.
+    pub(super) fn decision(root: &Path) -> Option<Site> {
+        #[cfg(unix)]
+        let pin = sot_platform::host::PinnedDir::open(root).ok()?;
+        let site = Site::plain(root.canonicalize().ok()?);
+        #[cfg(unix)]
+        let site = {
+            let mut site = site;
+            if sot_platform::host::dir_identity(&site.content_root).ok()? != pin.identity().ok()? { return None; }
+            site.pin = Some(pin);
+            site
+        };
+        Some(site)
     }
 
     /// Open a site for `docs.open`. `ws_root` bounds how far the URL space may
@@ -339,6 +360,14 @@ fn not_found() -> Refusal {
 /// swapped in after the caller's check fails with ELOOP or ENOTDIR.
 #[cfg(unix)]
 fn open_beneath(base: &Path, rel: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::fd::AsFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let base = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY).open(base)?;
+    open_beneath_fd(base.as_fd(), rel)
+}
+
+#[cfg(unix)]
+fn open_beneath_fd(base: std::os::fd::BorrowedFd<'_>, rel: &Path) -> std::io::Result<std::fs::File> {
     use std::ffi::CString;
     use std::io::{Error, ErrorKind};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -355,14 +384,7 @@ fn open_beneath(base: &Path, rel: &Path) -> std::io::Result<std::fs::File> {
         return Err(Error::from(ErrorKind::InvalidInput));
     }
     let flags = libc::O_RDONLY | libc::O_CLOEXEC;
-    let cbase = cstr(base.as_os_str().as_bytes())?;
-    // SAFETY: plain open(2) on a NUL-terminated path; the fd is owned at once.
-    let fd = unsafe { libc::open(cbase.as_ptr(), flags | libc::O_DIRECTORY) };
-    if fd < 0 {
-        return Err(Error::last_os_error());
-    }
-    // SAFETY: `fd` is a fresh, valid descriptor nobody else owns.
-    let mut dir = unsafe { OwnedFd::from_raw_fd(fd) };
+    let mut dir = base.try_clone_to_owned()?;
     let last = comps.len() - 1;
     for (i, c) in comps.iter().enumerate() {
         let cc = cstr(c.as_bytes())?;
@@ -406,7 +428,13 @@ fn open_checked(base: &Path, rel: &Path, shown: &str) -> Result<std::fs::File, R
             "refused: .git is never served".into(),
         ));
     }
-    match open_beneath(base, rel) {
+    opened_or_refused(open_beneath(base, rel), shown)
+}
+
+fn opened_or_refused(opened: std::io::Result<std::fs::File>, shown: &str) -> Result<std::fs::File, Refusal> {
+    #[cfg(not(unix))]
+    let _ = shown;
+    match opened {
         Ok(f) => Ok(f),
         #[cfg(unix)]
         Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP) | Some(libc::ENOTDIR)) => Err(refuse(
@@ -417,6 +445,26 @@ fn open_checked(base: &Path, rel: &Path, shown: &str) -> Result<std::fs::File, R
         )),
         Err(_) => Err(not_found()),
     }
+}
+
+/// All components are opened relative to the held row object. The pathname check can only refuse; even a swap
+/// immediately after it cannot redirect the bytes, because no later open uses that pathname as its base.
+#[cfg(unix)]
+fn open_pinned(site: &Site, pin: &sot_platform::host::PinnedDir, parts: &[&str], shown: &str) -> Result<(std::fs::File, PathBuf), Refusal> {
+    use std::os::fd::AsFd;
+    let current = sot_platform::host::dir_identity(&site.content_root).ok();
+    if current.is_none() || current != pin.identity().ok() {
+        return Err(refuse(shown, "403 Forbidden", "R6", "refused: the row's project folder changed after the page was granted".into()));
+    }
+    let mut relative = PathBuf::from(parts.join("/"));
+    if parts.is_empty() { relative.push("index.html"); }
+    let file = opened_or_refused(open_beneath_fd(pin.as_fd(), &relative), shown)?;
+    let file = if file.metadata().map_err(|_| not_found())?.is_dir() {
+        relative.push("index.html");
+        opened_or_refused(open_beneath_fd(file.as_fd(), Path::new("index.html")), shown)?
+    } else { file };
+    if !file.metadata().map_err(|_| not_found())?.is_file() { return Err(not_found()); }
+    Ok((file, site.content_root.join(relative)))
 }
 
 /// Resolve a decoded request path and open the file, applying the follow rule
@@ -459,6 +507,10 @@ pub(crate) fn resolve_and_open(
             }
             _ => parts.push(p),
         }
+    }
+    #[cfg(unix)]
+    if let Some(pin) = &site.pin {
+        return open_pinned(site, pin, &parts, decoded);
     }
     let mut q = site.url_root.clone();
     for p in &parts {

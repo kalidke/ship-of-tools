@@ -326,6 +326,41 @@ async fn a_decision_page_replaced_after_the_verb_cannot_escape_its_row() {
     }
 }
 
+/// Red at b9a079069 by behavior: a different directory at the same pathname serves the other row's bytes.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_decision_grant_refuses_a_row_folder_replaced_after_the_grant() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-root-swap").await;
+    let site = queue(&env, &mut a).await;
+    let page = env.workspace_project_root.join("decision.html");
+    std::fs::write(env.daemon_project_root.join("decision.html"), "other row's private bytes").unwrap();
+    set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "question": format!("Decide? Page: {}", page.display())}));
+    assert_eq!(site.post(json!({"verb": "open", "handle": HANDLE})).await.status, 202);
+    let args = command(&mut a, "docs").await;
+    let opened = call(&mut a, 12, op::DOCS_OPEN, json!({"path": args["path"]})).await;
+    let granted = SiteUrl::parse(opened.payload["url"].as_str().unwrap());
+    assert_eq!(granted.raw("GET", None, "", "").await.body.as_slice(), b"<p>Decision</p>");
+    std::fs::create_dir(env.workspace_project_root.join("assets")).unwrap();
+    std::fs::write(env.workspace_project_root.join("assets/app.js"), "relative asset").unwrap();
+    let prefix = granted.target.rsplit_once('/').unwrap().0;
+    let asset = SiteUrl { target: format!("{prefix}/assets/app.js"), ..granted.clone() };
+    assert_eq!(asset.raw("GET", None, "", "").await.body.as_slice(), b"relative asset");
+    let original = env._tmp.path().join("original-row");
+    std::fs::rename(&env.workspace_project_root, &original).unwrap();
+    std::os::unix::fs::symlink(&env.daemon_project_root, &env.workspace_project_root).unwrap();
+    let reply = granted.raw("GET", None, "", "").await;
+    assert!(matches!(reply.status, 403 | 404), "the replacement link is refused: {}", String::from_utf8_lossy(&reply.body));
+    // A plain directory replacement defeats canonical-path equality too, so this is the behavioral red control.
+    std::fs::remove_file(&env.workspace_project_root).unwrap();
+    std::fs::rename(&env.daemon_project_root, &env.workspace_project_root).unwrap();
+    let reply = granted.raw("GET", None, "", "").await;
+    assert_eq!(reply.status, 403, "a different folder at the same path is refused: {}", String::from_utf8_lossy(&reply.body));
+    std::fs::rename(&env.workspace_project_root, &env.daemon_project_root).unwrap();
+    std::fs::rename(&original, &env.workspace_project_root).unwrap();
+    assert_eq!(granted.raw("GET", None, "", "").await.body.as_slice(), b"<p>Decision</p>");
+}
+
 /// Red at the first landing by behavior: a damaged registry answered 200 with an empty rows array.
 #[tokio::test]
 async fn a_registry_failure_is_visible_and_recovers_on_the_next_read() {

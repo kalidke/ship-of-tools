@@ -57,11 +57,15 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   408. These refusals close the connection. A consumed body leaves the connection open unless requested closed,
   including after a bad JSON object or verb. Verb answers are JSON with `Cache-Control: no-store`: success has
   `ok: true`, refusal has `error` and `code`.
-- One `PageVerbs` admission budget covers all prefix and pool listeners: at most four POSTs read bodies or run
-  handlers (`MAX_IN_FLIGHT`). Excess requests answer 503 `server_busy` and close without reading a body. After the
-  bounded body, a handler waits at most 5 s (`HANDLER_BOUND`), then answers 503 `handler_timeout`. Blocking work
-  retains its admission slot until it actually ends, including after that answer; no late command is sent. A stalled
-  filesystem can occupy all four slots indefinitely, during which new verbs are refused; files remain available.
+- One `PageVerbs` supplies three bounded budgets shared by all prefix and pool listeners: four POST body readers,
+  four `states` handlers and four action handlers (`goto`, `open`, and later `reply`), each `MAX_IN_FLIGHT`. The body
+  reader releases its slot once it has consumed the bounded body, before the decoded verb takes its own handler
+  slot. Excess work answers 503 `server_busy`: a body admission refusal closes without reading, while a handler
+  admission refusal has consumed its body and keeps the connection unless requested closed. A handler waits at most
+  5 s (`HANDLER_BOUND`), then answers 503 `handler_timeout`. Blocking work retains its own class's slot until it
+  actually ends, including after that answer; no late command is sent. Four stalled actions never spend a polling
+  slot, and four stalled polls never spend an action slot. A stalled registry can occupy all four polling slots
+  indefinitely; new polls are then refused, while action capacity and file requests remain independent.
 - `states` returns this daemon's registry sessions, including sessions outside rows, sorted by handle. Foreign and
   unknown-host entries are omitted. Rows owns the question parsing and the binding to a local row. States needs no
   live window. An unreadable, missing or malformed registry (including a missing/non-object `agents`) answers JSON
@@ -71,9 +75,18 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   plain prefix site rooted at that row (no git link authority or widened URL root), then sends `docs {workspace,
   path: "sot-page:<nonce>/<relative>"}`. `docs.open` redeems only the requesting owner's live grant, returning its
   existing URL through the usual remote proxy route, without interpreting the path under any other workspace.
-  Every file request applies `resolve_and_open` again: replacing a page with a link into another registered row
-  after the verb answers serves no bytes from that row. `.git` and `..` remain refused. An extra caller-supplied
-  path grants nothing. Decision pages use row-relative assets; root-relative assets are not rewritten.
+  On Unix a decision site holds the row's `PinnedDir` from preparation through the grant's lifetime, after checking
+  that its identity matches the row's original folder. Every file request refuses a changed base identity and opens
+  each component with `openat` from the borrowed pin descriptor (`AsFd`), never by reopening the base pathname.
+  This works on Linux and macOS, even if the row or an ancestor is replaced between the check and the final open;
+  links below the pin are not followed. `.git` and `..` remain refused. An extra caller-supplied path grants nothing.
+- Windows keeps the existing canonicalize-then-`File::open` path. A file or intermediate folder replaced between
+  those steps can escape confinement; this landing does not close that race. Platform's stated directory-pin gap
+  ([guarantee 10](../../../platform/CLAUDE.md#guarantees)) accepts an ordinary file on Windows, and the pin supplies
+  no Windows handle-relative descendant open. The Unix descriptor walk above makes no Windows guarantee.
+- Decision pages must use relative asset and navigation paths, such as `assets/app.js`. Root-relative paths such as
+  `/assets/app.js` escape the prefix nonce and normally answer 404: decision grants do not support them. This limit
+  applies to decision grants; ordinary `docs.open` retains its existing pool routing.
 - A page command goes by target serial to the owner's newest live named frontend (`PageVerbs.window`), never the
   window in use. Go-to and open answer 202; no live window answers 503 `window_gone` and sends nothing. No local row
   answers 409 `not_a_row` (a known foreign entry names its daemon); no question page answers 409 `no_page`; an outside,
@@ -112,7 +125,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `rust/protocol/src/page_url.rs`.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `sot_protocol::pipe::pipe_bidirectional`, `sot_protocol::reply::reject`,
 `site_owner` and `away_sites` (the window's key and the windows away, given to `handle_docs_open` as arguments),
-the server-built `PageVerbs` closures (states, handle lookup, window lookup and the fe-command bus), `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `sot_containment::process`, `resolve_bin`,
+the server-built `PageVerbs` closures (states, handle lookup, window lookup and the fe-command bus), Unix
+`sot_platform::host::{PinnedDir, dir_identity}` (`AsFd` for the pin's borrowed descriptor), `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `sot_containment::process`, `resolve_bin`,
 `sot_state_dir`, `host_name`, `state_dir_hash`, `bound_pluto_port`, `allowed_proxy_ports`, `lane_dial`, `ResolvedDial`, `sot_protocol::video_path::video_mime`.
 
 ## Folders
@@ -138,9 +152,9 @@ HTTP capability/Origin checks, states, go-to, page containment, site retention a
 body deadline is `http_keep_tests.rs::a_body_dripped_past_the_bound_is_refused_at_the_bound`; complete owner cleanup
 is `site/tests.rs::an_owner_keeps_eight_prefix_sites_and_removes_them_together`. The browser-origin done test remains
 a by-hand check on local and remote windows. A page cannot act on another daemon's rows; a session outside any row
-has states but no go-to or open. Capability possession and matching Host/Origin do not authenticate a same-account
-process as a page. The maintainer's decision on that trust boundary is pending; this implementation supplies no
-additional process identity proof.
+has states but no go-to or open. The page channel's trust boundary is **this OS account**, pending the maintainer's
+word. A same-account process holding a site capability can call its verbs; possession and matching Host/Origin do
+not authenticate that process as the originating document. Other accounts are refused by `serve_own`.
 `site/verbs_tests.rs` observes capability calls and commands on denied requests and JSON failure recovery on one
 connection. `tests/page_channel.rs::page_verbs_work_through_the_page_proxy_with_the_windows_local_origin` drives the
 real `proxy.connect` pipe with browser-facing Host and Origin values different from the daemon's port.
@@ -151,6 +165,13 @@ The round-two regressions are `a_reassigned_pool_port_refuses_the_old_document_w
 `site/verbs_tests.rs::an_expired_grant_cannot_finish_a_verb_that_was_already_reading` expires a grant while its
 registry read is held, then observes refusal when that read ends.
 `tests/site_windows.rs::a_window_that_redials_keeps_its_pages` checks redial retention through the ninth prefix open.
+`tests/page_channel.rs::a_decision_grant_refuses_a_row_folder_replaced_after_the_grant` replaces the granted row
+with a link and then another directory at the same pathname (Unix).
+`site/links_case_tests.rs::a_decision_file_open_uses_the_pin_after_a_row_or_ancestor_swap` swaps the base or its
+ancestor after the identity check and observes the real final-open walker still reading the original row's bytes.
+`site/verbs_tests.rs::polling_has_its_own_bounded_budget_and_does_not_block_actions` covers the polling budget;
+the existing worker-deadline case now holds four actions and observes successful polls before and after timeout.
+`site/verbs_tests.rs::incomplete_bodies_have_a_bounded_budget_that_releases_on_eof` covers the shared body readers.
 - `video.rs`: the video listener, its token grants and the request handler.
 
 ## Start here

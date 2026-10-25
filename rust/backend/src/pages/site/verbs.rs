@@ -59,7 +59,9 @@ pub(crate) struct PageVerbs {
     /// The page owner's newest named, live frontend connection.
     pub window: Arc<dyn Fn(u64) -> Option<ActiveFrontend> + Send + Sync>,
     pub fe: broadcast::Sender<FeCommandEvt>,
-    in_flight: Arc<Semaphore>,
+    bodies: Arc<Semaphore>,
+    states_in_flight: Arc<Semaphore>,
+    actions_in_flight: Arc<Semaphore>,
 }
 
 impl PageVerbs {
@@ -69,7 +71,12 @@ impl PageVerbs {
         window: Arc<dyn Fn(u64) -> Option<ActiveFrontend> + Send + Sync>,
         fe: broadcast::Sender<FeCommandEvt>,
     ) -> Self {
-        Self { states, row_of, window, fe, in_flight: Arc::new(Semaphore::new(MAX_IN_FLIGHT)) }
+        Self {
+            states, row_of, window, fe,
+            bodies: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
+            states_in_flight: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
+            actions_in_flight: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
+        }
     }
 
     #[cfg(test)]
@@ -91,18 +98,28 @@ impl PageVerbs {
         if own_origin.is_none() || request.origin != own_origin {
             return refuse(stream, "403 Forbidden", "forbidden", "the request must come from this site's origin", false).await;
         }
-        let Ok(permit) = self.in_flight.clone().try_acquire_owned() else {
-            return refuse(stream, "503 Service Unavailable", "server_busy", "all four page handlers are busy; try again", false).await;
+        let Ok(reader) = self.bodies.clone().try_acquire_owned() else {
+            return refuse(stream, "503 Service Unavailable", "server_busy", "all four page body readers are busy; try again", false).await;
         };
-        let permit = Arc::new(permit);
         let bytes = match read_body(stream, buf, request).await? {
             Ok(bytes) => bytes,
             Err(error) => return refuse(stream, error.status, error.code, error.words, false).await,
         };
+        drop(reader);
         let body = serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object);
         let Some(body) = body else {
             return bad_request(stream, request.keep).await;
         };
+        // A blocked action must not spend polling capacity. Reply will use the action budget in landing 2a.
+        let budget = if body.get("verb").and_then(Value::as_str) == Some("states") {
+            &self.states_in_flight
+        } else {
+            &self.actions_in_flight
+        };
+        let Ok(permit) = budget.clone().try_acquire_owned() else {
+            return refuse(stream, "503 Service Unavailable", "server_busy", "all four handlers for this verb class are busy; try again", request.keep).await;
+        };
+        let permit = Arc::new(permit);
         let (status, answer) = match tokio::time::timeout(HANDLER_BOUND, self.dispatch(capability, &body, permit.clone())).await {
             Ok(Ok(answer)) => answer,
             Ok(Err(cause)) => {
@@ -180,7 +197,7 @@ impl PageVerbs {
 fn page_inside(root: &Path, page: &str) -> Option<(Site, String)> {
     let page = Path::new(page);
     if !page.is_absolute() { return None; }
-    let site = Site::plain(root.canonicalize().ok()?);
+    let site = Site::decision(root)?;
     if crate::pages::home_folder().is_some_and(|home| home.starts_with(&site.content_root)) { return None; }
     let page = page.canonicalize().ok()?;
     let relative = page.strip_prefix(&site.content_root).ok()?.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");

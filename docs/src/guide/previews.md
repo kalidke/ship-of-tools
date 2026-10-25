@@ -103,7 +103,8 @@ successful read found no sessions of this daemon.
 Post `{verb: "goto", handle: "session-handle"}` to switch the window that opened the page to that row. Post
 `{verb: "open", handle: "session-handle"}` to open the page the row's question names. The daemon reads the question
 again and requires an absolute page under that row's project folder. It grants a site rooted at that row and checks
-each file request there, so replacing the page with a link out after the action is refused when fetched. The page
+each file request there. Unix grants hold the row folder by identity and open files relative to that held folder;
+Windows retains a path-based check/open race. The page
 script supplies a handle; it cannot select an arbitrary file. These actions need no confirmation and answer
 `202` with `{ok: true}`. They go to the page's own window even when another window is in use, locally and through a
 remote window's page proxy.
@@ -120,9 +121,11 @@ requests without Origin are refused (403); OPTIONS cannot authorize a cross-orig
 Content-Length and fit within 4 KiB; valid requests reuse their connection for polling. The last eight prefix pages
 opened by a window keep working, so a queue page can open a decision page and keep polling. A site with root-relative
 links uses a pool port instead, with one site per window: opening another pool site replaces it.
-Decision pages opened by a verb use a prefix site rooted at the row; root-relative asset URLs are not rewritten.
-All page listeners share four handler slots; excess requests answer 503 `server_busy`. A handler exceeding five
-seconds answers 503 `handler_timeout`; stalled blocking work keeps its slot until it ends. These errors have the same
+Decision pages opened by a verb must use relative paths for assets and navigation, such as `assets/app.js`;
+root-relative paths such as `/assets/app.js` are unsupported and normally return 404.
+All page listeners share separate budgets of four body readers, four states handlers and four action handlers;
+stalled actions cannot consume polling slots. Excess requests answer 503 `server_busy`. A handler exceeding five
+seconds answers 503 `handler_timeout`; stalled blocking work keeps its class's slot until it ends. These errors have the same
 JSON `error` and `code` fields and can be shown by the page.
 
 The fixture at `rust/backend/tests/fixtures/page_channel/index.html` lists states every three seconds and provides

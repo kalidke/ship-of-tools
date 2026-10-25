@@ -135,7 +135,8 @@ pub fn dir_identity(dir: &Path) -> Result<DirIdentity> {
 ///   kernel resolves directly against the descriptor's inode, immune to
 ///   any later rename/exchange of the pathname that reached it.
 ///   `pinned_path` is exactly that string.
-/// - **macOS**: no pin, and this branch does not pretend to be one. The
+/// - **macOS**: `pinned_path` is not a pin; handle-relative callers use
+///   `AsFd` instead. The legacy path branch does not pretend to be a pin. The
 ///   Linux arm rests on a `/proc` magic symlink the kernel resolves
 ///   against the DESCRIPTOR's inode; macOS has no equivalent — its
 ///   `/dev/fd/<n>` yields a dup of the descriptor, and traversing INTO
@@ -192,13 +193,23 @@ pub struct PinnedDir {
     proc_path: PathBuf,
 }
 
+/// Borrow the object itself for handle-relative operations on Unix, including macOS where pinned_path is only a
+/// pathname. A caller that walks with openat through this descriptor never reopens the directory by its old name.
+#[cfg(unix)]
+impl std::os::fd::AsFd for PinnedDir {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.handle)
+    }
+}
+
 impl PinnedDir {
     /// Open and pin `dir` — the FIRST thing a caller acquires (before the
     /// writer fence, before the lease check, before any other I/O), so
     /// nothing downstream can ever run in an unpinned window.
     #[cfg(unix)]
     pub fn open(dir: &Path) -> Result<Self> {
-        let handle = File::open(dir)?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let handle = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY).open(dir)?;
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::io::AsRawFd;

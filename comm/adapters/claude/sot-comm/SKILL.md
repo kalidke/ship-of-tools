@@ -80,7 +80,8 @@ colour: a running turn (green) or an open question with no turn running
 survives intervening turns until you report `working`/`idle`/`done` — there
 is no time-based self-heal, the same as blue. Blue clears on the user's next
 genuine prompt, or on viewing the row — never by age. Mechanics + fixture-
-testing rule + turn-end auditor: `references/work-state.md`.
+testing rule + turn-end auditor: `references/work-state.md`. Decision pages named in `Page:` must use relative asset
+and navigation paths (`assets/app.js`, not `/assets/app.js`); decision grants do not support root-relative paths.
 
 ## After you send — end your turn
 

@@ -219,7 +219,8 @@ Work-state. A row with a joined agent has one work-state, which the window shows
   whitespace, semicolons and periods. `Recommend` or `Recommended`, optional colon, and a letter with optional
   parentheses ends the options and supplies the recommendation. No `Options:` means no options or recommendation.
   The page server requires an absolute page under the row's canonical project root and grants a plain site there;
-  its file requests enforce that root again when serving bytes, even after a pathname is replaced.
+  Unix file requests walk beneath a pin of that row's original directory object when serving bytes. Windows keeps
+  its path-based open and its check/open replacement gap (pages' contract).
 - How the window shows it: the row's name in the Sessions tree and the strip takes the state's color (Julia red, green,
   purple and blue, and gray), flashes at a change, and wilts when it is `working` and its time is ten minutes old; a busy
   turn's heartbeat restamps the time at most once a minute. The summary follows the name.

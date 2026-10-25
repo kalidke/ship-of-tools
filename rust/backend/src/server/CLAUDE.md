@@ -179,7 +179,7 @@ of each.
 `ClientGuard`) is handed to a handler that needs a window fact as a value or a closure (`handle_docs_open` takes the
 window's key and `away_sites`, `spawn_periodic` the count of attached windows).
 `run` builds one `PageVerbs` after the fe-command bus and roster exist, then calls `start_page_servers` before accepting
-control connections. All page listeners share its admission budget. Its blocking closures use the checked fresh
+control connections. All page listeners share its separate body-reader, polling and action budgets. Its blocking closures use the checked fresh
 comm registry read and call rows' `work_state::states` and
 `handle::row_of_handle`; its window closure is `Clients::window_connection`.
 

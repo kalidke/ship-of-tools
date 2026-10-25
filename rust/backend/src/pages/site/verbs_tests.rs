@@ -160,19 +160,88 @@ async fn an_expired_grant_cannot_finish_a_verb_that_was_already_reading() {
     server.await.unwrap();
 }
 
-/// Held blocking work keeps its admission slot even after the HTTP handler's deadline.
+struct ReleaseWorkers(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+impl Drop for ReleaseWorkers {
+    fn drop(&mut self) {
+        *self.0.0.lock().unwrap() = true;
+        self.0.1.notify_all();
+    }
+}
+
+async fn budget_post(addr: std::net::SocketAddr, nonce: &str, verb: &str) -> (u16, serde_json::Value) {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let body = json!({"verb": verb, "handle": "handle"}).to_string();
+    stream.write_all(format!("POST /{nonce}/ HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).await.unwrap();
+    let text = String::from_utf8(bytes).unwrap();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap();
+    (head.split_whitespace().nth(1).unwrap().parse::<u16>().unwrap(), serde_json::from_str(body).unwrap())
+}
+
+async fn budget_file(addr: std::net::SocketAddr, nonce: &str) {
+    let mut file = TcpStream::connect(addr).await.unwrap();
+    file.write_all(format!("GET /{nonce}/index.html HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut bytes = Vec::new();
+    tokio::time::timeout(Duration::from_secs(3), file.read_to_end(&mut bytes)).await.expect("files remain available").unwrap();
+    let reply = String::from_utf8(bytes).unwrap();
+    assert_eq!(reply.split_whitespace().nth(1), Some("200"));
+    assert!(reply.ends_with("files still serve"));
+}
+
+/// Held actions retain their slots after timeout, while states uses its own budget.
 #[tokio::test]
 async fn page_work_is_limited_and_a_timeout_keeps_its_slot_until_the_worker_ends() {
-    use std::sync::{Condvar, Mutex};
-    struct Release(Arc<(Mutex<bool>, Condvar)>);
-    impl Drop for Release {
-        fn drop(&mut self) {
-            *self.0.0.lock().unwrap() = true;
-            self.0.1.notify_all();
-        }
+    budget_case(false, 8_000_000_053).await;
+}
+
+#[tokio::test]
+async fn polling_has_its_own_bounded_budget_and_does_not_block_actions() {
+    budget_case(true, 8_000_000_055).await;
+}
+
+#[tokio::test]
+async fn incomplete_bodies_have_a_bounded_budget_that_releases_on_eof() {
+    const OWNER: u64 = 8_000_000_056;
+    let root = tempfile::tempdir().unwrap();
+    let nonce = set_root(OWNER, Site::plain(root.path().to_path_buf())).unwrap();
+    let verbs = PageVerbs::empty();
+    let listener = crate::pages::bind_page_listener(0).unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "page-body-limit-test", move |stream| {
+        let verbs = verbs.clone();
+        async move { handle_conn(stream, ServeMode::Prefix, verbs).await.unwrap(); }
+    }));
+    assert_eq!(budget_post(addr, &nonce, "states").await.0, 200);
+    let mut readers = Vec::new();
+    for _ in 0..4 {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(format!("POST /{nonce}/ HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nContent-Length: 17\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        readers.push(stream);
     }
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let (status, body) = budget_post(addr, &nonce, "states").await;
+            if status == 503 { assert_eq!(body["code"], "server_busy"); break; }
+            assert_eq!(status, 200, "{body}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("all four body readers admitted, the fifth refused");
+    for mut stream in readers {
+        stream.shutdown().await.unwrap();
+        let mut reply = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut reply)).await.unwrap().unwrap();
+        let reply = String::from_utf8(reply).unwrap();
+        assert_eq!(reply.split_whitespace().nth(1), Some("400"));
+    }
+    assert_eq!(budget_post(addr, &nonce, "states").await.0, 200, "EOF released the body readers");
+    remove_root(OWNER);
+}
+
+async fn budget_case(states_stalled: bool, owner: u64) {
+    use std::sync::{Condvar, Mutex};
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
-    let release = Release(gate.clone());
+    let release = ReleaseWorkers(gate.clone());
     let started = Arc::new(AtomicUsize::new(0));
     let ended = Arc::new(AtomicUsize::new(0));
     let (s, e) = (started.clone(), ended.clone());
@@ -183,72 +252,77 @@ async fn page_work_is_limited_and_a_timeout_keeps_its_slot_until_the_worker_ends
         e.fetch_add(1, SeqCst);
     });
     let states_work = work.clone();
+    let windows = Arc::new(AtomicUsize::new(0));
+    let looked_up = windows.clone();
     let (fe, mut commands) = tokio::sync::broadcast::channel(16);
     let verbs = Arc::new(PageVerbs::new(
-        Arc::new(move || { states_work(); Ok(Vec::new()) }),
+        Arc::new(move || {
+            if states_stalled { states_work(); }
+            Ok(Vec::new())
+        }),
         Arc::new(move |_| {
-            work();
+            if !states_stalled { work(); }
             Ok(RowRef { workspace_id: "row".into(), project_root: PathBuf::new(), page: String::new() })
         }),
-        Arc::new(|_| panic!("a timed-out goto must never look up a window")),
-        fe,
+        Arc::new(move |requested| {
+            assert_eq!(requested, owner);
+            looked_up.fetch_add(1, SeqCst);
+            Some(crate::clients::ActiveFrontend { serial: 42, handle: "fe@test".into() })
+        }), fe,
     ));
-    const OWNER: u64 = 8_000_000_053;
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("index.html"), "files still serve").unwrap();
-    let nonce = set_root(OWNER, Site::plain(root.path().to_path_buf())).unwrap();
+    let nonce = set_root(owner, Site::plain(root.path().to_path_buf())).unwrap();
     let listener = crate::pages::bind_page_listener(0).unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "page-limit-test", move |stream| {
         let verbs = verbs.clone();
         async move { handle_conn(stream, ServeMode::Prefix, verbs).await.unwrap(); }
     }));
-    let post = |nonce: String, goto: bool| async move {
-        let mut stream = TcpStream::connect(addr).await.unwrap();
-        let body = if goto { "{\"verb\":\"goto\",\"handle\":\"handle\"}" } else { "{\"verb\":\"states\"}" };
-        stream.write_all(format!("POST /{nonce}/ HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-        let mut bytes = Vec::new();
-        stream.read_to_end(&mut bytes).await.unwrap();
-        let text = String::from_utf8(bytes).unwrap();
-        let (head, body) = text.split_once("\r\n\r\n").unwrap();
-        (head.split_whitespace().nth(1).unwrap().parse::<u16>().unwrap(), serde_json::from_str::<serde_json::Value>(body).unwrap())
-    };
-    let requests: Vec<_> = (0..4).map(|i| tokio::spawn(post(nonce.clone(), i == 0))).collect();
+    let post = |nonce: String, verb: &'static str| async move { budget_post(addr, &nonce, verb).await };
+    let (stalled, healthy, success) = if states_stalled { ("states", "goto", 202) } else { ("goto", "states", 200) };
+    let requests: Vec<_> = (0..4).map(|_| tokio::spawn(post(nonce.clone(), stalled))).collect();
     tokio::time::timeout(Duration::from_secs(3), async {
         while started.load(SeqCst) != 4 { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.expect("four workers admitted");
-    let (status, body) = tokio::time::timeout(Duration::from_secs(1), post(nonce.clone(), false)).await.expect("excess work refused immediately");
+    let (status, body) = tokio::time::timeout(Duration::from_secs(1), post(nonce.clone(), stalled)).await.expect("excess work refused immediately");
     assert_eq!(status, 503);
     assert_eq!(body["code"], "server_busy");
-    let mut file = TcpStream::connect(addr).await.unwrap();
-    file.write_all(format!("GET /{nonce}/index.html HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
-    let mut bytes = Vec::new();
-    tokio::time::timeout(Duration::from_secs(3), file.read_to_end(&mut bytes)).await.expect("files remain available").unwrap();
-    let reply = String::from_utf8(bytes).unwrap();
-    assert_eq!(reply.split_whitespace().nth(1), Some("200"));
-    assert!(reply.ends_with("files still serve"));
+    let (status, body) = tokio::time::timeout(Duration::from_secs(1), post(nonce.clone(), healthy)).await.expect("the other budget makes progress");
+    assert_eq!(status, success, "{body}");
+    if states_stalled { commands.try_recv().expect("the healthy goto"); }
+    else { assert_eq!(body["rows"], json!([])); }
+    budget_file(addr, &nonce).await;
     for request in requests {
         let (status, body) = tokio::time::timeout(Duration::from_secs(7), request).await.expect("handler deadline").unwrap();
         assert_eq!(status, 503);
         assert_eq!(body["code"], "handler_timeout");
     }
-    let (status, body) = tokio::time::timeout(Duration::from_secs(1), post(nonce.clone(), false)).await.unwrap();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(1), post(nonce.clone(), stalled)).await.unwrap();
     assert_eq!(status, 503);
     assert_eq!(body["code"], "server_busy", "timed-out blocking work still owns its slots");
+    let (status, body) = tokio::time::timeout(Duration::from_secs(1), post(nonce.clone(), healthy)).await.expect("polling and actions stay independent after timeout");
+    assert_eq!(status, success, "{body}");
+    if states_stalled { commands.try_recv().expect("the second healthy goto"); }
     assert_eq!(started.load(SeqCst), 4);
     drop(release);
     tokio::time::timeout(Duration::from_secs(3), async {
         while ended.load(SeqCst) != 4 { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.unwrap();
+    assert!(commands.try_recv().is_err(), "timed-out actions send no late command");
+    assert_eq!(windows.load(SeqCst), if states_stalled { 2 } else { 0 });
     // The workers may still be dropping their permits after incrementing ended.
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            let (status, body) = post(nonce.clone(), false).await;
-            if status == 200 { assert_eq!(body["rows"], json!([])); break; }
+            let (status, body) = post(nonce.clone(), stalled).await;
+            if status != 503 {
+                assert_eq!(status, if states_stalled { 200 } else { 202 }, "{body}");
+                break;
+            }
             assert_eq!(body["code"], "server_busy");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }).await.expect("finished workers release their slots");
-    assert!(commands.try_recv().is_err(), "the timed-out goto sends no late command");
-    remove_root(OWNER);
+    if !states_stalled { assert_eq!(commands.try_recv().unwrap().target_serial, Some(42)); }
+    remove_root(owner);
 }

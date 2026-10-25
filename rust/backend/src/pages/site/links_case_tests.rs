@@ -17,6 +17,38 @@ fn site_of(f: &Fixture, home: PathBuf) -> Site {
         url_root: f.repo.clone(),
         bounds: Bounds { home: Some(home), ..f.bounds.clone() },
         git: None,
+        pin: None,
+    }
+}
+
+/// Exercise the real final-open walker after a swap in the gap following the base identity check.
+#[test]
+fn a_decision_file_open_uses_the_pin_after_a_row_or_ancestor_swap() {
+    use std::io::Read;
+    use std::os::fd::AsFd;
+    for ancestor in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("parent");
+        let row = parent.join("row");
+        let other = tmp.path().join("other");
+        let other_row = other.join("row");
+        for base in [&row, &other_row] {
+            std::fs::create_dir_all(base.join("assets")).unwrap();
+        }
+        std::fs::write(row.join("assets/page.html"), "original").unwrap();
+        std::fs::write(other.join("row/assets/page.html"), "other row").unwrap();
+        let site = Site::decision(&row).unwrap();
+        let pin = site.pin.as_ref().unwrap();
+        assert_eq!(sot_platform::host::dir_identity(&row).unwrap(), pin.identity().unwrap());
+        let replaced = if ancestor { &parent } else { &row };
+        std::fs::rename(replaced, tmp.path().join("moved")).unwrap();
+        let target = if ancestor { other.clone() } else { other.join("row") };
+        symlink(target, replaced).unwrap();
+        assert_eq!(std::fs::read_to_string(row.join("assets/page.html")).unwrap(), "other row");
+        let mut file = open_beneath_fd(pin.as_fd(), Path::new("assets/page.html")).unwrap();
+        let mut text = String::new();
+        file.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "original", "the final open stays on the original row (ancestor={ancestor})");
     }
 }
 

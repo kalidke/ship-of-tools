@@ -67,9 +67,12 @@ where each lives).
 9. **A restart is paced.** A connection or child restarted through `Redial` waits from its caller's floor,
    doubling to its cap, and starts over only after one that lasted `STABLE` (60 s) or at a person's request; an
    answered hello, a bare connect or a generation alone does not restart it.
-10. **A directory pin opens only a directory (Unix).** `dir_identity` opens with `O_DIRECTORY`, so a FIFO or any
-    other non-directory fails at once and never waits. On Windows it opens with backup semantics and accepts an
-    ordinary file (gap, listed in the result file).
+10. **A directory pin opens only a directory (Unix).** `dir_identity` and `PinnedDir::open` open with `O_DIRECTORY`,
+    so a FIFO or any other non-directory fails at once and never waits. `PinnedDir` exposes its held Unix descriptor
+    through `AsFd`: an `openat` walk resolves from the same base directory object after a rename of it or
+    an ancestor, on Linux and macOS. This does not strengthen macOS's legacy `pinned_path`, which still returns a
+    pathname. On Windows the identity open uses backup semantics and accepts an ordinary file (gap); the pin supplies
+    no handle-relative descendant open.
 11. **Private means private (Unix).** `is_private_dir` and `secure_private_dir` accept only an owner-only directory
     that is not a link; `secure_socket_dir` secures each level under the runtime base the same way. `ensure_private_dir`
     is the weaker form: it creates the folder, follows a symlink and repairs the mode to 0700. On Windows
@@ -144,7 +147,7 @@ gethostname, sha2, thiserror, getrandom; tracing-subscriber and tempfile for the
 Everything above; each name is a path under `sot_platform::`: `host::state_dir::{sot_state_dir, sot_config_dir,
 runtime_sot_dir, host_name, kernel_host_name, state_dir_hash, is_private_dir}`, `host::{publish_noreplace,
 write_durable, remove_durable, lock_writer, lock_supervisor, try_lock_daemon, HeldDir, remove_ended, preflight_volume,
-storage_exhaustion, dir_identity, inherit_none, harden_own_stdio}`, `host::fd::*`, `host::winjob::{AnonymousJob, JobError}` (Windows), `host::process_tree::*`,
+storage_exhaustion, dir_identity, PinnedDir, inherit_none, harden_own_stdio}`, `host::fd::*`, `host::winjob::{AnonymousJob, JobError}` (Windows), `host::process_tree::*`,
 `host::redial::{Redial, STABLE}`, `host::env::Env`, `identity::challenge::*`, `identity::exchange::{IdentityExchange,
 ExchangeDecode}`, `identity::deadline::run_with_deadline`, `identity::os_account::own_account_id`,
 `identity::peer_owner::serve_own`, `transport::{Client, TransportError, CONNECT_BOUND, transport_error_to_io}`,
@@ -180,7 +183,7 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | 7 | storage codes | `host/storage_tests.rs`: `storage_codes_are_recognized_by_native_code_only`; `rust/capsule/src/storage_tests.rs`: `a_transport_error_is_never_storage_exhaustion` |
 | 8 | volume preflight | `host/volume_tests.rs` |
 | 9 | redial | `host/redial_tests.rs`: `a_short_connection_keeps_the_doubling`, `a_connection_that_lasted_stable_starts_over`, `a_reset_starts_over` |
-| 10 | dir pin | `host/pinned_dir_tests.rs`: `a_fifo_fails_at_once_and_never_waits_for_a_writer` |
+| 10 | dir pin | `host/pinned_dir_tests.rs`: `a_fifo_fails_at_once_and_never_waits_for_a_writer`, `a_directory_pin_rejects_an_ordinary_file`, `a_borrowed_directory_pin_keeps_its_folder_after_an_ancestor_swap` |
 | 11 | private dir | `host/state_dir_is_private_dir_tests.rs`; `host/paths_secure_private_dir_tests.rs`: `a_missing_parent_is_created_and_the_leaf_is_private`, `ensure_private_dir_makes_an_owner_only_folder_that_is_private` |
 | 12 | job ends at last close (Windows) | `rust/capsule/tests/conpty.rs`: `containment_kills_child_and_grandchild` (`:147`); `rust/capsule/tests/capsule/windows_only.rs`: `the_agent_job_refuses_a_breakaway` (`:488`); containment's `contain_tests.rs` `contain_job_permits_no_breakaway` reads the flags only |
 | 13 | local connection | `transport/accept_policy_tests.rs`; `tests/connect_own.rs`: `a_socket_this_account_listens_on_is_reached_wherever_it_is`, `a_socket_another_account_listens_on_is_refused`, `a_full_backlog_ends_the_connect_within_its_bound`, `a_missing_socket_is_not_found` (and the Windows pipe cases); the capsule's `rust/capsule/tests/socket_unix/` and `rust/capsule/tests/pipe_win/` (cancel, concurrent submit, the connector's bounds), `rust/capsule/tests/socket_unix/cloexec.rs` |

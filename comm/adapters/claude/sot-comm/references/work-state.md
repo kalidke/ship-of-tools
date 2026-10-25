@@ -70,6 +70,11 @@ period ignored. The daemon opens it only if the absolute path resolves under the
 outside your folder, including a link out, is refused. Pages list sessions of the daemon serving them. Sessions
 outside rows have no go-to or context action; an action naming a different daemon's session refuses with its name.
 
+A decision page must use relative paths for assets and navigation, for example `assets/app.js` or `next.html`.
+Root-relative paths such as `/assets/app.js` are unsupported by decision grants: they escape the page's nonce and
+normally return 404, which can leave the page blank or its controls unavailable. Keep the assets under the row's
+project folder too.
+
 `AskUserQuestion` (Claude) is the session yielding to the owner while the
 harness pauses: its PreToolUse hook sends `blocked` then `stop` — a real turn
 end, not a hold. The answer arrives as that tool's PostToolUse, which sends
