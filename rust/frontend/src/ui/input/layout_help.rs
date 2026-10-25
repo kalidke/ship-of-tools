@@ -236,6 +236,7 @@ impl LayoutHelp {
     }
     pub(in crate::ui) fn help_key(&mut self, key: HelpKey<'_>, context: help::Context, focus: PaneFocus,
         bindings: &KeyBindings, now: impl FnOnce() -> Instant) -> HelpKeyEffect {
+        struct HelpKeyEvent<'a> { logical_key: &'a Key }
         let HelpKey { logical_key, action, repeat, modifiers } = key;
         let Modifiers { ctrl, super_, .. } = modifiers;
         let mut effect = HelpKeyEffect::default();
@@ -262,7 +263,8 @@ impl LayoutHelp {
             || action.is_some_and(|a| matches!(a.spec().scope, Scope::Global | Scope::Workspace | Scope::Restore | Scope::Quit)) {
             return effect;
         }
-        tracing::debug!(target: "sot::ui::input::global_keys", event.logical_key = ?logical_key, ?action, "help drawer key");
+        let event = HelpKeyEvent { logical_key };
+        tracing::debug!(target: "sot::ui::input::global_keys", ?event.logical_key, ?action, "help drawer key");
         match logical_key {
             _ if action == Some(Action::HelpClose) => effect.layout = Some(self.close_help()),
             _ if action == Some(Action::HelpUp) => self.move_help_selection(-1, bindings),
