@@ -18,9 +18,24 @@ const ROW: &str = "page-row";
 const HANDLE: &str = "row-here";
 
 async fn window(env: &Env, instance: &str) -> Conn {
-    let stream = support::poll_until(
-        || async { support::try_connect(&env.socket_path).await }, BOUND, "page daemon",
-    ).await;
+    let ready = tokio::time::timeout(BOUND, async {
+        loop {
+            if let Some(stream) = support::try_connect(&env.socket_path).await {
+                return Ok(stream);
+            }
+            let status = env.daemon.borrow_mut().as_mut().expect("tracked page daemon")
+                .try_wait().expect("check page daemon status");
+            if let Some(status) = status {
+                return Err(status);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await;
+    let stream = match ready {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(status)) => panic!("page daemon exited before binding: {status}\n{}", env.daemon_log_since(0)),
+        Err(_) => panic!("timed out waiting for page daemon\n{}", env.daemon_log_since(0)),
+    };
     let mut conn = tokio::io::BufReader::new(stream);
     // Both windows deliberately share a name. Only the connection serial distinguishes them.
     let hello = HelloReq {
