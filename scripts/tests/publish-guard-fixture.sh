@@ -59,10 +59,14 @@ commit() { git -C "$R" add -A; git -C "$R" commit -q --allow-empty -m "${1:-clea
 reset_case() { git -C "$R" reset -q --hard "$BASE"; }
 refs() { git -C "$B" for-each-ref --format='%(refname) %(objectname)' | LC_ALL=C sort; }
 reject() { # safe test label, expected hook diagnostic, push arguments
-    local label=$1 reason=$2 before after
+    local label=$1 reason=$2 before after push_status=0
     shift 2
     before=$(refs)
-    if git -C "$R" push -q "$@" > "$T/push.out" 2>&1; then fail "$label accepted"; fi
+    git -C "$R" push -q "$@" > "$T/push.out" 2>&1 || push_status=$?
+    if [ -n "${PG_FAULT_LOG:-}" ]; then
+        [ -s "$PG_FAULT_LOG" ] || fail "$label fault injection did not reach the producer"
+    fi
+    [ "$push_status" -ne 0 ] || fail "$label accepted"
     after=$(refs)
     [ "$before" = "$after" ] || fail "$label changed destination refs"
     grep -F "$reason" "$T/push.out" > /dev/null || fail "$label did not reach its intended refusal"

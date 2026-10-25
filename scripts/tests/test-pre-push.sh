@@ -165,29 +165,57 @@ reject 'shallow missing parent' 'unavailable locally' origin HEAD:refs/heads/sha
 fixture producers
 printf new > "$R/data"; commit
 REAL_GIT=$(command -v git)
+REAL_GIT_EXEC_PATH=$("$REAL_GIT" --exec-path)
+FAULT_EXEC_PATH="$T/git-wrapper"
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
+    REAL_GIT_EXEC_PATH=$(cygpath -u "$REAL_GIT_EXEC_PATH")
+    FAULT_EXEC_PATH=$(cygpath -am "$FAULT_EXEC_PATH")
+    ;; esac
 mkdir "$T/git-wrapper"
 cat > "$T/git-wrapper/git" <<'WRAPPER'
 #!/bin/bash
+fault() {
+    printf '%s\n' "$PG_FAIL_PRODUCER" >> "$PG_FAULT_LOG" || exit 98
+    exit 9
+}
 case "$1:${PG_FAIL_PRODUCER:-}" in
-    cat-file:catalog) [ "${2:-}" != --batch-all-objects ] || exit 9 ;;
-    cat-file:read) [ "${2:-}" != commit ] || exit 9 ;;
-    ls-tree:tree) exit 9 ;;
+    cat-file:catalog) [ "${2:-}" != --batch-all-objects ] || fault ;;
+    cat-file:read) [ "${2:-}" != commit ] || fault ;;
+    ls-tree:tree) fault ;;
 esac
 exec "$PG_REAL_GIT" "$@"
 WRAPPER
 chmod +x "$T/git-wrapper/git"
+# Git prepends its execution directory to PATH before running hooks. Put the fixture
+# wrapper there, and retain the real execution directory on PATH for transport helpers.
 for producer in catalog read tree; do
-    PG_FAIL_PRODUCER=$producer PG_REAL_GIT=$REAL_GIT PATH="$T/git-wrapper:$PATH" reject "failed Git producer $producer" 'pre-push: cannot' origin main
+    : > "$T/producer-fault"
+    case "$producer" in
+        catalog) reason='pre-push: cannot enumerate local objects' ;;
+        read) reason='pre-push: cannot read object' ;;
+        tree) reason='pre-push: cannot read tree' ;;
+    esac
+    PG_FAIL_PRODUCER=$producer PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
+        GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
+        reject "failed Git producer $producer" "$reason" origin main
+    grep -Fx "$producer" "$T/producer-fault" > /dev/null || fail 'wrong Git producer fault was injected'
 done
 # A policy read failure is not treated as an empty, permissive policy.
 REAL_CAT=$(command -v cat)
 cat > "$T/git-wrapper/cat" <<'CAT'
 #!/bin/sh
-[ "${1:-}" != "$PG_POLICY_FILE" ] || exit 9
+if [ "${1:-}" = "$PG_POLICY_FILE" ]; then
+    printf 'policy-read\n' >> "$PG_FAULT_LOG" || exit 98
+    exit 9
+fi
 exec "$PG_REAL_CAT" "$@"
 CAT
 chmod +x "$T/git-wrapper/cat"
-PG_POLICY_FILE=$POLICY PG_REAL_CAT=$REAL_CAT PG_REAL_GIT=$REAL_GIT PATH="$T/git-wrapper:$PATH" reject 'failed policy read' 'cannot read sot.publishList' origin main
+: > "$T/producer-fault"
+PG_POLICY_FILE=$POLICY PG_REAL_CAT=$REAL_CAT PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
+    GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
+    reject 'failed policy read' 'cannot read sot.publishList' origin main
+grep -Fx policy-read "$T/producer-fault" > /dev/null || fail 'policy read fault was not injected'
 accept 'producer controls remain clean' origin main
 accept 'deletion preparation' origin HEAD:old
 accept 'valid-list deletion' origin :old
