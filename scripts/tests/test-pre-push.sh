@@ -86,6 +86,13 @@ BASE=$old
 commit 'new snapshot'
 reject 'retained denied content' 'line 3' origin HEAD:old
 printf 'clean again\n' > "$R/data"; commit
+reject 'clean tip still scans unpublished denied parent' 'line 3' origin HEAD:old
+# The rejected snapshot was never published. Leave it off the clean update's ancestry;
+# only the destination's advertised old commit and its ancestors may be excluded.
+reset_case
+printf 'clean again\n' > "$R/data"; commit
+[ "$(git -C "$R" rev-parse HEAD^)" = "$old" ] || fail 'clean update does not directly follow the published commit'
+[ "$(git -C "$B" rev-parse refs/heads/old)" = "$old" ] || fail 'destination no longer advertises the published commit'
 accept 'advertised old history excluded after content removal' origin HEAD:old
 # Another remote-tracking namespace is not an exclusion.
 git -C "$R" update-ref refs/remotes/unrelated/held "$old"
