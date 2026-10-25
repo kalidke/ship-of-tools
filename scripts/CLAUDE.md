@@ -424,8 +424,9 @@ take about 9 to 11 minutes each on hosted Windows), while the three guard shell 
 proofs there. The Windows gate builds all three binaries before the units (45-minute step, 44-minute test-binary
 bound) and witness (75-minute step, 600 s per command), within a 140-minute job. Landing B lands with both proven green
 on Windows: release-gate run 40189400665 (the nine units in 31 minutes, fresh and repair in 46.5). That run's conclusion is
-red from one step outside the guard, `Test sot-comm disambiguation (hermetic)` in its slow checks, which still runs comm
-suites pass 4 deleted (`test-join-disambiguation.sh: No such file or directory`, exit 127; queued, owed before the 0.7.0 gate). The command-owner unit proofs remain
+red from one step outside the guard, `Test sot-comm disambiguation (hermetic)` in its slow checks, which named comm
+suites pass 4 deleted (`test-join-disambiguation.sh: No such file or directory`, exit 127); the step is gone, since
+`rc-gate.sh` runs every comm suite that remains at each landing. The command-owner unit proofs remain
 in the per-landing sotd shard on all three systems. The table's rows and coverage check still require every test
 in exactly one row; the planner/check also requires every shard in exactly one landing or release job per system.
 Native Windows/macOS success and signal behavior require execution evidence; the configured matrix alone does not establish them.

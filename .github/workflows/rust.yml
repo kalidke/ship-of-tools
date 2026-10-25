@@ -34,9 +34,8 @@ on:
     # scripts/** is here because this workflow carries the launcher parse steps:
     # without it, a script-only PR — exactly the class that needs parsing — never
     # triggers them. Proven by PR #82 (a ps1-only hotfix) running zero Rust checks.
-    # comm/** added alongside the "Test sot-comm disambiguation" step below
-    # (PR #148 Codex review F10) — without it, a comm-only change (like the
-    # one that added that step) would never trigger this workflow at all.
+    # comm/** is here because the comm commands are thin wrappers over `sotd comm`, whose tests run here: a
+    # comm-only change must still run them.
     paths: ["rust/**", "scripts/**", "docs/tools/**", "comm/**", "agents/**", ".github/workflows/rust.yml", ".github/actions/**", ".github/test-shards.txt", ".github/wgl-depot.sh"]
   workflow_dispatch: {}
 
