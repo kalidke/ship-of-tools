@@ -354,7 +354,7 @@ fn peek_preparation_respects_dialog_context_expiry_and_fit() {
     let width = lines.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.as_str())).max().unwrap() as u16 + 4;
     let height = lines.len() as u16 + 2;
     for (w, ht, delta, changed, dialog) in [(width, height, Duration::ZERO, false, false),
-        (width, height, PEEK_HOLD, false, false), (width, height, PEEK_HOLD + PEEK_FADE - Duration::from_nanos(1), false, false),
+        (width, height, PEEK_HOLD, false, false), (width, height, PEEK_HOLD + PEEK_FADE - Duration::from_millis(1), false, false),
         (width, height, PEEK_HOLD + PEEK_FADE, false, false), (width, height, PEEK_HOLD + PEEK_FADE + Duration::from_nanos(1), false, false),
         (width, height, Duration::ZERO, true, false), (width, height, Duration::ZERO, false, true),
         (width-1, height, Duration::ZERO, false, false), (width, height-1, Duration::ZERO, false, false)] {

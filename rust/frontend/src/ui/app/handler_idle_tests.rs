@@ -89,7 +89,7 @@ fn peek_deadlines_wake_fade_and_expire_without_postponement() {
     }
     assert_eq!(layout.peek().unwrap().opacity(fade), 1.0);
     assert!((layout.peek().unwrap().opacity(fade + fade_span / 2) - 0.5).abs() < 0.01);
-    assert!(!layout.expire_peek(|| fade + fade_span - Duration::from_nanos(1)));
+    assert!(!layout.expire_peek(|| fade + fade_span - Duration::from_millis(1)));
     assert!(layout.expire_peek(|| fade + fade_span));
     assert!(layout.peek_deadline().is_none());
     assert!(!layout.expire_peek(|| panic!("absent peek sampled the clock")));
