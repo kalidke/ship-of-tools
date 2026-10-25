@@ -233,10 +233,11 @@ version; apply verifies before it mutates and restores on failure; launch fails 
 install. Proven only at the release gate: the Windows converge (an update with a window running) and an rc9.15 box's
 old prelude handing off to the first 0.7.0 candidate on a backend-only host with glibc 2.31. Since the publish guard's
 landing A, a push from an enrolled clone is refused when a new commit's snapshot (its files, paths and identities), a
-pushed ref name or a tag holds an entry of the private list, which lives per computer outside any repository
+pushed ref name or a tag holds an entry of the private list as a whole word, which lives per computer outside any repository
 (`publish-list.txt` in platform's config folder); a refusal names the commit or ref and the list's line, never the entry;
 the gate, release and pack entries enroll their clone first. Stated limits: a never-enrolled clone, `gh` text and
-`--no-verify`; landing B puts it in the installer.
+`--no-verify`; landing B puts it in the installer. Since 2026-10-25 no entry stands as a whole word anywhere in main's tree (three
+replaced in four files).
 
 **records.** Guarantees: the manual says what is true now; a design not built is marked unbuilt; no private names.
 After the reorganization the package page and the contracts are the only descriptive records a session loads; ADRs
