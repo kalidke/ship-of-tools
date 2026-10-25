@@ -65,6 +65,11 @@ see:
 
 Clear waiting when the job lands. A stale purple row lies to the user.
 
+A blocked question can carry its answers and its page:
+`<question> Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>`. A decision page named in `Page:` must
+use relative asset and navigation paths (`assets/app.js`, not `/assets/app.js`); decision grants do not support
+root-relative paths.
+
 ## Results
 
 If work produces a visual or browsable artifact, show it before final response:
