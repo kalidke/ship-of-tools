@@ -22,7 +22,7 @@ pub(in crate::ui) struct KeyPress<'a> {
 }
 
 pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventLoop, modifiers: ModifiersState, event: KeyEvent, is_synthetic: bool) {
-    let keep = match state.nav_prompt { Some(NavPrompt::ConfirmQuit { keep }) => Some(keep), _ => None };
+    let keep = state.focus_prompts.quit_choice();
     let quit_again = keep.is_some() && state.bindings.resolve(&event.logical_key, Some(&event.key_without_modifiers()),
         Modifiers { ctrl: modifiers.control_key(), alt: modifiers.alt_key(), shift: modifiers.shift_key(),
             super_: modifiers.super_key() }, false, |a| a == Action::Quit) == Some(Action::Quit);
@@ -38,7 +38,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
 }
 
 /// The raw-event boundary used by KeyboardInput and headless routing tests.
-fn input_continuation<S, P>(
+pub(in crate::ui) fn input_continuation<S, P>(
     state: &mut S, logical: &Key, repeat: bool, synthetic: bool, pressed: bool, keep: Option<bool>, quit_again: bool,
     resolve: impl FnOnce(&mut S) -> (Option<Action>, P), next: impl FnOnce(&mut S, InputRoute<P>),
 ) {
@@ -53,7 +53,7 @@ fn input_continuation<S, P>(
     next(state, InputRoute::Next(action, prepared));
 }
 
-enum InputRoute<P> { Prompt(QuitPromptStep), Next(Option<Action>, P) }
+pub(in crate::ui) enum InputRoute<P> { Prompt(QuitPromptStep), Next(Option<Action>, P) }
 
 fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &KeyEvent) -> (Option<Action>, (String, help::Context, Option<WsKey>)) {
     // A real, non-synthetic keypress, past this point — presence
@@ -81,13 +81,24 @@ fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &
 
 /// Routes one keypress through the layers in their fixed order; `Break` ends the keypress, `Continue` hands it on.
 fn route_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>, label: String, context: help::Context, was_destroy_pending: Option<WsKey>) -> ControlFlow<()> {
-    let KeyPress { event, ctrl, alt, shift, super_, .. } = key;
-    // Any key ends a stayed relaunch's dialog, and does nothing else unless the focused pane takes typed text: the
-    // dialog appears on its own, so that key is the user's.
-    if let Some(eaten) = dismiss_stay(&mut state.relaunch_stayed, context.consumes_text()) {
-        state.window.request_redraw();
+    let dismissed = state.focus_prompts.dismiss_stay_key(context.consumes_text());
+    stayed_key_continuation(state, dismissed, |state| state.window.request_redraw(), |state| {
+        route_key_layers(state, event_loop, key, label, context, was_destroy_pending)
+    })
+}
+
+pub(in crate::ui) fn stayed_key_continuation<S>(state: &mut S, dismissed: Option<bool>,
+    redraw: impl FnOnce(&mut S), next: impl FnOnce(&mut S) -> ControlFlow<()>) -> ControlFlow<()> {
+    if let Some(eaten) = dismissed {
+        redraw(state);
         if eaten { return Break(()); }
     }
+    next(state)
+}
+
+fn route_key_layers(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>, label: String,
+    context: help::Context, was_destroy_pending: Option<WsKey>) -> ControlFlow<()> {
+    let KeyPress { event, ctrl, alt, shift, super_, .. } = key;
     help_key(state, key, context.clone())?;
 
     tracing::info!(
@@ -123,7 +134,7 @@ fn route_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>,
     // switches; Repl = code typing + Enter to submit. Preview
     // and Llm are passive today — Escape returns focus to the
     // tree so the user is never stranded with no input target.
-    match state.focus {
+    match state.focus_prompts.focus() {
         PaneFocus::NavTree => {
             nav_tree_key(state, key, label.clone(), was_destroy_pending)?;
         }

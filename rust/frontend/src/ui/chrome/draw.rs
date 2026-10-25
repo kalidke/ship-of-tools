@@ -53,7 +53,7 @@ impl State {
         let lease_notice = self.leases.notice();
         let (clock_now, battery, last_key, version_stamp, version_skew) = self.chrome_labels();
         let mode = self.mode;
-        let focus = self.focus;
+        let focus = self.focus_prompts.focus();
         let help_context = self.help_context();
         let maximize_slot =
             maximize_slot(self.maximized, focus, self.leaving.as_ref().and_then(|l| l.line()).is_some());
@@ -214,7 +214,7 @@ impl State {
         // input field the user types into; a block cursor (▏) marks the
         // insertion point.
         let status = self.status.clone();
-        let nav_prompt_line = match &self.nav_prompt {
+        let nav_prompt_line = match self.focus_prompts.prompt() {
             Some(NavPrompt::CreateFile { input, .. }) => Some((format!("new file or dir/: {input}▏"), String::new())),
             Some(NavPrompt::ConfirmDelete { label, .. }) => Some((format!("delete {label}? [y/N]"), String::new())),
             Some(NavPrompt::ScaleEntry { input, .. }) => Some((format!("pixel size (nm): {input}▏"), String::new())),

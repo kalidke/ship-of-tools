@@ -130,25 +130,13 @@ pub(in crate::ui) fn quit_prompt_click(answers: Option<[Rect; 2]>, left_at: Opti
     step
 }
 
-/// A key while a stayed relaunch's dialog shows ends it. `None` when it was not showing; else whether the key is
-/// eaten: it is, except where the focused pane consumes typed text, since the dialog appears on its own and the
-/// user may be typing into the agent, and that character is theirs.
-pub(in crate::ui) fn dismiss_stay(relaunch_stayed: &mut bool, consumes_text: bool) -> Option<bool> {
-    std::mem::take(relaunch_stayed).then_some(!consumes_text)
-}
-
-/// A press while the dialog shows ends it and reaches no pane. True when it was showing.
-pub(in crate::ui) fn dismiss_stay_press(relaunch_stayed: &mut bool) -> bool {
-    std::mem::take(relaunch_stayed)
-}
-
 impl State {
     /// The close dialog this frame shows, on the chrome's grid (`close_dialog_text`).
     pub(in crate::ui) fn close_dialog(&self) -> Option<CloseDialog> {
         let size = self.terminal.size().ok()?;
         let line = self.leaving.as_ref().and_then(crate::lease::Leaving::line);
-        let text = close_dialog_text(self.nav_prompt.as_ref(), self.leases.notice(), line.as_deref(),
-            self.relaunch_stayed.then(|| self.leases.stay_notice()).flatten(), self.quit_hint.as_ref().map(|(h, _)| h.as_str()))?;
+        let text = close_dialog_text(self.focus_prompts.prompt(), self.leases.notice(), line.as_deref(),
+            self.focus_prompts.stayed().then(|| self.leases.stay_notice()).flatten(), self.focus_prompts.hint())?;
         Some(close_dialog(Rect::new(0, 0, size.width, size.height), text))
     }
 }

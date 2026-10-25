@@ -394,10 +394,8 @@ struct State {
     /// When the cached `battery_label` was last (re)computed. `None` forces a
     /// query on the first paint.
     last_battery_query: Option<std::time::Instant>,
-    /// Which pane has keyboard focus. Tree by default; Ctrl+Arrow moves
-    /// focus. REPL focus consumes character keys as code rather than
-    /// firing tree navigation.
-    focus: PaneFocus,
+    /// Window-wide focus, prompt editing and close notices; runtime state only.
+    focus_prompts: FocusPrompts,
     /// The four pane content rects from the most recent redraw, cached
     /// so keyboard handlers can size scroll steps to a real viewport
     /// (`PgUp/PgDn`, `Ctrl+u/d`). Updated at the end of every redraw.
@@ -613,18 +611,6 @@ struct State {
     /// valid in flight together (see `next_project_scan_gen`).
     project_scan_req_gen: HashMap<(HostKey, Option<String>), u64>,
     // ui/nav/files: nav prompts, the reveal walk and file transfers.
-    /// Active NavTree modal prompt (Ctrl+N new-file, future delete-confirm),
-    /// or `None` in the normal nav state. While `Some`, the NavTree key
-    /// handler routes keystrokes into the prompt before any nav shortcut and
-    /// the nav pane shows the prompt in its pinned rows. The quit question is
-    /// the exception: the close dialog shows it, and it never replaces another
-    /// prompt (`open_quit_prompt`).
-    nav_prompt: Option<NavPrompt>,
-    /// A relaunch stayed open (`stay_open`): the close dialog shows the stay's own text until a key or a press (`dismiss_stay`, `dismiss_stay_press`).
-    relaunch_stayed: bool,
-    /// The hint that the quit chord went to the program (`quit_chord`), and when it goes: the close dialog's panel
-    /// shows it, takes no keys, and `about_to_wait` ends it.
-    quit_hint: Option<(String, std::time::Instant)>,
     /// Node id of a file or directory just created via the Ctrl+N prompt,
     /// awaiting its `file.write` (file) or `dir.create` (dir) reply. When
     /// that reply lands matching this id, we refresh the parent dir's
@@ -661,14 +647,6 @@ struct State {
     /// and the target is STILL absent it's genuinely gone — stop. Cleared when
     /// the cursor lands.
     reveal_refetched: Option<(String, String)>,
-    /// Focus to restore when the scale-entry prompt resolves (confirm OR
-    /// cancel). Ctrl+S fires from the Preview pane, and `begin_scale_entry`
-    /// takes NavTree focus purely because that's where NavPrompt keystrokes
-    /// are handled — an implementation detail, not something the user asked
-    /// for. Without restoring, calibrating an image you're inspecting dumps
-    /// you in the tree, so your next zoom/pan keypress goes to the wrong pane.
-    /// `None` when no scale prompt is open.
-    scale_entry_prior_focus: Option<PaneFocus>,
     /// One-shot cursor reveal for a preview driven via a *workspace switch*
     /// (#4 fix). Cross-ws force-show previews and #1's persisted `nav.preview`
     /// are consumed in `switch_to_workspace`, which fires the preview body
@@ -1304,8 +1282,6 @@ impl State {
 
 
 
-#[cfg(test)]
-mod scan_tests;
 pub(crate) mod preview;
 pub(crate) mod render;
 use render::*;

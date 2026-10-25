@@ -144,29 +144,19 @@ pub(in crate::ui) struct PaneRects {
 }
 
 impl State {
-    /// The one write of `focus`. The quit question is a centred dialog and stays
-    /// until answered, whichever pane code moves focus to.
+    /// Delegate ordinary moves without changing prompts or notices.
     pub(in crate::ui) fn set_focus(&mut self, to: PaneFocus) {
-        self.focus = to;
+        self.focus_prompts.set_focus(to);
     }
 
-    /// Dismiss the active NavTree prompt without acting. The cancel message is
-    /// variant-aware so the user sees which prompt they backed out of.
+    pub(in crate::ui) fn apply_prompt_effect(&mut self, effect: PromptEffect) {
+        if let Some(status) = effect.status { self.status = status; }
+        if effect.redraw { self.window.request_redraw(); }
+    }
+
     pub(in crate::ui) fn cancel_nav_prompt(&mut self) {
-        self.status = match self.nav_prompt {
-            Some(NavPrompt::ConfirmDelete { .. }) => "delete · cancelled".to_string(),
-            Some(NavPrompt::ConfirmQuit { .. }) => "quit · cancelled".to_string(),
-            Some(NavPrompt::ScaleEntry { .. }) => "pixel size · cancelled".to_string(),
-            _ => "new file · cancelled".to_string(),
-        };
-        self.nav_prompt = None;
-        // Cancelling a scale prompt returns you where you were (see
-        // `scale_entry_prior_focus`). Only fires for that prompt; the other
-        // variants are opened FROM the tree and never moved focus.
-        if let Some(prior) = self.scale_entry_prior_focus.take() {
-            self.set_focus(prior);
-        }
-        self.window.request_redraw();
+        let effect = self.focus_prompts.cancel();
+        self.apply_prompt_effect(effect);
     }
 }
 

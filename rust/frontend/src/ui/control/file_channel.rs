@@ -16,7 +16,7 @@ impl State {
             return;
         };
         let mode = self.mode.label();
-        let focus = match self.focus {
+        let focus = match self.focus_prompts.focus() {
             PaneFocus::NavTree => "nav",
             PaneFocus::Preview => "preview",
             PaneFocus::Llm => "llm",

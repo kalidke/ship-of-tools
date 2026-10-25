@@ -11,3 +11,9 @@ pub(in crate::ui) mod keypress;
 pub(in crate::ui) mod global_keys;
 
 pub(in crate::ui) use paste::*;
+
+mod focus_prompts;
+pub(in crate::ui) use focus_prompts::{FocusPrompts, NavPrompt, PromptEffect};
+
+#[cfg(test)]
+mod focus_prompts_tests;

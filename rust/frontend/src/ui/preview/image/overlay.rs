@@ -383,81 +383,55 @@ impl State {
         if !Self::is_image_node_id(&node_id) {
             return false;
         }
-        self.nav_prompt = Some(NavPrompt::ScaleEntry {
-            node_id,
-            input: String::new(),
-        });
-        // Ctrl+S fires from the PREVIEW focus arm, but every NavPrompt's
-        // keystroke handling (chars / Backspace / Enter / Esc) lives in the
-        // NavTree arm — so without this the prompt opens and then silently
-        // swallows nothing: typing goes to the preview's zoom/pan keys and
-        // Enter never reaches `confirm_scale_entry`. Ctrl+N doesn't need this
-        // because it can only fire from NavTree focus in the first place.
-        // Codex v0.4.4 gate. Remember where the user actually was so resolving
-        // the prompt puts them back (5th-gate follow-up) — the focus move is
-        // ours, not theirs, so it shouldn't outlive the prompt.
-        self.scale_entry_prior_focus = Some(self.focus);
-        self.set_focus(PaneFocus::NavTree);
-        self.status = "pixel size (nm): ".to_string();
-        self.window.request_redraw();
+        let effect = self.focus_prompts.begin_scale(node_id);
+        self.apply_prompt_effect(effect);
         true
     }
 
-    /// Confirm the pixel-size prompt: validate the typed nanometres (no
-    /// nm, and fire `preview.set_scale`. The backend writes the sidecar and
-    /// replies with the re-rendered preview (carrying the F1-rescaled
-    /// `physical_scale`), which lands in the normal preview path — so the bar
-    /// appears from the authoritative value rather than a local guess that
-    /// could be wrong for a downsampled raster.
+    /// Validate nanometers and send the isotropic raw pixel size. The authoritative reply installs the scale.
     pub(in crate::ui) fn confirm_scale_entry(&mut self) {
-        let (node_id, raw) = match self.nav_prompt.as_ref() {
-            Some(NavPrompt::ScaleEntry { node_id, input }) => {
-                (node_id.clone(), input.trim().to_string())
-            }
-            _ => return,
-        };
-        let Some(nm_per_px) = parse_nm_pixel_size(&raw) else {
-            // Keep the prompt open so the user can correct the typo.
-            self.status = "pixel size · enter a positive number in nm".to_string();
-            self.window.request_redraw();
-            return;
-        };
-        // Isotropic from a single entry: both axes get the same value. The
-        // anisotropic (XZ) case is Phase 3 — one number can't describe it, and
-        // guessing would be worse than the Phase-1 lateral bar.
-        let generation = self.next_preview_gen();
-        if let Err(e) = self.send(crate::net::transport::OutgoingReq::PreviewSetScale {
-            node_id: node_id.clone(),
-            nm_per_px,
-            workspace_id: self.active_workspace_id.clone(),
-            generation,
-        }) {
-            tracing::warn!(error = %e, %node_id, "drop preview.set_scale — channel closed");
-            self.status = "pixel size · channel closed".to_string();
-            self.window.request_redraw();
-            return;
-        }
-        tracing::info!(%node_id, nm_per_px,
-            "scale entry → preview.set_scale");
-        // Arm the overlay so the bar is visible the moment the re-rendered
-        // preview lands; without a scale present the toggle would otherwise
-        // just re-open this prompt.
-        self.scalebar_on = true;
-        self.nav_prompt = None;
-        // Gate the success message on THIS save: the reply arrives as an
-        // ordinary preview install, so without a pending marker we'd either
-        // leave "saving…" up forever or congratulate the user on every
-        // unrelated preview.get.
-        self.scale_save_pending = Some((node_id.clone(), raw.clone()));
-        // Prompt resolved — hand focus back to the pane the user was actually
-        // in (the Preview they're calibrating), so their next zoom/pan key
-        // lands there rather than in the tree.
-        if let Some(prior) = self.scale_entry_prior_focus.take() {
-            self.set_focus(prior);
-        }
-        self.status = format!("pixel size {raw} nm · saving…");
-        self.window.request_redraw();
+        confirm_scale(self);
     }
+}
+
+/// Production scale confirmation port.
+pub(in crate::ui) trait ScalePromptContext {
+    fn prompts(&mut self) -> &mut FocusPrompts;
+    fn send_scale(&mut self, node_id: &str, nm_per_px: f64) -> Result<(), String>;
+    fn enable_scalebar(&mut self);
+    fn mark_scale_saved(&mut self, node_id: String, raw: String);
+    fn scale_effect(&mut self, effect: PromptEffect);
+}
+
+pub(in crate::ui) fn confirm_scale(context: &mut impl ScalePromptContext) {
+    let Some((node_id, raw)) = context.prompts().scale_draft() else { return; };
+    let Some(nm_per_px) = parse_nm_pixel_size(&raw) else {
+        context.scale_effect(PromptEffect::message("pixel size · enter a positive number in nm"));
+        return;
+    };
+    if let Err(e) = context.send_scale(&node_id, nm_per_px) {
+        tracing::warn!(error = %e, %node_id, "drop preview.set_scale — channel closed");
+        context.scale_effect(PromptEffect::message("pixel size · channel closed"));
+        return;
+    }
+    tracing::info!(%node_id, nm_per_px, "scale entry → preview.set_scale");
+    context.enable_scalebar();
+    context.prompts().complete_scale();
+    context.mark_scale_saved(node_id, raw.clone());
+    context.prompts().restore_scale_focus();
+    context.scale_effect(PromptEffect::message(format!("pixel size {raw} nm · saving…")));
+}
+
+impl ScalePromptContext for State {
+    fn prompts(&mut self) -> &mut FocusPrompts { &mut self.focus_prompts }
+    fn send_scale(&mut self, node_id: &str, nm_per_px: f64) -> Result<(), String> {
+        let generation = self.next_preview_gen();
+        self.send(OutgoingReq::PreviewSetScale { node_id: node_id.to_string(), nm_per_px,
+            workspace_id: self.active_workspace_id.clone(), generation }).map_err(|e| e.to_string())
+    }
+    fn enable_scalebar(&mut self) { self.scalebar_on = true; }
+    fn mark_scale_saved(&mut self, node_id: String, raw: String) { self.scale_save_pending = Some((node_id, raw)); }
+    fn scale_effect(&mut self, effect: PromptEffect) { self.apply_prompt_effect(effect); }
 }
 
 #[cfg(test)]

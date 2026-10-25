@@ -8,7 +8,7 @@ impl State {
     }
 
     pub(in crate::ui) fn help_context(&self) -> help::Context {
-        let pane = match self.focus {
+        let pane = match self.focus_prompts.focus() {
             PaneFocus::NavTree => help::Pane::Nav,
             PaneFocus::Preview => help::Pane::Preview,
             PaneFocus::Llm => help::Pane::Agent,
@@ -19,9 +19,9 @@ impl State {
                 _ => help::Pane::Repl,
             },
         };
-        let editing = self.focus == PaneFocus::Preview && self.edit_state.is_some();
-        let prompt = self.focus == PaneFocus::NavTree && self.nav_prompt.is_some();
-        let picker = self.focus == PaneFocus::NavTree && self.workspace_picker.is_some();
+        let editing = self.focus_prompts.focus() == PaneFocus::Preview && self.edit_state.is_some();
+        let prompt = self.focus_prompts.focus() == PaneFocus::NavTree && self.focus_prompts.prompt().is_some();
+        let picker = self.focus_prompts.focus() == PaneFocus::NavTree && self.workspace_picker.is_some();
         let file = if pane == help::Pane::Preview { self.previewed_files_path() }
             else if pane == help::Pane::Nav { self.cursored_files_path() } else { None };
         help::Context {
@@ -30,7 +30,7 @@ impl State {
             pages: self.preview_page.is_some_and(|(_, count)| count > 1),
             editable: self.preview_png.is_none() && self.previewed_files_path().is_some()
                 || self.concept.as_ref().is_some_and(|c| c.exists && self.concept_target_fired.as_ref() == Some(&c.target)),
-            confirmation: if matches!(self.nav_prompt, Some(NavPrompt::ConfirmDelete { .. })) && prompt {
+            confirmation: if matches!(self.focus_prompts.prompt(), Some(NavPrompt::ConfirmDelete { .. })) && prompt {
                 help::Confirmation::Delete
             } else if editing && self.edit_state.as_ref().is_some_and(|e| e.confirm_discard) {
                 help::Confirmation::Discard
@@ -40,8 +40,8 @@ impl State {
             workspace_locked: self.edit_state.is_some(),
             picker, prompt, editing, modal: editing || prompt || picker,
             restore: self.maximized || self.wide_preview && self.edit_state.is_none()
-                && self.nav_prompt.is_none() && self.workspace_picker.is_none()
-                && matches!(self.focus, PaneFocus::NavTree | PaneFocus::Preview),
+                && self.focus_prompts.prompt().is_none() && self.workspace_picker.is_none()
+                && matches!(self.focus_prompts.focus(), PaneFocus::NavTree | PaneFocus::Preview),
             session: self.tree.rows.get(self.tree.selected).is_some_and(|r| r.node.kind == "session"),
             alternate_screen: match pane {
                 help::Pane::Terminal => {
@@ -61,7 +61,7 @@ impl State {
 
     pub(in crate::ui) fn open_help_drawer(&mut self, context: help::Context) {
         if self.help_origin.is_none() {
-            self.help_origin = Some((self.focus, self.drawer, self.maximized));
+            self.help_origin = Some((self.focus_prompts.focus(), self.drawer, self.maximized));
         }
         self.help.open(context);
         self.drawer = DrawerContent::Help;

@@ -51,18 +51,6 @@ pub(in crate::ui) fn redraw_exits(should_exit: bool, leaving: bool, harness: boo
 /// The status when Ctrl+Q finds another prompt open: a typed name or entry is never discarded for the question.
 pub(in crate::ui) const QUIT_REFUSED: &str = "quit · finish or cancel the open prompt first";
 
-/// Opens the question unless another prompt is open, which it never overwrites (a file name typed in the tree stays
-/// when focus has moved to another pane). False when it refused.
-fn open_quit_prompt(prompt: &mut Option<NavPrompt>, keep: bool) -> bool {
-    if matches!(prompt, Some(p) if !matches!(p, NavPrompt::ConfirmQuit { .. })) {
-        tracing::info!("quit prompt: refused, another prompt is open");
-        return false;
-    }
-    *prompt = Some(NavPrompt::ConfirmQuit { keep });
-    tracing::info!(keep, "quit prompt: open");
-    true
-}
-
 /// How long final teardown may take after the terminal decision before the process ends itself.
 const BACKSTOP: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -156,10 +144,10 @@ pub(in crate::ui) fn end_loop(deadline: &ExitDeadline, code: i32, end: impl FnOn
 enum LeaveEffect { Redraw, Finish(i32) }
 
 /// Only leases and exit-state slots are available to this transition.
-fn begin_leave(leases: &crate::lease::Leases, prompt: &mut Option<NavPrompt>, leaving: &mut Option<crate::lease::Leaving>,
+fn begin_leave(leases: &crate::lease::Leases, prompts: &mut FocusPrompts, leaving: &mut Option<crate::lease::Leaving>,
     should_exit: &mut bool, intent: LeaveIntent, code: i32, now: std::time::Instant) -> LeaveEffect {
     tracing::info!(?intent, code, "window: leaving");
-    *prompt = None;
+    prompts.begin_leave();
     *leaving = leases.leave_all(intent, code, now);
     *should_exit = true;
     if leaving.is_some() { LeaveEffect::Redraw } else { LeaveEffect::Finish(code) }
@@ -170,14 +158,12 @@ fn begin_leave(leases: &crate::lease::Leases, prompt: &mut Option<NavPrompt>, le
 /// the status is cleared, since a relaunch command's "relaunching…" would contradict that notice (true); otherwise a
 /// grant took the leave first, and the wait goes on (false). A Keep that stays asks again, Yes selected, so the close
 /// dialog shows that notice: the window never seems to ignore the close.
-fn confirm_stay(leases: &crate::lease::Leases, prompt: &mut Option<NavPrompt>, leaving: &mut Option<crate::lease::Leaving>,
+fn confirm_stay(leases: &crate::lease::Leases, prompts: &mut FocusPrompts, leaving: &mut Option<crate::lease::Leaving>,
     should_exit: &mut bool, status: &mut String, now: std::time::Instant) -> bool {
     if !leaving.as_mut().is_some_and(|l| leases.stay(l, now)) {
         return false;
     }
-    if leaving.as_ref().is_some_and(|l| l.intent == LeaveIntent::Keep) {
-        let _ = open_quit_prompt(prompt, true);
-    }
+    prompts.record_stay(leaving.as_ref().expect("a successful stay has a leave").intent);
     *leaving = None;
     *should_exit = false;
     status.clear();
@@ -201,7 +187,7 @@ impl State {
     pub(in crate::ui) fn request_quit(&mut self, event_loop: &ActiveEventLoop, reason: ExitReason) {
         match exit_intent(reason, self.leaving.as_ref().map(|l| l.intent)) {
             ExitStep::Ask => {
-                if !open_quit_prompt(&mut self.nav_prompt, false) {
+                if !self.focus_prompts.ask_quit(false) {
                     self.status = QUIT_REFUSED.to_string();
                 }
                 self.window.request_redraw();
@@ -226,8 +212,7 @@ impl State {
     /// in; with none, at once. The window never ends the drawer's session
     /// itself: the daemon's Close ends it, and a Keep keeps it.
     pub(in crate::ui) fn leave(&mut self, event_loop: &ActiveEventLoop, intent: LeaveIntent, code: i32) {
-        self.relaunch_stayed = false;
-        match begin_leave(&self.leases, &mut self.nav_prompt, &mut self.leaving, &mut self.should_exit,
+        match begin_leave(&self.leases, &mut self.focus_prompts, &mut self.leaving, &mut self.should_exit,
             intent, code, std::time::Instant::now()) {
             LeaveEffect::Redraw => self.window.request_redraw(),
             LeaveEffect::Finish(code) => self.finish_exit(event_loop, code),
@@ -242,11 +227,9 @@ impl State {
     /// request, and a later grant would end this computer's sessions, so the window stays open. False when a grant
     /// took the leave first.
     pub(in crate::ui) fn stay_open(&mut self, now: std::time::Instant) -> bool {
-        let handover = self.leaving.as_ref().is_some_and(|l| l.intent == LeaveIntent::Handover);
-        let stayed = confirm_stay(&self.leases, &mut self.nav_prompt, &mut self.leaving, &mut self.should_exit,
+        let stayed = confirm_stay(&self.leases, &mut self.focus_prompts, &mut self.leaving, &mut self.should_exit,
             &mut self.status, now);
         if stayed {
-            self.relaunch_stayed = handover;
             self.window.request_redraw();
         }
         stayed

@@ -162,16 +162,17 @@ fn a_relaunch_that_stays_says_why_in_the_dialog_until_a_key() {
             assert!(all.contains(&words.join(" ")), "{area:?}: {want:?} is not in {rows:#?}");
         }
     }
-    let mut shown = true;
-    assert_eq!(dismiss_stay(&mut shown, false), Some(true), "a key ends it and is eaten");
-    assert!(!shown);
-    assert_eq!(dismiss_stay(&mut shown, false), None, "and only once");
+    let mut shown = FocusPrompts::new(PaneFocus::NavTree);
+    shown.record_stay(LeaveIntent::Handover);
+    assert_eq!(shown.dismiss_stay_key(false), Some(true), "a key ends it and is eaten");
+    assert!(!shown.stayed());
+    assert_eq!(shown.dismiss_stay_key(false), None, "and only once");
     // The agent, the terminal and the other text panes keep the key the user was typing.
-    shown = true;
-    assert_eq!(dismiss_stay(&mut shown, true), Some(false));
-    assert!(!shown, "it still ends the dialog");
+    shown.record_stay(LeaveIntent::Handover);
+    assert_eq!(shown.dismiss_stay_key(true), Some(false));
+    assert!(!shown.stayed(), "it still ends the dialog");
     // A press ends it too and reaches no pane.
-    shown = true;
-    assert!(dismiss_stay_press(&mut shown) && !shown);
-    assert!(!dismiss_stay_press(&mut shown), "and only once");
+    shown.record_stay(LeaveIntent::Handover);
+    assert!(shown.dismiss_stay_press() && !shown.stayed());
+    assert!(!shown.dismiss_stay_press(), "and only once");
 }

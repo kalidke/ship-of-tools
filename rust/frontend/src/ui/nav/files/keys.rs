@@ -16,12 +16,12 @@ pub(in crate::ui) fn nav_prompt_key(state: &mut State, key: KeyPress<'_>) -> Con
     // Backspace pops, Enter confirms, Esc cancels, and
     // any other nav key is swallowed so arrows / mode
     // switches don't disturb the tree mid-type.
-    if state.nav_prompt.is_some() {
+    if state.focus_prompts.prompt().is_some() {
         // ConfirmDelete is a y/N gate, not a text field:
         // 'y'/'Y' confirms, everything else (incl.
         // 'n'/'N'/Esc) cancels. CreateFile keeps its
         // text-input behaviour below — branch on variant.
-        if matches!(state.nav_prompt, Some(NavPrompt::ConfirmDelete { .. })) {
+        if matches!(state.focus_prompts.prompt(), Some(NavPrompt::ConfirmDelete { .. })) {
             match &event.logical_key {
                 _ if action == Some(Action::DeleteConfirm) && !event.repeat =>
                 {
@@ -39,7 +39,7 @@ pub(in crate::ui) fn nav_prompt_key(state: &mut State, key: KeyPress<'_>) -> Con
             _ if action == Some(Action::Confirm) && !event.repeat => {
                 // Route Enter to whichever text prompt is open.
                 if matches!(
-                    state.nav_prompt,
+                    state.focus_prompts.prompt(),
                     Some(NavPrompt::ScaleEntry { .. })
                 ) {
                     state.confirm_scale_entry();

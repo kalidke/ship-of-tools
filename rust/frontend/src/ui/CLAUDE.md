@@ -7,6 +7,7 @@ owns authoritative rows and identity; `session/row_presentation.rs` owns their p
 `session/result_ledger.rs` owns owed results and their attempts; `agent_pane::AgentPane` owns the selected agent pane.
 `drawer/repl::ReplModel` owns REPL row state, submissions, history, routing and lifecycle;
 `drawer/repl/presentation::ReplPresentation` owns window-wide REPL images, layout and scroll anchoring.
+`input::FocusPrompts` owns window-wide focus, nav prompts, captured scale focus, stayed notice and quit hint.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -144,8 +145,18 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   REPL independently of the general UI snapshot. Connected reopening still precedes session on_connected;
   destruction still reconciles the ledger before bounce/cache cleanup. The exhaustive router is unchanged.
 - Final window teardown has one shared three-second OS-clock process deadline, independent of the UI and transport runtime; it starts at the terminal decision, after any daemon acknowledgement and notice presentation.
-- `State::set_focus` (chrome/panes.rs) is the one write of `focus`; scan_tests.rs (`focus_written_only_by_set_focus`)
-  fails any other.
+- `FocusPrompts` privately owns focus, nav prompts, captured scale focus, stayed notice and quit hint. It lends
+  immutable observations and owned drafts, never takes State or exposes mutable storage. `State::set_focus` only
+  delegates; moves preserve prompts/notices. State retains admission, validation, sends, pending markers and redraw.
+  Create closes on send success; delete on either outcome. Scale success enables the bar, closes, arms save, then
+  restores captured focus once; failures retain text/focus. Cancellation consumes saved focus even after leave
+  removed its prompt. Quit alone refuses replacement. Begin leave clears only prompt/stayed; only successful lease
+  stay reopens Yes for Keep or records Handover stayed. Text consumers keep a stayed dismissal key. Raw-key, picker,
+  pointer presence/modal/focus/selection ordering, finite diagnostics and dialog precedence remain unchanged. Hints
+  use bound labels, take no input and wake/expire at four seconds including equality. All fields are runtime only.
+  Behavior tests replace both focus scans: `input::focus_prompts_tests`, `input::keypress::tests`,
+  `nav::files::prompt::tests`, `app::{exit,dialog}::tests`, `app::handler::idle_tests`, `chrome::panes::tests`.
+  They drive production continuations. Native window-close retains its scenarios and hosted gate requirement.
 - `AgentPane` privately owns the host/attachment target, size, selection/drag, selected client, host-bounded warm
   pool, hold, dial reason, request/client clocks, warning count, feed, discarded-input count and composed
   `PanePresentation`. Its operations never take State or expose mutable clients/screens/storage. The narrow
@@ -227,9 +238,9 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `app/`: the winit application (`App`), event-loop callbacks, one frame (`frame.rs`) and the quit prompt and exit.
 - `render/`: glyph text, the ratatui cell backend, textured quads, the surface and the capture readback.
 - `render/pass/`: the frame's render pass, one `State` method per section, called in order by `State::redraw`.
-- `chrome/`: panes and focus, the status line, nav spill, colours, the wireframe and the frame's chrome draw.
+- `chrome/`: pane geometry and focus delegation, the status line, nav spill, colours, the wireframe and the frame's chrome draw.
 - `chrome/strip/`: the session strip band under the panes.
-- `input/`: the action catalog, key and mouse routing, help and clipboard paste.
+- `input/`: FocusPrompts, the action catalog, key and mouse routing, help and clipboard paste.
 - `nav/`: the navigation pane's trees (mode, store, Modules, Sessions, Hosts).
 - `nav/files/`: Files mode's prompts, reveal walk, transfers and re-lists.
 - `session/`: `RowDirectory` owns listings/identity, `RowPresentation` owns metadata/order/flashes and `ResultLedger`
@@ -255,14 +266,13 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `connections.rs`: the window's view of its connection set: `send`, `send_to`, `default_host`, `ordered_hosts`.
 - `page_proxy.rs`: arming a local listener so a remote daemon's page opens, at a port of the window's own for a page a
   daemon op served, and the URL that opens it (`ensure_proxy_for_url`, `PageSource`, `bind_proxy_listener`).
-- `scan_tests.rs`: the remaining inherited focus-write and ROI-paste source scans; the leave contract is tested behaviorally by the inline begin_leave tests in app/exit.rs.
 - `agent_pane/`: the agent pane (its own page).
 - `app/`: the winit application and exit path (its own page).
 - `chrome/`: the pane chrome (its own page).
 - `control/`: agent control of the window (its own page).
 - `drawer/`: the bottom drawer (its own page).
 - `init/`: building the window's state at launch (its own page).
-- `input/`: key bindings, help and paste (its own page).
+- `input/`: FocusPrompts, its behavior tests, key bindings, help and paste (its own page).
 - `nav/`: the navigation pane's trees (its own page).
 - `persist/`: settings, discovery and resume state (its own page).
 - `preview/`: the preview pane (its own page).

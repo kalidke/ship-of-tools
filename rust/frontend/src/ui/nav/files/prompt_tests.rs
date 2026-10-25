@@ -32,26 +32,6 @@ fn build_new_file_node_id_joins_and_validates() {
 }
 
 #[test]
-fn nav_prompt_name_char_allowed_takes_one_trailing_slash_only() {
-    // `\` is never a name character.
-    assert!(!nav_prompt_name_char_allowed("", '\\'));
-    assert!(!nav_prompt_name_char_allowed("sub", '\\'));
-    // A leading `/` on an empty buffer is refused (a directory still
-    // needs a name).
-    assert!(!nav_prompt_name_char_allowed("", '/'));
-    // Ordinary chars are always fine on an empty or plain buffer.
-    assert!(nav_prompt_name_char_allowed("", 's'));
-    assert!(nav_prompt_name_char_allowed("sub", 'x'));
-    // A single trailing `/` is accepted once the buffer is non-empty.
-    assert!(nav_prompt_name_char_allowed("sub", '/'));
-    // Once the buffer ends with `/`, nothing more is accepted — neither
-    // another `/` (no double slash) nor an ordinary char (no embedded
-    // separator via "sub/" + "x" → "sub/x").
-    assert!(!nav_prompt_name_char_allowed("sub/", '/'));
-    assert!(!nav_prompt_name_char_allowed("sub/", 'x'));
-}
-
-#[test]
 fn split_create_name_takes_a_trailing_slash_as_a_directory_marker() {
     assert_eq!(split_create_name("a.txt"), (false, "a.txt".to_string()));
     assert_eq!(split_create_name("sub/"), (true, "sub".to_string()));
@@ -64,22 +44,6 @@ fn split_create_name_takes_a_trailing_slash_as_a_directory_marker() {
         build_new_file_node_id("files:x", &bare),
         Ok("files:x/sub".to_string())
     );
-}
-
-#[test]
-fn new_file_collision_detected_against_existing_sibling() {
-    // Mirror the confirm-path collision guard: scan the flat rows for the
-    // would-be new id. A sibling `a.txt` already under `files:sub` means
-    // creating another `a.txt` there collides; `b.txt` does not.
-    let mut t = TreeView::new();
-    t.set_root(
-        node("files:sub", "sub", true),
-        vec![node("files:sub/a.txt", "a.txt", false)],
-    );
-    let collide = build_new_file_node_id("files:sub", "a.txt").unwrap();
-    let fresh = build_new_file_node_id("files:sub", "b.txt").unwrap();
-    assert!(t.rows.iter().any(|r| r.node.id == collide));
-    assert!(!t.rows.iter().any(|r| r.node.id == fresh));
 }
 
 #[test]

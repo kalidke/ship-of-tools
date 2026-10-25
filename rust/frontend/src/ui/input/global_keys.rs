@@ -5,15 +5,9 @@ use std::ops::ControlFlow::{self, Break, Continue};
 use crate::ui::input::keypress::KeyPress;
 
 pub(in crate::ui) fn confirm_quit_key(state: &mut State, event_loop: &ActiveEventLoop, step: QuitPromptStep) {
-    match step {
-        QuitPromptStep::Stay { keep } => {
-            state.nav_prompt = Some(NavPrompt::ConfirmQuit { keep });
-            state.window.request_redraw();
-        }
-        QuitPromptStep::Cancel => state.cancel_nav_prompt(),
-        QuitPromptStep::Leave(i) => state.leave(event_loop, i, 0),
-        QuitPromptStep::Ignore => {}
-    }
+    let (effect, leave) = state.focus_prompts.answer_quit(step);
+    state.apply_prompt_effect(effect);
+    if let Some(intent) = leave { state.leave(event_loop, intent, 0); }
 }
 
 pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: help::Context) -> ControlFlow<()> {
@@ -26,7 +20,7 @@ pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: hel
     if action == Some(Action::ToggleHelp) {
         tracing::debug!(repeat = event.repeat, peek = state.help.peek.is_some(), ?context, "context help requested");
         if event.repeat { return Break(()); }
-        if state.drawer == DrawerContent::Help && state.focus == PaneFocus::Repl {
+        if state.drawer == DrawerContent::Help && state.focus_prompts.focus() == PaneFocus::Repl {
             state.close_help_drawer();
         } else if let Some(peek) = state.help.peek.take() {
             state.open_help_drawer(peek.context);
@@ -41,7 +35,7 @@ pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: hel
         if event.logical_key == Key::Named(NamedKey::Escape) { return Break(()); }
     }
     // Browsing Help consumes its own input; no typed search leaks into Julia.
-    if state.drawer == DrawerContent::Help && state.focus == PaneFocus::Repl
+    if state.drawer == DrawerContent::Help && state.focus_prompts.focus() == PaneFocus::Repl
         && !action.is_some_and(|a| matches!(a.spec().scope,
             crate::ui::input::keybindings::Scope::Global | crate::ui::input::keybindings::Scope::Workspace |
             crate::ui::input::keybindings::Scope::Restore | crate::ui::input::keybindings::Scope::Quit))
@@ -89,21 +83,40 @@ pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: hel
 /// says where to press it instead.
 pub(in crate::ui) fn quit_chord(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>, context: help::Context) -> ControlFlow<()> {
     let KeyPress { event, action, ctrl, alt, shift, super_ } = key;
+    let base = event.key_without_modifiers();
+    let bound_quit = || state.bindings.resolve(&event.logical_key, Some(&base), Modifiers { ctrl, alt, shift, super_ },
+        context.consumes_text(), |a| a == Action::Quit).is_some();
+    let route = quit_chord_route(action, event.repeat, context.pane, bound_quit);
+    quit_chord_continuation(state, route, |state| state.request_quit(event_loop, ExitReason::QuitKey), |state| {
+        let chord = state.bindings.first_label(Action::Quit);
+        state.focus_prompts.show_hint(&chord, std::time::Instant::now());
+        state.window.request_redraw();
+    }, |_| Continue(()))
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::ui) enum QuitChordRoute { Request, Consume, Hint, Next }
+
+pub(in crate::ui) fn quit_chord_route(action: Option<Action>, repeat: bool, pane: help::Pane,
+    bound_quit: impl FnOnce() -> bool) -> QuitChordRoute {
     if action == Some(Action::Quit) {
-        if !event.repeat { state.request_quit(event_loop, ExitReason::QuitKey); }
-        return Break(());
+        return if repeat { QuitChordRoute::Consume } else { QuitChordRoute::Request };
     }
-    if !event.repeat && matches!(context.pane, help::Pane::Agent | help::Pane::Terminal) {
-        let base = event.key_without_modifiers();
-        let quit = state.bindings.resolve(&event.logical_key, Some(&base), Modifiers { ctrl, alt, shift, super_ },
-            context.consumes_text(), |a| a == Action::Quit);
-        if quit.is_some() {
-            let hint = quit_hint(&state.bindings.first_label(Action::Quit));
-            state.quit_hint = Some((hint, std::time::Instant::now() + crate::ui::app::QUIT_HINT_HOLD));
-            state.window.request_redraw();
-        }
+    if !repeat && matches!(pane, help::Pane::Agent | help::Pane::Terminal) && bound_quit() {
+        return QuitChordRoute::Hint;
     }
-    Continue(())
+    QuitChordRoute::Next
+}
+
+/// A rejected quit chord installs its hint and still reaches the next input layer.
+pub(in crate::ui) fn quit_chord_continuation<S>(state: &mut S, route: QuitChordRoute,
+    request: impl FnOnce(&mut S), hint: impl FnOnce(&mut S), next: impl FnOnce(&mut S) -> ControlFlow<()>) -> ControlFlow<()> {
+    match route {
+        QuitChordRoute::Request => { request(state); Break(()) }
+        QuitChordRoute::Consume => Break(()),
+        QuitChordRoute::Hint => { hint(state); next(state) }
+        QuitChordRoute::Next => next(state),
+    }
 }
 
 /// The status when the quit chord, as the platform and the user's bindings label it, did not close the window: it is
@@ -237,7 +250,7 @@ pub(in crate::ui) fn navigation_chords(state: &mut State, key: KeyPress<'_>, lab
                 DrawerContent::Help => preset.drawer.or(Some(crate::ui::persist::settings::Slot::Repl)),
                 _ => preset.drawer,
             };
-            state.set_focus(state.focus.move_in(dir, &columns, drawer));
+            state.focus_prompts.move_focus(dir, &columns, drawer);
             // Keymap-driven label (Ctrl+Arrow on Windows/Linux,
             // Cmd+Arrow on macOS) instead of a hard-coded
             // "Ctrl+" prefix, which used to print "Ctrl+Left"
@@ -312,9 +325,9 @@ pub(in crate::ui) fn layout_chords(state: &mut State, key: KeyPress<'_>, label: 
     if state.wide_preview
         && !state.maximized
         && state.edit_state.is_none()
-        && state.nav_prompt.is_none()
+        && state.focus_prompts.prompt().is_none()
         && state.workspace_picker.is_none()
-        && matches!(state.focus, PaneFocus::NavTree | PaneFocus::Preview)
+        && matches!(state.focus_prompts.focus(), PaneFocus::NavTree | PaneFocus::Preview)
         && action == Some(Action::RestoreLayout)
     {
         state.wide_preview = false;
@@ -332,7 +345,7 @@ pub(in crate::ui) fn layout_chords(state: &mut State, key: KeyPress<'_>, label: 
     // drawer-close bounce.
     if action == Some(Action::ToggleWidePreview) {
         state.wide_preview = !state.wide_preview;
-        if state.wide_preview && state.focus == PaneFocus::Llm {
+        if state.wide_preview && state.focus_prompts.focus() == PaneFocus::Llm {
             state.set_focus(PaneFocus::Preview);
         }
         state.last_key = Some(label);
@@ -388,7 +401,7 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
         state.drawer = state.drawer.toggle(slot);
         if state.drawer.is_open() {
             state.set_focus(PaneFocus::Repl);
-        } else if state.focus == PaneFocus::Repl {
+        } else if state.focus_prompts.focus() == PaneFocus::Repl {
             state.set_focus(PaneFocus::NavTree);
         }
         // The Monitor's subscription follows the toggle (ADR 0020).
@@ -409,7 +422,7 @@ pub(in crate::ui) fn scroll_line_chords(state: &mut State, key: KeyPress<'_>) ->
     // through to the pty so tmux/shell keep alt-keybinds.
     if matches!(action, Some(Action::ScrollLineUp | Action::ScrollLineDown)) {
         let row_step: i32 = 1;
-        match (state.focus, action) {
+        match (state.focus_prompts.focus(), action) {
             (PaneFocus::Repl, Some(Action::ScrollLineUp)) => {
                 state.repl_model.scroll_line(true);
                 state.window.request_redraw();
@@ -449,7 +462,7 @@ pub(in crate::ui) fn table_scroll_key(state: &mut State, key: KeyPress<'_>) -> C
     // anything when the current doc actually contains a
     // table wider than the preview pane; otherwise the
     // redraw clamp keeps scroll at 0.
-    if state.focus == PaneFocus::Preview
+    if state.focus_prompts.focus() == PaneFocus::Preview
         && state.preview_png.is_none()
         && state.edit_state.is_none()
     {

@@ -15,46 +15,50 @@ pub(in crate::ui) fn cursor_moved(state: &mut State, position: PhysicalPosition<
 }
 
 pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop, btn_state: ElementState, button: MouseButton) {
-    // A real press, whichever button and whatever it does below: presence
-    // (design point A) precedes and is independent of the click's own
-    // handling. A release is not a press: a window can be sent one for a
-    // click that began elsewhere.
-    state.report_presence(btn_state == ElementState::Pressed);
-    // While the quit question is open, a press answers it and goes no further (`quit_prompt_click`).
-    if btn_state == ElementState::Pressed && matches!(state.nav_prompt, Some(NavPrompt::ConfirmQuit { .. })) {
-        let (x, y) = ((state.cursor_px.0 - state.chrome_origin_x) / state.cell_w.max(1.0),
-            (state.cursor_px.1 - state.chrome_origin_y) / state.cell_h.max(1.0));
-        let left_at = (button == MouseButton::Left && x >= 0.0 && y >= 0.0).then_some((x as u16, y as u16));
-        let step = quit_prompt_click(state.close_dialog().and_then(|d| d.answers), left_at);
-        confirm_quit_key(state, event_loop, step);
-        return;
-    }
-    // A press ends a stayed relaunch's dialog, as a key does, and reaches no pane.
-    if btn_state == ElementState::Pressed && dismiss_stay_press(&mut state.relaunch_stayed) {
-        state.window.request_redraw();
-        return;
-    }
-    if button == MouseButton::Left {
-        match btn_state {
-            ElementState::Pressed => {
-                // Mouse-down inside the LLM pane starts a new
-                // selection at the clicked cell and grabs
-                // focus so subsequent keys (Ctrl+Shift+C copy)
-                // land in the LLM arm. Outside the pane: clear
-                // any existing selection so a click elsewhere
-                // dismisses the highlight.
-                let cell = state.llm_cell_at_px(state.cursor_px, true);
-                if cell.is_some() { state.set_focus(PaneFocus::Llm); }
+    pointer_continuation(state, btn_state == ElementState::Pressed, button == MouseButton::Left,
+        |state, pressed| state.report_presence(pressed),
+        |state| {
+            if state.focus_prompts.quit_choice().is_none() { return None; }
+            let (x, y) = ((state.cursor_px.0 - state.chrome_origin_x) / state.cell_w.max(1.0),
+                (state.cursor_px.1 - state.chrome_origin_y) / state.cell_h.max(1.0));
+            let left_at = (button == MouseButton::Left && x >= 0.0 && y >= 0.0).then_some((x as u16, y as u16));
+            Some(quit_prompt_click(state.close_dialog().and_then(|d| d.answers), left_at))
+        },
+        |state, step| confirm_quit_key(state, event_loop, step),
+        |state| {
+            let dismissed = state.focus_prompts.dismiss_stay_press();
+            if dismissed { state.window.request_redraw(); }
+            dismissed
+        },
+        |state| {
+            let cell = state.llm_cell_at_px(state.cursor_px, true);
+            agent_press_continuation(state, cell, |state| state.set_focus(PaneFocus::Llm), |state, cell| {
                 if state.agent_pane.press(cell) { state.window.request_redraw(); }
-            }
-            ElementState::Released => {
-                // Mouse-up just ends the drag — selection
-                // stays painted so the user has time to hit
-                // Ctrl+Shift+C.
-                state.agent_pane.release();
-            }
-        }
+            });
+        },
+        |state| { state.agent_pane.release(); });
+}
+
+/// Presence precedes modal interception; a release ends drag even when a dialog is showing.
+pub(in crate::ui) fn pointer_continuation<S>(state: &mut S, pressed: bool, left: bool,
+    presence: impl FnOnce(&mut S, bool), question: impl FnOnce(&mut S) -> Option<QuitPromptStep>,
+    answer: impl FnOnce(&mut S, QuitPromptStep), dismiss: impl FnOnce(&mut S) -> bool,
+    press: impl FnOnce(&mut S), release: impl FnOnce(&mut S)) {
+    presence(state, pressed);
+    if pressed {
+        if let Some(step) = question(state) { answer(state, step); return; }
+        if dismiss(state) { return; }
     }
+    if left {
+        if pressed { press(state); } else { release(state); }
+    }
+}
+
+/// The same clicked cell selects the pane and begins its selection, in that order. Outside clears selection.
+pub(in crate::ui) fn agent_press_continuation<S, C>(state: &mut S, cell: Option<C>,
+    focus: impl FnOnce(&mut S), press: impl FnOnce(&mut S, Option<C>)) {
+    if cell.is_some() { focus(state); }
+    press(state, cell);
 }
 
 /// The wheel dispatcher needs only pointer geometry and its routing effects, never general State access.
@@ -134,7 +138,7 @@ fn dispatch_wheel(context: &mut impl WheelContext, modifiers: ModifiersState, de
 impl WheelContext for State {
     fn report_wheel_presence(&mut self) { self.report_presence(true); }
     fn wheel_geometry(&mut self) -> WheelGeometry {
-        WheelGeometry { cell_w: self.cell_w, cell_h: self.cell_h, focus: self.focus, residue: self.wheel_residue_y }
+        WheelGeometry { cell_w: self.cell_w, cell_h: self.cell_h, focus: self.focus_prompts.focus(), residue: self.wheel_residue_y }
     }
     fn scroll_preview_horizontal(&mut self, pixels: f32) {
         self.md_table_scroll_px = (self.md_table_scroll_px + pixels).max(0.0);
@@ -145,7 +149,7 @@ impl WheelContext for State {
 }
 
 fn route_wheel_rows(state: &mut State, rows_above: i32) {
-    if state.drawer == DrawerContent::Help && state.focus == PaneFocus::Repl {
+    if state.drawer == DrawerContent::Help && state.focus_prompts.focus() == PaneFocus::Repl {
         state.help.move_selection(-(rows_above as isize), &state.bindings);
         state.window.request_redraw();
         return;
@@ -155,7 +159,7 @@ fn route_wheel_rows(state: &mut State, rows_above: i32) {
     // and LLM's are the tail — sign flip lives in each
     // pane's apply step so a single positive `rows_above`
     // feels like "show content above" everywhere.
-    match state.focus {
+    match state.focus_prompts.focus() {
         PaneFocus::Repl if state.drawer == DrawerContent::Terminal => {
             wheel_terminal(state, rows_above);
         }

@@ -120,8 +120,8 @@ impl State {
         // focus move) are actually visible.
         self.wide_preview = false;
         self.set_focus(PaneFocus::Llm);
-        // After `set_focus`, so an open quit prompt is dismissed
-        // before the agent pane takes the bytes.
+        // Focus moves leave an open quit question intact; its next key
+        // still answers the dialog before reaching the agent pane.
         // ADR 0042 slice L1b fix 3: routed through the ONE
         // session-pane input dispatcher, exactly like
         // `forward_clipboard_paste_to_llm` — a live capsule

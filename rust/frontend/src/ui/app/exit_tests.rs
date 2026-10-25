@@ -1,27 +1,5 @@
 use super::*;
 
-/// Ctrl+Q reaches `request_quit` from any pane, so a prompt left open in the tree can be there: its typed text
-/// stays, and the question does not open over it.
-#[test]
-fn the_question_never_overwrites_another_prompt() {
-    for other in [
-        NavPrompt::CreateFile { dir_node_id: "files:".into(), input: "typed-name".into() },
-        NavPrompt::ConfirmDelete { node_id: "files:a".into(), label: "a".into() },
-        NavPrompt::ScaleEntry { node_id: "files:a".into(), input: "1".into() },
-    ] {
-        let mut prompt = Some(other.clone());
-        assert!(!open_quit_prompt(&mut prompt, false));
-        assert!(std::mem::discriminant(prompt.as_ref().unwrap()) == std::mem::discriminant(&other),
-            "the open prompt is untouched");
-        if let Some(NavPrompt::CreateFile { input, .. }) = &prompt {
-            assert_eq!(input, "typed-name");
-        }
-    }
-    let mut prompt = None;
-    assert!(open_quit_prompt(&mut prompt, false) && matches!(prompt, Some(NavPrompt::ConfirmQuit { keep: false })));
-    assert!(open_quit_prompt(&mut prompt, true), "the question may reopen itself");
-}
-
 #[test]
 fn redraw_exit_table() {
     // A leaving window exits only from `about_to_wait`.
@@ -37,8 +15,11 @@ fn redraw_exit_table() {
 #[test]
 fn quit_transitions_log_only_finite_fields() {
     let log = sot_platform::test_log::capture();
-    let mut prompt = None;
-    open_quit_prompt(&mut prompt, false);
+    let mut prompt = FocusPrompts::new(PaneFocus::NavTree);
+    prompt.ask_quit(false);
+    prompt.open_create("files:".into());
+    assert!(!prompt.ask_quit(true));
+    let _ = quit_prompt_click(None, None);
     let _ = quit_prompt_step(false, &Key::Character("typed-fixture-text".into()), false, false);
     let leases = crate::lease::Leases::new(true, vec![]);
     let mut leaving = None;
@@ -46,7 +27,7 @@ fn quit_transitions_log_only_finite_fields() {
     assert_eq!(begin_leave(&leases, &mut prompt, &mut leaving, &mut should_exit,
         LeaveIntent::Keep, 0, std::time::Instant::now()), LeaveEffect::Finish(0));
     let text = log.text();
-    for message in ["quit prompt: open", "quit prompt: key", "window: leaving"] {
+    for message in ["quit prompt: open", "quit prompt: refused, another prompt is open", "quit prompt: key", "quit prompt: press", "window: leaving"] {
         assert!(text.contains(message), "missing transition event: {message}");
     }
     assert!(!text.contains("typed-fixture-text"));
@@ -63,10 +44,11 @@ async fn leave_close_keep_and_handover_only_leave_leases() {
         let leases = crate::lease::Leases::new(false, vec![host.clone()]);
         tokio::time::timeout(std::time::Duration::from_secs(5), leases.before_data_connection(&host, &path, None, |_| {}))
             .await.unwrap().unwrap();
-        let (mut prompt, mut leaving, mut should_exit) = (Some(NavPrompt::ConfirmQuit { keep: true }), None, false);
+        let (mut prompt, mut leaving, mut should_exit) = (FocusPrompts::new(PaneFocus::NavTree), None, false);
+        prompt.ask_quit(true);
         let now = std::time::Instant::now();
         let effect = begin_leave(&leases, &mut prompt, &mut leaving, &mut should_exit, intent, code, now);
-        assert!(should_exit && prompt.is_none(), "exit state is set before the UI effect");
+        assert!(should_exit && prompt.prompt().is_none(), "exit state is set before the UI effect");
         assert_eq!(effect, LeaveEffect::Redraw);
         assert!(matches!(leaving.as_mut().unwrap().poll(now), LeaveStep::Wait(_)));
         assert_eq!(leaving.as_ref().unwrap().exit_code, code);
@@ -81,7 +63,7 @@ async fn leave_close_keep_and_handover_only_leave_leases() {
     }
     for intent in [LeaveIntent::Close, LeaveIntent::Keep, LeaveIntent::Handover] {
         let leases = crate::lease::Leases::new(true, vec![]);
-        let (mut prompt, mut leaving, mut should_exit) = (None, None, false);
+        let (mut prompt, mut leaving, mut should_exit) = (FocusPrompts::new(PaneFocus::NavTree), None, false);
         assert_eq!(begin_leave(&leases, &mut prompt, &mut leaving, &mut should_exit, intent, 0,
             std::time::Instant::now()), LeaveEffect::Finish(0));
         assert!(should_exit && leaving.is_none());
@@ -94,6 +76,33 @@ async fn leave_close_keep_and_handover_only_leave_leases() {
 /// relaunch command's status does not outlast the stay. A leave with no request unanswered never stays.
 #[tokio::test]
 async fn a_stay_keeps_the_window_open_until_the_next_leave() {
+    stay_scenarios(false).await;
+}
+
+#[tokio::test]
+async fn only_a_successful_stay_updates_the_prompt_notices() {
+    let leases = crate::lease::Leases::new(true, vec![]);
+    let mut prompt = FocusPrompts::new(PaneFocus::Preview);
+    prompt.begin_scale("files:image.png".into());
+    prompt.record_stay(LeaveIntent::Handover);
+    let now = std::time::Instant::now();
+    prompt.show_hint("Fixture+Q", now);
+    let before = prompt.prompt().cloned();
+    let mut leaving = None;
+    let mut should_exit = false;
+    let mut status = "unchanged".to_string();
+    assert!(!confirm_stay(&leases, &mut prompt, &mut leaving, &mut should_exit, &mut status, now));
+    assert_eq!(prompt.prompt(), before.as_ref());
+    assert!(prompt.stayed());
+    assert!(prompt.hint().is_some());
+    assert_eq!(status, "unchanged");
+    assert!(!should_exit);
+    prompt.cancel();
+    assert_eq!(prompt.focus(), PaneFocus::Preview);
+    stay_scenarios(true).await;
+}
+
+async fn stay_scenarios(protect_other: bool) {
     use crate::lease::{grant_tests::bind, leave_tests::{leave_fake, logged, is_leave, finish}, LeaveStep};
     use std::time::Duration;
     for (intent, code, said, at_deadline, answer) in [(LeaveIntent::Keep, 0, "keep not done", false, "granted"),
@@ -119,9 +128,14 @@ async fn a_stay_keeps_the_window_open_until_the_next_leave() {
             tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
         };
         asked.await.unwrap();
-        let (mut prompt, mut leaving, mut should_exit, mut status) = (None, None, false, "relaunching…".to_string());
+        let (mut prompt, mut leaving, mut should_exit, mut status) = (FocusPrompts::new(PaneFocus::NavTree), None, false, "relaunching…".to_string());
         let t0 = std::time::Instant::now();
         assert_eq!(begin_leave(&leases, &mut prompt, &mut leaving, &mut should_exit, intent, code, t0), LeaveEffect::Redraw);
+        if protect_other && intent == LeaveIntent::Keep {
+            prompt.open_create("files:sub".into());
+            for c in "retained".chars() { prompt.push_char(c); }
+        }
+        let before = prompt.prompt().cloned();
         let at = if at_deadline { t0 + sot_protocol::ops::lease::KEEP_ACK_WAIT + Duration::from_secs(1) } else { t0 };
         if at_deadline {
             assert_eq!(leaving.as_mut().unwrap().poll(at), LeaveStep::Stay);
@@ -131,8 +145,12 @@ async fn a_stay_keeps_the_window_open_until_the_next_leave() {
         assert!(leaving.is_none() && !should_exit && !redraw_exits(should_exit, leaving.is_some(), false),
             "a stayed window would exit at its next redraw or wake");
         let asked = (intent == LeaveIntent::Keep).then_some(true);
-        assert_eq!(prompt.as_ref().map(|p| matches!(p, NavPrompt::ConfirmQuit { keep: true })), asked,
-            "a Keep that stays asks again, Yes selected; a relaunch does not");
+        if protect_other && intent == LeaveIntent::Keep {
+            assert_eq!(prompt.prompt(), before.as_ref(), "Keep must not overwrite another prompt");
+        } else {
+            assert_eq!(prompt.quit_choice(), asked, "a Keep that stays asks again, Yes selected");
+        }
+        assert_eq!(prompt.stayed(), intent == LeaveIntent::Handover);
         assert_eq!(status, "", "the relaunch command's status outlasted the stay");
         assert!(leases.notice().is_some_and(|n| n.starts_with(said)), "the stay's notice: {:?}", leases.notice());
         open.send(answer).unwrap();
@@ -145,10 +163,12 @@ async fn a_stay_keeps_the_window_open_until_the_next_leave() {
         leases.before_data_connection(&next, &path, None, |_| {}).await.expect("a stayed window takes a new lease");
         assert_eq!(begin_leave(&leases, &mut prompt, &mut leaving, &mut should_exit, LeaveIntent::Keep, 0, t0),
             LeaveEffect::Redraw);
+        assert!(!prompt.stayed(), "the next leave clears the UI notice");
         assert_eq!(leases.notice(), None, "the next leave ends the stay's notice");
         assert!(!confirm_stay(&leases, &mut prompt, &mut leaving, &mut should_exit, &mut status, t0),
             "a Keep with no request unanswered");
         assert!(leaving.is_some() && should_exit);
+        assert!(prompt.prompt().is_none() && !prompt.stayed());
         if granted {
             assert!(logged(&log, 1).await.first().is_some_and(|e| is_leave(e, "keep")), "the next leave reached the late grant");
         }

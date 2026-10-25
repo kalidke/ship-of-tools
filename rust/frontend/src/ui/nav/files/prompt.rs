@@ -1,61 +1,6 @@
-//! Ctrl+N and Ctrl+D name prompts in the Files tree: the prompt state, the new-entry id and the confirm paths.
+//! Files prompt admission, validation, sends and pending operations. FocusPrompts owns editing and storage.
 
 use super::*;
-/// A one-line modal prompt that floats over the NavTree and steals
-/// keystrokes while it's `Some` (mirrors how `WorkspacePicker` and
-/// `EditState` intercept keys). Each variant carries the context the
-/// confirm path needs. The enum is the extension point: new nav-pane
-/// modals add a variant here and a match arm in the key handler +
-/// renderer, without touching the surrounding nav code.
-#[derive(Clone)]
-pub(in crate::ui) enum NavPrompt {
-    /// Ctrl+N in Files mode: type the name of a new file, or — with a
-    /// trailing `/` — a new directory, to create in `dir_node_id`. Enter
-    /// confirms (validates + fires `file.write` with empty content, or
-    /// `dir.create` when the name ends with `/`), Esc cancels. `input` is
-    /// the live name buffer.
-    CreateFile {
-        /// `files:`-prefixed id of the directory that will contain the new
-        /// entry (`files:` for the project root). The new entry's id is
-        /// `build_new_file_node_id(dir_node_id, input)` after stripping any
-        /// trailing `/`.
-        dir_node_id: String,
-        /// Live name buffer, rendered after `new file or dir/: ` on the
-        /// status line. `nav_prompt_push_char` guarantees any `/` in here
-        /// is exactly one trailing character.
-        input: String,
-    },
-    /// Ctrl+D in Files mode: confirm trashing the cursored file. `y`/`Y`
-    /// fires `file.delete` for `node_id`; `n`/`N`/Esc/any other key cancels.
-    /// No text input — it's a y/N gate. `label` is the file's display name,
-    /// shown in the `delete <label>? [y/N]` status line.
-    ConfirmDelete {
-        /// `files:`-prefixed id of the file to delete.
-        node_id: String,
-        /// Display label of the row, echoed in the confirm prompt.
-        label: String,
-    },
-    /// Ctrl+Q in navigation focus: ask whether to keep the daemon and its
-    /// sessions running. `keep` is the highlighted answer (No by default);
-    /// Tab flips the choice, Enter confirms by key identity, every other non-repeat key cancels, and repeats are ignored.
-    ConfirmQuit { keep: bool },
-    /// Ctrl+S on a raster that carries NO physical scale (ADR 0034 §4 live
-    /// entry): type the pixel size in MICRONS. Enter validates + fires
-    /// `preview.set_scale` (which persists the sidecar and returns the
-    /// re-rendered preview), Esc cancels.
-    ///
-    /// Nanometers, the entry unit (see `parse_nm_pixel_size`): there is no
-    /// conversion, and the wire and the on-disk sidecar stay in nm (ADR 0034 §2).
-    /// The typed number is the RAW/original pixel size — never the
-    /// served/downsampled one — so it is sent verbatim.
-    ScaleEntry {
-        /// `files:`-prefixed id of the previewed raster being calibrated.
-        node_id: String,
-        /// Live nm-per-pixel buffer, rendered after `pixel size (nm): `.
-        input: String,
-    },
-}
-
 /// Outcome of a Ctrl+N create round-trip, as `finish_pending_create` needs
 /// it: `FileWriteResult`'s `Ok`/`Conflict`/`Error` and `DirCreateResult`'s
 /// `Ok`/`Error` collapse onto these three cases — a conflicting `file.write`
@@ -95,26 +40,9 @@ fn build_new_file_node_id(dir_node_id: &str, name: &str) -> Result<String, &'sta
     Ok(format!("{dir_node_id}{sep}{name}"))
 }
 
-/// Whether typing `c` onto the live Ctrl+N prompt buffer `buf` is allowed.
-/// `\` is never a name character here. `/` is accepted only as a single
-/// TRAILING character — it's the "make this a directory" marker that
-/// `split_create_name` strips before validating the rest of the name via
-/// `build_new_file_node_id` — so a second `/`, or any character typed after
-/// one, is refused. Pure so the invariant ("at most one `/`, and only at the
-/// end") is testable without a live prompt buffer.
-fn nav_prompt_name_char_allowed(buf: &str, c: char) -> bool {
-    if c == '\\' {
-        return false;
-    }
-    if c == '/' {
-        return !buf.is_empty() && !buf.ends_with('/');
-    }
-    !buf.ends_with('/')
-}
-
 /// Splits the Ctrl+N prompt's trimmed input into "is this a directory" and
 /// the bare name to hand `build_new_file_node_id`. A single trailing `/` —
-/// `nav_prompt_name_char_allowed` guarantees the buffer can carry at most
+/// `FocusPrompts::push_char` guarantees the buffer can carry at most
 /// one, and only trailing — marks a directory and is stripped; anything
 /// else is a file name, unchanged.
 fn split_create_name(name: &str) -> (bool, String) {
@@ -155,52 +83,19 @@ impl State {
         } else {
             parent_files_node_id(&row.node.id)
         };
-        self.nav_prompt = Some(NavPrompt::CreateFile {
-            dir_node_id,
-            input: String::new(),
-        });
-        self.status = "new file or dir/: ".to_string();
-        self.window.request_redraw();
+        let effect = self.focus_prompts.open_create(dir_node_id);
+        self.apply_prompt_effect(effect);
         true
     }
 
-    /// Append a typed character to the active new-file-or-folder prompt's
-    /// name buffer, gated by `nav_prompt_name_char_allowed` (see there for
-    /// the trailing-`/`-only rule). Everything it allows is validated again
-    /// on Enter by `build_new_file_node_id`.
+    /// Edit through the owner's variant-specific input rules.
     pub(in crate::ui) fn nav_prompt_push_char(&mut self, c: char) {
-        match self.nav_prompt.as_mut() {
-            Some(NavPrompt::CreateFile { input, .. }) => {
-                if !nav_prompt_name_char_allowed(input, c) {
-                    return;
-                }
-                input.push(c);
-                self.window.request_redraw();
-            }
-            // Scale entry is a NUMBER: filter at the source (as CreateFile does
-            // for separators) so only digits and a single decimal point can be
-            // typed. `parse_nm_pixel_size` still validates on Enter — this
-            // just stops obvious junk from ever entering the buffer.
-            Some(NavPrompt::ScaleEntry { input, .. }) => {
-                if c.is_ascii_digit() || (c == '.' && !input.contains('.')) {
-                    input.push(c);
-                    self.window.request_redraw();
-                }
-            }
-            _ => {}
-        }
+        if self.focus_prompts.push_char(c) { self.window.request_redraw(); }
     }
 
-    /// Backspace one char off whichever text prompt is active.
+    /// Backspace redraws even an empty text prompt.
     pub(in crate::ui) fn nav_prompt_backspace(&mut self) {
-        match self.nav_prompt.as_mut() {
-            Some(NavPrompt::CreateFile { input, .. })
-            | Some(NavPrompt::ScaleEntry { input, .. }) => {
-                input.pop();
-                self.window.request_redraw();
-            }
-            _ => {}
-        }
+        if self.focus_prompts.backspace() { self.window.request_redraw(); }
     }
 
     /// Confirm the new-file-or-folder prompt: validate the name + check for a
@@ -211,53 +106,7 @@ impl State {
     /// success, remember the id so the reply can refresh the dir listing,
     /// close the prompt, and show a "creating …" status.
     pub(in crate::ui) fn confirm_create_file(&mut self) {
-        let (dir_node_id, name) = match self.nav_prompt.as_ref() {
-            Some(NavPrompt::CreateFile { dir_node_id, input }) => {
-                (dir_node_id.clone(), input.trim().to_string())
-            }
-            _ => return,
-        };
-        let (is_dir, bare_name) = split_create_name(&name);
-        let kind = if is_dir { "new dir" } else { "new file" };
-        let new_id = match build_new_file_node_id(&dir_node_id, &bare_name) {
-            Ok(id) => id,
-            Err(reason) => {
-                self.status = format!("{kind} · {reason}");
-                self.window.request_redraw();
-                return;
-            }
-        };
-        // Sibling-collision guard: refuse if any existing row already carries
-        // the would-be id (a file or dir of that name already lives here).
-        if self.tree.rows.iter().any(|r| r.node.id == new_id) {
-            self.status = format!("{kind} · '{bare_name}' already exists");
-            self.window.request_redraw();
-            return;
-        }
-        let req = if is_dir {
-            OutgoingReq::DirCreate {
-                node_id: new_id.clone(),
-                workspace_id: self.active_workspace_id.clone(),
-            }
-        } else {
-            OutgoingReq::FileWrite {
-                node_id: new_id.clone(),
-                content: String::new(),
-                expected_version: None,
-                workspace_id: self.active_workspace_id.clone(),
-            }
-        };
-        if let Err(e) = self.send(req) {
-            tracing::warn!(error = %e, %new_id, is_dir, "drop {kind} — channel closed");
-            self.status = format!("{kind} · channel closed");
-            self.window.request_redraw();
-            return;
-        }
-        tracing::info!(%new_id, is_dir, "navtree.create → {kind}");
-        self.pending_created_node_id = Some(new_id);
-        self.nav_prompt = None;
-        self.status = format!("creating {bare_name}…");
-        self.window.request_redraw();
+        confirm_create(self);
     }
 
     /// The shared tail of a Ctrl+N create round-trip: does nothing unless
@@ -316,12 +165,8 @@ impl State {
             self.window.request_redraw();
             return false;
         }
-        self.nav_prompt = Some(NavPrompt::ConfirmDelete {
-            node_id: row.node.id.clone(),
-            label: row.node.label.clone(),
-        });
-        self.status = format!("delete {}? [y/N]", row.node.label);
-        self.window.request_redraw();
+        let effect = self.focus_prompts.open_delete(row.node.id.clone(), row.node.label.clone());
+        self.apply_prompt_effect(effect);
         true
     }
 
@@ -330,26 +175,81 @@ impl State {
     /// the prompt, and show a "deleting …" status. On a closed channel,
     /// surface it and leave nothing pending.
     pub(in crate::ui) fn confirm_delete_file(&mut self) {
-        let (node_id, label) = match self.nav_prompt.as_ref() {
-            Some(NavPrompt::ConfirmDelete { node_id, label }) => (node_id.clone(), label.clone()),
-            _ => return,
-        };
-        if let Err(e) = self.send(OutgoingReq::FileDelete {
-            node_id: node_id.clone(),
-            workspace_id: self.active_workspace_id.clone(),
-        }) {
-            tracing::warn!(error = %e, %node_id, "drop file.delete — channel closed");
-            self.status = "delete · channel closed".to_string();
-            self.nav_prompt = None;
-            self.window.request_redraw();
+        confirm_delete(self);
+    }
+}
+
+/// Production confirmation port; drafts are owned before callbacks.
+pub(in crate::ui) trait FilePromptContext {
+    fn prompts(&mut self) -> &mut FocusPrompts;
+    fn file_exists(&self, node_id: &str) -> bool;
+    fn send_create(&mut self, node_id: &str, is_dir: bool) -> Result<(), String>;
+    fn send_delete(&mut self, node_id: &str) -> Result<(), String>;
+    fn mark_created(&mut self, node_id: String);
+    fn mark_deleted(&mut self, node_id: String);
+    fn prompt_effect(&mut self, effect: PromptEffect);
+}
+
+pub(in crate::ui) fn confirm_create(context: &mut impl FilePromptContext) {
+    let Some((dir_node_id, name)) = context.prompts().create_draft() else { return; };
+    let (is_dir, bare_name) = split_create_name(&name);
+    let kind = if is_dir { "new dir" } else { "new file" };
+    let new_id = match build_new_file_node_id(&dir_node_id, &bare_name) {
+        Ok(id) => id,
+        Err(reason) => {
+            context.prompt_effect(PromptEffect::message(format!("{kind} · {reason}")));
             return;
         }
-        tracing::info!(%node_id, "navtree.delete_file → file.delete");
-        self.pending_deleted_node_id = Some(node_id);
-        self.nav_prompt = None;
-        self.status = format!("deleting {label}…");
-        self.window.request_redraw();
+    };
+    if context.file_exists(&new_id) {
+        context.prompt_effect(PromptEffect::message(format!("{kind} · '{bare_name}' already exists")));
+        return;
     }
+    if let Err(e) = context.send_create(&new_id, is_dir) {
+        tracing::warn!(error = %e, %new_id, is_dir, "drop {kind} — channel closed");
+        context.prompts().complete_create(false);
+        context.prompt_effect(PromptEffect::message(format!("{kind} · channel closed")));
+        return;
+    }
+    tracing::info!(%new_id, is_dir, "navtree.create → {kind}");
+    context.mark_created(new_id);
+    context.prompts().complete_create(true);
+    context.prompt_effect(PromptEffect::message(format!("creating {bare_name}…")));
+}
+
+pub(in crate::ui) fn confirm_delete(context: &mut impl FilePromptContext) {
+    let Some((node_id, label)) = context.prompts().delete_target() else { return; };
+    if let Err(e) = context.send_delete(&node_id) {
+        tracing::warn!(error = %e, %node_id, "drop file.delete — channel closed");
+        context.prompts().complete_delete(false);
+        context.prompt_effect(PromptEffect::message("delete · channel closed"));
+        return;
+    }
+    tracing::info!(%node_id, "navtree.delete_file → file.delete");
+    context.mark_deleted(node_id);
+    context.prompts().complete_delete(true);
+    context.prompt_effect(PromptEffect::message(format!("deleting {label}…")));
+}
+
+impl FilePromptContext for State {
+    fn prompts(&mut self) -> &mut FocusPrompts { &mut self.focus_prompts }
+    fn file_exists(&self, node_id: &str) -> bool { self.tree.rows.iter().any(|r| r.node.id == node_id) }
+    fn send_create(&mut self, node_id: &str, is_dir: bool) -> Result<(), String> {
+        let req = if is_dir {
+            OutgoingReq::DirCreate { node_id: node_id.to_string(), workspace_id: self.active_workspace_id.clone() }
+        } else {
+            OutgoingReq::FileWrite { node_id: node_id.to_string(), content: String::new(), expected_version: None,
+                workspace_id: self.active_workspace_id.clone() }
+        };
+        self.send(req).map_err(|e| e.to_string())
+    }
+    fn send_delete(&mut self, node_id: &str) -> Result<(), String> {
+        self.send(OutgoingReq::FileDelete { node_id: node_id.to_string(), workspace_id: self.active_workspace_id.clone() })
+            .map_err(|e| e.to_string())
+    }
+    fn mark_created(&mut self, node_id: String) { self.pending_created_node_id = Some(node_id); }
+    fn mark_deleted(&mut self, node_id: String) { self.pending_deleted_node_id = Some(node_id); }
+    fn prompt_effect(&mut self, effect: PromptEffect) { self.apply_prompt_effect(effect); }
 }
 
 #[cfg(test)]

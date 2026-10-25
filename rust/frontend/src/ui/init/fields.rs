@@ -96,9 +96,6 @@ impl State {
             repl_presentation: ReplPresentation::default(),
             evt_rx,
             status: "offline · no transport".to_string(),
-            nav_prompt: None,
-            relaunch_stayed: false,
-            quit_hint: None,
             pending_created_node_id: None,
             pending_deleted_node_id: None,
             notify_sticky_until: None,
@@ -124,7 +121,6 @@ impl State {
             preview_page_raster_pending: None,
             preview_reraster_keep_view: false,
             preview_scale: None,
-            scale_entry_prior_focus: None,
             scale_save_pending: None,
             // Default off; `--start-scalebar` arms it for the headless capture
             // harness (no `b` keypress). Still gated on a present scale at draw.
@@ -213,7 +209,7 @@ impl State {
             wheel_angle: 0.0,
             wheel_vel: 0.0,
             wheel_anim_last: None,
-            focus: initial_focus(cli),
+            focus_prompts: FocusPrompts::new(initial_focus(cli)),
             tree_scroll: 0,
             preview_scroll: 0,
             md_table_scroll_px: 0.0,
