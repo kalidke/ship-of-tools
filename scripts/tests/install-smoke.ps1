@@ -105,8 +105,21 @@ $prefix = Join-Path $env:LOCALAPPDATA 'sot'
 $repoName = $(if ($env:SOT_SMOKE_REPO) { $env:SOT_SMOKE_REPO } elseif ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'kalidke/ship-of-tools' })
 $env:SOT_INSTALL_REPO = $repoName
 
+# The profile is scratch-guard's. CreateNew never opens or replaces an existing private list.
+$policyDir = Join-Path $env:LOCALAPPDATA 'sot\config'
+New-Item -ItemType Directory -Force -Path $policyDir | Out-Null
+$policyStream = [IO.File]::Open((Join-Path $policyDir 'publish-list.txt'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+try {
+    $policyBytes = [Text.Encoding]::UTF8.GetBytes("# synthetic install smoke policy`nsmoke-denied-publication`n")
+    $policyStream.Write($policyBytes, 0, $policyBytes.Length)
+} finally { $policyStream.Dispose() }
+
 function Invoke-Entry([string]$Label, [string[]]$ArgList) {
-    Invoke-Logged $Label 'powershell.exe' (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script:Entry) + $ArgList)
+    # An absolute entry path identifies no caller; the workflow checkout must not be enrolled by a smoke.
+    Push-Location -LiteralPath $script:Smoke
+    try {
+        Invoke-Logged $Label 'powershell.exe' (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script:Entry) + $ArgList)
+    } finally { Pop-Location }
 }
 
 # ---- the pack -Archive takes, made from the artifacts ----------------------------------------------------------------

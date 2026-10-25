@@ -68,6 +68,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# This fixture provisions only synthetic policy. It never opens or replaces an existing private list.
+mkdir -p "$HOME/.config/sot"
+( set -C; printf '# synthetic install smoke policy\nsmoke-denied-publication\n' > "$HOME/.config/sot/publish-list.txt" ) \
+    || die 'scratch config already has a publish list or cannot provision its synthetic policy'
+
 sha_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 
 # ---- the folder --archive takes, made from the artifacts ------------------------------------------------------------
@@ -133,7 +138,7 @@ expect_eq() {  # <what> <got> <want>
 }
 
 # The entry, as a person runs it from the checkout; the run's artifacts only ever by --archive.
-entry() { bash "$CHECKOUT/scripts/install.sh" "$@"; }
+entry() { ( cd "$SMOKE" || exit 1; bash "$CHECKOUT/scripts/install.sh" "$@" ); }
 
 # BEFORE-TAG by its own installer: this entry's prelude fetches the tag's install.sh and runs it with these arguments.
 install_before() {
