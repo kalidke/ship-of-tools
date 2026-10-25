@@ -4,16 +4,28 @@
 fixture scanner
 ok 'clean commit push'
 selected=0
-for field in message text binary-before binary-after buffer-boundary path rename author-name author-email committer-name committer-email symlink odd-path; do
+for field in message text line-start line-end in-path host-label after-at hyphenated punctuation underscore non-ascii-boundaries later-word binary-before binary-after buffer-boundary path rename author-name author-email committer-name committer-email symlink odd-path; do
     [ -z "${PUBLISH_GUARD_CASE:-}" ] || [ "$PUBLISH_GUARD_CASE" = "$field" ] || continue
     selected=$((selected + 1))
     reset_case
     case "$field" in
         message) commit 'a GLIMMERDENY message' ;;
         text) printf 'GLIMMERDENY\n' > "$R/data"; commit ;;
+        line-start) printf 'GLIMMERDENY begins here\n' > "$R/data"; commit ;;
+        line-end) printf 'ends here GLIMMERDENY\n' > "$R/data"; commit ;;
+        in-path) printf '/srv/GLIMMERDENY/x\n' > "$R/data"; commit ;;
+        host-label) printf 'GLIMMERDENY.example.org\n' > "$R/data"; commit ;;
+        after-at) printf 'user@GLIMMERDENY\n' > "$R/data"; commit ;;
+        hyphenated) printf 'probe-GLIMMERDENY\n' > "$R/data"; commit ;;
+        punctuation) printf '([GLIMMERDENY]),;\n' > "$R/data"; commit ;;
+        underscore) printf '_GLIMMERDENY_\n' > "$R/data"; commit ;;
+        non-ascii-boundaries) printf '\303\251GLIMMERDENY\303\251\n' > "$R/data"; commit ;;
+        later-word) printf 'xglimmerdeny glimmerdenying [GLIMMERDENY]\n' > "$R/data"; commit ;;
         binary-before) printf 'glimmerdeny\000tail\n' > "$R/data"; commit ;;
         binary-after) printf 'head\000glimmerdeny\n' > "$R/data"; commit ;;
-        buffer-boundary) { printf '%08190d' 0; printf 'glimmerdeny\n'; } > "$R/data"; commit ;;
+        buffer-boundary)
+            # Keep the entry at the same byte offset, with a whole-word boundary after the padding.
+            { printf '%08189d ' 0; printf 'glimmerdeny\n'; } > "$R/data"; commit ;;
         path) mkdir -p "$R/parent"; printf 'fine\n' > "$R/parent/glimmerdeny file"; commit ;;
         odd-path)
             blob=$(printf fine | git -C "$R" hash-object -w --stdin)
@@ -39,6 +51,53 @@ if [ -n "${PUBLISH_GUARD_CASE:-}" ]; then
     [ "$selected" = 1 ] || fail 'unknown selected regression'
     printf '1..%s\n' "$count"; exit 0
 fi
+# These acceptance regressions are red under substring matching. Distinct destinations
+# keep each push observable without advancing the clean control used by later denials.
+for field in word-prefix word-suffix word-both digit-prefix digit-suffix path branch identity message; do
+    reset_case
+    destination="refs/heads/longer-$field"
+    case "$field" in
+        word-prefix) printf 'xGLIMMERDENY\n' > "$R/data"; commit ;;
+        word-suffix) printf 'GLIMMERDENYing\n' > "$R/data"; commit ;;
+        word-both) printf 'xGLIMMERDENYing\n' > "$R/data"; commit ;;
+        digit-prefix) printf '7GLIMMERDENY\n' > "$R/data"; commit ;;
+        digit-suffix) printf 'GLIMMERDENY7\n' > "$R/data"; commit ;;
+        path) mkdir -p "$R/glimmerdenying"; printf fine > "$R/glimmerdenying/x"; commit ;;
+        branch) commit; destination=refs/heads/glimmerdenying ;;
+        identity)
+            GIT_AUTHOR_NAME=xglimmerdeny GIT_AUTHOR_EMAIL=glimmerdenying@example.invalid \
+                GIT_COMMITTER_NAME=glimmerdenying GIT_COMMITTER_EMAIL=xglimmerdeny@example.invalid \
+                git -C "$R" commit -q --allow-empty -m clean ;;
+        message) commit 'xglimmerdeny glimmerdenying' ;;
+    esac
+    accept "longer word $field" origin "HEAD:$destination"
+done
+# Dots are literal entry bytes; the same ASCII boundary rule applies at both ends.
+printf '%s\n' '# synthetic dotted policy' '' 'glimmerdeny.example.org' > "$POLICY"
+for field in alone punctuation later-word; do
+    reset_case
+    case "$field" in
+        alone) printf 'GLIMMERDENY.EXAMPLE.ORG\n' > "$R/data" ;;
+        punctuation) printf '(GlImMeRdEnY.ExAmPlE.OrG):443\n' > "$R/data" ;;
+        later-word) printf 'xglimmerdeny.example.org glimmerdeny.example.orging [GLIMMERDENY.EXAMPLE.ORG]\n' > "$R/data" ;;
+    esac
+    commit
+    reject "dotted entry $field" 'line 3' origin main
+done
+for field in prefix suffix literal-dots; do
+    reset_case
+    case "$field" in
+        prefix) printf 'xglimmerdeny.example.org\n' > "$R/data" ;;
+        suffix) printf 'glimmerdeny.example.orging\n' > "$R/data" ;;
+        literal-dots) printf 'glimmerdenyXexampleYorg\n' > "$R/data" ;;
+    esac
+    commit
+    accept "dotted entry $field" origin "HEAD:refs/heads/dotted-$field"
+done
+printf 'glimmerdeny.glimmerdeny\n' > "$POLICY"
+reset_case
+printf 'xglimmerdeny.glimmerdeny.glimmerdeny\n' > "$R/data"; commit
+reject 'overlapping dotted entry after an embedded occurrence' 'line 1' origin main
 reset_case
 # A literal slash-spanning policy is checked against full paths, not individual tree components.
 printf 'parent/leaf\n' > "$POLICY"
