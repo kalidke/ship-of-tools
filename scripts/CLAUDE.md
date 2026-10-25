@@ -325,10 +325,13 @@ Guarantees and boundaries:
   hash, exact recorded location and policy. A previously placed hook that changes before the final check is FAIL.
   Unix uses Bash on PATH; Windows derives Bash from Git for Windows, never WSL's Bash. Native paths reach Bash as
   forward-slash absolute paths; setup remains the only hook-placement and policy-validation owner.
-- Every child started by `install/publish.rs` (caller discovery/origin/common-directory reads, source verification,
-  enrollment and the read-only check) has 30 s wall clock through exit and complete stdout/stderr. `install/cmd.rs`
-  drains both streams while waiting, observes the leader without releasing its owned group/job, and allows at most
-  5 s more for termination, reap and output cleanup. It ends only its own containment domain. A timeout, signal,
+- Each single Git read started by `install/publish.rs` (caller discovery/origin/common-directory reads and source
+  HEAD/diff verification) has 60 s wall clock through exit and complete stdout/stderr. The setup script has 300 s
+  per enrollment or read-only check: its many Git/Bash processes need more time on Windows, including concurrent
+  installs/tests. Tests pass short bounds explicitly through the discovery parameter; no environment variable can
+  shorten the product's bounds. `install/cmd.rs` drains both streams while waiting, observes the leader without
+  releasing its owned group/job, and allows at most 5 s more for termination, reap and output cleanup. It ends only
+  its own containment domain. A timeout, signal,
   failed read or incomplete cleanup is an operational failure: discovery/enrollment return `Stop`, the final check
   records `Found::fail`; partial output never becomes ready or setup status 3/4. This bound does not extend to the
   separate installer observation calls noted above.
@@ -336,7 +339,7 @@ Guarantees and boundaries:
   summary. It names the checked base and recognized caller (including a caller sharing the base's common directory),
   readiness/provisioning or preserved conflict, and the limited discovery scope: installed base and recognized caller
   only, other clones not discovered. Pending enrollment names its clones and remains pending until actually checked.
-  A failed check takes precedence over these results and human steps.
+  Empty parts are omitted when joining the verdict. A failed check takes precedence over these results and human steps.
 - Setup never changes `core.hooksPath`. Any effective explicit setting, including empty/default or worktree/global
   overrides, is a named conflict with the clone-local migration command. An unknown/edited/nonregular/linked slot is
   preserved. Replacement requires an exact shipped shim or a matching recorded installed hash; publication is whole

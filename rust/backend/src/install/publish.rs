@@ -16,12 +16,22 @@ struct Clone {
     common: PathBuf,
 }
 
+#[derive(Clone, Copy)]
+struct Bounds {
+    git: Duration,
+    setup: Duration,
+}
+
+// One Git read is much smaller than setup's many Git/Bash processes, especially under parallel Windows tests.
+const INSTALL_BOUNDS: Bounds = Bounds { git: Duration::from_secs(60), setup: Duration::from_secs(300) };
+
 pub(super) struct Plan {
     env: Env,
     git: PathBuf,
     bash: PathBuf,
     list: PathBuf,
     caller: Option<Clone>,
+    bounds: Bounds,
 }
 
 pub(super) struct Enrolled<'a> {
@@ -36,8 +46,8 @@ fn stop(detail: impl Into<String>) -> Stop {
     Stop::at("publish guard", 1, detail)
 }
 
-fn run(command: &mut Command, purpose: &str) -> Result<cmd::Ran, Stop> {
-    let ran = cmd::output_within(command, Duration::from_secs(30));
+fn run(command: &mut Command, purpose: &str, bound: Duration) -> Result<cmd::Ran, Stop> {
+    let ran = cmd::output_within(command, bound);
     if ran.code.is_none() { return Err(stop(format!("{purpose}: {}", ran.last_said()))); }
     Ok(ran)
 }
@@ -115,10 +125,10 @@ fn same_origin(actual: &str, expected: &str) -> bool {
 impl Plan {
     pub(super) fn capture() -> Result<Self, Stop> {
         let cwd = std::env::current_dir().map_err(|_| stop("cannot read the original working folder"))?;
-        Self::discover(&cwd, &super::origin(), Env::process())
+        Self::discover(&cwd, &super::origin(), Env::process(), INSTALL_BOUNDS)
     }
 
-    fn discover(cwd: &Path, origin: &str, mut env: Env) -> Result<Self, Stop> {
+    fn discover(cwd: &Path, origin: &str, mut env: Env, bounds: Bounds) -> Result<Self, Stop> {
         // Git's repository/config selectors cannot redirect discovery or the later setup. Preserve actual global
         // and system config: an effective hooksPath there is the owner's choice, and must remain a conflict.
         for key in ["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
@@ -142,8 +152,8 @@ impl Plan {
         if !config.is_absolute() {
             return Err(stop("the platform config folder must be absolute"));
         }
-        let mut plan = Self { env, git, bash, list: config.join("publish-list.txt"), caller: None };
-        let top = run(plan.git(cwd).args(["rev-parse", "--show-toplevel"]), "caller discovery")?;
+        let mut plan = Self { env, git, bash, list: config.join("publish-list.txt"), caller: None, bounds };
+        let top = run(plan.git(cwd).args(["rev-parse", "--show-toplevel"]), "caller discovery", plan.bounds.git)?;
         if !top.ok() {
             if top.code == Some(128) && top.err.contains("not a git repository") {
                 say("publish guard: original working folder is outside Git; no caller clone enrolled");
@@ -152,7 +162,7 @@ impl Plan {
             return Err(stop("cannot identify the caller checkout"));
         }
         let checkout = PathBuf::from(top.first_line());
-        let url = run(plan.git(&checkout).args(["config", "--local", "--no-includes", "--get", "remote.origin.url"]), "caller origin")?;
+        let url = run(plan.git(&checkout).args(["config", "--local", "--no-includes", "--get", "remote.origin.url"]), "caller origin", plan.bounds.git)?;
         if url.code == Some(1) || (url.ok() && !same_origin(&url.first_line(), origin)) {
             say(&format!("publish guard: unrelated caller checkout kept: {}", checkout.display()));
         } else if !url.ok() {
@@ -170,7 +180,7 @@ impl Plan {
     }
 
     fn clone_at(&self, checkout: &Path) -> Result<Clone, Stop> {
-        let ran = run(self.git(checkout).args(["rev-parse", "--git-common-dir"]), "common Git directory")?;
+        let ran = run(self.git(checkout).args(["rev-parse", "--git-common-dir"]), "common Git directory", self.bounds.git)?;
         let path = PathBuf::from(ran.first_line());
         let path = if path.is_absolute() { path } else { checkout.join(path) };
         let common = if ran.ok() { path.canonicalize().ok() } else { None };
@@ -179,11 +189,11 @@ impl Plan {
     }
 
     fn verified_source(&self, source: &Path, commit: &str) -> Result<bool, Stop> {
-        let head = run(self.git(source).args(["rev-parse", "HEAD"]), "source HEAD verification")?;
+        let head = run(self.git(source).args(["rev-parse", "HEAD"]), "source HEAD verification", self.bounds.git)?;
         let paths = ["scripts/setup-publish-guard.sh", "scripts/hooks/pre-push", "scripts/hooks/pre-push-shim", "scripts/hooks/publish-guard-lib.sh"];
         Ok(head.ok() && head.first_line() == commit
             && paths.iter().all(|p| std::fs::symlink_metadata(source.join(p)).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink()))
-            && run(self.git(source).args(["diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--"]).args(paths), "source diff verification")?.ok())
+            && run(self.git(source).args(["diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--"]).args(paths), "source diff verification", self.bounds.git)?.ok())
     }
 
     fn setup(&self, source: &Path, clone: &Clone, check: bool) -> Result<cmd::Ran, Stop> {
@@ -192,7 +202,7 @@ impl Plan {
             .arg(bash_path(&clone.checkout)?).arg("--list").arg(bash_path(&self.list)?).arg("--installer");
         if let Some(tmp) = self.env.get_nonempty("TMPDIR") { c.env("TMPDIR", bash_path(Path::new(tmp))?); }
         if check { c.arg("--check-only"); }
-        let ran = run(&mut c, if check { "read-only publish guard check" } else { "publish guard enrollment" })?;
+        let ran = run(&mut c, if check { "read-only publish guard check" } else { "publish guard enrollment" }, self.bounds.setup)?;
         for line in ran.out.lines().chain(ran.err.lines()) { say(line); }
         Ok(ran)
     }

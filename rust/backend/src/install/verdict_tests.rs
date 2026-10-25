@@ -4,6 +4,24 @@ fn found(fail: Option<&str>, steps: &[&str]) -> Found {
     Found { fail: fail.map(String::from), steps: steps.iter().map(|s| (*s).to_string()).collect(), pass: "Ship of Tools 1.2.3 at 0123abcde on this computer".into(), ..Found::default() }
 }
 
+#[test]
+fn checked_results_join_only_nonempty_verdict_parts() {
+    let mut f = Found::default();
+    f.checked("publish guard scope: known clones only");
+    f.checked("");
+    f.checked("publish guard checked base: ready");
+    let checked = "publish guard scope: known clones only; publish guard checked base: ready";
+    assert_eq!(line(&f, ""), (format!("PASS: {checked}"), 0));
+    assert_eq!(line(&f, "; pinned"), (format!("PASS: {checked}; pinned"), 0));
+    f.pass = "installed".into();
+    assert_eq!(line(&f, ""), (format!("PASS: installed; {checked}"), 0));
+    f.step("");
+    f.step("install Julia");
+    f.step("");
+    assert_eq!(line(&f, "; pinned"), (format!("ONE STEP LEFT: install Julia; {checked}; pinned"), 0));
+    assert_eq!(line(&Found::default(), "; pinned"), ("PASS: pinned".into(), 0));
+}
+
 /// One verdict, in its words: a run that reached its checks ends PASS, ONE STEP LEFT (both exit 0, the install is whole)
 /// or FAIL (exit 1), and a pinned run's line says where it is pinned whichever it is; a stop is a FAIL naming its
 /// check, with its own exit code (2 for a refusal) and the tail the run had written; a stop that lands while a step is

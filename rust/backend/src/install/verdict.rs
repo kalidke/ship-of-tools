@@ -87,11 +87,12 @@ pub(super) fn line(found: &Found, pin: &str) -> (String, i32) {
     if let Some(fail) = &found.fail {
         return (format!("FAIL: {fail}{pin}"), 1);
     }
-    let checked = if found.checked.is_empty() { String::new() } else { format!("; {}", found.checked.join("; ")) };
-    if !found.steps.is_empty() {
-        return (format!("ONE STEP LEFT: {}{checked}{pin}", found.steps.join("; then ")), 0);
-    }
-    (format!("PASS: {}{checked}{pin}", found.pass), 0)
+    let steps = found.steps.iter().filter(|part| !part.is_empty()).map(String::as_str).collect::<Vec<_>>().join("; then ");
+    let (word, head) = if steps.is_empty() { ("PASS", found.pass.as_str()) } else { ("ONE STEP LEFT", steps.as_str()) };
+    let details = std::iter::once(head).chain(found.checked.iter().map(String::as_str))
+        .chain(std::iter::once(pin.strip_prefix("; ").unwrap_or(pin)))
+        .filter(|part| !part.is_empty()).collect::<Vec<_>>().join("; ");
+    (format!("{word}: {details}"), 0)
 }
 
 /// The verdict for a run that stopped, and its exit code.

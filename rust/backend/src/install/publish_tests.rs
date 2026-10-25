@@ -57,7 +57,7 @@ impl Fixture {
     }
 
     fn plan(&self, cwd: &Path) -> Plan {
-        Plan::discover(cwd, self.source.to_str().unwrap(), self.env.clone()).unwrap()
+        Plan::discover(cwd, self.source.to_str().unwrap(), self.env.clone(), INSTALL_BOUNDS).unwrap()
     }
 
     fn policy(&self, plan: &Plan) {
@@ -83,6 +83,16 @@ fn assert_refused(ran: &sot_platform::test_wait::Ran, expected: &str) {
     assert_eq!(ran.status.code(), Some(1), "{ran}");
     let guard_lines: Vec<_> = ran.stderr.lines().filter(|line| line.starts_with("pre-push: ")).collect();
     assert_eq!(guard_lines, vec![expected], "{ran}");
+}
+
+fn assert_checked_clone(line: &str, role: &str, expected: &Path, state: &str) {
+    let marker = format!("publish guard checked {role} ");
+    let mut clauses = line.split(marker.as_str()).skip(1);
+    let clause = clauses.next().unwrap_or_else(|| panic!("missing {role} result: {line}"));
+    assert!(clauses.next().is_none(), "duplicate {role} results: {line}");
+    let (reported, rest) = clause.split_once(": ").unwrap();
+    assert_eq!(Path::new(reported).canonicalize().unwrap(), expected.canonicalize().unwrap(), "{line}");
+    assert_eq!(rest.split("; publish guard ").next().unwrap(), state, "{line}");
 }
 
 #[test]
@@ -119,7 +129,7 @@ fn installer_records_platform_location_without_creating_policy_and_reports_one_s
     let expected = f.dir.path().join(if cfg!(windows) { "local/sot/config/publish-list.txt" } else { "config/sot/publish-list.txt" });
     assert_eq!(plan.list, expected);
     if !cfg!(windows) {
-        let fallback = Plan::discover(&f.caller, f.source.to_str().unwrap(), f.env.clone().without("XDG_CONFIG_HOME")).unwrap();
+        let fallback = Plan::discover(&f.caller, f.source.to_str().unwrap(), f.env.clone().without("XDG_CONFIG_HOME"), INSTALL_BOUNDS).unwrap();
         assert_eq!(fallback.list, f.dir.path().join("home/.config/sot/publish-list.txt"));
     }
     let mut found = Found::default();
@@ -128,7 +138,7 @@ fn installer_records_platform_location_without_creating_policy_and_reports_one_s
     let (line, code) = super::super::verdict::line(&found, "");
     assert_eq!(code, 0);
     assert!(line.starts_with("ONE STEP LEFT:") && line.contains("provision"), "{line}");
-    assert!(line.contains(&format!("caller {}: guard installed; policy needs provisioning", f.caller.display())), "{line}");
+    assert_checked_clone(&line, "caller", &f.caller, "guard installed; policy needs provisioning");
     assert!(!line.contains(": ready"), "{line}");
     let denied = f.git(&f.caller, &["push", f.dir.path().join("remote").to_str().unwrap(), "HEAD:refs/heads/clean"]);
     assert_refused(&denied, "pre-push: sot.publishList must name a readable regular file without a symlink; refusing the push");
@@ -148,8 +158,7 @@ fn installer_preserves_hooks_configuration_and_modified_owned_slots() {
     assert!(found.fail.is_none() && found.steps.iter().any(|s| s.contains("preserved publish hook conflict")), "{found:?}");
     assert!(!f.caller.join(".git/hooks/pre-push").exists());
     let (line, _) = super::super::verdict::line(&found, "");
-    assert!(line.contains(&format!("caller {}: preserved conflict", f.caller.display())), "{line}");
-    assert!(!line.contains(&format!("caller {}: ready", f.caller.display())), "{line}");
+    assert_checked_clone(&line, "caller", &f.caller, "preserved conflict");
     f.git(&f.caller, &["config", "--unset-all", "core.hooksPath"]).ok();
     let mut found = Found::default();
     let enrolled = plan.enroll(&f.source, &f.commit, &f.base, &mut found).unwrap();
@@ -169,7 +178,7 @@ fn discovery_is_read_only_exact_and_deduplicates_linked_worktrees() {
     let before = std::fs::read(f.caller.join(".git/config")).unwrap();
     let env = f.env.clone().with("GIT_DIR", f.base.join(".git")).with("GIT_WORK_TREE", &f.base)
         .with("GIT_CONFIG_COUNT", "1").with("GIT_CONFIG_KEY_0", "remote.origin.url").with("GIT_CONFIG_VALUE_0", "wrong");
-    let plan = Plan::discover(&f.caller, f.source.to_str().unwrap(), env).unwrap();
+    let plan = Plan::discover(&f.caller, f.source.to_str().unwrap(), env, INSTALL_BOUNDS).unwrap();
     assert_eq!(plan.caller.as_ref().unwrap().common, f.caller.join(".git").canonicalize().unwrap());
     assert_eq!(std::fs::read(f.caller.join(".git/config")).unwrap(), before);
     assert!(!f.caller.join(".git/hooks/pre-push").exists(), "a later refused gate has no enrollment to undo");
@@ -191,7 +200,7 @@ fn discovery_is_read_only_exact_and_deduplicates_linked_worktrees() {
     enrolled.check(&mut found);
     assert!(found.fail.is_none() && found.steps.is_empty(), "{found:?}");
     let (line, _) = super::super::verdict::line(&found, "");
-    assert!(line.contains(&format!("caller {}: ready (shares base)", linked.display())), "{line}");
+    assert_checked_clone(&line, "caller", &linked, "ready (shares base)");
     f.reject_push(&linked, "glimmerdeny");
     assert!(same_origin("git@github.com:owner/project.git", "https://github.com/Owner/Project"));
     assert!(same_origin("ssh://git@github.com/owner/project.git", "https://github.com/owner/project.git"));
@@ -250,8 +259,8 @@ fn checked_verdict(julia_step: bool) -> (Fixture, String) {
 fn healthy_verdict_names_checked_base_caller_and_limited_scope() {
     let (f, line) = checked_verdict(false);
     assert!(line.starts_with("PASS: "), "{line}");
-    for path in [&f.base, &f.caller] {
-        assert!(line.contains(&format!("{}: ready", path.display())), "{line}");
+    for (role, path) in [("base", &f.base), ("caller", &f.caller)] {
+        assert_checked_clone(&line, role, path, "ready");
     }
     assert!(line.contains("installed base and recognized caller only") && line.contains("other clones not discovered"), "{line}");
 }
@@ -260,8 +269,8 @@ fn healthy_verdict_names_checked_base_caller_and_limited_scope() {
 fn julia_only_verdict_keeps_checked_guard_results() {
     let (f, line) = checked_verdict(true);
     assert!(line.starts_with("ONE STEP LEFT: install Julia"), "{line}");
-    for path in [&f.base, &f.caller] {
-        assert!(line.contains(&format!("{}: ready", path.display())), "{line}");
+    for (role, path) in [("base", &f.base), ("caller", &f.caller)] {
+        assert_checked_clone(&line, role, path, "ready");
     }
     assert!(line.contains("installed base and recognized caller only"), "{line}");
 }
@@ -284,6 +293,7 @@ fn guard_results_never_override_a_failed_check() {
 fn stalled_publish_child(selector: &str, phase: &str, name: &str) {
     use std::time::Instant;
     if !sot_platform::test_isolated::run_isolated_until(name, Instant::now() + Duration::from_secs(45)).unwrap() { return; }
+    let bounds = Bounds { git: Duration::from_secs(3), setup: Duration::from_secs(3) };
     let mut f = Fixture::new();
     let tools = f.dir.path().join("stall-tools");
     std::fs::create_dir(&tools).unwrap();
@@ -302,32 +312,36 @@ fn stalled_publish_child(selector: &str, phase: &str, name: &str) {
     if phase == "git" && selector != "rev-parse HEAD" && selector != "diff --quiet" {
         std::fs::write(&switch, "stall").unwrap();
         let start = Instant::now();
-        let result = Plan::discover(&f.caller, f.source.to_str().unwrap(), f.env.clone());
+        let result = Plan::discover(&f.caller, f.source.to_str().unwrap(), f.env.clone(), bounds);
         let error = match result { Ok(_) => panic!("stalled discovery was accepted"), Err(error) => error };
         assert_eq!(error.code, 1);
         assert!(error.detail.contains("within"), "{error:?}");
-        assert!(start.elapsed() < Duration::from_secs(35));
+        assert!(start.elapsed() < Duration::from_secs(9));
     } else {
-        let plan = if selector == "--check-only" { f.plan(&f.base) } else { f.plan(&f.caller) };
+        let cwd = if selector == "--check-only" { &f.base } else { &f.caller };
+        let plan = Plan::discover(cwd, f.source.to_str().unwrap(), f.env.clone(), bounds).unwrap();
         f.policy(&plan);
         let mut found = Found::default();
-        let start = Instant::now();
-        if selector == "--check-only" {
+        let start = if selector == "--check-only" {
             let enrolled = plan.enroll(&f.source, &f.commit, &f.base, &mut found).unwrap();
             std::fs::write(&switch, "stall").unwrap();
+            let start = Instant::now();
             enrolled.check(&mut found);
             assert!(found.fail.as_deref().is_some_and(|s| s.contains("within")), "{found:?}");
             assert!(found.steps.is_empty(), "a cut check is not a provisioning/conflict step: {found:?}");
+            start
         } else {
             std::fs::write(&switch, "stall").unwrap();
+            let start = Instant::now();
             let error = match plan.enroll(&f.source, &f.commit, &f.base, &mut found) {
                 Ok(_) => panic!("stalled enrollment was accepted"), Err(error) => error,
             };
             assert_eq!(error.code, 1);
             assert!(error.detail.contains("within"), "{error:?}");
             assert!(found.steps.is_empty(), "a cut child is not status 3 or 4: {found:?}");
-        }
-        assert!(start.elapsed() < Duration::from_secs(35));
+            start
+        };
+        assert!(start.elapsed() < Duration::from_secs(9));
     }
     let before = std::fs::read(&pulse).expect("stand-in must have entered");
     assert!(!before.is_empty());
