@@ -109,6 +109,8 @@ impl RowDirectory {
 
     /// Commit immediately after the coordinator's reconciliation, before rebuilding projections.
     /// Rebuild translation from those same authoritative listings, including invisible anchors.
+    /// Every installed host participates, even a synthetic host outside State's fixed connections;
+    /// display order scopes presentation projections, not the directory's identity translation.
     pub(in crate::ui) fn commit_replace(&mut self, update: RowDirectoryUpdate) {
         self.workspace_lists.insert(update.host, update.rows);
         self.workspace_id_slugs.clear();

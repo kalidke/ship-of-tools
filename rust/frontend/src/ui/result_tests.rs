@@ -1230,17 +1230,7 @@ impl State {
         );
         let retained = self.row_directory.prepare_replace(a.clone(), rows("<host-control-a>", "shared-id"));
         anyhow::ensure!(retained.retired().is_empty(), "control: a disconnect retired a canonical identity");
-        self.on_workspace_destroyed(
-            a.clone(),
-            Ok(crate::net::transport::WorkspaceDestroyedInfo {
-                workspace_id: "id-base-<host-control-a>".into(),
-                slug: "base".into(),
-                label: "base".into(),
-                tmux_killed: false,
-                toml_removed: false,
-                kept: Some("run ended".into()),
-            }),
-        );
+        self.kept_default_preserves_its_result_and_view(&a, &b)?;
         anyhow::ensure!(
             self.probe_sees_badge(&a) && self.probe_sees_badge(&b),
             "control: an unchanged list, a disconnect or a kept default row removed an owed result"
@@ -1258,6 +1248,90 @@ impl State {
             "control: a late destroy of the replaced id removed its successor's result"
         );
         println!("result-lifetime controls=true entered_bodies=1");
+        Ok(())
+    }
+
+    /// A kept default retains its own owed result and its cached view; only its attachment is invalidated.
+    fn kept_default_preserves_its_result_and_view(
+        &mut self,
+        kept_host: &HostKey,
+        other_host: &HostKey,
+    ) -> Result<()> {
+        self.switch_to_workspace(kept_host.clone(), None, None, false);
+        let default = self.active_result_workspace()
+            .ok_or_else(|| anyhow::anyhow!("control: default row did not resolve"))?;
+        let node_id = "files:kept-default.rs";
+        let preview = ("text/plain".to_string(), b"kept default preview\n".to_vec());
+        self.mode = Mode::Files;
+        self.tree.set_root(
+            node("files:", "base", true),
+            vec![node(node_id, "kept-default.rs", false)],
+        );
+        self.tree.selected = 1;
+        self.preview_node_id_fired = Some(node_id.into());
+        self.preview_src_node_id = Some(node_id.into());
+        self.preview_src = Some(preview.clone());
+        self.repl_input = "kept_default_input = 42".into();
+        // Park through the real switch so the tree, preview and REPL use their normal snapshot keys.
+        self.switch_to_workspace(other_host.clone(), None, None, false);
+        self.dispatch_fe_command(Some(kept_host), FeCommand::Preview {
+            workspace: default.identity().workspace_id.clone(),
+            path: "kept-default.rs".into(),
+            urgent: false,
+            roi: None,
+            caption: None,
+        });
+        anyhow::ensure!(
+            self.pending_result_path(kept_host, "base").as_deref() == Some("kept-default.rs"),
+            "control: the default row's own result was not owed"
+        );
+        let owed = self.pending_nav.clone();
+        self.on_workspace_destroyed(kept_host.clone(), Ok(crate::net::transport::WorkspaceDestroyedInfo {
+            workspace_id: default.identity().workspace_id.clone(),
+            slug: default.row_key().1.clone(),
+            label: "base".into(),
+            tmux_killed: false,
+            toml_removed: false,
+            kept: Some("run ended".into()),
+        }));
+        anyhow::ensure!(
+            self.pending_nav == owed
+                && self.pending_result_path(kept_host, "base").as_deref() == Some("kept-default.rs"),
+            "control: keeping the default row removed or changed its own pending result"
+        );
+        // Check the parked cursor before result reveal can place it again on return.
+        let tree_key = (Mode::Files, TreeScope::Workspace(default.view_key().clone()));
+        let cached = self.tree_store.take(&tree_key)
+            .ok_or_else(|| anyhow::anyhow!("control: keeping the default row removed its cached tree"))?;
+        let selected = cached.view.rows.get(cached.view.selected).map(|row| row.node.id.clone());
+        self.tree_store.stash(tree_key, cached);
+        anyhow::ensure!(
+            selected.as_deref() == Some(node_id),
+            "control: keeping the default row reset its cached selection"
+        );
+        // No request is answered or frame presented here, so its badge must remain owed.
+        self.switch_to_workspace(kept_host.clone(), None, None, false);
+        anyhow::ensure!(
+            self.active_ws_key() == *default.view_key()
+                && self.mode == Mode::Files
+                && self.tree.selected == 1
+                && self.probe_selected_id().as_deref() == Some(node_id),
+            "control: keeping the default row reset its cached tree or selection"
+        );
+        anyhow::ensure!(
+            self.preview_src.as_ref() == Some(&preview)
+                && self.preview_src_node_id.as_deref() == Some(node_id),
+            "control: keeping the default row reset its cached preview"
+        );
+        anyhow::ensure!(
+            self.repl_input == "kept_default_input = 42",
+            "control: keeping the default row reset its cached REPL input"
+        );
+        anyhow::ensure!(
+            self.pending_result_path(kept_host, "base").as_deref() == Some("kept-default.rs"),
+            "control: returning to the kept default cleared its result before presentation"
+        );
+        self.switch_to_workspace(other_host.clone(), None, None, false);
         Ok(())
     }
 }

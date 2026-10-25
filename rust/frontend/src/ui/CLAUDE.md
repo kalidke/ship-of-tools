@@ -36,6 +36,11 @@ blocks and free functions using `use super::*`.
   Default aliases and inert-anchor visibility retain their existing rules. Lifecycle hints use a separate tolerant
   lookup: the event host qualifies known ids, unknown hints pass through, and absent hints use the caller's existing
   default-slug fallback. No caller can mutate either directory map or its row slices.
+- Pass 7a's one deliberate difference from `1bc65e054`: canonical-id translation covers every installed listing,
+  including a synthetic host absent from `conns`, whereas the old translation was limited to `ordered_hosts`.
+  Real listing events arrive only from the fixed connection set, so this difference is unreachable with real
+  connections. Presentation projections still use `ordered_hosts`. Behavior test:
+  `workspace_list::tests::canonical_translation_includes_a_host_outside_ordered_hosts`.
 - `RowDirectory::prepare_replace` reports canonical identities retired by one host's authoritative listing without
   changing the installed rows; same-slug canonical replacement retires the old identity, while unchanged rows and
   kept defaults survive. `on_workspaces` reconciles owed results before committing the replacement, then rebuilds
@@ -46,7 +51,9 @@ blocks and free functions using `use super::*`.
   authoritative_replacement_reports_only_retired_canonical_identities}` and
   `row_directory::listed_tests::{listed_resolution_keeps_each_host_and_key_space,
   ambiguous_empty_and_unknown_targets_are_refused}`. The native `pending_result_dies_with_its_canonical_row`
-  fixture covers reconciliation effects, disconnect retention and a kept default.
+  fixture covers reconciliation effects and disconnect retention; its `kept_default_preserves_its_result_and_view`
+  control checks the default row's own pending result, cached tree selection, preview source and REPL input through
+  workspace switches. The native fixture runs on hosted Windows and macOS.
 - Final window teardown has one shared three-second OS-clock process deadline, independent of the UI and transport runtime; it starts at the terminal decision, after any daemon acknowledgement and notice presentation.
 - `State::set_focus` (chrome/panes.rs) is the one write of `focus`; scan_tests.rs (`focus_written_only_by_set_focus`)
   fails any other.

@@ -10,6 +10,26 @@ fn listed_directory(lists: HashMap<HostKey, Vec<crate::net::transport::Workspace
     directory
 }
 
+#[test]
+fn canonical_translation_includes_a_host_outside_ordered_hosts() {
+    let connected = "connected".to_string();
+    let synthetic = "synthetic".to_string();
+    // State derives ordered_hosts from its fixed conns. Only a synthetic listing can name an absent host.
+    let ordered_hosts = vec![connected.clone()];
+    let directory = listed_directory(HashMap::from([
+        (connected.clone(), vec![ws_info("connected-row", "connected-target")]),
+        (synthetic.clone(), vec![ws_info("synthetic-row", "synthetic-target")]),
+    ]));
+    let fresh = fresh_workspace_caches(&ordered_hosts, &directory, &connected);
+    assert_eq!(fresh.workspace_slugs, vec![(connected, "connected-row".into())]);
+    assert!(!fresh.workspace_project_roots.contains_key(&(synthetic.clone(), "synthetic-row".into())));
+    // Translation belongs to the authoritative listings, independently of display/projection order.
+    assert_eq!(
+        directory.lifecycle_key(&synthetic, Some("ws-synthetic-row-0000"), None),
+        (synthetic, "synthetic-row".into())
+    );
+}
+
 // ---- activity_order (bottom strip within-host ordering) ----
 
 fn ak(host: &str, slug: &str) -> WsKey {
