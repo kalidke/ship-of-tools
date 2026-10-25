@@ -96,6 +96,8 @@ below still reach shared fields through `impl State` blocks and free functions u
   Exact warm reuse precedes dial configuration; pruning uses committed host-local stored attachment names, including
   same-name canonical replacements. Unresolved dials stay retryable; missing/unusable configuration and matching
   open failures retain reasons. Warnings count changed failure-status edges and reset on each installed client.
+  The coordinator logs a prepared attach before warm resume and before sampling the installed client's start clock;
+  the request clock keeps its earlier origin. Direct-reply admission already guarantees an empty active slot.
 - Input reaches only the selected pane client or is counted once per call; Pending input is discarded without replay.
   Held pixels never receive input. Copy uses client-or-blank and clears selection only after clipboard success.
   Pending resize tracks geometry without sending; page/wheel routing preserves local scrollback, alternate-screen
@@ -103,7 +105,10 @@ below still reach shared fields through `impl State` blocks and free functions u
 - Pane draw preserves presence/read-mark, pane pump, drawer pump, immutable screen borrow, draw, geometry/resize and
   painted-claim ordering. Only post-present completion can consume a live attached checkpoint's receipt; held pixels,
   empty area, stale requests and missing origins cannot report success. The existing `agent_pane/presentation_tests.rs`
-  cases remain; `agent_pane/owner_tests.rs` characterizes the seventeen owner guarantees. The native State fixture
+  cases remain; `agent_pane/owner_tests.rs` characterizes the owner guarantees, including exact host-local eviction
+  victims at an intermediate bound and ordering between attach logs and client clocks. The portable
+  `input::mouse::tests::a_wheel_step_reports_presence_before_fractional_routing` drives the production wheel
+  dispatcher through a narrow context port, including sub-row early returns. The native State fixture
   `a_wheel_step_reports_presence` replaces the wheel presence scan, including fractional steps and zero-area pointer
   mapping controls, alongside the previous nine fixtures. Native execution still requires hosted evidence.
 - Text over 512 KiB, or binary, is summarized, never shaped: `PREVIEW_TEXT_CAP` in preview/pane.rs.

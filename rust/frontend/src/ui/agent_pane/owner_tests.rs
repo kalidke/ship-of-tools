@@ -66,15 +66,19 @@ fn select(p: &mut Pane, h: &str, n: &str, t: Instant, bound: usize) -> Vec<Scrip
 }
 fn prepare(p: &mut Pane, key: WsKey) -> (AttachPlan<Scripted>, Vec<Scripted>) {
     let DirectReply::Attach(target) = p.direct_reply(&key.0, &key.0, Some(key.1.clone())) else { panic!("admitted reply") };
-    let (request, mut retired) = p.prepare_attach(target);
-    let (plan, dead) = p.prepare_warm(request);
-    retired.extend(dead);
-    (plan, retired)
+    p.prepare_attach(target)
+}
+fn start(
+    p: &mut Pane, plan: AttachPlan<Scripted>,
+    factory: impl FnOnce(&HostKey, &str, (u16, u16)) -> std::result::Result<Scripted, AttachFailure>,
+    now: impl FnMut() -> Instant,
+) -> AttachEffect {
+    install_pane_attach(p, plan, factory, now, |_| {})
 }
 fn install(p: &mut Pane, h: &str, n: &str, c: Scripted, t: Instant) -> AttachEffect {
     let (plan, retired) = prepare(p, key(h, n));
     drop(retired);
-    p.start_attach(plan, |_, _, _| Ok(c), || t)
+    start(p, plan, |_, _, _| Ok(c), || t)
 }
 fn ready(p: &mut Pane, h: &str, n: &str, text: &[u8], t: Instant) -> Handle {
     select(p, h, n, t, 16);
@@ -97,7 +101,7 @@ fn pixels(p: &mut Pane) -> (PaneScreen, String) {
 fn failure(p: &mut Pane, h: &str, kind: AttachFailure, t: Instant) -> AttachEffect {
     let (plan, retired) = prepare(p, key(h, "row"));
     drop(retired);
-    p.start_attach(plan, |_, _, _| Err(kind), || t)
+    start(p, plan, |_, _, _| Err(kind), || t)
 }
 
 #[test]
@@ -229,7 +233,7 @@ fn holds_end_at_checkpoint_or_a_dead_end() {
     ready(&mut p, "h", "b", b"other", t);
     select(&mut p, "h", "a", t, 2);
     let (plan, _) = prepare(&mut p, key("h", "a"));
-    p.start_attach(plan, |_, _, _| panic!("warm reuse must precede the factory"), || t);
+    start(&mut p, plan, |_, _, _| panic!("warm reuse must precede the factory"), || t);
     assert_eq!(pixels(&mut p), (PaneScreen::Client, "warm".into()));
 }
 
@@ -250,7 +254,7 @@ fn attach_warnings_follow_edges_and_reset_per_installed_client() {
     warning(step(&mut p, &b, Step { status: Some("unreachable"), ..Default::default() }, t), 1);
     select(&mut p, "h", "a", t, 2);
     let (plan, _) = prepare(&mut p, key("h", "a"));
-    p.start_attach(plan, |_, _, _| panic!("warm"), || t);
+    start(&mut p, plan, |_, _, _| panic!("warm"), || t);
     warning(step(&mut p, &a, Step { status: Some("another failure"), ..Default::default() }, t), 1);
 }
 
@@ -273,10 +277,75 @@ fn request_and_client_clocks_keep_their_distinct_origins() {
     ready(&mut p, "h", "b", b"b", after(t, 220));
     select(&mut p, "h", "a", after(t, 300), 2);
     let (plan, _) = prepare(&mut p, key("h", "a"));
-    let e = p.start_attach(plan, |_, _, _| panic!("warm"), || after(t, 350));
+    let e = start(&mut p, plan, |_, _, _| panic!("warm"), || after(t, 350));
     assert!(matches!(e.trace, AttachTrace::Warm(50)));
     let e = p.pump(|| after(t, 400));
     assert_eq!((e.since_request_ms, e.since_client_ms), (100, 50));
+}
+
+#[test]
+fn attach_logging_precedes_client_start_and_warm_resume() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "a", t, 2);
+    let (c, a) = Scripted::new(b"a", true);
+    let (plan, _) = prepare(&mut p, key("h", "a"));
+    let clock = std::cell::Cell::new(after(t, 100));
+    let effect = install_pane_attach(&mut p, plan, |_, _, _| Ok(c), || clock.get(), |trace| {
+        assert!(matches!(trace, AttachTrace::Cold));
+        clock.set(after(t, 150)); // Time spent in the coordinator's cold-attach log.
+    });
+    assert!(matches!(effect.trace, AttachTrace::Cold));
+    assert_eq!(p.client_open_elapsed(), Some(Duration::from_millis(150)));
+    let e = p.pump(|| after(t, 200));
+    assert_eq!((e.since_request_ms, e.since_client_ms), (200, 50));
+
+    ready(&mut p, "h", "b", b"b", after(t, 220));
+    select(&mut p, "h", "a", after(t, 300), 2);
+    let (plan, _) = prepare(&mut p, key("h", "a"));
+    clock.set(after(t, 350));
+    let effect = install_pane_attach(&mut p, plan, |_, _, _| panic!("warm reuse"), || clock.get(), |trace| {
+        assert!(matches!(trace, AttachTrace::Warm(50)));
+        assert_eq!(a.borrow().viewed, vec![false], "the warm client resumed before its attach log");
+        clock.set(after(t, 370)); // The request sample precedes logging; the client sample follows it.
+    });
+    assert!(matches!(effect.trace, AttachTrace::Warm(50)));
+    assert_eq!(a.borrow().viewed, vec![false, true]);
+    assert_eq!(p.client_open_elapsed(), Some(Duration::from_millis(70)));
+    let e = p.pump(|| after(t, 400));
+    assert_eq!((e.since_request_ms, e.since_client_ms), (100, 30));
+}
+
+#[test]
+fn warm_overflow_retires_the_oldest_host_local_client_and_reuses_the_survivor() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let other = ready(&mut p, "other", "same", b"other host", t);
+    let oldest = ready(&mut p, "h", "a", b"oldest", t);
+    assert!(select(&mut p, "h", "b", t, 2).is_empty());
+    let (c, survivor) = Scripted::new(b"survivor", true);
+    install(&mut p, "h", "b", c, t);
+    assert!(select(&mut p, "h", "c", t, 2).is_empty());
+    let (c, newest) = Scripted::new(b"newest", true);
+    install(&mut p, "h", "c", c, t);
+
+    // Three parked clients overflow the intermediate bound of two, well below the cap of sixteen.
+    let retired = select(&mut p, "h", "b", t, 2);
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].screen().contents(), "oldest", "eviction chose the wrong host-local client");
+    let (plan, rejected) = prepare(&mut p, key("h", "b"));
+    assert!(rejected.is_empty());
+    start(&mut p, plan, |_, _, _| panic!("the surviving client must be reused"), || t);
+    assert_eq!(pixels(&mut p), (PaneScreen::Client, "survivor".into()));
+    p.send_input(b"selected survivor");
+    assert_eq!(survivor.borrow().viewed, vec![false, true]);
+    assert_eq!(survivor.borrow().inputs, vec![b"selected survivor".to_vec()]);
+    assert!(oldest.borrow().inputs.is_empty() && newest.borrow().inputs.is_empty());
+
+    assert!(select(&mut p, "other", "same", t, 2).is_empty());
+    let (plan, _) = prepare(&mut p, key("other", "same"));
+    start(&mut p, plan, |_, _, _| panic!("another host's client must survive"), || t);
+    assert_eq!(other.borrow().viewed, vec![false, true]);
 }
 
 #[test]
@@ -288,7 +357,7 @@ fn warm_reuse_is_bounded_and_uses_the_exact_host_target() {
     select(&mut p, "a", "same", t, 2);
     p.sync_size((90, 30));
     let (plan, _) = prepare(&mut p, key("a", "same"));
-    p.start_attach(plan, |_, _, _| panic!("exact warm key"), || t);
+    start(&mut p, plan, |_, _, _| panic!("exact warm key"), || t);
     assert_eq!(a.borrow().viewed, vec![false, true]);
     assert_eq!(a.borrow().sizes, vec![(90, 30)]);
     p.send_input(b"a only");
@@ -300,7 +369,7 @@ fn warm_reuse_is_bounded_and_uses_the_exact_host_target() {
     let (plan, retired) = prepare(&mut p, key("a", "same"));
     assert_eq!(retired.len(), 1);
     let calls = std::cell::Cell::new(0);
-    p.start_attach(plan, |_, _, _| { calls.set(calls.get() + 1); Ok(Scripted::new(b"fresh", true).0) }, || t);
+    start(&mut p, plan, |_, _, _| { calls.set(calls.get() + 1); Ok(Scripted::new(b"fresh", true).0) }, || t);
     assert_eq!(calls.get(), 1);
     // The cap evicts the oldest on this host, leaving the other host's exact key reusable.
     let mut capped = Pane::new(None);
@@ -313,7 +382,7 @@ fn warm_reuse_is_bounded_and_uses_the_exact_host_target() {
     retired.extend(select(&mut capped, "b", "same", t, 100));
     assert_eq!(retired.len(), 2, "eighteen departed clients leave sixteen warm clients");
     let (plan, _) = prepare(&mut capped, key("b", "same"));
-    capped.start_attach(plan, |_, _, _| panic!("another host was evicted"), || t);
+    start(&mut capped, plan, |_, _, _| panic!("another host was evicted"), || t);
     assert_eq!(other.borrow().viewed.last(), Some(&true));
     // A snapshot can relabel the active slot with an already parked key.
     let mut p = Pane::new(None);
@@ -353,11 +422,11 @@ fn warm_pruning_uses_the_committed_host_session_names() {
     select(&mut p, "a", "stored", t, 2);
     let (plan, _) = prepare(&mut p, key("a", "stored"));
     let calls = std::cell::Cell::new(0);
-    p.start_attach(plan, |_, _, _| { calls.set(calls.get() + 1); Ok(Scripted::new(b"new", true).0) }, || t);
+    start(&mut p, plan, |_, _, _| { calls.set(calls.get() + 1); Ok(Scripted::new(b"new", true).0) }, || t);
     assert_eq!(calls.get(), 1);
     select(&mut p, "b", "stored", t, 2);
     let (plan, _) = prepare(&mut p, key("b", "stored"));
-    p.start_attach(plan, |_, _, _| panic!("other host survives pruning"), || t);
+    start(&mut p, plan, |_, _, _| panic!("other host survives pruning"), || t);
 }
 
 #[test]
@@ -400,7 +469,7 @@ fn resize_tracks_pending_geometry_without_sending() {
     select(&mut p, "h", "row", t, 2);
     let (plan, _) = prepare(&mut p, key("h", "row"));
     let (c, wire) = Scripted::new(b"", true);
-    p.start_attach(plan, |_, _, size| { assert_eq!(size, (100, 40)); Ok(c) }, || t);
+    start(&mut p, plan, |_, _, size| { assert_eq!(size, (100, 40)); Ok(c) }, || t);
     p.sync_size((100, 40));
     assert!(wire.borrow().sizes.is_empty());
     assert_eq!(wire.borrow().resets, 0);
@@ -557,7 +626,7 @@ fn kept_row_invalidation_preserves_the_existing_scope() {
     assert!(current.borrow().inputs.is_empty(), "kept attachment cannot remain an input destination");
     select(&mut p, "h", "a", t, 2);
     let (plan, _) = prepare(&mut p, key("h", "a"));
-    p.start_attach(plan, |_, _, _| panic!("kept outcome preserves warm storage"), || t);
+    start(&mut p, plan, |_, _, _| panic!("kept outcome preserves warm storage"), || t);
     assert_eq!(a.borrow().viewed.last(), Some(&true));
     // Native kept-default controls separately prove State retains its ledger, view and snapshots.
 }

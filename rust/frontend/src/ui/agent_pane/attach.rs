@@ -70,11 +70,6 @@ pub(in crate::ui) struct PaneSwitch<C> {
     pub status: Option<String>,
 }
 
-/// State retires the replaced slot before asking the owner to look for a warm client.
-pub(in crate::ui) struct AttachRequest {
-    target: WsKey,
-    size: (u16, u16),
-}
 /// State retires rejected warm clients before the factory can dial.
 pub(in crate::ui) struct AttachPlan<C> {
     target: WsKey,
@@ -88,6 +83,25 @@ pub(in crate::ui) struct AttachEffect {
     pub trace: AttachTrace,
 }
 pub(in crate::ui) enum AttachTrace { Warm(u64), Cold, Failed(AttachFailure) }
+
+/// A prepared client stays opaque and uninstalled until the coordinator has logged its attach.
+struct PendingAttach<C> {
+    client: Option<C>,
+    effect: AttachEffect,
+}
+
+/// The coordinator logs before warm resume and before sampling the installed client's clock.
+/// Both production and the process-free tests use this ordering with narrow log and clock ports.
+pub(super) fn install_pane_attach<C: PaneClient>(
+    pane: &mut AgentPane<C>, plan: AttachPlan<C>,
+    factory: impl FnOnce(&HostKey, &str, (u16, u16)) -> std::result::Result<C, AttachFailure>,
+    mut now: impl FnMut() -> Instant,
+    log: impl FnOnce(&AttachTrace),
+) -> AttachEffect {
+    let pending = pane.start_attach(plan, factory, &mut now);
+    log(&pending.effect.trace);
+    pane.finish_attach(pending, now)
+}
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::ui) enum AttachOutcome { Checkpoint { cols: u16, rows: u16 }, Attached, Warning { episode: u32, status: String } }
 pub(in crate::ui) struct PumpEffect {
@@ -128,46 +142,29 @@ impl<C: PaneClient> AgentPane<C> {
         Some(status)
     }
 
-    pub(in crate::ui) fn prepare_attach(&mut self, target: AdmittedAttach) -> (AttachRequest, Vec<C>) {
-        let retired = self.pane_attach_term.take().into_iter().collect();
-        (AttachRequest { target: target.0, size: self.open_size() }, retired)
-    }
-
-    pub(in crate::ui) fn prepare_warm(&mut self, request: AttachRequest) -> (AttachPlan<C>, Vec<C>) {
+    pub(in crate::ui) fn prepare_attach(&mut self, target: AdmittedAttach) -> (AttachPlan<C>, Vec<C>) {
+        // Direct-reply admission guarantees an empty active slot; only a dead warm client needs retirement.
         let mut retired = Vec::new();
-        let warm = self.warm_attach.take(&request.target).and_then(|mut c| {
+        let warm = self.warm_attach.take(&target.0).and_then(|mut c| {
             if c.is_dead() { retired.push(c); None } else { Some(c) }
         });
-        (AttachPlan { target: request.target, size: request.size, warm }, retired)
+        (AttachPlan { target: target.0, size: self.open_size(), warm }, retired)
     }
 
-    pub(in crate::ui) fn start_attach(
+    fn start_attach(
         &mut self, plan: AttachPlan<C>,
         factory: impl FnOnce(&HostKey, &str, (u16, u16)) -> std::result::Result<C, AttachFailure>,
         mut now: impl FnMut() -> Instant,
-    ) -> AttachEffect {
+    ) -> PendingAttach<C> {
         let AttachPlan { target: (host, target), size: (cols, rows), warm } = plan;
-        let result = match warm {
+        let (client, trace) = match warm {
             Some(mut c) => {
                 if c.screen().size() != (rows, cols) { c.resize(cols, rows); }
                 let elapsed = self.pane_attach_requested_at.map(|s| now().saturating_duration_since(s).as_millis() as u64).unwrap_or(0);
-                c.set_viewed(true);
-                if c.status_line() == "attached" { self.pane_inputs_discarded = 0; }
-                self.pane_attach_term = Some(c);
-                self.pane_dial_error = None;
-                self.pane_hold = None;
-                self.pane_attach_started_at = Some(now());
-                self.pane_attach_episode_warnings = 0;
-                AttachTrace::Warm(elapsed)
+                (c, AttachTrace::Warm(elapsed))
             }
             None => match factory(&host, &target, (cols, rows)) {
-                Ok(c) => {
-                    self.pane_attach_term = Some(c);
-                    self.pane_dial_error = None;
-                    self.pane_attach_started_at = Some(now());
-                    self.pane_attach_episode_warnings = 0;
-                    AttachTrace::Cold
-                }
+                Ok(c) => (c, AttachTrace::Cold),
                 Err(failure) => {
                     let msg = match &failure {
                         AttachFailure::MissingConfig => format!("'{host}' has no transport configured"),
@@ -180,12 +177,30 @@ impl<C: PaneClient> AgentPane<C> {
                     }
                     self.pane_hold = None;
                     self.pane_feed = PaneFeed::Pending;
-                    return AttachEffect { status: msg, trace: AttachTrace::Failed(failure) };
+                    return PendingAttach { client: None, effect: AttachEffect { status: msg, trace: AttachTrace::Failed(failure) } };
                 }
             },
         };
-        self.pane_feed = PaneFeed::Capsule;
-        AttachEffect { status: format!("attached BL → {target} (capsule, corrected)"), trace: result }
+        PendingAttach { client: Some(client), effect: AttachEffect {
+            status: format!("attached BL → {target} (capsule, corrected)"), trace,
+        } }
+    }
+
+    fn finish_attach(&mut self, pending: PendingAttach<C>, now: impl FnOnce() -> Instant) -> AttachEffect {
+        if let Some(c) = pending.client {
+            let warm = matches!(pending.effect.trace, AttachTrace::Warm(_));
+            if warm {
+                c.set_viewed(true);
+                if c.status_line() == "attached" { self.pane_inputs_discarded = 0; }
+            }
+            self.pane_attach_term = Some(c);
+            self.pane_dial_error = None;
+            if warm { self.pane_hold = None; }
+            self.pane_attach_started_at = Some(now());
+            self.pane_attach_episode_warnings = 0;
+            self.pane_feed = PaneFeed::Capsule;
+        }
+        pending.effect
     }
 
     pub(in crate::ui) fn reconnect_open(&self, host: &HostKey) -> Option<PaneOpen> {
@@ -261,13 +276,11 @@ impl State {
     }
 
     pub(in crate::ui) fn spawn_pane_attach_term(&mut self, target: AdmittedAttach) {
-        let (request, retired) = self.agent_pane.prepare_attach(target);
-        shutdown_detached(retired);
-        let (plan, retired) = self.agent_pane.prepare_warm(request);
+        let (plan, retired) = self.agent_pane.prepare_attach(target);
         shutdown_detached(retired);
         let hosts = &mut self.hosts;
         let wake = self.wake.clone();
-        let effect = self.agent_pane.start_attach(plan, |host, target, (cols, rows)| {
+        let effect = install_pane_attach(&mut self.agent_pane, plan, |host, target, (cols, rows)| {
             let config = hosts.host_transports.get(host).ok_or(AttachFailure::MissingConfig)?;
             let resolved = hosts.host_resolved_dial.get(host).cloned().ok_or(AttachFailure::Unresolved)?;
             let gate = hosts.link_gates.entry(host.clone()).or_default().clone();
@@ -275,13 +288,12 @@ impl State {
             let endpoint = sot_topology::lane_client::DaemonLaneEndpoint::new(dial, token);
             PaneAttachClient::attach(endpoint, target.to_string(), cols, rows, Box::new(move || wake.wake()))
                 .map_err(|e| AttachFailure::Startup(e.to_string()))
-        }, Instant::now);
-        match effect.trace {
+        }, Instant::now, |trace| match trace {
             AttachTrace::Warm(since_request_ms) => tracing::info!(since_request_ms, "session pane: warm capsule client reused"),
             AttachTrace::Cold => tracing::info!("session pane: capsule attach client attaching"),
             AttachTrace::Failed(AttachFailure::Startup(e)) => tracing::warn!(error = %e, "session pane: capsule attach client failed to start"),
             AttachTrace::Failed(_) => {}
-        }
+        });
         self.status = effect.status;
     }
 

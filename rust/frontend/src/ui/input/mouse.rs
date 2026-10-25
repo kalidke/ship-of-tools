@@ -57,9 +57,30 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
     }
 }
 
+/// The wheel dispatcher needs only pointer geometry and its routing effects, never general State access.
+#[derive(Clone, Copy)]
+struct WheelGeometry {
+    cell_w: f32,
+    cell_h: f32,
+    focus: PaneFocus,
+    residue: f32,
+}
+trait WheelContext {
+    fn report_wheel_presence(&mut self);
+    fn wheel_geometry(&mut self) -> WheelGeometry;
+    fn scroll_preview_horizontal(&mut self, pixels: f32);
+    fn store_wheel_residue(&mut self, residue: f32);
+    fn route_wheel_rows(&mut self, rows: i32);
+}
+
 pub(in crate::ui) fn mouse_wheel(state: &mut State, modifiers: ModifiersState, delta: MouseScrollDelta) {
-    // A person reading with the wheel is at this window: it counts as a press for presence.
-    state.report_presence(true);
+    dispatch_wheel(state, modifiers, delta);
+}
+
+fn dispatch_wheel(context: &mut impl WheelContext, modifiers: ModifiersState, delta: MouseScrollDelta) {
+    // Presence precedes all routing, including a fractional step that produces no whole row.
+    context.report_wheel_presence();
+    let geometry = context.wheel_geometry();
     // Convert the platform delta into fractional rows, then
     // accumulate. Precision touchpads emit small sub-row
     // pixel deltas that would otherwise truncate to zero
@@ -67,10 +88,10 @@ pub(in crate::ui) fn mouse_wheel(state: &mut State, modifiers: ModifiersState, d
     // step three rows, matching the common TUI cadence.
     let (delta_rows, raw_px_y, raw_px_x): (f32, f32, f32) = match delta {
         MouseScrollDelta::LineDelta(x, y) => {
-            (y * 3.0, y * state.cell_h * 3.0, x * state.cell_w * 3.0)
+            (y * 3.0, y * geometry.cell_h * 3.0, x * geometry.cell_w * 3.0)
         }
         MouseScrollDelta::PixelDelta(pos) => {
-            (pos.y as f32 / state.cell_h, pos.y as f32, pos.x as f32)
+            (pos.y as f32 / geometry.cell_h, pos.y as f32, pos.x as f32)
         }
     };
     // Shift+wheel-Y *or* a horizontal-axis wheel event in
@@ -80,7 +101,7 @@ pub(in crate::ui) fn mouse_wheel(state: &mut State, modifiers: ModifiersState, d
     // up shifts the table left (reveal more right-side
     // content). Clamp happens in redraw.
     let shift = modifiers.shift_key();
-    if state.focus == PaneFocus::Preview {
+    if geometry.focus == PaneFocus::Preview {
         let h_px = if shift && raw_px_y.abs() > 0.0 {
             -raw_px_y
         } else if raw_px_x.abs() > 0.0 {
@@ -89,24 +110,41 @@ pub(in crate::ui) fn mouse_wheel(state: &mut State, modifiers: ModifiersState, d
             0.0
         };
         if h_px.abs() > 0.0 {
-            state.md_table_scroll_px = (state.md_table_scroll_px + h_px).max(0.0);
-            state.window.request_redraw();
+            context.scroll_preview_horizontal(h_px);
             return;
         }
     }
-    state.wheel_residue_y += delta_rows;
-    let rows_above = state.wheel_residue_y.trunc() as i32;
-    state.wheel_residue_y -= rows_above as f32;
+    let accumulated = geometry.residue + delta_rows;
+    let rows_above = accumulated.trunc() as i32;
+    let residue = accumulated - rows_above as f32;
+    context.store_wheel_residue(residue);
     tracing::info!(
         delta_rows,
         rows_above,
-        residue = state.wheel_residue_y,
-        ?state.focus,
+        residue,
+        ?geometry.focus,
         "wheel"
     );
     if rows_above == 0 {
         return;
     }
+    context.route_wheel_rows(rows_above);
+}
+
+impl WheelContext for State {
+    fn report_wheel_presence(&mut self) { self.report_presence(true); }
+    fn wheel_geometry(&mut self) -> WheelGeometry {
+        WheelGeometry { cell_w: self.cell_w, cell_h: self.cell_h, focus: self.focus, residue: self.wheel_residue_y }
+    }
+    fn scroll_preview_horizontal(&mut self, pixels: f32) {
+        self.md_table_scroll_px = (self.md_table_scroll_px + pixels).max(0.0);
+        self.window.request_redraw();
+    }
+    fn store_wheel_residue(&mut self, residue: f32) { self.wheel_residue_y = residue; }
+    fn route_wheel_rows(&mut self, rows: i32) { route_wheel_rows(self, rows); }
+}
+
+fn route_wheel_rows(state: &mut State, rows_above: i32) {
     if state.drawer == DrawerContent::Help && state.focus == PaneFocus::Repl {
         state.help.move_selection(-(rows_above as isize), &state.bindings);
         state.window.request_redraw();
@@ -174,5 +212,57 @@ fn wheel_agent_pane(state: &mut State, rows_above: i32) {
         WheelEffect::Pending => {},
         WheelEffect::ClearResidue => state.wheel_residue_y = 0.0,
         WheelEffect::Redraw => state.window.request_redraw(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, PartialEq)]
+    enum Event { Presence, Geometry, Residue, Horizontal(f32), Rows(i32) }
+    struct WheelProbe {
+        geometry: WheelGeometry,
+        events: Vec<Event>,
+    }
+    impl WheelContext for WheelProbe {
+        fn report_wheel_presence(&mut self) { self.events.push(Event::Presence); }
+        fn wheel_geometry(&mut self) -> WheelGeometry {
+            self.events.push(Event::Geometry);
+            self.geometry
+        }
+        fn scroll_preview_horizontal(&mut self, pixels: f32) { self.events.push(Event::Horizontal(pixels)); }
+        fn store_wheel_residue(&mut self, residue: f32) {
+            self.events.push(Event::Residue);
+            self.geometry.residue = residue;
+        }
+        fn route_wheel_rows(&mut self, rows: i32) { self.events.push(Event::Rows(rows)); }
+    }
+
+    #[test]
+    fn a_wheel_step_reports_presence_before_fractional_routing() {
+        let mut context = WheelProbe {
+            geometry: WheelGeometry { cell_w: 2.0, cell_h: 4.0, focus: PaneFocus::Llm, residue: 0.0 },
+            events: Vec::new(),
+        };
+        dispatch_wheel(&mut context, ModifiersState::empty(), MouseScrollDelta::LineDelta(0.0, 0.05));
+        assert_eq!(context.events, vec![Event::Presence, Event::Geometry, Event::Residue]);
+        assert!((context.geometry.residue - 0.15).abs() < 0.00001);
+
+        context.events.clear();
+        dispatch_wheel(&mut context, ModifiersState::empty(), MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 0.4)));
+        assert_eq!(context.events, vec![Event::Presence, Event::Geometry, Event::Residue]);
+        assert!((context.geometry.residue - 0.25).abs() < 0.00001);
+
+        context.events.clear();
+        dispatch_wheel(&mut context, ModifiersState::empty(), MouseScrollDelta::LineDelta(0.0, 1.0));
+        assert_eq!(context.events, vec![Event::Presence, Event::Geometry, Event::Residue, Event::Rows(3)]);
+        assert!((context.geometry.residue - 0.25).abs() < 0.00001);
+
+        context.events.clear();
+        context.geometry.focus = PaneFocus::Preview;
+        dispatch_wheel(&mut context, ModifiersState::empty(), MouseScrollDelta::LineDelta(1.0, 0.0));
+        assert_eq!(context.events, vec![Event::Presence, Event::Geometry, Event::Horizontal(6.0)]);
+        assert!((context.geometry.residue - 0.25).abs() < 0.00001);
     }
 }
