@@ -233,3 +233,71 @@ fn folder_trust_is_said_as_the_command_reports_it() {
     assert_eq!(trust_report(&dir.path().join("missing"), dir.path())[0], "WARN: folder trust not declared (exit none)");
 }
 
+/// Cleanup may remove only a named, available version worktree. An unavailable registration can belong to another
+/// computer sharing this repository, and a locked/dirty checkout must remain intact when Git refuses its removal.
+#[test]
+fn version_cleanup_keeps_unavailable_registrations_and_refused_worktrees() {
+    // The actual cleanup runs in a child test with a scratch HOME; no process-wide environment is changed.
+    if let Some(root) = std::env::var_os("SOT_TEST_VERSION_CLEANUP_ROOT") {
+        let root = PathBuf::from(root);
+        prune_versions(&root.join("repo"), &root.join("base"), "current", Some("previous"));
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let base = root.join("base");
+    let repo = root.join("repo");
+    let versions = repo.join("versions");
+    std::fs::create_dir_all(&versions).unwrap();
+    let git = |args: &[&str]| {
+        let mut command = std::process::Command::new("git");
+        for (key, _) in std::env::vars_os().filter(|(k, _)| k.to_string_lossy().starts_with("GIT_")) {
+            command.env_remove(key);
+        }
+        let ran = sot_platform::test_wait::run_within(
+            command.env("HOME", &root)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false"])
+                .args(args),
+            std::time::Duration::from_secs(30),
+        );
+        assert_eq!(ran.status.code(), Some(0), "git {args:?}: {ran}");
+        ran.stdout
+    };
+    let b = base.to_string_lossy().into_owned();
+    git(&["init", "-q", &b]);
+    git(&["-C", &b, "config", "gc.worktreePruneExpire", "now"]);
+    std::fs::write(base.join("data"), "clean\n").unwrap();
+    git(&["-C", &b, "add", "data"]);
+    git(&["-C", &b, "commit", "-qm", "fixture"]);
+    for name in ["old", "locked", "dirty"] {
+        git(&["-C", &b, "worktree", "add", "--detach", &versions.join(name).to_string_lossy(), "HEAD"]);
+    }
+    let unavailable = root.join("unavailable");
+    git(&["-C", &b, "worktree", "add", "--detach", &unavailable.to_string_lossy(), "HEAD"]);
+    std::fs::remove_dir_all(&unavailable).unwrap();
+    git(&["-C", &b, "worktree", "lock", &versions.join("locked").to_string_lossy()]);
+    std::fs::write(versions.join("dirty/data"), "local change\n").unwrap();
+    let mut cleanup = std::process::Command::new(std::env::current_exe().unwrap());
+    for (key, _) in std::env::vars_os().filter(|(k, _)| k.to_string_lossy().starts_with("GIT_")) {
+        cleanup.env_remove(key);
+    }
+    let ran = sot_platform::test_wait::run_within(
+        cleanup.args(["--exact", "install::unix::tests::version_cleanup_keeps_unavailable_registrations_and_refused_worktrees", "--nocapture"])
+            .env("SOT_TEST_VERSION_CLEANUP_ROOT", &root)
+            .env("HOME", &root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1"),
+        std::time::Duration::from_secs(30),
+    );
+    assert_eq!(ran.status.code(), Some(0), "{ran}");
+    assert!(ran.stdout.contains("1 passed"), "cleanup body did not execute: {ran}");
+    assert!(!versions.join("old").exists(), "an available clean version is removed");
+    assert!(versions.join("locked/data").is_file(), "a refused worktree is kept intact");
+    assert_eq!(std::fs::read_to_string(versions.join("dirty/data")).unwrap(), "local change\n");
+    let registrations = git(&["-C", &b, "worktree", "list", "--porcelain"]);
+    assert!(registrations.contains(&format!("worktree {}\n", unavailable.display())), "{registrations}");
+}

@@ -637,9 +637,8 @@ fn lay_out(plan: &Plan) -> Result<(), Stop> {
         }
     } else {
         say(&format!("adding version worktree {tag}"));
-        let _ = cmd::output(cmd::git_in(&base).args(["worktree", "prune"]));
         if cmd::shown(cmd::git_in(&base).args(["worktree", "add", "--detach"]).arg(&checkout).arg(&want)) != Some(0) {
-            return Err(Stop::new(1, "worktree add failed"));
+            return Err(Stop::new(1, "worktree add failed; inspect this version path and its existing registration with git worktree list; registrations for unavailable paths are kept"));
         }
     }
     let have = cmd::output(cmd::git_in(&checkout).args(["rev-parse", "HEAD"])).first_line();
@@ -723,13 +722,12 @@ fn prune_versions(repo: &Path, base: &Path, tag: &str, prev: Option<&str>) {
         if dirty.is_empty() {
             say(&format!("pruning old version dir {name}"));
             if !cmd::output(cmd::git_in(base).args(["worktree", "remove"]).arg(&v)).ok() {
-                let _ = std::fs::remove_dir_all(&v);
+                say(&format!("keeping old version dir {name}: git could not remove its worktree; inspect that exact path before removing it"));
             }
         } else {
             say(&format!("keeping old version dir {name}: it has local changes ({}); it stays until it is clean or you remove it", dirty.lines().next().unwrap_or("")));
         }
     }
-    let _ = cmd::output(cmd::git_in(base).args(["worktree", "prune"]));
 }
 
 /// Julia (installed through juliaup when none at the channel is on PATH), the floor check, comm, and a daemon role's

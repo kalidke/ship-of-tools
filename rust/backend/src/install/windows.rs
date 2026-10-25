@@ -204,7 +204,6 @@ fn version_folder(ctx: &Ctx) -> Result<(), Stop> {
         }
         return Err(Stop::new(1, format!("{} exists but is not at {}; remove that folder and run this again", ctx.version_dir.display(), ctx.pack.short())));
     }
-    let _ = cmd::output(cmd::git_in(&ctx.base).args(["worktree", "prune"]));
     let ran = cmd::output(cmd::git_in(&ctx.base).args(["worktree", "add", "--detach"]).arg(&ctx.version_dir).arg(&ctx.pack.commit));
     if !ran.ok() {
         return Err(Stop::new(1, format!("could not add the worktree {} at {}: {}", ctx.version_dir.display(), ctx.pack.short(), ran.last_said())));
