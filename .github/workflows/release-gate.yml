@@ -38,8 +38,8 @@ jobs:
     name: build+test, release gate (${{ matrix.os }}, ${{ matrix.shard }})
     needs: plan
     runs-on: ${{ matrix.os }}
-    # Windows inst needs up to 45 minutes of units (30 measured in run 40185556807) and 75 of fresh/repair orchestration
-    # (fresh alone passed 20 in that run: its Git-launched pushes through the guard run under Git Bash), plus setup and build.
+    # Windows inst needs up to 45 minutes of units and 75 of fresh/repair orchestration (run 40189400665: units 31, fresh and
+    # repair 46.5, its Git-launched pushes through the guard running under Git Bash), plus setup and build.
     timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.shard == 'inst' && 140 || 60 }}
     strategy:
       fail-fast: false
