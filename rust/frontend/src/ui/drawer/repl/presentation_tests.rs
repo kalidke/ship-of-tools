@@ -453,7 +453,7 @@ fn repl_text_keeps_cell_rows_before_shaping() {
     frame(&mut model, &key, id, ReplFrame::Error {
         message: "errorA\r\nerrorB".into(),
         stacktrace: vec![serde_json::from_value(serde_json::json!({
-            "function": "fnA\nfnB", "file": "fileA\tfileB", "line": 7
+            "fn": "fnA\nfnB", "file": "fileA\tfileB", "line": 7
         })).unwrap()],
     });
     frame(&mut model, &key, id, ReplFrame::Image { mime: "imageA\nimageB".into(), data_base64: String::new(), bytes: 0 });
