@@ -448,5 +448,8 @@ listings and their canonical-id translation are `RowDirectory`'s, private. Pass 
 work state, flash, strip order and default slug are `RowPresentation`'s, private. Pass 7c landed 2026-10-25: the pending
 results, their serials and the reveal are `ResultLedger`'s, private. Pass 7d landed 2026-10-25: the agent pane's
 fields are `AgentPane`'s, private. Pass 7e landed 2026-10-25: the REPL's model and routing are `ReplModel`'s, private.
-Pass 7f landed 2026-10-25: the REPL's presentation is `ReplPresentation`'s, private. Nothing is half-done on main.
+Pass 7f landed 2026-10-25: the REPL's presentation is `ReplPresentation`'s, private. The page channel's landing 1
+landed 2026-10-25: a page the window opened reads row states, goes to a row and opens a row's decision page, through
+verbs checked against its site's capability and origin; its trust boundary is this OS account, the maintainer's
+decision. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
