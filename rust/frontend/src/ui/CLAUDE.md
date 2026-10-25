@@ -3,7 +3,8 @@
 ## Idea
 One UI thread owns all view state and every other thread reaches it only by waking the window; ratatui computes cells
 and one wgpu pass draws every pixel. The window's `State` (mod.rs) is driven by one winit loop. `session/row_directory.rs`
-owns authoritative rows and identity; `session/row_presentation.rs` owns their presentation. The remaining concepts
+owns authoritative rows and identity; `session/row_presentation.rs` owns their presentation;
+`session/result_ledger.rs` owns owed results and their attempts. The remaining concepts
 below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -63,6 +64,20 @@ below still reach shared fields through `impl State` blocks and free functions u
   The clock is sampled separately at each changed-row insertion after projection and at each explicit demo flash
   after capture seeding, preserving the timing of `1bc65e054`.
   Behavior tests: `workspace_list::tests` and `row_presentation::tests`.
+- `ResultLedger` privately owns canonical owed results, the listed badge index, both checked serials and the
+  hostless issuing reveal token. Replacements reset attempts; retries advance independently, and neither beginning
+  an attempt, releasing reveal ownership nor abandoning an unsent attempt consumes the owed result. Admission
+  requires the event dial host, active host, current listing, reveal ownership and both current serials. Cursor
+  landing releases the marker and certifies the node; preview installation certifies only the matching generation
+  and node after State's reply admission and source installation. Only the post-present operation acknowledges,
+  with both certificates and matching displayed cursor/source nodes on the resolved row. Kept outcomes do nothing;
+  removed outcomes invalidate the exact canonical identity. Prepared retirements reconcile only pending canonical
+  identities before directory commitment; State applies returned reveal cleanup and badge refresh effects.
+  The owner never takes State or exposes mutable storage. State retains navigation, preview clocks, sends,
+  presentation ordering and persistence. Behavior tests: `result_ledger::tests`; the retained badge status test is
+  `badge::tests::pending_nav_status_names_workspace_and_path`. The nine-fixture native registry also runs
+  `replaced_result_rejects_old_tree_attempt_before_effects`, alongside the badge, retirement/disconnect and
+  kept-default controls. Registration alone is not hosted execution evidence.
 - `State` applies nonempty REPL catch-up, migration on every applicable refresh, then status before attachments,
   declarations, capture cycling and tree rebuild. Switching snapshots first, then changes hosts/defaults without
   rebuild/migration. The owner never takes `State`; lifecycle/declarations, frame routing and persistence stay there.
@@ -131,8 +146,8 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `input/`: the action catalog, key and mouse routing, help and clipboard paste.
 - `nav/`: the navigation pane's trees (mode, store, Modules, Sessions, Hosts).
 - `nav/files/`: Files mode's prompts, reveal walk, transfers and re-lists.
-- `session/`: `RowDirectory` owns listings/identity and `RowPresentation` owns metadata/order/flashes; State
-  coordinates their effects, snapshots, switch, picker, presence and badge floor.
+- `session/`: `RowDirectory` owns listings/identity, `RowPresentation` owns metadata/order/flashes and `ResultLedger`
+  owns owed results/attempts; State coordinates effects, snapshots, switch, picker, presence and the badge floor.
 - `agent_pane/`: the agent pane's screen choice, attach client with warm pool, and input.
 - `drawer/`: the bottom drawer and its tenants.
 - `drawer/repl/`: the REPL tenant (log, submit, history, display lines).

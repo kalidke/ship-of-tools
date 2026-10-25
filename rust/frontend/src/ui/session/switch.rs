@@ -227,7 +227,7 @@ impl State {
         self.reveal_awaiting = None;
         self.reveal_refetched = None;
         // Leaving abandons the result attempt that owned the reveal; coming back starts a new one.
-        self.result_reveal = None;
+        self.result_ledger.release_reveal();
         // The preview-follow hold is the departing reveal's too: it names a
         // node id in the OLD workspace's tree, and the same id exists in
         // most projects (files:README.md) — left armed, it would suppress

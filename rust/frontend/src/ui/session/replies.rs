@@ -376,6 +376,12 @@ impl State {
     ) {
         match result {
             Ok(info) if info.kept.is_some() => {
+                let effects = self.result_ledger.row_outcome(
+                    &ResultRowIdentity { host: event_host.clone(), workspace_id: info.workspace_id.clone() },
+                    ResultRowOutcome::Kept,
+                    &self.active_host,
+                );
+                self.apply_result_effects(effects);
                 // Default row: the backend ended its capsule
                 // run instead of removing the row — nav/REPL/
                 // tree caches stay untouched. But the BL
@@ -422,7 +428,12 @@ impl State {
             Ok(info) => {
                 // The destroyed row's owed result and attempts die with it,
                 // before the bounce or any cache cleanup can touch them.
-                self.invalidate_result_row(&event_host, &info.workspace_id);
+                let effects = self.result_ledger.row_outcome(
+                    &ResultRowIdentity { host: event_host.clone(), workspace_id: info.workspace_id.clone() },
+                    ResultRowOutcome::Removed,
+                    &self.active_host,
+                );
+                self.apply_result_effects(effects);
                 // If the active workspace was the one we
                 // just destroyed, bounce to default. The
                 // backend already refused to destroy the

@@ -37,7 +37,6 @@ impl State {
         default_b.is_default = true;
         self.on_workspaces(a.clone(), vec![row_a, default_a]);
         self.on_workspaces(b.clone(), vec![row_b, default_b]);
-        self.pending_nav = PendingResults::default();
         while a_rx.try_recv().is_ok() {}
         while b_rx.try_recv().is_ok() {}
         (a, b, a_rx, b_rx)
@@ -102,13 +101,13 @@ impl State {
         );
         anyhow::ensure!(
             self.pending_result_path(b, "project").as_deref() == Some("by-id.png")
-                && !self.pending_nav.contains_key(&(b.clone(), "id-b".into())),
+                && !self.result_ledger.has_badge(&(b.clone(), "id-b".into())),
             "canonical spelling created a phantom strip key"
         );
         let before = (
             self.active_host.clone(),
             self.active_workspace_id.clone(),
-            self.pending_nav.clone(),
+            self.result_ledger.clone(),
         );
         self.dispatch_fe_command(
             Some(&b),
@@ -125,7 +124,7 @@ impl State {
                 == (
                     self.active_host.clone(),
                     self.active_workspace_id.clone(),
-                    self.pending_nav.clone()
+                    self.result_ledger.clone()
                 )
                 && self.status.starts_with("result refused"),
             "unknown urgent target mutated result state"
@@ -148,7 +147,7 @@ impl State {
                     == (
                         self.active_host.clone(),
                         self.active_workspace_id.clone(),
-                        self.pending_nav.clone()
+                        self.result_ledger.clone()
                     ),
                 "unknown goto or reveal mutated result state"
             );
@@ -1285,7 +1284,7 @@ impl State {
             self.pending_result_path(kept_host, "base").as_deref() == Some("kept-default.rs"),
             "control: the default row's own result was not owed"
         );
-        let owed = self.pending_nav.clone();
+        let owed = self.result_ledger.clone();
         self.on_workspace_destroyed(kept_host.clone(), Ok(crate::net::transport::WorkspaceDestroyedInfo {
             workspace_id: default.identity().workspace_id.clone(),
             slug: default.row_key().1.clone(),
@@ -1295,7 +1294,7 @@ impl State {
             kept: Some("run ended".into()),
         }));
         anyhow::ensure!(
-            self.pending_nav == owed
+            self.result_ledger == owed
                 && self.pending_result_path(kept_host, "base").as_deref() == Some("kept-default.rs"),
             "control: keeping the default row removed or changed its own pending result"
         );

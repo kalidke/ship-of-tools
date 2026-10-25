@@ -119,9 +119,13 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 8] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 9] = [
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
+        (
+            "replaced_result_rejects_old_tree_attempt_before_effects",
+            State::replaced_result_rejects_old_tree_attempt_before_effects,
+        ),
         ("first_named_account_is_sent", State::first_named_account_is_sent),
         ("pending_result_dies_with_its_canonical_row", State::pending_result_dies_with_its_canonical_row),
         (

@@ -749,15 +749,8 @@ struct State {
     /// NOT cleared on `workspace.list` — an old daemon sends empty
     /// `repl_state`, and frame-driven entries must survive it.
     repl_lifecycle: HashMap<WsKey, String>,
-    /// Results owed to current listed canonical rows; authoritative removal or identity replacement invalidates their entries and attempts.
-    pending_nav: PendingResults,
-    /// Serial of the newest result recorded; never reset, so a replacement is told from the result it replaced.
-    result_serial: u64,
-    /// Serial of the newest attempt started; never reset.
-    attempt_serial: u64,
-    /// The attempt the in-flight reveal (`pending_reveal` or `pending_switch_reveal`) works for, when it
-    /// is a result's; ordinary tree replies neither advance nor abort a reveal while it is set.
-    result_reveal: Option<crate::net::transport::ResultAttemptId>,
+    /// Runtime results, attempts and presentation certificates for canonical rows.
+    result_ledger: ResultLedger,
     /// Sessions-mode workspace picker (ADR 0014). `Some(state)` while
     /// the user is browsing a directory tree to pick the project_root
     /// of a new workspace; `None` outside the picker. Supersedes the

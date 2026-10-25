@@ -1,20 +1,5 @@
 use super::*;
 
-impl State {
-    /// The path owed to the listed strip row `(host, slug)`, if any.
-    pub(in crate::ui) fn pending_result_path(
-        &self,
-        host: &HostKey,
-        slug: &str,
-    ) -> Option<String> {
-        let target = self.row_directory.resolve(host, slug).ok()?;
-        self.pending_nav
-            .entries
-            .get(target.identity())
-            .map(|entry| entry.path.clone())
-    }
-}
-
 #[test]
 fn pending_nav_status_names_workspace_and_path() {
     // The badge floor's user-facing status string (ADR 0025 §1) must name

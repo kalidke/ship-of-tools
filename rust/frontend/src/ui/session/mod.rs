@@ -7,6 +7,7 @@ pub(in crate::ui) mod keys;
 mod picker;
 mod presence;
 mod replies;
+mod result_ledger;
 mod row_directory;
 mod row_presentation;
 mod snapshot;
@@ -14,7 +15,7 @@ mod switch;
 mod workspace_key;
 mod workspace_list;
 
-pub(in crate::ui) use badge::PendingResults;
+pub(in crate::ui) use result_ledger::{ResultEffects, ResultLedger, ResultRowOutcome};
 pub(in crate::ui) use picker::*;
 pub(in crate::ui) use presence::*;
 pub(in crate::ui) use snapshot::*;

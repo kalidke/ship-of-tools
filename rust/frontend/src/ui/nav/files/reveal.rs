@@ -30,7 +30,7 @@ impl State {
     /// the row materializes (the deep-path case the old code left body-only).
     pub(in crate::ui) fn drive_same_ws_open(&mut self, path: &str) {
         // An in-place open takes over the reveal state; a result attempt no longer owns it.
-        self.result_reveal = None;
+        self.result_ledger.release_reveal();
         // Through the store seam (a direct `self.mode =` would leave another
         // mode's rows on screen as "the Files tree").
         self.force_files_mode();
@@ -170,7 +170,7 @@ impl State {
     ) {
         self.preview_node_id_fired = Some(node_id.clone());
         self.preview_anchor_line = None;
-        self.result_reveal = Some(attempt.clone());
+        self.result_ledger.arm_reveal(attempt.clone());
         // The active view is THIS workspace's Files tree by
         // construction (force_files_mode swapped it in by key);
         // the only remaining question is whether it has rows yet
@@ -233,7 +233,7 @@ impl State {
     /// The children request a reveal step sends for `anc_id`: tagged with the result attempt when the
     /// reveal is a result's, so only that attempt's own reply can advance it.
     fn reveal_children_request(&self, anc_id: &str) -> crate::net::transport::OutgoingReq {
-        match &self.result_reveal {
+        match self.result_ledger.reveal_attempt() {
             Some(attempt) => crate::net::transport::OutgoingReq::ResultTree {
                 attempt: attempt.clone(),
                 request: crate::net::transport::ResultTreeRequest::Children {

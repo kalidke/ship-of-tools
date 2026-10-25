@@ -70,7 +70,7 @@ impl State {
                     self.reveal_awaiting = None;
                     self.reveal_refetched = None;
                     self.driven_preview_hold_cursor = None;
-                    self.result_reveal = None;
+                    self.result_ledger.release_reveal();
                     self.window.request_redraw();
                 }
             }
@@ -159,7 +159,7 @@ impl State {
                     .rows
                     .get(self.tree.selected)
                     .map(|r| r.node.id.clone());
-                self.result_reveal = None;
+                self.result_ledger.release_reveal();
                 self.pending_reveal = Some(sel);
                 self.reveal_awaiting = None;
                 self.reveal_refetched = None;
@@ -256,7 +256,7 @@ impl State {
             // nested one. Runs after the resume/README cursor
             // defaults above so the explicit switch-reveal wins.
             // A result's one-shot is consumed only by its own attempt's root reply.
-            if self.result_reveal.is_some() != result_owned {
+            if self.result_ledger.reveal_attempt().is_some() != result_owned {
                 return;
             }
             if let Some(node_id) = self.pending_switch_reveal.take() {
@@ -332,7 +332,7 @@ impl State {
             tracing::info!(%parent_id, "reveal: re-entering after children splice");
         }
         // A result's reveal advances only on its own attempt's reply, and an in-place one never on a result's.
-        if self.result_reveal.is_some() == result_owned {
+        if self.result_ledger.reveal_attempt().is_some() == result_owned {
             self.drive_reveal_step(Some(&parent_id));
         }
     }
@@ -371,7 +371,7 @@ impl State {
             .reveal_refetched
             .as_ref()
             .is_some_and(|(_, anc)| anc == &parent_id);
-        if self.result_reveal.is_none()
+        if self.result_ledger.reveal_attempt().is_none()
             && (self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) || refetch_gated)
         {
             // Covers BOTH wait states (codex round 4): a failed

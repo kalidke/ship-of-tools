@@ -30,11 +30,8 @@ impl State {
     /// Reconcile owed results against the directory's prepared retirement report, before commitment.
     /// Only currently listed rows can acquire a pending result; a disconnect and a kept default do not retire one.
     pub(in crate::ui) fn reconcile_pending_results(&mut self, update: &RowDirectoryUpdate) {
-        for identity in update.retired() {
-            if self.pending_nav_workspace_ids(&identity.host).contains(&identity.workspace_id) {
-                self.invalidate_result_row(&identity.host, &identity.workspace_id);
-            }
-        }
+        let effects = self.result_ledger.reconcile_retired(update.retired(), &self.active_host);
+        self.apply_result_effects(effects);
     }
 
     /// Badge changes reorder the existing projection without a directory refresh.

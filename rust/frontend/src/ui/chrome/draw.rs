@@ -467,8 +467,8 @@ impl State {
                     let pending = host
                         .zip(slug)
                         .map(|(h, s)| {
-                            self.pending_nav
-                                .contains_key(&(h.to_string(), s.to_string()))
+                            self.result_ledger
+                                .has_badge(&(h.to_string(), s.to_string()))
                         })
                         .unwrap_or(false);
                     (agent_tone_for(&r.node.payload, now), flash, pending)

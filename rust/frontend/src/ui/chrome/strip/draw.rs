@@ -110,14 +110,14 @@ impl State {
         // a slug, and the strip must not conflate their state.
         // Per-name badge-floor pending flag (ADR 0025 §1): true when that
         // workspace has a pending nav.preview result waiting, keyed by the
-        // same (host, slug) WsKey pair pending_nav uses (ADR 0042 L2a codex
+        // same (host, slug) WsKey pair the ledger's badge index uses (ADR 0042 L2a codex
         // review, item E). Read BEFORE the labels because the badge is part
         // of the label (`strip_label`): every width below, the hull's
         // included, is measured from the text that is drawn.
         let pendings: Vec<bool> = self
             .row_presentation.keys()
             .iter()
-            .map(|(h, s)| self.pending_nav.contains_key(&(h.clone(), s.clone())))
+            .map(|(h, s)| self.result_ledger.has_badge(&(h.clone(), s.clone())))
             .collect();
         let labels: Vec<String> = self
             .row_presentation.keys()
