@@ -9,31 +9,40 @@ grep -F 'sot.publishList' "$T/setup.out" > /dev/null || fail 'readiness wrong ca
 git -C "$R" config sot.publishList "$POLICY"
 ok 'placement and readiness have distinct outcomes'
 # Installer outcomes distinguish human work from failed publication; final checks never repair what they observe.
-"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$POLICY" --installer > "$T/installer.out" 2>&1 || fail 'installer ready control failed'
+# Supply the native slash path the installer uses. MSYS converts POSIX arguments to git.exe, but not to Bash's
+# printf in --check-only, whose byte comparison intentionally detects a changed recorded location.
+installer_policy=$(path_for_comparison "$POLICY") || fail 'cannot resolve installer policy path'
+installer_absent=$(path_for_comparison "$T/not-provisioned") || fail 'cannot resolve absent installer policy path'
+"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$installer_policy" --installer > "$T/installer.out" 2>&1 || {
+    cat "$T/installer.out" >&2; fail 'installer ready control failed'
+}
+[ "$(git -C "$R" config --local --get sot.publishList)" = "$installer_policy" ] || fail 'installer recorded another policy location'
 before=$(git -C "$R" hash-object --no-filters "$R/.git/config" "$R/.git/hooks/pre-push" "$R/.git/publish-guard/installed-hash")
-"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$POLICY" --installer --check-only > "$T/installer.out" 2>&1 || fail 'read-only readiness control failed'
+"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$installer_policy" --installer --check-only > "$T/installer.out" 2>&1 || {
+    cat "$T/installer.out" >&2; fail 'read-only readiness control failed'
+}
 after=$(git -C "$R" hash-object --no-filters "$R/.git/config" "$R/.git/hooks/pre-push" "$R/.git/publish-guard/installed-hash")
 [ "$before" = "$after" ] || fail 'read-only check changed installed state'
 rc=0
-"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$T/not-provisioned" --installer > "$T/installer.out" 2>&1 || rc=$?
+"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$installer_absent" --installer > "$T/installer.out" 2>&1 || rc=$?
 [ "$rc" = 3 ] && [ ! -e "$T/not-provisioned" ] || fail 'missing list was not an unprovisioned outcome'
 git -C "$R" config core.hooksPath foreign-hooks
 cp "$R/.git/config" "$T/kept-config"
 rc=0
-"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$POLICY" --installer > "$T/installer.out" 2>&1 || rc=$?
+"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$installer_policy" --installer > "$T/installer.out" 2>&1 || rc=$?
 [ "$rc" = 4 ] && cmp -s "$R/.git/config" "$T/kept-config" || fail 'installer did not preserve hook configuration'
 grep -F 'config --local --unset-all core.hooksPath' "$T/installer.out" > /dev/null || fail 'missing migration command'
 git -C "$R" config --unset-all core.hooksPath
-"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$POLICY" --installer > "$T/installer.out" 2>&1 || fail 'installer recovery failed'
+"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$installer_policy" --installer > "$T/installer.out" 2>&1 || fail 'installer recovery failed'
 cp "$R/.git/hooks/pre-push" "$T/installer-shim"
 rm -f "$R/.git/hooks/pre-push"
 rc=0
-"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$POLICY" --installer --check-only > "$T/installer.out" 2>&1 || rc=$?
+"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$installer_policy" --installer --check-only > "$T/installer.out" 2>&1 || rc=$?
 [ "$rc" = 1 ] && [ ! -e "$R/.git/hooks/pre-push" ] || fail 'final check repaired a missing hook'
 mv "$T/installer-shim" "$R/.git/hooks/pre-push"; fixture_executable "$R/.git/hooks/pre-push"
 printf 'another writer\n' > "$R/.git/config.lock"
 rc=0
-"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$POLICY" --installer > "$T/installer.out" 2>&1 || rc=$?
+"$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$installer_policy" --installer > "$T/installer.out" 2>&1 || rc=$?
 [ "$rc" = 1 ] || fail 'Git write failure became a human step'
 rm -f "$R/.git/config.lock"
 ok 'installer status and read-only verification'

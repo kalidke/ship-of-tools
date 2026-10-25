@@ -2,8 +2,9 @@
 """Real sotd install orchestration in scratch profiles, with actual Git-launched pushes.
 
 Run after building the three binaries, on Linux/macOS/Windows. --scenario repair is also a baseline witness against
-4464089f7's binaries and checkout: successful orchestration there leaves both known clones unenrolled. Julia steps
-and the Windows shortcut are recording fixtures; no row, service, window, agent or network request is started.
+4464089f7's binaries and checkout: successful orchestration there leaves both known clones unenrolled. Unix Julia steps
+and the Windows shortcut are recording fixtures. Windows leaves Julia unavailable and checks its human-step verdict;
+its unique scratch USERNAME isolates the daemon pipe. No row, service, window, agent or network request is started.
 """
 
 import argparse
@@ -18,10 +19,18 @@ import subprocess
 import tempfile
 
 
-def run(argv, cwd, env, ok=True, input_text=None):
-    result = subprocess.run([str(a) for a in argv], cwd=cwd, env=env, text=True,
-                            stdin=subprocess.DEVNULL if input_text is None else None, input=input_text,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+def run(argv, cwd, env, ok=True, input_text=None, *, step=None, timeout=180):
+    try:
+        result = subprocess.run([str(a) for a in argv], cwd=cwd, env=env, text=True,
+                                stdin=subprocess.DEVNULL if input_text is None else None, input=input_text,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        # TimeoutExpired can carry bytes even with text=True. Keep the installer's last progress lines: the command
+        # alone cannot distinguish enrollment, layout, a daemon query, or a converge waiting on a missing fixture.
+        output = error.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        raise AssertionError(f"{step or argv[0]}: timed out after {timeout} s\n{argv}\n{output}") from None
     if ok and result.returncode:
         raise AssertionError(f"{argv}: exit {result.returncode}\n{result.stdout}")
     return result
@@ -71,6 +80,9 @@ def main():
                    GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid",
                    GIT_AUTHOR_DATE="2020-01-01T00:00:00Z", GIT_COMMITTER_DATE="2020-01-01T00:00:00Z")
         if windows:
+            # The Windows endpoint uses USERNAME, not USERPROFILE or LOCALAPPDATA. Without it, every stripped
+            # environment probes the shared sot-user-local fallback rather than a fixture-owned daemon namespace.
+            env["USERNAME"] = "sot-scratch-" + root.name
             jq = shutil.which("jq.exe")
             if not jq:
                 raise RuntimeError("native jq.exe is a fixture prerequisite")
@@ -94,6 +106,17 @@ def main():
             return run([git, "-C", cwd, *words], cwd=root, env=env, ok=ok, input_text=data)
 
         version_line = run([binaries["sotd"], "--version"], root, env).stdout
+        if windows:
+            pipe = run([binaries["sotd"], "session-socket-path", "local"], root, env,
+                       step="Windows scratch pipe derivation", timeout=15).stdout.strip()
+            assert pipe == "\\\\.\\pipe\\sot-" + env["USERNAME"] + "-local", pipe
+            # Enumerate names without opening a pipe instance, as the installer's read-only probe does.
+            assert pipe.rsplit("\\", 1)[1].casefold() not in {name.casefold() for name in os.listdir("\\\\.\\pipe\\")}, (
+                "Windows scratch daemon pipe already exists")
+            absent = run([binaries["sotd"], "same-version", "--endpoint", "pipe:" + pipe], root, env, ok=False,
+                         step="Windows scratch daemon absence check", timeout=15)
+            assert absent.returncode == 2, f"scratch pipe must have no daemon: exit {absent.returncode}\n{absent.stdout}"
+            assert shutil.which("julia", path=env["PATH"]) is None, "Windows fixture must leave Julia as a named install step"
         version = version_line.split()[1]
         match = re.search(r"\(([0-9a-f]{7,40}) ", version_line)
         if not match:
@@ -158,13 +181,16 @@ def main():
         command += ["-Archive", pack, "-Prefix", prefix] if windows else ["--archive", pack, "--prefix", prefix, "--be-only", "--no-service"]
 
         def install(cwd=caller, success=True):
-            result = run(command, cwd, env, ok=success)
+            result = run(command, cwd, env, ok=success, step=f"{args.scenario} installer publish enrollment ({args.case})")
             lines = [line for line in result.stdout.splitlines() if re.match(r"^(PASS|FAIL|ONE STEP LEFT): ", line)]
             assert len(lines) == 1 and result.stdout.rstrip().endswith(lines[0]), result.stdout
             if success:
                 assert not lines[0].startswith("FAIL:"), result.stdout
                 if args.scenario == "repair":
                     assert "a repair run" in result.stdout, result.stdout
+                if windows:
+                    assert "install Julia" in lines[0], result.stdout
+                    assert (prefix / "shortcut-called").read_text(encoding="ascii") == "called", result.stdout
             return result, lines[0]
 
         result, _ = install()
