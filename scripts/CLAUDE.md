@@ -297,11 +297,19 @@ Guarantees and boundaries:
   bytes under `LC_ALL=C`, case-insensitive for ASCII letters only: a non-ASCII entry matches identical UTF-8 bytes,
   without Unicode case folding or normalization. Blank/comment lines are ignored; `!span` erases literal permitted
   spans before matching. CRLF lists and an unterminated last line keep original line numbers.
-- Only locally available old OIDs advertised by this destination bound commit history; unrelated remote-tracking refs
-  never do. New branches/tags or unavailable old OIDs can conservatively recheck history. A retained denied file in a
-  new snapshot still refuses after an ancestor was published. Raw parent traversal refuses missing shallow/promisor
-  objects; local object enumeration precedes reads, so the hook never fetches to complete a scan. No diff, textconv or
-  replacement object changes its inspected bytes. NUL bytes delimit single-line matching, as paths use NUL records.
+- Commit history is bounded by this destination's advertised old OIDs plus `refs/remotes/<name>/*` for the pushed
+  remote's configured name (the hook's first argument when it names a configured remote). Unrelated remote-tracking
+  refs never bound the scan; a push by URL or path uses no tracking refs. Both bounds exclude only commits and tags
+  available locally and their locally available commit ancestry. A new branch or tag from an enrolled clone scans
+  only history that this named remote has never held as of the last fetch; new snapshots, ref names and tag objects
+  still receive their normal scans. A retained denied file in a new snapshot still refuses after an ancestor was
+  published. Unavailable old OIDs can conservatively recheck history.
+  A stale tracking ref older than the destination can only widen the scan, never narrow it below what the destination
+  advertises. In normal Git use a tracking ref moves only on fetch or a successful push to that remote; a hand-edited
+  tracking ref is outside this guarantee, like `--no-verify`. Failed remote/tracking-ref reads refuse the push.
+  Raw parent traversal refuses missing shallow/promisor objects; local object enumeration precedes reads, so the
+  hook never fetches to complete a scan. No diff, textconv or replacement object changes its inspected bytes. NUL
+  bytes delimit single-line matching, as paths use NUL records.
 - On every push, one raw common-clone-local `sot.publishList` value must name an absolute readable regular file outside
   every repository and Git metadata. There is no global, system or command-config fallback. Missing, multiple,
   relative, linked, inside-repository or unresolvable policy paths refuse, including deletion-only pushes. Directory
@@ -384,7 +392,7 @@ Tests (all observe execution, not source spellings):
 
 | Entry | Guarantee |
 |---|---|
-| `tests/test-pre-push.sh` | Full object/ref scope, matching and allowances, destination exclusions, missing shallow/promisor objects without fetch, witnessed producer/read failures (including path-bearing stderr and disappearing policy), complete stderr audit and deletion behavior |
+| `tests/test-pre-push.sh` | Full object/ref scope, matching and allowances, advertised-old and named-remote tracking exclusions for new branches/tags, URL/path and unrelated-remote controls, new denied snapshots on fetched history, missing shallow/promisor objects without fetch, witnessed producer/read failures (including remote/tracking reads, path-bearing stderr and disappearing policy), complete stderr audit and deletion behavior |
 | `tests/test-publish-guard-setup.sh` | Policy placement/UTF-8 encoding at readiness and push, non-ASCII comments and literal entry matching with ASCII folding only, unreadable/failed/incomplete validators, hostile Git selectors, preserved configuration/hooks, repeated setup, common-worktree shim/version selection, fresh-clone limit, exact chaining and veto/cycles, default commit hooks, LF/native Windows paths/interpreter |
 | `tests/test-publish-guard-setup.sh` (installer cases) | Distinct ready/provisioning/conflict/write-failure statuses and read-only final checks, including a missing hook that stays missing |
 | `install::cmd::tests::*` | Concurrent large-stream draining, deadline through output completion after a leader exits, owned writer cessation, and partial output never supplying a successful/provisioning result; native stand-ins run on all three systems |

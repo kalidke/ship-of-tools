@@ -1,6 +1,51 @@
 #!/bin/bash
 # Real local pushes; every denial has a clean control and an unchanged remote.
 . "${BASH_SOURCE[0]%/*}/publish-guard-fixture.sh"
+# Select either acceptance regression alone to witness its refusal under f423a1d6c.
+case "${PUBLISH_GUARD_CASE:-}" in ''|tracking-*)
+    fixture tracking-history
+    printf 'glimmerdeny\n' > "$R/data"; commit 'old snapshot'
+    git -C "$R" push -q --no-verify origin main > "$T/seed.out" 2>&1
+    printf 'clean again\n' > "$R/data"; commit 'remove old content'
+    git -C "$R" push -q --no-verify origin main > "$T/seed.out" 2>&1
+    R="$T/with spaces/fetched-clone"
+    git clone -q --no-local -b main "$B" "$R"
+    payload "$R"
+    "$BASH" "$R/scripts/setup-publish-guard.sh" "$R" --list "$POLICY" > "$T/setup.out" 2>&1 || fail 'fetched clone enrollment failed'
+    fetched=$(git -C "$R" rev-parse refs/remotes/origin/main)
+    [ "$fetched" = "$(git -C "$B" rev-parse refs/heads/main)" ] || fail 'clone did not fetch destination history'
+    commit 'new clean snapshot'
+    git -C "$R" branch fetched-branch
+    git -C "$R" tag -a fetched-tag -m 'new clean tag'
+    branch_update=refs/heads/fetched-branch:refs/heads/fetched-branch
+    selected=0
+    for field in path url unrelated retained branch tag; do
+        [ -z "${PUBLISH_GUARD_CASE:-}" ] || [ "$PUBLISH_GUARD_CASE" = "tracking-$field" ] || continue
+        selected=$((selected + 1))
+        case "$field" in
+            path) reject 'new branch by path rechecks old history' 'line 3' "$B" "$branch_update" ;;
+            url) reject 'new branch by URL rechecks old history' 'line 3' "file://$B" "$branch_update" ;;
+            unrelated)
+                destination=$B
+                B="$T/with spaces/other-destination.git"
+                git init -q --bare "$B"
+                git -C "$R" remote add other "$B"
+                reject 'different remote tracking history is not excluded' 'line 3' other "$branch_update"
+                B=$destination ;;
+            retained)
+                printf 'glimmerdeny\n' > "$R/data"; commit 'new denied snapshot'
+                reject 'new snapshot on fetched history still scans retained content' 'line 3' origin HEAD:refs/heads/new-denied
+                git -C "$R" reset -q --hard refs/heads/fetched-branch ;;
+            branch) accept 'new branch excludes fetched destination history' origin "$branch_update" ;;
+            tag) accept 'new tag excludes fetched destination history' origin refs/tags/fetched-tag ;;
+        esac
+    done
+    if [ -n "${PUBLISH_GUARD_CASE:-}" ]; then
+        [ "$selected" = 1 ] || fail 'unknown selected tracking regression'
+        printf '1..%s\n' "$count"; exit 0
+    fi
+    ;;
+esac
 fixture scanner
 ok 'clean commit push'
 selected=0
@@ -147,17 +192,14 @@ reject 'retained denied content' 'line 3' origin HEAD:old
 printf 'clean again\n' > "$R/data"; commit
 reject 'clean tip still scans unpublished denied parent' 'line 3' origin HEAD:old
 # The rejected snapshot was never published. Leave it off the clean update's ancestry;
-# only the destination's advertised old commit and its ancestors may be excluded.
+# the destination's advertised old commit and its tracked history may be excluded.
 reset_case
 printf 'clean again\n' > "$R/data"; commit
 [ "$(git -C "$R" rev-parse HEAD^)" = "$old" ] || fail 'clean update does not directly follow the published commit'
 [ "$(git -C "$B" rev-parse refs/heads/old)" = "$old" ] || fail 'destination no longer advertises the published commit'
 accept 'advertised old history excluded after content removal' origin HEAD:old
-# Another remote-tracking namespace is not an exclusion.
-git -C "$R" update-ref refs/remotes/unrelated/held "$old"
-reject 'unrelated remote history' 'line 3' origin "$old:refs/heads/another"
-# New refs conservatively recheck ancestors even if a different destination ref already holds them.
-reject 'new ref rechecks history' 'line 3' origin HEAD:refs/heads/new-history
+# A successful named push also records history in that remote's tracking namespace.
+accept 'new ref excludes history tracked after a successful push' origin HEAD:refs/heads/new-history
 merged=$(printf clean | git -C "$R" commit-tree "$tree" -p HEAD -p "$BASE")
 reject 'merge tree content' 'line 3' origin "$merged:refs/heads/merge-content"
 # A gitlink contributes its path and oid without fetching its repository.
@@ -231,7 +273,7 @@ git clone -q --branch main --depth=1 "file://$B" "$S"
 payload "$S"
 "$BASH" "$S/scripts/setup-publish-guard.sh" "$S" --list "$POLICY" > "$T/setup.out"
 R=$S
-reject 'shallow missing parent' 'unavailable locally' origin HEAD:refs/heads/shallow-copy
+reject 'shallow missing parent without named tracking refs' 'unavailable locally' "$B" HEAD:refs/heads/shallow-copy
 fixture producers
 printf new > "$R/data"; commit
 REAL_GIT=$(command -v git)
@@ -252,18 +294,22 @@ case "$1:${PG_FAIL_PRODUCER:-}" in
     cat-file:catalog) [ "${2:-}" != --batch-all-objects ] || fault ;;
     cat-file:read) [ "${2:-}" != commit ] || fault ;;
     ls-tree:tree) fault ;;
+    remote:remotes) fault ;;
+    for-each-ref:tracking) fault ;;
 esac
 exec "$PG_REAL_GIT" "$@"
 WRAPPER
 fixture_executable "$T/git-wrapper/git"
 # Git prepends its execution directory to PATH before running hooks. Put the fixture
 # wrapper there, and retain the real execution directory on PATH for transport helpers.
-for producer in catalog read tree; do
+for producer in catalog read tree remotes tracking; do
     : > "$T/producer-fault"
     case "$producer" in
         catalog) reason='pre-push: cannot enumerate local objects' ;;
         read) reason='pre-push: cannot read object' ;;
         tree) reason='pre-push: cannot read tree' ;;
+        remotes) reason='pre-push: cannot read configured remotes' ;;
+        tracking) reason='pre-push: cannot read destination tracking refs' ;;
     esac
     PG_FAIL_PRODUCER=$producer PG_REAL_GIT=$REAL_GIT PG_FAULT_LOG="$T/producer-fault" \
         GIT_EXEC_PATH="$FAULT_EXEC_PATH" PATH="$T/git-wrapper:$REAL_GIT_EXEC_PATH:$PATH" \
