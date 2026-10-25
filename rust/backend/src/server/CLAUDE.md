@@ -127,12 +127,17 @@ of each.
     writes it (`repl_frame_for`, `ReplFrameMsg::opener`). Limit: only `fe`-role connections with a name are windows;
     "in use" is the latest `fe.presence` stamp among them, and with none stamped the one connected last; with no
     named frontend attached a browser open goes nowhere.
+    A page's command instead goes to the window that opened its site: `Clients::window_connection(owner)` selects
+    that owner's newest live named `fe` connection, and `PageVerbs` publishes with its name and serial. The bus writer
+    writes only to that serial, so another window and an older redial receive nothing. No live connection answers
+    503 `window_gone` at the page server. A disconnect after selection remains the bus's best-effort delivery limit.
 14. **A handler is given what it may use as arguments; the compiler enforces part of that.** The server's
     implementation modules (`conn`, `dispatch`, `events`, `hello`, `listen`, `reply`) are private to it, so no other
     module can name them. What remains reachable crate-wide is the entry's (`server::run`, `server::refuse_live_socket`)
     and the server-owned modules at the crate root (`clients*`, `session`, `daemon_log`, `paths`): the services take
     `Session` (the revision ring's handle) as an argument, and no longer take the roster: pages is given the window's key
-    and the away windows as a closure, the updater the count of attached windows. That no service reaches the roster or
+    and the away windows as a closure, and `PageVerbs` with the states, handle and window lookups and fe-command bus;
+    the updater the count of attached windows. That no service reaches the roster or
     the entry's items through the crate is a convention until the crates are cut, held by review, not by the compiler.
 15. **The log is one file, bounded, and normally not copied to a regular-file stdout.** `sotd.log` follows
     `XDG_STATE_HOME` and rolls after a daemon write leaves it over 64 MiB: its last 64 MiB go to `sotd.log.1`,
@@ -173,6 +178,9 @@ of each.
 `run`, and `refuse_live_socket` for the early check in `main.rs`. Services reach nothing here; the roster (`Clients`,
 `ClientGuard`) is handed to a handler that needs a window fact as a value or a closure (`handle_docs_open` takes the
 window's key and `away_sites`, `spawn_periodic` the count of attached windows).
+`run` builds `PageVerbs` after the fe-command bus and roster exist, then calls `start_page_servers` before accepting
+control connections. Its blocking closures read the comm registry fresh and call rows' `work_state::states` and
+`handle::row_of_handle`; its window closure is `Clients::window_connection`.
 
 ## Does not
 Implement an op beyond `hello`, `ping` and the handoffs (every other op is its owner's handler). Decide when anything
@@ -202,7 +210,7 @@ tests need the built `sotd` and run in test containers.
 | 10 | off the loop | `dispatch_place_tests.rs`: `the_lists_are_disjoint_and_reasoned`; `reply_tests.rs`: `a_pooled_job_that_waits_ten_seconds_for_a_permit_is_answered_and_never_runs`; `tests/switch_latency/main.rs`: `slow_concept_read_does_not_delay_a_later_cheap_reply_on_the_same_connection`, `an_instant_op_is_answered_while_kernel_previews_hold_the_pool`, `a_ping_is_answered_while_a_quarto_render_is_held`, `a_held_render_runs_to_its_end_after_its_connection_closes`; `src/rows/unknown_workspace_tests.rs` (the pooled hint) |
 | 11 | accept errors | `listen_tests.rs`: `the_session_loop_survives_every_transient_and_resource_accept_error`; the stop at departure is lifecycle's (`tests/window_lease/lease.rs`: `last_one_out_two_windows`) |
 | 12 | the hello names running REPL runs | `tests/repl_windows.rs` (Linux) |
-| 13 | a command with no window named | `events_tests.rs`: `a_page_for_every_frontend_opens_in_the_window_in_use`; `src/clients_show_tests.rs`: `a_preview_goes_to_every_window_and_every_other_command_to_one`, `the_window_in_use_is_the_one_with_the_latest_input_the_one_marked_active`; `tests/active_frontend.rs`: `a_preview_reaches_every_window`, `a_browser_open_reaches_only_the_window_in_use`, `an_announced_page_opens_in_one_window_the_one_in_use` |
+| 13 | a command with no window named; a page's own window | `events_tests.rs`: `a_page_for_every_frontend_opens_in_the_window_in_use`; `src/clients_show_tests.rs`: `a_preview_goes_to_every_window_and_every_other_command_to_one`, `the_window_in_use_is_the_one_with_the_latest_input_the_one_marked_active`; `tests/active_frontend.rs`: `a_preview_reaches_every_window`, `a_browser_open_reaches_only_the_window_in_use`, `an_announced_page_opens_in_one_window_the_one_in_use`; `tests/page_channel.rs`: `a_go_to_reaches_only_the_window_that_opened_the_page`, `a_page_whose_window_is_away_is_answered_503`; `src/clients_window_tests.rs`: `a_page_owner_resolves_only_to_its_newest_named_frontend` |
 | 14 | a handler is given its arguments | the private submodules (compiler); the rest by convention, no test |
 | 16 | an event is one frame or dropped | `conn_select_once_wire_tests.rs`: `one_item_is_one_evt_frame`, `a_lagged_bus_writes_nothing`, `a_closed_bus_writes_nothing` (per bus) |
 | 15 | the log | `src/daemon_log/log_tests.rs`: `a_log_over_the_cap_rolls_after_the_first_write_and_a_held_writer_keeps_the_base`, `a_log_over_the_cap_rolls_within_a_run_and_every_writer_keeps_the_base`, `a_failing_roll_prints_once_and_is_not_retried_before_the_log_grows_by_the_cap`; `tests/daemon_stdout.rs`: `a_daemon_whose_stdout_is_a_file_writes_its_log_once` |

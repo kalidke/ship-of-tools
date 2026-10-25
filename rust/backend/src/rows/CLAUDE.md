@@ -202,10 +202,21 @@ Work-state. A row with a joined agent has one work-state, which the window shows
   (`sot_require_agent`), and a process outside the row resolves no handle of the row's. The daemon sets two facts only:
   the dialog it reads on a Claude row's screen, and a person's read (`workspace.activate` with `read: true`, which the
   window sends after ten seconds on the row), which clears `done` without restamping the row's time.
-- One reader path. `workspace.list` carries each row's `agent_state`, `agent_summary` and `agent_status_at`, read fresh
+- Two reader paths. `workspace.list` carries each row's `agent_state`, `agent_summary` and `agent_status_at`, read fresh
   from the registry through the row's bound handle and only from an entry of this host (`work_state::shown_of`); the
   work-state poll compares the same answer every 1.5 s and publishes `workspace.changed` (action `agent_state`) when what
   any row shows changed (`work_state::poll`).
+  `work_state::states` supplies pages with this host's registry sessions, sorted by handle, including sessions
+  outside any row. It exposes `handle`, `host`, `repo`, `row`, `state`, `summary`, `question`, `options`, `recommend`,
+  `page`, `waiting`, `status_at` and `last_seen`; absent strings are empty. Foreign and unknown-host entries are
+  omitted. `row` is this daemon's row bound by `bound_handle`, else empty, never a registry-supplied row id alone.
+  `handle::row_of_handle` applies the same binding and host rule for page actions; a known foreign entry refuses
+  naming its daemon. The server reads the registry fresh on a blocking thread for each call.
+- Question grammar is rows': `work_state::question::parts` removes `Page:` plus whitespace and a non-space path first
+  (one trailing period dropped), splits at the first `Options:`, then extracts `(letter) text` options, trimming
+  whitespace, semicolons and periods. `Recommend` or `Recommended`, optional colon, and a letter with optional
+  parentheses ends the options and supplies the recommendation. No `Options:` means no options or recommendation.
+  The page server requires an absolute page under the row's canonical project root before opening it.
 - How the window shows it: the row's name in the Sessions tree and the strip takes the state's color (Julia red, green,
   purple and blue, and gray), flashes at a change, and wilts when it is `working` and its time is ten minutes old; a busy
   turn's heartbeat restamps the time at most once a minute. The summary follows the name.
@@ -234,7 +245,8 @@ handles (the rows that run); work-state: the reduction and
 
 Calls in: the window and the row CLIs (`agents/spawn/`, `sot-fe`) through the ops above; lifecycle (`end_every`,
 `forget`, `resume_all`, `close_gate_and_settle`, `claim_create`, `list`); the server (`row_or_reply`, `resolve`,
-`capsule_guard`, `seed_default_row`, the bus setters); files and sidecars (a row's lazy handles); messaging's wake
+`capsule_guard`, `seed_default_row`, the bus setters, and page-channel `work_state::states` and `handle::row_of_handle`);
+files and sidecars (a row's lazy handles); messaging's wake
 (the declared handle, the headless client, `state_dir_for`, the probe); every session's hooks and declarations
 (`comm-status.sh`, which runs `sotd work-state`). The interfaces kept: every op's payload, `comm-status.sh`'s verbs and
 exit codes, and the registry entry's fields. Gone: `SOT_COMM_ROW_HANDLE`, the daemon's own entry into `comm-status.sh`,
@@ -244,7 +256,8 @@ scripts during an install logs one refused dialog stamp a row until it restarts.
 Calls out: capsule (`sot-capsule supervise`, the supervisor client, the attach client); agents (argv, environment,
 folder trust); sidecars (`Kernel`, `Repl`); files (`FilesMode`, `ConceptStore`, `Watcher`); messaging (`edit_entry`,
 `read_comm_agents`, `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, the wake's `dialog_of`);
-platform (dirs, the declared host, durable writes, locks); containment (`Signal`).
+platform (dirs, the declared host, durable writes, locks); containment (`Signal`); pages (the `PageRow`, `PageOption`
+and `RowRef` data shapes its server-built closures return).
 
 Does not: run the agent's terminal or keep its screen (capsule); decide when rows end (lifecycle asks); read a screen for
 mail or type into a prompt (messaging's wake); build an agent's argv (agents); write the registry's address-book fields
@@ -289,13 +302,16 @@ restarts a live one in place.
 - `workspace.rs`: the row's methods, `Phase`, `Observation`, `SupervisorIdentity`, the phase cell, `now_unix`.
 - `registry.rs`: `Workspaces` insert, lookup, removal, observers, buses, the account cell and the per-row guard.
 - `handle.rs`: the declared cell (`Declared`), `bound_handle`, `declared_handle`, the two moves of a handle
-  (`set_agent_handle`, `clear_shared_handles`) and the liveness stamp's choice of handles.
+  (`set_agent_handle`, `clear_shared_handles`), the page channel's `row_of_handle` and the liveness stamp's choice of handles.
 - `end.rs`: the end API lifecycle calls: `end_every`, `forget`, `EndReport`.
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`.
 - `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `end_default_row_run`, `default_row_launch_seed`,
   `seed_default_row`.
 - `state_folder.rs`: `close_row_folder`, the start sweep (`sweep_with`, `sweep_state_folders`), `retire`, `finish_retired_voyages`,
   `is_row_folder_name`, `AGE_FLOOR`.
+- `work_state/question.rs`: the question-line convention, with table cases in `question_tests.rs`. The shared
+  handle/host rule is exercised by `work_state/tests.rs::page_states_and_lookup_share_the_windows_handle_and_host_rule`
+  and by the real-daemon page channel tests.
 
 ## Start here
 `mod.rs` for the structs, then `registry.rs::insert` for how a row enters. A phase change:

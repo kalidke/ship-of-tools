@@ -1,6 +1,6 @@
 //! The request and response code both loopback servers share: request heads and persistent connections, content
-//! types, single ranges, file bodies, plain replies. A connection is bounded on both sides: no whole request head within
-//! `IDLE_BOUND`, or a reply write the client takes none of within `WRITE_BOUND`, closes it.
+//! types, single ranges, file bodies, plain and JSON replies. A connection is bounded on both sides: no whole request
+//! head or POST body within `IDLE_BOUND`, or a reply write the client takes none of within `WRITE_BOUND`, closes it.
 
 use std::path::Path;
 
@@ -33,8 +33,12 @@ pub(crate) struct Request {
     pub(crate) target: String,
     pub(crate) range: Option<String>,
     pub(crate) cookie: Option<String>,
+    pub(crate) host: Option<String>,
+    pub(crate) origin: Option<String>,
+    pub(crate) content_length: Option<usize>,
+    pub(crate) transfer_encoding: bool,
     /// Whether the connection carries the next request after this one's reply: an HTTP/1.1 request that neither says
-    /// `Connection: close` nor has a body, which neither server reads.
+    /// `Connection: close` nor has an unread body. Only site POSTs consume a body.
     pub(crate) keep: bool,
 }
 
@@ -76,20 +80,91 @@ pub(crate) async fn read_request<S: AsyncRead + AsyncWrite + Unpin>(
     let mut lines = head.split("\r\n");
     let mut parts = lines.next().unwrap_or("").split_whitespace();
     let (method, target) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
-    let mut request = Request { method, target, range: None, cookie: None, keep: parts.next() == Some("HTTP/1.1") };
+    let mut request = Request {
+        method, target, range: None, cookie: None, host: None, origin: None,
+        content_length: None, transfer_encoding: false, keep: parts.next() == Some("HTTP/1.1"),
+    };
+    let (mut hosts, mut origins, mut lengths) = (0, 0, 0);
     for line in lines {
         let Some((name, value)) = line.split_once(':') else { continue };
         let (name, value) = (name.trim().to_ascii_lowercase(), value.trim());
         match name.as_str() {
             "range" => request.range = Some(value.to_string()),
             "cookie" => request.cookie = Some(value.to_string()),
+            "host" => { hosts += 1; request.host = Some(value.to_string()); }
+            "origin" => { origins += 1; request.origin = Some(value.to_string()); }
             "connection" if value.split(',').any(|t| t.trim().eq_ignore_ascii_case("close")) => request.keep = false,
-            "transfer-encoding" => request.keep = false,
-            "content-length" if value != "0" => request.keep = false,
+            "transfer-encoding" => { request.transfer_encoding = true; request.keep = false; }
+            "content-length" => {
+                lengths += 1;
+                request.content_length = (!value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+                    .then(|| value.parse().unwrap_or(usize::MAX));
+                if request.method != "POST" && value != "0" { request.keep = false; }
+            }
             _ => {}
         }
     }
+    if hosts != 1 || request.host.as_deref() == Some("") { request.host = None; }
+    if origins != 1 { request.origin = None; }
+    if lengths != 1 { request.content_length = None; }
     Ok(Some(request))
+}
+
+/// The page channel's body cap. No other page request consumes a body.
+const MAX_BODY: usize = 4 * 1024;
+
+pub(crate) struct BodyRefusal {
+    pub status: &'static str,
+    pub code: &'static str,
+    pub words: &'static str,
+}
+
+/// Consume exactly one bounded Content-Length body, retaining pipelined bytes for the next request.
+/// A refused frame closes the connection: its unconsumed bytes can never become another request.
+pub(crate) async fn read_body<S: AsyncRead + Unpin>(
+    stream: &mut S,
+    buf: &mut Vec<u8>,
+    request: &Request,
+) -> Result<std::result::Result<Vec<u8>, BodyRefusal>> {
+    let length = if request.transfer_encoding { None } else { request.content_length };
+    let Some(length) = length else {
+        return Ok(Err(BodyRefusal { status: "411 Length Required", code: "length_required", words: "one valid Content-Length is required; transfer encoding is not supported" }));
+    };
+    if length > MAX_BODY {
+        return Ok(Err(BodyRefusal { status: "413 Content Too Large", code: "body_too_large", words: "the page request body is over 4 KiB" }));
+    }
+    let read = async {
+        while buf.len() < length {
+            let mut chunk = [0; MAX_BODY];
+            let want = length - buf.len();
+            let n = stream.read(&mut chunk[..want]).await?;
+            if n == 0 { return Ok::<_, std::io::Error>(false); }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        Ok(true)
+    };
+    match tokio::time::timeout(IDLE_BOUND, read).await {
+        Ok(Ok(true)) => Ok(Ok(buf.drain(..length).collect())),
+        Ok(Ok(false)) => Ok(Err(BodyRefusal { status: "400 Bad Request", code: "bad_request", words: "the body ended before Content-Length bytes arrived" })),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => Ok(Err(BodyRefusal { status: "408 Request Timeout", code: "bad_request", words: "the whole body did not arrive within 30 s" })),
+    }
+}
+
+/// A page verb's JSON reply, never cached, with the pool cookie when authenticated by its secret.
+pub(crate) async fn write_json<S: AsyncWrite + Unpin>(
+    stream: &mut S, status: &str, value: &serde_json::Value, cookie: Option<&str>, keep: bool,
+) -> Result<bool> {
+    let body = serde_json::to_vec(value)?;
+    let cookie = cookie.map(|c| format!("Set-Cookie: {c}\r\n")).unwrap_or_default();
+    let head = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\n{cookie}{}\r\n",
+        body.len(), connection_line(keep),
+    );
+    send(stream, head.as_bytes()).await?;
+    send(stream, &body).await?;
+    stream.flush().await?;
+    Ok(keep)
 }
 
 /// The `Connection` line of a reply: none while the connection stays open (HTTP/1.1's default), else `close`.

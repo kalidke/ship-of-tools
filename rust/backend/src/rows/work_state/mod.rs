@@ -1,10 +1,11 @@
 //! Work-state: the facts a row's session and the daemon set on the row's comm registry entry, the one reduction that
-//! turns them into the state the window shows, the one write every setter takes ([`write_event`]) and the one read every
-//! reader takes ([`shown_of`]). The contract is rows' (rows/CLAUDE.md, work-state).
+//! turns them into the state the window shows, the one write every setter takes ([`write_event`]), and the window's
+//! and pages' reads ([`shown_of`], [`states`]). The contract is rows' (rows/CLAUDE.md, work-state).
 
 pub(crate) mod cli;
 pub(crate) mod dialog;
 pub(crate) mod poll;
+pub(crate) mod question;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -267,7 +268,7 @@ pub(crate) struct Shown {
     pub status_at: String,
 }
 
-/// The one read: what row `ws` shows, from `agents` (the registry's `.agents`, read once per caller) through the row's
+/// The window's read: what row `ws` shows, from `agents` (the registry's `.agents`, read once per caller) through the row's
 /// bound handle, and only from an entry of `host`, so another host's same-named entry never colors this host's row.
 pub(crate) fn shown_of(ws: &Workspace, rows: &[Arc<Workspace>], agents: Option<&Value>, host: &str) -> Shown {
     let handle = bound_handle(ws, rows);
@@ -279,6 +280,27 @@ pub(crate) fn shown_of(ws: &Workspace, rows: &[Arc<Workspace>], agents: Option<&
     };
     let field = |k: &str| entry.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     Shown { state: field("state"), summary: field("summary"), status_at: field("status_at") }
+}
+
+/// The page view of this daemon's registry sessions, including sessions outside any row, sorted by handle.
+/// The server supplies a fresh registry read on a blocking thread, as it does for the window's read.
+pub(crate) fn states(rows: &[Arc<Workspace>], agents: Option<&Value>, host: &str) -> Vec<crate::pages::site::verbs::PageRow> {
+    let Some(agents) = agents.and_then(Value::as_object) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (handle, entry) in agents.iter().filter(|(_, entry)| host_matches(entry, host)) {
+        let field = |k: &str| entry.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let parts = question::parts(&field("question"));
+        let row = rows.iter().find(|ws| bound_handle(ws, rows) == *handle)
+            .map(|ws| ws.workspace_id.clone()).unwrap_or_default();
+        out.push(crate::pages::site::verbs::PageRow {
+            handle: handle.clone(), host: field("host"), repo: field("repo"), row,
+            state: field("state"), summary: field("summary"), question: parts.question,
+            options: parts.options, recommend: parts.recommend, page: parts.page,
+            waiting: field("waiting"), status_at: field("status_at"), last_seen: field("last_seen"),
+        });
+    }
+    out.sort_by(|a, b| a.handle.cmp(&b.handle));
+    out
 }
 
 #[cfg(test)]

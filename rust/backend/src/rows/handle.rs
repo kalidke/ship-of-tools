@@ -77,6 +77,32 @@ pub(crate) fn bound_handle(ws: &Workspace, rows: &[Arc<Workspace>]) -> String {
     }
 }
 
+/// Resolve a page's handle using the same binding and host rule as the window's work-state read.
+/// The registry is read fresh by the server on a blocking thread. A foreign entry names its daemon in the refusal.
+pub(crate) fn row_of_handle(
+    rows: &[Arc<Workspace>],
+    handle: &str,
+    agents: Option<&serde_json::Value>,
+    host: &str,
+) -> Result<crate::pages::site::verbs::RowRef, String> {
+    use crate::comm::registry::registry::host_matches;
+    let entry = agents.and_then(|agents| agents.get(handle));
+    if let Some(other) = entry.filter(|entry| !host_matches(entry, host))
+        .and_then(|entry| entry.get("host")).and_then(serde_json::Value::as_str).filter(|s| !s.is_empty())
+    {
+        return Err(format!("{handle} belongs to daemon {other}; this page is served by daemon {host}"));
+    }
+    let entry = entry.filter(|entry| host_matches(entry, host))
+        .ok_or_else(|| format!("{handle} has no session entry on daemon {host}"))?;
+    let row = rows.iter().find(|ws| bound_handle(ws, rows) == handle)
+        .ok_or_else(|| format!("{handle} binds no row on daemon {host}"))?;
+    let question = entry.get("question").and_then(serde_json::Value::as_str).unwrap_or("");
+    Ok(crate::pages::site::verbs::RowRef {
+        workspace_id: row.workspace_id.clone(), project_root: row.project_root.clone(),
+        page: crate::rows::work_state::question::parts(question).page,
+    })
+}
+
 /// How often the held handles are stamped when nothing changed.
 const STAMP_EVERY: Duration = Duration::from_secs(60);
 

@@ -118,7 +118,6 @@ pub async fn run(opts: Opts) -> Result<()> {
     let pluto = Pluto::new(Pluto::default_project_dir(), Pluto::default_start_script());
 
     crate::sidecars::ports::install(std::sync::Arc::new(crate::pages::proxy::PagesGrants));
-    start_page_servers().await;
 
     // Streamed REPL frame bus (Option B): every eval's frames are fanned out
     // here off the per-workspace REPL supervisor; each connection subscribes
@@ -215,6 +214,23 @@ pub async fn run(opts: Opts) -> Result<()> {
     // across both listeners so the live count spans transports; each
     // connection registers on hello and deregisters on drop.
     let clients = Clients::new();
+
+    // Page verbs receive only the facts and command route they use, after the roster and bus exist.
+    let states_rows = workspaces.clone();
+    let handle_rows = workspaces.clone();
+    let page_windows = clients.clone();
+    start_page_servers(Arc::new(crate::pages::site::verbs::PageVerbs {
+        states: Arc::new(move || {
+            let agents = crate::comm::registry::registry::read_comm_agents();
+            crate::rows::work_state::states(&states_rows.list(), agents.as_ref(), &store::declared_host())
+        }),
+        row_of: Arc::new(move |handle| {
+            let agents = crate::comm::registry::registry::read_comm_agents();
+            crate::rows::handle::row_of_handle(&handle_rows.list(), handle, agents.as_ref(), &store::declared_host())
+        }),
+        window: Arc::new(move |owner| page_windows.window_connection(owner)),
+        fe: fe_command_tx.clone(),
+    })).await;
 
     // Auto-updater (ADR 0030 §4, Phase C): daily check that, on a newer
     // release, pushes an `fe.command` `notify` over the bus above and runs

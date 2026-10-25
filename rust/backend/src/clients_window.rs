@@ -10,8 +10,8 @@ use std::time::Instant;
 
 /// How many windows with no live connection the roster remembers; past this many, the one away longest is forgotten,
 /// its pages end, and if it comes back it starts afresh. Far more than the windows one person has away at once
-/// (asleep, redialing), and each is small (`CallerNumbers` keeps at most 256 runs; a window owns at most one page per
-/// page server, ADR 0029).
+/// (asleep, redialing), and each is bounded (`CallerNumbers` keeps at most 256 runs; a window owns at most eight prefix
+/// sites and one pool site).
 const AWAY: usize = 64;
 
 /// A window: its hello's declared host and instance.
@@ -45,6 +45,21 @@ pub(super) fn window_count<'a>(infos: impl Iterator<Item = &'a ClientInfo>) -> u
 }
 
 impl super::Clients {
+    /// The newest named frontend connection of the page owner, including an owner's redial.
+    /// A connection whose hello names no window owns its sites by its own serial.
+    pub fn window_connection(&self, owner: u64) -> Option<super::ActiveFrontend> {
+        let inner = self.inner.lock().unwrap();
+        inner.by_conn.values()
+            .filter(|info| info.role == "fe" && info.name.as_ref().is_some_and(|name| !name.is_empty()))
+            .filter(|info| {
+                let sites = window_key(info).and_then(|key| inner.windows.get(&key))
+                    .map_or(info.serial, |window| window.sites);
+                sites == owner
+            })
+            .max_by_key(|info| info.serial)
+            .map(|info| super::ActiveFrontend { serial: info.serial, handle: info.name.clone().expect("named frontend") })
+    }
+
     /// The owners of the pages of the windows with no live connection, the one away longest first: whose pool port a
     /// new open may take when every port is held (`pages::site::assign_pool_port`). Never a live window's.
     pub fn away_sites(&self) -> Vec<u64> {

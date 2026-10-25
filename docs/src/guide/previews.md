@@ -79,6 +79,47 @@ in-pane:
 
 These all follow the same "rich/interactive content lives in the browser" policy.
 
+## A page that acts
+
+A page opened by `W` or `sot-fe docs` can read session states and act on rows of the daemon serving it. Its script
+posts JSON to its own URL:
+
+```javascript
+const response = await fetch(location.pathname, {
+  method: "POST",
+  headers: {"Content-Type": "application/json"},
+  body: JSON.stringify({verb: "states"})
+});
+const answer = await response.json();
+```
+
+`states` answers `{ok: true, rows: [...]}`, sorted by handle, including sessions outside rows. Each entry has
+`handle`, `host`, `repo`, `row`, `state`, `summary`, `question`, `options` (objects with `key` and `text`), `recommend`,
+`page`, `waiting`, `status_at` and `last_seen`. An absent string is empty, and `row` is empty for a session outside any
+row. A question's `Options:`, `Recommend` and `Page:` parts are separated into those fields. Only this daemon's host
+entries are listed.
+
+Post `{verb: "goto", handle: "session-handle"}` to switch the window that opened the page to that row. Post
+`{verb: "open", handle: "session-handle"}` to open the page the row's question names. The daemon reads the question
+again and requires an absolute page under that row's project folder, resolving links before deciding. The page
+script supplies a handle; it cannot select an arbitrary file. These actions need no confirmation and answer
+`202` with `{ok: true}`. They go to the page's own window even when another window is in use, locally and through a
+remote window's page proxy.
+
+Replies are JSON and never cached. A refusal has `error` (the explanation) and `code`: `not_a_row` (409, including a
+foreign session, whose daemon is named), `no_page` (409), `page_outside` (403), or `window_gone` (503). States still
+works while the window is away. Missing fields, malformed JSON and unknown verbs answer `bad_request` (400).
+`reply` currently answers `bad_request`; reply delivery and the window's confirmation bar are not built yet.
+
+The channel requires the site's live nonce or pool secret/cookie and a matching browser Origin. Other origins and
+requests without Origin are refused (403); OPTIONS cannot authorize a cross-origin request (405). POST bodies need a
+Content-Length and fit within 4 KiB; valid requests reuse their connection for polling. The last eight prefix pages
+opened by a window keep working, so a queue page can open a decision page and keep polling. A site with root-relative
+links uses a pool port instead, with one site per window: opening another pool site replaces it.
+
+The fixture at `rust/backend/tests/fixtures/page_channel/index.html` lists states every three seconds and provides
+Go to, Context and reply controls for checking the channel in a local or remote window.
+
 A page can also show data that lives outside its repo. When the repo tracks a
 symlink to a folder on a mounted share or drive (under `/mnt`, `/media` or, on
 macOS, `/Volumes`), images and movies on the page load through that link, and

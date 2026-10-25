@@ -58,6 +58,18 @@ has one; when it has none the stamp is refused: rc 2, stderr
 `comm-status.sh: <verb> needs its text -- stamp discarded`, nothing written.
 A script that stamped a bare `blocked` or `waiting` now shows that error.
 
+For a question with answer choices and a full-context page, declare the parts on the same line:
+
+```text
+blocked "<question> Options: (a) ...; (b) .... Recommend (a). Page: <absolute path of a page under your folder>"
+```
+
+The page channel reads the question, answer keys and texts, recommendation and page separately. Without options a
+queue can show a reply box; without a page it has no context button. `Page:` takes one non-space path, with a trailing
+period ignored. The daemon opens it only if the absolute path resolves under the row's own project folder; a page
+outside your folder, including a link out, is refused. Pages list sessions of the daemon serving them. Sessions
+outside rows have no go-to or context action; an action naming a different daemon's session refuses with its name.
+
 `AskUserQuestion` (Claude) is the session yielding to the owner while the
 harness pauses: its PreToolUse hook sends `blocked` then `stop` — a real turn
 end, not a hold. The answer arrives as that tool's PostToolUse, which sends

@@ -8,10 +8,8 @@
 // site root is what makes BOTH relative and root-relative (`/asset`) links resolve — `o`'s file://
 // open can't (search/JS and root-relative assets break off-origin).
 //
-// One site per owner at a time (its last open wins): an owner is a window,
-// kept across its redials, or a connection of no window (ADR 0029). Opening a
-// second site re-points the owner's root, so a stale first tab 404s on reload;
-// another owner's sites are untouched.
+// A window keeps its last eight prefix sites, so a page that opens another page
+// keeps polling. Pool sites still keep one site per owner (ADR 0029).
 //
 // Why hand-rolled rather than axum/tower-http: same reasoning as pages::video —
 // the backend has no HTTP stack and the need is narrow (GET a file under a root).
@@ -32,8 +30,7 @@
 // resolved path lies inside a `.git` directory below the site folder is served,
 // and a linked file has no hidden part at all.
 //
-// Scope/security: binds 127.0.0.1 only, but neither port has auth of its own — any local user on a shared
-// host can reach them once something is being served. Guards (security
+// Scope/security: binds 127.0.0.1 and admits only this OS account through serve_own. Guards (security
 // review): `docs.open` confines the servable root to a KNOWN workspace's
 // project root (rejects anything canonicalizing outside every one of them,
 // same check as `pluto.open`'s), and this file's traversal guard (below)
@@ -77,12 +74,16 @@ use crate::pages::http::{content_type, read_request, serve_file, write_simple, R
 /// first path segment (`/<nonce>/…`), so two FEs serve different sites on the
 /// one `:1236` port without clobbering each other. An owner is a window, kept
 /// across its redials, or a connection of no window (`ClientGuard::site_owner`).
-/// `OWNER_NONCE` tracks which nonce belongs to which owner, so a re-open can
-/// repoint (dropping the stale nonce's entry) and `ClientGuard::drop` can reap
+/// `OWNER_NONCE` tracks the owner's bounded history, so an open evicts the oldest
+/// past `SITES_PER_WINDOW`, and `ClientGuard::drop` can reap
 /// the right one when its owner ends. Empty until the first open. `RwLock::new`
 /// and `BTreeMap::new` are both const, so this initializes without lazy init.
-static SITE_ROOTS: RwLock<BTreeMap<String, Arc<Site>>> = RwLock::new(BTreeMap::new());
-static OWNER_NONCE: RwLock<BTreeMap<u64, String>> = RwLock::new(BTreeMap::new());
+static SITE_ROOTS: RwLock<BTreeMap<String, (u64, Arc<Site>)>> = RwLock::new(BTreeMap::new());
+static OWNER_NONCE: RwLock<BTreeMap<u64, std::collections::VecDeque<String>>> = RwLock::new(BTreeMap::new());
+pub(crate) const SITES_PER_WINDOW: usize = 8;
+
+pub(crate) mod verbs;
+use verbs::PageVerbs;
 
 /// ADR 0029 Option B — the per-port pool for ROOT-RELATIVE sites. A site whose
 /// entry HTML uses `/asset`-style links can't ride the shared `/{nonce}/`
@@ -123,8 +124,7 @@ pub fn pool_ports() -> std::ops::RangeInclusive<u16> {
 
 /// Assign (or repoint) a pool port for `owner`, serving `root`,
 /// and mint a fresh per-open secret for it. Reuses the owner's existing
-/// port when it has one — one pool site per owner, matching the prefix
-/// map's semantics — but ALWAYS mints a new secret, even on repoint, so a
+/// port when it has one — one pool site per owner — but ALWAYS mints a new secret, even on repoint, so a
 /// stale secret (and the cookie it set) stops working the moment the site is
 /// reopened. When every port is held, the port of the first owner in `away`
 /// (the windows with no live connection, the one away longest first:
@@ -195,13 +195,13 @@ pub fn pool_assigned_ports() -> Vec<u16> {
         .collect()
 }
 
-/// Root AND secret for a pool port — what `serve_request`'s `ServeMode::Pool`
+/// Owner, root and secret for a pool port — what `serve_request`'s `ServeMode::Pool`
 /// arm needs to authenticate a request (security review; see `assign_pool_port`).
-fn pool_entry_for(port: u16) -> Option<(Arc<Site>, String)> {
+fn pool_entry_for(port: u16) -> Option<(u64, Arc<Site>, String)> {
     POOL.read()
         .unwrap_or_else(|p| p.into_inner())
         .get(&port)
-        .map(|(_, r, s)| (r.clone(), s.clone()))
+        .map(|(owner, r, s)| (*owner, r.clone(), s.clone()))
 }
 
 /// The env var keeps its historical `SOT_DOCS_PORT` name.
@@ -228,22 +228,22 @@ pub fn bound_site_port() -> Option<u16> {
 
 /// Set the site root for `owner`, minting a fresh nonce and
 /// returning it — the caller (`docs.open`) embeds it as the URL's first path
-/// segment (`/<nonce>/…`). A repoint (this owner already has a live
-/// nonce) drops the OLD nonce's `SITE_ROOTS` entry first, so a stale link a
-/// browser tab still holds 404s instead of silently serving the new site.
+/// segment (`/<nonce>/…`). Keeps the last `SITES_PER_WINDOW` opens; an evicted
+/// link answers 404 rather than silently serving the new site.
 /// `None` if the CSPRNG couldn't be read — fails closed rather than mint a
 /// guessable nonce (security review). Ignores lock poisoning (a panicked
 /// reader can't corrupt the map).
 pub fn set_root(owner: u64, site: Site) -> Option<String> {
     let nonce = random_token()?;
     let mut sn = OWNER_NONCE.write().unwrap_or_else(|p| p.into_inner());
-    let old_nonce = sn.insert(owner, nonce.clone());
-    drop(sn);
+    let nonces = sn.entry(owner).or_default();
+    nonces.push_back(nonce.clone());
     let mut g = SITE_ROOTS.write().unwrap_or_else(|p| p.into_inner());
-    if let Some(old) = old_nonce {
+    while nonces.len() > SITES_PER_WINDOW {
+        let old = nonces.pop_front().expect("past the bound");
         g.remove(&old);
     }
-    g.insert(nonce.clone(), Arc::new(site));
+    g.insert(nonce.clone(), (owner, Arc::new(site)));
     Some(nonce)
 }
 
@@ -253,16 +253,16 @@ pub fn set_root(owner: u64, site: Site) -> Option<String> {
 /// serving modes — one hook covers both).
 pub fn remove_root(owner: u64) {
     let mut sn = OWNER_NONCE.write().unwrap_or_else(|p| p.into_inner());
-    let nonce = sn.remove(&owner);
-    drop(sn);
-    if let Some(nonce) = nonce {
-        SITE_ROOTS.write().unwrap_or_else(|p| p.into_inner()).remove(&nonce);
+    if let Some(nonces) = sn.remove(&owner) {
+        let mut roots = SITE_ROOTS.write().unwrap_or_else(|p| p.into_inner());
+        for nonce in nonces { roots.remove(&nonce); }
     }
+    drop(sn);
     let mut p = POOL.write().unwrap_or_else(|p| p.into_inner());
     p.retain(|_, (s, _, _)| *s != owner);
 }
 
-fn root_for(nonce: &str) -> Option<Arc<Site>> {
+fn root_for(nonce: &str) -> Option<(u64, Arc<Site>)> {
     SITE_ROOTS
         .read()
         .unwrap_or_else(|p| p.into_inner())
@@ -302,7 +302,7 @@ pub fn encode_url_path(path: &str) -> String {
 /// Spawn the static-site server on `127.0.0.1:port`. Returns once the listener is
 /// bound; the accept loop runs for the life of the process. Spawn once at
 /// startup. No root is needed at spawn — `docs.open` sets it per open.
-pub async fn spawn(preferred: u16) -> Result<()> {
+pub(crate) async fn spawn(preferred: u16, verbs: Arc<PageVerbs>) -> Result<()> {
     // Bind with a brief retry (ADR 0029). A `sotd` restart can race the previous
     // process's hold on this port; the launcher now waits for the old process to
     // exit first, but a transient TIME_WAIT / handover can still lose a single
@@ -341,9 +341,12 @@ pub async fn spawn(preferred: u16) -> Result<()> {
     let port = listener.local_addr().context("static-site server local_addr")?.port();
     BOUND_SITE_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(port, "static-site server listening");
-    tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "docs", |stream| async move {
-        if let Err(e) = handle_conn(stream, ServeMode::Prefix).await {
-            tracing::debug!(error = %e, "static-site conn ended");
+    tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "docs", move |stream| {
+        let verbs = verbs.clone();
+        async move {
+            if let Err(e) = handle_conn(stream, ServeMode::Prefix, verbs).await {
+                tracing::debug!(error = %e, "static-site conn ended");
+            }
         }
     }));
     Ok(())
@@ -369,7 +372,7 @@ enum ServeMode {
 /// downstream already keys on the ACTUAL bound ports: `BOUND_POOL` is what
 /// `assign_pool_port` picks from, what `docs.open` URLs advertise, and what
 /// `pool_assigned_ports()` feeds the ADR-0035 proxy allowlist.
-pub async fn spawn_pool() {
+pub(crate) async fn spawn_pool(verbs: Arc<PageVerbs>) {
     // Mark spawned BEFORE the binds so that even if all fail (BOUND_POOL stays
     // empty), assign_pool_port yields no candidates rather than falling back
     // to the full range (codex r3).
@@ -400,9 +403,13 @@ pub async fn spawn_pool() {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .insert(port);
-        tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "docs-pool", move |stream| async move {
-            if let Err(e) = handle_conn(stream, ServeMode::Pool(port)).await {
-                tracing::debug!(error = %e, port, "pool-site conn ended");
+        let verbs = verbs.clone();
+        tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "docs-pool", move |stream| {
+            let verbs = verbs.clone();
+            async move {
+                if let Err(e) = handle_conn(stream, ServeMode::Pool(port), verbs).await {
+                    tracing::debug!(error = %e, port, "pool-site conn ended");
+                }
             }
         }));
     }
@@ -464,32 +471,32 @@ use links::Site;
 use links::resolve_and_open;
 
 /// One accepted connection: its requests in turn (`read_request`), while each reply leaves it open.
-async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
+async fn handle_conn(mut stream: TcpStream, mode: ServeMode, verbs: Arc<PageVerbs>) -> Result<()> {
     let mut buf = Vec::new();
     while let Some(request) = read_request(&mut stream, &mut buf).await? {
-        if !serve_request(&mut stream, &request, mode).await? {
+        if !serve_request(&mut stream, &mut buf, &request, mode, &verbs).await? {
             break;
         }
     }
     Ok(())
 }
 
-/// The 405 for a method other than GET or HEAD.
+/// The 405 for a method other than GET, HEAD or POST. No preflight succeeds.
 async fn refuse_method(stream: &mut TcpStream, method: &str) -> Result<bool> {
     write_simple(
         stream,
         method,
         "405 Method Not Allowed",
-        "only GET/HEAD",
+        "only GET/HEAD/POST",
         false,
     )
     .await
 }
 
 /// One request, from its target to its reply. Returns whether the connection stays open.
-async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMode) -> Result<bool> {
+async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Request, mode: ServeMode, verbs: &PageVerbs) -> Result<bool> {
     let (method, target, keep) = (request.method.as_str(), request.target.as_str(), request.keep);
-    if method != "GET" && method != "HEAD" {
+    if method != "GET" && method != "HEAD" && method != "POST" {
         return refuse_method(stream, method).await;
     }
 
@@ -499,15 +506,15 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
     // root-relative links resolve on that origin. `set_cookie`, if `Some`, is
     // a `Set-Cookie` header value the eventual 200 response must include.
     let raw_path = target.split(|c| c == '?' || c == '#').next().unwrap_or("");
-    let (site, rest, set_cookie) = match mode {
+    let (owner, site, rest, set_cookie) = match mode {
         ServeMode::Pool(port) => {
-            let Some((site, secret)) = pool_entry_for(port) else {
+            let Some((owner, site, secret)) = pool_entry_for(port) else {
                 return write_simple(
                     stream,
                     method,
                     "404 Not Found",
                     "no site assigned to this port (the daemon restarted or forgot the window that opened it)",
-                    keep,
+                    keep && method != "POST",
                 )
                 .await;
             };
@@ -549,6 +556,9 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
                 None => (cookie_ok(), false),
             };
             if !ok {
+                if method == "POST" {
+                    return verbs::refuse(stream, "403 Forbidden", "forbidden", "missing or invalid site secret", false).await;
+                }
                 return write_simple(
                     stream,
                     method,
@@ -560,7 +570,7 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
             }
             let set_cookie =
                 by_query.then(|| format!("{cookie_name}={secret}; HttpOnly; SameSite=Strict; Path=/"));
-            (site, raw_path.trim_start_matches('/').to_string(), set_cookie)
+            (owner, site, raw_path.trim_start_matches('/').to_string(), set_cookie)
         }
         ServeMode::Prefix => {
             let trimmed = raw_path.trim_start_matches('/');
@@ -568,7 +578,7 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
                 Some((t, r)) => (t, r),
                 None => (trimmed, ""),
             };
-            let Some(site) = root_for(token) else {
+            let Some((owner, site)) = root_for(token) else {
                 // Either a stale/disconnected nonce, or a root-relative asset
                 // (`/assets/…`) that landed here — `docs.open` routes sites
                 // with root-relative links to the pool instead, so this is
@@ -577,16 +587,20 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
                     stream,
                     method,
                     "404 Not Found",
-                    "no site open for this link (it was reopened, the daemon restarted or forgot the window \
+                    "no site open for this link (it was evicted, the daemon restarted or forgot the window \
                      that opened it, a `../` link on the page climbs above the top of the site, or this site \
                      uses root-relative links and should open via a pool port)",
-                    keep,
+                    keep && method != "POST",
                 )
                 .await;
             };
-            (site, rest.to_string(), None)
+            (owner, site, rest.to_string(), None)
         }
     };
+
+    if method == "POST" {
+        return verbs.serve(stream, buf, request, owner, set_cookie.as_deref()).await;
+    }
 
     // Percent-decode the per-root path and resolve it. `resolve_and_open` does
     // blocking filesystem work (a stalled share must not stall the runtime).
@@ -619,3 +633,5 @@ async fn serve_request(stream: &mut TcpStream, request: &Request, mode: ServeMod
 mod pool_auth_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod verbs_tests;
