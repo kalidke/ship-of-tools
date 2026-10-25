@@ -18,14 +18,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 
 # Importing the helper must not write a bytecode cache into the supplied source checkout.
 sys.dont_write_bytecode = True
-from installer_process import RUNNER_ENV, capture, descendants
+from installer_process import capture, descendants
 
 
-def run(argv, cwd, env, ok=True, input_text=None, *, step=None, timeout=180):
+STEP_TIMEOUT = 600 if os.name == "nt" else 180
+
+
+def run(argv, cwd, env, ok=True, input_text=None, *, step=None, timeout=STEP_TIMEOUT):
     def report_timeout(pid, error):
         # TimeoutExpired can carry bytes even with text=True. Keep the installer's last progress lines: the command
         # alone cannot distinguish enrollment, layout, a daemon query, or a converge waiting on a missing fixture.
@@ -52,104 +54,6 @@ def refused_with(result, expected_line):
     return result.returncode == 1 and guard_lines == [expected_line]
 
 
-def windows_diagnostic_matrix(root, base, system):
-    """Experiments only: none of these environment variants is ever used to install."""
-    executable = system / "WindowsPowerShell/v1.0/powershell.exe"
-    exact = "@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine) | ConvertTo-Json -Compress"
-    phases = r'''
-$ErrorActionPreference = 'Stop'
-function Phase([string]$Name) { [Console]::Out.WriteLine('PGB_PHASE=' + $Name); [Console]::Out.Flush() }
-Phase 'script-start'
-'''
-    staged = r'''
-Phase 'before-imports'
-Import-Module CimCmdlets,Microsoft.PowerShell.Utility -ErrorAction Stop
-Phase 'after-imports'
-Phase 'before-enumeration'
-$items = @(Get-CimInstance Win32_Process -ErrorAction Stop)
-Phase 'after-enumeration'
-$rows = @($items | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine)
-Phase 'after-projection'
-$json = $rows | ConvertTo-Json -Compress
-Phase 'after-json'
-$decoded = ConvertFrom-Json -InputObject $json
-$own = @($decoded | Where-Object { $_.ProcessId -eq $PID })
-if ($own.Count -ne 1 -or [string]::IsNullOrEmpty($own[0].CommandLine)) { throw 'CIM did not observe its own process' }
-Phase 'after-self-validation'
-'''
-    def fresh(label):
-        folder = root / ("matrix-" + label)
-        for name in ["home", "local", "config", "run", "tmp"]:
-            (folder / name).mkdir(parents=True)
-        env = dict(base)
-        env.update(HOME=str(folder / "home"), USERPROFILE=str(folder / "home"), LOCALAPPDATA=str(folder / "local"),
-                   APPDATA=str(folder / "config"), XDG_CONFIG_HOME=str(folder / "config"), XDG_STATE_HOME=str(folder / "state"),
-                   XDG_RUNTIME_DIR=str(folder / "run"), TMPDIR=str(folder / "tmp"), TMP=str(folder / "tmp"), TEMP=str(folder / "tmp"),
-                   SOT_COMM_HOME=str(folder / "home/comm"), CODEX_HOME=str(folder / "home/codex"),
-                   CLAUDE_CONFIG_DIR=str(folder / "home/claude"))
-        return env
-
-    def variant(label, env, body=exact, bound=15):
-        start = time.monotonic()
-        output = ""
-        print(f"CIM matrix start: {label}; bound={bound}s", flush=True)
-        try:
-            result = capture([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
-                              phases + body + "\nPhase 'complete'\n"], root, env, timeout=bound)
-            output, status = result.stdout, f"exit={result.returncode}"
-        except subprocess.TimeoutExpired as error:
-            output, status = error.stdout or "", "timeout"
-        if isinstance(output, bytes):
-            output = output.decode("utf-8", errors="replace")
-        markers = [line.removeprefix("PGB_PHASE=") for line in output.splitlines() if line.startswith("PGB_PHASE=")]
-        phase = markers[-1] if markers else "before-script"
-        print(f"CIM matrix: {label}; elapsed={time.monotonic() - start:.3f}s; {status}; last-phase={phase}; bound={bound}s", flush=True)
-        return status == "exit=0"
-
-    variant("current .NET-only startup", base, "[Console]::Out.WriteLine('dotnet-only'); [Console]::Out.Flush()")
-    variant("current exact product query", base)
-    variant("current staged query", base, staged)
-    variant("repeat current after staged query", base)
-    cold = fresh("cold")
-    completed = variant("fresh cold exact query", cold, bound=45)
-    variant("same profile repeat exact query", cold)
-    print(f"CIM matrix: cold-completed={completed}; a timed-out cold attempt does not establish completed warming", flush=True)
-    no_cache = fresh("no-cache")
-    no_cache["PSModuleAnalysisCachePath"] = "nul"
-    variant("fresh module analysis cache disabled", no_cache)
-    variant("repeat current after cache experiment", base)
-    imports = r'''
-Phase 'before-absolute-imports'
-$modules = [IO.Path]::Combine($env:SystemRoot, 'System32\WindowsPowerShell\v1.0\Modules')
-Import-Module ([IO.Path]::Combine($modules, 'CimCmdlets\CimCmdlets.psd1')) -ErrorAction Stop
-Import-Module ([IO.Path]::Combine($modules, 'Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
-Phase 'after-absolute-imports'
-'''
-    variant("fresh absolute system-module imports", fresh("imports"), imports + exact)
-    variant("only USERNAME restored", dict(base, USERNAME=RUNNER_ENV["USERNAME"]))
-    variant("only PATH restored", dict(base, PATH=RUNNER_ENV["PATH"]))
-    temporary = root / "matrix-native-temp"
-    temporary.mkdir()
-    probe = temporary / "writable"
-    probe.write_bytes(b"scratch")
-    assert probe.read_bytes() == b"scratch"
-    probe.unlink()
-    variant("only TEMP and TMP changed", dict(base, TEMP=str(temporary), TMP=str(temporary)))
-    isolated = fresh("near-full")
-    near_full = {k.upper(): v for k, v in RUNNER_ENV.items() if not k.upper().startswith(("SOT_", "CODEX_", "CLAUDE_", "JULIA_"))}
-    for key, value in isolated.items():
-        if key != "PATH":
-            near_full[key.upper()] = value
-    near_full["PSMODULEANALYSISCACHEPATH"] = str(Path(isolated["LOCALAPPDATA"]) / "module-analysis-cache")
-    near_full["HOMEDRIVE"] = Path(isolated["USERPROFILE"]).drive
-    near_full["HOMEPATH"] = str(Path(isolated["USERPROFILE"]))[len(near_full["HOMEDRIVE"]):]
-    variant("near-full variables with scratch profile and cache", near_full)
-    variant("repeat current after environment experiments", base)
-    projected = "@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,CommandLine -OperationTimeoutSec 5 | Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine) | ConvertTo-Json -Compress"
-    variant("current projected properties and operation timeout", base, projected)
-    print("CIM matrix complete: diagnostic variants do not select or modify the install environment", flush=True)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
@@ -157,7 +61,6 @@ def main():
     parser.add_argument("--sot", type=Path, required=True)
     parser.add_argument("--capsule", type=Path, required=True)
     parser.add_argument("--scenario", choices=["fresh", "repair"], default="repair")
-    parser.add_argument("--windows-diagnostics-only", action="store_true", help="run the bounded diagnostic matrix once, without installing")
     parser.add_argument("--case", choices=["all", "enrollment", "migration", "policy", "refusal"], default="all")
     args = parser.parse_args()
     binaries = {"sotd": args.sotd.resolve(), "sot": args.sot.resolve(), "sot-capsule": args.capsule.resolve()}
@@ -221,12 +124,6 @@ def main():
                 (tools / name).chmod(0o755)
             path = [tools]
         env["PATH"] = os.pathsep.join(str(p) for p in path)
-        if args.windows_diagnostics_only:
-            if windows:
-                windows_diagnostic_matrix(root, env, system)
-            else:
-                print("SKIP: CIM diagnostic matrix requires native Windows", flush=True)
-            return
 
         def g(cwd, *words, ok=True, data=None):
             return run([git, "-C", cwd, *words], cwd=root, env=env, ok=ok, input_text=data)

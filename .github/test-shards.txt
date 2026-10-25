@@ -5,7 +5,8 @@
 # filters are alternatives and `--skip X` removes, as in libtest. A target's rows together select each of its tests
 # exactly once: the check in rust.yml fails, naming the test, on one that runs nowhere or twice. A shard runs its rows
 # one after the other; rc-gate.sh runs each row that has filters as a job of its own.
-# A shard named gate-* runs in release-gate.yml, once per release; every other shard runs in rust.yml at each landing.
+# A shard named gate-* runs in release-gate.yml, once per release. `release SYSTEM shard...` moves named landing
+# shards to that system's release gate too; the rows and their test coverage stay the same.
 # `rest-0` to `rest-2` are never named: together they run every test executable this table does not name (every third
 # one each), and rest-0 the doc tests.
 #
@@ -13,8 +14,9 @@
 # are in gate-* shards; the rest are cut so a landing shard runs under about four minutes of tests (seconds measured in
 # hosted run 39644482546 and the local gate: supervisor 141, lane_bridge 104, fe_client 59, capsule_workspaces 423 in
 # three groups, comm_wake 377 in three groups, the sotd unit binary 120).
-# `inst`, the installer's publish-guard units, runs real Git Bash enrollments: seconds on Linux and macOS, minutes on
-# Windows (more than five in hosted run 40181674093), so on Windows it is a job of its own with a 15-minute test step.
+# Real Git Bash enrollments take minutes each on hosted Windows (9 to 11 in run 40182511300); the three guard shell
+# suites prove the guard there per landing. Linux and macOS keep `inst` at each landing.
+release windows inst
 
 sup        test supervisor
 fe         test fe_client --skip unresponsive_supervisor_expires_the_health_window

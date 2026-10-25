@@ -40,13 +40,15 @@ Guarantees, each with the mechanism it rests on:
   `fe_client`'s health window) and the page test that needs a prepared Julia depot run only in release-gate.yml, or here
   with `RCG_FULL` set.
 - The hosted runs are two. rust.yml, at each landing, is the build and the unit tests sharded on all three systems by
-  `.github/test-shards.txt`, each job bound by `timeout-minutes`, with a check that every test of a named target runs in
+  `.github/test-shards.txt`; its `release SYSTEM shard...` lines defer selected shards to that system's release gate.
+  Each job is bound by `timeout-minutes`, with a check that every test of a named target runs in
   exactly one shard (`tests/shards.py check`), in five to seven minutes. CI.yml's preview tools (ghostscript, poppler, ffmpeg) come from a cache keyed by the runner
   image and the package list, so a landing does not wait on a package mirror. release-gate.yml, dispatched by hand at the
   release gate (pass 11 and before each final release), never on a tag, holds the rest: the `gate-*` shards (the tests
   that sleep, the WGL page test with its depot), the native window proofs (minimized, closed, pane timing), the daemon
-  lifetime harness, the hermetic comm and agents suites, the gate's own parity tests, the
-  launcher's suites on Windows, the Windows ignored-containment and ConPTY runs, and the shell suites under bash 3.2
+  lifetime harness, the hermetic comm and agents suites, the gate's own parity tests, Windows' slow installer publish
+  proofs (`inst` plus fresh/repair orchestration), the launcher's suites on Windows, the Windows ignored-containment
+  and ConPTY runs, and the shell suites under bash 3.2
   (Linux and macOS; they leave with the shell twins under D1). No cut reads either.
 - A release's artifacts are CI's build of its tag. release.yml sets `SOT_BUILD_ORIGIN=ci` exactly when the ref is a tag,
   so only a tag run's binaries carry the bare version (`is_release_build`); a branch dispatch's and a local pack's carry
@@ -173,7 +175,7 @@ Guarantees, each with the mechanism it rests on. Install:
   `SOT_INSTALL_DAEMON_WAIT_S` (Windows, 60 s). Publish enrollment's child commands have the stronger wall-clock and
   output-completion bound below. Until the observation pass, the installer's own process listings (`procs.rs`) and
   installed binaries' `--version` asks remain unbounded. Whole-install completion on Windows in an isolated profile
-  remains unproven; the diagnostic matrix measures that environment without repairing product observation.
+  remains unproven until the release-gate witness completes.
 
 Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdate.rs`):
 - An automatic arm goes only strictly above install.json's version, never into a dev build, a pinned or unreadable
@@ -388,7 +390,6 @@ Tests (all observe execution, not source spellings):
 | `install::cmd::tests::*` | Concurrent large-stream draining, deadline through output completion after a leader exits, owned writer cessation, and partial output never supplying a successful/provisioning result; native stand-ins run on all three systems |
 | `install::publish::tests::*` | Distinct base/caller push behavior, platform location without policy creation, repair, preserved/edited hooks, read-only caller discovery, exact origin identity, common-worktree deduplication, native Bash/path execution, failed writes and pending-apply honesty; healthy and Julia-only verdicts retain checked names/scope; stalled Unix Git/Bash commands produce operational failures, including the read-only check |
 | `tests/installer-publish-guard.py --scenario fresh\|repair` | Real `sotd install` orchestration in isolated profiles, both clones' clean/denied pushes and destination refs, refused options without caller writes, hook migration in the verdict and missing-policy provisioning; Unix's later role refusal witnesses recognized discovery before refusal and unchanged clone config/hooks and installed state. Unix records Julia steps, Windows records the shortcut and checks Julia's unavailable verdict step. Windows uses a unique scratch USERNAME and checks its pipe name and absence. No daemon, window or Julia instantiation is exercised on Windows |
-| `tests/installer-publish-guard.py --windows-diagnostics-only` | One Windows diagnostic matrix before the install scenarios: each variant prints label, elapsed time, exit/timeout and last phase, continuing after a timeout; diagnostic environments never become an install environment |
 | `tests/install-smoke.sh`, `tests/install-smoke.ps1` | Existing release smokes provision only synthetic policy, exclusively create it in their scratch config and invoke the absolute bootstrap outside the workflow checkout, so the smoke enrolls only its installed clone |
 | `tests/test-publish-guard-entries.sh` | Actual release push refusal; gate checkout enrollment at container boundary; shell/PowerShell pack enrollment at recording build boundary; entry conflicts before builds |
 | `tests/installer-apply.sh` (including `installer-handoff.sh`) | Git-less libc/tree preflight retains its cause; a real scratch clone enrolls before recording builds and packs an executable sot-apply |
@@ -400,8 +401,8 @@ sets PSModulePath to Windows PowerShell's system modules alone. Profile/config/t
 identity stay isolated; the runner's user module paths are excluded. Its `installer_process.py` helper gives each
 command a Windows job (joined before the real command starts, kill on close, no breakaway) or a Unix process group.
 Output goes to an owned scratch file with a separate reader, so Windows progress is available while the child lives.
-At the command's timeout (180 s unless a probe names a shorter bound), it first prints captured progress and a
-descendant snapshot with PID, parent, elapsed time and full command line. The listing command uses the runner's full
+At the command's timeout (600 s on Windows, 180 s on Unix, unless a probe names a shorter bound), it first prints
+captured progress and a descendant snapshot with PID, parent, elapsed time and full command line. The listing command uses the runner's full
 environment with no PowerShell profile and has its own 10 s bound; a failed/timed-out listing is reported explicitly.
 Only then does cleanup close the Windows job or send TERM to its own Unix group, allowing 15 s on Unix before KILL
 and a final 5 s reap bound. Unix cleanup after an abnormal installer exit is not guaranteed: installer steps take
@@ -409,19 +410,19 @@ their own groups and can survive the harness's group. The enclosing lane contain
 available; macOS containment remains unproven. Windows allows 5 s to drain/reap;
 if the Python trampoline never joined the job, its own spawn handle permits termination and a final 5 s reap.
 Snapshot PIDs are never used for termination. `capture` owns the file and process lifetime directly; there is no
-separate `capture_to_file` helper. CIM/environment causation still needs hosted execution evidence.
+separate `capture_to_file` helper.
 
-The Windows matrix compares .NET startup, the exact product query, staged import/enumeration/projection/JSON and
-self-validation, a fresh-profile cold run (45 s) and its repeat (15 s), disabled module analysis cache, absolute
-system-module imports, independent USERNAME/PATH/TEMP changes, a near-full environment with scratch identity and
-profile/config/temp/cache and system-only modules, and restricted properties with a CIM operation timeout. Other
-variants have 15 s bounds. Repeated exact-current controls expose shared warming; a timed-out cold run does not
-prove that warming completed. Restoring one diagnostic variable changes no install scenario. These observations
-do not establish isolated Windows install completion, and do not bound the product's own observation calls.
+Hosted Windows measured a cold CIM process query at about 26 s; the install's process observation remains unbounded
+until the observation pass, a 0.7.0 tag blocker.
 
 The three publish suites are listed in `rc-gate.sh` and `under-bash.sh`, and run as real local pushes in rust.yml's
 three-system `publish-guard` job. No passing evidence is implied by this contract; the landing records the actual runs.
-The native tests run in the existing sotd shard on every system; the process fixture runs fresh and repair once per
-system in rust.yml's existing build shard containing `sotd-c`, after its Rust tests. The process step has 15 minutes
-for the matrix and scenarios; that job has 25 minutes. No new product build job is required.
+Linux/macOS run the native publish units (`inst`) and fresh/repair process witness at every landing; the witness
+follows the Rust tests in the job containing `sotd-c`. Windows runs both only at the release gate, in
+`build+test, release gate (windows-latest, inst)`: real Git Bash enrollments take minutes each (the nine native units
+take about 9 to 11 minutes each on hosted Windows), while the three guard shell suites retain per-landing enforcement
+proofs there. The Windows gate builds all three binaries before the units (45-minute step, 44-minute test-binary
+bound) and witness (20-minute step, 600 s per command), within an 80-minute job. The command-owner unit proofs remain
+in the per-landing sotd shard on all three systems. The table's rows and coverage check still require every test
+in exactly one row; the planner/check also requires every shard in exactly one landing or release job per system.
 Native Windows/macOS success and signal behavior require execution evidence; the configured matrix alone does not establish them.

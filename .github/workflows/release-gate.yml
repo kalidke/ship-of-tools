@@ -4,7 +4,8 @@
 # Dispatched by hand at the release gate (pass 11, and before each final release): `gh workflow run release-gate.yml
 # --ref <branch>`. Never on a tag, so the release path's thirty minutes from fixes to an installed candidate stand; no
 # cut reads it. It holds what cannot fit a landing shard of five minutes: the tests that sleep on the clock and the page
-# test that needs a prepared Julia depot (the `gate-*` shards of .github/test-shards.txt), the native window proofs
+# test that needs a prepared Julia depot (the `gate-*` shards of .github/test-shards.txt), Windows' slow `inst` shard
+# and installer publish witness (the table's `release windows inst`), the native window proofs
 # (minimized, closed, pane timing), the daemon lifetime harness, the hermetic comm and agents suites, the gate's
 # own parity tests, the launcher's suites on Windows, the Windows-only ignored and ConPTY
 # runs, and the shell suites under bash 3.2 (which leave with the shell twins under messaging's decision D1).
@@ -37,8 +38,8 @@ jobs:
     name: build+test, release gate (${{ matrix.os }}, ${{ matrix.shard }})
     needs: plan
     runs-on: ${{ matrix.os }}
-    # The bound of the shard: about 1 min of setup, 2 of cached build, up to 5 of tests. A slow shard fails here, named.
-    timeout-minutes: 60
+    # Windows inst needs up to 45 minutes of units and 20 of fresh/repair orchestration, plus setup and build.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.shard == 'inst' && 80 || 60 }}
     strategy:
       fail-fast: false
       matrix:
@@ -97,12 +98,23 @@ jobs:
       # here. --no-fail-fast: one failing test binary must not hide the others.
       - name: Test shard ${{ matrix.shard }}
         shell: bash
-        timeout-minutes: 50
+        timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.shard == 'inst' && 45 || 50 }}
         env:
-          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
+          # Leave one minute for the bounded runner's timeout diagnostics and cleanup before the 45-minute step ends.
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py ${{ matrix.shard == 'inst' && 2640 || 900 }}
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
         run: python3 ../scripts/tests/shards.py run ${{ matrix.shard }}
+      # Build workspace above supplies sotd.exe, sot.exe and sot-capsule.exe before either proof starts.
+      - name: Test installer publish enrollment (fresh and repair)
+        if: matrix.os == 'windows-latest' && matrix.shard == 'inst'
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          for scenario in fresh repair; do
+            python3 ../scripts/tests/installer-publish-guard.py --repo .. --scenario "$scenario" \
+              --sotd target/debug/sotd.exe --sot target/debug/sot.exe --capsule target/debug/sot-capsule.exe
+          done
 
   # The proofs Windows does not run at each landing (rust.yml `test`, sup shard, macOS only): the clippy gate over every
   # target, with the test-children rule, and the portable selected-body proofs, on windows-latest. The disallowed-methods

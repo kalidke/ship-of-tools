@@ -18,8 +18,9 @@ alternatives, as in libtest; `--skip X` removes. A target's rows together must s
 A line `fold SYSTEM a+b c` lists the jobs of linux, windows or macos: shards joined by + run in turn in one job, and a
 shard in no fold is a job of its own (a system's seconds differ: macOS and Windows run the groups of Linux's slow
 binaries in a fraction of the time, and macOS runs at most five jobs at once).
-A shard named gate-* runs in release-gate.yml, every other in rust.yml, and `rest-0` and `rest-1` (never named) in
-rust.yml run every test executable the table does not name, alternate ones each, rest-0 then the doc tests.
+A shard named gate-* runs in release-gate.yml. A line `release SYSTEM shard...` also moves those landing shards to
+that system's release gate, removing them from its landing folds/jobs without changing row selection or coverage.
+Every other shard runs in rust.yml; `rest-0` through `rest-2` split unnamed test executables, rest-0 then the doc tests.
 """
 import json
 import os
@@ -38,7 +39,7 @@ def rows():
     out = []
     for line in TABLE.read_text().splitlines():
         line = line.split('#', 1)[0].strip()
-        if line and not line.startswith('fold '):
+        if line and not line.startswith(('fold ', 'release ')):
             shard, kind, target, *filters = line.split()
             if kind not in ROW_KINDS:
                 sys.exit(f'{TABLE}: {line!r}: kind {kind} is not one of {ROW_KINDS}')
@@ -56,13 +57,36 @@ def folds(system):
     return out
 
 
+def release_shards(system):
+    """Landing shards deferred to one system's release gate, with their selection rows unchanged."""
+    out = []
+    for line in TABLE.read_text().splitlines():
+        words = line.split('#', 1)[0].split()
+        if words[:2] == ['release', system]:
+            out += words[2:]
+    names = {n for n in shard_names(rows()) if not n.startswith('gate-')} | set(REST)
+    if len(out) != len(set(out)) or set(out) - names:
+        sys.exit(f'release {system}: a shard twice or not a landing shard: {out}')
+    return out
+
+
+def gate_jobs(system):
+    return [n for n in shard_names(rows()) if n.startswith('gate-')] + release_shards(system)
+
+
 def jobs(system):
-    """Every landing shard once: in its fold, or a job of its own."""
+    """Every landing shard once, except those this system defers to its release gate."""
     names = [n for n in shard_names(rows()) if not n.startswith('gate-')] + list(REST)
     named = [n for job in folds(system) for n in job.split('+')]
     if len(named) != len(set(named)) or set(named) - set(names):
         sys.exit(f'fold {system}: a shard twice or not in the table: {sorted(set(named) ^ set(names) & set(named))}')
-    return folds(system) + [n for n in names if n not in named]
+    deferred = set(release_shards(system))
+    out = []
+    for job in folds(system) + [n for n in names if n not in named]:
+        parts = [n for n in job.split('+') if n not in deferred]
+        if parts:
+            out.append('+'.join(parts))
+    return out
 
 
 def shard_names(table):
@@ -169,6 +193,11 @@ def check():
         sys.exit('the table names a rest shard; rest runs only what the table does not name')
     built = built_tests()
     problems = []
+    expected_shards = set(shard_names(table)) | set(REST)
+    for system in OSES:
+        planned = [n for job in jobs(system) + gate_jobs(system) for n in job.split('+')]
+        if len(planned) != len(set(planned)) or set(planned) != expected_shards:
+            problems.append(f'{system}: landing and release plans must route every shard exactly once')
     if declared_tests() != {(k, n) for k, n in built}:
         problems.append('the manifests declare other test executables than cargo built: '
                         + repr(sorted(declared_tests() ^ {(k, n) for k, n in built})))
@@ -210,9 +239,8 @@ def parts(everything):
 def main():
     command, *args = sys.argv[1:] or ['']
     if command == 'plan' and args in (['landing'], ['gate']):
-        gate = [n for n in shard_names(rows()) if n.startswith('gate-')]
         if args == ['gate']:
-            plan = [{'os': os_, 'shard': n} for os_ in OSES.values() for n in gate]
+            plan = [{'os': os_, 'shard': n} for system, os_ in OSES.items() for n in gate_jobs(system)]
         else:
             plan = [{'os': os_, 'shard': job} for system, os_ in OSES.items() for job in jobs(system)]
         print(json.dumps(plan))

@@ -100,8 +100,8 @@ jobs:
     name: build+test (${{ matrix.os }}, ${{ matrix.shard }})
     needs: plan
     runs-on: ${{ matrix.os }}
-    # The installer shard also runs the bounded Windows diagnostic matrix and fresh/repair process fixtures.
-    timeout-minutes: ${{ (contains(matrix.shard, 'sotd-c') || matrix.shard == 'inst') && 25 || 12 }}
+    # Linux/macOS sotd-c jobs also drive fresh/repair installer publish enrollment.
+    timeout-minutes: ${{ matrix.os != 'windows-latest' && contains(matrix.shard, 'sotd-c') && 25 || 12 }}
     strategy:
       fail-fast: false
       matrix:
@@ -169,27 +169,22 @@ jobs:
       # here. --no-fail-fast: one failing test binary must not hide the others.
       - name: Test shard ${{ matrix.shard }}
         shell: bash
-        timeout-minutes: ${{ matrix.shard == 'inst' && 15 || 5 }}
+        timeout-minutes: 5
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
         run: python3 ../scripts/tests/shards.py run ${{ matrix.shard }}
-      # Run after the Rust shard so an installer observation timeout cannot hide its unit results. Windows probes
-      # run once, in diagnostic environments only; fresh/repair retain the isolated install environment.
+      # Windows runs these slow proofs once per release, with inst in release-gate.yml. Its three guard shell suites
+      # stay in this workflow at every landing. Run this witness after the Rust shard to preserve the unit results.
       - name: Test installer publish enrollment (fresh and repair)
-        if: contains(matrix.shard, 'sotd-c')
+        if: runner.os != 'Windows' && contains(matrix.shard, 'sotd-c')
         shell: bash
         timeout-minutes: 15
         run: |
-          ext=
-          if [ "$RUNNER_OS" = Windows ]; then ext=.exe; fi
-          installer_args=(--repo .. --sotd "target/debug/sotd$ext" --sot "target/debug/sot$ext" --capsule "target/debug/sot-capsule$ext")
-          if [ "$RUNNER_OS" = Windows ]; then
-            python3 ../scripts/tests/installer-publish-guard.py "${installer_args[@]}" --windows-diagnostics-only
-          fi
           for scenario in fresh repair; do
-            python3 ../scripts/tests/installer-publish-guard.py "${installer_args[@]}" --scenario "$scenario"
+            python3 ../scripts/tests/installer-publish-guard.py --repo .. --scenario "$scenario" \
+              --sotd target/debug/sotd --sot target/debug/sot --capsule target/debug/sot-capsule
           done
       # Every test of a named target runs in exactly one shard of .github/test-shards.txt; a test unassigned or assigned twice
       # fails the run here, named.
