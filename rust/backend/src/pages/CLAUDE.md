@@ -152,8 +152,8 @@ HTTP capability/Origin checks, states, go-to, page containment, site retention a
 body deadline is `http_keep_tests.rs::a_body_dripped_past_the_bound_is_refused_at_the_bound`; complete owner cleanup
 is `site/tests.rs::an_owner_keeps_eight_prefix_sites_and_removes_them_together`. The browser-origin done test remains
 a by-hand check on local and remote windows. A page cannot act on another daemon's rows; a session outside any row
-has states but no go-to or open. The page channel's trust boundary is **this OS account**, pending the maintainer's
-word. A same-account process holding a site capability can call its verbs; possession and matching Host/Origin do
+has states but no go-to or open. The page channel's trust boundary is **this OS account**, the same as every other
+daemon operation (the maintainer's decision, 2026-10-25). A same-account process holding a site capability can call its verbs; possession and matching Host/Origin do
 not authenticate that process as the originating document. Other accounts are refused by `serve_own`.
 `site/verbs_tests.rs` observes capability calls and commands on denied requests and JSON failure recovery on one
 connection. `tests/page_channel.rs::page_verbs_work_through_the_page_proxy_with_the_windows_local_origin` drives the
