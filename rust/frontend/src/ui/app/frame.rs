@@ -208,16 +208,15 @@ impl State {
             self.pending_auto_pin = false;
         }
         // `--demo-repl-eval`: one-shot self-submit once the workspace is
-        // live (same gating as the other harness one-shots). Goes through
-        // submit_repl_input so a repl_log entry exists for the frames to
-        // land in, then shows the REPL drawer so the capture includes it.
+        // live (same gating as the other harness one-shots). Replaces the
+        // draft and submits without moving scroll, then shows the REPL
+        // drawer so the capture includes it.
         if self.pending_demo_repl_eval.is_some()
             && self.pending_initial_selection.is_none()
             && !self.tree.rows.is_empty()
         {
             if let Some(code) = self.pending_demo_repl_eval.take() {
-                self.repl_model.edit_draft(DraftEdit::Replace(code));
-                self.submit_repl_input();
+                self.submit_demo_repl_input(code);
                 if self.drawer != DrawerContent::Repl {
                     self.drawer = DrawerContent::Repl;
                 }

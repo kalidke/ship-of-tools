@@ -46,7 +46,24 @@ impl ReplModel {
                 end_entry(entry, elapsed_ms, frames);
             }
         } else {
-            tracing::debug!(eval_id, "repl.eval reply for unknown entry — ignoring");
+            match owner.as_ref() {
+                Some(key) if key != active => {
+                    if self.parked.contains_key(key) {
+                        tracing::debug!(
+                            eval_id,
+                            ?key,
+                            "repl.eval reply for unknown id in snapshot — ignoring"
+                        );
+                    } else {
+                        tracing::debug!(
+                            eval_id,
+                            ?key,
+                            "repl.eval reply for workspace with no snapshot — ignoring"
+                        );
+                    }
+                }
+                _ => tracing::debug!(eval_id, "repl.eval reply for unknown id — ignoring"),
+            }
         }
     }
 
@@ -136,10 +153,14 @@ impl ReplModel {
         if let Some(entry) = self.routed_entry(owner.as_ref(), active, eval_id) {
             match frame {
                 ReplFrame::Done { elapsed_ms, .. } => {
+                    tracing::debug!(eval_id, elapsed_ms, "repl.frame: done (finalize)");
                     entry.elapsed_ms = elapsed_ms;
                     entry.in_flight = false;
                 }
-                other => entry.frames.push(other),
+                other => {
+                    tracing::debug!(eval_id, "repl.frame: append");
+                    entry.frames.push(other);
+                }
             }
         } else {
             tracing::warn!(
@@ -166,7 +187,7 @@ impl ReplModel {
     }
 
     /// A session's Started announcement only registers a visited destination, and never duplicates ownership.
-    pub(in crate::ui) fn start_run(
+    fn start_run(
         &mut self,
         host: HostKey,
         eval_id: u64,

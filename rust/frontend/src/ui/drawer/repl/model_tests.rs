@@ -59,13 +59,16 @@ fn texts(log: &[ReplEntry]) -> Vec<String> {
         .collect()
 }
 fn announce(model: &mut ReplModel, row: &WsKey, active: &WsKey, id: u64) {
-    model.start_run(
+    model.apply_frame(
         row.0.clone(),
         id,
         active,
         row.clone(),
-        "session".into(),
-        "run file.jl".into(),
+        ReplFrame::Started {
+            run_id: format!("run-{id}"),
+            origin: "session".into(),
+            display: "run file.jl".into(),
+        },
     );
 }
 fn info(id: u64, fresh: bool, elapsed_ms: u64, frames: Vec<ReplFrame>) -> ReplRunFileInfo {
@@ -112,6 +115,90 @@ fn a_row_switch_never_restarts_the_windows_eval_count() {
     assert_eq!(submit(&mut m, &a, "a again"), 3);
     let plan = m.begin_file_run(target(&a), "file.jl".into(), true);
     assert_eq!(plan.submission.eval_id(), 4);
+}
+
+#[test]
+fn demo_submission_preserves_scroll_including_whitespace() {
+    for code in ["demo = 7", " \n\t"] {
+        let mut m = ReplModel::default();
+        let a = key("host", "a");
+        let first = submit(&mut m, &a, "history");
+        complete(&mut m, &a, first);
+        m.edit_draft(DraftEdit::Replace("original draft".into()));
+        assert!(m.history_back());
+        m.scroll_rows(19);
+
+        let plan = m.begin_demo_eval(target(&a), code.into());
+        assert_eq!(m.scroll(), 19);
+        assert_eq!(m.input(), "");
+        if code.trim().is_empty() {
+            assert!(plan.is_none());
+            assert_eq!(m.entries().len(), 1);
+            assert!(m.history_forward());
+            assert_eq!(m.input(), "original draft");
+            assert_eq!(submit(&mut m, &a, "next"), first + 1);
+        } else {
+            let plan = plan.unwrap();
+            assert_eq!(plan.host, a.0);
+            assert!(
+                matches!(&plan.request, OutgoingReq::ReplEval { code: sent, workspace_id: Some(ws), .. } if sent == code && ws == "a")
+            );
+            assert_eq!(plan.submission.eval_id(), first + 1);
+            assert_eq!(m.entries().last().unwrap().code, code);
+            m.complete_submission(plan.submission, Ok(()));
+            assert_eq!(m.scroll(), 19);
+            assert!(!m.history_forward());
+        }
+    }
+}
+
+#[test]
+fn started_frames_register_only_visited_destinations_once() {
+    let mut m = ReplModel::default();
+    let (a, b, unvisited) = (key("one", "a"), key("one", "b"), key("two", "a"));
+    m.restore_row(&b);
+    switch(&mut m, &b, &a);
+
+    announce(&mut m, &a, &a, 801);
+    let entry = &m.entries()[0];
+    assert_eq!(entry.eval_id, 801);
+    assert_eq!(entry.origin.as_deref(), Some("session ▸ run file.jl"));
+    assert!(entry.code.is_empty());
+    assert!(entry.frames.is_empty());
+    assert!(entry.in_flight);
+    assert!(!entry.pkg_mode);
+    output(&mut m, "one", 801, &a, "live");
+
+    // A duplicate cannot append control output or move ownership to another visited row.
+    announce(&mut m, &a, &a, 801);
+    announce(&mut m, &b, &a, 801);
+    assert_eq!(m.entries().len(), 1);
+    assert_eq!(m.entries()[0].frames.len(), 1);
+    assert!(m.parked_entries(&b).unwrap().is_empty());
+
+    announce(&mut m, &b, &a, 802);
+    announce(&mut m, &b, &a, 802);
+    let parked = m.parked_entries(&b).unwrap();
+    assert_eq!(parked.len(), 1);
+    assert_eq!(parked[0].eval_id, 802);
+    assert!(parked[0].in_flight);
+    assert!(parked[0].frames.is_empty());
+    output(&mut m, "one", 801, &a, "still live");
+    output(&mut m, "one", 802, &a, "parked");
+    assert_eq!(m.entries()[0].frames.len(), 2);
+    assert_eq!(m.parked_entries(&b).unwrap()[0].frames.len(), 1);
+
+    announce(&mut m, &unvisited, &a, 803);
+    assert!(m.parked_entries(&unvisited).is_none());
+    assert_eq!(m.entries().len(), 1);
+    // Ignoring an unvisited destination must not reserve its id: a later live announcement works.
+    switch(&mut m, &a, &unvisited);
+    announce(&mut m, &unvisited, &unvisited, 803);
+    assert_eq!(m.in_flight_ids(), [803]);
+    done(&mut m, "one", 801, &unvisited);
+    done(&mut m, "one", 802, &unvisited);
+    assert!(!m.parked_entries(&a).unwrap()[0].in_flight);
+    assert!(!m.parked_entries(&b).unwrap()[0].in_flight);
 }
 
 #[test]

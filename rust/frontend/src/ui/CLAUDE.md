@@ -85,7 +85,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   never take State or expose mutable storage. State retains image caches, geometry, build anchors, transport,
   status, browser/proxy work and persistence. REPL records remain runtime memory, with no new resume format.
 - Eval submission consumes whitespace without advancing the counter or resetting history; real submissions register
-  before send and trim to 255 before appending. Failed sends close the visible entry with an error and retain the
+  before send and trim to 255 before appending. Delayed demo submission replaces the draft without moving scroll,
+  including whitespace that submits nothing. Failed sends close the visible entry with an error and retain the
   route. Registered replies use (event dial host, eval id) and the normalized sending-row key, even across switches;
   a recorded missing parked row drops output. Unknown owners keep the legacy live-log fallback. Acceptance leaves
   routing and flight state intact; terminal replies append to streamed output. Done consumes run-file display
@@ -105,9 +106,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   saturating fine-line scroll retain their distinct arithmetic; rendering supplies the final clamp.
 - Ctrl+L clears log, scroll and State's image caches, retaining draft, prompt mode and history walk. A fresh file
   run clears log, scroll, mode and history, retaining draft and image caches until normal pruning. Every restore
-  requests a build-anchor reset, including a first visit. Behavior proofs: `drawer::repl::model_tests` (eighteen
-  invariants) and the moved `drawer::repl::log::tests` characterizations. The two existing native REPL fixtures
-  still run through the event queue with allocated ids, alongside the kept-default draft control; hosted
+  requests a build-anchor reset, including a first visit. Behavior proofs: `drawer::repl::model_tests`, including
+  demo scroll preservation and Started-frame dispatch, and the moved `drawer::repl::log::tests` characterizations.
+  The two existing native REPL fixtures still run through the event queue with allocated ids, alongside the
+  kept-default draft control; hosted
   Windows/macOS execution remains required.
 - `State` applies REPL catch-up, migration on every applicable refresh, then status before attachments,
   declarations, capture cycling and tree rebuild. Switching snapshots before host/default changes and restores

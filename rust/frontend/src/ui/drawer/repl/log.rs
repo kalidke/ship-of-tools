@@ -79,6 +79,16 @@ impl ReplModel {
         })
     }
 
+    /// A delayed demo replaces the draft and submits without moving the view, even for whitespace.
+    pub(in crate::ui) fn begin_demo_eval(
+        &mut self,
+        target: ReplTarget,
+        code: String,
+    ) -> Option<ReplSend> {
+        self.live.input = code;
+        self.begin_eval(target)
+    }
+
     /// The caller validates the cursored .jl path before beginning a run.
     pub(in crate::ui) fn begin_file_run(
         &mut self,
@@ -117,7 +127,14 @@ impl ReplModel {
         result: Result<(), String>,
     ) -> ReplEffects {
         if let Err(message) = &result {
-            tracing::warn!(error = %message, eval_id = submission.eval_id(), "drop REPL request — channel closed");
+            match &submission.kind {
+                SubmissionKind::Eval => {
+                    tracing::warn!(error = %message, eval_id = submission.eval_id(), "drop repl.eval request — channel closed");
+                }
+                SubmissionKind::File { .. } => {
+                    tracing::warn!(error = %message, "failed to dispatch repl.run_file");
+                }
+            }
             if let Some(entry) = self
                 .live
                 .log
@@ -148,10 +165,7 @@ impl ReplModel {
         }
     }
 
-    pub(in crate::ui) fn edit_draft(&mut self, edit: DraftEdit<'_>) -> bool {
-        let before = (self.live.input.len(), self.live.pkg_mode, self.live.scroll);
-        let replacement_changed =
-            matches!(&edit, DraftEdit::Replace(text) if text != &self.live.input);
+    pub(in crate::ui) fn edit_draft(&mut self, edit: DraftEdit<'_>) {
         match edit {
             DraftEdit::Typed("]") if self.live.input.is_empty() && !self.live.pkg_mode => {
                 self.live.pkg_mode = true
@@ -175,8 +189,6 @@ impl ReplModel {
             DraftEdit::Replace(text) => self.live.input = text,
         }
         self.scroll_to_tail();
-        replacement_changed
-            || before != (self.live.input.len(), self.live.pkg_mode, self.live.scroll)
     }
 
     pub(in crate::ui) fn history_back(&mut self) -> bool {
@@ -296,9 +308,18 @@ impl State {
 
     pub(in crate::ui) fn submit_repl_input(&mut self) {
         let target = self.repl_target();
-        let Some(plan) = self.repl_model.begin_eval(target) else {
-            return;
-        };
+        let plan = self.repl_model.begin_eval(target);
+        self.send_repl_eval(plan);
+    }
+
+    pub(in crate::ui) fn submit_demo_repl_input(&mut self, code: String) {
+        let target = self.repl_target();
+        let plan = self.repl_model.begin_demo_eval(target, code);
+        self.send_repl_eval(plan);
+    }
+
+    fn send_repl_eval(&mut self, plan: Option<ReplSend>) {
+        let Some(plan) = plan else { return };
         let result = self
             .send_to(&plan.host, plan.request)
             .map_err(|e| e.to_string());

@@ -1,5 +1,5 @@
 //! Existing log characterizations, driven through public owner operations.
-use crate::ui::{DraftEdit, OutgoingReq, ReplModel, ReplTarget, WsKey};
+use crate::ui::{DraftEdit, OutgoingReq, ReplFrame, ReplModel, ReplTarget, WsKey};
 
 fn row() -> WsKey {
     ("host".into(), "row".into())
@@ -49,13 +49,16 @@ fn a_ctrl_c_names_every_eval_in_flight_and_no_other() {
     let mut m = ReplModel::default();
     submit(&mut m, "done", true);
     let b = submit(&mut m, "b", false);
-    m.start_run(
+    m.apply_frame(
         "host".into(),
         1 << 40,
         &row(),
         row(),
-        "session".into(),
-        "run x.jl".into(),
+        ReplFrame::Started {
+            run_id: "session-run".into(),
+            origin: "session".into(),
+            display: "run x.jl".into(),
+        },
     );
     submit(&mut m, "also done", true);
     assert_eq!(interrupt(&mut m).0, [b, 1 << 40]);
