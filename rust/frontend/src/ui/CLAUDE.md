@@ -2,8 +2,9 @@
 
 ## Idea
 One UI thread owns all view state and every other thread reaches it only by waking the window; ratatui computes cells
-and one wgpu pass draws every pixel. The window is one `State` (mod.rs) driven by one winit loop; each concept below
-is a folder whose `impl State` blocks and free functions reach the shared fields through `use super::*`.
+and one wgpu pass draws every pixel. The window's `State` (mod.rs) is driven by one winit loop. Its first extracted
+owner is `session/row_directory.rs`; the remaining concepts below still reach shared fields through `impl State`
+blocks and free functions using `use super::*`.
 
 ## Owns
 - The winit loop, frame pacing and the exit path: `app/`.
@@ -28,7 +29,24 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
 - An action resolves only if `help::Context::allows` it (input/keypress.rs passes it to the resolver), so help and
   dispatch cannot disagree.
 - Preview and concept replies require the current generation, host and workspace. Result-owned tree replies also require the currently listed canonical row and issuing result/attempt before active or parked tree installation and reveal effects; ordinary nav replies retain their tree-key routing.
-- Workspace view maps use WsKey = (host, normalized slug); strip keys use the listed (host, slug). Canonical ids are resolved through workspace.list before command effects.
+- Workspace view maps use WsKey = (host, normalized slug); strip keys use the listed (host, slug). `RowDirectory`
+  privately owns authoritative host listings and canonical-id translation. Its strict resolver admits a command
+  only for one listed row with a nonempty, unique canonical id on the specified dial host, and returns an owned
+  `ResolvedWorkspace` carrying canonical identity, listed key, normalized view key and the stored attachment name.
+  Default aliases and inert-anchor visibility retain their existing rules. Lifecycle hints use a separate tolerant
+  lookup: the event host qualifies known ids, unknown hints pass through, and absent hints use the caller's existing
+  default-slug fallback. No caller can mutate either directory map or its row slices.
+- `RowDirectory::prepare_replace` reports canonical identities retired by one host's authoritative listing without
+  changing the installed rows; same-slug canonical replacement retires the old identity, while unchanged rows and
+  kept defaults survive. `on_workspaces` reconciles owed results before committing the replacement, then rebuilds
+  presentation projections, prunes warm attachments, updates declarations and rebuilds or parks the Sessions tree
+  (with the existing capture-cycle step before the tree). Disconnect leaves the directory intact. Behavior tests:
+  `row_directory::tests::{union_replace_leaves_the_other_hosts_list_intact,
+  lifecycle_key_uses_the_event_host_and_keeps_legacy_fallbacks,
+  authoritative_replacement_reports_only_retired_canonical_identities}` and
+  `row_directory::listed_tests::{listed_resolution_keeps_each_host_and_key_space,
+  ambiguous_empty_and_unknown_targets_are_refused}`. The native `pending_result_dies_with_its_canonical_row`
+  fixture covers reconciliation effects, disconnect retention and a kept default.
 - Final window teardown has one shared three-second OS-clock process deadline, independent of the UI and transport runtime; it starts at the terminal decision, after any daemon acknowledgement and notice presentation.
 - `State::set_focus` (chrome/panes.rs) is the one write of `focus`; scan_tests.rs (`focus_written_only_by_set_focus`)
   fails any other.
@@ -94,7 +112,8 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `input/`: the action catalog, key and mouse routing, help and clipboard paste.
 - `nav/`: the navigation pane's trees (mode, store, Modules, Sessions, Hosts).
 - `nav/files/`: Files mode's prompts, reveal walk, transfers and re-lists.
-- `session/`: which row the window is on: the workspace lists, snapshots, the switch, picker, presence, badge floor.
+- `session/`: `RowDirectory` owns authoritative listings and identity resolution; State coordinates the projections,
+  snapshots, switch, picker, presence and badge floor.
 - `agent_pane/`: the agent pane's screen choice, attach client with warm pool, and input.
 - `drawer/`: the bottom drawer and its tenants.
 - `drawer/repl/`: the REPL tenant (log, submit, history, display lines).

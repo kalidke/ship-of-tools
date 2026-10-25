@@ -706,14 +706,8 @@ struct State {
     /// active_workspace_id)` is what names the current workspace now that
     /// there's more than one connection.
     active_workspace_id: Option<String>,
-    /// The union this refactor is built on (ADR 0042 L2a): host → its most
-    /// recent `workspace.list` reply. A reply from host H replaces only
-    /// H's entry — every other host's last-known list is untouched, so an
-    /// unreachable host keeps showing its (greyed) rows instead of
-    /// vanishing. `rebuild_workspace_caches` and the Sessions tree are
-    /// both derived from this in `conns` order (see `ordered_hosts`), not
-    /// insertion order.
-    workspace_lists: HashMap<crate::net::dial::HostKey, Vec<crate::net::transport::WorkspaceInfo>>,
+    /// Authoritative host listings and canonical identity translation, owned by session/row_directory.rs.
+    row_directory: RowDirectory,
     /// Two-press confirm for `D` (workspace destroy) in Sessions mode.
     /// First press arms with the cursor row's `(host, workspace_id)`;
     /// second press on the same row fires `workspace.destroy` via
@@ -784,21 +778,6 @@ struct State {
     /// NOT cleared on `workspace.list` — an old daemon sends empty
     /// `repl_state`, and frame-driven entries must survive it.
     repl_lifecycle: HashMap<WsKey, String>,
-    /// `(host, canonical workspace_id)` → `(host, slug)`, from each host's
-    /// own `workspace.list` reply. Lifecycle frames stamp the CANONICAL id
-    /// (`ws-<slug>-<hash>`) — the Repl supervisor's identity — while every
-    /// FE surface keys by `WsKey` (the `started`-frame lesson, 2026-07-16:
-    /// a canonical-id compare against slug keys silently never matches).
-    /// This map is the translation at the frame boundary.
-    /// ADR 0042 L2a codex review, item J: the OUTER key is now
-    /// host-qualified — a canonical id is `slug+pid+time`, but a LEGACY
-    /// id is just the bare slug, so two hosts' same-slug legacy ids
-    /// collided on a bare-id key (whichever host inserted last silently
-    /// won, and a lookup from the OTHER host's frame resolved to the
-    /// wrong slug). Looked up via the frame's own `event_host`
-    /// (`lifecycle_key_of`'s `host` param), never trusted from the
-    /// entry's own value.
-    workspace_id_slugs: HashMap<(HostKey, String), WsKey>,
     /// Results owed to current listed canonical rows; authoritative removal or identity replacement invalidates their entries and attempts.
     pending_nav: PendingResults,
     /// Serial of the newest result recorded; never reset, so a replacement is told from the result it replaced.

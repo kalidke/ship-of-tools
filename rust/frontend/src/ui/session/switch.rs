@@ -65,7 +65,7 @@ impl State {
             .unwrap_or(0);
         let next = ((idx + direction).rem_euclid(n)) as usize;
         let (next_host, next_slug) = self.workspace_slugs[next].clone();
-        let target = match resolve_listed_workspace(&self.workspace_lists, &next_host, &next_slug) {
+        let target = match self.row_directory.resolve(&next_host, &next_slug) {
             Ok(target) => target,
             Err(reason) => {
                 self.refuse_result(&reason);
@@ -137,8 +137,7 @@ impl State {
                 return;
             }
             None => {
-                let target = match resolve_listed_workspace(
-                    &self.workspace_lists,
+                let target = match self.row_directory.resolve(
                     &host,
                     slug.as_deref().unwrap_or(""),
                 ) {
@@ -191,8 +190,8 @@ impl State {
         let old_tree_key = self.active_tree_key();
         self.active_host = host;
         self.default_workspace_slug = self
-            .workspace_lists
-            .get(&self.active_host)
+            .row_directory
+            .rows(&self.active_host)
             .and_then(|rows| rows.iter().find(|row| row.is_default))
             .map(|row| row.slug.clone());
         // (round 2, finding 14): project the declaration

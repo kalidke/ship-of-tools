@@ -306,7 +306,7 @@ impl PaneDriver<'_> {
     /// and its status line (rebuilt only for the active host's events), and the window thread's last failed redraw.
     fn setup_state(&self, listed: bool) -> String {
         let Some(state) = self.app.state.as_ref() else { return "no State".to_string() };
-        let mut lists: Vec<String> = state.workspace_lists.iter().map(|(key, rows)| format!("{key}:{}", rows.len())).collect();
+        let mut lists: Vec<String> = state.row_directory.listings().map(|(key, rows)| format!("{key}:{}", rows.len())).collect();
         lists.sort();
         let text = self.capture.text();
         let redraw_failed = text.lines().filter(|l| l.contains("redraw failed")).last().unwrap_or("none").trim().to_string();
@@ -318,7 +318,7 @@ impl PaneDriver<'_> {
 
     fn ready_to_switch(&self) -> Result<bool> {
         let Some(state) = self.app.state.as_ref() else { return Ok(false) };
-        let listed = state.workspace_lists.get(HOST_KEY).is_some_and(|rows| self.plan.iter().all(|p| rows.iter().any(|r| r.slug == p.slug)));
+        let listed = state.row_directory.rows(HOST_KEY).is_some_and(|rows| self.plan.iter().all(|p| rows.iter().any(|r| r.slug == p.slug)));
         if !(listed && state.frame_counter >= 3 && state.pty_size.is_some()) {
             if self.begun.elapsed() >= SETUP_BOUND {
                 anyhow::bail!("pane-timing setup failure: the window was not ready to switch in {SETUP_BOUND:?}: {}", self.setup_state(listed));

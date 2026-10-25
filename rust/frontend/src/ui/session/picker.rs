@@ -183,8 +183,8 @@ impl State {
         //   which is the one per-host path the frontend always holds --
         //   see `picker_start_for_host`.
         let default_row_root = self
-            .workspace_lists
-            .get(&host)
+            .row_directory
+            .rows(&host)
             .and_then(|l| l.iter().find(|w| w.is_default))
             .map(|w| w.project_root.clone());
         let configured = self

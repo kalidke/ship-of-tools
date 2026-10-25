@@ -65,16 +65,14 @@ fn every_hosts_connected_requests_its_own_workspace_list() {
         "the active host got its request too"
     );
 
-    // Both hosts' replies land and union into one map, neither
-    // clobbering the other (mirrors the real workspace_lists.insert).
-    let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
-    lists.insert("local".to_string(), vec![ws_info("home", "sot-be-home")]);
-    lists.insert("alpha".to_string(), vec![ws_info("sot", "sot-be-sot")]);
-    assert_eq!(
-        lists.len(),
-        2,
-        "both hosts' lists are present after both replies land"
-    );
+    // Both hosts' replies land through the authoritative directory operation.
+    let mut directory = RowDirectory::default();
+    for (host, slug) in [("local", "home"), ("alpha", "sot")] {
+        let update = directory.prepare_replace(host.into(), vec![ws_info(slug, "stored-target")]);
+        directory.commit_replace(update);
+    }
+    assert_eq!(directory.rows("local").unwrap()[0].slug, "home");
+    assert_eq!(directory.rows("alpha").unwrap()[0].slug, "sot");
 }
 
 

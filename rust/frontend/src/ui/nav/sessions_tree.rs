@@ -118,7 +118,7 @@ fn session_host_children(
 /// splice.
 fn resplice_expanded_session_hosts(
     view: &mut TreeView,
-    workspace_lists: &HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>>,
+    directory: &RowDirectory,
 ) {
     let open: Vec<(String, HostKey)> = view
         .rows
@@ -130,7 +130,7 @@ fn resplice_expanded_session_hosts(
         })
         .collect();
     for (parent_id, host) in open {
-        if let Some(list) = workspace_lists.get(&host) {
+        if let Some(list) = directory.rows(&host) {
             view.apply_children(&parent_id, session_host_children(&host, list));
         }
     }
@@ -299,7 +299,7 @@ impl State {
             .map(|host| {
                 let connected = self.hosts.host_connected.get(&host).copied().unwrap_or(false);
                 let link = host_link_status(connected, self.hello_refused.get(&host).map(String::as_str));
-                let has_list = self.workspace_lists.contains_key(&host);
+                let has_list = self.row_directory.rows(&host).is_some();
                 let is_active = host == self.active_host;
                 let display = host_label(&self.hosts.declared_host, &host);
                 host_tree_node(&host, display, link, has_list, is_active)
@@ -332,7 +332,7 @@ impl State {
         // A host with no list yet has no children (matches the tree's own
         // `has_children: false` for that state, ADR 0042 L2's acceptance:
         // still a visible node, just nothing to expand into).
-        let Some(list) = self.workspace_lists.get(&host) else {
+        let Some(list) = self.row_directory.rows(&host) else {
             return false;
         };
         let parent_id = row.node.id.clone();
@@ -416,7 +416,7 @@ impl State {
             let slot = self.tree_store.slot_mut(reply_key);
             if slot.view.rows.is_empty() || slot.from_reply {
                 slot.view.set_root(root, children);
-                resplice_expanded_session_hosts(&mut slot.view, &self.workspace_lists);
+                resplice_expanded_session_hosts(&mut slot.view, &self.row_directory);
                 slot.from_reply = true;
             } else {
                 tracing::debug!(
@@ -426,7 +426,7 @@ impl State {
             return;
         }
         self.tree.set_root(root, children);
-        resplice_expanded_session_hosts(&mut self.tree, &self.workspace_lists);
+        resplice_expanded_session_hosts(&mut self.tree, &self.row_directory);
         if let Some(n) = self.pending_initial_selection.take() {
             self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
         }

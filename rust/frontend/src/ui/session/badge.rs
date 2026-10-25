@@ -47,7 +47,7 @@ impl State {
     /// the FE views another row. The row's strip name is badged and the status line says where the
     /// result waits; the view is never switched. A newer result replaces the owed one for the row.
     pub(in crate::ui) fn mark_pending_nav(&mut self, host: HostKey, ws: String, path: String) {
-        let target = match resolve_listed_workspace(&self.workspace_lists, &host, &ws) {
+        let target = match self.row_directory.resolve(&host, &ws) {
             Ok(target) => target,
             Err(reason) => return self.refuse_result(&reason),
         };
@@ -72,7 +72,7 @@ impl State {
     /// Strip rows carrying an owed result: the entries joined to the current listed rows.
     pub(in crate::ui) fn badged_keys(&self) -> std::collections::HashSet<WsKey> {
         let listed = |id: &ResultRowIdentity| {
-            let rows = self.workspace_lists.get(&id.host)?;
+            let rows = self.row_directory.rows(&id.host)?;
             let row = rows
                 .iter()
                 .find(|row| row.workspace_id == id.workspace_id)?;
@@ -138,7 +138,7 @@ impl State {
         attempt: &ResultAttemptId,
     ) -> Option<&mut PendingNav> {
         let target =
-            resolve_listed_workspace(&self.workspace_lists, host, &attempt.workspace_id).ok()?;
+            self.row_directory.resolve(host, &attempt.workspace_id).ok()?;
         let entry = self.pending_nav.entries.get_mut(target.identity())?;
         let current = entry.attempt.as_ref()?;
         (target.identity().workspace_id == attempt.workspace_id

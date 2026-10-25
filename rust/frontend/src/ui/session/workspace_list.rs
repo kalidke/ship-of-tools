@@ -11,7 +11,6 @@ struct FreshWorkspaceCaches {
     workspace_labels: HashMap<WsKey, String>,
     workspace_project_roots: HashMap<WsKey, String>,
     workspace_states: HashMap<WsKey, (String, String)>,
-    workspace_id_slugs: HashMap<(HostKey, String), WsKey>,
     /// Only the entries an old-daemon-safe insert would touch (non-empty
     /// `repl_state`) — `repl_lifecycle` itself is never cleared, so the
     /// caller inserts these rather than replacing the whole map.
@@ -44,7 +43,7 @@ pub(in crate::ui) fn declared_sessions_from(
 }
 
 /// Pure core of the ADR 0042 L2a workspace-cache rebuild: given the union
-/// (`ordered_hosts` for display order, `lists` for each host's last-known
+/// (`ordered_hosts` for display order, `directory` for each host's last-known
 /// `workspace.list`) and `active_host`, computes every workspace-scoped
 /// cache keyed by `(host, slug)` — no `State` dependency, so "two hosts
 /// each having a workspace with the same slug don't collide" is directly
@@ -60,7 +59,7 @@ pub(in crate::ui) fn declared_sessions_from(
 /// built from this function, not from the tree.
 fn fresh_workspace_caches(
     ordered_hosts: &[HostKey],
-    lists: &HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>>,
+    directory: &RowDirectory,
     active_host: &HostKey,
 ) -> FreshWorkspaceCaches {
     let mut out = FreshWorkspaceCaches {
@@ -68,12 +67,11 @@ fn fresh_workspace_caches(
         workspace_labels: HashMap::new(),
         workspace_project_roots: HashMap::new(),
         workspace_states: HashMap::new(),
-        workspace_id_slugs: HashMap::new(),
         repl_lifecycle: HashMap::new(),
         default_workspace_slug: None,
     };
     for host in ordered_hosts {
-        let Some(list) = lists.get(host) else {
+        let Some(list) = directory.rows(host) else {
             continue;
         };
         for w in list {
@@ -93,8 +91,6 @@ fn fresh_workspace_caches(
                 ws_key.clone(),
                 (w.agent_state.clone(), w.agent_status_at.clone()),
             );
-            out.workspace_id_slugs
-                .insert((host.clone(), w.workspace_id.clone()), ws_key.clone());
             if !w.repl_state.is_empty() {
                 out.repl_lifecycle
                     .insert(ws_key.clone(), w.repl_state.clone());
@@ -104,10 +100,9 @@ fn fresh_workspace_caches(
             // `workspace_slugs`, the list the strip iterates to render rows
             // and workspace-cycle keybindings walk (`workspace_labels`
             // above is likewise skipped: no label to render). Everything
-            // else here is kept: `workspace_project_roots` /
-            // `workspace_id_slugs` are harmless (the daemon still lists the
-            // row), and `default_workspace_slug` below is the strip's own
-            // active-index fallback — it must still resolve to this row
+            // else here is kept: `workspace_project_roots` is harmless
+            // (the daemon still lists the row), and `default_workspace_slug`
+            // below is the strip's own active-index fallback — it must still resolve to this row
             // when it's the connection's default.
             if !is_inert {
                 out.workspace_slugs.push(ws_key.clone());
@@ -223,19 +218,13 @@ impl State {
             .map(|s| (self.active_host.clone(), s.to_string()))
     }
 
-    /// Reconcile canonical pending-result identities before rebuilding workspace caches from an authoritative host list. A disconnect is not removal, and a kept default row retains its identity.
-    pub(in crate::ui) fn reconcile_pending_results(
-        &mut self,
-        host: &HostKey,
-        incoming: &[crate::net::transport::WorkspaceInfo],
-    ) {
-        let owed: Vec<String> = self
-            .pending_nav_workspace_ids(host)
-            .into_iter()
-            .filter(|id| !incoming.iter().any(|row| &row.workspace_id == id))
-            .collect();
-        for id in owed {
-            self.invalidate_result_row(host, &id);
+    /// Reconcile owed results against the directory's prepared retirement report, before commitment.
+    /// Only currently listed rows can acquire a pending result; a disconnect and a kept default do not retire one.
+    pub(in crate::ui) fn reconcile_pending_results(&mut self, update: &RowDirectoryUpdate) {
+        for identity in update.retired() {
+            if self.pending_nav_workspace_ids(&identity.host).contains(&identity.workspace_id) {
+                self.invalidate_result_row(&identity.host, &identity.workspace_id);
+            }
         }
     }
 
@@ -255,7 +244,7 @@ impl State {
     }
 
     /// Clear + rebuild every workspace-scoped cache from the union of every
-    /// host's last-known `workspace.list` (`workspace_lists`), in `conns`
+    /// host's last-known `workspace.list` (`row_directory`), in `conns`
     /// order (ADR 0042 L2a). Called whenever ANY host's slice of the union
     /// changes, not just the active host's. The union→caches computation
     /// itself is `fresh_workspace_caches`, a free function with no `State`
@@ -267,7 +256,7 @@ impl State {
         self.refresh_badge_index();
         let fresh = fresh_workspace_caches(
             &self.ordered_hosts(),
-            &self.workspace_lists,
+            &self.row_directory,
             &self.active_host,
         );
         for (key, (state, _)) in &fresh.workspace_states {
@@ -303,7 +292,6 @@ impl State {
         self.workspace_labels = fresh.workspace_labels;
         self.workspace_project_roots = fresh.workspace_project_roots;
         self.workspace_states = fresh.workspace_states;
-        self.workspace_id_slugs = fresh.workspace_id_slugs;
         // repl_lifecycle is NEVER cleared (old-daemon empty repl_state must
         // not regress a frame-driven entry) — insert, don't replace.
         for (key, state) in fresh.repl_lifecycle {

@@ -1,5 +1,15 @@
 use super::*;
 
+/// Build the projection's input through the directory's real authoritative replacement operations.
+fn listed_directory(lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>>) -> RowDirectory {
+    let mut directory = RowDirectory::default();
+    for (host, rows) in lists {
+        let update = directory.prepare_replace(host, rows);
+        directory.commit_replace(update);
+    }
+    directory
+}
+
 // ---- activity_order (bottom strip within-host ordering) ----
 
 fn ak(host: &str, slug: &str) -> WsKey {
@@ -206,7 +216,7 @@ fn fresh_workspace_caches_two_hosts_sharing_a_slug_do_not_collide() {
     lists.insert("alpha".to_string(), vec![alpha_ws]);
     lists.insert("beta".to_string(), vec![beta_ws]);
     let ordered = vec!["alpha".to_string(), "beta".to_string()];
-    let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
+    let fresh = fresh_workspace_caches(&ordered, &listed_directory(lists), &"alpha".to_string());
 
     assert_eq!(
         fresh.workspace_slugs.len(),
@@ -243,7 +253,7 @@ fn a_rows_root_is_the_daemons_spelling_so_a_watched_path_resolves_under_it() {
     linked.canonical_root = Some("/t/real/repo".to_string());
     let older = ws_info("beta", "sot-be-beta");
     let lists = HashMap::from([(host.clone(), vec![linked, older])]);
-    let fresh = fresh_workspace_caches(std::slice::from_ref(&host), &lists, &host);
+    let fresh = fresh_workspace_caches(std::slice::from_ref(&host), &listed_directory(lists), &host);
     let root = |slug: &str| fresh.workspace_project_roots.get(&(host.clone(), slug.to_string())).cloned();
     assert_eq!(root("alpha").as_deref(), Some("/t/real/repo"));
     assert_eq!(root("beta").as_deref(), Some("/projects/beta"), "a daemon that sends no canonical_root");
@@ -268,62 +278,12 @@ fn fresh_workspace_caches_default_slug_is_scoped_to_active_host() {
     lists.insert("beta".to_string(), vec![beta_default]);
     let ordered = vec!["alpha".to_string(), "beta".to_string()];
 
-    let fresh_alpha = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
+    let directory = listed_directory(lists);
+    let fresh_alpha = fresh_workspace_caches(&ordered, &directory, &"alpha".to_string());
     assert_eq!(fresh_alpha.default_workspace_slug.as_deref(), Some("home"));
 
-    let fresh_beta = fresh_workspace_caches(&ordered, &lists, &"beta".to_string());
+    let fresh_beta = fresh_workspace_caches(&ordered, &directory, &"beta".to_string());
     assert_eq!(fresh_beta.default_workspace_slug.as_deref(), Some("root"));
-}
-
-#[test]
-fn fresh_workspace_caches_workspace_id_slugs_resolves_to_the_right_host() {
-    // The canonical workspace_id → WsKey translation (repl.frame
-    // lifecycle routing) must carry the ORIGINATING host, not
-    // whichever host happens to be active. ADR 0042 L2a codex review,
-    // item J: the map's OWN key is host-qualified too, so a same-id
-    // lookup can only ever resolve against the querying host's own
-    // entry (a legacy id is bare-slug and DOES collide across hosts).
-    let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
-    lists.insert("beta".to_string(), vec![ws_info("sot", "sot-be-sot")]);
-    let ordered = vec!["beta".to_string()];
-    let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
-    assert_eq!(
-        fresh
-            .workspace_id_slugs
-            .get(&("beta".to_string(), "ws-sot-0000".to_string())),
-        Some(&("beta".to_string(), "sot".to_string()))
-    );
-    // A query for the SAME canonical id under a DIFFERENT host misses
-    // entirely -- the collision a bare-id key used to paper over.
-    assert_eq!(
-        fresh
-            .workspace_id_slugs
-            .get(&("alpha".to_string(), "ws-sot-0000".to_string())),
-        None,
-        "the same canonical id under a different host must not resolve"
-    );
-}
-
-#[test]
-fn union_replace_leaves_the_other_hosts_list_intact() {
-    // The actual per-host-replace step (`workspace_lists.insert`) is a
-    // bare HashMap insert — this test proves the INVARIANT it exists
-    // for: replacing host A's slice must not disturb host B's, exactly
-    // like a real `IncomingEvt::Workspaces` reply from A shouldn't
-    // clobber B's last-known (possibly now-unreachable) list.
-    let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
-    lists.insert("alpha".to_string(), vec![ws_info("one", "sot-be-one")]);
-    lists.insert("beta".to_string(), vec![ws_info("two", "sot-be-two")]);
-
-    // A fresh reply from alpha with a DIFFERENT workspace set.
-    lists.insert("alpha".to_string(), vec![ws_info("three", "sot-be-three")]);
-
-    assert_eq!(lists.get("beta").map(Vec::len), Some(1));
-    assert_eq!(lists["beta"][0].slug, "two", "beta's list is untouched");
-    assert_eq!(
-        lists["alpha"][0].slug, "three",
-        "alpha's list is the new one"
-    );
 }
 
 #[test]
@@ -333,7 +293,7 @@ fn fresh_workspace_caches_skips_a_host_with_no_list_yet() {
     // rows rather than panicking on a missing map entry.
     let lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
     let ordered = vec!["alpha".to_string(), "beta".to_string()];
-    let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
+    let fresh = fresh_workspace_caches(&ordered, &listed_directory(lists), &"alpha".to_string());
     assert!(fresh.workspace_slugs.is_empty());
     assert!(fresh.default_workspace_slug.is_none());
 }
@@ -355,7 +315,7 @@ fn fresh_workspace_caches_hides_the_inert_anchor_from_the_strip_but_keeps_its_de
     let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
     lists.insert(host.clone(), list);
     let ordered = vec![host.clone()];
-    let fresh = fresh_workspace_caches(&ordered, &lists, &host);
+    let fresh = fresh_workspace_caches(&ordered, &listed_directory(lists), &host);
 
     let anchor_key: WsKey = (host.clone(), "sot".to_string());
     assert!(
@@ -389,7 +349,7 @@ fn fresh_workspace_caches_hides_a_default_tmux_row_with_no_agent_from_the_strip_
     let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
     lists.insert(host.clone(), vec![default_row]);
     let ordered = vec![host.clone()];
-    let fresh = fresh_workspace_caches(&ordered, &lists, &host);
+    let fresh = fresh_workspace_caches(&ordered, &listed_directory(lists), &host);
 
     let key: WsKey = (host.clone(), "sot".to_string());
     assert!(!fresh.workspace_slugs.contains(&key), "{:?}", fresh.workspace_slugs);

@@ -1223,6 +1223,13 @@ impl State {
         };
         self.on_workspaces(a.clone(), rows("<host-control-a>", "shared-id"));
         self.on_disconnected(a.clone(), "link lost".into(), false);
+        anyhow::ensure!(
+            self.row_directory.resolve(&a, "shared-id").is_ok()
+                && self.row_directory.resolve(&b, "shared-id").is_ok(),
+            "control: a disconnect removed a directory listing"
+        );
+        let retained = self.row_directory.prepare_replace(a.clone(), rows("<host-control-a>", "shared-id"));
+        anyhow::ensure!(retained.retired().is_empty(), "control: a disconnect retired a canonical identity");
         self.on_workspace_destroyed(
             a.clone(),
             Ok(crate::net::transport::WorkspaceDestroyedInfo {

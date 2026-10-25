@@ -403,8 +403,8 @@ impl State {
 
     fn park_warm_attach(&mut self, key: (HostKey, String), client: PaneAttachClient) {
         let bound = self
-            .workspace_lists
-            .get(&key.0)
+            .row_directory
+            .rows(&key.0)
             .map(|l| l.iter().filter(|w| !w.is_inert_anchor()).count())
             .unwrap_or(1);
         // A parked client's worker stays alive but must not dial after an
@@ -415,8 +415,8 @@ impl State {
 
     pub(in crate::ui) fn prune_warm_attach(&mut self, host: &HostKey) {
         let live: std::collections::HashSet<String> = self
-            .workspace_lists
-            .get(host)
+            .row_directory
+            .rows(host)
             .map(|l| l.iter().map(|w| w.session_name.clone()).collect())
             .unwrap_or_default();
         shutdown_detached(self.warm_attach.retain_rows(host, |row| live.contains(row)));

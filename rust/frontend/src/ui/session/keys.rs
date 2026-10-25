@@ -122,7 +122,7 @@ pub(in crate::ui) fn session_enter_key(state: &mut State) -> ControlFlow<()> {
                         return Continue(());
                     }
                     Some(id.to_string())
-                } else if let Some(rows) = state.workspace_lists.get(&host) {
+                } else if let Some(rows) = state.row_directory.rows(&host) {
                     let mut matches = rows.iter().filter(|w| w.session_name == session_name);
                     let first = matches.next();
                     if matches.next().is_some() {
@@ -134,7 +134,7 @@ pub(in crate::ui) fn session_enter_key(state: &mut State) -> ControlFlow<()> {
                     None
                 };
                 if let Some(spelling) = listed_spelling {
-                    match resolve_listed_workspace(&state.workspace_lists, &host, &spelling) {
+                    match state.row_directory.resolve(&host, &spelling) {
                         Ok(target) => state.switch_to_resolved_workspace(target, true),
                         Err(reason) => state.refuse_result(&reason),
                     }

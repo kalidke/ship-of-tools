@@ -7,7 +7,7 @@ impl State {
         host: &HostKey,
         slug: &str,
     ) -> Option<String> {
-        let target = resolve_listed_workspace(&self.workspace_lists, host, slug).ok()?;
+        let target = self.row_directory.resolve(host, slug).ok()?;
         self.pending_nav
             .entries
             .get(target.identity())

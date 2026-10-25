@@ -234,10 +234,11 @@ fn resplice_expanded_session_hosts_drops_a_row_no_longer_in_workspace_lists() {
 
     // The destroy already landed server-side: `local`'s fresh list no
     // longer has "doomed", but still has an unrelated survivor.
-    let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
-    lists.insert(host.clone(), vec![ws_info("survivor", "sot-be-survivor")]);
+    let mut directory = RowDirectory::default();
+    let update = directory.prepare_replace(host.clone(), vec![ws_info("survivor", "sot-be-survivor")]);
+    directory.commit_replace(update);
 
-    resplice_expanded_session_hosts(&mut view, &lists);
+    resplice_expanded_session_hosts(&mut view, &directory);
 
     let session_ids: Vec<&str> = view
         .rows
@@ -273,8 +274,9 @@ fn every_configured_host_shows_up_even_without_a_list_yet() {
     // Two conns, one has answered workspace.list — both still get a
     // tree node; the empty one is flagged unreachable and childless.
     let ordered = vec!["alpha".to_string(), "beta".to_string()];
-    let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
-    lists.insert("alpha".to_string(), vec![ws_info("sot", "sot-be-sot")]);
+    let mut directory = RowDirectory::default();
+    let update = directory.prepare_replace("alpha".to_string(), vec![ws_info("sot", "sot-be-sot")]);
+    directory.commit_replace(update);
     // "beta" has no list yet.
     let host_connected: HashMap<HostKey, bool> =
         [("alpha".to_string(), true)].into_iter().collect();
@@ -283,7 +285,7 @@ fn every_configured_host_shows_up_even_without_a_list_yet() {
         .iter()
         .map(|host| {
             let connected = host_connected.get(host).copied().unwrap_or(false);
-            let has_list = lists.contains_key(host);
+            let has_list = directory.rows(host).is_some();
             host_tree_node(host, host, (!connected).then_some("unreachable"), has_list, host == "alpha")
         })
         .collect();

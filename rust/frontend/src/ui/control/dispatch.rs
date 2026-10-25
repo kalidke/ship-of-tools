@@ -10,14 +10,14 @@ pub(super) enum ResultRoute {
 }
 
 fn result_route_decision(
-    lists: &HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>>,
+    directory: &RowDirectory,
     host: &HostKey,
     spelling: &str,
     active: Option<&ResultRowIdentity>,
     urgent: bool,
     goto: bool,
 ) -> ResultRoute {
-    let target = match resolve_listed_workspace(lists, host, spelling) {
+    let target = match directory.resolve(host, spelling) {
         Ok(target) => target,
         Err(reason) => return ResultRoute::Refusal(reason),
     };
@@ -48,7 +48,7 @@ impl State {
     ) -> ResultRoute {
         let active = self.active_result_workspace();
         result_route_decision(
-            &self.workspace_lists,
+            &self.row_directory,
             host,
             spelling,
             active.as_ref().map(ResolvedWorkspace::identity),

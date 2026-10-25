@@ -515,8 +515,9 @@ impl State {
         // then rebuild every workspace-scoped cache from the
         // whole union in one pass.
         // Reconcile canonical pending-result identities before rebuilding workspace caches from an authoritative host list.
-        self.reconcile_pending_results(&event_host, &workspaces);
-        self.workspace_lists.insert(event_host.clone(), workspaces);
+        let update = self.row_directory.prepare_replace(event_host.clone(), workspaces);
+        self.reconcile_pending_results(&update);
+        self.row_directory.commit_replace(update);
         self.rebuild_workspace_caches();
         self.prune_warm_attach(&event_host);
         // No handle declaration is sent for message routing: the daemon files for
@@ -532,7 +533,7 @@ impl State {
         // connection so a hub that never sees this box's rows
         // directly can list them.
         if self.hosts.declared_host.get(&event_host) == Some(&frontend_identity().host) {
-            if let Some(rows) = self.workspace_lists.get(&event_host) {
+            if let Some(rows) = self.row_directory.rows(&event_host) {
                 let sessions = declared_sessions_from(rows);
                 if self.last_declared_sessions.as_ref() != Some(&sessions) {
                     self.last_declared_sessions = Some(sessions.clone());

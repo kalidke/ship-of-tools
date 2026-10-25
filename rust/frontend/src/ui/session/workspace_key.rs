@@ -2,97 +2,6 @@
 
 use super::*;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(in crate::ui) struct ResultRowIdentity {
-    pub(in crate::ui) host: HostKey,
-    pub(in crate::ui) workspace_id: String,
-}
-
-#[derive(Clone, Debug)]
-pub(in crate::ui) struct ResolvedWorkspace {
-    identity: ResultRowIdentity,
-    row_key: WsKey,
-    view_key: WsKey,
-    is_default: bool,
-    session_name: String,
-    visible: bool,
-}
-
-impl ResolvedWorkspace {
-    pub(in crate::ui) fn identity(&self) -> &ResultRowIdentity {
-        &self.identity
-    }
-
-    pub(in crate::ui) fn row_key(&self) -> &WsKey {
-        &self.row_key
-    }
-
-    pub(in crate::ui) fn view_key(&self) -> &WsKey {
-        &self.view_key
-    }
-
-    pub(in crate::ui) fn slug(&self) -> Option<String> {
-        (!self.is_default).then(|| self.row_key.1.clone())
-    }
-
-    pub(in crate::ui) fn visible(&self) -> bool {
-        self.visible
-    }
-
-    pub(in crate::ui) fn attachment(&self) -> Result<Option<String>, String> {
-        if !self.visible {
-            Ok(None)
-        } else if self.session_name.is_empty() {
-            Err("listed workspace has no attachment target".to_string())
-        } else {
-            Ok(Some(self.session_name.clone()))
-        }
-    }
-}
-
-pub(in crate::ui) fn resolve_listed_workspace(
-    lists: &HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>>,
-    host: &HostKey,
-    spelling: &str,
-) -> Result<ResolvedWorkspace, String> {
-    let list = lists
-        .get(host)
-        .ok_or_else(|| "workspace list unavailable".to_string())?;
-    let mut matches = list.iter().filter(|row| {
-        (is_default_workspace_name(spelling) && row.is_default)
-            || row.slug == spelling
-            || row.workspace_id == spelling
-    });
-    let row = matches
-        .next()
-        .ok_or_else(|| "unknown workspace".to_string())?;
-    if matches.next().is_some() || row.workspace_id.is_empty() {
-        return Err("ambiguous or empty workspace identity".to_string());
-    }
-    if list
-        .iter()
-        .filter(|other| other.workspace_id == row.workspace_id)
-        .count()
-        != 1
-    {
-        return Err("ambiguous workspace identity".to_string());
-    }
-    Ok(ResolvedWorkspace {
-        identity: ResultRowIdentity {
-            host: host.clone(),
-            workspace_id: row.workspace_id.clone(),
-        },
-        row_key: (host.clone(), row.slug.clone()),
-        view_key: (
-            host.clone(),
-            ws_key_of(Some(&row.slug), row.is_default.then_some(row.slug.as_str())),
-        ),
-        is_default: row.is_default,
-        session_name: row.session_name.clone(),
-        visible: !row.is_inert_anchor(),
-    })
-}
-
 /// Normalize a wire `workspace_id` to the workspace-key literal. BOTH
 /// spellings of the daemon-default workspace — `None` AND its actual slug
 /// (`Some(default_slug)`) — map to `"<default>"`: startup keys the default
@@ -115,45 +24,9 @@ pub(in crate::ui) fn is_default_workspace_name(name: &str) -> bool {
     name.is_empty() || name == "default" || name == "<default>"
 }
 
-/// Slug storage key for a `lifecycle` repl.frame evt's workspace hint (core
-/// of `lifecycle_store_key`, free-function for unit tests — the `ws_key_of`
-/// pattern). The hint is the Repl supervisor's identity: a CANONICAL
-/// workspace_id (`ws-<slug>-<hash>`) for per-workspace REPLs (translate via
-/// `id_slugs`; a canonical-id key against slug-keyed maps silently never
-/// matches — the `started`-frame lesson) or `None` for a frame with no
-/// workspace id, which only an older daemon sends (= the default workspace's
-/// slug, "<default>" until the first list reply resolves it). An unknown hint is stored as-is: it may already be a slug.
-/// ADR 0042 L2a codex review, item J: `id_slugs` is keyed by `(host, id)`,
-/// not a bare id — a canonical workspace_id is `slug+pid+time`, but a
-/// LEGACY id (older workspaces, or a daemon that hasn't rotated to the
-/// new scheme) is just the bare slug, so two hosts' same-slug legacy ids
-/// collide on a bare-id key. `host` (the frame's OWN connection, always
-/// correct) resolves the lookup — never trusted from whatever the map
-/// entry happened to store, which is exactly the class of bug a
-/// bare-id key could produce (a same-id collision silently returning
-/// the WRONG host's slug).
-fn lifecycle_key_of(
-    host: &str,
-    wire_hint: Option<&str>,
-    id_slugs: &HashMap<(HostKey, String), WsKey>,
-    default_slug: Option<&str>,
-) -> WsKey {
-    match wire_hint {
-        None => (
-            host.to_string(),
-            default_slug.unwrap_or("<default>").to_string(),
-        ),
-        Some(h) => id_slugs
-            .get(&(host.to_string(), h.to_string()))
-            .cloned()
-            .unwrap_or_else(|| (host.to_string(), h.to_string())),
-    }
-}
-
 impl State {
     pub(in crate::ui) fn active_result_workspace(&self) -> Option<ResolvedWorkspace> {
-        resolve_listed_workspace(
-            &self.workspace_lists,
+        self.row_directory.resolve(
             &self.active_host,
             self.active_workspace_id.as_deref().unwrap_or(""),
         )
@@ -192,13 +65,12 @@ impl State {
     }
 
     /// Storage key (a `WsKey`) for a `lifecycle` repl.frame evt's workspace
-    /// hint — see `lifecycle_key_of` for the translation rules. `host` is
+    /// hint — see `RowDirectory::lifecycle_key` for the translation rules. `host` is
     /// the connection that delivered the frame (ADR 0042 L2a).
     pub(in crate::ui) fn lifecycle_store_key(&self, host: &str, wire_hint: Option<&str>) -> WsKey {
-        lifecycle_key_of(
+        self.row_directory.lifecycle_key(
             host,
             wire_hint,
-            &self.workspace_id_slugs,
             self.default_workspace_slug.as_deref(),
         )
     }
@@ -289,7 +161,3 @@ impl State {
 #[cfg(test)]
 #[path = "workspace_key_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "workspace_key_listed_tests.rs"]
-mod listed_tests;

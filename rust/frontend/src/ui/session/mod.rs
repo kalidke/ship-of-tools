@@ -7,6 +7,7 @@ pub(in crate::ui) mod keys;
 mod picker;
 mod presence;
 mod replies;
+mod row_directory;
 mod snapshot;
 mod switch;
 mod workspace_key;
@@ -18,7 +19,7 @@ pub(in crate::ui) use presence::*;
 pub(in crate::ui) use snapshot::*;
 #[cfg(test)]
 pub(in crate::ui) use workspace_key::ws_key_of;
-pub(in crate::ui) use workspace_key::{
-    is_default_workspace_name, resolve_listed_workspace, ResolvedWorkspace, ResultRowIdentity,
+pub(in crate::ui) use row_directory::{
+    ResolvedWorkspace, ResultRowIdentity, RowDirectory, RowDirectoryUpdate,
 };
 pub(in crate::ui) use workspace_list::*;
