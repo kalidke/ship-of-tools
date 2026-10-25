@@ -49,13 +49,15 @@ env:
 
 jobs:
   publish-guard:
-    name: publish guard (${{ matrix.os }})
+    name: publish guard (${{ matrix.os }}, ${{ matrix.suite }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # One job per suite: Windows Git Bash starts processes slowly, and the three suites in one job ran past ten minutes.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        suite: [test-pre-push, test-publish-guard-setup, test-publish-guard-entries]
     defaults:
       run:
         shell: bash
@@ -81,9 +83,7 @@ jobs:
           fi
           "$interpreter" -n scripts/hooks/pre-push
           "$interpreter" -n scripts/hooks/pre-push-shim
-          "$interpreter" scripts/tests/test-pre-push.sh
-          "$interpreter" scripts/tests/test-publish-guard-setup.sh
-          "$interpreter" scripts/tests/test-publish-guard-entries.sh
+          "$interpreter" "scripts/tests/${{ matrix.suite }}.sh"
 
   plan:
     name: plan the test shards
