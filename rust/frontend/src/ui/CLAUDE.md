@@ -32,7 +32,7 @@ owns the scalebar toggle and label, the caption store and label, and the caption
 with their requests in flight, and the pending reflow; `control::ControlChannel` owns the fe-commands queue and the
 last `fe-state.json` signature; `drawer::terminal::drawer::TerminalDrawer` owns the Terminal drawer's shell, its last
 pty size and its starting folder; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
-spin.
+spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -246,6 +246,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `StripMotion` privately owns the session strip's motion: the scroll snaps to the active session on the first
   paint and then eases toward it, and a workspace cycle flicks the wheels (clamped), which spin down; both step on
   one frame clock and report whether they still move, so the frame loop stays alive only until they settle.
+- `NavSpill` privately owns the nav spill (`[nav] spill_ms`): each frame's cursor is observed, and only a user's
+  move (same mode, workspace and tree generation, another cursor) arms the deadline; boot, loads, restores and
+  switches move the baseline without arming. The draw publishes the overflowing rows it collected; the idle tick
+  expires the deadline once, with a repaint.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

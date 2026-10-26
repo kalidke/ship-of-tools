@@ -43,7 +43,7 @@ impl State {
         let mut new_repl_scroll = self.repl_model.scroll();
         // Nav-spill overlay rows collected by this draw (same captured-
         // local pattern as `preview_cells`); written to
-        // `self.nav_spill_segments` after `draw` returns for the render-
+        // the nav spill after `draw` returns for the render-
         // pass tail to paint.
         let mut nav_spill_segs_out: Vec<NavSpillSeg> = Vec::new();
 
@@ -130,32 +130,8 @@ impl State {
             self.workspace_picker.as_ref().map(WorkspacePicker::selected),
             self.nav.tree().generation(),
         );
-        if self.nav_spill_cursor.as_ref() != Some(&spill_cursor_now) {
-            // Arm ONLY on a user cursor move: same mode+workspace, same tree
-            // CONTENT (generation), different cursor. Everything else that
-            // perturbs the tuple — boot, the async initial tree load, a
-            // cursor restore, a refresh splicing rows around the cursor, a
-            // mode/workspace switch swapping the tree — updates the baseline
-            // without arming (codex review: first-frame-only suppression
-            // made startup spill timing-dependent).
-            let user_move = match (self.nav_spill_cursor.as_ref(), &spill_cursor_now) {
-                (Some((pm, pw, ps, pp, pg)), (m, w, s, p, g)) => {
-                    pm == m && pw == w && pg == g && (ps != s || pp != p)
-                }
-                (None, _) => false,
-            };
-            self.nav_spill_cursor = Some(spill_cursor_now);
-            if user_move && self.settings.nav_spill_ms > 0 {
-                self.nav_spill_until = Some(
-                    std::time::Instant::now()
-                        + std::time::Duration::from_millis(self.settings.nav_spill_ms),
-                );
-            }
-        }
-        let nav_spill_active = self
-            .nav_spill_until
-            .map(|u| std::time::Instant::now() < u)
-            .unwrap_or(false);
+        self.nav_spill.observe(spill_cursor_now, self.settings.nav_spill_ms);
+        let nav_spill_active = self.nav_spill.active();
         let layout_preset = self.layout_help.effective_preset(self.settings.resolve_preset(self.monitor_aspect));
         // `drawer` was bound above (after the terminal lazy-spawn/close).
         let drawer_open = drawer.is_open();
@@ -194,7 +170,7 @@ impl State {
         self.nav.set_scroll(nav_scroll);
         self.repl_model.commit_rendered_scroll(new_repl_scroll);
         self.pane_rects = new_pane_rects;
-        self.nav_spill_segments = nav_spill_segs_out;
+        self.nav_spill.publish(nav_spill_segs_out);
 
         self.agent_pane.sync_size(pty_size_observed);
         let candidate = pane_facts.and_then(|facts| self.agent_pane.painted_candidate(facts, pty_size_observed));

@@ -219,7 +219,8 @@ impl State {
         // at collection time. The close dialog's panel takes the same
         // backing in the same batch: one quad, one `render_many`.
         let strip_rects: Vec<ScreenRect> = self
-            .nav_spill_segments
+            .nav_spill
+            .segments()
             .iter()
             .map(|seg| ScreenRect {
                 x: self.chrome_origin_x + seg.x as f32 * self.cell_w,

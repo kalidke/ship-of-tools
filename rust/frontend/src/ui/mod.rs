@@ -401,27 +401,8 @@ struct State {
     pane_rects: PaneRects,
     /// Runtime drawer, layout flags, Help browsing, origin and startup requests.
     layout_help: LayoutHelp,
-    /// Transient nav spill (`[nav] spill_ms`): while the user is actively
-    /// moving the nav cursor, nav rows whose text overflows the column
-    /// float their FULL text over the preview pane's left edge (overlay
-    /// text layer + backing strip — pane geometry never moves), vanishing
-    /// once this deadline passes with no further moves. `None` = spill
-    /// not active. Expiry repaint rides the `about_to_wait` idle tick,
-    /// same as `notify_sticky_until`.
-    nav_spill_until: Option<std::time::Instant>,
-    /// The spill rows collected by the LAST draw-closure run — the
-    /// `media_paint_targets` pattern: the closure writes cell-space
-    /// segments here, the render-pass tail reads them for the backing
-    /// quads and the overlay text prepare. Empty whenever the spill is
-    /// inactive or nothing overflows.
-    nav_spill_segments: Vec<NavSpillSeg>,
-    /// Last (mode, workspace, tree cursor, picker cursor) the spill
-    /// trigger saw — a change between frames is what (re)arms the timer.
-    /// Frame-side detection so every cursor mover (keys, wheel, mode and
-    /// workspace switches) triggers uniformly without touching each input
-    /// path. `None` until the first frame, which deliberately does not
-    /// arm (boot isn't a user move).
-    nav_spill_cursor: Option<(Mode, Option<String>, usize, Option<usize>, u64)>,
+    /// The nav spill: its deadline, the segments the last draw collected and the cursor its trigger last saw.
+    nav_spill: NavSpill,
     // ui/chrome/strip: the session strip's scroll and wheel animation.
     /// The session strip's eased scroll and the brand wheels' spin.
     strip_motion: StripMotion,

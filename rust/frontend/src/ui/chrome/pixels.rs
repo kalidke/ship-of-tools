@@ -100,7 +100,7 @@ impl State {
                 width: rect.width, height: rect.height, now })
         } else { None };
         let prepared = self.layout_help.prepare_peek(dialog.is_some(), inputs, &self.bindings);
-        if prepared.clear_spill { self.nav_spill_segments.clear(); }
+        if prepared.clear_spill { self.nav_spill.clear_segments(); }
         prepared.layout.apply(self, None);
         if let Some(overlay) = prepared.overlay {
             help_opacity = overlay.opacity;
@@ -130,7 +130,8 @@ impl State {
         // clears the overlay renderer's retained geometry (see
         // `prepare_overlay`'s doc), so no `if` around this call.
         let mut overlay_lines: Vec<crate::ui::render::text::Line> = self
-            .nav_spill_segments
+            .nav_spill
+            .segments()
             .iter()
             .map(|seg| crate::ui::render::text::Line {
                 text: seg.text.clone(),

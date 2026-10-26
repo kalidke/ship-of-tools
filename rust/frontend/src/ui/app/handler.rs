@@ -245,11 +245,8 @@ impl ApplicationHandler for App {
         // Nav-spill expiry: same pattern as the toast — once the spill
         // window elapses, repaint so the nav column springs back to its
         // preset width. The ~1s idle tick bounds how late that lands.
-        if let Some(until) = state.nav_spill_until {
-            if std::time::Instant::now() >= until {
-                state.nav_spill_until = None;
-                state.window.request_redraw();
-            }
+        if state.nav_spill.expire() {
+            state.window.request_redraw();
         }
         if !state.dirty {
             // Fullscreen VRR/OLED brightness-flicker fix (2026-07-12, a VRR/OLED

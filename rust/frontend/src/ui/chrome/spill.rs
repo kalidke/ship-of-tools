@@ -1,5 +1,7 @@
 //! The nav spill overlay: which nav rows repaint over the preview, and cell-width truncation.
 
+use crate::ui::nav::Mode;
+
 /// One nav row the spill overlay repaints in full over the preview's
 /// left edge (nav-spill, `[nav] spill_ms`). Collected in the draw
 /// closure for VISIBLE rows whose text overflows the nav column;
@@ -62,3 +64,74 @@ pub(in crate::ui) fn truncate_to_cells(text: &str, cells: usize) -> (String, usi
 #[cfg(test)]
 #[path = "spill_tests.rs"]
 mod tests;
+
+/// What the spill trigger compares between frames: (mode, workspace, tree cursor, picker cursor, tree generation).
+pub(in crate::ui) type SpillCursor = (Mode, Option<String>, usize, Option<usize>, u64);
+
+/// The nav spill's state between frames: the deadline a user's cursor move arms, the segments the last draw
+/// collected, and the cursor the trigger last saw.
+#[derive(Default)]
+pub(in crate::ui) struct NavSpill {
+    /// Transient nav spill (`[nav] spill_ms`): while the user is actively
+    /// moving the nav cursor, nav rows whose text overflows the column
+    /// float their FULL text over the preview pane's left edge (overlay
+    /// text layer + backing strip — pane geometry never moves), vanishing
+    /// once this deadline passes with no further moves. `None` = spill
+    /// not active. Expiry repaint rides the `about_to_wait` idle tick,
+    /// same as the sticky toast.
+    until: Option<std::time::Instant>,
+    /// The spill rows collected by the LAST draw-closure run — the
+    /// `media_paint_targets` pattern: the closure writes cell-space
+    /// segments here, the render-pass tail reads them for the backing
+    /// quads and the overlay text prepare. Empty whenever the spill is
+    /// inactive or nothing overflows.
+    segments: Vec<NavSpillSeg>,
+    /// Last cursor the spill trigger saw — a change between frames is what (re)arms the timer.
+    /// Frame-side detection so every cursor mover (keys, wheel, mode and
+    /// workspace switches) triggers uniformly without touching each input
+    /// path. `None` until the first frame, which deliberately does not
+    /// arm (boot isn't a user move).
+    cursor: Option<SpillCursor>,
+}
+
+impl NavSpill {
+    /// The frame's cursor. Arm ONLY on a user cursor move: same mode+workspace, same tree
+    /// CONTENT (generation), different cursor. Everything else that
+    /// perturbs the tuple — boot, the async initial tree load, a
+    /// cursor restore, a refresh splicing rows around the cursor, a
+    /// mode/workspace switch swapping the tree — updates the baseline
+    /// without arming (codex review: first-frame-only suppression
+    /// made startup spill timing-dependent). `spill_ms` 0 never arms.
+    pub(in crate::ui) fn observe(&mut self, now: SpillCursor, spill_ms: u64) {
+        if self.cursor.as_ref() == Some(&now) {
+            return;
+        }
+        let user_move = match (self.cursor.as_ref(), &now) {
+            (Some((pm, pw, ps, pp, pg)), (m, w, s, p, g)) => pm == m && pw == w && pg == g && (ps != s || pp != p),
+            (None, _) => false,
+        };
+        self.cursor = Some(now);
+        if user_move && spill_ms > 0 {
+            self.until = Some(std::time::Instant::now() + std::time::Duration::from_millis(spill_ms));
+        }
+    }
+
+    pub(in crate::ui) fn active(&self) -> bool {
+        self.until.map(|u| std::time::Instant::now() < u).unwrap_or(false)
+    }
+
+    /// The idle tick: true once, when the deadline has passed (the nav column springs back on the repaint).
+    pub(in crate::ui) fn expire(&mut self) -> bool {
+        match self.until {
+            Some(until) if std::time::Instant::now() >= until => {
+                self.until = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub(in crate::ui) fn segments(&self) -> &[NavSpillSeg] { &self.segments }
+    pub(in crate::ui) fn publish(&mut self, segments: Vec<NavSpillSeg>) { self.segments = segments; }
+    pub(in crate::ui) fn clear_segments(&mut self) { self.segments.clear(); }
+}
