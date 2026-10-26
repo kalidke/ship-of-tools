@@ -30,7 +30,8 @@ owns the scalebar toggle and label, the caption store and label, and the caption
 `preview::image::figure_store::FigureStore` owns the markdown figures' bitmaps, requests in flight and failures;
 `preview::markdown::media_store::MarkdownMedia` owns the table buffers and their scroll, the math and token caches
 with their requests in flight, and the pending reflow; `control::ControlChannel` owns the fe-commands queue and the
-last `fe-state.json` signature.
+last `fe-state.json` signature; `drawer::terminal::drawer::TerminalDrawer` owns the Terminal drawer's shell, its last
+pty size and its starting folder.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -236,6 +237,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `ControlChannel` privately owns the window half of the control channel (ADR 0019): the queue the command-file
   watcher fills through its producer end, drained whole under the lock alone so dispatch never holds it, and the
   signature of the last `fe-state.json` written, so the file is rewritten only when the state it reports changes.
+- `TerminalDrawer` privately owns the Terminal drawer's local shell (G2/G3): spawned the first time the drawer is
+  shown, at 80x24 in the repo root; pumped before each draw (the report says when the pane looks wrong); its pty
+  resized only when the drawer's cell size changes (at least 2x2). Typed and pasted input returns the view to the
+  live tail; a wheel the shell's app tracks is forwarded as is. The Monitor tenant stays on State: its native
+  fixture sets the subscription and hub directly, and moving it needs that fixture's own design.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

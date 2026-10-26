@@ -574,20 +574,8 @@ struct State {
     /// Window-wide REPL images, pixel geometry and line-build anchor.
     repl_presentation: ReplPresentation,
     // ui/drawer/terminal: the terminal drawer's backends.
-    /// Local PTY terminal hosting the OS shell (G2). Lazily spawned the
-    /// first time the Terminal drawer opens (Ctrl+T); a separate field
-    /// from the ratatui `terminal` so the draw closure's `self.terminal`
-    /// borrow and this terminal's `screen()` borrow are disjoint.
-    local_term: Option<crate::ui::drawer::terminal::pty::LocalTerminal>,
-    /// Last `(cols, rows)` the local terminal's PTY was sized to. `None`
-    /// until the drawer rect is first observed; drives resize-on-change
-    /// (mirrors the agent pane size).
-    term_size: Option<(u16, u16)>,
-    /// Local repo root (`$SOT_REPO_DIR`, set by the supervisor). Used as
-    /// the Terminal drawer's working directory, so the plain shell it spawns
-    /// starts in the project root. `None` when launched outside the
-    /// supervisor (then the shell inherits the frontend's cwd). ADR 0017.
-    repo_dir: Option<std::path::PathBuf>,
+    /// The Terminal drawer's local shell, its last pty size and the repo root it starts in.
+    term_drawer: crate::ui::drawer::terminal::drawer::TerminalDrawer,
     // ui/agent_pane: selected client, warm storage, screen, input and receipt owner.
     agent_pane: AgentPane,
     // ui/preview: the preview pane's buffers, concept slot, scroll and overlays.

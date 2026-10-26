@@ -59,14 +59,11 @@ pub(in crate::ui) fn forward_clipboard_paste_to_llm(state: &mut State) -> bool {
 
 /// Read the OS clipboard and forward it to the local Terminal drawer's pty as
 /// one bracketed-paste blob. Mirrors `forward_clipboard_paste_to_llm` but
-/// targets the in-process `local_term` rather than the remote pty.
+/// targets the in-process local terminal rather than the remote pty.
 pub(in crate::ui) fn forward_clipboard_paste_to_local_term(state: &mut State) {
     let Some(text) = read_clipboard_text() else {
         return;
     };
     let bytes = bracketed_paste_bytes(&text);
-    if let Some(t) = state.local_term.as_mut() {
-        t.send_input(&bytes);
-        t.screen_mut().set_scrollback(0);
-    }
+    state.term_drawer.type_input(&bytes);
 }

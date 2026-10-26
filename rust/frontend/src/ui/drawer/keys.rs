@@ -69,9 +69,9 @@ fn terminal_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlF
         let h = state.pane_rects.repl.height as i32;
         let page_step = (h / 3).max(1);
         let alt_screen = state
-            .local_term
-            .as_ref()
-            .map(|t| t.screen().alternate_screen())
+            .term_drawer
+            .screen()
+            .map(|s| s.alternate_screen())
             .unwrap_or(false);
         if !alt_screen {
             match &event.logical_key {
@@ -92,10 +92,7 @@ fn terminal_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlF
             // Typing snaps back to the live tail so the
             // cursor/prompt is visible (standard emulator
             // behaviour).
-            if let Some(t) = state.local_term.as_mut() {
-                t.send_input(&bytes);
-                t.screen_mut().set_scrollback(0);
-            }
+            state.term_drawer.type_input(&bytes);
             state.last_key = Some(label);
             state.window.request_redraw();
         }

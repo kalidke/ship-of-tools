@@ -2,12 +2,11 @@
 //! and the scrollback ring's step.
 
 use crate::ui::*;
+use super::drawer::PumpReport;
 
 /// `scroll_ring` for the Terminal drawer's local terminal; three call sites share it.
 pub(in crate::ui) fn scroll_drawer_ring(state: &mut State, delta: i32) {
-    if let Some(t) = state.local_term.as_mut() {
-        scroll_ring(t.screen_mut(), delta);
-    }
+    state.term_drawer.scroll(delta);
 }
 
 impl State {
@@ -16,24 +15,14 @@ impl State {
         // first time the Terminal drawer is shown, then drain any pending
         // output into its parser before we borrow its screen for the draw.
         // All mutation happens here, before the `self.terminal.draw`
-        // borrow and the immutable `local_term` screen borrow below.
+        // borrow and the immutable terminal screen borrow below.
         if self.layout_help.drawer() == DrawerContent::Terminal {
-            if self.local_term.is_none() {
+            if !self.term_drawer.is_spawned() {
                 let shell = crate::ui::drawer::terminal::pty::resolve_shell(self.settings.terminal_shell.as_deref());
                 let wake = self.wake.clone();
-                // cwd = repo root, so the plain shell starts in the
-                // project directory. ADR 0017.
-                let cwd = self.repo_dir.clone();
-                match crate::ui::drawer::terminal::pty::LocalTerminal::spawn(
-                    &shell,
-                    80,
-                    24,
-                    cwd.as_deref(),
-                    Box::new(move || wake.wake()),
-                ) {
-                    Ok(t) => {
+                match self.term_drawer.spawn(&shell, Box::new(move || wake.wake())) {
+                    Ok(()) => {
                         tracing::info!(program = %shell.program, "local terminal spawned");
-                        self.local_term = Some(t);
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "failed to spawn local terminal");
@@ -44,29 +33,14 @@ impl State {
                     }
                 }
             }
-            if let Some(t) = self.local_term.as_mut() {
-                let processed = t.pump();
-                // Diagnostic surfaced on the status line so a blank pane is
-                // debuggable without RUST_LOG: parser size, dead flag, and
-                // whether the screen currently holds any non-blank cell.
-                // Only overwrite the status line when the pane actually looks
-                // wrong (dead / no content) — otherwise it fires every frame
-                // the drawer is open and clobbers real status messages
-                // (connection line, pin/unpin, ADR-0019 `notify`).
-                let dead = t.is_dead();
-                let screen = t.screen();
-                let (srows, scols) = screen.size();
-                let mut has_content = false;
-                'scan: for r in 0..srows {
-                    for c in 0..scols {
-                        if let Some(cell) = screen.cell(r, c) {
-                            if !cell.contents().is_empty() {
-                                has_content = true;
-                                break 'scan;
-                            }
-                        }
-                    }
-                }
+            // Diagnostic surfaced on the status line so a blank pane is
+            // debuggable without RUST_LOG: parser size, dead flag, and
+            // whether the screen currently holds any non-blank cell.
+            // Only overwrite the status line when the pane actually looks
+            // wrong (dead / no content) — otherwise it fires every frame
+            // the drawer is open and clobbers real status messages
+            // (connection line, pin/unpin, ADR-0019 `notify`).
+            if let Some(PumpReport { processed, dead, has_content, cols: scols, rows: srows }) = self.term_drawer.pump() {
                 if dead || !has_content {
                     self.status = format!(
                         "term: {scols}x{srows} content={has_content} dead={dead} pumped={processed}"
@@ -82,17 +56,6 @@ impl State {
         // real drawer size on the first frame it's visible, and on any
         // later drawer geometry change.
         let (tcols, trows) = term_size_observed;
-        if tcols >= 2 && trows >= 2 {
-            let changed = self
-                .term_size
-                .map(|prev| prev != (tcols, trows))
-                .unwrap_or(true);
-            if changed {
-                if let Some(t) = self.local_term.as_mut() {
-                    t.resize(tcols, trows);
-                }
-                self.term_size = Some((tcols, trows));
-            }
-        }
+        self.term_drawer.fit(tcols, trows);
     }
 }

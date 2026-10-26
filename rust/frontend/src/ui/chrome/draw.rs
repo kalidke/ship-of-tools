@@ -93,9 +93,7 @@ impl State {
             }
         };
         let term_screen = if drawer == DrawerContent::Terminal {
-            self.local_term
-                .as_ref()
-                .map(|t| t.screen())
+            self.term_drawer.screen()
         } else {
             None
         };

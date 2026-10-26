@@ -39,7 +39,7 @@ impl State {
             session: self.nav.tree().rows().get(self.nav.tree().selected()).is_some_and(|r| r.node.kind == "session"),
             alternate_screen: match pane {
                 help::Pane::Terminal => {
-                    let screen = self.local_term.as_ref().map(|t| t.screen());
+                    let screen = self.term_drawer.screen();
                     screen.is_some_and(|s| s.alternate_screen())
                 }
                 help::Pane::Agent => {
