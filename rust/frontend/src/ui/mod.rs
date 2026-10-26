@@ -423,23 +423,8 @@ struct State {
     /// arm (boot isn't a user move).
     nav_spill_cursor: Option<(Mode, Option<String>, usize, Option<usize>, u64)>,
     // ui/chrome/strip: the session strip's scroll and wheel animation.
-    /// Session-strip horizontal scroll, in strip-local pixels (the
-    /// strip-local x that maps to screen-center). `None` = uninitialized
-    /// → snap to the active session's center on first paint (no slide-in).
-    /// Eases toward the active session's center each frame; while it hasn't
-    /// settled, `redraw` sets `dirty` so the frame loop keeps animating.
-    strip_scroll_px: Option<f32>,
-    /// Timestamp of the last strip-animation frame, for frame-rate-
-    /// independent easing. `None` when settled (so the next switch starts
-    /// a fresh ease rather than seeing a stale dt).
-    strip_anim_last: Option<std::time::Instant>,
-    /// Brand-wheel spin gimmick (see `WHEEL_*`): current rotation of the
-    /// bottom-strip bow wheels (radians), the live angular velocity a
-    /// workspace cycle flicks it with, and the last spin-frame timestamp for
-    /// frame-rate-independent decay (`None` when at rest).
-    wheel_angle: f32,
-    wheel_vel: f32,
-    wheel_anim_last: Option<std::time::Instant>,
+    /// The session strip's eased scroll and the brand wheels' spin.
+    strip_motion: StripMotion,
     // ui/input: the last key, pointer state, key bindings and the help drawer.
     /// Label of the most recent key press (for chrome feedback). `None` until
     /// the user hits a key; modes-mode + tree navigation hang off the same

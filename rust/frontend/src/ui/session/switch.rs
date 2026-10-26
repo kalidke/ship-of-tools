@@ -65,8 +65,7 @@ impl State {
         // Flick the brand wheels in the direction of travel (forward = CW). The
         // per-frame decay + redraw live in the bottom-strip block; nudge the
         // event loop so the spin animates even if nothing else is dirty.
-        self.wheel_vel = (self.wheel_vel + direction as f32 * WHEEL_FLICK_VEL)
-            .clamp(-WHEEL_MAX_VEL, WHEEL_MAX_VEL);
+        self.strip_motion.flick(direction);
         self.dirty = true;
         self.window.request_redraw();
         self.switch_to_resolved_workspace(target, person_driven);

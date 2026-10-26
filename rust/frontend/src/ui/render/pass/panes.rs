@@ -121,7 +121,7 @@ impl State {
         // own docstring) — that bug showed exactly one logo at the right end.
         if !strip_logo_rects.is_empty() {
             // Copy out before the &mut borrow of logo_quad below.
-            let wheel_angle = self.wheel_angle;
+            let wheel_angle = self.strip_motion.wheel_angle();
             if let Some((quad, _, _)) = self.logo_quad.as_mut() {
                 quad.render_many_rotated(
                     &self.device,
