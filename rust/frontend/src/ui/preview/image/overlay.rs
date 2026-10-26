@@ -204,7 +204,7 @@ impl State {
             None
         };
         let (Some(letterbox_rect), Some(quad_px)) =
-            (png_rect, self.preview_png.as_ref().map(|q| q.size_px))
+            (png_rect, self.raster.quad_size())
         else {
             return clear_and_none(self);
         };
@@ -227,7 +227,7 @@ impl State {
         }
         // Source→screen mapping (must match the draw block's `canvas_w`).
         let zoom_max = png_zoom_max(image_rect.w, image_rect.h, quad_px);
-        let zoom = self.preview_png_zoom.clamp(1.0, zoom_max);
+        let zoom = self.raster.zoom().clamp(1.0, zoom_max);
         let canvas_w = letterbox_rect.w * zoom;
         // Measure against the AS-SERVED width, not the texture width: an image
         // over `max_texture_dimension_2d` is GPU-downsampled for display, but
@@ -235,10 +235,7 @@ impl State {
         // spans the whole image either way, so pairing it with the served width
         // is what keeps the bar physically true (Codex review R2 — a 20000 px
         // raster capped to 16384 otherwise reads ~1.22x short).
-        let (src_w, _src_h) = self
-            .preview_png_src_dims
-            .or(self.preview_png_dims)
-            .unwrap_or(quad_px);
+        let (src_w, _src_h) = self.raster.served_dims().unwrap_or(quad_px);
         if src_w == 0 || canvas_w <= 0.0 {
             return clear_and_none(self);
         }

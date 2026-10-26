@@ -280,7 +280,7 @@ impl State {
         let Some((page, _count)) = self.preview_page else {
             return;
         };
-        let target = self.preview_png_zoom.max(1.0);
+        let target = self.raster.zoom().max(1.0);
         let have = self.preview_page_raster_zoom;
         let pending = self.preview_requests.reraster_zoom();
         if target <= have.max(pending) * 1.2 {
@@ -310,23 +310,6 @@ impl State {
         {
             self.preview_requests.arm_reraster(page, target);
         }
-    }
-
-    /// Scale the PNG pan offset when the zoom changes so the point at the
-    /// centre of the field of view stays put. `pan_px` is measured in
-    /// zoomed-canvas pixels (canvas = letterbox × zoom), so the image
-    /// fraction off-centre is `pan / (letterbox × zoom)`. Holding that
-    /// fraction fixed across a zoom change means pan scales with the zoom
-    /// ratio — without this, zooming while panned drifts the view off the
-    /// point you were looking at. The render path re-clamps pan to the new
-    /// slack, so over-scrolled values self-correct.
-    pub(in crate::ui) fn scale_png_pan_for_zoom(&mut self, cur: f32, next: f32) {
-        if cur <= 0.0 {
-            return;
-        }
-        let ratio = next / cur;
-        self.preview_png_pan_px.0 *= ratio;
-        self.preview_png_pan_px.1 *= ratio;
     }
 }
 

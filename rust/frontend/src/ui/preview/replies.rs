@@ -179,7 +179,7 @@ impl State {
         // file's quad. The solve itself stays in the render pass,
         // where the live pane geometry exists.
         let row_key = self.active_result_row_key();
-        let raster_installed = is_raster_preview_mime(&mime) && self.preview_png.is_some();
+        let raster_installed = is_raster_preview_mime(&mime) && self.raster.is_shown();
         if let Some(dropped) =
             self.preview_requests.certify_roi_aim(row_key.as_ref(), node_id.as_deref(), raster_installed)
         {

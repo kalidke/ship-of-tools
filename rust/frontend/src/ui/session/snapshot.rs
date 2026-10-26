@@ -181,7 +181,7 @@ impl State {
         // render_preview_source rebuilds the shaped text/png/svg for the
         // restored mime; if the leaving workspace had nothing rendered
         // we just leave the panes empty.
-        self.preview_png = None;
+        self.raster.hide();
         self.shaped.clear_svg();
         // The installed source travels whole: restored BEFORE
         // render_preview_source so the repaint (and any scalebar drawn on

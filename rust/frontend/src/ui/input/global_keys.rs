@@ -396,7 +396,7 @@ pub(in crate::ui) fn table_scroll_key(state: &mut State, key: KeyPress<'_>) -> C
     // table wider than the preview pane; otherwise the
     // redraw clamp keeps scroll at 0.
     if state.focus_prompts.focus() == PaneFocus::Preview
-        && state.preview_png.is_none()
+        && !state.raster.is_shown()
         && !state.editor.is_editing()
     {
         let step = state.shaped.md().body_em().max(8.0);

@@ -617,69 +617,8 @@ struct State {
     /// a row's restore without a round trip.
     preview_source: preview::source::InstalledPreviewSource,
     // ui/preview/image: the image view, ROI, pages, scalebar, captions and figures.
-    preview_png: Option<Quad>,
-    /// Zoom multiplier for the PNG preview pane — 1.0 fits the image to
-    /// the pane (current letterbox behaviour); >1.0 samples a 1/zoom-wide
-    /// sub-rect of the texture so detail becomes legible.
-    preview_png_zoom: f32,
-    /// Pan offset in physical pixels of the zoomed canvas relative to
-    /// the pane centre. `(0, 0)` keeps the canvas centred in
-    /// `preview_rect`; arrow keys nudge by a fraction of the pane.
-    /// Clamped at render time so the canvas covers the pane in whichever
-    /// axes it's larger than the pane — the user can't pan past the
-    /// image edge and reveal empty pane.
-    preview_png_pan_px: (f32, f32),
-    /// Natural dimensions (w, h) of the currently-loaded PNG, used as
-    /// part of the cache key so flipping between same-size renders in
-    /// the same directory (e.g. successive timesteps of a plot) keeps
-    /// the same view (see `preview_png_cache`). `None` until a PNG has
-    /// loaded.
-    preview_png_dims: Option<(u32, u32)>,
-    /// Dimensions of the shown raster as SERVED, before the GPU-fit downsample
-    /// that `decode_and_fit` applies to images exceeding
-    /// `max_texture_dimension_2d`. Equals `preview_png_dims` for everything
-    /// under the cap. The ADR-0034 scalebar keys off THIS: the wire's
-    /// `nm_per_px` describes served pixels, so measuring against the shrunken
-    /// texture width mis-scales the bar by `src/texture` (a 20000 px raster
-    /// capped to 16384 reads ~1.22x short). Re-derived on every decode, so it
-    /// stays correct across workspace-snapshot repaints.
-    preview_png_src_dims: Option<(u32, u32)>,
-    /// The visible region of the current image preview, in *source-image
-    /// pixel* coords (ADR 0022). Recomputed each draw from zoom/pan/letterbox
-    /// when an image is shown; `None` when the preview isn't a croppable
-    /// image. Consumed by `capture_roi` (the `C` hotkey / `capture_roi`
-    /// fe-command) and surfaced in `fe-state.json` so the LLM pane knows what
-    /// the user is zoomed into.
-    preview_roi: Option<PreviewRoi>,
-    /// Per-directory + per-dimensions cache of the last visible SOURCE-PX
-    /// ROI, so switching among same-sized image renders in one directory
-    /// restores the previous view rather than snapping back to fit.
-    /// Mixed-size images miss the cache and start at fit-to-pane.
-    ///
-    /// Source px, not `(zoom, pan_px)`: screen-px values are only valid
-    /// against the image rect they were measured in, and that rect moves —
-    /// the caption band resizes it per file (and the pane itself can resize
-    /// between save and restore). A screen-px carry between a captioned and
-    /// an uncaptioned same-size neighbor restored an offset, wrongly-
-    /// magnified view. An ROI re-solved against the live rect at consume
-    /// time (`pending_roi_restore`) is geometry-independent by construction.
-    /// Written through from the render pass each draw — a keystroke-time
-    /// save recorded the previous frame's view — and only for image node
-    /// ids (via `preview_roi`'s gate), which also stops PDF page turns
-    /// (same node id ⇒ same key) from restoring one page's view onto
-    /// another when a page turn is specified to reset to fit.
-    preview_png_cache: HashMap<(String, (u32, u32)), RoiRect>,
-    /// One-shot deferred view restore: a cache hit at preview install can't
-    /// solve immediately — there's no live geometry there, and
-    /// `caption_band_px` at install time still describes the PREVIOUS
-    /// node's band — so the hit is parked as `(node_id, roi)` and consumed
-    /// in the render pass next to the `--roi` aim solve, against the
-    /// current `image_rect`. An aim consumed for the same install wins over
-    /// the carry, and a carry restore never emits the ADR-0025
-    /// `preview_roi_applied` echo (that event is the CLI contract for
-    /// explicit aims). Node-guarded and overwritten on every raster
-    /// install, so a stale entry is inert.
-    pending_roi_restore: Option<(String, RoiRect)>,
+    /// The raster view: the shown raster, its zoom and pan, the visible ROI and the same-directory view carry.
+    raster: RasterView,
     /// Pagination of the preview the pane is *showing* (ADR 0021):
     /// `(page, page_count)` from the reply's extras. `None` for
     /// unpaginated previews. Drives the `n`/`p` page-turn keys and the
@@ -949,6 +888,7 @@ use render::*;
 use self::preview::concept::{split_frontmatter, ConceptInfo, ConceptSlot, DriftCheck, DriftStatus};
 use self::preview::editor::state::{EditState, Editor};
 use self::preview::shaped::ShapedPreview;
+use self::preview::image::raster::RasterView;
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,

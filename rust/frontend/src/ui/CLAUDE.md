@@ -23,7 +23,8 @@ upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file par
 `preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer;
 `preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect;
 `preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line anchor, the math
-SVG, the refused-hello overlay and the highlighter.
+SVG, the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
+zoom, pan and dimensions, the visible ROI and the same-directory view carry.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -202,6 +203,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   sent `preview.get` arms its anchor; the reply consumes it and scrolls to the definition only for a code reply to the
   request that armed it; a cursor move within the shown file re-anchors only on a real change of line. Scrolling is
   named: by a signed step stopping at the top, saturating line steps, top, end (clamped by the next layout).
+- `RasterView` privately owns the image pane's view of one raster: its texture, loaded and served dimensions, zoom,
+  pan, the visible source-pixel ROI, the per-directory, per-size view carry and the carry parked at install. A decoded
+  raster installs; unless a page re-raster keeps the view, the view resets to fit and an image node's cached
+  neighbor view is parked. Each frame clears the ROI and, with a raster shown, frames the canvas: a ready `--roi`
+  aim wins over the parked carry, a degenerate solve is logged and dropped, then zoom and pan are clamped to the live
+  geometry. State computes the ROI for an image node, which the owner records and writes through to the carry
+  outside the quantization window; State echoes an applied aim and draws the quad. Keys reset, pan and step the
+  zoom (1.25x below 1.5, whole steps above, pan scaled to keep the center).
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

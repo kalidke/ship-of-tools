@@ -6,7 +6,6 @@ use super::*;
 const BLOCK_PAD_Y: f32 = 4.0;
 
 impl State {
-    #[allow(clippy::too_many_lines, reason = "paints the preview PNG in its pane; predates the 100-line limit")]
     pub(in crate::ui) fn paint_preview_png(
         &mut self,
         mut rpass: &mut wgpu::RenderPass<'_>,
@@ -14,134 +13,31 @@ impl State {
         image_rect: ScreenRect,
     ) -> Result<()> {
         // Preview-layer goes under chrome text so borders and labels stay
-        // legible above whatever the preview is. PNG uses a canvas
-        // model — at zoom 1 the canvas equals letterbox (image inside
-        // pane, aspect preserved); at zoom > 1 the canvas grows by
-        // `zoom` and is rendered at full size with a scissor clip to
-        // the pane, so the zoomed-in view fills the whole pane.
-        // ADR 0022: recomputed below when an image is shown; cleared each
-        // frame so a switch to markdown / no-preview drops the stale ROI.
-        self.preview_roi = None;
+        // legible above whatever the preview is.
+        self.raster.clear_roi();
         let row_key = self.active_result_row_key();
-        if let (Some(quad), Some(letterbox_rect)) = (self.preview_png.as_ref(), png_rect) {
-            // Re-clamp against the live pane size before sizing the
-            // canvas: a pane resize or a zoom restored from the
-            // view-state cache can sit above the per-pixel ceiling for
-            // the current geometry, and the canvas must honour it. Same
-            // `(image_rect, size_px)` inputs as the `letterbox` —
-            // they must stay in lockstep, caption band included, or at the
-            // ceiling canvas_w no longer equals 16 × source-px exactly.
-            let zoom_max = png_zoom_max(image_rect.w, image_rect.h, quad.size_px);
-            // ADR 0025 `preview --roi`: consume a pending viewport aim
-            // whose image is the installed quad (ready — certified at
-            // preview install) AND still the fired preview target. The
-            // solve overrides zoom/pan here, where the live pane geometry
-            // exists; the ordinary clamps just below then produce the
-            // effective rect echoed back after `preview_roi` recomputes.
-            let mut roi_aim: Option<RoiAim> = None;
-            if let Some(aim) = self.preview_requests.take_ready_roi_aim(row_key.as_ref()) {
-                let (src_w, src_h) = self.preview_png_dims.unwrap_or(quad.size_px);
-                match solve_roi_view(
-                    image_rect.w,
-                    image_rect.h,
-                    letterbox_rect.w,
-                    letterbox_rect.h,
-                    zoom_max,
-                    src_w,
-                    src_h,
-                    aim.rect,
-                ) {
-                    Some((z, pan)) => {
-                        self.preview_png_zoom = z;
-                        self.preview_png_pan_px = pan;
-                        roi_aim = Some(aim);
-                    }
-                    None => tracing::warn!(node_id = %aim.node_id,
-                        "preview --roi: degenerate geometry — aim dropped"),
-                }
-            }
-            if roi_aim.is_some() {
-                // An explicit `--roi` aim beats the view carry: both
-                // target this install, and the aim is a user/CLI ask.
-                self.pending_roi_restore = None;
-            } else if self.pending_roi_restore.as_ref().is_some_and(|(nid, _)| {
-                Some(nid.as_str()) == self.preview_requests.fired_target()
-            }) {
-                // Same-dir same-size view carry (`preview_png_cache`),
-                // deferred from preview install to here — the first
-                // frame with this node's OWN caption band in
-                // `image_rect`. Solved exactly like an aim; the
-                // ordinary clamps below still apply. Deliberately no
-                // `preview_roi_applied` echo: that event is the
-                // ADR-0025 contract for explicit aims only.
-                let (nid, rect) = self.pending_roi_restore.take().expect("checked Some above");
-                let (src_w, src_h) = self.preview_png_dims.unwrap_or(quad.size_px);
-                match solve_roi_view(
-                    image_rect.w,
-                    image_rect.h,
-                    letterbox_rect.w,
-                    letterbox_rect.h,
-                    zoom_max,
-                    src_w,
-                    src_h,
-                    rect,
-                ) {
-                    Some((z, pan)) => {
-                        self.preview_png_zoom = z;
-                        self.preview_png_pan_px = pan;
-                    }
-                    // Degraded, not broken — the view stays at fit. Logged
-                    // (debug, not the aim path's warn: no user asked for
-                    // this rect) so a mysteriously-not-carried view is
-                    // diagnosable.
-                    None => tracing::debug!(node_id = %nid,
-                        "view carry: degenerate geometry — restore dropped"),
-                }
-            }
-            let zoom = self.preview_png_zoom.clamp(1.0, zoom_max);
-            self.preview_png_zoom = zoom;
-            let canvas_w = letterbox_rect.w * zoom;
-            let canvas_h = letterbox_rect.h * zoom;
-            let pane_cx = image_rect.x + image_rect.w * 0.5;
-            let pane_cy = image_rect.y + image_rect.h * 0.5;
-            // Clamp pan so canvas always covers the pane in any axis
-            // where canvas > pane. When canvas < pane (e.g. at zoom
-            // 1 with a non-pane-aspect image), pan in that axis is
-            // forced to 0 so the letterbox stays centred.
-            let slack_x = (canvas_w - image_rect.w).max(0.0);
-            let slack_y = (canvas_h - image_rect.h).max(0.0);
-            let pan_x = self
-                .preview_png_pan_px
-                .0
-                .clamp(-slack_x * 0.5, slack_x * 0.5);
-            let pan_y = self
-                .preview_png_pan_px
-                .1
-                .clamp(-slack_y * 0.5, slack_y * 0.5);
-            self.preview_png_pan_px = (pan_x, pan_y);
-            let canvas_rect = ScreenRect {
-                x: pane_cx - canvas_w * 0.5 + pan_x,
-                y: pane_cy - canvas_h * 0.5 + pan_y,
-                w: canvas_w,
-                h: canvas_h,
+        if let (true, Some(letterbox_rect)) = (self.raster.is_shown(), png_rect) {
+            let aim = self.preview_requests.take_ready_roi_aim(row_key.as_ref());
+            let fired = self.preview_requests.fired_target();
+            let Some(frame) = self.raster.frame(image_rect, letterbox_rect, aim, fired) else {
+                return Ok(());
             };
+            let canvas_rect = frame.rect;
             // ADR 0022: stash the visible ROI in source-image px so the
             // `C` hotkey / `capture_roi` fe-command and fe-state.json know
             // what's on screen. Image files only — a PDF page's source is
-            // the `.pdf`, which `image.crop` can't decode (v2). Computed
-            // into a local (shared borrows) then field-assigned, so it
-            // doesn't fight `quad`'s borrow of `self.preview_png`.
+            // the `.pdf`, which `image.crop` can't decode (v2).
             let new_roi: Option<PreviewRoi> =
                 self.preview_requests.fired_target().and_then(|nid| {
                     if !Self::is_image_node_id(nid) {
                         return None;
                     }
-                    let (src_w, src_h) = self.preview_png_dims.unwrap_or(quad.size_px);
+                    let (src_w, src_h) = frame.src;
                     let (x, y, w, h) = visible_roi_px(
                         canvas_rect.x,
                         canvas_rect.y,
-                        canvas_w,
-                        canvas_h,
+                        canvas_rect.w,
+                        canvas_rect.h,
                         image_rect.x,
                         image_rect.y,
                         image_rect.w,
@@ -158,46 +54,15 @@ impl State {
                         h,
                         src_w,
                         src_h,
-                        zoom,
+                        zoom: frame.zoom,
                     })
                 });
-            self.preview_roi = new_roi;
-            // Write-through view carry: persist the freshly computed
-            // visible ROI so same-dir same-size neighbors restore this
-            // view (`preview_png_cache`). Done here, not at keystroke
-            // time, because only this pass has the post-clamp geometry.
-            // The hysteresis matters: a restore's own readback lands
-            // within quantization (±1 px/edge) of the rect it restored,
-            // and overwriting with it would ratchet — each flip
-            // re-fitting a rect one pixel bigger, the view creeping out.
-            // Keeping the incumbent inside that window makes the carry a
-            // true fixed point; real zoom/pan input moves edges by far
-            // more than a pixel, so nothing a user does is swallowed.
-            // `preview_roi` is image-node-gated, so PDF pages never save.
-            if let Some(roi) = self.preview_roi.as_ref() {
-                if let Some(key) = png_cache_key_from_node_id(
-                    Some(roi.node_id.as_str()),
-                    (roi.src_w, roi.src_h),
-                ) {
-                    let rect = RoiRect {
-                        x: roi.x,
-                        y: roi.y,
-                        w: roi.w,
-                        h: roi.h,
-                    };
-                    match self.preview_png_cache.get(&key) {
-                        Some(prev) if roi_rects_within_quantization(*prev, rect) => {}
-                        _ => {
-                            self.preview_png_cache.insert(key, rect);
-                        }
-                    }
-                }
-            }
+            self.raster.record_roi(new_roi);
             // ADR 0025: echo the effective (post-clamp) rect for a just-
             // applied `--roi` aim — `fe.command.send` is fire-and-forget,
             // so the ack couldn't carry it (2026-07-21 ADR update).
-            if let Some(aim) = roi_aim {
-                match self.preview_roi.as_ref() {
+            if let Some(aim) = frame.aim {
+                match self.raster.roi() {
                     Some(eff) => self.emit_preview_roi_applied(&aim, eff),
                     // Raster but not a croppable image node (e.g. a PDF
                     // page): no source-px frame to report against.
@@ -213,13 +78,15 @@ impl State {
             let sw = image_rect.w.max(0.0) as u32;
             let sh = image_rect.h.max(0.0) as u32;
             rpass.set_scissor_rect(sx, sy, sw, sh);
-            quad.render(
-                &self.queue,
-                &self.quad_pipeline,
-                &mut rpass,
-                canvas_rect,
-                (self.config.width, self.config.height),
-            )?;
+            if let Some(quad) = self.raster.quad() {
+                quad.render(
+                    &self.queue,
+                    &self.quad_pipeline,
+                    &mut rpass,
+                    canvas_rect,
+                    (self.config.width, self.config.height),
+                )?;
+            }
             // Reset scissor so subsequent draws (SVG, media paint,
             // chrome text) aren't clipped to the preview pane.
             rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
@@ -242,7 +109,7 @@ impl State {
         // Dedicated quad fields, not the shared `border_quads` map: each
         // `render_many` mutably borrows its quad for the whole render-pass
         // lifetime (`'a`), so two colours must come from two disjoint
-        // fields — one map borrowed twice would alias. `self.preview_png`'s
+        // fields — one map borrowed twice would alias. The raster's
         // borrow ended when the image block closed.
         if let Some(sb) = scalebar_draw.as_ref() {
             let sx = image_rect.x.max(0.0) as u32;

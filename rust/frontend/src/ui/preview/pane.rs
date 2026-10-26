@@ -273,12 +273,9 @@ impl State {
                 sampler,
             ) {
                 Ok((q, src_w, src_h)) => {
-                    let dims = q.size_px;
-                    self.preview_png = Some(q);
-                    self.preview_png_dims = Some(dims);
                     // Pre-downsample size for the ADR-0034 scalebar (see field
-                    // docs). Same as `dims` unless the GPU-fit shrank it.
-                    self.preview_png_src_dims = Some((src_w, src_h));
+                    // docs). Same as the texture's unless the GPU-fit shrank it.
+                    self.raster.install(q, (src_w, src_h));
                     if std::mem::take(&mut self.preview_reraster_keep_view) {
                         // Zoom re-raster of the same page (ADR 0021): the new
                         // bitmap is the same page at higher resolution. Fit-to-
@@ -292,23 +289,18 @@ impl State {
                         // image rect — which doesn't exist here, and whose
                         // caption band at this moment is still the previous
                         // node's — so a hit only PARKS the restore for the
-                        // render pass (see `pending_roi_restore`). Either
+                        // render pass (`RasterView::reset_view`). Either
                         // way the view resets to fit now, so every miss and
                         // any pre-consume frame paint the default. Image
                         // nodes only: a PDF page turn shares (dir, dims)
                         // across pages and must reset, not inherit another
                         // page's view.
-                        self.pending_roi_restore = self
+                        let carry = self
                             .preview_requests
                             .fired_target()
                             .filter(|nid| Self::is_image_node_id(nid))
-                            .and_then(|nid| {
-                                let key = png_cache_key_from_node_id(Some(nid), dims)?;
-                                let roi = *self.preview_png_cache.get(&key)?;
-                                Some((nid.to_string(), roi))
-                            });
-                        self.preview_png_zoom = 1.0;
-                        self.preview_png_pan_px = (0.0, 0.0);
+                            .map(str::to_owned);
+                        self.raster.reset_view(carry.as_deref());
                     }
                 }
                 Err(e) => tracing::warn!(error = %e, "preview-png decode failed"),
@@ -328,7 +320,7 @@ impl State {
                         scale,
                     );
                     self.shaped.install(md);
-                    self.preview_png = None;
+                    self.raster.hide();
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "tokens+json decode failed");
@@ -356,7 +348,7 @@ impl State {
                 scale,
             );
             self.shaped.install(md);
-            self.preview_png = None;
+            self.raster.hide();
         } else if mime == "text/markdown" || mime == "text/x-markdown" {
             if let Ok(s) = std::str::from_utf8(bytes) {
                 // NOTE: `figure_failed` is deliberately NOT touched here.
@@ -387,7 +379,7 @@ impl State {
                     &self.markdown_token_cache,
                 );
                 self.shaped.install(md);
-                self.preview_png = None;
+                self.raster.hide();
                 // Fire math.render for any `$$...$$` blocks the walk
                 // discovered. Replies populate `math_cache` and the
                 // next paint pulls the SVG in via A3.
@@ -409,7 +401,7 @@ impl State {
                 scale,
             );
             self.shaped.install(md);
-            self.preview_png = None;
+            self.raster.hide();
         } else {
             tracing::debug!(
                 %mime,

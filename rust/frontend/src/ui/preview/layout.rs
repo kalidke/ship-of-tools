@@ -9,7 +9,7 @@ impl State {
         // the preview pane over EVERYTHING (help included) until a clean
         // reconnect clears it. Rebuilt lazily below once md_rect_px is known.
         let show_fatal = self.hello_refused.contains_key(self.selected.host());
-        let show_png = self.preview_png.is_some() && !show_fatal;
+        let show_png = self.raster.is_shown() && !show_fatal;
         let show_svg = false;
         // Edit mode owns the preview pane: the file viewer hides so
         // the editable annotation body has the whole rect.
@@ -47,9 +47,9 @@ impl State {
         let image_rect = image_rect_for_caption(preview_rect, self.caption_band_px);
 
         let png_rect = if show_png {
-            self.preview_png
-                .as_ref()
-                .map(|q| letterbox(image_rect, q.size_px))
+            self.raster
+                .quad_size()
+                .map(|size_px| letterbox(image_rect, size_px))
         } else {
             None
         };

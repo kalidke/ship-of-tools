@@ -259,7 +259,7 @@ impl State {
             // perfectly healthy here.
             self.preview_source = Default::default();
             self.figure_failed.clear();
-            self.preview_png = None;
+            self.raster.hide();
             self.shaped.clear_svg();
             self.concept.clear();
             self.preview_requests.reset_concept_follow();
