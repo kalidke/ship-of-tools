@@ -35,8 +35,8 @@ does not read it and uses no mail; it reports to the session that launched it.
   the product as a user; a thought from reading code is a note. Either goes to the owning subsystem's queue and is
   handled at that subsystem's pass; a defect that blocks use is fixed on the release branch.
 - Work happens on main, one writer at a time; a second pass in parallel works in a worktree on a disjoint subsystem.
-  Before a push, the touched crates' tests and the workspace build run locally. Hosted runs happen once at the end of
-  a pass and once at the release gate.
+  Before a push to main, the local gate, the workspace build and the touched crates' tests run locally. The hosted
+  runs test main after the merge, one per batch of merges; a red one is fixed forward or its landing reverted.
 - Read `requirements.md` before adding a feature. Change the contract or manual page in the commit that changes the
   code it describes. Plots in Julia use CairoMakie.
 - The repo is public: no private host names, user names, LAN details or host-suffixed handles in commits, PRs, code
