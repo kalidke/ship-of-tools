@@ -58,7 +58,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   including after a bad JSON object or verb. Verb answers are JSON with `Cache-Control: no-store`: success has
   `ok: true`, refusal has `error` and `code`.
 - One `PageVerbs` supplies three bounded budgets shared by all prefix and pool listeners: four POST body readers,
-  four `states` handlers and four action handlers (`goto`, `open`, and later `reply`), each `MAX_IN_FLIGHT`. The body
+  four `states` handlers and four action handlers (`goto`, `open`, `reply`), each `MAX_IN_FLIGHT`. The body
   reader releases its slot once it has consumed the bounded body, before the decoded verb takes its own handler
   slot. Excess work answers 503 `server_busy`: a body admission refusal closes without reading, while a handler
   admission refusal has consumed its body and keeps the connection unless requested closed. A handler waits at most
@@ -90,9 +90,12 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 - A page command goes by target serial to the owner's newest live named frontend (`PageVerbs.window`), never the
   window in use. Go-to and open answer 202; no live window answers 503 `window_gone` and sends nothing. No local row
   answers 409 `not_a_row` (a known foreign entry names its daemon); no question page answers 409 `no_page`; an outside,
-  relative or unresolvable page answers 403 `page_outside`. Unknown or malformed verbs, `reply` included until landing
-  2a, answer 400 `bad_request`. A blocking handler failure is logged and answers JSON 500 `handler_error`, keeping the
-  consumed connection available for the next request. This landing never types or opens a reply bar.
+  relative or unresolvable page answers 403 `page_outside`. Unknown or malformed verbs answer 400 `bad_request`. A blocking handler failure is logged and answers JSON 500 `handler_error`, keeping the
+  consumed connection available for the next request. `reply {handle, text}` resolves the handle with the same local/foreign rule, then calls wire's `page_reply::line`.
+  Invalid text answers 400 `bad_text`, naming the refusal; valid text sends `page_reply {workspace, handle, line}` to
+  the same owner connection and answers 202. A POST offers only: it never types or confirms delivery, and the daemon
+  keeps no pending-reply table. An older window drops the command and delivers nothing; the bar is landing 2b.
+  `fe.command.send` refuses the reserved command, so only this page server publishes an offer.
 - A quarto render starts through `Signal::spawn` and is always given the daemon's julia as `QUARTO_JULIA`, an
   inherited one overridden, and a refusal by the resolver fails the render (`run_quarto`), `--no-execute` or not,
   since quarto runs `QUARTO_JULIA` for an `engine: julia` document even then; so a host without julia renders no
@@ -122,7 +125,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `video.open`, `docs.open`,
 `quarto.open`, `quarto_render_error`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `PagesGrants`,
 `is_servable_video`, `start_page_servers`, `PageVerbs`, `PageRow`, `PageOption`, `RowRef`, `remove_root`, `loopback_port_from_url`, `with_loopback_port`,
-`rust/protocol/src/page_url.rs`.
+`rust/protocol/src/page_url.rs`. Uses wire's `page_reply::line` for reply offers.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `sot_protocol::pipe::pipe_bidirectional`, `sot_protocol::reply::reject`,
 `site_owner` and `away_sites` (the window's key and the windows away, given to `handle_docs_open` as arguments),
 the server-built `PageVerbs` closures (states, handle lookup, window lookup and the fe-command bus), Unix
@@ -152,7 +155,7 @@ HTTP capability/Origin checks, states, go-to, page containment, site retention a
 body deadline is `http_keep_tests.rs::a_body_dripped_past_the_bound_is_refused_at_the_bound`; complete owner cleanup
 is `site/tests.rs::an_owner_keeps_eight_prefix_sites_and_removes_them_together`. The browser-origin done test remains
 a by-hand check on local and remote windows. A page cannot act on another daemon's rows; a session outside any row
-has states but no go-to or open. The page channel's trust boundary is **this OS account**, the same as every other
+has states but no go-to, open or reply. The page channel's trust boundary is **this OS account**, the same as every other
 daemon operation (the maintainer's decision, 2026-10-25). A same-account process holding a site capability can call its verbs; possession and matching Host/Origin do
 not authenticate that process as the originating document. Other accounts are refused by `serve_own`.
 `site/verbs_tests.rs` observes capability calls and commands on denied requests and JSON failure recovery on one
@@ -177,3 +180,8 @@ the existing worker-deadline case now holds four actions and observes successful
 ## Start here
 
 `proxy.rs` `allowed_proxy_ports` for what a remote window may reach; `video.rs` `serve_request` for a served request.
+
+Reply behavior: `tests/page_channel.rs::a_reply_with_hostile_text_is_refused_and_opens_no_bar` observes refusal and
+exact marked offers on the owner's newest connection; `a_handle_that_binds_no_row_here_is_refused` includes replies
+and named foreign-daemon refusals. `tests/comm_wake.rs::a_page_reply_post_types_nothing` observes an offer and no pane
+input for three seconds on a free stub-agent row.

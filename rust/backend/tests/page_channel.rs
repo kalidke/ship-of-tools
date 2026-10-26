@@ -503,9 +503,9 @@ async fn a_handle_that_binds_no_row_here_is_refused() {
     set_entry(&env, "foreign", json!({"host": "other-daemon", "workspace_id": ROW}));
     // Even a name declared on a local row may not borrow a foreign registry entry.
     set_entry(&env, HANDLE, json!({"host": "other-daemon", "workspace_id": ROW}));
-    for verb in ["goto", "open"] {
+    for verb in ["goto", "open", "reply"] {
         for handle in ["outside", "missing", "foreign", HANDLE] {
-            let res = site.post(json!({"verb": verb, "handle": handle})).await;
+            let res = site.post(json!({"verb": verb, "handle": handle, "text": "approve"})).await;
             res.code(409, "not_a_row");
             if handle == "foreign" || handle == HANDLE {
                 assert!(res.json()["error"].as_str().unwrap().contains("other-daemon"));
@@ -520,7 +520,7 @@ async fn malformed_verbs_and_unframed_or_oversize_bodies_run_nothing() {
     let _serial = SERIAL.lock().await;
     let (env, mut a) = setup("page-bodies").await;
     let site = queue(&env, &mut a).await;
-    for body in ["[]", "null", "{", "{}", "{\"verb\":\"goto\"}", "{\"verb\":\"open\",\"handle\":1}", "{\"verb\":\"reply\",\"handle\":\"row-here\",\"text\":\"yes\"}", "{\"verb\":\"confirm\"}"] {
+    for body in ["[]", "null", "{", "{}", "{\"verb\":\"goto\"}", "{\"verb\":\"open\",\"handle\":1}", "{\"verb\":\"reply\",\"handle\":\"row-here\"}", "{\"verb\":\"reply\",\"handle\":\"row-here\",\"text\":1}", "{\"verb\":\"confirm\"}"] {
         site.raw("POST", Some(&format!("http://{}", site.host)), "", body).await.code(400, "bad_request");
     }
     for (framing, status) in [("", 411), ("Transfer-Encoding: chunked\r\n", 411), ("Content-Length: 4097\r\n", 413), ("Content-Length: nope\r\n", 411), ("Content-Length: 2\r\nContent-Length: 2\r\n", 411)] {
@@ -536,4 +536,86 @@ async fn malformed_verbs_and_unframed_or_oversize_bodies_run_nothing() {
     }
     assert_eq!(site.raw("HEAD", None, "", "").await.status, 200);
     no_command(&mut a).await;
+}
+
+/// Red at the base: reply answers bad_request, rather than sanitizing and offering a marked line.
+#[tokio::test]
+async fn a_reply_with_hostile_text_is_refused_and_opens_no_bar() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut old) = setup("page-reply").await;
+    let site = queue(&env, &mut old).await;
+    let mut other = window(&env, "window-b").await;
+    let mut newest = window(&env, "window-a").await;
+    for text in ["\u{1b}[201~", "a\nb", "", "   ", "a\rb", "\u{2066}"] {
+        site.post(json!({"verb": "reply", "handle": HANDLE, "text": text})).await.code(400, "bad_text");
+    }
+    site.post(json!({"verb": "reply", "handle": HANDLE, "text": "a".repeat(513)})).await.code(400, "bad_text");
+    tokio::join!(no_command(&mut old), no_command(&mut other), no_command(&mut newest));
+    for (text, line) in [("approve", "[sot-page] approve"), (" /clear ", "[sot-page] /clear")] {
+        assert_eq!(site.post(json!({"verb": "reply", "handle": HANDLE, "text": text})).await.status, 202);
+        assert_eq!(command(&mut newest, "page_reply").await, json!({"workspace": ROW, "handle": HANDLE, "line": line}));
+    }
+    tokio::join!(no_command(&mut old), no_command(&mut other));
+}
+
+/// Red at the base: fe.command.send publishes the reserved command.
+#[tokio::test]
+async fn a_session_cannot_open_a_reply_bar() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-reserved").await;
+    let mut b = window(&env, "window-b").await;
+    let (mut sender, _) = support::connect_and_hello(&env.socket_path).await;
+    for target in [Value::Null, json!("fe@test-window")] {
+        let res = call(&mut sender, 90, op::FE_COMMAND_SEND, json!({
+            "cmd": "page_reply", "target": target,
+            "args": {"workspace": ROW, "handle": HANDLE, "line": "[sot-page] approve"}
+        })).await;
+        assert_eq!(res.payload["code"], "reserved", "{res:?}");
+        assert!(res.payload["error"].as_str().unwrap().contains("page_reply"));
+        tokio::join!(no_command(&mut a), no_command(&mut b));
+    }
+}
+
+
+#[tokio::test]
+async fn page_reply_rechecks_the_mark_the_handle_and_the_target_without_resuming_it() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-delivery-refusals").await;
+    let send = |workspace: &str, handle: &str, line: &str| json!({
+        "workspace_id": workspace, "handle": handle, "line": line
+    });
+    for line in ["approve", "[sot-page] a\nb", "[sot-page]  approve"] {
+        let res = call(&mut a, 101, "page.reply", send(ROW, HANDLE, line)).await;
+        assert_eq!(res.payload["outcome"], "refused", "{res:?}");
+        assert!(res.payload["detail"].as_str().unwrap().starts_with("reply"), "{res:?}");
+    }
+    let res = call(&mut a, 102, "page.reply", send("missing-row", HANDLE, "[sot-page] approve")).await;
+    assert_eq!(res.payload["code"], "unknown_workspace", "{res:?}");
+    let res = call(&mut a, 103, "page.reply", send(ROW, "stale-handle", "[sot-page] approve")).await;
+    assert_eq!(res.payload["outcome"], "refused", "{res:?}");
+    assert_eq!(res.payload["detail"], "handle_changed");
+    let res = call(&mut a, 104, "page.reply", send(ROW, HANDLE, "[sot-page] approve")).await;
+    assert_eq!(res.payload["outcome"], "refused", "{res:?}");
+    assert_eq!(res.payload["detail"], "not_typeable", "an inert or Codex row cannot be typed into");
+    // A stopped Claude row exercises the Ready check without starting any process.
+    env.seed_capsule_toml("stopped-reply", "stopped-slug", &env.workspace_project_root, "claude");
+    env.seed_capsule_toml("codex-reply", "codex-reply", &env.workspace_project_root, "codex");
+    env.kill_daemon_bounded().await;
+    env.spawn_sotd_with_env(&[("SOT_DOCS_PORT", "0"), ("SOT_VIDEO_PORT", "0")]);
+    let mut back = window(&env, "window-a").await;
+    let joined = call(&mut back, 105, op::AGENT_JOIN, json!({"workspace_id": "stopped-reply", "handle": "stopped-handle"})).await;
+    assert_eq!(joined.payload["ok"], true);
+    let res = call(&mut back, 106, "page.reply", send("stopped-reply", "stopped-handle", "[sot-page] approve")).await;
+    assert_eq!(res.payload["outcome"], "not_ready", "{res:?}");
+    let alias = call(&mut back, 107, "page.reply", send("stopped-slug", "stopped-handle", "[sot-page] approve")).await;
+    assert_eq!(alias.payload["code"], "unknown_workspace");
+    let joined = call(&mut back, 108, op::AGENT_JOIN, json!({"workspace_id": "codex-reply", "handle": "codex-handle"})).await;
+    assert_eq!(joined.payload["ok"], true);
+    let codex = call(&mut back, 109, "page.reply", send("codex-reply", "codex-handle", "[sot-page] approve")).await;
+    assert_eq!(codex.payload["outcome"], "refused");
+    assert_eq!(codex.payload["detail"], "not_typeable");
+    let listed = call(&mut back, 110, op::WORKSPACE_LIST, json!({})).await;
+    let row = listed.payload["workspaces"].as_array().expect("workspaces").iter()
+        .find(|r| r["workspace_id"] == "stopped-reply").expect("stopped row");
+    assert_ne!(row["phase"], "ready");
 }

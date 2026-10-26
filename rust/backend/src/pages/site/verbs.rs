@@ -110,7 +110,7 @@ impl PageVerbs {
         let Some(body) = body else {
             return bad_request(stream, request.keep).await;
         };
-        // A blocked action must not spend polling capacity. Reply will use the action budget in landing 2a.
+        // A blocked action must not spend polling capacity.
         let budget = if body.get("verb").and_then(Value::as_str) == Some("states") {
             &self.states_in_flight
         } else {
@@ -140,23 +140,32 @@ impl PageVerbs {
             if !capability.live() { return Ok(grant_gone()); }
             return Ok(("200 OK", json!({"ok": true, "rows": rows})));
         }
-        // Landing 2a adds reply here. No verb confirms or types a reply.
-        if !matches!(verb, "goto" | "open") {
+        // No HTTP verb confirms or types a reply.
+        if !matches!(verb, "goto" | "open" | "reply") {
             return Ok(bad_request_value());
         }
         let Some(handle) = body.get("handle").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
             return Ok(bad_request_value());
         };
         let row_of = self.row_of.clone();
-        let handle = handle.to_string();
+        let lookup_handle = handle.to_string();
         let work = permit.clone();
-        let row = match tokio::task::spawn_blocking(move || { let _permit = work; row_of(&handle) }).await? {
+        let row = match tokio::task::spawn_blocking(move || { let _permit = work; row_of(&lookup_handle) }).await? {
             Ok(row) => row,
             Err(words) => return Ok(("409 Conflict", error("not_a_row", &words))),
         };
         let mut page = None;
         let (cmd, mut args) = if verb == "goto" {
             ("goto_workspace", json!({"workspace": row.workspace_id}))
+        } else if verb == "reply" {
+            let Some(text) = body.get("text").and_then(Value::as_str) else {
+                return Ok(bad_request_value());
+            };
+            let line = match sot_protocol::page_reply::line(text) {
+                Ok(line) => line,
+                Err(reason) => return Ok(("400 Bad Request", error("bad_text", &reason.to_string()))),
+            };
+            ("page_reply", json!({"workspace": row.workspace_id, "handle": handle, "line": line}))
         } else {
             if row.page.is_empty() {
                 return Ok(("409 Conflict", error("no_page", "the row's question names no page")));
@@ -217,7 +226,7 @@ fn window_gone() -> (&'static str, Value) {
 }
 
 fn bad_request_value() -> (&'static str, Value) {
-    ("400 Bad Request", error("bad_request", "expected states, goto or open with the required fields"))
+    ("400 Bad Request", error("bad_request", "expected states, goto, open or reply with the required fields"))
 }
 
 async fn bad_request(stream: &mut TcpStream, keep: bool) -> Result<bool> {

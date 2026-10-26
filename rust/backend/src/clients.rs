@@ -602,6 +602,11 @@ pub async fn handle_fe_command_send(
 ) -> Result<HandlerOutput> {
     let mut req: FeCommandSendReq =
         serde_json::from_value(payload_json).context("fe.command.send payload")?;
+    if req.cmd == "page_reply" {
+        return Ok(vec![(Frame::res(req_id, op::FE_COMMAND_SEND, serde_json::json!({
+            "error": "page_reply is reserved to the page server", "code": "reserved"
+        })), None)]);
+    }
     let mut target_serial: Option<u64> = None;
     let mut why = if req.target.is_some() { "named" } else { "every" };
     let snap = clients.snapshot_with_active();

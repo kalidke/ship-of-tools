@@ -1,5 +1,10 @@
 //! Tests of the free-prompt screen reading: captured frames, menus, glyphs and the typed-line gate.
 
+// Existing wake fixtures all use the wake line; supplied-line behavior is tested separately.
+fn prompt_of(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> Result<Prompt, &'static str> {
+    super::prompt_of(lines, cursor, agent, windows, WAKE_LINE)
+}
+
 use super::*;
 
 fn prompt_free_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> bool {
@@ -220,7 +225,7 @@ fn a_pane_too_narrow_for_the_wake_line_is_refused() {
     let b = |w: usize| vec!["\u{2500}".repeat(w), "\u{276f}\u{a0}".to_string(), "\u{2500}".repeat(w)];
     let need = 2 + WAKE_LINE.chars().count() + 2;
     for windows in [false, true] {
-        assert_eq!(prompt_of(&b(need - 1), Some((1, 2)), "claude", windows), Err("pane too narrow for the wake line"));
+        assert_eq!(prompt_of(&b(need - 1), Some((1, 2)), "claude", windows), Err("pane too narrow for the line"));
         assert_eq!(prompt_of(&b(need), Some((1, 2)), "claude", windows), Ok(Prompt::Empty));
     }
 }

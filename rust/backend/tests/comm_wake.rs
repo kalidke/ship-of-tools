@@ -98,6 +98,7 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &
            spid=$!\n\
            if [ -f '{ctl}/echo-after' ]; then w=''; [ -f '{ctl}/focus-after' ] && w='{ctl}/marks/focus-moved'; bash '{slow}' \"$(cat '{ctl}/echo-after')\" '{ctl}/line' \"$w\"; line=$(cat '{ctl}/line'); else IFS= read -r line; fi\n\
            kill $spid\n\
+           printf '%s\\n' \"$line\" >> '{ctl}/received'\n\
            case \"$line\" in\n\
              quit) exit 0 ;;
              '[sot-comm] you have mail: run comm-poll.sh') echo \"$(date +%s%3N) ping\" >> '{log}' ;;\n\
@@ -906,4 +907,191 @@ async fn screen_now(row: &mut Row) -> Option<Vec<String>> {
     row.next_id += 1;
     let res = call(&mut row.conn, id, op::PTY_SCREEN, serde_json::json!({ "workspace_id": row.ws })).await;
     res.payload["lines"].as_array().map(|l| l.iter().map(|l| l.as_str().unwrap_or_default().to_string()).collect())
+}
+
+
+/// Use literal wire names and marks so these tests compile at the pre-2a base and fail by behavior.
+async fn prepare_page_reply(row: &Row) {
+    set_entry(&row.env, serde_json::json!({"host": TEST_STATE_HOST, "workspace_id": row.ws}));
+    pass_boot_look(&marks(row)).await;
+}
+
+async fn page_reply(row: &mut Row, handle: &str, line: &str) -> serde_json::Value {
+    let id = row.next_id;
+    row.next_id += 1;
+    call(&mut row.conn, id, "page.reply", serde_json::json!({
+        "workspace_id": row.ws, "handle": handle, "line": line
+    })).await.payload
+}
+
+fn received(row: &Row) -> Vec<String> {
+    match std::fs::read_to_string(row.env._tmp.path().join("ctl/received")) {
+        Ok(text) => text.lines().map(str::to_owned).collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("read stub input: {error}"),
+    }
+}
+
+#[tokio::test]
+async fn page_reply_types_the_marked_line_at_a_free_prompt() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start("pr-free", None, false).await;
+    prepare_page_reply(&row).await;
+    let res = page_reply(&mut row, HANDLE, "[sot-page] approve").await;
+    assert_eq!(res["outcome"], "sent", "{res}");
+    wait_for("the marked reply", || !received(&row).is_empty()).await;
+    assert_eq!(received(&row), ["[sot-page] approve"]);
+    assert_eq!((pings(&row.log), others(&row.log)), (0, 1));
+    row.env.kill_daemon_bounded().await;
+}
+
+#[tokio::test]
+async fn page_reply_never_types_into_a_dialog_a_draft_or_a_working_row() {
+    let _serial = SERIAL.lock().await;
+    for (tag, dialog, controls, seen) in [
+        ("pr-dialog", true, vec![], "Allow this action"),
+        ("pr-draft", false, vec!["draft=unsent words"], "unsent words"),
+        ("pr-home", false, vec!["draft-home=unsent words"], "unsent words"),
+        ("pr-wrap", false, vec!["draft-wrap=unsent words"], "and push every branch"),
+        ("pr-newline", false, vec!["draft-nl=unsent words"], "unsent words"),
+        ("pr-working", false, vec![], "spinner"),
+        ("pr-stop", false, vec![], "footer"),
+        ("pr-registry", false, vec![], "footer"),
+    ] {
+        let mut row = start_with(tag, None, dialog, &controls, &[]).await;
+        prepare_page_reply(&row).await;
+        if tag == "pr-working" { std::fs::write(&row.spin, b"").unwrap(); }
+        if tag == "pr-stop" {
+            set_entry(&row.env, serde_json::json!({"host": TEST_STATE_HOST, "stop_at": iso_at(0)}));
+        }
+        if tag == "pr-registry" {
+            support::set_registry_fixture(&row.env.comm_root, support::RegistryFixture::Bytes(b"not JSON"));
+        }
+        wait_for_screen(&mut row, seen).await;
+        let res = page_reply(&mut row, HANDLE, "[sot-page] approve").await;
+        assert_eq!(res["outcome"], "not_free", "{tag}: {res}");
+        assert!(!res["detail"].as_str().unwrap().is_empty());
+        assert!(!row.screen_has("[sot-page]").await, "{tag}: text reached a guarded pane");
+        assert!(received(&row).is_empty(), "{tag}: sent a line");
+        row.env.kill_daemon_bounded().await;
+    }
+}
+
+#[tokio::test]
+async fn a_page_reply_and_a_wake_never_type_at_once() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_with("pr-wake", None, false, &[], &[("SOT_TEST_WAKE_HOLD_AFTER_FINAL_MS", "6000")]).await;
+    let m = marks(&row);
+    prepare_page_reply(&row).await;
+    append_mail(&row.env, 1);
+    wait_for("the wake's held final check", || m.join("final-ok").exists()).await;
+    let res = page_reply(&mut row, HANDLE, "[sot-page] approve").await;
+    assert_eq!(res["outcome"], "not_free", "{res}");
+    assert!(res["detail"].as_str().unwrap().contains("another typing"), "{res}");
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await);
+    assert_eq!(received(&row), ["[sot-comm] you have mail: run comm-poll.sh"]);
+    row.env.kill_daemon_bounded().await;
+}
+
+#[tokio::test]
+async fn two_page_reply_attempts_share_one_guard_and_the_connection_stays_live() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_with("pr-two", None, false, &[], &[("SOT_TEST_WAKE_HOLD_AFTER_FINAL_MS", "6000")]).await;
+    let m = marks(&row);
+    prepare_page_reply(&row).await;
+    let id = row.next_id;
+    row.next_id += 1;
+    let frame = sot_protocol::Frame::req(id, "page.reply", serde_json::json!({
+        "workspace_id": row.ws, "handle": HANDLE, "line": "[sot-page] first"
+    }));
+    sot_protocol::codec::write_frame(row.conn.get_mut(), &frame, None).await.unwrap();
+    wait_for("the first reply's held final check", || m.join("final-ok").exists()).await;
+    // A second job on the same connection is answered while the first attempt is still held.
+    let second = page_reply(&mut row, HANDLE, "[sot-page] second").await;
+    assert_eq!(second["outcome"], "not_free", "{second}");
+    assert!(second["detail"].as_str().unwrap().contains("another typing"));
+    assert!(!m.join("done").exists(), "the connection answered only after the first typing ended");
+    let first = tokio::time::timeout(BOUND, async {
+        loop {
+            let (frame, _) = sot_protocol::codec::read_frame(&mut row.conn).await.unwrap();
+            if frame.id == id && frame.kind == sot_protocol::Kind::Res { break frame.payload; }
+        }
+    }).await.unwrap();
+    assert_eq!(first["outcome"], "sent", "{first}");
+    wait_for("the first reply", || !received(&row).is_empty()).await;
+    assert_eq!(received(&row), ["[sot-page] first"]);
+    row.env.kill_daemon_bounded().await;
+}
+
+#[tokio::test]
+async fn page_reply_refuses_a_row_that_no_longer_binds_the_handle() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start("pr-handle", None, false).await;
+    prepare_page_reply(&row).await;
+    let joined = call(&mut row.conn, row.next_id, op::AGENT_JOIN,
+        serde_json::json!({"workspace_id": row.ws, "handle": "replacement"})).await;
+    row.next_id += 1;
+    assert_eq!(joined.payload["ok"], true);
+    let res = page_reply(&mut row, HANDLE, "[sot-page] approve").await;
+    assert_eq!(res["outcome"], "refused", "{res}");
+    assert_eq!(res["detail"], "handle_changed");
+    assert!(!row.screen_has("[sot-page]").await);
+    assert!(received(&row).is_empty());
+    row.env.kill_daemon_bounded().await;
+}
+
+#[tokio::test]
+async fn a_page_reply_left_typed_is_never_entered_or_retried_by_the_wake() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_with("pr-unsent", None, false, &["echo-after=6"], &[]).await;
+    prepare_page_reply(&row).await;
+    let res = page_reply(&mut row, HANDLE, "[sot-page] approve").await;
+    assert_eq!(res["outcome"], "typed_not_sent", "{res}");
+    assert!(!res["detail"].as_str().unwrap().is_empty());
+    wait_for_screen(&mut row, "[sot-page] approve").await;
+    append_mail(&row.env, 1);
+    let res = page_reply(&mut row, HANDLE, "[sot-page] approve").await;
+    assert_eq!(res["outcome"], "not_free", "an identical draft cannot authorize Enter: {res}");
+    tokio::time::sleep(THREE_TICKS).await;
+    assert!(received(&row).is_empty(), "a later wake or reply sent the pending line");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// POST only offers a reply to its own window; even with a free row no bytes reach the pane.
+#[tokio::test]
+async fn a_page_reply_post_types_nothing() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let _serial = SERIAL.lock().await;
+    let mut row = start_with("pr-post", None, false, &[], &[("SOT_DOCS_PORT", "0"), ("SOT_VIDEO_PORT", "0")]).await;
+    prepare_page_reply(&row).await;
+    set_entry(&row.env, serde_json::json!({"host": TEST_STATE_HOST, "workspace_id": row.ws}));
+    let stream = try_connect(&row.env.socket_path).await.expect("own daemon");
+    let mut window = tokio::io::BufReader::new(stream);
+    let hello = sot_protocol::HelloReq { name: Some("fe@page-test".into()), instance: Some("reply-window".into()),
+        ..sot_protocol::HelloReq::this_process("page-test", "fe", Some("test-window".into())).unwrap() };
+    call(&mut window, 1, op::HELLO, serde_json::to_value(hello).unwrap()).await;
+    let page = row.env.workspace_project_root.join("index.html");
+    std::fs::write(&page, "<p>Reply fixture</p>").unwrap();
+    let opened = call(&mut window, 2, op::DOCS_OPEN, serde_json::json!({"path": page})).await;
+    let url = opened.payload["url"].as_str().expect("page URL");
+    let (host, path) = url.strip_prefix("http://").unwrap().split_once('/').unwrap();
+    let mut http = tokio::net::TcpStream::connect(host).await.unwrap();
+    let body = serde_json::json!({"verb": "reply", "handle": HANDLE, "text": "approve"}).to_string();
+    let request = format!("POST /{path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    http.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(BOUND, http.read_to_string(&mut response)).await.unwrap().unwrap();
+    assert!(response.starts_with("HTTP/1.1 202"), "{response}");
+    let offer = tokio::time::timeout(BOUND, async {
+        loop {
+            let (frame, _) = sot_protocol::codec::read_frame(&mut window).await.unwrap();
+            if frame.op == op::FE_COMMAND { break frame.payload; }
+        }
+    }).await.unwrap();
+    assert_eq!(offer["cmd"], "page_reply");
+    assert_eq!(offer["args"], serde_json::json!({"workspace": row.ws, "handle": HANDLE, "line": "[sot-page] approve"}));
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(received(&row).is_empty());
+    assert!(!row.screen_has("[sot-page]").await);
+    row.env.kill_daemon_bounded().await;
 }

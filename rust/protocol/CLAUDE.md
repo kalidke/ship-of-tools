@@ -44,7 +44,10 @@ name is in this crate's one op table.
 6. **The shared grammars have one parser.** The annotation header (two complete trimmed `---` fence lines, CRLF and
    indentation tolerated, an unclosed header has no hash, the body bytes kept); the physical scale (a string unit and
    a nonempty axes array of string names with finite positive `nm_per_px`); the loopback page URL; the video suffix
-   classification (the Julia twin is exercised against the same corpus).
+   classification (the Julia twin is exercised against the same corpus); page reply text (`page_reply::line` and
+   `check_line`). Reply text trims ASCII spaces, is nonempty and at most `MAX_TEXT` (512) UTF-8 bytes, and refuses
+   controls and the listed invisible formatting characters, naming the first code point. Every canonical line begins
+   with the one `MARK`, `[sot-page] `. `check_line` accepts exactly a canonical marked line, without rewriting it.
 
 7. **A frame write to a connection ends in an error rather than parking.** `reply::write_frame_to` fails after 10 s plus 1 s
    per MiB of blob (`write_frame_within` takes the bound), so a peer that stops draining cannot hold its writer; an
@@ -63,7 +66,7 @@ name is in this crate's one op table.
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
 names and every op's payload type (`ops/`, its page lists the families); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
-annotation, physical-scale, page-URL and video-suffix grammars; the daemon's frame writes and byte pipe (`reply.rs`:
+annotation, physical-scale, page-URL, video-suffix and page-reply grammars; the daemon's frame writes and byte pipe (`reply.rs`:
 `HandlerOutput`, `write_frame_to`, `write_frame_within`, `reject`; `pipe.rs`: `pipe_bidirectional`), which services take from
 here and never from the server. Owns no runtime state.
 
@@ -74,7 +77,7 @@ serde, serde_json, tokio (the async codec), tracing (the pipe's close log), and 
 `Frame`, `read_frame`, `read_envelope`, `write_frame` and their blocking forms, `ChildLines`, `blocking_child_lines`,
 `PROTOCOL_VERSION`, `HelloReq`/`HelloRes` and every op payload, `is_release_build`, `version_line`,
 `annotation::{split_frontmatter, synced_against}`, `physical_scale::{PhysicalScale, parse_physical_scale}`,
-`video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`; the shell twin `sot_hello_frame`
+`video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`, `page_reply::{MARK, MAX_TEXT, line, check_line}`; the shell twin `sot_hello_frame`
 (`comm/lib/comm-lib-client.sh`) and `scripts/sot-lease.ps1` follow the lease and hello shapes and are owned by them.
 
 ## Does not
@@ -92,7 +95,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 3 | defaulted growth, protocol integer | `ops/session_tests.rs`: `legacy_hello_req_defaults_to_preversioning`, `legacy_hello_res_defaults_to_preversioning`, `this_process_declares_the_protocol_the_version_and_the_os_account`; `lib_client_wire_tests.rs`: `the_shell_hello_is_this_protocols_hello`; `ops/lease_wire_tests.rs`: `fe_lease_res_defaults`; the integer's refusal at hello is `rust/backend/src/server/hello_protocol_gate_tests.rs` and `rust/backend/tests/admission.rs` (server's) |
 | 4 | lossy lines | `child_lines_tests.rs`: `every_byte_a_child_writes_reads_as_a_line` |
 | 5 | release predicate | `version_app_version_tests.rs`: `the_bare_version_and_the_release_predicate_never_disagree`, `clean_on_tag_is_the_bare_version_only_from_ci` |
-| 6 | grammars | `annotation_tests.rs`, `physical_scale_tests.rs`, `page_url_tests.rs`, `video_path_tests.rs` |
+| 6 | grammars | `annotation_tests.rs`, `physical_scale_tests.rs`, `page_url_tests.rs`, `video_path_tests.rs`, `page_reply_tests.rs::hostile_text_is_refused_and_plain_text_is_marked` |
 | 7 | a bounded frame write | `reply_tests.rs`: `write_frame_within_times_out_on_stuck_peer`, `write_timeout_is_not_confused_with_an_oversize_envelope`, `oversize_envelope_stays_downcastable_through_write_frame_within`, `write_frame_within_succeeds_on_healthy_peer`, `write_deadline_scales_with_blob_size` |
 | 8 | the byte pipe | `pipe_tests.rs`: `bytes_cross_both_ways_and_the_pipe_ends_when_the_client_closes`, `the_pipe_ends_when_the_upstream_closes_though_the_client_stays_open` |
 
@@ -108,6 +111,10 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 - `src/pipe.rs`: `pipe_bidirectional`, the raw byte pipe after a connect frame (the daemon's `proxy.connect` and `lane.connect`)
 - `src/reply.rs`: `HandlerOutput`, the bounded frame write and the error frame for a refused connect
 - `src/physical_scale.rs`: PhysicalScale, ScaleAxis and parse_physical_scale, shared by preview reads, writes and display.
+- `src/page_reply.rs`: the page-reply mark, byte cap and one text grammar, shared by HTTP offers and confirmed
+  delivery. `ops/pages.rs` holds `PageReplyReq { workspace_id, handle, line }` and `PageReplyRes { outcome, detail }`
+  for the new `page.reply` op. Older daemons refuse the unknown op; older windows drop `page_reply` commands, so no
+  protocol integer change is needed.
 - `src/page_url.rs`: the loopback page-URL grammar, one parser for the daemon's proxy allowlist and the window's page proxy, and the port rewrite the window's page proxy opens
 - `src/video_path.rs`: video_mime, the five ASCII-insensitive dotted suffixes, and Rust consumer fixtures matching the executed Julia matches corpus.
 - `src/version.rs`: the product version string and `is_release_build`
