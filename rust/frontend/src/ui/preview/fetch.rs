@@ -41,7 +41,7 @@ impl State {
     /// preview — the user is parked on the pinned node and the cursor
     /// is free to roam.
     pub(in crate::ui) fn maybe_fire_preview(&mut self) {
-        if self.pinned_preview_node_id.is_some() {
+        if self.nav_cursor.pinned().is_some() {
             return;
         }
         // `--capture-preview` runs must show the requested node, full stop.
@@ -52,7 +52,7 @@ impl State {
         if self.capture_preview_armed {
             return;
         }
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.nav.tree().rows().get(self.nav.tree().selected()) else {
             return;
         };
         // Files-mode rows are already keyed `files:<relpath>` — fire
@@ -66,7 +66,7 @@ impl State {
             if file.is_empty() {
                 None
             } else {
-                let rel = match &self.scan_project_root {
+                let rel = match self.nav.scan_project_root() {
                     Some(root) if !root.is_empty() => file
                         .strip_prefix(root)
                         .map(|s| s.trim_start_matches(['/', '\\']).to_string())

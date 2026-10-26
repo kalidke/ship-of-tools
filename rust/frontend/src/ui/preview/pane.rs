@@ -188,23 +188,23 @@ impl State {
     pub(in crate::ui) fn toggle_pin(&mut self) {
         // Pinned → unpin from anywhere, and move the cursor to the pinned node
         // if it's in the current tree (so the user sees what was pinned).
-        if let Some(pinned) = self.pinned_preview_node_id.take() {
-            if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == pinned) {
-                self.tree.selected = idx;
+        if let Some(pinned) = self.nav_cursor.take_pin() {
+            if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == pinned) {
+                self.nav.select(idx);
             }
             self.status = format!("unpinned · {pinned}");
             self.window.request_redraw();
             return;
         }
         // Nothing pinned → pin the cursor row (files: only).
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.nav.tree().rows().get(self.nav.tree().selected()) else {
             return;
         };
         let id = row.node.id.clone();
         if !id.starts_with("files:") {
             return;
         }
-        self.pinned_preview_node_id = Some(id.clone());
+        self.nav_cursor.pin(id.clone());
         self.status = format!("pinned · {id}");
         self.window.request_redraw();
     }

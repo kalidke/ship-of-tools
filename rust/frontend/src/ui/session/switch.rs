@@ -211,16 +211,14 @@ impl State {
         // and drive the cursor/preview to a same-relative-path file in the
         // wrong project (Codex review 2026-07-15). The first-visit badge-consume
         // below re-arms it for the new workspace when one is pending.
-        self.pending_switch_reveal = None;
+        self.reveal.cancel_root();
         // The in-flight deep-reveal bookkeeping is likewise the DEPARTING
         // workspace's: its awaited parent_id names a row in the departing
         // tree, and a same-string parent in the entering tree is a different
         // node. Clearing here is also what lets the TreeChildren park branch
         // skip abort logic entirely — an armed reveal's awaited parent always
         // belongs to the ACTIVE key.
-        self.pending_reveal = None;
-        self.reveal_awaiting = None;
-        self.reveal_refetched = None;
+        self.reveal.abort();
         // Leaving abandons the result attempt that owned the reveal; coming back starts a new one.
         self.result_ledger.release_reveal();
         // The preview-follow hold is the departing reveal's too: it names a
@@ -249,9 +247,9 @@ impl State {
         let restored = self.restore_workspace_ui(&key);
         if !restored {
             // First visit — start from a clean slate.
-            self.mode = Mode::Files;
+            self.nav.set_mode(Mode::Files);
             self.preview_requests.forget_fired();
-            self.pinned_preview_node_id = None;
+            self.nav_cursor.restore_pin(None);
             // Same invariant as the snapshot restore: a first-visited
             // workspace must not inherit the departing workspace's source,
             // its node, its calibration (a stale nm/px until the next wire
@@ -266,7 +264,7 @@ impl State {
             self.preview_concept = None;
             self.concept = None;
             self.preview_requests.reset_concept_follow();
-            clear_drift(&mut self.file_ast_hashes, &mut self.file_parse_fired, &mut self.file_parse_retry);
+            self.drift.clear();
             self.edit_state = None;
             self.preview_edit = None;
         }
@@ -284,8 +282,8 @@ impl State {
         self.swap_active_tree(old_tree_key, new_tree_key);
         // First visit to this (mode, workspace) — nothing parked — so fire
         // the mode's loader to fill the empty view.
-        if self.tree.rows.is_empty() {
-            match self.mode {
+        if self.nav.tree().rows().is_empty() {
+            match self.nav.mode() {
                 Mode::Files => {
                     tracing::info!("tree.root requested: workspace switch (empty Files slot)");
                     if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeRoot {
@@ -320,7 +318,7 @@ impl State {
                     self.select_active_host();
                 }
             }
-        } else if self.mode == Mode::Files {
+        } else if self.nav.mode() == Mode::Files {
             // Revisit: the parked Files tree came back as it was left, and
             // nothing could have updated it meanwhile (watcher refreshes
             // reach only the active view). Re-list its open dirs so files

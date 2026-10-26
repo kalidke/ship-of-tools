@@ -122,7 +122,7 @@ impl State {
         self.parked_views.park(
             key,
             WorkspaceUiSnapshot {
-                mode: self.mode,
+                mode: self.nav.mode(),
                 // (tree + scroll deliberately absent — they stash into
                 // `tree_store` under their own key in switch_to_workspace.)
                 // Host dropped — redundant with this snapshot's own WsKey
@@ -130,7 +130,7 @@ impl State {
                 // at snapshot time.
                 bl_pane_target: self.agent_pane.snapshot_target(),
                 preview_node_id_fired: self.preview_requests.fired_target().map(str::to_owned),
-                pinned_preview_node_id: self.pinned_preview_node_id.clone(),
+                pinned_preview_node_id: self.nav_cursor.pinned().clone(),
                 source: self.preview_source.clone(),
                 figure_failed: self.figure_failed.clone(),
                 concept: self.concept.clone(),
@@ -154,7 +154,7 @@ impl State {
         // it here from a per-workspace blob is exactly what used to hand
         // back a foreign tree (Codex R4). Only the mode is restored, so the
         // caller's post-restore key computation picks the right slot.
-        self.mode = snap.mode;
+        self.nav.set_mode(snap.mode);
         // focus is global across workspaces — don't restore. The user
         // expects pane focus to follow their last interaction regardless
         // of which workspace is active.
@@ -163,7 +163,7 @@ impl State {
         // name always belonged to it.
         self.agent_pane.restore_snapshot_target(key.0.clone(), snap.bl_pane_target);
         self.preview_requests.restore_fired(snap.preview_node_id_fired);
-        self.pinned_preview_node_id = snap.pinned_preview_node_id;
+        self.nav_cursor.restore_pin(snap.pinned_preview_node_id);
         // preview_concept gets re-shaped on the next frame by the
         // cursor-tracking concept.read path (memo cleared below). The
         // backing concept data is restored so the drift badge keeps
@@ -173,7 +173,7 @@ impl State {
         self.preview_requests.reset_concept_follow();
         // Not snapshotted: while this workspace was parked the daemon sent no `preview.changed` for it, so a
         // cached hash may be of bytes since edited. Each file parses again at its next view.
-        clear_drift(&mut self.file_ast_hashes, &mut self.file_parse_fired, &mut self.file_parse_retry);
+        self.drift.clear();
         // Restore the edit modal — including dirty/discard/stale
         // banners — and re-shape its preview from the buffer.
         self.edit_state = snap.edit_state;

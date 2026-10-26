@@ -33,7 +33,7 @@ impl State {
             tracing::warn!(error = %e, "drop nav.toggle_hidden — channel closed");
             return;
         }
-        if matches!(self.mode, Mode::Files) {
+        if matches!(self.nav.mode(), Mode::Files) {
             tracing::info!("tree.root requested: toggle_hidden refresh");
             if let Err(e) = self.send(OutgoingReq::TreeRoot {
                 mode: "files".to_string(),
@@ -51,8 +51,7 @@ impl State {
                 // via the empty-slot loader gate. Without this, a populated
                 // parked slot dropped the reply and the stale visibility
                 // stuck until a manual reload.
-                self.tree = TreeView::new();
-                self.tree_scroll = 0;
+                self.nav.clear_active();
             }
         }
     }
@@ -69,12 +68,12 @@ impl State {
     /// expanded / a different workspace's path), in which case the reply's
     /// `apply_children` would ignore the unknown parent anyway.
     pub(in crate::ui) fn refresh_tree_dir_if_expanded(&mut self, dir_id: &str) {
-        if self.mode != Mode::Files {
+        if self.nav.mode() != Mode::Files {
             return;
         }
         let shown_expanded = self
-            .tree
-            .rows
+            .nav.tree()
+            .rows()
             .iter()
             .any(|r| r.node.id == dir_id && r.expanded);
         if !shown_expanded {
@@ -99,7 +98,7 @@ impl State {
     /// cursor survive, rows re-anchor by node id, so a preview of a file
     /// created while the tree was parked keeps a row to sit on.
     pub(in crate::ui) fn refresh_restored_files_tree(&mut self) {
-        for dir_id in expanded_files_dirs(&self.tree.rows) {
+        for dir_id in expanded_files_dirs(&self.nav.tree().rows()) {
             if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
                 parent_id: dir_id.clone(),
                 workspace_id: self.selected.workspace_id().clone(),

@@ -17,7 +17,7 @@ fn hosts_tree_refresh_keeps_the_cursor_on_the_host_it_was_on() {
             node("hosts:beta", "beta", false),
         ],
     );
-    t.selected = 2; // cursor on "beta", not the active host
+    t.select(2); // cursor on "beta", not the active host
                     // A refresh re-seeds the same root -- no cursor repositioning,
                     // just the id-based reanchor `set_root` already does.
     t.set_root(
@@ -27,7 +27,7 @@ fn hosts_tree_refresh_keeps_the_cursor_on_the_host_it_was_on() {
             node("hosts:beta", "beta", false),
         ],
     );
-    assert_eq!(t.rows[t.selected].node.id, "hosts:beta");
+    assert_eq!(t.rows()[t.selected()].node.id, "hosts:beta");
 }
 
 #[test]
@@ -47,10 +47,10 @@ fn expand_hosts_root_repopulates_after_collapse_then_reexpand() {
         node("hosts:", "hosts", true),
         vec![node("hosts:local", "local", false)],
     );
-    t.selected = 0;
+    t.select(0);
     assert!(t.collapse_selected());
-    assert_eq!(t.rows.len(), 1);
-    assert!(!t.rows[0].expanded);
+    assert_eq!(t.rows().len(), 1);
+    assert!(!t.rows()[0].expanded);
 
     let fresh = vec![
         node("hosts:local", "local", false),
@@ -58,10 +58,10 @@ fn expand_hosts_root_repopulates_after_collapse_then_reexpand() {
     ];
     assert!(expand_hosts_root(&mut t, Mode::Hosts, fresh));
     assert_eq!(
-        t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+        t.rows().iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
         vec!["hosts:", "hosts:local", "hosts:beta"]
     );
-    assert!(t.rows[0].expanded);
+    assert!(t.rows()[0].expanded);
 }
 
 #[test]
@@ -76,22 +76,22 @@ fn expand_hosts_root_declines_outside_mode_hosts_or_off_the_root_row() {
         node("hosts:", "hosts", true),
         vec![node("hosts:local", "local", false)],
     );
-    wrong_mode.selected = 0;
+    wrong_mode.select(0);
     assert!(wrong_mode.collapse_selected());
     assert!(!expand_hosts_root(
         &mut wrong_mode,
         Mode::Sessions,
         vec![node("hosts:local", "local", false)],
     ));
-    assert_eq!(wrong_mode.rows.len(), 1, "declined -- stays collapsed");
-    assert!(!wrong_mode.rows[0].expanded);
+    assert_eq!(wrong_mode.rows().len(), 1, "declined -- stays collapsed");
+    assert!(!wrong_mode.rows()[0].expanded);
 
     let mut off_root = TreeView::new();
     off_root.set_root(
         node("hosts:", "hosts", true),
         vec![node("hosts:local", "local", false)],
     );
-    off_root.selected = 1; // on the child row, not the root
+    off_root.select(1); // on the child row, not the root
     assert!(!expand_hosts_root(
         &mut off_root,
         Mode::Hosts,

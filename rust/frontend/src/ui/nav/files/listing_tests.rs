@@ -11,17 +11,17 @@ fn expanded_files_dirs_lists_root_and_open_subdirs_only() {
             node("files:a.jl", "a.jl", false),
         ],
     );
-    t.rows[1].expanded = true;
+    t.mark_expanded("files:src");
     t.apply_children("files:src", vec![node("files:src/x.jl", "x.jl", false)]);
     // Root + the one open subdir; the collapsed `docs` and every file
     // row stay out (a refresh must not reopen a closed dir).
-    assert_eq!(expanded_files_dirs(&t.rows), vec!["files:", "files:src"]);
+    assert_eq!(expanded_files_dirs(&t.rows()), vec!["files:", "files:src"]);
     // Collapsing everything leaves nothing to refresh — the user closed it.
-    t.rows[0].expanded = false;
-    t.rows[1].expanded = false;
-    assert!(expanded_files_dirs(&t.rows).is_empty());
+    t.select(0);
+    t.collapse_selected();
+    assert!(expanded_files_dirs(&t.rows()).is_empty());
     // A parked non-Files tree (session rows) never triggers a Files refresh.
     let mut s = TreeView::new();
     s.set_root(node("sessions:", "hosts", true), vec![node("session_host:a", "a", true)]);
-    assert!(expanded_files_dirs(&s.rows).is_empty());
+    assert!(expanded_files_dirs(&s.rows()).is_empty());
 }

@@ -57,7 +57,7 @@ impl ApplicationHandler for App {
                 // request now so the chrome's initial render is the
                 // unified Modules/Types tree. Mostly for `--capture`,
                 // where we can't inject `m` mid-run.
-                if state.mode == Mode::Modules {
+                if state.nav.mode() == Mode::Modules {
                     let generation = state
                         .next_project_scan_gen(state.selected.host().clone(), state.selected.workspace_id().clone());
                     if let Err(e) = state.send(OutgoingReq::ProjectScan {

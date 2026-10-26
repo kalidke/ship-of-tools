@@ -108,24 +108,12 @@ impl State {
         // ADR-0017 resume can restore the active ws BY SLUG pre-learn); a
         // slug-keyed marker left behind would let the README default fire a
         // second time and yank the cursor (codex r4).
-        if self.nav_readme_defaulted.remove(&from_key) {
-            self.nav_readme_defaulted.insert(to_key.clone());
-        }
-        for mode in [Mode::Files, Mode::Modules] {
-            let from = (mode, TreeScope::Workspace(from_key.clone()));
-            if let Some(slot) = self.tree_store.take(&from) {
-                let to = (mode, TreeScope::Workspace(to_key.clone()));
-                match self.tree_store.take(&to) {
-                    None => self.tree_store.stash(to, slot),
-                    Some(existing) => {
-                        // Target existed — the default-keyed slot wins; put
-                        // it back and drop the slug-keyed one.
-                        self.tree_store.stash(to, existing);
-                        tracing::debug!(?mode, %slug, %host,
-                            "learn-migration: dropped slug-keyed tree slot (default-keyed slot exists)");
-                    }
-                }
-            }
+        self.nav_cursor.migrate_root_marker(&from_key, to_key.clone());
+        // A target that exists wins: the default-keyed slot stays and the
+        // slug-keyed one is dropped.
+        for mode in self.nav.migrate_workspace(&from_key, &to_key) {
+            tracing::debug!(?mode, %slug, %host,
+                "learn-migration: dropped slug-keyed tree slot (default-keyed slot exists)");
         }
     }
 }

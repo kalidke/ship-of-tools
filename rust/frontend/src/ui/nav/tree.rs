@@ -103,8 +103,8 @@ fn suppress_collapsed_subtrees(
 
 #[derive(Clone, Default)]
 pub(in crate::ui) struct TreeView {
-    pub(in crate::ui) rows: Vec<TreeRow>,
-    pub(in crate::ui) selected: usize,
+    rows: Vec<TreeRow>,
+    selected: usize,
     /// Bumped on every CONTENT mutation (set_root / set_flat /
     /// apply_children). The nav-spill trigger compares it across frames to
     /// tell a USER cursor move (selected changed, content same) from a
@@ -113,7 +113,7 @@ pub(in crate::ui) struct TreeView {
     /// cursor) — only the former arms the spill (codex review: the old
     /// first-frame-only boot suppression made startup spill
     /// timing-dependent).
-    pub(in crate::ui) generation: u64,
+    generation: u64,
 }
 
 impl TreeView {
@@ -122,6 +122,43 @@ impl TreeView {
             rows: Vec::new(),
             selected: 0,
             generation: 0,
+        }
+    }
+
+    pub(in crate::ui) fn rows(&self) -> &[TreeRow] { &self.rows }
+    pub(in crate::ui) fn selected(&self) -> usize { self.selected }
+    pub(in crate::ui) fn generation(&self) -> u64 { self.generation }
+
+    /// Put the cursor on row `idx`, which the caller found in `rows()`.
+    pub(in crate::ui) fn select(&mut self, idx: usize) {
+        self.selected = idx;
+    }
+
+    /// Put the cursor on row `n`, or the last row when the tree is shorter.
+    pub(in crate::ui) fn select_clamped(&mut self, n: usize) {
+        self.selected = n.min(self.rows.len().saturating_sub(1));
+    }
+
+    /// Mark the cursored row expanded at request time, so its children reply is accepted (`apply_children`).
+    pub(in crate::ui) fn mark_selected_expanded(&mut self) {
+        if let Some(r) = self.rows.get_mut(self.selected) {
+            r.expanded = true;
+        }
+    }
+
+    /// Mark the row with node id `id` expanded at request time.
+    pub(in crate::ui) fn mark_expanded(&mut self, id: &str) {
+        if let Some(r) = self.rows.iter_mut().find(|r| r.node.id == id) {
+            r.expanded = true;
+        }
+    }
+
+    /// Patch the root row's label (a restored Files tree shows the active row's current label).
+    pub(in crate::ui) fn relabel_root(&mut self, root_id: &str, label: String) {
+        if let Some(root) = self.rows.first_mut() {
+            if root.node.id == root_id {
+                root.node.label = label;
+            }
         }
     }
 
@@ -362,7 +399,7 @@ impl State {
         // in `workspace_lists` — no wire round-trip needed to expand one.
         // Declines (returns false, falls through below) for any other row
         // kind. Checked before `row` is bound below — both need to inspect
-        // `self.tree.rows`, and this one also needs `&mut self`.
+        // `self.nav.tree().rows`, and this one also needs `&mut self`.
         if self.try_expand_session_host_local() {
             return true;
         }
@@ -376,7 +413,7 @@ impl State {
         if self.try_expand_hosts_root_local() {
             return true;
         }
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.nav.tree().rows.get(self.nav.tree().selected) else {
             return false;
         };
         if !row.node.has_children || row.expanded {
@@ -466,9 +503,7 @@ impl State {
             // suppresses subtrees of currently-collapsed ids and set_root
             // keeps a collapsed same-id root collapsed, so a Left between
             // request and reply wins there too (codex review, round 3).
-            if let Some(r) = self.tree.rows.get_mut(self.tree.selected) {
-                r.expanded = true;
-            }
+            self.nav.mark_selected_expanded();
             return true;
         }
         false
@@ -481,14 +516,14 @@ impl State {
     /// collapse outranks a driven reveal; the preview body already showed.
     pub(in crate::ui) fn collapse_selected_row(&mut self) -> bool {
         let collapsed_id = self
-            .tree
+            .nav.tree()
             .rows
-            .get(self.tree.selected)
+            .get(self.nav.tree().selected)
             .map(|r| r.node.id.clone());
-        if !self.tree.collapse_selected() {
+        if !self.nav.collapse_selected() {
             return false;
         }
-        if let (Some(id), Some(target)) = (collapsed_id, self.pending_reveal.as_ref()) {
+        if let (Some(id), Some(target)) = (collapsed_id, self.reveal.target()) {
             // A ROOT id is `<mode>:` with an EMPTY rest ("files:") — not
             // merely ends-with-':' (codex round 4: a directory literally
             // named "ab:" yields id "files:ab:", and an ends-with test would
@@ -496,16 +531,14 @@ impl State {
             // Deeper ids scope with '/'.
             let is_root = id.split_once(':').is_some_and(|(_, rest)| rest.is_empty());
             let scoped = if is_root {
-                target != &id && target.starts_with(&id)
+                target != id.as_str() && target.starts_with(&id)
             } else {
                 target.starts_with(&format!("{id}/"))
             };
             if scoped {
                 tracing::info!(collapsed = %id, target = %target,
                     "reveal: cancelled by user collapse of an ancestor");
-                self.pending_reveal = None;
-                self.reveal_awaiting = None;
-                self.reveal_refetched = None;
+                self.reveal.abort();
             }
         }
         true

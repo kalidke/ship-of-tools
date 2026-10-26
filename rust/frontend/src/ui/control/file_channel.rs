@@ -15,7 +15,7 @@ impl State {
         let Some(path) = fe_state_path() else {
             return;
         };
-        let mode = self.mode.label();
+        let mode = self.nav.mode().label();
         let focus = match self.focus_prompts.focus() {
             PaneFocus::NavTree => "nav",
             PaneFocus::Preview => "preview",

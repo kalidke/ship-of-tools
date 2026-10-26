@@ -84,9 +84,9 @@ impl State {
     pub(in crate::ui) fn acknowledge_presented_result(&mut self) {
         let target = self.active_result_workspace();
         let cursor = self
-            .tree
-            .rows
-            .get(self.tree.selected)
+            .nav.tree()
+            .rows()
+            .get(self.nav.tree().selected())
             .map(|row| row.node.id.clone());
         let shown = self.preview_source.node_id().map(str::to_owned);
         let effects = self.result_ledger.acknowledge_presented(
@@ -103,10 +103,7 @@ impl State {
     /// Apply navigation cleanup before committing a prepared directory replacement or bouncing rows.
     pub(in crate::ui) fn apply_result_effects(&mut self, effects: ResultEffects) {
         if effects.clear_reveal {
-            self.pending_reveal = None;
-            self.pending_switch_reveal = None;
-            self.reveal_awaiting = None;
-            self.reveal_refetched = None;
+            self.reveal.clear();
             self.preview_requests.abort_reveal();
         }
         if effects.refresh_badges {

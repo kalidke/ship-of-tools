@@ -96,7 +96,7 @@ pub(in crate::ui) fn picker_key(state: &mut State, key: KeyPress<'_>) -> Control
 }
 
 pub(in crate::ui) fn session_enter_key(state: &mut State) -> ControlFlow<()> {
-    let row = state.tree.rows.get(state.tree.selected);
+    let row = state.nav.tree().rows().get(state.nav.tree().selected());
     let kind = row.map(|r| r.node.kind.clone());
     match kind.as_deref() {
         Some("session_create") => {
@@ -149,7 +149,7 @@ pub(in crate::ui) fn session_enter_key(state: &mut State) -> ControlFlow<()> {
 }
 
 pub(in crate::ui) fn session_destroy_key(state: &mut State, was_destroy_pending: Option<WsKey>) -> ControlFlow<()> {
-    let Some(row) = state.tree.rows.get(state.tree.selected) else {
+    let Some(row) = state.nav.tree().rows().get(state.nav.tree().selected()) else {
         return Break(());
     };
     if row.node.kind != "session" {

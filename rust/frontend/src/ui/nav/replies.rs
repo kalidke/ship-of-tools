@@ -31,13 +31,13 @@ impl State {
             return;
         }
         let awaited = |state: &Self, request: &ResultTreeRequest| match request {
-            ResultTreeRequest::Root => state.pending_switch_reveal.is_some(),
+            ResultTreeRequest::Root => state.reveal.root_target().is_some(),
             ResultTreeRequest::Children { parent_id } => {
-                state.pending_reveal.is_some()
-                    && (state.reveal_awaiting.as_deref() == Some(parent_id.as_str())
+                state.reveal.target().is_some()
+                    && (state.reveal.awaiting() == Some(parent_id.as_str())
                         || state
-                            .reveal_refetched
-                            .as_ref()
+                            .reveal
+                            .refetched()
                             .is_some_and(|(_, anc)| anc == parent_id))
             }
         };
@@ -65,10 +65,7 @@ impl State {
                 if awaited(self, &request) {
                     tracing::info!(?request, %error, "result tree request FAILED — reveal aborted");
                     self.status = format!("result tree failed · {error}");
-                    self.pending_reveal = None;
-                    self.pending_switch_reveal = None;
-                    self.reveal_awaiting = None;
-                    self.reveal_refetched = None;
+                    self.reveal.clear();
                     self.preview_requests.abort_reveal();
                     self.result_ledger.release_reveal();
                     self.window.request_redraw();
@@ -113,18 +110,16 @@ impl State {
             // since non-empty slots skip the loader). A richer
             // parked tree wins; drop the reply like the old
             // guard did.
-            let slot = self.tree_store.slot_mut(reply_key.clone());
-            if slot.view.rows.is_empty() || slot.from_reply {
-                // Empty, or holding an EARLIER parked reply —
-                // replies are server-ordered, newest wins (the
-                // double-toggle race, codex r5). Only user-
-                // stashed state (from_reply=false) is sacred.
+            // Parked when the slot is empty, or holding an EARLIER
+            // parked reply — replies are server-ordered, newest wins
+            // (the double-toggle race, codex r5). Only user-stashed
+            // state is sacred.
+            if self.nav.parks_reply(&reply_key) {
                 tracing::info!(
                     ?reply_key,
                     "tree.root parked into its slot (not the active view)"
                 );
-                slot.view.set_root(root, children);
-                slot.from_reply = true;
+                self.nav.park_root(reply_key, root, children);
             } else {
                 tracing::info!(
                     ?reply_key,
@@ -138,11 +133,11 @@ impl State {
         // request origin is traced too, so an unexpected
         // collapse names its trigger in the log.
         tracing::info!(
-            rows_before = self.tree.rows.len(),
+            rows_before = self.nav.tree().rows().len(),
             new_children = children.len(),
             "tree.root applied — nav tree rebuilt (set_root)"
         );
-        self.tree.set_root(root, children);
+        self.nav.set_root(root, children);
         // Reconnect nav restore (2026-07-11): if this root is the
         // hello/reconnect rebuild, re-reveal the pre-reconnect
         // cursor through the reveal machinery — its ancestor path
@@ -150,19 +145,17 @@ impl State {
         // the exact row (preview re-anchors on landing). Consumed
         // once; discarded when the workspace changed in between
         // (a switch's fresh tree must not chase the old path).
-        if let Some((armed_ws, sel)) = self.restore_nav_after_resume.take() {
+        if let Some((armed_ws, sel)) = self.nav_cursor.take_resume_restore() {
             if armed_ws == *self.selected.workspace_id() {
                 tracing::info!(target = %sel,
                     "resume: restoring nav cursor after reconnect rebuild");
                 self.preview_requests.arm_driven_hold(self
-                    .tree
-                    .rows
-                    .get(self.tree.selected)
+                    .nav.tree()
+                    .rows()
+                    .get(self.nav.tree().selected())
                     .map(|r| r.node.id.clone()));
                 self.result_ledger.release_reveal();
-                self.pending_reveal = Some(sel);
-                self.reveal_awaiting = None;
-                self.reveal_refetched = None;
+                self.reveal.start(sel);
                 self.drive_reveal_step(None);
             } else {
                 tracing::info!(?armed_ws, active = ?self.selected.workspace_id(),
@@ -177,10 +170,10 @@ impl State {
         // isn't loaded yet just leaves the default cursor. A
         // CLI --start-selected below still overrides this.
         let mut resume_landed = false;
-        if let Some((id, scroll)) = self.pending_resume_nav.take() {
-            if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == id) {
-                self.tree.selected = idx;
-                self.tree_scroll = scroll;
+        if let Some((id, scroll)) = self.nav_cursor.take_resume_nav() {
+            if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == id) {
+                self.nav.select(idx);
+                self.nav.set_scroll(scroll);
                 resume_landed = true;
             }
         }
@@ -196,17 +189,17 @@ impl State {
         // the first-row "pretend we already fired" suppression
         // below only holds while the cursor stays on row 0.
         let ws_key = self.active_ws_key();
-        let readme_default = matches!(self.mode, Mode::Files)
+        let readme_default = matches!(self.nav.mode(), Mode::Files)
             && self.capture_preview.is_none()
-            && self.nav_readme_defaulted.insert(ws_key);
+            && self.nav_cursor.first_root_for(ws_key);
         if !resume_landed && readme_default {
             if let Some(idx) = self
-                .tree
-                .rows
+                .nav.tree()
+                .rows()
                 .iter()
                 .position(|r| r.node.label.eq_ignore_ascii_case("readme.md"))
             {
-                self.tree.selected = idx;
+                self.nav.select(idx);
             }
         }
         self.consume_files_root_one_shots(result_owned);
@@ -217,9 +210,9 @@ impl State {
         // event matches our startup mode; otherwise the files-
         // mode `tree.root` that always fires at connect would
         // eat the selection meant for the modules tree.
-        if matches!(self.mode, Mode::Files) {
-            if let Some(n) = self.pending_initial_selection.take() {
-                self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
+        if matches!(self.nav.mode(), Mode::Files) {
+            if let Some(n) = self.nav_cursor.take_initial_selection() {
+                self.nav.select_clamped(n);
             }
             if let Some(rel) = self.capture_preview.take() {
                 let node_id = format!("files:{rel}");
@@ -259,23 +252,21 @@ impl State {
             if self.result_ledger.reveal_attempt().is_some() != result_owned {
                 return;
             }
-            if let Some(node_id) = self.pending_switch_reveal.take() {
+            if let Some(node_id) = self.reveal.take_root() {
                 // Hold the per-frame preview-follow off the just-applied
                 // README/default cursor while this deep reveal lands, so
                 // `maybe_fire_preview` can't clobber the driven badge
                 // preview with README (the post-relaunch badge-consume
                 // race — two repros 2026-06-30). Mirrors
                 // `drive_same_ws_open`; cleared on landing.
-                if !self.tree.rows.iter().any(|r| r.node.id == node_id) {
+                if !self.nav.tree().rows().iter().any(|r| r.node.id == node_id) {
                     self.preview_requests.arm_driven_hold(self
-                        .tree
-                        .rows
-                        .get(self.tree.selected)
+                        .nav.tree()
+                        .rows()
+                        .get(self.nav.tree().selected())
                         .map(|r| r.node.id.clone()));
                 }
-                self.pending_reveal = Some(node_id);
-                self.reveal_awaiting = None;
-                self.reveal_refetched = None;
+                self.reveal.start(node_id);
                 self.drive_reveal_step(None);
             }
         }
@@ -312,10 +303,7 @@ impl State {
         if reply_key != self.active_tree_key() {
             tracing::info!(?workspace_id, active = ?self.selected.workspace_id(),
                 %parent_id, "tree.children parked into its own slot");
-            self.tree_store
-                .slot_mut(reply_key)
-                .view
-                .apply_children(&parent_id, children);
+            self.nav.park_children(reply_key, &parent_id, children);
             // No reveal-abort here: switch_to_workspace clears the
             // reveal bookkeeping, so an armed reveal's awaited
             // parent always belongs to the ACTIVE key — a parked
@@ -324,11 +312,11 @@ impl State {
             // node; aborting on it was the cross-key bug).
             return;
         }
-        self.tree.apply_children(&parent_id, children);
+        self.nav.apply_children(&parent_id, children);
         // Advance an in-flight deep-path reveal: this splice may have
         // just made the next ancestor (or the target row) visible.
         // No-op when no reveal is armed.
-        if self.pending_reveal.is_some() {
+        if self.reveal.target().is_some() {
             tracing::info!(%parent_id, "reveal: re-entering after children splice");
         }
         // A result's reveal advances only on its own attempt's reply, and an in-place one never on a result's.
@@ -368,11 +356,11 @@ impl State {
         tracing::info!(%parent_id, %error, "tree.children FAILED");
         self.status = format!("tree expand failed · {parent_id}: {error}");
         let refetch_gated = self
-            .reveal_refetched
-            .as_ref()
+            .reveal
+            .refetched()
             .is_some_and(|(_, anc)| anc == &parent_id);
         if self.result_ledger.reveal_attempt().is_none()
-            && (self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) || refetch_gated)
+            && (self.reveal.awaiting() == Some(parent_id.as_str()) || refetch_gated)
         {
             // Covers BOTH wait states (codex round 4): a failed
             // reply for the awaited level OR for the force-
@@ -380,9 +368,7 @@ impl State {
             // gated forever (only that dir's reply advances the
             // walk now).
             tracing::info!(%parent_id, "reveal: aborted — awaited children failed");
-            self.pending_reveal = None;
-            self.reveal_awaiting = None;
-            self.reveal_refetched = None;
+            self.reveal.abort();
         }
         self.window.request_redraw();
     }
@@ -406,11 +392,7 @@ impl State {
         // its own key. Per-key (not global) because scans for
         // DIFFERENT workspaces are independently valid in
         // flight together; see `next_project_scan_gen`.
-        let latest = self
-            .project_scan_req_gen
-            .get(&(event_host.clone(), workspace_id.clone()))
-            .copied()
-            .unwrap_or(0);
+        let latest = self.nav_cursor.latest_scan(&event_host, &workspace_id);
         if generation != latest {
             tracing::debug!(?workspace_id, generation, latest, %event_host,
                 "drop stale project.scan reply");
@@ -443,18 +425,14 @@ impl State {
         if reply_key != self.active_tree_key() {
             tracing::info!(?reply_key, active = ?self.active_tree_key(),
                 "project.scan parked into its own slot (not the active view)");
-            let slot = self.tree_store.slot_mut(reply_key);
-            slot.view.set_flat(rows);
-            slot.scan_project_root = project_root;
-            slot.from_reply = true;
+            self.nav.park_scan(reply_key, rows, project_root);
             return;
         }
-        self.scan_project_root = project_root;
-        self.tree.set_flat(rows);
+        self.nav.install_scan(rows, project_root);
         // Key match implies Modules mode — the old mode gate on
         // this consume is subsumed.
-        if let Some(n) = self.pending_initial_selection.take() {
-            self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
+        if let Some(n) = self.nav_cursor.take_initial_selection() {
+            self.nav.select_clamped(n);
         }
     }
 
@@ -466,7 +444,7 @@ impl State {
     ) {
         // Record the failure; the retry gate in
         // maybe_fire_concept_read re-arms after a backoff. Do
-        // NOT un-latch `file_parse_fired` here — an instant
+        // NOT un-latch the parse latch here — an instant
         // un-latch let the redraw loop re-fire every frame
         // against a fast-failing kernel (the ~4.7k req/s storm).
         //
@@ -482,12 +460,7 @@ impl State {
             self.reply_ws_key(workspace_id.as_deref()),
         );
         if failed_ws_key == self.active_ws_key() {
-            let e = self
-                .file_parse_retry
-                .entry(path)
-                .or_insert((std::time::Instant::now(), 0));
-            e.0 = std::time::Instant::now();
-            e.1 += 1;
+            self.drift.record_failure(path);
         }
     }
 
@@ -516,7 +489,7 @@ impl State {
         // skipped insert isn't lost: the owning workspace's
         // restore clears the cache and re-fires on view.
         if reply_ws_key == self.active_ws_key() {
-            install_parsed_hash(&path, ast_hash, &mut self.file_ast_hashes, &self.file_parse_fired, &mut self.file_parse_retry);
+            self.drift.install(&path, ast_hash);
         }
         // If a module row's payload.path matches, synthesize
         // child TreeNodes from the parsed definitions and
@@ -535,18 +508,20 @@ impl State {
         let splice_active = reply_key == self.active_tree_key();
         let module_id = {
             let view = if splice_active {
-                &self.tree
+                Some(self.nav.tree())
             } else {
-                &self.tree_store.slot_mut(reply_key.clone()).view
+                self.nav.parked(&reply_key)
             };
-            view.rows
-                .iter()
-                .find(|r| {
-                    r.node.kind == "module"
-                        && r.node.payload.get("path").and_then(|v| v.as_str())
-                            == Some(path.as_str())
-                })
-                .map(|r| r.node.id.clone())
+            view.and_then(|view| {
+                view.rows()
+                    .iter()
+                    .find(|r| {
+                        r.node.kind == "module"
+                            && r.node.payload.get("path").and_then(|v| v.as_str())
+                                == Some(path.as_str())
+                    })
+                    .map(|r| r.node.id.clone())
+            })
         };
         if let Some(parent_id) = module_id {
             // Strip the `modules:` prefix to recover the module
@@ -589,12 +564,9 @@ impl State {
                 })
                 .collect();
             if splice_active {
-                self.tree.apply_children(&parent_id, kids);
+                self.nav.apply_children(&parent_id, kids);
             } else {
-                self.tree_store
-                    .slot_mut(reply_key)
-                    .view
-                    .apply_children(&parent_id, kids);
+                self.nav.park_children(reply_key, &parent_id, kids);
             }
         }
     }
@@ -625,11 +597,11 @@ impl State {
         let splice_active = reply_key == self.active_tree_key();
         let exists = {
             let view = if splice_active {
-                &self.tree
+                Some(self.nav.tree())
             } else {
-                &self.tree_store.slot_mut(reply_key.clone()).view
+                self.nav.parked(&reply_key)
             };
-            view.rows.iter().any(|r| r.node.id == parent_id)
+            view.is_some_and(|view| view.rows().iter().any(|r| r.node.id == parent_id))
         };
         if !exists {
             tracing::debug!(
@@ -663,12 +635,9 @@ impl State {
             })
             .collect();
         if splice_active {
-            self.tree.apply_children(&parent_id, kids);
+            self.nav.apply_children(&parent_id, kids);
         } else {
-            self.tree_store
-                .slot_mut(reply_key)
-                .view
-                .apply_children(&parent_id, kids);
+            self.nav.park_children(reply_key, &parent_id, kids);
         }
     }
 }

@@ -89,7 +89,7 @@ impl State {
         if event_host == *self.selected.host() {
             // Changes made while the connection was down were never sent: the drift cache and the cursored
             // annotation read are of unknown age, so each file parses (and the annotation reads) again on view.
-            clear_drift(&mut self.file_ast_hashes, &mut self.file_parse_fired, &mut self.file_parse_retry);
+            self.drift.clear();
             self.preview_requests.reset_concept_follow();
             // Carry the resumed active workspace across the
             // reconnect (right after `hello` succeeds — this
@@ -117,8 +117,7 @@ impl State {
                     read: false,
                 },
             );
-            let had_batch = self.upload_batch.take().is_some();
-            if self.upload.take().is_some() || had_batch {
+            if self.file_ops.interrupt() {
                 self.status =
                     format!("upload interrupted by reconnect — {} to retry", self.bindings.first_label(Action::Upload));
                 self.notify_sticky_until =
@@ -130,7 +129,7 @@ impl State {
             // we restored into a different mode — or restored into
             // Files but with an `active_workspace_id` set (ADR
             // 0014) — fire the right request now.
-            match self.mode {
+            match self.nav.mode() {
                 // ADR 0042 L2a codex review, item A: no separate
                 // fetch here — the unconditional per-Connected
                 // send_to(&event_host, WorkspaceList) above
@@ -161,16 +160,15 @@ impl State {
                     // transport's hello-time default fetch). Captured
                     // NOW, while the pre-reconnect tree is intact.
                     if let Some(sel) = self
-                        .tree
-                        .rows
-                        .get(self.tree.selected)
+                        .nav.tree()
+                        .rows()
+                        .get(self.nav.tree().selected())
                         .map(|r| r.node.id.clone())
                         .filter(|id| id.starts_with("files:") && id != "files:")
                     {
                         tracing::info!(selected = %sel,
                         "resume: arming nav cursor restore for the incoming tree.root");
-                        self.restore_nav_after_resume =
-                            Some((self.selected.workspace_id().clone(), sel));
+                        self.nav_cursor.arm_resume_restore(self.selected.workspace_id().clone(), sel);
                     }
                 }
                 Mode::Hosts => {
@@ -444,7 +442,7 @@ impl State {
                 // the store split orphaned them — drop the
                 // destroyed workspace's Files/Modules slots so a
                 // same-slug recreate starts clean (codex r2 #3).
-                self.tree_store.purge_workspace(&ws_key);
+                self.nav.purge_workspace(&ws_key);
                 let destroyed_key: WsKey = (event_host.clone(), info.slug.clone());
                 self.row_presentation.forget_destroyed_metadata(&destroyed_key);
                 let tmux_note = if info.tmux_killed {

@@ -15,6 +15,11 @@ follow commitment, the driven-preview hold, and the crop, scale-save and `--roi`
 `session::ParkedViews` owns the rows' parked views (`WorkspaceUiSnapshot`), keyed by row.
 `session::SelectedRow` owns the selected `(host, workspace)`, its read-mark dwell, the destroy confirm and a create's
 request time; `session::WorkspacePicker` owns the new-session picker's listing, cursor and account choice.
+`nav::NavCursor` owns the nav cursor's settle debounce, startup/relaunch/reconnect placements, README default, pin and
+project-scan clock; `nav::TreeView` owns a tree's rows, cursor and content generation; `nav::Navigation` owns the
+active tree, its mode, scroll and scan root, and the store of parked trees; `nav::RevealWalk` owns the reveal walk's
+target, awaited level, refresh memo and root-armed target; `nav::FileOps` owns the pending create and delete and the
+upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -138,6 +143,43 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   path, accounts only from that host with the first selected, and Tab cycles in range, so the native account fixture
   reaches each choice through the reply and Tab; an out-of-range index is the portable test's. The presence clock
   (`PresenceClock`) stays its own private-field value on State.
+- `NavCursor` privately owns where the nav cursor lands and when its follow fires. Each frame asks it whether the
+  cursor has sat still for `NAV_FIRE_DEBOUNCE`; a move restarts the wait, and a settled cursor lets the concept and
+  preview follow fire. It hands out the one-shot startup selection, relaunch cursor and reconnect restore once each,
+  marks a row's first Files root once (the README default, the marker migrating with the default row's key), holds the
+  C2 pin (pinned, taken by an unpin, restored with a row's view, cleared by a first visit) and issues and reports each
+  row's `project.scan` generation, a stale scan reply being dropped at its own row's latest.
+- `TreeView` privately owns a tree's flat rows, its cursor and its content generation. Readers see the rows and cursor
+  by reference; the cursor moves only by `select`, `select_clamped`, the arrow moves and the merges that re-anchor it
+  by node id; a row is marked expanded only at request time (`mark_selected_expanded`, `mark_expanded`), so
+  `apply_children` keeps dropping a reply for a collapsed parent; the root label is patched only through
+  `relabel_root`. Tests build trees through the same operations.
+- `Navigation` privately owns the active tree, the mode, the nav scroll, the active Modules scan root and the
+  `TreeStore` of every other (mode, scope)'s tree, whose slots are private too. The store never holds the active key:
+  a mode or row change sets the mode, then swaps (the departing view parks as user state with its scroll and, for
+  Modules, its scan root; the entering slot comes back or an empty view does; a Files root shows the active row's
+  label). A reply for a key not on screen parks: a root or a Sessions rebuild only into an empty slot or over an
+  earlier parked reply (the decision is asked first, so the park log still precedes the rebuild's), a children splice
+  or a scan into its slot. Parked trees are read by reference; a destroyed row's slots are purged and the default
+  row's raw-slug slots migrate with an existing `<default>` slot winning.
+- `RevealWalk` privately owns what the reveal walk remembers between round trips: its target, the ancestor it awaits,
+  the one force-refresh it spent and a target armed for a row's incoming root. Each transition is named and ends
+  exactly the parts it ended before: `start` (fresh levels), `reset_levels`, `stop` (target and level, the refresh
+  memo kept), `abort` (with the memo), `clear` (with the root target: a row change, a failed result tree),
+  `level_answered`, `await_level`, `mark_refetched`, `arm_root`, `defer_to_root` (reporting a root already in flight),
+  `cancel_root` and `take_root`. `drive_reveal_step` and the tree replies stay State's, reading it by reference.
+- `FileOps` privately owns the Files tree's in-flight file transactions: the pending Ctrl+N create and Ctrl+D delete,
+  each settled only by a reply naming its node, and the upload batch with its one file in flight. The batch is pinned
+  to the host and row it started on; the owner pops its queue, reads each chunk (`UPLOAD_CHUNK`) and returns it as the
+  request's fields, counts a file done on its final ack, adopts the backend's resolved name from the first ack, and
+  reports the host a failure must come from (the file's, else the batch's between files). A failed send or read, a
+  backend failure and a reconnect end the upload and its batch; a local open failure ends only the batch. State sends,
+  refreshes the destination listing and writes the status.
+- `DriftCheck` privately owns the active row's drift cache: each `.jl` file's `file.parse` hash, the one-shot parse
+  latch and failed parses' backoff records. A view takes the latch (re-armed after a failure's backoff, never past
+  `FILE_PARSE_MAX_RETRIES`); a reply installs only into a latched, unforgotten path; a failure counts an attempt and
+  keeps the latch; a failed send drops the latch; a `preview.changed` for the file forgets it; a row change and a
+  reconnect clear it. The concept line reads one `DriftStatus` per file.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
@@ -316,7 +358,8 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `chrome/`: pane geometry and focus delegation, the status line, nav spill, colours, the wireframe and the frame's chrome draw.
 - `chrome/strip/`: the session strip band under the panes.
 - `input/`: FocusPrompts, LayoutHelp, the action catalog, key and mouse routing, help and clipboard paste.
-- `nav/`: the navigation pane's trees (mode, store, Modules, Sessions, Hosts).
+- `nav/`: the navigation pane's trees: `Navigation` (active tree, mode, scroll, store), `TreeView`, `NavCursor`, the
+  Modules, Sessions and Hosts trees.
 - `nav/files/`: Files mode's prompts, reveal walk, transfers and re-lists.
 - `session/`: `RowDirectory` owns listings/identity, `RowPresentation` owns metadata/order/flashes, `ResultLedger`
   owns owed results/attempts, `ParkedViews` the parked row views and `SelectedRow` the selected row and its read

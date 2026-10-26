@@ -134,13 +134,13 @@ fn tree_store_isolates_slots_and_round_trips() {
     // Round-trip preserves rows + cursor + scroll (per-mode cursor
     // persistence is exactly this).
     let mut slot = store.take(&key_files_a).expect("wsA Files slot present");
-    assert_eq!(slot.view.rows.len(), 2);
-    slot.view.selected = 1;
+    assert_eq!(slot.view.rows().len(), 2);
+    slot.view.select(1);
     slot.scroll = 7;
     store.stash(key_files_a.clone(), slot);
     let again = store.take(&key_files_a).expect("round-trip");
-    assert_eq!(again.view.rows[1].node.id, "files:x.jl");
-    assert_eq!(again.view.selected, 1);
+    assert_eq!(again.view.rows()[1].node.id, "files:x.jl");
+    assert_eq!(again.view.selected(), 1);
     assert_eq!(again.scroll, 7);
 
     // The Modules slot still holds ONLY modules rows; taking the (now
@@ -150,7 +150,7 @@ fn tree_store_isolates_slots_and_round_trips() {
     let mods = store.take(&key_mods_a).expect("wsA Modules slot present");
     assert!(mods
         .view
-        .rows
+        .rows()
         .iter()
         .all(|r| r.node.id.starts_with("modules:")));
     assert!(store.take(&key_sessions).is_some());

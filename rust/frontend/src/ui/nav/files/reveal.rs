@@ -57,21 +57,20 @@ impl State {
         // key above) — the old stale-workspace detection has nothing to
         // detect. Cursor reveal: land now if the row is already present;
         // else expand ancestors asynchronously.
-        let visible_idx = self.tree.rows.iter().position(|r| r.node.id == node_id);
+        let visible_idx = self.nav.tree().rows().iter().position(|r| r.node.id == node_id);
         if let Some(idx) = visible_idx {
             tracing::info!(%node_id, "reveal: target already visible — cursor landed");
-            self.tree.selected = idx;
-            self.pending_reveal = None;
-            self.reveal_awaiting = None;
+            self.nav.select(idx);
+            self.reveal.stop();
             self.preview_requests.finish_reveal();
         } else {
             // Hold the per-frame preview-follow off the (stale) cursor row so it
             // doesn't clobber the driven preview while ancestors expand; the
             // hold lifts when the cursor lands on the target.
             self.preview_requests.arm_driven_hold(self
-                .tree
-                .rows
-                .get(self.tree.selected)
+                .nav.tree()
+                .rows()
+                .get(self.nav.tree().selected())
                 .map(|r| r.node.id.clone()));
             // Fresh reveal intent: drop the per-level bookkeeping a prior
             // target may have left so `drive_reveal_step` and its once-only
@@ -79,8 +78,7 @@ impl State {
             // Without clearing `reveal_refetched`, a stale `(old_target, anc)`
             // key could trip the "already refreshed → genuinely gone" early-out
             // and strand this reveal.
-            self.reveal_awaiting = None;
-            self.reveal_refetched = None;
+            self.reveal.reset_levels();
             // Split on whether the Files tree is loaded (has rows yet). This
             // split is what makes the reveal robust AND keeps a late
             // `tree.root` reply from ever rebuilding — and thereby
@@ -89,8 +87,8 @@ impl State {
             // conjunct is gone: the active view can only be the active ws's
             // Files tree now.
             let files_tree_loaded = self
-                .tree
-                .rows
+                .nav.tree()
+                .rows()
                 .iter()
                 .any(|r| r.node.id.starts_with("files:"));
             if files_tree_loaded {
@@ -105,9 +103,7 @@ impl State {
                 // `tree.root` here: a late-arriving `set_root` rebuilds and
                 // collapses the loaded tree, stranding an intervening reveal and
                 // letting the auto-follow clobber the driven preview.
-                self.pending_reveal = Some(node_id);
-                self.reveal_awaiting = None;
-                self.reveal_refetched = None;
+                self.reveal.start(node_id);
                 self.drive_reveal_step(None);
             } else {
                 // Files tree NOT loaded FOR THE ACTIVE WS: empty, rows belong to
@@ -135,9 +131,7 @@ impl State {
                 // rapid batch (the 3-back-to-back repro): the daemon answers
                 // every `tree.root` independently, so fire exactly one and let
                 // later calls just update the latest-wins target.
-                self.pending_reveal = None;
-                let root_inflight = self.pending_switch_reveal.is_some();
-                self.pending_switch_reveal = Some(node_id.clone());
+                let root_inflight = self.reveal.defer_to_root(node_id.clone());
                 if root_inflight {
                     tracing::info!(%node_id,
                         "reveal: tree.root already in flight — updated switch-reveal target only");
@@ -150,7 +144,7 @@ impl State {
                     }) {
                         tracing::warn!(error = %e,
                             "drive_same_ws_open: drop tree.root — channel closed");
-                        self.pending_switch_reveal = None;
+                        self.reveal.cancel_root();
                     }
                 }
             }
@@ -176,8 +170,8 @@ impl State {
         // the only remaining question is whether it has rows yet
         // (a first visit's slot is empty until tree.root lands).
         let files_tree_usable = self
-            .tree
-            .rows
+            .nav.tree()
+            .rows()
             .iter()
             .any(|r| r.node.id.starts_with("files:"));
         // #4: land the nav cursor on the driven file so cursor +
@@ -196,16 +190,14 @@ impl State {
             // preview with the cursor's file (the post-relaunch
             // badge-consume race). Mirrors `drive_same_ws_open`;
             // `drive_reveal_step` clears the hold when it lands.
-            if !self.tree.rows.iter().any(|r| r.node.id == node_id) {
+            if !self.nav.tree().rows().iter().any(|r| r.node.id == node_id) {
                 self.preview_requests.arm_driven_hold(self
-                    .tree
-                    .rows
-                    .get(self.tree.selected)
+                    .nav.tree()
+                    .rows()
+                    .get(self.nav.tree().selected())
                     .map(|r| r.node.id.clone()));
             }
-            self.pending_reveal = Some(node_id.clone());
-            self.reveal_awaiting = None;
-            self.reveal_refetched = None;
+            self.reveal.start(node_id.clone());
             self.drive_reveal_step(None);
         } else {
             // First visit (a tree.root was requested but its rows
@@ -214,14 +206,14 @@ impl State {
             // one-shot reveal consumed on the incoming reply (see the
             // result-tree handler). The attempt asks for its own root: an
             // ordinary root reply cannot complete a result's reveal.
-            self.pending_switch_reveal = Some(node_id.clone());
+            self.reveal.arm_root(node_id.clone());
             if let Err(e) = self.send(crate::net::transport::OutgoingReq::ResultTree {
                 attempt: attempt.clone(),
                 request: crate::net::transport::ResultTreeRequest::Root,
             }) {
                 tracing::warn!(error = %e,
                     "badge consume: drop tree.root — channel closed");
-                self.pending_switch_reveal = None;
+                self.reveal.cancel_root();
                 self.abandon_result_attempt(&attempt);
             }
         }
@@ -256,15 +248,13 @@ impl State {
     /// already expanded yet the target still isn't present, the path doesn't
     /// resolve and the reveal is dropped (the preview body already showed).
     pub(in crate::ui) fn drive_reveal_step(&mut self, replied_parent: Option<&str>) {
-        let Some(target_id) = self.pending_reveal.clone() else {
+        let Some(target_id) = self.reveal.target().map(str::to_owned) else {
             return;
         };
         // Target row visible now → land the cursor and finish.
-        if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == target_id) {
-            self.tree.selected = idx;
-            self.pending_reveal = None;
-            self.reveal_awaiting = None;
-            self.reveal_refetched = None;
+        if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == target_id) {
+            self.nav.select(idx);
+            self.reveal.abort();
             self.preview_requests.finish_reveal();
             self.result_cursor_landed(&target_id);
             // Re-anchor the header/preview onto the landed row. The body was
@@ -285,27 +275,24 @@ impl State {
         // its reply shows up. (Landing on a visible target above is always
         // allowed — any splice may legitimately surface it.)
         let gate = self
-            .reveal_awaiting
-            .clone()
-            .or_else(|| self.reveal_refetched.as_ref().map(|(_, anc)| anc.clone()));
+            .reveal
+            .awaiting().map(str::to_owned)
+            .or_else(|| self.reveal.refetched().map(|(_, anc)| anc.clone()));
         if let Some(g) = gate {
             if replied_parent != Some(g.as_str()) {
                 return;
             }
-            if self.reveal_awaiting.as_deref() == Some(g.as_str()) {
-                self.reveal_awaiting = None;
-            }
+            self.reveal.level_answered(&g);
         }
         let Some(rel) = target_id.strip_prefix("files:") else {
-            self.pending_reveal = None;
-            self.reveal_awaiting = None;
+            self.reveal.stop();
             return;
         };
         // Expand the deepest ancestor that's present but not yet expanded
         // (deepest-first ordering from `ancestor_rels`).
         for anc in ancestor_rels(rel) {
             let anc_id = format!("files:{anc}");
-            let Some(row) = self.tree.rows.iter().find(|r| r.node.id == anc_id) else {
+            let Some(row) = self.nav.tree().rows().iter().find(|r| r.node.id == anc_id) else {
                 continue;
             };
             if row.expanded {
@@ -319,25 +306,21 @@ impl State {
                 // reveal, AND badge-consume (all funnel through here), so
                 // generate→preview and badge→navigate work on fresh files.
                 let key = (target_id.clone(), anc_id.clone());
-                if self.reveal_refetched.as_ref() == Some(&key) {
+                if self.reveal.refetched() == Some(&key) {
                     // Already force-refreshed this dir for this target and it's
                     // STILL absent → genuinely gone. Stop; the body preview stands.
                     tracing::info!(%target_id, %anc_id,
                         "reveal: re-fetched expanded ancestor, target still absent — stopping");
-                    self.pending_reveal = None;
-                    self.reveal_awaiting = None;
-                    self.reveal_refetched = None;
+                    self.reveal.abort();
                     return;
                 }
                 if let Err(e) = self.send(self.reveal_children_request(&anc_id)) {
                     tracing::warn!(error = %e, %anc_id,
                         "reveal: drop tree.children refresh — channel closed");
-                    self.pending_reveal = None;
-                    self.reveal_awaiting = None;
-                    self.reveal_refetched = None;
+                    self.reveal.abort();
                     return;
                 }
-                self.reveal_refetched = Some(key);
+                self.reveal.mark_refetched(key);
                 tracing::info!(%target_id, %anc_id,
                     "reveal: force-refresh expanded ancestor for a fresh (not-yet-listed) file");
                 return;
@@ -345,37 +328,32 @@ impl State {
             if !row.node.has_children {
                 tracing::info!(%target_id, anc = %anc_id,
                     "reveal: ancestor is a leaf (has_children=false) — stopping");
-                self.pending_reveal = None;
-                self.reveal_awaiting = None;
+                self.reveal.stop();
                 return;
             }
             // Already requested this exact level → keep waiting (don't storm).
-            if self.reveal_awaiting.as_deref() == Some(anc_id.as_str()) {
+            if self.reveal.awaiting() == Some(anc_id.as_str()) {
                 return;
             }
             if let Err(e) = self.send(self.reveal_children_request(&anc_id)) {
                 tracing::warn!(error = %e, %anc_id,
                     "reveal: drop tree.children — channel closed");
-                self.pending_reveal = None;
-                self.reveal_awaiting = None;
+                self.reveal.stop();
                 return;
             }
             tracing::info!(%target_id, anc = %anc_id, "reveal: expanding ancestor");
             // Same request-time disclosure flip as try_expand_selected:
             // apply_children drops replies for collapsed parents, so the
             // reveal's intentional ancestor expand must mark the row now.
-            if let Some(r) = self.tree.rows.iter_mut().find(|r| r.node.id == anc_id) {
-                r.expanded = true;
-            }
-            self.reveal_awaiting = Some(anc_id);
+            self.nav.mark_expanded(&anc_id);
+            self.reveal.await_level(anc_id);
             return;
         }
         // No ancestor visible at all (root collapsed, or a root-level file the
         // tree hasn't loaded). Nothing to expand toward — drop the reveal; the
         // preview body already showed.
         tracing::info!(%target_id, "reveal: no visible ancestor to expand — stopping");
-        self.pending_reveal = None;
-        self.reveal_awaiting = None;
+        self.reveal.stop();
     }
 }
 

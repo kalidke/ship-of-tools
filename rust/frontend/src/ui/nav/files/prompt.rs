@@ -69,7 +69,7 @@ impl State {
     /// to `files:`. Returns false (no-op) when the cursor isn't on a `files:`
     /// row — the caller leaves the keystroke for the normal nav handler.
     pub(in crate::ui) fn begin_create_file(&mut self) -> bool {
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.nav.tree().rows().get(self.nav.tree().selected()) else {
             return false;
         };
         if !row.node.id.starts_with("files:") {
@@ -118,10 +118,9 @@ impl State {
     /// `already_exists` error both collapse to `AlreadyExists` here, since
     /// both mean "the name existed on disk already".
     pub(in crate::ui) fn finish_pending_create(&mut self, node_id: &str, outcome: CreateOutcome) {
-        if self.pending_created_node_id.as_deref() != Some(node_id) {
+        if !self.file_ops.settle_created(node_id) {
             return;
         }
-        self.pending_created_node_id = None;
         match outcome {
             CreateOutcome::Ok => {
                 // Re-list the parent dir so the new entry appears without a
@@ -154,7 +153,7 @@ impl State {
     /// when the cursor isn't on a deletable `files:` file row — the caller
     /// leaves the keystroke for the normal nav handler.
     pub(in crate::ui) fn begin_delete_file(&mut self) -> bool {
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.nav.tree().rows().get(self.nav.tree().selected()) else {
             return false;
         };
         if !row.node.id.starts_with("files:") {
@@ -232,7 +231,7 @@ pub(in crate::ui) fn confirm_delete(context: &mut impl FilePromptContext) {
 
 impl FilePromptContext for State {
     fn prompts(&mut self) -> &mut FocusPrompts { &mut self.focus_prompts }
-    fn file_exists(&self, node_id: &str) -> bool { self.tree.rows.iter().any(|r| r.node.id == node_id) }
+    fn file_exists(&self, node_id: &str) -> bool { self.nav.tree().rows().iter().any(|r| r.node.id == node_id) }
     fn send_create(&mut self, node_id: &str, is_dir: bool) -> Result<(), String> {
         let req = if is_dir {
             OutgoingReq::DirCreate { node_id: node_id.to_string(), workspace_id: self.selected.workspace_id().clone() }
@@ -246,8 +245,8 @@ impl FilePromptContext for State {
         self.send(OutgoingReq::FileDelete { node_id: node_id.to_string(), workspace_id: self.selected.workspace_id().clone() })
             .map_err(|e| e.to_string())
     }
-    fn mark_created(&mut self, node_id: String) { self.pending_created_node_id = Some(node_id); }
-    fn mark_deleted(&mut self, node_id: String) { self.pending_deleted_node_id = Some(node_id); }
+    fn mark_created(&mut self, node_id: String) { self.file_ops.mark_created(node_id); }
+    fn mark_deleted(&mut self, node_id: String) { self.file_ops.mark_deleted(node_id); }
     fn prompt_effect(&mut self, effect: PromptEffect) { self.apply_prompt_effect(effect); }
 }
 

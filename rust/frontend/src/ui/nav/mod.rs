@@ -3,6 +3,7 @@
 use super::*;
 
 pub(in crate::ui) mod files;
+mod cursor;
 mod hosts_tree;
 pub(in crate::ui) mod keys;
 mod modules;
@@ -14,6 +15,7 @@ mod tree_store;
 mod support_tests;
 
 pub(in crate::ui) use files::*;
+pub(in crate::ui) use cursor::NavCursor;
 pub(in crate::ui) use hosts_tree::*;
 pub(in crate::ui) use modules::*;
 pub(in crate::ui) use sessions_tree::*;

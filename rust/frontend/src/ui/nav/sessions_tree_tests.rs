@@ -200,7 +200,7 @@ fn resplice_expanded_session_hosts_drops_a_row_no_longer_in_workspace_lists() {
     let mut host_payload = serde_json::Map::new();
     host_payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
     let mut view = TreeView::new();
-    view.rows = vec![
+    view.set_flat(vec![
         TreeRow {
             node: TreeNode {
                 id: "sessions:".to_string(),
@@ -230,7 +230,7 @@ fn resplice_expanded_session_hosts_drops_a_row_no_longer_in_workspace_lists() {
             depth: 2,
             expanded: false,
         },
-    ];
+    ]);
 
     // The destroy already landed server-side: `local`'s fresh list no
     // longer has "doomed", but still has an unrelated survivor.
@@ -241,7 +241,7 @@ fn resplice_expanded_session_hosts_drops_a_row_no_longer_in_workspace_lists() {
     resplice_expanded_session_hosts(&mut view, &directory);
 
     let session_ids: Vec<&str> = view
-        .rows
+        .rows()
         .iter()
         .filter(|r| r.node.kind == "session")
         .map(|r| r.node.id.as_str())

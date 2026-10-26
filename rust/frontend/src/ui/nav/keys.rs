@@ -36,7 +36,7 @@ pub(in crate::ui) fn nav_tree_key(state: &mut State, key: KeyPress<'_>, label: S
     // (confirm_create_file picks which).
     if !event.repeat
         && action == Some(Action::NewFile)
-        && matches!(state.mode, Mode::Files)
+        && matches!(state.nav.mode(), Mode::Files)
         && state.begin_create_file()
     {
         state.last_key = Some(label);
@@ -51,7 +51,7 @@ pub(in crate::ui) fn nav_tree_key(state: &mut State, key: KeyPress<'_>, label: S
     // focus Ctrl+D (half-page scroll) is a separate block.
     if !event.repeat
         && action == Some(Action::DeleteFile)
-        && matches!(state.mode, Mode::Files)
+        && matches!(state.nav.mode(), Mode::Files)
         && state.begin_delete_file()
     {
         state.last_key = Some(label);
@@ -66,10 +66,10 @@ fn nav_action_key(state: &mut State, key: KeyPress<'_>, was_destroy_pending: Opt
     let KeyPress { event, action, .. } = key;
     match action {
         Some(Action::NavDown) => {
-            state.tree.move_down();
+            state.nav.move_down();
         }
         Some(Action::NavUp) => {
-            state.tree.move_up();
+            state.nav.move_up();
         }
         Some(Action::NavExpand) | Some(Action::NavOpen)
             if !event.repeat =>
@@ -78,8 +78,8 @@ fn nav_action_key(state: &mut State, key: KeyPress<'_>, was_destroy_pending: Opt
         }
         Some(Action::NavCollapse) if !event.repeat => {
             if !state.collapse_selected_row() {
-                if let Some(p) = state.tree.parent_of_selected() {
-                    state.tree.selected = p;
+                if let Some(p) = state.nav.tree().parent_of_selected() {
+                    state.nav.select(p);
                 }
             }
         }
@@ -160,7 +160,7 @@ fn nav_enter_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
     // re-targeting the BL pane.
     let is_enter =
         action == Some(Action::NavOpen);
-    if is_enter && matches!(state.mode, Mode::Hosts) {
+    if is_enter && matches!(state.nav.mode(), Mode::Hosts) {
         // ADR 0015: persist the selected host
         // so the next launcher run targets
         // it. We don't tear down the live
@@ -174,7 +174,7 @@ fn nav_enter_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
         state.pick_host_under_cursor();
         return Break(());
     }
-    if is_enter && matches!(state.mode, Mode::Sessions) {
+    if is_enter && matches!(state.nav.mode(), Mode::Sessions) {
         session_enter_key(state)?;
     }
     state.try_expand_selected();

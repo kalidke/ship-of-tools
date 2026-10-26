@@ -471,145 +471,23 @@ struct State {
     /// file is only rewritten when the observable state actually changes.
     fe_state_sig: Option<u64>,
     // ui/nav: the active tree and mode, cursor-driven preview firing, request generations.
-    /// Files-mode tree, flattened for chrome rendering. Updated by
-    /// `tree.root` / `tree.children` events; navigated by arrow keys.
-    tree: TreeView,
-    /// Which root tree the left pane is currently showing. `f`/`m` keys
-    /// switch this and fire the corresponding wire request.
-    mode: Mode,
-    /// Reconnect nav restore (2026-07-11): set on hello/reconnect resume so
-    /// the NEXT applied tree.root re-reveals the pre-reconnect cursor (via
-    /// the pending_reveal machinery — the cursor's ancestor path re-expands
-    /// for free) instead of dumping the user at the top with everything
-    /// collapsed. Windows Modern Standby makes this fire on every idle/wake
-    /// cycle, so this is the difference between "nav keeps resetting" and
-    /// continuity. Carries the workspace the flag was armed for — a
-    /// workspace switch between hello and the root reply must NOT re-reveal
-    /// the old workspace's path in the new tree.
-    restore_nav_after_resume: Option<(Option<String>, String)>,
-    /// (mode, tree.selected) snapshot from the previous redraw — used
-    /// by the nav-fire debounce to detect cursor moves and stamp
-    /// `cursor_moved_at`. Mode is included so a mode swap (which
-    /// replaces the tree wholesale) is treated as a move.
-    last_cursor_pos: Option<(Mode, usize)>,
-    /// Wall-clock timestamp of the most recent cursor change in
-    /// NavTree. Cleared after preview.get / concept.read / file.parse
-    /// finally fire; while `Some`, those round-trips are suppressed
-    /// (see [`NAV_FIRE_DEBOUNCE`]). Without this gate hold-to-scroll
-    /// fires hundreds of backend requests per second.
-    cursor_moved_at: Option<std::time::Instant>,
-    /// C2 pin-and-leave: when `Some`, the preview pane stays on this
-    /// node's rendered content even as the user moves the cursor away.
-    /// `maybe_fire_preview` is a no-op while pinned. `p` (NavTree focus)
-    /// toggles: pressing on a non-pinned cursor row pins it; pressing
-    /// when the cursor is on the already-pinned row clears the pin.
-    /// Per-workspace via [`WorkspaceUiSnapshot`].
-    pinned_preview_node_id: Option<String>,
-    /// Absolute path of the most recent `project.scan`'s `project_root`.
-    /// The chrome strips this prefix off the absolute file paths each
-    /// Modules-mode entry carries to synthesize the `files:<relpath>`
-    /// node id that `preview.get` expects. Reset on each scan reply.
-    scan_project_root: Option<String>,
-    /// One-shot from `--start-selected <n>`; consumed by the first tree.root
-    /// response that lands so the cursor opens on that row.
-    /// `None` after consumption (or if the flag wasn't set).
-    pending_initial_selection: Option<usize>,
-    /// One-shot nav cursor restore across an ADR-0017 relaunch: the
-    /// persisted `(selected node id, scroll)`. Applied best-effort when
-    /// the matching workspace's `tree.root` arrives and the row is
-    /// present; a deeply-collapsed selection that isn't in the freshly
-    /// loaded tree just lands on the default cursor.
-    pending_resume_nav: Option<(String, u16)>,
-    /// Per-(mode, scope) parking lot for every nav tree that is NOT the
-    /// active one (`self.tree` IS the active slot). Replaces the old
-    /// `files_tree_workspace` provenance side-stamp + per-consumer
-    /// staleness guards: installs route by the reply's key, so the active
-    /// view can only ever hold the active (mode, workspace)'s tree — a
-    /// foreign tree is structurally impossible rather than detected.
-    tree_store: TreeStore,
-    /// One-shot PER WORKSPACE: on a workspace's first Files-mode `tree.root`
-    /// where nothing else (ADR-0017 resume, `--start-selected`) placed the
-    /// cursor, default it to the project README so a fresh session opens
-    /// onto rendered docs instead of the bare root row. Keys are `WsKey`
-    /// (`active_ws_key()`, ADR 0042 L2a -- was bare `current_workspace_key()`,
-    /// which let two hosts' same-slug workspaces share a one-shot marker);
-    /// presence = already defaulted (or resumed) once, so refreshes never
-    /// yank the cursor.
-    nav_readme_defaulted: std::collections::HashSet<WsKey>,
-    /// Persistent scroll offset for the nav pane (vim-style scrolloff
-    /// behaviour). Updated each frame from the cursor's position relative
-    /// to the current viewport: when the cursor moves into the bottom
-    /// 1/3 of the pane going down, scroll keeps it stationary there;
-    /// same on the way up. At the body's edges the cursor falls through
-    /// to the actual top/bottom row. Kept on State so the cursor
-    /// position alone doesn't determine the scroll — direction of motion
-    /// matters.
-    tree_scroll: u16,
+    /// The nav pane's trees: the active (mode, row)'s tree with its scroll and scan root, and the store parking
+    /// every other tree. Installs route by the reply's key, so the active view can only hold the active key's tree.
+    nav: Navigation,
+    /// Where the nav cursor lands and when its follow fires: the settle debounce, the startup, relaunch and
+    /// reconnect placements, the README default, the pin and the per-row project-scan clock.
+    nav_cursor: NavCursor,
     /// Request clocks, the fired target and its re-raster, concept follow, the driven-preview hold, and the crop,
     /// scale-save and `--roi` aim transactions.
     preview_requests: preview::requests::PreviewRequests,
-    /// Like PreviewRequests’ slot clocks, but for
-    /// `project.scan` — keyed per (host, workspace) rather than one global
-    /// counter, since scans for different workspaces are independently
-    /// valid in flight together (see `next_project_scan_gen`).
-    project_scan_req_gen: HashMap<(HostKey, Option<String>), u64>,
     // ui/nav/files: nav prompts, the reveal walk and file transfers.
-    /// Node id of a file or directory just created via the Ctrl+N prompt,
-    /// awaiting its `file.write` (file) or `dir.create` (dir) reply. When
-    /// that reply lands matching this id, we refresh the parent dir's
-    /// listing so the new entry appears, then clear this. `None` outside a
-    /// create round-trip.
-    pending_created_node_id: Option<String>,
-    /// Node id of a file just deleted via the Ctrl+D confirm prompt, awaiting
-    /// its `file.delete` reply. When that reply lands matching this id, we
-    /// refresh the parent dir's listing so the row vanishes, then clear this.
-    /// `None` outside a delete round-trip.
-    pending_deleted_node_id: Option<String>,
-    /// Deep-path reveal target for a driven open (`files:<relpath>`), set when
-    /// the BE opens a file whose row isn't visible yet because its ancestor dirs
-    /// aren't expanded. `drive_reveal_step` expands one ancestor per
-    /// `tree.children` round-trip until the row materializes, then lands the
-    /// cursor on it (so the nav header + viewport follow the preview body — one
-    /// command drives both panes; the BE never issues a separate cursor move).
-    /// `None` when no reveal is in flight.
-    pending_reveal: Option<String>,
-    /// The ancestor dir id (`files:<relpath>`) whose `tree.children` we've
-    /// already requested for the in-flight `pending_reveal` and are awaiting.
-    /// Guards against re-requesting the same in-flight level when unrelated
-    /// `tree.children` replies re-enter `drive_reveal_step`. Cleared/advanced as
-    /// each level resolves.
-    reveal_awaiting: Option<String>,
-    /// For a reveal whose deepest *expanded* ancestor dir doesn't contain the
-    /// target, the `(target_id, ancestor_id)` pair we already force-refreshed
-    /// once. A brand-new file (an agent wrote it *after* the dir was last
-    /// listed) is absent from the cached children, so `drive_reveal_step`
-    /// re-fetches that dir (a fresh `list_dir` stat surfaces it) instead of
-    /// giving up — one loopback round-trip, sub-second, so generate→preview and
-    /// badge→navigate land on fresh files. Keyed by `(target, ancestor)` so it
-    /// self-scopes to this reveal and can't loop: if the same dir is refreshed
-    /// and the target is STILL absent it's genuinely gone — stop. Cleared when
-    /// the cursor lands.
-    reveal_refetched: Option<(String, String)>,
-    /// One-shot cursor reveal for a preview driven via a *workspace switch*
-    /// (#4 fix). Cross-ws force-show previews and #1's persisted `nav.preview`
-    /// are consumed in `switch_to_workspace`, which fires the preview body
-    /// before the switched-to workspace's `tree.root` has loaded — so the
-    /// target row isn't in `tree.rows` yet and the cursor can't land inline.
-    /// We stash the `files:` node id here and apply it when that workspace's
-    /// `tree.root` reply arrives (re-using `drive_reveal_step`, so a top-level
-    /// row lands directly and a nested one expands its ancestors). Without it
-    /// the preview pane updates but the nav cursor stays on the old row — the
-    /// desync the maintainer hit. `None` once consumed.
-    pending_switch_reveal: Option<String>,
-    /// In-flight `file.upload`, if any. The chrome drives chunk flow control:
-    /// it sends chunk 0 in `start_upload`, then sends the next chunk on each
-    /// non-`done` `FileUploadAck`. `None` when no upload is running.
-    upload: Option<UploadState>,
-    /// The multi-file batch the in-flight `upload` belongs to, if any. Holds the
-    /// not-yet-started files and the shared destination; `Some` for the whole
-    /// duration of a multi- (or single-) file upload, cleared when the last
-    /// file's ack lands. Guards `u` against starting a second batch mid-run.
-    upload_batch: Option<UploadBatch>,
+    /// The Files tree's in-flight file transactions: the Ctrl+N create and Ctrl+D delete awaiting their
+    /// replies, and the upload batch with its one file in flight (chunks paced by its acks, pinned to its host).
+    file_ops: FileOps,
+    /// The reveal walk: the target the Files tree is being opened toward (a driven open whose row is not yet
+    /// visible), the level it awaits, its one force-refresh, and a target armed for a row's incoming root. The nav
+    /// cursor lands on the target when its row materializes, so one command drives both panes.
+    reveal: RevealWalk,
     // ui/session: the active (host, workspace), workspace lists and caches, picker, snapshots.
     /// The selected row, `(host, workspace_id)`, and its read-mark dwell (ADR 0014, ADR 0042 L2a). A `None`
     /// workspace is the host daemon's default; the host is the connection every current-view operation targets,
@@ -956,27 +834,10 @@ struct State {
     /// MathRendered events into a single rebuild per frame.
     needs_md_reflow: bool,
     // ui/preview/editor: the annotation editor and file-parse staleness.
-    /// `kernel.request file.parse` results, keyed by the relative path the
-    /// kernel was asked about (matches the suffix of `files:` node ids).
-    /// Used by the drift badge: if a row's path has a hash here AND its
-    /// annotation parses a `synced_against`, and the two differ, yellow it.
-    /// Lazy, per file, on view; a `preview.changed` for the file, a workspace
-    /// switch and a reconnect drop it.
-    file_ast_hashes: std::collections::HashMap<String, String>,
-    /// Paths the GPU thread has already asked `file.parse` for. Prevents
-    /// re-firing while a request is in flight, and a reply installs only while its
-    /// path is latched. Cleared on a switch and on a reconnect.
-    file_parse_fired: std::collections::HashSet<String>,
-    /// Failed `file.parse` bookkeeping: path → (last failure, attempt
-    /// count). The retry gate in `maybe_fire_concept_read` re-fires only
-    /// after an exponential backoff and gives up after
-    /// `FILE_PARSE_MAX_RETRIES`. WITHOUT this, a kernel that fails fast
-    /// (dead / respawning) turned the unthrottled redraw loop into a
-    /// request storm — observed ~4.7k file.parse/s on a capture box, which
-    /// flooded the respawning kernel straight back down (2026-07-02).
-    /// Cleared on success. Deliberately NOT in the workspace snapshot:
-    /// a workspace switch resets the attempts, which is a feature.
-    file_parse_retry: std::collections::HashMap<String, (std::time::Instant, u32)>,
+    /// The drift badge's cache: per `.jl` path (the suffix of `files:` node ids) its `file.parse` hash, the
+    /// one-shot parse latch and failed parses' backoff (2026-07-02: a fast-failing kernel once drew ~4.7k
+    /// file.parse/s). Lazy, per file, on view; a `preview.changed` for the file, a row change and a reconnect drop it.
+    drift: DriftCheck,
     /// Active concept-annotation edit, or `None` for read-only view.
     /// Toggled by `e` (enter) / `Esc` (discard) in Preview focus.
     /// Save fires `concept.write` with the captured
@@ -1135,7 +996,7 @@ impl State {
 pub(crate) mod preview;
 pub(crate) mod render;
 use render::*;
-use self::preview::concept::{clear_drift, drift_is_stale, install_parsed_hash, split_frontmatter, ConceptInfo, FILE_PARSE_MAX_RETRIES};
+use self::preview::concept::{split_frontmatter, ConceptInfo, DriftCheck, DriftStatus};
 use self::preview::editor::state::EditState;
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,

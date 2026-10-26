@@ -52,7 +52,7 @@ impl State {
         let mut leaving_drawn = false;
         let lease_notice = self.leases.notice();
         let (clock_now, battery, last_key, version_stamp, version_skew) = self.chrome_labels();
-        let mode = self.mode;
+        let mode = self.nav.mode();
         let focus = self.focus_prompts.focus();
         let help_context = self.help_context();
         let maximize_slot =
@@ -73,8 +73,8 @@ impl State {
         let (nav_cursor_body_pos, nav_has_cursor) = self.nav_cursor_row();
         // Mutable copy of the persistent scroll. The draw closure updates
         // this in place based on the cursor's viewport position; the
-        // result is written back to self.tree_scroll after the draw.
-        let mut nav_scroll = self.tree_scroll;
+        // result is written back to the nav scroll after the draw.
+        let mut nav_scroll = self.nav.scroll();
         self.fire_due_read_mark();
         self.report_presence(false);
         self.pump_pane_attach_term();
@@ -126,11 +126,11 @@ impl State {
         // workspace switches all trigger uniformly. The picker cursor
         // rides in the tuple so workspace-picker browsing spills too.
         let spill_cursor_now = (
-            self.mode,
+            self.nav.mode(),
             self.selected.workspace_id().clone(),
-            self.tree.selected,
+            self.nav.tree().selected(),
             self.workspace_picker.as_ref().map(WorkspacePicker::selected),
-            self.tree.generation,
+            self.nav.tree().generation(),
         );
         if self.nav_spill_cursor.as_ref() != Some(&spill_cursor_now) {
             // Arm ONLY on a user cursor move: same mode+workspace, same tree
@@ -172,7 +172,7 @@ impl State {
             nav_prompt_line: &nav_prompt_line, lease_notice, nav_line: &nav_line, owed_line: &owed_line,
             status: &status, nav_cursor_body_pos, tree_empty, contrast_dim, concept_status: &concept_status,
             last_key: &last_key, nav_has_cursor, nav_spill_active, preview_name: &preview_name,
-            pinned_preview_node_id: &self.pinned_preview_node_id, drawer, monitor_host_connected,
+            pinned_preview_node_id: self.nav_cursor.pinned(), drawer, monitor_host_connected,
             monitor_host_label: &monitor_host_label, repl_input: &repl_input, repl_lines: &repl_lines,
             repl_pkg_mode, help_state, help_bindings, help_context: &help_context, clock_now,
             battery: &battery, version_stamp: &version_stamp, version_skew, pty_screen,
@@ -191,9 +191,9 @@ impl State {
         } = view;
         // Persist the scroll the draw closure landed on so the next
         // frame starts from the same offset (sticky behaviour); the
-        // closure can't write to self.tree_scroll directly because the
+        // closure can't write to the nav scroll directly because the
         // ratatui draw API takes a &mut self method, not self.
-        self.tree_scroll = nav_scroll;
+        self.nav.set_scroll(nav_scroll);
         self.repl_model.commit_rendered_scroll(new_repl_scroll);
         self.pane_rects = new_pane_rects;
         self.nav_spill_segments = nav_spill_segs_out;
@@ -265,8 +265,8 @@ impl State {
         let (nav_cursor_body_pos, nav_has_cursor) = match &self.workspace_picker {
             Some(p) => (4usize.saturating_add(p.selected()), !p.entries().is_empty()),
             None => (
-                2usize.saturating_add(self.tree.selected),
-                !self.tree.rows.is_empty(),
+                2usize.saturating_add(self.nav.tree().selected()),
+                !self.nav.tree().rows().is_empty(),
             ),
         };
         (nav_cursor_body_pos, nav_has_cursor)
@@ -287,15 +287,11 @@ impl State {
                         info.synced_against.as_deref(),
                         info.target.strip_prefix("files/"),
                     ) {
-                        (Some(synced), Some(path)) => match self.file_ast_hashes.get(path) {
-                            Some(h) if h == synced => " · in sync",
-                            Some(_) => " · STALE (file ast_hash differs from synced_against)",
-                            None => match self.file_parse_retry.get(path) {
-                                Some(&(_, n)) if n >= FILE_PARSE_MAX_RETRIES => {
-                                    " · drift check unavailable (file.parse failing)"
-                                }
-                                _ => " · checking…",
-                            },
+                        (Some(synced), Some(path)) => match self.drift.status(path, synced) {
+                            DriftStatus::InSync => " · in sync",
+                            DriftStatus::Stale => " · STALE (file ast_hash differs from synced_against)",
+                            DriftStatus::Unavailable => " · drift check unavailable (file.parse failing)",
+                            DriftStatus::Checking => " · checking…",
                         },
                         (Some(_), None) => " · sync check N/A",
                         (None, _) => " · no synced_against frontmatter",
@@ -317,13 +313,13 @@ impl State {
         // the annotation parses a `synced_against` AND the file's
         // `ast_hash` differs. Expanding to non-cursored rows needs a
         // per-row concept cache — phase 2.
-        let selected_stale: bool = match (self.tree.rows.get(self.tree.selected), &self.concept) {
+        let selected_stale: bool = match (self.nav.tree().rows().get(self.nav.tree().selected()), &self.concept) {
             (Some(row), Some(info)) if info.exists => {
                 if let (Some(synced), Some(path)) = (
                     info.synced_against.as_ref(),
                     row.node.id.strip_prefix("files:"),
                 ) {
-                    drift_is_stale(&self.file_ast_hashes, path, synced)
+                    self.drift.is_stale(path, synced)
                 } else {
                     false
                 }
@@ -418,16 +414,16 @@ impl State {
     }
 
     fn tree_nav_rows(&self, selected_stale: bool) -> (Vec<NavRow>, bool) {
-        let pinned_id = self.pinned_preview_node_id.as_deref();
+        let pinned_id = self.nav_cursor.pinned().as_deref();
         let now = chrono::Utc::now();
         let flash_now = std::time::Instant::now();
         let rows: Vec<NavRow> = self
-            .tree
-            .rows
+            .nav.tree()
+            .rows()
             .iter()
             .enumerate()
             .map(|(i, r)| {
-                let selected = i == self.tree.selected;
+                let selected = i == self.nav.tree().selected();
                 // ADR 0030 §8 decision 31c: a capsule row held by a
                 // foreign build folds into the SAME "stale" colour
                 // slot as annotation drift (both are cross-cutting
@@ -482,7 +478,7 @@ impl State {
                 )
             })
             .collect();
-        let empty = self.tree.rows.is_empty();
+        let empty = self.nav.tree().rows().is_empty();
         (rows, empty)
     }
 
