@@ -41,7 +41,9 @@ on:
 
 concurrency:
   group: rust-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # main is tested after each batch of merges: a run in progress there finishes and the newest push waits behind it,
+  # so landings closer together than one run still get a finished run; a branch's newer push cancels its older run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   RUST_BACKTRACE: "1"
