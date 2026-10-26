@@ -45,7 +45,7 @@ pub(in crate::ui) fn png_key(state: &mut State, key: KeyPress<'_>, label: String
             ),
             state.cell_w,
             state.cell_h,
-            state.caption_band_px,
+            state.overlays.caption_band_px(),
         );
         let (pane_w, pane_h) = (pane_rect.w, pane_rect.h);
         // Zoom ceiling is per-image: how big a single
@@ -80,7 +80,7 @@ pub(in crate::ui) fn png_key(state: &mut State, key: KeyPress<'_>, label: String
             // no-opping, so an uncalibrated raster is one
             // keystroke from a real bar.
             if state.preview_source.scale().is_some() {
-                state.scalebar_on = !state.scalebar_on;
+                state.overlays.toggle_scalebar();
             } else if !state.begin_scale_entry() {
                 state.status = "scalebar · no image previewed".to_string();
             }

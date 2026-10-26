@@ -23,7 +23,7 @@ impl State {
         help::Context {
             pane, mode: self.nav.mode(),
             file, image: self.raster.is_shown(),
-            pages: self.preview_page.is_some_and(|(_, count)| count > 1),
+            pages: self.pages.page().is_some_and(|(_, count)| count > 1),
             editable: !self.raster.is_shown() && self.previewed_files_path().is_some()
                 || self.concept.info().is_some_and(|c| c.exists() && self.preview_requests.concept_target() == Some(c.target())),
             confirmation: if matches!(self.focus_prompts.prompt(), Some(NavPrompt::ConfirmDelete { .. })) && prompt {

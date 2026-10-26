@@ -119,11 +119,11 @@ impl State {
         // serving plugin reported page extras; anything else
         // (including a later unpaginated reply for a new
         // cursor target) clears it, retiring the n/p keys.
-        self.preview_page = extras.as_ref().and_then(|e| {
+        self.pages.set_page(extras.as_ref().and_then(|e| {
             let page = e.get("page")?.as_u64()? as u32;
             let count = e.get("page_count")?.as_u64()? as u32;
             Some((page, count))
-        });
+        }));
         // Resolve a live-entry save: this same handler serves the
         // `set_scale` reply (one install path, by design), so it's
         // where "saving…" has to be retired. Gated on the pending
@@ -146,16 +146,8 @@ impl State {
         // for the SAME page — a reply for a different page is a
         // real navigation (page turn / cursor move) and resets the
         // view to fit.
-        match self.preview_requests.settle_page_reply(self.preview_page.map(|(page, _)| page)) {
-            Some(z) => {
-                self.preview_page_raster_zoom = z;
-                self.preview_reraster_keep_view = true;
-            }
-            None => {
-                self.preview_page_raster_zoom = 1.0;
-                self.preview_reraster_keep_view = false;
-            }
-        }
+        let reraster_zoom = self.preview_requests.settle_page_reply(self.pages.page().map(|(page, _)| page));
+        self.pages.settle_reply(reraster_zoom);
         if matches!(mime.as_str(), "text/markdown" | "text/x-markdown") {
             // A fresh preview.get REPLY landing here (as
             // opposed to a cached-bytes reflow — see the note
@@ -351,7 +343,7 @@ impl State {
                 crate::net::transport::OutgoingReq::PreviewGet {
                     node_id: node_id.clone(),
                     workspace_id: self.selected.workspace_id().clone(),
-                    page: self.preview_page.map(|(p, _)| p),
+                    page: self.pages.page().map(|(p, _)| p),
                     fit_w,
                     fit_h,
                     generation,

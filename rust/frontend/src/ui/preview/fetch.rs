@@ -117,7 +117,7 @@ impl State {
             node_id: id.clone(),
             workspace_id: self.selected.workspace_id().clone(),
             // Cursor-driven fetch always opens at page 1; the reply's
-            // extras re-seed `preview_page` for the n/p transport.
+            // extras re-seed the page for the n/p transport.
             page: None,
             fit_w,
             fit_h,

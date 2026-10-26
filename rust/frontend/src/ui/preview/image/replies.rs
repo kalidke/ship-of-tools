@@ -170,7 +170,7 @@ impl State {
             .to_string();
         // The bar never appeared, so don't leave the overlay armed
         // claiming a scale we don't have.
-        self.scalebar_on = false;
+        self.overlays.disable_scalebar();
         // This save resolved (as a failure), so retire the pending
         // marker — otherwise the next unrelated preview would
         // consume it and report a "saved" that never happened.

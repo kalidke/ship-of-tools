@@ -24,7 +24,9 @@ upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file par
 `preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect;
 `preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line anchor, the math
 SVG, the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
-zoom, pan and dimensions, the visible ROI and the same-directory view carry.
+zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
+the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
+owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -211,6 +213,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   geometry. State computes the ROI for an image node, which the owner records and writes through to the carry
   outside the quantization window; State echoes an applied aim and draws the quad. Keys reset, pan and step the
   zoom (1.25x below 1.5, whole steps above, pan scaled to keep the center).
+- `PageView` privately owns pagination (ADR 0021): a reply's page extras set the page or clear it; a reply that
+  re-rastered the page on screen records its zoom and arms a one-shot keep-view the raster install takes; any other
+  resets the raster zoom to fit. `FigureOverlays` privately owns what is drawn over a figure: the sticky scalebar
+  toggle (disabled when a scale save fails), the caption store, the labels shaped each frame outside the render pass
+  (cleared whenever their overlay is not drawn), and the caption band published before the image rect is derived, so
+  the keyboard zoom ceiling uses the same reduced pane.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

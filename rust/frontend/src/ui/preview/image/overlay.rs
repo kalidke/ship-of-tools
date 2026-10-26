@@ -63,7 +63,7 @@ impl CaptionStore {
 pub(in crate::ui) use sot_protocol::physical_scale::PhysicalScale;
 
 /// A raster preview's physical scale (ADR 0034) from the reply's `extras.physical_scale`, valid by
-/// `sot_protocol::physical_scale`. `None` for a reply without the key (so it clears like `preview_page`) or
+/// `sot_protocol::physical_scale`. `None` for a reply without the key (so it clears like the page) or
 /// with an invalid value: the window invents no unit, name or axis.
 pub(in crate::ui) fn parse_physical_scale(extras: &serde_json::Value) -> Option<PhysicalScale> {
     sot_protocol::physical_scale::parse_physical_scale(extras.get("physical_scale")?)
@@ -175,7 +175,7 @@ impl State {
     /// Compute the dynamic scalebar's bar + label geometry for this frame and
     /// shape its label buffer (ADR 0034). Called once per render, BEFORE the
     /// render pass so the label is ready for `text.prepare`. Returns `None`
-    /// (and clears `scalebar_label`) unless the toggle is on, an image raster
+    /// (and clears the scalebar label) unless the toggle is on, an image raster
     /// is shown, and a physical scale is present.
     ///
     /// The bar length keys off the **source→screen** mapping (`canvas_w /
@@ -195,12 +195,12 @@ impl State {
         image_rect: ScreenRect,
     ) -> Option<ScalebarDraw> {
         // Cheap early-outs; every miss clears the stale label.
-        if !self.scalebar_on {
-            self.scalebar_label = None;
+        if !self.overlays.scalebar_on() {
+            self.overlays.clear_scalebar_label();
             return None;
         }
         let clear_and_none = |s: &mut Self| -> Option<ScalebarDraw> {
-            s.scalebar_label = None;
+            s.overlays.clear_scalebar_label();
             None
         };
         let (Some(letterbox_rect), Some(quad_px)) =
@@ -268,7 +268,7 @@ impl State {
             .map(|r| r.line_w)
             .unwrap_or(0.0);
         let label_h = label_buf.buffer.metrics().line_height;
-        self.scalebar_label = Some(label_buf);
+        self.overlays.show_scalebar_label(label_buf);
         // Geometry: bottom-left corner, label above the bar, dark backing box.
         let m = 10.0 * scale_f;
         let bar_h = (4.0 * scale_f).max(2.0);
@@ -312,7 +312,7 @@ impl State {
     /// keeps it and the renderer simply declines to draw it.
     pub(in crate::ui) fn build_caption(&mut self, preview_rect: ScreenRect) -> Option<CaptionDraw> {
         let clear_and_none = |s: &mut Self| -> Option<CaptionDraw> {
-            s.caption_label = None;
+            s.overlays.clear_caption_label();
             None
         };
         let Some(node_id) = self.preview_requests.fired_target().map(str::to_owned) else {
@@ -324,7 +324,7 @@ impl State {
         let Some(ws_key) = self.active_result_row_key() else {
             return clear_and_none(self);
         };
-        let Some(text) = self.preview_captions.get(&ws_key, &node_id).cloned() else {
+        let Some(text) = self.overlays.captions().get(&ws_key, &node_id).cloned() else {
             return clear_and_none(self);
         };
         let scale_f = self.scale;
@@ -341,7 +341,7 @@ impl State {
         );
         let line_h = buf.buffer.metrics().line_height;
         let lines = buf.buffer.layout_runs().count().max(1);
-        self.caption_label = Some(buf);
+        self.overlays.show_caption_label(buf);
         // Cap the drawn height so a long caption can never swallow the figure it
         // describes: past CAPTION_MAX_LINES the overlay stops growing and the
         // remainder is clipped by the ExtraArea's `bottom`. The length cap makes
@@ -426,7 +426,7 @@ impl ScalePromptContext for State {
         self.send(OutgoingReq::PreviewSetScale { node_id: node_id.to_string(), nm_per_px,
             workspace_id: self.selected.workspace_id().clone(), generation }).map_err(|e| e.to_string())
     }
-    fn enable_scalebar(&mut self) { self.scalebar_on = true; }
+    fn enable_scalebar(&mut self) { self.overlays.enable_scalebar(); }
     fn mark_scale_saved(&mut self, node_id: String, raw: String) { self.preview_requests.arm_scale_save(node_id, raw); }
     fn scale_effect(&mut self, effect: PromptEffect) { self.apply_prompt_effect(effect); }
 }

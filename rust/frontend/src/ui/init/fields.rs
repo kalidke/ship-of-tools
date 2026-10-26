@@ -93,16 +93,10 @@ impl State {
             )),
             concept: ConceptSlot::new(concept_rect_px),
             reveal: RevealWalk::default(),
-            preview_page: None,
-            preview_page_raster_zoom: 1.0,
-            preview_reraster_keep_view: false,
+            pages: PageView::default(),
             // Default off; `--start-scalebar` arms it for the headless capture
             // harness (no `b` keypress). Still gated on a present scale at draw.
-            scalebar_on: cli.start_scalebar,
-            scalebar_label: None,
-            preview_captions: CaptionStore::default(),
-            caption_label: None,
-            caption_band_px: 0.0,
+            overlays: FigureOverlays::new(cli.start_scalebar),
             agent_pane: AgentPane::new(
                 initial_bl_pane_target(resume_matches_last_host, &persisted_geom, &active_host)),
             selected: SelectedRow::new(

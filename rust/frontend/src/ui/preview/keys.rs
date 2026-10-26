@@ -34,7 +34,7 @@ fn page_turn_key(state: &mut State, key: KeyPress<'_>, label: String) -> Control
     // other handlers; on NON-paginated previews PgUp/
     // PgDn fall through to the text-scroll arms below.
     // No autorepeat: each page is a fresh pdftoppm run.
-    if let Some((page, count)) = state.preview_page {
+    if let Some((page, count)) = state.pages.page() {
         if count > 1 && !event.repeat {
             {
                 let next = match action {

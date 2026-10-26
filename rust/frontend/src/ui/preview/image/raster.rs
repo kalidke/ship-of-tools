@@ -64,7 +64,7 @@ pub(in crate::ui) struct RasterView {
     view_cache: HashMap<(String, (u32, u32)), RoiRect>,
     /// One-shot deferred view restore: a cache hit at preview install can't
     /// solve immediately — there's no live geometry there, and
-    /// `caption_band_px` at install time still describes the PREVIOUS
+    /// the caption band at install time still describes the PREVIOUS
     /// node's band — so the hit is parked as `(node_id, roi)` and consumed
     /// in the render pass next to the `--roi` aim solve, against the
     /// current `image_rect`. An aim consumed for the same install wins over

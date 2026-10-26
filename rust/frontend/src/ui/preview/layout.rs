@@ -37,14 +37,14 @@ impl State {
         } else {
             // No raster on screen (help, edit modal, markdown, fatal overlay):
             // nothing to caption, and the text pane keeps the full rect.
-            self.caption_label = None;
+            self.overlays.clear_caption_label();
             None
         };
         // Publish the band height BEFORE deriving image_rect, so the keyboard
         // zoom/pan handler (which runs outside the render pass) derives its pane
         // from the same number this frame drew with.
-        self.caption_band_px = caption_draw.as_ref().map_or(0.0, |c| c.backing.h);
-        let image_rect = image_rect_for_caption(preview_rect, self.caption_band_px);
+        self.overlays.publish_caption_band(caption_draw.as_ref().map_or(0.0, |c| c.backing.h));
+        let image_rect = image_rect_for_caption(preview_rect, self.overlays.caption_band_px());
 
         let png_rect = if show_png {
             self.raster

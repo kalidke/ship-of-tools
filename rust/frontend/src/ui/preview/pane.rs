@@ -229,7 +229,7 @@ impl State {
         // when the title overflows the pane width.
         // Paginated preview (ADR 0021): surface position + the page-turn
         // keys in the title so the affordance is discoverable.
-        match self.preview_page {
+        match self.pages.page() {
             Some((page, count)) if count > 1 => Some(format!("{rel} · p {page}/{count} · n/p")),
             _ => Some(rel.to_string()),
         }
@@ -260,7 +260,7 @@ impl State {
             // Paginated document pages (preview_page set from this reply's
             // extras) filter Linear — rasterized text aliases hard under
             // Nearest. Standalone rasters keep Nearest per the 2026-05-22 ask.
-            let sampler = if self.preview_page.is_some() {
+            let sampler = if self.pages.page().is_some() {
                 crate::ui::render::quad::SamplerKind::Linear
             } else {
                 crate::ui::render::quad::SamplerKind::Nearest
@@ -276,7 +276,7 @@ impl State {
                     // Pre-downsample size for the ADR-0034 scalebar (see field
                     // docs). Same as the texture's unless the GPU-fit shrank it.
                     self.raster.install(q, (src_w, src_h));
-                    if std::mem::take(&mut self.preview_reraster_keep_view) {
+                    if self.pages.take_keep_view() {
                         // Zoom re-raster of the same page (ADR 0021): the new
                         // bitmap is the same page at higher resolution. Fit-to-
                         // pane normalizes source resolution, so keeping zoom/pan

@@ -61,7 +61,7 @@ use preview::image::figures::{decode_figure_bytes, fail_figure, FigureCacheEntry
 #[cfg(test)]
 use preview::image::overlay::CAPTION_MAX_CHARS;
 use preview::image::overlay::{
-    parse_physical_scale, truncate_caption, CaptionStore,
+    parse_physical_scale, truncate_caption,
 };
 use preview::image::view::{
     image_rect_for_caption, letterbox, png_cache_key_from_node_id, png_zoom_max,
@@ -619,49 +619,10 @@ struct State {
     // ui/preview/image: the image view, ROI, pages, scalebar, captions and figures.
     /// The raster view: the shown raster, its zoom and pan, the visible ROI and the same-directory view carry.
     raster: RasterView,
-    /// Pagination of the preview the pane is *showing* (ADR 0021):
-    /// `(page, page_count)` from the reply's extras. `None` for
-    /// unpaginated previews. Drives the `n`/`p` page-turn keys and the
-    /// title's `p N/M` suffix; never inspected per-file-type — any plugin
-    /// that reports page extras gets the transport for free.
-    preview_page: Option<(u32, u32)>,
-    /// Zoom level the *current* page bitmap was rasterized for (1.0 = fit
-    /// to pane). Zooming in past this re-requests the page at the larger
-    /// pixel size so rasterized text stays crisp instead of stretching the
-    /// fit-sized bitmap (ADR 0021 deferred follow-up). Reset to 1.0 on a
-    /// fresh page/file.
-    preview_page_raster_zoom: f32,
-    /// One-shot: the next `image/png` render is a zoom re-raster of the
-    /// page already on screen, so the quad swap must preserve zoom/pan
-    /// rather than reset to fit. Set by the Preview handler, consumed in
-    /// `render_preview_source`.
-    preview_reraster_keep_view: bool,
-    /// Scalebar overlay toggle (ADR 0034, `b`). Default off; sticky across
-    /// navigations (renders only when the installed scale is present, so it can
-    /// stay armed while browsing a mix of scaled / unscaled rasters).
-    scalebar_on: bool,
-    /// The shaped scalebar label buffer (e.g. `500 nm`), rebuilt each frame
-    /// from the adaptive bar length by `build_scalebar` (shaped OUTSIDE the
-    /// render pass). `None` when the bar isn't drawn.
-    scalebar_label: Option<crate::ui::preview::markdown::MarkdownPreview>,
-    /// Agent-supplied figure captions, sticky per (host, listed workspace slug, file).
-    /// Commands write the resolved target key and rendering reads the corresponding
-    /// active row key. The store is shared across snapshots because its keys carry
-    /// the host and workspace identity.
-    preview_captions: CaptionStore,
-    /// The shaped caption buffer for the image on screen, rebuilt each frame by
-    /// `build_caption` (shaped OUTSIDE the render pass, like `scalebar_label`).
-    /// `None` when no caption is drawn.
-    caption_label: Option<crate::ui::preview::markdown::MarkdownPreview>,
-    /// Height in px of the caption band the LAST frame reserved (0.0 for none).
-    /// Published by the render pass purely so the KEYBOARD zoom/pan handler can
-    /// reach it: that handler runs outside the render pass, rebuilds the pane
-    /// rect from cells, and would otherwise compute its zoom ceiling against the
-    /// unreduced pane — making the reachable max zoom depend on whether a
-    /// caption happens to be set (verified 2.9%–6.4% short on a
-    /// height-constrained image). Band height is only knowable after the caption
-    /// is shaped, so it has to be stashed rather than recomputed.
-    caption_band_px: f32,
+    /// Pagination of the shown preview: page and count, the page bitmap's raster zoom and a re-raster's keep-view.
+    pages: PageView,
+    /// The figure overlays: the scalebar toggle and label, the caption store and label, and the caption band.
+    overlays: FigureOverlays,
     /// Cache of fetched markdown-figure bitmaps keyed by the literal
     /// URL string that appeared in the source (`![](url)`). Populated
     /// by `IncomingEvt::FigureLoaded`; consumed by the markdown render
@@ -889,6 +850,8 @@ use self::preview::concept::{split_frontmatter, ConceptInfo, ConceptSlot, DriftC
 use self::preview::editor::state::{EditState, Editor};
 use self::preview::shaped::ShapedPreview;
 use self::preview::image::raster::RasterView;
+use self::preview::image::pages::PageView;
+use self::preview::image::figure_overlays::FigureOverlays;
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,

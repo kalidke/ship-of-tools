@@ -277,11 +277,11 @@ impl State {
     /// linear-downsamples the existing higher-res bitmap. The GPU keeps
     /// showing the stretched texture until the sharper reply swaps in.
     pub(in crate::ui) fn maybe_reraster_page(&mut self) {
-        let Some((page, _count)) = self.preview_page else {
+        let Some((page, _count)) = self.pages.page() else {
             return;
         };
         let target = self.raster.zoom().max(1.0);
-        let have = self.preview_page_raster_zoom;
+        let have = self.pages.raster_zoom();
         let pending = self.preview_requests.reraster_zoom();
         if target <= have.max(pending) * 1.2 {
             return;

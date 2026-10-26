@@ -136,7 +136,7 @@ impl State {
         };
         let md_clip_bottom = whole_line_clip(self.shaped.md(), md_rect, preview_scroll_px);
         let mut extras: Vec<crate::ui::render::text::ExtraArea> = Vec::new();
-        if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.scalebar_label.as_ref()) {
+        if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.overlays.scalebar_label()) {
             extras.push(crate::ui::render::text::ExtraArea {
                 buffer: &lbl.buffer,
                 x: sb.label_x,
@@ -150,7 +150,7 @@ impl State {
                 scroll_y_px: 0.0,
             });
         }
-        if let (Some(cap), Some(lbl)) = (caption_draw.as_ref(), self.caption_label.as_ref()) {
+        if let (Some(cap), Some(lbl)) = (caption_draw.as_ref(), self.overlays.caption_label()) {
             extras.push(crate::ui::render::text::ExtraArea {
                 buffer: &lbl.buffer,
                 x: cap.text_x,
