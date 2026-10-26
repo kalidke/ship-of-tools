@@ -50,7 +50,7 @@ impl State {
         match quad_from_svg_bytes(
             self.gpu.device(),
             self.gpu.queue(),
-            &self.quad_pipeline,
+            self.brushes.pipeline(),
             &svg_bytes,
             1024,
             256,

@@ -2,6 +2,7 @@
 //! strike lines.
 
 use super::*;
+use crate::ui::render::brushes::Solid;
 
 const BLOCK_PAD_Y: f32 = 4.0;
 
@@ -81,7 +82,7 @@ impl State {
             if let Some(quad) = self.raster.quad() {
                 quad.render(
                     self.gpu.queue(),
-                    &self.quad_pipeline,
+                    self.brushes.pipeline(),
                     &mut rpass,
                     canvas_rect,
                     (self.gpu.config().width, self.gpu.config().height),
@@ -117,22 +118,8 @@ impl State {
             let sw = image_rect.w.max(0.0) as u32;
             let sh = image_rect.h.max(0.0) as u32;
             rpass.set_scissor_rect(sx, sy, sw, sh);
-            self.scalebar_back_quad.render_many(
-                self.gpu.device(),
-                self.gpu.queue(),
-                &self.quad_pipeline,
-                &mut rpass,
-                std::slice::from_ref(&sb.backing),
-                (self.gpu.config().width, self.gpu.config().height),
-            )?;
-            self.scalebar_bar_quad.render_many(
-                self.gpu.device(),
-                self.gpu.queue(),
-                &self.quad_pipeline,
-                &mut rpass,
-                std::slice::from_ref(&sb.bar),
-                (self.gpu.config().width, self.gpu.config().height),
-            )?;
+            self.brushes.paint(Solid::ScalebarBack, &self.gpu, &mut rpass, std::slice::from_ref(&sb.backing))?;
+            self.brushes.paint(Solid::ScalebarBar, &self.gpu, &mut rpass, std::slice::from_ref(&sb.bar))?;
             rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
         }
         // Figure-caption band. Its own quad field for the aliasing reason
@@ -145,20 +132,13 @@ impl State {
             let sw = preview_rect.w.max(0.0) as u32;
             let sh = preview_rect.h.max(0.0) as u32;
             rpass.set_scissor_rect(sx, sy, sw, sh);
-            self.caption_back_quad.render_many(
-                self.gpu.device(),
-                self.gpu.queue(),
-                &self.quad_pipeline,
-                &mut rpass,
-                std::slice::from_ref(&cap.backing),
-                (self.gpu.config().width, self.gpu.config().height),
-            )?;
+            self.brushes.paint(Solid::CaptionBack, &self.gpu, &mut rpass, std::slice::from_ref(&cap.backing))?;
             rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
         }
         if let (Some(quad), Some(rect)) = (self.shaped.svg(), svg_rect) {
             quad.render(
                 self.gpu.queue(),
-                &self.quad_pipeline,
+                self.brushes.pipeline(),
                 &mut rpass,
                 rect,
                 (self.gpu.config().width, self.gpu.config().height),
@@ -256,7 +236,7 @@ impl State {
             };
             quad.render(
                 self.gpu.queue(),
-                &self.quad_pipeline,
+                self.brushes.pipeline(),
                 &mut rpass,
                 paint_rect,
                 (self.gpu.config().width, self.gpu.config().height),
@@ -280,9 +260,9 @@ impl State {
         // doesn't bleed into the wireframe.
         // Single batched render for both block panels (full pane
         // width) and inline pills (text width + padding). Combined
-        // because `Quad::render_many` borrows `&mut self.code_bg_quad`
-        // tied to the rpass lifetime, so two separate calls in the
-        // same scope conflict; one merged Vec sidesteps it.
+        // because each `render_many` rewrites its quad's vertex buffer,
+        // so two paints with one brush in one pass would leave only the
+        // second; one merged Vec sidesteps it.
         if show_md {
             // One rect per fenced block, spanning from the first
             // line's top to the last line's bottom — covers blank
@@ -350,14 +330,7 @@ impl State {
                     });
                 }
                 if !batched.is_empty() {
-                    self.code_bg_quad.render_many(
-                        self.gpu.device(),
-                        self.gpu.queue(),
-                        &self.quad_pipeline,
-                        &mut rpass,
-                        &batched,
-                        (self.gpu.config().width, self.gpu.config().height),
-                    )?;
+                    self.brushes.paint(Solid::CodeBg, &self.gpu, &mut rpass, &batched)?;
                 }
                 self.paint_code_borders(rpass, md_rect, preview_scroll_px, pane_top, pane_bot)?;
             }
@@ -374,10 +347,10 @@ impl State {
         pane_bot: f32,
     ) -> Result<()> {
                 // Per-block 1-px border around the slate panel —
-                // top / bottom / left / right edges. Different
-                // Quad field from `code_bg_quad`, so a second
-                // `render_many` call in this scope is fine (the
-                // borrow conflict is per-field, not per-pass).
+                // top / bottom / left / right edges. A different
+                // brush from the code background, so a second
+                // paint in this pass is fine (the vertex buffer
+                // is per brush, not per pass).
                 // Inline pills don't get bordered; the visual
                 // affordance is only useful at panel scale.
                 // Clamped panel rect + whether the real top / bottom edge
@@ -453,14 +426,7 @@ impl State {
                             h: r.h,
                         });
                     }
-                    self.code_border_quad.render_many(
-                        self.gpu.device(),
-                        self.gpu.queue(),
-                        &self.quad_pipeline,
-                        &mut rpass,
-                        &edges,
-                        (self.gpu.config().width, self.gpu.config().height),
-                    )?;
+                    self.brushes.paint(Solid::CodeBorder, &self.gpu, &mut rpass, &edges)?;
                 }
         Ok(())
     }
@@ -510,14 +476,7 @@ impl State {
                         h: STRIKE_THICKNESS,
                     });
                 }
-                self.strike_line_quad.render_many(
-                    self.gpu.device(),
-                    self.gpu.queue(),
-                    &self.quad_pipeline,
-                    &mut rpass,
-                    &batched,
-                    (self.gpu.config().width, self.gpu.config().height),
-                )?;
+                self.brushes.paint(Solid::StrikeLine, &self.gpu, &mut rpass, &batched)?;
             }
         }
         Ok(())

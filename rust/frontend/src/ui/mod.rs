@@ -177,71 +177,8 @@ struct State {
     gpu: crate::ui::render::gpu::Gpu,
     /// The text canvas: the glyph text layer, the chrome's cell grid and the cell metrics both are laid out with.
     canvas: crate::ui::render::canvas::Canvas,
-    background: wgpu::Color,
-    quad_pipeline: QuadPipeline,
-    /// A 1×1 pastel-yellow RGBA texture used as the LLM-pane selection
-    /// highlight. Rendered as a per-row stretched quad before text.render
-    /// so glyphs sit on top — gives a "highlighter" look that doesn't
-    /// invert the text colour (REVERSED inverts both fg and bg, which
-    /// hurt readability per user feedback). Solid colour with full alpha
-    /// — the chrome's near-black bg shows around glyph antialias edges.
-    selection_bg_quad: Quad,
-    /// A 1×1 near-opaque surface-navy RGBA texture: the backing strip
-    /// under nav-spill overlay rows. Rendered AFTER the main text pass
-    /// (so it covers preview glyphs and images alike), then the overlay
-    /// text layer draws the row text on top. Alpha slightly under full
-    /// so an image preview barely ghosts through — reads as "floating
-    /// above", not "hole cut into the preview".
-    overlay_back_quad: Quad,
-    /// A 1×1 dark slate RGBA texture used as the markdown-preview code
-    /// bg — both inline `<code>` and fenced code blocks render against
-    /// it so `Vec<u8>` doesn't look like prose. Paint pass walks
-    /// `MarkdownPreview::code_glyph_rects` and stretches this quad
-    /// behind each contiguous code-run, slightly lifted from the
-    /// chrome bg toward VS-Code Dark+'s `#1e1e1e` so the panel reads
-    /// clearly against the deep-navy surface.
-    code_bg_quad: Quad,
-    /// 1×1 lighter-slate RGBA tile for the 1-px border around fenced
-    /// code blocks. Four thin quads per block (top/bottom/left/right)
-    /// give the panel an outline so it reads as a discrete block
-    /// instead of "a stripe of slate behind the text" — matches the
-    /// GitHub / VS Code code-block treatment.
-    code_border_quad: Quad,
-    /// 1×1 light-gray RGBA tile painted as a thin horizontal quad
-    /// through every `STRIKE_GLYPH_FLAG` run in the markdown preview.
-    /// Replaces the U+0335 / U+0336 combining-mark fallback that
-    /// rasterised inconsistently across fontdb's font picks (Segoe UI
-    /// rendered it as an underline, Consolas barely at all).
-    strike_line_quad: Quad,
-    /// Lazily-built solid-colour quads for pane-border box-drawing chars,
-    /// keyed by RGB. `chrome::project_border_quads` emits arm-from-centre
-    /// rects sized to the exact cell so stacked `│` borders tile without the
-    /// sub-cell font-leading gaps cosmic-text leaves (the resolved monospace
-    /// font doesn't fill the 18px cell). Cached rather than built per frame
-    /// because `Quad::from_rgba8` allocates a GPU texture + bind group; pane
-    /// borders use only 1–2 colours so the map stays tiny.
-    border_quads: HashMap<(u8, u8, u8), Quad>,
-    /// Solid quads for the ADR-0034 scalebar overlay: a white `bar` over a
-    /// black `back`ing box. Dedicated fields (not `border_quads`) because each
-    /// `render_many` mutably borrows its quad for the whole render-pass
-    /// lifetime, so the two colours must live in disjoint fields.
-    scalebar_bar_quad: Quad,
-    scalebar_back_quad: Quad,
-    /// Backing box for the figure-caption overlay. A dedicated field, not a
-    /// reuse of `scalebar_back_quad`: `render_many` mutably borrows its quad for
-    /// the whole render-pass lifetime, so two draws in one pass need two
-    /// disjoint fields (the same aliasing rule the scalebar's own two quads
-    /// document below).
-    caption_back_quad: Quad,
-    /// Miniature dark logo (from `LOGO_DARK_PNG`) flanking each session badge
-    /// in the bottom strip, plus its native `(w, h)` for aspect-ratio sizing.
-    /// `None` when the embedded PNG fails to decode — purely cosmetic, the
-    /// strip renders unchanged without it.
-    logo_quad: Option<(Quad, u32, u32)>,
-    /// Small wordmark logo (from `LOGO_WORDMARK_PNG`) drawn at the top of the
-    /// nav pane, plus its native `(w, h)` for aspect-ratio sizing. `None` when
-    /// the embedded PNG fails to decode.
-    wordmark_quad: Option<(Quad, u32, u32)>,
+    /// The quad pipeline, the solid brushes, the logos and the help peek's backing.
+    brushes: crate::ui::render::brushes::Brushes,
     /// `--capture <path>`: render to PNG and exit. Set means we keep
     /// requesting redraws until `frame_counter == CAPTURE_FRAME` so the
     /// transport task has time to push events.
@@ -389,7 +326,6 @@ struct State {
     /// file format and discovery order. Read-only once loaded — the
     /// chrome doesn't reload mid-session.
     bindings: KeyBindings,
-    help_back_quad: Option<(u8, Quad)>,
     // ui/control: the fe-commands queue and the fe-state.json signature.
     /// The fe-commands queue the watcher fills and the last fe-state.json signature.
     control: ControlChannel,

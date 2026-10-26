@@ -268,7 +268,7 @@ impl State {
             match crate::ui::preview::image::png::quad_and_source_dims_from_png_bytes(
                 self.gpu.device(),
                 self.gpu.queue(),
-                &self.quad_pipeline,
+                self.brushes.pipeline(),
                 bytes,
                 sampler,
             ) {

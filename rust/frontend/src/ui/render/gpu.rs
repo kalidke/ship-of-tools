@@ -1,4 +1,4 @@
-//! The GPU's lifetime owner: the surface, the device and queue, and the surface's configuration.
+//! The GPU's lifetime owner: the surface, the device and queue, the surface's configuration and its clear colour.
 
 /// The window's GPU. Field order is load-bearing: fields drop in declaration order, as `State`'s did. The surface's
 /// size changes only by `resize`, and a lost or outdated surface is reconfigured once by `acquire_frame`.
@@ -7,14 +7,19 @@ pub(in crate::ui) struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// The frame's clear colour, chosen for the surface's format (`clear_color_for_surface`).
+    clear_color: wgpu::Color,
 }
 
 impl Gpu {
     pub(in crate::ui) fn new(
         surface: wgpu::Surface<'static>, device: wgpu::Device, queue: wgpu::Queue, config: wgpu::SurfaceConfiguration,
+        clear_color: wgpu::Color,
     ) -> Self {
-        Self { surface, device, queue, config }
+        Self { surface, device, queue, config, clear_color }
     }
+
+    pub(in crate::ui) fn clear_color(&self) -> wgpu::Color { self.clear_color }
 
     pub(in crate::ui) fn device(&self) -> &wgpu::Device { &self.device }
     pub(in crate::ui) fn queue(&self) -> &wgpu::Queue { &self.queue }

@@ -18,7 +18,7 @@ impl State {
         match decode_figure_bytes(
             self.gpu.device(),
             self.gpu.queue(),
-            &self.quad_pipeline,
+            self.brushes.pipeline(),
             &mime,
             &bytes,
         ) {

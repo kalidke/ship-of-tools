@@ -83,7 +83,7 @@ impl State {
             let quad = quad_from_svg_bytes(
                 self.gpu.device(),
                 self.gpu.queue(),
-                &self.quad_pipeline,
+                self.brushes.pipeline(),
                 draw.svg.as_bytes(),
                 draw.w,
                 draw.h,

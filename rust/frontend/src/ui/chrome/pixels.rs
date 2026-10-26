@@ -57,19 +57,7 @@ impl State {
         // self.border_quads while the pass already holds other &self borrows.
         // Doing it here keeps the pass to pure iter_mut + render_many.
         for color in border_rects_by_color.keys() {
-            if !self.border_quads.contains_key(color) {
-                let (r, g, b) = *color;
-                let quad = Quad::from_rgba8(
-                    self.gpu.device(),
-                    self.gpu.queue(),
-                    &self.quad_pipeline,
-                    &[r, g, b, 255],
-                    1,
-                    1,
-                )
-                .context("failed to build border-colour quad")?;
-                self.border_quads.insert(*color, quad);
-            }
+            self.brushes.ensure_border(*color, &self.gpu, "failed to build border-colour quad")?;
         }
         Ok(border_rects_by_color)
     }
@@ -117,10 +105,7 @@ impl State {
                 color: Some((167, 222, 231)), bold: i == 0, italic: false, dim: false,
             }).collect();
             let alpha = (help_opacity * 245.0).round() as u8;
-            if self.help_back_quad.as_ref().map(|(a, _)| *a) != Some(alpha) {
-                self.help_back_quad = Some((alpha, Quad::from_rgba8(self.gpu.device(), self.gpu.queue(),
-                    &self.quad_pipeline, &[14, 30, 46, alpha], 1, 1)?));
-            }
+            self.brushes.ensure_help_back(alpha, &self.gpu)?;
         }
 
         // Nav-spill overlay text: the segments the draw closure just

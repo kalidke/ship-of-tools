@@ -16,7 +16,7 @@ impl State {
         // self, so the ease can mutate self.* without a borrow conflict.
         //
         // Each ship's bow wheel is accumulated here (physical px) and drawn
-        // from `self.logo_quad` inside the render pass — the per-ship
+        // with the strip logo inside the render pass — the per-ship
         // layout it needs only exists in this block.
         let mut strip_logo_rects: Vec<ScreenRect> = Vec::new();
         if !self.row_presentation.keys().is_empty() {
@@ -36,9 +36,9 @@ impl State {
             // names alone mark the groups, matching the asset's own
             // fail-soft contract (a decode failure never breaks the layout,
             // per `LOGO_DARK_PNG`'s doc).
-            let logo_dims: Option<(f32, f32)> = self.logo_quad.as_ref().map(|(_, nw, nh)| {
+            let logo_dims: Option<(f32, f32)> = self.brushes.logo_size().map(|(nw, nh)| {
                 let logo_h = (self.canvas.cell_h() - 2.0).max(1.0);
-                let logo_w = logo_h * (*nw as f32 / (*nh).max(1) as f32);
+                let logo_w = logo_h * (nw as f32 / nh.max(1) as f32);
                 (logo_w, logo_h)
             });
             let items: Vec<StripItem> = strip_items(self.row_presentation.keys(), |h| {
@@ -80,19 +80,7 @@ impl State {
             // Hulls ride the chrome's own colour-keyed solid-quad cache, so the
             // brown costs exactly one entry and one batched draw.
             if !strip_hull_rects.is_empty() {
-                if !self.border_quads.contains_key(&HULL_RGB) {
-                    let (r, g, b) = HULL_RGB;
-                    let quad = Quad::from_rgba8(
-                        self.gpu.device(),
-                        self.gpu.queue(),
-                        &self.quad_pipeline,
-                        &[r, g, b, 255],
-                        1,
-                        1,
-                    )
-                    .context("failed to build hull-colour quad")?;
-                    self.border_quads.insert(HULL_RGB, quad);
-                }
+                self.brushes.ensure_border(HULL_RGB, &self.gpu, "failed to build hull-colour quad")?;
                 border_rects_by_color
                     .entry(HULL_RGB)
                     .or_default()

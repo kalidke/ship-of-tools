@@ -62,7 +62,7 @@ impl State {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.background),
+                        load: wgpu::LoadOp::Clear(self.gpu.clear_color()),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
