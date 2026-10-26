@@ -76,10 +76,11 @@ fn a_typing_attempt_owns_the_row_until_it_ends() {
 
 #[test]
 fn the_prompt_gate_checks_the_supplied_lines_fit_and_exact_contents() {
+    let long = "x".repeat(32);
     let boxed = |text: &str| vec!["─".repeat(32), format!("❯\u{a0}{text}"), "─".repeat(32)];
     let prompt = |lines: &[String], text| super::screen::prompt_of(lines, Some((1, 2)), "claude", false, text);
     assert_eq!(prompt(&boxed(""), "[sot-page] ok"), Ok(Prompt::Empty));
-    assert_eq!(prompt(&boxed(""), &"x".repeat(32)), Err("pane too narrow for the line"));
+    assert_eq!(prompt(&boxed(""), &long), Err("pane too narrow for the line"));
     assert_eq!(prompt(&boxed("[sot-page] ok"), "[sot-page] ok"), Ok(Prompt::HoldsLine));
     assert!(prompt(&boxed("[sot-page] other"), "[sot-page] ok").is_err());
 }
