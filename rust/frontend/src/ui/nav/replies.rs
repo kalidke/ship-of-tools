@@ -69,7 +69,7 @@ impl State {
                     self.pending_switch_reveal = None;
                     self.reveal_awaiting = None;
                     self.reveal_refetched = None;
-                    self.driven_preview_hold_cursor = None;
+                    self.preview_requests.abort_reveal();
                     self.result_ledger.release_reveal();
                     self.window.request_redraw();
                 }
@@ -154,11 +154,11 @@ impl State {
             if armed_ws == self.active_workspace_id {
                 tracing::info!(target = %sel,
                     "resume: restoring nav cursor after reconnect rebuild");
-                self.driven_preview_hold_cursor = self
+                self.preview_requests.arm_driven_hold(self
                     .tree
                     .rows
                     .get(self.tree.selected)
-                    .map(|r| r.node.id.clone());
+                    .map(|r| r.node.id.clone()));
                 self.result_ledger.release_reveal();
                 self.pending_reveal = Some(sel);
                 self.reveal_awaiting = None;
@@ -267,11 +267,11 @@ impl State {
                 // race — two repros 2026-06-30). Mirrors
                 // `drive_same_ws_open`; cleared on landing.
                 if !self.tree.rows.iter().any(|r| r.node.id == node_id) {
-                    self.driven_preview_hold_cursor = self
+                    self.preview_requests.arm_driven_hold(self
                         .tree
                         .rows
                         .get(self.tree.selected)
-                        .map(|r| r.node.id.clone());
+                        .map(|r| r.node.id.clone()));
                 }
                 self.pending_reveal = Some(node_id);
                 self.reveal_awaiting = None;
@@ -401,7 +401,7 @@ impl State {
         // `kernel.request` runs off-loop (switch-latency): two
         // scans fired close together for the SAME (host,
         // workspace) can complete in EITHER order now, so —
-        // exactly like `preview.get`'s `reply_is_current` —
+        // exactly like PreviewRequests preview admission —
         // drop one that isn't the latest generation issued for
         // its own key. Per-key (not global) because scans for
         // DIFFERENT workspaces are independently valid in

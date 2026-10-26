@@ -317,7 +317,7 @@ impl State {
             "image/png".into(),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo.png")).to_vec(),
             None,
-            self.preview_req_gen,
+            self.preview_requests.preview_generation(),
         );
     }
 

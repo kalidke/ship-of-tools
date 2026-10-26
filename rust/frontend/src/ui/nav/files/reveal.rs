@@ -63,16 +63,16 @@ impl State {
             self.tree.selected = idx;
             self.pending_reveal = None;
             self.reveal_awaiting = None;
-            self.driven_preview_hold_cursor = None;
+            self.preview_requests.finish_reveal();
         } else {
             // Hold the per-frame preview-follow off the (stale) cursor row so it
             // doesn't clobber the driven preview while ancestors expand; the
             // hold lifts when the cursor lands on the target.
-            self.driven_preview_hold_cursor = self
+            self.preview_requests.arm_driven_hold(self
                 .tree
                 .rows
                 .get(self.tree.selected)
-                .map(|r| r.node.id.clone());
+                .map(|r| r.node.id.clone()));
             // Fresh reveal intent: drop the per-level bookkeeping a prior
             // target may have left so `drive_reveal_step` and its once-only
             // force-refresh memo start clean (mirrors the resume-reveal reset).
@@ -197,11 +197,11 @@ impl State {
             // badge-consume race). Mirrors `drive_same_ws_open`;
             // `drive_reveal_step` clears the hold when it lands.
             if !self.tree.rows.iter().any(|r| r.node.id == node_id) {
-                self.driven_preview_hold_cursor = self
+                self.preview_requests.arm_driven_hold(self
                     .tree
                     .rows
                     .get(self.tree.selected)
-                    .map(|r| r.node.id.clone());
+                    .map(|r| r.node.id.clone()));
             }
             self.pending_reveal = Some(node_id.clone());
             self.reveal_awaiting = None;
@@ -265,7 +265,7 @@ impl State {
             self.pending_reveal = None;
             self.reveal_awaiting = None;
             self.reveal_refetched = None;
-            self.driven_preview_hold_cursor = None;
+            self.preview_requests.finish_reveal();
             self.result_cursor_landed(&target_id);
             // Re-anchor the header/preview onto the landed row. The body was
             // already fetched (preview_node_id_fired == target_id), so this

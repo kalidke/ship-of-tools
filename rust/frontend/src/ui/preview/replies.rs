@@ -3,6 +3,7 @@
 //! overlay (set on a refusal, cleared by a clean hello).
 
 use crate::ui::*;
+use super::requests::{self, RequestReplyContext, PreviewRequests};
 
 impl State {
     pub(crate) fn clear_hello_refused(&mut self, event_host: HostKey) {
@@ -45,98 +46,54 @@ impl State {
         content: String,
         generation: u64,
     ) {
-        // Switch-latency Phase 1: drop a reply that isn't the
-        // LATEST concept.read this session has fired for the
-        // slot, or that answers a (host, workspace) the chrome
-        // has since left — a daemon can now answer requests on
-        // one connection out of order, and `target` alone isn't
-        // a safe owner check (two projects can annotate the
-        // same relative path). Both consumers below (an open
-        // edit buffer, and the read-only annotation view) each
-        // additionally match on their own "current target"
-        // (`edit.target` / `concept_target_fired`) — this gate
-        // is the host/workspace/generation leg of the same
-        // owner check, common to both.
-        if !reply_is_current(
-            generation,
-            self.concept_req_gen,
-            &event_host,
-            &self.active_host,
-            &workspace_id,
-            &self.active_workspace_id,
-        ) {
-            tracing::debug!(%target, ?workspace_id, generation,
-                latest = self.concept_req_gen, %event_host,
-                active_host = %self.active_host,
-                "concept.read reply dropped — stale generation or non-active (host, workspace)");
-            return;
-        }
-        // Two consumers for concept.read replies:
-        //   1) Edit-mode stale-reload: when the user picks
-        //      `r` on the stale banner we re-fire the read
-        //      and replace the edit buffer with the on-disk
-        //      content. Matches by edit_state.target so it
-        //      doesn't collide with the cursor-tracking
-        //      read.
-        //   2) Cursor-tracking read: the usual path that
-        //      populates `concept` + `preview_concept` for
-        //      the read-only view.
-        let stale_reload = self
-            .edit_state
-            .as_ref()
-            .map(|e| e.stale_banner && e.target == target)
-            .unwrap_or(false);
-        if stale_reload {
-            if let Some(edit) = self.edit_state.as_mut() {
-                let (header, body) = split_frontmatter(&content);
-                edit.header = header;
-                edit.expected_ast_hash = if exists {
-                    sot_protocol::annotation::synced_against(&content)
-                } else {
-                    None
-                };
-                edit.original = body.clone();
-                edit.buf = EditBuffer::new(body);
-                edit.stale_banner = false;
-                edit.confirm_discard = false;
-            }
-            self.rebuild_edit_preview();
-            // Also let the cursor-tracking path update its
-            // cache so the read-only view shows fresh
-            // content if the user exits edit mode.
-        }
-        // Drop if the cursor has moved since we fired this read;
-        // the next `maybe_fire_concept_read` will issue a fresh
-        // request for the current selection.
-        if self.concept_target_fired.as_deref() == Some(target.as_str()) {
-            let synced_against = if exists {
-                sot_protocol::annotation::synced_against(&content)
+        requests::continue_concept_reply(self, event_host, workspace_id, generation, target, (exists, content));
+    }
+
+    fn reload_concept_editor(&mut self, exists: bool, content: &str) {
+        if let Some(edit) = self.edit_state.as_mut() {
+            let (header, body) = split_frontmatter(content);
+            edit.header = header;
+            edit.expected_ast_hash = if exists {
+                sot_protocol::annotation::synced_against(content)
             } else {
                 None
             };
-            if exists {
-                let body = split_frontmatter(&content).1;
-                self.preview_concept = Some(MarkdownPreview::new(
-                    self.text.font_system_mut(),
-                    &body,
-                    self.concept_rect_px.w.max(1.0),
-                    self.concept_rect_px.h.max(1.0),
-                    self.scale,
-                    &MathMetricsMap::new(),
-                    &FigureMetricsMap::new(),
-                    &self.highlight_service,
-                    &self.markdown_token_cache,
-                ));
-            } else {
-                self.preview_concept = None;
-            }
-            self.concept = Some(ConceptInfo {
-                target,
-                exists,
-                content,
-                synced_against,
-            });
+            edit.original = body.clone();
+            edit.buf = EditBuffer::new(body);
+            edit.stale_banner = false;
+            edit.confirm_discard = false;
         }
+        self.rebuild_edit_preview();
+    }
+
+    fn install_concept_read(&mut self, target: String, exists: bool, content: String) {
+        let synced_against = if exists {
+            sot_protocol::annotation::synced_against(&content)
+        } else {
+            None
+        };
+        if exists {
+            let body = split_frontmatter(&content).1;
+            self.preview_concept = Some(MarkdownPreview::new(
+                self.text.font_system_mut(),
+                &body,
+                self.concept_rect_px.w.max(1.0),
+                self.concept_rect_px.h.max(1.0),
+                self.scale,
+                &MathMetricsMap::new(),
+                &FigureMetricsMap::new(),
+                &self.highlight_service,
+                &self.markdown_token_cache,
+            ));
+        } else {
+            self.preview_concept = None;
+        }
+        self.concept = Some(ConceptInfo {
+            target,
+            exists,
+            content,
+            synced_against,
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -150,35 +107,12 @@ impl State {
         extras: Option<serde_json::Value>,
         generation: u64,
     ) {
-        // Switch-latency Phase 1: drop a reply that isn't the
-        // LATEST preview.get/preview.set_scale this session has
-        // fired for the preview slot, or that answers a (host,
-        // workspace) it's since left. The workspace-only check
-        // this replaced (2026-06-24, the A→B→A round-trip fix)
-        // caught a reply from an abandoned WORKSPACE but not one
-        // from an abandoned NODE within the still-active
-        // workspace — a slower earlier preview.get could still
-        // overwrite what a later cursor move already asked for;
-        // the generation check (a request's slot-monotonic
-        // sequence number, stamped at send time and echoed here)
-        // catches that regardless of workspace. It also folds in
-        // the host: `workspace_id: None` names "the default
-        // workspace" on EVERY host, so a workspace-only check
-        // could mistake a stale reply from a non-active host for
-        // the active one.
-        if !reply_is_current(
-            generation,
-            self.preview_req_gen,
-            &event_host,
-            &self.active_host,
-            &workspace_id,
-            &self.active_workspace_id,
-        ) {
-            tracing::debug!(?workspace_id, generation, latest = self.preview_req_gen,
-                %event_host, active_host = %self.active_host,
-                "drop stale preview.get/set_scale reply");
-            return;
-        }
+        let payload = PreviewReply { node_id, workspace_id: workspace_id.clone(), mime, bytes, extras, generation };
+        requests::continue_preview_reply(self, event_host, workspace_id, generation, payload);
+    }
+
+    fn install_preview_reply(&mut self, payload: PreviewReply) {
+        let PreviewReply { node_id, workspace_id, mime, bytes, extras, generation } = payload;
         // Cache the source so a runtime font-size change
         // can re-render at the new scale without a
         // round-trip to the backend.
@@ -601,25 +535,10 @@ impl State {
         generation: u64,
         message: String,
     ) {
-        // Same stale-reply test the success path (`Preview`,
-        // above) applies: a preview request can be superseded
-        // by a workspace switch or a different file selection
-        // before its FAILURE arrives, and an obsolete error
-        // must not overwrite the current status line any more
-        // than an obsolete success may overwrite the pane.
-        if !reply_is_current(
-            generation,
-            self.preview_req_gen,
-            &event_host,
-            &self.active_host,
-            &workspace_id,
-            &self.active_workspace_id,
-        ) {
-            tracing::debug!(?workspace_id, generation, latest = self.preview_req_gen,
-                %event_host, active_host = %self.active_host,
-                "drop stale preview.get failure");
-            return;
-        }
+        requests::continue_preview_failure(self, event_host, workspace_id, generation, (node_id, message));
+    }
+
+    fn install_preview_failure(&mut self, node_id: Option<String>, message: String) {
         // Most commonly `code: "kernel_unavailable"` — a
         // bounded-output-only file type (HDF5/video/PDF) with
         // the Julia kernel unavailable. Same status-line
@@ -634,6 +553,37 @@ impl State {
             .to_string();
         self.status = format!("preview failed · {name}: {message}");
         self.window.request_redraw();
+    }
+}
+
+pub(in crate::ui) struct PreviewReply {
+    node_id: Option<String>,
+    workspace_id: Option<String>,
+    mime: String,
+    bytes: Vec<u8>,
+    extras: Option<serde_json::Value>,
+    generation: u64,
+}
+
+impl RequestReplyContext for State {
+    type Preview = PreviewReply;
+    type Concept = (bool, String);
+    type Failure = (Option<String>, String);
+    fn requests(&self) -> &PreviewRequests { &self.preview_requests }
+    fn active_host(&self) -> &HostKey { &self.active_host }
+    fn active_workspace(&self) -> &Option<String> { &self.active_workspace_id }
+    fn install_preview(&mut self, payload: Self::Preview) { self.install_preview_reply(payload); }
+    fn stale_editor_target(&self) -> Option<&str> {
+        self.edit_state.as_ref().filter(|edit| edit.stale_banner).map(|edit| edit.target.as_str())
+    }
+    fn reload_editor(&mut self, (exists, content): &Self::Concept) {
+        self.reload_concept_editor(*exists, content);
+    }
+    fn install_concept(&mut self, target: String, (exists, content): Self::Concept) {
+        self.install_concept_read(target, exists, content);
+    }
+    fn preview_failed(&mut self, (node_id, message): Self::Failure) {
+        self.install_preview_failure(node_id, message);
     }
 }
 

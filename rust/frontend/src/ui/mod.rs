@@ -482,17 +482,6 @@ struct State {
     /// rows generate a target (`files:` prefix); modules-mode rows have
     /// no backend-side preview.
     preview_node_id_fired: Option<String>,
-    /// Blink guard for imperatively-driven previews (fe-command / nav.preview).
-    /// When a driven preview targets a node NOT in the current tree rows (a deep
-    /// path whose ancestors aren't expanded), the cursor stays on the OLD row,
-    /// and `maybe_fire_preview` would otherwise fire that old row's preview right
-    /// over the driven one — the deep-path blink. While this holds the old row's
-    /// node id, `maybe_fire_preview` is suppressed for that exact row; the hold
-    /// lifts the instant the cursor moves elsewhere. `None` normally. The
-    /// deep-path cursor-reveal below (`pending_reveal`) supersedes this for
-    /// same-workspace driven opens — there the cursor *does* follow the preview;
-    /// the hold only bridges the brief window while ancestors are expanding.
-    driven_preview_hold_cursor: Option<String>,
     /// Reconnect nav restore (2026-07-11): set on hello/reconnect resume so
     /// the NEXT applied tree.root re-reveals the pre-reconnect cursor (via
     /// the pending_reveal machinery — the cursor's ancestor path re-expands
@@ -561,27 +550,9 @@ struct State {
     /// position alone doesn't determine the scroll — direction of motion
     /// matters.
     tree_scroll: u16,
-    /// Switch-latency Phase 1: monotonic "latest issued" counter for the
-    /// preview slot (`preview.get` + `preview.set_scale` share one slot —
-    /// both install through the single `IncomingEvt::Preview` path).
-    /// Incremented every time a request for either op is fired and stamped
-    /// into the `OutgoingReq`/`PendingKind`/`IncomingEvt` trio unchanged;
-    /// the reply handler drops any reply whose echoed generation is behind
-    /// this counter's CURRENT value — a strictly-increasing counter means
-    /// only the most recently fired request can ever match, so an earlier,
-    /// slower reply (same workspace, a different node, a different host —
-    /// even the daemon answering requests out of order) can never overwrite
-    /// what a later cursor move already asked for. Paired with an owner
-    /// check (host/workspace/node) as defense in depth for the one case
-    /// generation alone can't see: `active_host`/`active_workspace_id`
-    /// changing without firing a fresh preview request.
-    preview_req_gen: u64,
-    /// Same mechanism as `preview_req_gen`, for the concept/annotation
-    /// slot (`concept.read`, cursor-tracking + stale-reload re-fire share
-    /// this one counter — both land in the same `IncomingEvt::ConceptRead`
-    /// consumer).
-    concept_req_gen: u64,
-    /// Same mechanism as `preview_req_gen`/`concept_req_gen`, for
+    /// Request clocks, concept follow and driven-preview hold (stage A).
+    preview_requests: preview::requests::PreviewRequests,
+    /// Like PreviewRequests’ slot clocks, but for
     /// `project.scan` — keyed per (host, workspace) rather than one global
     /// counter, since scans for different workspaces are independently
     /// valid in flight together (see `next_project_scan_gen`).
@@ -793,12 +764,6 @@ struct State {
     /// Pixel rect of the markdown pane from the most recent ratatui layout
     /// pass; cached so we can re-shape on resize without re-running layout.
     md_rect_px: ScreenRect,
-    /// Annotation state for the most-recently-fired `concept.read`. `target`
-    /// is what we asked for; when the response arrives with the same target,
-    /// `exists` and `content` are filled. Mismatch (cursor moved before the
-    /// reply landed) is dropped — the chrome stays on the last good answer
-    /// until the new one arrives, which keeps the status line from flickering.
-    concept_target_fired: Option<String>,
     concept: Option<ConceptInfo>,
     /// Definition line (1-indexed) the in-flight `preview.get` should
     /// anchor to once it lands — set from the selected modules-mode row's
@@ -1263,7 +1228,6 @@ pub(crate) mod render;
 use render::*;
 use self::preview::concept::{clear_drift, drift_is_stale, install_parsed_hash, split_frontmatter, ConceptInfo, FILE_PARSE_MAX_RETRIES};
 use self::preview::editor::state::EditState;
-use self::preview::reply_is_current;
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,
