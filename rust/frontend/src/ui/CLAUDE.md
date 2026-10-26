@@ -15,6 +15,8 @@ follow commitment, the driven-preview hold, and the crop, scale-save and `--roi`
 `session::ParkedViews` owns the rows' parked views (`WorkspaceUiSnapshot`), keyed by row.
 `session::SelectedRow` owns the selected `(host, workspace)`, its read-mark dwell, the destroy confirm and a create's
 request time; `session::WorkspacePicker` owns the new-session picker's listing, cursor and account choice.
+`nav::NavCursor` owns the nav cursor's settle debounce, startup/relaunch/reconnect placements, README default, pin and
+project-scan clock.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -138,6 +140,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   path, accounts only from that host with the first selected, and Tab cycles in range, so the native account fixture
   reaches each choice through the reply and Tab; an out-of-range index is the portable test's. The presence clock
   (`PresenceClock`) stays its own private-field value on State.
+- `NavCursor` privately owns where the nav cursor lands and when its follow fires. Each frame asks it whether the
+  cursor has sat still for `NAV_FIRE_DEBOUNCE`; a move restarts the wait, and a settled cursor lets the concept and
+  preview follow fire. It hands out the one-shot startup selection, relaunch cursor and reconnect restore once each,
+  marks a row's first Files root once (the README default, the marker migrating with the default row's key), holds the
+  C2 pin (pinned, taken by an unpin, restored with a row's view, cleared by a first visit) and issues and reports each
+  row's `project.scan` generation, a stale scan reply being dropped at its own row's latest.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

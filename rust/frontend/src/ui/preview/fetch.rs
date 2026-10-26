@@ -41,7 +41,7 @@ impl State {
     /// preview — the user is parked on the pinned node and the cursor
     /// is free to roam.
     pub(in crate::ui) fn maybe_fire_preview(&mut self) {
-        if self.pinned_preview_node_id.is_some() {
+        if self.nav_cursor.pinned().is_some() {
             return;
         }
         // `--capture-preview` runs must show the requested node, full stop.

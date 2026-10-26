@@ -130,7 +130,7 @@ impl State {
                 // at snapshot time.
                 bl_pane_target: self.agent_pane.snapshot_target(),
                 preview_node_id_fired: self.preview_requests.fired_target().map(str::to_owned),
-                pinned_preview_node_id: self.pinned_preview_node_id.clone(),
+                pinned_preview_node_id: self.nav_cursor.pinned().clone(),
                 source: self.preview_source.clone(),
                 figure_failed: self.figure_failed.clone(),
                 concept: self.concept.clone(),
@@ -163,7 +163,7 @@ impl State {
         // name always belonged to it.
         self.agent_pane.restore_snapshot_target(key.0.clone(), snap.bl_pane_target);
         self.preview_requests.restore_fired(snap.preview_node_id_fired);
-        self.pinned_preview_node_id = snap.pinned_preview_node_id;
+        self.nav_cursor.restore_pin(snap.pinned_preview_node_id);
         // preview_concept gets re-shaped on the next frame by the
         // cursor-tracking concept.read path (memo cleared below). The
         // backing concept data is restored so the drift badge keeps

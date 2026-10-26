@@ -108,9 +108,7 @@ impl State {
         // ADR-0017 resume can restore the active ws BY SLUG pre-learn); a
         // slug-keyed marker left behind would let the README default fire a
         // second time and yank the cursor (codex r4).
-        if self.nav_readme_defaulted.remove(&from_key) {
-            self.nav_readme_defaulted.insert(to_key.clone());
-        }
+        self.nav_cursor.migrate_root_marker(&from_key, to_key.clone());
         for mode in [Mode::Files, Mode::Modules] {
             let from = (mode, TreeScope::Workspace(from_key.clone()));
             if let Some(slot) = self.tree_store.take(&from) {

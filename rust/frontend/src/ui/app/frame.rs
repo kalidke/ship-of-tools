@@ -155,15 +155,7 @@ impl State {
         // suppressing them until the cursor sits still for
         // `NAV_FIRE_DEBOUNCE` makes hold-to-scroll free.
         let cursor_now = (self.mode, self.tree.selected);
-        if self.last_cursor_pos != Some(cursor_now) {
-            self.last_cursor_pos = Some(cursor_now);
-            self.cursor_moved_at = Some(std::time::Instant::now());
-        }
-        let debouncing = self
-            .cursor_moved_at
-            .map(|t| t.elapsed() < NAV_FIRE_DEBOUNCE)
-            .unwrap_or(false);
-        if debouncing {
+        if !self.nav_cursor.settled(cursor_now, NAV_FIRE_DEBOUNCE) {
             // Mark dirty so `about_to_wait` reschedules a redraw at the
             // frame boundary; on each subsequent redraw the elapsed
             // check passes once the user settles, then the fires go
@@ -171,7 +163,6 @@ impl State {
             // dwarfed by the per-row backend traffic we're skipping.
             self.dirty = true;
         } else {
-            self.cursor_moved_at = None;
             self.maybe_fire_concept_read();
             self.maybe_fire_preview();
         }
@@ -184,7 +175,7 @@ impl State {
         // queued — a no-op row (leaf or already expanded) doesn't deserve
         // a retry loop.
         if self.pending_auto_expand
-            && self.pending_initial_selection.is_none()
+            && self.nav_cursor.initial_selection_done()
             && !self.tree.rows.is_empty()
         {
             self.try_expand_selected();
@@ -195,7 +186,7 @@ impl State {
         // id doesn't start with `files:` is a `toggle_pin` no-op; the
         // flag still clears so we don't churn.
         if self.pending_auto_pin
-            && self.pending_initial_selection.is_none()
+            && self.nav_cursor.initial_selection_done()
             && !self.tree.rows.is_empty()
         {
             self.toggle_pin();
@@ -206,7 +197,7 @@ impl State {
         // draft and submits without moving scroll, then shows the REPL
         // drawer so the capture includes it.
         if self.pending_demo_repl_eval.is_some()
-            && self.pending_initial_selection.is_none()
+            && self.nav_cursor.initial_selection_done()
             && !self.tree.rows.is_empty()
         {
             if let Some(code) = self.pending_demo_repl_eval.take() {

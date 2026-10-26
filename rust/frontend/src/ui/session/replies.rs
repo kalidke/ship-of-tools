@@ -169,8 +169,7 @@ impl State {
                     {
                         tracing::info!(selected = %sel,
                         "resume: arming nav cursor restore for the incoming tree.root");
-                        self.restore_nav_after_resume =
-                            Some((self.selected.workspace_id().clone(), sel));
+                        self.nav_cursor.arm_resume_restore(self.selected.workspace_id().clone(), sel);
                     }
                 }
                 Mode::Hosts => {

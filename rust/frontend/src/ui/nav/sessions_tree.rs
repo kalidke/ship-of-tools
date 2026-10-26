@@ -427,7 +427,7 @@ impl State {
         }
         self.tree.set_root(root, children);
         resplice_expanded_session_hosts(&mut self.tree, &self.row_directory);
-        if let Some(n) = self.pending_initial_selection.take() {
+        if let Some(n) = self.nav_cursor.take_initial_selection() {
             self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
         }
     }

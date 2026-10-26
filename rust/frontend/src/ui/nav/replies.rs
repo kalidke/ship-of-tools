@@ -150,7 +150,7 @@ impl State {
         // the exact row (preview re-anchors on landing). Consumed
         // once; discarded when the workspace changed in between
         // (a switch's fresh tree must not chase the old path).
-        if let Some((armed_ws, sel)) = self.restore_nav_after_resume.take() {
+        if let Some((armed_ws, sel)) = self.nav_cursor.take_resume_restore() {
             if armed_ws == *self.selected.workspace_id() {
                 tracing::info!(target = %sel,
                     "resume: restoring nav cursor after reconnect rebuild");
@@ -177,7 +177,7 @@ impl State {
         // isn't loaded yet just leaves the default cursor. A
         // CLI --start-selected below still overrides this.
         let mut resume_landed = false;
-        if let Some((id, scroll)) = self.pending_resume_nav.take() {
+        if let Some((id, scroll)) = self.nav_cursor.take_resume_nav() {
             if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == id) {
                 self.tree.selected = idx;
                 self.tree_scroll = scroll;
@@ -198,7 +198,7 @@ impl State {
         let ws_key = self.active_ws_key();
         let readme_default = matches!(self.mode, Mode::Files)
             && self.capture_preview.is_none()
-            && self.nav_readme_defaulted.insert(ws_key);
+            && self.nav_cursor.first_root_for(ws_key);
         if !resume_landed && readme_default {
             if let Some(idx) = self
                 .tree
@@ -218,7 +218,7 @@ impl State {
         // mode `tree.root` that always fires at connect would
         // eat the selection meant for the modules tree.
         if matches!(self.mode, Mode::Files) {
-            if let Some(n) = self.pending_initial_selection.take() {
+            if let Some(n) = self.nav_cursor.take_initial_selection() {
                 self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
             }
             if let Some(rel) = self.capture_preview.take() {
@@ -406,11 +406,7 @@ impl State {
         // its own key. Per-key (not global) because scans for
         // DIFFERENT workspaces are independently valid in
         // flight together; see `next_project_scan_gen`.
-        let latest = self
-            .project_scan_req_gen
-            .get(&(event_host.clone(), workspace_id.clone()))
-            .copied()
-            .unwrap_or(0);
+        let latest = self.nav_cursor.latest_scan(&event_host, &workspace_id);
         if generation != latest {
             tracing::debug!(?workspace_id, generation, latest, %event_host,
                 "drop stale project.scan reply");
@@ -453,7 +449,7 @@ impl State {
         self.tree.set_flat(rows);
         // Key match implies Modules mode — the old mode gate on
         // this consume is subsumed.
-        if let Some(n) = self.pending_initial_selection.take() {
+        if let Some(n) = self.nav_cursor.take_initial_selection() {
             self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
         }
     }

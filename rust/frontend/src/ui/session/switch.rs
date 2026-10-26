@@ -251,7 +251,7 @@ impl State {
             // First visit — start from a clean slate.
             self.mode = Mode::Files;
             self.preview_requests.forget_fired();
-            self.pinned_preview_node_id = None;
+            self.nav_cursor.restore_pin(None);
             // Same invariant as the snapshot restore: a first-visited
             // workspace must not inherit the departing workspace's source,
             // its node, its calibration (a stale nm/px until the next wire

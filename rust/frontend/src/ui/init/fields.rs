@@ -103,12 +103,9 @@ impl State {
                 persisted_geom.last_mode.as_deref(),
                 harness,
             ),
-            last_cursor_pos: None,
-            cursor_moved_at: None,
             concept: None,
             pending_file_edit: None,
             pending_reveal: None,
-            restore_nav_after_resume: None,
             reveal_awaiting: None,
             reveal_refetched: None,
             preview_page: None,
@@ -123,7 +120,6 @@ impl State {
             caption_band_px: 0.0,
             preview_anchor_line: None,
             preview_anchored_to: None,
-            pinned_preview_node_id: None,
             agent_pane: AgentPane::new(
                 initial_bl_pane_target(resume_matches_last_host, &persisted_geom, &active_host)),
             selected: SelectedRow::new(
@@ -158,9 +154,7 @@ impl State {
             concept_rect_px,
             file_ast_hashes: std::collections::HashMap::new(),
             file_parse_fired: std::collections::HashSet::new(),
-            pending_initial_selection: cli.start_selected,
-            pending_resume_nav: initial_pending_resume_nav(cli),
-            nav_readme_defaulted: std::collections::HashSet::new(),
+            nav_cursor: NavCursor::new(cli.start_selected, initial_pending_resume_nav(cli)),
             pending_switch_reveal: None,
             tree_store: TreeStore::new(),
             pending_auto_expand: cli.auto_expand,
@@ -249,7 +243,6 @@ impl State {
             text_scale_mult: 1.0,
             preview_source: Default::default(),
             preview_requests: preview::requests::PreviewRequests::default(),
-            project_scan_req_gen: HashMap::new(),
         }
     }
 }

@@ -172,7 +172,7 @@ impl State {
             nav_prompt_line: &nav_prompt_line, lease_notice, nav_line: &nav_line, owed_line: &owed_line,
             status: &status, nav_cursor_body_pos, tree_empty, contrast_dim, concept_status: &concept_status,
             last_key: &last_key, nav_has_cursor, nav_spill_active, preview_name: &preview_name,
-            pinned_preview_node_id: &self.pinned_preview_node_id, drawer, monitor_host_connected,
+            pinned_preview_node_id: self.nav_cursor.pinned(), drawer, monitor_host_connected,
             monitor_host_label: &monitor_host_label, repl_input: &repl_input, repl_lines: &repl_lines,
             repl_pkg_mode, help_state, help_bindings, help_context: &help_context, clock_now,
             battery: &battery, version_stamp: &version_stamp, version_skew, pty_screen,
@@ -418,7 +418,7 @@ impl State {
     }
 
     fn tree_nav_rows(&self, selected_stale: bool) -> (Vec<NavRow>, bool) {
-        let pinned_id = self.pinned_preview_node_id.as_deref();
+        let pinned_id = self.nav_cursor.pinned().as_deref();
         let now = chrono::Utc::now();
         let flash_now = std::time::Instant::now();
         let rows: Vec<NavRow> = self

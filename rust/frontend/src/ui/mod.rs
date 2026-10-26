@@ -477,49 +477,11 @@ struct State {
     /// Which root tree the left pane is currently showing. `f`/`m` keys
     /// switch this and fire the corresponding wire request.
     mode: Mode,
-    /// Reconnect nav restore (2026-07-11): set on hello/reconnect resume so
-    /// the NEXT applied tree.root re-reveals the pre-reconnect cursor (via
-    /// the pending_reveal machinery — the cursor's ancestor path re-expands
-    /// for free) instead of dumping the user at the top with everything
-    /// collapsed. Windows Modern Standby makes this fire on every idle/wake
-    /// cycle, so this is the difference between "nav keeps resetting" and
-    /// continuity. Carries the workspace the flag was armed for — a
-    /// workspace switch between hello and the root reply must NOT re-reveal
-    /// the old workspace's path in the new tree.
-    restore_nav_after_resume: Option<(Option<String>, String)>,
-    /// (mode, tree.selected) snapshot from the previous redraw — used
-    /// by the nav-fire debounce to detect cursor moves and stamp
-    /// `cursor_moved_at`. Mode is included so a mode swap (which
-    /// replaces the tree wholesale) is treated as a move.
-    last_cursor_pos: Option<(Mode, usize)>,
-    /// Wall-clock timestamp of the most recent cursor change in
-    /// NavTree. Cleared after preview.get / concept.read / file.parse
-    /// finally fire; while `Some`, those round-trips are suppressed
-    /// (see [`NAV_FIRE_DEBOUNCE`]). Without this gate hold-to-scroll
-    /// fires hundreds of backend requests per second.
-    cursor_moved_at: Option<std::time::Instant>,
-    /// C2 pin-and-leave: when `Some`, the preview pane stays on this
-    /// node's rendered content even as the user moves the cursor away.
-    /// `maybe_fire_preview` is a no-op while pinned. `p` (NavTree focus)
-    /// toggles: pressing on a non-pinned cursor row pins it; pressing
-    /// when the cursor is on the already-pinned row clears the pin.
-    /// Per-workspace via [`WorkspaceUiSnapshot`].
-    pinned_preview_node_id: Option<String>,
     /// Absolute path of the most recent `project.scan`'s `project_root`.
     /// The chrome strips this prefix off the absolute file paths each
     /// Modules-mode entry carries to synthesize the `files:<relpath>`
     /// node id that `preview.get` expects. Reset on each scan reply.
     scan_project_root: Option<String>,
-    /// One-shot from `--start-selected <n>`; consumed by the first tree.root
-    /// response that lands so the cursor opens on that row.
-    /// `None` after consumption (or if the flag wasn't set).
-    pending_initial_selection: Option<usize>,
-    /// One-shot nav cursor restore across an ADR-0017 relaunch: the
-    /// persisted `(selected node id, scroll)`. Applied best-effort when
-    /// the matching workspace's `tree.root` arrives and the row is
-    /// present; a deeply-collapsed selection that isn't in the freshly
-    /// loaded tree just lands on the default cursor.
-    pending_resume_nav: Option<(String, u16)>,
     /// Per-(mode, scope) parking lot for every nav tree that is NOT the
     /// active one (`self.tree` IS the active slot). Replaces the old
     /// `files_tree_workspace` provenance side-stamp + per-consumer
@@ -527,15 +489,6 @@ struct State {
     /// view can only ever hold the active (mode, workspace)'s tree — a
     /// foreign tree is structurally impossible rather than detected.
     tree_store: TreeStore,
-    /// One-shot PER WORKSPACE: on a workspace's first Files-mode `tree.root`
-    /// where nothing else (ADR-0017 resume, `--start-selected`) placed the
-    /// cursor, default it to the project README so a fresh session opens
-    /// onto rendered docs instead of the bare root row. Keys are `WsKey`
-    /// (`active_ws_key()`, ADR 0042 L2a -- was bare `current_workspace_key()`,
-    /// which let two hosts' same-slug workspaces share a one-shot marker);
-    /// presence = already defaulted (or resumed) once, so refreshes never
-    /// yank the cursor.
-    nav_readme_defaulted: std::collections::HashSet<WsKey>,
     /// Persistent scroll offset for the nav pane (vim-style scrolloff
     /// behaviour). Updated each frame from the cursor's position relative
     /// to the current viewport: when the cursor moves into the bottom
@@ -545,14 +498,12 @@ struct State {
     /// position alone doesn't determine the scroll — direction of motion
     /// matters.
     tree_scroll: u16,
+    /// Where the nav cursor lands and when its follow fires: the settle debounce, the startup, relaunch and
+    /// reconnect placements, the README default, the pin and the per-row project-scan clock.
+    nav_cursor: NavCursor,
     /// Request clocks, the fired target and its re-raster, concept follow, the driven-preview hold, and the crop,
     /// scale-save and `--roi` aim transactions.
     preview_requests: preview::requests::PreviewRequests,
-    /// Like PreviewRequests’ slot clocks, but for
-    /// `project.scan` — keyed per (host, workspace) rather than one global
-    /// counter, since scans for different workspaces are independently
-    /// valid in flight together (see `next_project_scan_gen`).
-    project_scan_req_gen: HashMap<(HostKey, Option<String>), u64>,
     // ui/nav/files: nav prompts, the reveal walk and file transfers.
     /// Node id of a file or directory just created via the Ctrl+N prompt,
     /// awaiting its `file.write` (file) or `dir.create` (dir) reply. When

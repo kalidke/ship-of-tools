@@ -12,9 +12,7 @@ impl State {
     /// order, so this same generation check previews already use is
     /// required here too.
     pub(in crate::ui) fn next_project_scan_gen(&mut self, host: HostKey, workspace_id: Option<String>) -> u64 {
-        let gen = self.project_scan_req_gen.entry((host, workspace_id)).or_insert(0);
-        *gen += 1;
-        *gen
+        self.nav_cursor.issue_scan(host, workspace_id)
     }
 }
 
