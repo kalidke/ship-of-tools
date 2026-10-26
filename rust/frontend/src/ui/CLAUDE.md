@@ -16,7 +16,7 @@ follow commitment, the driven-preview hold, and the crop, scale-save and `--roi`
 `session::SelectedRow` owns the selected `(host, workspace)`, its read-mark dwell, the destroy confirm and a create's
 request time; `session::WorkspacePicker` owns the new-session picker's listing, cursor and account choice.
 `nav::NavCursor` owns the nav cursor's settle debounce, startup/relaunch/reconnect placements, README default, pin and
-project-scan clock.
+project-scan clock; `nav::TreeView` owns a tree's rows, cursor and content generation.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -146,6 +146,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   marks a row's first Files root once (the README default, the marker migrating with the default row's key), holds the
   C2 pin (pinned, taken by an unpin, restored with a row's view, cleared by a first visit) and issues and reports each
   row's `project.scan` generation, a stale scan reply being dropped at its own row's latest.
+- `TreeView` privately owns a tree's flat rows, its cursor and its content generation. Readers see the rows and cursor
+  by reference; the cursor moves only by `select`, `select_clamped`, the arrow moves and the merges that re-anchor it
+  by node id; a row is marked expanded only at request time (`mark_selected_expanded`, `mark_expanded`), so
+  `apply_children` keeps dropping a reply for a collapsed parent; the root label is patched only through
+  `relabel_root`. Tests build trees through the same operations.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

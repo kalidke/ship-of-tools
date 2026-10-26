@@ -79,7 +79,7 @@ fn nav_action_key(state: &mut State, key: KeyPress<'_>, was_destroy_pending: Opt
         Some(Action::NavCollapse) if !event.repeat => {
             if !state.collapse_selected_row() {
                 if let Some(p) = state.tree.parent_of_selected() {
-                    state.tree.selected = p;
+                    state.tree.select(p);
                 }
             }
         }

@@ -545,7 +545,7 @@ struct State {
     /// (#4 fix). Cross-ws force-show previews and #1's persisted `nav.preview`
     /// are consumed in `switch_to_workspace`, which fires the preview body
     /// before the switched-to workspace's `tree.root` has loaded — so the
-    /// target row isn't in `tree.rows` yet and the cursor can't land inline.
+    /// target row isn't in `tree.rows()` yet and the cursor can't land inline.
     /// We stash the `files:` node id here and apply it when that workspace's
     /// `tree.root` reply arrives (re-using `drive_reveal_step`, so a top-level
     /// row lands directly and a nested one expands its ancestors). Without it

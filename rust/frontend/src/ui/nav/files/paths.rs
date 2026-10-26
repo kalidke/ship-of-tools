@@ -35,7 +35,7 @@ impl State {
     /// for Pluto-flavored `.jl` dispatch — the backend needs an
     /// absolute path to hand to `SessionActions.open`.
     pub(in crate::ui) fn cursored_files_path(&self) -> Option<String> {
-        let row = self.tree.rows.get(self.tree.selected)?;
+        let row = self.tree.rows().get(self.tree.selected())?;
         let rel = row.node.id.strip_prefix("files:")?;
         if rel.is_empty() {
             return None;
@@ -77,7 +77,7 @@ impl State {
     /// the hello response didn't carry a project_root. Returns true iff
     /// something was written.
     pub(in crate::ui) fn copy_navtree_path(&self) -> bool {
-        let row = self.tree.rows.get(self.tree.selected);
+        let row = self.tree.rows().get(self.tree.selected());
         let Some(rel) = row.and_then(|r| r.node.id.strip_prefix("files:")) else {
             return false;
         };

@@ -69,7 +69,7 @@ impl State {
     /// to `files:`. Returns false (no-op) when the cursor isn't on a `files:`
     /// row — the caller leaves the keystroke for the normal nav handler.
     pub(in crate::ui) fn begin_create_file(&mut self) -> bool {
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.tree.rows().get(self.tree.selected()) else {
             return false;
         };
         if !row.node.id.starts_with("files:") {
@@ -154,7 +154,7 @@ impl State {
     /// when the cursor isn't on a deletable `files:` file row — the caller
     /// leaves the keystroke for the normal nav handler.
     pub(in crate::ui) fn begin_delete_file(&mut self) -> bool {
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.tree.rows().get(self.tree.selected()) else {
             return false;
         };
         if !row.node.id.starts_with("files:") {
@@ -232,7 +232,7 @@ pub(in crate::ui) fn confirm_delete(context: &mut impl FilePromptContext) {
 
 impl FilePromptContext for State {
     fn prompts(&mut self) -> &mut FocusPrompts { &mut self.focus_prompts }
-    fn file_exists(&self, node_id: &str) -> bool { self.tree.rows.iter().any(|r| r.node.id == node_id) }
+    fn file_exists(&self, node_id: &str) -> bool { self.tree.rows().iter().any(|r| r.node.id == node_id) }
     fn send_create(&mut self, node_id: &str, is_dir: bool) -> Result<(), String> {
         let req = if is_dir {
             OutgoingReq::DirCreate { node_id: node_id.to_string(), workspace_id: self.selected.workspace_id().clone() }

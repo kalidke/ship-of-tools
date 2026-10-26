@@ -9,7 +9,7 @@ use crate::ui::drawer::repl::presentation::ReplDrawerLayout;
 // mutably elsewhere and the borrow checker dislikes mixing).
 //
 // When the workspace picker is active we render *its* directory
-// listing in the NavTree pane instead of `self.tree.rows`, so
+// listing in the NavTree pane instead of `self.tree.rows()`, so
 // Sessions mode flow visibly transitions to the picker without
 // having to introduce a second pane region. A title row at the
 // top shows `current_path` so the user always knows where they

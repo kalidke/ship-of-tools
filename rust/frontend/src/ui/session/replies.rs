@@ -162,8 +162,8 @@ impl State {
                     // NOW, while the pre-reconnect tree is intact.
                     if let Some(sel) = self
                         .tree
-                        .rows
-                        .get(self.tree.selected)
+                        .rows()
+                        .get(self.tree.selected())
                         .map(|r| r.node.id.clone())
                         .filter(|id| id.starts_with("files:") && id != "files:")
                     {

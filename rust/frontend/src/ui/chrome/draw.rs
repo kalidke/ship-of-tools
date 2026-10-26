@@ -128,9 +128,9 @@ impl State {
         let spill_cursor_now = (
             self.mode,
             self.selected.workspace_id().clone(),
-            self.tree.selected,
+            self.tree.selected(),
             self.workspace_picker.as_ref().map(WorkspacePicker::selected),
-            self.tree.generation,
+            self.tree.generation(),
         );
         if self.nav_spill_cursor.as_ref() != Some(&spill_cursor_now) {
             // Arm ONLY on a user cursor move: same mode+workspace, same tree
@@ -265,8 +265,8 @@ impl State {
         let (nav_cursor_body_pos, nav_has_cursor) = match &self.workspace_picker {
             Some(p) => (4usize.saturating_add(p.selected()), !p.entries().is_empty()),
             None => (
-                2usize.saturating_add(self.tree.selected),
-                !self.tree.rows.is_empty(),
+                2usize.saturating_add(self.tree.selected()),
+                !self.tree.rows().is_empty(),
             ),
         };
         (nav_cursor_body_pos, nav_has_cursor)
@@ -317,7 +317,7 @@ impl State {
         // the annotation parses a `synced_against` AND the file's
         // `ast_hash` differs. Expanding to non-cursored rows needs a
         // per-row concept cache — phase 2.
-        let selected_stale: bool = match (self.tree.rows.get(self.tree.selected), &self.concept) {
+        let selected_stale: bool = match (self.tree.rows().get(self.tree.selected()), &self.concept) {
             (Some(row), Some(info)) if info.exists => {
                 if let (Some(synced), Some(path)) = (
                     info.synced_against.as_ref(),
@@ -423,11 +423,11 @@ impl State {
         let flash_now = std::time::Instant::now();
         let rows: Vec<NavRow> = self
             .tree
-            .rows
+            .rows()
             .iter()
             .enumerate()
             .map(|(i, r)| {
-                let selected = i == self.tree.selected;
+                let selected = i == self.tree.selected();
                 // ADR 0030 §8 decision 31c: a capsule row held by a
                 // foreign build folds into the SAME "stale" colour
                 // slot as annotation drift (both are cross-cutting
@@ -482,7 +482,7 @@ impl State {
                 )
             })
             .collect();
-        let empty = self.tree.rows.is_empty();
+        let empty = self.tree.rows().is_empty();
         (rows, empty)
     }
 

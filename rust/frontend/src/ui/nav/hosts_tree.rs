@@ -92,15 +92,13 @@ fn expand_hosts_root(tree: &mut TreeView, mode: Mode, children: Vec<TreeNode>) -
     if mode != Mode::Hosts {
         return false;
     }
-    let Some(row) = tree.rows.get(tree.selected) else {
+    let Some(row) = tree.rows().get(tree.selected()) else {
         return false;
     };
     if row.node.id != "hosts:" || row.expanded {
         return false;
     }
-    if let Some(r) = tree.rows.get_mut(tree.selected) {
-        r.expanded = true;
-    }
+    tree.mark_selected_expanded();
     tree.apply_children("hosts:", children);
     true
 }
@@ -159,15 +157,15 @@ impl State {
     /// refresh's cursor where the user left it (Codex round, PR #172).
     /// Codex review (PR #163): the OLD version computed a position into
     /// `hosts_config.hosts` (0 = first host) and used it directly as
-    /// `self.tree.selected` -- off by one, since row 0 of the rendered
+    /// `self.tree.selected()` -- off by one, since row 0 of the rendered
     /// tree is the ROOT ("hosts:") and the first host lands at row 1.
     /// Restoring by NODE ID against the actual post-`set_root` rows
     /// sidesteps that arithmetic entirely rather than just patching the
     /// +1.
     pub(in crate::ui) fn select_active_host(&mut self) {
         let want_id = format!("hosts:{}", self.selected.host());
-        if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == want_id) {
-            self.tree.selected = idx;
+        if let Some(idx) = self.tree.rows().iter().position(|r| r.node.id == want_id) {
+            self.tree.select(idx);
         }
     }
 
@@ -202,7 +200,7 @@ impl State {
     /// superseded note): every host is already a live connection, so
     /// there's nothing to relaunch into — Enter just navigates there.
     pub(in crate::ui) fn pick_host_under_cursor(&mut self) {
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.tree.rows().get(self.tree.selected()) else {
             return;
         };
         if row.node.kind != "host" {
@@ -228,8 +226,8 @@ impl State {
         // lands degraded below -- the cursor simply stays put.
         self.rebuild_and_install_sessions_tree();
         let host_row_id = format!("sessions:host:{name}");
-        if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == host_row_id) {
-            self.tree.selected = idx;
+        if let Some(idx) = self.tree.rows().iter().position(|r| r.node.id == host_row_id) {
+            self.tree.select(idx);
         }
         self.status = format!("host · {name}");
         self.window.request_redraw();

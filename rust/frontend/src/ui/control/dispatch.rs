@@ -159,7 +159,7 @@ impl State {
                     "collapse" => {
                         if !self.collapse_selected_row() {
                             if let Some(p) = self.tree.parent_of_selected() {
-                                self.tree.selected = p;
+                                self.tree.select(p);
                             }
                         }
                     }

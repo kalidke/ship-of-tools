@@ -121,7 +121,7 @@ fn resplice_expanded_session_hosts(
     directory: &RowDirectory,
 ) {
     let open: Vec<(String, HostKey)> = view
-        .rows
+        .rows()
         .iter()
         .filter(|r| r.node.kind == "session_host" && r.expanded)
         .filter_map(|r| {
@@ -314,7 +314,7 @@ impl State {
     /// pulled from. Returns `false` (declines) for any other row kind so
     /// `try_expand_selected` falls through to its normal wire-request path.
     pub(in crate::ui) fn try_expand_session_host_local(&mut self) -> bool {
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.tree.rows().get(self.tree.selected()) else {
             return false;
         };
         if row.node.kind != "session_host" || row.expanded {
@@ -341,9 +341,7 @@ impl State {
         // (it drops a splice for a collapsed parent — the collapse-race
         // fix); mark it BEFORE splicing, same order every wire-based
         // expand uses at request time.
-        if let Some(r) = self.tree.rows.get_mut(self.tree.selected) {
-            r.expanded = true;
-        }
+        self.tree.mark_selected_expanded();
         self.tree.apply_children(&parent_id, kids);
         self.window.request_redraw();
         true
@@ -353,7 +351,7 @@ impl State {
     /// pane, return the session name (panes have a `session` payload).
     /// `None` for any other row kind.
     pub(in crate::ui) fn selected_session_name(&self) -> Option<String> {
-        let row = self.tree.rows.get(self.tree.selected)?;
+        let row = self.tree.rows().get(self.tree.selected())?;
         if row.node.kind == "session" {
             return row
                 .node
@@ -382,7 +380,7 @@ impl State {
     /// for any other row kind or a row from a daemon old enough not to
     /// send the field.
     pub(in crate::ui) fn selected_session_host(&self) -> Option<HostKey> {
-        let row = self.tree.rows.get(self.tree.selected)?;
+        let row = self.tree.rows().get(self.tree.selected())?;
         if row.node.kind != "session" && row.node.kind != "pane" {
             return None;
         }
@@ -414,7 +412,7 @@ impl State {
             // Reply-over-reply allowed (see the TreeRoot park
             // rationale); user-stashed state blocks.
             let slot = self.tree_store.slot_mut(reply_key);
-            if slot.view.rows.is_empty() || slot.from_reply {
+            if slot.view.rows().is_empty() || slot.from_reply {
                 slot.view.set_root(root, children);
                 resplice_expanded_session_hosts(&mut slot.view, &self.row_directory);
                 slot.from_reply = true;
@@ -428,7 +426,7 @@ impl State {
         self.tree.set_root(root, children);
         resplice_expanded_session_hosts(&mut self.tree, &self.row_directory);
         if let Some(n) = self.nav_cursor.take_initial_selection() {
-            self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
+            self.tree.select_clamped(n);
         }
     }
 }

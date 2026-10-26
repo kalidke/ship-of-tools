@@ -85,8 +85,8 @@ impl State {
         let target = self.active_result_workspace();
         let cursor = self
             .tree
-            .rows
-            .get(self.tree.selected)
+            .rows()
+            .get(self.tree.selected())
             .map(|row| row.node.id.clone());
         let shown = self.preview_source.node_id().map(str::to_owned);
         let effects = self.result_ledger.acknowledge_presented(

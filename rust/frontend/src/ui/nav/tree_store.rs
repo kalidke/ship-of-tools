@@ -218,11 +218,7 @@ impl State {
         // visit; the caller decides whether to fire the mode's loader.
         if matches!(new_key.0, Mode::Files) {
             if let Some(label) = self.active_workspace_label() {
-                if let Some(root) = self.tree.rows.first_mut() {
-                    if root.node.id == "files:" {
-                        root.node.label = label;
-                    }
-                }
+                self.tree.relabel_root("files:", label);
             }
         }
     }
@@ -279,7 +275,7 @@ impl State {
             // (the refetch's set_root/set_flat would collapse them; codex
             // r3). Content staleness is the accepted parked-slot residual.
             Mode::Files => {
-                if self.tree.rows.is_empty() {
+                if self.tree.rows().is_empty() {
                     if let Err(e) = self.send(OutgoingReq::TreeRoot {
                         mode: "files".to_string(),
                         workspace_id: self.selected.workspace_id().clone(),
@@ -291,7 +287,7 @@ impl State {
                 }
             }
             Mode::Modules => {
-                if self.tree.rows.is_empty() {
+                if self.tree.rows().is_empty() {
                     let generation = self
                         .next_project_scan_gen(self.selected.host().clone(), self.selected.workspace_id().clone());
                     if let Err(e) = self.send(OutgoingReq::ProjectScan {

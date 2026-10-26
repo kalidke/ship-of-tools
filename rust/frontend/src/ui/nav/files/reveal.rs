@@ -57,10 +57,10 @@ impl State {
         // key above) — the old stale-workspace detection has nothing to
         // detect. Cursor reveal: land now if the row is already present;
         // else expand ancestors asynchronously.
-        let visible_idx = self.tree.rows.iter().position(|r| r.node.id == node_id);
+        let visible_idx = self.tree.rows().iter().position(|r| r.node.id == node_id);
         if let Some(idx) = visible_idx {
             tracing::info!(%node_id, "reveal: target already visible — cursor landed");
-            self.tree.selected = idx;
+            self.tree.select(idx);
             self.pending_reveal = None;
             self.reveal_awaiting = None;
             self.preview_requests.finish_reveal();
@@ -70,8 +70,8 @@ impl State {
             // hold lifts when the cursor lands on the target.
             self.preview_requests.arm_driven_hold(self
                 .tree
-                .rows
-                .get(self.tree.selected)
+                .rows()
+                .get(self.tree.selected())
                 .map(|r| r.node.id.clone()));
             // Fresh reveal intent: drop the per-level bookkeeping a prior
             // target may have left so `drive_reveal_step` and its once-only
@@ -90,7 +90,7 @@ impl State {
             // Files tree now.
             let files_tree_loaded = self
                 .tree
-                .rows
+                .rows()
                 .iter()
                 .any(|r| r.node.id.starts_with("files:"));
             if files_tree_loaded {
@@ -177,7 +177,7 @@ impl State {
         // (a first visit's slot is empty until tree.root lands).
         let files_tree_usable = self
             .tree
-            .rows
+            .rows()
             .iter()
             .any(|r| r.node.id.starts_with("files:"));
         // #4: land the nav cursor on the driven file so cursor +
@@ -196,11 +196,11 @@ impl State {
             // preview with the cursor's file (the post-relaunch
             // badge-consume race). Mirrors `drive_same_ws_open`;
             // `drive_reveal_step` clears the hold when it lands.
-            if !self.tree.rows.iter().any(|r| r.node.id == node_id) {
+            if !self.tree.rows().iter().any(|r| r.node.id == node_id) {
                 self.preview_requests.arm_driven_hold(self
                     .tree
-                    .rows
-                    .get(self.tree.selected)
+                    .rows()
+                    .get(self.tree.selected())
                     .map(|r| r.node.id.clone()));
             }
             self.pending_reveal = Some(node_id.clone());
@@ -260,8 +260,8 @@ impl State {
             return;
         };
         // Target row visible now → land the cursor and finish.
-        if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == target_id) {
-            self.tree.selected = idx;
+        if let Some(idx) = self.tree.rows().iter().position(|r| r.node.id == target_id) {
+            self.tree.select(idx);
             self.pending_reveal = None;
             self.reveal_awaiting = None;
             self.reveal_refetched = None;
@@ -305,7 +305,7 @@ impl State {
         // (deepest-first ordering from `ancestor_rels`).
         for anc in ancestor_rels(rel) {
             let anc_id = format!("files:{anc}");
-            let Some(row) = self.tree.rows.iter().find(|r| r.node.id == anc_id) else {
+            let Some(row) = self.tree.rows().iter().find(|r| r.node.id == anc_id) else {
                 continue;
             };
             if row.expanded {
@@ -364,9 +364,7 @@ impl State {
             // Same request-time disclosure flip as try_expand_selected:
             // apply_children drops replies for collapsed parents, so the
             // reveal's intentional ancestor expand must mark the row now.
-            if let Some(r) = self.tree.rows.iter_mut().find(|r| r.node.id == anc_id) {
-                r.expanded = true;
-            }
+            self.tree.mark_expanded(&anc_id);
             self.reveal_awaiting = Some(anc_id);
             return;
         }

@@ -52,7 +52,7 @@ impl State {
         if self.capture_preview_armed {
             return;
         }
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.tree.rows().get(self.tree.selected()) else {
             return;
         };
         // Files-mode rows are already keyed `files:<relpath>` — fire

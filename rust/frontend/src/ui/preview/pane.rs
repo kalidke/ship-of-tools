@@ -189,15 +189,15 @@ impl State {
         // Pinned → unpin from anywhere, and move the cursor to the pinned node
         // if it's in the current tree (so the user sees what was pinned).
         if let Some(pinned) = self.nav_cursor.take_pin() {
-            if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == pinned) {
-                self.tree.selected = idx;
+            if let Some(idx) = self.tree.rows().iter().position(|r| r.node.id == pinned) {
+                self.tree.select(idx);
             }
             self.status = format!("unpinned · {pinned}");
             self.window.request_redraw();
             return;
         }
         // Nothing pinned → pin the cursor row (files: only).
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.tree.rows().get(self.tree.selected()) else {
             return;
         };
         let id = row.node.id.clone();

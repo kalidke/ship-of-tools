@@ -114,7 +114,7 @@ impl State {
             // parked tree wins; drop the reply like the old
             // guard did.
             let slot = self.tree_store.slot_mut(reply_key.clone());
-            if slot.view.rows.is_empty() || slot.from_reply {
+            if slot.view.rows().is_empty() || slot.from_reply {
                 // Empty, or holding an EARLIER parked reply —
                 // replies are server-ordered, newest wins (the
                 // double-toggle race, codex r5). Only user-
@@ -138,7 +138,7 @@ impl State {
         // request origin is traced too, so an unexpected
         // collapse names its trigger in the log.
         tracing::info!(
-            rows_before = self.tree.rows.len(),
+            rows_before = self.tree.rows().len(),
             new_children = children.len(),
             "tree.root applied — nav tree rebuilt (set_root)"
         );
@@ -156,8 +156,8 @@ impl State {
                     "resume: restoring nav cursor after reconnect rebuild");
                 self.preview_requests.arm_driven_hold(self
                     .tree
-                    .rows
-                    .get(self.tree.selected)
+                    .rows()
+                    .get(self.tree.selected())
                     .map(|r| r.node.id.clone()));
                 self.result_ledger.release_reveal();
                 self.pending_reveal = Some(sel);
@@ -178,8 +178,8 @@ impl State {
         // CLI --start-selected below still overrides this.
         let mut resume_landed = false;
         if let Some((id, scroll)) = self.nav_cursor.take_resume_nav() {
-            if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == id) {
-                self.tree.selected = idx;
+            if let Some(idx) = self.tree.rows().iter().position(|r| r.node.id == id) {
+                self.tree.select(idx);
                 self.tree_scroll = scroll;
                 resume_landed = true;
             }
@@ -202,11 +202,11 @@ impl State {
         if !resume_landed && readme_default {
             if let Some(idx) = self
                 .tree
-                .rows
+                .rows()
                 .iter()
                 .position(|r| r.node.label.eq_ignore_ascii_case("readme.md"))
             {
-                self.tree.selected = idx;
+                self.tree.select(idx);
             }
         }
         self.consume_files_root_one_shots(result_owned);
@@ -219,7 +219,7 @@ impl State {
         // eat the selection meant for the modules tree.
         if matches!(self.mode, Mode::Files) {
             if let Some(n) = self.nav_cursor.take_initial_selection() {
-                self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
+                self.tree.select_clamped(n);
             }
             if let Some(rel) = self.capture_preview.take() {
                 let node_id = format!("files:{rel}");
@@ -266,11 +266,11 @@ impl State {
                 // preview with README (the post-relaunch badge-consume
                 // race — two repros 2026-06-30). Mirrors
                 // `drive_same_ws_open`; cleared on landing.
-                if !self.tree.rows.iter().any(|r| r.node.id == node_id) {
+                if !self.tree.rows().iter().any(|r| r.node.id == node_id) {
                     self.preview_requests.arm_driven_hold(self
                         .tree
-                        .rows
-                        .get(self.tree.selected)
+                        .rows()
+                        .get(self.tree.selected())
                         .map(|r| r.node.id.clone()));
                 }
                 self.pending_reveal = Some(node_id);
@@ -450,7 +450,7 @@ impl State {
         // Key match implies Modules mode — the old mode gate on
         // this consume is subsumed.
         if let Some(n) = self.nav_cursor.take_initial_selection() {
-            self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
+            self.tree.select_clamped(n);
         }
     }
 
@@ -535,7 +535,7 @@ impl State {
             } else {
                 &self.tree_store.slot_mut(reply_key.clone()).view
             };
-            view.rows
+            view.rows()
                 .iter()
                 .find(|r| {
                     r.node.kind == "module"
@@ -625,7 +625,7 @@ impl State {
             } else {
                 &self.tree_store.slot_mut(reply_key.clone()).view
             };
-            view.rows.iter().any(|r| r.node.id == parent_id)
+            view.rows().iter().any(|r| r.node.id == parent_id)
         };
         if !exists {
             tracing::debug!(

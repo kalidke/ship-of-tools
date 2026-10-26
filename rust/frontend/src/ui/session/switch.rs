@@ -284,7 +284,7 @@ impl State {
         self.swap_active_tree(old_tree_key, new_tree_key);
         // First visit to this (mode, workspace) — nothing parked — so fire
         // the mode's loader to fill the empty view.
-        if self.tree.rows.is_empty() {
+        if self.tree.rows().is_empty() {
             match self.mode {
                 Mode::Files => {
                     tracing::info!("tree.root requested: workspace switch (empty Files slot)");

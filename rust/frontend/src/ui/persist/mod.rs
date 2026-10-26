@@ -68,8 +68,8 @@ impl State {
             font_scale: Some(self.text_scale_mult as f64),
             nav_selected_id: self
                 .tree
-                .rows
-                .get(self.tree.selected)
+                .rows()
+                .get(self.tree.selected())
                 .map(|r| r.node.id.clone()),
             nav_scroll: Some(self.tree_scroll),
         };

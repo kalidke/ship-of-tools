@@ -74,7 +74,7 @@ impl State {
         }
         let shown_expanded = self
             .tree
-            .rows
+            .rows()
             .iter()
             .any(|r| r.node.id == dir_id && r.expanded);
         if !shown_expanded {
@@ -99,7 +99,7 @@ impl State {
     /// cursor survive, rows re-anchor by node id, so a preview of a file
     /// created while the tree was parked keeps a row to sit on.
     pub(in crate::ui) fn refresh_restored_files_tree(&mut self) {
-        for dir_id in expanded_files_dirs(&self.tree.rows) {
+        for dir_id in expanded_files_dirs(&self.tree.rows()) {
             if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
                 parent_id: dir_id.clone(),
                 workspace_id: self.selected.workspace_id().clone(),

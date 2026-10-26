@@ -69,8 +69,8 @@ impl State {
     pub(in crate::ui) fn start_download(&mut self) {
         let is_dir = self
             .tree
-            .rows
-            .get(self.tree.selected)
+            .rows()
+            .get(self.tree.selected())
             .map(|r| r.node.kind == "dir")
             .unwrap_or(false);
         if is_dir {
@@ -119,7 +119,7 @@ impl State {
             self.window.request_redraw();
             return;
         }
-        let (is_dir, node_id) = match self.tree.rows.get(self.tree.selected) {
+        let (is_dir, node_id) = match self.tree.rows().get(self.tree.selected()) {
             Some(r) => (r.node.kind == "dir", r.node.id.clone()),
             None => (false, String::new()),
         };

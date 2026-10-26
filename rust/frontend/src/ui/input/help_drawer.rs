@@ -36,7 +36,7 @@ impl State {
             workspace_locked: self.edit_state.is_some(),
             picker, prompt, editing, modal: editing || prompt || picker,
             restore: self.layout_help.restore_available(self.focus_prompts.focus(), self.layout_gates()),
-            session: self.tree.rows.get(self.tree.selected).is_some_and(|r| r.node.kind == "session"),
+            session: self.tree.rows().get(self.tree.selected()).is_some_and(|r| r.node.kind == "session"),
             alternate_screen: match pane {
                 help::Pane::Terminal => {
                     let screen = self.local_term.as_ref().map(|t| t.screen());
