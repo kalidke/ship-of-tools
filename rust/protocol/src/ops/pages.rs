@@ -2,6 +2,22 @@
 
 use super::*;
 
+/// The window sends this only after the person confirms its page reply bar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageReplyReq {
+    pub workspace_id: String,
+    pub handle: String,
+    pub line: String,
+}
+
+/// Delivery is never retried. `sent` means the marked line and Enter were recorded;
+/// `typed_not_sent` leaves text in the pane, and `unknown` may have delivered it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageReplyRes {
+    pub outcome: String,
+    pub detail: String,
+}
+
 /// Open a Pluto-flavored `.jl` notebook in the backend-supervised
 /// Pluto server. Path must be absolute on the backend host.
 #[derive(Debug, Clone, Serialize, Deserialize)]

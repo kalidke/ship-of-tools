@@ -10,6 +10,7 @@ pub mod child_lines;
 pub mod codec;
 pub mod ir;
 pub mod ops;
+pub mod page_reply;
 pub mod page_url;
 pub mod pipe;
 pub mod physical_scale;
@@ -23,7 +24,7 @@ pub use ops::{
     AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, ClientVersion, CommFileReq, CommFileRes, ConceptListRes, ConceptReadReq, ConceptReadRes,
     ConceptWriteReq, ConceptWriteRes, DaemonVersion, DeclaredSession, DisconnectedBox, DirCreateReq, DirCreateRes, DirectoryEntry,
     DirectoryListReq, DirectoryListRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
-    FeCommandSendRes,
+    FeCommandSendRes, PageReplyReq, PageReplyRes,
     FePresenceReq, FePresenceRes, FeSessionsReq, FeSessionsRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq,
     FileReadReq, FileReadRes,
     FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, GpuSample, HANDOFF_ROLE, HelloReq, LINK_ROLE, HelloRes,

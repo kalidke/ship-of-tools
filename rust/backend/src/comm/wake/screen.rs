@@ -56,26 +56,26 @@ const PANEL_DOT: char = '\u{25cf}';
 const PANEL_RING: char = '\u{25ef}';
 
 /// What the screen is as a prompt for the wake: `Ok(Empty)` when it is free, `Ok(HoldsLine)` when the box holds just
-/// the wake line (the rest of the structural test passing), else the reason it is neither. Free is all of: (a) only spaces before
+/// the supplied line (the rest of the structural test passing), else the reason it is neither. Free is all of: (a) only spaces before
 /// the glyph; (b) the cursor just after the glyph, or one more; (c) the line directly between the input box's
 /// two borders (a rule, optionally labelled); (d) after the glyph U+00A0, the main prompt's own mark (menus and
 /// dialog inputs draw an ASCII space), then nothing but spaces, or, where the NBSP is not required
-/// ([`NBSP_ON_WINDOWS`]), nothing but spaces at all; (e) the input reaches the main agent ([`panel_refusal`]); (f) the wake line fits on the prompt row ([`fits`]).
+/// ([`NBSP_ON_WINDOWS`]), nothing but spaces at all; (e) the input reaches the main agent ([`panel_refusal`]); (f) the supplied line fits on the prompt row ([`fits`]).
 /// The wake reads the cursor's row with dim cells blank (`screen::free_test_lines`), so Claude Code's dim
 /// suggestion or placeholder reads empty and a typed draft reads not free wherever its cursor sits. One frame
 /// cannot tell a working row, whose input box is live too; the hold in `wake_if_free` does.
-pub(super) fn prompt_of(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> Result<Prompt, &'static str> {
+pub(super) fn prompt_of(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool, text: &str) -> Result<Prompt, &'static str> {
     match input_refused(lines, cursor, agent, windows, Expect::Empty) {
-        None if !fits(lines, cursor, WAKE_LINE) => Err("pane too narrow for the wake line"),
+        None if !fits(lines, cursor, text) => Err("pane too narrow for the line"),
         None => Ok(Prompt::Empty),
-        // Any refusal while the box holds the wake's own line: an earlier wake typed it and did not send it.
-        Some(_) if typed_refusal(lines, cursor, agent, windows, WAKE_LINE).is_none() => Ok(Prompt::HoldsLine),
+        // A caller may recognize its own line already in the box; only the wake may complete it.
+        Some(_) if typed_refusal(lines, cursor, agent, windows, text).is_none() => Ok(Prompt::HoldsLine),
         Some(reason) => Err(reason),
     }
 }
 
-/// What a prompt [`prompt_of`] accepts holds: nothing (the free test), or exactly the wake line, typed by an earlier
-/// wake and not sent.
+/// What a prompt [`prompt_of`] accepts holds: nothing (the free test), or exactly the supplied line, typed by an earlier
+/// attempt and not sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Prompt {
     Empty,

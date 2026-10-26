@@ -111,6 +111,9 @@ pub mod op {
     /// 0041's take-on-first-input semantics, applied to a second kind of
     /// client.
     pub const PTY_INPUT: &str = "pty.input";
+
+    /// Deliver a confirmed, marked page reply through the free-prompt gate.
+    pub const PAGE_REPLY: &str = "page.reply";
     /// ADR 0042 amendment (2026-09-07): the CURRENT screen of a row named by
     /// `workspace_id` — no scrollback, no history (the record and a future
     /// Issue-B own those). Request `PtyScreenReq`, response `PtyScreenRes`

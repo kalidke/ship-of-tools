@@ -102,7 +102,8 @@ mod attempt;
 pub(crate) mod screen;
 mod unread;
 
-use attempt::{wake_if_free, Owed, WakeOutcome};
+use attempt::{wake_if_free, Owed};
+pub(crate) use attempt::{type_if_free, WakeOutcome};
 use screen::{prompt_glyphs, prompt_of, Prompt};
 use unread::scan;
 
@@ -325,7 +326,7 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         // The registry, then the clock: a mark the read sees was stamped no later than `now`.
         let registry = crate::comm::registry::registry::read_registry_fresh(&home.join("registry.json")).unwrap_or_default();
         let now = crate::comm::registry::registry::unix_now_secs();
-        let prompt = prompt_of(l, c, a, cfg!(windows));
+        let prompt = prompt_of(l, c, a, cfg!(windows), WAKE_LINE);
         let reason = match prompt {
             Err(reason) => Some(reason),
             // A Complete tick sends Enter to a line already in the box; an empty box is not its business.
@@ -345,8 +346,8 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         Err(e) => (Err(e), String::new()),
     };
     if look {
+        if let Some(why) = boot_look_pending(&out) { return Step::LookPending(why); }
         match (&out, seen.0) {
-            (Err(_), _) => return Step::LookPending("the row could not be read"),
             (Ok(_), Some(reason)) if reason != LINE_NOT_SHOWN => tracing::info!(handle, reason, "comm wake: boot look left main's box alone"),
             _ => {}
         }
@@ -357,6 +358,15 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         return Step::Clear;
     }
     step_of(handle, out, &run, seen, s.total, Instant::now())
+}
+
+// Contention is not a look at the box: keep the boot completion pending until an attempt can read it.
+fn boot_look_pending(out: &Result<WakeOutcome, HeadlessError>) -> Option<&'static str> {
+    match out {
+        Err(_) => Some("the row could not be read"),
+        Ok(WakeOutcome::NotFree { reason: "another typing on this row", .. }) => Some("another typing on this row"),
+        _ => None,
+    }
 }
 
 /// Whether a Complete tick that found main's box empty ([`LINE_NOT_SHOWN`]) ends the debt: the mail is read and
@@ -379,7 +389,7 @@ fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, run: &str, see
     let (reason, border) = seen;
     match out {
         Ok(WakeOutcome::Woke) => Step::Woke(Woken { line: total, at: now, enter_owed: false, run: run.to_string() }),
-        Ok(WakeOutcome::NotFree { row }) => Step::Refused(Refusal { reason: reason.unwrap_or("moved during the hold"), border, detail: None, row }),
+        Ok(WakeOutcome::NotFree { row, reason: attempt_reason }) => Step::Refused(Refusal { reason: reason.unwrap_or(attempt_reason), border, detail: None, row }),
         Ok(WakeOutcome::TypedNoEnter { reason, border, row }) => {
             tracing::warn!(handle, border = ?border, row = ?row, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
             Step::Woke(Woken { line: total, at: now, enter_owed: true, run: run.to_string() })

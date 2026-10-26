@@ -112,7 +112,20 @@ remote window's page proxy.
 Replies are JSON and never cached. A refusal has `error` (the explanation) and `code`: `not_a_row` (409, including a
 foreign session, whose daemon is named), `no_page` (409), `page_outside` (403), or `window_gone` (503). States still
 works while the window is away. Missing fields, malformed JSON and unknown verbs answer `bad_request` (400).
-`reply` currently answers `bad_request`; reply delivery and the window's confirmation bar are not built yet.
+Post `{verb: "reply", handle: "session-handle", text: "approve"}` to offer a reply to that window. Text trims ASCII
+spaces, must be nonempty and fit in 512 UTF-8 bytes, and must contain no controls, line separators or invisible
+formatting characters. Invalid text answers 400 `bad_text`, naming the refusal. Accepted text gains the visible
+`[sot-page] ` mark and answers 202; that is an offer, not a delivery receipt. The confirmation bar is landing 2b:
+until that window update, the unknown offer is dropped and nothing is delivered. No page verb confirms delivery.
+
+The daemon's `page.reply` delivery op rechecks the mark and target handle and uses the wake's free-prompt gate,
+sharing one typing attempt per row. It refuses a dialog, menu, working screen, unsent draft, active Stop hook,
+unsupported agent or line that cannot fit the prompt row; only a Ready Claude capsule row is supported. A sent line
+contains the mark in the pane and transcript. `typed_not_sent` means text was typed but Enter withheld, and `unknown`
+means delivery could not be confirmed; inspect the pane before trying again. An unsent page line is never completed
+by the wake. A marked approval is the person's word for a merge, never for a tag or a registration in General:
+those require approval typed in that session's pane without the mark. That unmarked convention is not proof of
+physical keyboard input, since existing `pty.input` callers can type unmarked text.
 
 The channel requires the site's live nonce or explicit pool query secret and a matching browser Origin. Keep
 `location.search` in a pool page's POST URL: cookies alone do not authorize verbs, since another open may replace
