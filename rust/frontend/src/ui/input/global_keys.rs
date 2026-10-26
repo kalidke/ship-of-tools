@@ -273,7 +273,7 @@ pub(in crate::ui) fn navigation_chords(state: &mut State, key: KeyPress<'_>, lab
     // workspace.cycle_prev). Suppressed in edit mode so it doesn't
     // hijack arrows in the editor; the default Shift+Arrow chords
     // keep it disjoint from Ctrl+Arrow (pane focus) above.
-    if !event.repeat && state.edit_state.is_none() {
+    if !event.repeat && !state.editor.is_editing() {
         if action == Some(Action::WorkspaceCycleNext) {
             state.cycle_workspace(1, true);
             state.last_key = Some(label);
@@ -399,7 +399,7 @@ pub(in crate::ui) fn table_scroll_key(state: &mut State, key: KeyPress<'_>) -> C
     // redraw clamp keeps scroll at 0.
     if state.focus_prompts.focus() == PaneFocus::Preview
         && state.preview_png.is_none()
-        && state.edit_state.is_none()
+        && !state.editor.is_editing()
     {
         let step = state.preview_md.body_em().max(8.0);
         match action {

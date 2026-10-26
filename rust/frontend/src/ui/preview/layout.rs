@@ -14,7 +14,7 @@ impl State {
         // Edit mode owns the preview pane: the file viewer hides so
         // the editable annotation body has the whole rect.
         let show_edit =
-            !show_fatal && self.edit_state.is_some() && self.preview_edit.is_some();
+            !show_fatal && self.editor.is_editing() && self.editor.shaped().is_some();
         let show_md = !show_fatal && !show_png && !show_edit;
         (show_fatal, show_png, show_svg, show_edit, show_md)
     }
@@ -132,7 +132,7 @@ impl State {
             show_edit,
             &self.preview_md,
             md_rect.h,
-            self.preview_edit.as_ref(),
+            self.editor.shaped(),
             preview_rect.h,
         );
         let visible_px = (shown_h - crate::ui::render::text::EXTRA_TOP_PAD_PX).max(line_h);

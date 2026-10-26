@@ -265,8 +265,7 @@ impl State {
             self.concept = None;
             self.preview_requests.reset_concept_follow();
             self.drift.clear();
-            self.edit_state = None;
-            self.preview_edit = None;
+            self.editor.close();
         }
         restored
     }

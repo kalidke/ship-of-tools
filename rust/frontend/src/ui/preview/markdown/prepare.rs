@@ -180,7 +180,7 @@ impl State {
             });
         }
         if show_edit {
-            if let Some(pe) = self.preview_edit.as_ref() {
+            if let Some(pe) = self.editor.shaped() {
                 extras.push(crate::ui::render::text::ExtraArea {
                     buffer: &pe.buffer,
                     x: preview_rect.x,

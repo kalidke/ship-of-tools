@@ -2,6 +2,7 @@
 //! or the failure.
 
 use crate::ui::*;
+use super::state::FileReadOutcome;
 
 impl State {
     pub(crate) fn on_file_read(
@@ -13,29 +14,19 @@ impl State {
     ) {
         // Edit-enter (or stale-reload) for a general file: when this
         // reply matches the pending request and the file exists, open
-        // the editor on it (replacing any prior edit_state — that's
+        // the editor on it (replacing any prior edit — that's
         // how `r` reload-discards). Non-pending replies are ignored.
-        if self.pending_file_edit.as_deref() == Some(node_id.as_str()) {
-            self.pending_file_edit = None;
-            if exists {
-                self.edit_state = Some(EditState {
-                    target: node_id.clone(),
-                    expected_ast_hash: None,
-                    header: None,
-                    original: content.clone(),
-                    buf: EditBuffer::new(content),
-                    confirm_discard: false,
-                    stale_banner: false,
-                    file_node_id: Some(node_id.clone()),
-                    file_version: Some(version),
-                });
+        match self.editor.open_file(&node_id, exists, content, version) {
+            FileReadOutcome::Opened => {
                 self.rebuild_edit_preview();
                 tracing::info!(%node_id, "entered file edit mode");
-            } else {
+            }
+            FileReadOutcome::Missing => {
                 tracing::warn!(%node_id, "file.read: not found — not entering edit");
             }
-        } else {
-            tracing::debug!(%node_id, exists, "file.read reply (no pending edit)");
+            FileReadOutcome::Unasked => {
+                tracing::debug!(%node_id, exists, "file.read reply (no pending edit)");
+            }
         }
     }
 
@@ -46,22 +37,15 @@ impl State {
     ) {
         // Reconcile only when the reply targets the active file edit
         // (late replies for an abandoned edit are ignored).
-        let matches_active = self
-            .edit_state
-            .as_ref()
-            .and_then(|e| e.file_node_id.as_deref())
-            == Some(node_id.as_str());
+        let matches_active = self.editor.file_node_id() == Some(node_id.as_str());
         match result {
             crate::net::transport::FileWriteResult::Ok { path, version } => {
                 tracing::info!(%node_id, %path, %version, "file.write ok");
                 if matches_active {
-                    if let Some(edit) = self.edit_state.as_mut() {
-                        // Snap the dirty baseline + adopt the new
-                        // version so further edits start clean and
-                        // the next save's conflict check is current.
-                        edit.original = edit.buf.body().to_string();
-                        edit.file_version = Some(version);
-                    }
+                    // Snap the dirty baseline + adopt the new
+                    // version so further edits start clean and
+                    // the next save's conflict check is current.
+                    self.editor.mark_file_saved(version);
                     // Surface the save (peer report 2026-08-19):
                     // this arm used to set no status and request
                     // no redraw, so an active-edit save was
@@ -84,9 +68,7 @@ impl State {
             } => {
                 tracing::warn!(%node_id, %current_version, "file.write refused: conflict");
                 if matches_active {
-                    if let Some(edit) = self.edit_state.as_mut() {
-                        edit.stale_banner = true;
-                    }
+                    self.editor.mark_stale();
                     self.rebuild_edit_preview();
                     // The banner lives in the rebuilt preview, but
                     // nothing here scheduled a paint for it — pair

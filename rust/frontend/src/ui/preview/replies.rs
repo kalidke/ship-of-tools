@@ -50,19 +50,7 @@ impl State {
     }
 
     fn reload_concept_editor(&mut self, exists: bool, content: &str) {
-        if let Some(edit) = self.edit_state.as_mut() {
-            let (header, body) = split_frontmatter(content);
-            edit.header = header;
-            edit.expected_ast_hash = if exists {
-                sot_protocol::annotation::synced_against(content)
-            } else {
-                None
-            };
-            edit.original = body.clone();
-            edit.buf = EditBuffer::new(body);
-            edit.stale_banner = false;
-            edit.confirm_discard = false;
-        }
+        self.editor.reload_concept(exists, content);
         self.rebuild_edit_preview();
     }
 
@@ -244,11 +232,7 @@ impl State {
         // ignored. Stale-write banner UI lands in a later
         // commit; for v1 we log loudly and trust the backend's
         // refusal (no auto-clobber, no silent overwrite).
-        let matches_active = self
-            .edit_state
-            .as_ref()
-            .map(|e| e.target == target)
-            .unwrap_or(false);
+        let matches_active = self.editor.edits_target(&target);
         match result {
             crate::net::transport::ConceptWriteResult::Ok { path, written } => {
                 tracing::info!(%target, %path, written, "concept.write ok");
@@ -257,17 +241,13 @@ impl State {
                     // the new on-disk state — the user can
                     // keep editing without an instant dirty
                     // flag after a save.
-                    if let Some(edit) = self.edit_state.as_mut() {
-                        edit.original = edit.buf.body().to_string();
-                    }
+                    self.editor.mark_saved();
                 }
             }
             crate::net::transport::ConceptWriteResult::Stale => {
                 tracing::warn!(%target, "concept.write refused: stale");
                 if matches_active {
-                    if let Some(edit) = self.edit_state.as_mut() {
-                        edit.stale_banner = true;
-                    }
+                    self.editor.mark_stale();
                     self.rebuild_edit_preview();
                 }
             }
@@ -547,7 +527,7 @@ impl RequestReplyContext for State {
     fn active_workspace(&self) -> &Option<String> { self.selected.workspace_id() }
     fn install_preview(&mut self, payload: Self::Preview) { self.install_preview_reply(payload); }
     fn stale_editor_target(&self) -> Option<&str> {
-        self.edit_state.as_ref().filter(|edit| edit.stale_banner).map(|edit| edit.target.as_str())
+        self.editor.stale_target()
     }
     fn reload_editor(&mut self, (exists, content): &Self::Concept) {
         self.reload_concept_editor(*exists, content);

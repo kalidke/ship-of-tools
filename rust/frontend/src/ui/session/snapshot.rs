@@ -68,9 +68,9 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     concept: Option<ConceptInfo>,
     /// Concept-write modal state (header / buffer / dirty flag /
     /// banners). Captured so swap-back returns the user to mid-edit
-    /// without losing typed content. preview_edit is *not* in the
+    /// without losing typed content. The shaped edit buffer is *not* in the
     /// snapshot — it gets re-shaped by `rebuild_edit_preview` from
-    /// edit_state on restore.
+    /// the edit on restore.
     edit_state: Option<EditState>,
 }
 
@@ -134,7 +134,7 @@ impl State {
                 source: self.preview_source.clone(),
                 figure_failed: self.figure_failed.clone(),
                 concept: self.concept.clone(),
-                edit_state: self.edit_state.clone(),
+                edit_state: self.editor.park(),
             },
         );
     }
@@ -176,7 +176,7 @@ impl State {
         self.drift.clear();
         // Restore the edit modal — including dirty/discard/stale
         // banners — and re-shape its preview from the buffer.
-        self.edit_state = snap.edit_state;
+        self.editor.restore(snap.edit_state);
         self.rebuild_edit_preview();
         // Clear the stale Quads then repaint from the cached source.
         // render_preview_source rebuilds preview_md/png/svg for the

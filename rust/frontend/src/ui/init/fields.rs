@@ -102,7 +102,6 @@ impl State {
                 harness,
             )),
             concept: None,
-            pending_file_edit: None,
             reveal: RevealWalk::default(),
             preview_page: None,
             preview_page_raster_zoom: 1.0,
@@ -210,8 +209,7 @@ impl State {
             focus_on_first_frame: true,
             #[cfg(all(test, feature = "test-window-progress"))]
             native_progress: native_progress_ledger(),
-            edit_state: None,
-            preview_edit: None,
+            editor: Editor::default(),
             help_back_quad: None,
             hello_refused: HashMap::new(),
             preview_fatal: None,

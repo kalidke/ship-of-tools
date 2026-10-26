@@ -838,21 +838,10 @@ struct State {
     /// one-shot parse latch and failed parses' backoff (2026-07-02: a fast-failing kernel once drew ~4.7k
     /// file.parse/s). Lazy, per file, on view; a `preview.changed` for the file, a row change and a reconnect drop it.
     drift: DriftCheck,
-    /// Active concept-annotation edit, or `None` for read-only view.
-    /// Toggled by `e` (enter) / `Esc` (discard) in Preview focus.
-    /// Save fires `concept.write` with the captured
-    /// `expected_ast_hash` so the backend's stale-gate engages.
-    edit_state: Option<EditState>,
-    /// Node id (`files:<relpath>`) of a general-file edit-enter awaiting its
-    /// `file.read` reply; the editor opens when a reply's node id matches,
-    /// then this clears. `None` when not entering a file edit. Transient —
-    /// not snapshotted.
-    pending_file_edit: Option<String>,
-    /// Shaped preview buffer for the active edit. Rebuilt eagerly on
-    /// every key that mutates the edit buffer; rendered in place of
-    /// the file-preview markdown when `edit_state` is Some. None when
-    /// not in edit mode.
-    preview_edit: Option<MarkdownPreview>,
+    /// The preview pane's editor: the active annotation or file edit (`e` enters, `Esc` discards; a save carries
+    /// its `expected_ast_hash` or file version so the backend's stale gate engages), the file edit awaiting its
+    /// `file.read`, and the shaped buffer drawn in place of the file preview.
+    editor: Editor,
     // ui/persist: settings.
     /// User-tunable chrome settings (layout proportions today, future
     /// general settings). Loaded once at startup via the same layered
@@ -997,7 +986,7 @@ pub(crate) mod preview;
 pub(crate) mod render;
 use render::*;
 use self::preview::concept::{split_frontmatter, ConceptInfo, DriftCheck, DriftStatus};
-use self::preview::editor::state::EditState;
+use self::preview::editor::state::{EditState, Editor};
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,

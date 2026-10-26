@@ -19,7 +19,8 @@ request time; `session::WorkspacePicker` owns the new-session picker's listing, 
 project-scan clock; `nav::TreeView` owns a tree's rows, cursor and content generation; `nav::Navigation` owns the
 active tree, its mode, scroll and scan root, and the store of parked trees; `nav::RevealWalk` owns the reveal walk's
 target, awaited level, refresh memo and root-armed target; `nav::FileOps` owns the pending create and delete and the
-upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff.
+upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff;
+`preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -180,6 +181,13 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `FILE_PARSE_MAX_RETRIES`); a reply installs only into a latched, unforgotten path; a failure counts an attempt and
   keeps the latch; a failed send drops the latch; a `preview.changed` for the file forgets it; a row change and a
   reconnect clear it. The concept line reads one `DriftStatus` per file.
+- `Editor` privately owns the preview pane's editor: the active `EditState` (its fields private: target, expected hash,
+  header, baseline, buffer, discard prompt, stale banner, file node and version), the file edit whose `file.read` it
+  armed, and the shaped buffer, rebuilt from the edit and absent without one. A key in edit mode returns one
+  `EditorKey`; the discard prompt and the stale banner take only their answers, and a stale file reload arms its
+  `file.read` before it is sent. A `file.read` opens an edit only for the armed node. A landed save snaps the baseline;
+  a stale refusal raises the banner. A row parks the edit, never the shaped buffer or the armed read; a first visit
+  closes it. State sends, re-shapes (`rebuild_edit_preview`) and repaints.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
