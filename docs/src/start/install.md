@@ -301,6 +301,14 @@ Re-running the install command is also the updater. The built-in update
 check, pinning a version, and rolling back are in
 [Updating and rollback](../guide/updating.md).
 
+- A run that names a version or archive pins the install and turns automatic updates off. Run the installer again with
+  no version or archive to remove the pin and follow the channel again.
+- Restart every open Ship of Tools window after an update, on every computer that shows one.
+- A computer declared as a frontend also runs its own local daemon; this is expected even when it shows rows on other
+  computers. An explicit `--backend <alias>` install is the exception and runs no local daemon.
+- `sotd` is installed in `$PREFIX/bin`: `~/.local/share/sot/bin` by default on Linux and macOS, or
+  `%LOCALAPPDATA%\sot\bin` on Windows (where it is `sotd.exe`).
+
 ## Requirements
 
 ### [Platforms](@id platforms)

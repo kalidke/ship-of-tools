@@ -32,7 +32,9 @@ longest timeout the tool allows. It ends with exactly one line; read the last li
   window and start it again, since it still runs the old version). Tell the human that step in those words.
 - `FAIL: <check>: <detail>`: stop and report the line. Three are decisions, not faults. `daemon:` names rows with a live
   REPL and says when the Pluto server is running (a restart would end the REPLs and every notebook open in it; their
-  variables are lost, the rows and their agents keep running), or says why the daemon could not be asked in full. A daemon that cannot answer is judged from its own REPL and Pluto child processes: with none, the run goes on with no flag. When something is live and a person is at the console, the installer asks "Restart the daemon? ... [y/N]" in place; with no console (an agent's run) it stops with this line: ask the human, and re-run with `--restart-daemon` only on a yes. `target:` and
+  variables are lost, the rows and their agents keep running between 0.7 releases), or says why the daemon could not be
+  asked in full. The update from 0.6 to 0.7 ends every row's agent once; use `/resume` in each row to bring its conversation
+  back. A daemon that cannot answer is judged from its own REPL and Pluto child processes: with none, the run goes on with no flag. When something is live and a person is at the console, the installer asks "Restart the daemon? ... [y/N]" in place; with no console (an agent's run) it stops with this line: ask the human, and re-run with `--restart-daemon` only on a yes. `target:` and
   `direction:` are the human's to answer, never a version the agent picks. `target:` says the install is a build of the
   line (a `+` in its version): a pack of the line (`scripts/pack-build.sh` in the checkout that built it) goes in with
   `--archive <folder>`, while a release named with `--version` is usually older and moves this computer back.
@@ -78,7 +80,8 @@ allows. It ends with exactly one line; read the last line of its output, and act
   quit Ship of Tools (choose Keep) and start it from the shortcut, start it at the desk, or install Julia or jq with the
   winget command the line names. Tell the human that step in those words, and run the installer again to confirm.
 - `FAIL: <check>: <detail>`: stop and report the line. `daemon:` names rows with a live REPL and says when the Pluto
-  server is running (a restart would end both; the rows and their agents keep running). A daemon that cannot answer is judged
+  server is running (a restart would end both; the rows and their agents keep running between 0.7 releases). The update
+  from 0.6 to 0.7 ends every row's agent once; use `/resume` in each row to bring its conversation back. A daemon that cannot answer is judged
   from its own REPL and Pluto child processes, and the installer asks "Restart the daemon?" in place at a console; with no
   console it stops with this line: ask the human, and run it again with `-RestartDaemon` only on a yes. `target:` and `direction:` are the human's to answer, never a version the agent
   picks: `target:` says the install is a build of the line (a `+` in its version), which a pack of the line
@@ -96,6 +99,16 @@ in it is the `target:` case above, so ask the human; otherwise tell the human th
 stable release, a pre-release the newest published one) and fetch that tag's installer:
 `curl.exe -fsSL -o "$env:TEMP\sot-install.ps1" https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.ps1`,
 then run it with no version, so the install stays unpinned: its prelude follows the same channel.
+
+## After an update
+
+- A run that names a version or archive pins the install and turns automatic updates off. Run the installer again with
+  no version or archive to remove the pin and follow the channel again.
+- Restart every open Ship of Tools window after an update, on every computer that shows one.
+- A computer declared as a frontend also runs its own local daemon; this is expected even when it shows rows on other
+  computers. An explicit `--backend <alias>` install is the exception and runs no local daemon.
+- `sotd` is installed in `$PREFIX/bin`: `~/.local/share/sot/bin` by default on Linux and macOS, or
+  `%LOCALAPPDATA%\sot\bin` on Windows (where it is `sotd.exe`).
 
 ## Which install is this?
 
