@@ -21,7 +21,7 @@ pub(in crate::ui) enum CloseDialogText<'a> {
 }
 
 /// The close dialog in cells: the panel its backing covers; each row's column, row, text and style; while it asks,
-/// its answers' cells, No then Yes, for a press to hit; and whether the area was too short to draw every row.
+/// its answers' cells, No then Yes, for a press to hit; and whether the area was too small to draw every row whole.
 #[derive(Debug)]
 pub(in crate::ui) struct CloseDialog {
     pub(in crate::ui) panel: Rect,
@@ -35,6 +35,10 @@ const STAYED_KEYS: &str = "any key closes this";
 
 /// The widest the dialog's text runs, in cells.
 const TEXT_MAX: u16 = 60;
+
+/// The narrowest text column the dialog counts as drawn whole: in a narrower one a line wraps a few characters to a
+/// row and a wrap drops its spaces, so what shows is no longer the line.
+const TEXT_MIN: u16 = 20;
 
 /// How long the quit hint shows.
 pub(in crate::ui) const QUIT_HINT_HOLD: std::time::Duration = std::time::Duration::from_secs(4);
@@ -124,9 +128,14 @@ pub(in crate::ui) fn close_dialog(area: Rect, text: CloseDialogText<'_>) -> Clos
         [no, yes]
     });
     let foot = area.y + area.height;
-    let rows = rows.into_iter().filter(|(_, y, (t, _))| *y < foot && !t.is_empty()).map(|(x, y, (t, s))| (x, y, t, s))
+    let rows: Vec<(u16, u16, String, Style)> = rows.into_iter().filter(|(_, y, (t, _))| *y < foot && !t.is_empty()).map(|(x, y, (t, s))| (x, y, t, s))
         .collect();
-    CloseDialog { panel, rows, answers, clipped: ph > area.height }
+    // Cut off by the window's foot or its side, or too narrow to read whole: a row below the foot is not drawn, and
+    // one that runs past the right edge is cut by the glyph layer.
+    let clipped = ph > area.height || area.width.saturating_sub(4) < TEXT_MIN
+        || rows.iter().any(|(x, _, t, _)| usize::from(*x) + unicode_width::UnicodeWidthStr::width(t.as_str())
+            > usize::from(area.x + area.width));
+    CloseDialog { panel, rows, answers, clipped }
 }
 
 /// What a press does while the question is open: a left press on an answer gives that answer; any other press

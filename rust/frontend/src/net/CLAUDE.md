@@ -31,9 +31,10 @@ through the channel types below.
 - A `page.reply` answer is about the handle the confirmed reply was sent for, never whatever the window shows by the
   time it lands: `send_page_reply` records `PendingKind::PageReply { handle }` before it writes, and `IncomingEvt::PageReplied`
   carries that handle with the daemon's `outcome` and `detail` (an error reply is outcome `error` with its words; an
-  answer that does not parse is never `sent`). The request is made only from the window's reply bar (fe-ui); the
-  transport adds nothing to it and never retries it. Tests `ops::pages::tests::a_page_reply_answer_carries_its_handle_outcome_and_reason`
-  and the golden `every_request_kind_and_its_error_reply_match_the_golden`.
+  answer that does not parse is never `sent`). A connection that ends before the answer yields outcome `unknown` for that handle (`PendingGuard`), once. The
+  request is made only from the window's reply bar (fe-ui); the transport adds nothing to it and never retries it. Tests `ops::pages::tests::a_page_reply_answer_carries_its_handle_outcome_and_reason`
+  `reply_wait_end_tests::a_page_reply_without_its_answer_is_unknown_when_the_connection_ends` and the golden
+  `every_request_kind_and_its_error_reply_match_the_golden`.
 - A result-tree completion carries the canonical workspace id and result/attempt serials saved at issuance through the request-id pending entry; the existing fan-in envelope supplies its dial HostKey. These identities are local and change no daemon payload.
 - A down ssh host costs at most two logins a minute, and a daemon that answers the hello and then drops costs no more:
   the wait starts over only after a session that lasted `STABLE`, or at F5 (`redial_for`, `Redial`).

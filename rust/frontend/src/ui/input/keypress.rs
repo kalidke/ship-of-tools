@@ -23,7 +23,7 @@ pub(in crate::ui) struct KeyPress<'a> {
 
 pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventLoop, modifiers: ModifiersState, event: KeyEvent, is_synthetic: bool) {
     // What is drawn over the reply bar decides who gets this key, so the bar is told before any layer reads it.
-    state.observe_reply_bar(std::time::Instant::now());
+    state.observe_reply_bar();
     let keep = state.focus_prompts.quit_choice();
     let quit_again = keep.is_some() && state.bindings.resolve(&event.logical_key, Some(&event.key_without_modifiers()),
         Modifiers { ctrl: modifiers.control_key(), alt: modifiers.alt_key(), shift: modifiers.shift_key(),
@@ -88,9 +88,18 @@ fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &
 /// Routes one keypress through the layers in their fixed order; `Break` ends the keypress, `Continue` hands it on.
 fn route_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>, label: String, context: help::Context, was_destroy_pending: Option<WsKey>) -> ControlFlow<()> {
     let dismissed = state.focus_prompts.dismiss_stay_key(context.consumes_text());
-    stayed_key_continuation(state, dismissed, |state| state.window.request_redraw(), |state| {
+    let covered = state.reply_bar.covered();
+    covered_key_continuation(state, covered, dismissed, |state| state.window.request_redraw(), |state| {
         route_key_layers(state, event_loop, key, label, context, was_destroy_pending)
     })
+}
+
+/// Under a dialog that covers an open reply bar, the dialog takes the key or the key is swallowed: a stayed notice
+/// is dismissed (eaten or not), the quit hint and a leave's line take none, and no pane under the covered bar gets
+/// one. With no covered bar the key goes on as `stayed_key_continuation` says.
+pub(in crate::ui) fn covered_key_continuation<S>(state: &mut S, covered: bool, dismissed: Option<bool>,
+    redraw: impl FnOnce(&mut S), next: impl FnOnce(&mut S) -> ControlFlow<()>) -> ControlFlow<()> {
+    stayed_key_continuation(state, dismissed, redraw, |state| if covered { Break(()) } else { next(state) })
 }
 
 pub(in crate::ui) fn stayed_key_continuation<S>(state: &mut S, dismissed: Option<bool>,

@@ -69,7 +69,7 @@ impl State {
         // over its backing, do not.
         // The reply bar draws as the same panel, under it: a close dialog covers the bar and the bar learns so here.
         let bar_now = std::time::Instant::now();
-        self.observe_reply_bar(bar_now);
+        self.observe_reply_bar();
         let dialog = self.close_dialog().or_else(|| self.reply_dialog(bar_now));
         let mut help_overlay_rect = None;
         let mut help_overlay_lines = Vec::new();

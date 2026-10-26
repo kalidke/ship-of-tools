@@ -14,6 +14,16 @@ pub(in crate::ui) fn bar_key_kind(logical: &Key, repeat: bool, modifiers: Modifi
     }
 }
 
+/// What a close dialog and the bar's panel make of the bar's sight: covered by a dialog, cut off, or whole at the
+/// panel's rectangle (`panel` is `None` when no bar is open or the grid is unknown, which is not whole).
+pub(in crate::ui) fn sight_of(dialog_open: bool, panel: Option<&CloseDialog>) -> Sight {
+    match panel {
+        _ if dialog_open => Sight::Covered,
+        Some(panel) if !panel.clipped => Sight::Whole(panel.panel),
+        _ => Sight::Cut,
+    }
+}
+
 impl State {
     /// A reply a page offered, which came from the daemon `host`: the bar opens for a row this window lists on that
     /// host. It never sends: only the bar's Enter does (`reply_bar_key`).
@@ -31,13 +41,12 @@ impl State {
                 return;
             }
         };
-        let now = Instant::now();
         let offer = ReplyOffer { host: host.clone(), workspace_id: workspace.to_string(), handle: handle.clone(), name, line };
-        // Covered until the frame's own look says otherwise, so a bar cannot arm before it has been seen.
-        match self.reply_bar.offer(offer, Sight::Covered, now) {
+        // Covered until laid out, and shown only by a presented frame, so a bar cannot arm before it has been seen.
+        match self.reply_bar.offer(offer, Sight::Covered) {
             Ok(()) => {
                 tracing::info!(%handle, "page reply: bar opened");
-                self.observe_reply_bar(now);
+                self.observe_reply_bar();
                 self.window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
             }
             Err(refused) => {
@@ -55,7 +64,10 @@ impl State {
 
     /// The bar's panel on the chrome's grid.
     pub(in crate::ui) fn reply_dialog(&self, now: Instant) -> Option<CloseDialog> {
-        let view = self.reply_bar.view(now)?;
+        self.reply_panel(&self.reply_bar.view(now)?)
+    }
+
+    fn reply_panel(&self, view: &ReplyView) -> Option<CloseDialog> {
         let size = self.canvas.grid_size().ok()?;
         Some(close_dialog(
             ratatui::layout::Rect::new(0, 0, size.width, size.height),
@@ -63,22 +75,22 @@ impl State {
         ))
     }
 
-    /// What the person sees of the bar now: a close dialog covers it, or its panel is cut off by a short window, or
-    /// all of it shows.
-    fn reply_sight(&self, now: Instant) -> Sight {
-        if self.close_dialog_open() {
-            Sight::Covered
-        } else if self.reply_dialog(now).is_some_and(|panel| !panel.clipped) {
-            Sight::Whole
-        } else {
-            Sight::Cut
-        }
+    /// How the bar is laid out now: a close dialog covers it, or its panel is cut off by a small window, or all of it
+    /// shows, at this rectangle.
+    fn reply_sight(&self) -> Sight {
+        let panel = self.reply_bar.layout_view().and_then(|view| self.reply_panel(&view));
+        sight_of(self.close_dialog_open(), panel.as_ref())
     }
 
-    /// Tell the bar what is drawn over it. Called with each frame's overlays and before each key is routed.
-    pub(in crate::ui) fn observe_reply_bar(&mut self, now: Instant) {
-        let sight = self.reply_sight(now);
-        self.reply_bar.observe(sight, now);
+    /// Tell the bar how it is laid out. Called with each frame's overlays and before each key is routed.
+    pub(in crate::ui) fn observe_reply_bar(&mut self) {
+        let sight = self.reply_sight();
+        self.reply_bar.observe(sight);
+    }
+
+    /// A frame was presented: the bar, if that frame laid it out whole, has now been shown.
+    pub(in crate::ui) fn reply_bar_presented(&mut self, now: Instant) {
+        self.reply_bar.presented(now);
     }
 
     /// Give the bar a key; whether it took it. An armed Enter sends the reply, Esc drops it.

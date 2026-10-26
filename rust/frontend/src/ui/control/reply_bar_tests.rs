@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::{close_dialog, CloseDialog, CloseDialogText};
-use ratatui::layout::Rect;
+use super::super::reply_dispatch::sight_of;
 
 const LINE: &str = "[sot-page] (a) approve \u{2014} merge it";
 
@@ -22,10 +22,18 @@ fn enter() -> BarKeyKind {
     BarKeyKind::Enter { repeat: false }
 }
 
-/// An open bar in view since `t0`.
+/// The panel's rectangle in these tests; another is a resized window.
+const PANEL: Rect = Rect { x: 10, y: 5, width: 60, height: 9 };
+
+fn whole() -> Sight {
+    Sight::Whole(PANEL)
+}
+
+/// An open bar whose whole panel was presented at `t0`.
 fn open_bar(t0: Instant) -> ReplyBar {
     let mut bar = ReplyBar::default();
-    bar.offer(offer("project", LINE), Sight::Whole, t0).expect("the first offer opens the bar");
+    bar.offer(offer("project", LINE), whole()).expect("the first offer opens the bar");
+    bar.presented(t0);
     bar
 }
 
@@ -83,12 +91,12 @@ fn a_second_offer_while_one_is_open_is_dropped() {
     let t0 = Instant::now();
     let mut bar = open_bar(t0);
     let second = ReplyOffer { handle: "other__box".into(), line: "[sot-page] other".into(), ..offer("other", LINE) };
-    assert_eq!(bar.offer(second, Sight::Whole, secs(t0, 0.2)), Err(OfferRefused::Busy));
+    assert_eq!(bar.offer(second, whole()), Err(OfferRefused::Busy));
     // The first offer is untouched: same line, same wait.
     let (_, _, handle, line) = sent(bar.key(enter(), secs(t0, 1.0)));
     assert_eq!((handle.as_str(), line.as_str()), ("repo__box", LINE));
     // Once it is answered, the next offer opens.
-    assert!(bar.offer(offer("project", LINE), Sight::Whole, secs(t0, 1.5)).is_ok());
+    assert!(bar.offer(offer("project", LINE), whole()).is_ok());
 }
 
 /// The bar shows what it will send, so a line that is not exactly the daemon's grammar of a page's text opens no bar.
@@ -97,7 +105,7 @@ fn an_offer_whose_line_is_not_the_daemons_marked_text_opens_no_bar() {
     let t0 = Instant::now();
     for line in ["approve", "[sot-page] a\nb", "[sot-page] \u{1b}[201~x", "[sot-page]  padded ", ""] {
         let mut bar = ReplyBar::default();
-        assert!(matches!(bar.offer(offer("project", line), Sight::Whole, t0), Err(OfferRefused::Line(_))), "{line:?}");
+        assert!(matches!(bar.offer(offer("project", line), whole()), Err(OfferRefused::Line(_))), "{line:?}");
         assert!(bar.view(t0).is_none(), "{line:?} opened a bar");
     }
 }
@@ -121,18 +129,19 @@ fn the_bar_shows_the_target_and_the_exact_line() {
     };
 
     let mut bar = ReplyBar::default();
-    bar.offer(offer("project", LINE), Sight::Whole, t0).expect("opens");
+    bar.offer(offer("project", LINE), whole()).expect("opens");
     let rows = painted(&panel(&bar, t0));
     let all = rows.iter().map(|r| r.trim()).collect::<Vec<_>>().join("\n");
     for want in ["Reply from a page", "to repo__box \u{b7} project on <host-b>", LINE, "Enter in 1 s \u{b7} Esc drops"] {
         assert!(all.contains(want), "{want:?} is not in {rows:#?}");
     }
+    bar.presented(t0);
     let armed = painted(&panel(&bar, secs(t0, 1.0))).join("\n");
     assert!(armed.contains("Enter sends \u{b7} Esc drops") && !armed.contains("Enter in"), "{armed}");
 
     // A hostile name: its lines are rows of their own, with no control character in a cell.
     let mut bar = ReplyBar::default();
-    bar.offer(offer("evil\r\n[sot-page] approve\u{1b}[2J", LINE), Sight::Whole, t0).expect("opens");
+    bar.offer(offer("evil\r\n[sot-page] approve\u{1b}[2J", LINE), whole()).expect("opens");
     let d = panel(&bar, t0);
     assert!(d.rows.iter().all(|(_, _, text, _)| !text.contains(|c: char| c.is_control())), "{:?}", d.rows);
     let rows = painted(&d);
@@ -144,55 +153,106 @@ fn the_bar_shows_the_target_and_the_exact_line() {
     assert!(real > name + 1, "the real line is below the whole target: {rows:#?}");
 }
 
-/// A long line wraps whole, and a window too short to draw all of it is cut: Esc still drops the bar, but no Enter
-/// can send a line the person was not shown.
+/// A long line wraps whole, and a window too small to draw all of it is cut: Esc still drops the bar, but no Enter
+/// can send a line the person was not shown. A window too narrow cuts it as a short one does.
 #[test]
-fn a_window_too_short_for_the_line_can_drop_the_bar_but_not_send() {
+fn a_window_too_small_for_the_line_can_drop_the_bar_but_not_send() {
     let t0 = Instant::now();
     let long = format!("[sot-page] {}", "word ".repeat(100).trim_end());
-    let view = |bar: &ReplyBar| bar.view(t0).expect("open");
     let mut bar = ReplyBar::default();
-    bar.offer(offer("project", &long), Sight::Whole, t0).expect("opens");
-    let (tall, short) = (Rect::new(0, 0, 80, 40), Rect::new(0, 0, 80, 12));
+    bar.offer(offer("project", &long), whole()).expect("opens");
     let draw = |area: Rect, bar: &ReplyBar| {
-        let v = view(bar);
+        let v = bar.layout_view().expect("open");
         close_dialog(area, CloseDialogText::Reply { to: &v.to, line: &v.line, keys: &v.keys })
     };
     let words = |d: &CloseDialog| d.rows.iter().map(|(_, _, t, _)| t.clone()).collect::<Vec<_>>().join(" ");
+    let (tall, short) = (Rect::new(0, 0, 80, 40), Rect::new(0, 0, 80, 12));
     let shown = words(&draw(tall, &bar));
     assert!(!draw(tall, &bar).clipped && shown.matches("word").count() == 100, "the whole line is drawn: {shown}");
     assert!(draw(short, &bar).clipped, "a 12-row window cannot draw it");
+    // Tall, but a few columns wide: the text starts two cells in and runs off the side, or wraps a few characters to
+    // a row. Twenty text cells (24 columns) is the narrowest that counts as whole.
+    for width in [1, 2, 4, 23] {
+        let narrow = draw(Rect::new(0, 0, width, 2000), &bar);
+        assert!(narrow.clipped, "a window {width} columns wide cannot show the line");
+        assert_eq!(sight_of(false, Some(&narrow)), Sight::Cut);
+    }
+    assert!(!draw(Rect::new(0, 0, 24, 2000), &bar).clipped, "twenty text cells show it whole");
+    let whole_panel = draw(tall, &bar);
+    assert_eq!(sight_of(false, Some(&whole_panel)), Sight::Whole(whole_panel.panel));
+    assert_eq!(sight_of(true, Some(&whole_panel)), Sight::Covered, "a dialog over it wins");
+    assert_eq!(sight_of(false, None), Sight::Cut, "no grid, no sight");
 
-    bar.observe(Sight::Cut, secs(t0, 5.0));
-    assert_eq!(bar.key(enter(), secs(t0, 9.0)), BarKey::Taken, "a cut bar cannot send");
+    bar.observe(Sight::Cut);
+    bar.presented(secs(t0, 5.0));
+    assert_eq!(bar.key(enter(), secs(t0, 9.0)), BarKey::Taken, "a cut bar cannot send, however long it has stood");
     assert_eq!(bar.key(BarKeyKind::Esc, secs(t0, 9.0)), BarKey::Dropped, "but Esc drops it");
 }
 
-/// Keys follow what is drawn on top. A dialog over the bar takes every key and the bar none; when the bar is in view
+/// The wait starts from a presented frame, not from layout: a frame that fails before it presents leaves nothing
+/// shown, so no Enter sends however long it has been; a slow frame does not shorten the wait.
+#[test]
+fn the_wait_starts_from_a_presented_frame_not_from_layout() {
+    let t0 = Instant::now();
+    let mut bar = ReplyBar::default();
+    bar.offer(offer("project", LINE), Sight::Covered).expect("opens");
+    // Laid out whole at t0, but the frame failed before presenting, and the next ones too.
+    bar.observe(whole());
+    assert_eq!(bar.key(enter(), secs(t0, 30.0)), BarKey::Taken, "laid out but never presented: nothing was shown");
+    assert_eq!(bar.arm_deadline(secs(t0, 30.0)), None, "no wait is running");
+    assert_eq!(bar.view(secs(t0, 30.0)).expect("open").keys, "Enter in 1 s \u{b7} Esc drops");
+    // A frame presents at 40 s: the wait begins there.
+    bar.presented(secs(t0, 40.0));
+    assert_eq!(bar.key(enter(), secs(t0, 40.9)), BarKey::Taken);
+    assert_eq!(bar.arm_deadline(secs(t0, 40.2)), Some(secs(t0, 41.0)));
+    // A later presented frame does not restart a running wait.
+    bar.presented(secs(t0, 40.5));
+    sent(bar.key(enter(), secs(t0, 41.0)));
+}
+
+/// A resize moves the panel, so it is another sight: the evidence that the bar was shown is dropped, even when the
+/// bar stays whole, and the wait begins again from the next presented frame.
+#[test]
+fn a_resize_drops_the_evidence_that_the_bar_was_shown() {
+    let t0 = Instant::now();
+    let mut bar = open_bar(t0);
+    bar.observe(Sight::Whole(Rect { x: 11, ..PANEL }));
+    assert_eq!(bar.key(enter(), secs(t0, 20.0)), BarKey::Taken, "the new panel has not been presented");
+    bar.presented(secs(t0, 21.0));
+    assert_eq!(bar.key(enter(), secs(t0, 21.5)), BarKey::Taken);
+    sent(bar.key(enter(), secs(t0, 22.0)));
+}
+
+/// Keys follow what is drawn on top. A dialog over the bar takes every key and the bar none; when the bar is shown
 /// again its wait starts over, so neither an Enter given to the dialog nor one typed while the bar was hidden sends.
 #[test]
 fn a_dialog_over_the_bar_takes_every_key_and_the_wait_starts_again() {
     let t0 = Instant::now();
     let mut bar = open_bar(t0);
     // The bar has been armed for ten seconds when the quit dialog opens over it.
-    bar.observe(Sight::Covered, secs(t0, 10.0));
+    bar.observe(Sight::Covered);
+    assert!(bar.covered());
+    bar.presented(secs(t0, 10.0));
     for key in [enter(), BarKeyKind::Esc, BarKeyKind::Other] {
         assert_eq!(bar.key(key, secs(t0, 11.0)), BarKey::Pass, "the dialog covers the bar: {key:?} is the dialog's");
     }
     assert!(bar.view(secs(t0, 11.0)).is_some(), "the offer stands under the dialog");
-    // The dialog closes at 12 s. An Enter less than a second later sends nothing.
-    bar.observe(Sight::Whole, secs(t0, 12.0));
-    assert_eq!(bar.key(enter(), secs(t0, 12.0)), BarKey::Taken);
-    assert_eq!(bar.key(enter(), secs(t0, 12.9)), BarKey::Taken, "the wait started again when the bar came back");
+    // The dialog closes at 12 s, and a frame shows the bar again at 12.2 s. Nothing sends until a second after that.
+    bar.observe(whole());
+    assert!(!bar.covered());
+    assert_eq!(bar.key(enter(), secs(t0, 12.0)), BarKey::Taken, "back in layout but not yet presented");
+    bar.presented(secs(t0, 12.2));
+    assert_eq!(bar.key(enter(), secs(t0, 13.1)), BarKey::Taken, "the wait started again when the bar came back");
     let view = bar.view(secs(t0, 12.5)).expect("open");
     assert_eq!(view.keys, "Enter in 1 s \u{b7} Esc drops", "the panel says it is waiting again");
-    sent(bar.key(enter(), secs(t0, 13.0)));
+    sent(bar.key(enter(), secs(t0, 13.2)));
 
     // A bar offered while a dialog is open starts hidden and unarmed: the dialog's own Enter cannot reach it.
     let mut bar = ReplyBar::default();
-    bar.offer(offer("project", LINE), Sight::Covered, t0).expect("opens");
+    bar.offer(offer("project", LINE), Sight::Covered).expect("opens");
+    bar.presented(secs(t0, 29.0));
     assert_eq!(bar.key(enter(), secs(t0, 30.0)), BarKey::Pass);
-    bar.observe(Sight::Whole, secs(t0, 31.0));
+    bar.observe(whole());
     assert_eq!(bar.key(enter(), secs(t0, 31.2)), BarKey::Taken, "the first Enter after the dialog closes sends nothing");
 }
 
@@ -202,8 +262,9 @@ fn the_waits_deadline_is_only_while_the_bar_is_waiting() {
     let mut bar = open_bar(t0);
     assert_eq!(bar.arm_deadline(secs(t0, 0.2)), Some(secs(t0, 1.0)));
     assert_eq!(bar.arm_deadline(secs(t0, 1.0)), None, "armed: no wake needed");
-    bar.observe(Sight::Covered, secs(t0, 2.0));
+    bar.observe(Sight::Covered);
     assert_eq!(bar.arm_deadline(secs(t0, 2.1)), None, "covered: it shows nothing to change");
-    bar.observe(Sight::Whole, secs(t0, 3.0));
+    bar.observe(whole());
+    bar.presented(secs(t0, 3.0));
     assert_eq!(bar.arm_deadline(secs(t0, 3.1)), Some(secs(t0, 4.0)));
 }

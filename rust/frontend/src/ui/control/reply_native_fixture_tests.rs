@@ -45,7 +45,7 @@ impl State {
         let offered = Instant::now();
         self.dispatch_fe_command(Some(&b), offer_command("repo__box", line));
         anyhow::ensure!(
-            self.reply_sight(offered) == Sight::Whole,
+            matches!(self.reply_sight(), Sight::Whole(_)),
             "the fixture window cannot show the whole bar (grid {:?})",
             self.canvas.grid_size().ok()
         );
@@ -57,20 +57,40 @@ impl State {
         anyhow::ensure!(self.status.text().starts_with("reply from a page dropped"), "status: {}", self.status.text());
         anyhow::ensure!(self.reply_bar.view(Instant::now()).is_some_and(|v| v.line == line), "the second offer replaced the first");
 
-        // Enter before the wait sends nothing: the clock reads the offer's own moment, before the bar was first in view.
-        anyhow::ensure!(self.reply_bar_key(BarKeyKind::Enter { repeat: false }, offered), "the bar did not take an early Enter");
-        anyhow::ensure!(page_replies(&mut b_rx).is_empty() && page_replies(&mut a_rx).is_empty(), "an early Enter sent");
+        let enter = BarKeyKind::Enter { repeat: false };
+        let sent_so_far = |b_rx: &mut Requests, a_rx: &mut Requests| page_replies(b_rx).len() + page_replies(a_rx).len();
 
-        // Enter after the wait puts the one request, with the line, on the offering host's connection.
-        let later = offered + Duration::from_secs(5);
-        self.observe_reply_bar(later);
-        anyhow::ensure!(self.reply_bar_key(BarKeyKind::Enter { repeat: false }, later), "the bar did not take the armed Enter");
+        // Laid out but never presented, however late the clock reads: nothing was shown, so Enter sends nothing.
+        anyhow::ensure!(self.reply_bar_key(enter, offered + Duration::from_secs(10)), "the bar did not take an unseen Enter");
+        anyhow::ensure!(sent_so_far(&mut b_rx, &mut a_rx) == 0, "an Enter sent a bar no frame had presented");
+
+        // A presented frame starts the wait: an Enter straight after it sends nothing.
+        self.redraw()?;
+        anyhow::ensure!(self.reply_bar_key(enter, Instant::now()), "the bar did not take an Enter after its frame");
+        anyhow::ensure!(sent_so_far(&mut b_rx, &mut a_rx) == 0, "an Enter straight after the first frame sent");
+
+        // A quit question drawn over the bar takes every key and the bar none.
+        self.focus_prompts.ask_quit(false);
+        self.redraw()?;
+        anyhow::ensure!(self.reply_bar.covered(), "the quit question did not cover the bar");
+        anyhow::ensure!(!self.reply_bar_key(enter, Instant::now() + Duration::from_secs(10)), "the bar took a key under the dialog");
+        // The dialog closes; a frame shows the bar again, and the wait starts over from that frame.
+        self.focus_prompts.answer_quit(QuitPromptStep::Cancel);
+        self.redraw()?;
+        anyhow::ensure!(!self.reply_bar.covered(), "the bar stayed covered after the dialog closed");
+        anyhow::ensure!(self.reply_bar_key(enter, Instant::now()), "the bar did not take an Enter after the dialog");
+        anyhow::ensure!(sent_so_far(&mut b_rx, &mut a_rx) == 0, "an Enter straight after the dialog closed sent");
+
+        // A second of presented frames later, Enter puts the one request, with the line, on the offering host's connection.
+        std::thread::sleep(ARM + Duration::from_millis(150));
+        self.redraw()?;
+        anyhow::ensure!(self.reply_bar_key(enter, Instant::now()), "the bar did not take the armed Enter");
         let on_b = page_replies(&mut b_rx);
         anyhow::ensure!(
             on_b == [("id-b".to_string(), "repo__box".to_string(), line.to_string())] && page_replies(&mut a_rx).is_empty(),
             "the armed Enter sent {on_b:?}"
         );
-        anyhow::ensure!(!self.reply_bar_key(BarKeyKind::Enter { repeat: false }, later), "the sent bar still took a key");
+        anyhow::ensure!(!self.reply_bar_key(enter, Instant::now()), "the sent bar still took a key");
         anyhow::ensure!(page_replies(&mut b_rx).is_empty(), "a second Enter sent again");
 
         self.reply_bar = ReplyBar::default();

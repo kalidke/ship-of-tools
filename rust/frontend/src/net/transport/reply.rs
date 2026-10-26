@@ -221,6 +221,13 @@ impl Drop for PendingGuard<'_> {
                         stacktrace: Vec::new(),
                     }],
                 },
+                // A confirmed reply is never retried, and the daemon may have typed it before the connection ended:
+                // the person is told its delivery is unknown, never that it failed.
+                PendingKind::PageReply { handle } => IncomingEvt::PageReplied {
+                    handle,
+                    outcome: "unknown".into(),
+                    detail: "the connection to the daemon ended before it answered".into(),
+                },
                 _ => continue,
             };
             let _ = self.evt_tx.send((self.host.clone(), event));

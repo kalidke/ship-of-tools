@@ -118,11 +118,13 @@ formatting characters. Invalid text answers 400 `bad_text`, naming the refusal. 
 `[sot-page] ` mark and answers 202; that is an offer, not a delivery receipt. No page verb confirms delivery.
 
 A window shows an offer on a reply bar drawn over every pane, titled "Reply from a page". It names the session, the row
-and its computer, and shows the exact line that will be typed. Enter sends only after the bar has been in view for one
+and its computer, and shows the exact line that will be typed. Enter sends only after the bar has been on screen, whole, for one
 second and is not a held key's repeat; Esc drops it; while the bar is up it takes every key. A dialog over the bar, such
-as the quit question, takes the keys instead, and the bar's second starts again when it is back, so an Enter given to
-the dialog never sends the reply. A second offer while one is open is dropped, and the status line says so. In a window
-too short to show the whole line, Esc drops the bar but Enter cannot send it. Nothing a page sends can confirm the bar:
+as the quit question or the quit hint, takes the keys instead and nothing under the bar gets one; the bar's second
+starts again when it is shown again, so an Enter given to the dialog never sends the reply. A second offer while one is
+open is dropped, and the status line says so. In a window too small to show the whole target and line, Esc drops the
+bar but Enter cannot send it. If the connection ends before the daemon answers, the status line says the delivery is
+unknown: look at the pane before replying again. Nothing a page sends can confirm the bar:
 it reads only the window's own keys. A window without the bar drops the offer and delivers nothing.
 
 The daemon's `page.reply` delivery op rechecks the mark and target handle and uses the wake's free-prompt gate,

@@ -103,7 +103,8 @@ fn the_quit_dialog_takes_a_key_before_the_reply_bar_and_the_bar_before_the_panes
     seen.bar.offer(ReplyOffer {
         host: "<host-b>".into(), workspace_id: "id-7".into(), handle: "repo__box".into(), name: "project".into(),
         line: "[sot-page] approve".into(),
-    }, Sight::Whole, t0).expect("the offer opens the bar");
+    }, Sight::Whole(ratatui::layout::Rect::new(0, 0, 60, 9))).expect("the offer opens the bar");
+    seen.bar.presented(t0);
     // Enter, as `keyboard_input` hands it: the bar reads the logical key, never a binding.
     let press = |seen: &mut Seen, quit: Option<bool>| {
         let enter = Key::Named(NamedKey::Enter);
@@ -123,14 +124,15 @@ fn the_quit_dialog_takes_a_key_before_the_reply_bar_and_the_bar_before_the_panes
     };
 
     // The quit question opens at 5 s over an armed bar and takes the Enter; the bar is not asked.
-    seen.bar.observe(Sight::Covered, t0 + Duration::from_secs(5));
+    seen.bar.observe(Sight::Covered);
     seen.at = t0 + Duration::from_secs(6);
     press(&mut seen, Some(false));
     assert_eq!((seen.prompt.as_ref(), seen.asked, seen.panes, seen.sent),
         (Some(&QuitPromptStep::Leave(LeaveIntent::Close)), 0, 0, 0));
 
     // It closes at 8 s. An Enter 0.3 s later is the bar's, and sends nothing; no pane sees it.
-    seen.bar.observe(Sight::Whole, t0 + Duration::from_secs(8));
+    seen.bar.observe(Sight::Whole(ratatui::layout::Rect::new(0, 0, 60, 9)));
+    seen.bar.presented(t0 + Duration::from_secs(8));
     seen.at = t0 + Duration::from_millis(8300);
     press(&mut seen, None);
     assert_eq!((seen.asked, seen.panes, seen.sent), (1, 0, 0));
@@ -142,4 +144,20 @@ fn the_quit_dialog_takes_a_key_before_the_reply_bar_and_the_bar_before_the_panes
     seen.at = t0 + Duration::from_secs(10);
     press(&mut seen, None);
     assert_eq!((seen.asked, seen.panes, seen.sent), (3, 1, 1));
+}
+
+/// Under a dialog that covers an open reply bar, no key reaches a pane: a stayed notice is dismissed whether or not
+/// the dismissal eats the key, and the quit hint and a leave's line, which take no key, swallow it. With the bar not
+/// covered the key goes on as before.
+#[test]
+fn nothing_reaches_a_pane_under_a_covered_bar() {
+    use std::ops::ControlFlow::{Break, Continue};
+    for dismissed in [None, Some(false), Some(true)] {
+        let (mut redraws, mut panes) = (0, 0);
+        let flow = covered_key_continuation(&mut (), true, dismissed, |_| redraws += 1, |_| { panes += 1; Continue(()) });
+        assert_eq!((flow, panes, redraws), (Break(()), 0, usize::from(dismissed.is_some())), "{dismissed:?}");
+    }
+    let mut panes = 0;
+    let flow = covered_key_continuation(&mut (), false, None, |_| (), |_| { panes += 1; Continue(()) });
+    assert_eq!((flow, panes), (Continue(()), 1), "no covered bar: the key goes on");
 }

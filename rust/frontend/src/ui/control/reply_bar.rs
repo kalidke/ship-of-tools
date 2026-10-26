@@ -2,9 +2,11 @@
 
 use std::time::{Duration, Instant};
 
+use ratatui::layout::Rect;
+
 use crate::net::dial::HostKey;
 
-/// How long the bar must have been wholly in view before Enter sends: no key meant for something else lands on it.
+/// How long the bar must have been on screen, whole, before Enter sends: no key meant for something else lands on it.
 pub(in crate::ui) const ARM: Duration = Duration::from_secs(1);
 
 /// A reply a page offered, as the window resolved it: the daemon it came from, the row's id and listed name, the
@@ -76,55 +78,72 @@ pub(in crate::ui) struct ReplyView {
 pub(in crate::ui) enum Sight {
     /// A dialog is drawn over it: the dialog takes every key and the bar none.
     Covered,
-    /// The window is too short to draw every row of the line: Esc drops it, but Enter cannot send what is not shown.
+    /// The window is too short or too narrow to draw every row of the line: Esc drops it, but Enter cannot send what
+    /// is not shown.
     Cut,
-    Whole,
+    /// Laid out in full, at this panel rectangle. Another rectangle (a resize) is another sight.
+    Whole(Rect),
 }
 
 struct Open {
     offer: ReplyOffer,
     sight: Sight,
-    /// When the bar last came wholly into view; `None` while it is not.
-    whole_since: Option<Instant>,
+    /// When a frame laying the bar out `Whole` was last presented; `None` until one is, and again as soon as the
+    /// sight changes. Layout alone is no evidence: a frame can fail after it.
+    shown_since: Option<Instant>,
 }
 
-/// The bar holds at most one offer, and is told what is drawn on top of it (`offer`, `observe`).
+/// The bar holds at most one offer, and is told what is drawn on top of it (`offer`, `observe`) and when a frame
+/// that showed it was presented (`presented`).
 #[derive(Default)]
 pub(in crate::ui) struct ReplyBar {
     open: Option<Open>,
 }
 
 impl ReplyBar {
-    /// Hold `offer` for an answer.
-    pub(in crate::ui) fn offer(&mut self, offer: ReplyOffer, sight: Sight, now: Instant) -> Result<(), OfferRefused> {
+    /// Hold `offer` for an answer. Nothing has been shown yet.
+    pub(in crate::ui) fn offer(&mut self, offer: ReplyOffer, sight: Sight) -> Result<(), OfferRefused> {
         if self.open.is_some() {
             return Err(OfferRefused::Busy);
         }
         sot_protocol::page_reply::check_line(&offer.line).map_err(|r| OfferRefused::Line(r.to_string()))?;
-        self.open = Some(Open { offer, sight, whole_since: (sight == Sight::Whole).then_some(now) });
+        self.open = Some(Open { offer, sight, shown_since: None });
         Ok(())
     }
 
-    /// Tell the bar what is drawn over it now. A bar that is not wholly in view starts its wait over when it is
-    /// again, so no Enter meant for a dialog, or typed while the bar was hidden, finds it armed.
-    pub(in crate::ui) fn observe(&mut self, sight: Sight, now: Instant) {
+    /// Tell the bar how it is laid out now. Any change of sight (a dialog over it, a resize, a cut) drops the
+    /// evidence that it was shown, so the wait starts over from the next presented frame: no Enter meant for a
+    /// dialog, or typed while the bar was hidden, finds it armed.
+    pub(in crate::ui) fn observe(&mut self, sight: Sight) {
         if let Some(open) = &mut self.open {
+            if open.sight != sight {
+                open.shown_since = None;
+            }
             open.sight = sight;
-            match (sight, open.whole_since) {
-                (Sight::Whole, None) => open.whole_since = Some(now),
-                (Sight::Whole, Some(_)) => {}
-                _ => open.whole_since = None,
+        }
+    }
+
+    /// A frame has been presented, laid out as the last `observe` said. If that was the whole bar, the wait begins.
+    pub(in crate::ui) fn presented(&mut self, now: Instant) {
+        if let Some(open) = &mut self.open {
+            if matches!(open.sight, Sight::Whole(_)) && open.shown_since.is_none() {
+                open.shown_since = Some(now);
             }
         }
     }
 
-    /// Enter sends once the bar has been wholly in view for `ARM` and is not a repeat; Esc drops; every other key
-    /// is taken. While a dialog covers the bar it takes none.
+    /// Whether a dialog is drawn over an open bar, so the dialog owns every key and nothing under it gets one.
+    pub(in crate::ui) fn covered(&self) -> bool {
+        self.open.as_ref().is_some_and(|open| open.sight == Sight::Covered)
+    }
+
+    /// Enter sends once the bar has been shown whole for `ARM` and is not a repeat; Esc drops; every other key is
+    /// taken. While a dialog covers the bar it takes none.
     pub(in crate::ui) fn key(&mut self, key: BarKeyKind, now: Instant) -> BarKey {
         let Some(open) = self.open.as_ref().filter(|open| open.sight != Sight::Covered) else {
             return BarKey::Pass;
         };
-        let armed = open.whole_since.is_some_and(|since| now.saturating_duration_since(since) >= ARM);
+        let armed = open.shown_since.is_some_and(|since| now.saturating_duration_since(since) >= ARM);
         match key {
             BarKeyKind::Esc => {
                 self.open = None;
@@ -145,14 +164,25 @@ impl ReplyBar {
 
     /// When the wait before Enter ends, while it is still running: the moment the panel changes its words.
     pub(in crate::ui) fn arm_deadline(&self, now: Instant) -> Option<Instant> {
-        let since = self.open.as_ref()?.whole_since?;
+        let since = self.open.as_ref()?.shown_since?;
         (now.saturating_duration_since(since) < ARM).then(|| since + ARM)
     }
 
     /// The panel's words. The offer's text is the daemon's and the row's: draw it through `cell_lines`.
     pub(in crate::ui) fn view(&self, now: Instant) -> Option<ReplyView> {
-        let Open { offer, whole_since, .. } = self.open.as_ref()?;
-        let wait = whole_since.map_or(ARM, |since| ARM.saturating_sub(now.saturating_duration_since(since)));
+        let Open { shown_since, .. } = self.open.as_ref()?;
+        let wait = shown_since.map_or(ARM, |since| ARM.saturating_sub(now.saturating_duration_since(since)));
+        self.view_waiting(wait)
+    }
+
+    /// The panel as it is laid out, for deciding whether it shows whole: always the words of the wait, the longer of
+    /// the two, so the panel's rectangle does not change when Enter arms and no change of words counts as a new sight.
+    pub(in crate::ui) fn layout_view(&self) -> Option<ReplyView> {
+        self.view_waiting(ARM)
+    }
+
+    fn view_waiting(&self, wait: Duration) -> Option<ReplyView> {
+        let offer = &self.open.as_ref()?.offer;
         let keys = if wait.is_zero() {
             "Enter sends \u{b7} Esc drops".to_string()
         } else {
