@@ -88,7 +88,7 @@ pub(in crate::ui) fn host_label<'a>(declared_host: &'a HashMap<HostKey, String>,
 /// treats a currently-collapsed same-id root as "the user closed this,
 /// keep it collapsed" and would silently no-op here (the same contract
 /// `try_expand_session_host_local` relies on for `session_host`).
-fn expand_hosts_root(tree: &mut TreeView, mode: Mode, children: Vec<TreeNode>) -> bool {
+pub(super) fn expand_hosts_root(tree: &mut TreeView, mode: Mode, children: Vec<TreeNode>) -> bool {
     if mode != Mode::Hosts {
         return false;
     }
@@ -146,7 +146,7 @@ impl State {
         // Landing on the active host at all is `select_active_host`'s job,
         // called only for a genuinely FIRST population (mode entry, a
         // first-visited workspace, resume).
-        self.tree.set_root(root, children);
+        self.nav.set_root(root, children);
         self.window.request_redraw();
     }
 
@@ -157,15 +157,15 @@ impl State {
     /// refresh's cursor where the user left it (Codex round, PR #172).
     /// Codex review (PR #163): the OLD version computed a position into
     /// `hosts_config.hosts` (0 = first host) and used it directly as
-    /// `self.tree.selected()` -- off by one, since row 0 of the rendered
+    /// `self.nav.tree().selected()` -- off by one, since row 0 of the rendered
     /// tree is the ROOT ("hosts:") and the first host lands at row 1.
     /// Restoring by NODE ID against the actual post-`set_root` rows
     /// sidesteps that arithmetic entirely rather than just patching the
     /// +1.
     pub(in crate::ui) fn select_active_host(&mut self) {
         let want_id = format!("hosts:{}", self.selected.host());
-        if let Some(idx) = self.tree.rows().iter().position(|r| r.node.id == want_id) {
-            self.tree.select(idx);
+        if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == want_id) {
+            self.nav.select(idx);
         }
     }
 
@@ -200,7 +200,7 @@ impl State {
     /// superseded note): every host is already a live connection, so
     /// there's nothing to relaunch into — Enter just navigates there.
     pub(in crate::ui) fn pick_host_under_cursor(&mut self) {
-        let Some(row) = self.tree.rows().get(self.tree.selected()) else {
+        let Some(row) = self.nav.tree().rows().get(self.nav.tree().selected()) else {
             return;
         };
         if row.node.kind != "host" {
@@ -226,8 +226,8 @@ impl State {
         // lands degraded below -- the cursor simply stays put.
         self.rebuild_and_install_sessions_tree();
         let host_row_id = format!("sessions:host:{name}");
-        if let Some(idx) = self.tree.rows().iter().position(|r| r.node.id == host_row_id) {
-            self.tree.select(idx);
+        if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == host_row_id) {
+            self.nav.select(idx);
         }
         self.status = format!("host · {name}");
         self.window.request_redraw();
@@ -243,7 +243,7 @@ impl State {
     /// exact root id, not just a row's `kind`.
     pub(in crate::ui) fn try_expand_hosts_root_local(&mut self) -> bool {
         let children = self.hosts_tree_children();
-        if !expand_hosts_root(&mut self.tree, self.mode, children) {
+        if !self.nav.expand_hosts_root(children) {
             return false;
         }
         self.window.request_redraw();

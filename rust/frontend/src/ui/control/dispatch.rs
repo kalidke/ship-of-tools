@@ -151,15 +151,15 @@ impl State {
             FeCommand::Nav { action } => {
                 tracing::info!(%action, "fe-command: nav");
                 match action.as_str() {
-                    "down" => self.tree.move_down(),
-                    "up" => self.tree.move_up(),
+                    "down" => self.nav.move_down(),
+                    "up" => self.nav.move_up(),
                     "expand" => {
                         self.try_expand_selected();
                     }
                     "collapse" => {
                         if !self.collapse_selected_row() {
-                            if let Some(p) = self.tree.parent_of_selected() {
-                                self.tree.select(p);
+                            if let Some(p) = self.nav.tree().parent_of_selected() {
+                                self.nav.select(p);
                             }
                         }
                     }

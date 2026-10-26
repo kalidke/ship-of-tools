@@ -122,7 +122,7 @@ impl State {
         self.parked_views.park(
             key,
             WorkspaceUiSnapshot {
-                mode: self.mode,
+                mode: self.nav.mode(),
                 // (tree + scroll deliberately absent — they stash into
                 // `tree_store` under their own key in switch_to_workspace.)
                 // Host dropped — redundant with this snapshot's own WsKey
@@ -154,7 +154,7 @@ impl State {
         // it here from a per-workspace blob is exactly what used to hand
         // back a foreign tree (Codex R4). Only the mode is restored, so the
         // caller's post-restore key computation picks the right slot.
-        self.mode = snap.mode;
+        self.nav.set_mode(snap.mode);
         // focus is global across workspaces — don't restore. The user
         // expects pane focus to follow their last interaction regardless
         // of which workspace is active.

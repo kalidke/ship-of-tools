@@ -39,7 +39,7 @@ impl State {
             .ok()
             .map(|p| p.to_logical::<f64>(scale));
         let s = crate::ui::persist::resume::GlobalState {
-            last_mode: Some(self.mode.label().to_string()),
+            last_mode: Some(self.nav.mode().label().to_string()),
             // The persisted GlobalState is still single-host -- drop the
             // owner, keep the session name. `last_workspace_id` and
             // `last_bl_target` are meaningful only paired with
@@ -67,11 +67,11 @@ impl State {
             fullscreen: Some(self.window.fullscreen().is_some()),
             font_scale: Some(self.text_scale_mult as f64),
             nav_selected_id: self
-                .tree
+                .nav.tree()
                 .rows()
-                .get(self.tree.selected())
+                .get(self.nav.tree().selected())
                 .map(|r| r.node.id.clone()),
-            nav_scroll: Some(self.tree_scroll),
+            nav_scroll: Some(self.nav.scroll()),
         };
         crate::ui::persist::resume::save(&s);
     }

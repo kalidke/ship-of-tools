@@ -16,7 +16,8 @@ follow commitment, the driven-preview hold, and the crop, scale-save and `--roi`
 `session::SelectedRow` owns the selected `(host, workspace)`, its read-mark dwell, the destroy confirm and a create's
 request time; `session::WorkspacePicker` owns the new-session picker's listing, cursor and account choice.
 `nav::NavCursor` owns the nav cursor's settle debounce, startup/relaunch/reconnect placements, README default, pin and
-project-scan clock; `nav::TreeView` owns a tree's rows, cursor and content generation.
+project-scan clock; `nav::TreeView` owns a tree's rows, cursor and content generation; `nav::Navigation` owns the
+active tree, its mode, scroll and scan root, and the store of parked trees.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -151,6 +152,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   by node id; a row is marked expanded only at request time (`mark_selected_expanded`, `mark_expanded`), so
   `apply_children` keeps dropping a reply for a collapsed parent; the root label is patched only through
   `relabel_root`. Tests build trees through the same operations.
+- `Navigation` privately owns the active tree, the mode, the nav scroll, the active Modules scan root and the
+  `TreeStore` of every other (mode, scope)'s tree, whose slots are private too. The store never holds the active key:
+  a mode or row change sets the mode, then swaps (the departing view parks as user state with its scroll and, for
+  Modules, its scan root; the entering slot comes back or an empty view does; a Files root shows the active row's
+  label). A reply for a key not on screen parks: a root or a Sessions rebuild only into an empty slot or over an
+  earlier parked reply (the decision is asked first, so the park log still precedes the rebuild's), a children splice
+  or a scan into its slot. Parked trees are read by reference; a destroyed row's slots are purged and the default
+  row's raw-slug slots migrate with an existing `<default>` slot winning.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
@@ -329,7 +338,8 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `chrome/`: pane geometry and focus delegation, the status line, nav spill, colours, the wireframe and the frame's chrome draw.
 - `chrome/strip/`: the session strip band under the panes.
 - `input/`: FocusPrompts, LayoutHelp, the action catalog, key and mouse routing, help and clipboard paste.
-- `nav/`: the navigation pane's trees (mode, store, Modules, Sessions, Hosts).
+- `nav/`: the navigation pane's trees: `Navigation` (active tree, mode, scroll, store), `TreeView`, `NavCursor`, the
+  Modules, Sessions and Hosts trees.
 - `nav/files/`: Files mode's prompts, reveal walk, transfers and re-lists.
 - `session/`: `RowDirectory` owns listings/identity, `RowPresentation` owns metadata/order/flashes, `ResultLedger`
   owns owed results/attempts, `ParkedViews` the parked row views and `SelectedRow` the selected row and its read

@@ -249,7 +249,7 @@ impl State {
         let restored = self.restore_workspace_ui(&key);
         if !restored {
             // First visit — start from a clean slate.
-            self.mode = Mode::Files;
+            self.nav.set_mode(Mode::Files);
             self.preview_requests.forget_fired();
             self.nav_cursor.restore_pin(None);
             // Same invariant as the snapshot restore: a first-visited
@@ -284,8 +284,8 @@ impl State {
         self.swap_active_tree(old_tree_key, new_tree_key);
         // First visit to this (mode, workspace) — nothing parked — so fire
         // the mode's loader to fill the empty view.
-        if self.tree.rows().is_empty() {
-            match self.mode {
+        if self.nav.tree().rows().is_empty() {
+            match self.nav.mode() {
                 Mode::Files => {
                     tracing::info!("tree.root requested: workspace switch (empty Files slot)");
                     if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeRoot {
@@ -320,7 +320,7 @@ impl State {
                     self.select_active_host();
                 }
             }
-        } else if self.mode == Mode::Files {
+        } else if self.nav.mode() == Mode::Files {
             // Revisit: the parked Files tree came back as it was left, and
             // nothing could have updated it meanwhile (watcher refreshes
             // reach only the active view). Re-list its open dirs so files

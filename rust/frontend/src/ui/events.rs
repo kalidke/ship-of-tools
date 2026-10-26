@@ -353,7 +353,7 @@ impl State {
                 | crate::net::transport::IncomingEvt::Disconnected { .. }
         ) {
             self.rebuild_and_install_sessions_tree();
-            if matches!(self.mode, Mode::Hosts) {
+            if matches!(self.nav.mode(), Mode::Hosts) {
                 self.populate_hosts_tree();
             }
         }

@@ -174,7 +174,7 @@ impl State {
     /// from `redraw` so cursor moves and event-driven tree updates both
     /// trigger refresh without each caller having to remember.
     pub(in crate::ui) fn maybe_fire_concept_read(&mut self) {
-        let Some(row) = self.tree.rows().get(self.tree.selected()) else {
+        let Some(row) = self.nav.tree().rows().get(self.nav.tree().selected()) else {
             return;
         };
         let target = node_id_to_concept_target(&row.node.id);

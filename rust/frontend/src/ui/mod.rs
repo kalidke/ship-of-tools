@@ -471,33 +471,9 @@ struct State {
     /// file is only rewritten when the observable state actually changes.
     fe_state_sig: Option<u64>,
     // ui/nav: the active tree and mode, cursor-driven preview firing, request generations.
-    /// Files-mode tree, flattened for chrome rendering. Updated by
-    /// `tree.root` / `tree.children` events; navigated by arrow keys.
-    tree: TreeView,
-    /// Which root tree the left pane is currently showing. `f`/`m` keys
-    /// switch this and fire the corresponding wire request.
-    mode: Mode,
-    /// Absolute path of the most recent `project.scan`'s `project_root`.
-    /// The chrome strips this prefix off the absolute file paths each
-    /// Modules-mode entry carries to synthesize the `files:<relpath>`
-    /// node id that `preview.get` expects. Reset on each scan reply.
-    scan_project_root: Option<String>,
-    /// Per-(mode, scope) parking lot for every nav tree that is NOT the
-    /// active one (`self.tree` IS the active slot). Replaces the old
-    /// `files_tree_workspace` provenance side-stamp + per-consumer
-    /// staleness guards: installs route by the reply's key, so the active
-    /// view can only ever hold the active (mode, workspace)'s tree — a
-    /// foreign tree is structurally impossible rather than detected.
-    tree_store: TreeStore,
-    /// Persistent scroll offset for the nav pane (vim-style scrolloff
-    /// behaviour). Updated each frame from the cursor's position relative
-    /// to the current viewport: when the cursor moves into the bottom
-    /// 1/3 of the pane going down, scroll keeps it stationary there;
-    /// same on the way up. At the body's edges the cursor falls through
-    /// to the actual top/bottom row. Kept on State so the cursor
-    /// position alone doesn't determine the scroll — direction of motion
-    /// matters.
-    tree_scroll: u16,
+    /// The nav pane's trees: the active (mode, row)'s tree with its scroll and scan root, and the store parking
+    /// every other tree. Installs route by the reply's key, so the active view can only hold the active key's tree.
+    nav: Navigation,
     /// Where the nav cursor lands and when its follow fires: the settle debounce, the startup, relaunch and
     /// reconnect placements, the README default, the pin and the per-row project-scan clock.
     nav_cursor: NavCursor,

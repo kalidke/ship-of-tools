@@ -200,9 +200,9 @@ impl State {
         let mut selected = node("sessions:selected", "selected", false);
         selected.kind = "session".into();
         selected.payload = serde_json::json!({"host": b, "workspace_id":"id-b", "slug":"project", "name":"stored-b"}).as_object().unwrap().clone();
-        self.tree
+        self.nav
             .set_root(node("sessions:", "sessions", true), vec![selected]);
-        self.tree.select(1);
+        self.nav.select(1);
         anyhow::ensure!(
             self.agent_pane.target().as_ref() != Some(&(b.clone(), "stored-b".into())),
             "Sessions-Enter needs a different departing attachment"
@@ -641,9 +641,9 @@ impl State {
     }
 
     fn probe_selected_id(&self) -> Option<String> {
-        self.tree
+        self.nav.tree()
             .rows()
-            .get(self.tree.selected())
+            .get(self.nav.tree().selected())
             .map(|row| row.node.id.clone())
     }
 
@@ -665,12 +665,12 @@ impl State {
         host: &HostKey,
     ) -> (Vec<String>, usize, String, bool, bool, Option<String>, bool) {
         (
-            self.tree
+            self.nav.tree()
                 .rows()
                 .iter()
                 .map(|row| row.node.id.clone())
                 .collect(),
-            self.tree.selected(),
+            self.nav.tree().selected(),
             self.status.clone(),
             self.pending_reveal.is_some(),
             self.pending_switch_reveal.is_some(),
@@ -684,13 +684,10 @@ impl State {
             Mode::Files,
             TreeScope::Workspace((host.clone(), "project".into())),
         );
-        self.tree_store
-            .slot_mut(key)
-            .view
-            .rows()
-            .iter()
-            .map(|row| row.node.id.clone())
-            .collect()
+        self.nav
+            .parked(&key)
+            .map(|view| view.rows().iter().map(|row| row.node.id.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// The newest attempt's preview arrives and a frame is presented: that clears the badge, and nothing earlier did.
@@ -840,13 +837,13 @@ impl State {
         if case.parked {
             let before = (
                 self.parked_project_rows(&a),
-                self.tree.rows().len(),
+                self.nav.tree().rows().len(),
                 self.status.clone(),
             );
             self.deliver_old_reply(&mut wire, &old, case, &paths);
             let after = (
                 self.parked_project_rows(&a),
-                self.tree.rows().len(),
+                self.nav.tree().rows().len(),
                 self.status.clone(),
             );
             anyhow::ensure!(before == after, "{REJECTED}");
@@ -1265,12 +1262,12 @@ impl State {
             .ok_or_else(|| anyhow::anyhow!("control: default row did not resolve"))?;
         let node_id = "files:kept-default.rs";
         let preview = ("text/plain".to_string(), b"kept default preview\n".to_vec());
-        self.mode = Mode::Files;
-        self.tree.set_root(
+        self.nav.set_mode(Mode::Files);
+        self.nav.set_root(
             node("files:", "base", true),
             vec![node(node_id, "kept-default.rs", false)],
         );
-        self.tree.select(1);
+        self.nav.select(1);
         self.preview_requests.record_fired(node_id.into());
         self.preview_source.install(preview.0.clone(), preview.1.clone(), Some(node_id.into()), None, None);
         self.repl_model.edit_draft(DraftEdit::Replace("kept_default_input = 42".into()));
@@ -1303,10 +1300,9 @@ impl State {
         );
         // Check the parked cursor before result reveal can place it again on return.
         let tree_key = (Mode::Files, TreeScope::Workspace(default.view_key().clone()));
-        let cached = self.tree_store.take(&tree_key)
+        let cached = self.nav.parked(&tree_key)
             .ok_or_else(|| anyhow::anyhow!("control: keeping the default row removed its cached tree"))?;
-        let selected = cached.view.rows().get(cached.view.selected()).map(|row| row.node.id.clone());
-        self.tree_store.stash(tree_key, cached);
+        let selected = cached.rows().get(cached.selected()).map(|row| row.node.id.clone());
         anyhow::ensure!(
             selected.as_deref() == Some(node_id),
             "control: keeping the default row reset its cached selection"
@@ -1315,8 +1311,8 @@ impl State {
         self.switch_to_workspace(kept_host.clone(), None, None, false);
         anyhow::ensure!(
             self.active_ws_key() == *default.view_key()
-                && self.mode == Mode::Files
-                && self.tree.selected() == 1
+                && self.nav.mode() == Mode::Files
+                && self.nav.tree().selected() == 1
                 && self.probe_selected_id().as_deref() == Some(node_id),
             "control: keeping the default row reset its cached tree or selection"
         );

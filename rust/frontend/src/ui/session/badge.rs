@@ -84,9 +84,9 @@ impl State {
     pub(in crate::ui) fn acknowledge_presented_result(&mut self) {
         let target = self.active_result_workspace();
         let cursor = self
-            .tree
+            .nav.tree()
             .rows()
-            .get(self.tree.selected())
+            .get(self.nav.tree().selected())
             .map(|row| row.node.id.clone());
         let shown = self.preview_source.node_id().map(str::to_owned);
         let effects = self.result_ledger.acknowledge_presented(

@@ -399,7 +399,7 @@ impl State {
         // in `workspace_lists` — no wire round-trip needed to expand one.
         // Declines (returns false, falls through below) for any other row
         // kind. Checked before `row` is bound below — both need to inspect
-        // `self.tree.rows`, and this one also needs `&mut self`.
+        // `self.nav.tree().rows`, and this one also needs `&mut self`.
         if self.try_expand_session_host_local() {
             return true;
         }
@@ -413,7 +413,7 @@ impl State {
         if self.try_expand_hosts_root_local() {
             return true;
         }
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
+        let Some(row) = self.nav.tree().rows.get(self.nav.tree().selected) else {
             return false;
         };
         if !row.node.has_children || row.expanded {
@@ -503,7 +503,7 @@ impl State {
             // suppresses subtrees of currently-collapsed ids and set_root
             // keeps a collapsed same-id root collapsed, so a Left between
             // request and reply wins there too (codex review, round 3).
-            self.tree.mark_selected_expanded();
+            self.nav.mark_selected_expanded();
             return true;
         }
         false
@@ -516,11 +516,11 @@ impl State {
     /// collapse outranks a driven reveal; the preview body already showed.
     pub(in crate::ui) fn collapse_selected_row(&mut self) -> bool {
         let collapsed_id = self
-            .tree
+            .nav.tree()
             .rows
-            .get(self.tree.selected)
+            .get(self.nav.tree().selected)
             .map(|r| r.node.id.clone());
-        if !self.tree.collapse_selected() {
+        if !self.nav.collapse_selected() {
             return false;
         }
         if let (Some(id), Some(target)) = (collapsed_id, self.pending_reveal.as_ref()) {

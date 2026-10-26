@@ -130,7 +130,7 @@ impl State {
             // we restored into a different mode — or restored into
             // Files but with an `active_workspace_id` set (ADR
             // 0014) — fire the right request now.
-            match self.mode {
+            match self.nav.mode() {
                 // ADR 0042 L2a codex review, item A: no separate
                 // fetch here — the unconditional per-Connected
                 // send_to(&event_host, WorkspaceList) above
@@ -161,9 +161,9 @@ impl State {
                     // transport's hello-time default fetch). Captured
                     // NOW, while the pre-reconnect tree is intact.
                     if let Some(sel) = self
-                        .tree
+                        .nav.tree()
                         .rows()
-                        .get(self.tree.selected())
+                        .get(self.nav.tree().selected())
                         .map(|r| r.node.id.clone())
                         .filter(|id| id.starts_with("files:") && id != "files:")
                     {
@@ -443,7 +443,7 @@ impl State {
                 // the store split orphaned them — drop the
                 // destroyed workspace's Files/Modules slots so a
                 // same-slug recreate starts clean (codex r2 #3).
-                self.tree_store.purge_workspace(&ws_key);
+                self.nav.purge_workspace(&ws_key);
                 let destroyed_key: WsKey = (event_host.clone(), info.slug.clone());
                 self.row_presentation.forget_destroyed_metadata(&destroyed_key);
                 let tmux_note = if info.tmux_killed {

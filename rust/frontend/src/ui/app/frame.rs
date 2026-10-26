@@ -154,7 +154,7 @@ impl State {
         // are the *only* path that ships per-row backend traffic;
         // suppressing them until the cursor sits still for
         // `NAV_FIRE_DEBOUNCE` makes hold-to-scroll free.
-        let cursor_now = (self.mode, self.tree.selected());
+        let cursor_now = (self.nav.mode(), self.nav.tree().selected());
         if !self.nav_cursor.settled(cursor_now, NAV_FIRE_DEBOUNCE) {
             // Mark dirty so `about_to_wait` reschedules a redraw at the
             // frame boundary; on each subsequent redraw the elapsed
@@ -176,7 +176,7 @@ impl State {
         // a retry loop.
         if self.pending_auto_expand
             && self.nav_cursor.initial_selection_done()
-            && !self.tree.rows().is_empty()
+            && !self.nav.tree().rows().is_empty()
         {
             self.try_expand_selected();
             self.pending_auto_expand = false;
@@ -187,7 +187,7 @@ impl State {
         // flag still clears so we don't churn.
         if self.pending_auto_pin
             && self.nav_cursor.initial_selection_done()
-            && !self.tree.rows().is_empty()
+            && !self.nav.tree().rows().is_empty()
         {
             self.toggle_pin();
             self.pending_auto_pin = false;
@@ -198,7 +198,7 @@ impl State {
         // drawer so the capture includes it.
         if self.pending_demo_repl_eval.is_some()
             && self.nav_cursor.initial_selection_done()
-            && !self.tree.rows().is_empty()
+            && !self.nav.tree().rows().is_empty()
         {
             if let Some(code) = self.pending_demo_repl_eval.take() {
                 self.submit_demo_repl_input(code);
@@ -211,8 +211,8 @@ impl State {
         // by clearing the pending tuple.
         if let Some((module, name)) = self.pending_demo_function_methods.clone() {
             let target_id = format!("modules:{module}:{name}");
-            if let Some(idx) = self.tree.rows().iter().position(|r| r.node.id == target_id) {
-                self.tree.select(idx);
+            if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == target_id) {
+                self.nav.select(idx);
                 self.try_expand_selected();
                 self.pending_demo_function_methods = None;
             }
@@ -229,8 +229,8 @@ impl State {
         // concept panel and drift badge key off the cursored row.
         if let Some(path) = self.pending_start_path.clone() {
             let target_id = format!("files:{path}");
-            if let Some(idx) = self.tree.rows().iter().position(|r| r.node.id == target_id) {
-                self.tree.select(idx);
+            if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == target_id) {
+                self.nav.select(idx);
                 self.pending_start_path = None;
                 self.start_path_fired = None;
             } else {
@@ -249,7 +249,7 @@ impl State {
                     }
                     let anc_id = format!("files:{prefix}");
                     if let Some(idx) = self
-                        .tree
+                        .nav.tree()
                         .rows()
                         .iter()
                         .position(|r| r.node.id == anc_id && !r.expanded)
@@ -258,11 +258,11 @@ impl State {
                     }
                 }
                 if let Some(idx) = frontier {
-                    let anc_id = self.tree.rows()[idx].node.id.clone();
+                    let anc_id = self.nav.tree().rows()[idx].node.id.clone();
                     // Fire once per frontier; `expanded` flips only when the
                     // children splice lands, so gate re-fires on the memo.
                     if self.start_path_fired.as_deref() != Some(anc_id.as_str()) {
-                        self.tree.select(idx);
+                        self.nav.select(idx);
                         if self.try_expand_selected() {
                             self.start_path_fired = Some(anc_id);
                         } else {
