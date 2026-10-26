@@ -34,7 +34,8 @@ last `fe-state.json` signature; `drawer::terminal::drawer::TerminalDrawer` owns 
 pty size and its starting folder; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
 spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor; `chrome::StatusLine`
 owns the status text and the hold a pushed notify keeps on it; `chrome::BatteryGauge` owns the cached battery label;
-`input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue.
+`input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue; `proxy_arms::ProxyArms`
+owns the page proxy's proxied hosts, listener manager and armed listeners.
 Each of these owners lives in a module (or a module tree) that holds no `impl State`, so the compiler, not
 convention, keeps the window's code out of its fields.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
@@ -261,6 +262,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   no battery or on an error (never a fake reading), and every frame between queries reuses it.
 - `Pointer` privately owns the pointer between events: the last position (winit reports it only on motion) and the
   wheel's fractional rows, stored by the wheel adapter and cleared when the agent pane consumes a gesture.
+- `ProxyArms` privately owns the window half of the page proxy (ADR 0035): a host's pages are proxied exactly when
+  its own `Connected` said so (no host's event touches another's); a page's listener is armed once per (host, daemon
+  port), re-armed on reuse, and an `Announced` page whose port is held, by this window's listener for another host or
+  by an unknown process, is never opened. State resolves the dial and reports each refusal on the status line.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

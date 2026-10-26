@@ -3,6 +3,7 @@
 //! private fields.
 
 use super::*;
+use super::proxy_arms::ArmOutcome;
 
 /// Outcome of `State::resolve_proxy_target` — see its doc for the three
 /// cases. `Dial` carries the recipe to spawn for the remote leg
@@ -138,7 +139,7 @@ impl State {
     ) -> Option<String> {
         let target = Self::resolve_proxy_target(
             host,
-            &self.proxy_capable_hosts,
+            self.proxies.capable(),
             &self.hosts.host_resolved_dial,
             &self.hosts.host_transports,
         );
@@ -153,29 +154,12 @@ impl State {
             ProxyTarget::Dial(dial, token) => (dial, token),
         };
         let gate = self.hosts.link_gates.entry(host.clone()).or_default().clone();
-        let Some(tx) = self.proxy_listener_tx.as_ref() else {
-            tracing::warn!(%host, "proxy: no listener manager to arm one; not opening");
-            return None;
-        };
-        let Some(daemon_port) = sot_protocol::page_url::loopback_port_from_url(url) else {
-            return Some(url.to_string()); // nothing to proxy, so nothing to arm
-        };
-        if let Some(opened) = Self::armed_url(&self.proxy_ensured, host, daemon_port, url, source) {
-            return Some(opened);
-        }
-        let (listener, local, opened) = match Self::bind_proxy_listener(url, source) {
-            Ok(bound) => bound,
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                // An Announced page keeps the daemon's number, and something here already holds it. Occupancy is not
-                // ownership: opening would render whatever that is, looking like the page meant. Not cached, so the
-                // next open binds if the holder has gone.
-                tracing::warn!(
-                    daemon_port,
-                    "proxy: port already bound by an UNKNOWN local listener — not ours; not opening"
-                );
-                let ours = self.proxy_ensured.iter().find(|(_, (local, _))| *local == daemon_port);
-                self.status.set(match ours {
-                    Some(((other, _), _)) => format!(
+        match self.proxies.arm(host, url, source, dial, token, gate) {
+            ArmOutcome::Open(opened) => Some(opened),
+            ArmOutcome::Dropped => None,
+            ArmOutcome::PortHeld { daemon_port, owner } => {
+                self.status.set(match owner {
+                    Some(other) => format!(
                         "port {daemon_port} is held by this window's page from '{other}' — not opening (it would show that page)"
                     ),
                     None => format!(
@@ -183,31 +167,14 @@ impl State {
                     ),
                 });
                 self.window.request_redraw();
-                return None;
+                None
             }
-            Err(e) => {
-                tracing::warn!(daemon_port, error = %e, "proxy: bind failed; not opening");
+            ArmOutcome::BindFailed(e) => {
                 self.status.set(format!("page proxy: could not bind a local port · {e}"));
                 self.window.request_redraw();
-                return None;
+                None
             }
-        };
-        let arm = std::sync::Arc::new(crate::pages::Arm::default());
-        let armed = crate::pages::PageListener {
-            listener,
-            daemon_port,
-            dial: dial.clone(),
-            token,
-            gate,
-            arm: std::sync::Arc::clone(&arm),
-        };
-        if tx.send(armed).is_err() {
-            tracing::warn!(daemon_port, "proxy: manager gone; not arming");
-            return None;
         }
-        self.proxy_ensured.insert((host.clone(), daemon_port), (local, arm));
-        tracing::info!(daemon_port, local, ?source, %dial, "proxy: bound local listener for backend page");
-        Some(opened)
     }
 }
 

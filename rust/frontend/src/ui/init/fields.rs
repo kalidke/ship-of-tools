@@ -181,9 +181,7 @@ impl State {
             figures: FigureStore::default(),
             // ADR 0035: each host's `Connected` evt (remote + proxy) adds it
             // here; `resumed()` spawns the listener manager.
-            proxy_capable_hosts: std::collections::HashSet::new(),
-            proxy_listener_tx: None,
-            proxy_ensured: std::collections::HashMap::new(),
+            proxies: crate::ui::proxy_arms::ProxyArms::default(),
             text_scale_mult: 1.0,
             preview_source: Default::default(),
             preview_requests: preview::requests::PreviewRequests::default(),

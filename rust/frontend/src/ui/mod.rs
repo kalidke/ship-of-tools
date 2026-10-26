@@ -161,6 +161,7 @@ use crate::net::transport::ResolvedDial;
 
 mod connections;
 mod page_proxy;
+mod proxy_arms;
 mod events;
 mod init;
 
@@ -569,34 +570,8 @@ struct State {
     /// discovery as `bindings`; not re-read on file change.
     settings: Settings,
     // pages.rs (pages): page-proxy arming.
-    /// ADR 0035 daemon TCP proxy — frontend half.
-    /// `proxy_capable_hosts`: every host whose loopback pages this FE will
-    /// proxy — inserted/removed per host from ITS OWN `Connected`/next
-    /// `Connected` evt (`!matches!(resolved, ResolvedDial::Local) && proxy`),
-    /// never FE-global: a box that also runs a local (pipe) daemon (ADR 0042)
-    /// gets a `Connected{resolved: ResolvedDial::Local, ..}` from that one
-    /// too, and a global flag let it silently switch proxying
-    /// off for every OTHER host's pages (2026-09-10 field incident: every
-    /// backend page "can't be reached" on a FE box with a local sotd, with
-    /// nothing logged — the gate returned before the first log line). A later
-    /// gate that scoped this to `default_host` alone fixed that incident but
-    /// broke proxying for every non-default row's figures (cross-host figure
-    /// defect) — per-host tracking fixes both: no host's evt can touch
-    /// another's entry, and no host is structurally excluded. The actual
-    /// dial for a proxy-capable host is read from `host_resolved_dial`
-    /// (ADR 0045 decision 1) at arm time — never re-derived or restricted to
-    /// one host — so `ensure_proxy_for_url` opens the proxy against the SAME
-    /// daemon connection that owns the row, whichever host that is.
-    /// `proxy_listener_tx`: hands GPU-thread-bound `std` listeners to the
-    /// runtime accept loop, each tagged with its daemon port and the dial + token to
-    /// reach that daemon through (`None` when no host has a
-    /// runtime at all).
-    /// `proxy_ensured`: per (host, daemon port), the port of the listener this
-    /// frontend bound for it and the `Arm` that listener shares; opening a page
-    /// on it re-arms it, since the daemon may have refused the port (`bad_port`) since.
-    proxy_capable_hosts: std::collections::HashSet<HostKey>,
-    proxy_listener_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::pages::PageListener>>,
-    proxy_ensured: std::collections::HashMap<(HostKey, u16), (u16, std::sync::Arc<crate::pages::Arm>)>,
+    /// ADR 0035 daemon TCP proxy — frontend half: the proxied hosts, the listener manager and the armed listeners.
+    proxies: crate::ui::proxy_arms::ProxyArms,
     // relaunch.rs (distribution): the relaunch watcher's flag.
     /// Set by the relaunch-watcher thread when the sentinel file
     /// (`%LOCALAPPDATA%\sot\relaunch.request`) appears: `0` = no request,
