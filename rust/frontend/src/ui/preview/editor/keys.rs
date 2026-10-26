@@ -58,7 +58,7 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
                     // clears the banner via a fresh
                     // edit_state); for a concept edit re-fire
                     // concept.read.
-                    let ws = state.active_workspace_id.clone();
+                    let ws = state.selected.workspace_id().clone();
                     if let Some(node_id) = edit.file_node_id.clone() {
                         state.pending_file_edit = Some(node_id.clone());
                         if let Err(e) = state.send(OutgoingReq::FileRead {
@@ -128,7 +128,7 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
             }
             _ if action == Some(Action::EditSave) => {
                 let content = edit.full_content();
-                let ws = state.active_workspace_id.clone();
+                let ws = state.selected.workspace_id().clone();
                 if let Some(node_id) = edit.file_node_id.clone() {
                     // General-file save → file.write, gated
                     // on the version we read (conflict-aware).
@@ -375,7 +375,7 @@ pub(in crate::ui) fn enter_editor(state: &mut State) {
     if !entered && state.edit_state.is_none() {
         if let Some(node_id) = state.preview_requests.fired_target().map(str::to_owned) {
             if node_id.starts_with("files:") {
-                let ws = state.active_workspace_id.clone();
+                let ws = state.selected.workspace_id().clone();
                 if let Err(e) = state.send(OutgoingReq::FileRead {
                     node_id: node_id.clone(),
                     workspace_id: ws,

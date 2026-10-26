@@ -58,7 +58,7 @@ fn presence_held_due(clock: &mut PresenceClock, now: std::time::Instant) -> bool
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReadMarkAction {
+pub(super) enum ReadMarkAction {
     /// No mark, or not due yet: nothing to do.
     Keep,
     /// The view moved on before the dwell elapsed: drop the mark, send nothing.
@@ -67,7 +67,7 @@ enum ReadMarkAction {
     Fire,
 }
 
-fn read_mark_decision(
+pub(super) fn read_mark_decision(
     mark: Option<&ReadMark>,
     active_host: &str,
     active_workspace_id: Option<&str>,
@@ -111,25 +111,15 @@ impl State {
     /// send the read flag for a row the user has stayed on for
     /// `READ_DWELL`, or drop a mark whose view has moved on.
     pub(in crate::ui) fn fire_due_read_mark(&mut self) {
-        match read_mark_decision(
-            self.read_mark.as_ref(),
-            &self.active_host,
-            self.active_workspace_id.as_deref(),
-            std::time::Instant::now(),
-        ) {
-            ReadMarkAction::Keep => {}
-            ReadMarkAction::Cancel => self.read_mark = None,
-            ReadMarkAction::Fire => {
-                let Some(m) = self.read_mark.take() else { return };
-                tracing::info!(host = %m.host, ws = ?m.workspace_id, "read mark: dwell elapsed — clearing blue");
-                let _ = self.send_to(
-                    &m.host,
-                    crate::net::transport::OutgoingReq::WorkspaceActivate {
-                        workspace_id: m.workspace_id,
-                        read: true,
-                    },
-                );
-            }
+        if let Some(m) = self.selected.take_due_read_mark(std::time::Instant::now()) {
+            tracing::info!(host = %m.host, ws = ?m.workspace_id, "read mark: dwell elapsed — clearing blue");
+            let _ = self.send_to(
+                &m.host,
+                crate::net::transport::OutgoingReq::WorkspaceActivate {
+                    workspace_id: m.workspace_id,
+                    read: true,
+                },
+            );
         }
     }
 }

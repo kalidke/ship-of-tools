@@ -126,8 +126,10 @@ impl State {
             pinned_preview_node_id: None,
             agent_pane: AgentPane::new(
                 initial_bl_pane_target(resume_matches_last_host, &persisted_geom, &active_host)),
-            active_workspace_id:
+            selected: SelectedRow::new(
+                active_host,
                 initial_active_workspace_id(cli, resume_matches_last_host, &persisted_geom),
+            ),
             hosts: crate::net::hosts::HostTable {
                 host_connected: HashMap::new(),
                 // Filled by `resumed()` from the same `PendingTransport` list
@@ -174,7 +176,6 @@ impl State {
             not_ended_shown: None,
             leaving: None,
             last_declared_sessions: None,
-            active_host,
             monitor_hub,
             scale,
             cell_w,
@@ -219,7 +220,6 @@ impl State {
             upload_batch: None,
             monitor_aspect: initial_monitor_aspect(event_loop),
             local_term: None,
-            read_mark: None,
             pending_capsule_create_requested_at: None,
             term_size: None,
             repo_dir,

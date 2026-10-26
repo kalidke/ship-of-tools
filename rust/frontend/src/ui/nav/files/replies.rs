@@ -31,7 +31,7 @@ impl State {
                     if let Err(e) =
                         self.send(crate::net::transport::OutgoingReq::TreeChildren {
                             parent_id: parent,
-                            workspace_id: self.active_workspace_id.clone(),
+                            workspace_id: self.selected.workspace_id().clone(),
                         })
                     {
                         tracing::warn!(error = %e,

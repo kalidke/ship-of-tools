@@ -611,17 +611,11 @@ struct State {
     /// file's ack lands. Guards `u` against starting a second batch mid-run.
     upload_batch: Option<UploadBatch>,
     // ui/session: the active (host, workspace), workspace lists and caches, picker, snapshots.
-    /// ADR 0014 active workspace. `None` resolves to the daemon's
-    /// default workspace (the project the backend was launched with).
-    /// `Some(slug)` routes tree/preview ops through the corresponding
-    /// workspace's FilesMode + Kernel. Set when the user Enters a row
-    /// in Sessions mode and persisted to `state-<hostname>.toml` so a
-    /// restart resumes in the same workspace.
-    ///
-    /// ADR 0042 L2a: bare, unchanged type — the pair `(active_host,
-    /// active_workspace_id)` is what names the current workspace now that
-    /// there's more than one connection.
-    active_workspace_id: Option<String>,
+    /// The selected row, `(host, workspace_id)`, and its read-mark dwell (ADR 0014, ADR 0042 L2a). A `None`
+    /// workspace is the host daemon's default; the host is the connection every current-view operation targets,
+    /// first the connection `resolve_default_host` names (local-first, then --dial argument order). A person's
+    /// switch persists it to the per-host resume file so a restart resumes there.
+    selected: SelectedRow,
     /// Authoritative host listings and canonical identity translation, owned by session/row_directory.rs.
     row_directory: RowDirectory,
     /// Private listed-row projections, activity order and transition flashes.
@@ -685,14 +679,6 @@ struct State {
     /// resent verbatim in the `Connected` arm, since its own fresh
     /// connection remembers nothing from before.
     last_declared_sessions: Option<Vec<sot_protocol::DeclaredSession>>,
-    /// The connection every "current view" operation targets — cursor
-    /// state, the active tree, `active_workspace_id`. The pair
-    /// `(active_host, active_workspace_id)` names the current workspace
-    /// (ADR 0042 L2a). Defaults to the first connection in `conns`
-    /// (local-first, then --dial argument order — see `dial::resolve_connections`).
-    active_host: crate::net::dial::HostKey,
-    /// Pending 10 s read mark for the row a person just switched to.
-    read_mark: Option<ReadMark>,
     /// LU6a design-review amendment: stamped by `commit_workspace_create`
     /// the moment `workspace.create` is SENT, and consumed (taken) by the
     /// `attach_session_to_bl` that `switch_to_workspace` always calls once

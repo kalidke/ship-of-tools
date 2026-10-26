@@ -197,7 +197,7 @@ impl State {
             })
         };
         let node_label = row.node.label.clone();
-        let workspace_id = self.active_workspace_id.clone();
+        let workspace_id = self.selected.workspace_id().clone();
         let follow = self.preview_requests.prepare_concept_follow(target, workspace_id.clone());
         super::requests::continue_concept_follow(self, follow, files_path, node_label, workspace_id);
     }

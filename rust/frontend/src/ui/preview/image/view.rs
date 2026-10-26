@@ -300,7 +300,7 @@ impl State {
         if self
             .send(crate::net::transport::OutgoingReq::PreviewGet {
                 node_id,
-                workspace_id: self.active_workspace_id.clone(),
+                workspace_id: self.selected.workspace_id().clone(),
                 page: Some(page),
                 fit_w: Some(scaled_w),
                 fit_h: Some(scaled_h),

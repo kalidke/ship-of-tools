@@ -132,7 +132,7 @@ impl State {
             })
             .collect();
         let current_key = self.row_presentation.selected_key(
-            &self.active_host, self.active_workspace_id.as_deref(),
+            self.selected.host(), self.selected.workspace_id().as_deref(),
         );
         let active = current_key
             .as_ref()
@@ -210,7 +210,7 @@ impl State {
             &items,
             &item_positions,
             &item_widths,
-            &self.active_host,
+            self.selected.host(),
             |h| self.hosts.host_connected.get(h).copied().unwrap_or(false),
             wheel_w,
             self.cell_w,

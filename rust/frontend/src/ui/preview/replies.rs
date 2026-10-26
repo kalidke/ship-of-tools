@@ -302,8 +302,8 @@ impl State {
         // ACTIVE host's tag/root (e.g. two projects both
         // having "src/main.jl") could repaint the visible
         // pane with a non-active host's file content.
-        if event_host != self.active_host {
-            tracing::debug!(%event_host, active_host = %self.active_host,
+        if event_host != *self.selected.host() {
+            tracing::debug!(%event_host, active_host = %self.selected.host(),
                 "preview.changed from a non-active host — dropped");
             return;
         }
@@ -312,7 +312,8 @@ impl State {
         let event_path = payload.get("path").and_then(|v| v.as_str());
         let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("");
         let active_ws = self
-            .active_workspace_id
+            .selected
+            .workspace_id()
             .as_deref()
             .or(self.row_presentation.default_slug());
         let resolved = resolve_preview_changed(
@@ -384,7 +385,7 @@ impl State {
                 &event_host,
                 crate::net::transport::OutgoingReq::PreviewGet {
                     node_id: node_id.clone(),
-                    workspace_id: self.active_workspace_id.clone(),
+                    workspace_id: self.selected.workspace_id().clone(),
                     page: self.preview_page.map(|(p, _)| p),
                     fit_w,
                     fit_h,
@@ -542,8 +543,8 @@ impl RequestReplyContext for State {
     type Concept = (bool, String);
     type Failure = (Option<String>, String);
     fn requests(&self) -> &PreviewRequests { &self.preview_requests }
-    fn active_host(&self) -> &HostKey { &self.active_host }
-    fn active_workspace(&self) -> &Option<String> { &self.active_workspace_id }
+    fn active_host(&self) -> &HostKey { self.selected.host() }
+    fn active_workspace(&self) -> &Option<String> { self.selected.workspace_id() }
     fn install_preview(&mut self, payload: Self::Preview) { self.install_preview_reply(payload); }
     fn stale_editor_target(&self) -> Option<&str> {
         self.edit_state.as_ref().filter(|edit| edit.stale_banner).map(|edit| edit.target.as_str())

@@ -47,7 +47,7 @@ impl State {
     /// stayed on this view" dwell signal.
     pub(in crate::ui) fn cycle_workspace(&mut self, direction: i32, person_driven: bool) {
         let Some((next_host, next_slug)) = self.row_presentation.next_row(
-            direction, &self.active_host, self.active_workspace_id.as_deref(),
+            direction, self.selected.host(), self.selected.workspace_id().as_deref(),
         ) else {
             return;
         };
@@ -174,15 +174,15 @@ impl State {
         // describe what `self.tree` holds. The swap itself runs after the
         // snapshot-restore below has settled the entering mode.
         let old_tree_key = self.active_tree_key();
-        self.active_host = host;
-        self.row_presentation.select_host_default(&self.row_directory, &self.active_host);
+        self.selected.select(host, slug.clone());
+        self.row_presentation.select_host_default(&self.row_directory, self.selected.host());
         // (round 2, finding 14): project the declaration
         // into the status line HERE too, not only in `drain_events`'s own
         // `Connected` handling — switching to a host that is ALREADY
         // connected fires no new `Connected` event, so without this
         // `self.host` kept showing whatever the PREVIOUSLY active host
         // had declared until its own next reconnect.
-        self.host = Some(host_label(&self.hosts.declared_host, &self.active_host).to_string());
+        self.host = Some(host_label(&self.hosts.declared_host, self.selected.host()).to_string());
         // ADR 0042 L2a: preview_fatal is a lazily-rebuilt PROJECTION of
         // hello_refused for whichever host is active (rebuild_fatal_overlay
         // only refills it when it's None) -- an active-host switch must
@@ -191,10 +191,9 @@ impl State {
         // stay hidden behind an empty cached buffer) until something else
         // happens to clear it.
         self.preview_fatal = None;
-        self.active_workspace_id = slug.clone();
         // `workspace.activate`, fired UNCONDITIONALLY before the cache-dependent work below (a fully cached restore,
         // or a switch to the default row, sends nothing else): the one signal the daemon's `preview.changed` filter
-        // can count on (Codex review). `self.active_host` is already the new host, so a cross-host switch reaches it.
+        // can count on (Codex review). The selected host is already the new one, so a cross-host switch reaches it.
         if let Err(e) = self.send(crate::net::transport::OutgoingReq::WorkspaceActivate {
             workspace_id: slug.clone(),
             read: false,
@@ -204,11 +203,7 @@ impl State {
         // ADR 0044 dwell: a PERSON's switch arms a 10 s read mark for this
         // exact view; any switch (person or not) replaces it, so only a row
         // the user stayed on gets `read: true` (sent from `fire_due_read_mark`).
-        self.read_mark = person_driven.then(|| ReadMark {
-            host: self.active_host.clone(),
-            workspace_id: slug.clone(),
-            at: std::time::Instant::now() + READ_DWELL,
-        });
+        self.selected.arm_read_mark(person_driven, std::time::Instant::now());
         // A workspace change invalidates any one-shot reveal armed for the
         // PREVIOUS workspace. Its `tree.root` reply is dropped by the TreeRoot
         // workspace guard WITHOUT consuming `pending_switch_reveal`, so a stale
@@ -235,11 +230,11 @@ impl State {
         // moved the cursor (blank preview on switch).
         self.preview_requests.leave_row();
         if let Some(target) = session_name {
-            // `self.active_host` was just set to `host` above, before
+            // The selected host was just set to `host` above, before
             // anything in this function fired a request — correct BY
             // CONSTRUCTION, not a default (see `attach_session_to_bl`'s
             // own doc).
-            self.attach_session_to_bl(self.active_host.clone(), target);
+            self.attach_session_to_bl(self.selected.host().clone(), target);
         }
         old_tree_key
     }
@@ -295,7 +290,7 @@ impl State {
                     tracing::info!("tree.root requested: workspace switch (empty Files slot)");
                     if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeRoot {
                         mode: "files".to_string(),
-                        workspace_id: self.active_workspace_id.clone(),
+                        workspace_id: self.selected.workspace_id().clone(),
                     }) {
                         tracing::warn!(error = %e, "drop tree.root after workspace switch");
                     }
@@ -303,9 +298,9 @@ impl State {
                 Mode::Modules => {
                     tracing::info!("project.scan requested: workspace switch (empty Modules slot)");
                     let generation = self
-                        .next_project_scan_gen(self.active_host.clone(), self.active_workspace_id.clone());
+                        .next_project_scan_gen(self.selected.host().clone(), self.selected.workspace_id().clone());
                     if let Err(e) = self.send(crate::net::transport::OutgoingReq::ProjectScan {
-                        workspace_id: self.active_workspace_id.clone(),
+                        workspace_id: self.selected.workspace_id().clone(),
                         generation,
                     }) {
                         tracing::warn!(error = %e, "drop project.scan after workspace switch");
@@ -356,7 +351,7 @@ impl State {
         let (fit_w, fit_h) = self.preview_fit_px();
         if let Err(e) = self.send(crate::net::transport::OutgoingReq::PreviewGet {
             node_id: node_id.clone(),
-            workspace_id: self.active_workspace_id.clone(),
+            workspace_id: self.selected.workspace_id().clone(),
             page: None,
             fit_w,
             fit_h,

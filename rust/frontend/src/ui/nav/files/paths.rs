@@ -23,8 +23,8 @@ impl State {
     /// meaning of `<rel>` without changing the daemon startup root.
     pub(in crate::ui) fn active_project_root(&self) -> Option<&str> {
         self.row_presentation.active_project_root(
-            &self.active_host,
-            self.active_workspace_id.as_deref(),
+            self.selected.host(),
+            self.selected.workspace_id().as_deref(),
             self.daemon_project_root.as_deref(),
         )
     }

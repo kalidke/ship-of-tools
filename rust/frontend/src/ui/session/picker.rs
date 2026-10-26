@@ -392,7 +392,7 @@ impl State {
             .workspace_picker
             .as_ref()
             .map(|p| p.host.clone())
-            .unwrap_or_else(|| self.active_host.clone());
+            .unwrap_or_else(|| self.selected.host().clone());
         let label = std::path::Path::new(&path)
             .file_name()
             .and_then(|n| n.to_str())

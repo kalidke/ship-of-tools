@@ -13,6 +13,7 @@ owns authoritative rows and identity; `session/row_presentation.rs` owns their p
 follow commitment, the driven-preview hold, and the crop, scale-save and `--roi` aim transactions.
 `preview::source::InstalledPreviewSource` owns the installed preview bytes, their node, scale and markdown origin.
 `session::ParkedViews` owns the rows' parked views (`WorkspaceUiSnapshot`), keyed by row.
+`session::SelectedRow` owns the selected `(host, workspace)` and its read-mark dwell.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -124,6 +125,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   coming back reads a clone, a kept default row's end forgets only the parked attachment, a destroyed row's view is
   dropped, and the default row's raw-slug key migrates to `<default>` with an existing `<default>` view winning. State
   composes and applies the view; the map is reached through nothing else.
+- `SelectedRow` privately owns the selected host and workspace and the pending read mark. Readers see the host and
+  workspace by reference; only a switch's retarget and the capture harness's startup seed select a row, both parts at
+  once. Every switch replaces the read mark (armed `READ_DWELL` ahead only when a person switched); each redraw takes
+  a due mark whose row is still selected, and drops one whose row was left, before State sends the read flag. The
+  native fixtures select their rows through the same operation.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
@@ -305,8 +311,8 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `nav/`: the navigation pane's trees (mode, store, Modules, Sessions, Hosts).
 - `nav/files/`: Files mode's prompts, reveal walk, transfers and re-lists.
 - `session/`: `RowDirectory` owns listings/identity, `RowPresentation` owns metadata/order/flashes, `ResultLedger`
-  owns owed results/attempts and `ParkedViews` the parked row views; State coordinates effects, snapshot capture and
-  restore, switch, picker, presence and the badge floor.
+  owns owed results/attempts, `ParkedViews` the parked row views and `SelectedRow` the selected row and its read
+  mark; State coordinates effects, snapshot capture and restore, the switch, picker, presence and the badge floor.
 - `agent_pane/`: `AgentPane` and its attach, input, screen and reply operations; thin State adapters apply effects.
 - `drawer/`: the bottom drawer and its tenants.
 - `drawer/repl/`: ReplModel owns row behavior; ReplPresentation owns image refresh, projection, layout, anchoring

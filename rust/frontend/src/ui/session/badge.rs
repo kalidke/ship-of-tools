@@ -54,7 +54,7 @@ impl State {
 
     pub(in crate::ui) fn abandon_result_attempt(&mut self, attempt: &ResultAttemptId) {
         self.result_ledger
-            .abandon_attempt(&self.row_directory, &self.active_host, attempt);
+            .abandon_attempt(&self.row_directory, self.selected.host(), attempt);
     }
 
     pub(in crate::ui) fn admits_result_attempt(
@@ -63,12 +63,12 @@ impl State {
         attempt: &ResultAttemptId,
     ) -> bool {
         self.result_ledger
-            .admits_attempt(&self.row_directory, host, &self.active_host, attempt)
+            .admits_attempt(&self.row_directory, host, self.selected.host(), attempt)
     }
 
     pub(in crate::ui) fn result_cursor_landed(&mut self, node_id: &str) {
         self.result_ledger
-            .cursor_landed(&self.row_directory, &self.active_host, node_id);
+            .cursor_landed(&self.row_directory, self.selected.host(), node_id);
     }
 
     pub(in crate::ui) fn result_preview_installed(

@@ -56,7 +56,7 @@ impl State {
         &mut self,
     ) -> Result<()> {
         let host: HostKey = "<repl-host>".to_string();
-        self.active_host = host.clone();
+        self.selected.select(host.clone(), self.selected.workspace_id().clone());
         let (events, receiver) = std::sync::mpsc::channel();
         self.evt_rx = receiver;
         let (active, parked): (WsKey, WsKey) =
@@ -105,7 +105,7 @@ impl State {
             ("<repl-host>".to_string(), "<repl-other>".to_string());
         let (tx, _requests) = tokio::sync::mpsc::unbounded_channel();
         self.conns = vec![(host.clone(), tx)];
-        self.active_host = host.clone();
+        self.selected.select(host.clone(), self.selected.workspace_id().clone());
         let (events, receiver) = std::sync::mpsc::channel();
         self.evt_rx = receiver;
         let send = |evt| {

@@ -27,8 +27,8 @@ pub(in crate::ui) fn is_default_workspace_name(name: &str) -> bool {
 impl State {
     pub(in crate::ui) fn active_result_workspace(&self) -> Option<ResolvedWorkspace> {
         self.row_directory.resolve(
-            &self.active_host,
-            self.active_workspace_id.as_deref().unwrap_or(""),
+            self.selected.host(),
+            self.selected.workspace_id().as_deref().unwrap_or(""),
         )
         .ok()
     }
@@ -43,7 +43,7 @@ impl State {
     /// in `active_workspace_id`; `<default>` is the literal we use
     /// instead so it has a snapshot slot too.
     pub(in crate::ui) fn current_workspace_key(&self) -> String {
-        self.reply_ws_key(self.active_workspace_id.as_deref())
+        self.reply_ws_key(self.selected.workspace_id().as_deref())
     }
 
     /// The host-qualified sibling of `current_workspace_key` (ADR 0042
@@ -54,7 +54,7 @@ impl State {
     /// the wire-level `workspace_id` normalization AND half of this pair,
     /// not a value to retype.
     pub(in crate::ui) fn active_ws_key(&self) -> WsKey {
-        (self.active_host.clone(), self.current_workspace_key())
+        (self.selected.host().clone(), self.current_workspace_key())
     }
 
     /// Workspace-key for a wire `workspace_id` — the ONE normalization both

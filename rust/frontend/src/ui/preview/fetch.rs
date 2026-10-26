@@ -121,7 +121,7 @@ impl State {
         let generation = self.next_preview_gen();
         if let Err(e) = self.send(crate::net::transport::OutgoingReq::PreviewGet {
             node_id: id.clone(),
-            workspace_id: self.active_workspace_id.clone(),
+            workspace_id: self.selected.workspace_id().clone(),
             // Cursor-driven fetch always opens at page 1; the reply's
             // extras re-seed `preview_page` for the n/p transport.
             page: None,

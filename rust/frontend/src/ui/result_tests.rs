@@ -25,8 +25,7 @@ impl State {
         let (a_tx, mut a_rx) = tokio::sync::mpsc::unbounded_channel();
         let (b_tx, mut b_rx) = tokio::sync::mpsc::unbounded_channel();
         self.conns = vec![(a.clone(), a_tx), (b.clone(), b_tx)];
-        self.active_host = a.clone();
-        self.active_workspace_id = Some("project".into());
+        self.selected.select(a.clone(), Some("project".into()));
         let mut row_a = ws_info("project", "stored-a");
         row_a.workspace_id = "id-a".into();
         let mut row_b = ws_info("project", "stored-b");
@@ -75,7 +74,7 @@ impl State {
         a_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
         b_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
     ) -> Result<()> {
-        anyhow::ensure!(self.active_host == *a, "docs probe: the window must view host a");
+        anyhow::ensure!(*self.selected.host() == *a, "docs probe: the window must view host a");
         self.dispatch_fe_command(Some(b), FeCommand::Docs { workspace: "project".into(), path: "/site/page.html".into() });
         anyhow::ensure!(
             matches!(b_rx.try_recv(), Ok(OutgoingReq::DocsOpen { .. })) && a_rx.try_recv().is_err(),
@@ -105,8 +104,8 @@ impl State {
             "canonical spelling created a phantom strip key"
         );
         let before = (
-            self.active_host.clone(),
-            self.active_workspace_id.clone(),
+            self.selected.host().clone(),
+            self.selected.workspace_id().clone(),
             self.result_ledger.clone(),
         );
         self.dispatch_fe_command(
@@ -122,8 +121,8 @@ impl State {
         anyhow::ensure!(
             before
                 == (
-                    self.active_host.clone(),
-                    self.active_workspace_id.clone(),
+                    self.selected.host().clone(),
+                    self.selected.workspace_id().clone(),
                     self.result_ledger.clone()
                 )
                 && self.status.starts_with("result refused"),
@@ -145,8 +144,8 @@ impl State {
             anyhow::ensure!(
                 before
                     == (
-                        self.active_host.clone(),
-                        self.active_workspace_id.clone(),
+                        self.selected.host().clone(),
+                        self.selected.workspace_id().clone(),
                         self.result_ledger.clone()
                     ),
                 "unknown goto or reveal mutated result state"
@@ -159,7 +158,7 @@ impl State {
             },
         );
         let requests: Vec<_> = std::iter::from_fn(|| b_rx.try_recv().ok()).collect();
-        anyhow::ensure!(self.active_host == *b && self.active_workspace_id.as_deref() == Some("project")
+        anyhow::ensure!(*self.selected.host() == *b && self.selected.workspace_id().as_deref() == Some("project")
             && requests.iter().any(|r| matches!(r, OutgoingReq::PtyOpen { target: Some(name), .. } if name == "stored-b")),
             "stored attachment name was not used for the listed canonical row");
         Ok(())
@@ -184,8 +183,8 @@ impl State {
             },
         );
         anyhow::ensure!(
-            self.active_host == *a
-                && self.active_workspace_id.is_none()
+            *self.selected.host() == *a
+                && self.selected.workspace_id().is_none()
                 && self.row_presentation.default_slug() == Some("base-a"),
             "default resolved using another host's list"
         );
@@ -210,8 +209,8 @@ impl State {
         );
         let _ = session::keys::session_enter_key(self);
         anyhow::ensure!(
-            self.active_host == *b
-                && self.active_workspace_id.as_deref() == Some("project")
+            *self.selected.host() == *b
+                && self.selected.workspace_id().as_deref() == Some("project")
                 && self.agent_pane.target().as_ref() == Some(&(b.clone(), "stored-b".into())),
             "Sessions-Enter reversed a session name into a slug"
         );
@@ -313,7 +312,7 @@ impl State {
         self.on_preview(
             host.clone(),
             Some("files:same.png".into()),
-            self.active_workspace_id.clone(),
+            self.selected.workspace_id().clone(),
             "image/png".into(),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo.png")).to_vec(),
             None,
@@ -578,8 +577,7 @@ impl State {
         self.conns.push((host.clone(), tx));
         let (events, receiver) = std::sync::mpsc::channel();
         self.evt_rx = receiver;
-        self.active_host = host.clone();
-        self.active_workspace_id = None;
+        self.selected.select(host.clone(), None);
         self.on_workspaces(
             host.clone(),
             vec![
@@ -653,7 +651,7 @@ impl State {
         self.on_preview(
             host.clone(),
             Some(node_id.to_string()),
-            self.active_workspace_id.clone(),
+            self.selected.workspace_id().clone(),
             "text/plain".into(),
             b"fn shown() {}\n".to_vec(),
             None,
@@ -1003,7 +1001,7 @@ impl State {
         self.on_preview_get_failed(
             a.clone(),
             Some(node.clone()),
-            self.active_workspace_id.clone(),
+            self.selected.workspace_id().clone(),
             generation,
             "kernel_unavailable".into(),
         );

@@ -127,7 +127,7 @@ impl State {
         // rides in the tuple so workspace-picker browsing spills too.
         let spill_cursor_now = (
             self.mode,
-            self.active_workspace_id.clone(),
+            self.selected.workspace_id().clone(),
             self.tree.selected,
             self.workspace_picker.as_ref().map(|p| p.selected),
             self.tree.generation,

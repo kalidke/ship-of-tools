@@ -25,7 +25,7 @@ impl State {
             // `docs.open` instead (ADR 0024's site server, full asset
             // fidelity) — the same request `W` dispatches today.
             if let Some(path) = self.previewed_files_path() {
-                self.docs_open_external(&self.active_host.clone(), path);
+                self.docs_open_external(&self.selected.host().clone(), path);
             } else if let Some(bytes) = self.preview_source.bytes() {
                 if let Err(e) = open_html_in_browser(bytes) {
                     tracing::warn!(error = %e, "failed to open preview in browser");

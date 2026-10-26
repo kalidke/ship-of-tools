@@ -85,7 +85,7 @@ impl State {
     pub(in crate::ui) fn dispatch_fe_command(&mut self, from_host: Option<&HostKey>, cmd: FeCommand) {
         match cmd {
             FeCommand::Workspace { slug } => {
-                let host = from_host.unwrap_or(&self.active_host).clone();
+                let host = from_host.unwrap_or(self.selected.host()).clone();
                 match self.result_route(&host, slug.as_deref().unwrap_or(""), true, true) {
                     ResultRoute::Switch(target) => self.switch_to_resolved_workspace(target, false),
                     ResultRoute::Refusal(reason) => self.refuse_result(&reason),
@@ -183,7 +183,7 @@ impl State {
                 roi,
                 caption,
             } => {
-                let host = from_host.unwrap_or(&self.active_host).clone();
+                let host = from_host.unwrap_or(self.selected.host()).clone();
                 let route = self.result_route(&host, &workspace, urgent, false);
                 let target = match &route {
                     ResultRoute::Refusal(reason) => {
@@ -273,7 +273,7 @@ impl State {
                 // the site_serve nonce, so the URL outlives the send (a backend
                 // one-shot docs.open would have its nonce reaped on disconnect).
                 tracing::info!(%workspace, %path, "fe-command: docs");
-                let host = from_host.unwrap_or(&self.active_host).clone();
+                let host = from_host.unwrap_or(self.selected.host()).clone();
                 self.docs_open_external(&host, path);
             }
         }

@@ -30,14 +30,14 @@ impl State {
     /// Reconcile owed results against the directory's prepared retirement report, before commitment.
     /// Only currently listed rows can acquire a pending result; a disconnect and a kept default do not retire one.
     pub(in crate::ui) fn reconcile_pending_results(&mut self, update: &RowDirectoryUpdate) {
-        let effects = self.result_ledger.reconcile_retired(update.retired(), &self.active_host);
+        let effects = self.result_ledger.reconcile_retired(update.retired(), self.selected.host());
         self.apply_result_effects(effects);
     }
 
     /// Badge changes reorder the existing projection without a directory refresh.
     pub(in crate::ui) fn resort_strip(&mut self) {
         let badged = self.badged_keys();
-        self.row_presentation.resort(&self.active_host, self.active_workspace_id.as_deref(), badged);
+        self.row_presentation.resort(self.selected.host(), self.selected.workspace_id().as_deref(), badged);
     }
 
     /// Apply listing effects in order: badges/presentation, REPL catch-up, default migration, status.
@@ -48,8 +48,8 @@ impl State {
         let hosts = self.ordered_hosts();
         let badged = self.badged_keys();
         let effects = self.row_presentation.refresh(
-            &self.row_directory, &hosts, &self.active_host,
-            self.active_workspace_id.as_deref(), badged, std::time::Instant::now,
+            &self.row_directory, &hosts, self.selected.host(),
+            self.selected.workspace_id().as_deref(), badged, std::time::Instant::now,
         );
         // Insert only: empty old-daemon values must not erase frame-driven lifecycle entries.
         self.repl_model.apply_listing_catchup(effects.repl_catchup);
@@ -91,8 +91,8 @@ impl State {
     /// snapshot restore). A default selection has no label before hello.
     pub(in crate::ui) fn active_workspace_label(&self) -> Option<String> {
         self.row_presentation.active_label(
-            &self.active_host,
-            self.active_workspace_id.as_deref(),
+            self.selected.host(),
+            self.selected.workspace_id().as_deref(),
             self.daemon_root_basename.as_deref(),
         )
     }

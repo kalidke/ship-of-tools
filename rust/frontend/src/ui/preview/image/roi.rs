@@ -40,7 +40,7 @@ impl State {
         // LLM pane — a side effect, not just a paint) can confirm it's
         // still answering FOR this host before acting, even if the user
         // switched hosts between the request and the reply landing.
-        let roi_host = self.active_host.clone();
+        let roi_host = self.selected.host().clone();
         if self
             .send_to(
                 &roi_host,
@@ -50,7 +50,7 @@ impl State {
                     y: roi.y,
                     w: roi.w,
                     h: roi.h,
-                    workspace_id: self.active_workspace_id.clone(),
+                    workspace_id: self.selected.workspace_id().clone(),
                 },
             )
             .is_err()

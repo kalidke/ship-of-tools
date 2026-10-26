@@ -56,7 +56,8 @@ fn page_turn_key(state: &mut State, key: KeyPress<'_>, label: String) -> Control
                                 crate::net::transport::OutgoingReq::PreviewGet {
                                     node_id,
                                     workspace_id: state
-                                        .active_workspace_id
+                                        .selected
+                                        .workspace_id()
                                         .clone(),
                                     page: Some(np),
                                     fit_w,
@@ -147,7 +148,7 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
                 .previewed_files_path()
                 .or_else(|| state.cursored_files_path())
                 .unwrap_or_default();
-            state.docs_open_external(&state.active_host.clone(), path);
+            state.docs_open_external(&state.selected.host().clone(), path);
         }
         Some(Action::OpenExecute) if !event.repeat =>
         {

@@ -86,7 +86,7 @@ impl State {
         // (re)connect (its tree node just flipped to connected
         // above) doesn't re-fire the active workspace's resume
         // flow redundantly.
-        if event_host == self.active_host {
+        if event_host == *self.selected.host() {
             // Changes made while the connection was down were never sent: the drift cache and the cursored
             // annotation read are of unknown age, so each file parses (and the annotation reads) again on view.
             clear_drift(&mut self.file_ast_hashes, &mut self.file_parse_fired, &mut self.file_parse_retry);
@@ -113,7 +113,7 @@ impl State {
             let _ = self.send_to(
                 &event_host,
                 crate::net::transport::OutgoingReq::WorkspaceActivate {
-                    workspace_id: self.active_workspace_id.clone(),
+                    workspace_id: self.selected.workspace_id().clone(),
                     read: false,
                 },
             );
@@ -140,20 +140,20 @@ impl State {
                 Mode::Sessions => {}
                 Mode::Modules => {
                     let generation = self.next_project_scan_gen(
-                        self.active_host.clone(),
-                        self.active_workspace_id.clone(),
+                        self.selected.host().clone(),
+                        self.selected.workspace_id().clone(),
                     );
                     let _ = self.send(crate::net::transport::OutgoingReq::ProjectScan {
-                        workspace_id: self.active_workspace_id.clone(),
+                        workspace_id: self.selected.workspace_id().clone(),
                         generation,
                     });
                 }
                 Mode::Files => {
-                    if self.active_workspace_id.is_some() {
+                    if self.selected.workspace_id().is_some() {
                         tracing::info!("tree.root requested: hello/reconnect resume");
                         let _ = self.send(crate::net::transport::OutgoingReq::TreeRoot {
                             mode: "files".to_string(),
-                            workspace_id: self.active_workspace_id.clone(),
+                            workspace_id: self.selected.workspace_id().clone(),
                         });
                     }
                     // Arm the post-rebuild cursor restore for the
@@ -170,7 +170,7 @@ impl State {
                         tracing::info!(selected = %sel,
                         "resume: arming nav cursor restore for the incoming tree.root");
                         self.restore_nav_after_resume =
-                            Some((self.active_workspace_id.clone(), sel));
+                            Some((self.selected.workspace_id().clone(), sel));
                     }
                 }
                 Mode::Hosts => {
@@ -227,7 +227,7 @@ impl State {
                 let generation = self.next_preview_gen();
                 let _ = self.send(crate::net::transport::OutgoingReq::PreviewGet {
                     node_id,
-                    workspace_id: self.active_workspace_id.clone(),
+                    workspace_id: self.selected.workspace_id().clone(),
                     // Hold the page across the reconnect — a
                     // blip shouldn't yank a paginated preview
                     // back to page 1.
@@ -237,7 +237,7 @@ impl State {
                     generation,
                 });
             }
-        } // if event_host == self.active_host
+        } // if event_host is the selected host
     }
 
     pub(crate) fn on_disconnected(&mut self, event_host: HostKey, reason: String, refused: bool) {
@@ -246,7 +246,7 @@ impl State {
         if !refused {
             self.clear_hello_refused(event_host.clone());
         }
-        if event_host == self.active_host {
+        if event_host == *self.selected.host() {
             self.status = format!("disconnected · {reason}");
         } else {
             // (S9, finding S14): `host_label`,
@@ -355,7 +355,7 @@ impl State {
                 let effects = self.result_ledger.row_outcome(
                     &ResultRowIdentity { host: event_host.clone(), workspace_id: info.workspace_id.clone() },
                     ResultRowOutcome::Kept,
-                    &self.active_host,
+                    self.selected.host(),
                 );
                 self.apply_result_effects(effects);
                 // Default row: the backend ended its capsule
@@ -374,9 +374,10 @@ impl State {
                 // `pane_feed`.
                 let detail = info.kept.as_deref().unwrap_or("");
                 self.status = format!("{detail} (default row kept)");
-                if self.active_host == event_host
+                if *self.selected.host() == event_host
                     && self
-                        .active_workspace_id
+                        .selected
+                        .workspace_id()
                         .as_deref()
                         .map(|s| s == info.slug || s == info.workspace_id)
                         .unwrap_or(false)
@@ -402,7 +403,7 @@ impl State {
                 let effects = self.result_ledger.row_outcome(
                     &ResultRowIdentity { host: event_host.clone(), workspace_id: info.workspace_id.clone() },
                     ResultRowOutcome::Removed,
-                    &self.active_host,
+                    self.selected.host(),
                 );
                 self.apply_result_effects(effects);
                 // If the active workspace was the one we
@@ -415,9 +416,10 @@ impl State {
                 // same-named slug/id destroyed on a DIFFERENT
                 // host must not bounce us off what we're
                 // actually viewing.
-                if self.active_host == event_host
+                if *self.selected.host() == event_host
                     && self
-                        .active_workspace_id
+                        .selected
+                        .workspace_id()
                         .as_deref()
                         .map(|s| s == info.slug || s == info.workspace_id)
                         .unwrap_or(false)

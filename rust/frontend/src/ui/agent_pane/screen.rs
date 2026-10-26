@@ -271,7 +271,7 @@ impl<C: PaneClient> AgentPane<C> {
 impl State {
     pub(in crate::ui) fn session_pane_view(&mut self) -> (PaneScreen, Vec<String>, Option<PaintedClient>) {
         let target = self.agent_pane.target();
-        let host = target.as_ref().map(|(h, _)| h).unwrap_or(&self.active_host);
+        let host = target.as_ref().map(|(h, _)| h).unwrap_or(self.selected.host());
         let mismatch = self.hello_refused.get(host).and_then(|m| m.lines().next());
         self.agent_pane.view(mismatch)
     }

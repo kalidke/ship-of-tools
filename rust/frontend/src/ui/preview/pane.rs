@@ -427,7 +427,7 @@ impl State {
     /// buffer shaped to the preview width — so it reuses the same overlay paint
     /// path. No-op (clears the buffer) when no refusal is set.
     pub(in crate::ui) fn rebuild_fatal_overlay(&mut self) {
-        let Some(body) = self.hello_refused.get(&self.active_host).cloned() else {
+        let Some(body) = self.hello_refused.get(self.selected.host()).cloned() else {
             self.preview_fatal = None;
             return;
         };

@@ -165,7 +165,7 @@ impl State {
     /// sidesteps that arithmetic entirely rather than just patching the
     /// +1.
     pub(in crate::ui) fn select_active_host(&mut self) {
-        let want_id = format!("hosts:{}", self.active_host);
+        let want_id = format!("hosts:{}", self.selected.host());
         if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == want_id) {
             self.tree.selected = idx;
         }
@@ -188,7 +188,7 @@ impl State {
             .map(|name| {
                 let connected = self.hosts.host_connected.get(&name).copied().unwrap_or(false);
                 let link = host_link_status(connected, self.hello_refused.get(&name).map(String::as_str));
-                let is_active = name == self.active_host;
+                let is_active = name == *self.selected.host();
                 let is_default = default_name == Some(name.as_str());
                 let display = host_label(&self.hosts.declared_host, &name);
                 hosts_mode_row(&name, display, link, is_active, is_default)
