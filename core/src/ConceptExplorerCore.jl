@@ -7,20 +7,20 @@ A small set of abstract types defines what is pluggable; methods on them are
 the contract. A package extends the system simply by being `using`-ed — the
 dispatch tables grow, with no registration step and no manifest.
 
-The surface is six abstract types — [`FileType`](@ref), [`Mode`](@ref),
-[`ConceptEntity`](@ref), [`AnnotationKind`](@ref), [`Tool`](@ref) and
-[`Capture`](@ref) — plus two serialization structs, [`TreeNode`](@ref) and
-[`PreviewPayload`](@ref), that carry opaque payloads across the Rust↔Julia
-boundary.
+The surface is three abstract types — [`FileType`](@ref),
+[`ConceptEntity`](@ref) and [`AnnotationKind`](@ref) — plus two serialization
+structs, [`TreeNode`](@ref) and [`PreviewPayload`](@ref), that carry opaque
+payloads across the Rust↔Julia boundary.
 
-Implementation status (v0.3.x): **`FileType` is the surface that is wired
+Implementation status: **`FileType` is the surface that is wired
 end-to-end today** — the seven standard file types ship as ordinary
 `matches`/`preview` methods with no privileged access, and third-party plugins
-(e.g. the HDF5 example) travel the identical path. The other five types are
-declared design seams: no concrete subtype of `Mode`, `ConceptEntity`,
-`AnnotationKind`, `Tool`, or `Capture` exists yet, and the current navigation
-modes are built into the frontend/backend rather than dispatched through
-`Mode`.
+(e.g. the HDF5 example) travel the identical path. The other two types are
+declared design seams: no concrete subtype of `ConceptEntity` or
+`AnnotationKind` exists yet. The current navigation modes are built into the
+frontend/backend. Future mods are specified by
+[ADR 0051](https://github.com/kalidke/ship-of-tools/blob/main/docs/history/adr/0051-mods.md#the-mod)
+and are not built.
 
 See the *Extending* section of the manual — *The Dispatch ABI* and the
 *Writing a FileType Plugin* / HDF5 worked-example pages — for the full
@@ -33,7 +33,7 @@ using JSON3
 using JuliaSyntax
 using SHA
 
-export FileType, Mode, ConceptEntity, AnnotationKind, Tool, Capture
+export FileType, ConceptEntity, AnnotationKind
 export TreeNode, PreviewPayload
 export preview, parse_entities, ast_hash, applicable_annotations, matches
 export file_types, file_type_for
@@ -52,22 +52,6 @@ is resolved by [`file_type_for`](@ref). Adding a `FileType` requires zero
 changes on the Rust side.
 """
 abstract type FileType end
-
-"""
-    Mode
-
-Abstract supertype for a switchable navigation-tree root — Files, Modules,
-Types, Math, Outputs, and the rest. Every mode presents the same shape — a
-parent → current → children hierarchy shown as a collapsible outline; a hotkey
-swaps which `Mode`'s tree is the root, and cursor position is preserved per mode
-across switches.
-
-A mode plugin implements the tree contract — `tree_root`, `tree_children` and
-`preview_for` — returning [`TreeNode`](@ref) values for the frontend to render
-and a [`PreviewPayload`](@ref) for the focused node. (Those methods are defined
-by the mode plugins layered above core, not in this module.)
-"""
-abstract type Mode end
 
 """
     ConceptEntity
@@ -91,25 +75,6 @@ on. [`applicable_annotations`](@ref) reports which kinds are valid for a given
 entity.
 """
 abstract type AnnotationKind end
-
-"""
-    Tool
-
-Abstract supertype for an action the orchestrator LLM can invoke. A tool plugin
-defines `tool_spec` (the schema advertised to the model) and `tool_call` (the
-implementation). The tool surface is static in phase 1; plugin-defined tools
-are a phase-2 seam.
-"""
-abstract type Tool end
-
-"""
-    Capture
-
-Abstract supertype for a structured REPL output — a figure, a `DataFrame`, and
-the like — that should render at full fidelity rather than as text. A capture
-plugin defines `capture_payload` to convert the value into a display frame.
-"""
-abstract type Capture end
 
 """
     preview(::Type{<:FileType}, path) -> PreviewPayload

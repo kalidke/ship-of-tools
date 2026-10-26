@@ -61,7 +61,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/concepts/`: concept pages (sessions, work state, the comm relay, transport).
 - `src/contributing.md`: working conventions, the decision process, how to build and test.
 - `src/design/`: design notes for planned or partly built parts (the staged roadmap and requirements pages land here).
-- `src/extend/`: how to extend the system (the FileType ABI, the HDF5 tutorial, discovery and mode notes).
+- `src/extend/`: how to extend the system (the FileType ABI, the HDF5 tutorial and discovery notes).
 - `src/features.md`: what the system does.
 - `src/guide/`: task guides and architecture pages.
 - `src/index.md`: the home page.

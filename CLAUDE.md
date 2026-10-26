@@ -27,7 +27,7 @@ does not read it and uses no mail; it reports to the session that launched it.
   through `LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/preview.jl`. Nothing discovers a user's packages (ADR 0006's
   declarative mechanism is unbuilt), so a new plugin is a kernel dependency plus a `using` line or a table row. A plugin
   whose output must be bounded also needs its extensions in `is_bounded_output_plugin`
-  (`rust/backend/src/files/preview/mod.rs`). `Mode`, `ConceptEntity`, `AnnotationKind`, `Tool` and `Capture` are
+  (`rust/backend/src/files/preview/mod.rs`). `ConceptEntity` and `AnnotationKind` are
   declared in `core/` but unbuilt; scope any extensibility claim to `FileType`.
 - Reactive over eager. A concept annotation shows stale when the file's hash, which the kernel computes on
   `file.parse`, no longer matches its `synced_against`; nothing sweeps in the background.

@@ -83,8 +83,11 @@ travel as the Rust wire type `TreeNode` with the same fields.
 The frontend draws whatever tree the kernel sends and dispatches on `PreviewPayload`'s
 `mime` to pick a renderer. It never inspects `id` or `payload`; it never learns
 what a `:pngfile` *is*. The consequence is the load-bearing property of the whole
-design: **adding a new `FileType` needs no Rust change** unless its output must be bounded, in which case the daemon's preview gates also name its extensions (`Mode` is not built: the modes are native Rust views today). A plugin
-that teaches the kernel to preview a new file format ships entirely in Julia, and
+design: **adding a new `FileType` needs no Rust change** unless its output must be
+bounded, in which case the daemon's preview gates also name its extensions.
+Navigation modes are native Rust views; future view extensions follow the mod
+design in [ADR 0051](https://github.com/kalidke/ship-of-tools/blob/main/docs/history/adr/0051-mods.md#the-mod),
+which is not built. A plugin that teaches the kernel to preview a new file format ships entirely in Julia, and
 the frontend renders it because the MIME type tells it how. See
 [`TreeNode`](@ref) and [`PreviewPayload`](@ref) in the API reference.
 
