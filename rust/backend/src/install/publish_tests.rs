@@ -34,7 +34,7 @@ impl Fixture {
             .with("GIT_COMMITTER_NAME", "Fixture").with("GIT_COMMITTER_EMAIL", "fixture@example.invalid");
         let source = d.join("source");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for rel in ["scripts/setup-publish-guard.sh", "scripts/hooks/pre-push", "scripts/hooks/pre-push-shim", "scripts/hooks/publish-guard-lib.sh"] {
+        for rel in ["scripts/setup-publish-guard.sh", "scripts/hooks/pre-push", "scripts/hooks/pre-push-shim", "scripts/hooks/publish-guard-lib.sh", "scripts/hooks/publish-guard-scan.awk"] {
             sot_platform::test_exec::write_executable(&source.join(rel), std::fs::read(root.join(rel)).unwrap());
         }
         let mut f = Self { dir, env, source, base: d.join("base"), caller: d.join("caller with spaces"), commit: String::new() };
