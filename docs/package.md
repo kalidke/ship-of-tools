@@ -478,5 +478,12 @@ left of 236. The installer's crossing words landed 2026-10-26: at the 0.6-to-0.7
 and its conversation comes back by resume, and the install guides say what to do after an update (run again if an
 update pinned the install, restart every window, a window's computer runs its own daemon, where `sotd` is). The
 unbuilt exported types `Mode`, `Tool` and `Capture` left `core/` on 2026-10-26, before the 0.7.0 tag, as ADR 0051
-decides; `ConceptEntity` and `AnnotationKind` stay declared and unbuilt. Nothing is half-done on main.
+decides; `ConceptEntity` and `AnnotationKind` stay declared and unbuilt. The publish guard's speed landed 2026-10-26.
+The page channel's landing 2b landed 2026-10-26: a page's offered reply is confirmed only on the window's
+`ReplyBar`, by Enter after a second of the whole bar presented (any resize, cover or failed frame starts the second
+again), keys follow what is drawn on top, nothing reaches a pane under a covered bar, and a reply whose answer is
+lost reads unknown; the change about 100 minutes in all and the push 16 seconds, a miss: a fresh agent read its
+200k read set cold, then three findings rounds on presentation, covering layers and the status line, which an agent
+holding the window would have known (the captain's rule since: a change to a subsystem's behavior goes to an agent
+holding that subsystem whole). Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
