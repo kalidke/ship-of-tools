@@ -26,6 +26,7 @@ impl State {
             _ => {
                 tracing::warn!(%handle, "page reply dropped: the row is not listed");
                 self.status.set(format!("reply from a page dropped \u{b7} {handle} is not a row this window lists"));
+                self.status.hold();
                 self.window.request_redraw();
                 return;
             }
@@ -46,6 +47,7 @@ impl State {
                 };
                 tracing::warn!(%handle, %why, "page reply dropped");
                 self.status.set(format!("reply from a page dropped \u{b7} {why}"));
+                self.status.hold();
             }
         }
         self.window.request_redraw();
@@ -81,22 +83,26 @@ impl State {
 
     /// Give the bar a key; whether it took it. An armed Enter sends the reply, Esc drops it.
     pub(in crate::ui) fn reply_bar_key(&mut self, key: BarKeyKind, now: Instant) -> bool {
-        match self.reply_bar.key(key, now) {
+        let said = match self.reply_bar.key(key, now) {
             BarKey::Pass => return false,
-            BarKey::Taken => {}
+            BarKey::Taken => None,
             BarKey::Dropped => {
                 tracing::info!("page reply: dropped");
-                self.status.set("reply dropped".to_string());
+                Some("reply dropped".to_string())
             }
             BarKey::Send(reply) => {
                 let (host, workspace_id, handle, line) = reply.into_parts();
                 tracing::info!(%handle, "page reply: confirmed");
                 let sent = self.send_to(&host, OutgoingReq::PageReply { workspace_id, handle: handle.clone(), line });
-                match sent {
-                    Ok(()) => self.status.set(format!("sending reply to {handle}\u{2026}")),
-                    Err(_) => self.status.set(format!("reply to {handle} not sent \u{b7} no connection to its daemon")),
-                }
+                Some(match sent {
+                    Ok(()) => format!("sending reply to {handle}\u{2026}"),
+                    Err(_) => format!("reply to {handle} not sent \u{b7} no connection to its daemon"),
+                })
             }
+        };
+        if let Some(text) = said {
+            self.status.set(text);
+            self.status.hold();
         }
         self.window.request_redraw();
         true

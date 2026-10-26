@@ -19,6 +19,7 @@ impl State {
     pub(crate) fn on_page_replied(&mut self, handle: String, outcome: String, detail: String) {
         tracing::info!(%handle, %outcome, "page reply: answered");
         self.status.set(page_reply_status(&handle, &outcome, &detail));
+        self.status.hold();
         self.window.request_redraw();
     }
 
