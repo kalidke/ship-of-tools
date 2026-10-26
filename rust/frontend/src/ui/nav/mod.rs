@@ -21,5 +21,7 @@ pub(in crate::ui) use modules::*;
 pub(in crate::ui) use sessions_tree::*;
 pub(in crate::ui) use tree::*;
 pub(in crate::ui) use tree_store::*;
+mod expand;
+mod modes;
 #[cfg(test)]
 pub(in crate::ui) use support_tests::*;

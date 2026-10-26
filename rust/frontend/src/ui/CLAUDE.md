@@ -35,6 +35,8 @@ pty size and its starting folder; `chrome::StripMotion` owns the session strip's
 spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor; `chrome::StatusLine`
 owns the status text and the hold a pushed notify keeps on it; `chrome::BatteryGauge` owns the cached battery label;
 `input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue.
+Each of these owners lives in a module (or a module tree) that holds no `impl State`, so the compiler, not
+convention, keeps the window's code out of its fields.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns

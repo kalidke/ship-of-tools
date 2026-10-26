@@ -9,6 +9,7 @@ pub(crate) mod markdown;
 pub(crate) mod editor;
 pub(crate) mod pane;
 pub(crate) mod concept;
+mod concept_follow;
 mod fetch;
 pub(in crate::ui) mod keys;
 mod layout;

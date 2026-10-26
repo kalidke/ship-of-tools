@@ -4,7 +4,9 @@ use super::*;
 
 mod badge;
 pub(in crate::ui) mod keys;
+mod parked;
 mod picker;
+mod picker_flow;
 mod presence;
 mod replies;
 mod result_ledger;
@@ -20,6 +22,7 @@ pub(in crate::ui) use result_ledger::{AttemptStart, ResultEffects, ResultLedger,
 pub(in crate::ui) use picker::*;
 pub(in crate::ui) use presence::*;
 pub(in crate::ui) use snapshot::*;
+pub(in crate::ui) use parked::ParkedViews;
 #[cfg(test)]
 pub(in crate::ui) use workspace_key::ws_key_of;
 pub(in crate::ui) use row_directory::{

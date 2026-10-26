@@ -553,18 +553,3 @@ fn edit_motion_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
     }
     buf_changed
 }
-
-impl State {
-    /// Re-shape the edit preview from the active edit buffer. Called
-    /// whenever a key mutates the buffer; cheap enough for a
-    /// few-KB annotation. Without an edit it clears the shaped
-    /// buffer so the next render falls back to the read-only path.
-    pub(in crate::ui) fn rebuild_edit_preview(&mut self) {
-        let width = self.concept.rect().w.max(1.0);
-        let scale = self.scale * self.text_scale_mult;
-        let text = &mut self.text;
-        self.editor.reshape(&self.bindings, |spans| {
-            MarkdownPreview::new_plain_spans(text.font_system_mut(), spans, width, scale)
-        });
-    }
-}
