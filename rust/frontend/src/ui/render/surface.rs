@@ -97,6 +97,7 @@ impl State {
     /// can't soft-lock the chrome by zooming to 0.01.
     pub(in crate::ui) fn apply_text_scale(&mut self, mult: f32) {
         let (width, height) = (self.gpu.config().width, self.gpu.config().height);
+        self.reply_bar.invalidate();
         self.canvas.apply_text_scale(mult, width, height);
         // Replay the cached preview source — without this the open
         // file would stay at its original scale until the user
@@ -107,6 +108,8 @@ impl State {
     }
 
     pub(in crate::ui) fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        // Any size event, a minimize included, ends what the reply bar was shown as.
+        self.reply_bar.invalidate();
         if new_size.width == 0 || new_size.height == 0 {
             return;
         }

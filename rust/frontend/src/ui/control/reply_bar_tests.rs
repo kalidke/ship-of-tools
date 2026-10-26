@@ -223,6 +223,22 @@ fn a_resize_drops_the_evidence_that_the_bar_was_shown() {
     sent(bar.key(enter(), secs(t0, 22.0)));
 }
 
+/// A size event ends the evidence even when the layout comes back to the same rectangle before anything observes
+/// it (the window shrunk to a cut size and restored): the wait starts over from the next presented frame.
+#[test]
+fn a_size_event_drops_the_evidence_even_if_the_layout_comes_back() {
+    let t0 = Instant::now();
+    let mut bar = open_bar(t0);
+    assert_eq!(bar.arm_deadline(secs(t0, 5.0)), None, "armed at 5 s");
+    bar.invalidate();
+    assert_eq!(bar.key(enter(), secs(t0, 20.0)), BarKey::Taken, "no frame has shown the bar since the size event");
+    bar.presented(secs(t0, 21.0));
+    assert_eq!(bar.key(enter(), secs(t0, 21.9)), BarKey::Taken);
+    sent(bar.key(enter(), secs(t0, 22.0)));
+    // With no bar open there is nothing to drop.
+    ReplyBar::default().invalidate();
+}
+
 /// Keys follow what is drawn on top. A dialog over the bar takes every key and the bar none; when the bar is shown
 /// again its wait starts over, so neither an Enter given to the dialog nor one typed while the bar was hidden sends.
 #[test]

@@ -264,8 +264,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   nothing else; `FeCommand::PageReply` is `skip_deserializing`, so the command file cannot open a bar, and
   `route_fe_command` makes it only from a directed `fe.command`, so a broadcast opens none. Enter sends only once a presented frame has shown the bar whole for one second and is not a repeat: layout is no
   evidence, so a frame that fails before it presents leaves the bar unshown and Enter sends nothing, and a slow frame
-  does not shorten the second. The evidence is dropped whenever the layout changes (a dialog over the bar, a resize,
-  a cut), and the second starts again from the next presented frame. Esc drops it; while the bar is not covered it
+  does not shorten the second. The evidence is dropped whenever the layout changes (a dialog over the bar, a cut) and on every size event
+  or text-scale change itself (`State::resize`, `apply_text_scale`), even when the layout comes back to the same
+  rectangle before anything looks, and the second starts again from the next presented frame. Esc drops it; while the bar is not covered it
   takes every key, plain Enter and Esc by their logical keys and never a binding. Keys follow what is drawn on top:
   while the close dialog (the quit question, a leave's line, a stayed relaunch's notice or the quit hint) is drawn it
   takes every key and the bar none, and nothing under a covered bar gets one (a stayed notice is dismissed, the hint
@@ -274,19 +275,23 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   unable to draw every row of the target and the line whole can drop the bar but not send it. The panel is the close dialog's renderer (`CloseDialogText::Reply`), titled "Reply from a page", under the
   close dialog; the target (handle, listed name, host) and the line go through `cell_lines` and `wrap_status`, so a
   hostile name stays on rows of its own with no control character in a cell. The mouse takes no part. The answer comes
-  back as `IncomingEvt::PageReplied` and `page_reply_status` puts it on the status line: only `sent` says the line
+  back as `IncomingEvt::PageReplied` and `page_reply_status` puts it on the status line, held like a pushed notify;
+  the selected host's `Disconnected` that follows in the same frame carries the held text instead of overwriting
+  it (`session::replies::disconnect_status`, test `the_disconnect_line_carries_the_text_held_on_it`): only `sent` says the line
   and its Enter were recorded. Behavior tests: `control::reply_bar::tests::{the_bar_sends_only_on_an_armed_enter,
   esc_drops_and_sends_nothing, the_bar_takes_every_key_while_open_and_in_view, a_second_offer_while_one_is_open_is_dropped,
   an_offer_whose_line_is_not_the_daemons_marked_text_opens_no_bar, the_bar_shows_the_target_and_the_exact_line,
   a_window_too_small_for_the_line_can_drop_the_bar_but_not_send, a_dialog_over_the_bar_takes_every_key_and_the_wait_starts_again,
   the_waits_deadline_is_only_while_the_bar_is_waiting,
-  the_wait_starts_from_a_presented_frame_not_from_layout, a_resize_drops_the_evidence_that_the_bar_was_shown}`, `control::command::tests::{a_directed_page_reply_opens_the_bar_and_a_broadcast_does_not,
+  the_wait_starts_from_a_presented_frame_not_from_layout, a_resize_drops_the_evidence_that_the_bar_was_shown,
+  a_size_event_drops_the_evidence_even_if_the_layout_comes_back}`, `control::command::tests::{a_directed_page_reply_opens_the_bar_and_a_broadcast_does_not,
   a_command_file_cannot_open_a_reply_bar}`, `input::keypress::tests::{the_quit_dialog_takes_a_key_before_the_reply_bar_and_the_bar_before_the_panes,
   nothing_reaches_a_pane_under_a_covered_bar}`
   and `control::replies::tests::the_status_line_says_what_became_of_a_confirmed_reply`; the native State fixture
   `the_bars_enter_sends_page_reply_to_the_pages_host` (a reply from host B's daemon opens the bar, every other command
   and a second offer send nothing, an Enter before any frame has presented the bar sends nothing, nor one straight
-  after the first frame or straight after a quit question closed over the bar, and an Enter a second after a
+  after the first frame, a size event or a quit question closing over the bar, the teardown's `unknown` and the host's
+  disconnect drained in one frame both show, and an Enter a second after a
   presented frame puts one `PageReply` with the line on B's connection and none on A's) runs in the release gate with the other State fixtures.
 - `TerminalDrawer` privately owns the Terminal drawer's local shell (G2/G3): spawned the first time the drawer is
   shown, at 80x24 in the repo root; pumped before each draw (the report says when the pane looks wrong); its pty

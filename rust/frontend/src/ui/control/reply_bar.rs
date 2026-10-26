@@ -123,6 +123,15 @@ impl ReplyBar {
         }
     }
 
+    /// The window's surface changed size (or its text scale): whatever was shown is not what is on screen now, even if
+    /// the layout comes back to the same rectangle before the next observation. The wait starts over from the next
+    /// presented frame.
+    pub(in crate::ui) fn invalidate(&mut self) {
+        if let Some(open) = &mut self.open {
+            open.shown_since = None;
+        }
+    }
+
     /// A frame has been presented, laid out as the last `observe` said. If that was the whole bar, the wait begins.
     pub(in crate::ui) fn presented(&mut self, now: Instant) {
         if let Some(open) = &mut self.open {

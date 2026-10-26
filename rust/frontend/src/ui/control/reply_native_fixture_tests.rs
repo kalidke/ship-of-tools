@@ -81,7 +81,17 @@ impl State {
         anyhow::ensure!(self.reply_bar_key(enter, Instant::now()), "the bar did not take an Enter after the dialog");
         anyhow::ensure!(sent_so_far(&mut b_rx, &mut a_rx) == 0, "an Enter straight after the dialog closed sent");
 
-        // A second of presented frames later, Enter puts the one request, with the line, on the offering host's connection.
+        // A second of presented frames later the bar is armed; a size event ends that, even at the same size.
+        std::thread::sleep(ARM + Duration::from_millis(150));
+        self.redraw()?;
+        let size = winit::dpi::PhysicalSize::new(self.gpu.config().width, self.gpu.config().height);
+        self.resize(size);
+        anyhow::ensure!(self.reply_bar_key(enter, Instant::now()), "the bar did not take an Enter after a size event");
+        anyhow::ensure!(sent_so_far(&mut b_rx, &mut a_rx) == 0, "an Enter straight after a size event sent");
+
+        // A second of presented frames after that, Enter puts the one request, with the line, on the offering host's
+        // connection.
+        self.redraw()?;
         std::thread::sleep(ARM + Duration::from_millis(150));
         self.redraw()?;
         anyhow::ensure!(self.reply_bar_key(enter, Instant::now()), "the bar did not take the armed Enter");
@@ -92,6 +102,27 @@ impl State {
         );
         anyhow::ensure!(!self.reply_bar_key(enter, Instant::now()), "the sent bar still took a key");
         anyhow::ensure!(page_replies(&mut b_rx).is_empty(), "a second Enter sent again");
+
+        // The connection ends before the daemon answers: the teardown's `unknown` and the disconnect drain in one
+        // frame, and the person still sees what became of the reply.
+        let (events, receiver) = std::sync::mpsc::channel();
+        let saved_events = std::mem::replace(&mut self.evt_rx, receiver);
+        self.selected.select(b.clone(), None);
+        let to_events = |evt| events.send((b.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
+        to_events(crate::net::transport::IncomingEvt::PageReplied {
+            handle: "repo__box".into(),
+            outcome: "unknown".into(),
+            detail: "the connection to the daemon ended before it answered".into(),
+        })?;
+        to_events(crate::net::transport::IncomingEvt::Disconnected { reason: "eof".into(), refused: false })?;
+        self.drain_events();
+        anyhow::ensure!(
+            self.status.text().contains("delivery unknown") && self.status.text().contains("disconnected"),
+            "the disconnect hid the reply's outcome: {}",
+            self.status.text()
+        );
+        self.evt_rx = saved_events;
+        self.selected.select(a.clone(), None);
 
         self.reply_bar = ReplyBar::default();
         self.conns = saved_conns;
