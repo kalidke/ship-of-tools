@@ -457,5 +457,10 @@ verbs checked against its site's capability and origin; its trust boundary is th
 decision. Pass 7g landed 2026-10-25: focus and the prompts are `FocusPrompts`'s, private, and no source scan guards
 focus any more. The publish guard's history bound landed 2026-10-25: a new branch or tag from an enrolled clone scans
 only what the destination does not hold. Pass 7h landed 2026-10-25: the drawer, maximize, wide preview and Help are
-`LayoutHelp`'s, private. Nothing is half-done on main.
+`LayoutHelp`'s, private. The page channel's landing 2a landed 2026-10-26: a page's reply is one line of at most 512
+bytes, refused if it holds a control or direction character, marked `[sot-page] ` and offered to the page's window
+(which drops it until landing 2b draws the bar); a confirmed reply is typed only at a free prompt, under the wake's
+one attempt per row (the change 22 minutes, launch to main 84: the first test run's wake suite took 10 minutes, the
+hosted wake shard overran its bound and the new tests went to a shard of their own, and the gate's scratch clone
+needed its own build folder and node packages). Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
