@@ -245,7 +245,13 @@ gate (minutes each under Git Bash on a hosted runner), and the three guard suite
 listing and `--version` asks stay unbounded until the observation pass, a 0.7.0 tag blocker. A push scans only commits the
 destination does not hold: since 2026-10-25 the guard bounds its history scan by the push's old ids and by what the
 destination advertises at push time (one `ls-remote` per push, read only when it would dial exactly the URL git hands the
-hook; any error refuses), so a new branch or tag no longer rescans the history the server already has. Since 2026-10-25 no entry stands as a whole word anywhere in main's tree (three
+hook; any error refuses), so a new branch or tag no longer rescans the history the server already has. Since 2026-10-26 a push costs a few
+processes per round, not per object: the published history that bounds it is listed by one `git rev-list` with
+replacements, grafts and the commit-graph off (a shallow clone, or a listing that fails, takes the raw walk), and the
+new commits, trees and blobs are read in batches, one per generation and tree level, and matched in one pass per
+stream, with the same bytes scanned and the same refusals; a push of main fell from about 3 minutes to 16 seconds
+(measured on the maintainer's workstation: 96 s had gone to walking the history behind 462 advertised refs one commit
+at a time, 82 s to the snapshot, one process start per path and blob). Since 2026-10-25 no entry stands as a whole word anywhere in main's tree (three
 replaced in four files).
 
 **records.** Guarantees: the manual says what is true now; a design not built is marked unbuilt; no private names.
