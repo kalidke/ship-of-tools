@@ -12,10 +12,10 @@ impl State {
         let (lines, border_rects_by_color, strip_logo_rects) = self.project_chrome()?;
         // Compute pixel rects from ratatui's cell rects, then letterbox each
         // image inside its rect.
-        let cell_w = self.cell_w;
-        let cell_h = self.cell_h;
-        let ox = self.chrome_origin_x;
-        let oy = self.chrome_origin_y;
+        let cell_w = self.canvas.cell_w();
+        let cell_h = self.canvas.cell_h();
+        let ox = self.canvas.origin_x();
+        let oy = self.canvas.origin_y();
         let cells_to_px = move |cells: ratatui::layout::Rect| ScreenRect {
             x: ox + cells.x as f32 * cell_w,
             y: oy + cells.y as f32 * cell_h,
@@ -96,7 +96,7 @@ impl State {
         }
         self.acknowledge_presented_result();
         self.ack_presented_lines(owed_drawn, owed, owed_line, leaving_drawn);
-        self.text.trim();
+        self.canvas.trim();
         self.finish_frame_capture(readback, capture_target, capture_now, selfie_target);
         self.frame_counter += 1;
         self.last_frame_at = Some(std::time::Instant::now());

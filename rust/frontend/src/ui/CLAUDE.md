@@ -37,7 +37,8 @@ owns the status text and the hold a pushed notify keeps on it; `chrome::BatteryG
 `input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue; `proxy_arms::ProxyArms`
 owns the page proxy's proxied hosts, listener manager and armed listeners; `host_view::ActiveLink` owns the active
 connection's hello facts and `host_view::HelloRefusals` each host's refused hello; `render::gpu::Gpu` owns the
-surface, device, queue and surface configuration.
+surface, device, queue and surface configuration; `render::canvas::Canvas` owns the glyph text layer, the chrome's
+cell grid and the cell metrics.
 Each of these owners lives in a module (or a module tree) that holds no `impl State`, so the compiler, not
 convention, keeps the window's code out of its fields.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
@@ -283,7 +284,15 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `Gpu` privately owns the window's GPU (the render resources' first stage): the surface, device, queue and the
   surface's configuration, dropped in their original order. The size changes only by `resize`; `acquire_frame`
   reconfigures a lost or outdated surface once and asks again. Device, queue and configuration are lent immutably to
-  the drawing code; the text layer, the chrome grid, the quad pipeline and the solid quads are still State's.
+  the drawing code.
+- `Canvas` privately owns the render resources' text stage: the glyph text layer, the ratatui terminal over the cell
+  backend, the startup scale, the text-scale multiplier (clamped to 0.5..=3) and the cell metrics derived from them
+  (the cell width measured from the monospace advance). A text-scale change or a resize re-derives the chrome grid
+  from the surface size in the same operation, so the cell count never disagrees with the cell size. Shaping
+  (`shape`, which lends the font system to one buffer build or resize), the chrome draw (`draw_chrome`), text and
+  overlay preparation and their paint, and the atlas trim are its operations; the cell backend is read through
+  `chrome()`. The quad pipeline and the solid quads are still State's. The native pane-mapping fixture checks
+  rejection and clamping against the window's own metrics, with points outside any geometry.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

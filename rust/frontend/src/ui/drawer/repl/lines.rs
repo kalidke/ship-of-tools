@@ -28,7 +28,7 @@ impl State {
         let row = self.active_ws_key();
         let starting = self.active_repl_starting();
         self.repl_presentation.build(
-            &row, self.repl_model.entries(), starting, self.cell_w, self.cell_h, scroll,
+            &row, self.repl_model.entries(), starting, self.canvas.cell_w(), self.canvas.cell_h(), scroll,
         )
     }
 }

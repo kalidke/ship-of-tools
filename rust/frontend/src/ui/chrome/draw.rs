@@ -154,8 +154,8 @@ impl State {
             repl_cells, new_pane_rects, new_repl_scroll, repl_scrollback_cells, repl_window,
             pty_size_observed, term_size_observed,
         };
-        self.terminal
-            .draw(|frame| {
+        self.canvas
+            .draw_chrome(|frame| {
                 view.paint(frame, tree_lines, &mut nav_spill_segs_out);
             })
             .context("ratatui draw failed")?;

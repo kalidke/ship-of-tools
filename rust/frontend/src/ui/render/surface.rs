@@ -96,24 +96,8 @@ impl State {
     /// reflows at the new size. Clamped to a sane range so the user
     /// can't soft-lock the chrome by zooming to 0.01.
     pub(in crate::ui) fn apply_text_scale(&mut self, mult: f32) {
-        self.text_scale_mult = mult.clamp(0.5, 3.0);
-        let s = self.scale * self.text_scale_mult;
-        self.cell_h = BASE_CELL_H * s;
-        self.chrome_origin_x = BASE_CHROME_ORIGIN_X * s;
-        self.chrome_origin_y = BASE_CHROME_ORIGIN_Y * s;
-        self.text
-            .set_metrics(cosmic_text::Metrics::new(14.0 * s, 18.0 * s));
-        // Re-measure monospace advance at the new metrics so the cell
-        // grid still matches cosmic-text's actual glyph positioning
-        // after a runtime font-size change. Fall back to BASE_CELL_W * s
-        // if shape fails (no monospace font installed).
-        self.cell_w = self.text.monospace_advance().unwrap_or(BASE_CELL_W * s);
-        // Re-derive the chrome grid against the new cell metrics —
-        // without this the cell count (cols, rows) stays at the old
-        // value while each cell paints at the new (bigger) size, and
-        // content extends past the wgpu surface edge. The window
-        // doesn't resize; the grid does.
-        self.rederive_chrome_grid();
+        let (width, height) = (self.gpu.config().width, self.gpu.config().height);
+        self.canvas.apply_text_scale(mult, width, height);
         // Replay the cached preview source — without this the open
         // file would stay at its original scale until the user
         // navigated to a different file.
@@ -127,27 +111,7 @@ impl State {
             return;
         }
         self.gpu.resize(new_size.width, new_size.height);
-        self.text
-            .resize(self.gpu.queue(), self.gpu.config().width, self.gpu.config().height);
-
-        self.rederive_chrome_grid();
-    }
-
-    /// Recompute the chrome grid from the surface size and cell metrics and tell ratatui.
-    fn rederive_chrome_grid(&mut self) {
-        let (cols, rows) = cell_grid_for(
-            self.gpu.config().width,
-            self.gpu.config().height,
-            self.cell_w,
-            self.cell_h,
-            self.chrome_origin_x,
-            self.chrome_origin_y,
-        );
-        self.terminal.backend_mut().resize(cols, rows);
-        // ratatui needs to know the grid changed so it reallocates its buffers.
-        let _ = self
-            .terminal
-            .resize(ratatui::layout::Rect::new(0, 0, cols, rows));
+        self.canvas.resize(self.gpu.queue(), new_size.width, new_size.height);
     }
 }
 

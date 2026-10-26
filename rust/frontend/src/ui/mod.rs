@@ -175,9 +175,9 @@ struct State {
     wake: MainWake,
     /// The GPU: surface, device, queue and the surface's configuration.
     gpu: crate::ui::render::gpu::Gpu,
-    text: TextLayer,
+    /// The text canvas: the glyph text layer, the chrome's cell grid and the cell metrics both are laid out with.
+    canvas: crate::ui::render::canvas::Canvas,
     background: wgpu::Color,
-    terminal: Terminal<WgpuBackend>,
     quad_pipeline: QuadPipeline,
     /// A 1×1 pastel-yellow RGBA texture used as the LLM-pane selection
     /// highlight. Rendered as a per-row stretched quad before text.render
@@ -242,14 +242,6 @@ struct State {
     /// nav pane, plus its native `(w, h)` for aspect-ratio sizing. `None` when
     /// the embedded PNG fails to decode.
     wordmark_quad: Option<(Quad, u32, u32)>,
-    /// Combined multiplier (`cli.scale * window.scale_factor()`) applied to
-    /// all text + cell metrics. Captured once at startup; ScaleFactorChanged
-    /// is currently ignored.
-    scale: f32,
-    cell_w: f32,
-    cell_h: f32,
-    chrome_origin_x: f32,
-    chrome_origin_y: f32,
     /// `--capture <path>`: render to PNG and exit. Set means we keep
     /// requesting redraws until `frame_counter == CAPTURE_FRAME` so the
     /// transport task has time to push events.
@@ -276,13 +268,6 @@ struct State {
     /// later doesn't re-cycle. Zero leaves the active workspace alone.
     capture_cycle: i32,
     frame_counter: u32,
-    /// Runtime multiplier on top of the startup `scale`. `1.0` = no
-    /// change; `>1.0` = bigger fonts and cells; `<1.0` = smaller.
-    /// Bumped via `Ctrl+=` / `Ctrl+-` (reset by `Ctrl+0`). Affects
-    /// chrome cell metrics, the TextLayer's per-line metrics, and the
-    /// preview's flowed-text buffer simultaneously (user picked
-    /// "Global only" — same change applies to every pane).
-    text_scale_mult: f32,
     // ui/app: the event fan-in, frame pacing, the exit flag and the harness's startup actions.
     /// Drained at the top of every redraw; every host's transport task
     /// pushes here, tagged with its own `HostKey` (ADR 0042 L2a fan-in).

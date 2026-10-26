@@ -37,7 +37,7 @@ impl State {
             // fail-soft contract (a decode failure never breaks the layout,
             // per `LOGO_DARK_PNG`'s doc).
             let logo_dims: Option<(f32, f32)> = self.logo_quad.as_ref().map(|(_, nw, nh)| {
-                let logo_h = (self.cell_h - 2.0).max(1.0);
+                let logo_h = (self.canvas.cell_h() - 2.0).max(1.0);
                 let logo_w = logo_h * (*nw as f32 / (*nh).max(1) as f32);
                 (logo_w, logo_h)
             });
@@ -52,15 +52,15 @@ impl State {
             let wheel_w = logo_dims.map(|(logo_w, _)| logo_w).unwrap_or(0.0);
             let label_widths: Vec<f32> = labels
                 .iter()
-                .map(|l| l.chars().count() as f32 * self.cell_w)
+                .map(|l| l.chars().count() as f32 * self.canvas.cell_w())
                 .collect();
             let item_widths = strip_item_widths(&items, &label_widths, wheel_w);
             let item_positions = strip_cursor_positions(&item_widths, |i| {
-                strip_gap_before(&items[i], self.cell_w)
+                strip_gap_before(&items[i], self.canvas.cell_w())
             });
             let divider_offsets =
-                strip_divider_offsets(&items, &item_widths, &label_widths, self.cell_w);
-            let target = session_strip_target(&labels, active, self.cell_w, &divider_offsets);
+                strip_divider_offsets(&items, &item_widths, &label_widths, self.canvas.cell_w());
+            let target = session_strip_target(&labels, active, self.canvas.cell_w(), &divider_offsets);
             let scroll = self.strip_motion.scroll_or(target);
             // Two rows hanging off the bottom of the chrome grid: session
             // names above, the ships below them. The grid's own bottom edge is
@@ -70,9 +70,9 @@ impl State {
             // neither row can land on the bottom border line and its version
             // stamp — and the air above the names is `STRIP_TOP_AIR_ROWS`
             // whatever the window height quantises to.
-            let grid_bottom = self.chrome_origin_y
-                + self.terminal.backend().rows() as f32 * self.cell_h;
-            let (baseline_y, ship_y) = strip_row_tops(grid_bottom, self.cell_h);
+            let grid_bottom = self.canvas.origin_y()
+                + self.canvas.chrome().rows() as f32 * self.canvas.cell_h();
+            let (baseline_y, ship_y) = strip_row_tops(grid_bottom, self.canvas.cell_h());
             let strip_lines = self.strip_name_lines(&labels, active, scroll, baseline_y, &pendings, &divider_offsets);
             let (strip_hull_rects, tag_lines) = self.strip_ships(&items, &item_positions, &item_widths, wheel_w, scroll, logo_dims, baseline_y, ship_y, &mut strip_logo_rects);
             lines.extend(strip_lines);
@@ -175,7 +175,7 @@ impl State {
             active,
             scroll,
             self.gpu.config().width as f32,
-            self.cell_w,
+            self.canvas.cell_w(),
             baseline_y,
             &tones,
             self.contrast_dim,
@@ -205,7 +205,7 @@ impl State {
         // can re-derive a second answer.
         let win_w = self.gpu.config().width as f32;
         let (_, logo_h) = logo_dims.unwrap_or((0.0, 0.0));
-        let (hull_y, hull_h) = hull_band(ship_y, self.cell_h);
+        let (hull_y, hull_h) = hull_band(ship_y, self.canvas.cell_h());
         let marks: Vec<StripMark> = ship_marks(
             &items,
             &item_positions,
@@ -213,14 +213,14 @@ impl State {
             self.selected.host(),
             |h| self.hosts.host_connected.get(h).copied().unwrap_or(false),
             wheel_w,
-            self.cell_w,
+            self.canvas.cell_w(),
             hull_h,
             scroll,
             win_w,
         );
         // Draw the marks. Every vertical coordinate comes from
         // `ship_vertical` — the one place the band's locked geometry lives.
-        let vert = ship_vertical(baseline_y, ship_y, self.cell_h, logo_h);
+        let vert = ship_vertical(baseline_y, ship_y, self.canvas.cell_h(), logo_h);
         let mut strip_hull_rects: Vec<ScreenRect> = Vec::new();
         let mut tag_lines: Vec<crate::ui::render::text::Line> = Vec::new();
         for m in &marks {

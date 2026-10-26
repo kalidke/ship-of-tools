@@ -241,8 +241,8 @@ impl State {
     /// before the first layout pass (pane rect still zero), in which case
     /// the plugin falls back to its fixed DPI.
     pub(in crate::ui) fn preview_fit_px(&self) -> (Option<u32>, Option<u32>) {
-        let w = (self.pane_rects.preview.width as f32 * self.cell_w) as u32;
-        let h = (self.pane_rects.preview.height as f32 * self.cell_h) as u32;
+        let w = (self.pane_rects.preview.width as f32 * self.canvas.cell_w()) as u32;
+        let h = (self.pane_rects.preview.height as f32 * self.canvas.cell_h()) as u32;
         if w == 0 || h == 0 {
             (None, None)
         } else {
@@ -255,7 +255,7 @@ impl State {
     /// font-rescale path (which replays against the cached source).
     #[allow(clippy::too_many_lines, reason = "routes a preview blob to its renderer by mime; predates the 100-line limit")]
     pub(in crate::ui) fn render_preview_source(&mut self, mime: &str, bytes: &[u8]) {
-        let scale = self.scale * self.text_scale_mult;
+        let scale = self.canvas.scale() * self.canvas.text_scale_mult();
         if is_raster_preview_mime(mime) {
             // Paginated document pages (preview_page set from this reply's
             // extras) filter Linear — rasterized text aliases hard under
@@ -313,12 +313,11 @@ impl State {
                         .into_iter()
                         .map(|s| (s.text, s.kind))
                         .collect();
-                    let md = MarkdownPreview::new_tokens(
-                        self.text.font_system_mut(),
+                    let md = self.canvas.shape(|fs| MarkdownPreview::new_tokens(fs,
                         &pairs,
                         self.shaped.rect().w.max(1.0),
                         scale,
-                    );
+                    ));
                     self.shaped.install(md);
                     self.raster.hide();
                 }
@@ -341,12 +340,11 @@ impl State {
                 "{kind} file — {} bytes\n\nNot previewed as text (mime: {mime}).",
                 bytes.len()
             );
-            let md = MarkdownPreview::new_plain(
-                self.text.font_system_mut(),
+            let md = self.canvas.shape(|fs| MarkdownPreview::new_plain(fs,
                 &msg,
                 self.shaped.rect().w.max(1.0),
                 scale,
-            );
+            ));
             self.shaped.install(md);
             self.raster.hide();
         } else if mime == "text/markdown" || mime == "text/x-markdown" {
@@ -367,8 +365,7 @@ impl State {
                 let math_metrics = self.md_media.math_metrics();
                 let figure_metrics = self.figures.metrics();
                 let rect = self.shaped.rect();
-                let md = MarkdownPreview::new(
-                    self.text.font_system_mut(),
+                let md = self.canvas.shape(|fs| MarkdownPreview::new(fs,
                     s,
                     rect.w.max(1.0),
                     rect.h.max(1.0),
@@ -377,7 +374,7 @@ impl State {
                     &figure_metrics,
                     self.shaped.highlighter(),
                     self.md_media.token_cache(),
-                );
+                ));
                 self.shaped.install(md);
                 self.raster.hide();
                 // Fire math.render for any `$$...$$` blocks the walk
@@ -394,12 +391,11 @@ impl State {
                 self.dispatch_pending_markdown_tokens();
             }
         } else if let Ok(s) = std::str::from_utf8(bytes) {
-            let md = MarkdownPreview::new_plain(
-                self.text.font_system_mut(),
+            let md = self.canvas.shape(|fs| MarkdownPreview::new_plain(fs,
                 s,
                 self.shaped.rect().w.max(1.0),
                 scale,
-            );
+            ));
             self.shaped.install(md);
             self.raster.hide();
         } else {
@@ -421,13 +417,12 @@ impl State {
             return;
         };
         let width = self.shaped.rect().w.max(1.0);
-        let scale = self.scale * self.text_scale_mult;
-        let fatal = MarkdownPreview::new_plain(
-            self.text.font_system_mut(),
+        let scale = self.canvas.scale() * self.canvas.text_scale_mult();
+        let fatal = self.canvas.shape(|fs| MarkdownPreview::new_plain(fs,
             &body,
             width,
             scale,
-        );
+        ));
         self.shaped.show_fatal(Some(fatal));
     }
 }

@@ -63,17 +63,17 @@ impl State {
         let shaped = if exists {
             let body = split_frontmatter(&content).1;
             let rect = self.concept.rect();
-            Some(MarkdownPreview::new(
-                self.text.font_system_mut(),
+            let scale = self.canvas.scale();
+            Some(self.canvas.shape(|fs| MarkdownPreview::new(fs,
                 &body,
                 rect.w.max(1.0),
                 rect.h.max(1.0),
-                self.scale,
+                scale,
                 &MathMetricsMap::new(),
                 &FigureMetricsMap::new(),
                 self.shaped.highlighter(),
                 self.md_media.token_cache(),
-            ))
+            )))
         } else {
             None
         };

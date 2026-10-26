@@ -77,7 +77,7 @@ impl State {
         // Scale the chart's text + gutters to match the chrome's
         // effective text size (cell_h is BASE_CELL_H * scale), so the
         // SVG's logical-px labels aren't tiny on a hi-DPI window.
-        let mon_scale = (self.cell_h / BASE_CELL_H) as f64;
+        let mon_scale = (self.canvas.cell_h() / BASE_CELL_H) as f64;
         let shown = self.layout_help.drawer() == DrawerContent::Monitor;
         if let Some(draw) = self.monitor.plan(cells_to_px(repl_cells), shown, mon_scale) {
             let quad = quad_from_svg_bytes(

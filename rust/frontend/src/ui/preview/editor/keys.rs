@@ -141,10 +141,10 @@ impl State {
     /// buffer so the next render falls back to the read-only path.
     pub(in crate::ui) fn rebuild_edit_preview(&mut self) {
         let width = self.concept.rect().w.max(1.0);
-        let scale = self.scale * self.text_scale_mult;
-        let text = &mut self.text;
+        let scale = self.canvas.scale() * self.canvas.text_scale_mult();
+        let canvas = &mut self.canvas;
         self.editor.reshape(&self.bindings, |spans| {
-            MarkdownPreview::new_plain_spans(text.font_system_mut(), spans, width, scale)
+            canvas.shape(|fs| MarkdownPreview::new_plain_spans(fs, spans, width, scale))
         });
     }
 }

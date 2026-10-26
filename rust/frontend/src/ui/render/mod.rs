@@ -4,6 +4,7 @@
 use super::*;
 
 pub(crate) mod cells;
+pub(in crate::ui) mod canvas;
 pub(in crate::ui) mod gpu;
 pub(crate) mod quad;
 pub(crate) mod text;

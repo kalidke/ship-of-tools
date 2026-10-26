@@ -217,7 +217,7 @@ impl State {
         }
         let mut tables = Vec::with_capacity(snapshots.len());
         for (rendered, font_px, line_h_px) in snapshots {
-            tables.push(table_buffer(self.text.font_system_mut(), rendered, font_px, line_h_px));
+            tables.push(self.canvas.shape(|fs| table_buffer(fs, rendered, font_px, line_h_px)));
         }
         self.md_media.replace_tables(tables);
     }

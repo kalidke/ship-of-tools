@@ -19,8 +19,8 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
         |state, pressed| state.report_presence(pressed),
         |state| {
             if state.focus_prompts.quit_choice().is_none() { return None; }
-            let (x, y) = ((state.pointer.at_px().0 - state.chrome_origin_x) / state.cell_w.max(1.0),
-                (state.pointer.at_px().1 - state.chrome_origin_y) / state.cell_h.max(1.0));
+            let (x, y) = ((state.pointer.at_px().0 - state.canvas.origin_x()) / state.canvas.cell_w().max(1.0),
+                (state.pointer.at_px().1 - state.canvas.origin_y()) / state.canvas.cell_h().max(1.0));
             let left_at = (button == MouseButton::Left && x >= 0.0 && y >= 0.0).then_some((x as u16, y as u16));
             Some(quit_prompt_click(state.close_dialog().and_then(|d| d.answers), left_at))
         },
@@ -138,7 +138,7 @@ fn dispatch_wheel(context: &mut impl WheelContext, modifiers: ModifiersState, de
 impl WheelContext for State {
     fn report_wheel_presence(&mut self) { self.report_presence(true); }
     fn wheel_geometry(&mut self) -> WheelGeometry {
-        WheelGeometry { cell_w: self.cell_w, cell_h: self.cell_h, focus: self.focus_prompts.focus(), residue: self.pointer.residue() }
+        WheelGeometry { cell_w: self.canvas.cell_w(), cell_h: self.canvas.cell_h(), focus: self.focus_prompts.focus(), residue: self.pointer.residue() }
     }
     fn scroll_preview_horizontal(&mut self, pixels: f32) {
         self.md_media.scroll_tables(pixels);

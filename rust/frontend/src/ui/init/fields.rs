@@ -52,9 +52,8 @@ impl State {
             window,
             wake,
             gpu: crate::ui::render::gpu::Gpu::new(surface, device, queue, config),
-            text,
+            canvas: crate::ui::render::canvas::Canvas::new(text, terminal, scale, cell_w, cell_h, chrome_origin_x, chrome_origin_y),
             background: initial_background(surface_format),
-            terminal,
             quad_pipeline,
             selection_bg_quad,
             overlay_back_quad,
@@ -123,11 +122,6 @@ impl State {
             not_ended_shown: None,
             leaving: None,
             last_declared_sessions: None,
-            scale,
-            cell_w,
-            cell_h,
-            chrome_origin_x,
-            chrome_origin_y,
             capture_path: cli.capture.clone(),
             selfie_pending: None,
             capture_preview: cli.capture_preview.clone(),
@@ -166,7 +160,6 @@ impl State {
             // ADR 0035: each host's `Connected` evt (remote + proxy) adds it
             // here; `resumed()` spawns the listener manager.
             proxies: crate::ui::proxy_arms::ProxyArms::default(),
-            text_scale_mult: 1.0,
             preview_source: Default::default(),
             preview_requests: preview::requests::PreviewRequests::default(),
         }

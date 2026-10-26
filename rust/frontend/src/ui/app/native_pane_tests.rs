@@ -289,7 +289,7 @@ fn receipts(text: &str) -> Vec<u128> {
 impl PaneDriver<'_> {
     fn cells(&self) -> String {
         let Some(state) = self.app.state.as_ref() else { return String::new() };
-        state.terminal.backend().project_lines(0.0, 0.0, 1.0, 1.0).into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n")
+        state.canvas.chrome().project_lines(0.0, 0.0, 1.0, 1.0).into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n")
     }
 
     /// The monitor shape and effective in-memory layout of this child.

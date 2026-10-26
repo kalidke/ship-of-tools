@@ -275,14 +275,7 @@ impl State {
             }
         }
 
-        self.text.prepare(
-            self.gpu.device(),
-            self.gpu.queue(),
-            self.gpu.config().width,
-            self.gpu.config().height,
-            &lines,
-            &extras,
-        )?;
+        self.canvas.prepare_text(&self.gpu, &lines, &extras)?;
         Ok((scalebar_draw, media_paint_targets))
     }
 }

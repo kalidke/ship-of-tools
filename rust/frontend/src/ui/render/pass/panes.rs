@@ -42,7 +42,7 @@ impl State {
     pub(in crate::ui) fn paint_repl_figures(&self, rpass: &mut wgpu::RenderPass<'_>) -> Result<()> {
         let mut painter = ReplQuadPainter { queue: self.gpu.queue(), pipeline: &self.quad_pipeline, pass: rpass };
         self.repl_presentation.paint(
-            self.layout_help.drawer() == DrawerContent::Repl, self.cell_w, self.cell_h,
+            self.layout_help.drawer() == DrawerContent::Repl, self.canvas.cell_w(), self.canvas.cell_h(),
             (self.gpu.config().width, self.gpu.config().height), &mut painter,
         )
     }
@@ -64,8 +64,8 @@ impl State {
             let (er, ec) = end;
             let pane = self.pane_rects.llm;
             if pane.width > 0 && pane.height > 0 {
-                let origin_x = self.chrome_origin_x + pane.x as f32 * self.cell_w;
-                let origin_y = self.chrome_origin_y + pane.y as f32 * self.cell_h;
+                let origin_x = self.canvas.origin_x() + pane.x as f32 * self.canvas.cell_w();
+                let origin_y = self.canvas.origin_y() + pane.y as f32 * self.canvas.cell_h();
                 let max_row = pane.height.saturating_sub(1);
                 let max_col = pane.width.saturating_sub(1);
                 let sr = sr.min(max_row);
@@ -87,10 +87,10 @@ impl State {
                     }
                     let span = (ce - cs + 1) as f32;
                     row_rects.push(ScreenRect {
-                        x: origin_x + cs as f32 * self.cell_w,
-                        y: origin_y + row as f32 * self.cell_h,
-                        w: span * self.cell_w,
-                        h: self.cell_h,
+                        x: origin_x + cs as f32 * self.canvas.cell_w(),
+                        y: origin_y + row as f32 * self.canvas.cell_h(),
+                        w: span * self.canvas.cell_w(),
+                        h: self.canvas.cell_h(),
                     });
                 }
                 if !row_rects.is_empty() {
@@ -141,12 +141,12 @@ impl State {
         // PNG's aspect, clamped to the pane's width minus a cell each side.
         if let Some((quad, nw, nh)) = self.wordmark_quad.as_ref() {
             let nav = self.pane_rects.nav;
-            let nav_x = self.chrome_origin_x + nav.x as f32 * self.cell_w;
-            let nav_y = self.chrome_origin_y + nav.y as f32 * self.cell_h;
-            let nav_w = nav.width as f32 * self.cell_w;
-            let mut wm_h = self.cell_h;
+            let nav_x = self.canvas.origin_x() + nav.x as f32 * self.canvas.cell_w();
+            let nav_y = self.canvas.origin_y() + nav.y as f32 * self.canvas.cell_h();
+            let nav_w = nav.width as f32 * self.canvas.cell_w();
+            let mut wm_h = self.canvas.cell_h();
             let mut wm_w = wm_h * (*nw as f32 / (*nh).max(1) as f32);
-            let max_w = (nav_w - 2.0 * self.cell_w).max(1.0);
+            let max_w = (nav_w - 2.0 * self.canvas.cell_w()).max(1.0);
             if wm_w > max_w {
                 wm_w = max_w;
                 wm_h = wm_w * (*nh as f32 / (*nw).max(1) as f32);
@@ -156,8 +156,8 @@ impl State {
                 &self.quad_pipeline,
                 &mut rpass,
                 ScreenRect {
-                    x: nav_x + self.cell_w,
-                    y: nav_y + (self.cell_h - wm_h) * 0.5,
+                    x: nav_x + self.canvas.cell_w(),
+                    y: nav_y + (self.canvas.cell_h() - wm_h) * 0.5,
                     w: wm_w,
                     h: wm_h,
                 },
@@ -196,7 +196,7 @@ impl State {
             }
         }
 
-        self.text.render(&mut rpass)?;
+        self.canvas.render_text(&mut rpass)?;
         Ok(())
     }
 
@@ -223,10 +223,10 @@ impl State {
             .segments()
             .iter()
             .map(|seg| ScreenRect {
-                x: self.chrome_origin_x + seg.x as f32 * self.cell_w,
-                y: self.chrome_origin_y + seg.row as f32 * self.cell_h,
-                w: (seg.width_cells + 1) as f32 * self.cell_w,
-                h: self.cell_h,
+                x: self.canvas.origin_x() + seg.x as f32 * self.canvas.cell_w(),
+                y: self.canvas.origin_y() + seg.row as f32 * self.canvas.cell_h(),
+                w: (seg.width_cells + 1) as f32 * self.canvas.cell_w(),
+                h: self.canvas.cell_h(),
             })
             .chain(dialog_rect)
             .collect();
@@ -248,7 +248,7 @@ impl State {
         }
         if !overlay_lines.is_empty() {
             rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
-            self.text.render_overlay(&mut rpass)?;
+            self.canvas.render_overlay(&mut rpass)?;
         }
         Ok(())
     }
