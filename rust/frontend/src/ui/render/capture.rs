@@ -192,15 +192,15 @@ impl State {
                 Ok(()) => {
                     tracing::info!(path = %path.display(), "capture wrote PNG");
                     if is_selfie {
-                        self.status = format!("selfie saved: {}", path.display());
-                        self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
+                        self.status.set(format!("selfie saved: {}", path.display()));
+                        self.status.hold();
                     }
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "capture failed");
                     if is_selfie {
-                        self.status = format!("selfie failed: {e}");
-                        self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
+                        self.status.set(format!("selfie failed: {e}"));
+                        self.status.hold();
                     }
                 }
             }

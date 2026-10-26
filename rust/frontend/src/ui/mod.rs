@@ -370,15 +370,8 @@ struct State {
     /// Set once the window is on its way out and waiting for the daemons' acks.
     leaving: Option<crate::lease::Leaving>,
     // ui/chrome: the status line, focus, pane rects, maximize and nav spill.
-    /// One-line status string for the chrome.
-    status: String,
-    /// While `Some(t)` and `now < t`, the status line is holding a pushed
-    /// notify (op::FE_COMMAND `notify`) and `rebuild_connection_status` won't
-    /// clobber it — so a toast survives a workspace switch for a few seconds
-    /// instead of being overwritten instantly (which otherwise made a pushed
-    /// notify un-seeable while the user roamed workspaces). Cleared + the
-    /// status rebuilt once elapsed (in `about_to_wait`, on the idle tick).
-    notify_sticky_until: Option<std::time::Instant>,
+    /// One-line status string for the chrome, and the hold a pushed notify keeps on it.
+    status: StatusLine,
     /// Selected-session contrast lever (`--contrast-mode`, ADR 0023). `false`
     /// = "bright" (default): the selected/active row pops by going brighter +
     /// bold. `true` = "dim": non-selected rows are dimmed so the selection

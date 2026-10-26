@@ -346,7 +346,7 @@ impl State {
     pub(in crate::ui) fn apply_repl_effects(&mut self, effects: ReplEffects) {
         self.repl_presentation.apply_effects(&effects);
         if let Some(status) = effects.status {
-            self.status = status;
+            self.status.set(status);
         }
         if let Some(host) = effects.listing {
             let _ = self.send_to(&host, OutgoingReq::WorkspaceList);
@@ -364,7 +364,7 @@ impl State {
         if !crate::browser_open::opens_here(action.open, action.fe.as_deref(), &self_comm_handle())
         {
             tracing::info!(page = %origin, "wgl: browser frame served, not opened here");
-            self.status = "interactive figure served, not opened here".to_string();
+            self.status.set("interactive figure served, not opened here".to_string());
             return;
         }
         if let Some(url) = self.ensure_proxy_for_url(
@@ -373,10 +373,10 @@ impl State {
             crate::ui::page_proxy::PageSource::Announced,
         ) {
             match crate::browser_open::open_page(&url) {
-                Ok(()) => self.status = format!("opened interactive figure · {origin}"),
+                Ok(()) => self.status.set(format!("opened interactive figure · {origin}")),
                 Err(e) => {
                     tracing::warn!(error = %e, page = %origin, "wgl: browser open failed");
-                    self.status = format!("interactive figure · browser-open failed · {e}");
+                    self.status.set(format!("interactive figure · browser-open failed · {e}"));
                 }
             }
         }

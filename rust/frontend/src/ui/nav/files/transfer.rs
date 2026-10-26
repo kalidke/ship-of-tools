@@ -225,12 +225,12 @@ impl State {
             .map(|r| r.node.kind == "dir")
             .unwrap_or(false);
         if is_dir {
-            self.status = "download · select a file, not a folder".to_string();
+            self.status.set("download · select a file, not a folder".to_string());
             self.window.request_redraw();
             return;
         }
         let Some(abs) = self.cursored_files_path() else {
-            self.status = "download · no file under cursor".to_string();
+            self.status.set("download · no file under cursor".to_string());
             self.window.request_redraw();
             return;
         };
@@ -243,7 +243,7 @@ impl State {
         let dir = self.settings.download_dir();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             tracing::warn!(error = %e, dir = %dir.display(), "download: cannot create downloads dir");
-            self.status = format!("download failed · mkdir {}: {e}", dir.display());
+            self.status.set(format!("download failed · mkdir {}: {e}", dir.display()));
             self.window.request_redraw();
             return;
         }
@@ -255,7 +255,7 @@ impl State {
             tracing::warn!(error = %e, "drop file.download — channel closed");
             return;
         }
-        self.status = format!("download · {basename} → {}", dest.display());
+        self.status.set(format!("download · {basename} → {}", dest.display()));
         self.window.request_redraw();
     }
 
@@ -266,7 +266,7 @@ impl State {
     /// its first chunk; subsequent chunks/files are pumped by `FileUploadAck`.
     pub(in crate::ui) fn start_upload(&mut self) {
         if self.file_ops.uploading() {
-            self.status = "upload · already in progress".to_string();
+            self.status.set("upload · already in progress".to_string());
             self.window.request_redraw();
             return;
         }
@@ -275,7 +275,7 @@ impl State {
             None => (false, String::new()),
         };
         let Some(abs) = self.cursored_files_path() else {
-            self.status = "upload · no target folder for this row".to_string();
+            self.status.set("upload · no target folder for this row".to_string());
             self.window.request_redraw();
             return;
         };
@@ -288,7 +288,7 @@ impl State {
             let dir = match abs.rsplit_once(['/', '\\']) {
                 Some((parent, _)) if !parent.is_empty() => parent.to_string(),
                 _ => {
-                    self.status = "upload · cannot resolve parent folder".to_string();
+                    self.status.set("upload · cannot resolve parent folder".to_string());
                     self.window.request_redraw();
                     return;
                 }
@@ -304,7 +304,7 @@ impl State {
         let files: std::collections::VecDeque<std::path::PathBuf> = match picked {
             Some(v) if !v.is_empty() => v.into_iter().collect(),
             _ => {
-                self.status = "upload · cancelled".to_string();
+                self.status.set("upload · cancelled".to_string());
                 self.window.request_redraw();
                 return;
             }
@@ -332,11 +332,11 @@ impl State {
                 // destination listing once so the new files appear without a
                 // manual re-expand, then report the aggregate.
                 self.refresh_upload_dir(&host, workspace_id, &dir_node_id);
-                self.status = if total == 1 {
+                self.status.set(if total == 1 {
                     format!("uploaded · {done} file → {dir}")
                 } else {
                     format!("uploaded · {done}/{total} files → {dir}")
-                };
+                });
                 self.window.request_redraw();
                 return;
             }
@@ -353,7 +353,7 @@ impl State {
             Ok(ft) => ft,
             Err(e) => {
                 tracing::warn!(error = %e, local = %local.display(), "upload: open local file failed");
-                self.status = format!("upload failed · open {}: {e}", local.display());
+                self.status.set(format!("upload failed · open {}: {e}", local.display()));
                 // A local-open failure aborts the rest of the batch: already
                 // uploaded files stay (refresh so they show), the remainder is
                 // dropped. Predictable partial state over silent skipping.
@@ -417,12 +417,12 @@ impl State {
                 } else {
                     // Multi-file batches prefix `file i/N ·`; a lone file omits it.
                     let prefix = self.file_ops.progress_prefix();
-                    self.status = format!("upload · {prefix}{name} {sent}/{total}");
+                    self.status.set(format!("upload · {prefix}{name} {sent}/{total}"));
                 }
             }
             Err((name, e)) => {
                 tracing::warn!(error = %e, "upload: local read failed");
-                self.status = format!("upload failed · read {name}: {e}");
+                self.status.set(format!("upload failed · read {name}: {e}"));
                 self.file_ops.abort_upload();
             }
         }

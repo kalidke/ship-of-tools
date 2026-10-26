@@ -131,7 +131,7 @@ impl State {
         // landing in whatever tmux pty the daemon still had
         // open even while a capsule was live and selected.
         layout_help::finish_agent_reveal(reveal, self, Some(&bytes));
-        self.status = format!("ROI {w}×{h} of {name} → LLM pane · Enter to send");
+        self.status.set(format!("ROI {w}×{h} of {name} → LLM pane · Enter to send"));
         self.window.request_redraw();
     }
 
@@ -154,7 +154,7 @@ impl State {
             .next()
             .unwrap_or(&node_id)
             .to_string();
-        self.status = format!("capture failed · {name}: {message}");
+        self.status.set(format!("capture failed · {name}: {message}"));
         self.window.request_redraw();
     }
 
@@ -175,7 +175,7 @@ impl State {
         // marker — otherwise the next unrelated preview would
         // consume it and report a "saved" that never happened.
         self.preview_requests.fail_scale_save();
-        self.status = format!("pixel size failed · {name}: {message}");
+        self.status.set(format!("pixel size failed · {name}: {message}"));
         self.window.request_redraw();
     }
 }

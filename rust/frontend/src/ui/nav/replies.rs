@@ -64,7 +64,7 @@ impl State {
             ResultTreeReply::Failed { request, error } => {
                 if awaited(self, &request) {
                     tracing::info!(?request, %error, "result tree request FAILED — reveal aborted");
-                    self.status = format!("result tree failed · {error}");
+                    self.status.set(format!("result tree failed · {error}"));
                     self.reveal.clear();
                     self.preview_requests.abort_reveal();
                     self.result_ledger.release_reveal();
@@ -354,7 +354,7 @@ impl State {
         // on this parent — previously this was warn-and-drop in
         // the transport and the reveal starved silently.
         tracing::info!(%parent_id, %error, "tree.children FAILED");
-        self.status = format!("tree expand failed · {parent_id}: {error}");
+        self.status.set(format!("tree expand failed · {parent_id}: {error}"));
         let refetch_gated = self
             .reveal
             .refetched()

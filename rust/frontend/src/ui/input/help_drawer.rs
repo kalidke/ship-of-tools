@@ -77,7 +77,7 @@ impl layout_help::HelpBrowserPort for State {
     fn help_html(&mut self, html: &[u8]) -> std::result::Result<(), String> {
         open_html_in_browser(html).map(|_| ()).map_err(|e| e.to_string())
     }
-    fn help_status(&mut self, status: String) { self.status = status; }
+    fn help_status(&mut self, status: String) { self.status.set(status); }
 }
 impl layout_help::AgentRevealPort for State {
     fn layout_paste(&mut self, bytes: &[u8]) { self.send_pane_input(bytes); }

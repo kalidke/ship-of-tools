@@ -187,7 +187,7 @@ impl State {
         // scroll hides what Enter would confirm. A text prompt is the
         // input field the user types into; a block cursor (▏) marks the
         // insertion point.
-        let status = self.status.clone();
+        let status = self.status.text().to_string();
         let nav_prompt_line = match self.focus_prompts.prompt() {
             Some(NavPrompt::CreateFile { input, .. }) => Some((format!("new file or dir/: {input}▏"), String::new())),
             Some(NavPrompt::ConfirmDelete { label, .. }) => Some((format!("delete {label}? [y/N]"), String::new())),

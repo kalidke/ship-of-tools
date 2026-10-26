@@ -58,7 +58,7 @@ impl State {
     }
 
     pub(in crate::ui) fn refuse_result(&mut self, reason: &str) {
-        self.status = format!("result refused · {reason}");
+        self.status.set(format!("result refused · {reason}"));
         tracing::warn!(%reason, "result target refused");
         self.window.request_redraw();
     }
@@ -98,15 +98,15 @@ impl State {
             FeCommand::ReloadKeybindings => {
                 self.bindings = KeyBindings::load_layered();
                 tracing::info!("fe-command: reloaded keybindings");
-                self.status = "keybindings reloaded".to_string();
+                self.status.set("keybindings reloaded".to_string());
                 self.window.request_redraw();
             }
             FeCommand::Notify { text, level } => {
                 tracing::info!(?level, %text, "fe-command: notify");
-                self.status = text;
+                self.status.set(text);
                 // Pin it briefly so a workspace switch doesn't instantly rebuild
                 // the status line over it (see NOTIFY_STICKY).
-                self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
+                self.status.hold();
                 self.window.request_redraw();
             }
             FeCommand::OpenUrl { url } => {
@@ -119,11 +119,11 @@ impl State {
                 let host = from_host.cloned().unwrap_or_else(|| self.default_host());
                 if let Some(url) = self.ensure_proxy_for_url(&host, &url, crate::ui::page_proxy::PageSource::Announced) {
                     match crate::browser_open::open_page(&url) {
-                        Ok(()) => self.status = format!("opened in browser · {origin}"),
-                        Err(e) => self.status = format!("open_url failed · {e}"),
+                        Ok(()) => self.status.set(format!("opened in browser · {origin}")),
+                        Err(e) => self.status.set(format!("open_url failed · {e}")),
                     }
                 }
-                self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
+                self.status.hold();
                 self.window.request_redraw();
             }
             FeCommand::Mode { mode } => {
@@ -250,10 +250,10 @@ impl State {
                 // (launch-sot.ps1 / sot-launch) respawns us. `ephemeral` FEs
                 // (`--capture`) have no supervisor and must not exit for one.
                 if self.ephemeral {
-                    self.status = "relaunch refused · ephemeral frontend".to_string();
+                    self.status.set("relaunch refused · ephemeral frontend".to_string());
                 } else {
                     tracing::info!(converge, "fe-command: relaunch");
-                    self.status = if converge { "converging…" } else { "relaunching…" }.to_string();
+                    self.status.set(if converge { "converging…" } else { "relaunching…" }.to_string());
                     self.relaunch_flag.store(
                         if converge { 76 } else { 75 },
                         std::sync::atomic::Ordering::Relaxed,

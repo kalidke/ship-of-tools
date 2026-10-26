@@ -192,7 +192,7 @@ impl State {
             if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == pinned) {
                 self.nav.select(idx);
             }
-            self.status = format!("unpinned · {pinned}");
+            self.status.set(format!("unpinned · {pinned}"));
             self.window.request_redraw();
             return;
         }
@@ -205,7 +205,7 @@ impl State {
             return;
         }
         self.nav_cursor.pin(id.clone());
-        self.status = format!("pinned · {id}");
+        self.status.set(format!("pinned · {id}"));
         self.window.request_redraw();
     }
 

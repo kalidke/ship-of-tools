@@ -159,7 +159,7 @@ fn begin_leave(leases: &crate::lease::Leases, prompts: &mut FocusPrompts, leavin
 /// grant took the leave first, and the wait goes on (false). A Keep that stays asks again, Yes selected, so the close
 /// dialog shows that notice: the window never seems to ignore the close.
 fn confirm_stay(leases: &crate::lease::Leases, prompts: &mut FocusPrompts, leaving: &mut Option<crate::lease::Leaving>,
-    should_exit: &mut bool, status: &mut String, now: std::time::Instant) -> bool {
+    should_exit: &mut bool, status: &mut StatusLine, now: std::time::Instant) -> bool {
     if !leaving.as_mut().is_some_and(|l| leases.stay(l, now)) {
         return false;
     }
@@ -188,7 +188,7 @@ impl State {
         match exit_intent(reason, self.leaving.as_ref().map(|l| l.intent)) {
             ExitStep::Ask => {
                 if !self.focus_prompts.ask_quit(false) {
-                    self.status = QUIT_REFUSED.to_string();
+                    self.status.set(QUIT_REFUSED.to_string());
                 }
                 self.window.request_redraw();
             }

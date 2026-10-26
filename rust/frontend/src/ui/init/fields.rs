@@ -83,9 +83,8 @@ impl State {
             monitor_dirty: false,
             repl_presentation: ReplPresentation::default(),
             evt_rx,
-            status: "offline · no transport".to_string(),
+            status: StatusLine::new("offline · no transport"),
             file_ops: FileOps::default(),
-            notify_sticky_until: None,
             nav: Navigation::new(initial_mode(
                 cli.start_mode.as_deref(),
                 persisted_geom.last_mode.as_deref(),

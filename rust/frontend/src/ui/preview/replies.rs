@@ -34,7 +34,7 @@ impl State {
         // (rebuild_fatal_overlay/show_fatal).
         self.hello_refused.insert(event_host.clone(), message);
         self.shaped.clear_fatal();
-        self.status = "the backend refused this window (see preview)".to_string();
+        self.status.set("the backend refused this window (see preview)".to_string());
     }
 
     pub(crate) fn on_concept_read(
@@ -133,13 +133,13 @@ impl State {
         // consume the marker and label an unrelated image "saved".
         let scale_saved = self.preview_requests.settle_scale_save(node_id.as_deref());
         if let Some(raw) = scale_saved {
-            self.status = if self.preview_source.scale().is_some() {
+            self.status.set(if self.preview_source.scale().is_some() {
                 format!("pixel size {raw} nm · saved")
             } else {
                 // Reply landed but carried no scale — report that
                 // rather than claiming a save that didn't stick.
                 format!("pixel size {raw} nm · saved, but no scale came back")
-            };
+            });
         }
         // Is this the higher-res reply to a zoom re-raster of the
         // page already on screen? Only if a re-raster is pending
@@ -360,16 +360,16 @@ impl State {
                     if let Err(e) = crate::browser_open::open_page(&url) {
                         tracing::warn!(error = %e, page = %origin,
                                 "pluto: browser open failed");
-                        self.status = format!("pluto.open browser-launch failed · {e}");
+                        self.status.set(format!("pluto.open browser-launch failed · {e}"));
                     } else {
-                        self.status = format!("pluto · opened {origin}");
+                        self.status.set(format!("pluto · opened {origin}"));
                     }
                 }
                 self.window.request_redraw();
             }
             Err(msg) => {
                 tracing::warn!(error = %msg, "pluto.open failed");
-                self.status = format!("pluto.open failed · {msg}");
+                self.status.set(format!("pluto.open failed · {msg}"));
                 self.window.request_redraw();
             }
         }
@@ -380,7 +380,7 @@ impl State {
     pub(crate) fn on_pluto_starting(&mut self, event_host: HostKey, message: String) {
         tracing::info!(%message, %event_host, "pluto.open: the server is still starting");
         let host = host_label(&self.hosts.declared_host, &event_host);
-        self.status = pluto_starting_status(host, &message);
+        self.status.set(pluto_starting_status(host, &message));
         self.window.request_redraw();
     }
 
@@ -392,16 +392,16 @@ impl State {
                     if let Err(e) = crate::browser_open::open_page(&url) {
                         tracing::warn!(error = %e, page = %origin,
                                 "docs: browser open failed");
-                        self.status = format!("docs.open browser-launch failed · {e}");
+                        self.status.set(format!("docs.open browser-launch failed · {e}"));
                     } else {
-                        self.status = format!("docs · opened {origin}");
+                        self.status.set(format!("docs · opened {origin}"));
                     }
                 }
                 self.window.request_redraw();
             }
             Err(msg) => {
                 tracing::warn!(error = %msg, "docs.open failed");
-                self.status = format!("docs.open failed · {msg}");
+                self.status.set(format!("docs.open failed · {msg}"));
                 self.window.request_redraw();
             }
         }
@@ -415,16 +415,16 @@ impl State {
                     if let Err(e) = crate::browser_open::open_page(&url) {
                         tracing::warn!(error = %e, page = %origin,
                                 "video: browser open failed");
-                        self.status = format!("video.open browser-launch failed · {e}");
+                        self.status.set(format!("video.open browser-launch failed · {e}"));
                     } else {
-                        self.status = "video · opened in browser".to_string();
+                        self.status.set("video · opened in browser".to_string());
                     }
                 }
                 self.window.request_redraw();
             }
             Err(msg) => {
                 tracing::warn!(error = %msg, "video.open failed");
-                self.status = format!("video.open failed · {msg}");
+                self.status.set(format!("video.open failed · {msg}"));
                 self.window.request_redraw();
             }
         }
@@ -443,15 +443,15 @@ impl State {
                 // `open_path_external`).
                 if let Err(e) = open_html_in_browser(&html) {
                     tracing::warn!(error = %e, "quarto: open_html_in_browser failed");
-                    self.status = format!("quarto.open browser-launch failed · {e}");
+                    self.status.set(format!("quarto.open browser-launch failed · {e}"));
                 } else {
-                    self.status = "quarto · opened in browser".to_string();
+                    self.status.set("quarto · opened in browser".to_string());
                 }
                 self.window.request_redraw();
             }
             Err(msg) => {
                 tracing::warn!(error = %msg, "quarto.open failed");
-                self.status = format!("quarto.open failed · {msg}");
+                self.status.set(format!("quarto.open failed · {msg}"));
                 self.window.request_redraw();
             }
         }
@@ -481,7 +481,7 @@ impl State {
             .and_then(|id| id.rsplit(['/', '\\']).next())
             .unwrap_or("preview")
             .to_string();
-        self.status = format!("preview failed · {name}: {message}");
+        self.status.set(format!("preview failed · {name}: {message}"));
         self.window.request_redraw();
     }
 }

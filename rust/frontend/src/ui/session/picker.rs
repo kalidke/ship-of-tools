@@ -321,7 +321,7 @@ impl State {
         if let Err(e) = self.send_to(&host, crate::net::transport::OutgoingReq::AccountsList) {
             tracing::warn!(error = %e, %host, "drop initial accounts.list — channel closed");
         }
-        self.status = format!("create workspace · {host} · picker @ {start}");
+        self.status.set(format!("create workspace · {host} · picker @ {start}"));
         self.window.request_redraw();
     }
 
@@ -359,7 +359,7 @@ impl State {
             ) {
                 tracing::warn!(error = %e, %path, "drop directory.list (drill-in)");
             }
-            self.status = format!("picker · {path}");
+            self.status.set(format!("picker · {path}"));
             self.window.request_redraw();
         }
     }
@@ -381,7 +381,7 @@ impl State {
             ) {
                 tracing::warn!(error = %e, %path, "drop directory.list (ascend)");
             }
-            self.status = format!("picker · {path}");
+            self.status.set(format!("picker · {path}"));
             self.window.request_redraw();
         }
     }
@@ -405,10 +405,10 @@ impl State {
         ) {
             tracing::warn!(error = %e, %path, "drop directory.list (toggle hidden)");
         }
-        self.status = format!(
+        self.status.set(format!(
             "picker · {path} · hidden folders {}",
             if include_hidden { "shown" } else { "hidden" }
-        );
+        ));
         self.window.request_redraw();
     }
 
@@ -420,7 +420,7 @@ impl State {
             return;
         };
         let suffix = if acct.any_logged_in() { "" } else { " (not logged in)" };
-        self.status = format!("picker · account: {}{suffix}", acct.name);
+        self.status.set(format!("picker · account: {}{suffix}", acct.name));
         self.window.request_redraw();
     }
 
@@ -459,7 +459,7 @@ impl State {
             },
         ) {
             tracing::warn!(error = %e, %host, %label, %path, "drop workspace.create — channel closed");
-            self.status = "create failed · channel closed".to_string();
+            self.status.set("create failed · channel closed".to_string());
             return;
         }
         // LU6a design-review amendment: the "since request" clock the
@@ -478,7 +478,7 @@ impl State {
             "codex" => "codex workspace",
             _ => "bare session",
         };
-        self.status = format!("create {kind} · '{label}' @ {path} (registering…)");
+        self.status.set(format!("create {kind} · '{label}' @ {path} (registering…)"));
         self.window.request_redraw();
     }
 
@@ -486,7 +486,7 @@ impl State {
     pub(in crate::ui) fn picker_cancel(&mut self) {
         if self.workspace_picker.is_some() {
             self.workspace_picker = None;
-            self.status = "create cancelled".to_string();
+            self.status.set("create cancelled".to_string());
             self.window.request_redraw();
         }
     }

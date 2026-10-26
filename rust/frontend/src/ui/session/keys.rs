@@ -179,9 +179,7 @@ pub(in crate::ui) fn session_destroy_key(state: &mut State, was_destroy_pending:
         .unwrap_or(row.node.label.as_str())
         .to_string();
     let Some(target_id) = target_id else {
-        state.status =
-            "destroy: row has no workspace_id (refresh `s` and retry)"
-                .to_string();
+        state.status.set("destroy: row has no workspace_id (refresh `s` and retry)");
         state.window.request_redraw();
         return Break(());
     };
@@ -194,17 +192,16 @@ pub(in crate::ui) fn session_destroy_key(state: &mut State, was_destroy_pending:
             },
         ) {
             tracing::warn!(error = %e, "drop workspace.destroy");
-            state.status = format!(
+            state.status.set(format!(
                 "destroy '{target_label}' failed · channel closed"
-            );
+            ));
         } else {
-            state.status = format!("destroying '{target_label}'…");
+            state.status.set(format!("destroying '{target_label}'…"));
         }
         state.window.request_redraw();
     } else {
         state.selected.arm_destroy(target);
-        state.status =
-            format!("press {} again to destroy '{target_label}' · any other key cancels", state.bindings.first_label(Action::SessionDestroy));
+        state.status.set(format!("press {} again to destroy '{target_label}' · any other key cancels", state.bindings.first_label(Action::SessionDestroy)));
         state.window.request_redraw();
     }
     Continue(())

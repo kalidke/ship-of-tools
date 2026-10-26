@@ -173,10 +173,8 @@ pub(in crate::ui) fn window_chords(state: &mut State, key: KeyPress<'_>, label: 
         // fullscreen with the pin on. Nothing on the way out,
         // and nothing when the setting has opted it off.
         if entering_fullscreen && state.settings.fullscreen_vsync_pin {
-            state.status =
-                "fullscreen: steady redraw for VRR panels ([display] fullscreen_vsync_pin = false to disable)"
-                    .to_string();
-            state.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
+            state.status.set("fullscreen: steady redraw for VRR panels ([display] fullscreen_vsync_pin = false to disable)");
+            state.status.hold();
         }
         state.last_key = Some(label);
         state.window.request_redraw();

@@ -98,12 +98,12 @@ async fn only_a_successful_stay_updates_the_prompt_notices() {
     let before = prompt.prompt().cloned();
     let mut leaving = None;
     let mut should_exit = false;
-    let mut status = "unchanged".to_string();
+    let mut status = StatusLine::new("unchanged");
     assert!(!confirm_stay(&leases, &mut prompt, &mut leaving, &mut should_exit, &mut status, now));
     assert_eq!(prompt.prompt(), before.as_ref());
     assert!(prompt.stayed());
     assert!(prompt.hint().is_some());
-    assert_eq!(status, "unchanged");
+    assert_eq!(status.text(), "unchanged");
     assert!(!should_exit);
     prompt.cancel();
     assert_eq!(prompt.focus(), PaneFocus::Preview);
@@ -136,7 +136,7 @@ async fn stay_scenarios(protect_other: bool) {
             tokio::spawn(async move { leases.before_data_connection(&host, &path, None, |_| {}).await })
         };
         asked.await.unwrap();
-        let (mut prompt, mut leaving, mut should_exit, mut status) = (FocusPrompts::new(PaneFocus::NavTree), None, false, "relaunching…".to_string());
+        let (mut prompt, mut leaving, mut should_exit, mut status) = (FocusPrompts::new(PaneFocus::NavTree), None, false, StatusLine::new("relaunching…"));
         let t0 = std::time::Instant::now();
         assert_eq!(begin_leave(&leases, &mut prompt, &mut leaving, &mut should_exit, intent, code, t0), LeaveEffect::Redraw);
         if protect_other && intent == LeaveIntent::Keep {
@@ -159,7 +159,7 @@ async fn stay_scenarios(protect_other: bool) {
             assert_eq!(prompt.quit_choice(), asked, "a Keep that stays asks again, Yes selected");
         }
         assert_eq!(prompt.stayed(), intent == LeaveIntent::Handover);
-        assert_eq!(status, "", "the relaunch command's status outlasted the stay");
+        assert_eq!(status.text(), "", "the relaunch command's status outlasted the stay");
         assert!(leases.notice().is_some_and(|n| n.starts_with(said)), "the stay's notice: {:?}", leases.notice());
         open.send(answer).unwrap();
         assert_eq!(in_flight.await.unwrap().unwrap(), 0);
