@@ -19,11 +19,13 @@ sot-protocol = { path = "../protocol" }
 sot-platform = { path = "../platform" }
 # The capsule's `Endpoint`, which the lane dial implements (the client trait and the connectors are platform's).
 sot-capsule = { path = "../capsule" }
+# The link's local streams: a `connect_own` client adopted as an async socket or pipe.
+interprocess = { workspace = true }
+# The link's end, logged once.
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 sot-platform = { path = "../platform", features = ["test-support"] }
-# The lane client's tests dial a fake daemon on a local socket or pipe, the one transport it has.
-interprocess = { workspace = true }
 # The descriptor test clears a pipe's close-on-exec flag, which std has no call for.
 libc = { workspace = true }

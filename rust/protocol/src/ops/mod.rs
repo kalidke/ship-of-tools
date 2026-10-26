@@ -470,6 +470,20 @@ pub mod op {
     /// not-ended notice. Payload [`crate::ops::FeNoticeSeenReq`]; reply
     /// [`crate::ops::FeNoticeSeenRes`].
     pub const FE_NOTICE_SEEN: &str = "fe.notice_seen";
+
+    /// The window's link (`ops/link.rs`; topology's `link` runs it): the first frame of an ssh login or a relay
+    /// connection that the far `sotd stdio-bridge` answers as the link's router, never a daemon. Payload
+    /// [`crate::ops::link::LinkHelloReq`]; reply [`crate::ops::link::LinkHelloRes`]. A daemon reached directly refuses
+    /// it `unauthenticated`, as any first frame that is not a hello.
+    pub const LINK_HELLO: &str = "link.hello";
+    /// Open a channel on a link: [`crate::ops::link::LinkOpenReq`], reply [`crate::ops::link::LinkOpenRes`].
+    pub const LINK_OPEN: &str = "link.open";
+    /// A channel's next bytes, as the blob: [`crate::ops::link::LinkDataEvt`].
+    pub const LINK_DATA: &str = "link.data";
+    /// Credit returned for a channel's bytes its consumer read: [`crate::ops::link::LinkCreditEvt`].
+    pub const LINK_CREDIT: &str = "link.credit";
+    /// A channel's end, both ways: [`crate::ops::link::LinkCloseEvt`].
+    pub const LINK_CLOSE: &str = "link.close";
 }
 
 mod session;
@@ -501,6 +515,8 @@ pub use update::*;
 
 mod lane;
 pub use lane::*;
+
+pub mod link;
 
 pub mod lease;
 pub use lease::{FeLeaseReq, FeLeaseRes, FeLeavingReq, FeLeavingRes, FeNoticeSeenReq, FeNoticeSeenRes, LeaseOutcome, LeaveIntent};

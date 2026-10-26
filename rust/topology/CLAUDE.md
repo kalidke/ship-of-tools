@@ -129,10 +129,26 @@ of each.
     caller, ssh or a systemd unit, owns the lifetime); a failure usually prints one stderr line, but a host name that
     contains a newline prints several, and the two copy directions can each print a diagnosis; the no-argument form
     ignores `$SOT_SOCKET` and `$SOT_BACKEND_LABEL`; its integration suite is Unix-only.
+13. **Flow control is per channel, so a stalled channel never stops the control channel or another channel.** The
+    link (`link/`) keeps each channel's queues and credit under one lock with the link's state (`table.rs`). Each
+    direction of each channel has a credit of `WINDOW` (256 KiB) granted at open; a sender writes a channel's data only
+    against its credit, in blobs of at most `CHUNK`; the receiver queues a channel's bytes in a queue its credit bounds
+    and returns credit, a chunk at a time, as its consumer reads. The link's one reader therefore never waits on a
+    consumer, and its one writer (`io.rs`) serves the link ops first and then the channels with data and credit in
+    turn, one chunk each. A consumer that stops reading holds at most `WINDOW` bytes of its channel at each end; its
+    producer then waits. A peer that sends beyond its credit, a blob over `CHUNK` (refused on its declared length, before
+    a byte of it is read), credit beyond the window or a frame for a channel never opened ends the link (logged once); a
+    frame for a channel already closed is dropped; the open past `MAX_CHANNELS` (channel 0 counted) is refused
+    `too_many_channels`. Limits: the bound on another channel's wait is not one chunk but the bytes already in flight
+    inside ssh and TCP, at most the sum of the open channels' credit (n x 256 KiB), so on a 1 MB/s link with two bulk
+    channels a keystroke can wait about half a second; `MAX_CHANNELS` bounds the queues at 64 MiB per link in the worst
+    case; a channel's throughput is at most `WINDOW` per round trip.
 
 ## Owns
 hosts.toml's grammar, search rule, edits and status table; this box's own endpoint, the label, `slug` and the plain
-host-name grammar; the ssh recipe, `SSH_OPTS`, `SSH_LOGIN_BOUND`, `LinkGate` and `LinkWatch`; the lane dial
+host-name grammar; the ssh recipe, `SSH_OPTS`, `SSH_LOGIN_BOUND`, `LinkGate` and `LinkWatch`; the link runtime (`link/`: the channel
+table, the reader and writer, `Channel`, `Link`, `LinkHandle`, the router's `serve`, `connect_local` and `adopt`,
+`LINK_REPLY_BOUND`, `SILENCE_BOUND`); the lane dial
 `DaemonLaneEndpoint` and its piped child; the unit text sotd generates (the hub's relay socket, service and command
 drop-in per relayed host, the pins), the tunnel and relay unit names, and `apply_plan`'s convergence; in `sotd`:
 `TopologyStore`, `topology.set` and `topology.changed`, `sotd topology`'s verbs, `sotd status`, `sotd same-version`,
@@ -141,8 +157,9 @@ drop-in per relayed host, the pins), the tunnel and relay unit names, and `apply
 ## Calls in
 `sot_protocol::{op, Frame, Kind, HelloReq, HANDOFF_ROLE, LaneConnectReq, LaneConnectRes, codec, child_lines}` (wire);
 `sot_platform::host::{state_dir, env, inherit_none}` and `sot_platform::identity::{challenge, peer, exchange}`;
-`sot_platform::transport::{Client, TransportError, connect_own, socket_unix, pipe_win}`, `sot_capsule::endpoint::Endpoint`; serde, tokio
-(oneshot, process, time). In `sotd`: `sot_containment::{process, Signal, Contained, ContainedStd, guard_pid}` and the
+`sot_platform::transport::{Client, TransportError, connect_own, socket_unix, pipe_win}`, `sot_capsule::endpoint::Endpoint`;
+`sot_protocol::ops::link` (the link's payloads and constants); serde, tokio (oneshot, process, time, io), interprocess
+(the link's local streams), tracing (the link's end). In `sotd`: `sot_containment::{process, Signal, Contained, ContainedStd, guard_pid}` and the
 server's roster and rows for `topology.set`.
 
 ## Calls out
@@ -180,6 +197,7 @@ One per guarantee. Library paths are under `rust/topology/src/`; daemon-half pat
 | 10 | pins | `relay_units_tests.rs`: `a_pin_names_each_host_and_its_domain_forms_only`, `unit_names_and_pin_paths`, `relay_units_carry_the_host_and_the_declared_path`; backend `relay_units_tests.rs`: `refresh_pins_the_daemon_and_the_tunnels`; `rust/backend/tests/unit_pin.rs` (real systemd condition evaluation, pin-write refusal); the `[Install]` limit has no test |
 | 11 | bounded `systemctl` | backend `relay_units_tests.rs`: `a_hung_systemctl_ends_at_its_bound_and_says_so`, `refresh_writes_and_reloads_in_order`, `refresh_after_a_failed_reload_reloads_and_restarts_again`, `the_relay_probe_takes_its_tree` |
 | 12 | stdio-bridge | `rust/backend/tests/stdio_bridge.rs` (every test there) |
+| 13 | per-channel flow control | `link/tests.rs`: `a_stalled_channel_never_delays_another_channel`, `data_beyond_its_credit_ends_the_link`, `a_blob_over_the_chunk_ends_the_link`, `a_frame_for_a_closed_channel_is_dropped_and_one_never_opened_ends_the_link`, `the_open_past_the_cap_is_refused` |
 
 Windows- and macOS-specific arms run on the hosted runner of their OS (`endpoint_windows_tests.rs`, the Windows arms of
 `dial_tests.rs`).

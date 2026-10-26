@@ -3994,6 +3994,7 @@ dependencies = [
  "sot-protocol",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
