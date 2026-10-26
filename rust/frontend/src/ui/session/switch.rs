@@ -261,8 +261,7 @@ impl State {
             self.figure_failed.clear();
             self.preview_png = None;
             self.preview_svg = None;
-            self.preview_concept = None;
-            self.concept = None;
+            self.concept.clear();
             self.preview_requests.reset_concept_follow();
             self.drift.clear();
             self.editor.close();

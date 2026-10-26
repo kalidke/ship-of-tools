@@ -102,15 +102,7 @@ impl State {
     pub(in crate::ui) fn layout_concept(&mut self, preview_rect: ScreenRect) {
         // Same dance for the concept pane. Shares the same rect now that
         // it's a single preview slot.
-        let concept_rect = preview_rect;
-        let concept_size_changed = (concept_rect.w - self.concept_rect_px.w).abs() > 0.5
-            || (concept_rect.h - self.concept_rect_px.h).abs() > 0.5;
-        if concept_size_changed {
-            if let Some(pc) = self.preview_concept.as_mut() {
-                pc.resize(self.text.font_system_mut(), concept_rect.w, concept_rect.h);
-            }
-        }
-        self.concept_rect_px = concept_rect;
+        self.concept.layout(preview_rect, self.text.font_system_mut());
     }
 
     pub(in crate::ui) fn clamp_preview_scroll(&mut self, show_edit: bool, md_rect: ScreenRect, preview_rect: ScreenRect) -> f32 {

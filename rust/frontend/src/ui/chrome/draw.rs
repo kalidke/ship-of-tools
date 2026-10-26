@@ -279,13 +279,13 @@ impl State {
         // (None/None), loading (Some/None or mismatched), and ready
         // (Some/Some with the same target).
         let concept_target = self.preview_requests.concept_target().map(str::to_owned);
-        let concept_status: String = match (&concept_target, &self.concept) {
+        let concept_status: String = match (&concept_target, self.concept.info()) {
             (None, _) => "annotation: (no target for this row)".to_string(),
-            (Some(t), Some(info)) if info.target == *t => {
-                if info.exists {
+            (Some(t), Some(info)) if info.target() == t.as_str() => {
+                if info.exists() {
                     let drift = match (
-                        info.synced_against.as_deref(),
-                        info.target.strip_prefix("files/"),
+                        info.synced_against(),
+                        info.target().strip_prefix("files/"),
                     ) {
                         (Some(synced), Some(path)) => match self.drift.status(path, synced) {
                             DriftStatus::InSync => " · in sync",
@@ -313,10 +313,10 @@ impl State {
         // the annotation parses a `synced_against` AND the file's
         // `ast_hash` differs. Expanding to non-cursored rows needs a
         // per-row concept cache — phase 2.
-        let selected_stale: bool = match (self.nav.tree().rows().get(self.nav.tree().selected()), &self.concept) {
-            (Some(row), Some(info)) if info.exists => {
+        let selected_stale: bool = match (self.nav.tree().rows().get(self.nav.tree().selected()), self.concept.info()) {
+            (Some(row), Some(info)) if info.exists() => {
                 if let (Some(synced), Some(path)) = (
-                    info.synced_against.as_ref(),
+                    info.synced_against(),
                     row.node.id.strip_prefix("files:"),
                 ) {
                     self.drift.is_stale(path, synced)

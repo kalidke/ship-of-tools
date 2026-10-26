@@ -101,13 +101,13 @@ pub(super) fn chord_types_text(ctrl: bool, alt: bool, super_: bool) -> bool {
 pub(in crate::ui) fn enter_editor(state: &mut State) {
     // Concept-annotation edit takes priority when one
     // is loaded for the cursored node (content is
-    // already in `state.concept`).
+    // already in the concept slot).
     let mut entered = false;
     if let (Some(target), Some(info)) =
-        (state.preview_requests.concept_target().map(str::to_owned), state.concept.as_ref())
+        (state.preview_requests.concept_target().map(str::to_owned), state.concept.info())
     {
-        if info.target == target && info.exists {
-            state.editor.enter_concept(target, info.synced_against.clone(), &info.content);
+        if info.target() == target && info.exists() {
+            state.editor.enter_concept(target, info.synced_against().map(str::to_owned), info.content());
             state.rebuild_edit_preview();
             entered = true;
         }

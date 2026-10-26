@@ -61,7 +61,7 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     figure_failed: std::collections::HashSet<String>,
     /// Concept-annotation backing data, including `synced_against`
     /// for the drift badge. The *shaped* MarkdownPreview is not in the
-    /// snapshot (cosmic-text Buffer isn't Clone-able); preview_concept
+    /// snapshot (cosmic-text Buffer isn't Clone-able); the shaped body
     /// is cleared on swap-in and the cursor-tracking
     /// `maybe_fire_concept_read` re-shapes it on the next frame from
     /// the fresh wire reply. The brief no-concept frame is the cost.
@@ -133,7 +133,7 @@ impl State {
                 pinned_preview_node_id: self.nav_cursor.pinned().clone(),
                 source: self.preview_source.clone(),
                 figure_failed: self.figure_failed.clone(),
-                concept: self.concept.clone(),
+                concept: self.concept.park(),
                 edit_state: self.editor.park(),
             },
         );
@@ -164,12 +164,11 @@ impl State {
         self.agent_pane.restore_snapshot_target(key.0.clone(), snap.bl_pane_target);
         self.preview_requests.restore_fired(snap.preview_node_id_fired);
         self.nav_cursor.restore_pin(snap.pinned_preview_node_id);
-        // preview_concept gets re-shaped on the next frame by the
+        // The shaped concept body gets re-shaped on the next frame by the
         // cursor-tracking concept.read path (memo cleared below). The
         // backing concept data is restored so the drift badge keeps
         // its synced_against until the fresh reply lands.
-        self.preview_concept = None;
-        self.concept = snap.concept;
+        self.concept.restore(snap.concept);
         self.preview_requests.reset_concept_follow();
         // Not snapshotted: while this workspace was parked the daemon sent no `preview.changed` for it, so a
         // cached hash may be of bytes since edited. Each file parses again at its next view.

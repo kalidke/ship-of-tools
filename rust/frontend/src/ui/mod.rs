@@ -608,7 +608,8 @@ struct State {
     /// Pixel rect of the markdown pane from the most recent ratatui layout
     /// pass; cached so we can re-shape on resize without re-running layout.
     md_rect_px: ScreenRect,
-    concept: Option<ConceptInfo>,
+    /// The concept slot: the last annotation read, its shaped body and the rect it is shaped for.
+    concept: ConceptSlot,
     /// Definition line (1-indexed) the in-flight `preview.get` should
     /// anchor to once it lands — set from the selected modules-mode row's
     /// `line` payload so the code preview scrolls the item (its docstring
@@ -625,14 +626,6 @@ struct State {
     /// line so we re-anchor only on a real change, never fighting the user's
     /// manual scroll on a stable selection.
     preview_anchored_to: Option<u32>,
-    /// Shaped annotation body for the latest `concept.read` reply, ready
-    /// for the chrome's concept pane to render. `None` when the cursored
-    /// row has no annotation; rebuilt on every event so we don't pay the
-    /// markdown shape cost per frame.
-    preview_concept: Option<MarkdownPreview>,
-    /// Pixel rect of the concept pane from the most recent layout pass.
-    /// Cached so `resize` triggers only on actual shape changes.
-    concept_rect_px: ScreenRect,
     /// Scroll offset (rows from the top) of the preview pane's flowed
     /// text. 0 = top of the markdown body; positive = scrolled down.
     /// Drives an upward pixel shift of the cosmic-text TextArea via
@@ -985,7 +978,7 @@ impl State {
 pub(crate) mod preview;
 pub(crate) mod render;
 use render::*;
-use self::preview::concept::{split_frontmatter, ConceptInfo, DriftCheck, DriftStatus};
+use self::preview::concept::{split_frontmatter, ConceptInfo, ConceptSlot, DriftCheck, DriftStatus};
 use self::preview::editor::state::{EditState, Editor};
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,

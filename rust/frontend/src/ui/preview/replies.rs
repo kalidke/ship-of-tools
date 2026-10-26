@@ -60,28 +60,24 @@ impl State {
         } else {
             None
         };
-        if exists {
+        let shaped = if exists {
             let body = split_frontmatter(&content).1;
-            self.preview_concept = Some(MarkdownPreview::new(
+            let rect = self.concept.rect();
+            Some(MarkdownPreview::new(
                 self.text.font_system_mut(),
                 &body,
-                self.concept_rect_px.w.max(1.0),
-                self.concept_rect_px.h.max(1.0),
+                rect.w.max(1.0),
+                rect.h.max(1.0),
                 self.scale,
                 &MathMetricsMap::new(),
                 &FigureMetricsMap::new(),
                 &self.highlight_service,
                 &self.markdown_token_cache,
-            ));
+            ))
         } else {
-            self.preview_concept = None;
-        }
-        self.concept = Some(ConceptInfo {
-            target,
-            exists,
-            content,
-            synced_against,
-        });
+            None
+        };
+        self.concept.install(target, exists, content, synced_against, shaped);
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -20,7 +20,8 @@ project-scan clock; `nav::TreeView` owns a tree's rows, cursor and content gener
 active tree, its mode, scroll and scan root, and the store of parked trees; `nav::RevealWalk` owns the reveal walk's
 target, awaited level, refresh memo and root-armed target; `nav::FileOps` owns the pending create and delete and the
 upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff;
-`preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer.
+`preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer;
+`preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -188,6 +189,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `file.read` before it is sent. A `file.read` opens an edit only for the armed node. A landed save snaps the baseline;
   a stale refusal raises the banner. A row parks the edit, never the shaped buffer or the armed read; a first visit
   closes it. State sends, re-shapes (`rebuild_edit_preview`) and repaints.
+- `ConceptSlot` privately owns the concept slot: the last `concept.read` (`ConceptInfo`, its fields private), its
+  shaped body and the rect it is shaped for. A reply installs the read and its shape together; a follow's commit and a
+  first visit clear both; a row parks the read alone, and its restore drops the shape until the next read. The layout
+  pass resizes the shape only when the rect moved by more than half a pixel. The shaped body is built and resized but
+  no draw path reads it today.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
