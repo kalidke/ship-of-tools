@@ -13,14 +13,33 @@ pub(in crate::ui) struct StatusLine {
     /// notify un-seeable while the user roamed workspaces). Cleared + the
     /// status rebuilt once elapsed (in `about_to_wait`, on the idle tick).
     sticky_until: Option<std::time::Instant>,
+    /// The held text a disconnect line carries (a reply's outcome, a notify): kept on its own, so each further
+    /// disconnect line carries it and not the previous disconnect line. Any other write drops it.
+    note: Option<String>,
 }
 
 impl StatusLine {
-    pub(in crate::ui) fn new(text: impl Into<String>) -> Self { Self { text: text.into(), sticky_until: None } }
+    pub(in crate::ui) fn new(text: impl Into<String>) -> Self { Self { text: text.into(), sticky_until: None, note: None } }
 
     pub(in crate::ui) fn text(&self) -> &str { &self.text }
-    pub(in crate::ui) fn set(&mut self, text: impl Into<String>) { self.text = text.into(); }
-    pub(in crate::ui) fn clear(&mut self) { self.text.clear(); }
+    pub(in crate::ui) fn set(&mut self, text: impl Into<String>) { self.text = text.into(); self.note = None; }
+    pub(in crate::ui) fn clear(&mut self) { self.text.clear(); self.note = None; }
+
+    /// The text a disconnect line must carry: the note an earlier one carried, else the text held now (never a
+    /// disconnect line itself), while the hold lasts.
+    pub(in crate::ui) fn carried(&mut self) -> Option<String> {
+        if !self.held() {
+            return None;
+        }
+        self.note.clone().or_else(|| Some(self.text.clone()).filter(|t| !t.starts_with("disconnected")))
+    }
+
+    /// Write `text` carrying `note`, and hold it.
+    pub(in crate::ui) fn set_carrying(&mut self, text: impl Into<String>, note: String) {
+        self.text = text.into();
+        self.note = Some(note);
+        self.hold();
+    }
 
     /// Hold the text just written for `NOTIFY_STICKY`.
     pub(in crate::ui) fn hold(&mut self) { self.sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY); }

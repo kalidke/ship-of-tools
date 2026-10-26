@@ -10,7 +10,24 @@ fn the_disconnect_line_carries_the_text_held_on_it() {
     );
 }
 
+/// Two disconnect lines drain before one paint (a redial failing again): the reply's outcome is on the line after
+/// both, once, and the first disconnect's reason is not.
 #[test]
-fn a_held_disconnect_line_is_not_carried_into_the_next_one() {
-    assert_eq!(disconnect_status("eof", Some("disconnected \u{b7} eof")), "disconnected \u{b7} eof");
+fn a_reply_outcome_survives_any_number_of_disconnect_lines() {
+    let mut status = StatusLine::new("connected");
+    status.set("reply to repo__box: delivery unknown \u{b7} the connection ended");
+    status.hold();
+    for reason in ["eof", "dial failed", "dial failed again"] {
+        show_disconnect(&mut status, reason);
+    }
+    assert_eq!(
+        status.text(),
+        "disconnected \u{b7} dial failed again \u{b7} reply to repo__box: delivery unknown \u{b7} the connection ended"
+    );
+    // With nothing held, a disconnect carries nothing, and a disconnect line is never carried.
+    let mut status = StatusLine::new("connected");
+    show_disconnect(&mut status, "eof");
+    assert_eq!(status.text(), "disconnected \u{b7} eof");
+    show_disconnect(&mut status, "eof again");
+    assert_eq!(status.text(), "disconnected \u{b7} eof again", "a disconnect line is never carried");
 }

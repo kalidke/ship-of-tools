@@ -5,12 +5,23 @@
 use crate::ui::*;
 
 /// The status line for the selected host's disconnect: its reason, and the text that was held on the line (a
-/// notify, a reply's outcome) when it came, so a person who has not yet seen that text still does. A held
-/// disconnect line is not carried again, so repeated disconnects do not pile up.
+/// notify, a reply's outcome) when it came, so a person who has not yet seen that text still does.
 pub(in crate::ui) fn disconnect_status(reason: &str, held: Option<&str>) -> String {
-    match held.filter(|held| !held.starts_with("disconnected")) {
+    match held {
         Some(held) => format!("disconnected \u{b7} {reason} \u{b7} {held}"),
         None => format!("disconnected \u{b7} {reason}"),
+    }
+}
+
+/// Show the selected host's disconnect on `status`. The text held on the line is carried as a part of its own, so
+/// any number of disconnect lines (a redial that fails again) keep it until a write that is not a disconnect, or the
+/// end of its hold, replaces it; the earlier disconnect line is not carried, so they do not pile up.
+pub(in crate::ui) fn show_disconnect(status: &mut StatusLine, reason: &str) {
+    let carried = status.carried();
+    let text = disconnect_status(reason, carried.as_deref());
+    match carried {
+        Some(note) => status.set_carrying(text, note),
+        None => status.set(text),
     }
 }
 
@@ -250,12 +261,7 @@ impl State {
         }
         if event_host == *self.selected.host() {
             // A text a notify or a reply's outcome is holding, drained in the same frame, is carried, not overwritten.
-            let held = self.status.held().then(|| self.status.text().to_string());
-            let text = disconnect_status(&reason, held.as_deref());
-            self.status.set(text);
-            if held.is_some() {
-                self.status.hold();
-            }
+            show_disconnect(&mut self.status, &reason);
         } else {
             // (S9, finding S14): `host_label`,
             // not the bare dial key, so a log line names a

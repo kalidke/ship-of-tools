@@ -114,10 +114,14 @@ impl State {
             outcome: "unknown".into(),
             detail: "the connection to the daemon ended before it answered".into(),
         })?;
-        to_events(crate::net::transport::IncomingEvt::Disconnected { reason: "eof".into(), refused: false })?;
+        for reason in ["eof", "dial failed"] {
+            to_events(crate::net::transport::IncomingEvt::Disconnected { reason: reason.into(), refused: false })?;
+        }
         self.drain_events();
         anyhow::ensure!(
-            self.status.text().contains("delivery unknown") && self.status.text().contains("disconnected"),
+            self.status.text().contains("delivery unknown")
+                && self.status.text().contains("dial failed")
+                && !self.status.text().contains("eof"),
             "the disconnect hid the reply's outcome: {}",
             self.status.text()
         );

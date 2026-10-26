@@ -276,8 +276,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   close dialog; the target (handle, listed name, host) and the line go through `cell_lines` and `wrap_status`, so a
   hostile name stays on rows of its own with no control character in a cell. The mouse takes no part. The answer comes
   back as `IncomingEvt::PageReplied` and `page_reply_status` puts it on the status line, held like a pushed notify;
-  the selected host's `Disconnected` that follows in the same frame carries the held text instead of overwriting
-  it (`session::replies::disconnect_status`, test `the_disconnect_line_carries_the_text_held_on_it`): only `sent` says the line
+  the selected host's `Disconnected` lines that follow before a paint (a redial failing again) carry the held text,
+  kept as a part of its own, instead of overwriting it (`session::replies::show_disconnect`, tests
+  `the_disconnect_line_carries_the_text_held_on_it` and `a_reply_outcome_survives_any_number_of_disconnect_lines`): only `sent` says the line
   and its Enter were recorded. Behavior tests: `control::reply_bar::tests::{the_bar_sends_only_on_an_armed_enter,
   esc_drops_and_sends_nothing, the_bar_takes_every_key_while_open_and_in_view, a_second_offer_while_one_is_open_is_dropped,
   an_offer_whose_line_is_not_the_daemons_marked_text_opens_no_bar, the_bar_shows_the_target_and_the_exact_line,
