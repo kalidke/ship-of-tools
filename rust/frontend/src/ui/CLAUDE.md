@@ -33,7 +33,7 @@ with their requests in flight, and the pending reflow; `control::ControlChannel`
 last `fe-state.json` signature; `drawer::terminal::drawer::TerminalDrawer` owns the Terminal drawer's shell, its last
 pty size and its starting folder; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
 spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor; `chrome::StatusLine`
-owns the status text and the hold a pushed notify keeps on it.
+owns the status text and the hold a pushed notify keeps on it; `chrome::BatteryGauge` owns the cached battery label.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -254,6 +254,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `StatusLine` privately owns the status line: every write replaces the text; a pushed notify (and the launch
   notice, a capture's result, an interrupted upload, the fullscreen pin) also holds it for `NOTIFY_STICKY`, during
   which `rebuild_connection_status` leaves it; the idle tick expires the hold once and rebuilds the line.
+- `BatteryGauge` privately owns the battery readout: the OS is asked at most every 30 s, the label is `None` with
+  no battery or on an error (never a fake reading), and every frame between queries reuses it.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

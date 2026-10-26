@@ -377,15 +377,8 @@ struct State {
     /// bold. `true` = "dim": non-selected rows are dimmed so the selection
     /// pops by contrast. Applied in both the nav rows and the bottom strip.
     contrast_dim: bool,
-    /// Cached battery readout for the top-right chrome (e.g. `85%` or `+72%`
-    /// while charging). `None` means no battery present / query failed — we
-    /// render nothing in that case (never a fake `0%`). The OS query is not
-    /// free, so it's refreshed at most once per `BATTERY_QUERY_INTERVAL`; the
-    /// clock ticking every second reuses this cached value in between.
-    battery_label: Option<String>,
-    /// When the cached `battery_label` was last (re)computed. `None` forces a
-    /// query on the first paint.
-    last_battery_query: Option<std::time::Instant>,
+    /// The battery readout's cache.
+    battery: BatteryGauge,
     /// Window-wide focus, prompt editing and close notices; runtime state only.
     focus_prompts: FocusPrompts,
     /// The four pane content rects from the most recent redraw, cached

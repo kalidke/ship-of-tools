@@ -224,30 +224,6 @@ pub(in crate::ui) fn nav_pinned_rows(
     (pane_height - rows.len(), rows, drawn)
 }
 
-impl State {
-    /// Refresh the cached battery label if it's stale (or never queried).
-    /// The OS query (via the cross-platform `battery` crate) is not free, so
-    /// it runs at most once per `BATTERY_QUERY_INTERVAL`; between refreshes the
-    /// per-second clock repaint reuses the cached value. On no battery present
-    /// (desktop / CI) or any query error we set the label to `None` so the
-    /// chrome paints nothing for the battery — never a fake `0%` or `N/A`.
-    pub(in crate::ui) fn refresh_battery_label(&mut self) {
-        /// How often to hit the OS for a fresh battery reading.
-        const BATTERY_QUERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
-
-        let now = std::time::Instant::now();
-        let fresh = self
-            .last_battery_query
-            .map(|t| now.duration_since(t) < BATTERY_QUERY_INTERVAL)
-            .unwrap_or(false);
-        if fresh {
-            return;
-        }
-        self.last_battery_query = Some(now);
-        self.battery_label = query_battery_label();
-    }
-}
-
 /// Middle-truncate `s` to at most `max` chars, biasing the tail so a path's
 /// basename + extension stay visible (`src/very/long/Mod…Name.jl`). Returns
 /// `s` unchanged when it already fits. The full name is always recoverable
@@ -276,8 +252,8 @@ pub(in crate::ui) fn middle_truncate(s: &str, max: usize) -> String {
 /// OS-specific calls here.
 ///
 /// This reads the OS and is not free; callers must rate-limit it (see
-/// `State::refresh_battery_label`), not call it per frame.
-fn query_battery_label() -> Option<String> {
+/// `BatteryGauge::label`), not call it per frame.
+pub(super) fn query_battery_label() -> Option<String> {
     use battery::State as BatState;
 
     let manager = battery::Manager::new().ok()?;

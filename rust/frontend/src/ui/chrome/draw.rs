@@ -219,8 +219,7 @@ impl State {
         // free, so refresh the cache at most once per `BATTERY_QUERY_INTERVAL`
         // (the clock repaints ~1×/s and reuses the cached value between
         // refreshes). `None` => no battery / query failed => paint nothing.
-        self.refresh_battery_label();
-        let battery = self.battery_label.clone();
+        let battery = self.battery.label();
         let last_key = self.last_key.clone();
         // FE/BE version stamp for the bottom chrome edge. Snapshotted here
         // with the other draw locals because the draw closure can't borrow
