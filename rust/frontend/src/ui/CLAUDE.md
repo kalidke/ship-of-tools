@@ -29,7 +29,8 @@ the shown preview's page, its raster zoom and a re-raster's keep-view; `preview:
 owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved;
 `preview::image::figure_store::FigureStore` owns the markdown figures' bitmaps, requests in flight and failures;
 `preview::markdown::media_store::MarkdownMedia` owns the table buffers and their scroll, the math and token caches
-with their requests in flight, and the pending reflow.
+with their requests in flight, and the pending reflow; `control::ControlChannel` owns the fe-commands queue and the
+last `fe-state.json` signature.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -232,6 +233,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   no reflow, so it cannot loop); a figure's landing or failure asks for one too, and the frame takes it once. Table
   buffers are rebuilt only when their sources change, which also returns the shared horizontal scroll to the left;
   the scroll is clamped each frame to the widest table. A math SVG rasterizes once, at the pane's size.
+- `ControlChannel` privately owns the window half of the control channel (ADR 0019): the queue the command-file
+  watcher fills through its producer end, drained whole under the lock alone so dispatch never holds it, and the
+  signature of the last `fe-state.json` written, so the file is rewritten only when the state it reports changes.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

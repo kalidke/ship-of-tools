@@ -51,7 +51,7 @@ impl State {
         workspaces.hash(&mut hasher);
         preview_sig.hash(&mut hasher);
         let sig = hasher.finish();
-        if self.fe_state_sig == Some(sig) {
+        if self.control.state_written(sig) {
             return;
         }
         let preview = match self.raster.roi() {
@@ -86,7 +86,7 @@ impl State {
             tracing::warn!(error = %e, "write fe-state.json failed");
             return;
         }
-        self.fe_state_sig = Some(sig);
+        self.control.record_state(sig);
     }
 }
 

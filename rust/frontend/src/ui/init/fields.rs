@@ -182,8 +182,7 @@ impl State {
             repo_dir,
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             presence: Default::default(),
-            fe_commands: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
-            fe_state_sig: None,
+            control: ControlChannel::default(),
             focus_on_first_frame: true,
             #[cfg(all(test, feature = "test-window-progress"))]
             native_progress: native_progress_ledger(),

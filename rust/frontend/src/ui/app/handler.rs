@@ -88,7 +88,7 @@ impl ApplicationHandler for App {
                 // ephemeral instances don't arm them (B8).
                 if let Some(cmd_dir) = fe_commands_dir().filter(|_| !state.ephemeral) {
                     let _ = std::fs::create_dir_all(&cmd_dir);
-                    spawn_command_watcher(cmd_dir, state.fe_commands.clone(), state.wake.clone());
+                    spawn_command_watcher(cmd_dir, state.control.producer(), state.wake.clone());
                 }
                 self.state = Some(state);
             }

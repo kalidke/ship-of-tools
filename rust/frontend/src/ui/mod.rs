@@ -462,13 +462,8 @@ struct State {
     bindings: KeyBindings,
     help_back_quad: Option<(u8, Quad)>,
     // ui/control: the fe-commands queue and the fe-state.json signature.
-    /// FE control commands (ADR 0019) enqueued by the command-file watcher
-    /// thread (the producer) and drained on the main thread in `window_event`
-    /// (the consumer), so dispatch runs the same code paths as the keybinds.
-    fe_commands: Arc<std::sync::Mutex<std::collections::VecDeque<FeCommand>>>,
-    /// Hash of the last `fe-state.json` we wrote (ADR 0019), so the readback
-    /// file is only rewritten when the observable state actually changes.
-    fe_state_sig: Option<u64>,
+    /// The fe-commands queue the watcher fills and the last fe-state.json signature.
+    control: ControlChannel,
     // ui/nav: the active tree and mode, cursor-driven preview firing, request generations.
     /// The nav pane's trees: the active (mode, row)'s tree with its scroll and scan root, and the store parking
     /// every other tree. Installs route by the reply's key, so the active view can only hold the active key's tree.
