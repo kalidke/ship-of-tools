@@ -185,7 +185,7 @@ impl State {
             .into_iter()
             .map(|name| {
                 let connected = self.hosts.host_connected.get(&name).copied().unwrap_or(false);
-                let link = host_link_status(connected, self.hello_refused.get(&name).map(String::as_str));
+                let link = host_link_status(connected, self.hello_refused.get(&name));
                 let is_active = name == *self.selected.host();
                 let is_default = default_name == Some(name.as_str());
                 let display = host_label(&self.hosts.declared_host, &name);

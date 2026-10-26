@@ -115,11 +115,7 @@ impl State {
             },
             row_directory: RowDirectory::default(),
             row_presentation: RowPresentation::default(),
-            host: None,
-            daemon_root_basename: None,
-            daemon_project_root: None,
-            backend_version: None,
-            last_revision: 0,
+            active_link: crate::ui::host_view::ActiveLink::new(),
             repl_model: ReplModel::default(),
             result_ledger: ResultLedger::default(),
             contrast_dim: cli.contrast_mode == "dim",
@@ -177,7 +173,7 @@ impl State {
             native_progress: native_progress_ledger(),
             editor: Editor::default(),
             help_back_quad: None,
-            hello_refused: HashMap::new(),
+            hello_refused: Default::default(),
             figures: FigureStore::default(),
             // ADR 0035: each host's `Connected` evt (remote + proxy) adds it
             // here; `resumed()` spawns the listener manager.

@@ -179,9 +179,9 @@ impl State {
         // into the status line HERE too, not only in `drain_events`'s own
         // `Connected` handling — switching to a host that is ALREADY
         // connected fires no new `Connected` event, so without this
-        // `self.host` kept showing whatever the PREVIOUSLY active host
+        // the status line kept showing whatever the PREVIOUSLY active host
         // had declared until its own next reconnect.
-        self.host = Some(host_label(&self.hosts.declared_host, self.selected.host()).to_string());
+        self.active_link.relabel(host_label(&self.hosts.declared_host, self.selected.host()).to_string());
         // ADR 0042 L2a: preview_fatal is a lazily-rebuilt PROJECTION of
         // hello_refused for whichever host is active (rebuild_fatal_overlay
         // only refills it when it's None) -- an active-host switch must

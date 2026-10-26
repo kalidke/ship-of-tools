@@ -71,13 +71,13 @@ impl State {
         if self.status.held() {
             return;
         }
-        let Some(host) = self.host.clone() else {
+        let Some(host) = self.active_link.host_label().map(str::to_owned) else {
             return;
         };
         let label = self
             .active_workspace_label()
             .unwrap_or_else(|| "default".to_string());
-        self.status.set(format!("connected · {host}:{label} · rev {}", self.last_revision));
+        self.status.set(format!("connected · {host}:{label} · rev {}", self.active_link.revision()));
     }
 
     /// Display label for the active workspace: the per-workspace name from
@@ -90,7 +90,7 @@ impl State {
         self.row_presentation.active_label(
             self.selected.host(),
             self.selected.workspace_id().as_deref(),
-            self.daemon_root_basename.as_deref(),
+            self.active_link.root_basename(),
         )
     }
 }

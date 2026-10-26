@@ -35,7 +35,8 @@ pty size and its starting folder; `chrome::StripMotion` owns the session strip's
 spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor; `chrome::StatusLine`
 owns the status text and the hold a pushed notify keeps on it; `chrome::BatteryGauge` owns the cached battery label;
 `input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue; `proxy_arms::ProxyArms`
-owns the page proxy's proxied hosts, listener manager and armed listeners.
+owns the page proxy's proxied hosts, listener manager and armed listeners; `host_view::ActiveLink` owns the active
+connection's hello facts and `host_view::HelloRefusals` each host's refused hello.
 Each of these owners lives in a module (or a module tree) that holds no `impl State`, so the compiler, not
 convention, keeps the window's code out of its fields.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
@@ -266,6 +267,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   its own `Connected` said so (no host's event touches another's); a page's listener is armed once per (host, daemon
   port), re-armed on reuse, and an `Announced` page whose port is held, by this window's listener for another host or
   by an unknown process, is never opened. State resolves the dial and reports each refusal on the status line.
+- `ActiveLink` privately owns the active connection's hello as the status line and version stamp show it (label,
+  project root and its basename, backend version, revision), set only by the active host's own `Connected` and
+  relabelled by a switch to an already connected host. `HelloRefusals` privately owns each host's refused hello,
+  lifted only by that host's own clean hello; the active host's is the blocking overlay.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
