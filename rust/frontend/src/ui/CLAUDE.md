@@ -34,7 +34,9 @@ last `fe-state.json` signature; `drawer::terminal::drawer::TerminalDrawer` owns 
 pty size and its starting folder; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
 spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor; `chrome::StatusLine`
 owns the status text and the hold a pushed notify keeps on it; `chrome::BatteryGauge` owns the cached battery label;
-`input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue.
+`input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue; `proxy_arms::ProxyArms`
+owns the page proxy's proxied hosts, listener manager and armed listeners; `host_view::ActiveLink` owns the active
+connection's hello facts and `host_view::HelloRefusals` each host's refused hello.
 Each of these owners lives in a module (or a module tree) that holds no `impl State`, so the compiler, not
 convention, keeps the window's code out of its fields.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
@@ -140,9 +142,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   the aim through the owner's operations; its ROI assertions stay intact.
 - `InstalledPreviewSource` privately owns what the last admitted preview reply installed: its mime and bytes, the node
   it answered (what `o`/`W`/`O` act on, never the fired target), its physical scale and, for a markdown reply with a
-  node, the document's node and workspace, which a later non-markdown reply leaves in place. It is one Clone value: a
-  row's snapshot carries it whole and restores it before the repaint, and a first visit clears it whole, so the bytes,
-  node, calibration and markdown origin are always one reply's. The coordinator repaints from an owned copy of the
+  node, the document's node and workspace. It is one Clone value: a row's snapshot carries it whole and restores it
+  before the repaint, and a first visit clears it whole, so the bytes, node and calibration are always the latest
+  reply's. The markdown origin is not: it is the last markdown reply with a node, so after markdown A with a node, a
+  PNG or a node-less markdown B replaces the bytes, node and scale and keeps A's origin (figure fetches for the shown
+  markdown still need it). The coordinator repaints from an owned copy of the
   bytes; `figure_failed` stays with the markdown media and travels beside it in the snapshot.
 - `ParkedViews` privately owns the map of parked row views. Leaving a row parks its view (replacing an earlier one),
   coming back reads a clone, a kept default row's end forgets only the parked attachment, a destroyed row's view is
@@ -261,6 +265,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   no battery or on an error (never a fake reading), and every frame between queries reuses it.
 - `Pointer` privately owns the pointer between events: the last position (winit reports it only on motion) and the
   wheel's fractional rows, stored by the wheel adapter and cleared when the agent pane consumes a gesture.
+- `ProxyArms` privately owns the window half of the page proxy (ADR 0035): a host's pages are proxied exactly when
+  its own `Connected` said so (no host's event touches another's); a page's listener is armed once per (host, daemon
+  port), re-armed on reuse, and an `Announced` page whose port is held, by this window's listener for another host or
+  by an unknown process, is never opened. State resolves the dial and reports each refusal on the status line.
+- `ActiveLink` privately owns the active connection's hello as the status line and version stamp show it (label,
+  project root and its basename, backend version, revision), set only by the active host's own `Connected` and
+  relabelled by a switch to an already connected host. `HelloRefusals` privately owns each host's refused hello,
+  lifted only by that host's own clean hello; the active host's is the blocking overlay.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

@@ -36,7 +36,7 @@ impl ApplicationHandler for App {
                     // costs nothing idle. It arms per port only when THAT
                     // port's owning host actually connects remotely and
                     // advertises the proxy, gated at ensure-time by
-                    // `proxy_capable_hosts` (per host, set from each host's
+                    // the proxied hosts (per host, set from each host's
                     // own Connected evt), NOT the CLI shape. Each listener now
                     // carries its own target daemon address + token
                     // (`ensure_proxy_for_url` resolves both from
@@ -51,7 +51,7 @@ impl ApplicationHandler for App {
                     // before the browser launches.
                     let (ltx, lrx) = tokio::sync::mpsc::unbounded_channel();
                     crate::pages::spawn_proxy_manager(rt, lrx);
-                    state.proxy_listener_tx = Some(ltx);
+                    state.proxies.start_manager(ltx);
                 }
                 // If `--start-mode modules` was set, queue a project.scan
                 // request now so the chrome's initial render is the

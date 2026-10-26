@@ -42,11 +42,7 @@ impl State {
         // (the 2026-09-10 incident), and a non-default host's
         // Connected arms its own entry too, instead of being
         // silently ignored.
-        if proxy && !matches!(resolved, ResolvedDial::Local) {
-            self.proxy_capable_hosts.insert(event_host.clone());
-        } else {
-            self.proxy_capable_hosts.remove(&event_host);
-        }
+        self.proxies.note_connected(&event_host, proxy && !matches!(resolved, ResolvedDial::Local));
         // Residual (accepted, codex): these gates gate NEW binds
         // only; listeners already bound this process persist across
         // a reconnect. A capability DOWNGRADE across reconnect

@@ -226,7 +226,7 @@ impl State {
         // `self` again.
         let (version_stamp, version_skew) = version_label(
             &sot_protocol::app_version(),
-            self.backend_version.as_deref(),
+            self.active_link.backend_version(),
         );
         (clock_now, battery, last_key, version_stamp, version_skew)
     }

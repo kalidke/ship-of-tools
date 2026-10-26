@@ -17,7 +17,7 @@ impl State {
         // of active_host's entry, rebuilt lazily at draw time
         // either way (harmless extra rebuild if this wasn't
         // the active host's mismatch to begin with).
-        self.hello_refused.remove(&event_host);
+        self.hello_refused.accept(&event_host);
         self.shaped.clear_fatal();
     }
 
@@ -32,7 +32,7 @@ impl State {
         // other (healthy) host works fine. Only active_host's
         // entry is ever projected to the blocking overlay
         // (rebuild_fatal_overlay/show_fatal).
-        self.hello_refused.insert(event_host.clone(), message);
+        self.hello_refused.refuse(event_host.clone(), message);
         self.shaped.clear_fatal();
         self.status.set("the backend refused this window (see preview)".to_string());
     }

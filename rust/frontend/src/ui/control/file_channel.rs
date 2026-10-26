@@ -23,8 +23,8 @@ impl State {
             PaneFocus::Repl => "repl",
         };
         let active = self.selected.workspace_id().clone();
-        let host = self.host.clone();
-        let rev = self.last_revision;
+        let host = self.active_link.host_label().map(str::to_owned);
+        let rev = self.active_link.revision();
         let workspaces = self.row_presentation.keys().to_vec();
         // ADR 0022: the active image preview, so the LLM pane knows what the
         // user is zoomed into. The signature buckets zoom (0.1) + ROI origin/

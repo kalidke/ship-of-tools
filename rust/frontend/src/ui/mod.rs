@@ -160,7 +160,9 @@ use crate::ui::render::text::TextLayer;
 use crate::net::transport::ResolvedDial;
 
 mod connections;
+mod host_view;
 mod page_proxy;
+mod proxy_arms;
 mod events;
 mod init;
 
@@ -436,34 +438,8 @@ struct State {
     row_directory: RowDirectory,
     /// Private listed-row projections, activity order and transition flashes.
     row_presentation: RowPresentation,
-    /// Short hostname from the hello response, kept alongside the
-    /// daemon's project_root basename so the chrome can rebuild the
-    /// "connected · host:workspace · rev N" status line every time the
-    /// active workspace changes — not just at connect time. ADR 0042 L2a:
-    /// updated only from events whose host is `active_host` — this field
-    /// (and its three siblings below) describe the active connection's
-    /// status line, not every connection; `host_connected` above is the
-    /// per-host status the Sessions tree needs.
-    host: Option<String>,
-    /// Project_root basename from the hello response. Used as the label
-    /// whenever `active_workspace_id` is None; explicit slugs use presentation labels.
-    daemon_root_basename: Option<String>,
-    /// Full project_root path from the hello response. Joined with the
-    /// `files:<rel>` node id by `copy_navtree_path` so Ctrl+C in NavTree
-    /// yields the absolute backend-side path (paste-into-shell utility).
-    daemon_project_root: Option<String>,
-    /// The connected backend's product version (`HelloRes::app_version`),
-    /// painted beside the FE's own version on the bottom chrome edge.
-    /// `None` before the first hello, or when the daemon is old enough not
-    /// to send the field. Deliberately NOT cleared on disconnect — a stale
-    /// "what we last talked to" reads better than a blank half, and the
-    /// transport state is already called out in the nav status row, so the
-    /// stamp doesn't need to duplicate it.
-    backend_version: Option<String>,
-    /// Highest revision seen in any frame, surfaced in the status line.
-    /// Tracked separately so post-connect events (workspace switches,
-    /// preview.changed bumps) don't render a stale rev.
-    last_revision: u64,
+    /// The active connection's hello facts: host label, project root and its basename, backend version, revision.
+    active_link: crate::ui::host_view::ActiveLink,
     /// Runtime results, attempts and presentation certificates for canonical rows.
     result_ledger: ResultLedger,
     /// Sessions-mode workspace picker (ADR 0014). `Some(state)` while
@@ -528,17 +504,8 @@ struct State {
     shaped: ShapedPreview,
     /// The concept slot: the last annotation read, its shaped body and the rect it is shaped for.
     concept: ConceptSlot,
-    /// ADR 0030 §2 / ADR 0042 L2a: a persistent, blocking "update needed"
-    /// message shown when a host's daemon refuses the handshake on a
-    /// protocol-version skew. Keyed by `HostKey` — each host's own hello
-    /// answers for itself — so ONE stale/optional remote can't block the
-    /// whole UI while every other (healthy) host works fine; only
-    /// `active_host`'s entry is projected to the blocking overlay (see
-    /// `rebuild_fatal_overlay`/`show_fatal`). A host's entry is removed on
-    /// its own next successful `Connected` (not every host's). The shaped
-    /// preview's fatal overlay is shaped for whichever host is CURRENTLY
-    /// active, rebuilt on set + on resize + on an active-host switch.
-    hello_refused: HashMap<HostKey, String>,
+    /// Each host's refused hello, the active host's projected to the blocking overlay.
+    hello_refused: crate::ui::host_view::HelloRefusals,
     /// The installed source: bytes, their node, their scale and the markdown origin, repainted from on a rescale or
     /// a row's restore without a round trip.
     preview_source: preview::source::InstalledPreviewSource,
@@ -569,34 +536,8 @@ struct State {
     /// discovery as `bindings`; not re-read on file change.
     settings: Settings,
     // pages.rs (pages): page-proxy arming.
-    /// ADR 0035 daemon TCP proxy — frontend half.
-    /// `proxy_capable_hosts`: every host whose loopback pages this FE will
-    /// proxy — inserted/removed per host from ITS OWN `Connected`/next
-    /// `Connected` evt (`!matches!(resolved, ResolvedDial::Local) && proxy`),
-    /// never FE-global: a box that also runs a local (pipe) daemon (ADR 0042)
-    /// gets a `Connected{resolved: ResolvedDial::Local, ..}` from that one
-    /// too, and a global flag let it silently switch proxying
-    /// off for every OTHER host's pages (2026-09-10 field incident: every
-    /// backend page "can't be reached" on a FE box with a local sotd, with
-    /// nothing logged — the gate returned before the first log line). A later
-    /// gate that scoped this to `default_host` alone fixed that incident but
-    /// broke proxying for every non-default row's figures (cross-host figure
-    /// defect) — per-host tracking fixes both: no host's evt can touch
-    /// another's entry, and no host is structurally excluded. The actual
-    /// dial for a proxy-capable host is read from `host_resolved_dial`
-    /// (ADR 0045 decision 1) at arm time — never re-derived or restricted to
-    /// one host — so `ensure_proxy_for_url` opens the proxy against the SAME
-    /// daemon connection that owns the row, whichever host that is.
-    /// `proxy_listener_tx`: hands GPU-thread-bound `std` listeners to the
-    /// runtime accept loop, each tagged with its daemon port and the dial + token to
-    /// reach that daemon through (`None` when no host has a
-    /// runtime at all).
-    /// `proxy_ensured`: per (host, daemon port), the port of the listener this
-    /// frontend bound for it and the `Arm` that listener shares; opening a page
-    /// on it re-arms it, since the daemon may have refused the port (`bad_port`) since.
-    proxy_capable_hosts: std::collections::HashSet<HostKey>,
-    proxy_listener_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::pages::PageListener>>,
-    proxy_ensured: std::collections::HashMap<(HostKey, u16), (u16, std::sync::Arc<crate::pages::Arm>)>,
+    /// ADR 0035 daemon TCP proxy — frontend half: the proxied hosts, the listener manager and the armed listeners.
+    proxies: crate::ui::proxy_arms::ProxyArms,
     // relaunch.rs (distribution): the relaunch watcher's flag.
     /// Set by the relaunch-watcher thread when the sentinel file
     /// (`%LOCALAPPDATA%\sot\relaunch.request`) appears: `0` = no request,

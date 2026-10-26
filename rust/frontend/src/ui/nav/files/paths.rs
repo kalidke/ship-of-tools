@@ -25,7 +25,7 @@ impl State {
         self.row_presentation.active_project_root(
             self.selected.host(),
             self.selected.workspace_id().as_deref(),
-            self.daemon_project_root.as_deref(),
+            self.active_link.project_root(),
         )
     }
 
@@ -72,7 +72,7 @@ impl State {
     /// Push the cursored NavTree row's file path to the OS clipboard. Only
     /// fires for rows whose node id starts with `files:` (Files mode + the
     /// scan-derived rows in Modules mode that route through preview.get).
-    /// Joins with `daemon_project_root` when known to yield an absolute
+    /// Joins with the active project root when known to yield an absolute
     /// backend-side path; falls back to the workspace-relative path if
     /// the hello response didn't carry a project_root. Returns true iff
     /// something was written.
