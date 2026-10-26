@@ -17,6 +17,12 @@
 //! across the wire. `--endpoint` is for a caller on this box that already holds a
 //! local endpoint; the ssh forms never pass it.
 //!
+//! The no-argument and `--endpoint` forms read the caller's first line before they copy anything: a `link.hello`
+//! makes the bridge the far end of a window's link (`sot_topology::link::router`), the connection already made
+//! becoming its channel 0 and each channel the window opens one more connection to the same endpoint; any other
+//! line goes to the endpoint unchanged and the copy starts as below. `--host` never routes: its endpoint is the hub's
+//! relay socket, where each connection is a login.
+//!
 //! Three rules, each a correctness requirement rather than a style note:
 //!
 //! 1. **Nothing of its own on stdout, ever** — no greeting, no progress
@@ -58,6 +64,10 @@ const EXIT_FAILED: i32 = 1;
 /// write; small enough to stay on the stack in both directions.
 const CHUNK: usize = 64 * 1024;
 
+/// How long a routing form waits for the caller's first line: the daemon's own bound on a first frame
+/// (`ADMISSION_READ_BOUND`).
+const FIRST_LINE_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// This box's own already-hardened client for its own endpoint — the same
 /// two `sot-capsule` clients `LaneDial::Local` dials with, never a second
 /// connector written here. `connect_own` connects only to an endpoint this
@@ -82,6 +92,9 @@ fn local_endpoint(endpoint: &str) -> Option<std::path::PathBuf> {
 }
 
 pub fn run(args: &[String]) -> i32 {
+    // The forms whose endpoint is a local one on this box route a link; `--host`'s is a relay socket, a login per
+    // connection.
+    let routes = !matches!(args, [flag, _] if flag == "--host");
     let path = match args {
         // This box's own daemon, at the label it resolves for itself —
         // never a caller-supplied one. A `--label` argument was how a
@@ -115,7 +128,7 @@ pub fn run(args: &[String]) -> i32 {
     };
 
     let client = match connect(&path) {
-        Ok(c) => Arc::new(c),
+        Ok(c) => c,
         Err(e) => {
             // The whole diagnosis in one line: which endpoint, and what
             // it said — an absent one and a refusing one read differently
@@ -127,6 +140,31 @@ pub fn run(args: &[String]) -> i32 {
             return EXIT_FAILED;
         }
     };
+
+    let first = if routes {
+        match first_line() {
+            Ok(line) => line,
+            Err(why) => {
+                eprintln!("sotd stdio-bridge: {why}");
+                return EXIT_FAILED;
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let hello = first.strip_suffix(b"\n").and_then(|line| serde_json::from_slice::<sot_protocol::Frame>(line).ok());
+    if let Some(hello) = hello.filter(sot_topology::link::router::is_link_hello) {
+        return route(hello, client, path);
+    }
+    // Any other first line is the caller's first bytes for the daemon, unchanged.
+    if !first.is_empty() {
+        if let Err(e) = client.write_all(&first) {
+            eprintln!("sotd stdio-bridge: writing to the daemon: {e}");
+            return EXIT_FAILED;
+        }
+    }
+
+    let client = Arc::new(client);
 
     // stdin → daemon, on its own thread, because both directions block.
     // `upstream` carries this thread's verdict to the one below: it is
@@ -185,6 +223,74 @@ pub fn run(args: &[String]) -> i32 {
                 eprintln!("sotd stdio-bridge: reading from the daemon: {e}");
                 return EXIT_FAILED;
             }
+        }
+    }
+}
+
+/// The caller's first line, newline included: at most `MAX_ENVELOPE_BYTES` and one more byte without one, or what came
+/// before the end of input, within [`FIRST_LINE_BOUND`]. What follows it stays in stdin's own buffer, so the copy or
+/// the router reads it next.
+fn first_line() -> Result<Vec<u8>, String> {
+    use std::io::BufRead;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin().lock();
+        let mut line = Vec::new();
+        let read = loop {
+            let chunk = match stdin.fill_buf() {
+                Ok(chunk) => chunk,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => break Err(format!("reading stdin: {e}")),
+            };
+            if chunk.is_empty() {
+                break Ok(());
+            }
+            let room = sot_protocol::codec::MAX_ENVELOPE_BYTES + 1 - line.len();
+            let take = chunk.iter().position(|&b| b == b'\n').map_or(chunk.len(), |at| at + 1).min(room);
+            line.extend_from_slice(&chunk[..take]);
+            stdin.consume(take);
+            if line.ends_with(b"\n") || line.len() > sot_protocol::codec::MAX_ENVELOPE_BYTES {
+                break Ok(());
+            }
+        };
+        let _ = tx.send(read.map(|()| line));
+    });
+    rx.recv_timeout(FIRST_LINE_BOUND).unwrap_or_else(|_| Err(format!("no first line within {FIRST_LINE_BOUND:?}")))
+}
+
+/// The far end of a window's link: `client`, the connection already made, is channel 0, and each channel the window
+/// opens is one more connection to `path` through `connect_own`. Exits 0 when the window closed the link or channel 0
+/// ended, else 1 with the reason on one stderr line.
+fn route(hello: sot_protocol::Frame, client: Bridged, path: std::path::PathBuf) -> i32 {
+    use sot_topology::link::router::{Connector, Duplex};
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("sotd stdio-bridge: the link's runtime: {e}");
+            return EXIT_FAILED;
+        }
+    };
+    let served = runtime.block_on(async move {
+        let mut stdout = tokio::io::stdout();
+        let control = match sot_topology::link::adopt(client) {
+            Ok(control) => control,
+            Err(e) => {
+                let why = format!("{}: {e}", path.display());
+                sot_topology::link::router::refuse_unreachable(&hello, &mut stdout, &why).await;
+                return Err(why);
+            }
+        };
+        let connect: Connector = std::sync::Arc::new(move || {
+            let path = path.clone();
+            Box::pin(async move { sot_topology::link::connect_local(&path).await.map(|s| Box::new(s) as Box<dyn Duplex>) })
+        });
+        sot_topology::link::router::serve(hello, tokio::io::stdin(), stdout, Box::new(control), connect).await
+    });
+    match served {
+        Ok(()) => 0,
+        Err(why) => {
+            eprintln!("sotd stdio-bridge: the link ended: {why}");
+            EXIT_FAILED
         }
     }
 }
