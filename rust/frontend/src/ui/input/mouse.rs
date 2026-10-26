@@ -141,7 +141,7 @@ impl WheelContext for State {
         WheelGeometry { cell_w: self.cell_w, cell_h: self.cell_h, focus: self.focus_prompts.focus(), residue: self.wheel_residue_y }
     }
     fn scroll_preview_horizontal(&mut self, pixels: f32) {
-        self.md_table_scroll_px = (self.md_table_scroll_px + pixels).max(0.0);
+        self.md_media.scroll_tables(pixels);
         self.window.request_redraw();
     }
     fn store_wheel_residue(&mut self, residue: f32) { self.wheel_residue_y = residue; }

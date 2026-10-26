@@ -81,7 +81,7 @@ pub(super) fn attrs_for(ctx: Ctx) -> Attrs<'static> {
 /// space at u64 is enough for code-block-sized inputs that we're caching
 /// (we'd need ~2³² distinct fences to expect one collision, and the
 /// frontend would have run out of memory long before then). Matches
-/// what `State::markdown_token_cache` keys by.
+/// what the markdown media's token cache keys by.
 pub(super) fn hash_source(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();

@@ -129,12 +129,11 @@ impl State {
 
     fn reflow_markdown_preview(&mut self) {
         // Coalesced reflow: one MathRendered (or a burst) sets
-        // needs_md_reflow; we rebuild preview_md here so the walk pulls
+        // a reflow; we rebuild the shaped buffer here so the walk pulls
         // the freshly-cached SVG dims when sizing per-block placeholders.
         // Markdown-only by construction — non-markdown previews don't go
         // through the math walk.
-        if self.needs_md_reflow {
-            self.needs_md_reflow = false;
+        if self.md_media.take_reflow() {
             if let Some((mime, bytes)) = self.preview_source.source_copy() {
                 if mime == "text/markdown" || mime == "text/x-markdown" {
                     self.render_preview_source(&mime, &bytes);

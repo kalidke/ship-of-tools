@@ -27,7 +27,9 @@ SVG, the refused-hello overlay and the highlighter; `preview::image::raster::Ras
 zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
 the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
 owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved;
-`preview::image::figure_store::FigureStore` owns the markdown figures' bitmaps, requests in flight and failures.
+`preview::image::figure_store::FigureStore` owns the markdown figures' bitmaps, requests in flight and failures;
+`preview::markdown::media_store::MarkdownMedia` owns the table buffers and their scroll, the math and token caches
+with their requests in flight, and the pending reflow.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -225,6 +227,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   settles its URL, then installs or fails it; an unresolvable local URL fails at once. Failures report to the walk as
   zero-size metrics, are cleared only by a fresh markdown reply or a first visit, and a row parks and restores its
   own.
+- `MarkdownMedia` privately owns the rest of the markdown media. Math and token requests go out only for keys
+  neither cached nor in flight; a reply caches, settles its key and asks for one reflow (a math failure settles with
+  no reflow, so it cannot loop); a figure's landing or failure asks for one too, and the frame takes it once. Table
+  buffers are rebuilt only when their sources change, which also returns the shared horizontal scroll to the left;
+  the scroll is clamped each frame to the widest table. A math SVG rasterizes once, at the pane's size.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

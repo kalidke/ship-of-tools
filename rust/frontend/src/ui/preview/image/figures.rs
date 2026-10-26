@@ -181,7 +181,7 @@ impl State {
                 // the compact fallback and pushes no MediaBlock.)
                 tracing::debug!(%url, "figure unresolvable — collapsing to compact fallback");
                 self.figures.mark_unresolvable(url);
-                self.needs_md_reflow = true;
+                self.md_media.request_reflow();
                 continue;
             };
             if let Err(e) = self.send(crate::net::transport::OutgoingReq::FigureGet {

@@ -16,6 +16,11 @@ pub(in crate::ui) struct TableBufferEntry {
     pub(in crate::ui) natural_w_px: f32,
 }
 
+impl TableBufferEntry {
+    /// Whether this buffer was built from `source`.
+    pub(super) fn built_from(&self, source: &str) -> bool { self.rendered == source }
+}
+
 /// One table's buffer at its natural width. 10_000 px is wider than any
 /// realistic GFM table so the box-drawing lines lay out without soft-wrap;
 /// `None` for height matches the main preview buffer's "extend past the rect"
@@ -153,42 +158,6 @@ pub(in crate::ui) fn parse_math_svg_dims(svg_bytes: &[u8]) -> (Option<f32>, Opti
 }
 
 impl State {
-    /// Translate `math_cache` into the per-block pixel-metrics map the
-    /// markdown walk consumes. Each cached SVG's ex-unit dimensions
-    /// become unscaled pixels in body-font space:
-    /// `value_ex * MATHJAX_EX_FACTOR * MD_BODY_SIZE`. The walk applies
-    /// the per-context `scale` itself, so the values stored here are
-    /// scale-1 reference numbers — same coordinate system as
-    /// `MATH_BLOCK_H_DEFAULT` and friends. Entries without parsed
-    /// dimensions are skipped (the walk will see no cache hit and use
-    /// its fallback path).
-    pub(in crate::ui) fn build_math_metrics(&self) -> MathMetricsMap {
-        let mut out = MathMetricsMap::new();
-        for (key, entry) in self.math_cache.iter() {
-            let (Some(w_ex), Some(h_ex)) = (entry.width_ex, entry.height_ex) else {
-                continue;
-            };
-            let width_px = w_ex * MATHJAX_EX_FACTOR * MD_BODY_SIZE;
-            let height_px = h_ex * MATHJAX_EX_FACTOR * MD_BODY_SIZE;
-            // vertical_align_ex is negative when the SVG hangs below
-            // the baseline. Drop is the positive distance below; default
-            // 0 for display blocks that don't always include the style.
-            let baseline_drop_px = entry
-                .vertical_align_ex
-                .map(|v| (-v) * MATHJAX_EX_FACTOR * MD_BODY_SIZE)
-                .unwrap_or(0.0);
-            out.insert(
-                key.clone(),
-                MathMetrics {
-                    width_px,
-                    height_px,
-                    baseline_drop_px,
-                },
-            );
-        }
-        out
-    }
-
     /// Fire `math.render` for every block in the latest markdown
     /// preview that isn't already cached or in flight. Called after
     /// the shaped buffer is (re)built. Idempotent — repeated calls with
@@ -200,7 +169,7 @@ impl State {
                 continue;
             };
             let key = (latex.clone(), display);
-            if self.math_cache.contains_key(&key) || self.math_pending.contains(&key) {
+            if self.md_media.math_handled(&key) {
                 continue;
             }
             if let Err(e) = self.send(crate::net::transport::OutgoingReq::MathRender {
@@ -211,7 +180,7 @@ impl State {
                     "drop math.render request — channel closed");
                 continue;
             }
-            self.math_pending.insert(key);
+            self.md_media.mark_math_pending(key);
         }
     }
 
@@ -219,7 +188,7 @@ impl State {
     /// wide GFM tables at natural width — see `TableBufferEntry`
     /// docstring. Compares the current `media_blocks` Table sources
     /// against the cached `rendered` strings; if any differ (or count
-    /// changed), the whole `table_buffers` Vec is rebuilt and the
+    /// changed), the whole table buffer set is rebuilt and the
     /// horizontal scroll resets to 0 so navigation between docs starts
     /// fresh. No-op when buffers are already in sync — typical steady
     /// state across redraws.
@@ -243,20 +212,14 @@ impl State {
                 _ => None,
             })
             .collect();
-        let in_sync = snapshots.len() == self.table_buffers.len()
-            && snapshots
-                .iter()
-                .zip(self.table_buffers.iter())
-                .all(|((r, _, _), e)| r == &e.rendered);
-        if in_sync {
+        if self.md_media.tables_match(&snapshots) {
             return;
         }
-        self.table_buffers.clear();
-        self.md_table_scroll_px = 0.0;
+        let mut tables = Vec::with_capacity(snapshots.len());
         for (rendered, font_px, line_h_px) in snapshots {
-            let entry = table_buffer(self.text.font_system_mut(), rendered, font_px, line_h_px);
-            self.table_buffers.push(entry);
+            tables.push(table_buffer(self.text.font_system_mut(), rendered, font_px, line_h_px));
         }
+        self.md_media.replace_tables(tables);
     }
 
     /// Drain the shaped buffer's `pending_token_fences` and fire
@@ -268,9 +231,7 @@ impl State {
         let pending = self.shaped.take_pending_token_fences();
         for (lang, source_hash, source) in pending {
             let key = (lang.clone(), source_hash);
-            if self.markdown_token_cache.contains_key(&key)
-                || self.markdown_token_pending.contains(&key)
-            {
+            if self.md_media.tokens_handled(&key) {
                 continue;
             }
             if let Err(e) = self.send(crate::net::transport::OutgoingReq::MarkdownTokenize {
@@ -282,7 +243,7 @@ impl State {
                     "drop markdown.tokenize request — channel closed");
                 continue;
             }
-            self.markdown_token_pending.insert(key);
+            self.md_media.mark_tokens_pending(key);
         }
     }
 
@@ -369,7 +330,7 @@ impl State {
                         // between then and now — fall back to a single-line
                         // anchor rect so we don't paint at (0, 0).
                         let key = (latex.clone(), false);
-                        let entry = self.math_cache.get(&key);
+                        let entry = self.md_media.math(&key);
                         let (svg_w_px, svg_h_px, drop_px) = match entry {
                             Some(e) => {
                                 let w = e

@@ -72,7 +72,7 @@ impl State {
                 &MathMetricsMap::new(),
                 &FigureMetricsMap::new(),
                 self.shaped.highlighter(),
-                &self.markdown_token_cache,
+                self.md_media.token_cache(),
             ))
         } else {
             None

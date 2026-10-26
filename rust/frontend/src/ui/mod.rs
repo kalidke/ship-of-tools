@@ -32,14 +32,13 @@ use crate::ui::input::keybindings::{Action, KeyBindings, Modifiers};
 use crate::ui::input::help;
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use crate::ui::preview::markdown::{
-    FigureMetricsMap, MarkdownPreview, MathMetrics, MathMetricsMap,
-    BODY_SIZE as MD_BODY_SIZE,
+    FigureMetricsMap, MarkdownPreview, MathMetricsMap,
 };
 use crate::ui::preview::image::png::quad_from_png_bytes;
 use crate::ui::render::quad::{Quad, QuadPipeline, ScreenRect};
 use crate::ui::preview::image::svg::quad_from_svg_bytes;
 use crate::ui::preview::markdown::media::{
-    parse_math_svg_dims, whole_row_bottom, MathSvg, TableBufferEntry, MATHJAX_EX_FACTOR,
+    parse_math_svg_dims, whole_row_bottom, MathSvg, MATHJAX_EX_FACTOR,
 };
 use crate::ui::persist::settings::Settings;
 use crate::net::transport::OutgoingReq;
@@ -626,58 +625,8 @@ struct State {
     /// The markdown figures: fetched bitmaps, requests in flight and terminal failures.
     figures: FigureStore,
     // ui/preview/markdown: tables, math and token caches, and reflow.
-    /// Horizontal scroll for wide markdown tables. Shared across every
-    /// `MediaBlock::Table` on the current preview — Windows's (e) work
-    /// item ships Path 1, where each table buffer is at natural width
-    /// and we shift it left by this many pixels then let `TextBounds`
-    /// clip the overflow to the preview pane. One scroll var keeps the
-    /// state model trivially small; in practice a markdown doc only
-    /// ever has one wide table on screen at a time. h/l (Preview focus)
-    /// step ±~1 cell; Shift+wheel-Y also adjusts. Reset to 0 whenever
-    /// the shaped buffer is rebuilt so navigating between docs starts fresh.
-    md_table_scroll_px: f32,
-    /// Per-table cosmic-text buffers hosted as ExtraAreas. Indexed in
-    /// `media_blocks` Table-encounter order so multiple tables on one
-    /// page each get their own slot. `rendered` is the source text the
-    /// buffer was built from; on every redraw the chrome compares it
-    /// against the current `media_blocks` so navigating to a doc with
-    /// the same table count but different content still rebuilds.
-    /// Each buffer is laid out at huge width (no soft-wrap) and
-    /// `natural_w_px` is the measured max line width — used by the
-    /// scroll clamp.
-    table_buffers: Vec<TableBufferEntry>,
-    /// Cache of MathJax-rendered SVGs keyed by `(latex, display)`.
-    /// Populated by `IncomingEvt::MathRendered`; consumed by the
-    /// markdown render path to paint quads over FFFC placeholders.
-    /// Survives navigation so re-opening a doc with the same math
-    /// doesn't re-roundtrip.
-    math_cache: std::collections::HashMap<(String, bool), MathSvg>,
-    /// In-flight math.render requests, same key shape as `math_cache`.
-    /// Prevents duplicate dispatch when a markdown doc has the same
-    /// equation twice or when the user re-loads a partially-fetched
-    /// doc before the first replies land.
-    math_pending: std::collections::HashSet<(String, bool)>,
-    /// Per-fence semantic-overlay cache keyed by `(lang, source_hash)`.
-    /// Populated by `IncomingEvt::MarkdownTokens`; consumed by the
-    /// CodeBlock walk to overlay tree-sitter base spans with backend-
-    /// derived semantic spans (function-def, call-site, type, etc.).
-    /// Survives navigation so re-rendering identical fences in another
-    /// doc (Julia ecosystem reuses the same snippets) skips the round
-    /// trip.
-    markdown_token_cache:
-        std::collections::HashMap<(String, u64), Vec<crate::net::transport::MarkdownToken>>,
-    /// In-flight markdown.tokenize requests, same key shape as
-    /// `markdown_token_cache`. Prevents duplicate dispatch when the
-    /// same fence appears twice in a doc or the user re-renders before
-    /// the reply lands.
-    markdown_token_pending: std::collections::HashSet<(String, u64)>,
-    /// Set by the MathRendered event handler when a fresh SVG enters
-    /// `math_cache`. The redraw loop checks this and rebuilds
-    /// the shaped buffer from the installed source so the markdown walk can size
-    /// per-block placeholders to the SVG's natural dimensions instead
-    /// of the pre-render letterbox default. Coalesces a burst of
-    /// MathRendered events into a single rebuild per frame.
-    needs_md_reflow: bool,
+    /// The markdown media: table buffers and their scroll, math and token caches, and the pending reflow.
+    md_media: MarkdownMedia,
     // ui/preview/editor: the annotation editor and file-parse staleness.
     /// The drift badge's cache: per `.jl` path (the suffix of `files:` node ids) its `file.parse` hash, the
     /// one-shot parse latch and failed parses' backoff (2026-07-02: a fast-failing kernel once drew ~4.7k
@@ -837,6 +786,7 @@ use self::preview::image::raster::RasterView;
 use self::preview::image::pages::PageView;
 use self::preview::image::figure_overlays::FigureOverlays;
 use self::preview::image::figure_store::FigureStore;
+use self::preview::markdown::media_store::MarkdownMedia;
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,

@@ -8,7 +8,7 @@ impl State {
         // Decode the bytes into a Quad sized to the
         // bitmap's natural pixel dimensions, then drop it
         // into figure_cache keyed by the original markdown
-        // URL. `needs_md_reflow` forces a one-shot walk
+        // URL. A reflow request forces a one-shot walk
         // before the next paint so the placeholder's
         // reserved height tracks the figure's actual aspect
         // — without it the FFFC stays at the
@@ -31,7 +31,7 @@ impl State {
                     "figure decoded"
                 );
                 self.figures.install(url, entry);
-                self.needs_md_reflow = true;
+                self.md_media.request_reflow();
                 self.window.request_redraw();
             }
             Err(e) => {
@@ -41,7 +41,7 @@ impl State {
                 // than leaving an empty box that will never
                 // be painted over.
                 self.figures.fail(url);
-                self.needs_md_reflow = true;
+                self.md_media.request_reflow();
                 self.window.request_redraw();
             }
         }
@@ -58,7 +58,7 @@ impl State {
         // decode failure above.
         tracing::warn!(%url, "figure.get failed — collapsing to compact fallback");
         self.figures.fail(url);
-        self.needs_md_reflow = true;
+        self.md_media.request_reflow();
         self.window.request_redraw();
     }
 

@@ -166,8 +166,7 @@ impl State {
             wheel_vel: 0.0,
             wheel_anim_last: None,
             focus_prompts: FocusPrompts::new(initial_focus(cli)),
-            md_table_scroll_px: 0.0,
-            table_buffers: Vec::new(),
+            md_media: MarkdownMedia::default(),
             pane_rects: PaneRects::default(),
             cursor_px: (0.0, 0.0),
             wheel_residue_y: 0.0,
@@ -191,12 +190,7 @@ impl State {
             editor: Editor::default(),
             help_back_quad: None,
             hello_refused: HashMap::new(),
-            math_cache: std::collections::HashMap::new(),
-            math_pending: std::collections::HashSet::new(),
-            markdown_token_cache: std::collections::HashMap::new(),
-            markdown_token_pending: std::collections::HashSet::new(),
             figures: FigureStore::default(),
-            needs_md_reflow: false,
             // ADR 0035: each host's `Connected` evt (remote + proxy) adds it
             // here; `resumed()` spawns the listener manager.
             proxy_capable_hosts: std::collections::HashSet::new(),
