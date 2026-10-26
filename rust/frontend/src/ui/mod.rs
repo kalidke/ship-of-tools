@@ -620,13 +620,6 @@ struct State {
     row_directory: RowDirectory,
     /// Private listed-row projections, activity order and transition flashes.
     row_presentation: RowPresentation,
-    /// Two-press confirm for `D` (workspace destroy) in Sessions mode.
-    /// First press arms with the cursor row's `(host, workspace_id)`;
-    /// second press on the same row fires `workspace.destroy` via
-    /// `send_to` (a destroy targets a specific row, not necessarily the
-    /// active one). Cleared by any other keypress (snapshot-then-reset at
-    /// the top of the input handler) so a cursor move disarms the trap.
-    pending_destroy_target: Option<WsKey>,
     /// Short hostname from the hello response, kept alongside the
     /// daemon's project_root basename so the chrome can rebuild the
     /// "connected · host:workspace · rev N" status line every time the
@@ -679,13 +672,6 @@ struct State {
     /// resent verbatim in the `Connected` arm, since its own fresh
     /// connection remembers nothing from before.
     last_declared_sessions: Option<Vec<sot_protocol::DeclaredSession>>,
-    /// LU6a design-review amendment: stamped by `commit_workspace_create`
-    /// the moment `workspace.create` is SENT, and consumed (taken) by the
-    /// `attach_session_to_bl` that `switch_to_workspace` always calls once
-    /// the `WorkspaceCreated` reply lands — the handoff that makes a
-    /// create's `since_request_ms` start at the create request rather
-    /// than at the later switch. `None` whenever no create is in flight.
-    pending_capsule_create_requested_at: Option<std::time::Instant>,
     /// This window's last real press and last `fe.presence` send (`report_presence`, `presence_due`): ONE clock gates
     /// the fan-out to every connected daemon, and idle input sends nothing at all (no timer, no heartbeat).
     presence: PresenceClock,

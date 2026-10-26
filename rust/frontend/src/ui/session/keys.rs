@@ -202,7 +202,7 @@ pub(in crate::ui) fn session_destroy_key(state: &mut State, was_destroy_pending:
         }
         state.window.request_redraw();
     } else {
-        state.pending_destroy_target = Some(target);
+        state.selected.arm_destroy(target);
         state.status =
             format!("press {} again to destroy '{target_label}' · any other key cancels", state.bindings.first_label(Action::SessionDestroy));
         state.window.request_redraw();

@@ -15,7 +15,7 @@ pub(in crate::ui) struct WorkspacePicker {
     /// on — the "+ create new" row's own host, fixed for the picker's
     /// lifetime (ADR 0042 L2a). Every `directory.list`/`workspace.create`
     /// this picker fires routes via `send_to(&host, ...)`.
-    pub(in crate::ui) host: HostKey,
+    host: HostKey,
     /// Whether the listing includes dot-entries. Starts ON: a hidden folder
     /// (a Julia depot, a dot-config tree) is a legitimate workspace root,
     /// and the picker exists to choose roots. `.` toggles it, the same key
@@ -24,12 +24,12 @@ pub(in crate::ui) struct WorkspacePicker {
     /// Absolute path of the directory we're currently showing. The
     /// title bar in the NavTree displays this so the user always knows
     /// where they are.
-    pub(in crate::ui) current_path: String,
+    current_path: String,
     /// Subdirectory rows under `current_path`. Populated by the
     /// `IncomingEvt::DirectoryList` handler when the path echoes ours.
-    pub(in crate::ui) entries: Vec<crate::net::transport::DirEntry>,
+    entries: Vec<crate::net::transport::DirEntry>,
     /// Cursor into `entries`. `0`-based; clamped on each refresh.
-    pub(in crate::ui) selected: usize,
+    selected: usize,
     /// The entry the cursor lands on when the pending listing arrives,
     /// by name (unique within one listing, and immune to a start path
     /// written with a trailing slash): the directory Left just came out of —
@@ -42,11 +42,11 @@ pub(in crate::ui) struct WorkspacePicker {
     /// first. Empty until the reply lands, and stays empty (the field the
     /// render/commit paths check) when the daemon only has "default" or
     /// predates the op — either way the account choice is hidden.
-    pub(in crate::ui) accounts: Vec<crate::net::transport::AccountInfo>,
+    accounts: Vec<crate::net::transport::AccountInfo>,
     /// Cursor into `accounts` (`Tab` cycles). `0` is always "default" when
     /// `accounts` is non-empty, so index 0 and "no choice made" both mean
     /// the same thing: the agent's own default directory.
-    pub(in crate::ui) account_selected: usize,
+    account_selected: usize,
 }
 
 /// The account a new row is created under: the selected one by name, or `None` (the daemon's own default)
@@ -57,6 +57,106 @@ fn selected_account(picker: &WorkspacePicker) -> Option<String> {
 }
 
 impl WorkspacePicker {
+    /// A picker on `host` showing `start`, hidden folders shown, its listing and accounts not yet answered.
+    fn open(host: HostKey, start: String) -> Self {
+        Self {
+            host,
+            show_hidden: true,
+            current_path: start,
+            entries: Vec::new(),
+            selected: 0,
+            reveal: None,
+            accounts: Vec::new(),
+            account_selected: 0,
+        }
+    }
+
+    pub(in crate::ui) fn current_path(&self) -> &str { &self.current_path }
+    pub(in crate::ui) fn entries(&self) -> &[crate::net::transport::DirEntry] { &self.entries }
+    pub(in crate::ui) fn selected(&self) -> usize { self.selected }
+
+    /// The account the choice row names, when there is a choice.
+    pub(in crate::ui) fn shown_account(&self) -> Option<&crate::net::transport::AccountInfo> {
+        self.account_choice_visible().then(|| &self.accounts[self.account_selected])
+    }
+
+    /// Whether a `directory.list` reply from `host` for `path` answers this picker's pending listing.
+    pub(in crate::ui) fn answers(&self, host: &HostKey, path: &str) -> bool {
+        self.current_path == path && &self.host == host
+    }
+
+    /// A late or other host's listing is logged with the picker's own path and host.
+    pub(in crate::ui) fn host(&self) -> &HostKey { &self.host }
+
+    /// The accounts `host` reported, the first selected; another host's reply changes nothing.
+    pub(in crate::ui) fn set_accounts(&mut self, host: &HostKey, accounts: Vec<crate::net::transport::AccountInfo>) {
+        if &self.host == host {
+            self.accounts = accounts;
+            self.account_selected = 0;
+        }
+    }
+
+    fn cursor_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    fn cursor_down(&mut self) {
+        if self.selected + 1 < self.entries.len() {
+            self.selected += 1;
+        }
+    }
+
+    /// Show `path` while its listing is asked for: entries cleared, cursor at the top.
+    fn go_to(&mut self, path: String) {
+        self.current_path = path;
+        self.entries.clear();
+        self.selected = 0;
+    }
+
+    /// Into the cursored directory: the path to list, or `None` with no entry under the cursor.
+    fn drill_in(&mut self) -> Option<String> {
+        let path = self.entries.get(self.selected).map(|e| e.path.clone())?;
+        self.go_to(path.clone());
+        Some(path)
+    }
+
+    /// Up to the parent, landing the cursor on the directory left when its listing arrives: the path to list, or
+    /// `None` at the top (no parent, or an empty one).
+    fn ascend(&mut self) -> Option<String> {
+        let path = std::path::Path::new(&self.current_path).parent().map(|p| p.to_string_lossy().into_owned())?;
+        if path.is_empty() {
+            return None;
+        }
+        self.reveal = std::path::Path::new(&self.current_path).file_name().map(|n| n.to_string_lossy().into_owned());
+        self.go_to(path.clone());
+        Some(path)
+    }
+
+    /// Flip hidden folders, keeping the cursor on its entry unless that is the one now hidden: the path to re-list.
+    fn toggle_hidden(&mut self) -> String {
+        self.show_hidden = !self.show_hidden;
+        self.reveal = self.entries.get(self.selected).map(|e| e.name.clone());
+        self.entries.clear();
+        self.selected = 0;
+        self.current_path.clone()
+    }
+
+    /// The next account, when there is a choice.
+    fn cycle_account(&mut self) -> Option<&crate::net::transport::AccountInfo> {
+        if !self.account_choice_visible() {
+            return None;
+        }
+        self.account_selected = (self.account_selected + 1) % self.accounts.len();
+        Some(&self.accounts[self.account_selected])
+    }
+
+    /// The cursored directory, or the shown one in an empty folder.
+    fn chosen_path(&self) -> String {
+        self.entries.get(self.selected).map(|e| e.path.clone()).unwrap_or_else(|| self.current_path.clone())
+    }
+
     /// Install a listing that answers `current_path` and place the cursor:
     /// on `reveal` if the listing holds it, else where it was if that is
     /// still in range, else the top.
@@ -202,16 +302,7 @@ impl State {
             fe_home,
             |p| std::path::Path::new(p).is_dir(),
         );
-        self.workspace_picker = Some(WorkspacePicker {
-            host: host.clone(),
-            show_hidden: true,
-            current_path: start.clone(),
-            entries: Vec::new(),
-            selected: 0,
-            reveal: None,
-            accounts: Vec::new(),
-            account_selected: 0,
-        });
+        self.workspace_picker = Some(WorkspacePicker::open(host.clone(), start.clone()));
         if let Err(e) = self.send_to(
             &host,
             crate::net::transport::OutgoingReq::DirectoryList {
@@ -237,9 +328,7 @@ impl State {
     /// Move the picker's cursor up by one row (saturating).
     pub(in crate::ui) fn picker_cursor_up(&mut self) {
         if let Some(p) = self.workspace_picker.as_mut() {
-            if p.selected > 0 {
-                p.selected -= 1;
-            }
+            p.cursor_up();
             self.window.request_redraw();
         }
     }
@@ -248,9 +337,7 @@ impl State {
     /// length). Zero-entry directories pin the cursor at 0.
     pub(in crate::ui) fn picker_cursor_down(&mut self) {
         if let Some(p) = self.workspace_picker.as_mut() {
-            if p.selected + 1 < p.entries.len() {
-                p.selected += 1;
-            }
+            p.cursor_down();
             self.window.request_redraw();
         }
     }
@@ -260,19 +347,11 @@ impl State {
     /// `current_path` immediately so the title reflects where the user
     /// is going even before the listing lands.
     pub(in crate::ui) fn picker_drill_in(&mut self) {
-        let Some(host) = self.workspace_picker.as_ref().map(|p| p.host.clone()) else {
+        let Some(p) = self.workspace_picker.as_mut() else {
             return;
         };
-        let next = match self.workspace_picker.as_ref() {
-            Some(p) => p.entries.get(p.selected).map(|e| e.path.clone()),
-            None => None,
-        };
-        if let Some(path) = next {
-            if let Some(p) = self.workspace_picker.as_mut() {
-                p.current_path = path.clone();
-                p.entries.clear();
-                p.selected = 0;
-            }
+        let host = p.host.clone();
+        if let Some(path) = p.drill_in() {
             let include_hidden = self.workspace_picker.as_ref().is_some_and(|p| p.show_hidden);
             if let Err(e) = self.send_to(
                 &host,
@@ -288,29 +367,13 @@ impl State {
     /// Ascend to the parent of the picker's `current_path`. Re-fires
     /// the listing so the parent's entries populate.
     pub(in crate::ui) fn picker_ascend(&mut self) {
-        let Some(host) = self.workspace_picker.as_ref().map(|p| p.host.clone()) else {
+        let Some(p) = self.workspace_picker.as_mut() else {
             return;
         };
-        let parent = match self.workspace_picker.as_ref() {
-            Some(p) => std::path::Path::new(&p.current_path)
-                .parent()
-                .map(|p| p.to_string_lossy().into_owned()),
-            None => None,
-        };
-        if let Some(path) = parent {
-            if path.is_empty() {
-                return;
-            }
-            if let Some(p) = self.workspace_picker.as_mut() {
-                // The directory being left is an entry of its parent: land
-                // the cursor on it when the parent's listing arrives.
-                p.reveal = std::path::Path::new(&p.current_path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned());
-                p.current_path = path.clone();
-                p.entries.clear();
-                p.selected = 0;
-            }
+        let host = p.host.clone();
+        // The directory being left is an entry of its parent: the cursor
+        // lands on it when the parent's listing arrives.
+        if let Some(path) = p.ascend() {
             let include_hidden = self.workspace_picker.as_ref().is_some_and(|p| p.show_hidden);
             if let Err(e) = self.send_to(
                 &host,
@@ -334,13 +397,8 @@ impl State {
         let Some(p) = self.workspace_picker.as_mut() else {
             return;
         };
-        p.show_hidden = !p.show_hidden;
-        // Keep the cursor on the entry it was on, unless that entry is the
-        // one now hidden.
-        p.reveal = p.entries.get(p.selected).map(|e| e.name.clone());
-        p.entries.clear();
-        p.selected = 0;
-        let (host, path, include_hidden) = (p.host.clone(), p.current_path.clone(), p.show_hidden);
+        let path = p.toggle_hidden();
+        let (host, include_hidden) = (p.host.clone(), p.show_hidden);
         if let Err(e) = self.send_to(
             &host,
             crate::net::transport::OutgoingReq::DirectoryList { path: path.clone(), include_hidden },
@@ -358,27 +416,17 @@ impl State {
     /// 1 entries (the choice is hidden — either only "default" exists, or the daemon
     /// never answered `accounts.list`).
     pub(in crate::ui) fn picker_cycle_account(&mut self) {
-        let Some(p) = self.workspace_picker.as_mut() else {
+        let Some(acct) = self.workspace_picker.as_mut().and_then(WorkspacePicker::cycle_account) else {
             return;
         };
-        if !p.account_choice_visible() {
-            return;
-        }
-        p.account_selected = (p.account_selected + 1) % p.accounts.len();
-        let acct = &p.accounts[p.account_selected];
         let suffix = if acct.any_logged_in() { "" } else { " (not logged in)" };
         self.status = format!("picker · account: {}{suffix}", acct.name);
         self.window.request_redraw();
     }
 
     pub(in crate::ui) fn picker_confirm_selected(&mut self, agent: &str) {
-        let path = match self.workspace_picker.as_ref() {
-            Some(p) => p
-                .entries
-                .get(p.selected)
-                .map(|e| e.path.clone())
-                .unwrap_or_else(|| p.current_path.clone()),
-            None => return,
+        let Some(path) = self.workspace_picker.as_ref().map(WorkspacePicker::chosen_path) else {
+            return;
         };
         self.commit_workspace_create(path, agent);
     }
@@ -422,7 +470,7 @@ impl State {
         // `attach_session_to_bl` (always reached via `switch_to_workspace`
         // from that reply) takes this, not merely reads it, so a stale
         // value can't leak into a later, unrelated switch.
-        self.pending_capsule_create_requested_at = Some(std::time::Instant::now());
+        self.selected.note_create_requested(std::time::Instant::now());
         // Status line reflects which Enter the user pressed (ADR 0031):
         // Enter=claude workspace · Shift+Enter=bare · Ctrl+Enter=codex.
         let kind = match agent {

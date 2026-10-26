@@ -247,9 +247,9 @@ impl<C: PaneClient> AgentPane<C> {
 impl State {
     pub(in crate::ui) fn attach_session_to_bl(&mut self, host: HostKey, session_name: String) {
         let key = (host, session_name);
-        // The create transaction stays with State and is consumed only for an actual switch.
+        // The create's request time is the selected row's, consumed only for an actual switch.
         let origin = if self.agent_pane.is_target(&key) { None } else {
-            Some(self.pending_capsule_create_requested_at.take().unwrap_or_else(Instant::now))
+            Some(self.selected.take_create_requested().unwrap_or_else(Instant::now))
         };
         let bound = self.agent_pane.target().and_then(|(h, _)| self.row_directory.rows(&h)
             .map(|l| l.iter().filter(|w| !w.is_inert_anchor()).count())).unwrap_or(1);

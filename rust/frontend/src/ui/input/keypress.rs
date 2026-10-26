@@ -65,8 +65,7 @@ fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &
     // re-arms on first press; any other key (cursor move,
     // mode switch, etc.) silently clears it. Same pattern
     // as the now-retired exit-confirm.
-    let was_destroy_pending = state.pending_destroy_target.clone();
-    state.pending_destroy_target = None;
+    let was_destroy_pending = state.selected.take_destroy_arm();
     let label = key_label(&event.logical_key);
     let ctrl = modifiers.control_key();
     let alt = modifiers.alt_key();

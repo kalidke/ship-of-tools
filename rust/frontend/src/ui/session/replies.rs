@@ -276,11 +276,11 @@ impl State {
             // from a different host echoing the same path
             // (plausible: two hosts share a home-directory
             // layout) must not populate this picker's entries.
-            if p.current_path == path && p.host == event_host {
+            if p.answers(&event_host, &path) {
                 p.land_listing(entries);
                 self.window.request_redraw();
             } else {
-                tracing::debug!(%path, current = %p.current_path, %event_host, picker_host = %p.host, "drop stale directory.list reply");
+                tracing::debug!(%path, current = %p.current_path(), %event_host, picker_host = %p.host(), "drop stale directory.list reply");
             }
         }
     }
@@ -568,10 +568,7 @@ impl State {
         accounts: Vec<crate::net::transport::AccountInfo>,
     ) {
         if let Some(p) = self.workspace_picker.as_mut() {
-            if p.host == event_host {
-                p.accounts = accounts;
-                p.account_selected = 0;
-            }
+            p.set_accounts(&event_host, accounts);
         }
     }
 }

@@ -13,7 +13,8 @@ owns authoritative rows and identity; `session/row_presentation.rs` owns their p
 follow commitment, the driven-preview hold, and the crop, scale-save and `--roi` aim transactions.
 `preview::source::InstalledPreviewSource` owns the installed preview bytes, their node, scale and markdown origin.
 `session::ParkedViews` owns the rows' parked views (`WorkspaceUiSnapshot`), keyed by row.
-`session::SelectedRow` owns the selected `(host, workspace)` and its read-mark dwell.
+`session::SelectedRow` owns the selected `(host, workspace)`, its read-mark dwell, the destroy confirm and a create's
+request time; `session::WorkspacePicker` owns the new-session picker's listing, cursor and account choice.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -125,11 +126,18 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   coming back reads a clone, a kept default row's end forgets only the parked attachment, a destroyed row's view is
   dropped, and the default row's raw-slug key migrates to `<default>` with an existing `<default>` view winning. State
   composes and applies the view; the map is reached through nothing else.
-- `SelectedRow` privately owns the selected host and workspace and the pending read mark. Readers see the host and
-  workspace by reference; only a switch's retarget and the capture harness's startup seed select a row, both parts at
-  once. Every switch replaces the read mark (armed `READ_DWELL` ahead only when a person switched); each redraw takes
-  a due mark whose row is still selected, and drops one whose row was left, before State sends the read flag. The
-  native fixtures select their rows through the same operation.
+- `SelectedRow` privately owns the selected host and workspace, the pending read mark, the two-press destroy arm and
+  the time a `workspace.create` was sent. Readers see the host and workspace by reference; only a switch's retarget
+  and the capture harness's startup seed select a row, both parts at once. Every switch replaces the read mark (armed
+  `READ_DWELL` ahead only when a person switched); each redraw takes a due mark whose row is still selected, and drops
+  one whose row was left, before State sends the read flag. Every key press takes the destroy arm before its action,
+  so only a second destroy press on the same row destroys. The create's time is taken by the next attach that switches
+  rows. The native fixtures select their rows through the same operation. `WorkspacePicker` privately owns its host,
+  path, listing, cursor, hidden-folder flag, return reveal and accounts: State opens and closes it and sends what its
+  operations return (drill in, ascend, toggle hidden), a listing lands only when it answers the picker's own host and
+  path, accounts only from that host with the first selected, and Tab cycles in range, so the native account fixture
+  reaches each choice through the reply and Tab; an out-of-range index is the portable test's. The presence clock
+  (`PresenceClock`) stays its own private-field value on State.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

@@ -906,14 +906,15 @@ impl State {
         println!("account-choice phase=body-entered entered_bodies=1");
         let (a, mut rx, _events) = self.prepare_lifetime_probe("<host-account>", "id-account");
         while rx.try_recv().is_ok() {}
-        let cases: [(&str, &[&str], usize, Option<&str>); 7] = [
+        // The selection is reached as a person reaches it, by the reply and Tab; an out-of-range index is
+        // unreachable that way and is `session::picker::tests::selected_account_is_chosen_by_name_not_position`'s.
+        let cases: [(&str, &[&str], usize, Option<&str>); 6] = [
             ("no default", &["team", "other"], 0, Some("team")),
             ("default first, default chosen", &["default", "team"], 0, None),
             ("default first, second chosen", &["default", "team"], 1, Some("team")),
             ("default later, first chosen", &["team", "default"], 0, Some("team")),
             ("default later, default chosen", &["team", "default"], 1, None),
             ("empty list", &[], 0, None),
-            ("stale index", &["default", "team"], 5, None),
         ];
         for (label, names, selected, want) in cases {
             self.begin_create_session(a.clone());
@@ -925,9 +926,11 @@ impl State {
                     logged_in: Default::default(),
                 })
                 .collect();
-            let picker = self.workspace_picker.as_mut().ok_or_else(|| anyhow::anyhow!("{label}: no picker"))?;
-            picker.accounts = accounts;
-            picker.account_selected = selected;
+            anyhow::ensure!(self.workspace_picker.is_some(), "{label}: no picker");
+            self.on_accounts_list(a.clone(), accounts);
+            for _ in 0..selected {
+                self.picker_cycle_account();
+            }
             self.picker_confirm_selected("claude");
             self.picker_cancel();
             let sent = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|request| match request {
