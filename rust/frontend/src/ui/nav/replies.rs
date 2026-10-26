@@ -444,7 +444,7 @@ impl State {
     ) {
         // Record the failure; the retry gate in
         // maybe_fire_concept_read re-arms after a backoff. Do
-        // NOT un-latch `file_parse_fired` here — an instant
+        // NOT un-latch the parse latch here — an instant
         // un-latch let the redraw loop re-fire every frame
         // against a fast-failing kernel (the ~4.7k req/s storm).
         //
@@ -460,12 +460,7 @@ impl State {
             self.reply_ws_key(workspace_id.as_deref()),
         );
         if failed_ws_key == self.active_ws_key() {
-            let e = self
-                .file_parse_retry
-                .entry(path)
-                .or_insert((std::time::Instant::now(), 0));
-            e.0 = std::time::Instant::now();
-            e.1 += 1;
+            self.drift.record_failure(path);
         }
     }
 
@@ -494,7 +489,7 @@ impl State {
         // skipped insert isn't lost: the owning workspace's
         // restore clears the cache and re-fires on view.
         if reply_ws_key == self.active_ws_key() {
-            install_parsed_hash(&path, ast_hash, &mut self.file_ast_hashes, &self.file_parse_fired, &mut self.file_parse_retry);
+            self.drift.install(&path, ast_hash);
         }
         // If a module row's payload.path matches, synthesize
         // child TreeNodes from the parsed definitions and

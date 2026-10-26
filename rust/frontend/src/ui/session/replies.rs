@@ -89,7 +89,7 @@ impl State {
         if event_host == *self.selected.host() {
             // Changes made while the connection was down were never sent: the drift cache and the cursored
             // annotation read are of unknown age, so each file parses (and the annotation reads) again on view.
-            clear_drift(&mut self.file_ast_hashes, &mut self.file_parse_fired, &mut self.file_parse_retry);
+            self.drift.clear();
             self.preview_requests.reset_concept_follow();
             // Carry the resumed active workspace across the
             // reconnect (right after `hello` succeeds — this

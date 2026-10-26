@@ -19,7 +19,7 @@ request time; `session::WorkspacePicker` owns the new-session picker's listing, 
 project-scan clock; `nav::TreeView` owns a tree's rows, cursor and content generation; `nav::Navigation` owns the
 active tree, its mode, scroll and scan root, and the store of parked trees; `nav::RevealWalk` owns the reveal walk's
 target, awaited level, refresh memo and root-armed target; `nav::FileOps` owns the pending create and delete and the
-upload batch.
+upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -175,6 +175,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   reports the host a failure must come from (the file's, else the batch's between files). A failed send or read, a
   backend failure and a reconnect end the upload and its batch; a local open failure ends only the batch. State sends,
   refreshes the destination listing and writes the status.
+- `DriftCheck` privately owns the active row's drift cache: each `.jl` file's `file.parse` hash, the one-shot parse
+  latch and failed parses' backoff records. A view takes the latch (re-armed after a failure's backoff, never past
+  `FILE_PARSE_MAX_RETRIES`); a reply installs only into a latched, unforgotten path; a failure counts an attempt and
+  keeps the latch; a failed send drops the latch; a `preview.changed` for the file forgets it; a row change and a
+  reconnect clear it. The concept line reads one `DriftStatus` per file.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

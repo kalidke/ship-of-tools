@@ -11,7 +11,7 @@ pub(in crate::ui) struct ConceptInfo {
     pub(in crate::ui) content: String,
     /// `synced_against` AST hash parsed out of the annotation's YAML
     /// frontmatter. `None` when no annotation exists, no frontmatter, or
-    /// the field is absent. Compared against `file_ast_hashes[path]` to
+    /// the field is absent. Compared against the file's parsed hash to
     /// drive the drift badge.
     pub(in crate::ui) synced_against: Option<String>,
 }
@@ -39,7 +39,7 @@ type Retries = std::collections::HashMap<String, (std::time::Instant, u32)>;
 
 /// Forget one file's drift check: its hash, its one-shot parse latch and its failure record. The next
 /// `maybe_fire_concept_read` with the cursor on it parses it again; no other file is touched.
-pub(in crate::ui) fn forget_drift(path: &str, hashes: &mut Hashes, fired: &mut Fired, retry: &mut Retries) {
+fn forget_drift(path: &str, hashes: &mut Hashes, fired: &mut Fired, retry: &mut Retries) {
     hashes.remove(path);
     fired.remove(path);
     retry.remove(path);
@@ -48,14 +48,14 @@ pub(in crate::ui) fn forget_drift(path: &str, hashes: &mut Hashes, fired: &mut F
 /// Forget every file's drift check, failure records included. The cache lasts only while this window receives the workspace's changes, so a
 /// workspace switch and a reconnect clear it (the daemon sends no `preview.changed` for a row that is not active
 /// and replays none).
-pub(in crate::ui) fn clear_drift(hashes: &mut Hashes, fired: &mut Fired, retry: &mut Retries) {
+fn clear_drift(hashes: &mut Hashes, fired: &mut Fired, retry: &mut Retries) {
     hashes.clear();
     fired.clear();
     retry.clear();
 }
 
 /// True when the file's hash is known and differs from the annotation's `synced_against`.
-pub(in crate::ui) fn drift_is_stale(hashes: &Hashes, path: &str, synced: &str) -> bool {
+fn drift_is_stale(hashes: &Hashes, path: &str, synced: &str) -> bool {
     hashes.get(path).is_some_and(|h| h != synced)
 }
 
@@ -63,7 +63,7 @@ pub(in crate::ui) fn drift_is_stale(hashes: &Hashes, path: &str, synced: &str) -
 /// out now. A failed parse re-arms the latch only after an exponential backoff (`1u64 << n` with n=1,2 → 2s, 4s)
 /// and not at all at the attempt cap, where the latch STAYS latched, so a storm is structurally impossible: each
 /// re-arm buys exactly one fire (the failure handler re-stamps the timestamp).
-pub(in crate::ui) fn take_parse_fire(path: &str, hashes: &Hashes, fired: &mut Fired, retry: &Retries) -> bool {
+fn take_parse_fire(path: &str, hashes: &Hashes, fired: &mut Fired, retry: &Retries) -> bool {
     if hashes.contains_key(path) {
         return false;
     }
@@ -80,7 +80,7 @@ pub(in crate::ui) fn take_parse_fire(path: &str, hashes: &Hashes, fired: &mut Fi
 /// Install a `file.parse` reply's hash only while the path is still latched: a forget (the file changed) clears
 /// the latch, so a reply read before the edit is dropped. The kernel serves one request at a time, so a newer
 /// fire's reply follows it.
-pub(in crate::ui) fn install_parsed_hash(
+fn install_parsed_hash(
     path: &str,
     hash: String,
     hashes: &mut Hashes,
@@ -93,6 +93,66 @@ pub(in crate::ui) fn install_parsed_hash(
     retry.remove(path);
     hashes.insert(path.to_string(), hash);
     true
+}
+
+/// The drift check's cache for the active row: each `.jl` file's parsed hash, the one-shot parse latch, and failed
+/// parses' backoff records. It lasts only while this window receives the row's changes, so a row change and a
+/// reconnect clear it.
+#[derive(Default)]
+pub(in crate::ui) struct DriftCheck {
+    hashes: Hashes,
+    fired: Fired,
+    retry: Retries,
+}
+
+/// What the concept line says of a file's drift (`DriftCheck::status`).
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::ui) enum DriftStatus {
+    InSync,
+    Stale,
+    /// The file's parse keeps failing: past `FILE_PARSE_MAX_RETRIES`.
+    Unavailable,
+    Checking,
+}
+
+impl DriftCheck {
+    pub(in crate::ui) fn forget(&mut self, path: &str) {
+        forget_drift(path, &mut self.hashes, &mut self.fired, &mut self.retry);
+    }
+
+    pub(in crate::ui) fn clear(&mut self) { clear_drift(&mut self.hashes, &mut self.fired, &mut self.retry); }
+
+    pub(in crate::ui) fn is_stale(&self, path: &str, synced: &str) -> bool { drift_is_stale(&self.hashes, path, synced) }
+
+    pub(in crate::ui) fn status(&self, path: &str, synced: &str) -> DriftStatus {
+        match self.hashes.get(path) {
+            Some(h) if h == synced => DriftStatus::InSync,
+            Some(_) => DriftStatus::Stale,
+            None => match self.retry.get(path) {
+                Some(&(_, n)) if n >= FILE_PARSE_MAX_RETRIES => DriftStatus::Unavailable,
+                _ => DriftStatus::Checking,
+            },
+        }
+    }
+
+    pub(in crate::ui) fn take_parse_fire(&mut self, path: &str) -> bool {
+        take_parse_fire(path, &self.hashes, &mut self.fired, &self.retry)
+    }
+
+    /// A send that failed leaves the file unlatched, so its next view parses again.
+    pub(in crate::ui) fn forget_fire(&mut self, path: &str) { self.fired.remove(path); }
+
+    pub(in crate::ui) fn install(&mut self, path: &str, hash: String) -> bool {
+        install_parsed_hash(path, hash, &mut self.hashes, &self.fired, &mut self.retry)
+    }
+
+    /// A failed parse: its attempt is counted and stamped now, for the backoff `take_parse_fire` applies. The latch
+    /// stays, so a fast-failing kernel is never asked again every frame.
+    pub(in crate::ui) fn record_failure(&mut self, path: String) {
+        let e = self.retry.entry(path).or_insert((std::time::Instant::now(), 0));
+        e.0 = std::time::Instant::now();
+        e.1 += 1;
+    }
 }
 
 /// What a `preview.changed` for a `files:` node means to the drift check.
@@ -127,12 +187,7 @@ impl State {
     pub(in crate::ui) fn forget_changed_file(&mut self, node_id: &str) {
         match self.preview_requests.invalidate_changed(node_id) {
             ChangeEffect::ReadAnnotationAgain => {},
-            ChangeEffect::ForgetFile(path) => forget_drift(
-                path,
-                &mut self.file_ast_hashes,
-                &mut self.file_parse_fired,
-                &mut self.file_parse_retry,
-            ),
+            ChangeEffect::ForgetFile(path) => self.drift.forget(path),
             ChangeEffect::Nothing => {}
         }
     }
@@ -215,11 +270,11 @@ impl super::requests::ConceptRequestContext for State {
     }
 
     fn take_drift_parse(&mut self, path: &str) -> bool {
-        take_parse_fire(path, &self.file_ast_hashes, &mut self.file_parse_fired, &self.file_parse_retry)
+        self.drift.take_parse_fire(path)
     }
 
     fn forget_drift_fire(&mut self, path: &str) {
-        self.file_parse_fired.remove(path);
+        self.drift.forget_fire(path);
     }
 }
 

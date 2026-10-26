@@ -834,27 +834,10 @@ struct State {
     /// MathRendered events into a single rebuild per frame.
     needs_md_reflow: bool,
     // ui/preview/editor: the annotation editor and file-parse staleness.
-    /// `kernel.request file.parse` results, keyed by the relative path the
-    /// kernel was asked about (matches the suffix of `files:` node ids).
-    /// Used by the drift badge: if a row's path has a hash here AND its
-    /// annotation parses a `synced_against`, and the two differ, yellow it.
-    /// Lazy, per file, on view; a `preview.changed` for the file, a workspace
-    /// switch and a reconnect drop it.
-    file_ast_hashes: std::collections::HashMap<String, String>,
-    /// Paths the GPU thread has already asked `file.parse` for. Prevents
-    /// re-firing while a request is in flight, and a reply installs only while its
-    /// path is latched. Cleared on a switch and on a reconnect.
-    file_parse_fired: std::collections::HashSet<String>,
-    /// Failed `file.parse` bookkeeping: path → (last failure, attempt
-    /// count). The retry gate in `maybe_fire_concept_read` re-fires only
-    /// after an exponential backoff and gives up after
-    /// `FILE_PARSE_MAX_RETRIES`. WITHOUT this, a kernel that fails fast
-    /// (dead / respawning) turned the unthrottled redraw loop into a
-    /// request storm — observed ~4.7k file.parse/s on a capture box, which
-    /// flooded the respawning kernel straight back down (2026-07-02).
-    /// Cleared on success. Deliberately NOT in the workspace snapshot:
-    /// a workspace switch resets the attempts, which is a feature.
-    file_parse_retry: std::collections::HashMap<String, (std::time::Instant, u32)>,
+    /// The drift badge's cache: per `.jl` path (the suffix of `files:` node ids) its `file.parse` hash, the
+    /// one-shot parse latch and failed parses' backoff (2026-07-02: a fast-failing kernel once drew ~4.7k
+    /// file.parse/s). Lazy, per file, on view; a `preview.changed` for the file, a row change and a reconnect drop it.
+    drift: DriftCheck,
     /// Active concept-annotation edit, or `None` for read-only view.
     /// Toggled by `e` (enter) / `Esc` (discard) in Preview focus.
     /// Save fires `concept.write` with the captured
@@ -1013,7 +996,7 @@ impl State {
 pub(crate) mod preview;
 pub(crate) mod render;
 use render::*;
-use self::preview::concept::{clear_drift, drift_is_stale, install_parsed_hash, split_frontmatter, ConceptInfo, FILE_PARSE_MAX_RETRIES};
+use self::preview::concept::{split_frontmatter, ConceptInfo, DriftCheck, DriftStatus};
 use self::preview::editor::state::EditState;
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,

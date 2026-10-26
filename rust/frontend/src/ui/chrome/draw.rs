@@ -287,15 +287,11 @@ impl State {
                         info.synced_against.as_deref(),
                         info.target.strip_prefix("files/"),
                     ) {
-                        (Some(synced), Some(path)) => match self.file_ast_hashes.get(path) {
-                            Some(h) if h == synced => " · in sync",
-                            Some(_) => " · STALE (file ast_hash differs from synced_against)",
-                            None => match self.file_parse_retry.get(path) {
-                                Some(&(_, n)) if n >= FILE_PARSE_MAX_RETRIES => {
-                                    " · drift check unavailable (file.parse failing)"
-                                }
-                                _ => " · checking…",
-                            },
+                        (Some(synced), Some(path)) => match self.drift.status(path, synced) {
+                            DriftStatus::InSync => " · in sync",
+                            DriftStatus::Stale => " · STALE (file ast_hash differs from synced_against)",
+                            DriftStatus::Unavailable => " · drift check unavailable (file.parse failing)",
+                            DriftStatus::Checking => " · checking…",
                         },
                         (Some(_), None) => " · sync check N/A",
                         (None, _) => " · no synced_against frontmatter",
@@ -323,7 +319,7 @@ impl State {
                     info.synced_against.as_ref(),
                     row.node.id.strip_prefix("files:"),
                 ) {
-                    drift_is_stale(&self.file_ast_hashes, path, synced)
+                    self.drift.is_stale(path, synced)
                 } else {
                     false
                 }
