@@ -152,7 +152,7 @@ impl State {
             result_ledger: ResultLedger::default(),
             contrast_dim: cli.contrast_mode == "dim",
             workspace_picker: None,
-            workspace_ui_snapshots: HashMap::new(),
+            parked_views: ParkedViews::default(),
             preview_concept: None,
             concept_rect_px,
             file_ast_hashes: std::collections::HashMap::new(),

@@ -387,9 +387,7 @@ impl State {
                     event_host.clone(),
                     self.reply_ws_key(Some(info.slug.as_str())),
                 );
-                if let Some(snap) = self.workspace_ui_snapshots.get_mut(&ws_key) {
-                    snap.bl_pane_target = None;
-                }
+                self.parked_views.forget_attachment(&ws_key);
                 // No manual `workspace.list` request here —
                 // the backend's own `run_ended`
                 // `WorkspaceChanged` push (the generic
@@ -438,7 +436,7 @@ impl State {
                     event_host.clone(),
                     self.reply_ws_key(Some(info.slug.as_str())),
                 );
-                self.workspace_ui_snapshots.remove(&ws_key);
+                self.parked_views.forget(&ws_key);
                 self.repl_model.forget_destroyed_row(&ws_key);
                 // The tree slots died with the snapshot on main;
                 // the store split orphaned them — drop the

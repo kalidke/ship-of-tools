@@ -12,6 +12,7 @@ owns authoritative rows and identity; `session/row_presentation.rs` owns their p
 `preview::requests::PreviewRequests` owns both request clocks, the fired preview target and its page re-raster, concept
 follow commitment, the driven-preview hold, and the crop, scale-save and `--roi` aim transactions.
 `preview::source::InstalledPreviewSource` owns the installed preview bytes, their node, scale and markdown origin.
+`session::ParkedViews` owns the rows' parked views (`WorkspaceUiSnapshot`), keyed by row.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -119,6 +120,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   row's snapshot carries it whole and restores it before the repaint, and a first visit clears it whole, so the bytes,
   node, calibration and markdown origin are always one reply's. The coordinator repaints from an owned copy of the
   bytes; `figure_failed` stays with the markdown media and travels beside it in the snapshot.
+- `ParkedViews` privately owns the map of parked row views. Leaving a row parks its view (replacing an earlier one),
+  coming back reads a clone, a kept default row's end forgets only the parked attachment, a destroyed row's view is
+  dropped, and the default row's raw-slug key migrates to `<default>` with an existing `<default>` view winning. State
+  composes and applies the view; the map is reached through nothing else.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
@@ -299,8 +304,9 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `input/`: FocusPrompts, LayoutHelp, the action catalog, key and mouse routing, help and clipboard paste.
 - `nav/`: the navigation pane's trees (mode, store, Modules, Sessions, Hosts).
 - `nav/files/`: Files mode's prompts, reveal walk, transfers and re-lists.
-- `session/`: `RowDirectory` owns listings/identity, `RowPresentation` owns metadata/order/flashes and `ResultLedger`
-  owns owed results/attempts; State coordinates effects, snapshots, switch, picker, presence and the badge floor.
+- `session/`: `RowDirectory` owns listings/identity, `RowPresentation` owns metadata/order/flashes, `ResultLedger`
+  owns owed results/attempts and `ParkedViews` the parked row views; State coordinates effects, snapshot capture and
+  restore, switch, picker, presence and the badge floor.
 - `agent_pane/`: `AgentPane` and its attach, input, screen and reply operations; thin State adapters apply effects.
 - `drawer/`: the bottom drawer and its tenants.
 - `drawer/repl/`: ReplModel owns row behavior; ReplPresentation owns image refresh, projection, layout, anchoring

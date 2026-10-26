@@ -38,7 +38,7 @@ impl State {
             .map(|target| target.row_key().clone())
     }
 
-    /// Key used to index `workspace_ui_snapshots` for the *current*
+    /// Key used to index the parked views for the *current*
     /// workspace. The daemon's default workspace doesn't carry a slug
     /// in `active_workspace_id`; `<default>` is the literal we use
     /// instead so it has a snapshot slot too.
@@ -102,11 +102,7 @@ impl State {
         // Every map it touches is host-qualified now; migrating the wrong
         // host's entries would be a silent no-op (miss) at best.
         let to_key: WsKey = (host.clone(), DEFAULT_KEY.to_string());
-        if let Some(v) = self.workspace_ui_snapshots.remove(&from_key) {
-            self.workspace_ui_snapshots
-                .entry(to_key.clone())
-                .or_insert(v);
-        }
+        self.parked_views.migrate(&from_key, to_key.clone());
         self.repl_model.migrate_default_key(&from_key, to_key.clone());
         // The README-defaulted one-shot marker is keyed the same way (an
         // ADR-0017 resume can restore the active ws BY SLUG pre-learn); a

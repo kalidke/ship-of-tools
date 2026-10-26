@@ -19,8 +19,8 @@ use crate::ui::preview::source::InstalledPreviewSource;
 /// REPL pane state (scrollback / input / history) lives in a private
 /// record in `ReplModel`, which routes replies for parked rows independently.
 ///
-/// Held in `State.workspace_ui_snapshots`, keyed by workspace slug
-/// (with `<default>` for the daemon-default workspace).
+/// Held in `ParkedViews`, keyed by the row's `WsKey` (with `<default>`
+/// for the daemon-default workspace).
 #[derive(Clone)]
 pub(in crate::ui) struct WorkspaceUiSnapshot {
     /// Last mode the workspace was rendering. Dropped-then-restored so a
@@ -37,7 +37,7 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     mode: Mode,
     /// Tmux session the BL pane was attached to (`sot-be-<slug>`).
     /// Restored via `attach_session_to_bl` on swap-in.
-    pub(in crate::ui) bl_pane_target: Option<String>,
+    bl_pane_target: Option<String>,
     /// The node id we most recently asked the backend to preview, so
     /// switching back doesn't bounce-fetch the same preview again.
     preview_node_id_fired: Option<String>,
@@ -74,6 +74,43 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     edit_state: Option<EditState>,
 }
 
+/// The rows' parked views: one `WorkspaceUiSnapshot` per row the window has left, keyed by its `WsKey`. Leaving a
+/// row parks its view, coming back reads it, and a row's own end edits or drops it; nothing else reaches the map.
+#[derive(Default)]
+pub(in crate::ui) struct ParkedViews {
+    views: HashMap<WsKey, WorkspaceUiSnapshot>,
+}
+
+impl ParkedViews {
+    /// Park a left row's view, replacing any earlier one.
+    fn park(&mut self, key: WsKey, view: WorkspaceUiSnapshot) {
+        self.views.insert(key, view);
+    }
+
+    fn view(&self, key: &WsKey) -> Option<&WorkspaceUiSnapshot> {
+        self.views.get(key)
+    }
+
+    /// A kept default row's run ended: its parked view no longer names an attachment to restore.
+    pub(in crate::ui) fn forget_attachment(&mut self, key: &WsKey) {
+        if let Some(view) = self.views.get_mut(key) {
+            view.bl_pane_target = None;
+        }
+    }
+
+    /// A destroyed row's view dies with it, so a same-slug successor starts clean.
+    pub(in crate::ui) fn forget(&mut self, key: &WsKey) {
+        self.views.remove(key);
+    }
+
+    /// Move a view parked under the default row's raw slug to its `<default>` key; a view already there wins.
+    pub(in crate::ui) fn migrate(&mut self, from: &WsKey, to: WsKey) {
+        if let Some(view) = self.views.remove(from) {
+            self.views.entry(to).or_insert(view);
+        }
+    }
+}
+
 impl State {
     /// Capture the chrome's current view state into the per-workspace
     /// snapshot map. Called immediately before changing
@@ -82,7 +119,7 @@ impl State {
     /// for repaint, concept slot, drift bookkeeping, pty target.
     pub(in crate::ui) fn snapshot_current_workspace_ui(&mut self) {
         let key = self.active_ws_key();
-        self.workspace_ui_snapshots.insert(
+        self.parked_views.park(
             key,
             WorkspaceUiSnapshot {
                 mode: self.mode,
@@ -108,7 +145,7 @@ impl State {
     /// source. Returns `false` if there's no prior state for this
     /// workspace — caller falls back to fetching fresh.
     pub(in crate::ui) fn restore_workspace_ui(&mut self, key: &WsKey) -> bool {
-        let Some(snap) = self.workspace_ui_snapshots.get(key).cloned() else {
+        let Some(snap) = self.parked_views.view(key).cloned() else {
             return false;
         };
         // The nav tree does NOT restore from this snapshot — it swaps

@@ -669,14 +669,12 @@ struct State {
     /// older label-only prompt that fired `tmux.create_session` with
     /// a hardcoded `$SOT_PROJECTS_ROOT/<label>` cwd.
     workspace_picker: Option<WorkspacePicker>,
-    /// Per-workspace NavTree snapshots. Captured when the user
-    /// switches away from a workspace; restored when they switch back.
-    /// Keyed by `WsKey` (ADR 0042 L2a, Codex review PR #163: bare-slug
-    /// keying let "sot" on host A and "sot" on host B share a slot --
-    /// `"<default>"` for the daemon-default within a host). Means
-    /// switching workspaces (or hosts) doesn't lose cursor position or
-    /// the expanded-folder shape of the file tree.
-    workspace_ui_snapshots: HashMap<WsKey, WorkspaceUiSnapshot>,
+    /// Per-row parked views, captured when the user switches away from a
+    /// row and restored when they switch back. Keyed by `WsKey` (ADR 0042
+    /// L2a, Codex review PR #163: bare-slug keying let "sot" on host A and
+    /// "sot" on host B share a slot -- `"<default>"` for the
+    /// daemon-default within a host).
+    parked_views: ParkedViews,
     /// REPL row records, drafts, history, eval routing and lifecycle.
     repl_model: ReplModel,
     /// The last `fe.sessions` projection this frontend sent out
