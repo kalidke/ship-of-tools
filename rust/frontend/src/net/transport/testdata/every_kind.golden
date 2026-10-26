@@ -32,17 +32,18 @@
 > {"v":4,"id":33,"kind":"req","op":"pluto.open","payload":{"path":"pl.path"}}
 > {"v":4,"id":34,"kind":"req","op":"video.open","payload":{"path":"vo.path"}}
 > {"v":4,"id":35,"kind":"req","op":"docs.open","payload":{"path":"do.path"}}
-> {"v":4,"id":36,"kind":"req","op":"quarto.open","payload":{"execute":true,"path":"qo.path"}}
-> {"v":4,"id":37,"kind":"req","op":"repl.run_file","payload":{"eval_id":116,"fresh":true,"path":"rf.path","workspace_id":"rf.ws"}}
-> {"v":4,"id":38,"kind":"req","op":"file.download","payload":{"path":"fdl.path"}}
-> {"v":4,"id":39,"kind":"req","op":"file.upload","payload":{"data_b64":"AQID","dir":"fu.dir","eof":true,"name":"fu.name","offset":117,"total":118}}
-> {"v":4,"id":40,"kind":"req","op":"monitor.subscribe","payload":{}}
-> {"v":4,"id":41,"kind":"req","op":"monitor.unsubscribe","payload":{}}
-> {"v":4,"id":42,"kind":"req","op":"agent.send","payload":{"from":"as.from","text":"as.text","to":"as.to"}}
-> {"v":4,"id":43,"kind":"req","op":"monitor.history","payload":{"host":"mh.host","points":119,"until":3.5,"window_s":2.5}}
-> {"v":4,"id":44,"kind":"req","op":"tree.root","payload":{"mode":"files","workspace_id":"rt.ws"}}
-> {"v":4,"id":45,"kind":"req","op":"tree.children","payload":{"node_id":"rc.parent","workspace_id":"rc.ws"}}
-> {"v":4,"id":46,"kind":"req","op":"repl.interrupt","payload":{"eval_ids":[206],"force":true,"workspace_id":"rif.ws"}}
+> {"v":4,"id":36,"kind":"req","op":"page.reply","payload":{"handle":"pr.handle","line":"pr.line","workspace_id":"pr.ws"}}
+> {"v":4,"id":37,"kind":"req","op":"quarto.open","payload":{"execute":true,"path":"qo.path"}}
+> {"v":4,"id":38,"kind":"req","op":"repl.run_file","payload":{"eval_id":116,"fresh":true,"path":"rf.path","workspace_id":"rf.ws"}}
+> {"v":4,"id":39,"kind":"req","op":"file.download","payload":{"path":"fdl.path"}}
+> {"v":4,"id":40,"kind":"req","op":"file.upload","payload":{"data_b64":"AQID","dir":"fu.dir","eof":true,"name":"fu.name","offset":117,"total":118}}
+> {"v":4,"id":41,"kind":"req","op":"monitor.subscribe","payload":{}}
+> {"v":4,"id":42,"kind":"req","op":"monitor.unsubscribe","payload":{}}
+> {"v":4,"id":43,"kind":"req","op":"agent.send","payload":{"from":"as.from","text":"as.text","to":"as.to"}}
+> {"v":4,"id":44,"kind":"req","op":"monitor.history","payload":{"host":"mh.host","points":119,"until":3.5,"window_s":2.5}}
+> {"v":4,"id":45,"kind":"req","op":"tree.root","payload":{"mode":"files","workspace_id":"rt.ws"}}
+> {"v":4,"id":46,"kind":"req","op":"tree.children","payload":{"node_id":"rc.parent","workspace_id":"rc.ws"}}
+> {"v":4,"id":47,"kind":"req","op":"repl.interrupt","payload":{"eval_ids":[206],"force":true,"workspace_id":"rif.ws"}}
 < golden Connected { session_id: "sess-1", revision: 0, host: None, project_root: None, proxy: false, resolved: Local, backend_version: "", repl_running: [] }
 < golden TreeChildrenFailed { workspace_id: Some("tc.ws"), parent_id: "tc.parent", error: "err-tree.children" }
 < golden Event { op: "nav.toggle_hidden", payload: Object {"code": String("code-nav.toggle_hidden"), "error": String("err-nav.toggle_hidden")} }
@@ -71,6 +72,7 @@
 < golden PlutoOpened { result: Err("err-pluto.open") }
 < golden VideoOpened { result: Err("err-video.open") }
 < golden DocsOpened { result: Err("err-docs.open") }
+< golden PageReplied { handle: "pr.handle", outcome: "error", detail: "err-page.reply [code-page.reply]" }
 < golden QuartoOpened { result: Err("err-quarto.open") }
 < golden ReplRunFileDone { eval_id: 116, result: Err("err-repl.run_file") }
 < golden FileTransferFailed { op: "download", message: "err-file.download" }

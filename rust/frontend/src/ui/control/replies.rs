@@ -1,9 +1,27 @@
 //! The daemon's pushed events (`IncomingEvt::Event`), by op: workspace.changed, agent.message nav
-//! envelopes, fe.command, preview.changed.
+//! envelopes, fe.command, preview.changed; and the reply to a confirmed page reply (`page.reply`).
 
 use crate::ui::*;
 
+/// What the status line says of a confirmed reply's outcome. `sent` is the only outcome that says the line and its
+/// Enter were recorded; `unknown` may have been delivered; `typed_not_sent` left the line in the prompt unsent.
+pub(in crate::ui) fn page_reply_status(handle: &str, outcome: &str, detail: &str) -> String {
+    match outcome {
+        "sent" => format!("reply sent to {handle}"),
+        "unknown" => format!("reply to {handle}: delivery unknown \u{b7} {detail}"),
+        "typed_not_sent" => format!("reply to {handle} typed but not sent \u{b7} {detail}"),
+        _ => format!("reply to {handle} not sent \u{b7} {detail}"),
+    }
+}
+
 impl State {
+    /// The `page.reply` answer for a reply the bar's Enter sent.
+    pub(crate) fn on_page_replied(&mut self, handle: String, outcome: String, detail: String) {
+        tracing::info!(%handle, %outcome, "page reply: answered");
+        self.status.set(page_reply_status(&handle, &outcome, &detail));
+        self.window.request_redraw();
+    }
+
     pub(crate) fn on_event(&mut self, event_host: HostKey, op: String, payload: serde_json::Value) {
         if op == sot_protocol::op::WORKSPACE_CHANGED {
             // Server pushed a workspace create/destroy; re-list so
@@ -59,3 +77,7 @@ impl State {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "replies_tests.rs"]
+mod tests;

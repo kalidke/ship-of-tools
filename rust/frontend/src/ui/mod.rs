@@ -263,6 +263,8 @@ struct State {
     // ui/control: the fe-commands queue and the fe-state.json signature.
     /// The fe-commands queue the watcher fills and the last fe-state.json signature.
     control: ControlChannel,
+    /// A reply a page offered, held for its person's word: the only sender of `page.reply`.
+    reply_bar: ReplyBar,
     // ui/nav: the active tree and mode, cursor-driven preview firing, request generations.
     /// The nav pane's trees: the active (mode, row)'s tree with its scroll and scan root, and the store parking
     /// every other tree. Installs route by the reply's key, so the active view can only hold the active key's tree.

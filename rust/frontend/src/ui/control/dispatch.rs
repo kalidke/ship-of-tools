@@ -261,6 +261,10 @@ impl State {
                 }
                 self.window.request_redraw();
             }
+            FeCommand::PageReply { workspace, handle, line } => match from_host {
+                Some(host) => self.offer_page_reply(host, &workspace, handle, line),
+                None => tracing::warn!("fe-command page_reply: no daemon sent it, dropped"),
+            },
             FeCommand::Docs { workspace, path } => {
                 // No workspace switch: docs.open confines the absolute path to
                 // ANY registered workspace on the backend, so the active FE

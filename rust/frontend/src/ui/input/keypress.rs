@@ -22,12 +22,16 @@ pub(in crate::ui) struct KeyPress<'a> {
 }
 
 pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventLoop, modifiers: ModifiersState, event: KeyEvent, is_synthetic: bool) {
+    // What is drawn over the reply bar decides who gets this key, so the bar is told before any layer reads it.
+    state.observe_reply_bar(std::time::Instant::now());
     let keep = state.focus_prompts.quit_choice();
     let quit_again = keep.is_some() && state.bindings.resolve(&event.logical_key, Some(&event.key_without_modifiers()),
         Modifiers { ctrl: modifiers.control_key(), alt: modifiers.alt_key(), shift: modifiers.shift_key(),
             super_: modifiers.super_key() }, false, |a| a == Action::Quit) == Some(Action::Quit);
     input_continuation(state, &event.logical_key, event.repeat, is_synthetic, event.state == ElementState::Pressed,
-        keep, quit_again, |state| prepare_keyboard_input(state, modifiers, &event), |state, route| match route {
+        keep, quit_again, |state| prepare_keyboard_input(state, modifiers, &event),
+        |state| state.reply_bar_key(bar_key_kind(&event.logical_key, event.repeat, modifiers), std::time::Instant::now()),
+        |state, route| match route {
             InputRoute::Prompt(step) => confirm_quit_key(state, event_loop, step),
             InputRoute::Next(action, (label, context, was_destroy_pending)) => {
                 let key = KeyPress { event: &event, action, ctrl: modifiers.control_key(), alt: modifiers.alt_key(),
@@ -37,10 +41,12 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
         });
 }
 
-/// The raw-event boundary used by KeyboardInput and headless routing tests.
+/// The raw-event boundary used by KeyboardInput and headless routing tests. The quit prompt takes a key first; then
+/// the reply bar, if one is in view, takes it before any binding or pane (`bar` says whether it did).
 pub(in crate::ui) fn input_continuation<S, P>(
     state: &mut S, logical: &Key, repeat: bool, synthetic: bool, pressed: bool, keep: Option<bool>, quit_again: bool,
-    resolve: impl FnOnce(&mut S) -> (Option<Action>, P), next: impl FnOnce(&mut S, InputRoute<P>),
+    resolve: impl FnOnce(&mut S) -> (Option<Action>, P), bar: impl FnOnce(&mut S) -> bool,
+    next: impl FnOnce(&mut S, InputRoute<P>),
 ) {
     if synthetic || !pressed { return; }
     if let Some(keep) = keep {
@@ -50,6 +56,7 @@ pub(in crate::ui) fn input_continuation<S, P>(
     if matches!(logical, Key::Named(NamedKey::Control | NamedKey::Shift |
         NamedKey::Alt | NamedKey::Super | NamedKey::Meta | NamedKey::AltGraph)) { return; }
     let (action, prepared) = resolve(state);
+    if bar(state) { return; }
     next(state, InputRoute::Next(action, prepared));
 }
 

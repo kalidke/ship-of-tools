@@ -139,6 +139,19 @@ pub(in crate::ui) fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, sel
             let path = str_arg("path")?;
             Some(FeCommand::Docs { workspace, path })
         }
+        "page_reply" => {
+            // A page's reply is offered to one window for its person's word; a broadcast would offer it to every
+            // window, so it opens no bar.
+            if !directed {
+                tracing::warn!("fe-command page_reply: broadcast refused; only a directed offer opens the bar");
+                return None;
+            }
+            Some(FeCommand::PageReply {
+                workspace: str_arg("workspace")?,
+                handle: str_arg("handle")?,
+                line: str_arg("line")?,
+            })
+        }
         "relaunch" => {
             if !directed {
                 tracing::warn!("fe-command relaunch: broadcast refused; target one frontend with --fe");
@@ -252,6 +265,11 @@ pub(in crate::ui) enum FeCommand {
     /// re-ensure, then respawn). DIRECTED only -- a broadcast would bounce
     /// every attached frontend at once.
     Relaunch { converge: bool },
+    /// A reply a page offered, for this window's person to confirm on the reply bar. Never read from the command
+    /// file: a file in that folder could otherwise open a bar that says it came from a page, so only an
+    /// `fe.command` evt from the daemon's page server makes one (`route_fe_command`, directed only).
+    #[serde(skip_deserializing)]
+    PageReply { workspace: String, handle: String, line: String },
 }
 
 fn fe_cmd_default_dir() -> i32 {

@@ -115,8 +115,15 @@ works while the window is away. Missing fields, malformed JSON and unknown verbs
 Post `{verb: "reply", handle: "session-handle", text: "approve"}` to offer a reply to that window. Text trims ASCII
 spaces, must be nonempty and fit in 512 UTF-8 bytes, and must contain no controls, line separators or invisible
 formatting characters. Invalid text answers 400 `bad_text`, naming the refusal. Accepted text gains the visible
-`[sot-page] ` mark and answers 202; that is an offer, not a delivery receipt. The confirmation bar is landing 2b:
-until that window update, the unknown offer is dropped and nothing is delivered. No page verb confirms delivery.
+`[sot-page] ` mark and answers 202; that is an offer, not a delivery receipt. No page verb confirms delivery.
+
+A window shows an offer on a reply bar drawn over every pane, titled "Reply from a page". It names the session, the row
+and its computer, and shows the exact line that will be typed. Enter sends only after the bar has been in view for one
+second and is not a held key's repeat; Esc drops it; while the bar is up it takes every key. A dialog over the bar, such
+as the quit question, takes the keys instead, and the bar's second starts again when it is back, so an Enter given to
+the dialog never sends the reply. A second offer while one is open is dropped, and the status line says so. In a window
+too short to show the whole line, Esc drops the bar but Enter cannot send it. Nothing a page sends can confirm the bar:
+it reads only the window's own keys. A window without the bar drops the offer and delivers nothing.
 
 The daemon's `page.reply` delivery op rechecks the mark and target handle and uses the wake's free-prompt gate,
 sharing one typing attempt per row. It refuses a dialog, menu, working screen, unsent draft, active Stop hook,

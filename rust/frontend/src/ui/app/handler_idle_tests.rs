@@ -44,7 +44,7 @@ fn quit_hint_deadlines_wake_and_expire_without_taking_input() {
     let keep = p.quit_choice();
     let mut seen = (p, 0);
     input_continuation(&mut seen, &Key::Character("x".into()), false, false, true, keep, false,
-        |_| (None, ()), |s, route| match route {
+        |_| (None, ()), |_| false, |s, route| match route {
             InputRoute::Next(_, ()) => s.1 += 1,
             InputRoute::Prompt(_) => panic!("a hint took input"),
         });

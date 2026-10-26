@@ -16,6 +16,7 @@ fn route_q(keep: Option<bool>, logical: Key, m: Modifiers, repeat: bool, synthet
     let mut observed = (None, 0, Vec::new());
     input_continuation(&mut observed, &logical, repeat, synthetic, pressed, keep, quit_again,
         |_| (bindings.resolve(&logical, Some(&logical), m, context.consumes_text(), |a| context.allows(a)), ()),
+        |_| false,
         |seen, route| match route {
             InputRoute::Prompt(step) => seen.0 = Some(step),
             InputRoute::Next(_, ()) => {
@@ -88,4 +89,57 @@ fn raw_admission_and_repeat_controls() {
     }
     assert_eq!(route(None, Key::Named(NamedKey::Control), modifiers(), false, false, true, false), (None, 0, vec![]));
     assert_eq!(route(None, Key::Character("text".into()), modifiers(), false, false, true, false), (None, 1, b"text".to_vec()));
+}
+
+/// Keys follow what is drawn on top. The quit dialog takes a key before the reply bar is asked, so an Enter given to
+/// the dialog is never the bar's; a bar that is in view takes a key before any binding or pane; and once the dialog
+/// closes the bar's wait starts again, so an Enter right after it sends nothing.
+#[test]
+fn the_quit_dialog_takes_a_key_before_the_reply_bar_and_the_bar_before_the_panes() {
+    use std::time::{Duration, Instant};
+    struct Seen { bar: ReplyBar, at: Instant, panes: usize, asked: usize, sent: usize, prompt: Option<QuitPromptStep> }
+    let t0 = Instant::now();
+    let mut seen = Seen { bar: ReplyBar::default(), at: t0, panes: 0, asked: 0, sent: 0, prompt: None };
+    seen.bar.offer(ReplyOffer {
+        host: "<host-b>".into(), workspace_id: "id-7".into(), handle: "repo__box".into(), name: "project".into(),
+        line: "[sot-page] approve".into(),
+    }, Sight::Whole, t0).expect("the offer opens the bar");
+    // Enter, as `keyboard_input` hands it: the bar reads the logical key, never a binding.
+    let press = |seen: &mut Seen, quit: Option<bool>| {
+        let enter = Key::Named(NamedKey::Enter);
+        input_continuation(seen, &enter, false, false, true, quit, false, |_| (None, ()),
+            |s| {
+                s.asked += 1;
+                match s.bar.key(bar_key_kind(&Key::Named(NamedKey::Enter), false, ModifiersState::empty()), s.at) {
+                    BarKey::Pass => false,
+                    BarKey::Send(_) => { s.sent += 1; true }
+                    _ => true,
+                }
+            },
+            |s, route| match route {
+                InputRoute::Prompt(step) => s.prompt = Some(step),
+                InputRoute::Next(..) => s.panes += 1,
+            });
+    };
+
+    // The quit question opens at 5 s over an armed bar and takes the Enter; the bar is not asked.
+    seen.bar.observe(Sight::Covered, t0 + Duration::from_secs(5));
+    seen.at = t0 + Duration::from_secs(6);
+    press(&mut seen, Some(false));
+    assert_eq!((seen.prompt.as_ref(), seen.asked, seen.panes, seen.sent),
+        (Some(&QuitPromptStep::Leave(LeaveIntent::Close)), 0, 0, 0));
+
+    // It closes at 8 s. An Enter 0.3 s later is the bar's, and sends nothing; no pane sees it.
+    seen.bar.observe(Sight::Whole, t0 + Duration::from_secs(8));
+    seen.at = t0 + Duration::from_millis(8300);
+    press(&mut seen, None);
+    assert_eq!((seen.asked, seen.panes, seen.sent), (1, 0, 0));
+
+    // A second after it came back, Enter sends once; the next Enter finds no bar and reaches the panes.
+    seen.at = t0 + Duration::from_secs(9);
+    press(&mut seen, None);
+    assert_eq!((seen.asked, seen.panes, seen.sent), (2, 0, 1));
+    seen.at = t0 + Duration::from_secs(10);
+    press(&mut seen, None);
+    assert_eq!((seen.asked, seen.panes, seen.sent), (3, 1, 1));
 }

@@ -1,4 +1,4 @@
-//! pluto.open, video.open, docs.open, quarto.open: the requests (send_<op>: write the frame, then record its PendingKind).
+//! pluto.open, video.open, docs.open, page.reply, quarto.open: the requests (send_<op>: write the frame, then record its PendingKind).
 //! Their replies (on_<op>: the reply frame becomes an IncomingEvt).
 
 use super::*;
@@ -63,6 +63,29 @@ pub(crate) async fn send_docs_open<W: AsyncWrite + Unpin>(
     )
     .await?;
     pending.insert(id, PendingKind::DocsOpen);
+    Ok(())
+}
+
+pub(crate) async fn send_page_reply<W: AsyncWrite + Unpin>(
+    mut tx: W,
+    pending: &mut HashMap<u64, PendingKind>,
+    id: u64,
+    workspace_id: String,
+    handle: String,
+    line: String,
+) -> Result<()> {
+    tracing::info!(%workspace_id, %handle, id, "→ page.reply");
+    codec::write_frame(
+        &mut tx,
+        &Frame::req(
+            id,
+            op::PAGE_REPLY,
+            serde_json::to_value(PageReplyReq { workspace_id, handle: handle.clone(), line })?,
+        ),
+        None,
+    )
+    .await?;
+    pending.insert(id, PendingKind::PageReply { handle });
     Ok(())
 }
 
@@ -154,6 +177,22 @@ pub(crate) fn on_docs_open(
         Err(msg)
     };
     emit(IncomingEvt::DocsOpened { result });
+}
+
+pub(crate) fn on_page_reply(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    handle: String,
+) {
+    let payload = frame.payload;
+    let (outcome, detail) = match error_text(&payload) {
+        Some(message) => ("error".to_string(), message),
+        None => match serde_json::from_value::<PageReplyRes>(payload) {
+            Ok(r) => (r.outcome, r.detail),
+            Err(e) => ("error".to_string(), format!("page.reply res parse: {e}")),
+        },
+    };
+    emit(IncomingEvt::PageReplied { handle, outcome, detail });
 }
 
 pub(crate) fn on_quarto_open(

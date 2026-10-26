@@ -288,7 +288,8 @@ impl ApplicationHandler for App {
             let fading_help = state.layout_help.peek_fading(std::time::Instant::now);
             let interval = idle_interval(fading_help, state.row_presentation.has_flashes());
             let fade_at = state.layout_help.peek_deadline()
-                .into_iter().chain(state.focus_prompts.hint_deadline()).min();
+                .into_iter().chain(state.focus_prompts.hint_deadline())
+                .chain(state.reply_bar.arm_deadline(std::time::Instant::now())).min();
             let deadline = arm_idle(&mut self.idle_due, std::time::Instant::now(), interval, fade_at);
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             return;

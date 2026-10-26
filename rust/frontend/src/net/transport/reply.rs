@@ -112,6 +112,10 @@ pub(super) enum PendingKind {
     PlutoOpen,
     VideoOpen,
     DocsOpen,
+    /// A `page.reply`: the reply is about THIS handle, whatever the window shows by the time it lands.
+    PageReply {
+        handle: String,
+    },
     QuartoOpen,
     ReplRunFile {
         eval_id: u64,
@@ -328,6 +332,7 @@ pub(super) fn handle_response_frame(
             PendingKind::PlutoOpen => on_pluto_open(frame, &emit),
             PendingKind::VideoOpen => on_video_open(frame, &emit),
             PendingKind::DocsOpen => on_docs_open(frame, &emit),
+            PendingKind::PageReply { handle } => on_page_reply(frame, &emit, handle),
             PendingKind::QuartoOpen => on_quarto_open(frame, blob, &emit),
             PendingKind::ReplRunFile { eval_id, path, fresh } => {
                 if frame.payload.get("frames").is_some() {

@@ -67,7 +67,10 @@ impl State {
     ) -> Result<(Option<ScreenRect>, Option<ScreenRect>, Vec<crate::ui::render::text::Line>)> {
         // The close dialog covers every pane; while it shows, the help peek and the nav spill, whose text would draw
         // over its backing, do not.
-        let dialog = self.close_dialog();
+        // The reply bar draws as the same panel, under it: a close dialog covers the bar and the bar learns so here.
+        let bar_now = std::time::Instant::now();
+        self.observe_reply_bar(bar_now);
+        let dialog = self.close_dialog().or_else(|| self.reply_dialog(bar_now));
         let mut help_overlay_rect = None;
         let mut help_overlay_lines = Vec::new();
         let mut help_opacity = 1.0;

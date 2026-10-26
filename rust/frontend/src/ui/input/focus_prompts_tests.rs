@@ -48,7 +48,7 @@ fn raw(p: &mut FocusPrompts, logical: Key, repeat: bool, synthetic: bool, presse
     let keep = p.quit_choice();
     let mut probe = (p, Vec::new(), None);
     input_continuation(&mut probe, &logical, repeat, synthetic, pressed, keep, quit_again,
-        |s| { s.1.push("prepare"); (None, ()) }, |s, route| match route {
+        |s| { s.1.push("prepare"); (None, ()) }, |_| false, |s, route| match route {
             InputRoute::Prompt(step) => {
                 s.1.push("question");
                 s.2 = s.0.answer_quit(step).1;

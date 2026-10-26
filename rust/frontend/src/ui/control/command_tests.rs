@@ -469,3 +469,37 @@ fn route_missing_required_arg_is_ignored() {
     let evt = fe_evt("notify", serde_json::json!({"level": "info"}), None);
     assert!(route_fe_command(&evt, "fe@host-a").is_none());
 }
+
+// ─── A page's reply offer: it opens a bar only when directed, and only from the daemon ───
+
+/// The offer the daemon's page server makes: a directed `page_reply` with the row, the handle and the marked line.
+#[test]
+fn a_directed_page_reply_opens_the_bar_and_a_broadcast_does_not() {
+    let args = serde_json::json!({"workspace": "id-1", "handle": "repo__box", "line": "[sot-page] approve"});
+    match route_fe_command(&fe_evt("page_reply", args.clone(), Some("fe@host-a")), "fe@host-a") {
+        Some(FeCommand::PageReply { workspace, handle, line }) => {
+            assert_eq!((workspace.as_str(), handle.as_str(), line.as_str()), ("id-1", "repo__box", "[sot-page] approve"));
+        }
+        other => panic!("a directed offer must reach the bar, got {other:?}"),
+    }
+    assert!(route_fe_command(&fe_evt("page_reply", args.clone(), None), "fe@host-a").is_none(), "a broadcast opens no bar");
+    assert!(
+        route_fe_command(&fe_evt("page_reply", args, Some("fe@host-b")), "fe@host-a").is_none(),
+        "an offer for another window opens no bar here"
+    );
+    for missing in ["workspace", "handle", "line"] {
+        let mut args = serde_json::json!({"workspace": "id-1", "handle": "repo__box", "line": "[sot-page] approve"});
+        args.as_object_mut().expect("an object").remove(missing);
+        assert!(route_fe_command(&fe_evt("page_reply", args, Some("fe@host-a")), "fe@host-a").is_none(), "no {missing}");
+    }
+}
+
+/// The command-file channel parses `FeCommand` from any file in its folder, so a variant it could parse would let
+/// any local file open a bar that says it came from a page.
+#[test]
+fn a_command_file_cannot_open_a_reply_bar() {
+    let file = r#"{"cmd": "page_reply", "workspace": "id-1", "handle": "repo__box", "line": "[sot-page] approve"}"#;
+    assert!(serde_json::from_str::<FeCommand>(file).is_err(), "a command file made a page reply");
+    // The same file's other commands still parse, so the refusal is the variant's, not the format's.
+    assert!(serde_json::from_str::<FeCommand>(r#"{"cmd": "notify", "text": "hi"}"#).is_ok());
+}
