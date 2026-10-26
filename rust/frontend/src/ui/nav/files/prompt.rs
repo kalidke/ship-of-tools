@@ -130,7 +130,7 @@ impl State {
                 let parent = parent_files_node_id(node_id);
                 if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
                     parent_id: parent,
-                    workspace_id: self.active_workspace_id.clone(),
+                    workspace_id: self.selected.workspace_id().clone(),
                 }) {
                     tracing::warn!(error = %e, "drop post-create tree.children refresh");
                 }
@@ -235,15 +235,15 @@ impl FilePromptContext for State {
     fn file_exists(&self, node_id: &str) -> bool { self.tree.rows.iter().any(|r| r.node.id == node_id) }
     fn send_create(&mut self, node_id: &str, is_dir: bool) -> Result<(), String> {
         let req = if is_dir {
-            OutgoingReq::DirCreate { node_id: node_id.to_string(), workspace_id: self.active_workspace_id.clone() }
+            OutgoingReq::DirCreate { node_id: node_id.to_string(), workspace_id: self.selected.workspace_id().clone() }
         } else {
             OutgoingReq::FileWrite { node_id: node_id.to_string(), content: String::new(), expected_version: None,
-                workspace_id: self.active_workspace_id.clone() }
+                workspace_id: self.selected.workspace_id().clone() }
         };
         self.send(req).map_err(|e| e.to_string())
     }
     fn send_delete(&mut self, node_id: &str) -> Result<(), String> {
-        self.send(OutgoingReq::FileDelete { node_id: node_id.to_string(), workspace_id: self.active_workspace_id.clone() })
+        self.send(OutgoingReq::FileDelete { node_id: node_id.to_string(), workspace_id: self.selected.workspace_id().clone() })
             .map_err(|e| e.to_string())
     }
     fn mark_created(&mut self, node_id: String) { self.pending_created_node_id = Some(node_id); }

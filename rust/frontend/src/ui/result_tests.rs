@@ -25,8 +25,7 @@ impl State {
         let (a_tx, mut a_rx) = tokio::sync::mpsc::unbounded_channel();
         let (b_tx, mut b_rx) = tokio::sync::mpsc::unbounded_channel();
         self.conns = vec![(a.clone(), a_tx), (b.clone(), b_tx)];
-        self.active_host = a.clone();
-        self.active_workspace_id = Some("project".into());
+        self.selected.select(a.clone(), Some("project".into()));
         let mut row_a = ws_info("project", "stored-a");
         row_a.workspace_id = "id-a".into();
         let mut row_b = ws_info("project", "stored-b");
@@ -75,7 +74,7 @@ impl State {
         a_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
         b_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
     ) -> Result<()> {
-        anyhow::ensure!(self.active_host == *a, "docs probe: the window must view host a");
+        anyhow::ensure!(*self.selected.host() == *a, "docs probe: the window must view host a");
         self.dispatch_fe_command(Some(b), FeCommand::Docs { workspace: "project".into(), path: "/site/page.html".into() });
         anyhow::ensure!(
             matches!(b_rx.try_recv(), Ok(OutgoingReq::DocsOpen { .. })) && a_rx.try_recv().is_err(),
@@ -105,8 +104,8 @@ impl State {
             "canonical spelling created a phantom strip key"
         );
         let before = (
-            self.active_host.clone(),
-            self.active_workspace_id.clone(),
+            self.selected.host().clone(),
+            self.selected.workspace_id().clone(),
             self.result_ledger.clone(),
         );
         self.dispatch_fe_command(
@@ -122,8 +121,8 @@ impl State {
         anyhow::ensure!(
             before
                 == (
-                    self.active_host.clone(),
-                    self.active_workspace_id.clone(),
+                    self.selected.host().clone(),
+                    self.selected.workspace_id().clone(),
                     self.result_ledger.clone()
                 )
                 && self.status.starts_with("result refused"),
@@ -145,8 +144,8 @@ impl State {
             anyhow::ensure!(
                 before
                     == (
-                        self.active_host.clone(),
-                        self.active_workspace_id.clone(),
+                        self.selected.host().clone(),
+                        self.selected.workspace_id().clone(),
                         self.result_ledger.clone()
                     ),
                 "unknown goto or reveal mutated result state"
@@ -159,7 +158,7 @@ impl State {
             },
         );
         let requests: Vec<_> = std::iter::from_fn(|| b_rx.try_recv().ok()).collect();
-        anyhow::ensure!(self.active_host == *b && self.active_workspace_id.as_deref() == Some("project")
+        anyhow::ensure!(*self.selected.host() == *b && self.selected.workspace_id().as_deref() == Some("project")
             && requests.iter().any(|r| matches!(r, OutgoingReq::PtyOpen { target: Some(name), .. } if name == "stored-b")),
             "stored attachment name was not used for the listed canonical row");
         Ok(())
@@ -184,8 +183,8 @@ impl State {
             },
         );
         anyhow::ensure!(
-            self.active_host == *a
-                && self.active_workspace_id.is_none()
+            *self.selected.host() == *a
+                && self.selected.workspace_id().is_none()
                 && self.row_presentation.default_slug() == Some("base-a"),
             "default resolved using another host's list"
         );
@@ -210,8 +209,8 @@ impl State {
         );
         let _ = session::keys::session_enter_key(self);
         anyhow::ensure!(
-            self.active_host == *b
-                && self.active_workspace_id.as_deref() == Some("project")
+            *self.selected.host() == *b
+                && self.selected.workspace_id().as_deref() == Some("project")
                 && self.agent_pane.target().as_ref() == Some(&(b.clone(), "stored-b".into())),
             "Sessions-Enter reversed a session name into a slug"
         );
@@ -313,7 +312,7 @@ impl State {
         self.on_preview(
             host.clone(),
             Some("files:same.png".into()),
-            self.active_workspace_id.clone(),
+            self.selected.workspace_id().clone(),
             "image/png".into(),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo.png")).to_vec(),
             None,
@@ -578,8 +577,7 @@ impl State {
         self.conns.push((host.clone(), tx));
         let (events, receiver) = std::sync::mpsc::channel();
         self.evt_rx = receiver;
-        self.active_host = host.clone();
-        self.active_workspace_id = None;
+        self.selected.select(host.clone(), None);
         self.on_workspaces(
             host.clone(),
             vec![
@@ -653,7 +651,7 @@ impl State {
         self.on_preview(
             host.clone(),
             Some(node_id.to_string()),
-            self.active_workspace_id.clone(),
+            self.selected.workspace_id().clone(),
             "text/plain".into(),
             b"fn shown() {}\n".to_vec(),
             None,
@@ -908,14 +906,15 @@ impl State {
         println!("account-choice phase=body-entered entered_bodies=1");
         let (a, mut rx, _events) = self.prepare_lifetime_probe("<host-account>", "id-account");
         while rx.try_recv().is_ok() {}
-        let cases: [(&str, &[&str], usize, Option<&str>); 7] = [
+        // The selection is reached as a person reaches it, by the reply and Tab; an out-of-range index is
+        // unreachable that way and is `session::picker::tests::selected_account_is_chosen_by_name_not_position`'s.
+        let cases: [(&str, &[&str], usize, Option<&str>); 6] = [
             ("no default", &["team", "other"], 0, Some("team")),
             ("default first, default chosen", &["default", "team"], 0, None),
             ("default first, second chosen", &["default", "team"], 1, Some("team")),
             ("default later, first chosen", &["team", "default"], 0, Some("team")),
             ("default later, default chosen", &["team", "default"], 1, None),
             ("empty list", &[], 0, None),
-            ("stale index", &["default", "team"], 5, None),
         ];
         for (label, names, selected, want) in cases {
             self.begin_create_session(a.clone());
@@ -927,9 +926,11 @@ impl State {
                     logged_in: Default::default(),
                 })
                 .collect();
-            let picker = self.workspace_picker.as_mut().ok_or_else(|| anyhow::anyhow!("{label}: no picker"))?;
-            picker.accounts = accounts;
-            picker.account_selected = selected;
+            anyhow::ensure!(self.workspace_picker.is_some(), "{label}: no picker");
+            self.on_accounts_list(a.clone(), accounts);
+            for _ in 0..selected {
+                self.picker_cycle_account();
+            }
             self.picker_confirm_selected("claude");
             self.picker_cancel();
             let sent = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|request| match request {
@@ -1003,7 +1004,7 @@ impl State {
         self.on_preview_get_failed(
             a.clone(),
             Some(node.clone()),
-            self.active_workspace_id.clone(),
+            self.selected.workspace_id().clone(),
             generation,
             "kernel_unavailable".into(),
         );
@@ -1271,8 +1272,7 @@ impl State {
         );
         self.tree.selected = 1;
         self.preview_requests.record_fired(node_id.into());
-        self.preview_src_node_id = Some(node_id.into());
-        self.preview_src = Some(preview.clone());
+        self.preview_source.install(preview.0.clone(), preview.1.clone(), Some(node_id.into()), None, None);
         self.repl_model.edit_draft(DraftEdit::Replace("kept_default_input = 42".into()));
         // Park through the real switch so the tree, preview and REPL use their normal snapshot keys.
         self.switch_to_workspace(other_host.clone(), None, None, false);
@@ -1321,8 +1321,8 @@ impl State {
             "control: keeping the default row reset its cached tree or selection"
         );
         anyhow::ensure!(
-            self.preview_src.as_ref() == Some(&preview)
-                && self.preview_src_node_id.as_deref() == Some(node_id),
+            self.preview_source.source_copy().as_ref() == Some(&preview)
+                && self.preview_source.node_id() == Some(node_id),
             "control: keeping the default row reset its cached preview"
         );
         anyhow::ensure!(

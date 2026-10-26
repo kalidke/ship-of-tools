@@ -22,7 +22,7 @@ impl State {
             PaneFocus::Llm => "llm",
             PaneFocus::Repl => "repl",
         };
-        let active = self.active_workspace_id.clone();
+        let active = self.selected.workspace_id().clone();
         let host = self.host.clone();
         let rev = self.last_revision;
         let workspaces = self.row_presentation.keys().to_vec();

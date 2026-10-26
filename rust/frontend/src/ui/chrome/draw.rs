@@ -127,9 +127,9 @@ impl State {
         // rides in the tuple so workspace-picker browsing spills too.
         let spill_cursor_now = (
             self.mode,
-            self.active_workspace_id.clone(),
+            self.selected.workspace_id().clone(),
             self.tree.selected,
-            self.workspace_picker.as_ref().map(|p| p.selected),
+            self.workspace_picker.as_ref().map(WorkspacePicker::selected),
             self.tree.generation,
         );
         if self.nav_spill_cursor.as_ref() != Some(&spill_cursor_now) {
@@ -263,7 +263,7 @@ impl State {
         // two path/header rows before its entries. Keep scroll and hit testing
         // aligned when the help legend moves from the body to the border.
         let (nav_cursor_body_pos, nav_has_cursor) = match &self.workspace_picker {
-            Some(p) => (4usize.saturating_add(p.selected), !p.entries.is_empty()),
+            Some(p) => (4usize.saturating_add(p.selected()), !p.entries().is_empty()),
             None => (
                 2usize.saturating_add(self.tree.selected),
                 !self.tree.rows.is_empty(),
@@ -334,9 +334,9 @@ impl State {
     }
 
     fn picker_nav_rows(&self, p: &WorkspacePicker) -> (Vec<NavRow>, bool) {
-        let mut rows: Vec<NavRow> = Vec::with_capacity(p.entries.len() + 4);
+        let mut rows: Vec<NavRow> = Vec::with_capacity(p.entries().len() + 4);
         rows.push((
-            format!("workspace picker · {}", p.current_path),
+            format!("workspace picker · {}", p.current_path()),
             false,
             false,
             false,
@@ -380,8 +380,7 @@ impl State {
         // still selectable, just marked; this row renders with the
         // same dim treatment as the two footer rows above (no
         // agent/pinned/stale/selected tone applies to it).
-        if p.account_choice_visible() {
-            let acct = &p.accounts[p.account_selected];
+        if let Some(acct) = p.shown_account() {
             let marker = if acct.any_logged_in() { "" } else { " (not logged in)" };
             rows.push((
                 format!("  account: {}{marker} · {} next", acct.name,
@@ -399,8 +398,8 @@ impl State {
                 true,
             ));
         }
-        for (i, e) in p.entries.iter().enumerate() {
-            let selected = i == p.selected;
+        for (i, e) in p.entries().iter().enumerate() {
+            let selected = i == p.selected();
             let caret = if selected { ">" } else { " " };
             let disclosure = if e.has_children { "▸" } else { "·" };
             rows.push((
@@ -414,7 +413,7 @@ impl State {
                 false,
             ));
         }
-        let empty = p.entries.is_empty();
+        let empty = p.entries().is_empty();
         (rows, empty)
     }
 

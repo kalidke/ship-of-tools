@@ -59,9 +59,9 @@ impl ApplicationHandler for App {
                 // where we can't inject `m` mid-run.
                 if state.mode == Mode::Modules {
                     let generation = state
-                        .next_project_scan_gen(state.active_host.clone(), state.active_workspace_id.clone());
+                        .next_project_scan_gen(state.selected.host().clone(), state.selected.workspace_id().clone());
                     if let Err(e) = state.send(OutgoingReq::ProjectScan {
-                        workspace_id: state.active_workspace_id.clone(),
+                        workspace_id: state.selected.workspace_id().clone(),
                         generation,
                     }) {
                         tracing::warn!(error = %e, "drop initial project.scan request");

@@ -399,9 +399,9 @@ impl State {
             // entire scan ships in one round-trip anyway so per-row
             // expansion doesn't need a separate fetch.
             let generation =
-                self.next_project_scan_gen(self.active_host.clone(), self.active_workspace_id.clone());
+                self.next_project_scan_gen(self.selected.host().clone(), self.selected.workspace_id().clone());
             Some(crate::net::transport::OutgoingReq::ProjectScan {
-                workspace_id: self.active_workspace_id.clone(),
+                workspace_id: self.selected.workspace_id().clone(),
                 generation,
             })
         } else if row.node.kind == "sessions" {
@@ -416,7 +416,7 @@ impl State {
                 .and_then(|v| v.as_str())
                 .map(|p| crate::net::transport::OutgoingReq::FileParse {
                     path: p.to_string(),
-                    workspace_id: self.active_workspace_id.clone(),
+                    workspace_id: self.selected.workspace_id().clone(),
                 })
         } else if row.node.kind == "function" {
             // Read module + name out of payload (populated when col-2
@@ -434,7 +434,7 @@ impl State {
                 .get("name")
                 .and_then(|v| v.as_str())
                 .map(String::from);
-            let ws = self.active_workspace_id.clone();
+            let ws = self.selected.workspace_id().clone();
             module.zip(name).map(
                 |(module, name)| crate::net::transport::OutgoingReq::FunctionMethods {
                     module,
@@ -445,7 +445,7 @@ impl State {
         } else {
             Some(crate::net::transport::OutgoingReq::TreeChildren {
                 parent_id: row.node.id.clone(),
-                workspace_id: self.active_workspace_id.clone(),
+                workspace_id: self.selected.workspace_id().clone(),
             })
         };
         if let Some(req) = outgoing {

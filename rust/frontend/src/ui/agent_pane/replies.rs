@@ -28,7 +28,7 @@ impl<C: PaneClient> AgentPane<C> {
 
 impl State {
     pub(crate) fn on_pty_attach_direct(&mut self, event_host: HostKey, target: Option<String>) {
-        match self.agent_pane.direct_reply(&event_host, &self.active_host, target) {
+        match self.agent_pane.direct_reply(&event_host, self.selected.host(), target) {
             DirectReply::Targetless => tracing::warn!("pty.open refused attach_direct for a targetless (default) request — no row identity to correct or attach"),
             DirectReply::Ignore => {},
             DirectReply::Attach(target) => self.spawn_pane_attach_term(target),
@@ -37,7 +37,7 @@ impl State {
     }
 
     pub(crate) fn on_pty_open_failed(&mut self, event_host: HostKey, target: Option<String>, error: String) {
-        if let Some(status) = self.agent_pane.open_failed(&event_host, &self.active_host, target.as_deref(), &error) {
+        if let Some(status) = self.agent_pane.open_failed(&event_host, self.selected.host(), target.as_deref(), &error) {
             tracing::warn!(?target, %error, "pty.open reply surfaced as a pane reason");
             self.status = status;
         }

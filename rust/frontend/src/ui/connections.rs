@@ -19,7 +19,7 @@ impl State {
         &self,
         req: OutgoingReq,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<OutgoingReq>> {
-        self.send_to(&self.active_host.clone(), req)
+        self.send_to(&self.selected.host().clone(), req)
     }
 
     /// Send `req` on `host`'s connection — for ops that target a specific
@@ -46,7 +46,7 @@ impl State {
     /// the STARTUP `active_host` (`conns.first()`, local-first then
     /// `--dial` argument order).
     pub(in crate::ui) fn default_host(&self) -> HostKey {
-        resolve_default_host(&self.conns, self.active_host.clone())
+        resolve_default_host(&self.conns, self.selected.host().clone())
     }
 
     /// The monitor drawer's subscribe target (2.1): the declared hub when
@@ -54,7 +54,7 @@ impl State {
     /// three former `state.default_host()` call sites at the monitor
     /// subscribe/history/tab-label points use this instead.
     pub(in crate::ui) fn monitor_host(&self) -> HostKey {
-        resolve_monitor_host(&self.conns, self.monitor_hub.as_deref(), self.active_host.clone())
+        resolve_monitor_host(&self.conns, self.monitor_hub.as_deref(), self.selected.host().clone())
     }
 
     /// Every connection in display order (ADR 0042 L2a) — local-first,

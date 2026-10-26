@@ -11,6 +11,10 @@ owns authoritative rows and identity; `session/row_presentation.rs` owns their p
 `input::LayoutHelp` owns drawer selection, maximize/wide flags, Help browsing, return origin and startup requests.
 `preview::requests::PreviewRequests` owns both request clocks, the fired preview target and its page re-raster, concept
 follow commitment, the driven-preview hold, and the crop, scale-save and `--roi` aim transactions.
+`preview::source::InstalledPreviewSource` owns the installed preview bytes, their node, scale and markdown origin.
+`session::ParkedViews` owns the rows' parked views (`WorkspaceUiSnapshot`), keyed by row.
+`session::SelectedRow` owns the selected `(host, workspace)`, its read-mark dwell, the destroy confirm and a create's
+request time; `session::WorkspacePicker` owns the new-session picker's listing, cursor and account choice.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -112,6 +116,28 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   for its row and node, retired by a non-raster install, and consumed by the render pass only while it is still the
   fired target. No stronger transaction identity is claimed. The native result fixture reaches the fired target and
   the aim through the owner's operations; its ROI assertions stay intact.
+- `InstalledPreviewSource` privately owns what the last admitted preview reply installed: its mime and bytes, the node
+  it answered (what `o`/`W`/`O` act on, never the fired target), its physical scale and, for a markdown reply with a
+  node, the document's node and workspace, which a later non-markdown reply leaves in place. It is one Clone value: a
+  row's snapshot carries it whole and restores it before the repaint, and a first visit clears it whole, so the bytes,
+  node, calibration and markdown origin are always one reply's. The coordinator repaints from an owned copy of the
+  bytes; `figure_failed` stays with the markdown media and travels beside it in the snapshot.
+- `ParkedViews` privately owns the map of parked row views. Leaving a row parks its view (replacing an earlier one),
+  coming back reads a clone, a kept default row's end forgets only the parked attachment, a destroyed row's view is
+  dropped, and the default row's raw-slug key migrates to `<default>` with an existing `<default>` view winning. State
+  composes and applies the view; the map is reached through nothing else.
+- `SelectedRow` privately owns the selected host and workspace, the pending read mark, the two-press destroy arm and
+  the time a `workspace.create` was sent. Readers see the host and workspace by reference; only a switch's retarget
+  and the capture harness's startup seed select a row, both parts at once. Every switch replaces the read mark (armed
+  `READ_DWELL` ahead only when a person switched); each redraw takes a due mark whose row is still selected, and drops
+  one whose row was left, before State sends the read flag. Every key press takes the destroy arm before its action,
+  so only a second destroy press on the same row destroys. The create's time is taken by the next attach that switches
+  rows. The native fixtures select their rows through the same operation. `WorkspacePicker` privately owns its host,
+  path, listing, cursor, hidden-folder flag, return reveal and accounts: State opens and closes it and sends what its
+  operations return (drill in, ascend, toggle hidden), a listing lands only when it answers the picker's own host and
+  path, accounts only from that host with the first selected, and Tab cycles in range, so the native account fixture
+  reaches each choice through the reply and Tab; an out-of-range index is the portable test's. The presence clock
+  (`PresenceClock`) stays its own private-field value on State.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
@@ -292,16 +318,17 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `input/`: FocusPrompts, LayoutHelp, the action catalog, key and mouse routing, help and clipboard paste.
 - `nav/`: the navigation pane's trees (mode, store, Modules, Sessions, Hosts).
 - `nav/files/`: Files mode's prompts, reveal walk, transfers and re-lists.
-- `session/`: `RowDirectory` owns listings/identity, `RowPresentation` owns metadata/order/flashes and `ResultLedger`
-  owns owed results/attempts; State coordinates effects, snapshots, switch, picker, presence and the badge floor.
+- `session/`: `RowDirectory` owns listings/identity, `RowPresentation` owns metadata/order/flashes, `ResultLedger`
+  owns owed results/attempts, `ParkedViews` the parked row views and `SelectedRow` the selected row and its read
+  mark; State coordinates effects, snapshot capture and restore, the switch, picker, presence and the badge floor.
 - `agent_pane/`: `AgentPane` and its attach, input, screen and reply operations; thin State adapters apply effects.
 - `drawer/`: the bottom drawer and its tenants.
 - `drawer/repl/`: ReplModel owns row behavior; ReplPresentation owns image refresh, projection, layout, anchoring
   and painting; thin State adapters apply transport and presentation effects.
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
 - `preview/`: PreviewRequests owns request clocks, the fired target, concept follow, driven holds and the crop,
-  save and aim transactions; State coordinates preview installation, shaping and transport (fetch, replies, layout,
-  concept, open).
+  save and aim transactions; InstalledPreviewSource owns the installed source; State coordinates preview installation,
+  shaping and transport (fetch, replies, layout, concept, open).
 - `preview/image/`: bitmap previews as quads: figures, overlays, view, ROI.
 - `preview/markdown/`: markdown and source text shaped into cosmic-text buffers.
 - `preview/editor/`: the in-pane edit buffer.

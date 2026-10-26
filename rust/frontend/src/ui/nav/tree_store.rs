@@ -282,7 +282,7 @@ impl State {
                 if self.tree.rows.is_empty() {
                     if let Err(e) = self.send(OutgoingReq::TreeRoot {
                         mode: "files".to_string(),
-                        workspace_id: self.active_workspace_id.clone(),
+                        workspace_id: self.selected.workspace_id().clone(),
                     }) {
                         tracing::warn!(error = %e, "drop tree.root request — channel closed");
                     }
@@ -293,9 +293,9 @@ impl State {
             Mode::Modules => {
                 if self.tree.rows.is_empty() {
                     let generation = self
-                        .next_project_scan_gen(self.active_host.clone(), self.active_workspace_id.clone());
+                        .next_project_scan_gen(self.selected.host().clone(), self.selected.workspace_id().clone());
                     if let Err(e) = self.send(OutgoingReq::ProjectScan {
-                        workspace_id: self.active_workspace_id.clone(),
+                        workspace_id: self.selected.workspace_id().clone(),
                         generation,
                     }) {
                         tracing::warn!(error = %e, "drop project.scan request — channel closed");

@@ -160,8 +160,8 @@ impl State {
         };
         let total_files = files.len();
         self.upload_batch = Some(UploadBatch {
-            host: self.active_host.clone(),
-            workspace_id: self.active_workspace_id.clone(),
+            host: self.selected.host().clone(),
+            workspace_id: self.selected.workspace_id().clone(),
             dir,
             dir_node_id,
             queue: files,

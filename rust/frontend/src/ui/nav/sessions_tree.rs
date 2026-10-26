@@ -300,7 +300,7 @@ impl State {
                 let connected = self.hosts.host_connected.get(&host).copied().unwrap_or(false);
                 let link = host_link_status(connected, self.hello_refused.get(&host).map(String::as_str));
                 let has_list = self.row_directory.rows(&host).is_some();
-                let is_active = host == self.active_host;
+                let is_active = host == *self.selected.host();
                 let display = host_label(&self.hosts.declared_host, &host);
                 host_tree_node(&host, display, link, has_list, is_active)
             })

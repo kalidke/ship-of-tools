@@ -193,8 +193,8 @@ impl State {
     /// reject.
     pub(in crate::ui) fn dispatch_pending_figures(&mut self) {
         let blocks = self.preview_md.media_blocks.clone();
-        let md_node_id = self.current_md_node_id.clone();
-        let workspace_id = self.current_md_workspace_id.clone();
+        let md_node_id = self.preview_source.md_node_id().map(str::to_owned);
+        let workspace_id = self.preview_source.md_workspace_id().map(str::to_owned);
         for block in blocks {
             let crate::ui::preview::markdown::MediaBlock::Figure { url, .. } = block else {
                 continue;

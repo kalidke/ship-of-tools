@@ -312,7 +312,7 @@ impl PaneDriver<'_> {
         let redraw_failed = text.lines().filter(|l| l.contains("redraw failed")).last().unwrap_or("none").trim().to_string();
         format!(
             "listed={listed} lists=[{}] frames={} pty_size={:?} active_host={} status={:?} last_redraw_failure={redraw_failed:?} {}",
-            lists.join(" "), state.frame_counter, state.agent_pane.size(), state.active_host, state.status, self.layout_state()
+            lists.join(" "), state.frame_counter, state.agent_pane.size(), state.selected.host(), state.status, self.layout_state()
         )
     }
 

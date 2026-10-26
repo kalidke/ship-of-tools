@@ -300,8 +300,8 @@ impl ReplModel {
 impl State {
     pub(in crate::ui) fn repl_target(&self) -> ReplTarget {
         ReplTarget {
-            host: self.active_host.clone(),
-            workspace_id: self.active_workspace_id.clone(),
+            host: self.selected.host().clone(),
+            workspace_id: self.selected.workspace_id().clone(),
             view_key: self.active_ws_key(),
         }
     }

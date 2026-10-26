@@ -28,7 +28,7 @@ impl State {
     /// next expand (tree.children reads the same flag).
     pub(in crate::ui) fn toggle_hidden_files(&mut self) {
         if let Err(e) = self.send(OutgoingReq::ToggleHidden {
-            workspace_id: self.active_workspace_id.clone(),
+            workspace_id: self.selected.workspace_id().clone(),
         }) {
             tracing::warn!(error = %e, "drop nav.toggle_hidden — channel closed");
             return;
@@ -37,7 +37,7 @@ impl State {
             tracing::info!("tree.root requested: toggle_hidden refresh");
             if let Err(e) = self.send(OutgoingReq::TreeRoot {
                 mode: "files".to_string(),
-                workspace_id: self.active_workspace_id.clone(),
+                workspace_id: self.selected.workspace_id().clone(),
             }) {
                 tracing::warn!(error = %e, "drop tree.root after nav.toggle_hidden — channel closed");
             } else {
@@ -82,7 +82,7 @@ impl State {
         }
         if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
             parent_id: dir_id.to_string(),
-            workspace_id: self.active_workspace_id.clone(),
+            workspace_id: self.selected.workspace_id().clone(),
         }) {
             tracing::warn!(error = %e, %dir_id, "drop tree.children (watcher refresh)");
         }
@@ -102,7 +102,7 @@ impl State {
         for dir_id in expanded_files_dirs(&self.tree.rows) {
             if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
                 parent_id: dir_id.clone(),
-                workspace_id: self.active_workspace_id.clone(),
+                workspace_id: self.selected.workspace_id().clone(),
             }) {
                 tracing::warn!(error = %e, %dir_id, "drop tree.children (restored-tree refresh)");
             }

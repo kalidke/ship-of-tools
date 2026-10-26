@@ -1,6 +1,7 @@
 //! Per-row UI and REPL snapshots: what the window saves when it leaves a row and restores when it comes back.
 
 use super::*;
+use crate::ui::preview::source::InstalledPreviewSource;
 
 /// One workspace's snapshot of the chrome's view state, captured on
 /// workspace switch and restored when the user comes back. Goal: the
@@ -18,8 +19,8 @@ use super::*;
 /// REPL pane state (scrollback / input / history) lives in a private
 /// record in `ReplModel`, which routes replies for parked rows independently.
 ///
-/// Held in `State.workspace_ui_snapshots`, keyed by workspace slug
-/// (with `<default>` for the daemon-default workspace).
+/// Held in `ParkedViews`, keyed by the row's `WsKey` (with `<default>`
+/// for the daemon-default workspace).
 #[derive(Clone)]
 pub(in crate::ui) struct WorkspaceUiSnapshot {
     /// Last mode the workspace was rendering. Dropped-then-restored so a
@@ -36,7 +37,7 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     mode: Mode,
     /// Tmux session the BL pane was attached to (`sot-be-<slug>`).
     /// Restored via `attach_session_to_bl` on swap-in.
-    pub(in crate::ui) bl_pane_target: Option<String>,
+    bl_pane_target: Option<String>,
     /// The node id we most recently asked the backend to preview, so
     /// switching back doesn't bounce-fetch the same preview again.
     preview_node_id_fired: Option<String>,
@@ -44,46 +45,20 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     /// pinned when the user swapped away; restored on swap-in so the
     /// preview stays parked on the same file across workspace switches.
     pinned_preview_node_id: Option<String>,
-    /// Last preview source (mime + raw bytes) the chrome rendered. On
-    /// swap-in we feed this back through `render_preview_source` to
-    /// rebuild the preview pane without a fresh `preview.get`.
-    preview_src: Option<(String, Vec<u8>)>,
-    /// The node id the `Preview` reply that installed `preview_src`
-    /// actually answered — MUST travel with it (same discipline as
-    /// `preview_scale` below). Distinct from `preview_node_id_fired`,
-    /// which flips the moment a NEW request is dispatched: between firing
-    /// request B and B's reply landing, `preview_node_id_fired` already
-    /// says B while `preview_src` (and this field) still hold A. Field
-    /// report round 2: `previewed_files_path()` used to read
-    /// `preview_node_id_fired`, so `o`/`W`/`O` pressed in that window
-    /// routed against the file that was ABOUT to be shown, not the one
-    /// on screen.
-    preview_src_node_id: Option<String>,
-    /// Terminally-failed figure URLs for the markdown doc in `preview_src`
-    /// — MUST travel with it, alongside `current_md_node_id` and
-    /// `current_md_workspace_id` below. Round-2 review finding: these
-    /// three are provenance companions of the shown doc, not global
-    /// state. Without snapshotting them, a workspace switch let workspace
-    /// B's cursor-driven markdown reload clear workspace A's cached
-    /// failures (a global `figure_failed.clear()`, since the field lived
-    /// only on `State`), switching back to A could refire A's already-
-    /// failed figure, B's surviving failures could wrongly collapse A's
-    /// healthy one, and A's restored figure fetch could resolve against
-    /// B's `current_md_node_id`/`current_md_workspace_id` — the wrong
-    /// directory or project entirely.
+    /// The installed preview source the chrome rendered: bytes, the node
+    /// their reply answered, their physical scale and the markdown origin
+    /// (see `InstalledPreviewSource`). On swap-in it is restored whole and
+    /// its bytes fed back through `render_preview_source` to rebuild the
+    /// preview pane without a fresh `preview.get`.
+    source: InstalledPreviewSource,
+    /// Terminally-failed figure URLs for the markdown doc in `source` —
+    /// MUST travel with it (round-2 review finding: a provenance companion
+    /// of the shown doc, not global state). Without snapshotting it, a
+    /// workspace switch let workspace B's cursor-driven markdown reload
+    /// clear workspace A's cached failures, switching back to A could
+    /// refire A's already-failed figure, and B's surviving failures could
+    /// wrongly collapse A's healthy one.
     figure_failed: std::collections::HashSet<String>,
-    /// See `figure_failed` above.
-    current_md_node_id: Option<String>,
-    /// See `figure_failed` above.
-    current_md_workspace_id: Option<String>,
-    /// Physical scale (ADR 0034) of the raster in `preview_src`. MUST travel
-    /// with it: `preview_scale` is otherwise only ever set by a `preview.get`
-    /// wire reply, and swap-in deliberately rebuilds the pane from the cached
-    /// bytes WITHOUT re-fetching — so without this the restored image keeps
-    /// whichever workspace's calibration was last on the wire. Showing a 2
-    /// nm/px image labelled with another workspace's 10 nm/px bar is worse
-    /// than showing no bar at all (Codex review of v0.4.3, F2).
-    preview_scale: Option<PhysicalScale>,
     /// Concept-annotation backing data, including `synced_against`
     /// for the drift badge. The *shaped* MarkdownPreview is not in the
     /// snapshot (cosmic-text Buffer isn't Clone-able); preview_concept
@@ -99,6 +74,43 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     edit_state: Option<EditState>,
 }
 
+/// The rows' parked views: one `WorkspaceUiSnapshot` per row the window has left, keyed by its `WsKey`. Leaving a
+/// row parks its view, coming back reads it, and a row's own end edits or drops it; nothing else reaches the map.
+#[derive(Default)]
+pub(in crate::ui) struct ParkedViews {
+    views: HashMap<WsKey, WorkspaceUiSnapshot>,
+}
+
+impl ParkedViews {
+    /// Park a left row's view, replacing any earlier one.
+    fn park(&mut self, key: WsKey, view: WorkspaceUiSnapshot) {
+        self.views.insert(key, view);
+    }
+
+    fn view(&self, key: &WsKey) -> Option<&WorkspaceUiSnapshot> {
+        self.views.get(key)
+    }
+
+    /// A kept default row's run ended: its parked view no longer names an attachment to restore.
+    pub(in crate::ui) fn forget_attachment(&mut self, key: &WsKey) {
+        if let Some(view) = self.views.get_mut(key) {
+            view.bl_pane_target = None;
+        }
+    }
+
+    /// A destroyed row's view dies with it, so a same-slug successor starts clean.
+    pub(in crate::ui) fn forget(&mut self, key: &WsKey) {
+        self.views.remove(key);
+    }
+
+    /// Move a view parked under the default row's raw slug to its `<default>` key; a view already there wins.
+    pub(in crate::ui) fn migrate(&mut self, from: &WsKey, to: WsKey) {
+        if let Some(view) = self.views.remove(from) {
+            self.views.entry(to).or_insert(view);
+        }
+    }
+}
+
 impl State {
     /// Capture the chrome's current view state into the per-workspace
     /// snapshot map. Called immediately before changing
@@ -107,7 +119,7 @@ impl State {
     /// for repaint, concept slot, drift bookkeeping, pty target.
     pub(in crate::ui) fn snapshot_current_workspace_ui(&mut self) {
         let key = self.active_ws_key();
-        self.workspace_ui_snapshots.insert(
+        self.parked_views.park(
             key,
             WorkspaceUiSnapshot {
                 mode: self.mode,
@@ -119,12 +131,8 @@ impl State {
                 bl_pane_target: self.agent_pane.snapshot_target(),
                 preview_node_id_fired: self.preview_requests.fired_target().map(str::to_owned),
                 pinned_preview_node_id: self.pinned_preview_node_id.clone(),
-                preview_src: self.preview_src.clone(),
-                preview_src_node_id: self.preview_src_node_id.clone(),
+                source: self.preview_source.clone(),
                 figure_failed: self.figure_failed.clone(),
-                current_md_node_id: self.current_md_node_id.clone(),
-                current_md_workspace_id: self.current_md_workspace_id.clone(),
-                preview_scale: self.preview_scale.clone(),
                 concept: self.concept.clone(),
                 edit_state: self.edit_state.clone(),
             },
@@ -137,7 +145,7 @@ impl State {
     /// source. Returns `false` if there's no prior state for this
     /// workspace — caller falls back to fetching fresh.
     pub(in crate::ui) fn restore_workspace_ui(&mut self, key: &WsKey) -> bool {
-        let Some(snap) = self.workspace_ui_snapshots.get(key).cloned() else {
+        let Some(snap) = self.parked_views.view(key).cloned() else {
             return false;
         };
         // The nav tree does NOT restore from this snapshot — it swaps
@@ -176,32 +184,18 @@ impl State {
         // we just leave the panes empty.
         self.preview_png = None;
         self.preview_svg = None;
-        // ADR 0034: the calibration travels with the cached bytes. Restored
-        // BEFORE render_preview_source so the repaint (and any scalebar drawn
-        // on it) uses THIS workspace's scale, never the one the departing
-        // workspace happened to leave in place.
-        self.preview_scale = snap.preview_scale.clone();
-        // Travels with preview_src for the same reason preview_scale does:
-        // the restored bytes are THIS workspace's, and `o`/`W`/`O` must
-        // route against this workspace's file, not whatever the departing
-        // workspace last had in flight.
-        self.preview_src_node_id = snap.preview_src_node_id.clone();
-        // Round-2 review finding: these three are provenance companions of
-        // `preview_src`, not global state — restore them BEFORE
-        // render_preview_source below, since its markdown branch reads all
-        // three (figure_failed via figure_already_handled,
-        // current_md_node_id/current_md_workspace_id to resolve relative
-        // `![](url)`s). Restoring after would let this workspace's figures
-        // dispatch against whichever OTHER workspace happened to leave
-        // these set last.
+        // The installed source travels whole: restored BEFORE
+        // render_preview_source so the repaint (and any scalebar drawn on
+        // it) uses THIS workspace's calibration (ADR 0034), `o`/`W`/`O`
+        // route against this workspace's file, and the markdown branch
+        // resolves relative `![](url)`s against this workspace's document —
+        // never whatever the departing workspace left in place. Its
+        // figure_failed is restored first too, since that branch reads it
+        // (via figure_already_handled).
+        self.preview_source = snap.source.clone();
         self.figure_failed = snap.figure_failed.clone();
-        self.current_md_node_id = snap.current_md_node_id.clone();
-        self.current_md_workspace_id = snap.current_md_workspace_id.clone();
-        if let Some((mime, bytes)) = snap.preview_src.clone() {
-            self.preview_src = Some((mime.clone(), bytes.clone()));
+        if let Some((mime, bytes)) = self.preview_source.source_copy() {
             self.render_preview_source(&mime, &bytes);
-        } else {
-            self.preview_src = None;
         }
         // NOTE: no foreign-provenance corrective reload here or anywhere —
         // the class is retired. The caller swaps the tree in from the store

@@ -48,7 +48,7 @@ impl State {
             // when the resumed active_host isn't the one they were
             // saved for).
             last_bl_target: self.agent_pane.snapshot_target(),
-            last_workspace_id: self.active_workspace_id.clone(),
+            last_workspace_id: self.selected.workspace_id().clone(),
             // ADR 0042 L2a codex review, item H: REPURPOSED. This field
             // was ADR 0015's "pick a host, Ctrl+Q + relaunch" signal to
             // the LAUNCHER (which host to route the SSH tunnel + remote
@@ -59,7 +59,7 @@ impl State {
             // quit, so a daily launch resumes wherever the user actually
             // left off rather than always the configured default (see
             // State::new's active_host resolution).
-            last_host: Some(self.active_host.clone()),
+            last_host: Some(self.selected.host().clone()),
             window_w: Some(inner.width),
             window_h: Some(inner.height),
             window_x: pos.as_ref().map(|p| p.x),

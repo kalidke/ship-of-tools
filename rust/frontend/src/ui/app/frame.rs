@@ -135,7 +135,7 @@ impl State {
         // through the math walk.
         if self.needs_md_reflow {
             self.needs_md_reflow = false;
-            if let Some((mime, bytes)) = self.preview_src.clone() {
+            if let Some((mime, bytes)) = self.preview_source.source_copy() {
                 if mime == "text/markdown" || mime == "text/x-markdown" {
                     self.render_preview_source(&mime, &bytes);
                 }

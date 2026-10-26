@@ -216,7 +216,7 @@ impl State {
         if !is_image {
             return clear_and_none(self);
         }
-        let Some(scale) = self.preview_scale.clone() else {
+        let Some(scale) = self.preview_source.scale().cloned() else {
             return clear_and_none(self);
         };
         let Some(axis) = scale.axes.first() else {
@@ -427,7 +427,7 @@ impl ScalePromptContext for State {
     fn send_scale(&mut self, node_id: &str, nm_per_px: f64) -> Result<(), String> {
         let generation = self.next_preview_gen();
         self.send(OutgoingReq::PreviewSetScale { node_id: node_id.to_string(), nm_per_px,
-            workspace_id: self.active_workspace_id.clone(), generation }).map_err(|e| e.to_string())
+            workspace_id: self.selected.workspace_id().clone(), generation }).map_err(|e| e.to_string())
     }
     fn enable_scalebar(&mut self) { self.scalebar_on = true; }
     fn mark_scale_saved(&mut self, node_id: String, raw: String) { self.preview_requests.arm_scale_save(node_id, raw); }

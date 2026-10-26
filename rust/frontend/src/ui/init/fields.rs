@@ -114,7 +114,6 @@ impl State {
             preview_page: None,
             preview_page_raster_zoom: 1.0,
             preview_reraster_keep_view: false,
-            preview_scale: None,
             // Default off; `--start-scalebar` arms it for the headless capture
             // harness (no `b` keypress). Still gated on a present scale at draw.
             scalebar_on: cli.start_scalebar,
@@ -127,8 +126,10 @@ impl State {
             pinned_preview_node_id: None,
             agent_pane: AgentPane::new(
                 initial_bl_pane_target(resume_matches_last_host, &persisted_geom, &active_host)),
-            active_workspace_id:
+            selected: SelectedRow::new(
+                active_host,
                 initial_active_workspace_id(cli, resume_matches_last_host, &persisted_geom),
+            ),
             hosts: crate::net::hosts::HostTable {
                 host_connected: HashMap::new(),
                 // Filled by `resumed()` from the same `PendingTransport` list
@@ -142,7 +143,6 @@ impl State {
             },
             row_directory: RowDirectory::default(),
             row_presentation: RowPresentation::default(),
-            pending_destroy_target: None,
             host: None,
             daemon_root_basename: None,
             daemon_project_root: None,
@@ -153,7 +153,7 @@ impl State {
             result_ledger: ResultLedger::default(),
             contrast_dim: cli.contrast_mode == "dim",
             workspace_picker: None,
-            workspace_ui_snapshots: HashMap::new(),
+            parked_views: ParkedViews::default(),
             preview_concept: None,
             concept_rect_px,
             file_ast_hashes: std::collections::HashMap::new(),
@@ -175,7 +175,6 @@ impl State {
             not_ended_shown: None,
             leaving: None,
             last_declared_sessions: None,
-            active_host,
             monitor_hub,
             scale,
             cell_w,
@@ -220,8 +219,6 @@ impl State {
             upload_batch: None,
             monitor_aspect: initial_monitor_aspect(event_loop),
             local_term: None,
-            read_mark: None,
-            pending_capsule_create_requested_at: None,
             term_size: None,
             repo_dir,
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
@@ -243,8 +240,6 @@ impl State {
             figure_cache: std::collections::HashMap::new(),
             figure_pending: std::collections::HashSet::new(),
             figure_failed: std::collections::HashSet::new(),
-            current_md_node_id: None,
-            current_md_workspace_id: None,
             needs_md_reflow: false,
             // ADR 0035: each host's `Connected` evt (remote + proxy) adds it
             // here; `resumed()` spawns the listener manager.
@@ -252,8 +247,7 @@ impl State {
             proxy_listener_tx: None,
             proxy_ensured: std::collections::HashMap::new(),
             text_scale_mult: 1.0,
-            preview_src: None,
-            preview_src_node_id: None,
+            preview_source: Default::default(),
             preview_requests: preview::requests::PreviewRequests::default(),
             project_scan_req_gen: HashMap::new(),
         }

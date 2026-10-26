@@ -104,7 +104,7 @@ pub(in crate::ui) fn session_enter_key(state: &mut State) -> ControlFlow<()> {
                 .and_then(|r| r.node.payload.get("host"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
-                .unwrap_or_else(|| state.active_host.clone());
+                .unwrap_or_else(|| state.selected.host().clone());
             state.begin_create_session(host);
             return Break(());
         }
@@ -112,7 +112,7 @@ pub(in crate::ui) fn session_enter_key(state: &mut State) -> ControlFlow<()> {
             if let Some(session_name) = state.selected_session_name() {
                 let host = state
                     .selected_session_host()
-                    .unwrap_or_else(|| state.active_host.clone());
+                    .unwrap_or_else(|| state.selected.host().clone());
                 let listed_spelling = if let Some(id) = row
                     .and_then(|r| r.node.payload.get("workspace_id"))
                     .and_then(|v| v.as_str())
@@ -170,7 +170,7 @@ pub(in crate::ui) fn session_destroy_key(state: &mut State, was_destroy_pending:
         .get("host")
         .and_then(|v| v.as_str())
         .map(str::to_string)
-        .unwrap_or_else(|| state.active_host.clone());
+        .unwrap_or_else(|| state.selected.host().clone());
     let target_label = row
         .node
         .payload
@@ -202,7 +202,7 @@ pub(in crate::ui) fn session_destroy_key(state: &mut State, was_destroy_pending:
         }
         state.window.request_redraw();
     } else {
-        state.pending_destroy_target = Some(target);
+        state.selected.arm_destroy(target);
         state.status =
             format!("press {} again to destroy '{target_label}' · any other key cancels", state.bindings.first_label(Action::SessionDestroy));
         state.window.request_redraw();

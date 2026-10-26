@@ -41,7 +41,7 @@ impl State {
                             .is_some_and(|(_, anc)| anc == parent_id))
             }
         };
-        let workspace_id = self.active_workspace_id.clone();
+        let workspace_id = self.selected.workspace_id().clone();
         match reply {
             ResultTreeReply::Root { root, children } => {
                 if awaited(self, &ResultTreeRequest::Root) {
@@ -151,7 +151,7 @@ impl State {
         // once; discarded when the workspace changed in between
         // (a switch's fresh tree must not chase the old path).
         if let Some((armed_ws, sel)) = self.restore_nav_after_resume.take() {
-            if armed_ws == self.active_workspace_id {
+            if armed_ws == *self.selected.workspace_id() {
                 tracing::info!(target = %sel,
                     "resume: restoring nav cursor after reconnect rebuild");
                 self.preview_requests.arm_driven_hold(self
@@ -165,7 +165,7 @@ impl State {
                 self.reveal_refetched = None;
                 self.drive_reveal_step(None);
             } else {
-                tracing::info!(?armed_ws, active = ?self.active_workspace_id,
+                tracing::info!(?armed_ws, active = ?self.selected.workspace_id(),
                     "resume: nav restore discarded — workspace changed before the root arrived");
             }
         }
@@ -310,7 +310,7 @@ impl State {
             )),
         );
         if reply_key != self.active_tree_key() {
-            tracing::info!(?workspace_id, active = ?self.active_workspace_id,
+            tracing::info!(?workspace_id, active = ?self.selected.workspace_id(),
                 %parent_id, "tree.children parked into its own slot");
             self.tree_store
                 .slot_mut(reply_key)

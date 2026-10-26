@@ -40,7 +40,7 @@ impl State {
         let generation = self.next_preview_gen();
         if let Err(e) = self.send(crate::net::transport::OutgoingReq::PreviewGet {
             node_id: node_id.clone(),
-            workspace_id: self.active_workspace_id.clone(),
+            workspace_id: self.selected.workspace_id().clone(),
             page: None,
             fit_w,
             fit_h,
@@ -146,7 +146,7 @@ impl State {
                         "reveal: files tree not loaded — loading tree.root and arming switch-reveal");
                     if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeRoot {
                         mode: "files".to_string(),
-                        workspace_id: self.active_workspace_id.clone(),
+                        workspace_id: self.selected.workspace_id().clone(),
                     }) {
                         tracing::warn!(error = %e,
                             "drive_same_ws_open: drop tree.root — channel closed");
@@ -242,7 +242,7 @@ impl State {
             },
             None => crate::net::transport::OutgoingReq::TreeChildren {
                 parent_id: anc_id.to_string(),
-                workspace_id: self.active_workspace_id.clone(),
+                workspace_id: self.selected.workspace_id().clone(),
             },
         }
     }

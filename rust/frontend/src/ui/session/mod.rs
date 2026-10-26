@@ -10,6 +10,7 @@ mod replies;
 mod result_ledger;
 mod row_directory;
 mod row_presentation;
+mod selected;
 mod snapshot;
 mod switch;
 mod workspace_key;
@@ -26,3 +27,4 @@ pub(in crate::ui) use row_directory::{
 };
 pub(in crate::ui) use workspace_list::*;
 pub(in crate::ui) use row_presentation::RowPresentation;
+pub(in crate::ui) use selected::SelectedRow;
