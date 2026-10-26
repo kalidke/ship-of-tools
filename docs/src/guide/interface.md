@@ -103,8 +103,7 @@ and back lands you where you left each one. The modes bound today:
 
 The mode keys are plain single characters, so they are **scoped to navigation
 focus**: typing `f` into the REPL or a prompt inserts an `f`, it does not switch
-modes. The full conceptual mode set (Project, Types, Math, Outputs, Agents) and
-what is built today is on the [Modes](modes.md) page.
+modes. Details of each built-in mode are on the [Modes](modes.md) page.
 
 ### Driving it
 
@@ -138,13 +137,12 @@ what is built today is on the [Modes](modes.md) page.
 - The bottom border of the window shows the frontend (`fe`) and backend (`be`)
   versions.
 
-Modes are a **planned plugin surface**: the design is a `Mode` subtype with
-`tree_root` / `tree_children` / `preview_for` methods — the core modes shipping
-the same way, with no privileged path. Today the nav roots are fixed (the four
-above) and built into the frontend and backend; the mode-plugin seam is not yet
-wired. See
-[Writing a Mode Plugin](../extend/mode.md) and
-[The Dispatch ABI](../extend/abi.md).
+The four navigation modes above are built into the frontend and backend.
+[ADR 0051](https://github.com/kalidke/ship-of-tools/blob/main/docs/history/adr/0051-mods.md#the-mod)
+specifies future view extensions as mods with `tree_children` and the
+three-argument `preview`, shown in a generic Mods navigation mode. The mod system
+is not built. See [The Dispatch ABI](../extend/abi.md) for the current extension
+surface.
 
 
 ## The Preview Pane

@@ -12,25 +12,22 @@ registration call, no plugin manifest, and no central list to edit.
 
 This page is the conceptual contract. For the symbol-by-symbol reference see
 [API — ConceptExplorerCore](../ref/api-core.md); for step-by-step tutorials see
-[Writing a FileType Plugin](filetype.md) and [Writing a Mode Plugin](mode.md);
+[Writing a FileType Plugin](filetype.md);
 for a complete external package see the [HDF5 worked example](hdf5.md).
 
 ## The pluggable types
 
-Six abstract types name everything that can be extended:
+Core declares three abstract types:
 
 | Type | What it pluralizes | A plugin adds … | Status |
 |------|--------------------|-----------------|--------|
 | [`FileType`](@ref) | file kinds the explorer can preview / parse | `struct PngFile <: FileType end` | built |
-| [`Mode`](@ref) | switchable nav-tree roots | `struct FilesMode <: Mode end` | declared, NOT BUILT (no implementation) |
 | [`ConceptEntity`](@ref) | conceptual units a file declares | a function / type / derivation entity | declared, NOT BUILT (no implementation) |
 | [`AnnotationKind`](@ref) | categories of concept annotation | a `TypeMeaning` kind | declared, NOT BUILT (no implementation) |
-| [`Tool`](@ref) | actions an agent could call | a `ReadFile` tool | declared, NOT BUILT (no implementation) |
-| [`Capture`](@ref) | structured REPL outputs | a `FigureCapture` | declared, NOT BUILT (no implementation) |
 
-Only `FileType` is wired end to end. The other five are declared in core and
-nothing subtypes or dispatches on them: the window's modes are native Rust views,
-not `Mode` subtypes.
+Only `FileType` is wired end to end. `ConceptEntity` and `AnnotationKind` are
+declared design targets with no concrete subtypes. The window's navigation modes
+are native Rust views.
 
 ## The contract
 
@@ -54,11 +51,14 @@ plugins return an empty vector) but nothing calls it; `ast_hash` and
 The staleness hash that is built today is not `ast_hash`: see
 [The Concept Layer](../guide/concept-layer.md).
 
-The remaining surfaces — `tree_root` / `tree_children` / `preview_for` for
-[`Mode`](@ref), `tool_spec` / `tool_call` for [`Tool`](@ref), and
-`capture_payload` for [`Capture`](@ref) — are the design for the mode / tool /
-capture plugins. Core does not define the generic stubs and nothing implements
-them: NOT BUILT.
+### Planned mods
+
+`Mode`, `Tool` and `Capture` have been removed from core.
+[ADR 0051](https://github.com/kalidke/ship-of-tools/blob/main/docs/history/adr/0051-mods.md#what-is-deleted)
+specifies what replaces them in a 0.7.Z after the 0.7.0 tag: `Mod` with
+`tree_children` and the three-argument `preview` for views, `:repl` events for
+structured output, and MCP servers if a mod needs to offer tools to agents.
+The mod system is not built.
 
 ### A minimal FileType plugin
 
@@ -95,16 +95,15 @@ The Rust↔Julia boundary is crossed by exactly two generic structs, both with
 
 Because both carry opaque, kernel-defined payloads, **adding a new `FileType`
 needs no Rust change** unless its output must be bounded, in which case the
-daemon's preview gates also name its extensions. `Mode` is NOT BUILT (the modes
-are native Rust views; see [Writing a Mode Plugin](mode.md)).
-The frontend renders whatever the MIME says and draws the tree the kernel sends.
+daemon's preview gates also name its extensions. The frontend renders file
+previews by MIME. Navigation modes are native Rust views; future view extensions
+follow the planned mod design above.
 
 ## Core is a plugin to itself
 
 The standard file types are implemented as methods on `FileType`, the same
 abstract type a third-party plugin extends — they receive **no privileged
-access**. (The core modes are not: they are native Rust views, since `Mode` is
-not built.) If core ever needs
+access**. Built-in navigation modes are native Rust views. If core ever needs
 something the ABI cannot express, the rule is to *fix the ABI*, not to
 special-case core. This keeps the extension surface honest: third-party plugins
 travel exactly the path core travels.
@@ -119,6 +118,6 @@ explicitly — see [Discovery & Configuration](discovery.md).
 ## Next steps
 
 - [Writing a FileType Plugin](filetype.md)
-- [Writing a Mode Plugin](mode.md)
+- [ADR 0051: mods](https://github.com/kalidke/ship-of-tools/blob/main/docs/history/adr/0051-mods.md)
 - [Worked Example: HDF5](hdf5.md)
 - [API — ConceptExplorerCore](../ref/api-core.md)

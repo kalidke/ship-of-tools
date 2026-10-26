@@ -4,6 +4,8 @@ A dependency-ordered plan for the Phase 1 milestone defined in `CLAUDE.md`. The 
 
 > **Note (2026-05-07):** Plan revised after the C-pivot. The original plan assumed the frontend was a TUI rendered into the user's terminal. That premise was wrong for the user's deployment (Windows → SSH → tmux → Linux remote). The revised plan keeps the kernel, core IR, line protocol, and backend daemon intact but rebuilds the frontend as a **native local window** that owns rendering end-to-end.
 
+> **Update (2026-10-26):** The mode and tool plugin seams in the original plan were never built. `Mode`, `Tool` and `Capture` have been removed from core. Built-in navigation modes are native Rust views. [ADR 0051](https://github.com/kalidke/ship-of-tools/blob/main/docs/history/adr/0051-mods.md#what-is-deleted) replaces the old design with mods for views, later `:repl` events for structured output, and MCP servers if a mod needs to offer tools to agents. The mod system is planned for a 0.7.Z after the 0.7.0 tag and is not built.
+
 ## Scope
 
 Phase 1, per `CLAUDE.md`:
@@ -74,7 +76,6 @@ If any of those fail in a way the architecture can't fix, switch to option B bef
 **Deliverable:** real filesystem navigation. `.md` rendered, `.png` rendered, `.jl` shown as syntax-highlighted text. External edits update the tree within 500 ms.
 
 **Files:**
-- `julia/plugins/files-mode/src/FilesMode.jl` — `tree_root`, `tree_children`, `preview_for`.
 - `julia/plugins/markdown/src/MarkdownPreview.jl` — `preview(::Type{MarkdownDoc}, path) → PreviewPayload(mime="text/markdown", data=bytes)`.
 - `julia/plugins/png/src/PngPreview.jl` — read bytes → `image/png` payload.
 - `julia/plugins/julia-source/src/JuliaSourcePreview.jl` — read + syntect-friendly metadata → `text/plain` with extras.
@@ -89,7 +90,6 @@ If any of those fail in a way the architecture can't fix, switch to option B bef
 **Files:**
 - `julia/plugins/julia-source/src/JuliaSourceParser.jl` — `parse_entities` walks `JuliaSyntax.parseall`.
 - `julia/plugins/julia-source/src/Index.jl` — project index keyed by `(path, mtime, size)`; incremental rebuild on `file.changed`.
-- `julia/plugins/modules-mode/src/ModulesMode.jl` — mode-tree dispatch.
 - `core/src/ASTHash.jl` — hash function.
 - `core/test/test_ast_hash.jl` — property test.
 - `rust/frontend/src/ui/nav/tree_store.rs` — per-mode cursor preservation; modes switch via `f` / `m` / `s` / `h` in nav focus.
@@ -118,7 +118,6 @@ If any of those fail in a way the architecture can't fix, switch to option B bef
 **Files:**
 - `julia/plugins/concept/src/ConceptStore.jl` — `read_annotation`, `write_annotation`, `is_stale`. YAML frontmatter via `YAML.jl`.
 - `julia/plugins/concept/src/Provenance.jl` — stamps `synced_against` and `synced_at` on write.
-- `julia/plugins/modules-mode/src/ModulesMode.jl` — extend `preview_for` to compose source + annotation + badge.
 - `rust/frontend/src/preview/composite.rs` — multi-pane preview composition (source on top, annotation below, badge overlay).
 - `rust/backend/src/editor.rs` — shell out to `$EDITOR`, await exit, signal kernel re-read.
 
@@ -133,7 +132,6 @@ If any of those fail in a way the architecture can't fix, switch to option B bef
 - `rust/backend/src/orchestrator/tools.rs` — tool spec construction.
 - `rust/backend/src/orchestrator/cache.rs` — four-block cache scheme.
 - `rust/frontend/src/chat_pane.rs` — input area, transcript, streaming render via cosmic-text, collapsed tool-call breadcrumbs.
-- `core/src/ToolSpec.jl` — `tool_spec` and `tool_call` dispatch surfaces *defined but unwired*. Phase 2 seam.
 
 **Acceptance:** ask the orchestrator to "create an annotation for function X." File appears with proper frontmatter; reopening Modules mode shows the new annotation.
 
@@ -155,9 +153,9 @@ Noted but not built:
 - **Multi-laptop / multi-client** — `client_id` already in handshake; first-wins is the M1+ default; richer policies later.
 - **Multi-agent** — `chat.send` already takes a session id (always `"main"` in Phase 1).
 - **Remote transport variants** — protocol is transport-agnostic; backend just listens on a different socket.
-- **Types/Math/Outputs modes** — `mode.list` already returns a vector.
+- **Future views** — ADR 0051 specifies mods; the planned Outputs view becomes a mod.
 - **Background staleness sweep** — `is_stale` is on-demand in M5; future is a kernel timer.
-- **Plugin-defined tools** — `core/src/ToolSpec.jl` defined, unwired in M6; Phase 2 adds `kernel.tools.list`.
+- **Tools offered by mods** — ADR 0051 leaves MCP servers for when a mod needs to offer tools to agents.
 - **Full LaTeX docs (`tectonic`)** — only inline math via MathJax in M1; document-level TeX comes when a plugin needs it.
 - **Option B fallback path** — Tauri/wry wrapping a web frontend. The kernel, backend, line protocol, core IR are unchanged across that swap; only the frontend surface differs. Kept warm in case M1 spike findings demote C.
 
