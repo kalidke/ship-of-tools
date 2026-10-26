@@ -397,16 +397,8 @@ struct State {
     /// the user hits a key; modes-mode + tree navigation hang off the same
     /// keyboard input plumbing once they land.
     last_key: Option<String>,
-    /// Latest cursor position in physical pixels — winit only
-    /// delivers `CursorMoved` on motion, so a click immediately after
-    /// focus would otherwise have no position to anchor to.
-    cursor_px: (f32, f32),
-    /// Fractional wheel-row accumulator. Precision touchpads and smooth
-    /// wheels emit small sub-row deltas; truncating each event to i32
-    /// drops everything until the user flicks hard. Accumulating here
-    /// and only applying whole rows lets gentle scroll work the way the
-    /// user expects.
-    wheel_residue_y: f32,
+    /// The pointer's last position and the wheel's sub-row residue.
+    pointer: crate::ui::input::pointer::Pointer,
     /// Resolved keybindings (defaults overlaid with the user's
     /// `keybindings.toml` if present). See `ui/input/keybindings.rs` for the
     /// file format and discovery order. Read-only once loaded — the

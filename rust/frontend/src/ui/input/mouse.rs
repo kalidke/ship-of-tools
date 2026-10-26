@@ -6,11 +6,11 @@ use winit::dpi::PhysicalPosition;
 use winit::keyboard::ModifiersState;
 
 pub(in crate::ui) fn cursor_moved(state: &mut State, position: PhysicalPosition<f64>) {
-    state.cursor_px = (position.x as f32, position.y as f32);
+    state.pointer.moved_to((position.x as f32, position.y as f32));
     // Extend the LLM-pane selection while the user is dragging.
     // Drag uses non-strict cell mapping so the user can pull
     // outside the pane to extend selection to the edge.
-    let end = state.llm_cell_at_px(state.cursor_px, false);
+    let end = state.llm_cell_at_px(state.pointer.at_px(), false);
     if state.agent_pane.extend_drag(end) { state.window.request_redraw(); }
 }
 
@@ -19,8 +19,8 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
         |state, pressed| state.report_presence(pressed),
         |state| {
             if state.focus_prompts.quit_choice().is_none() { return None; }
-            let (x, y) = ((state.cursor_px.0 - state.chrome_origin_x) / state.cell_w.max(1.0),
-                (state.cursor_px.1 - state.chrome_origin_y) / state.cell_h.max(1.0));
+            let (x, y) = ((state.pointer.at_px().0 - state.chrome_origin_x) / state.cell_w.max(1.0),
+                (state.pointer.at_px().1 - state.chrome_origin_y) / state.cell_h.max(1.0));
             let left_at = (button == MouseButton::Left && x >= 0.0 && y >= 0.0).then_some((x as u16, y as u16));
             Some(quit_prompt_click(state.close_dialog().and_then(|d| d.answers), left_at))
         },
@@ -31,7 +31,7 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
             dismissed
         },
         |state| {
-            let cell = state.llm_cell_at_px(state.cursor_px, true);
+            let cell = state.llm_cell_at_px(state.pointer.at_px(), true);
             agent_press_continuation(state, cell, |state| state.set_focus(PaneFocus::Llm), |state, cell| {
                 if state.agent_pane.press(cell) { state.window.request_redraw(); }
             });
@@ -138,13 +138,13 @@ fn dispatch_wheel(context: &mut impl WheelContext, modifiers: ModifiersState, de
 impl WheelContext for State {
     fn report_wheel_presence(&mut self) { self.report_presence(true); }
     fn wheel_geometry(&mut self) -> WheelGeometry {
-        WheelGeometry { cell_w: self.cell_w, cell_h: self.cell_h, focus: self.focus_prompts.focus(), residue: self.wheel_residue_y }
+        WheelGeometry { cell_w: self.cell_w, cell_h: self.cell_h, focus: self.focus_prompts.focus(), residue: self.pointer.residue() }
     }
     fn scroll_preview_horizontal(&mut self, pixels: f32) {
         self.md_media.scroll_tables(pixels);
         self.window.request_redraw();
     }
-    fn store_wheel_residue(&mut self, residue: f32) { self.wheel_residue_y = residue; }
+    fn store_wheel_residue(&mut self, residue: f32) { self.pointer.store_residue(residue); }
     fn route_wheel_rows(&mut self, rows: i32) { route_wheel_rows(self, rows); }
 }
 
@@ -203,7 +203,7 @@ fn wheel_terminal(state: &mut State, rows_above: i32) {
 fn wheel_agent_pane(state: &mut State, rows_above: i32) {
     match state.agent_pane.wheel(rows_above) {
         WheelEffect::Pending => {},
-        WheelEffect::ClearResidue => state.wheel_residue_y = 0.0,
+        WheelEffect::ClearResidue => state.pointer.clear_residue(),
         WheelEffect::Redraw => state.window.request_redraw(),
     }
 }

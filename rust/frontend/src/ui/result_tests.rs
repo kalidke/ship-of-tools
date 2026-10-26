@@ -1339,11 +1339,11 @@ impl State {
     pub(in crate::ui) fn a_wheel_step_reports_presence(&mut self) -> Result<()> {
         self.presence = PresenceClock::default();
         self.set_focus(PaneFocus::Llm);
-        self.wheel_residue_y = 0.0;
+        self.pointer.clear_residue();
         let fresh = self.presence;
         input::mouse::mouse_wheel(self, winit::keyboard::ModifiersState::empty(), MouseScrollDelta::LineDelta(0.0, 0.05));
         anyhow::ensure!(self.presence != fresh, "fractional wheel step did not advance presence");
-        anyhow::ensure!(self.wheel_residue_y > 0.0 && self.wheel_residue_y < 1.0, "fractional control scrolled a whole row");
+        anyhow::ensure!(self.pointer.residue() > 0.0 && self.pointer.residue() < 1.0, "fractional control scrolled a whole row");
         let first = self.presence;
         input::mouse::mouse_wheel(self, winit::keyboard::ModifiersState::empty(), MouseScrollDelta::LineDelta(0.0, 1.0));
         anyhow::ensure!(self.presence != first, "whole wheel step did not advance presence");
