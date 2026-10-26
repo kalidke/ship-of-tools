@@ -190,7 +190,7 @@ impl Plan {
 
     fn verified_source(&self, source: &Path, commit: &str) -> Result<bool, Stop> {
         let head = run(self.git(source).args(["rev-parse", "HEAD"]), "source HEAD verification", self.bounds.git)?;
-        let paths = ["scripts/setup-publish-guard.sh", "scripts/hooks/pre-push", "scripts/hooks/pre-push-shim", "scripts/hooks/publish-guard-lib.sh"];
+        let paths = ["scripts/setup-publish-guard.sh", "scripts/hooks/pre-push", "scripts/hooks/pre-push-shim", "scripts/hooks/publish-guard-lib.sh", "scripts/hooks/publish-guard-scan.awk"];
         Ok(head.ok() && head.first_line() == commit
             && paths.iter().all(|p| std::fs::symlink_metadata(source.join(p)).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink()))
             && run(self.git(source).args(["diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--"]).args(paths), "source diff verification", self.bounds.git)?.ok())
