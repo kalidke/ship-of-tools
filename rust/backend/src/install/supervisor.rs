@@ -82,12 +82,16 @@ pub(super) enum Way {
     Desk,
     /// Nothing runs and this is a desktop session: the update applies here.
     Here,
+    /// The process listing failed: whether anything runs is unknown, so nothing is stopped and the update stays armed.
+    Unlisted,
 }
 
-/// The way for a resident supervisor's launcher code id (`None` when no supervisor runs, empty when it logs none), a
-/// window running without one, and this process's logon session (0 for an ssh logon), asked only when nothing runs.
+/// The way for what the process listing showed (`None` when it failed): a resident supervisor's launcher code id
+/// (`None` when no supervisor runs, empty when it logs none) and a window running without one; and this process's logon
+/// session (0 for an ssh logon), asked only when nothing runs.
 #[cfg_attr(not(windows), allow(dead_code, reason = "the Windows install chooses how an update applies"))]
-pub(super) fn way(supervisor_code: Option<&str>, window_only: bool, session: &dyn Fn() -> Option<u32>) -> Way {
+pub(super) fn way(seen: Option<(Option<&str>, bool)>, session: &dyn Fn() -> Option<u32>) -> Way {
+    let Some((supervisor_code, window_only)) = seen else { return Way::Unlisted };
     match supervisor_code {
         Some(code) if !code.is_empty() => Way::Converge,
         Some(_) => Way::Quit,

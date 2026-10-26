@@ -110,17 +110,24 @@ pub(super) fn work_of(out: &str, err: &str, code: Option<i32>) -> Work {
     Work { rows, pluto, unsure }
 }
 
+/// What a restart would end, asked of the daemon within [`cmd::ASK_BOUND`]; an ask that gave no answer is `unsure` with
+/// its reason, so a caller that cannot be told is asked about, never told "nothing".
 pub(super) fn work(sotd: &Path, endpoint: &str) -> Work {
-    let ran = cmd::output(Command::new(sotd).args(["update", "repls", "--endpoint", endpoint]));
+    let ran = cmd::ask(Command::new(sotd).args(["update", "repls", "--endpoint", endpoint]));
     work_of(&ran.out, &ran.err, ran.code)
 }
 
 /// What the daemon processes of the install at `prefix` run for a person, from their own process tree: `Some` with one
 /// entry per direct child that is a REPL (`repl`) or the Pluto server (`pluto`), `None` when no daemon process of the
-/// install is found, so nothing can be ruled out. The daemon is its program path, the sidecars its children by parent id.
+/// install is found, so nothing can be ruled out; a process listing that failed is the same `None`. The daemon is its
+/// program path, the sidecars its children by parent id.
 pub(super) fn children(prefix: &Path) -> Option<Vec<&'static str>> {
-    let all = procs::snapshot();
-    let daemon = procs::daemon_pids(&all, prefix);
+    children_in(&procs::snapshot(), prefix)
+}
+
+pub(super) fn children_in(all: &Result<Vec<procs::Proc>, String>, prefix: &Path) -> Option<Vec<&'static str>> {
+    let all = all.as_ref().ok()?;
+    let daemon = procs::daemon_pids(all, prefix);
     if daemon.is_empty() {
         return None;
     }

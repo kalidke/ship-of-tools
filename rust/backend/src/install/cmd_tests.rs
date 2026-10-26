@@ -19,7 +19,7 @@ fn bounded_output_drains_both_large_streams() {
     if !isolated("install::cmd::tests::bounded_output_drains_both_large_streams") { return; }
     let d = tempfile::tempdir().unwrap();
     let ran = Steps::new().output_within(&mut command("flood", &d.path().join("pulse")), Duration::from_secs(5));
-    assert!(ran.ok(), "{:?}: {}", ran.code, ran.err);
+    assert!(ran.ok() && ran.answered(), "{:?}: {}", ran.code, ran.err);
     assert!(ran.out.contains(&"a".repeat(2 * 1024 * 1024)));
     assert!(ran.err.contains(&"b".repeat(2 * 1024 * 1024)));
 }
@@ -48,7 +48,7 @@ fn bounded_output_never_accepts_partial_output_before_a_timeout() {
     let pulse = d.path().join("pulse");
     let ran = Steps::new().output_within(&mut command("stall3", &pulse), Duration::from_secs(3));
     assert_eq!(ran.code, None, "a partial ready line must not turn a cut child into status 3");
-    assert!(!ran.ok() && ran.err.contains("within"), "{}", ran.err);
+    assert!(!ran.ok() && !ran.answered() && ran.err.contains("within"), "a cut program has not answered: {}", ran.err);
     assert!(ran.out.is_empty(), "partial stdout must be discarded");
     assert!(!std::fs::read(&pulse).expect("stand-in must have printed before the cut").is_empty());
 }

@@ -92,7 +92,7 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     pack.check_binary("sot").map_err(|why| Stop::new(1, why))?;
     println!("installing Ship of Tools {} into {}", pack.tag(), prefix.display());
     let new_sotd = pack.exe("sotd");
-    let pipe = cmd::output(Command::new(&new_sotd).args(["session-socket-path", "local"])).first_line();
+    let pipe = cmd::ask(Command::new(&new_sotd).args(["session-socket-path", "local"])).first_line();
     let pipe = if pipe.starts_with(r"\\.\pipe\") { pipe } else { String::new() };
     let version_dir = prefix.join("repo\\versions").join(pack.tag());
     let mut ctx = Ctx {
@@ -239,14 +239,30 @@ fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: &str) 
 }
 
 /// The daemon's state: its pipe asked; a daemon whose pipe exists or whose program runs and cannot be told is
-/// `Unknown`. A window that holds it counts as another version: the converge or the start replaces it.
+/// `Unknown`. A window that holds it counts as another version: the converge or the start replaces it. A process
+/// listing that failed presumes a daemon runs, so one that cannot be told is `Unknown`, never `None`, and its reason
+/// leads `why`.
 fn daemon_state(ctx: &Ctx, sotd: &Path) -> (State, String) {
-    let runs = pipe_listed(&ctx.pipe) || !procs::daemon_pids(&procs::snapshot(), &ctx.prefix).is_empty();
+    let (runs, listing) = daemon_runs(ctx);
+    let said = |why: String| match &listing {
+        Some(l) => format!("{l}; {why}"),
+        None => why,
+    };
     if ctx.pipe.is_empty() {
-        return (if runs { State::Unknown } else { State::None }, "no pipe name".into());
+        return (if runs { State::Unknown } else { State::None }, said("no pipe name".into()));
     }
     let (st, why) = daemon::state(sotd, &ctx.endpoint(), runs);
-    (if st == State::Held { State::Other } else { st }, why)
+    (if st == State::Held { State::Other } else { st }, said(why))
+}
+
+/// Whether a daemon may run: its pipe is listed, or its program runs. A process listing that failed (its reason is the
+/// second value) presumes one does.
+fn daemon_runs(ctx: &Ctx) -> (bool, Option<String>) {
+    if pipe_listed(&ctx.pipe) {
+        return (true, None);
+    }
+    let all = procs::snapshot();
+    (procs::daemon_may_run(&all, &ctx.prefix), all.err())
 }
 
 /// Whether the pipe is listed (never opened: a probe must not take an instance).
@@ -300,11 +316,18 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
         return Err(Stop::new(1, detail));
     }
     verdict::set_tail(armed_tail(ctx));
-    let all = procs::snapshot();
-    let sup = supervisor(&ctx.log_dir, &all);
-    let window_only = sup.is_none() && procs::window_runs(&all, &ctx.prefix);
+    let listed = procs::snapshot();
+    let seen = listed.as_ref().ok().map(|all| {
+        let sup = supervisor(&ctx.log_dir, all);
+        let window_only = sup.is_none() && procs::window_runs(all, &ctx.prefix);
+        (sup, window_only)
+    });
     let work = if live.is_empty() { String::new() } else { format!("; {live}") };
-    match super::supervisor::way(sup.as_ref().map(|(_, code)| code.as_str()), window_only, &session_id) {
+    match super::supervisor::way(seen.as_ref().map(|(sup, window_only)| (sup.as_ref().map(|(_, code)| code.as_str()), *window_only)), &session_id) {
+        Way::Unlisted => {
+            let why = listed.err().unwrap_or_default();
+            return Ok(Some(format!("start Ship of Tools at the desk or quit it and start it again; the start applies {} (this run could not list the processes here ({why}), so it could not tell whether a window or supervisor runs and stopped nothing){work}", ctx.pack.tag())));
+        }
         Way::Converge => {
             let wait = super::secs_env("SOT_INSTALL_CONVERGE_WAIT_S", 1800);
             let relaunch = relaunch_script(ctx, installed)?;
@@ -376,7 +399,7 @@ fn converge(ctx: &Ctx, bound: Duration, relaunch: &Path) -> Result<(), Stop> {
 
 /// This process's logon session: 0 for an ssh logon, a later one at the desk.
 fn session_id() -> Option<u32> {
-    cmd::output(&mut powershell(&["-Command", "[System.Diagnostics.Process]::GetCurrentProcess().SessionId"])).first_line().parse().ok()
+    cmd::ask(&mut powershell(&["-Command", "[System.Diagnostics.Process]::GetCurrentProcess().SessionId"])).first_line().parse().ok()
 }
 
 /// Folder trust, the junction, the Julia environments and comm: what the launcher's first start does, done here so the
@@ -442,7 +465,10 @@ fn shortcut(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
     let lnk = super::home_dir().unwrap_or_default().join("Desktop\\Ship of Tools.lnk");
     let mut c = powershell(&["-Command", "try { (New-Object -ComObject WScript.Shell).CreateShortcut($env:SOT_SHORTCUT).Arguments } catch { '' }"]);
     c.env("SOT_SHORTCUT", &lnk);
-    if cmd::output(&mut c).out.to_ascii_lowercase().contains(r"repo\current\scripts\launch-sot.ps1") {
+    let read = cmd::ask(&mut c);
+    if !read.answered() {
+        found.step(format!("run this again at the desk, not over ssh: this session cannot traverse repo\\current, and the Desktop shortcut could not be read ({})", read.last_said()));
+    } else if read.out.to_ascii_lowercase().contains(r"repo\current\scripts\launch-sot.ps1") {
         println!("  shortcut: kept (repo\\current cannot be traversed in this session, and the shortcut already targets it)");
     } else {
         found.step("run this again at the desk, not over ssh: this session cannot traverse repo\\current, so the Desktop shortcut was not written");
@@ -502,11 +528,12 @@ fn write_record(ctx: &Ctx) -> Result<(), Stop> {
 }
 
 /// The launcher code id of a scripts folder, asked of that folder's own `Get-SotLauncherCodeId` (`sot-install-layout.ps1`),
-/// the one definition the launcher logs at its start; empty when it cannot be read.
-fn launcher_code_id(scripts: &Path) -> String {
+/// the one definition the launcher logs at its start; empty when it prints none, `None` when the ask gave no answer.
+fn launcher_code_id(scripts: &Path) -> Option<String> {
     let mut c = powershell(&["-Command", ". (Join-Path $env:SOT_SCRIPTS 'sot-install-layout.ps1'); Get-SotLauncherCodeId -ScriptsDir $env:SOT_SCRIPTS"]);
     c.env("SOT_SCRIPTS", scripts);
-    cmd::output(&mut c).first_line()
+    let ran = cmd::ask(&mut c);
+    ran.answered().then(|| ran.first_line())
 }
 
 /// What the run left: the binaries, the record, the junction, no armed pointer, comm and the kernel environment, the
@@ -516,8 +543,11 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
     let (v, short) = (&ctx.pack.version, ctx.pack.short());
     for b in ["sotd", "sot"] {
         let exe = ctx.prefix.join("bin").join(format!("{b}.exe"));
-        let line = cmd::output(Command::new(&exe).arg("--version")).first_line();
-        if !super::pack::binary_says(&line, b, v, &ctx.pack.commit) {
+        let ran = cmd::ask(Command::new(&exe).arg("--version"));
+        let line = ran.first_line();
+        if !ran.answered() {
+            found.fail("binaries", format!("bin\\{b}.exe gave no answer to --version ({})", ran.last_said()));
+        } else if !super::pack::binary_says(&line, b, v, &ctx.pack.commit) {
             found.fail("binaries", format!("bin\\{b}.exe reports '{line}', not {v} at {short}"));
         }
     }
@@ -548,18 +578,30 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
     } else {
         found.step("install Julia (winget install --id Julialang.Juliaup -e); agent comm and local REPLs need it, then run this again");
     }
-    if let Some((_, code)) = supervisor(&ctx.log_dir, &procs::snapshot()) {
-        let want = launcher_code_id(&ctx.version_dir.join("scripts"));
-        if !want.is_empty() && code != want {
-            found.step("quit Ship of Tools, choose Keep, and start it from the shortcut; the window runs an older launcher");
+    match procs::snapshot() {
+        Ok(all) => {
+            if let Some((_, code)) = supervisor(&ctx.log_dir, &all) {
+                match launcher_code_id(&ctx.version_dir.join("scripts")) {
+                    None => found.fail("launcher", "the launcher code id of the installed scripts could not be read, so whether the window runs an older launcher is unknown"),
+                    Some(want) if !want.is_empty() && code != want => {
+                        found.step("quit Ship of Tools, choose Keep, and start it from the shortcut; the window runs an older launcher");
+                    }
+                    Some(_) => {}
+                }
+            }
         }
+        Err(why) => found.fail("launcher", format!("could not list this account's processes ({why}), so whether the window's supervisor runs an older launcher is unknown")),
     }
     let sotd = ctx.sotd();
     // After a converge the waiter is the only ask, so the check keeps its bound; else one ask says what runs.
     let (st, why) = if ctx.expect_daemon && !ctx.pipe.is_empty() {
         let bound = super::secs_env("SOT_INSTALL_DAEMON_WAIT_S", 60);
-        let runs = pipe_listed(&ctx.pipe) || !procs::daemon_pids(&procs::snapshot(), &ctx.prefix).is_empty();
+        let (runs, listing) = daemon_runs(ctx);
         let (st, why) = daemon::wait_current(&sotd, &ctx.endpoint(), bound, false, runs);
+        let why = match listing {
+            Some(l) => format!("{l}; {why}"),
+            None => why,
+        };
         if st != State::Current {
             found.fail("daemon", format!("the daemon on {} did not answer as {v} within {} s after the converge (it is '{}')", ctx.pipe, bound.as_secs(), st.word()));
         }

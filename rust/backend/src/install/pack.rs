@@ -111,7 +111,7 @@ impl Pack {
     /// Whether the pack's binary `name` runs here and says the pack's version at its commit; why not, when not.
     pub fn check_binary(&self, name: &str) -> Result<(), String> {
         let exe = self.exe(name);
-        let ran = cmd::output(std::process::Command::new(&exe).arg("--version"));
+        let ran = cmd::ask(std::process::Command::new(&exe).arg("--version"));
         let line = ran.first_line();
         if ran.ok() && binary_says(&line, name, &self.version, &self.commit) {
             return Ok(());

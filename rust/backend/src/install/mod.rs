@@ -76,7 +76,8 @@ pub(super) fn absolute(p: &Path) -> PathBuf {
 }
 
 /// The version an install at `prefix` runs: its record's, else its installed `sotd`'s own (a record cut inside its
-/// version must not hide it from the channel or the never-backwards rule). Empty when neither says.
+/// version must not hide it from the channel or the never-backwards rule). Empty when neither says: an installed
+/// `sotd` that does not run, or does not answer within [`cmd::ASK_BOUND`], is a binary whose version cannot be read.
 pub(super) fn installed_version(prefix: &Path) -> String {
     if let Some(v) = record::string(&record::read(&prefix.join("install.json")), "version").filter(|v| !v.is_empty()) {
         return v;
@@ -85,7 +86,7 @@ pub(super) fn installed_version(prefix: &Path) -> String {
     if !sotd.is_file() {
         return String::new();
     }
-    let ran = cmd::output(std::process::Command::new(&sotd).arg("--version"));
+    let ran = cmd::ask(std::process::Command::new(&sotd).arg("--version"));
     ran.first_line().split_whitespace().nth(1).unwrap_or("").to_string()
 }
 
@@ -98,7 +99,7 @@ pub(super) fn direction(sotd: &Path, version: &str, prefix: &Path, installed: &s
     if !recorded && !installed.is_empty() {
         c.args(["--installed", installed]);
     }
-    let ran = cmd::output(&mut c);
+    let ran = cmd::ask(&mut c);
     match ran.first_line().as_str() {
         w @ ("newer" | "same" | "older") if ran.ok() => w.to_string(),
         _ => "unknown".to_string(),

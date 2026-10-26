@@ -301,3 +301,21 @@ fn version_cleanup_keeps_unavailable_registrations_and_refused_worktrees() {
     let registrations = git(&["-C", &b, "worktree", "list", "--porcelain"]);
     assert!(registrations.contains(&format!("worktree {}\n", unavailable.display())), "{registrations}");
 }
+
+#[test]
+fn a_listing_or_unit_question_with_no_answer_stops_the_run_before_it_writes() {
+    let prefix = Path::new("/p");
+    let stop = running_here(&Err("the process listing gave no answer: ps did not finish within 60000 ms".into()), prefix).unwrap_err();
+    assert!(stop.code == 1 && stop.detail.contains("did not finish within") && stop.detail.contains("nothing was changed"), "{stop:?}");
+    let seen = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n13 1 sot /p/bin/sot --socket s\n");
+    assert_eq!(running_here(&Ok(seen), prefix).unwrap(), (true, true));
+    assert_eq!(running_here(&Ok(procs::parse_ps("12 1 bash bash -c x\n")), prefix).unwrap(), (false, false), "a listing that shows none says so");
+
+    let dir = tempfile::tempdir().unwrap();
+    let inactive = dir.path().join("systemctl");
+    sot_platform::test_exec::write_executable(&inactive, "#!/bin/sh\nexit 3\n");
+    let answered = unit_asks(&inactive.to_string_lossy(), &["is-active", "sotd.service"]).unwrap();
+    assert!(answered.answered() && !answered.ok(), "an exit of any value is an answer");
+    let why = unit_asks(&dir.path().join("no-systemctl").to_string_lossy(), &["is-active", "sotd.service"]).unwrap_err();
+    assert!(why.contains("gave no answer"), "no answer is an error, never 'inactive': {why}");
+}

@@ -1,6 +1,6 @@
 //! How the foreground `sotd install` runs its steps. Bounded output owns a group/job through output completion and
-//! bounded cleanup. Other output/shown calls retain their existing waits and stop handling; the observation and
-//! abnormal-exit limits are recorded in scripts/CLAUDE.md.
+//! bounded cleanup, and every question the install asks of the machine goes through it (`ask`). Other output/shown
+//! calls retain their existing waits and stop handling; the limits are recorded in scripts/CLAUDE.md.
 
 use std::io::Read;
 use std::path::Path;
@@ -10,6 +10,7 @@ use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// What a finished program said: its exit code (`None` when it did not start or a signal ended it), stdout and stderr.
+#[derive(Debug)]
 pub(super) struct Ran {
     pub code: Option<i32>,
     pub out: String,
@@ -19,6 +20,12 @@ pub(super) struct Ran {
 impl Ran {
     pub fn ok(&self) -> bool {
         self.code == Some(0)
+    }
+
+    /// Whether the program ran to its own exit: false when it did not start, was cut at its bound, or a signal ended
+    /// it. The reason is then in `err`, and no caller may read the empty `out` as an answer of "nothing".
+    pub fn answered(&self) -> bool {
+        self.code.is_some()
     }
 
     /// The first line of stdout, trimmed.
@@ -262,6 +269,15 @@ fn end_group(mut child: sot_containment::ContainedStd, deadline: Instant) -> std
 struct BoundedRun<'a>(&'a AtomicUsize);
 impl Drop for BoundedRun<'_> {
     fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
+}
+
+/// The bound on a question asked of the machine (a process listing, a `--version`, a unit's state). A cold CIM listing
+/// takes about 26 s on a hosted Windows runner and misses 15 s in every environment, so the bound is 60 s.
+pub(super) const ASK_BOUND: Duration = Duration::from_secs(60);
+
+/// Ask the machine a question with `cmd`, within [`ASK_BOUND`]: the result is [`Ran::answered`] or says why not.
+pub(super) fn ask(cmd: &mut Command) -> Ran {
+    STEPS.output_within(cmd, ASK_BOUND)
 }
 
 /// Run `cmd` as one of the run's steps; see [`Steps::output`].

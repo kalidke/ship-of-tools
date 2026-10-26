@@ -211,12 +211,13 @@ fn a_live_daemon_is_asked_before_it_ends() {
     assert_eq!(asked.as_deref(), Some("a live REPL (the daemon could not name its row), and any other the daemon could not list"));
 
     // Windows: which way the update applies.
-    assert_eq!(supervisor::way(Some("AAA-BBB"), false, &|| Some(0)), supervisor::Way::Converge);
-    assert_eq!(supervisor::way(Some(""), false, &|| Some(1)), supervisor::Way::Quit);
-    assert_eq!(supervisor::way(None, true, &|| Some(0)), supervisor::Way::Quit);
-    assert_eq!(supervisor::way(None, false, &|| Some(0)), supervisor::Way::Desk);
-    assert_eq!(supervisor::way(None, false, &|| Some(2)), supervisor::Way::Here);
-    assert_eq!(supervisor::way(None, false, &|| None), supervisor::Way::Here, "a session that cannot be read is not taken for ssh");
+    assert_eq!(supervisor::way(Some((Some("AAA-BBB"), false)), &|| Some(0)), supervisor::Way::Converge);
+    assert_eq!(supervisor::way(Some((Some(""), false)), &|| Some(1)), supervisor::Way::Quit);
+    assert_eq!(supervisor::way(Some((None, true)), &|| Some(0)), supervisor::Way::Quit);
+    assert_eq!(supervisor::way(Some((None, false)), &|| Some(0)), supervisor::Way::Desk);
+    assert_eq!(supervisor::way(Some((None, false)), &|| Some(2)), supervisor::Way::Here);
+    assert_eq!(supervisor::way(Some((None, false)), &|| None), supervisor::Way::Here, "a session that cannot be read is not taken for ssh");
+    assert_eq!(supervisor::way(None, &|| panic!("a failed listing asks nothing more")), supervisor::Way::Unlisted, "a listing that failed is not 'nothing runs'");
 
     // Windows: the converge's wait.
     let dir = tempfile::tempdir().unwrap();

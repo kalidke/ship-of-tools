@@ -137,6 +137,34 @@ fn sotd_at(sotd: &Path, args: &[&str]) -> cmd::Ran {
     cmd::output(Command::new(sotd).args(args))
 }
 
+/// A question asked of an installed `sotd` (its `--version`, its socket path), within [`cmd::ASK_BOUND`].
+fn sotd_asks(sotd: &Path, args: &[&str]) -> cmd::Ran {
+    cmd::ask(Command::new(sotd).args(args))
+}
+
+/// A question asked of `systemctl --user` within [`cmd::ASK_BOUND`]: its answer (an exit code of any value is one), or
+/// why it gave none, which no caller may read as "the unit is not active".
+fn systemctl_asks(args: &[&str]) -> Result<cmd::Ran, String> {
+    unit_asks("systemctl", args)
+}
+
+fn unit_asks(systemctl: &str, args: &[&str]) -> Result<cmd::Ran, String> {
+    let ran = cmd::ask(Command::new(systemctl).arg("--user").args(args));
+    if ran.answered() { Ok(ran) } else { Err(format!("systemctl --user {} gave no answer ({})", args.join(" "), ran.last_said())) }
+}
+
+/// [`systemctl_asks`] before the run has written anything: no answer stops the run.
+fn systemctl_decides(args: &[&str]) -> Result<cmd::Ran, Stop> {
+    systemctl_asks(args).map_err(|why| Stop::new(1, format!("{why}, so whether sotd.service runs is unknown; nothing was changed")))
+}
+
+/// The daemon and window facts the decisions read from the process listing: whether a daemon process of the install
+/// runs and whether a window does. A listing that failed stops the run before it writes: neither is then known.
+fn running_here(all: &Result<Vec<procs::Proc>, String>, prefix: &Path) -> Result<(bool, bool), Stop> {
+    let all = all.as_ref().map_err(|why| Stop::new(1, format!("could not list this account's processes ({why}), so whether the install's daemon or window runs is unknown; nothing was changed")))?;
+    Ok((!procs::daemon_pids(all, prefix).is_empty(), procs::window_runs(all, prefix)))
+}
+
 /// Everything decided before the first write: the system, the pack, the direction, the role and its gates, the daemon.
 #[allow(clippy::too_many_lines, reason = "the decisions in install.sh's order, each a few lines that read as one sequence")]
 fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
@@ -269,7 +297,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
 
     step("gate");
     let prefix_s = prefix.to_string_lossy().into_owned();
-    let running = running_daemon_bin();
+    let running = running_daemon_bin()?;
     let wires_unit = !macos && resolved.daemon && !no_service;
     match role::ownership(running.as_deref(), &home, &prefix_s, macos, resolved.frontend, wires_unit, opts.force_role_change) {
         Gate::Allow => {}
@@ -290,15 +318,14 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     }
 
     step("daemon");
-    let socket = sotd_at(&new_sotd, &["session-socket-path", "sot"]).first_line();
+    let socket = sotd_asks(&new_sotd, &["session-socket-path", "sot"]).first_line();
     let endpoint = format!("unix:{socket}");
-    let all = procs::snapshot();
-    let unit_active = !macos && cmd::on_path("systemctl") && systemctl(&["is-active", "sotd.service"]).ok();
+    let (own_daemon, windows_before) = running_here(&procs::snapshot(), &prefix)?;
+    let unit_active = !macos && cmd::on_path("systemctl") && systemctl_decides(&["is-active", "sotd.service"])?.ok();
     let unit_runs = resolved.daemon && !no_service && unit_active;
     // A role with no daemon here stops this host's run of the unit (the retire), so its daemon is asked too.
     let retire_stops = !resolved.daemon && unit_active && home.join(".config/systemd/user/sotd.service").is_file();
-    let (before, why) = discover(&new_sotd, &endpoint, resolved.daemon, retire_stops, unit_runs, !procs::daemon_pids(&all, &prefix).is_empty());
-    let windows_before = procs::window_runs(&all, &prefix);
+    let (before, why) = discover(&new_sotd, &endpoint, resolved.daemon, retire_stops, unit_runs, own_daemon);
     // A repair ends no daemon: the predicate the restart step and the retire act on says so.
     let repair = dir == "same" && pre_commit == pack.commit && matches!(before, State::None | State::Current) && !ends_daemon(unit_runs, retire_stops, before);
     let mut plan = Plan {
@@ -383,12 +410,12 @@ fn heal_old_hosts(config: &Path) {
 }
 
 /// The program of the `sotd.service` running for this user here, or `None` when none runs: `is-active` is this host's
-/// own state, where the unit file may be another host's on a shared home.
-fn running_daemon_bin() -> Option<String> {
-    if !cmd::on_path("systemctl") || !systemctl(&["is-active", "--quiet", "sotd.service"]).ok() {
-        return None;
+/// own state, where the unit file may be another host's on a shared home. Stops the run when `systemctl` gives no answer.
+fn running_daemon_bin() -> Result<Option<String>, Stop> {
+    if !cmd::on_path("systemctl") || !systemctl_decides(&["is-active", "--quiet", "sotd.service"])?.ok() {
+        return Ok(None);
     }
-    role::unit_owner_path(&systemctl(&["cat", "sotd.service"]).out)
+    Ok(role::unit_owner_path(&systemctl_decides(&["cat", "sotd.service"])?.out))
 }
 
 /// The glibc this box runs, from `ldd --version`'s first line.
@@ -637,7 +664,7 @@ fn lay_out(plan: &Plan) -> Result<(), Stop> {
     for name in [format!("last-good-{}.json", plan.target), format!("just-applied-{}", plan.target), format!("pending-{}.json", plan.target)] {
         let _ = std::fs::remove_file(updates.join(name));
     }
-    say(&format!("binaries: {}", sotd_at(&plan.sotd(), &["--version"]).first_line()));
+    say(&format!("binaries: {}", sotd_asks(&plan.sotd(), &["--version"]).first_line()));
 
     step("layout");
     if checkout.is_dir() {
@@ -857,6 +884,10 @@ impl Units<'_> {
     fn systemctl(&self, args: &[&str]) -> cmd::Ran {
         cmd::output(Command::new(self.systemctl).arg("--user").args(args).env("HOME", self.home))
     }
+    /// [`Units::systemctl`] as a question, within [`cmd::ASK_BOUND`].
+    fn asks(&self, args: &[&str]) -> cmd::Ran {
+        cmd::ask(Command::new(self.systemctl).arg("--user").args(args).env("HOME", self.home))
+    }
     fn has_systemctl(&self) -> bool {
         Path::new(self.systemctl).is_file() || cmd::on_path(self.systemctl)
     }
@@ -988,7 +1019,8 @@ pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str) -> 
     }
     let user = std::env::var("USER").unwrap_or_else(|_| cmd::output(Command::new("id").arg("-un")).first_line());
     let _ = cmd::output(Command::new(u.loginctl).args(["enable-linger", &user]));
-    say(&format!("sotd running: {} (socket {socket})", u.systemctl(&["is-active", "sotd.service"]).first_line()));
+    let active = u.asks(&["is-active", "sotd.service"]);
+    say(&format!("sotd running: {} (socket {socket})", if active.answered() { active.first_line() } else { "no answer".to_string() }));
     Ok(())
 }
 
@@ -1112,7 +1144,7 @@ fn check(plan: &Plan, restarted: bool, found: &mut Found) {
         if b == "sot" && !plan.role.frontend {
             continue;
         }
-        let ran = sotd_at(&prefix.join("bin").join(b), &["--version"]);
+        let ran = sotd_asks(&prefix.join("bin").join(b), &["--version"]);
         let line = if ran.ok() { ran.first_line() } else { format!("does not run: {}", ran.last_said()) };
         if !super::pack::binary_says(&line, b, version, &commit) {
             found.fail("binaries", format!("{}/bin/{b} says '{line}', not {version} at {short}", prefix.display()));
@@ -1201,15 +1233,26 @@ fn daemon_after(plan: &Plan, restarted: bool, found: &mut Found) -> State {
     let socket = &plan.socket;
     let journal = "see journalctl --user -u sotd.service";
     if !plan.unit_managed() {
-        let runs = !procs::daemon_pids(&procs::snapshot(), &plan.prefix).is_empty();
-        let (st, why) = daemon::state(&plan.sotd(), &endpoint, runs);
+        let all = procs::snapshot();
+        let (st, why) = daemon::state(&plan.sotd(), &endpoint, procs::daemon_may_run(&all, &plan.prefix));
+        let why = match all {
+            Err(listing) => format!("{listing}; {why}"),
+            Ok(_) => why,
+        };
         if st == State::Unknown {
             found.fail("daemon", format!("a daemon runs on {socket} and could not be told its version ({why})"));
         }
         return st;
     }
     let held_ok = plan.unit_runs && !restarted;
-    if systemctl(&["is-active", "sotd.service"]).ok() {
+    let active = match systemctl_asks(&["is-active", "sotd.service"]) {
+        Ok(ran) => ran.ok(),
+        Err(why) => {
+            found.fail("daemon", format!("{why}, so whether sotd.service runs is unknown; {journal}"));
+            return State::Unknown;
+        }
+    };
+    if active {
         let (st, why) = daemon::wait_current(&plan.sotd(), &endpoint, super::secs_env("SOT_INSTALL_RESTART_WAIT_S", 30), held_ok, true);
         match st {
             State::Current => {}

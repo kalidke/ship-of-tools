@@ -174,9 +174,27 @@ Guarantees, each with the mechanism it rests on. Install:
   `http.lowSpeedLimit=1000` and `http.lowSpeedTime=60`, ssh with the tree's `SSH_OPTS` under a 30 s bound; a converge
   waits at most `SOT_INSTALL_CONVERGE_WAIT_S` (1800 s), a restarted daemon `SOT_INSTALL_RESTART_WAIT_S` (Unix, 30 s) or
   `SOT_INSTALL_DAEMON_WAIT_S` (Windows, 60 s). Publish enrollment's child commands have the stronger wall-clock and
-  output-completion bound below. Until the observation pass, the installer's own process listings (`procs.rs`) and
-  installed binaries' `--version` asks remain unbounded. Whole-install completion on Windows in an isolated profile
-  remains unproven until the release-gate witness completes.
+  output-completion bound below. Whole-install completion on Windows in an isolated profile remains unproven until the
+  release-gate witness completes.
+- Every question the install asks of the machine is bounded and fails closed. A question is a child that reads a
+  fact the install then decides on: the process listing (`ps`; CIM `Win32_Process`), the `--version` of a binary, the
+  installed `sotd`'s socket path, `update direction` and `update repls`, `systemctl --user is-active` and `cat`,
+  and on Windows the logon session, the launcher code id and the Desktop shortcut's target. Each runs through
+  `cmd::ask` under the same group/job ownership as the publish guard's Git reads, 60 s wall clock through exit and
+  complete output (a cold CIM listing takes about 26 s on a hosted Windows runner and misses 15 s in every
+  environment), and at most 5 s more to end it. A question that did not start, was cut or was ended by a signal has
+  not answered, and its output is discarded: it is never read as an empty answer. What each decision does with no
+  answer: a process listing that could not be read is an error, never an empty list, and a daemon is then presumed to
+  run, so one that cannot be told its version is `Unknown` (asked about, never taken for none) and its children are
+  unknown; a Unix run stops before it writes when the listing or `systemctl` gives no answer (exit 1, "nothing was
+  changed"); a Windows update whose listing failed stops nothing, leaves the update armed and ends ONE STEP LEFT; the
+  final checks record FAIL for a `--version`, a unit state, a launcher code or a listing that gave no answer; an
+  installed `sotd` whose `--version` gave none reads as a binary whose version cannot be read, as one that does not
+  run; `update repls` with no answer is the daemon not saying all of its work, which is asked about; a logon session
+  that cannot be read stays "not taken for ssh". Not questions, and so not bounded here: the install's own steps
+  (Git, `sotd update stage`, the scripts, Julia, npm), whose transfers keep their stall bounds, and reads whose only
+  stall is the filesystem, which the installer's own file reads share. The tests are `install::procs`, `install::cmd`
+  and the Unix and Windows decision tests (`running_here`, `way`).
 
 Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdate.rs`):
 - An automatic arm goes only strictly above install.json's version, never into a dev build, a pinned or unreadable
@@ -362,8 +380,8 @@ Guarantees and boundaries:
   releasing its owned group/job, and allows at most 5 s more for termination, reap and output cleanup. It ends only
   its own containment domain. A timeout, signal,
   failed read or incomplete cleanup is an operational failure: discovery/enrollment return `Stop`, the final check
-  records `Found::fail`; partial output never becomes ready or setup status 3/4. This bound does not extend to the
-  separate installer observation calls noted above.
+  records `Found::fail`; partial output never becomes ready or setup status 3/4. The installer's questions to the
+  machine have their own 60 s bound (Bounded waits, above).
 - The last `PASS` or `ONE STEP LEFT` line retains the guard's checked results independently of the ordinary install
   summary. It names the checked base and recognized caller (including a caller sharing the base's common directory),
   readiness/provisioning or preserved conflict, and the limited discovery scope: installed base and recognized caller
@@ -439,8 +457,9 @@ if the Python trampoline never joined the job, its own spawn handle permits term
 Snapshot PIDs are never used for termination. `capture` owns the file and process lifetime directly; there is no
 separate `capture_to_file` helper.
 
-Hosted Windows measured a cold CIM process query at about 26 s; the install's process observation remains unbounded
-until the observation pass, a 0.7.0 tag blocker.
+Hosted Windows measured a cold CIM process query at about 26 s; the install's process listing is bounded at 60 s
+(Bounded waits), so a stalled listing ends the install's decision with the fail-closed meaning above, not at the
+fixture's own timeout.
 
 The three publish suites are listed in `rc-gate.sh` and `under-bash.sh`, and run as real local pushes in rust.yml's
 three-system `publish-guard` job. No passing evidence is implied by this contract; the landing records the actual runs.
