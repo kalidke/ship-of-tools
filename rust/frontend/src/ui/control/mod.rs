@@ -3,12 +3,14 @@
 
 use super::*;
 
+mod channel;
 mod command;
 mod dispatch;
 mod envelope;
 mod file_channel;
 mod replies;
 
+pub(in crate::ui) use channel::ControlChannel;
 pub(in crate::ui) use command::*;
 pub(in crate::ui) use envelope::*;
 pub(in crate::ui) use file_channel::*;

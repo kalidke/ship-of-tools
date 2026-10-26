@@ -88,7 +88,7 @@ impl ApplicationHandler for App {
                 // ephemeral instances don't arm them (B8).
                 if let Some(cmd_dir) = fe_commands_dir().filter(|_| !state.ephemeral) {
                     let _ = std::fs::create_dir_all(&cmd_dir);
-                    spawn_command_watcher(cmd_dir, state.fe_commands.clone(), state.wake.clone());
+                    spawn_command_watcher(cmd_dir, state.control.producer(), state.wake.clone());
                 }
                 self.state = Some(state);
             }
@@ -245,11 +245,8 @@ impl ApplicationHandler for App {
         // Nav-spill expiry: same pattern as the toast — once the spill
         // window elapses, repaint so the nav column springs back to its
         // preset width. The ~1s idle tick bounds how late that lands.
-        if let Some(until) = state.nav_spill_until {
-            if std::time::Instant::now() >= until {
-                state.nav_spill_until = None;
-                state.window.request_redraw();
-            }
+        if state.nav_spill.expire() {
+            state.window.request_redraw();
         }
         if !state.dirty {
             // Fullscreen VRR/OLED brightness-flicker fix (2026-07-12, a VRR/OLED

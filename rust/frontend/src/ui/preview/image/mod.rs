@@ -9,6 +9,7 @@ pub(crate) mod png;
 pub(in crate::ui) mod raster;
 pub(in crate::ui) mod pages;
 pub(in crate::ui) mod figure_overlays;
+pub(in crate::ui) mod figure_store;
 pub(crate) mod svg;
 pub(crate) mod view;
 

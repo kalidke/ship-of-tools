@@ -387,7 +387,7 @@ pub(in crate::ui) fn scroll_line_chords(state: &mut State, key: KeyPress<'_>) ->
 pub(in crate::ui) fn table_scroll_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
     let KeyPress { action, .. } = key;
     // Wide-table horizontal scroll: h/l step the shared
-    // `md_table_scroll_px` by one body-em (≈ the width of
+    // the table scroll by one body-em (≈ the width of
     // one monospace cell). `0` resets to scroll-left.
     // Plain keys (no modifier) so the binding is one-handed
     // and fast; ignored unless the focus is Preview so the
@@ -401,9 +401,9 @@ pub(in crate::ui) fn table_scroll_key(state: &mut State, key: KeyPress<'_>) -> C
     {
         let step = state.shaped.md().body_em().max(8.0);
         match action {
-            Some(Action::TableLeft) => { state.md_table_scroll_px = (state.md_table_scroll_px - step).max(0.0); state.window.request_redraw(); return Break(()); }
-            Some(Action::TableRight) => { state.md_table_scroll_px += step; state.window.request_redraw(); return Break(()); }
-            Some(Action::TableReset) => { state.md_table_scroll_px = 0.0; state.window.request_redraw(); return Break(()); }
+            Some(Action::TableLeft) => { state.md_media.scroll_tables_left(step); state.window.request_redraw(); return Break(()); }
+            Some(Action::TableRight) => { state.md_media.scroll_tables_right(step); state.window.request_redraw(); return Break(()); }
+            Some(Action::TableReset) => { state.md_media.reset_table_scroll(); state.window.request_redraw(); return Break(()); }
             _ => {}
         }
     }

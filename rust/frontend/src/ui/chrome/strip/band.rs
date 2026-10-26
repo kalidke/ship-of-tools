@@ -67,7 +67,7 @@ pub(in crate::ui) fn strip_reserved_rows(cell_h: f32, oy: f32) -> u16 {
 const BAND_FIT_EPS_ROWS: f32 = 1e-3;
 
 /// Strip-local center-x (pixels) of the active item — the value
-/// `strip_scroll_px` eases toward so the active session sits at screen
+/// the strip scroll eases toward so the active session sits at screen
 /// center. Items lay out left→right, each `len*cell_w` wide with
 /// `STRIP_GAP_CELLS*cell_w` between them; `divider_offsets[active]` (0.0
 /// when absent — `&[]` from a caller with no `Bow`s to place)

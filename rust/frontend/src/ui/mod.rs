@@ -32,14 +32,13 @@ use crate::ui::input::keybindings::{Action, KeyBindings, Modifiers};
 use crate::ui::input::help;
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use crate::ui::preview::markdown::{
-    FigureMetrics, FigureMetricsMap, MarkdownPreview, MathMetrics, MathMetricsMap,
-    BODY_SIZE as MD_BODY_SIZE,
+    FigureMetricsMap, MarkdownPreview, MathMetricsMap,
 };
 use crate::ui::preview::image::png::quad_from_png_bytes;
 use crate::ui::render::quad::{Quad, QuadPipeline, ScreenRect};
 use crate::ui::preview::image::svg::quad_from_svg_bytes;
 use crate::ui::preview::markdown::media::{
-    parse_math_svg_dims, whole_row_bottom, MathSvg, TableBufferEntry, MATHJAX_EX_FACTOR,
+    parse_math_svg_dims, whole_row_bottom, MathSvg, MATHJAX_EX_FACTOR,
 };
 use crate::ui::persist::settings::Settings;
 use crate::net::transport::OutgoingReq;
@@ -57,7 +56,7 @@ use sot_protocol::{ReplFrame, TreeNode};
 mod app;
 use app::*;
 pub(crate) use app::{App, MainWake};
-use preview::image::figures::{decode_figure_bytes, fail_figure, FigureCacheEntry};
+use preview::image::figures::decode_figure_bytes;
 #[cfg(test)]
 use preview::image::overlay::CAPTION_MAX_CHARS;
 use preview::image::overlay::{
@@ -402,45 +401,11 @@ struct State {
     pane_rects: PaneRects,
     /// Runtime drawer, layout flags, Help browsing, origin and startup requests.
     layout_help: LayoutHelp,
-    /// Transient nav spill (`[nav] spill_ms`): while the user is actively
-    /// moving the nav cursor, nav rows whose text overflows the column
-    /// float their FULL text over the preview pane's left edge (overlay
-    /// text layer + backing strip — pane geometry never moves), vanishing
-    /// once this deadline passes with no further moves. `None` = spill
-    /// not active. Expiry repaint rides the `about_to_wait` idle tick,
-    /// same as `notify_sticky_until`.
-    nav_spill_until: Option<std::time::Instant>,
-    /// The spill rows collected by the LAST draw-closure run — the
-    /// `media_paint_targets` pattern: the closure writes cell-space
-    /// segments here, the render-pass tail reads them for the backing
-    /// quads and the overlay text prepare. Empty whenever the spill is
-    /// inactive or nothing overflows.
-    nav_spill_segments: Vec<NavSpillSeg>,
-    /// Last (mode, workspace, tree cursor, picker cursor) the spill
-    /// trigger saw — a change between frames is what (re)arms the timer.
-    /// Frame-side detection so every cursor mover (keys, wheel, mode and
-    /// workspace switches) triggers uniformly without touching each input
-    /// path. `None` until the first frame, which deliberately does not
-    /// arm (boot isn't a user move).
-    nav_spill_cursor: Option<(Mode, Option<String>, usize, Option<usize>, u64)>,
+    /// The nav spill: its deadline, the segments the last draw collected and the cursor its trigger last saw.
+    nav_spill: NavSpill,
     // ui/chrome/strip: the session strip's scroll and wheel animation.
-    /// Session-strip horizontal scroll, in strip-local pixels (the
-    /// strip-local x that maps to screen-center). `None` = uninitialized
-    /// → snap to the active session's center on first paint (no slide-in).
-    /// Eases toward the active session's center each frame; while it hasn't
-    /// settled, `redraw` sets `dirty` so the frame loop keeps animating.
-    strip_scroll_px: Option<f32>,
-    /// Timestamp of the last strip-animation frame, for frame-rate-
-    /// independent easing. `None` when settled (so the next switch starts
-    /// a fresh ease rather than seeing a stale dt).
-    strip_anim_last: Option<std::time::Instant>,
-    /// Brand-wheel spin gimmick (see `WHEEL_*`): current rotation of the
-    /// bottom-strip bow wheels (radians), the live angular velocity a
-    /// workspace cycle flicks it with, and the last spin-frame timestamp for
-    /// frame-rate-independent decay (`None` when at rest).
-    wheel_angle: f32,
-    wheel_vel: f32,
-    wheel_anim_last: Option<std::time::Instant>,
+    /// The session strip's eased scroll and the brand wheels' spin.
+    strip_motion: StripMotion,
     // ui/input: the last key, pointer state, key bindings and the help drawer.
     /// Label of the most recent key press (for chrome feedback). `None` until
     /// the user hits a key; modes-mode + tree navigation hang off the same
@@ -463,13 +428,8 @@ struct State {
     bindings: KeyBindings,
     help_back_quad: Option<(u8, Quad)>,
     // ui/control: the fe-commands queue and the fe-state.json signature.
-    /// FE control commands (ADR 0019) enqueued by the command-file watcher
-    /// thread (the producer) and drained on the main thread in `window_event`
-    /// (the consumer), so dispatch runs the same code paths as the keybinds.
-    fe_commands: Arc<std::sync::Mutex<std::collections::VecDeque<FeCommand>>>,
-    /// Hash of the last `fe-state.json` we wrote (ADR 0019), so the readback
-    /// file is only rewritten when the observable state actually changes.
-    fe_state_sig: Option<u64>,
+    /// The fe-commands queue the watcher fills and the last fe-state.json signature.
+    control: ControlChannel,
     // ui/nav: the active tree and mode, cursor-driven preview firing, request generations.
     /// The nav pane's trees: the active (mode, row)'s tree with its scroll and scan root, and the store parking
     /// every other tree. Installs route by the reply's key, so the active view can only hold the active key's tree.
@@ -580,20 +540,8 @@ struct State {
     /// Window-wide REPL images, pixel geometry and line-build anchor.
     repl_presentation: ReplPresentation,
     // ui/drawer/terminal: the terminal drawer's backends.
-    /// Local PTY terminal hosting the OS shell (G2). Lazily spawned the
-    /// first time the Terminal drawer opens (Ctrl+T); a separate field
-    /// from the ratatui `terminal` so the draw closure's `self.terminal`
-    /// borrow and this terminal's `screen()` borrow are disjoint.
-    local_term: Option<crate::ui::drawer::terminal::pty::LocalTerminal>,
-    /// Last `(cols, rows)` the local terminal's PTY was sized to. `None`
-    /// until the drawer rect is first observed; drives resize-on-change
-    /// (mirrors the agent pane size).
-    term_size: Option<(u16, u16)>,
-    /// Local repo root (`$SOT_REPO_DIR`, set by the supervisor). Used as
-    /// the Terminal drawer's working directory, so the plain shell it spawns
-    /// starts in the project root. `None` when launched outside the
-    /// supervisor (then the shell inherits the frontend's cwd). ADR 0017.
-    repo_dir: Option<std::path::PathBuf>,
+    /// The Terminal drawer's local shell, its last pty size and the repo root it starts in.
+    term_drawer: crate::ui::drawer::terminal::drawer::TerminalDrawer,
     // ui/agent_pane: selected client, warm storage, screen, input and receipt owner.
     agent_pane: AgentPane,
     // ui/preview: the preview pane's buffers, concept slot, scroll and overlays.
@@ -623,77 +571,11 @@ struct State {
     pages: PageView,
     /// The figure overlays: the scalebar toggle and label, the caption store and label, and the caption band.
     overlays: FigureOverlays,
-    /// Cache of fetched markdown-figure bitmaps keyed by the literal
-    /// URL string that appeared in the source (`![](url)`). Populated
-    /// by `IncomingEvt::FigureLoaded`; consumed by the markdown render
-    /// path to paint quads over the FFFC placeholders the walk
-    /// reserves for each figure. Survives navigation so re-opening a
-    /// doc with the same figure doesn't re-roundtrip.
-    figure_cache: std::collections::HashMap<String, FigureCacheEntry>,
-    /// In-flight figure.get requests, keyed by the same URL string.
-    /// Prevents duplicate dispatch when a markdown doc references the
-    /// same figure multiple times or when the user re-loads a
-    /// partially-fetched doc.
-    figure_pending: std::collections::HashSet<String>,
-    /// URLs whose figure fetch/decode terminally failed (bad bytes,
-    /// unresolvable local path). Reported to the markdown walk as 0-size
-    /// metrics so the layout collapses their reservation to the compact
-    /// text fallback instead of holding an empty FIGURE_BLOCK_H_DEFAULT
-    /// box forever.
-    figure_failed: std::collections::HashSet<String>,
+    /// The markdown figures: fetched bitmaps, requests in flight and terminal failures.
+    figures: FigureStore,
     // ui/preview/markdown: tables, math and token caches, and reflow.
-    /// Horizontal scroll for wide markdown tables. Shared across every
-    /// `MediaBlock::Table` on the current preview — Windows's (e) work
-    /// item ships Path 1, where each table buffer is at natural width
-    /// and we shift it left by this many pixels then let `TextBounds`
-    /// clip the overflow to the preview pane. One scroll var keeps the
-    /// state model trivially small; in practice a markdown doc only
-    /// ever has one wide table on screen at a time. h/l (Preview focus)
-    /// step ±~1 cell; Shift+wheel-Y also adjusts. Reset to 0 whenever
-    /// the shaped buffer is rebuilt so navigating between docs starts fresh.
-    md_table_scroll_px: f32,
-    /// Per-table cosmic-text buffers hosted as ExtraAreas. Indexed in
-    /// `media_blocks` Table-encounter order so multiple tables on one
-    /// page each get their own slot. `rendered` is the source text the
-    /// buffer was built from; on every redraw the chrome compares it
-    /// against the current `media_blocks` so navigating to a doc with
-    /// the same table count but different content still rebuilds.
-    /// Each buffer is laid out at huge width (no soft-wrap) and
-    /// `natural_w_px` is the measured max line width — used by the
-    /// scroll clamp.
-    table_buffers: Vec<TableBufferEntry>,
-    /// Cache of MathJax-rendered SVGs keyed by `(latex, display)`.
-    /// Populated by `IncomingEvt::MathRendered`; consumed by the
-    /// markdown render path to paint quads over FFFC placeholders.
-    /// Survives navigation so re-opening a doc with the same math
-    /// doesn't re-roundtrip.
-    math_cache: std::collections::HashMap<(String, bool), MathSvg>,
-    /// In-flight math.render requests, same key shape as `math_cache`.
-    /// Prevents duplicate dispatch when a markdown doc has the same
-    /// equation twice or when the user re-loads a partially-fetched
-    /// doc before the first replies land.
-    math_pending: std::collections::HashSet<(String, bool)>,
-    /// Per-fence semantic-overlay cache keyed by `(lang, source_hash)`.
-    /// Populated by `IncomingEvt::MarkdownTokens`; consumed by the
-    /// CodeBlock walk to overlay tree-sitter base spans with backend-
-    /// derived semantic spans (function-def, call-site, type, etc.).
-    /// Survives navigation so re-rendering identical fences in another
-    /// doc (Julia ecosystem reuses the same snippets) skips the round
-    /// trip.
-    markdown_token_cache:
-        std::collections::HashMap<(String, u64), Vec<crate::net::transport::MarkdownToken>>,
-    /// In-flight markdown.tokenize requests, same key shape as
-    /// `markdown_token_cache`. Prevents duplicate dispatch when the
-    /// same fence appears twice in a doc or the user re-renders before
-    /// the reply lands.
-    markdown_token_pending: std::collections::HashSet<(String, u64)>,
-    /// Set by the MathRendered event handler when a fresh SVG enters
-    /// `math_cache`. The redraw loop checks this and rebuilds
-    /// the shaped buffer from the installed source so the markdown walk can size
-    /// per-block placeholders to the SVG's natural dimensions instead
-    /// of the pre-render letterbox default. Coalesces a burst of
-    /// MathRendered events into a single rebuild per frame.
-    needs_md_reflow: bool,
+    /// The markdown media: table buffers and their scroll, math and token caches, and the pending reflow.
+    md_media: MarkdownMedia,
     // ui/preview/editor: the annotation editor and file-parse staleness.
     /// The drift badge's cache: per `.jl` path (the suffix of `files:` node ids) its `file.parse` hash, the
     /// one-shot parse latch and failed parses' backoff (2026-07-02: a fast-failing kernel once drew ~4.7k
@@ -852,6 +734,8 @@ use self::preview::shaped::ShapedPreview;
 use self::preview::image::raster::RasterView;
 use self::preview::image::pages::PageView;
 use self::preview::image::figure_overlays::FigureOverlays;
+use self::preview::image::figure_store::FigureStore;
+use self::preview::markdown::media_store::MarkdownMedia;
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,

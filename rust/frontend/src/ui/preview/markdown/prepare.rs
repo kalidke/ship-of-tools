@@ -19,15 +19,15 @@ impl State {
         };
         // Build / refresh per-table cosmic-text buffers — must run
         // before the extras are assembled below because the extras
-        // borrow `&self.table_buffers[i].buffer`. The fn is a no-op
+        // borrow each table buffer. The fn is a no-op
         // when the buffer set already matches the shaped buffer's `media_blocks`
         // (typical steady-state across redraws). It also resets
-        // `md_table_scroll_px` to 0 whenever buffers are rebuilt, so
+        // the table scroll to 0 whenever buffers are rebuilt, so
         // navigating to a different doc starts at scroll-left.
         if show_md {
             self.ensure_table_buffers();
         } else {
-            self.table_buffers.clear();
+            self.md_media.clear_tables();
         }
         // Clamp the shared horizontal scroll so the user can't walk
         // past the right edge of the widest table on the current doc.
@@ -36,12 +36,13 @@ impl State {
         // narrower tables just go past their own right edge into
         // empty space, which TextBounds clips invisibly).
         let widest_table_w = self
-            .table_buffers
+            .md_media
+            .tables()
             .iter()
             .map(|e| e.natural_w_px)
             .fold(0.0_f32, f32::max);
         let table_max_scroll = (widest_table_w - md_rect.w).max(0.0);
-        self.md_table_scroll_px = self.md_table_scroll_px.clamp(0.0, table_max_scroll);
+        self.md_media.clamp_table_scroll(table_max_scroll);
         let body_em_px = self.shaped.md().body_em().max(1.0);
         for (block_idx, rect) in &media_paint_targets {
             let Some(block) = self.shaped.md().media_blocks.get(*block_idx) else {
@@ -51,12 +52,9 @@ impl State {
                 continue;
             };
             let key = (latex.clone(), *display);
-            let Some(entry) = self.math_cache.get_mut(&key) else {
+            let Some(entry) = self.md_media.math_to_rasterise(&key) else {
                 continue;
             };
-            if entry.rasterised.is_some() {
-                continue;
-            }
             // Natural pixel size, derived from the SVG's ex-unit
             // dimensions and the body font. Clamped to the row
             // reservation so a malformed `<svg>` tag (or an
@@ -94,7 +92,7 @@ impl State {
                 target_w,
                 target_h,
             ) {
-                Ok(q) => entry.rasterised = Some(q),
+                Ok(q) => self.md_media.set_math_raster(&key, q),
                 Err(e) => tracing::warn!(error = %e,
                     latex_len = entry.svg_bytes.len(),
                     "math svg rasterise failed"),
@@ -216,15 +214,15 @@ impl State {
         }
         // Per-table extras — one ExtraArea per MediaBlock::Table, hosted
         // at the FFFC's screen rect with a left-shift of
-        // `md_table_scroll_px` so the user can drag the table
+        // the table scroll so the user can drag the table
         // horizontally. TextBounds at preview-pane edges clip the
         // overflow glyph-by-glyph — no wgpu scissor needed.
         //
         // We iterate `media_paint_targets` (in FFFC source order) and
         // increment a `table_idx` counter on each Table encounter so it
-        // walks `table_buffers` parallel to the source-order TableBufferEntry
+        // walks the table buffers parallel to the source-order TableBufferEntry
         // build inside `ensure_table_buffers`.
-        if show_md && !self.table_buffers.is_empty() {
+        if show_md && !self.md_media.tables().is_empty() {
             let mut table_idx: usize = 0;
             for (block_idx, rect) in &media_paint_targets {
                 let Some(block) = self.shaped.md().media_blocks.get(*block_idx) else {
@@ -233,7 +231,7 @@ impl State {
                 if !matches!(block, crate::ui::preview::markdown::MediaBlock::Table { .. }) {
                     continue;
                 }
-                let Some(entry) = self.table_buffers.get(table_idx) else {
+                let Some(entry) = self.md_media.tables().get(table_idx) else {
                     table_idx += 1;
                     continue;
                 };
@@ -248,7 +246,7 @@ impl State {
                 // the table's first row exactly at the FFFC's screen
                 // y. The ExtraArea pipeline adds EXTRA_TOP_PAD_PX to
                 // the y, so we subtract it back here.
-                let table_x = rect.x - self.md_table_scroll_px;
+                let table_x = rect.x - self.md_media.table_scroll_px();
                 let table_y = rect.y - crate::ui::render::text::EXTRA_TOP_PAD_PX;
                 extras.push(crate::ui::render::text::ExtraArea {
                     buffer: &entry.buffer,
@@ -267,7 +265,7 @@ impl State {
                     ),
                     // Pin the bounds.left to the pane edge — the
                     // glyph origin (`x`) is shifted into negative
-                    // territory by `md_table_scroll_px` and would
+                    // territory by the table scroll and would
                     // otherwise let bounds.left follow it off-pane.
                     clip_left: Some(preview_rect.x),
                     clip_top: Some(preview_rect.y),

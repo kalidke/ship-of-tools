@@ -212,7 +212,7 @@ impl State {
             let (quad, paint_w, paint_h): (&Quad, f32, f32) = match block {
                 crate::ui::preview::markdown::MediaBlock::Math { latex, display } => {
                     let key = (latex.clone(), *display);
-                    let Some(entry) = self.math_cache.get(&key) else {
+                    let Some(entry) = self.md_media.math(&key) else {
                         continue;
                     };
                     let Some(q) = entry.rasterised.as_ref() else {
@@ -224,7 +224,7 @@ impl State {
                     (q, pw_f, ph_f)
                 }
                 crate::ui::preview::markdown::MediaBlock::Figure { url, .. } => {
-                    let Some(entry) = self.figure_cache.get(url) else {
+                    let Some(entry) = self.figures.get(url) else {
                         continue;
                     };
                     let pw = entry.natural_w_px as f32;
@@ -239,7 +239,7 @@ impl State {
                 // quad pipeline — buffer is built before
                 // text.prepare, hosted in `extras`, with TextBounds
                 // clipping the overflow to the preview pane and
-                // `md_table_scroll_px` shifting the text left for
+                // the table scroll shifting the text left for
                 // horizontal scroll. Nothing to do in this loop.
                 crate::ui::preview::markdown::MediaBlock::Table { .. } => continue,
             };

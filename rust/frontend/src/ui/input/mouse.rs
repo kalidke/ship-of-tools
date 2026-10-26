@@ -141,7 +141,7 @@ impl WheelContext for State {
         WheelGeometry { cell_w: self.cell_w, cell_h: self.cell_h, focus: self.focus_prompts.focus(), residue: self.wheel_residue_y }
     }
     fn scroll_preview_horizontal(&mut self, pixels: f32) {
-        self.md_table_scroll_px = (self.md_table_scroll_px + pixels).max(0.0);
+        self.md_media.scroll_tables(pixels);
         self.window.request_redraw();
     }
     fn store_wheel_residue(&mut self, residue: f32) { self.wheel_residue_y = residue; }
@@ -188,20 +188,12 @@ fn wheel_terminal(state: &mut State, rows_above: i32) {
     // walk our vt100 scrollback ring (the emulator owns
     // the offset). Sign: positive rows_above = up =
     // older = larger offset, matching the REPL pane.
-    let mouse_on = state
-        .local_term
-        .as_ref()
-        .map(|t| t.mouse_tracking_on())
-        .unwrap_or(false);
+    let mouse_on = state.term_drawer.mouse_tracking_on();
     if mouse_on {
         let button = if rows_above > 0 { 64 } else { 65 };
         let n = rows_above.unsigned_abs().min(8);
         let seq = format!("\x1b[<{button};1;1M");
-        if let Some(t) = state.local_term.as_mut() {
-            for _ in 0..n {
-                t.send_input(seq.as_bytes());
-            }
-        }
+        state.term_drawer.forward_input(seq.as_bytes(), n);
     } else {
         scroll_drawer_ring(state, rows_above);
     }

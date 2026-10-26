@@ -72,7 +72,7 @@ impl State {
                 &MathMetricsMap::new(),
                 &FigureMetricsMap::new(),
                 self.shaped.highlighter(),
-                &self.markdown_token_cache,
+                self.md_media.token_cache(),
             ))
         } else {
             None
@@ -160,7 +160,7 @@ impl State {
             // gets a clean shot at every `![](url)` via
             // dispatch_pending_figures. figure_cache hits and
             // in-flight figure_pending entries are untouched.
-            self.figure_failed.clear();
+            self.figures.clear_failed();
         }
         self.render_preview_source(&mime, &bytes);
         self.result_preview_installed(generation, node_id.as_deref());

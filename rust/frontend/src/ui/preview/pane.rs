@@ -353,19 +353,19 @@ impl State {
             if let Ok(s) = std::str::from_utf8(bytes) {
                 // NOTE: `figure_failed` is deliberately NOT touched here.
                 // This function is also the cached-source REFLOW callback
-                // (apply_text_scale, the needs_md_reflow redraw path,
+                // (apply_text_scale, the reflow redraw path,
                 // workspace-switch restore) — none of those are new
                 // evidence a failed figure now exists, only a re-render of
                 // bytes already on hand. Clearing here once caused a
-                // request storm: a failure sets needs_md_reflow, the next
+                // request storm: a failure requests a reflow, the next
                 // redraw re-entered this function, cleared the failure,
                 // and dispatch_pending_figures refired the same doomed
                 // request every frame, forever (field report round 2).
                 // The clear lives at the actual fresh-reply seam instead —
                 // the `IncomingEvt::Preview` handler, right before it
                 // calls this function.
-                let math_metrics = self.build_math_metrics();
-                let figure_metrics = self.build_figure_metrics();
+                let math_metrics = self.md_media.math_metrics();
+                let figure_metrics = self.figures.metrics();
                 let rect = self.shaped.rect();
                 let md = MarkdownPreview::new(
                     self.text.font_system_mut(),
@@ -376,12 +376,12 @@ impl State {
                     &math_metrics,
                     &figure_metrics,
                     self.shaped.highlighter(),
-                    &self.markdown_token_cache,
+                    self.md_media.token_cache(),
                 );
                 self.shaped.install(md);
                 self.raster.hide();
                 // Fire math.render for any `$$...$$` blocks the walk
-                // discovered. Replies populate `math_cache` and the
+                // discovered. Replies populate the math cache and the
                 // next paint pulls the SVG in via A3.
                 self.dispatch_pending_math();
                 // Fire figure.get for any `![](url)` regions. Replies

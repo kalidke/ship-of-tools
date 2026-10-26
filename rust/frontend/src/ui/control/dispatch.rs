@@ -69,11 +69,7 @@ impl State {
     /// is scoped to the drain so dispatch (which mutates `self`) doesn't hold
     /// it.
     pub(in crate::ui) fn drain_fe_commands(&mut self) {
-        let cmds: Vec<FeCommand> = match self.fe_commands.lock() {
-            Ok(mut q) => q.drain(..).collect(),
-            Err(_) => return,
-        };
-        for cmd in cmds {
+        for cmd in self.control.drain() {
             self.dispatch_fe_command(None, cmd);
         }
     }

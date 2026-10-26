@@ -20,7 +20,7 @@ fn fail_figure_clears_pending_and_marks_failed() {
 fn failed_figure_stays_skipped_across_repeated_dispatch_until_seam_clears_it() {
     // This is the storm regression: `dispatch_pending_figures` calls
     // `figure_already_handled` on every walk, including the
-    // cached-bytes reflow passes (apply_text_scale, needs_md_reflow,
+    // cached-bytes reflow passes (apply_text_scale, the reflow,
     // workspace-switch restore) that `render_preview_source` also
     // serves. None of those may un-skip a failed url — only clearing
     // `failed` (which only the fresh IncomingEvt::Preview seam does)

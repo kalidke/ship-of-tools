@@ -21,6 +21,7 @@ pub(crate) mod highlight;
 mod buffer;
 mod prepare;
 pub(in crate::ui) mod media;
+pub(in crate::ui) mod media_store;
 mod replies;
 mod spans;
 mod table;
@@ -61,7 +62,7 @@ const CODE_LINE_H: f32 = 19.0;
 /// unscaled pixels, used on the *first* walk before any MathRendered
 /// SVG has come back. Generous so the user gets a stable layout while
 /// the sidecar is rendering; replaced per-block by the cached natural
-/// height on the second walk (triggered by State::needs_md_reflow).
+/// height on the second walk (triggered by the markdown media's reflow).
 const MATH_BLOCK_H_DEFAULT: f32 = 80.0;
 /// Fallback inline-math placeholder width in body em-spaces, applied
 /// before the SVG lands so the line doesn't jump when the real SVG
@@ -71,14 +72,14 @@ const INLINE_MATH_FALLBACK_EM_SPACES: usize = 2;
 /// Fallback vertical space reserved per figure placeholder, in unscaled
 /// pixels, used on the *first* walk before the figure's image bytes
 /// arrive. Sized generously — most figures will be much taller than a
-/// math block; the second walk (triggered by `State::needs_md_reflow`)
+/// math block; the second walk (triggered by the markdown media's reflow)
 /// uses the cached natural height once decoded.
 const FIGURE_BLOCK_H_DEFAULT: f32 = 200.0;
 
 /// Per-equation pixel dimensions extracted from the MathJax SVG once
 /// it arrives, expressed in *unscaled* pixels so the walk can scale
 /// them by `Ctx::scale` itself. The chrome (ui/preview/pane.rs) builds this from
-/// `math_cache` before calling `MarkdownPreview::new`; the walk uses
+/// the math cache before calling `MarkdownPreview::new`; the walk uses
 /// it to size display-math line heights and inline-math placeholders.
 #[derive(Clone, Copy, Debug)]
 pub struct MathMetrics {
@@ -292,7 +293,7 @@ struct WalkState<'a> {
     /// from `State::highlight_service`.
     highlight: &'a crate::ui::preview::markdown::highlight::HighlightService,
     /// Per-fence semantic-overlay cache borrowed from
-    /// `State::markdown_token_cache`. Keyed by `(lang, source_hash)`;
+    /// the markdown media's token cache. Keyed by `(lang, source_hash)`;
     /// when a fence hits, the walk overlays the backend's spans on top
     /// of tree-sitter's base. Miss → caller is asked (via
     /// `pending_token_fences`) to fire the round-trip.

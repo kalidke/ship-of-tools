@@ -6,7 +6,7 @@ impl State {
     /// A render that will not come: stop waiting on the equation and say why. A failure forces no reflow, so the
     /// removed key cannot loop; the next rebuild of the preview asks for the equation again.
     pub(crate) fn on_math_render_failed(&mut self, latex: String, display: bool, message: String) {
-        self.math_pending.remove(&(latex, display));
+        self.md_media.math_failed(&(latex, display));
         self.status = format!("math · {message}");
     }
 
@@ -25,7 +25,11 @@ impl State {
         // made every display block render ~4× oversized).
         let (width_ex, height_ex, vertical_align_ex) = parse_math_svg_dims(&svg_bytes);
         let key = (latex.clone(), display);
-        self.math_cache.insert(
+        // Caching it forces a one-shot rebuild of the shaped
+        // buffer before the next paint so the walk consults the
+        // freshly-cached dims when reserving each block's
+        // vertical space.
+        self.md_media.install_math(
             key,
             MathSvg {
                 svg_bytes: svg_bytes.clone(),
@@ -36,11 +40,6 @@ impl State {
                 rasterised: None,
             },
         );
-        self.math_pending.remove(&(latex, display));
-        // Force a one-shot rebuild of preview_md before the
-        // next paint so the walk consults the freshly-cached
-        // dims when reserving each block's vertical space.
-        self.needs_md_reflow = true;
         self.window.request_redraw();
         // Also keep the old standalone math-pane preview
         // path alive for the M1 acceptance test fixture
@@ -76,15 +75,13 @@ impl State {
         // on the tree-sitter base alone.
         let key = (lang.clone(), source_hash);
         let n = spans.len();
-        self.markdown_token_cache.insert(key.clone(), spans);
-        self.markdown_token_pending.remove(&key);
+        self.md_media.install_tokens(key, spans);
         tracing::debug!(
             %lang,
             source_hash,
             spans = n,
             "markdown.tokens received → cache + reflow"
         );
-        self.needs_md_reflow = true;
         self.window.request_redraw();
     }
 }

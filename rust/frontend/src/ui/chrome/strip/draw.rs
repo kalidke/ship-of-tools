@@ -10,7 +10,7 @@ impl State {
     ) -> Result<Vec<ScreenRect>> {
         // Bottom session strip (floating overlay): all sessions laid out
         // horizontally, the active one centered + bold, neighbours dimmed to
-        // either side. `strip_scroll_px` eases toward the active session's
+        // either side. the strip scroll eases toward the active session's
         // strip-local center so a switch (Shift+←→ → cycle_workspace)
         // slides the strip macOS-style. Drawn here, before `extras` borrow
         // self, so the ease can mutate self.* without a borrow conflict.
@@ -61,7 +61,7 @@ impl State {
             let divider_offsets =
                 strip_divider_offsets(&items, &item_widths, &label_widths, self.cell_w);
             let target = session_strip_target(&labels, active, self.cell_w, &divider_offsets);
-            let scroll = self.strip_scroll_px.unwrap_or(target);
+            let scroll = self.strip_motion.scroll_or(target);
             // Two rows hanging off the bottom of the chrome grid: session
             // names above, the ships below them. The grid's own bottom edge is
             // where the chrome's last row was drawn (`project_lines` walks the
@@ -273,44 +273,9 @@ impl State {
 
     fn ease_strip(&mut self, scroll: f32, target: f32) {
         // Ease toward `target` for the next frame; keep the frame loop
-        // alive (dirty) until settled. Frame-rate-independent ease-out.
-        let now = std::time::Instant::now();
-        let dt = self
-            .strip_anim_last
-            .map(|t| (now - t).as_secs_f32().min(0.1))
-            .unwrap_or(0.0);
-        let k = if dt > 0.0 {
-            1.0 - (-dt / STRIP_TAU).exp()
-        } else {
-            0.0
-        };
-        let next = scroll + (target - scroll) * k;
-        if (target - next).abs() < 0.5 {
-            self.strip_scroll_px = Some(target);
-            self.strip_anim_last = None;
-        } else {
-            self.strip_scroll_px = Some(next);
-            self.strip_anim_last = Some(now);
+        // alive (dirty) until settled.
+        if self.strip_motion.step(scroll, target, std::time::Instant::now()) {
             self.dirty = true;
-        }
-        // Spin the brand wheels down on the same frame clock: advance the
-        // angle by the current velocity, decay the velocity (frame-rate
-        // independent), and keep the loop alive until it settles. The angle
-        // is left wherever it stops — a wheel rests fine at any rotation.
-        if self.wheel_vel.abs() > WHEEL_MIN_VEL {
-            let wdt = self
-                .wheel_anim_last
-                .map(|t| (now - t).as_secs_f32().min(0.1))
-                .unwrap_or(0.0);
-            self.wheel_angle += self.wheel_vel * wdt;
-            self.wheel_vel *= (-wdt / WHEEL_TAU).exp();
-            if self.wheel_vel.abs() <= WHEEL_MIN_VEL {
-                self.wheel_vel = 0.0;
-                self.wheel_anim_last = None;
-            } else {
-                self.wheel_anim_last = Some(now);
-                self.dirty = true;
-            }
         }
     }
 }

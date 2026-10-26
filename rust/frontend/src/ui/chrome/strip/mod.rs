@@ -6,7 +6,9 @@ mod band;
 mod draw;
 mod hull;
 mod items;
+mod motion;
 
 pub(in crate::ui) use band::*;
 pub(in crate::ui) use hull::*;
 pub(in crate::ui) use items::*;
+pub(in crate::ui) use motion::StripMotion;

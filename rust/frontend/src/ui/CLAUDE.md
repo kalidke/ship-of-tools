@@ -26,7 +26,13 @@ upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file par
 SVG, the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
 zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
 the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
-owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved.
+owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved;
+`preview::image::figure_store::FigureStore` owns the markdown figures' bitmaps, requests in flight and failures;
+`preview::markdown::media_store::MarkdownMedia` owns the table buffers and their scroll, the math and token caches
+with their requests in flight, and the pending reflow; `control::ControlChannel` owns the fe-commands queue and the
+last `fe-state.json` signature; `drawer::terminal::drawer::TerminalDrawer` owns the Terminal drawer's shell, its last
+pty size and its starting folder; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
+spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -219,6 +225,31 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   toggle (disabled when a scale save fails), the caption store, the labels shaped each frame outside the render pass
   (cleared whenever their overlay is not drawn), and the caption band published before the image rect is derived, so
   the keyboard zoom ceiling uses the same reduced pane.
+- `FigureStore` privately owns the markdown figures by literal URL: the decoded bitmaps (kept across navigation),
+  the fetches in flight and the terminal failures. A fetch is sent only for a URL that is none of the three; a reply
+  settles its URL, then installs or fails it; an unresolvable local URL fails at once. Failures report to the walk as
+  zero-size metrics, are cleared only by a fresh markdown reply or a first visit, and a row parks and restores its
+  own.
+- `MarkdownMedia` privately owns the rest of the markdown media. Math and token requests go out only for keys
+  neither cached nor in flight; a reply caches, settles its key and asks for one reflow (a math failure settles with
+  no reflow, so it cannot loop); a figure's landing or failure asks for one too, and the frame takes it once. Table
+  buffers are rebuilt only when their sources change, which also returns the shared horizontal scroll to the left;
+  the scroll is clamped each frame to the widest table. A math SVG rasterizes once, at the pane's size.
+- `ControlChannel` privately owns the window half of the control channel (ADR 0019): the queue the command-file
+  watcher fills through its producer end, drained whole under the lock alone so dispatch never holds it, and the
+  signature of the last `fe-state.json` written, so the file is rewritten only when the state it reports changes.
+- `TerminalDrawer` privately owns the Terminal drawer's local shell (G2/G3): spawned the first time the drawer is
+  shown, at 80x24 in the repo root; pumped before each draw (the report says when the pane looks wrong); its pty
+  resized only when the drawer's cell size changes (at least 2x2). Typed and pasted input returns the view to the
+  live tail; a wheel the shell's app tracks is forwarded as is. The Monitor tenant stays on State: its native
+  fixture sets the subscription and hub directly, and moving it needs that fixture's own design.
+- `StripMotion` privately owns the session strip's motion: the scroll snaps to the active session on the first
+  paint and then eases toward it, and a workspace cycle flicks the wheels (clamped), which spin down; both step on
+  one frame clock and report whether they still move, so the frame loop stays alive only until they settle.
+- `NavSpill` privately owns the nav spill (`[nav] spill_ms`): each frame's cursor is observed, and only a user's
+  move (same mode, workspace and tree generation, another cursor) arms the deadline; boot, loads, restores and
+  switches move the baseline without arming. The draw publishes the overflowing rows it collected; the idle tick
+  expires the deadline once, with a repaint.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
