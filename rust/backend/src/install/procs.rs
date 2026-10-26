@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use super::cmd;
+use super::observe::{self, Fact, Machine, Why};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Proc {
@@ -20,23 +20,18 @@ pub(super) struct Proc {
 }
 
 /// This account's processes, or why they could not be listed: a listing that did not start, was cut at its bound,
-/// ended badly or gave no process is an `Err`, never an empty list (this process is always one of them), so no caller
+/// ended badly or gave no process is unknown, never an empty list (this process is always one of them), so no caller
 /// reads "could not list" as "none runs".
 #[cfg(unix)]
-pub(super) fn snapshot() -> Result<Vec<Proc>, String> {
+pub(super) fn snapshot(m: &dyn Machine) -> Fact<Vec<Proc>> {
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
-    list(Command::new("ps").args(["-u", &uid.to_string(), "-ww", "-o", "pid=", "-o", "ppid=", "-o", "ucomm=", "-o", "args="]), cmd::ASK_BOUND, parse_ps)
+    list(m, Command::new("ps").args(["-u", &uid.to_string(), "-ww", "-o", "pid=", "-o", "ppid=", "-o", "ucomm=", "-o", "args="]), observe::ASK_BOUND, parse_ps)
 }
 
-/// The listing `command` prints within `bound`, read by `parse`: `None` when the text is not a process listing.
-fn list(command: &mut Command, bound: Duration, parse: impl Fn(&str) -> Option<Vec<Proc>>) -> Result<Vec<Proc>, String> {
-    let program = command.get_program().to_string_lossy().into_owned();
-    let ran = cmd::ask_within(command, bound).map_err(|why| format!("the process listing gave no answer: {why}"))?;
-    if !ran.ok() {
-        return Err(format!("{program} ended with exit {}: {}", ran.code.unwrap_or_default(), ran.last_said()));
-    }
-    parse(&ran.out).filter(|all| !all.is_empty()).ok_or_else(|| format!("{program} printed no valid process list"))
+/// The listing `command` prints within `bound`, read by `parse` (`None` when the text is not a process listing).
+fn list(m: &dyn Machine, command: &mut Command, bound: Duration, parse: impl Fn(&str) -> Option<Vec<Proc>>) -> Fact<Vec<Proc>> {
+    observe::ask(m, command, bound, |a| parse(&a.zero()?.out).filter(|all| !all.is_empty()).ok_or_else(|| Why::Malformed("no valid process list".into())))
 }
 
 /// `ps -o pid= -o ppid= -o ucomm= -o args=` lines; `None` when a line is not one, since a listing with a row missing
@@ -58,11 +53,11 @@ pub(super) fn parse_ps(text: &str) -> Option<Vec<Proc>> {
 
 /// This account's processes, or why they could not be listed; see the Unix listing.
 #[cfg(windows)]
-pub(super) fn snapshot() -> Result<Vec<Proc>, String> {
+pub(super) fn snapshot(m: &dyn Machine) -> Fact<Vec<Proc>> {
     // Every session's: a daemon started at the desk runs in the desk's session while an ssh logon runs in session 0.
     // Another account's process shows no ExecutablePath to this one, so it never matches an install's path.
     let script = "@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine) | ConvertTo-Json -Compress";
-    list(Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", script]), cmd::ASK_BOUND, parse_cim)
+    list(m, Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", script]), observe::ASK_BOUND, parse_cim)
 }
 
 /// CIM's JSON: an array of objects, or one object for a single process, each with a numeric `ProcessId` and
@@ -99,11 +94,8 @@ pub(super) fn runs(p: &Proc, prefix: &Path, bin: &str) -> bool {
 
 /// Whether a daemon process of the install may run: it does when the listing shows one, and it is presumed to when the
 /// listing failed, since absence is never concluded from a listing that could not be read.
-pub(super) fn daemon_may_run(all: &Result<Vec<Proc>, String>, prefix: &Path) -> bool {
-    match all {
-        Ok(all) => !daemon_pids(all, prefix).is_empty(),
-        Err(_) => true,
-    }
+pub(super) fn daemon_may_run(all: &Fact<Vec<Proc>>, prefix: &Path) -> bool {
+    all.as_ref().read(|all| !daemon_pids(all, prefix).is_empty(), |_| true)
 }
 
 /// The pids of the install's daemon processes.

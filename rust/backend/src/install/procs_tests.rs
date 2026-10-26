@@ -1,5 +1,11 @@
 use super::*;
+use super::super::observe::{Live, Unknown};
 use std::time::Instant;
+
+/// Why a listing is unknown, or its rows.
+fn listed(mode: &str, bound: Duration) -> Result<Vec<Proc>, Unknown> {
+    list(&Live, &mut listing(mode), bound, fixture_rows).or(|u| u)
+}
 
 const FIXTURE: &str = "install::procs::tests::listing_fixture";
 
@@ -25,27 +31,26 @@ fn proc_of(prefix: &Path, bin: &str, pid: u32, ppid: u32) -> Proc {
 #[test]
 fn a_listing_that_stalls_ends_at_its_bound_as_an_error_never_an_empty_list() {
     let start = Instant::now();
-    let got = list(&mut listing("stall"), Duration::from_secs(2), fixture_rows);
-    let why = got.expect_err("a cut listing is not a list");
-    assert!(why.contains("no answer") && why.contains("did not finish within"), "{why}");
+    let why = listed("stall", Duration::from_secs(2)).expect_err("a cut listing is not a list");
+    assert_eq!(why.why(), &Why::Cut(Duration::from_secs(2)), "{why}");
     assert!(start.elapsed() < Duration::from_secs(10), "the cut took {:?}", start.elapsed());
 }
 
 #[test]
 fn a_listing_that_ends_badly_or_reads_as_nothing_is_an_error() {
-    let ended = list(&mut listing("good_then_exit_7"), Duration::from_secs(20), fixture_rows).expect_err("its rows are discarded with its exit");
-    assert!(ended.contains("exit 7"), "{ended}");
-    let none = list(&mut listing("noise"), Duration::from_secs(20), fixture_rows).expect_err("no process in the text is no list");
-    assert!(none.contains("no valid process list"), "{none}");
-    let torn = list(&mut listing("good_then_garbage"), Duration::from_secs(20), fixture_rows).expect_err("a row that does not read makes the listing invalid, not shorter");
-    assert!(torn.contains("no valid process list"), "{torn}");
-    let missing = list(&mut Command::new("sot-no-such-listing-program"), Duration::from_secs(20), fixture_rows).expect_err("a program that did not start lists nothing");
-    assert!(missing.contains("no answer"), "{missing}");
+    let ended = listed("good_then_exit_7", Duration::from_secs(20)).expect_err("its rows are discarded with its exit");
+    assert!(ended.to_string().contains("exit 7"), "{ended}");
+    let none = listed("noise", Duration::from_secs(20)).expect_err("no process in the text is no list");
+    assert!(none.to_string().contains("no valid process list"), "{none}");
+    let torn = listed("good_then_garbage", Duration::from_secs(20)).expect_err("a row that does not read makes the listing invalid, not shorter");
+    assert!(torn.to_string().contains("no valid process list"), "{torn}");
+    let missing = list(&Live, &mut Command::new("sot-no-such-listing-program"), Duration::from_secs(20), fixture_rows).or(|u| u).expect_err("a program that did not start lists nothing");
+    assert!(matches!(missing.why(), Why::NotStarted(_)), "{missing}");
 }
 
 #[test]
 fn a_listing_that_ends_well_is_read() {
-    let all = list(&mut listing("good"), Duration::from_secs(20), fixture_rows).expect("a finished listing");
+    let all = listed("good", Duration::from_secs(20)).expect("a finished listing");
     assert!(all.iter().any(|p| p.pid == 4242 && p.ppid == 1 && p.name == "sotd"), "{all:?}");
 }
 
@@ -66,12 +71,13 @@ fn a_listing_must_be_structurally_one() {
 fn a_failed_listing_never_says_no_daemon_runs() {
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path();
-    let seen = Ok(vec![proc_of(prefix, "sotd", 10, 1), Proc { pid: 11, ppid: 10, name: "julia".into(), exe: "julia".into(), args: "julia -e x".into() }]);
+    let seen = Fact::known(vec![proc_of(prefix, "sotd", 10, 1), Proc { pid: 11, ppid: 10, name: "julia".into(), exe: "julia".into(), args: "julia -e x".into() }]);
+    let cut = || Fact::unknown(Unknown::new("ps", Why::Cut(Duration::from_secs(60))));
     assert!(daemon_may_run(&seen, prefix));
-    assert!(!daemon_may_run(&Ok(vec![proc_of(Path::new("/elsewhere"), "sotd", 12, 1)]), prefix), "a listing that shows none says so");
-    assert!(daemon_may_run(&Err("cut".into()), prefix), "a listing that could not be read presumes one");
-    assert_eq!(super::super::daemon::children_in(&seen, prefix), Some(vec![]), "its children are those the listing shows");
-    assert_eq!(super::super::daemon::children_in(&Err("cut".into()), prefix), None, "nothing can be ruled out");
+    assert!(!daemon_may_run(&Fact::known(vec![proc_of(Path::new("/elsewhere"), "sotd", 12, 1)]), prefix), "a listing that shows none says so");
+    assert!(daemon_may_run(&cut(), prefix), "a listing that could not be read presumes one");
+    assert_eq!(super::super::daemon::children_in(seen, prefix), Some(vec![]), "its children are those the listing shows");
+    assert_eq!(super::super::daemon::children_in(cut(), prefix), None, "nothing can be ruled out");
 }
 
 // Finite stand-ins for the listing program; they run on every system.

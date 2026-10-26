@@ -1,4 +1,6 @@
 use super::*;
+use super::super::observe::tests::{says, Canned, Fake};
+use super::super::observe::Live;
 
 /// The floor is the first major.minor of the kernel's compat, whatever its spelling.
 #[test]
@@ -15,8 +17,12 @@ fn the_floor_is_the_first_major_minor_of_the_compat() {
     assert_eq!(default_version(&json).as_deref(), Some("1.11.7"));
 }
 
+fn version(v: Option<&str>) -> Fact<String> {
+    v.map_or_else(|| Fact::unknown(Unknown::new("julia --startup-file=no -e print(VERSION)", Why::Cut(std::time::Duration::from_secs(60)))), |v| Fact::known(v.to_string()))
+}
+
 fn facts(source: Source, refresh: Option<&str>) -> Facts {
-    Facts { floor: "1.12".into(), refresh: refresh.map(String::from), source, juliaup_on_path: true, floor_channel: false, selected: false, path_julia: "/usr/bin/julia".into() }
+    Facts { floor: "1.12".into(), refresh: version(refresh), source, juliaup_on_path: true, floor_channel: false, selected: false, path_julia: "/usr/bin/julia".into() }
 }
 
 /// The Julia the daemon will run meets the floor, or the run ends ONE STEP LEFT naming the version and the fix; a PATH
@@ -36,11 +42,14 @@ fn a_julia_below_the_floor_is_named_with_its_fix() {
     assert!(matches!(judge(&f), Judged::Step(_)));
     let Judged::Step(line) = judge(&facts(Source::Relative("julia".into()), Some("1.12.0"))) else { panic!() };
     assert!(line.contains("SOT_JULIA_BIN=julia is not an absolute path") && line.ends_with("make SOT_JULIA_BIN an absolute path or unset it"), "{line}");
-    let Judged::Step(line) = judge(&facts(Source::Bin(Some("1.12.0".into())), None)) else { panic!() };
-    assert!(line.starts_with("the Julia the comm refresh runs could not be asked") && line.ends_with("ahead of /usr/bin/julia on PATH"), "{line}");
+    let Judged::Step(line) = judge(&facts(Source::Bin(version(Some("1.12.0"))), None)) else { panic!() };
+    assert!(line.starts_with("the Julia the comm refresh runs could not be asked") && line.contains("did not answer within 60 s") && line.ends_with("ahead of /usr/bin/julia on PATH"), "{line}");
+    let Judged::Step(line) = judge(&facts(Source::Path, None)) else { panic!("a PATH julia that gave no version is a step, not a stop") };
+    assert!(line.contains("the daemon could not be asked") || line.contains("the Julia the daemon runs could not be asked"), "{line}");
 }
 
-/// A manifest is dropped only on git's answer that it is untracked; a checkout git cannot read keeps its manifests.
+/// A manifest is dropped only on git's answer that it is untracked; a checkout git cannot read keeps its manifests, and
+/// one whose question gave no answer is kept and named in the verdict.
 #[test]
 fn a_manifest_is_dropped_only_when_git_says_untracked() {
     let git = |dir: &Path, args: &[&str]| {
@@ -56,11 +65,21 @@ fn a_manifest_is_dropped_only_when_git_says_untracked() {
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q"]);
     git(&repo, &["add", "julia/kernel/Manifest.toml"]);
-    let stale: Vec<&str> = stale_manifests(&repo, false).iter().map(|(env, _)| *env).collect();
+    let mut found = Found::default();
+    let stale: Vec<&str> = stale_manifests(&Live, &repo, false, &mut found).iter().map(|(env, _)| *env).collect();
     assert_eq!(stale, ["repl"], "tracked is kept, untracked is dropped");
-    assert!(stale_manifests(&repo, true).is_empty(), "a repair keeps them");
+    assert!(stale_manifests(&Live, &repo, true, &mut found).is_empty(), "a repair keeps them");
     let plain = dir.path().join("plain");
     std::fs::create_dir_all(plain.join("julia/kernel")).unwrap();
     std::fs::write(plain.join("julia/kernel/Manifest.toml"), "m").unwrap();
-    assert!(stale_manifests(&plain, false).is_empty(), "git that cannot tell is no 'untracked'");
+    assert!(stale_manifests(&Live, &plain, false, &mut found).is_empty(), "git that cannot tell is no 'untracked'");
+    assert!(found.checked.iter().any(|c| c.contains("kept julia/kernel/Manifest.toml")), "{found:?}");
+    let fake = Fake::new(sot_platform::host::env::Env::empty());
+    fake.answer("ls-files", Canned::Stall);
+    let mut found = Found::default();
+    assert!(stale_manifests(&fake, &repo, false, &mut found).is_empty(), "a cut question drops nothing");
+    assert_eq!(found.checked.len(), 2, "each kept manifest is named: {found:?}");
+    assert!(found.checked[0].contains("did not answer within 1 s"), "{found:?}");
+    fake.answer("ls-files", says(1, ""));
+    assert_eq!(stale_manifests(&fake, &repo, false, &mut Found::default()).len(), 2, "exit 1 is untracked");
 }

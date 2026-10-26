@@ -1,6 +1,6 @@
 //! How the foreground `sotd install` runs its steps. Bounded output owns a group/job through output completion and
-//! bounded cleanup, and every question the install asks of the machine goes through it (`ask`). Other output/shown
-//! calls retain their existing waits and stop handling; the limits are recorded in scripts/CLAUDE.md.
+//! bounded cleanup, and every question the install asks of the machine goes through it (`observe::ask`). Other
+//! output/shown calls retain their existing waits and stop handling; the limits are recorded in scripts/CLAUDE.md.
 
 use std::io::Read;
 use std::path::Path;
@@ -8,6 +8,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use super::observe::{Answer, Why};
 
 /// What a finished program said: its exit code (`None` when it did not start or a signal ended it), stdout and stderr.
 #[derive(Debug)]
@@ -20,17 +22,6 @@ pub(super) struct Ran {
 impl Ran {
     pub fn ok(&self) -> bool {
         self.code == Some(0)
-    }
-
-    /// Whether the program ran to its own exit: false when it did not start, was cut at its bound, or a signal ended
-    /// it. The reason is then in `err`, and no caller may read the empty `out` as an answer of "nothing".
-    pub fn answered(&self) -> bool {
-        self.code.is_some()
-    }
-
-    /// The first line of stdout, trimmed.
-    pub fn first_line(&self) -> String {
-        self.out.lines().next().unwrap_or("").trim().to_string()
     }
 
     /// The last line it printed that is not blank, stderr first: a failed program says why there.
@@ -143,15 +134,15 @@ impl Steps {
         }
     }
 
-    /// [`Steps::output`] within `bound` by the clock: at the bound the step is killed with what it started, and the
-    /// result has no code and says so.
+    /// [`Steps::output`] within `bound` by the clock: the answer of a program that ran to its own exit with all its
+    /// output, or why there is none. At the bound the step is killed with what it started; what it printed is discarded.
     #[allow(clippy::disallowed_methods, reason = "the one waiter of sotd install's own steps (the test rule is for a test's own children)")]
-    pub(super) fn output_within(&self, cmd: &mut Command, bound: Duration) -> Ran {
+    pub(super) fn output_within(&self, cmd: &mut Command, bound: Duration) -> Result<Answer, Why> {
         let deadline = Instant::now() + bound;
         cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = match self.start_bounded(cmd) {
             Ok(c) => c,
-            Err(e) => return Ran { code: None, out: String::new(), err: format!("{}: {e}", program(cmd)) },
+            Err(e) => return Err(Why::NotStarted(e.to_string())),
         };
         let _active = BoundedRun(&self.bounded);
         let (sent, done) = mpsc::channel();
@@ -169,14 +160,14 @@ impl Steps {
         let failure = loop {
             while let Ok((index, body)) = done.try_recv() { bodies[index] = Some(body); }
             if Instant::now() >= deadline {
-                break Some(format!("{} did not finish within {} ms", program(cmd), bound.as_millis()));
+                break Some(Why::Cut(bound));
             }
-            if self.is_stopping() { break Some(format!("{} stopped", program(cmd))); }
-            if bodies.iter().any(|body| matches!(body, Some(Err(_)))) { break Some(format!("{} output read failed", program(cmd))); }
+            if self.is_stopping() { break Some(Why::Signal); }
+            if bodies.iter().any(|body| matches!(body, Some(Err(_)))) { break Some(Why::Failed(format!("{}: its output could not be read", program(cmd)))); }
             match child.exited(false) {
                 Ok(true) if bodies.iter().all(Option::is_some) => break None,
                 Ok(_) => std::thread::sleep(Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now()))),
-                Err(error) => break Some(format!("{} exit observation failed: {error}", program(cmd))),
+                Err(error) => break Some(Why::Failed(format!("{}: its exit could not be observed ({error})", program(cmd)))),
             }
         };
         // One cleanup budget covers termination, reap, and both readers. No blocking join or wait follows it.
@@ -188,19 +179,19 @@ impl Steps {
                 Err(_) => break,
             }
         }
-        let mut failures: Vec<String> = failure.into_iter().collect();
+        // The first reason stands; a cleanup that did not complete is said after it.
+        let mut why = failure;
         let code = match status {
-            Ok(status) => {
-                // A signal ended it: no exit code, so no answer; its output is discarded with the failure below.
-                if status.code().is_none() && failures.is_empty() { failures.push(format!("{} ended by a signal", program(cmd))); }
-                status.code()
-            }
-            Err(error) => { failures.push(format!("cleanup: {error}")); None }
+            // A signal ended it: no exit code, so no answer; what it printed is discarded.
+            Ok(status) => status.code().or_else(|| { why.get_or_insert(Why::Signal); None }),
+            Err(error) => { why.get_or_insert(Why::Failed(format!("{}: cleanup: {error}", program(cmd)))); None }
         };
-        if bodies.iter().any(|body| !matches!(body, Some(Ok(_)))) { failures.push("output cleanup did not complete within 5 s".into()); }
-        if !failures.is_empty() { return Ran { code: None, out: String::new(), err: failures.join("; ") }; }
+        if bodies.iter().any(|body| !matches!(body, Some(Ok(_)))) {
+            why.get_or_insert(Why::Failed(format!("{}: its output did not complete within 5 s of its end", program(cmd))));
+        }
+        if let Some(why) = why { return Err(why); }
         let [out, err] = bodies.map(|body| String::from_utf8_lossy(&body.unwrap().unwrap()).into_owned());
-        Ran { code, out, err }
+        Ok(Answer { exit: code.expect("an exit code when no reason was recorded"), out, err })
     }
 
     /// A person stopped the run: no step starts again, the running one is sent `signal` with every process it started,
@@ -275,29 +266,6 @@ impl Drop for BoundedRun<'_> {
     fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
 }
 
-/// The bound on a question asked of the machine (a process listing, a `--version`, a unit's state). A cold CIM listing
-/// takes about 26 s on a hosted Windows runner and misses 15 s in every environment, so the bound is 60 s.
-pub(super) const ASK_BOUND: Duration = Duration::from_secs(60);
-
-/// Ask the machine a question with `cmd`, within [`ASK_BOUND`]: `Err` with why when it gave no answer (it did not start,
-/// was cut at its bound or was ended by a signal), its output discarded. An answer of any exit code is `Ok`; the caller
-/// decides which codes it documents, or asks [`ask_ok`].
-pub(super) fn ask(cmd: &mut Command) -> Result<Ran, String> {
-    ask_within(cmd, ASK_BOUND)
-}
-
-/// [`ask`] within `bound`.
-pub(super) fn ask_within(cmd: &mut Command, bound: Duration) -> Result<Ran, String> {
-    let ran = STEPS.output_within(cmd, bound);
-    if ran.answered() { Ok(ran) } else { Err(format!("{}: {}", program(cmd), ran.err.trim())) }
-}
-
-/// [`ask`] where only an exit of 0 is an answer: any other exit is `Err` with the program's last words.
-pub(super) fn ask_ok(cmd: &mut Command) -> Result<Ran, String> {
-    let ran = ask(cmd)?;
-    if ran.ok() { Ok(ran) } else { Err(format!("{} ended with exit {}: {}", program(cmd), ran.code.unwrap_or_default(), ran.last_said())) }
-}
-
 /// Run `cmd` as one of the run's steps; see [`Steps::output`].
 pub(super) fn output(cmd: &mut Command) -> Ran {
     STEPS.output(cmd)
@@ -309,7 +277,7 @@ pub(super) fn shown(cmd: &mut Command) -> Option<i32> {
 }
 
 /// See [`Steps::output_within`].
-pub(super) fn output_within(cmd: &mut Command, bound: Duration) -> Ran {
+pub(super) fn output_within(cmd: &mut Command, bound: Duration) -> Result<Answer, Why> {
     STEPS.output_within(cmd, bound)
 }
 
@@ -336,13 +304,6 @@ pub(super) fn git_in(dir: &Path) -> Command {
 /// curl's bound on a whole transfer: a connect past 15 s, or under 1000 B/s for 60 s, ends it.
 #[cfg_attr(windows, allow(dead_code, reason = "the Unix juliaup install"))]
 pub(super) const CURL_BOUND: [&str; 6] = ["--connect-timeout", "15", "--speed-limit", "1000", "--speed-time", "60"];
-
-/// Whether a program by this name is on PATH.
-pub(super) fn on_path(name: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else { return false };
-    let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
-    std::env::split_paths(&path).any(|d| exts.iter().any(|e| d.join(format!("{name}{e}")).is_file()))
-}
 
 #[cfg(test)]
 #[path = "cmd_tests.rs"]

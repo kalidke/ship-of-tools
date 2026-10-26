@@ -118,11 +118,13 @@ pub(super) enum Launcher {
 /// The supervisor's logged launcher code id `logged` against the installed scripts' `installed` (the checkout's own
 /// `Get-SotLauncherCodeId`): an id that could not be read, or printed empty (its hashing failed), is unknown, never current.
 #[cfg_attr(not(windows), allow(dead_code, reason = "the Windows install checks the window's launcher"))]
-pub(super) fn launcher(logged: &str, installed: Result<String, String>) -> Launcher {
-    match installed {
-        Err(why) => Launcher::Unknown(why),
-        Ok(want) if want.is_empty() => Launcher::Unknown("it printed no launcher code id".into()),
-        Ok(want) if want != logged => Launcher::Older,
-        Ok(_) => Launcher::Current,
-    }
+pub(super) fn launcher(logged: &str, installed: super::observe::Fact<String>) -> Launcher {
+    installed.read(
+        |want| match want {
+            w if w.is_empty() => Launcher::Unknown("it printed no launcher code id".into()),
+            w if w != logged => Launcher::Older,
+            _ => Launcher::Current,
+        },
+        |why| Launcher::Unknown(why.to_string()),
+    )
 }

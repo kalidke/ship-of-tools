@@ -1,4 +1,7 @@
 use super::*;
+#[cfg(unix)]
+use super::super::observe::Live;
+use super::super::observe::{Unknown, Why};
 
 fn sums(names: &[&str]) -> Vec<sot_updater::fetch::sums::SumEntry> {
     names.iter().map(|n| sot_updater::fetch::sums::SumEntry { sha256: "0".repeat(64), name: (*n).to_string() }).collect()
@@ -40,26 +43,28 @@ fn a_pack_is_verified_before_it_runs() {
             std::fs::write(d.join("SHA256SUMS"), format!("{}  sot-0.6.7-linux-x86_64.tar.gz\n{}  COMMIT\n", sum("sot-0.6.7-linux-x86_64.tar.gz"), sum("COMMIT"))).unwrap();
         };
         make("0.6.7");
-        let pack = read(d, "linux-x86_64", Some("v0.6.7")).unwrap();
+        let pack = read(&Live, d, "linux-x86_64", Some("v0.6.7")).unwrap();
         assert_eq!((pack.version.as_str(), pack.short(), pack.tag()), ("0.6.7", "012345678", "v0.6.7".to_string()));
-        assert!(read(d, "linux-x86_64", Some("v0.6.8")).unwrap_err().contains("not v0.6.8"));
+        assert!(read(&Live, d, "linux-x86_64", Some("v0.6.8")).unwrap_err().contains("not v0.6.8"));
         make("0.6.6");
-        assert!(read(d, "linux-x86_64", None).unwrap_err().contains("does not match 0.6.7"));
+        assert!(read(&Live, d, "linux-x86_64", None).unwrap_err().contains("does not match 0.6.7"));
         make("0.6.7");
         std::fs::write(d.join("COMMIT"), "fedcba9876543210fedcba9876543210fedcba98\n").unwrap();
-        assert!(read(d, "linux-x86_64", None).unwrap_err().contains("COMMIT does not match its SHA256SUMS entry"));
+        assert!(read(&Live, d, "linux-x86_64", None).unwrap_err().contains("COMMIT does not match its SHA256SUMS entry"));
     }
 }
 
-/// A `--version` counts only from a program that exited 0: one that prints the expected line and then exits badly, is
-/// signaled, or does not answer in time does not pass.
+/// A `--version` counts only from a program that exited 0 and said the version at the commit: one that does not answer
+/// in time, or exits badly, does not pass, and says why.
 #[test]
 fn a_version_counts_only_from_a_clean_exit() {
     let c = "0123456789abcdef0123456789abcdef01234567";
-    let said = |code: Option<i32>| cmd::Ran { code, out: "sotd 0.6.7 (012345678 2026-10-20, protocol 9)\n".into(), err: String::new() };
-    assert!(binary_says(&version_line(Ok(said(Some(0)))), "sotd", "0.6.7", c));
-    assert!(!binary_says(&version_line(Ok(said(Some(1)))), "sotd", "0.6.7", c), "the right line with a bad exit");
-    assert!(!binary_says(&version_line(Ok(said(None))), "sotd", "0.6.7", c));
-    let cut = version_line(Err("sotd: did not finish within 60000 ms".into()));
-    assert!(!binary_says(&cut, "sotd", "0.6.7", c) && cut.contains("did not finish"), "{cut}");
+    let line = "sotd 0.6.7 (012345678 2026-10-20, protocol 9)";
+    assert_eq!(says(Fact::known(line.into()), "sotd", "0.6.7", c), Ok(()));
+    assert_eq!(says(Fact::known("sotd 0.6.6 (012345678 x)".into()), "sotd", "0.6.7", c), Err("says 'sotd 0.6.6 (012345678 x)'".into()));
+    let cut = says(Fact::unknown(Unknown::new("sotd --version", Why::Cut(std::time::Duration::from_secs(60)))), "sotd", "0.6.7", c).unwrap_err();
+    assert_eq!(cut, "does not run here (`sotd --version` did not answer within 60 s)");
+    let fake = super::super::observe::tests::Fake::new(sot_platform::host::env::Env::empty());
+    fake.answer("--version", super::super::observe::tests::says(1, line));
+    assert!(says(version_of(&fake, Path::new("/b/sotd")), "sotd", "0.6.7", c).unwrap_err().contains("ended with exit 1"), "the right line with a bad exit");
 }

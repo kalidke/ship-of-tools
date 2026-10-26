@@ -94,8 +94,9 @@ fn a_repair_run_moves_nothing() {
     assert_eq!(ran.status.code(), Some(0), "{ran}");
     std::fs::create_dir_all(dir.path().join("julia/kernel")).unwrap();
     std::fs::write(dir.path().join("julia/kernel/Manifest.toml"), "resolved\n").unwrap();
-    assert_eq!(super::super::julia::stale_manifests(dir.path(), false).len(), 1);
-    assert!(super::super::julia::stale_manifests(dir.path(), true).is_empty());
+    let live = &super::super::observe::Live;
+    assert_eq!(super::super::julia::stale_manifests(live, dir.path(), false, &mut super::super::verdict::Found::default()).len(), 1);
+    assert!(super::super::julia::stale_manifests(live, dir.path(), true, &mut super::super::verdict::Found::default()).is_empty());
 
     // The Windows caller hands its Julia step the repair it classified.
     #[cfg(windows)]
@@ -105,6 +106,8 @@ fn a_repair_run_moves_nothing() {
         let d = dir.path();
         let pack = Pack { dir: d.join("pack"), version: "0.6.7".into(), commit: "0".repeat(40), bin: d.join("bin"), libc: None };
         let ctx = windows::Ctx {
+            m: &super::super::observe::Live,
+            env: sot_platform::host::env::Env::empty(),
             opts: Default::default(),
             prefix: d.join("prefix"),
             pack,
@@ -117,10 +120,7 @@ fn a_repair_run_moves_nothing() {
             repair: true,
         };
         let seen = std::cell::Cell::new(None);
-        windows::environments(&ctx, &mut Found::default(), &|_, _, repair| {
-            seen.set(Some(repair));
-            Vec::new()
-        });
+        windows::environments(&ctx, &mut Found::default(), &|_, _, repair, _| seen.set(Some(repair)));
         assert_eq!(seen.get(), Some(true), "a Windows repair's Julia step was told it is no repair");
     }
 }

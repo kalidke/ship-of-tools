@@ -20,8 +20,8 @@ fn isolated(name: &str) -> bool {
 fn bounded_output_drains_both_large_streams() {
     if !isolated("install::cmd::tests::bounded_output_drains_both_large_streams") { return; }
     let d = tempfile::tempdir().unwrap();
-    let ran = Steps::new().output_within(&mut command("flood", &d.path().join("pulse")), Duration::from_secs(5));
-    assert!(ran.ok() && ran.answered(), "{:?}: {}", ran.code, ran.err);
+    let ran = Steps::new().output_within(&mut command("flood", &d.path().join("pulse")), Duration::from_secs(5)).expect("a finished program");
+    assert_eq!(ran.exit, 0, "{}", ran.err);
     assert!(ran.out.contains(&"a".repeat(2 * 1024 * 1024)));
     assert!(ran.err.contains(&"b".repeat(2 * 1024 * 1024)));
 }
@@ -33,9 +33,8 @@ fn bounded_output_keeps_deadline_after_leader_exit_and_stops_its_writer() {
     let pulse = d.path().join("pulse");
     let bound = Duration::from_secs(4);
     let start = Instant::now();
-    let ran = Steps::new().output_within(&mut command("leader", &pulse), bound);
-    assert_eq!(ran.code, None, "a leader's success is not output completion: {}", ran.err);
-    assert!(ran.err.contains("within"), "{}", ran.err);
+    let why = Steps::new().output_within(&mut command("leader", &pulse), bound).expect_err("a leader's success is not output completion");
+    assert_eq!(why, Why::Cut(bound));
     assert!(start.elapsed() < bound + Duration::from_secs(6));
     let before = std::fs::read(&pulse).expect("writer must have entered before the cut");
     assert!(!before.is_empty());
@@ -48,26 +47,9 @@ fn bounded_output_never_accepts_partial_output_before_a_timeout() {
     if !isolated("install::cmd::tests::bounded_output_never_accepts_partial_output_before_a_timeout") { return; }
     let d = tempfile::tempdir().unwrap();
     let pulse = d.path().join("pulse");
-    let ran = Steps::new().output_within(&mut command("stall3", &pulse), Duration::from_secs(3));
-    assert_eq!(ran.code, None, "a partial ready line must not turn a cut child into status 3");
-    assert!(!ran.ok() && !ran.answered() && ran.err.contains("within"), "a cut program has not answered: {}", ran.err);
-    assert!(ran.out.is_empty(), "partial stdout must be discarded");
+    let why = Steps::new().output_within(&mut command("stall3", &pulse), Duration::from_secs(3)).expect_err("a partial ready line must not turn a cut child into status 3");
+    assert_eq!(why, Why::Cut(Duration::from_secs(3)), "a cut program has not answered, and its partial stdout is discarded");
     assert!(!std::fs::read(&pulse).expect("stand-in must have printed before the cut").is_empty());
-}
-
-/// A program a signal ended has no exit code and so no answer: whatever it printed first is discarded, and the reason says
-/// a signal ended it.
-#[cfg(unix)]
-#[test]
-fn a_program_ended_by_a_signal_has_not_answered_and_its_output_is_discarded() {
-    let d = tempfile::tempdir().unwrap();
-    let script = d.path().join("killed");
-    sot_platform::test_exec::write_executable(&script, "#!/bin/sh\necho 'sotd 0.7.0 (0123456789abc protocol 9)'\necho partial >&2\nkill -9 $$\n");
-    let why = ask_within(&mut Command::new(&script), Duration::from_secs(20)).unwrap_err();
-    assert!(why.contains("ended by a signal"), "{why}");
-    assert!(!why.contains("0.7.0"), "the output it printed is not carried: {why}");
-    let ran = Steps::new().output_within(&mut Command::new(&script), Duration::from_secs(20));
-    assert!(ran.code.is_none() && ran.out.is_empty() && !ran.answered(), "{ran:?}");
 }
 
 // Finite native stand-ins also run on Windows. PIDs printed here are witnesses only, never cleanup inputs.

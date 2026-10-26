@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::cmd;
+use super::observe::{self, Fact, Machine};
 
 #[derive(Debug, Clone)]
 pub(super) struct Pack {
@@ -72,7 +72,7 @@ pub(super) fn binary_says(line: &str, name: &str, version: &str, commit: &str) -
 
 /// Read and check the pack in `dir` for `target` (`linux-x86_64`, ...): its identity and its `sotd`. `want` is the tag
 /// the run was told to install, when it was told one.
-pub(super) fn read(dir: &Path, target: &str, want: Option<&str>) -> Result<Pack, String> {
+pub(super) fn read(m: &dyn Machine, dir: &Path, target: &str, want: Option<&str>) -> Result<Pack, String> {
     let sums_path = dir.join("SHA256SUMS");
     let text = std::fs::read_to_string(&sums_path).map_err(|e| format!("{}: {e}", sums_path.display()))?;
     let sums = sot_updater::fetch::sums::parse_sums(&text).map_err(|e| format!("{}: {e:#}", sums_path.display()))?;
@@ -103,37 +103,32 @@ pub(super) fn read(dir: &Path, target: &str, want: Option<&str>) -> Result<Pack,
     let libc = std::fs::read_to_string(dir.join("LIBC")).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     let pack = Pack { dir: dir.to_path_buf(), version, commit, bin, libc };
     // The frontend is asked by the role that runs it: a backend-only host may lack the libc it was built for.
-    pack.check_binary("sotd")?;
+    pack.check_binary(m, "sotd")?;
     Ok(pack)
 }
 
 impl Pack {
     /// Whether the pack's binary `name` runs here and says the pack's version at its commit; why not, when not.
-    pub fn check_binary(&self, name: &str) -> Result<(), String> {
+    pub fn check_binary(&self, m: &dyn Machine, name: &str) -> Result<(), String> {
         let exe = self.exe(name);
-        let line = version_line(cmd::ask(std::process::Command::new(&exe).arg("--version")));
-        if binary_says(&line, name, &self.version, &self.commit) {
-            return Ok(());
-        }
-        let said = match line.strip_prefix(DOES_NOT_RUN) {
-            Some(why) => format!("does not run here ({why})"),
-            None => format!("says '{line}'"),
-        };
-        Err(format!("{} {said}, which does not match {} at {} (its SHA256SUMS and COMMIT)", exe.display(), self.version, self.short()))
+        says(version_of(m, &exe), name, &self.version, &self.commit)
+            .map_err(|said| format!("{} {said}, which does not match {} at {} (its SHA256SUMS and COMMIT)", exe.display(), self.version, self.short()))
     }
 }
 
-const DOES_NOT_RUN: &str = "does not run: ";
+/// The first line a program's `--version` prints when it exits 0.
+pub(super) fn version_of(m: &dyn Machine, exe: &Path) -> Fact<String> {
+    observe::ask(m, std::process::Command::new(exe).arg("--version"), observe::ASK_BOUND, |a| Ok(a.zero()?.first_line()))
+}
 
-/// The line an asked `--version` gave: its first line when the program exited 0, else `does not run: <why>`, which
-/// [`binary_says`] never accepts. A binary that prints the expected version and then exits badly, or does not answer, does
-/// not pass.
-pub(super) fn version_line(asked: Result<cmd::Ran, String>) -> String {
-    match asked {
-        Ok(ran) if ran.ok() => ran.first_line(),
-        Ok(ran) => format!("{DOES_NOT_RUN}{}", ran.last_said()),
-        Err(why) => format!("{DOES_NOT_RUN}{why}"),
-    }
+/// Whether a binary's `--version` says `<name> <version>` built at `commit`; else what it said (`says '<line>'`), or
+/// why it gave no line (`does not run here (<why>)`). A binary that prints the expected line and then exits badly, or
+/// does not answer, does not pass.
+pub(super) fn says(line: Fact<String>, name: &str, version: &str, commit: &str) -> Result<(), String> {
+    line.read(
+        |line| if binary_says(&line, name, version, commit) { Ok(()) } else { Err(format!("says '{line}'")) },
+        |why| Err(format!("does not run here ({why})")),
+    )
 }
 
 #[cfg(test)]

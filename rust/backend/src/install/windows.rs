@@ -9,17 +9,23 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use sot_platform::host::env::Env;
+
 use super::daemon::{self, State};
+use super::observe::{self, Fact, Live, Machine, ASK_BOUND};
 use super::options::Options;
 use super::pack::Pack;
 use super::supervisor::Way;
 use super::verdict::{self, step, Found, Stop};
-use super::{cmd, julia, procs, record};
+use super::{julia, procs, record};
 
 const TARGET: &str = "windows-x86_64";
 
 /// What the run works with.
-pub(super) struct Ctx {
+pub(super) struct Ctx<'a> {
+    /// Every child the run starts, and the environment it reads.
+    pub(super) m: &'a dyn Machine,
+    pub(super) env: Env,
     pub(super) opts: Options,
     pub(super) prefix: PathBuf,
     pub(super) pack: Pack,
@@ -34,7 +40,7 @@ pub(super) struct Ctx {
     pub(super) repair: bool,
 }
 
-impl Ctx {
+impl Ctx<'_> {
     fn sotd(&self) -> PathBuf {
         self.prefix.join("bin\\sotd.exe")
     }
@@ -49,8 +55,8 @@ impl Ctx {
     }
 }
 
-fn local_app_data() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA").map_or_else(|| PathBuf::from("."), PathBuf::from)
+fn local_app_data(env: &Env) -> PathBuf {
+    env.get_nonempty("LOCALAPPDATA").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
 fn powershell(args: &[&str]) -> Command {
@@ -60,10 +66,10 @@ fn powershell(args: &[&str]) -> Command {
 }
 
 /// Run a script of a checkout and show its lines; its exit code and what it said.
-fn script(path: &Path, args: &[&str]) -> cmd::Ran {
+fn script(m: &dyn Machine, path: &Path, args: &[&str]) -> super::cmd::Ran {
     let mut c = powershell(&["-File"]);
     c.arg(path).args(args);
-    let ran = cmd::output(&mut c);
+    let ran = m.act(&mut c);
     for l in ran.out.lines().chain(ran.err.lines()).filter(|l| !l.trim().is_empty()) {
         println!("  {l}");
     }
@@ -71,32 +77,40 @@ fn script(path: &Path, args: &[&str]) -> cmd::Ran {
 }
 
 pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
+    install_on(&Live, opts)
+}
+
+fn install_on(m: &dyn Machine, opts: Options) -> Result<(Found, String), Stop> {
     step("options");
-    let prefix = opts.prefix.as_deref().map_or_else(|| local_app_data().join("sot"), super::absolute);
+    let env = m.env();
+    let prefix = opts.prefix.as_deref().map_or_else(|| local_app_data(&env).join("sot"), super::absolute);
     step("preflight");
-    let arch = std::env::var("PROCESSOR_ARCHITEW6432").or_else(|_| std::env::var("PROCESSOR_ARCHITECTURE")).unwrap_or_default();
+    let arch = Some(env.text("PROCESSOR_ARCHITEW6432")).filter(|a| !a.is_empty()).unwrap_or_else(|| env.text("PROCESSOR_ARCHITECTURE"));
     if arch != "AMD64" {
         return Err(Stop::new(2, format!("Ship of Tools needs Windows x86_64 (this is {arch})")));
     }
-    if !cmd::on_path("git") {
+    if !observe::on_path(m, "git") {
         return Err(Stop::new(2, "git is not on PATH: winget install --id Git.Git -e"));
     }
-    if !cmd::on_path("jq") {
+    if !observe::on_path(m, "jq") {
         return Err(Stop::new(1, "sot-comm needs jq, which is not on PATH: install it with `winget install jqlang.jq`, then run this installer again"));
     }
     step("fetch");
-    let implicit = super::implicit_run() && !opts.named();
-    let named = opts.named() || (super::bootstrap_tag().is_some() && !implicit);
-    let want = opts.version.clone().or_else(|| if opts.archive.is_none() { super::bootstrap_tag() } else { None });
-    let pack = super::pack::read(&opts.pack, TARGET, want.as_deref()).map_err(|why| Stop::new(1, why))?;
-    pack.check_binary("sot").map_err(|why| Stop::new(1, why))?;
+    let implicit = super::implicit_run(&env) && !opts.named();
+    let named = opts.named() || (super::bootstrap_tag(&env).is_some() && !implicit);
+    let want = opts.version.clone().or_else(|| if opts.archive.is_none() { super::bootstrap_tag(&env) } else { None });
+    let pack = super::pack::read(m, &opts.pack, TARGET, want.as_deref()).map_err(|why| Stop::new(1, why))?;
+    pack.check_binary(m, "sot").map_err(|why| Stop::new(1, why))?;
     println!("installing Ship of Tools {} into {}", pack.tag(), prefix.display());
     let new_sotd = pack.exe("sotd");
-    let pipe = super::endpoint_name(cmd::ask(Command::new(&new_sotd).args(["session-socket-path", "local"])), |name| name.starts_with(r"\\.\pipe\"))?;
+    let pipe = super::endpoint_name(super::ask_endpoint(m, &new_sotd, "local", |name| name.starts_with(r"\\.\pipe\")))?;
     let version_dir = prefix.join("repo\\versions").join(pack.tag());
+    let mut found = Found::default();
     let mut ctx = Ctx {
+        m,
         base: prefix.join("repo\\base"),
-        log_dir: local_app_data().join("sot\\logs"),
+        log_dir: local_app_data(&env).join("sot\\logs"),
+        env,
         version_dir,
         opts,
         prefix,
@@ -107,26 +121,26 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
         repair: false,
     };
     let pin = if named { verdict::pin_tail(&ctx.pack.version) } else { String::new() };
-    let installed = super::installed_for(&ctx.prefix, implicit, "-Version")?;
-    let mut dir = String::new();
+    let installed = super::installed_for(super::installed_version(m, &ctx.prefix), &ctx.prefix, implicit, "-Version", &mut found)?;
+    let mut dir = None;
     let way = super::meet(&installed, ctx.sotd().is_file(), || {
         step("direction");
         if implicit && installed.contains('+') {
-            let way = super::build_direction(&ctx.prefix, &installed, &ctx.pack.commit);
-            return Err(Stop::at("target", 2, super::build_stop(&installed, &ctx.pack.tag(), &way, "-Archive", "-Version")));
+            let way = super::build_direction(m, &ctx.prefix, &installed, &ctx.pack.commit);
+            return Err(Stop::at("target", 2, super::build_stop(&installed, &ctx.pack.tag(), way, "-Archive", "-Version")));
         }
-        dir = super::direction(&new_sotd, &ctx.pack.version, &ctx.prefix, &installed);
-        super::guard_direction(implicit, &installed, &dir, &ctx.pack.version, &ctx.prefix, "-Version")
+        let asked = super::direction(m, &new_sotd, &ctx.pack.version, &ctx.prefix, &installed);
+        dir = super::guard_direction(implicit, &installed, asked, &ctx.pack.version, &ctx.prefix, "-Version", &mut found)?;
+        Ok(())
     })?;
     let publish = super::publish::Plan::capture()?;
     let pending = match way {
-        super::Meet::Update => update_or_repair(&mut ctx, &new_sotd, &installed, &dir)?,
+        super::Meet::Update => update_or_repair(&mut ctx, &new_sotd, &installed, dir)?,
         super::Meet::Fresh => {
             fresh(&ctx)?;
             None
         }
     };
-    let mut found = Found::default();
     found.pass = format!("Ship of Tools {} at {} on this computer", ctx.pack.version, ctx.pack.short());
     if let Some(step) = pending {
         // The update stays armed for a start: the run ends with that step.
@@ -135,9 +149,9 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
         return Ok((found, pin));
     }
     let enrolled = publish.enroll(&ctx.version_dir, &ctx.pack.commit, &ctx.base, &mut found)?;
-    if julia::which("julia").is_some() {
+    if observe::which(m, "julia").is_some() {
         step("julia");
-        let facts = julia::facts(&ctx.version_dir, None).map_err(|why| Stop::new(1, why))?;
+        let facts = julia::facts(m, &ctx.version_dir, None).map_err(|why| Stop::new(1, why))?;
         match julia::judge(&facts) {
             julia::Judged::Ok => {}
             julia::Judged::Step(line) => found.step(line),
@@ -151,7 +165,7 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     end_state(&ctx, &mut found);
     enrolled.check(&mut found);
     if let Some(hub) = refusal {
-        let me = sot_platform::host::state_dir::host_name().unwrap_or_else(|_| std::env::var("COMPUTERNAME").unwrap_or_default().to_lowercase());
+        let me = sot_platform::host::state_dir::host_name_in(&ctx.env).unwrap_or_else(|_| ctx.env.text("COMPUTERNAME").to_lowercase());
         found.fail("enroll", format!("the hosts.toml on '{hub}' does not list this computer ('{me}'), so the window would open with no hosts: on '{hub}' run  sotd topology set add {me} --frontend  (the sotd of its install), then run this installer again"));
     }
     Ok((found, pin))
@@ -178,37 +192,42 @@ fn fresh(ctx: &Ctx) -> Result<(), Stop> {
 /// `repo\base`: a blobless clone that holds the pack's commit, with its tag for a release.
 fn init_base(ctx: &Ctx) -> Result<(), Stop> {
     step("checkout");
-    let origin = super::origin();
+    let origin = super::origin(&ctx.env);
     if !ctx.base.join(".git").exists() {
         let _ = std::fs::create_dir_all(ctx.base.parent().unwrap_or(&ctx.base));
-        let ran = cmd::output(cmd::git().args(["clone", "--quiet", "--filter=blob:none", "--no-checkout", &origin]).arg(&ctx.base));
+        let ran = ctx.m.act(super::cmd::git().args(["clone", "--quiet", "--filter=blob:none", "--no-checkout", &origin]).arg(&ctx.base));
         if !ran.ok() {
             return Err(Stop::new(1, format!("could not clone {origin} into {}: {}", ctx.base.display(), ran.last_said())));
         }
     }
     let commit = &ctx.pack.commit;
-    // `cat-file -e` exits 0 when the commit is there; a git that cannot be asked is not "absent".
-    let held = cmd::ask(cmd::git_in(&ctx.base).args(["cat-file", "-e", &format!("{commit}^{{commit}}")])).map_err(|why| Stop::new(1, format!("could not ask git in {}: {why}", ctx.base.display())))?;
-    if !held.ok() && !cmd::output(cmd::git_in(&ctx.base).args(["fetch", "--quiet", "origin", commit])).ok() {
+    let no_answer = |why| Stop::new(1, format!("could not ask git in {}: {why}", ctx.base.display()));
+    // `cat-file -e` exits 0 when the commit is there and nonzero when it is not; a git that gives no answer is not
+    // "absent".
+    let held = observe::ask(ctx.m, super::cmd::git_in(&ctx.base).args(["cat-file", "-e", &format!("{commit}^{{commit}}")]), ASK_BOUND, |a| Ok(a.exit == 0)).or(no_answer)?;
+    if !held && !ctx.m.act(super::cmd::git_in(&ctx.base).args(["fetch", "--quiet", "origin", commit])).ok() {
         return Err(Stop::new(1, format!("{commit} is not in {} and could not be fetched from {origin}", ctx.base.display())));
     }
-    let tag = ctx.pack.tag();
-    let tagged = cmd::ask_ok(cmd::git_in(&ctx.base).args(["tag", "-l", &tag])).map_err(|why| Stop::new(1, format!("could not ask git in {}: {why}", ctx.base.display())))?;
-    if !ctx.pack.version.contains('+') && tagged.out.trim().is_empty() {
-        let _ = cmd::output(cmd::git_in(&ctx.base).args(["fetch", "--quiet", "origin", &format!("refs/tags/{tag}:refs/tags/{tag}")]));
+    // A release's tag, fetched when the clone lacks it; a build of the line has no tag and asks nothing.
+    if !ctx.pack.version.contains('+') {
+        let tag = ctx.pack.tag();
+        let tagged = observe::ask(ctx.m, super::cmd::git_in(&ctx.base).args(["tag", "-l", &tag]), ASK_BOUND, |a| Ok(!a.zero()?.out.trim().is_empty())).or(no_answer)?;
+        if !tagged {
+            let _ = ctx.m.act(super::cmd::git_in(&ctx.base).args(["fetch", "--quiet", "origin", &format!("refs/tags/{tag}:refs/tags/{tag}")]));
+        }
     }
     Ok(())
 }
 
 fn version_folder(ctx: &Ctx) -> Result<(), Stop> {
-    let head = |dir: &Path| cmd::ask_ok(cmd::git_in(dir).args(["rev-parse", "HEAD"])).map(|ran| ran.first_line()).map_err(|why| Stop::new(1, format!("could not read HEAD of {}: {why}", dir.display())));
+    let head = |dir: &Path| observe::ask(ctx.m, super::cmd::git_in(dir).args(["rev-parse", "HEAD"]), ASK_BOUND, |a| Ok(a.zero()?.first_line())).or(|why| Stop::new(1, format!("could not read HEAD of {}: {why}", dir.display())));
     if ctx.version_dir.exists() {
         if head(&ctx.version_dir)? == ctx.pack.commit {
             return Ok(());
         }
         return Err(Stop::new(1, format!("{} exists but is not at {}; remove that folder and run this again", ctx.version_dir.display(), ctx.pack.short())));
     }
-    let ran = cmd::output(cmd::git_in(&ctx.base).args(["worktree", "add", "--detach"]).arg(&ctx.version_dir).arg(&ctx.pack.commit));
+    let ran = ctx.m.act(super::cmd::git_in(&ctx.base).args(["worktree", "add", "--detach"]).arg(&ctx.version_dir).arg(&ctx.pack.commit));
     if !ran.ok() {
         return Err(Stop::new(1, format!("could not add the worktree {} at {}: {}", ctx.version_dir.display(), ctx.pack.short(), ran.last_said())));
     }
@@ -220,11 +239,11 @@ fn version_folder(ctx: &Ctx) -> Result<(), Stop> {
 
 /// An install already here: never backwards unasked, a repair run when nothing moves, else the update. The step of an
 /// update left armed for a start, when it is.
-fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: &str) -> Result<Option<String>, Stop> {
+fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: Option<super::Direction>) -> Result<Option<String>, Stop> {
     // A repair changes nothing in the record but its pin: a new -Hub is an install over the same build.
     let keeps = record::keeps(&record::read(&ctx.record_path()), &record_of(ctx));
     let (state, _) = daemon_state(ctx, new_sotd);
-    if dir == "same" && keeps && matches!(state, State::None | State::Current) {
+    if dir == Some(super::Direction::Same) && keeps && matches!(state, State::None | State::Current) {
         println!("this computer already runs {installed} at {}: a repair run", ctx.pack.short());
         ctx.repair = true;
         // The pin first, then the pointer armed over the install: no arm lands between.
@@ -233,7 +252,12 @@ fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: &str) 
         return Ok(None);
     }
     let from = if installed.is_empty() { "a version that cannot be read" } else { installed };
-    let how = if dir == "same" { ": same version, another build".to_string() } else { format!(" ({dir})") };
+    let how = match dir {
+        Some(super::Direction::Same) => ": same version, another build",
+        Some(super::Direction::Newer) => " (newer)",
+        Some(super::Direction::Older) => " (older)",
+        None => " (which way could not be told)",
+    };
     println!("this run moves the install from {from} to {}{how}", ctx.pack.version);
     update(ctx, new_sotd, installed)
 }
@@ -248,7 +272,7 @@ fn daemon_state(ctx: &Ctx, sotd: &Path) -> (State, String) {
         Some(l) => format!("{l}; {why}"),
         None => why,
     };
-    let (st, why) = daemon::state(sotd, &ctx.endpoint(), runs);
+    let (st, why) = daemon::state(ctx.m, sotd, &ctx.endpoint(), runs);
     (if st == State::Held { State::Other } else { st }, said(why))
 }
 
@@ -258,8 +282,9 @@ fn daemon_runs(ctx: &Ctx) -> (bool, Option<String>) {
     if pipe_listed(&ctx.pipe) {
         return (true, None);
     }
-    let all = procs::snapshot();
-    (procs::daemon_may_run(&all, &ctx.prefix), all.err())
+    let all = procs::snapshot(ctx.m);
+    let runs = procs::daemon_may_run(&all, &ctx.prefix);
+    (runs, all.read(|_| None, |why| Some(why.to_string())))
 }
 
 /// Whether the pipe is listed (never opened: a probe must not take an instance).
@@ -281,9 +306,9 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
     // Every path below that stops or restarts a daemon asks first, whatever its version.
     let (state, why) = daemon_state(ctx, new_sotd);
     let asks = daemon::Asks {
-        live: &|| daemon::work(new_sotd, &ctx.endpoint()),
-        kids: &|| daemon::children(&ctx.prefix),
-        ask: &daemon::ask_restart,
+        live: &|| daemon::work(ctx.m, new_sotd, &ctx.endpoint()),
+        kids: &|| daemon::children(ctx.m, &ctx.prefix),
+        ask: &|work| daemon::ask_restart(&ctx.env, work),
         note: &|t| println!("{t}"),
     };
     let live = daemon::ask_before_update(state, &ctx.pipe, &why, ctx.opts.restart_daemon, &asks)?;
@@ -296,7 +321,7 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
     let was_pinned = record::boolean(&record::read(&ctx.record_path()), "pinned") == Some(true);
     write_pin(ctx, ctx.named)?;
     println!("staging and preparing {} (this can take many minutes)", ctx.pack.tag());
-    let ran = cmd::output(Command::new(new_sotd).args(["update", "stage"]).arg(&ctx.pack.dir).arg("--prefix").arg(&ctx.prefix));
+    let ran = ctx.m.act(Command::new(new_sotd).args(["update", "stage"]).arg(&ctx.pack.dir).arg("--prefix").arg(&ctx.prefix));
     for l in ran.out.lines() {
         println!("  {l}");
     }
@@ -313,20 +338,31 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
         return Err(Stop::new(1, detail));
     }
     verdict::set_tail(armed_tail(ctx));
-    let listed = procs::snapshot();
-    let seen = listed.as_ref().ok().map(|all| {
-        let sup = supervisor(&ctx.log_dir, all);
-        let window_only = sup.is_none() && procs::window_runs(all, &ctx.prefix);
-        (sup, window_only)
-    });
+    // A listing that gave no answer is no supervisor, window or desk known: the way is unknown, and nothing is stopped.
+    let (seen, listing) = procs::snapshot(ctx.m).read(
+        |all| {
+            let sup = supervisor(&ctx.log_dir, &all);
+            let window_only = sup.is_none() && procs::window_runs(&all, &ctx.prefix);
+            (Some((sup, window_only)), None)
+        },
+        |why| (None, Some(why.to_string())),
+    );
     let work = if live.is_empty() { String::new() } else { format!("; {live}") };
-    match super::supervisor::way(seen.as_ref().map(|(sup, window_only)| (sup.as_ref().map(|(_, code)| code.as_str()), *window_only)), &session_id) {
+    let session = std::cell::RefCell::new(None);
+    let session_of = || {
+        let fact = session_id(ctx.m);
+        fact.as_ref().read(|id| Some(*id), |why| {
+            *session.borrow_mut() = Some(why.to_string());
+            None
+        })
+    };
+    match super::supervisor::way(seen.as_ref().map(|(sup, window_only)| (sup.as_ref().map(|(_, code)| code.as_str()), *window_only)), &session_of) {
         Way::Unknown => {
-            let why = listed.err().unwrap_or_else(|| "its logon session could not be read".into());
+            let why = listing.or_else(|| session.borrow().clone()).unwrap_or_else(|| "its logon session could not be read".into());
             return Ok(Some(format!("start Ship of Tools at the desk or quit it and start it again; the start applies {} (this run could not tell whether a window or supervisor runs, or whether it is at the desk ({why}), and stopped nothing){work}", ctx.pack.tag())));
         }
         Way::Converge => {
-            let wait = super::secs_env("SOT_INSTALL_CONVERGE_WAIT_S", 1800);
+            let wait = super::secs_env(&ctx.env, "SOT_INSTALL_CONVERGE_WAIT_S", 1800);
             let relaunch = relaunch_script(ctx, installed)?;
             converge(ctx, wait, &relaunch)?;
             ctx.expect_daemon = state != State::None;
@@ -351,13 +387,13 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
         let old = if installed.is_empty() { String::new() } else { format!("v{installed}") };
         let stopper = ctx.prefix.join("repo\\versions").join(old).join("scripts\\sot-local-daemon.ps1");
         if stopper.is_file() {
-            let _ = script(&stopper, &["-Stop"]);
+            let _ = script(ctx.m, &stopper, &["-Stop"]);
         } else {
             println!("  note: no sot-local-daemon.ps1 of the installed checkout to stop the daemon with; the apply below goes on");
         }
     }
     let apply = ctx.version_dir.join("scripts\\sot-apply.ps1");
-    let ran = script(&apply, &["-Prefix", &ctx.prefix.to_string_lossy()]);
+    let ran = script(ctx.m, &apply, &["-Prefix", &ctx.prefix.to_string_lossy()]);
     if !ran.out.contains("sot-apply: APPLIED") && !ran.err.contains("sot-apply: APPLIED") {
         return Err(Stop::new(1, format!("sot-apply.ps1 did not apply {}: {}", ctx.pack.tag(), ran.last_said())));
     }
@@ -389,8 +425,8 @@ fn converge(ctx: &Ctx, bound: Duration, relaunch: &Path) -> Result<(), Stop> {
     step("apply");
     let log = ctx.log_dir.join("supervisor.log");
     let start = std::fs::metadata(&log).map_or(0, |m| m.len());
-    let sentinel = local_app_data().join("sot\\relaunch.request");
-    let q = cmd::output(powershell(&["-File"]).arg(relaunch).arg("-Converge"));
+    let sentinel = local_app_data(&ctx.env).join("sot\\relaunch.request");
+    let q = ctx.m.act(powershell(&["-File"]).arg(relaunch).arg("-Converge"));
     if !q.ok() {
         return Err(Stop::new(1, format!("relaunch-sot.ps1 -Converge ended with exit {}: {}", q.code.map_or("none".into(), |c| c.to_string()), q.last_said())));
     }
@@ -399,16 +435,17 @@ fn converge(ctx: &Ctx, bound: Duration, relaunch: &Path) -> Result<(), Stop> {
 }
 
 /// This process's logon session: 0 for an ssh logon, a later one at the desk.
-fn session_id() -> Option<u32> {
-    let ran = cmd::ask_ok(&mut powershell(&["-Command", "[System.Diagnostics.Process]::GetCurrentProcess().SessionId"])).ok()?;
-    ran.first_line().parse().ok()
+fn session_id(m: &dyn Machine) -> Fact<u32> {
+    observe::ask(m, &mut powershell(&["-Command", "[System.Diagnostics.Process]::GetCurrentProcess().SessionId"]), ASK_BOUND, |a| {
+        a.zero()?.first_line().parse().map_err(|_| observe::Why::Malformed(format!("no session id ('{}')", a.first_line())))
+    })
 }
 
 /// Folder trust, the junction, the Julia environments and comm: what the launcher's first start does, done here so the
 /// install is whole before a window starts.
 fn layout_and_comm(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
     step("layout");
-    let ran = cmd::output(Command::new(ctx.sotd()).args(["trust", "declare"]).arg(super::home_dir().unwrap_or_default()));
+    let ran = ctx.m.act(Command::new(ctx.sotd()).args(["trust", "declare"]).arg(super::home_dir(&ctx.env).unwrap_or_default()));
     match (ran.code, ran.out.trim()) {
         (Some(0), "Declared") => println!("  folder trust declared"),
         (Some(0), "Kept") => println!("  folder trust kept"),
@@ -419,20 +456,20 @@ fn layout_and_comm(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
     if std::fs::symlink_metadata(&current).is_err() {
         let mut c = powershell(&["-Command", "New-Item -ItemType Junction -Path $env:SOT_JUNCTION_LINK -Target $env:SOT_JUNCTION_TARGET -ErrorAction Stop | Out-Null"]);
         c.env("SOT_JUNCTION_LINK", &current).env("SOT_JUNCTION_TARGET", &ctx.version_dir);
-        let made = cmd::output(&mut c);
+        let made = ctx.m.act(&mut c);
         if !made.ok() {
             return Err(Stop::new(1, format!("could not create the junction {} -> {}: {}", current.display(), ctx.version_dir.display(), made.last_said())));
         }
         println!("  created repo\\current -> {}", ctx.version_dir.display());
     }
-    if julia::which("julia").is_none() {
+    if observe::which(ctx.m, "julia").is_none() {
         return Ok(());
     }
-    environments(ctx, found, &|checkout, scratch, repair| julia::instantiate(checkout, None, scratch, repair, &|t| println!("  {t}")));
+    environments(ctx, found, &|checkout, scratch, repair, found| julia::instantiate(ctx.m, checkout, None, scratch, repair, &|t| println!("  {t}"), found));
     step("comm");
     let scratch = ctx.pack.dir.join("tmp");
     let _ = std::fs::create_dir_all(&scratch);
-    if !julia::update_comm(&ctx.version_dir, None, &scratch) {
+    if !julia::update_comm(ctx.m, &ctx.version_dir, None, &scratch) {
         return Err(Stop::new(1, "ShipTools.update_comm() failed"));
     }
     Ok(())
@@ -440,15 +477,13 @@ fn layout_and_comm(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
 
 /// The Julia environments of a checkout whose kernel was never instantiated, by `instantiate(checkout, scratch, repair)`;
 /// a repair keeps the environments' own manifests.
-pub(super) fn environments(ctx: &Ctx, found: &mut Found, instantiate: &dyn Fn(&Path, &Path, bool) -> Vec<String>) {
+pub(super) fn environments(ctx: &Ctx, found: &mut Found, instantiate: &dyn Fn(&Path, &Path, bool, &mut Found)) {
     if ctx.version_dir.join("julia\\kernel\\Manifest.toml").is_file() {
         return;
     }
     let scratch = ctx.pack.dir.join("tmp");
     let _ = std::fs::create_dir_all(&scratch);
-    for failed in instantiate(&ctx.version_dir, &scratch, ctx.repair) {
-        found.fail("julia", failed);
-    }
+    instantiate(&ctx.version_dir, &scratch, ctx.repair, found);
 }
 
 /// The Desktop shortcut and the taskbar pin, by the checkout's `install-shortcut.ps1` through `repo\current` where this
@@ -458,22 +493,20 @@ fn shortcut(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
     step("shortcut");
     let via = ctx.prefix.join("repo\\current\\scripts\\install-shortcut.ps1");
     if via.is_file() {
-        let ran = script(&via, &["-Prefix", &ctx.prefix.to_string_lossy(), "-NoManifest"]);
+        let ran = script(ctx.m, &via, &["-Prefix", &ctx.prefix.to_string_lossy(), "-NoManifest"]);
         if !ran.ok() {
             return Err(Stop::new(1, format!("install-shortcut.ps1 ended with exit {}", ran.code.map_or("none".into(), |c| c.to_string()))));
         }
         return Ok(());
     }
-    let lnk = super::home_dir().unwrap_or_default().join("Desktop\\Ship of Tools.lnk");
+    let lnk = super::home_dir(&ctx.env).unwrap_or_default().join("Desktop\\Ship of Tools.lnk");
     let mut c = powershell(&["-Command", "try { (New-Object -ComObject WScript.Shell).CreateShortcut($env:SOT_SHORTCUT).Arguments } catch { '' }"]);
     c.env("SOT_SHORTCUT", &lnk);
-    let read = cmd::ask_ok(&mut c);
-    if let Err(why) = &read {
-        found.step(format!("run this again at the desk, not over ssh: this session cannot traverse repo\\current, and the Desktop shortcut could not be read ({why})"));
-    } else if read.is_ok_and(|ran| ran.out.to_ascii_lowercase().contains(r"repo\current\scripts\launch-sot.ps1")) {
-        println!("  shortcut: kept (repo\\current cannot be traversed in this session, and the shortcut already targets it)");
-    } else {
-        found.step("run this again at the desk, not over ssh: this session cannot traverse repo\\current, so the Desktop shortcut was not written");
+    let read = observe::ask(ctx.m, &mut c, ASK_BOUND, |a| Ok(a.zero()?.out.to_ascii_lowercase().contains(r"repo\current\scripts\launch-sot.ps1")));
+    match read.read(Ok, Err) {
+        Ok(true) => println!("  shortcut: kept (repo\\current cannot be traversed in this session, and the shortcut already targets it)"),
+        Ok(false) => found.step("run this again at the desk, not over ssh: this session cannot traverse repo\\current, so the Desktop shortcut was not written"),
+        Err(why) => found.step(format!("run this again at the desk, not over ssh: this session cannot traverse repo\\current, and the Desktop shortcut could not be read ({why})")),
     }
     Ok(())
 }
@@ -487,7 +520,7 @@ fn sync_hub(ctx: &Ctx) -> Option<String> {
         println!("  note: no -Hub given and none recorded: this box cannot fetch hosts.toml until install.ps1 runs with -Hub <alias>");
         return None;
     };
-    let ran = cmd::output(Command::new(ctx.sotd()).args(["topology", "sync", "--hub", &hub]));
+    let ran = ctx.m.act(Command::new(ctx.sotd()).args(["topology", "sync", "--hub", &hub]));
     let said = format!("{}{}", ran.out, ran.err).split_whitespace().collect::<Vec<_>>().join(" ");
     if ran.ok() {
         println!("  topology sync --hub {hub} ok: {said}");
@@ -500,7 +533,7 @@ fn sync_hub(ctx: &Ctx) -> Option<String> {
 /// The record this run writes: the hub this run names, else the one recorded.
 fn record_of(ctx: &Ctx) -> record::Record {
     let hub = ctx.opts.hub.clone().or_else(|| record::string(&record::read(&ctx.record_path()), "hub")).unwrap_or_default();
-    let config = std::env::var_os("APPDATA").map_or_else(PathBuf::new, PathBuf::from).join("sot");
+    let config = ctx.env.get_nonempty("APPDATA").map_or_else(PathBuf::new, PathBuf::from).join("sot");
     record::Record {
         prefix: ctx.prefix.to_string_lossy().into_owned(),
         config: config.to_string_lossy().into_owned(),
@@ -532,10 +565,10 @@ fn write_record(ctx: &Ctx) -> Result<(), Stop> {
 /// The launcher code id of a scripts folder, asked of that folder's own `Get-SotLauncherCodeId` (`sot-install-layout.ps1`),
 /// the one definition the launcher logs at its start; why not, when the ask gave no answer or did not exit 0 (it prints
 /// nothing when its hashing fails, which [`supervisor::launcher`] reads as unknown).
-fn launcher_code_id(scripts: &Path) -> Result<String, String> {
+fn launcher_code_id(m: &dyn Machine, scripts: &Path) -> Fact<String> {
     let mut c = powershell(&["-Command", ". (Join-Path $env:SOT_SCRIPTS 'sot-install-layout.ps1'); Get-SotLauncherCodeId -ScriptsDir $env:SOT_SCRIPTS"]);
     c.env("SOT_SCRIPTS", scripts);
-    cmd::ask_ok(&mut c).map(|ran| ran.first_line())
+    observe::ask(m, &mut c, ASK_BOUND, |a| Ok(a.zero()?.first_line()))
 }
 
 /// What the run left: the binaries, the record, the junction, no armed pointer, comm and the kernel environment, the
@@ -545,9 +578,8 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
     let (v, short) = (&ctx.pack.version, ctx.pack.short());
     for b in ["sotd", "sot"] {
         let exe = ctx.prefix.join("bin").join(format!("{b}.exe"));
-        let line = super::pack::version_line(cmd::ask(Command::new(&exe).arg("--version")));
-        if !super::pack::binary_says(&line, b, v, &ctx.pack.commit) {
-            found.fail("binaries", format!("bin\\{b}.exe reports '{line}', not {v} at {short}"));
+        if let Err(said) = super::pack::says(super::pack::version_of(ctx.m, &exe), b, v, &ctx.pack.commit) {
+            found.fail("binaries", format!("bin\\{b}.exe {said}, not {v} at {short}"));
         }
     }
     let text = record::read(&ctx.record_path());
@@ -564,8 +596,8 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
     if ctx.pointer().exists() {
         found.fail("pointer", "an update pointer is still armed after this run");
     }
-    if julia::which("julia").is_some() {
-        let comm = std::env::var_os("SOT_COMM_HOME").map_or_else(|| super::home_dir().unwrap_or_default().join(".sot-comm"), PathBuf::from);
+    if observe::which(ctx.m, "julia").is_some() {
+        let comm = ctx.env.get_nonempty("SOT_COMM_HOME").map_or_else(|| super::home_dir(&ctx.env).unwrap_or_default().join(".sot-comm"), PathBuf::from);
         let stamp = std::fs::read_to_string(comm.join("VERSION")).unwrap_or_default().trim().trim_end_matches("-dirty").to_string();
         if stamp != short {
             found.fail("comm", format!("agent comm is at '{stamp}', not {short}"));
@@ -577,10 +609,10 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
     } else {
         found.step("install Julia (winget install --id Julialang.Juliaup -e); agent comm and local REPLs need it, then run this again");
     }
-    match procs::snapshot() {
+    match procs::snapshot(ctx.m).read(Ok, Err) {
         Ok(all) => {
             if let Some((_, code)) = supervisor(&ctx.log_dir, &all) {
-                match super::supervisor::launcher(&code, launcher_code_id(&ctx.version_dir.join("scripts"))) {
+                match super::supervisor::launcher(&code, launcher_code_id(ctx.m, &ctx.version_dir.join("scripts"))) {
                     super::supervisor::Launcher::Current => {}
                     super::supervisor::Launcher::Older => {
                         found.step("quit Ship of Tools, choose Keep, and start it from the shortcut; the window runs an older launcher");
@@ -594,9 +626,9 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
     let sotd = ctx.sotd();
     // After a converge the waiter is the only ask, so the check keeps its bound; else one ask says what runs.
     let (st, why) = if ctx.expect_daemon {
-        let bound = super::secs_env("SOT_INSTALL_DAEMON_WAIT_S", 60);
+        let bound = super::secs_env(&ctx.env, "SOT_INSTALL_DAEMON_WAIT_S", 60);
         let (runs, listing) = daemon_runs(ctx);
-        let (st, why) = daemon::wait_current(&sotd, &ctx.endpoint(), bound, false, runs);
+        let (st, why) = daemon::wait_current(ctx.m, &sotd, &ctx.endpoint(), bound, false, runs);
         let why = match listing {
             Some(l) => format!("{l}; {why}"),
             None => why,

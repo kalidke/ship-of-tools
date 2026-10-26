@@ -1,4 +1,7 @@
 use super::*;
+#[cfg(unix)]
+use super::super::observe::Live;
+use super::super::observe::{Unknown, Why};
 use super::super::supervisor;
 #[cfg(unix)]
 use super::super::unix;
@@ -99,12 +102,14 @@ fn agent_update_words_distinguish_06_retirement_from_07_restart() {
 /// person or applies it at the desk.
 #[test]
 fn a_live_daemon_is_asked_before_it_ends() {
-    assert_eq!(state_of(Some(0), true), State::Current);
-    assert_eq!(state_of(Some(3), false), State::Other);
-    assert_eq!(state_of(Some(4), true), State::Held);
-    for code in [Some(1), Some(2), None] {
-        assert_eq!(state_of(code, true), State::Unknown);
-        assert_eq!(state_of(code, false), State::None);
+    let said = |code: i32| Fact::known((code, String::new()));
+    assert_eq!(state_of(said(0), true).0, State::Current);
+    assert_eq!(state_of(said(3), false).0, State::Other);
+    assert_eq!(state_of(said(4), true).0, State::Held);
+    for why in [Why::Failed("ended with exit 2: no hello".into()), Why::Cut(Duration::from_secs(30)), Why::Signal] {
+        let no_answer = || Fact::unknown(Unknown::new("sotd same-version", why.clone()));
+        assert_eq!(state_of(no_answer(), true), (State::Unknown, format!("`sotd same-version` {why}")), "one that may run is never none");
+        assert_eq!(state_of(no_answer(), false).0, State::None);
     }
 
     let w = work_of("repl alpha\nrepl beta\npluto server\n", "", Some(3));
@@ -151,8 +156,8 @@ fn a_live_daemon_is_asked_before_it_ends() {
         let dir = tempfile::tempdir().unwrap();
         let mute = dir.path().join("sotd");
         sot_platform::test_exec::write_executable(&mute, "#!/bin/sh\necho 'sotd same-version: no hello within 5 s' >&2\nexit 1\n");
-        assert_eq!(unix::discover(&mute, "unix:/s.sock", false, true, false, false).0, State::Unknown, "an active unit the retire stops runs a daemon");
-        assert_eq!(unix::discover(&mute, "unix:/s.sock", false, false, false, true).0, State::None, "a role with no daemon here and nothing to retire asks nothing");
+        assert_eq!(unix::discover(&Live, &mute, "unix:/s.sock", false, true, false, false).0, State::Unknown, "an active unit the retire stops runs a daemon");
+        assert_eq!(unix::discover(&Live, &mute, "unix:/s.sock", false, false, false, true).0, State::None, "a role with no daemon here and nothing to retire asks nothing");
         let retire = |before| unix::Question { before, unit_runs: false, retire_stops: true, restart_flag: false, socket: "/s.sock", why: "no answer" };
         for before in [State::Current, State::Other, State::Held] {
             let (got, asked) = ask(&retire(before), work(&["alpha"], false, None), None, false);
@@ -224,11 +229,11 @@ fn a_live_daemon_is_asked_before_it_ends() {
     for state in [State::Current, State::Other, State::Held] {
         assert_eq!(apply_here(state), Apply::StopFirst, "{state:?}");
     }
-    let installed = |text: &str| Ok(text.to_string());
+    let installed = |text: &str| Fact::known(text.to_string());
     assert_eq!(supervisor::launcher("AAA", installed("AAA")), supervisor::Launcher::Current);
     assert_eq!(supervisor::launcher("", installed("AAA")), supervisor::Launcher::Older);
     assert!(matches!(supervisor::launcher("AAA", installed("")), supervisor::Launcher::Unknown(_)), "an empty code id (its hashing failed) is not current");
-    assert!(matches!(supervisor::launcher("AAA", Err("did not finish".into())), supervisor::Launcher::Unknown(_)));
+    assert!(matches!(supervisor::launcher("AAA", Fact::unknown(Unknown::new("powershell.exe", Why::Cut(Duration::from_secs(60))))), supervisor::Launcher::Unknown(_)));
 
     // Windows: the converge's wait.
     let dir = tempfile::tempdir().unwrap();
@@ -307,17 +312,17 @@ fn a_wait_for_the_daemon_keeps_its_bound() {
     let sotd = dir.path().join("sotd");
     sot_platform::test_exec::write_executable(&sotd, "#!/bin/sh\nsleep 10\nexit 3\n");
     let t0 = Instant::now();
-    let (st, why) = wait_current(&sotd, "unix:/nowhere.sock", Duration::from_secs(1), false, true);
+    let (st, why) = wait_current(&Live, &sotd, "unix:/nowhere.sock", Duration::from_secs(1), false, true);
     assert!(t0.elapsed() < Duration::from_millis(1800), "the wait took {:?}", t0.elapsed());
     assert_eq!(st, State::Unknown, "a daemon that runs and did not answer in time is not taken for none");
-    assert!(why.contains("did not finish within"), "{why}");
+    assert!(why.contains("did not answer within"), "{why}");
 }
 
 /// A configured wait longer than the ask bound never lengthens one ask past it, and an ask never starts with less than a
 /// millisecond.
 #[test]
 fn one_ask_in_a_wait_keeps_the_ask_bound() {
-    assert_eq!(ask_slice(Duration::from_secs(1800)), cmd::ASK_BOUND);
+    assert_eq!(ask_slice(Duration::from_secs(1800)), observe::ASK_BOUND);
     assert_eq!(ask_slice(Duration::from_secs(7)), Duration::from_secs(7));
     assert_eq!(ask_slice(Duration::ZERO), Duration::from_millis(1));
 }

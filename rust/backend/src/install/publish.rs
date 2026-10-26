@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use sot_platform::host::env::Env;
 
+use super::observe::{self, Answer, Live};
 use super::verdict::{Found, Stop};
-use super::{cmd, say};
+use super::say;
 
 #[derive(Debug, Clone)]
 struct Clone {
@@ -46,10 +47,9 @@ fn stop(detail: impl Into<String>) -> Stop {
     Stop::at("publish guard", 1, detail)
 }
 
-fn run(command: &mut Command, purpose: &str, bound: Duration) -> Result<cmd::Ran, Stop> {
-    let ran = cmd::output_within(command, bound);
-    if ran.code.is_none() { return Err(stop(format!("{purpose}: {}", ran.last_said()))); }
-    Ok(ran)
+/// A child of the guard within `bound`: its answer at any exit, for the caller to read; with none, the stop.
+fn run(command: &mut Command, purpose: &str, bound: Duration) -> Result<Answer, Stop> {
+    observe::ask(&Live, command, bound, |a| Ok(a.clone())).or(|why| stop(format!("{purpose}: {why}")))
 }
 
 fn scope(found: &mut Found) {
@@ -125,7 +125,8 @@ fn same_origin(actual: &str, expected: &str) -> bool {
 impl Plan {
     pub(super) fn capture() -> Result<Self, Stop> {
         let cwd = std::env::current_dir().map_err(|_| stop("cannot read the original working folder"))?;
-        Self::discover(&cwd, &super::origin(), Env::process(), INSTALL_BOUNDS)
+        let env = Env::process();
+        Self::discover(&cwd, &super::origin(&env), env, INSTALL_BOUNDS)
     }
 
     fn discover(cwd: &Path, origin: &str, mut env: Env, bounds: Bounds) -> Result<Self, Stop> {
@@ -154,8 +155,8 @@ impl Plan {
         }
         let mut plan = Self { env, git, bash, list: config.join("publish-list.txt"), caller: None, bounds };
         let top = run(plan.git(cwd).args(["rev-parse", "--show-toplevel"]), "caller discovery", plan.bounds.git)?;
-        if !top.ok() {
-            if top.code == Some(128) && top.err.contains("not a git repository") {
+        if top.exit != 0 {
+            if top.exit == 128 && top.err.contains("not a git repository") {
                 say("publish guard: original working folder is outside Git; no caller clone enrolled");
                 return Ok(plan);
             }
@@ -163,9 +164,9 @@ impl Plan {
         }
         let checkout = PathBuf::from(top.first_line());
         let url = run(plan.git(&checkout).args(["config", "--local", "--no-includes", "--get", "remote.origin.url"]), "caller origin", plan.bounds.git)?;
-        if url.code == Some(1) || (url.ok() && !same_origin(&url.first_line(), origin)) {
+        if url.exit == 1 || (url.exit == 0 && !same_origin(&url.first_line(), origin)) {
             say(&format!("publish guard: unrelated caller checkout kept: {}", checkout.display()));
-        } else if !url.ok() {
+        } else if url.exit != 0 {
             return Err(stop("cannot read the caller clone's origin"));
         } else {
             plan.caller = Some(plan.clone_at(&checkout)?);
@@ -183,7 +184,7 @@ impl Plan {
         let ran = run(self.git(checkout).args(["rev-parse", "--git-common-dir"]), "common Git directory", self.bounds.git)?;
         let path = PathBuf::from(ran.first_line());
         let path = if path.is_absolute() { path } else { checkout.join(path) };
-        let common = if ran.ok() { path.canonicalize().ok() } else { None };
+        let common = if ran.exit == 0 { path.canonicalize().ok() } else { None };
         let common = common.ok_or_else(|| stop(format!("cannot resolve the common Git directory for {}", checkout.display())))?;
         Ok(Clone { checkout: checkout.to_path_buf(), common })
     }
@@ -191,12 +192,12 @@ impl Plan {
     fn verified_source(&self, source: &Path, commit: &str) -> Result<bool, Stop> {
         let head = run(self.git(source).args(["rev-parse", "HEAD"]), "source HEAD verification", self.bounds.git)?;
         let paths = ["scripts/setup-publish-guard.sh", "scripts/hooks/pre-push", "scripts/hooks/pre-push-shim", "scripts/hooks/publish-guard-lib.sh", "scripts/hooks/publish-guard-scan.awk"];
-        Ok(head.ok() && head.first_line() == commit
+        Ok(head.exit == 0 && head.first_line() == commit
             && paths.iter().all(|p| std::fs::symlink_metadata(source.join(p)).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink()))
-            && run(self.git(source).args(["diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--"]).args(paths), "source diff verification", self.bounds.git)?.ok())
+            && run(self.git(source).args(["diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", "--"]).args(paths), "source diff verification", self.bounds.git)?.exit == 0)
     }
 
-    fn setup(&self, source: &Path, clone: &Clone, check: bool) -> Result<cmd::Ran, Stop> {
+    fn setup(&self, source: &Path, clone: &Clone, check: bool) -> Result<Answer, Stop> {
         let mut c = Command::new(&self.bash);
         c.env_clear().envs(self.env.iter()).arg(bash_path(&source.join("scripts/setup-publish-guard.sh"))?)
             .arg(bash_path(&clone.checkout)?).arg("--list").arg(bash_path(&self.list)?).arg("--installer");
@@ -222,9 +223,9 @@ impl Plan {
             if self.clone_at(&clone.checkout)?.common != clone.common {
                 return Err(stop("a clone's common Git directory changed since discovery"));
             }
-            match self.setup(source, &clone, false)?.code {
-                Some(0 | 3) => placed.push(clone),
-                Some(4) => {
+            match self.setup(source, &clone, false)?.exit {
+                0 | 3 => placed.push(clone),
+                4 => {
                     self.note(found, base, &clone, "preserved conflict");
                     found.step(format!("resolve the preserved publish hook conflict in {} (see setup diagnostics above), then run this installer again", clone.checkout.display()));
                 }
@@ -276,15 +277,15 @@ impl Enrolled<'_> {
             };
             if now.common != clone.common { found.fail("publish guard", "a clone's common Git directory changed during the install"); return; }
             let code = match self.plan.setup(&self.source, clone, true) {
-                Ok(ran) => ran.code,
+                Ok(ran) => ran.exit,
                 Err(error) => { found.fail("publish guard", error.detail); return; }
             };
             match code {
-                Some(0) => {
+                0 => {
                     self.plan.note(found, &self.base, clone, "ready");
                     say(&format!("publish guard: ready for {}", clone.checkout.display()));
                 }
-                Some(3) => {
+                3 => {
                     self.plan.note(found, &self.base, clone, "guard installed; policy needs provisioning");
                     found.step(format!("provision a valid private publish-list.txt in the platform config folder, then run this installer again (guard installed for {}; pushes refuse until ready)", clone.checkout.display()));
                 }

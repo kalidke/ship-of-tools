@@ -7,8 +7,11 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use sot_platform::host::env::Env;
+
+use super::observe::{self, Fact, Machine};
+use super::procs;
 use super::verdict::Stop;
-use super::{cmd, procs};
 
 /// What a run knows of the daemon on an endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,40 +41,47 @@ impl State {
     }
 }
 
-/// The state `sotd same-version`'s exit code says: 0 the target's, 3 another, 4 another a window holds; any other answer
-/// is `Unknown` when a daemon runs (`runs`) and `None` when none does.
-pub(super) fn state_of(code: Option<i32>, runs: bool) -> State {
-    match code {
-        Some(0) => State::Current,
-        Some(3) => State::Other,
-        Some(4) => State::Held,
-        _ if runs => State::Unknown,
-        _ => State::None,
-    }
+/// What `sotd same-version` answered: its exit code (0 the target's, 3 another, 4 another a window holds) and its line
+/// (the version it runs when another).
+pub(super) type Said = (i32, String);
+
+/// The state `sotd same-version`'s answer says, and its line or why it gave none. A daemon that gave no answer, or
+/// said it cannot tell, is `Unknown` when one may run (`runs`) and `None` when none does.
+pub(super) fn state_of(said: Fact<Said>, runs: bool) -> (State, String) {
+    said.read(
+        |(code, line)| match code {
+            0 => (State::Current, line),
+            3 => (State::Other, line),
+            _ => (State::Held, line),
+        },
+        |why| (if runs { State::Unknown } else { State::None }, why.to_string()),
+    )
 }
 
 /// The daemon on `endpoint` (`unix:<path>`, `pipe:<path>`), asked of `sotd`, and its version when different, else
-/// sotd's one line when it could not tell.
-pub(super) fn state(sotd: &Path, endpoint: &str, runs: bool) -> (State, String) {
-    state_within(sotd, endpoint, runs, Duration::from_secs(30))
+/// why it could not tell.
+pub(super) fn state(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: bool) -> (State, String) {
+    state_within(m, sotd, endpoint, runs, Duration::from_secs(30))
 }
 
 /// [`state`] with the ask itself held to `bound` by the clock: an ask cut at its bound could not tell.
-fn state_within(sotd: &Path, endpoint: &str, runs: bool, bound: Duration) -> (State, String) {
-    let ran = cmd::output_within(Command::new(sotd).args(["same-version", "--endpoint", endpoint]), bound);
-    let why = Some(ran.last_said()).filter(|s| !s.is_empty()).unwrap_or_else(|| "sotd same-version gave no reason".into());
-    (state_of(ran.code, runs), why)
+fn state_within(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: bool, bound: Duration) -> (State, String) {
+    let said = observe::ask(m, Command::new(sotd).args(["same-version", "--endpoint", endpoint]), bound, |a| match a.exit {
+        0 | 3 | 4 => Ok((a.exit, a.last_said())),
+        _ => Err(a.failed()),
+    });
+    state_of(said, runs)
 }
 
 /// The state once the daemon has had up to `bound` by the clock to answer as the target: `Current` as soon as it does,
-/// else what the last ask said, with sotd's reason, so no caller asks again past the bound. `held_ok` also ends the
-/// wait at `Held`.
-pub(super) fn wait_current(sotd: &Path, endpoint: &str, bound: Duration, held_ok: bool, runs: bool) -> (State, String) {
+/// else what the last ask said, with its reason, so no caller asks again past the bound. `held_ok` also ends the wait
+/// at `Held`.
+pub(super) fn wait_current(m: &dyn Machine, sotd: &Path, endpoint: &str, bound: Duration, held_ok: bool, runs: bool) -> (State, String) {
     let deadline = Instant::now() + bound;
     loop {
         // Every ask ends by the deadline or its own bound, the smaller, and none starts after the deadline.
         let left = deadline.saturating_duration_since(Instant::now());
-        let (st, why) = state_within(sotd, endpoint, runs, ask_slice(left));
+        let (st, why) = state_within(m, sotd, endpoint, runs, ask_slice(left));
         let left = deadline.saturating_duration_since(Instant::now());
         if st == State::Current || (held_ok && st == State::Held) || left.is_zero() {
             return (st, why);
@@ -84,9 +94,9 @@ pub(super) fn wait_current(sotd: &Path, endpoint: &str, bound: Duration, held_ok
 }
 
 /// The bound of one ask in a wait with `left` of its deadline: the smaller of the two, so a long configured wait never
-/// lengthens one observation past [`cmd::ASK_BOUND`].
+/// lengthens one observation past [`observe::ASK_BOUND`].
 fn ask_slice(left: Duration) -> Duration {
-    left.min(cmd::ASK_BOUND).max(Duration::from_millis(1))
+    left.min(observe::ASK_BOUND).max(Duration::from_millis(1))
 }
 
 /// What a restart of the daemon would end: the rows with a live REPL, whether its Pluto server runs, and, when the
@@ -116,30 +126,29 @@ pub(super) fn work_of(out: &str, err: &str, code: Option<i32>) -> Work {
     Work { rows, pluto, unsure }
 }
 
-/// What a restart would end, asked of the daemon within [`cmd::ASK_BOUND`]; an ask that gave no answer is `unsure` with
-/// its reason, so a caller that cannot be told is asked about, never told "nothing".
-pub(super) fn work(sotd: &Path, endpoint: &str) -> Work {
-    match cmd::ask(Command::new(sotd).args(["update", "repls", "--endpoint", endpoint])) {
-        Ok(ran) => work_of(&ran.out, &ran.err, ran.code),
-        Err(why) => Work { unsure: Some(why), ..Work::default() },
-    }
+/// What a restart would end, asked of the daemon within [`observe::ASK_BOUND`]; an ask that gave no answer is `unsure`
+/// with its reason, so a caller that cannot be told is asked about, never told "nothing".
+pub(super) fn work(m: &dyn Machine, sotd: &Path, endpoint: &str) -> Work {
+    observe::ask(m, Command::new(sotd).args(["update", "repls", "--endpoint", endpoint]), observe::ASK_BOUND, |a| Ok(a.clone()))
+        .read(|a| work_of(&a.out, &a.err, Some(a.exit)), |why| Work { unsure: Some(why.to_string()), ..Work::default() })
 }
 
 /// What the daemon processes of the install at `prefix` run for a person, from their own process tree: `Some` with one
 /// entry per direct child that is a REPL (`repl`) or the Pluto server (`pluto`), `None` when no daemon process of the
 /// install is found, so nothing can be ruled out; a process listing that failed is the same `None`. The daemon is its
 /// program path, the sidecars its children by parent id.
-pub(super) fn children(prefix: &Path) -> Option<Vec<&'static str>> {
-    children_in(&procs::snapshot(), prefix)
+pub(super) fn children(m: &dyn Machine, prefix: &Path) -> Option<Vec<&'static str>> {
+    children_in(procs::snapshot(m), prefix)
 }
 
-pub(super) fn children_in(all: &Result<Vec<procs::Proc>, String>, prefix: &Path) -> Option<Vec<&'static str>> {
-    let all = all.as_ref().ok()?;
-    let daemon = procs::daemon_pids(all, prefix);
-    if daemon.is_empty() {
-        return None;
-    }
-    Some(all.iter().filter(|p| daemon.contains(&p.ppid)).filter_map(|p| child_kind(&p.args)).collect())
+pub(super) fn children_in(all: Fact<Vec<procs::Proc>>, prefix: &Path) -> Option<Vec<&'static str>> {
+    all.read(
+        |all| {
+            let daemon = procs::daemon_pids(&all, prefix);
+            (!daemon.is_empty()).then(|| all.iter().filter(|p| daemon.contains(&p.ppid)).filter_map(|p| child_kind(&p.args)).collect())
+        },
+        |_| None,
+    )
 }
 
 /// A daemon child's kind from its command line: the REPL sidecar runs ShipToolsRepl's shim, the Pluto server the
@@ -299,17 +308,17 @@ fn live_text(state: State, pipe: &str, work: &Work, why: &str) -> String {
 /// One answer, asked in place at the console: "Restart the daemon? This ends WORK [y/N]". False, asking nothing, where
 /// there is no console. Unix asks on `/dev/tty` (it works under `curl | bash`; `SOT_INSTALL_TTY` names another file for
 /// a test); Windows on standard input when it is a console.
-pub(super) fn ask_restart(work: &str) -> bool {
+pub(super) fn ask_restart(env: &Env, work: &str) -> bool {
     let question = format!("Restart the daemon? This ends {work} [y/N] ");
-    let answer = read_answer(&question);
+    let answer = read_answer(env, &question);
     matches!(answer.as_deref().map(str::trim), Some("y" | "Y" | "yes" | "Yes" | "YES"))
 }
 
 #[cfg(unix)]
 #[allow(clippy::disallowed_methods, reason = "a person's answer at the console, not a child's output")]
-pub(super) fn read_answer(question: &str) -> Option<String> {
+pub(super) fn read_answer(env: &Env, question: &str) -> Option<String> {
     use std::io::{BufRead as _, Write as _};
-    let tty = std::env::var_os("SOT_INSTALL_TTY").unwrap_or_else(|| "/dev/tty".into());
+    let tty = env.get_nonempty("SOT_INSTALL_TTY").map_or_else(|| "/dev/tty".into(), std::ffi::OsStr::to_os_string);
     let mut out = std::fs::OpenOptions::new().write(true).open(&tty).ok()?;
     let input = std::fs::File::open(&tty).ok()?;
     out.write_all(question.as_bytes()).ok()?;
@@ -320,7 +329,7 @@ pub(super) fn read_answer(question: &str) -> Option<String> {
 
 #[cfg(windows)]
 #[allow(clippy::disallowed_methods, reason = "a person's answer at the console, not a child's output")]
-pub(super) fn read_answer(question: &str) -> Option<String> {
+pub(super) fn read_answer(_env: &Env, question: &str) -> Option<String> {
     use std::io::{IsTerminal as _, Write as _};
     if !std::io::stdin().is_terminal() {
         return None;
