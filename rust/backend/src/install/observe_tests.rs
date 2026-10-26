@@ -12,6 +12,7 @@ pub(in crate::install) enum Canned {
     /// It runs the stall stand-in (the test binary itself, so on every system) through the real runner, cut at 1 s.
     Stall,
     /// It runs on this computer: Git, bash and the checkout's library, in a test's scratch folders.
+    #[cfg_attr(windows, allow(dead_code, reason = "the Unix layout table runs Git live"))]
     Live,
 }
 
@@ -47,11 +48,19 @@ impl Fake {
         self
     }
 
+    /// Set a variable of the machine's environment.
+    #[cfg_attr(windows, allow(dead_code, reason = "the Unix tables set the bootstrap's variables"))]
+    pub fn set_env(&self, k: &str, v: impl AsRef<std::ffi::OsStr>) -> &Self {
+        self.env.borrow_mut().set(k, v);
+        self
+    }
+
     /// The lines asked or run so far, in order.
     pub fn asked(&self) -> Vec<String> {
         self.asked.borrow().clone()
     }
 
+    #[cfg_attr(not(windows), allow(dead_code, reason = "the Windows table asks what was asked"))]
     pub fn was_asked(&self, pattern: &str) -> bool {
         self.asked.borrow().iter().any(|l| l.contains(pattern))
     }
@@ -149,7 +158,7 @@ fn a_question_is_answered_or_says_why_not() {
     let mut git = cmd::git_in(Path::new("/r"));
     git.args(["rev-parse", "HEAD"]);
     assert_eq!(spelled(&git), "git -C /r rev-parse HEAD");
-    assert_eq!(spelled(Command::new("/x/bash").args(["-c", ". lib", "bash", "/c/lib.sh", "sot_boot_wired", "/u"])), "bash bash /c/lib.sh sot_boot_wired /u");
+    assert_eq!(spelled(Command::new("/x/bash").args(["-c", ". lib", "bash", "/c/lib.sh", "sot_boot_wired", "/u"])), "bash /c/lib.sh sot_boot_wired /u");
 }
 
 /// A program a signal ended has no answer, whatever it printed first.

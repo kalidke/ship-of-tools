@@ -195,11 +195,16 @@ pub(super) fn ask<T>(m: &dyn Machine, cmd: &mut Command, bound: Duration, read: 
 /// script text.
 fn spelled(cmd: &Command) -> String {
     let program = Path::new(cmd.get_program()).file_name().map_or_else(|| cmd.get_program().to_string_lossy(), |n| n.to_string_lossy()).into_owned();
+    let shell = matches!(program.as_str(), "bash" | "sh");
     let mut words = vec![program];
     let mut args = cmd.get_args().map(|a| a.to_string_lossy().into_owned());
     while let Some(a) = args.next() {
         if matches!(a.as_str(), "-c" | "-Command") {
             args.next();
+            // A shell's script is followed by the name it runs as.
+            if shell {
+                args.next();
+            }
             continue;
         }
         words.push(a);

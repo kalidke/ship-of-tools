@@ -646,3 +646,7 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+#[path = "windows_observe_tests.rs"]
+mod observe_tests;

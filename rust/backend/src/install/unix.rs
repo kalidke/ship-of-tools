@@ -1391,3 +1391,7 @@ fn daemon_after(m: &dyn Machine, plan: &Plan, restarted: bool, found: &mut Found
 #[cfg(test)]
 #[path = "unix_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "unix_observe_tests.rs"]
+mod observe_tests;
