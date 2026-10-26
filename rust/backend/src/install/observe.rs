@@ -1,7 +1,8 @@
-//! What the install asks of the computer, and the one way an answer is read (scripts/CLAUDE.md, Installers: "Bounded
-//! waits"). A question is a read-only child the run decides on: [`ask`] runs it within its bound and gives a [`Fact`],
-//! its value or why there is none, which no caller can read without saying what the unknown means. The [`Machine`] is
-//! every child the install starts and the environment it reads, so a test can stand in for any one of them.
+//! What the install asks of the computer, and the one way an answer is read (scripts/CLAUDE.md, Installers: "Every
+//! question the install asks"). A question is a read-only child the run decides on: [`ask`] runs it within its bound
+//! and gives a [`Fact`], its value or why there is none, which no caller can read without saying what the unknown
+//! means. The [`Machine`] is every child the install starts and the environment it reads, so a test can stand in for
+//! any one of them.
 
 use std::path::Path;
 use std::process::Command;

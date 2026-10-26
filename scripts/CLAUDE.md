@@ -176,49 +176,47 @@ Guarantees, each with the mechanism it rests on. Install:
   `SOT_INSTALL_DAEMON_WAIT_S` (Windows, 60 s). Publish enrollment's child commands have the stronger wall-clock and
   output-completion bound below. Whole-install completion on Windows in an isolated profile remains unproven until the
   release-gate witness completes.
-- Every question the install asks of the machine is bounded and fails closed. A question is a read-only child whose
-  answer the install then decides on, and it runs through `cmd::ask`: the process listing (`ps`; CIM
-  `Win32_Process`), every `--version`, the installed `sotd`'s `session-socket-path`, `update direction`, `update
-  repls`, `topology status` and `topology plan` (Unix), `systemctl --user is-active` and `cat`, the boot-wiring
-  queries, `ldd --version`, `stat -f`, `id -un`, Julia's version, floor and channel probes, the Git fact reads
-  (`rev-parse`, `rev-list`, `merge-base`, `status --porcelain`, `ls-files`, `cat-file`, `tag -l`), and on Windows the
-  logon session, the launcher code id and the Desktop shortcut's target. Each has 60 s wall clock through exit and
-  complete output under the same group/job ownership as the publish guard's Git reads (a cold CIM listing takes about
-  26 s on a hosted Windows runner and misses 15 s in every environment), then at most 5 s to end it; a daemon wait caps
-  each of its asks at the smaller of the wait left and 60 s. A question that did not start, was cut, or was ended by a
-  signal has no answer and its output is discarded; an answer is an exit code the caller then reads. Only those
-  children that change something or transfer are not questions and are not bounded here: clone, fetch, `worktree
-  add` and `remove`, `sotd update stage`, `trust declare`, `topology sync`, the scripts, Julia's instantiate and comm
-  steps, `juliaup`, npm, the `systemctl` actions, `loginctl enable-linger`, the unit and launcher writes and the icon
-  tools; their transfers keep their stall bounds. What each decision does with no answer:
-  - A process listing is valid only if it exits 0 and every row reads (a Unix row that does not parse, or CIM output that
-    is not an array of objects with numeric `ProcessId` and `ParentProcessId`, is an error, never a shorter or empty
-    list). A listing that failed presumes a daemon runs, so one that cannot be told its version is `Unknown` (asked
-    about, never taken for none) and its children are unknown. A Unix run stops before it writes (exit 1, "nothing was
-    changed"). A Windows update leaves the update armed, stops nothing, and ends ONE STEP LEFT with the reason, as it
-    does when the logon session cannot be read (the run is neither the desk nor an ssh logon); a daemon that runs and
-    cannot be told is not stopped before an apply, and the update stays armed.
-  - Before any write, the Unix run also stops (exit 1, or 2 where a gate refuses) when `systemctl` gives no documented
-    state (`active`, `inactive`, `failed`, `activating`, `deactivating`, `reloading`, `refreshing`, `maintenance`; a bus
-    or permission failure prints none), when an active unit's file cannot be read (the ownership gate is not "no
-    owner"), when `topology status` or `ldd` gives no answer, and when the daemon's socket path (Windows: pipe name) is
-    not a usable name. An installed `sotd` whose `--version` is cut, fails or prints none is an install that is there and
-    unreadable: a run that names no target stops (exit 2), a run that names its target goes on without a version, and
-    it is never "no install". Later in the run, a topology plan, a Git fact (`rev-parse`, `status`) or the Julia floor and
-    channel probes with no answer stop the run with the reason (in the final checks, FAIL); a Julia whose version
-    cannot be asked is the ONE STEP LEFT that says so.
-  - Reads of state a step would act on keep that state when they cannot say: a manifest is dropped only when `ls-files`
-    exits 1; an old version folder is pruned only when `status` exits 0 clean; `git merge-base` and `rev-list` that
-    give no answer make the build's direction `unknown: <why>`; `update direction` with no answer is `unknown`;
-    `update repls` with no answer is the daemon not saying all of its work, which is asked about.
-  - Final checks pass only on successful, valid observations: a binary counts only from an exit 0 `--version` that
-    says the version and commit; a Windows launcher code id that could not be read or printed empty is FAIL, as is a
-    window launcher check or a unit state that could not be listed or told; a cut is never PASS without its reason.
-  - Advisory reads say they could not tell: `stat` warns, `id` skips linger with a note, the boot-wiring line says it
-    could not be read.
-  The tests are `install::procs`, `install::cmd`, `install::mod` (installed version, endpoint name), `install::daemon`
-  (`way`, `apply_here`, `launcher`, the ask slice) and the Unix decision tests (`running_here`, the unit state, boot
-  wiring, Git reads).
+- Every question the install asks of the machine is bounded, and its unknown has one stated meaning. A question is a
+  read-only child whose answer the run decides on. Each runs through `observe::ask` and comes back an
+  `observe::Fact`, its value or why there is none (it did not start, was cut at its bound, was ended by a signal, ended
+  with an exit its reader does not document, or printed what does not read), which no caller reaches without writing
+  what the unknown means: a dropped fact does not compile (`unused_must_use` is denied in `install/`), and an explicit
+  discard is visible in the code. The bound is 60 s through exit and complete output, under the same group or job
+  ownership as the publish guard's reads, then at most 5 s to end it (a cold CIM listing takes about 26 s on a hosted
+  Windows runner and misses 15 s); `same-version` has 30 s, a daemon wait's ask the smaller of the wait left and 60 s,
+  the console's ssh check 30 s, `setup-publish-guard.sh --check-only` 300 s. The questions: the process listing (`ps`;
+  CIM `Win32_Process`), every `--version`, `session-socket-path`, `update direction` and `repls`, `same-version`,
+  `topology status` and `plan`, `systemctl --user is-active` and `cat`, `sot_boot_wired` and `sot_boot_off_line`,
+  `ldd --version`, `stat -f`, Julia's version, gate and channel probes, the Git reads (`rev-parse`, `rev-list`,
+  `merge-base`, `status`, `ls-files`, `cat-file`, `tag -l`, the publish guard's), and on Windows the logon session, the
+  launcher code id and the Desktop shortcut's target. `systemctl --user` is asked only where the run uses the unit (a
+  role that wires it, or a retire of an existing unit file), so a `--no-service` run never reads the user manager.
+  What each unknown means:
+  - Before any write (the direction, role, gate and daemon steps) every unknown stops the run with its reason: exit 1,
+    exit 2 where a gate or the never-backwards rule refuses, nothing written under the prefix, `~/.local/bin`, the unit
+    folder or the comm home. A listing that gave no answer is never "none runs"; a daemon that may run and gives no
+    answer is `Unknown`, asked about, and with no yes the run refuses. An installed `sotd` whose version cannot be read
+    stops a run that names no target (exit 2); a named run goes on and its verdict says why. A direction that cannot be
+    told refuses an implicit move over a readable version and is never a repair. `topology plan` is read here (an exit
+    naming no hosts.toml is the local launcher; under a hosts.toml status cannot read, it is not asked).
+  - After the first write, the checkout's Git reads and Julia's gate and channel probes stop the run (FAIL; the record,
+    written last, is not); an old version folder git cannot read is kept, and a manifest git cannot place is kept, each
+    named in the verdict; a Julia whose version cannot be asked is ONE STEP LEFT.
+  - A Windows update whose listing, logon session or daemon cannot be told stops nothing and stays armed (ONE STEP
+    LEFT, with the reason); a daemon a Windows update cannot tell, judged by its own children, is asked about.
+  - The final checks pass only on answers: a binary counts only from an exit 0 `--version` that says the version and
+    commit; a unit state, a daemon's answer, a listing, a launcher code id (empty included) or a plan that could not be
+    read is FAIL. A filesystem type (`stat`), a boot start (`sot_boot_wired`, after the run or in a retire) and the
+    Desktop shortcut that cannot be read are ONE STEP LEFT naming what to check.
+  - Not asked at all: the user name (linger is enabled by the numeric uid).
+  Children that change something or transfer are not questions and are not bounded here: clone, fetch, `worktree add`
+  and `remove`, `sotd update stage`, `trust declare`, `topology sync` and `pin`, the library's renders and boot writes,
+  the `systemctl` actions, `loginctl`, Julia's instantiate and comm steps, `juliaup` and the curl installer, npm,
+  `xattr`, the icon and desktop tools, the Windows scripts (stop, apply, shortcut, converge) and the junction; transfers
+  keep their stall bounds. Every child goes through `observe::Machine`, which a test stands in for. The tests are
+  `install::observe` (each reason from a real child), the decision tests of each module, and one table per phase that
+  cuts each question in turn on a fake computer and reads the verdict line, its reason, its exit code and the untouched
+  prefix: `install::unix::observe_tests` (Linux and macOS) and `install::windows::observe_tests` (Windows, hosted CI).
 
 Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdate.rs`):
 - An automatic arm goes only strictly above install.json's version, never into a dev build, a pinned or unreadable
@@ -405,7 +403,7 @@ Guarantees and boundaries:
   its own containment domain. A timeout, signal,
   failed read or incomplete cleanup is an operational failure: discovery/enrollment return `Stop`, the final check
   records `Found::fail`; partial output never becomes ready or setup status 3/4. The installer's questions to the
-  machine have their own 60 s bound (Bounded waits, above).
+  machine have their own 60 s bound ("Every question the install asks", above).
 - The last `PASS` or `ONE STEP LEFT` line retains the guard's checked results independently of the ordinary install
   summary. It names the checked base and recognized caller (including a caller sharing the base's common directory),
   readiness/provisioning or preserved conflict, and the limited discovery scope: installed base and recognized caller
@@ -482,7 +480,7 @@ Snapshot PIDs are never used for termination. `capture` owns the file and proces
 separate `capture_to_file` helper.
 
 Hosted Windows measured a cold CIM process query at about 26 s; the install's process listing is bounded at 60 s
-(Bounded waits), so a stalled listing ends the install's decision with the fail-closed meaning above, not at the
+("Every question the install asks", above), so a stalled listing ends the install's decision with the fail-closed meaning above, not at the
 fixture's own timeout.
 
 The three publish suites are listed in `rc-gate.sh` and `under-bash.sh`, and run as real local pushes in rust.yml's

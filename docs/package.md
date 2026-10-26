@@ -242,8 +242,9 @@ system, records where the list lives without writing it, leaves a clone whose `c
 untouched, and names each checked clone in its verdict; every child the guard starts is bounded (a Git read 60 s, the
 setup script 300 s). Windows proves the real-enrollment units and the install witness once per release, in the release
 gate (minutes each under Git Bash on a hosted runner), and the three guard suites per landing. Every question the installer asks
-of the machine (the process listing, `--version`, a unit's state) is bounded at 60 s and a cut one fails closed, never
-reads as "none runs" (scripts/CLAUDE.md, Bounded waits). A push scans only commits the
+of the machine (the process listing, `--version`, a unit's state) is bounded at 60 s and comes back a fact no caller reads
+without saying what its unknown means: before any write it stops the run, later it is FAIL, a step, an update left armed
+or state kept, its reason in the verdict, and never "none runs" (scripts/CLAUDE.md, Installers). A push scans only commits the
 destination does not hold: since 2026-10-25 the guard bounds its history scan by the push's old ids and by what the
 destination advertises at push time (one `ls-remote` per push, read only when it would dial exactly the URL git hands the
 hook; any error refuses), so a new branch or tag no longer rescans the history the server already has. Since 2026-10-26 a push costs a few

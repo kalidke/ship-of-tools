@@ -1,5 +1,5 @@
 //! The Unix install's questions, each cut in turn on a fake computer and walked through the phase that reads it to its
-//! verdict line (scripts/CLAUDE.md, Installers: "Bounded waits"). One table per phase; each runs in a child process of
+//! verdict line (scripts/CLAUDE.md, Installers: "Every question the install asks"). One table per phase; each runs in a child process of
 //! its own, since the verdict's step is the process's.
 
 use super::*;

@@ -1,5 +1,5 @@
 //! The Windows install's questions, each cut in turn on a fake computer and walked through the step that reads it to
-//! its verdict (scripts/CLAUDE.md, Installers: "Bounded waits"). The table runs in a child process of its own, since the
+//! its verdict (scripts/CLAUDE.md, Installers: "Every question the install asks"). The table runs in a child process of its own, since the
 //! verdict's step and tail are the process's.
 
 use super::*;
