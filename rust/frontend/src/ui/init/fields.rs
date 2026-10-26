@@ -94,8 +94,7 @@ impl State {
             repl_presentation: ReplPresentation::default(),
             evt_rx,
             status: "offline · no transport".to_string(),
-            pending_created_node_id: None,
-            pending_deleted_node_id: None,
+            file_ops: FileOps::default(),
             notify_sticky_until: None,
             nav: Navigation::new(initial_mode(
                 cli.start_mode.as_deref(),
@@ -202,8 +201,6 @@ impl State {
             nav_spill_cursor: None,
             bindings: load_keybindings(),
             settings,
-            upload: None,
-            upload_batch: None,
             monitor_aspect: initial_monitor_aspect(event_loop),
             local_term: None,
             term_size: None,

@@ -11,9 +11,8 @@ impl State {
     ) {
         // Ctrl+D delete round-trip: did this reply close out the
         // file we just asked the backend to trash? Late replies for
-        // a stale request are ignored.
-        let matches_delete =
-            self.pending_deleted_node_id.as_deref() == Some(node_id.as_str());
+        // a stale request are ignored. A matching reply settles the delete.
+        let matches_delete = self.file_ops.settle_deleted(&node_id);
         match result {
             crate::net::transport::FileDeleteResult::Ok {
                 path,
@@ -22,7 +21,6 @@ impl State {
             } => {
                 tracing::info!(%node_id, %path, trashed, ?trash_path, "file.delete ok");
                 if matches_delete {
-                    self.pending_deleted_node_id = None;
                     // Re-list the parent dir so the deleted row
                     // vanishes without a manual re-expand — same
                     // tree.children refresh the create path uses.
@@ -51,7 +49,6 @@ impl State {
             crate::net::transport::FileDeleteResult::Error { code, message } => {
                 tracing::error!(%node_id, %code, %message, "file.delete failed");
                 if matches_delete {
-                    self.pending_deleted_node_id = None;
                     self.status = format!("delete failed · {code}: {message}");
                     self.window.request_redraw();
                 }
@@ -116,7 +113,7 @@ impl State {
         // upload rather than being ignored (event_host, not
         // active_host) or, worse, misapplied to whatever a
         // differently-hosted upload happens to be active now.
-        if self.upload.as_ref().map(|u| &u.host) != Some(&event_host) {
+        if !self.file_ops.file_owned_by(&event_host) {
             tracing::debug!(%event_host, "file.upload ack from a non-owning host — dropped");
             return;
         }
@@ -125,19 +122,14 @@ impl State {
             // advance: `start_next_file` starts the next file, or —
             // when the queue is drained — finalizes with one listing
             // refresh + the aggregate status.
-            self.upload = None;
-            if let Some(b) = self.upload_batch.as_mut() {
-                b.done_files += 1;
-            }
+            self.file_ops.finish_file();
             self.start_next_file();
             self.window.request_redraw();
         } else {
             // The chunk-0 ack returns the backend's resolved name
             // (sanitized + de-duped, e.g. `report (1).csv`). Adopt it
             // so chunks 1..N target that same file.
-            if let (Some(fname), Some(up)) = (final_name, self.upload.as_mut()) {
-                up.name = fname;
-            }
+            self.file_ops.adopt_name(final_name);
             // Flow control: ack of chunk N → send chunk N+1.
             self.send_next_upload_chunk();
         }
@@ -155,15 +147,11 @@ impl State {
             // upload's batch — e.g. a stray failure on a host
             // this FE has since switched away from. Falls
             // back to the batch's own pinned host in the
-            // narrow between-files window where `self.upload`
-            // is momentarily `None` but the batch is still
+            // narrow between-files window where no file
+            // is in flight but the batch is still
             // live (so a legitimate same-host failure isn't
             // dropped just because no file is mid-flight).
-            let owner = self
-                .upload
-                .as_ref()
-                .map(|u| u.host.clone())
-                .or_else(|| self.upload_batch.as_ref().map(|b| b.host.clone()));
+            let owner = self.file_ops.owner();
             if owner.as_ref() != Some(&event_host) {
                 tracing::debug!(%event_host, ?owner,
                     "file.upload failure from a non-owning host — dropped");
@@ -172,8 +160,7 @@ impl State {
             // A backend upload failure aborts the whole batch — the
             // remaining files are dropped rather than uploaded into
             // an ambiguous state.
-            self.upload = None;
-            self.upload_batch = None;
+            self.file_ops.abort_upload();
         }
         self.status = format!("{op} failed · {message}");
         self.window.request_redraw();

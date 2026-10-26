@@ -481,30 +481,13 @@ struct State {
     /// scale-save and `--roi` aim transactions.
     preview_requests: preview::requests::PreviewRequests,
     // ui/nav/files: nav prompts, the reveal walk and file transfers.
-    /// Node id of a file or directory just created via the Ctrl+N prompt,
-    /// awaiting its `file.write` (file) or `dir.create` (dir) reply. When
-    /// that reply lands matching this id, we refresh the parent dir's
-    /// listing so the new entry appears, then clear this. `None` outside a
-    /// create round-trip.
-    pending_created_node_id: Option<String>,
-    /// Node id of a file just deleted via the Ctrl+D confirm prompt, awaiting
-    /// its `file.delete` reply. When that reply lands matching this id, we
-    /// refresh the parent dir's listing so the row vanishes, then clear this.
-    /// `None` outside a delete round-trip.
-    pending_deleted_node_id: Option<String>,
+    /// The Files tree's in-flight file transactions: the Ctrl+N create and Ctrl+D delete awaiting their
+    /// replies, and the upload batch with its one file in flight (chunks paced by its acks, pinned to its host).
+    file_ops: FileOps,
     /// The reveal walk: the target the Files tree is being opened toward (a driven open whose row is not yet
     /// visible), the level it awaits, its one force-refresh, and a target armed for a row's incoming root. The nav
     /// cursor lands on the target when its row materializes, so one command drives both panes.
     reveal: RevealWalk,
-    /// In-flight `file.upload`, if any. The chrome drives chunk flow control:
-    /// it sends chunk 0 in `start_upload`, then sends the next chunk on each
-    /// non-`done` `FileUploadAck`. `None` when no upload is running.
-    upload: Option<UploadState>,
-    /// The multi-file batch the in-flight `upload` belongs to, if any. Holds the
-    /// not-yet-started files and the shared destination; `Some` for the whole
-    /// duration of a multi- (or single-) file upload, cleared when the last
-    /// file's ack lands. Guards `u` against starting a second batch mid-run.
-    upload_batch: Option<UploadBatch>,
     // ui/session: the active (host, workspace), workspace lists and caches, picker, snapshots.
     /// The selected row, `(host, workspace_id)`, and its read-mark dwell (ADR 0014, ADR 0042 L2a). A `None`
     /// workspace is the host daemon's default; the host is the connection every current-view operation targets,

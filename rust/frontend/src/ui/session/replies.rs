@@ -117,8 +117,7 @@ impl State {
                     read: false,
                 },
             );
-            let had_batch = self.upload_batch.take().is_some();
-            if self.upload.take().is_some() || had_batch {
+            if self.file_ops.interrupt() {
                 self.status =
                     format!("upload interrupted by reconnect — {} to retry", self.bindings.first_label(Action::Upload));
                 self.notify_sticky_until =

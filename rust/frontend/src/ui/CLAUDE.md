@@ -18,7 +18,8 @@ request time; `session::WorkspacePicker` owns the new-session picker's listing, 
 `nav::NavCursor` owns the nav cursor's settle debounce, startup/relaunch/reconnect placements, README default, pin and
 project-scan clock; `nav::TreeView` owns a tree's rows, cursor and content generation; `nav::Navigation` owns the
 active tree, its mode, scroll and scan root, and the store of parked trees; `nav::RevealWalk` owns the reveal walk's
-target, awaited level, refresh memo and root-armed target.
+target, awaited level, refresh memo and root-armed target; `nav::FileOps` owns the pending create and delete and the
+upload batch.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -167,6 +168,13 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   memo kept), `abort` (with the memo), `clear` (with the root target: a row change, a failed result tree),
   `level_answered`, `await_level`, `mark_refetched`, `arm_root`, `defer_to_root` (reporting a root already in flight),
   `cancel_root` and `take_root`. `drive_reveal_step` and the tree replies stay State's, reading it by reference.
+- `FileOps` privately owns the Files tree's in-flight file transactions: the pending Ctrl+N create and Ctrl+D delete,
+  each settled only by a reply naming its node, and the upload batch with its one file in flight. The batch is pinned
+  to the host and row it started on; the owner pops its queue, reads each chunk (`UPLOAD_CHUNK`) and returns it as the
+  request's fields, counts a file done on its final ack, adopts the backend's resolved name from the first ack, and
+  reports the host a failure must come from (the file's, else the batch's between files). A failed send or read, a
+  backend failure and a reconnect end the upload and its batch; a local open failure ends only the batch. State sends,
+  refreshes the destination listing and writes the status.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
