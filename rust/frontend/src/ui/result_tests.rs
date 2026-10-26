@@ -1271,8 +1271,7 @@ impl State {
         );
         self.tree.selected = 1;
         self.preview_requests.record_fired(node_id.into());
-        self.preview_src_node_id = Some(node_id.into());
-        self.preview_src = Some(preview.clone());
+        self.preview_source.install(preview.0.clone(), preview.1.clone(), Some(node_id.into()), None, None);
         self.repl_model.edit_draft(DraftEdit::Replace("kept_default_input = 42".into()));
         // Park through the real switch so the tree, preview and REPL use their normal snapshot keys.
         self.switch_to_workspace(other_host.clone(), None, None, false);
@@ -1321,8 +1320,8 @@ impl State {
             "control: keeping the default row reset its cached tree or selection"
         );
         anyhow::ensure!(
-            self.preview_src.as_ref() == Some(&preview)
-                && self.preview_src_node_id.as_deref() == Some(node_id),
+            self.preview_source.source_copy().as_ref() == Some(&preview)
+                && self.preview_source.node_id() == Some(node_id),
             "control: keeping the default row reset its cached preview"
         );
         anyhow::ensure!(

@@ -11,6 +11,7 @@ owns authoritative rows and identity; `session/row_presentation.rs` owns their p
 `input::LayoutHelp` owns drawer selection, maximize/wide flags, Help browsing, return origin and startup requests.
 `preview::requests::PreviewRequests` owns both request clocks, the fired preview target and its page re-raster, concept
 follow commitment, the driven-preview hold, and the crop, scale-save and `--roi` aim transactions.
+`preview::source::InstalledPreviewSource` owns the installed preview bytes, their node, scale and markdown origin.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -112,6 +113,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   for its row and node, retired by a non-raster install, and consumed by the render pass only while it is still the
   fired target. No stronger transaction identity is claimed. The native result fixture reaches the fired target and
   the aim through the owner's operations; its ROI assertions stay intact.
+- `InstalledPreviewSource` privately owns what the last admitted preview reply installed: its mime and bytes, the node
+  it answered (what `o`/`W`/`O` act on, never the fired target), its physical scale and, for a markdown reply with a
+  node, the document's node and workspace, which a later non-markdown reply leaves in place. It is one Clone value: a
+  row's snapshot carries it whole and restores it before the repaint, and a first visit clears it whole, so the bytes,
+  node, calibration and markdown origin are always one reply's. The coordinator repaints from an owned copy of the
+  bytes; `figure_failed` stays with the markdown media and travels beside it in the snapshot.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
@@ -300,8 +307,8 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
   and painting; thin State adapters apply transport and presentation effects.
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
 - `preview/`: PreviewRequests owns request clocks, the fired target, concept follow, driven holds and the crop,
-  save and aim transactions; State coordinates preview installation, shaping and transport (fetch, replies, layout,
-  concept, open).
+  save and aim transactions; InstalledPreviewSource owns the installed source; State coordinates preview installation,
+  shaping and transport (fetch, replies, layout, concept, open).
 - `preview/image/`: bitmap previews as quads: figures, overlays, view, ROI.
 - `preview/markdown/`: markdown and source text shaped into cosmic-text buffers.
 - `preview/editor/`: the in-pane edit buffer.

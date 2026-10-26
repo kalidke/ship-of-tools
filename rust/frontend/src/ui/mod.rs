@@ -61,7 +61,7 @@ use preview::image::figures::{decode_figure_bytes, fail_figure, FigureCacheEntry
 #[cfg(test)]
 use preview::image::overlay::CAPTION_MAX_CHARS;
 use preview::image::overlay::{
-    parse_physical_scale, truncate_caption, CaptionStore, PhysicalScale,
+    parse_physical_scale, truncate_caption, CaptionStore,
 };
 use preview::image::view::{
     image_rect_for_caption, letterbox, png_cache_key_from_node_id, png_zoom_max,
@@ -804,14 +804,9 @@ struct State {
     /// on set + on resize + on an active-host switch.
     hello_refused: HashMap<HostKey, String>,
     preview_fatal: Option<MarkdownPreview>,
-    /// Last preview source (mime + raw bytes) cached so a font-size
-    /// change can rebuild the preview at the new scale without a
-    /// round-trip back to the backend. Cleared on disconnect.
-    preview_src: Option<(String, Vec<u8>)>,
-    /// The node id of the reply that installed `preview_src` — see the
-    /// `WorkspaceUiSnapshot` field of the same name for why this is a
-    /// distinct field from the fired target (`PreviewRequests`).
-    preview_src_node_id: Option<String>,
+    /// The installed source: bytes, their node, their scale and the markdown origin, repainted from on a rescale or
+    /// a row's restore without a round trip.
+    preview_source: preview::source::InstalledPreviewSource,
     // ui/preview/image: the image view, ROI, pages, scalebar, captions and figures.
     preview_png: Option<Quad>,
     /// Zoom multiplier for the PNG preview pane — 1.0 fits the image to
@@ -893,13 +888,8 @@ struct State {
     /// rather than reset to fit. Set by the Preview handler, consumed in
     /// `render_preview_source`.
     preview_reraster_keep_view: bool,
-    /// Physical scale of the raster the pane is *showing* (ADR 0034), from
-    /// the reply's `extras.physical_scale`. `None` for previews with no
-    /// scale; cleared on every `preview.get` reply (like `preview_page`).
-    /// Presence gates the scalebar toggle key + overlay.
-    preview_scale: Option<PhysicalScale>,
     /// Scalebar overlay toggle (ADR 0034, `b`). Default off; sticky across
-    /// navigations (renders only when `preview_scale` is present, so it can
+    /// navigations (renders only when the installed scale is present, so it can
     /// stay armed while browsing a mix of scaled / unscaled rasters).
     scalebar_on: bool,
     /// The shaped scalebar label buffer (e.g. `500 nm`), rebuilt each frame
@@ -988,23 +978,9 @@ struct State {
     /// same fence appears twice in a doc or the user re-renders before
     /// the reply lands.
     markdown_token_pending: std::collections::HashSet<(String, u64)>,
-    /// Node id of the markdown file backing the current `preview_md`
-    /// — used to resolve relative `![](url)` paths against the
-    /// markdown's own directory. Set whenever a `text/markdown`
-    /// preview lands carrying a node id; the fired target is
-    /// not authoritative here because the `--capture-preview` path
-    /// deliberately pins it to the root row to suppress
-    /// cursor-driven re-fires.
-    current_md_node_id: Option<String>,
-    /// Workspace the current markdown was fetched from. Figure
-    /// fetches use this rather than `active_workspace_id` so a
-    /// session whose active workspace differs from the markdown's
-    /// (e.g. `--capture-preview` always uses default) still routes
-    /// the figure to the right project.
-    current_md_workspace_id: Option<String>,
     /// Set by the MathRendered event handler when a fresh SVG enters
     /// `math_cache`. The redraw loop checks this and rebuilds
-    /// `preview_md` from `preview_src` so the markdown walk can size
+    /// `preview_md` from the installed source so the markdown walk can size
     /// per-block placeholders to the SVG's natural dimensions instead
     /// of the pre-render letterbox default. Coalesces a burst of
     /// MathRendered events into a single rebuild per frame.

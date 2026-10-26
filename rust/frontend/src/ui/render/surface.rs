@@ -117,7 +117,7 @@ impl State {
         // Replay the cached preview source — without this the open
         // file would stay at its original scale until the user
         // navigated to a different file.
-        if let Some((mime, bytes)) = self.preview_src.clone() {
+        if let Some((mime, bytes)) = self.preview_source.source_copy() {
             self.render_preview_source(&mime, &bytes);
         }
     }

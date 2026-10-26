@@ -216,7 +216,7 @@ impl State {
         if !is_image {
             return clear_and_none(self);
         }
-        let Some(scale) = self.preview_scale.clone() else {
+        let Some(scale) = self.preview_source.scale().cloned() else {
             return clear_and_none(self);
         };
         let Some(axis) = scale.axes.first() else {

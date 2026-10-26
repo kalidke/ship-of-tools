@@ -5,11 +5,11 @@ use crate::ui::*;
 impl State {
     /// Whether the current preview source is a code shaper (`new_tokens` /
     /// `new_plain`) rather than markdown/image — i.e. one where line anchoring
-    /// is meaningful. Keyed off the cached `preview_src` mime.
+    /// is meaningful. Keyed off the installed source's mime.
     fn preview_is_code(&self) -> bool {
-        self.preview_src
-            .as_ref()
-            .map(|(m, _)| {
+        self.preview_source
+            .mime()
+            .map(|m| {
                 m.starts_with("application/vnd.sot.tokens+json")
                     || (m.starts_with("text/") && m != "text/markdown" && m != "text/x-markdown")
             })

@@ -82,7 +82,7 @@ pub(in crate::ui) fn png_key(state: &mut State, key: KeyPress<'_>, label: String
             // pixel-size prompt (§4 live entry) instead of
             // no-opping, so an uncalibrated raster is one
             // keystroke from a real bar.
-            if state.preview_scale.is_some() {
+            if state.preview_source.scale().is_some() {
                 state.scalebar_on = !state.scalebar_on;
             } else if !state.begin_scale_entry() {
                 state.status = "scalebar · no image previewed".to_string();

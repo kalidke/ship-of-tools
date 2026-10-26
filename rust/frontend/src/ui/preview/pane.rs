@@ -7,8 +7,8 @@ use crate::ui::*;
 /// field report round-2 bug (`o`/`W`/`O` pressed between firing a new
 /// preview request and its reply landing used to act on the file about to
 /// be shown, not the one on screen). Callers pass
-/// `State::preview_src_node_id` — the node the currently-installed
-/// `preview_src` reply answered — as `installed`; this function's
+/// the installed source's node — the node the currently-installed
+/// reply answered — as `installed`; this function's
 /// signature has no room for a "fired but not yet replied" id at all,
 /// which is what makes that class of bug structurally unreachable here
 /// rather than merely avoided.

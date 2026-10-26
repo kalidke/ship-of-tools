@@ -104,7 +104,7 @@ pub fn quad_from_png_bytes(
 /// The preview pane uses this because the ADR-0034 scalebar must key off the
 /// as-served pixel count: `quad.size_px` is the (possibly shrunken) TEXTURE
 /// size, while the wire's `nm_per_px` describes the served image's pixels.
-/// Deriving the source dims per decode — rather than rescaling `preview_scale`
+/// Deriving the source dims per decode — rather than rescaling the installed scale
 /// in place — keeps it idempotent: `render_preview_source` re-runs on every
 /// workspace-snapshot restore, and an in-place rescale would compound the
 /// ratio on each swap-back.

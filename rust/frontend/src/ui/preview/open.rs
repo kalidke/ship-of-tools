@@ -9,14 +9,14 @@ impl State {
     /// sourceless html preview → temp file + OS browser (nothing reaches
     /// this today — `.html`/`.htm` is the only route to `text/html`, and
     /// the Quarto `--embed-resources` quick-open path is a separate
-    /// `IncomingEvt::QuartoOpened` handler that never sets `preview_src`
+    /// `IncomingEvt::QuartoOpened` handler that never installs a source
     /// — but the fallback is the honest thing to do if that ever
     /// changes); `.jl` → backend `pluto.open` (header-checked there);
     /// video → backend `video.open` (browser HTML5 playback); `.qmd` →
     /// quick Quarto render (no execution). Shared by the NavTree and
     /// Preview key arms (same behavior on the cursored / shown file).
     pub(in crate::ui) fn open_path_external(&mut self, abs: Option<String>) {
-        let preview_mime = self.preview_src.as_ref().map(|(m, _)| m.clone());
+        let preview_mime = self.preview_source.mime().map(str::to_owned);
         if preview_mime.as_deref() == Some("text/html") {
             // Field report: this used to always write the cached
             // preview bytes to a temp file — relative CSS/JS/images/
@@ -26,7 +26,7 @@ impl State {
             // fidelity) — the same request `W` dispatches today.
             if let Some(path) = self.previewed_files_path() {
                 self.docs_open_external(&self.active_host.clone(), path);
-            } else if let Some((_, bytes)) = self.preview_src.as_ref() {
+            } else if let Some(bytes) = self.preview_source.bytes() {
                 if let Err(e) = open_html_in_browser(bytes) {
                     tracing::warn!(error = %e, "failed to open preview in browser");
                 }

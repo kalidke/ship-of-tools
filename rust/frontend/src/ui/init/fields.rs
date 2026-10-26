@@ -114,7 +114,6 @@ impl State {
             preview_page: None,
             preview_page_raster_zoom: 1.0,
             preview_reraster_keep_view: false,
-            preview_scale: None,
             // Default off; `--start-scalebar` arms it for the headless capture
             // harness (no `b` keypress). Still gated on a present scale at draw.
             scalebar_on: cli.start_scalebar,
@@ -243,8 +242,6 @@ impl State {
             figure_cache: std::collections::HashMap::new(),
             figure_pending: std::collections::HashSet::new(),
             figure_failed: std::collections::HashSet::new(),
-            current_md_node_id: None,
-            current_md_workspace_id: None,
             needs_md_reflow: false,
             // ADR 0035: each host's `Connected` evt (remote + proxy) adds it
             // here; `resumed()` spawns the listener manager.
@@ -252,8 +249,7 @@ impl State {
             proxy_listener_tx: None,
             proxy_ensured: std::collections::HashMap::new(),
             text_scale_mult: 1.0,
-            preview_src: None,
-            preview_src_node_id: None,
+            preview_source: Default::default(),
             preview_requests: preview::requests::PreviewRequests::default(),
             project_scan_req_gen: HashMap::new(),
         }

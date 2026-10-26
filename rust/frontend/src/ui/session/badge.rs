@@ -88,7 +88,7 @@ impl State {
             .rows
             .get(self.tree.selected)
             .map(|row| row.node.id.clone());
-        let shown = self.preview_src_node_id.clone();
+        let shown = self.preview_source.node_id().map(str::to_owned);
         let effects = self.result_ledger.acknowledge_presented(
             target.as_ref(),
             cursor.as_deref(),

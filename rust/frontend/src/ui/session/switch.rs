@@ -257,22 +257,15 @@ impl State {
             self.mode = Mode::Files;
             self.preview_requests.forget_fired();
             self.pinned_preview_node_id = None;
-            self.preview_src = None;
-            self.preview_src_node_id = None;
             // Same invariant as the snapshot restore: a first-visited
-            // workspace must not inherit whatever the departing workspace
-            // left in these — a stale current_md_node_id/workspace_id
-            // would resolve THIS workspace's first figure fetch against
-            // the WRONG project, and a stale figure_failed would collapse
-            // figures that are perfectly healthy here.
+            // workspace must not inherit the departing workspace's source,
+            // its node, its calibration (a stale nm/px until the next wire
+            // reply) or its markdown origin (THIS workspace's first figure
+            // fetch resolved against the WRONG project) — nor its
+            // figure_failed, which would collapse figures that are
+            // perfectly healthy here.
+            self.preview_source = Default::default();
             self.figure_failed.clear();
-            self.current_md_node_id = None;
-            self.current_md_workspace_id = None;
-            // Same invariant as the snapshot restore: the calibration belongs
-            // to the previewed raster, so clearing the preview must clear the
-            // scale. Otherwise a first visit inherits the departing
-            // workspace's nm/px until the next wire reply overwrites it.
-            self.preview_scale = None;
             self.preview_png = None;
             self.preview_svg = None;
             self.preview_concept = None;

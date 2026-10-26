@@ -52,7 +52,7 @@ impl State {
     /// on what the user is LOOKING AT. Callers fall back to the cursored
     /// row when the shown preview isn't a files-mode node.
     ///
-    /// Deliberately reads `preview_src_node_id` (the node the INSTALLED
+    /// Deliberately reads the installed source's node (the node the INSTALLED
     /// reply answered) alone — not the fired target (the node the
     /// most recent REQUEST asked for: field report round 2, a request
     /// racing ahead of its own reply) and not `pinned_preview_node_id`
@@ -60,11 +60,11 @@ impl State {
     /// installed reply, so it can equally outrun what's shown — and
     /// persistently, since `maybe_fire_preview` refuses to fetch anything
     /// while pinned). `o`/`W`/`O` act on what is VISIBLE, period; when a
-    /// pinned preview IS what's installed, `preview_src_node_id` already
+    /// pinned preview IS what's installed, the installed node already
     /// equals it.
     pub(in crate::ui) fn previewed_files_path(&self) -> Option<String> {
         resolve_previewed_path(
-            self.preview_src_node_id.as_deref(),
+            self.preview_source.node_id(),
             self.active_project_root().as_deref(),
         )
     }

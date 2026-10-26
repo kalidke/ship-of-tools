@@ -115,15 +115,22 @@ impl State {
         let PreviewReply { node_id, workspace_id, mime, bytes, extras, generation } = payload;
         // Cache the source so a runtime font-size change
         // can re-render at the new scale without a
-        // round-trip to the backend.
-        self.preview_src = Some((mime.clone(), bytes.clone()));
-        // Field report round 2: stamp the node THIS reply
-        // actually answered, not the last one requested —
-        // `previewed_files_path()` reads this so `o`/`W`/`O`
-        // route against what's actually painted even when a
-        // newer request is already in flight ahead of its
-        // reply.
-        self.preview_src_node_id = node_id.clone();
+        // round-trip to the backend, with the node THIS reply
+        // actually answered, not the last one requested
+        // (field report round 2: `previewed_files_path()` reads
+        // it so `o`/`W`/`O` route against what's actually
+        // painted even when a newer request is already in
+        // flight ahead of its reply). ADR 0034: its physical
+        // scale for the scalebar overlay, cleared on every reply
+        // like pagination — a reply with no `physical_scale`
+        // retires the bar for the new target. For markdown, the
+        // node id + workspace that served the buffer: figure URL
+        // resolution needs the markdown file's directory, and
+        // figure fetches must go to the same workspace
+        // (otherwise active_workspace_id drift sends the
+        // request to a project that doesn't have the file).
+        let scale = extras.as_ref().and_then(parse_physical_scale);
+        self.preview_source.install(mime.clone(), bytes.clone(), node_id.clone(), scale, workspace_id);
         // Pagination state (ADR 0021): present only when the
         // serving plugin reported page extras; anything else
         // (including a later unpaginated reply for a new
@@ -133,10 +140,6 @@ impl State {
             let count = e.get("page_count")?.as_u64()? as u32;
             Some((page, count))
         });
-        // ADR 0034: physical scale for the scalebar overlay. Same
-        // clear-on-every-reply as pagination — a reply with no
-        // `physical_scale` retires the bar for the new target.
-        self.preview_scale = extras.as_ref().and_then(parse_physical_scale);
         // Resolve a live-entry save: this same handler serves the
         // `set_scale` reply (one install path, by design), so it's
         // where "saving…" has to be retired. Gated on the pending
@@ -146,7 +149,7 @@ impl State {
         // consume the marker and label an unrelated image "saved".
         let scale_saved = self.preview_requests.settle_scale_save(node_id.as_deref());
         if let Some(raw) = scale_saved {
-            self.status = if self.preview_scale.is_some() {
+            self.status = if self.preview_source.scale().is_some() {
                 format!("pixel size {raw} nm · saved")
             } else {
                 // Reply landed but carried no scale — report that
@@ -169,12 +172,6 @@ impl State {
                 self.preview_reraster_keep_view = false;
             }
         }
-        // For markdown previews, also remember which node
-        // id + workspace served the buffer — figure URL
-        // resolution needs the markdown file's directory,
-        // and figure fetches must go to the same workspace
-        // (otherwise active_workspace_id drift sends the
-        // request to a project that doesn't have the file).
         if matches!(mime.as_str(), "text/markdown" | "text/x-markdown") {
             // A fresh preview.get REPLY landing here (as
             // opposed to a cached-bytes reflow — see the note
@@ -188,10 +185,6 @@ impl State {
             // dispatch_pending_figures. figure_cache hits and
             // in-flight figure_pending entries are untouched.
             self.figure_failed.clear();
-            if let Some(id) = node_id.as_ref() {
-                self.current_md_node_id = Some(id.clone());
-                self.current_md_workspace_id = workspace_id;
-            }
         }
         self.render_preview_source(&mime, &bytes);
         self.result_preview_installed(generation, node_id.as_deref());
