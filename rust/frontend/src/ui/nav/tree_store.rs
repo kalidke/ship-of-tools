@@ -423,7 +423,7 @@ impl State {
         // switch_to_workspace clear. (The old cross-mode edge — a `files`
         // tree.root admitted while in Modules mode — is gone: installs route
         // by key now, so a Files reply can't touch a Modules view at all.)
-        self.pending_switch_reveal = None;
+        self.reveal.cancel_root();
         match mode {
             // Files/Modules: fire the loader ONLY for an empty (never-loaded)
             // view — a restored view keeps its nested cursor + expansion

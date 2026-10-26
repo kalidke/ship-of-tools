@@ -492,42 +492,10 @@ struct State {
     /// refresh the parent dir's listing so the row vanishes, then clear this.
     /// `None` outside a delete round-trip.
     pending_deleted_node_id: Option<String>,
-    /// Deep-path reveal target for a driven open (`files:<relpath>`), set when
-    /// the BE opens a file whose row isn't visible yet because its ancestor dirs
-    /// aren't expanded. `drive_reveal_step` expands one ancestor per
-    /// `tree.children` round-trip until the row materializes, then lands the
-    /// cursor on it (so the nav header + viewport follow the preview body — one
-    /// command drives both panes; the BE never issues a separate cursor move).
-    /// `None` when no reveal is in flight.
-    pending_reveal: Option<String>,
-    /// The ancestor dir id (`files:<relpath>`) whose `tree.children` we've
-    /// already requested for the in-flight `pending_reveal` and are awaiting.
-    /// Guards against re-requesting the same in-flight level when unrelated
-    /// `tree.children` replies re-enter `drive_reveal_step`. Cleared/advanced as
-    /// each level resolves.
-    reveal_awaiting: Option<String>,
-    /// For a reveal whose deepest *expanded* ancestor dir doesn't contain the
-    /// target, the `(target_id, ancestor_id)` pair we already force-refreshed
-    /// once. A brand-new file (an agent wrote it *after* the dir was last
-    /// listed) is absent from the cached children, so `drive_reveal_step`
-    /// re-fetches that dir (a fresh `list_dir` stat surfaces it) instead of
-    /// giving up — one loopback round-trip, sub-second, so generate→preview and
-    /// badge→navigate land on fresh files. Keyed by `(target, ancestor)` so it
-    /// self-scopes to this reveal and can't loop: if the same dir is refreshed
-    /// and the target is STILL absent it's genuinely gone — stop. Cleared when
-    /// the cursor lands.
-    reveal_refetched: Option<(String, String)>,
-    /// One-shot cursor reveal for a preview driven via a *workspace switch*
-    /// (#4 fix). Cross-ws force-show previews and #1's persisted `nav.preview`
-    /// are consumed in `switch_to_workspace`, which fires the preview body
-    /// before the switched-to workspace's `tree.root` has loaded — so the
-    /// target row isn't in `tree.rows()` yet and the cursor can't land inline.
-    /// We stash the `files:` node id here and apply it when that workspace's
-    /// `tree.root` reply arrives (re-using `drive_reveal_step`, so a top-level
-    /// row lands directly and a nested one expands its ancestors). Without it
-    /// the preview pane updates but the nav cursor stays on the old row — the
-    /// desync the maintainer hit. `None` once consumed.
-    pending_switch_reveal: Option<String>,
+    /// The reveal walk: the target the Files tree is being opened toward (a driven open whose row is not yet
+    /// visible), the level it awaits, its one force-refresh, and a target armed for a row's incoming root. The nav
+    /// cursor lands on the target when its row materializes, so one command drives both panes.
+    reveal: RevealWalk,
     /// In-flight `file.upload`, if any. The chrome drives chunk flow control:
     /// it sends chunk 0 in `start_upload`, then sends the next chunk on each
     /// non-`done` `FileUploadAck`. `None` when no upload is running.

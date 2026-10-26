@@ -17,7 +17,8 @@ follow commitment, the driven-preview hold, and the crop, scale-save and `--roi`
 request time; `session::WorkspacePicker` owns the new-session picker's listing, cursor and account choice.
 `nav::NavCursor` owns the nav cursor's settle debounce, startup/relaunch/reconnect placements, README default, pin and
 project-scan clock; `nav::TreeView` owns a tree's rows, cursor and content generation; `nav::Navigation` owns the
-active tree, its mode, scroll and scan root, and the store of parked trees.
+active tree, its mode, scroll and scan root, and the store of parked trees; `nav::RevealWalk` owns the reveal walk's
+target, awaited level, refresh memo and root-armed target.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -160,6 +161,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   earlier parked reply (the decision is asked first, so the park log still precedes the rebuild's), a children splice
   or a scan into its slot. Parked trees are read by reference; a destroyed row's slots are purged and the default
   row's raw-slug slots migrate with an existing `<default>` slot winning.
+- `RevealWalk` privately owns what the reveal walk remembers between round trips: its target, the ancestor it awaits,
+  the one force-refresh it spent and a target armed for a row's incoming root. Each transition is named and ends
+  exactly the parts it ended before: `start` (fresh levels), `reset_levels`, `stop` (target and level, the refresh
+  memo kept), `abort` (with the memo), `clear` (with the root target: a row change, a failed result tree),
+  `level_answered`, `await_level`, `mark_refetched`, `arm_root`, `defer_to_root` (reporting a root already in flight),
+  `cancel_root` and `take_root`. `drive_reveal_step` and the tree replies stay State's, reading it by reference.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

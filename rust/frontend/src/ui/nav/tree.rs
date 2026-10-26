@@ -523,7 +523,7 @@ impl State {
         if !self.nav.collapse_selected() {
             return false;
         }
-        if let (Some(id), Some(target)) = (collapsed_id, self.pending_reveal.as_ref()) {
+        if let (Some(id), Some(target)) = (collapsed_id, self.reveal.target()) {
             // A ROOT id is `<mode>:` with an EMPTY rest ("files:") — not
             // merely ends-with-':' (codex round 4: a directory literally
             // named "ab:" yields id "files:ab:", and an ends-with test would
@@ -531,16 +531,14 @@ impl State {
             // Deeper ids scope with '/'.
             let is_root = id.split_once(':').is_some_and(|(_, rest)| rest.is_empty());
             let scoped = if is_root {
-                target != &id && target.starts_with(&id)
+                target != id.as_str() && target.starts_with(&id)
             } else {
                 target.starts_with(&format!("{id}/"))
             };
             if scoped {
                 tracing::info!(collapsed = %id, target = %target,
                     "reveal: cancelled by user collapse of an ancestor");
-                self.pending_reveal = None;
-                self.reveal_awaiting = None;
-                self.reveal_refetched = None;
+                self.reveal.abort();
             }
         }
         true

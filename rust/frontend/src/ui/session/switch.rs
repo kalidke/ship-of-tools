@@ -211,16 +211,14 @@ impl State {
         // and drive the cursor/preview to a same-relative-path file in the
         // wrong project (Codex review 2026-07-15). The first-visit badge-consume
         // below re-arms it for the new workspace when one is pending.
-        self.pending_switch_reveal = None;
+        self.reveal.cancel_root();
         // The in-flight deep-reveal bookkeeping is likewise the DEPARTING
         // workspace's: its awaited parent_id names a row in the departing
         // tree, and a same-string parent in the entering tree is a different
         // node. Clearing here is also what lets the TreeChildren park branch
         // skip abort logic entirely — an armed reveal's awaited parent always
         // belongs to the ACTIVE key.
-        self.pending_reveal = None;
-        self.reveal_awaiting = None;
-        self.reveal_refetched = None;
+        self.reveal.abort();
         // Leaving abandons the result attempt that owned the reveal; coming back starts a new one.
         self.result_ledger.release_reveal();
         // The preview-follow hold is the departing reveal's too: it names a

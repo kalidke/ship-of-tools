@@ -672,9 +672,9 @@ impl State {
                 .collect(),
             self.nav.tree().selected(),
             self.status.clone(),
-            self.pending_reveal.is_some(),
-            self.pending_switch_reveal.is_some(),
-            self.reveal_awaiting.clone(),
+            self.reveal.target().is_some(),
+            self.reveal.root_target().is_some(),
+            self.reveal.awaiting().map(str::to_owned),
             self.probe_sees_badge(host),
         )
     }
@@ -1116,7 +1116,7 @@ impl State {
             Gone::Destroy => {
                 self.on_workspace_destroyed(host.clone(), Err("refused".into()));
                 anyhow::ensure!(
-                    self.pending_reveal.is_some() || self.pending_switch_reveal.is_some(),
+                    self.reveal.target().is_some() || self.reveal.root_target().is_some(),
                     "{label}: a failed destroy aborted the attempt"
                 );
                 self.on_workspace_destroyed(host.clone(), Ok(destroyed_info("old-id")));
@@ -1133,7 +1133,7 @@ impl State {
                 .badged_keys()
                 .contains(&(host.clone(), "project".into()))
                 && !(case.inflight
-                    && (self.pending_reveal.is_some() || self.pending_switch_reveal.is_some())),
+                    && (self.reveal.target().is_some() || self.reveal.root_target().is_some())),
             "{gone}"
         );
         // A successor row with the same slug is listed.

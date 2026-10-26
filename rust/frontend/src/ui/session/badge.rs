@@ -103,10 +103,7 @@ impl State {
     /// Apply navigation cleanup before committing a prepared directory replacement or bouncing rows.
     pub(in crate::ui) fn apply_result_effects(&mut self, effects: ResultEffects) {
         if effects.clear_reveal {
-            self.pending_reveal = None;
-            self.pending_switch_reveal = None;
-            self.reveal_awaiting = None;
-            self.reveal_refetched = None;
+            self.reveal.clear();
             self.preview_requests.abort_reveal();
         }
         if effects.refresh_badges {

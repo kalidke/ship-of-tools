@@ -31,13 +31,13 @@ impl State {
             return;
         }
         let awaited = |state: &Self, request: &ResultTreeRequest| match request {
-            ResultTreeRequest::Root => state.pending_switch_reveal.is_some(),
+            ResultTreeRequest::Root => state.reveal.root_target().is_some(),
             ResultTreeRequest::Children { parent_id } => {
-                state.pending_reveal.is_some()
-                    && (state.reveal_awaiting.as_deref() == Some(parent_id.as_str())
+                state.reveal.target().is_some()
+                    && (state.reveal.awaiting() == Some(parent_id.as_str())
                         || state
-                            .reveal_refetched
-                            .as_ref()
+                            .reveal
+                            .refetched()
                             .is_some_and(|(_, anc)| anc == parent_id))
             }
         };
@@ -65,10 +65,7 @@ impl State {
                 if awaited(self, &request) {
                     tracing::info!(?request, %error, "result tree request FAILED — reveal aborted");
                     self.status = format!("result tree failed · {error}");
-                    self.pending_reveal = None;
-                    self.pending_switch_reveal = None;
-                    self.reveal_awaiting = None;
-                    self.reveal_refetched = None;
+                    self.reveal.clear();
                     self.preview_requests.abort_reveal();
                     self.result_ledger.release_reveal();
                     self.window.request_redraw();
@@ -158,9 +155,7 @@ impl State {
                     .get(self.nav.tree().selected())
                     .map(|r| r.node.id.clone()));
                 self.result_ledger.release_reveal();
-                self.pending_reveal = Some(sel);
-                self.reveal_awaiting = None;
-                self.reveal_refetched = None;
+                self.reveal.start(sel);
                 self.drive_reveal_step(None);
             } else {
                 tracing::info!(?armed_ws, active = ?self.selected.workspace_id(),
@@ -257,7 +252,7 @@ impl State {
             if self.result_ledger.reveal_attempt().is_some() != result_owned {
                 return;
             }
-            if let Some(node_id) = self.pending_switch_reveal.take() {
+            if let Some(node_id) = self.reveal.take_root() {
                 // Hold the per-frame preview-follow off the just-applied
                 // README/default cursor while this deep reveal lands, so
                 // `maybe_fire_preview` can't clobber the driven badge
@@ -271,9 +266,7 @@ impl State {
                         .get(self.nav.tree().selected())
                         .map(|r| r.node.id.clone()));
                 }
-                self.pending_reveal = Some(node_id);
-                self.reveal_awaiting = None;
-                self.reveal_refetched = None;
+                self.reveal.start(node_id);
                 self.drive_reveal_step(None);
             }
         }
@@ -323,7 +316,7 @@ impl State {
         // Advance an in-flight deep-path reveal: this splice may have
         // just made the next ancestor (or the target row) visible.
         // No-op when no reveal is armed.
-        if self.pending_reveal.is_some() {
+        if self.reveal.target().is_some() {
             tracing::info!(%parent_id, "reveal: re-entering after children splice");
         }
         // A result's reveal advances only on its own attempt's reply, and an in-place one never on a result's.
@@ -363,11 +356,11 @@ impl State {
         tracing::info!(%parent_id, %error, "tree.children FAILED");
         self.status = format!("tree expand failed · {parent_id}: {error}");
         let refetch_gated = self
-            .reveal_refetched
-            .as_ref()
+            .reveal
+            .refetched()
             .is_some_and(|(_, anc)| anc == &parent_id);
         if self.result_ledger.reveal_attempt().is_none()
-            && (self.reveal_awaiting.as_deref() == Some(parent_id.as_str()) || refetch_gated)
+            && (self.reveal.awaiting() == Some(parent_id.as_str()) || refetch_gated)
         {
             // Covers BOTH wait states (codex round 4): a failed
             // reply for the awaited level OR for the force-
@@ -375,9 +368,7 @@ impl State {
             // gated forever (only that dir's reply advances the
             // walk now).
             tracing::info!(%parent_id, "reveal: aborted — awaited children failed");
-            self.pending_reveal = None;
-            self.reveal_awaiting = None;
-            self.reveal_refetched = None;
+            self.reveal.abort();
         }
         self.window.request_redraw();
     }
