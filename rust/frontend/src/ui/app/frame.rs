@@ -99,7 +99,7 @@ impl State {
         self.canvas.trim();
         self.finish_frame_capture(readback, capture_target, capture_now, selfie_target);
         self.capture.count_frame();
-        self.last_frame_at = Some(std::time::Instant::now());
+        self.pacer.drawn(std::time::Instant::now());
         Ok(())
     }
 
@@ -112,7 +112,7 @@ impl State {
         // mark dirty so the frame loop keeps animating it (the fast-repaint
         // cadence is armed in `about_to_wait`).
         if self.prune_expired_flashes(std::time::Instant::now()) {
-            self.dirty = true;
+            self.pacer.mark_dirty();
         }
         self.reflow_markdown_preview();
         self.fire_settled_cursor();
@@ -153,7 +153,7 @@ impl State {
             // check passes once the user settles, then the fires go
             // through. ~10 cheap no-op redraws per settle, which is
             // dwarfed by the per-row backend traffic we're skipping.
-            self.dirty = true;
+            self.pacer.mark_dirty();
         } else {
             self.maybe_fire_concept_read();
             self.maybe_fire_preview();

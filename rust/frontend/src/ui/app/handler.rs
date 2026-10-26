@@ -196,7 +196,7 @@ impl ApplicationHandler for App {
                     // A line owed to a frame whose redraw was throttled: go on
                     // to the frame-budget reschedule below, so that frame
                     // draws now and starts the hold (`Leaving::presented`).
-                    if !(state.dirty && state.leaving.as_ref().is_some_and(|l| l.owes_frame())) {
+                    if !(state.pacer.is_dirty() && state.leaving.as_ref().is_some_and(|l| l.owes_frame())) {
                         return;
                     }
                 }
@@ -245,7 +245,7 @@ impl ApplicationHandler for App {
         if state.nav_spill.expire() {
             state.window.request_redraw();
         }
-        if !state.dirty {
+        if !state.pacer.is_dirty() {
             // Fullscreen VRR/OLED brightness-flicker fix (2026-07-12, a VRR/OLED
             // ultrawide OLED). In borderless fullscreen DWM composition
             // disengages, so the panel's adaptive-sync refresh follows OUR
@@ -293,21 +293,9 @@ impl ApplicationHandler for App {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             return;
         }
-        match state.last_frame_at {
-            Some(t) => {
-                let elapsed = t.elapsed();
-                if elapsed >= FRAME_BUDGET {
-                    state.dirty = false;
-                    state.window.request_redraw();
-                } else {
-                    let deadline = std::time::Instant::now() + (FRAME_BUDGET - elapsed);
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-                }
-            }
-            None => {
-                state.dirty = false;
-                state.window.request_redraw();
-            }
+        match state.pacer.due() {
+            crate::ui::app::pacing::FrameDue::Now => state.window.request_redraw(),
+            crate::ui::app::pacing::FrameDue::At(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
         }
     }
 
@@ -337,7 +325,7 @@ impl ApplicationHandler for App {
         // idle clock tick (`!dirty`). Either way request a redraw so the chrome
         // repaints with a fresh `Local::now()`. `about_to_wait` will arm the
         // next 1s wake afterwards, so we don't busy-loop here.
-        state.dirty = false;
+        state.pacer.clear_dirty();
         state.window.request_redraw();
         event_loop.set_control_flow(ControlFlow::Wait);
     }
@@ -404,15 +392,8 @@ fn redraw_requested(state: &mut State, event_loop: &ActiveEventLoop) {
     // just collapsed with whatever else arrives in the
     // intervening few ms. Capture mode bypasses the cap so
     // the frame count ticks up to CAPTURE_FRAME without delay.
-    let throttled = !state.capture.harness()
-        && state
-            .last_frame_at
-            .map(|t| t.elapsed() < FRAME_BUDGET)
-            .unwrap_or(false);
-    if throttled {
-        state.dirty = true;
-    } else {
-        state.dirty = false;
+    let throttled = state.pacer.defer(state.capture.harness());
+    if !throttled {
         if let Err(e) = state.redraw() {
             tracing::error!(error = %e, "redraw failed");
         }
@@ -424,8 +405,7 @@ fn redraw_requested(state: &mut State, event_loop: &ActiveEventLoop) {
         // Window managers that refuse focus-stealing (Windows
         // foreground-lock, macOS) get the OS-sanctioned fallback
         // of a user-attention request. One-shot. ADR 0017.
-        if state.focus_on_first_frame {
-            state.focus_on_first_frame = false;
+        if state.pacer.take_first_frame_focus() {
             state.window.focus_window();
             // Windows blocks SetForegroundWindow for a freshly
             // spawned process (foreground lock), so a relaunched

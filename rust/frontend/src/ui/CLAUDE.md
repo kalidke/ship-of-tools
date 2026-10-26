@@ -40,7 +40,8 @@ connection's hello facts and `host_view::HelloRefusals` each host's refused hell
 surface, device, queue and surface configuration; `render::canvas::Canvas` owns the glyph text layer, the chrome's
 cell grid and the cell metrics; `render::brushes::Brushes` owns the quad pipeline, the solid brushes, the logos and
 the help peek's backing; `app::startup::StartupScript` owns the harness's command-line one-shots;
-`render::capture_run::CaptureRun` owns the capture harness's run.
+`render::capture_run::CaptureRun` owns the capture harness's run; `app::pacing::FramePacer` owns the frame-rate cap
+and the first frame's focus.
 Each of these owners lives in a module (or a module tree) that holds no `impl State`, so the compiler, not
 convention, keeps the window's code out of its fields.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
@@ -310,6 +311,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   target frame (`--capture-delay-ms`, else four times `CAPTURE_FRAME` with a capture preview, else `CAPTURE_FRAME`)
   beats a selfie on the same frame; the readback and the exit are State's. The native fixtures read the frame count
   through a reader compiled only for them.
+- `FramePacer` privately owns the frame-rate cap: a redraw inside `FRAME_BUDGET` of the last frame is deferred
+  (dirty) and drawn at the boundary, so a burst collapses into one frame (the capture harness draws every redraw);
+  animations and debounces mark it dirty; the first drawn frame takes the window's focus once.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

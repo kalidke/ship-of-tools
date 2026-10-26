@@ -125,8 +125,7 @@ impl State {
             exit_deadline: ExitDeadline::new(),
             last_key: None,
             battery: BatteryGauge::default(),
-            dirty: false,
-            last_frame_at: None,
+            pacer: crate::ui::app::pacing::FramePacer::new(),
             strip_motion: Default::default(),
             focus_prompts: FocusPrompts::new(initial_focus(cli)),
             md_media: MarkdownMedia::default(),
@@ -141,7 +140,6 @@ impl State {
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             presence: Default::default(),
             control: ControlChannel::default(),
-            focus_on_first_frame: true,
             #[cfg(all(test, feature = "test-window-progress"))]
             native_progress: native_progress_ledger(),
             editor: Editor::default(),

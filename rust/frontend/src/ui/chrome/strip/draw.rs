@@ -263,7 +263,7 @@ impl State {
         // Ease toward `target` for the next frame; keep the frame loop
         // alive (dirty) until settled.
         if self.strip_motion.step(scroll, target, std::time::Instant::now()) {
-            self.dirty = true;
+            self.pacer.mark_dirty();
         }
     }
 }

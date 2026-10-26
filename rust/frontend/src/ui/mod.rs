@@ -202,22 +202,8 @@ struct State {
     should_exit: bool,
     /// The App's one process backstop, shared so the final decision arms it.
     exit_deadline: ExitDeadline,
-    /// Frame-rate cap state. `request_redraw` from event handlers and the
-    /// transport task queue `RedrawRequested`; if we'd draw twice within
-    /// `FRAME_BUDGET`, the second one sets `dirty` and `about_to_wait`
-    /// reschedules at the next frame boundary so a burst (paste, PTY echo
-    /// storm, LLM token stream) collapses into one frame.
-    dirty: bool,
-    last_frame_at: Option<std::time::Instant>,
-    /// One-shot: focus + raise the window on the first rendered frame.
-    /// A focus request made at window-creation time (before the window
-    /// is shown / before the first paint) is widely ignored by window
-    /// managers — Windows' foreground-lock and macOS both restrict it.
-    /// Deferring to the first frame is the portable way to land focused
-    /// on launch / after an ADR-0017 self-relaunch. When the OS blocks
-    /// focus-stealing outright we fall back to `request_user_attention`
-    /// (taskbar flash / dock bounce / urgent hint). Cleared after use.
-    focus_on_first_frame: bool,
+    /// The frame pacer: the cap's deferred frame and clock, and the first frame's focus.
+    pacer: crate::ui::app::pacing::FramePacer,
     // ui: the per-host request senders that send and send_to route through.
     /// Push-side of every host's GPU→transport channel, in connection
     /// (display) order — ADR 0042 L2a's generalisation of the old single
