@@ -467,5 +467,10 @@ milestone and navigation, the reveal walk, file operations and the drift check a
 (the maintainer's decision) a landing is proved before main by the local gate, the build and the existing suite; the
 hosted Rust and CI runs test main after the merge, one run per batch of merges, none waited for before the next merge;
 a red post-merge run is fixed forward in the next landing or the landing is reverted; the native window run stays once
-per batch after the merge. Nothing is half-done on main.
+per batch after the merge. Whole-window landings 12 to 30 landed 2026-10-26, and the window's `State` has 104 fields
+left of 236. The installer's crossing words landed 2026-10-26: at the 0.6-to-0.7 update it says every agent ends once
+and its conversation comes back by resume, and the install guides say what to do after an update (run again if an
+update pinned the install, restart every window, a window's computer runs its own daemon, where `sotd` is). The
+unbuilt exported types `Mode`, `Tool` and `Capture` left `core/` on 2026-10-26, before the 0.7.0 tag, as ADR 0051
+decides; `ConceptEntity` and `AnnotationKind` stay declared and unbuilt. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
