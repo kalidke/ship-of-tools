@@ -61,7 +61,7 @@ use preview::image::figures::{decode_figure_bytes, fail_figure, FigureCacheEntry
 #[cfg(test)]
 use preview::image::overlay::CAPTION_MAX_CHARS;
 use preview::image::overlay::{
-    parse_physical_scale, truncate_caption, CaptionStore,
+    parse_physical_scale, truncate_caption,
 };
 use preview::image::view::{
     image_rect_for_caption, letterbox, png_cache_key_from_node_id, png_zoom_max,
@@ -597,49 +597,11 @@ struct State {
     // ui/agent_pane: selected client, warm storage, screen, input and receipt owner.
     agent_pane: AgentPane,
     // ui/preview: the preview pane's buffers, concept slot, scroll and overlays.
-    preview_svg: Option<Quad>,
-    /// Tree-sitter-backed syntax highlighter for the markdown preview's
-    /// fenced code blocks (and, later, the editor pane). Constructed
-    /// once per `State` because `HighlightConfiguration::new` compiles
-    /// the per-language highlight query — moderately expensive vs
-    /// the per-redraw highlight call itself.
-    highlight_service: crate::ui::preview::markdown::highlight::HighlightService,
-    preview_md: MarkdownPreview,
-    /// Pixel rect of the markdown pane from the most recent ratatui layout
-    /// pass; cached so we can re-shape on resize without re-running layout.
-    md_rect_px: ScreenRect,
-    concept: Option<ConceptInfo>,
-    /// Definition line (1-indexed) the in-flight `preview.get` should
-    /// anchor to once it lands — set from the selected modules-mode row's
-    /// `line` payload so the code preview scrolls the item (its docstring
-    /// if present, else the definition) to the top of the pane instead of
-    /// showing the containing file from line 1. `None` for files-mode rows
-    /// (which carry no `line`) → preview opens at the top as before.
-    /// Consumed once by the Preview reply handler.
-    preview_anchor_line: Option<u32>,
-    /// The definition line the *currently shown* code preview is anchored to.
-    /// Lets `maybe_fire_preview` re-anchor without a re-fetch when the cursor
-    /// moves between items in the SAME file (common within a module) — the
-    /// same-node early-return otherwise skips re-anchoring, so the preview
-    /// stays parked on the first item. Compared against the new selection's
-    /// line so we re-anchor only on a real change, never fighting the user's
-    /// manual scroll on a stable selection.
-    preview_anchored_to: Option<u32>,
-    /// Shaped annotation body for the latest `concept.read` reply, ready
-    /// for the chrome's concept pane to render. `None` when the cursored
-    /// row has no annotation; rebuilt on every event so we don't pay the
-    /// markdown shape cost per frame.
-    preview_concept: Option<MarkdownPreview>,
-    /// Pixel rect of the concept pane from the most recent layout pass.
-    /// Cached so `resize` triggers only on actual shape changes.
-    concept_rect_px: ScreenRect,
-    /// Scroll offset (rows from the top) of the preview pane's flowed
-    /// text. 0 = top of the markdown body; positive = scrolled down.
-    /// Drives an upward pixel shift of the cosmic-text TextArea via
-    /// `ExtraArea::scroll_y_px`. Image-only previews (PNG/SVG) ignore
-    /// this. Clamped at render time to total_layout_lines minus visible
-    /// rows so the user can't scroll past the bottom of the content.
-    preview_scroll: u16,
+    /// The shaped preview: the flowed text buffer, its rect, scroll and definition-line anchor, the math SVG, the
+    /// refused-hello overlay and the highlighter.
+    shaped: ShapedPreview,
+    /// The concept slot: the last annotation read, its shaped body and the rect it is shaped for.
+    concept: ConceptSlot,
     /// ADR 0030 §2 / ADR 0042 L2a: a persistent, blocking "update needed"
     /// message shown when a host's daemon refuses the handshake on a
     /// protocol-version skew. Keyed by `HostKey` — each host's own hello
@@ -647,121 +609,20 @@ struct State {
     /// whole UI while every other (healthy) host works fine; only
     /// `active_host`'s entry is projected to the blocking overlay (see
     /// `rebuild_fatal_overlay`/`show_fatal`). A host's entry is removed on
-    /// its own next successful `Connected` (not every host's). `preview_fatal`
-    /// is the shaped buffer for whichever host is CURRENTLY active, rebuilt
-    /// on set + on resize + on an active-host switch.
+    /// its own next successful `Connected` (not every host's). The shaped
+    /// preview's fatal overlay is shaped for whichever host is CURRENTLY
+    /// active, rebuilt on set + on resize + on an active-host switch.
     hello_refused: HashMap<HostKey, String>,
-    preview_fatal: Option<MarkdownPreview>,
     /// The installed source: bytes, their node, their scale and the markdown origin, repainted from on a rescale or
     /// a row's restore without a round trip.
     preview_source: preview::source::InstalledPreviewSource,
     // ui/preview/image: the image view, ROI, pages, scalebar, captions and figures.
-    preview_png: Option<Quad>,
-    /// Zoom multiplier for the PNG preview pane — 1.0 fits the image to
-    /// the pane (current letterbox behaviour); >1.0 samples a 1/zoom-wide
-    /// sub-rect of the texture so detail becomes legible.
-    preview_png_zoom: f32,
-    /// Pan offset in physical pixels of the zoomed canvas relative to
-    /// the pane centre. `(0, 0)` keeps the canvas centred in
-    /// `preview_rect`; arrow keys nudge by a fraction of the pane.
-    /// Clamped at render time so the canvas covers the pane in whichever
-    /// axes it's larger than the pane — the user can't pan past the
-    /// image edge and reveal empty pane.
-    preview_png_pan_px: (f32, f32),
-    /// Natural dimensions (w, h) of the currently-loaded PNG, used as
-    /// part of the cache key so flipping between same-size renders in
-    /// the same directory (e.g. successive timesteps of a plot) keeps
-    /// the same view (see `preview_png_cache`). `None` until a PNG has
-    /// loaded.
-    preview_png_dims: Option<(u32, u32)>,
-    /// Dimensions of the shown raster as SERVED, before the GPU-fit downsample
-    /// that `decode_and_fit` applies to images exceeding
-    /// `max_texture_dimension_2d`. Equals `preview_png_dims` for everything
-    /// under the cap. The ADR-0034 scalebar keys off THIS: the wire's
-    /// `nm_per_px` describes served pixels, so measuring against the shrunken
-    /// texture width mis-scales the bar by `src/texture` (a 20000 px raster
-    /// capped to 16384 reads ~1.22x short). Re-derived on every decode, so it
-    /// stays correct across workspace-snapshot repaints.
-    preview_png_src_dims: Option<(u32, u32)>,
-    /// The visible region of the current image preview, in *source-image
-    /// pixel* coords (ADR 0022). Recomputed each draw from zoom/pan/letterbox
-    /// when an image is shown; `None` when the preview isn't a croppable
-    /// image. Consumed by `capture_roi` (the `C` hotkey / `capture_roi`
-    /// fe-command) and surfaced in `fe-state.json` so the LLM pane knows what
-    /// the user is zoomed into.
-    preview_roi: Option<PreviewRoi>,
-    /// Per-directory + per-dimensions cache of the last visible SOURCE-PX
-    /// ROI, so switching among same-sized image renders in one directory
-    /// restores the previous view rather than snapping back to fit.
-    /// Mixed-size images miss the cache and start at fit-to-pane.
-    ///
-    /// Source px, not `(zoom, pan_px)`: screen-px values are only valid
-    /// against the image rect they were measured in, and that rect moves —
-    /// the caption band resizes it per file (and the pane itself can resize
-    /// between save and restore). A screen-px carry between a captioned and
-    /// an uncaptioned same-size neighbor restored an offset, wrongly-
-    /// magnified view. An ROI re-solved against the live rect at consume
-    /// time (`pending_roi_restore`) is geometry-independent by construction.
-    /// Written through from the render pass each draw — a keystroke-time
-    /// save recorded the previous frame's view — and only for image node
-    /// ids (via `preview_roi`'s gate), which also stops PDF page turns
-    /// (same node id ⇒ same key) from restoring one page's view onto
-    /// another when a page turn is specified to reset to fit.
-    preview_png_cache: HashMap<(String, (u32, u32)), RoiRect>,
-    /// One-shot deferred view restore: a cache hit at preview install can't
-    /// solve immediately — there's no live geometry there, and
-    /// `caption_band_px` at install time still describes the PREVIOUS
-    /// node's band — so the hit is parked as `(node_id, roi)` and consumed
-    /// in the render pass next to the `--roi` aim solve, against the
-    /// current `image_rect`. An aim consumed for the same install wins over
-    /// the carry, and a carry restore never emits the ADR-0025
-    /// `preview_roi_applied` echo (that event is the CLI contract for
-    /// explicit aims). Node-guarded and overwritten on every raster
-    /// install, so a stale entry is inert.
-    pending_roi_restore: Option<(String, RoiRect)>,
-    /// Pagination of the preview the pane is *showing* (ADR 0021):
-    /// `(page, page_count)` from the reply's extras. `None` for
-    /// unpaginated previews. Drives the `n`/`p` page-turn keys and the
-    /// title's `p N/M` suffix; never inspected per-file-type — any plugin
-    /// that reports page extras gets the transport for free.
-    preview_page: Option<(u32, u32)>,
-    /// Zoom level the *current* page bitmap was rasterized for (1.0 = fit
-    /// to pane). Zooming in past this re-requests the page at the larger
-    /// pixel size so rasterized text stays crisp instead of stretching the
-    /// fit-sized bitmap (ADR 0021 deferred follow-up). Reset to 1.0 on a
-    /// fresh page/file.
-    preview_page_raster_zoom: f32,
-    /// One-shot: the next `image/png` render is a zoom re-raster of the
-    /// page already on screen, so the quad swap must preserve zoom/pan
-    /// rather than reset to fit. Set by the Preview handler, consumed in
-    /// `render_preview_source`.
-    preview_reraster_keep_view: bool,
-    /// Scalebar overlay toggle (ADR 0034, `b`). Default off; sticky across
-    /// navigations (renders only when the installed scale is present, so it can
-    /// stay armed while browsing a mix of scaled / unscaled rasters).
-    scalebar_on: bool,
-    /// The shaped scalebar label buffer (e.g. `500 nm`), rebuilt each frame
-    /// from the adaptive bar length by `build_scalebar` (shaped OUTSIDE the
-    /// render pass). `None` when the bar isn't drawn.
-    scalebar_label: Option<crate::ui::preview::markdown::MarkdownPreview>,
-    /// Agent-supplied figure captions, sticky per (host, listed workspace slug, file).
-    /// Commands write the resolved target key and rendering reads the corresponding
-    /// active row key. The store is shared across snapshots because its keys carry
-    /// the host and workspace identity.
-    preview_captions: CaptionStore,
-    /// The shaped caption buffer for the image on screen, rebuilt each frame by
-    /// `build_caption` (shaped OUTSIDE the render pass, like `scalebar_label`).
-    /// `None` when no caption is drawn.
-    caption_label: Option<crate::ui::preview::markdown::MarkdownPreview>,
-    /// Height in px of the caption band the LAST frame reserved (0.0 for none).
-    /// Published by the render pass purely so the KEYBOARD zoom/pan handler can
-    /// reach it: that handler runs outside the render pass, rebuilds the pane
-    /// rect from cells, and would otherwise compute its zoom ceiling against the
-    /// unreduced pane — making the reachable max zoom depend on whether a
-    /// caption happens to be set (verified 2.9%–6.4% short on a
-    /// height-constrained image). Band height is only knowable after the caption
-    /// is shaped, so it has to be stashed rather than recomputed.
-    caption_band_px: f32,
+    /// The raster view: the shown raster, its zoom and pan, the visible ROI and the same-directory view carry.
+    raster: RasterView,
+    /// Pagination of the shown preview: page and count, the page bitmap's raster zoom and a re-raster's keep-view.
+    pages: PageView,
+    /// The figure overlays: the scalebar toggle and label, the caption store and label, and the caption band.
+    overlays: FigureOverlays,
     /// Cache of fetched markdown-figure bitmaps keyed by the literal
     /// URL string that appeared in the source (`![](url)`). Populated
     /// by `IncomingEvt::FigureLoaded`; consumed by the markdown render
@@ -789,7 +650,7 @@ struct State {
     /// state model trivially small; in practice a markdown doc only
     /// ever has one wide table on screen at a time. h/l (Preview focus)
     /// step ±~1 cell; Shift+wheel-Y also adjusts. Reset to 0 whenever
-    /// `preview_md` is rebuilt so navigating between docs starts fresh.
+    /// the shaped buffer is rebuilt so navigating between docs starts fresh.
     md_table_scroll_px: f32,
     /// Per-table cosmic-text buffers hosted as ExtraAreas. Indexed in
     /// `media_blocks` Table-encounter order so multiple tables on one
@@ -828,7 +689,7 @@ struct State {
     markdown_token_pending: std::collections::HashSet<(String, u64)>,
     /// Set by the MathRendered event handler when a fresh SVG enters
     /// `math_cache`. The redraw loop checks this and rebuilds
-    /// `preview_md` from the installed source so the markdown walk can size
+    /// the shaped buffer from the installed source so the markdown walk can size
     /// per-block placeholders to the SVG's natural dimensions instead
     /// of the pre-render letterbox default. Coalesces a burst of
     /// MathRendered events into a single rebuild per frame.
@@ -838,21 +699,10 @@ struct State {
     /// one-shot parse latch and failed parses' backoff (2026-07-02: a fast-failing kernel once drew ~4.7k
     /// file.parse/s). Lazy, per file, on view; a `preview.changed` for the file, a row change and a reconnect drop it.
     drift: DriftCheck,
-    /// Active concept-annotation edit, or `None` for read-only view.
-    /// Toggled by `e` (enter) / `Esc` (discard) in Preview focus.
-    /// Save fires `concept.write` with the captured
-    /// `expected_ast_hash` so the backend's stale-gate engages.
-    edit_state: Option<EditState>,
-    /// Node id (`files:<relpath>`) of a general-file edit-enter awaiting its
-    /// `file.read` reply; the editor opens when a reply's node id matches,
-    /// then this clears. `None` when not entering a file edit. Transient —
-    /// not snapshotted.
-    pending_file_edit: Option<String>,
-    /// Shaped preview buffer for the active edit. Rebuilt eagerly on
-    /// every key that mutates the edit buffer; rendered in place of
-    /// the file-preview markdown when `edit_state` is Some. None when
-    /// not in edit mode.
-    preview_edit: Option<MarkdownPreview>,
+    /// The preview pane's editor: the active annotation or file edit (`e` enters, `Esc` discards; a save carries
+    /// its `expected_ast_hash` or file version so the backend's stale gate engages), the file edit awaiting its
+    /// `file.read`, and the shaped buffer drawn in place of the file preview.
+    editor: Editor,
     // ui/persist: settings.
     /// User-tunable chrome settings (layout proportions today, future
     /// general settings). Loaded once at startup via the same layered
@@ -996,8 +846,12 @@ impl State {
 pub(crate) mod preview;
 pub(crate) mod render;
 use render::*;
-use self::preview::concept::{split_frontmatter, ConceptInfo, DriftCheck, DriftStatus};
-use self::preview::editor::state::EditState;
+use self::preview::concept::{split_frontmatter, ConceptInfo, ConceptSlot, DriftCheck, DriftStatus};
+use self::preview::editor::state::{EditState, Editor};
+use self::preview::shaped::ShapedPreview;
+use self::preview::image::raster::RasterView;
+use self::preview::image::pages::PageView;
+use self::preview::image::figure_overlays::FigureOverlays;
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,

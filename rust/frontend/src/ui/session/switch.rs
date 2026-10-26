@@ -190,7 +190,7 @@ impl State {
         // could keep showing (or a real refusal on the ENTERING host could
         // stay hidden behind an empty cached buffer) until something else
         // happens to clear it.
-        self.preview_fatal = None;
+        self.shaped.clear_fatal();
         // `workspace.activate`, fired UNCONDITIONALLY before the cache-dependent work below (a fully cached restore,
         // or a switch to the default row, sends nothing else): the one signal the daemon's `preview.changed` filter
         // can count on (Codex review). The selected host is already the new one, so a cross-host switch reaches it.
@@ -259,14 +259,12 @@ impl State {
             // perfectly healthy here.
             self.preview_source = Default::default();
             self.figure_failed.clear();
-            self.preview_png = None;
-            self.preview_svg = None;
-            self.preview_concept = None;
-            self.concept = None;
+            self.raster.hide();
+            self.shaped.clear_svg();
+            self.concept.clear();
             self.preview_requests.reset_concept_follow();
             self.drift.clear();
-            self.edit_state = None;
-            self.preview_edit = None;
+            self.editor.close();
         }
         restored
     }

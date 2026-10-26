@@ -6,14 +6,73 @@ use crate::ui::*;
 /// decide whether to show "annotation: present" or "(no annotation)".
 #[derive(Clone)]
 pub(in crate::ui) struct ConceptInfo {
-    pub(in crate::ui) target: String,
-    pub(in crate::ui) exists: bool,
-    pub(in crate::ui) content: String,
+    target: String,
+    exists: bool,
+    content: String,
     /// `synced_against` AST hash parsed out of the annotation's YAML
     /// frontmatter. `None` when no annotation exists, no frontmatter, or
     /// the field is absent. Compared against the file's parsed hash to
     /// drive the drift badge.
-    pub(in crate::ui) synced_against: Option<String>,
+    synced_against: Option<String>,
+}
+
+impl ConceptInfo {
+    pub(in crate::ui) fn target(&self) -> &str { &self.target }
+    pub(in crate::ui) fn exists(&self) -> bool { self.exists }
+    pub(in crate::ui) fn content(&self) -> &str { &self.content }
+    pub(in crate::ui) fn synced_against(&self) -> Option<&str> { self.synced_against.as_deref() }
+}
+
+/// The concept slot beside the preview: the last annotation read, its shaped body, and the rect the body is shaped
+/// for. The read and its shape travel together: a reply installs both, a follow's commit and a first visit clear
+/// both, and a row's restore brings back the read alone (the shaped body is rebuilt by the next read).
+pub(in crate::ui) struct ConceptSlot {
+    info: Option<ConceptInfo>,
+    shaped: Option<MarkdownPreview>,
+    /// Pixel rect of the concept pane from the most recent layout pass, so a resize re-shapes only on a real change.
+    rect: ScreenRect,
+}
+
+impl ConceptSlot {
+    pub(in crate::ui) fn new(rect: ScreenRect) -> Self { Self { info: None, shaped: None, rect } }
+
+    pub(in crate::ui) fn info(&self) -> Option<&ConceptInfo> { self.info.as_ref() }
+    pub(in crate::ui) fn rect(&self) -> ScreenRect { self.rect }
+
+    /// A `concept.read` reply: the read, with its `synced_against`, and its shaped body (`None` for no annotation).
+    pub(in crate::ui) fn install(
+        &mut self, target: String, exists: bool, content: String, synced_against: Option<String>,
+        shaped: Option<MarkdownPreview>,
+    ) {
+        self.shaped = shaped;
+        self.info = Some(ConceptInfo { target, exists, content, synced_against });
+    }
+
+    pub(in crate::ui) fn clear(&mut self) {
+        self.info = None;
+        self.shaped = None;
+    }
+
+    /// The read a row parks with.
+    pub(in crate::ui) fn park(&self) -> Option<ConceptInfo> { self.info.clone() }
+
+    /// A row's restore: its read comes back so the drift badge keeps its `synced_against`; the shape waits for the
+    /// next read.
+    pub(in crate::ui) fn restore(&mut self, info: Option<ConceptInfo>) {
+        self.shaped = None;
+        self.info = info;
+    }
+
+    /// The layout pass's rect: the shaped body is resized only when the rect changed by more than half a pixel.
+    pub(in crate::ui) fn layout(&mut self, rect: ScreenRect, font_system: &mut glyphon::FontSystem) {
+        let size_changed = (rect.w - self.rect.w).abs() > 0.5 || (rect.h - self.rect.h).abs() > 0.5;
+        if size_changed {
+            if let Some(pc) = self.shaped.as_mut() {
+                pc.resize(font_system, rect.w, rect.h);
+            }
+        }
+        self.rect = rect;
+    }
 }
 
 /// An annotation as `(header, body)`: the header, fences included, is `None` when `sot_protocol::annotation`
@@ -265,8 +324,7 @@ impl super::requests::ConceptRequestContext for State {
 
     fn commit_follow(&mut self, commit: super::requests::ConceptCommit) {
         let super::requests::ClearConceptCaches = self.preview_requests.commit_concept_follow(commit);
-        self.concept = None;
-        self.preview_concept = None;
+        self.concept.clear();
     }
 
     fn take_drift_parse(&mut self, path: &str) -> bool {

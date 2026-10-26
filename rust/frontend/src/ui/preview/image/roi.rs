@@ -22,7 +22,7 @@ impl State {
     /// status hint) when the preview isn't a croppable image — and no focus
     /// move on any failure path, so a no-op leaves you on the image.
     pub(in crate::ui) fn capture_roi(&mut self) {
-        let Some(roi) = self.preview_roi.clone() else {
+        let Some(roi) = self.raster.roi().cloned() else {
             self.status = "capture: no image ROI in preview (zoom an image first)".to_string();
             self.window.request_redraw();
             return;

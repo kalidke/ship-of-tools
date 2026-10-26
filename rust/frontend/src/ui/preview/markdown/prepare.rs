@@ -7,7 +7,7 @@ impl State {
     pub(in crate::ui) fn prepare_media(&mut self, show_md: bool, md_rect: ScreenRect,
                      preview_scroll_px: f32) -> Vec<(usize, ScreenRect)> {
         // Walk the laid-out markdown buffer for FFFC placeholders, zip
-        // with `preview_md.media_blocks` by appearance order, and
+        // with the shaped buffer's `media_blocks` by appearance order, and
         // pre-rasterise any math SVGs we have that haven't been
         // rasterised yet at the current pane width. Painting happens
         // inside the rpass; do the side-effecty rasterise here
@@ -20,7 +20,7 @@ impl State {
         // Build / refresh per-table cosmic-text buffers — must run
         // before the extras are assembled below because the extras
         // borrow `&self.table_buffers[i].buffer`. The fn is a no-op
-        // when the buffer set already matches `preview_md.media_blocks`
+        // when the buffer set already matches the shaped buffer's `media_blocks`
         // (typical steady-state across redraws). It also resets
         // `md_table_scroll_px` to 0 whenever buffers are rebuilt, so
         // navigating to a different doc starts at scroll-left.
@@ -42,9 +42,9 @@ impl State {
             .fold(0.0_f32, f32::max);
         let table_max_scroll = (widest_table_w - md_rect.w).max(0.0);
         self.md_table_scroll_px = self.md_table_scroll_px.clamp(0.0, table_max_scroll);
-        let body_em_px = self.preview_md.body_em().max(1.0);
+        let body_em_px = self.shaped.md().body_em().max(1.0);
         for (block_idx, rect) in &media_paint_targets {
-            let Some(block) = self.preview_md.media_blocks.get(*block_idx) else {
+            let Some(block) = self.shaped.md().media_blocks.get(*block_idx) else {
                 continue;
             };
             let crate::ui::preview::markdown::MediaBlock::Math { latex, display } = block else {
@@ -134,9 +134,9 @@ impl State {
             r.y + crate::ui::render::text::EXTRA_TOP_PAD_PX
                 + p.whole_line_bottom(scroll_px, r.h - crate::ui::render::text::EXTRA_TOP_PAD_PX)
         };
-        let md_clip_bottom = whole_line_clip(&self.preview_md, md_rect, preview_scroll_px);
+        let md_clip_bottom = whole_line_clip(self.shaped.md(), md_rect, preview_scroll_px);
         let mut extras: Vec<crate::ui::render::text::ExtraArea> = Vec::new();
-        if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.scalebar_label.as_ref()) {
+        if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.overlays.scalebar_label()) {
             extras.push(crate::ui::render::text::ExtraArea {
                 buffer: &lbl.buffer,
                 x: sb.label_x,
@@ -150,7 +150,7 @@ impl State {
                 scroll_y_px: 0.0,
             });
         }
-        if let (Some(cap), Some(lbl)) = (caption_draw.as_ref(), self.caption_label.as_ref()) {
+        if let (Some(cap), Some(lbl)) = (caption_draw.as_ref(), self.overlays.caption_label()) {
             extras.push(crate::ui::render::text::ExtraArea {
                 buffer: &lbl.buffer,
                 x: cap.text_x,
@@ -168,7 +168,7 @@ impl State {
         }
         if show_md {
             extras.push(crate::ui::render::text::ExtraArea {
-                buffer: &self.preview_md.buffer,
+                buffer: &self.shaped.md().buffer,
                 x: md_rect.x,
                 y: md_rect.y,
                 right: md_rect.x + md_rect.w,
@@ -180,7 +180,7 @@ impl State {
             });
         }
         if show_edit {
-            if let Some(pe) = self.preview_edit.as_ref() {
+            if let Some(pe) = self.editor.shaped() {
                 extras.push(crate::ui::render::text::ExtraArea {
                     buffer: &pe.buffer,
                     x: preview_rect.x,
@@ -200,7 +200,7 @@ impl State {
         // paint path but with a warm red tint so it reads as an error, not a
         // cheat sheet. Trumps everything (highest priority in the cascade).
         if show_fatal {
-            if let Some(pf) = self.preview_fatal.as_ref() {
+            if let Some(pf) = self.shaped.fatal() {
                 extras.push(crate::ui::render::text::ExtraArea {
                     buffer: &pf.buffer,
                     x: preview_rect.x,
@@ -227,7 +227,7 @@ impl State {
         if show_md && !self.table_buffers.is_empty() {
             let mut table_idx: usize = 0;
             for (block_idx, rect) in &media_paint_targets {
-                let Some(block) = self.preview_md.media_blocks.get(*block_idx) else {
+                let Some(block) = self.shaped.md().media_blocks.get(*block_idx) else {
                     continue;
                 };
                 if !matches!(block, crate::ui::preview::markdown::MediaBlock::Table { .. }) {

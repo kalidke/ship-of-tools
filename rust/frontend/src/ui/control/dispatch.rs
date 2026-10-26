@@ -210,8 +210,8 @@ impl State {
                     None => self.preview_requests.drop_roi_aim_for(&key, &node_id),
                 }
                 match caption {
-                    Some(text) => self.preview_captions.set(key, node_id, text),
-                    None => self.preview_captions.clear_one(&key, &node_id),
+                    Some(text) => self.overlays.set_caption(key, node_id, text),
+                    None => self.overlays.clear_caption(&key, &node_id),
                 }
                 match route {
                     ResultRoute::Render(_) => self.drive_same_ws_open(&path),

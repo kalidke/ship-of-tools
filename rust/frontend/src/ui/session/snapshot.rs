@@ -61,16 +61,16 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     figure_failed: std::collections::HashSet<String>,
     /// Concept-annotation backing data, including `synced_against`
     /// for the drift badge. The *shaped* MarkdownPreview is not in the
-    /// snapshot (cosmic-text Buffer isn't Clone-able); preview_concept
+    /// snapshot (cosmic-text Buffer isn't Clone-able); the shaped body
     /// is cleared on swap-in and the cursor-tracking
     /// `maybe_fire_concept_read` re-shapes it on the next frame from
     /// the fresh wire reply. The brief no-concept frame is the cost.
     concept: Option<ConceptInfo>,
     /// Concept-write modal state (header / buffer / dirty flag /
     /// banners). Captured so swap-back returns the user to mid-edit
-    /// without losing typed content. preview_edit is *not* in the
+    /// without losing typed content. The shaped edit buffer is *not* in the
     /// snapshot — it gets re-shaped by `rebuild_edit_preview` from
-    /// edit_state on restore.
+    /// the edit on restore.
     edit_state: Option<EditState>,
 }
 
@@ -133,8 +133,8 @@ impl State {
                 pinned_preview_node_id: self.nav_cursor.pinned().clone(),
                 source: self.preview_source.clone(),
                 figure_failed: self.figure_failed.clone(),
-                concept: self.concept.clone(),
-                edit_state: self.edit_state.clone(),
+                concept: self.concept.park(),
+                edit_state: self.editor.park(),
             },
         );
     }
@@ -164,26 +164,25 @@ impl State {
         self.agent_pane.restore_snapshot_target(key.0.clone(), snap.bl_pane_target);
         self.preview_requests.restore_fired(snap.preview_node_id_fired);
         self.nav_cursor.restore_pin(snap.pinned_preview_node_id);
-        // preview_concept gets re-shaped on the next frame by the
+        // The shaped concept body gets re-shaped on the next frame by the
         // cursor-tracking concept.read path (memo cleared below). The
         // backing concept data is restored so the drift badge keeps
         // its synced_against until the fresh reply lands.
-        self.preview_concept = None;
-        self.concept = snap.concept;
+        self.concept.restore(snap.concept);
         self.preview_requests.reset_concept_follow();
         // Not snapshotted: while this workspace was parked the daemon sent no `preview.changed` for it, so a
         // cached hash may be of bytes since edited. Each file parses again at its next view.
         self.drift.clear();
         // Restore the edit modal — including dirty/discard/stale
         // banners — and re-shape its preview from the buffer.
-        self.edit_state = snap.edit_state;
+        self.editor.restore(snap.edit_state);
         self.rebuild_edit_preview();
         // Clear the stale Quads then repaint from the cached source.
-        // render_preview_source rebuilds preview_md/png/svg for the
+        // render_preview_source rebuilds the shaped text/png/svg for the
         // restored mime; if the leaving workspace had nothing rendered
         // we just leave the panes empty.
-        self.preview_png = None;
-        self.preview_svg = None;
+        self.raster.hide();
+        self.shaped.clear_svg();
         // The installed source travels whole: restored BEFORE
         // render_preview_source so the repaint (and any scalebar drawn on
         // it) uses THIS workspace's calibration (ADR 0034), `o`/`W`/`O`

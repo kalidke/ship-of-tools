@@ -19,7 +19,14 @@ request time; `session::WorkspacePicker` owns the new-session picker's listing, 
 project-scan clock; `nav::TreeView` owns a tree's rows, cursor and content generation; `nav::Navigation` owns the
 active tree, its mode, scroll and scan root, and the store of parked trees; `nav::RevealWalk` owns the reveal walk's
 target, awaited level, refresh memo and root-armed target; `nav::FileOps` owns the pending create and delete and the
-upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff.
+upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff;
+`preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer;
+`preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect;
+`preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line anchor, the math
+SVG, the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
+zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
+the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
+owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -180,6 +187,38 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `FILE_PARSE_MAX_RETRIES`); a reply installs only into a latched, unforgotten path; a failure counts an attempt and
   keeps the latch; a failed send drops the latch; a `preview.changed` for the file forgets it; a row change and a
   reconnect clear it. The concept line reads one `DriftStatus` per file.
+- `Editor` privately owns the preview pane's editor: the active `EditState` (its fields private: target, expected hash,
+  header, baseline, buffer, discard prompt, stale banner, file node and version), the file edit whose `file.read` it
+  armed, and the shaped buffer, rebuilt from the edit and absent without one. A key in edit mode returns one
+  `EditorKey`; the discard prompt and the stale banner take only their answers, and a stale file reload arms its
+  `file.read` before it is sent. A `file.read` opens an edit only for the armed node. A landed save snaps the baseline;
+  a stale refusal raises the banner. A row parks the edit, never the shaped buffer or the armed read; a first visit
+  closes it. State sends, re-shapes (`rebuild_edit_preview`) and repaints.
+- `ConceptSlot` privately owns the concept slot: the last `concept.read` (`ConceptInfo`, its fields private), its
+  shaped body and the rect it is shaped for. A reply installs the read and its shape together; a follow's commit and a
+  first visit clear both; a row parks the read alone, and its restore drops the shape until the next read. The layout
+  pass resizes the shape only when the rect moved by more than half a pixel. The shaped body is built and resized but
+  no draw path reads it today.
+- `ShapedPreview` privately owns the pane's flowed text: one buffer shaped for the rect the last layout pass gave it
+  (resized only when the rect moved by more than half a pixel), the math SVG beside it, the scroll in body lines, the
+  definition-line anchor and the refused-hello overlay. Installing a buffer drops the SVG and scrolls to the top. A
+  sent `preview.get` arms its anchor; the reply consumes it and scrolls to the definition only for a code reply to the
+  request that armed it; a cursor move within the shown file re-anchors only on a real change of line. Scrolling is
+  named: by a signed step stopping at the top, saturating line steps, top, end (clamped by the next layout).
+- `RasterView` privately owns the image pane's view of one raster: its texture, loaded and served dimensions, zoom,
+  pan, the visible source-pixel ROI, the per-directory, per-size view carry and the carry parked at install. A decoded
+  raster installs; unless a page re-raster keeps the view, the view resets to fit and an image node's cached
+  neighbor view is parked. Each frame clears the ROI and, with a raster shown, frames the canvas: a ready `--roi`
+  aim wins over the parked carry, a degenerate solve is logged and dropped, then zoom and pan are clamped to the live
+  geometry. State computes the ROI for an image node, which the owner records and writes through to the carry
+  outside the quantization window; State echoes an applied aim and draws the quad. Keys reset, pan and step the
+  zoom (1.25x below 1.5, whole steps above, pan scaled to keep the center).
+- `PageView` privately owns pagination (ADR 0021): a reply's page extras set the page or clear it; a reply that
+  re-rastered the page on screen records its zoom and arms a one-shot keep-view the raster install takes; any other
+  resets the raster zoom to fit. `FigureOverlays` privately owns what is drawn over a figure: the sticky scalebar
+  toggle (disabled when a scale save fails), the caption store, the labels shaped each frame outside the render pass
+  (cleared whenever their overlay is not drawn), and the caption band published before the image rect is derived, so
+  the keyboard zoom ceiling uses the same reduced pane.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

@@ -9,12 +9,12 @@ impl State {
         // the preview pane over EVERYTHING (help included) until a clean
         // reconnect clears it. Rebuilt lazily below once md_rect_px is known.
         let show_fatal = self.hello_refused.contains_key(self.selected.host());
-        let show_png = self.preview_png.is_some() && !show_fatal;
+        let show_png = self.raster.is_shown() && !show_fatal;
         let show_svg = false;
         // Edit mode owns the preview pane: the file viewer hides so
         // the editable annotation body has the whole rect.
         let show_edit =
-            !show_fatal && self.edit_state.is_some() && self.preview_edit.is_some();
+            !show_fatal && self.editor.is_editing() && self.editor.shaped().is_some();
         let show_md = !show_fatal && !show_png && !show_edit;
         (show_fatal, show_png, show_svg, show_edit, show_md)
     }
@@ -37,25 +37,25 @@ impl State {
         } else {
             // No raster on screen (help, edit modal, markdown, fatal overlay):
             // nothing to caption, and the text pane keeps the full rect.
-            self.caption_label = None;
+            self.overlays.clear_caption_label();
             None
         };
         // Publish the band height BEFORE deriving image_rect, so the keyboard
         // zoom/pan handler (which runs outside the render pass) derives its pane
         // from the same number this frame drew with.
-        self.caption_band_px = caption_draw.as_ref().map_or(0.0, |c| c.backing.h);
-        let image_rect = image_rect_for_caption(preview_rect, self.caption_band_px);
+        self.overlays.publish_caption_band(caption_draw.as_ref().map_or(0.0, |c| c.backing.h));
+        let image_rect = image_rect_for_caption(preview_rect, self.overlays.caption_band_px());
 
         let png_rect = if show_png {
-            self.preview_png
-                .as_ref()
-                .map(|q| letterbox(image_rect, q.size_px))
+            self.raster
+                .quad_size()
+                .map(|size_px| letterbox(image_rect, size_px))
         } else {
             None
         };
         let svg_rect = if show_svg {
-            self.preview_svg
-                .as_ref()
+            self.shaped
+                .svg()
                 .map(|q| letterbox(preview_rect, q.size_px))
         } else {
             None
@@ -81,20 +81,14 @@ impl State {
             w: (preview_rect.w - 2.0 * pad_x).max(1.0),
             h: (preview_rect.h - 2.0 * pad_y).max(1.0),
         };
-        let size_changed = (md_rect.w - self.md_rect_px.w).abs() > 0.5
-            || (md_rect.h - self.md_rect_px.h).abs() > 0.5;
-        if size_changed {
-            self.preview_md
-                .resize(self.text.font_system_mut(), md_rect.w, md_rect.h);
-        }
-        self.md_rect_px = md_rect;
+        self.shaped.layout(md_rect, self.text.font_system_mut());
         md_rect
     }
 
     pub(in crate::ui) fn rebuild_fatal_if_shown(&mut self, show_fatal: bool) {
         // ADR 0030 §2: same lazy build for the protocol-mismatch overlay, once
         // md_rect_px reflects the real preview width so the message wraps right.
-        if show_fatal && self.preview_fatal.is_none() {
+        if show_fatal && self.shaped.fatal().is_none() {
             self.rebuild_fatal_overlay();
         }
     }
@@ -102,19 +96,11 @@ impl State {
     pub(in crate::ui) fn layout_concept(&mut self, preview_rect: ScreenRect) {
         // Same dance for the concept pane. Shares the same rect now that
         // it's a single preview slot.
-        let concept_rect = preview_rect;
-        let concept_size_changed = (concept_rect.w - self.concept_rect_px.w).abs() > 0.5
-            || (concept_rect.h - self.concept_rect_px.h).abs() > 0.5;
-        if concept_size_changed {
-            if let Some(pc) = self.preview_concept.as_mut() {
-                pc.resize(self.text.font_system_mut(), concept_rect.w, concept_rect.h);
-            }
-        }
-        self.concept_rect_px = concept_rect;
+        self.concept.layout(preview_rect, self.text.font_system_mut());
     }
 
     pub(in crate::ui) fn clamp_preview_scroll(&mut self, show_edit: bool, md_rect: ScreenRect, preview_rect: ScreenRect) -> f32 {
-        // Clamp `preview_scroll` so the user can't walk past the end
+        // Clamp the preview scroll so the user can't walk past the end
         // of the document. Pixel-summing per LayoutLine accounts for
         // per-line `line_height_opt` overrides emitted by tall
         // placeholder spans (display math, embedded figures) — using
@@ -122,7 +108,7 @@ impl State {
         // (figure_height - body_line_h) for every embedded media row.
         // Clamp by the one buffer on screen, in the rect it is drawn in, so a
         // hidden buffer never scrolls the pane into blank space.
-        let line_h = self.preview_md.line_height().max(1.0);
+        let line_h = self.shaped.md().line_height().max(1.0);
         // The extras paint with `EXTRA_TOP_PAD_PX` of headroom, so each
         // frame only renders `the drawn rect's height - pad` pixels of content. Subtract
         // the pad from `visible_px` so max_scroll lets the user reach the
@@ -130,18 +116,18 @@ impl State {
         // padding.
         let (shown, shown_h) = preview_scroll_target(
             show_edit,
-            &self.preview_md,
+            self.shaped.md(),
             md_rect.h,
-            self.preview_edit.as_ref(),
+            self.editor.shaped(),
             preview_rect.h,
         );
         let visible_px = (shown_h - crate::ui::render::text::EXTRA_TOP_PAD_PX).max(line_h);
-        // `preview_scroll` is body-line units; convert the pixel slack
+        // The preview scroll is body-line units; convert the pixel slack
         // back via ceil so the final body-line step always lands the
         // bottom of the document on screen (no off-by-fraction clip).
         let max_scroll = preview_max_scroll(line_h, visible_px, shown);
-        self.preview_scroll = self.preview_scroll.min(max_scroll);
-        let preview_scroll_px = self.preview_scroll as f32 * line_h;
+        self.shaped.clamp_scroll(max_scroll);
+        let preview_scroll_px = self.shaped.scroll() as f32 * line_h;
         preview_scroll_px
     }
 }

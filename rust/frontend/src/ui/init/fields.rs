@@ -46,7 +46,7 @@ impl State {
         } = solid;
         let LogoQuads { logo_quad, wordmark_quad } = logos;
         let PreviewContent {
-            preview_svg, highlight_service, preview_md, md_rect_px, concept_rect_px,
+            highlight_service, preview_md, md_rect_px, concept_rect_px,
         } = content;
         Self {
             window,
@@ -70,18 +70,8 @@ impl State {
             border_quads: HashMap::new(),
             logo_quad,
             wordmark_quad,
-            preview_png,
-            preview_png_zoom: 1.0,
-            preview_png_pan_px: (0.0, 0.0),
-            preview_png_dims: None,
-            preview_png_src_dims: None,
-            preview_roi: None,
-            preview_png_cache: HashMap::new(),
-            pending_roi_restore: None,
-            preview_svg,
-            highlight_service,
-            preview_md,
-            md_rect_px,
+            raster: RasterView::new(preview_png),
+            shaped: ShapedPreview::new(preview_md, highlight_service, md_rect_px),
             monitor_view: crate::ui::drawer::monitor::MonitorView::new(),
             monitor_quad: None,
             monitor_rect_px: ScreenRect {
@@ -101,21 +91,12 @@ impl State {
                 persisted_geom.last_mode.as_deref(),
                 harness,
             )),
-            concept: None,
-            pending_file_edit: None,
+            concept: ConceptSlot::new(concept_rect_px),
             reveal: RevealWalk::default(),
-            preview_page: None,
-            preview_page_raster_zoom: 1.0,
-            preview_reraster_keep_view: false,
+            pages: PageView::default(),
             // Default off; `--start-scalebar` arms it for the headless capture
             // harness (no `b` keypress). Still gated on a present scale at draw.
-            scalebar_on: cli.start_scalebar,
-            scalebar_label: None,
-            preview_captions: CaptionStore::default(),
-            caption_label: None,
-            caption_band_px: 0.0,
-            preview_anchor_line: None,
-            preview_anchored_to: None,
+            overlays: FigureOverlays::new(cli.start_scalebar),
             agent_pane: AgentPane::new(
                 initial_bl_pane_target(resume_matches_last_host, &persisted_geom, &active_host)),
             selected: SelectedRow::new(
@@ -145,8 +126,6 @@ impl State {
             contrast_dim: cli.contrast_mode == "dim",
             workspace_picker: None,
             parked_views: ParkedViews::default(),
-            preview_concept: None,
-            concept_rect_px,
             drift: DriftCheck::default(),
             nav_cursor: NavCursor::new(cli.start_selected, initial_pending_resume_nav(cli)),
             pending_auto_expand: cli.auto_expand,
@@ -187,7 +166,6 @@ impl State {
             wheel_vel: 0.0,
             wheel_anim_last: None,
             focus_prompts: FocusPrompts::new(initial_focus(cli)),
-            preview_scroll: 0,
             md_table_scroll_px: 0.0,
             table_buffers: Vec::new(),
             pane_rects: PaneRects::default(),
@@ -210,11 +188,9 @@ impl State {
             focus_on_first_frame: true,
             #[cfg(all(test, feature = "test-window-progress"))]
             native_progress: native_progress_ledger(),
-            edit_state: None,
-            preview_edit: None,
+            editor: Editor::default(),
             help_back_quad: None,
             hello_refused: HashMap::new(),
-            preview_fatal: None,
             math_cache: std::collections::HashMap::new(),
             math_pending: std::collections::HashSet::new(),
             markdown_token_cache: std::collections::HashMap::new(),

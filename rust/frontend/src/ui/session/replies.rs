@@ -229,7 +229,7 @@ impl State {
                     // Hold the page across the reconnect — a
                     // blip shouldn't yank a paginated preview
                     // back to page 1.
-                    page: self.preview_page.map(|(p, _)| p),
+                    page: self.pages.page().map(|(p, _)| p),
                     fit_w,
                     fit_h,
                     generation,

@@ -34,7 +34,7 @@ fn page_turn_key(state: &mut State, key: KeyPress<'_>, label: String) -> Control
     // other handlers; on NON-paginated previews PgUp/
     // PgDn fall through to the text-scroll arms below.
     // No autorepeat: each page is a fresh pdftoppm run.
-    if let Some((page, count)) = state.preview_page {
+    if let Some((page, count)) = state.pages.page() {
         if count > 1 && !event.repeat {
             {
                 let next = match action {
@@ -113,7 +113,7 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
         // when the preview isn't markdown or carries no
         // code blocks.
         Some(Action::CopyCode) if !event.repeat => {
-            let sources = &state.preview_md.code_block_sources;
+            let sources = &state.shaped.md().code_block_sources;
             if !sources.is_empty() {
                 let joined = sources.join("\n");
                 let n = sources.len();
@@ -174,13 +174,11 @@ fn preview_scroll_key(state: &mut State, key: KeyPress<'_>, h: i32) {
             // for the "I really want to jump"
             // case.
             let page_step = (h / 3).max(1);
-            let new = (state.preview_scroll as i32 - page_step).max(0);
-            state.preview_scroll = new as u16;
+            state.shaped.scroll_by(-page_step);
         }
         Some(Action::ScrollPageDown) => {
             let page_step = (h / 3).max(1);
-            let new = (state.preview_scroll as i32 + page_step).max(0);
-            state.preview_scroll = new as u16;
+            state.shaped.scroll_by(page_step);
         }
         // Plain ArrowUp / ArrowDown scroll the
         // markdown preview vertically by one row.
@@ -188,25 +186,23 @@ fn preview_scroll_key(state: &mut State, key: KeyPress<'_>, h: i32) {
         // (Action::PreviewPngPanUp/Down) so this
         // arm only fires for non-PNG content.
         Some(Action::PreviewUp) => {
-            state.preview_scroll = state.preview_scroll.saturating_sub(1);
+            state.shaped.scroll_up(1);
         }
         Some(Action::PreviewDown) => {
-            state.preview_scroll = state.preview_scroll.saturating_add(1);
+            state.shaped.scroll_down(1);
         }
         Some(Action::PreviewStart) if !event.repeat => {
-            state.preview_scroll = 0;
+            state.shaped.scroll_to_top();
         }
         Some(Action::PreviewEnd) if !event.repeat => {
             // Redraw clamps to (total - visible).
-            state.preview_scroll = u16::MAX;
+            state.shaped.scroll_to_end();
         }
         Some(Action::PreviewHalfUp) => {
-            let new = (state.preview_scroll as i32 - h / 2).max(0);
-            state.preview_scroll = new as u16;
+            state.shaped.scroll_by(-(h / 2));
         }
         Some(Action::PreviewHalfDown) => {
-            let new = (state.preview_scroll as i32 + h / 2).max(0);
-            state.preview_scroll = new as u16;
+            state.shaped.scroll_by(h / 2);
         }
         _ => {}
     }

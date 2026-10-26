@@ -18,7 +18,7 @@ impl State {
         // either way (harmless extra rebuild if this wasn't
         // the active host's mismatch to begin with).
         self.hello_refused.remove(&event_host);
-        self.preview_fatal = None;
+        self.shaped.clear_fatal();
     }
 
     pub(crate) fn on_hello_refused(&mut self, event_host: HostKey, message: String) {
@@ -33,7 +33,7 @@ impl State {
         // entry is ever projected to the blocking overlay
         // (rebuild_fatal_overlay/show_fatal).
         self.hello_refused.insert(event_host.clone(), message);
-        self.preview_fatal = None;
+        self.shaped.clear_fatal();
         self.status = "the backend refused this window (see preview)".to_string();
     }
 
@@ -50,19 +50,7 @@ impl State {
     }
 
     fn reload_concept_editor(&mut self, exists: bool, content: &str) {
-        if let Some(edit) = self.edit_state.as_mut() {
-            let (header, body) = split_frontmatter(content);
-            edit.header = header;
-            edit.expected_ast_hash = if exists {
-                sot_protocol::annotation::synced_against(content)
-            } else {
-                None
-            };
-            edit.original = body.clone();
-            edit.buf = EditBuffer::new(body);
-            edit.stale_banner = false;
-            edit.confirm_discard = false;
-        }
+        self.editor.reload_concept(exists, content);
         self.rebuild_edit_preview();
     }
 
@@ -72,28 +60,24 @@ impl State {
         } else {
             None
         };
-        if exists {
+        let shaped = if exists {
             let body = split_frontmatter(&content).1;
-            self.preview_concept = Some(MarkdownPreview::new(
+            let rect = self.concept.rect();
+            Some(MarkdownPreview::new(
                 self.text.font_system_mut(),
                 &body,
-                self.concept_rect_px.w.max(1.0),
-                self.concept_rect_px.h.max(1.0),
+                rect.w.max(1.0),
+                rect.h.max(1.0),
                 self.scale,
                 &MathMetricsMap::new(),
                 &FigureMetricsMap::new(),
-                &self.highlight_service,
+                self.shaped.highlighter(),
                 &self.markdown_token_cache,
-            ));
+            ))
         } else {
-            self.preview_concept = None;
-        }
-        self.concept = Some(ConceptInfo {
-            target,
-            exists,
-            content,
-            synced_against,
-        });
+            None
+        };
+        self.concept.install(target, exists, content, synced_against, shaped);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -135,11 +119,11 @@ impl State {
         // serving plugin reported page extras; anything else
         // (including a later unpaginated reply for a new
         // cursor target) clears it, retiring the n/p keys.
-        self.preview_page = extras.as_ref().and_then(|e| {
+        self.pages.set_page(extras.as_ref().and_then(|e| {
             let page = e.get("page")?.as_u64()? as u32;
             let count = e.get("page_count")?.as_u64()? as u32;
             Some((page, count))
-        });
+        }));
         // Resolve a live-entry save: this same handler serves the
         // `set_scale` reply (one install path, by design), so it's
         // where "saving…" has to be retired. Gated on the pending
@@ -162,16 +146,8 @@ impl State {
         // for the SAME page — a reply for a different page is a
         // real navigation (page turn / cursor move) and resets the
         // view to fit.
-        match self.preview_requests.settle_page_reply(self.preview_page.map(|(page, _)| page)) {
-            Some(z) => {
-                self.preview_page_raster_zoom = z;
-                self.preview_reraster_keep_view = true;
-            }
-            None => {
-                self.preview_page_raster_zoom = 1.0;
-                self.preview_reraster_keep_view = false;
-            }
-        }
+        let reraster_zoom = self.preview_requests.settle_page_reply(self.pages.page().map(|(page, _)| page));
+        self.pages.settle_reply(reraster_zoom);
         if matches!(mime.as_str(), "text/markdown" | "text/x-markdown") {
             // A fresh preview.get REPLY landing here (as
             // opposed to a cached-bytes reflow — see the note
@@ -195,7 +171,7 @@ impl State {
         // file's quad. The solve itself stays in the render pass,
         // where the live pane geometry exists.
         let row_key = self.active_result_row_key();
-        let raster_installed = is_raster_preview_mime(&mime) && self.preview_png.is_some();
+        let raster_installed = is_raster_preview_mime(&mime) && self.raster.is_shown();
         if let Some(dropped) =
             self.preview_requests.certify_roi_aim(row_key.as_ref(), node_id.as_deref(), raster_installed)
         {
@@ -214,24 +190,13 @@ impl State {
         // showing the containing file from line 1. Consume-once,
         // code shapers only (tokens / non-markdown text), and only
         // for the reply matching the request we anchored.
-        if let Some(def_line) = self.preview_anchor_line.take() {
-            let is_code = mime.starts_with("application/vnd.sot.tokens+json")
-                || (mime.starts_with("text/")
-                    && mime != "text/markdown"
-                    && mime != "text/x-markdown");
-            let matches_req =
-                node_id.as_deref() == self.preview_requests.fired_target();
-            if def_line > 0 && is_code && matches_req {
-                self.preview_scroll = self
-                    .preview_md
-                    .anchor_scroll_for_def_line(def_line as usize);
-                self.preview_anchored_to = Some(def_line);
-            } else {
-                self.preview_anchored_to = None;
-            }
-        } else {
-            self.preview_anchored_to = None;
-        }
+        let is_code = mime.starts_with("application/vnd.sot.tokens+json")
+            || (mime.starts_with("text/")
+                && mime != "text/markdown"
+                && mime != "text/x-markdown");
+        let matches_req =
+            node_id.as_deref() == self.preview_requests.fired_target();
+        self.shaped.settle_anchor(is_code && matches_req);
     }
 
     pub(crate) fn on_concept_write_done(
@@ -244,11 +209,7 @@ impl State {
         // ignored. Stale-write banner UI lands in a later
         // commit; for v1 we log loudly and trust the backend's
         // refusal (no auto-clobber, no silent overwrite).
-        let matches_active = self
-            .edit_state
-            .as_ref()
-            .map(|e| e.target == target)
-            .unwrap_or(false);
+        let matches_active = self.editor.edits_target(&target);
         match result {
             crate::net::transport::ConceptWriteResult::Ok { path, written } => {
                 tracing::info!(%target, %path, written, "concept.write ok");
@@ -257,17 +218,13 @@ impl State {
                     // the new on-disk state — the user can
                     // keep editing without an instant dirty
                     // flag after a save.
-                    if let Some(edit) = self.edit_state.as_mut() {
-                        edit.original = edit.buf.body().to_string();
-                    }
+                    self.editor.mark_saved();
                 }
             }
             crate::net::transport::ConceptWriteResult::Stale => {
                 tracing::warn!(%target, "concept.write refused: stale");
                 if matches_active {
-                    if let Some(edit) = self.edit_state.as_mut() {
-                        edit.stale_banner = true;
-                    }
+                    self.editor.mark_stale();
                     self.rebuild_edit_preview();
                 }
             }
@@ -386,7 +343,7 @@ impl State {
                 crate::net::transport::OutgoingReq::PreviewGet {
                     node_id: node_id.clone(),
                     workspace_id: self.selected.workspace_id().clone(),
-                    page: self.preview_page.map(|(p, _)| p),
+                    page: self.pages.page().map(|(p, _)| p),
                     fit_w,
                     fit_h,
                     generation,
@@ -547,7 +504,7 @@ impl RequestReplyContext for State {
     fn active_workspace(&self) -> &Option<String> { self.selected.workspace_id() }
     fn install_preview(&mut self, payload: Self::Preview) { self.install_preview_reply(payload); }
     fn stale_editor_target(&self) -> Option<&str> {
-        self.edit_state.as_ref().filter(|edit| edit.stale_banner).map(|edit| edit.target.as_str())
+        self.editor.stale_target()
     }
     fn reload_editor(&mut self, (exists, content): &Self::Concept) {
         self.reload_concept_editor(*exists, content);

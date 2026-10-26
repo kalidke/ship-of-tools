@@ -320,7 +320,6 @@ fn load_splash_png(
 }
 
 struct PreviewContent {
-    preview_svg: Option<Quad>,
     highlight_service: crate::ui::preview::markdown::highlight::HighlightService,
     preview_md: MarkdownPreview,
     md_rect_px: ScreenRect,
@@ -337,7 +336,6 @@ fn build_preview_content(
     // was useful for the pre-quadrant 4-tile demo (acceptance #2) but
     // it dominates the cascade on plain file navigation now. SVG comes
     // back only when math.render fires for the cursored content.
-    let preview_svg: Option<Quad> = None;
 
     // HighlightService — tree-sitter parser pool. Constructed once
     // (per-language `HighlightConfiguration` compile is moderately
@@ -371,7 +369,7 @@ fn build_preview_content(
         h: config.height as f32,
     };
     let concept_rect_px = md_rect_px; // same fallback until first layout
-    Ok(PreviewContent { preview_svg, highlight_service, preview_md, md_rect_px, concept_rect_px })
+    Ok(PreviewContent { highlight_service, preview_md, md_rect_px, concept_rect_px })
 }
 
 fn apply_harness_flags(state: &mut State, cli: &crate::cli::Cli) {

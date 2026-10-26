@@ -31,7 +31,7 @@ impl State {
         // size (32 px) so a continuous pan/zoom gesture rewrites at a coarse
         // cadence instead of every frame; the body carries the exact ROI.
         let preview_sig: Option<(String, u32, u32, u32, u32, u32)> =
-            self.preview_roi.as_ref().map(|r| {
+            self.raster.roi().map(|r| {
                 (
                     r.node_id.clone(),
                     (r.zoom * 10.0) as u32,
@@ -54,7 +54,7 @@ impl State {
         if self.fe_state_sig == Some(sig) {
             return;
         }
-        let preview = match &self.preview_roi {
+        let preview = match self.raster.roi() {
             Some(r) => serde_json::json!({
                 "node_id": r.node_id,
                 "path": r.path,

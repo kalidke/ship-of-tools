@@ -229,7 +229,7 @@ impl State {
         // when the title overflows the pane width.
         // Paginated preview (ADR 0021): surface position + the page-turn
         // keys in the title so the affordance is discoverable.
-        match self.preview_page {
+        match self.pages.page() {
             Some((page, count)) if count > 1 => Some(format!("{rel} · p {page}/{count} · n/p")),
             _ => Some(rel.to_string()),
         }
@@ -260,7 +260,7 @@ impl State {
             // Paginated document pages (preview_page set from this reply's
             // extras) filter Linear — rasterized text aliases hard under
             // Nearest. Standalone rasters keep Nearest per the 2026-05-22 ask.
-            let sampler = if self.preview_page.is_some() {
+            let sampler = if self.pages.page().is_some() {
                 crate::ui::render::quad::SamplerKind::Linear
             } else {
                 crate::ui::render::quad::SamplerKind::Nearest
@@ -273,13 +273,10 @@ impl State {
                 sampler,
             ) {
                 Ok((q, src_w, src_h)) => {
-                    let dims = q.size_px;
-                    self.preview_png = Some(q);
-                    self.preview_png_dims = Some(dims);
                     // Pre-downsample size for the ADR-0034 scalebar (see field
-                    // docs). Same as `dims` unless the GPU-fit shrank it.
-                    self.preview_png_src_dims = Some((src_w, src_h));
-                    if std::mem::take(&mut self.preview_reraster_keep_view) {
+                    // docs). Same as the texture's unless the GPU-fit shrank it.
+                    self.raster.install(q, (src_w, src_h));
+                    if self.pages.take_keep_view() {
                         // Zoom re-raster of the same page (ADR 0021): the new
                         // bitmap is the same page at higher resolution. Fit-to-
                         // pane normalizes source resolution, so keeping zoom/pan
@@ -292,23 +289,18 @@ impl State {
                         // image rect — which doesn't exist here, and whose
                         // caption band at this moment is still the previous
                         // node's — so a hit only PARKS the restore for the
-                        // render pass (see `pending_roi_restore`). Either
+                        // render pass (`RasterView::reset_view`). Either
                         // way the view resets to fit now, so every miss and
                         // any pre-consume frame paint the default. Image
                         // nodes only: a PDF page turn shares (dir, dims)
                         // across pages and must reset, not inherit another
                         // page's view.
-                        self.pending_roi_restore = self
+                        let carry = self
                             .preview_requests
                             .fired_target()
                             .filter(|nid| Self::is_image_node_id(nid))
-                            .and_then(|nid| {
-                                let key = png_cache_key_from_node_id(Some(nid), dims)?;
-                                let roi = *self.preview_png_cache.get(&key)?;
-                                Some((nid.to_string(), roi))
-                            });
-                        self.preview_png_zoom = 1.0;
-                        self.preview_png_pan_px = (0.0, 0.0);
+                            .map(str::to_owned);
+                        self.raster.reset_view(carry.as_deref());
                     }
                 }
                 Err(e) => tracing::warn!(error = %e, "preview-png decode failed"),
@@ -321,15 +313,14 @@ impl State {
                         .into_iter()
                         .map(|s| (s.text, s.kind))
                         .collect();
-                    self.preview_md = MarkdownPreview::new_tokens(
+                    let md = MarkdownPreview::new_tokens(
                         self.text.font_system_mut(),
                         &pairs,
-                        self.md_rect_px.w.max(1.0),
+                        self.shaped.rect().w.max(1.0),
                         scale,
                     );
-                    self.preview_png = None;
-                    self.preview_svg = None;
-                    self.preview_scroll = 0;
+                    self.shaped.install(md);
+                    self.raster.hide();
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "tokens+json decode failed");
@@ -350,15 +341,14 @@ impl State {
                 "{kind} file — {} bytes\n\nNot previewed as text (mime: {mime}).",
                 bytes.len()
             );
-            self.preview_md = MarkdownPreview::new_plain(
+            let md = MarkdownPreview::new_plain(
                 self.text.font_system_mut(),
                 &msg,
-                self.md_rect_px.w.max(1.0),
+                self.shaped.rect().w.max(1.0),
                 scale,
             );
-            self.preview_png = None;
-            self.preview_svg = None;
-            self.preview_scroll = 0;
+            self.shaped.install(md);
+            self.raster.hide();
         } else if mime == "text/markdown" || mime == "text/x-markdown" {
             if let Ok(s) = std::str::from_utf8(bytes) {
                 // NOTE: `figure_failed` is deliberately NOT touched here.
@@ -376,20 +366,20 @@ impl State {
                 // calls this function.
                 let math_metrics = self.build_math_metrics();
                 let figure_metrics = self.build_figure_metrics();
-                self.preview_md = MarkdownPreview::new(
+                let rect = self.shaped.rect();
+                let md = MarkdownPreview::new(
                     self.text.font_system_mut(),
                     s,
-                    self.md_rect_px.w.max(1.0),
-                    self.md_rect_px.h.max(1.0),
+                    rect.w.max(1.0),
+                    rect.h.max(1.0),
                     scale,
                     &math_metrics,
                     &figure_metrics,
-                    &self.highlight_service,
+                    self.shaped.highlighter(),
                     &self.markdown_token_cache,
                 );
-                self.preview_png = None;
-                self.preview_svg = None;
-                self.preview_scroll = 0;
+                self.shaped.install(md);
+                self.raster.hide();
                 // Fire math.render for any `$$...$$` blocks the walk
                 // discovered. Replies populate `math_cache` and the
                 // next paint pulls the SVG in via A3.
@@ -404,15 +394,14 @@ impl State {
                 self.dispatch_pending_markdown_tokens();
             }
         } else if let Ok(s) = std::str::from_utf8(bytes) {
-            self.preview_md = MarkdownPreview::new_plain(
+            let md = MarkdownPreview::new_plain(
                 self.text.font_system_mut(),
                 s,
-                self.md_rect_px.w.max(1.0),
+                self.shaped.rect().w.max(1.0),
                 scale,
             );
-            self.preview_png = None;
-            self.preview_svg = None;
-            self.preview_scroll = 0;
+            self.shaped.install(md);
+            self.raster.hide();
         } else {
             tracing::debug!(
                 %mime,
@@ -428,17 +417,18 @@ impl State {
     /// path. No-op (clears the buffer) when no refusal is set.
     pub(in crate::ui) fn rebuild_fatal_overlay(&mut self) {
         let Some(body) = self.hello_refused.get(self.selected.host()).cloned() else {
-            self.preview_fatal = None;
+            self.shaped.clear_fatal();
             return;
         };
-        let width = self.md_rect_px.w.max(1.0);
+        let width = self.shaped.rect().w.max(1.0);
         let scale = self.scale * self.text_scale_mult;
-        self.preview_fatal = Some(MarkdownPreview::new_plain(
+        let fatal = MarkdownPreview::new_plain(
             self.text.font_system_mut(),
             &body,
             width,
             scale,
-        ));
+        );
+        self.shaped.show_fatal(Some(fatal));
     }
 }
 

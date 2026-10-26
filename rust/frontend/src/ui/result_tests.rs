@@ -260,7 +260,7 @@ impl State {
         self.preview_requests.record_fired("files:same.png".into());
         anyhow::ensure!(
             self.build_caption(rect).is_some()
-                && self.caption_label.as_ref().unwrap().buffer.lines[0].text() == "caption a",
+                && self.overlays.caption_label().unwrap().buffer.lines[0].text() == "caption a",
             "host-qualified caption render read another host's same file"
         );
         self.install_result_probe_image(a);
@@ -283,7 +283,7 @@ impl State {
         );
         anyhow::ensure!(
             self.build_caption(rect).is_some()
-                && self.caption_label.as_ref().unwrap().buffer.lines[0].text() == "caption b",
+                && self.overlays.caption_label().unwrap().buffer.lines[0].text() == "caption b",
             "matching host caption did not reach its renderer"
         );
         while b_rx.try_recv().is_ok() {}

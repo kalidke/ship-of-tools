@@ -15,25 +15,25 @@ impl State {
                 _ => help::Pane::Repl,
             },
         };
-        let editing = self.focus_prompts.focus() == PaneFocus::Preview && self.edit_state.is_some();
+        let editing = self.focus_prompts.focus() == PaneFocus::Preview && self.editor.is_editing();
         let prompt = self.focus_prompts.focus() == PaneFocus::NavTree && self.focus_prompts.prompt().is_some();
         let picker = self.focus_prompts.focus() == PaneFocus::NavTree && self.workspace_picker.is_some();
         let file = if pane == help::Pane::Preview { self.previewed_files_path() }
             else if pane == help::Pane::Nav { self.cursored_files_path() } else { None };
         help::Context {
             pane, mode: self.nav.mode(),
-            file, image: self.preview_png.is_some(),
-            pages: self.preview_page.is_some_and(|(_, count)| count > 1),
-            editable: self.preview_png.is_none() && self.previewed_files_path().is_some()
-                || self.concept.as_ref().is_some_and(|c| c.exists && self.preview_requests.concept_target() == Some(c.target.as_str())),
+            file, image: self.raster.is_shown(),
+            pages: self.pages.page().is_some_and(|(_, count)| count > 1),
+            editable: !self.raster.is_shown() && self.previewed_files_path().is_some()
+                || self.concept.info().is_some_and(|c| c.exists() && self.preview_requests.concept_target() == Some(c.target())),
             confirmation: if matches!(self.focus_prompts.prompt(), Some(NavPrompt::ConfirmDelete { .. })) && prompt {
                 help::Confirmation::Delete
-            } else if editing && self.edit_state.as_ref().is_some_and(|e| e.confirm_discard) {
+            } else if editing && self.editor.confirming_discard() {
                 help::Confirmation::Discard
-            } else if editing && self.edit_state.as_ref().is_some_and(|e| e.stale_banner) {
+            } else if editing && self.editor.stale() {
                 help::Confirmation::Stale
             } else { help::Confirmation::None },
-            workspace_locked: self.edit_state.is_some(),
+            workspace_locked: self.editor.is_editing(),
             picker, prompt, editing, modal: editing || prompt || picker,
             restore: self.layout_help.restore_available(self.focus_prompts.focus(), self.layout_gates()),
             session: self.nav.tree().rows().get(self.nav.tree().selected()).is_some_and(|r| r.node.kind == "session"),
@@ -54,7 +54,7 @@ impl State {
     }
 
     pub(in crate::ui) fn layout_gates(&self) -> layout_help::LayoutGates {
-        layout_help::LayoutGates { editing: self.edit_state.is_some(),
+        layout_help::LayoutGates { editing: self.editor.is_editing(),
             prompt: self.focus_prompts.prompt().is_some(), picker: self.workspace_picker.is_some() }
     }
 

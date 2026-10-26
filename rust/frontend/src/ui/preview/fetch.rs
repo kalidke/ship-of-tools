@@ -102,15 +102,9 @@ impl State {
             // re-anchor the (already rendered) code preview to the new item.
             // Guard on a real change in target line so we don't re-anchor every
             // redraw and fight the user's manual scroll on a stable selection.
-            if anchor_line != self.preview_anchored_to {
-                if let Some(line) = anchor_line {
-                    if line > 0 && self.preview_is_code() {
-                        self.preview_scroll =
-                            self.preview_md.anchor_scroll_for_def_line(line as usize);
-                        self.window.request_redraw();
-                    }
-                }
-                self.preview_anchored_to = anchor_line;
+            let is_code = self.preview_is_code();
+            if self.shaped.reanchor(anchor_line, is_code) {
+                self.window.request_redraw();
             }
             return;
         }
@@ -123,7 +117,7 @@ impl State {
             node_id: id.clone(),
             workspace_id: self.selected.workspace_id().clone(),
             // Cursor-driven fetch always opens at page 1; the reply's
-            // extras re-seed `preview_page` for the n/p transport.
+            // extras re-seed the page for the n/p transport.
             page: None,
             fit_w,
             fit_h,
@@ -133,7 +127,7 @@ impl State {
             return;
         }
         self.preview_requests.record_fired(id);
-        self.preview_anchor_line = anchor_line;
+        self.shaped.arm_anchor(anchor_line);
     }
 }
 

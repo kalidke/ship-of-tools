@@ -51,7 +51,7 @@ impl State {
             return;
         }
         self.preview_requests.record_fired(node_id.clone());
-        self.preview_anchor_line = None;
+        self.shaped.clear_anchor();
         // The active view IS the active workspace's Files tree by
         // construction (installs route by key; force_files_mode swapped by
         // key above) — the old stale-workspace detection has nothing to
@@ -163,7 +163,7 @@ impl State {
         restored: bool,
     ) {
         self.preview_requests.record_fired(node_id.clone());
-        self.preview_anchor_line = None;
+        self.shaped.clear_anchor();
         self.result_ledger.arm_reveal(attempt.clone());
         // The active view is THIS workspace's Files tree by
         // construction (force_files_mode swapped it in by key);
