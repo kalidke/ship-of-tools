@@ -23,7 +23,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$p\repo\versions\$t\scripts
 Its options are `-Version`, `-Archive`, `-Hub`, `-Prefix` and `-RestartDaemon`, and it ends in the same one line. A
 `ONE STEP LEFT` there is usually to quit Ship of Tools (choose Keep) and start it from the shortcut, when the window's
 launcher is older than release candidate 9.13 or no window is up to be told, or to start it at the desk when the run was
-over ssh; with a current launcher running, the entry asks it to converge and waits for it, and your sessions keep running.
+over ssh; with a current launcher running, the entry asks it to converge and waits for it, and your sessions keep running
+between 0.7 releases. The update from 0.6 to 0.7 ends every row's agent once; use `/resume` in each row to bring its
+conversation back.
 
 With no options it moves to the newest release on the channel the machine already runs (a stable release follows the
 stable releases; a release candidate follows the candidates), and never moves the install backwards. The role is decided
@@ -49,7 +51,8 @@ Three `FAIL` lines are questions rather than faults:
   could read (a v0.6.5 daemon refuses the question, and a daemon older than the Pluto field cannot say whether its Pluto
   server is running, so the installer judges it from the daemon's own REPL and Pluto child processes instead: with none, the
   update goes on with no flag). Updating restarts the backend, which ends those REPLs' and notebooks' variables (the rows
-  and their agents keep running). When something is live and you are at the console, the installer asks "Restart the
+  and their agents keep running between 0.7 releases). The update from 0.6 to 0.7 ends every row's agent once; use
+  `/resume` in each row to bring its conversation back. When something is live and you are at the console, the installer asks "Restart the
   daemon? This ends ... [y/N]" in place and goes on at a y. With no console (an agent's run) it stops and changes nothing
   under the install: run it again with `--restart-daemon` (Windows: `-RestartDaemon`) when that is fine. A daemon that is running but cannot be told its
   version (it does not answer, or refuses the question) is treated the same way: the run stops with `sotd`'s own line and
@@ -86,7 +89,7 @@ self-updates** and updates by `git pull` and a rebuild):
 `SOT_UPDATE_MODE` controls the built-in check: `notify` (the default) stages and applies at the next launch, `off`
 disables it, and `auto` additionally restarts the backend to apply, if no frontend is attached when the daily check arms
 an update (otherwise it applies at the next launch or restart). That restarts REPLs and kernels, so their in-memory state
-is lost, which is why it is opt-in; agent sessions survive it.
+is lost, which is why it is opt-in; agent sessions survive it between 0.7 releases.
 
 The daemon of a machine runs the check; a window runs it itself only where the daemon does not own updates (a host the
 topology declares `daemon = false`, a `frontend` entry or a `--backend` frontend-only install whose install runs no

@@ -48,6 +48,46 @@ fn ask_update(state: State, live: Work, kids: Option<Vec<&'static str>>, flag: b
     (got, asked.into_inner())
 }
 
+/// The running daemon's version selects the words. The crossing is announced even with no REPL or Pluto server;
+/// Unix announces it only for a daemon this run would restart or stop.
+#[test]
+fn agent_update_words_distinguish_06_retirement_from_07_restart() {
+    let crossing = "this update from 0.6 to 0.7 ends every agent once; each conversation comes back when you use /resume in its row.";
+    let kept = "the rows and their agents keep running.";
+    for (state, version, expected) in [
+        (State::Other, "0.6.6", crossing),
+        (State::Held, "0.6.0-rc.9.15", crossing),
+        (State::Other, "0.7.0", kept),
+        (State::Held, "0.7.1", kept),
+        (State::Current, "", kept),
+        (State::Unknown, "0.6.6", kept),
+        (State::Other, "0.60.0", kept),
+    ] {
+        assert_eq!(agents_note(state, version), expected, "{state:?}: {version}");
+    }
+
+    for (version, expected) in [("0.6.6", vec![format!("note: {crossing}")]), ("0.7.0", vec![])] {
+        let notes = std::cell::RefCell::new(Vec::new());
+        let asks = Asks {
+            live: &Work::default,
+            kids: &|| None,
+            ask: &|_| panic!("no REPL or Pluto server needs an answer"),
+            note: &|text| notes.borrow_mut().push(text.to_string()),
+        };
+        assert!(ask_before_update(State::Other, "P", version, false, &asks).is_ok());
+        assert_eq!(*notes.borrow(), expected, "Windows: {version}");
+
+        #[cfg(unix)]
+        for (unit_runs, retire_stops) in [(true, false), (false, true), (false, false)] {
+            notes.borrow_mut().clear();
+            let question = unix::Question { retire_stops, why: version, ..q(State::Other, unit_runs, false) };
+            assert!(unix::question(&question, &asks).is_ok());
+            let wanted = if unit_runs || retire_stops { expected.clone() } else { vec![] };
+            assert_eq!(*notes.borrow(), wanted, "Unix: {version}, unit={unit_runs}, retire={retire_stops}");
+        }
+    }
+}
+
 /// A live daemon is asked before it ends. What it runs is its own answer: a daemon that runs and cannot be told its
 /// version is never read as none; its live work is its REPL rows and its Pluto server, and an answer it could not give
 /// in full says why; one that cannot say is judged by its own children, known by what they run; the question and the

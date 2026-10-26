@@ -50,7 +50,8 @@ pub(super) fn state_of(code: Option<i32>, runs: bool) -> State {
     }
 }
 
-/// The daemon on `endpoint` (`unix:<path>`, `pipe:<path>`), asked of `sotd`, and sotd's one line when it could not tell.
+/// The daemon on `endpoint` (`unix:<path>`, `pipe:<path>`), asked of `sotd`, and its version when different, else
+/// sotd's one line when it could not tell.
 pub(super) fn state(sotd: &Path, endpoint: &str, runs: bool) -> (State, String) {
     state_within(sotd, endpoint, runs, Duration::from_secs(30))
 }
@@ -194,6 +195,21 @@ pub(super) struct Asks<'a> {
     pub note: &'a dyn Fn(&str),
 }
 
+/// `same-version` prints the running daemon's version only when it differs (Other or Held); otherwise its line is a
+/// diagnostic. A 0.7 daemon retires the row layout a 0.6 daemon left, ending each old agent once.
+pub(super) fn retires_agents(state: State, version: &str) -> bool {
+    matches!(state, State::Other | State::Held) && version.starts_with("0.6.")
+}
+
+/// What happens to agents when the daemon is replaced, using the running version, not the install record's.
+pub(super) fn agents_note(state: State, version: &str) -> &'static str {
+    if retires_agents(state, version) {
+        "this update from 0.6 to 0.7 ends every agent once; each conversation comes back when you use /resume in its row."
+    } else {
+        "the rows and their agents keep running."
+    }
+}
+
 /// The Windows update's question: every way an update applies may stop or restart the daemon on `pipe`, so one that
 /// runs (`state` not `None`), whatever its version, is asked first, yes at a console or `-RestartDaemon`
 /// (`restart_flag`); a daemon that cannot say is judged by its own children. Changes nothing. What the restart would
@@ -203,11 +219,16 @@ pub(super) fn ask_before_update(state: State, pipe: &str, why: &str, restart_fla
     if state == State::None {
         return Ok(String::new());
     }
+    let retires = retires_agents(state, why);
+    if retires {
+        (a.note)(&format!("note: {}", agents_note(state, why)));
+    }
     let work = (a.live)();
     let unsure = work.unsure.is_some() || state == State::Unknown;
     let kids = if unsure { (a.kids)() } else { None };
     if unsure && kids.as_ref().is_some_and(Vec::is_empty) && work.rows.is_empty() && !work.pluto {
-        (a.note)(&format!("note: could not ask the daemon on {pipe} in full ({}); it has no REPL or Pluto child, so restarting it ends nothing live", work.unsure.as_deref().unwrap_or(why)));
+        let ends = if retires { "no live REPL or Pluto notebook" } else { "nothing live" };
+        (a.note)(&format!("note: could not ask the daemon on {pipe} in full ({}); it has no REPL or Pluto child, so restarting it ends {ends}", work.unsure.as_deref().unwrap_or(why)));
         return Ok(String::new());
     }
     let live = live_text(state, pipe, &work, why);
@@ -219,7 +240,8 @@ pub(super) fn ask_before_update(state: State, pipe: &str, why: &str, restart_fla
         (a.note)("note: restarting the daemon as answered");
         return Ok(live);
     }
-    println!("       Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then run this again with -RestartDaemon.");
+    let agents = agents_note(state, why);
+    println!("       Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); {agents} Nothing under the install was changed. Ask whoever uses this computer, then run this again with -RestartDaemon.");
     Err(Stop::new(2, live))
 }
 

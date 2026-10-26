@@ -448,7 +448,8 @@ pub(super) struct Question<'a> {
 /// cannot say is judged by its own children. Changes nothing. The live work, and whether part of it is unknown.
 pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), Stop> {
     let (socket, why) = (q.socket, q.why);
-    let refuse_hint = "Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.";
+    let agents = daemon::agents_note(q.before, why);
+    let refuse_hint = format!("Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); {agents} Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.");
     // The run ends the unit it restarts, or the one its role's retire stops.
     let ends_unit = q.unit_runs || q.retire_stops;
     let (acting, act) = if q.retire_stops { ("stopping", "stopping it would end") } else { ("restarting", "restarting it would end") };
@@ -475,6 +476,10 @@ pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), S
         return Ok((daemon::Work::default(), false));
     }
     let will_restart = (q.unit_runs && q.before == State::Other) || q.retire_stops;
+    let retires = will_restart && daemon::retires_agents(q.before, why);
+    if retires {
+        (a.note)(&format!("note: {agents}"));
+    }
     let live = (a.live)();
     let ended = |lead: &str| daemon::work_words(&live.rows, live.pluto, lead);
     let mut unknown = false;
@@ -486,18 +491,19 @@ pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), S
             (a.note)(&format!("{} (answered yes)", ended(&format!("{acting} the daemon ends"))));
         }
         None => {
-            println!("       Restarting the daemon ends those REPLs and notebooks (their variables are lost); the rows and their agents keep running. Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.");
+            println!("       Restarting the daemon ends those REPLs and notebooks (their variables are lost); {agents} Nothing under the install was changed. Ask whoever uses this computer, then re-run with --restart-daemon.");
             let what = if q.retire_stops { format!("this run stops the daemon on {socket}, since this computer runs none in this role") } else { format!("the daemon on {socket} runs another version") };
             return Err(Stop::new(2, format!("{what}, and {}", ended(act))));
         }
         Some(reason) => {
-            // The daemon could not say; its own children can: with none that is a REPL or the Pluto server, nothing live
-            // is left to end.
+            // The daemon could not say; its own children can: with none that is a REPL or the Pluto server, none of
+            // that work is left to end.
             let kids = (a.kids)();
             let (repl, pluto) = kids.as_ref().map_or((false, false), |k| (k.contains(&"repl"), k.contains(&"pluto")));
             if kids.as_ref().is_some_and(Vec::is_empty) && live.rows.is_empty() && !live.pluto {
                 if will_restart {
-                    (a.note)(&format!("note: could not ask the daemon on {socket} in full ({reason}); it has no REPL or Pluto child, so restarting it ends nothing live"));
+                    let ends = if retires { "no live REPL or Pluto notebook" } else { "nothing live" };
+                    (a.note)(&format!("note: could not ask the daemon on {socket} in full ({reason}); it has no REPL or Pluto child, so restarting it ends {ends}"));
                 }
             } else if !will_restart {
                 unknown = true;
