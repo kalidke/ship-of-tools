@@ -135,26 +135,12 @@ impl State {
         // also has to wait on the MathJax sidecar per `$$…$$` block. Give
         // it more frames so the readback is taken after the math SVGs have
         // landed and been laid out.
-        let capture_target_frame = if self.capture_delay_ms > 0 {
-            // Explicit override from --capture-delay-ms. Redraw loop is
-            // 60 Hz, so ms * 60 / 1000.
-            (self.capture_delay_ms * 60 / 1000).max(1)
-        } else if self.capture_preview_armed {
-            CAPTURE_FRAME * 4
-        } else {
-            CAPTURE_FRAME
-        };
-        let capture_now = self.capture_path.is_some() && self.frame_counter == capture_target_frame;
         // Ctrl+Shift+S selfie: capture the current frame to a timestamped PNG
         // without exiting. Shares the readback machinery with the --capture
         // harness path; the harness `capture_now` (one-shot + exit) wins if
         // both request a shot on the same frame.
-        let selfie_target = self.selfie_pending.take();
-        let capture_target = if capture_now {
-            self.capture_path.clone()
-        } else {
-            selfie_target.clone()
-        };
+        let shot = self.capture.shot();
+        let (capture_target, capture_now, selfie_target) = (shot.target, shot.harness, shot.selfie);
         let readback = if capture_target.is_some() {
             Some(stage_capture(
                 self.gpu.device(),
@@ -211,8 +197,8 @@ impl State {
             } else {
                 self.window.request_redraw();
             }
-        } else if self.capture_path.is_some() && !self.should_exit {
-            // Keep redrawing so frame_counter ticks up to CAPTURE_FRAME even
+        } else if self.capture.harness() && !self.should_exit {
+            // Keep redrawing so the frame count ticks up to CAPTURE_FRAME even
             // when there are no transport events to trigger redraws.
             self.window.request_redraw();
         }

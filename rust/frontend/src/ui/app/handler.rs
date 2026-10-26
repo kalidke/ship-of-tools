@@ -183,7 +183,7 @@ impl ApplicationHandler for App {
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        if state.capture_path.is_some() {
+        if state.capture.harness() {
             return;
         }
         // A leaving window exits only here, once its acks are in, with its
@@ -330,7 +330,7 @@ impl ApplicationHandler for App {
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        if state.capture_path.is_some() {
+        if state.capture.harness() {
             return;
         }
         // The deadline fired: either a deferred dirty frame is due, or it's the
@@ -403,8 +403,8 @@ fn redraw_requested(state: &mut State, event_loop: &ActiveEventLoop) {
     // the next frame boundary, so this draw isn't dropped —
     // just collapsed with whatever else arrives in the
     // intervening few ms. Capture mode bypasses the cap so
-    // frame_counter ticks up to CAPTURE_FRAME without delay.
-    let throttled = state.capture_path.is_none()
+    // the frame count ticks up to CAPTURE_FRAME without delay.
+    let throttled = !state.capture.harness()
         && state
             .last_frame_at
             .map(|t| t.elapsed() < FRAME_BUDGET)
@@ -444,7 +444,7 @@ fn redraw_requested(state: &mut State, event_loop: &ActiveEventLoop) {
                 ));
             }
         }
-        if redraw_exits(state.should_exit, state.leaving.is_some(), state.capture_path.is_some()) {
+        if redraw_exits(state.should_exit, state.leaving.is_some(), state.capture.harness()) {
             let code = state.leaving.as_ref().map_or(0, |l| l.exit_code);
             state.finish_exit(event_loop, code);
         }

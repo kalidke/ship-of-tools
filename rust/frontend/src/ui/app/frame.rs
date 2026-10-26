@@ -98,7 +98,7 @@ impl State {
         self.ack_presented_lines(owed_drawn, owed, owed_line, leaving_drawn);
         self.canvas.trim();
         self.finish_frame_capture(readback, capture_target, capture_now, selfie_target);
-        self.frame_counter += 1;
+        self.capture.count_frame();
         self.last_frame_at = Some(std::time::Instant::now());
         Ok(())
     }

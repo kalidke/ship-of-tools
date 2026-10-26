@@ -49,7 +49,7 @@ impl State {
         // auto-fire its own preview and overwrite the captured one — the
         // root-row suppression at the dispatch site doesn't cover a restored
         // non-root cursor.
-        if self.capture_preview_armed {
+        if self.capture.preview_armed() {
             return;
         }
         let Some(row) = self.nav.tree().rows().get(self.nav.tree().selected()) else {

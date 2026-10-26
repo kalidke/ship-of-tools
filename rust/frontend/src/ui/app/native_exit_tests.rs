@@ -170,8 +170,8 @@ struct CloseDriver<'a> {
 impl CloseDriver<'_> {
     fn decide(&mut self, event_loop: &ActiveEventLoop) {
         let Some(state) = self.app.state.as_mut() else { return };
-        if state.frame_counter < 3 || self.role == "capture" {
-            let drawn = state.frame_counter;
+        if state.capture.frames() < 3 || self.role == "capture" {
+            let drawn = state.capture.frames();
             if self.role != "capture" && self.failure.is_none() && self.begun.elapsed() > FRAME_WAIT {
                 println!("native: frames={drawn} after {FRAME_WAIT:?}");
                 self.failure = Some(anyhow::anyhow!("the window drew {drawn} frames in {FRAME_WAIT:?}; the decision needs 3"));

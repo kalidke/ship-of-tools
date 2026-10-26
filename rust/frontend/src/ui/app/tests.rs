@@ -503,9 +503,9 @@ impl NativeDriver {
             return;
         }
         let Some(state) = self.app.state.as_ref() else { return };
-        if state.frame_counter < 3 {
+        if state.capture.frames() < 3 {
             if self.transition.elapsed() > FIRST_FRAMES {
-                let drawn = state.frame_counter;
+                let drawn = state.capture.frames();
                 self.fail(event_loop, anyhow::anyhow!("the window drew {drawn} frames in {FIRST_FRAMES:?}; the workload starts after 3"));
             }
             return;

@@ -301,7 +301,7 @@ pub(in crate::ui) fn layout_chords(state: &mut State, key: KeyPress<'_>, label: 
     // render loop on the next frame (request_redraw below).
     if action == Some(Action::Selfie)
     {
-        state.selfie_pending = Some(selfie_path());
+        state.capture.request_selfie(selfie_path());
         state.last_key = Some(label);
         state.window.request_redraw();
         return Break(());

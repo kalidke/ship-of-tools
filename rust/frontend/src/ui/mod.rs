@@ -179,32 +179,8 @@ struct State {
     canvas: crate::ui::render::canvas::Canvas,
     /// The quad pipeline, the solid brushes, the logos and the help peek's backing.
     brushes: crate::ui::render::brushes::Brushes,
-    /// `--capture <path>`: render to PNG and exit. Set means we keep
-    /// requesting redraws until `frame_counter == CAPTURE_FRAME` so the
-    /// transport task has time to push events.
-    capture_path: Option<PathBuf>,
-    /// Ctrl+Shift+S selfie: a pending whole-window capture target. Set by the
-    /// keybind, consumed by the render loop on the next frame — unlike
-    /// `capture_path`, the FE does NOT exit after (it's a live screenshot).
-    selfie_pending: Option<PathBuf>,
-    /// `--capture-preview <relpath>`: project-relative path to fire
-    /// `preview.get` for as soon as the first Files-mode `tree.root` lands.
-    /// One-shot — consumed on first dispatch.
-    capture_preview: Option<String>,
-    /// True when `--capture-preview` was supplied. Persists past the
-    /// one-shot `capture_preview` consumption so the readback frame
-    /// delay knows to wait for the extra round-trip + MathJax.
-    capture_preview_armed: bool,
-    /// Explicit `--capture-delay-ms` override (0 = auto). When non-zero,
-    /// the readback frame is `delay_ms * 60 / 1000` regardless of
-    /// `capture_preview_armed`.
-    capture_delay_ms: u32,
-    /// `--capture-cycle <N>`: simulate N presses of Shift+ArrowRight (or
-    /// `|N|` of Shift+ArrowLeft when negative) on the first `workspace.list`
-    /// reply. One-shot — consumed on first application so a re-fetch
-    /// later doesn't re-cycle. Zero leaves the active workspace alone.
-    capture_cycle: i32,
-    frame_counter: u32,
+    /// The capture harness's run: its PNG, a pending selfie, the capture one-shots and the frame count.
+    capture: crate::ui::render::capture_run::CaptureRun,
     // ui/app: the event fan-in, frame pacing, the exit flag and the harness's startup actions.
     /// Drained at the top of every redraw; every host's transport task
     /// pushes here, tagged with its own `HostKey` (ADR 0042 L2a fan-in).

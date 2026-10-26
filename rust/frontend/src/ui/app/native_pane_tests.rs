@@ -312,14 +312,14 @@ impl PaneDriver<'_> {
         let redraw_failed = text.lines().filter(|l| l.contains("redraw failed")).last().unwrap_or("none").trim().to_string();
         format!(
             "listed={listed} lists=[{}] frames={} pty_size={:?} active_host={} status={:?} last_redraw_failure={redraw_failed:?} {}",
-            lists.join(" "), state.frame_counter, state.agent_pane.size(), state.selected.host(), state.status.text(), self.layout_state()
+            lists.join(" "), state.capture.frames(), state.agent_pane.size(), state.selected.host(), state.status.text(), self.layout_state()
         )
     }
 
     fn ready_to_switch(&self) -> Result<bool> {
         let Some(state) = self.app.state.as_ref() else { return Ok(false) };
         let listed = state.row_directory.rows(HOST_KEY).is_some_and(|rows| self.plan.iter().all(|p| rows.iter().any(|r| r.slug == p.slug)));
-        if !(listed && state.frame_counter >= 3 && state.agent_pane.size().is_some()) {
+        if !(listed && state.capture.frames() >= 3 && state.agent_pane.size().is_some()) {
             if self.begun.elapsed() >= SETUP_BOUND {
                 anyhow::bail!("pane-timing setup failure: the window was not ready to switch in {SETUP_BOUND:?}: {}", self.setup_state(listed));
             }
