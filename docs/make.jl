@@ -98,7 +98,6 @@ makedocs(;
             "The concept layer" => "guide/concept-layer.md",
             "Provenance colours" => "guide/color-coding.md",
             "Plugin discovery" => "extend/discovery.md",
-            "Mode plugins" => "extend/mode.md",
         ],
         "Project" => [
             "Contributing" => "contributing.md",

@@ -104,7 +104,8 @@ of each.
     of 4 permits per connection; a job that waits 10 s for one is answered with a timeout and never runs
     (`spawn_job`); a pooled job's workspace hint is resolved to the canonical id before it queues, or answered
     `unknown_workspace` with no job run (`canonicalize_workspace_id`). Job replies come back in the order the jobs
-    finish, each under its own request id. A job runs to its end after its connection closes (`Jobs` detaches, never
+    finish, each under its own request id. Rows' `page.reply` is a job with no permit: its prompt hold and blocking
+    capsule reads never hold the connection loop or a preview slot. A job runs to its end after its connection closes (`Jobs` detaches, never
     aborts), and only its reply is lost.
 11. **An accept error is survived by one policy.** `survive_accept_error` follows `sot_platform::transport::accept_policy`, the
     policy the row socket's acceptors use too: a transient error accepts again, a resource error (EMFILE and kin)
@@ -131,6 +132,8 @@ of each.
     that owner's newest live named `fe` connection, and `PageVerbs` publishes with its name and serial. The bus writer
     writes only to that serial, so another window and an older redial receive nothing. No live connection answers
     503 `window_gone` at the page server. A disconnect after selection remains the bus's best-effort delivery limit.
+    `fe.command.send` refuses `cmd: "page_reply"` with code `reserved` before publishing anything, with an explicit
+    target or without one. Only the page server publishes that offer (`tests/page_channel.rs::a_session_cannot_open_a_reply_bar`).
 14. **A handler is given what it may use as arguments; the compiler enforces part of that.** The server's
     implementation modules (`conn`, `dispatch`, `events`, `hello`, `listen`, `reply`) are private to it, so no other
     module can name them. What remains reachable crate-wide is the entry's (`server::run`, `server::refuse_live_socket`)
@@ -162,7 +165,7 @@ of each.
 - Each control session's task and state (`serve_control`): its roster guard, declared host, link end, active
   workspace, monitor flag, read deadline and its off-loop `JoinSet` and semaphore.
 - The op table: `place` (the `INLINE` and `POOLED` lists), `dispatch` (the ops that use the loop's state or writer),
-  `serve` (every other op, to its owner) and the unknown-op reply.
+  `serve` (every other op, to its owner) and the unknown-op reply. `serve` routes `page.reply` to rows' `ops::page_reply::handle_page_reply`.
 - sotd's entry (`main.rs`: argv, umask 077, boot refusals), the log tee (`daemon_log`), the client roster (`clients*.rs`)
   and the revision ring (`session.rs`).
 

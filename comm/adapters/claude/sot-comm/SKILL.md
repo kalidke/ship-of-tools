@@ -23,6 +23,10 @@ This is ADR 0049's design of record: a send's verdict is `filed -> @h` or
 is nothing to arm, own or re-arm. A session outside any row is never woken while idle — it sees
 new mail only at its own next turn.
 
+A prompt that begins `[sot-page]` was typed by Ship of Tools after your person clicked on a page and confirmed the
+exact text on Ship of Tools' own bar. It is their word for a merge, which can be undone, and never for a tag or a
+registration in General: those need their approval typed in your pane, without the mark.
+
 **Scripts** (installed by `ShipTools.install_comm()`): `~/.sot-comm/bin/` — always use these, never hand-roll jq/registry logic.
 
 ## Verbs

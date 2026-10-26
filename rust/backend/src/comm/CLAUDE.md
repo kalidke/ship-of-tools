@@ -103,6 +103,16 @@ Waking:
   `comm_wake::a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_box_alone`).
   Each typing, the line or Enter alone, is one INFO log event: the handle, what was
   sent, the cursor's row and the box's rows as the gate read them (escaped), and the outcome.
+- The same attempt serves rows' `page.reply` through `wake::type_if_free`: the given line passes the same free-prompt,
+  1.5 s stillness, fresh Stop-mark and run-fenced text/Enter gates. `screen::prompt_of` takes that line for its fit and
+  exact-content checks; the wake supplies `WAKE_LINE`. A page reply requires an empty box and never completes an
+  existing line, even the exact offered line. Unlike a wake, it keeps no owed Enter or retry.
+- One typing per row in this daemon: `attempt.rs` holds the state folder in a process-wide set from before attach
+  through client shutdown, for both callers and for Enter-only wakes too. Contention returns `not_free` with
+  "another typing on this row", without attaching. Other rows remain independent, and RAII releases the entry on
+  every exit. A boot look refused by contention stays pending until it can read the box. `attempt_tests.rs::a_typing_attempt_owns_the_row_until_it_ends` and
+  `tests/comm_wake.rs::a_page_reply_and_a_wake_never_type_at_once` prove the guard; the latter suite also observes two
+  concurrent replies and an unsent reply left untouched by later wakes. Unreadable Stop-mark bytes refuse a reply.
 - A busy session needs no typing: its end-of-turn check (the Stop hook, through `sotd comm unread`) does not let a turn
   end while unread mail waits, once per batch.
 - A session outside any row, every server session included, has a handle and an inbox and is never woken; it sees mail
@@ -166,13 +176,13 @@ sotd, stays beside them for the spawn; rows (`edit_entry`, `read_comm_agents`,
 `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, `dialog_of`); the server (`handle_comm_file`,
 `handle_agent_send`, `Links`, `record_at_boot`, the wake's `run`, the hub link's `run`).
 
-Calls out: rows, from the wake alone (`bound_handle` and the headless attach client); the package page's target puts the
+Calls out: rows, from the wake and the shared typing attempt (`bound_handle` and the headless attach client); the package page's target puts the
 wake in the `sotd` binary beside the op table, so messaging's own crate calls no rows code, and until the crates exist
 the wake lives in `wake/` here. From the rest: rows over the wire and through its script (`agent.join`, and
 `comm-status.sh join` after a join); topology (the relay endpoint, `dial_and_call`, the ssh recipe);
 platform (the declared host, the machine id, the kernel locks, `connect_own`); containment (`Signal` for every child).
 
-Does not: decide a row's work-state (rows'); type anything but the wake line and its Enter; carry anything but mail on
+Does not: decide a row's work-state (rows'); type anything of its own but the wake line and its Enter (rows supplies a confirmed page line to the shared attempt); carry anything but mail on
 `comm.file` (the window's notifications ride `agent.send`); queue or retry a send; read a subagent's mail.
 
 Platforms: one implementation on all three. Linux reads the mount table for the lock manager (`nfs4 <export>` with

@@ -10,47 +10,21 @@ you left each one.
 <DemoLoop name="modules" caption="Modules mode: the cursor moves through a module's definitions, with docstring and source in the preview." />
 ```
 
-Modes are a **planned** plugin surface: the design is a [`Mode`](@ref) subtype
-with `tree_root` / `tree_children` / `preview_for` methods adding a new root, and
-the core modes shipping as methods on that same type with no privileged path.
-`Mode` is declared in core and NOT BUILT. Today the nav roots are fixed native
-Rust views in the frontend (Files, Modules, Sessions, Hosts), not `Mode`
-subtypes: Files, Sessions and Hosts are built in Rust, and only the Modules tree
-comes from the Julia kernel. The mode-plugin seam is not wired.
-See [The Dispatch ABI](../extend/abi.md) and [Writing a Mode Plugin](../extend/mode.md).
+The four navigation modes are native Rust views in the frontend: Files, Modules,
+Sessions and Hosts. Files, Sessions and Hosts are built in Rust; the Modules tree
+comes from the Julia kernel. The former `Mode` extension type has been removed
+from core. [ADR 0051](https://github.com/kalidke/ship-of-tools/blob/main/docs/history/adr/0051-mods.md#the-mod)
+specifies future view extensions as `Mod` subtypes with `tree_children` and the
+three-argument `preview`, shown in a generic Mods navigation mode. The mod system
+is planned for a 0.7.Z after the 0.7.0 tag and is not built. The planned Agents and
+Outputs views become mods under that decision. See [The Dispatch ABI](../extend/abi.md)
+for the current extension surface.
 
 ## The same shape everywhere
 
 The window's navigation pane is a single collapsible tree: a parent context, the
 current level, and its children, shown through nesting. What changes between modes
 is *what* the tree enumerates and what the preview pane shows for the cursored node.
-
-| Mode | Level 1 → Level 2 → Level 3 | Preview |
-|------|-----------------------|---------|
-| Project | Sections → contents → subitems | Rendered markdown / task detail |
-| Files | Parent dir → current dir → contents | File at appropriate fidelity |
-| Modules | Modules → types, functions, macros, submodules → constructors | Definition source + concept artifact |
-| Types | Types → facets (fields/methods/sub) → members | Type def + meaning + data shape |
-| Math | Concept areas → concepts → derivations/impls | LaTeX + implementing functions |
-| Outputs | Recent runs → contents → artifacts | PNG / plot / JSON / MP4 |
-| Agents | Tasks → timeline → step detail | Diff / live tail / message |
-
-This table is the **conceptual mode set** — the design target. Not all of it is
-built yet; see the status breakdown below.
-
-## Built today vs planned
-
-| Mode | Status |
-|------|--------|
-| Files | **Built.** Filesystem navigation with previews. |
-| Modules | **Built, read-only.** Structural view derived from `JuliaSyntax.jl`. |
-| Types | Planned (after phase 1). |
-| Math | Planned (after phase 1). |
-| Outputs | Planned (after phase 1). |
-| Agents | **Partly here.** Multi-agent is real *today* — concurrent Claude Code sessions coordinated over the comm bus and surfaced in the Sessions view. What is pinned for later is *this dedicated mode*: an in-UI tasks → timeline → step-detail view for orchestrating them. |
-
-The conceptual set above describes where modes are going. What you can switch
-between *today* is the set of operational nav modes bound in the keymap, below.
 
 ## The nav modes bound today
 
@@ -65,9 +39,8 @@ those characters stay literal text.
 | `s` | Sessions | workspaces — the projects this backend is hosting |
 | `h` | Hosts | the remote hosts you can target |
 
-Files and Modules are the two conceptual modes wired up so far. Sessions and Hosts
-are **operational** modes — they navigate the deployment surface (which project,
-which machine) rather than the concept hierarchy of a single project.
+Files and Modules navigate the project. Sessions and Hosts navigate the deployment
+surface: which project and which machine.
 
 ### Sessions mode (`s`)
 

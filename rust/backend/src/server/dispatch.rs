@@ -334,6 +334,8 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
             // no controller id needed, it never takes the pen.
             crate::rows::ops::pty::handle_pty_screen(req_id, payload, workspaces).await
         }
+        // The 1.5 s prompt hold runs off the loop, without a preview-pool permit.
+        op::PAGE_REPLY => crate::rows::ops::page_reply::handle_page_reply(req_id, payload, workspaces).await,
         op::MONITOR_HISTORY => handle_monitor_history(req_id, payload, workspaces),
         other => {
             tracing::warn!(op = %other, "unknown op");

@@ -9,7 +9,7 @@ use crate::rows::run::headless::{attach, checkpointed, send_enter, send_text, Cl
 pub enum WakeOutcome {
     /// The screen was not a free prompt; nothing was typed. `row` is the cursor's row as the gate read it
     /// ([`cursor_row_trace`]).
-    NotFree { row: String },
+    NotFree { reason: &'static str, row: String },
     /// The line was typed and Enter written.
     Woke,
     /// The line was typed but the live screen then did not show it alone in main's input box, for `reason`
@@ -96,6 +96,12 @@ pub fn wake_if_free(
     still_for: Duration,
     op_budget: Duration,
 ) -> Result<Attempted, HeadlessError> {
+    let Some(_typing) = Typing::take(state_dir) else {
+        return Ok(Attempted {
+            outcome: WakeOutcome::NotFree { reason: "another typing on this row", row: String::new() },
+            run: String::new(),
+        });
+    };
     let mut client = checkpointed(attach(state_dir, controller_id)?, Instant::now() + op_budget)?;
     // The debt is the run's: another run's box holds no line, whatever this daemon typed into the one before it.
     let run = client.run();
@@ -123,7 +129,7 @@ pub fn wake_if_free(
     let out = if ends_here {
         Ok(WakeOutcome::RunChanged)
     } else if first_prompt.is_none() {
-        Ok(WakeOutcome::NotFree { row: cursor_row_trace(client.screen()) })
+        Ok(WakeOutcome::NotFree { reason: "prompt not free", row: cursor_row_trace(client.screen()) })
     } else {
         mark("hold");
         let held_from = Instant::now();
@@ -153,12 +159,70 @@ pub fn wake_if_free(
                 log_typing(handle, sent, &read, &out);
                 Ok(out)
             }
-            _ => Ok(WakeOutcome::NotFree { row: cursor_row_trace(client.screen()) }),
+            _ => Ok(WakeOutcome::NotFree { reason: "moved during the hold", row: cursor_row_trace(client.screen()) }),
         }
     };
     client.shutdown(SHUTDOWN_WAIT);
     mark("done");
     out.map(|outcome| Attempted { outcome, run })
+}
+
+/// One attempt per state folder, held from before attach through shutdown, for both callers.
+struct Typing(PathBuf);
+
+fn typings() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {
+    static TYPINGS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> = std::sync::OnceLock::new();
+    TYPINGS.get_or_init(Default::default)
+}
+
+impl Typing {
+    fn take(state_dir: &Path) -> Option<Self> {
+        let mut held = typings().lock().expect("row typing lock");
+        held.insert(state_dir.to_path_buf()).then(|| Self(state_dir.to_path_buf()))
+    }
+}
+
+impl Drop for Typing {
+    fn drop(&mut self) {
+        typings().lock().expect("row typing lock").remove(&self.0);
+    }
+}
+
+/// Type a supplied line with the wake's whole gate, without completing a line already in the box.
+/// The caller rechecks row identity and readiness at each gate; Stop marks are read fresh at both.
+/// No reply debt or retry is kept: a line left unsent stays for the person to inspect.
+pub(crate) fn type_if_free(
+    home: &Path, state_dir: &Path, handle: &str, line: &str,
+    admit: &dyn Fn() -> Result<(), &'static str>,
+) -> Result<Attempted, HeadlessError> {
+    let reason = std::cell::Cell::new(None);
+    let free = |lines: &[String], cursor, agent: &str, _: bool| {
+        let checked = (|| {
+            admit()?;
+            let registry = crate::comm::registry::registry::read_registry_fresh(&home.join("registry.json"))
+                .map_err(|_| "could not read the Stop hook mark")?;
+            let parsed: serde_json::Value = serde_json::from_slice(&registry)
+                .map_err(|_| "could not read the Stop hook mark")?;
+            if !parsed.get("agents").is_some_and(serde_json::Value::is_object) {
+                return Err("could not read the Stop hook mark");
+            }
+            let now = crate::comm::registry::registry::unix_now_secs();
+            if stop_hook_running(&registry, handle, now) {
+                return Err("stop hook running");
+            }
+            match super::screen::prompt_of(lines, cursor, agent, cfg!(windows), line)? {
+                Prompt::Empty => Ok(Prompt::Empty),
+                Prompt::HoldsLine => Err("input already holds a line"),
+            }
+        })();
+        reason.set(checked.as_ref().err().copied());
+        checked.ok()
+    };
+    let mut attempted = wake_if_free(state_dir, "sot-page-reply", handle, line, None, &free, "claude", STILL_FOR, OP_BUDGET)?;
+    if let WakeOutcome::NotFree { reason: why, .. } = &mut attempted.outcome {
+        if let Some(seen) = reason.get() { *why = seen; }
+    }
+    Ok(attempted)
 }
 
 /// What the gate read at the moment of typing: the cursor's row ([`cursor_row_trace`]) and the rows of the box around

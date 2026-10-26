@@ -178,6 +178,23 @@ Ends:
   holds it while it fills the folder; busy is skipped until the next start) and only when no 0.6 layout name is left in
   the row's folder; a failure is tried again at the next start, and a link of that name is kept.
 
+Page replies:
+- Rows owns `page.reply`, beside `pty.input` (`ops/page_reply.rs`). It rechecks the canonical marked line, resolves
+  only the canonical workspace id and requires the row's current bound handle to equal the handle the bar named.
+  Invalid text is `refused`; a missing id is `unknown_workspace`; a moved handle is `refused: handle_changed`.
+  Only a capsule row running Claude is typeable (`refused: not_typeable` otherwise). A blocking phase probe must
+  read Ready (`not_ready` otherwise); nothing on this path starts or resumes a row. It delegates typing to messaging's
+  shared attempt, rechecking binding, agent and phase at each prompt check. The op runs off the connection loop and
+  takes no preview-pool permit.
+- Outcomes are `sent` (the marked line and Enter recorded), `not_free` (nothing typed; detail names the gate's reason),
+  `typed_not_sent` (text typed, Enter withheld) or `unknown` (delivery may have occurred). A reply is never retried or
+  owed Enter by a wake; a line left unsent is for the person to inspect. The supplied line must fit one prompt row;
+  the fit counts characters, and a wide line that wraps gets no Enter. The wake's screen and read-to-input race
+  limits apply. Delivery logs the handle, workspace, marked line and outcome.
+- Behavior proofs: `tests/page_channel.rs::page_reply_rechecks_the_mark_the_handle_and_the_target_without_resuming_it`,
+  and the `page_reply` tests in `tests/comm_wake.rs` (real stub-agent input, refused panes, concurrent typings and a
+  changed handle). These tests use scratch homes only.
+
 Work-state. A row with a joined agent has one work-state, which the window shows as the color of its name:
 
 | state | color | means | summary |
@@ -237,10 +254,10 @@ Work-state. A row with a joined agent has one work-state, which the window shows
 Owns: the registry (`Workspaces`) and the row (`Workspace`) with its phase cell, guards, run gate and the default row's
 rule; on disk `<config>/workspaces-<host>/<slug>.toml`, `<state>/workspaces/<id>/` with its tombstones, and
 `workspaces/.registries-of`; the ops `workspace.create`, `workspace.destroy`, `workspace.list`, `workspace.activate`,
-`workspace.reauth`, `agent.join`, `pty.open`, `pty.input`, `pty.screen` and `lane.connect` (which pipes the row's one socket, `row-<h>`, after resuming an absent one), and the `workspace.changed`
+`workspace.reauth`, `agent.join`, `pty.open`, `pty.input`, `pty.screen`, `page.reply` and `lane.connect` (which pipes the row's one socket, `row-<h>`, after resuming an absent one), and the `workspace.changed`
 event; the supervisor's launch (state root, detached spawn per OS, durable parent, the Linux row scope), its start,
 watchdog, observer, end and boot resume (`spawn/`, `run/`); the daemon's headless attach adapter (`run/headless.rs`,
-using the capsule client under its guarantees 6 and 7), which the wake uses too; the liveness stamp's choice of
+using the capsule client under its guarantees 6 and 7), which the wake and page replies use too; the liveness stamp's choice of
 handles (the rows that run); work-state: the reduction and
 `sotd work-state`, the dialog tick and the poll (`work_state/`), and the scripts in `comm/work_state/`
 (`comm-status.sh`, `comm-turn-auditor.sh`, the status hooks), with the reference page
@@ -259,12 +276,12 @@ scripts during an install logs one refused dialog stamp a row until it restarts.
 
 Calls out: capsule (`sot-capsule supervise`, the supervisor client, the attach client); agents (argv, environment,
 folder trust); sidecars (`Kernel`, `Repl`); files (`FilesMode`, `ConceptStore`, `Watcher`); messaging (`edit_entry`,
-`read_comm_agents`, `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, the wake's `dialog_of`);
+`read_comm_agents`, `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, the wake's `dialog_of`, `type_if_free`);
 platform (dirs, the declared host, durable writes, locks); containment (`Signal`); pages (the `PageRow`, `PageOption`
 and `RowRef` data shapes its server-built closures return).
 
 Does not: run the agent's terminal or keep its screen (capsule); decide when rows end (lifecycle asks); read a screen for
-mail or type into a prompt (messaging's wake); build an agent's argv (agents); write the registry's address-book fields
+mail or perform prompt typing (messaging's shared attempt, called by the wake and `page.reply`); build an agent's argv (agents); write the registry's address-book fields
 or deliver mail (messaging); judge a turn's text (the turn auditor's Haiku call nudges the session; only the session's
 own stamp changes a fact).
 
@@ -284,6 +301,9 @@ Git Bash (messaging's rule, comm/CLAUDE.md).
 Tests: one unit test per guarantee, `cargo test -p sot-backend rows::` (each named in the pass's result); the row half
 of the integration suite `capsule_workspaces` on real daemons and capsules; `comm/tests/test-status-floor.sh` for the
 hooks' events reaching the reduction.
+
+Queued to rows: distinguish `pty.input` from a non-window connection with a visible mark. Until then, approval
+"typed in that session's pane" without `[sot-page]` is a convention, not proof of physical keyboard input.
 
 Unbuilt: ROW-RESTART (queue item 1, a feature): one restart action for a row in phase `terminal` or `ended_no_respawn`
 (`workspace.restart`, `sot-fe restart <ws> [--resume <id>]`, Shift+R in Sessions), keeping the row's id and handle,
