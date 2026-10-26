@@ -419,10 +419,12 @@ fn edit_buffer_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
                     .and_then(|mut cb| cb.set_text(text.clone()))
                 {
                     Ok(()) => tracing::info!(
+                        target: "sot::ui::preview::editor::keys",
                         bytes = text.len(),
                         "editor.copy → clipboard"
                     ),
                     Err(e) => tracing::warn!(
+                        target: "sot::ui::preview::editor::keys",
                         error = %e,
                         "clipboard write failed; editor copy dropped"
                     ),
@@ -440,6 +442,7 @@ fn edit_buffer_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
                     .and_then(|mut cb| cb.set_text(text))
                 {
                     tracing::warn!(
+                        target: "sot::ui::preview::editor::keys",
                         error = %e,
                         "clipboard write failed; editor cut still deletes"
                     );
