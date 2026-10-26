@@ -191,10 +191,10 @@ impl State {
 
     /// Fire `math.render` for every block in the latest markdown
     /// preview that isn't already cached or in flight. Called after
-    /// `preview_md` is (re)built. Idempotent — repeated calls with
+    /// the shaped buffer is (re)built. Idempotent — repeated calls with
     /// the same blocks do nothing once the cache is warm.
     pub(in crate::ui) fn dispatch_pending_math(&mut self) {
-        let blocks = self.preview_md.media_blocks.clone();
+        let blocks = self.shaped.md().media_blocks.clone();
         for block in blocks {
             let crate::ui::preview::markdown::MediaBlock::Math { latex, display } = block else {
                 continue;
@@ -229,7 +229,8 @@ impl State {
         // current source order. Snapshot avoids the &mut self / &self
         // borrow conflict when we walk media_blocks then build buffers.
         let snapshots: Vec<(String, f32, f32)> = self
-            .preview_md
+            .shaped
+            .md()
             .media_blocks
             .iter()
             .filter_map(|b| match b {
@@ -258,13 +259,13 @@ impl State {
         }
     }
 
-    /// Drain `preview_md.pending_token_fences` and fire
+    /// Drain the shaped buffer's `pending_token_fences` and fire
     /// `OutgoingReq::MarkdownTokenize` for each `(lang, source_hash)`
     /// that's not already in cache or in flight. Replies route through
     /// `IncomingEvt::MarkdownTokens`, populate the per-fence cache, and
     /// trigger a reflow so the next redraw consumes the overlay.
     pub(in crate::ui) fn dispatch_pending_markdown_tokens(&mut self) {
-        let pending = std::mem::take(&mut self.preview_md.pending_token_fences);
+        let pending = self.shaped.take_pending_token_fences();
         for (lang, source_hash, source) in pending {
             let key = (lang.clone(), source_hash);
             if self.markdown_token_cache.contains_key(&key)
@@ -285,12 +286,12 @@ impl State {
         }
     }
 
-    /// Walk `preview_md.buffer`'s laid-out runs looking for the FFFC
+    /// Walk the shaped buffer's laid-out runs looking for the FFFC
     /// (OBJECT REPLACEMENT CHARACTER) placeholders that
     /// `walk` (ui/preview/markdown/walk.rs) emitted for `$$…$$` / `$…$` / `![](…)`
     /// regions. Returns one entry per FFFC glyph, in source order,
     /// paired with the screen rect to paint into (md_rect-relative
-    /// + scroll-adjusted). The order matches `preview_md.media_blocks`
+    /// + scroll-adjusted). The order matches the shaped buffer's `media_blocks`
     /// so callers can zip the two by index without re-parsing the
     /// buffer text.
     ///
@@ -315,12 +316,12 @@ impl State {
         let top = md_rect.y + crate::ui::render::text::EXTRA_TOP_PAD_PX;
         use crate::ui::preview::markdown::MediaBlock;
         let mut out = Vec::new();
-        if self.preview_md.media_blocks.is_empty() {
+        if self.shaped.md().media_blocks.is_empty() {
             return out;
         }
-        let body_em_px = self.preview_md.body_em().max(1.0);
+        let body_em_px = self.shaped.md().body_em().max(1.0);
         let mut fffc_idx: usize = 0;
-        for run in self.preview_md.buffer.layout_runs() {
+        for run in self.shaped.md().buffer.layout_runs() {
             for g in run.glyphs.iter() {
                 // The glyph's start/end span the source text byte
                 // range it represents; checking the slice avoids
@@ -333,7 +334,7 @@ impl State {
                 if &run.text[g.start..end] != "\u{FFFC}" {
                     continue;
                 }
-                let Some(block) = self.preview_md.media_blocks.get(fffc_idx) else {
+                let Some(block) = self.shaped.md().media_blocks.get(fffc_idx) else {
                     fffc_idx += 1;
                     continue;
                 };

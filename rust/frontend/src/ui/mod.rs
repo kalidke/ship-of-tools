@@ -597,42 +597,11 @@ struct State {
     // ui/agent_pane: selected client, warm storage, screen, input and receipt owner.
     agent_pane: AgentPane,
     // ui/preview: the preview pane's buffers, concept slot, scroll and overlays.
-    preview_svg: Option<Quad>,
-    /// Tree-sitter-backed syntax highlighter for the markdown preview's
-    /// fenced code blocks (and, later, the editor pane). Constructed
-    /// once per `State` because `HighlightConfiguration::new` compiles
-    /// the per-language highlight query — moderately expensive vs
-    /// the per-redraw highlight call itself.
-    highlight_service: crate::ui::preview::markdown::highlight::HighlightService,
-    preview_md: MarkdownPreview,
-    /// Pixel rect of the markdown pane from the most recent ratatui layout
-    /// pass; cached so we can re-shape on resize without re-running layout.
-    md_rect_px: ScreenRect,
+    /// The shaped preview: the flowed text buffer, its rect, scroll and definition-line anchor, the math SVG, the
+    /// refused-hello overlay and the highlighter.
+    shaped: ShapedPreview,
     /// The concept slot: the last annotation read, its shaped body and the rect it is shaped for.
     concept: ConceptSlot,
-    /// Definition line (1-indexed) the in-flight `preview.get` should
-    /// anchor to once it lands — set from the selected modules-mode row's
-    /// `line` payload so the code preview scrolls the item (its docstring
-    /// if present, else the definition) to the top of the pane instead of
-    /// showing the containing file from line 1. `None` for files-mode rows
-    /// (which carry no `line`) → preview opens at the top as before.
-    /// Consumed once by the Preview reply handler.
-    preview_anchor_line: Option<u32>,
-    /// The definition line the *currently shown* code preview is anchored to.
-    /// Lets `maybe_fire_preview` re-anchor without a re-fetch when the cursor
-    /// moves between items in the SAME file (common within a module) — the
-    /// same-node early-return otherwise skips re-anchoring, so the preview
-    /// stays parked on the first item. Compared against the new selection's
-    /// line so we re-anchor only on a real change, never fighting the user's
-    /// manual scroll on a stable selection.
-    preview_anchored_to: Option<u32>,
-    /// Scroll offset (rows from the top) of the preview pane's flowed
-    /// text. 0 = top of the markdown body; positive = scrolled down.
-    /// Drives an upward pixel shift of the cosmic-text TextArea via
-    /// `ExtraArea::scroll_y_px`. Image-only previews (PNG/SVG) ignore
-    /// this. Clamped at render time to total_layout_lines minus visible
-    /// rows so the user can't scroll past the bottom of the content.
-    preview_scroll: u16,
     /// ADR 0030 §2 / ADR 0042 L2a: a persistent, blocking "update needed"
     /// message shown when a host's daemon refuses the handshake on a
     /// protocol-version skew. Keyed by `HostKey` — each host's own hello
@@ -640,11 +609,10 @@ struct State {
     /// whole UI while every other (healthy) host works fine; only
     /// `active_host`'s entry is projected to the blocking overlay (see
     /// `rebuild_fatal_overlay`/`show_fatal`). A host's entry is removed on
-    /// its own next successful `Connected` (not every host's). `preview_fatal`
-    /// is the shaped buffer for whichever host is CURRENTLY active, rebuilt
-    /// on set + on resize + on an active-host switch.
+    /// its own next successful `Connected` (not every host's). The shaped
+    /// preview's fatal overlay is shaped for whichever host is CURRENTLY
+    /// active, rebuilt on set + on resize + on an active-host switch.
     hello_refused: HashMap<HostKey, String>,
-    preview_fatal: Option<MarkdownPreview>,
     /// The installed source: bytes, their node, their scale and the markdown origin, repainted from on a rescale or
     /// a row's restore without a round trip.
     preview_source: preview::source::InstalledPreviewSource,
@@ -782,7 +750,7 @@ struct State {
     /// state model trivially small; in practice a markdown doc only
     /// ever has one wide table on screen at a time. h/l (Preview focus)
     /// step ±~1 cell; Shift+wheel-Y also adjusts. Reset to 0 whenever
-    /// `preview_md` is rebuilt so navigating between docs starts fresh.
+    /// the shaped buffer is rebuilt so navigating between docs starts fresh.
     md_table_scroll_px: f32,
     /// Per-table cosmic-text buffers hosted as ExtraAreas. Indexed in
     /// `media_blocks` Table-encounter order so multiple tables on one
@@ -821,7 +789,7 @@ struct State {
     markdown_token_pending: std::collections::HashSet<(String, u64)>,
     /// Set by the MathRendered event handler when a fresh SVG enters
     /// `math_cache`. The redraw loop checks this and rebuilds
-    /// `preview_md` from the installed source so the markdown walk can size
+    /// the shaped buffer from the installed source so the markdown walk can size
     /// per-block placeholders to the SVG's natural dimensions instead
     /// of the pre-render letterbox default. Coalesces a burst of
     /// MathRendered events into a single rebuild per frame.
@@ -980,6 +948,7 @@ pub(crate) mod render;
 use render::*;
 use self::preview::concept::{split_frontmatter, ConceptInfo, ConceptSlot, DriftCheck, DriftStatus};
 use self::preview::editor::state::{EditState, Editor};
+use self::preview::shaped::ShapedPreview;
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,

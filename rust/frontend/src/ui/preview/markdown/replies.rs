@@ -45,7 +45,7 @@ impl State {
         // Also keep the old standalone math-pane preview
         // path alive for the M1 acceptance test fixture
         // (`requirements.md` has a canonical integral
-        // expectation against `preview_svg`). Soon the
+        // expectation against the math SVG). Soon the
         // pane will be retired in favour of inline
         // markdown placement.
         match quad_from_svg_bytes(
@@ -58,7 +58,7 @@ impl State {
         ) {
             Ok(q) => {
                 tracing::info!(bytes = svg_bytes.len(), "math SVG rasterised");
-                self.preview_svg = Some(q);
+                self.shaped.show_svg(q);
             }
             Err(e) => tracing::warn!(error = %e, "math SVG rasterise failed"),
         }

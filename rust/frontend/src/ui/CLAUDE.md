@@ -21,7 +21,9 @@ active tree, its mode, scroll and scan root, and the store of parked trees; `nav
 target, awaited level, refresh memo and root-armed target; `nav::FileOps` owns the pending create and delete and the
 upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff;
 `preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer;
-`preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect.
+`preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect;
+`preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line anchor, the math
+SVG, the refused-hello overlay and the highlighter.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -194,6 +196,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   first visit clear both; a row parks the read alone, and its restore drops the shape until the next read. The layout
   pass resizes the shape only when the rect moved by more than half a pixel. The shaped body is built and resized but
   no draw path reads it today.
+- `ShapedPreview` privately owns the pane's flowed text: one buffer shaped for the rect the last layout pass gave it
+  (resized only when the rect moved by more than half a pixel), the math SVG beside it, the scroll in body lines, the
+  definition-line anchor and the refused-hello overlay. Installing a buffer drops the SVG and scrolls to the top. A
+  sent `preview.get` arms its anchor; the reply consumes it and scrolls to the definition only for a code reply to the
+  request that armed it; a cursor move within the shown file re-anchors only on a real change of line. Scrolling is
+  named: by a signed step stopping at the top, saturating line steps, top, end (clamped by the next layout).
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

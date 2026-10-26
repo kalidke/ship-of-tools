@@ -307,7 +307,7 @@ impl MarkdownPreview {
         BODY_SIZE * self.scale
     }
 
-    /// Scroll offset (in `body_line_h` units — what `preview_scroll` stores)
+    /// Scroll offset (in `body_line_h` units — what the preview scroll stores)
     /// that puts the item defined at `def_line` (1-indexed source line) at the
     /// top of the pane, anchored to its docstring start when one is attached.
     /// Walks the shaped buffer for the target line's layout run and converts
@@ -338,7 +338,7 @@ impl MarkdownPreview {
     /// per-line `line_height_opt` overrides emitted by tall placeholder
     /// spans (display math, embedded figures). `total_visual_lines`
     /// alone undercounts when figures stretch a single BufferLine to
-    /// many body-line heights, leaving `preview_scroll`'s clamp short
+    /// many body-line heights, leaving the preview scroll's clamp short
     /// of the actual bottom. `body_line_h` is the fallback for any
     /// LayoutLine that didn't carry its own override.
     ///

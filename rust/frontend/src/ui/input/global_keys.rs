@@ -369,14 +369,12 @@ pub(in crate::ui) fn scroll_line_chords(state: &mut State, key: KeyPress<'_>) ->
                 return Break(());
             }
             (PaneFocus::Preview, Some(Action::ScrollLineUp)) => {
-                state.preview_scroll =
-                    state.preview_scroll.saturating_sub(row_step as u16);
+                state.shaped.scroll_up(row_step as u16);
                 state.window.request_redraw();
                 return Break(());
             }
             (PaneFocus::Preview, Some(Action::ScrollLineDown)) => {
-                state.preview_scroll =
-                    state.preview_scroll.saturating_add(row_step as u16);
+                state.shaped.scroll_down(row_step as u16);
                 state.window.request_redraw();
                 return Break(());
             }
@@ -401,7 +399,7 @@ pub(in crate::ui) fn table_scroll_key(state: &mut State, key: KeyPress<'_>) -> C
         && state.preview_png.is_none()
         && !state.editor.is_editing()
     {
-        let step = state.preview_md.body_em().max(8.0);
+        let step = state.shaped.md().body_em().max(8.0);
         match action {
             Some(Action::TableLeft) => { state.md_table_scroll_px = (state.md_table_scroll_px - step).max(0.0); state.window.request_redraw(); return Break(()); }
             Some(Action::TableRight) => { state.md_table_scroll_px += step; state.window.request_redraw(); return Break(()); }

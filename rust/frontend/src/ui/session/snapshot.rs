@@ -178,11 +178,11 @@ impl State {
         self.editor.restore(snap.edit_state);
         self.rebuild_edit_preview();
         // Clear the stale Quads then repaint from the cached source.
-        // render_preview_source rebuilds preview_md/png/svg for the
+        // render_preview_source rebuilds the shaped text/png/svg for the
         // restored mime; if the leaving workspace had nothing rendered
         // we just leave the panes empty.
         self.preview_png = None;
-        self.preview_svg = None;
+        self.shaped.clear_svg();
         // The installed source travels whole: restored BEFORE
         // render_preview_source so the repaint (and any scalebar drawn on
         // it) uses THIS workspace's calibration (ADR 0034), `o`/`W`/`O`

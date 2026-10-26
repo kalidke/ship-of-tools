@@ -321,15 +321,14 @@ impl State {
                         .into_iter()
                         .map(|s| (s.text, s.kind))
                         .collect();
-                    self.preview_md = MarkdownPreview::new_tokens(
+                    let md = MarkdownPreview::new_tokens(
                         self.text.font_system_mut(),
                         &pairs,
-                        self.md_rect_px.w.max(1.0),
+                        self.shaped.rect().w.max(1.0),
                         scale,
                     );
+                    self.shaped.install(md);
                     self.preview_png = None;
-                    self.preview_svg = None;
-                    self.preview_scroll = 0;
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "tokens+json decode failed");
@@ -350,15 +349,14 @@ impl State {
                 "{kind} file — {} bytes\n\nNot previewed as text (mime: {mime}).",
                 bytes.len()
             );
-            self.preview_md = MarkdownPreview::new_plain(
+            let md = MarkdownPreview::new_plain(
                 self.text.font_system_mut(),
                 &msg,
-                self.md_rect_px.w.max(1.0),
+                self.shaped.rect().w.max(1.0),
                 scale,
             );
+            self.shaped.install(md);
             self.preview_png = None;
-            self.preview_svg = None;
-            self.preview_scroll = 0;
         } else if mime == "text/markdown" || mime == "text/x-markdown" {
             if let Ok(s) = std::str::from_utf8(bytes) {
                 // NOTE: `figure_failed` is deliberately NOT touched here.
@@ -376,20 +374,20 @@ impl State {
                 // calls this function.
                 let math_metrics = self.build_math_metrics();
                 let figure_metrics = self.build_figure_metrics();
-                self.preview_md = MarkdownPreview::new(
+                let rect = self.shaped.rect();
+                let md = MarkdownPreview::new(
                     self.text.font_system_mut(),
                     s,
-                    self.md_rect_px.w.max(1.0),
-                    self.md_rect_px.h.max(1.0),
+                    rect.w.max(1.0),
+                    rect.h.max(1.0),
                     scale,
                     &math_metrics,
                     &figure_metrics,
-                    &self.highlight_service,
+                    self.shaped.highlighter(),
                     &self.markdown_token_cache,
                 );
+                self.shaped.install(md);
                 self.preview_png = None;
-                self.preview_svg = None;
-                self.preview_scroll = 0;
                 // Fire math.render for any `$$...$$` blocks the walk
                 // discovered. Replies populate `math_cache` and the
                 // next paint pulls the SVG in via A3.
@@ -404,15 +402,14 @@ impl State {
                 self.dispatch_pending_markdown_tokens();
             }
         } else if let Ok(s) = std::str::from_utf8(bytes) {
-            self.preview_md = MarkdownPreview::new_plain(
+            let md = MarkdownPreview::new_plain(
                 self.text.font_system_mut(),
                 s,
-                self.md_rect_px.w.max(1.0),
+                self.shaped.rect().w.max(1.0),
                 scale,
             );
+            self.shaped.install(md);
             self.preview_png = None;
-            self.preview_svg = None;
-            self.preview_scroll = 0;
         } else {
             tracing::debug!(
                 %mime,
@@ -428,17 +425,18 @@ impl State {
     /// path. No-op (clears the buffer) when no refusal is set.
     pub(in crate::ui) fn rebuild_fatal_overlay(&mut self) {
         let Some(body) = self.hello_refused.get(self.selected.host()).cloned() else {
-            self.preview_fatal = None;
+            self.shaped.clear_fatal();
             return;
         };
-        let width = self.md_rect_px.w.max(1.0);
+        let width = self.shaped.rect().w.max(1.0);
         let scale = self.scale * self.text_scale_mult;
-        self.preview_fatal = Some(MarkdownPreview::new_plain(
+        let fatal = MarkdownPreview::new_plain(
             self.text.font_system_mut(),
             &body,
             width,
             scale,
-        ));
+        );
+        self.shaped.show_fatal(Some(fatal));
     }
 }
 

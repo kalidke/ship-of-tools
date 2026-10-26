@@ -167,8 +167,7 @@ fn route_wheel_rows(state: &mut State, rows_above: i32) {
             state.window.request_redraw();
         }
         PaneFocus::Preview => {
-            let new = (state.preview_scroll as i32 - rows_above).max(0);
-            state.preview_scroll = new as u16;
+            state.shaped.scroll_by(-rows_above);
             state.window.request_redraw();
         }
         PaneFocus::Llm => {

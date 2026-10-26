@@ -288,7 +288,7 @@ impl State {
             )?;
             rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
         }
-        if let (Some(quad), Some(rect)) = (self.preview_svg.as_ref(), svg_rect) {
+        if let (Some(quad), Some(rect)) = (self.shaped.svg(), svg_rect) {
             quad.render(
                 &self.queue,
                 &self.quad_pipeline,
@@ -331,7 +331,7 @@ impl State {
             rpass.set_scissor_rect(sx, sy, sw, sh);
         }
         for (block_idx, rect) in &media_paint_targets {
-            let Some(block) = self.preview_md.media_blocks.get(*block_idx) else {
+            let Some(block) = self.shaped.md().media_blocks.get(*block_idx) else {
                 continue;
             };
             // Resolve the kind-specific source quad + the paint
@@ -422,8 +422,8 @@ impl State {
             // lines inside the fence that `code_block_line_rects`
             // skipped, so the panel reads as one continuous strip
             // rather than per-line stripes with gaps.
-            let block_rects = self.preview_md.code_block_rects();
-            let inline_rects = self.preview_md.code_glyph_rects();
+            let block_rects = self.shaped.md().code_block_rects();
+            let inline_rects = self.shaped.md().code_glyph_rects();
             if !block_rects.is_empty() || !inline_rects.is_empty() {
                 const PAD_X: f32 = 3.0;
                 const PAD_Y: f32 = 1.0;
@@ -519,7 +519,8 @@ impl State {
                 // at the clip line so there's no false border drawn across
                 // the drawer boundary.
                 let block_panels: Vec<(ScreenRect, bool, bool)> = self
-                    .preview_md
+                    .shaped
+                    .md()
                     .code_block_rects()
                     .into_iter()
                     .filter_map(|(by, bh)| {
@@ -610,7 +611,7 @@ impl State {
         // Replaces the combining-mark fallback that rasterised
         // inconsistently across font picks.
         if show_md {
-            let rects = self.preview_md.strike_glyph_rects();
+            let rects = self.shaped.md().strike_glyph_rects();
             if !rects.is_empty() {
                 const STRIKE_THICKNESS: f32 = 1.5;
                 let pane_top = preview_rect.y;

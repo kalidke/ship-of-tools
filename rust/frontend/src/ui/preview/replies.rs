@@ -18,7 +18,7 @@ impl State {
         // either way (harmless extra rebuild if this wasn't
         // the active host's mismatch to begin with).
         self.hello_refused.remove(&event_host);
-        self.preview_fatal = None;
+        self.shaped.clear_fatal();
     }
 
     pub(crate) fn on_hello_refused(&mut self, event_host: HostKey, message: String) {
@@ -33,7 +33,7 @@ impl State {
         // entry is ever projected to the blocking overlay
         // (rebuild_fatal_overlay/show_fatal).
         self.hello_refused.insert(event_host.clone(), message);
-        self.preview_fatal = None;
+        self.shaped.clear_fatal();
         self.status = "the backend refused this window (see preview)".to_string();
     }
 
@@ -71,7 +71,7 @@ impl State {
                 self.scale,
                 &MathMetricsMap::new(),
                 &FigureMetricsMap::new(),
-                &self.highlight_service,
+                self.shaped.highlighter(),
                 &self.markdown_token_cache,
             ))
         } else {
@@ -198,24 +198,13 @@ impl State {
         // showing the containing file from line 1. Consume-once,
         // code shapers only (tokens / non-markdown text), and only
         // for the reply matching the request we anchored.
-        if let Some(def_line) = self.preview_anchor_line.take() {
-            let is_code = mime.starts_with("application/vnd.sot.tokens+json")
-                || (mime.starts_with("text/")
-                    && mime != "text/markdown"
-                    && mime != "text/x-markdown");
-            let matches_req =
-                node_id.as_deref() == self.preview_requests.fired_target();
-            if def_line > 0 && is_code && matches_req {
-                self.preview_scroll = self
-                    .preview_md
-                    .anchor_scroll_for_def_line(def_line as usize);
-                self.preview_anchored_to = Some(def_line);
-            } else {
-                self.preview_anchored_to = None;
-            }
-        } else {
-            self.preview_anchored_to = None;
-        }
+        let is_code = mime.starts_with("application/vnd.sot.tokens+json")
+            || (mime.starts_with("text/")
+                && mime != "text/markdown"
+                && mime != "text/x-markdown");
+        let matches_req =
+            node_id.as_deref() == self.preview_requests.fired_target();
+        self.shaped.settle_anchor(is_code && matches_req);
     }
 
     pub(crate) fn on_concept_write_done(

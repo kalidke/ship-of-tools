@@ -192,7 +192,7 @@ impl State {
     /// silently skipped — better than a request the backend will
     /// reject.
     pub(in crate::ui) fn dispatch_pending_figures(&mut self) {
-        let blocks = self.preview_md.media_blocks.clone();
+        let blocks = self.shaped.md().media_blocks.clone();
         let md_node_id = self.preview_source.md_node_id().map(str::to_owned);
         let workspace_id = self.preview_source.md_workspace_id().map(str::to_owned);
         for block in blocks {

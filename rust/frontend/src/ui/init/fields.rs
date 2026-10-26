@@ -46,7 +46,7 @@ impl State {
         } = solid;
         let LogoQuads { logo_quad, wordmark_quad } = logos;
         let PreviewContent {
-            preview_svg, highlight_service, preview_md, md_rect_px, concept_rect_px,
+            highlight_service, preview_md, md_rect_px, concept_rect_px,
         } = content;
         Self {
             window,
@@ -78,10 +78,7 @@ impl State {
             preview_roi: None,
             preview_png_cache: HashMap::new(),
             pending_roi_restore: None,
-            preview_svg,
-            highlight_service,
-            preview_md,
-            md_rect_px,
+            shaped: ShapedPreview::new(preview_md, highlight_service, md_rect_px),
             monitor_view: crate::ui::drawer::monitor::MonitorView::new(),
             monitor_quad: None,
             monitor_rect_px: ScreenRect {
@@ -113,8 +110,6 @@ impl State {
             preview_captions: CaptionStore::default(),
             caption_label: None,
             caption_band_px: 0.0,
-            preview_anchor_line: None,
-            preview_anchored_to: None,
             agent_pane: AgentPane::new(
                 initial_bl_pane_target(resume_matches_last_host, &persisted_geom, &active_host)),
             selected: SelectedRow::new(
@@ -184,7 +179,6 @@ impl State {
             wheel_vel: 0.0,
             wheel_anim_last: None,
             focus_prompts: FocusPrompts::new(initial_focus(cli)),
-            preview_scroll: 0,
             md_table_scroll_px: 0.0,
             table_buffers: Vec::new(),
             pane_rects: PaneRects::default(),
@@ -210,7 +204,6 @@ impl State {
             editor: Editor::default(),
             help_back_quad: None,
             hello_refused: HashMap::new(),
-            preview_fatal: None,
             math_cache: std::collections::HashMap::new(),
             math_pending: std::collections::HashSet::new(),
             markdown_token_cache: std::collections::HashMap::new(),
