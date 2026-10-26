@@ -83,8 +83,8 @@ impl State {
                 if !self.border_quads.contains_key(&HULL_RGB) {
                     let (r, g, b) = HULL_RGB;
                     let quad = Quad::from_rgba8(
-                        &self.device,
-                        &self.queue,
+                        self.gpu.device(),
+                        self.gpu.queue(),
                         &self.quad_pipeline,
                         &[r, g, b, 255],
                         1,
@@ -174,7 +174,7 @@ impl State {
             &labels,
             active,
             scroll,
-            self.config.width as f32,
+            self.gpu.config().width as f32,
             self.cell_w,
             baseline_y,
             &tones,
@@ -203,7 +203,7 @@ impl State {
         // once, there (`ship_marks`, `strip_visible`), so what the loop
         // below paints is exactly what survived the cull and no draw site
         // can re-derive a second answer.
-        let win_w = self.config.width as f32;
+        let win_w = self.gpu.config().width as f32;
         let (_, logo_h) = logo_dims.unwrap_or((0.0, 0.0));
         let (hull_y, hull_h) = hull_band(ship_y, self.cell_h);
         let marks: Vec<StripMark> = ship_marks(

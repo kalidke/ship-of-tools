@@ -321,23 +321,23 @@ impl State {
     }
 
     fn paint_result_probe_image(&mut self, rect: ScreenRect) -> Result<()> {
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        let texture = self.gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: Some("result fixture"),
             size: wgpu::Extent3d {
-                width: self.config.width,
-                height: self.config.height,
+                width: self.gpu.config().width,
+                height: self.gpu.config().height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: self.config.format,
+            format: self.gpu.config().format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
-            .device
+            .gpu.device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("result fixture"),
             });
@@ -358,7 +358,7 @@ impl State {
             });
             self.paint_preview_png(&mut pass, Some(rect), rect)?;
         }
-        self.queue.submit([encoder.finish()]);
+        self.gpu.queue().submit([encoder.finish()]);
         Ok(())
     }
 }

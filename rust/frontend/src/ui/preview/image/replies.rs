@@ -16,8 +16,8 @@ impl State {
         // bytes land.
         self.figures.settle(&url);
         match decode_figure_bytes(
-            &self.device,
-            &self.queue,
+            self.gpu.device(),
+            self.gpu.queue(),
             &self.quad_pipeline,
             &mime,
             &bytes,

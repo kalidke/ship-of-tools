@@ -19,7 +19,7 @@ impl State {
     pub(in crate::ui) fn decode_repl_images(&mut self) {
         let row = self.active_ws_key();
         let mut upload = QuadUpload {
-            device: &self.device, queue: &self.queue, pipeline: &self.quad_pipeline,
+            device: self.gpu.device(), queue: self.gpu.queue(), pipeline: &self.quad_pipeline,
         };
         self.repl_presentation.refresh_images(&row, self.repl_model.entries(), &mut upload);
     }

@@ -126,11 +126,9 @@ impl State {
         if new_size.width == 0 || new_size.height == 0 {
             return;
         }
-        self.config.width = new_size.width;
-        self.config.height = new_size.height;
-        self.surface.configure(&self.device, &self.config);
+        self.gpu.resize(new_size.width, new_size.height);
         self.text
-            .resize(&self.queue, self.config.width, self.config.height);
+            .resize(self.gpu.queue(), self.gpu.config().width, self.gpu.config().height);
 
         self.rederive_chrome_grid();
     }
@@ -138,8 +136,8 @@ impl State {
     /// Recompute the chrome grid from the surface size and cell metrics and tell ratatui.
     fn rederive_chrome_grid(&mut self) {
         let (cols, rows) = cell_grid_for(
-            self.config.width,
-            self.config.height,
+            self.gpu.config().width,
+            self.gpu.config().height,
             self.cell_w,
             self.cell_h,
             self.chrome_origin_x,

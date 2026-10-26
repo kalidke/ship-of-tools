@@ -266,8 +266,8 @@ impl State {
                 crate::ui::render::quad::SamplerKind::Nearest
             };
             match crate::ui::preview::image::png::quad_and_source_dims_from_png_bytes(
-                &self.device,
-                &self.queue,
+                self.gpu.device(),
+                self.gpu.queue(),
                 &self.quad_pipeline,
                 bytes,
                 sampler,

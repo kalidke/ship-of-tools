@@ -60,8 +60,8 @@ impl State {
             if !self.border_quads.contains_key(color) {
                 let (r, g, b) = *color;
                 let quad = Quad::from_rgba8(
-                    &self.device,
-                    &self.queue,
+                    self.gpu.device(),
+                    self.gpu.queue(),
                     &self.quad_pipeline,
                     &[r, g, b, 255],
                     1,
@@ -118,7 +118,7 @@ impl State {
             }).collect();
             let alpha = (help_opacity * 245.0).round() as u8;
             if self.help_back_quad.as_ref().map(|(a, _)| *a) != Some(alpha) {
-                self.help_back_quad = Some((alpha, Quad::from_rgba8(&self.device, &self.queue,
+                self.help_back_quad = Some((alpha, Quad::from_rgba8(self.gpu.device(), self.gpu.queue(),
                     &self.quad_pipeline, &[14, 30, 46, alpha], 1, 1)?));
             }
         }
@@ -156,10 +156,10 @@ impl State {
         let fade_start = overlay_lines.len();
         overlay_lines.extend(help_overlay_lines);
         self.text.prepare_overlay(
-            &self.device,
-            &self.queue,
-            self.config.width,
-            self.config.height,
+            self.gpu.device(),
+            self.gpu.queue(),
+            self.gpu.config().width,
+            self.gpu.config().height,
             &overlay_lines,
             Some((fade_start, help_opacity)),
         )?;

@@ -80,16 +80,16 @@ impl State {
             rpass.set_scissor_rect(sx, sy, sw, sh);
             if let Some(quad) = self.raster.quad() {
                 quad.render(
-                    &self.queue,
+                    self.gpu.queue(),
                     &self.quad_pipeline,
                     &mut rpass,
                     canvas_rect,
-                    (self.config.width, self.config.height),
+                    (self.gpu.config().width, self.gpu.config().height),
                 )?;
             }
             // Reset scissor so subsequent draws (SVG, media paint,
             // chrome text) aren't clipped to the preview pane.
-            rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+            rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
         }
         Ok(())
     }
@@ -118,22 +118,22 @@ impl State {
             let sh = image_rect.h.max(0.0) as u32;
             rpass.set_scissor_rect(sx, sy, sw, sh);
             self.scalebar_back_quad.render_many(
-                &self.device,
-                &self.queue,
+                self.gpu.device(),
+                self.gpu.queue(),
                 &self.quad_pipeline,
                 &mut rpass,
                 std::slice::from_ref(&sb.backing),
-                (self.config.width, self.config.height),
+                (self.gpu.config().width, self.gpu.config().height),
             )?;
             self.scalebar_bar_quad.render_many(
-                &self.device,
-                &self.queue,
+                self.gpu.device(),
+                self.gpu.queue(),
                 &self.quad_pipeline,
                 &mut rpass,
                 std::slice::from_ref(&sb.bar),
-                (self.config.width, self.config.height),
+                (self.gpu.config().width, self.gpu.config().height),
             )?;
-            rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+            rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
         }
         // Figure-caption band. Its own quad field for the aliasing reason
         // documented on the scalebar above. Scissored to the FULL pane
@@ -146,22 +146,22 @@ impl State {
             let sh = preview_rect.h.max(0.0) as u32;
             rpass.set_scissor_rect(sx, sy, sw, sh);
             self.caption_back_quad.render_many(
-                &self.device,
-                &self.queue,
+                self.gpu.device(),
+                self.gpu.queue(),
                 &self.quad_pipeline,
                 &mut rpass,
                 std::slice::from_ref(&cap.backing),
-                (self.config.width, self.config.height),
+                (self.gpu.config().width, self.gpu.config().height),
             )?;
-            rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+            rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
         }
         if let (Some(quad), Some(rect)) = (self.shaped.svg(), svg_rect) {
             quad.render(
-                &self.queue,
+                self.gpu.queue(),
                 &self.quad_pipeline,
                 &mut rpass,
                 rect,
-                (self.config.width, self.config.height),
+                (self.gpu.config().width, self.gpu.config().height),
             )?;
         }
         Ok(())
@@ -255,16 +255,16 @@ impl State {
                 h: paint_h,
             };
             quad.render(
-                &self.queue,
+                self.gpu.queue(),
                 &self.quad_pipeline,
                 &mut rpass,
                 paint_rect,
-                (self.config.width, self.config.height),
+                (self.gpu.config().width, self.gpu.config().height),
             )?;
         }
         // Reset scissor so subsequent draws (code panels, strike
         // lines, chrome text) aren't clipped to the preview pane.
-        rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+        rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
         Ok(())
     }
 
@@ -351,12 +351,12 @@ impl State {
                 }
                 if !batched.is_empty() {
                     self.code_bg_quad.render_many(
-                        &self.device,
-                        &self.queue,
+                        self.gpu.device(),
+                        self.gpu.queue(),
                         &self.quad_pipeline,
                         &mut rpass,
                         &batched,
-                        (self.config.width, self.config.height),
+                        (self.gpu.config().width, self.gpu.config().height),
                     )?;
                 }
                 self.paint_code_borders(rpass, md_rect, preview_scroll_px, pane_top, pane_bot)?;
@@ -454,12 +454,12 @@ impl State {
                         });
                     }
                     self.code_border_quad.render_many(
-                        &self.device,
-                        &self.queue,
+                        self.gpu.device(),
+                        self.gpu.queue(),
                         &self.quad_pipeline,
                         &mut rpass,
                         &edges,
-                        (self.config.width, self.config.height),
+                        (self.gpu.config().width, self.gpu.config().height),
                     )?;
                 }
         Ok(())
@@ -511,12 +511,12 @@ impl State {
                     });
                 }
                 self.strike_line_quad.render_many(
-                    &self.device,
-                    &self.queue,
+                    self.gpu.device(),
+                    self.gpu.queue(),
                     &self.quad_pipeline,
                     &mut rpass,
                     &batched,
-                    (self.config.width, self.config.height),
+                    (self.gpu.config().width, self.gpu.config().height),
                 )?;
             }
         }

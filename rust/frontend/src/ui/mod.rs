@@ -173,10 +173,8 @@ struct State {
     window: MainWindow,
     /// What another thread holds to ask this window for a redraw.
     wake: MainWake,
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
+    /// The GPU: surface, device, queue and the surface's configuration.
+    gpu: crate::ui::render::gpu::Gpu,
     text: TextLayer,
     background: wgpu::Color,
     terminal: Terminal<WgpuBackend>,

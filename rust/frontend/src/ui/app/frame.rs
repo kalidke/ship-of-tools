@@ -42,14 +42,7 @@ impl State {
             preview_rect, image_rect, png_rect, md_rect, preview_scroll_px, show_md, show_edit, show_fatal, &caption_draw)?;
         let (help_overlay_rect, dialog_rect, overlay_lines) = self.prepare_overlays()?;
         let prepared = std::time::Instant::now();
-        let frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.config);
-                self.surface.get_current_texture()?
-            }
-            Err(e) => return Err(e.into()),
-        };
+        let frame = self.gpu.acquire_frame()?;
         let drawable = std::time::Instant::now();
 
         let view = frame
@@ -57,7 +50,7 @@ impl State {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = self
-            .device
+            .gpu.device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("sot-frame"),
             });
@@ -95,7 +88,7 @@ impl State {
         }
         let (readback, capture_target, capture_now, selfie_target) = self.stage_frame_capture(&mut encoder, &frame);
         let encoded = std::time::Instant::now();
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.gpu.queue().submit(std::iter::once(encoder.finish()));
         let submitted = std::time::Instant::now();
         frame.present();
         if let Some(candidate) = presentation_candidate {

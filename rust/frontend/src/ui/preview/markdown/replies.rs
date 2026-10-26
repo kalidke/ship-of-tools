@@ -48,8 +48,8 @@ impl State {
         // pane will be retired in favour of inline
         // markdown placement.
         match quad_from_svg_bytes(
-            &self.device,
-            &self.queue,
+            self.gpu.device(),
+            self.gpu.queue(),
             &self.quad_pipeline,
             &svg_bytes,
             1024,

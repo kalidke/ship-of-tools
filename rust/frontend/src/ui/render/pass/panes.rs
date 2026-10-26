@@ -28,11 +28,11 @@ impl State {
         if self.layout_help.drawer() == DrawerContent::Monitor {
             if let Some(q) = self.monitor.quad() {
                 q.render(
-                    &self.queue,
+                    self.gpu.queue(),
                     &self.quad_pipeline,
                     &mut rpass,
                     self.monitor.rect(),
-                    (self.config.width, self.config.height),
+                    (self.gpu.config().width, self.gpu.config().height),
                 )?;
             }
         }
@@ -40,10 +40,10 @@ impl State {
     }
 
     pub(in crate::ui) fn paint_repl_figures(&self, rpass: &mut wgpu::RenderPass<'_>) -> Result<()> {
-        let mut painter = ReplQuadPainter { queue: &self.queue, pipeline: &self.quad_pipeline, pass: rpass };
+        let mut painter = ReplQuadPainter { queue: self.gpu.queue(), pipeline: &self.quad_pipeline, pass: rpass };
         self.repl_presentation.paint(
             self.layout_help.drawer() == DrawerContent::Repl, self.cell_w, self.cell_h,
-            (self.config.width, self.config.height), &mut painter,
+            (self.gpu.config().width, self.gpu.config().height), &mut painter,
         )
     }
 
@@ -95,12 +95,12 @@ impl State {
                 }
                 if !row_rects.is_empty() {
                     self.selection_bg_quad.render_many(
-                        &self.device,
-                        &self.queue,
+                        self.gpu.device(),
+                        self.gpu.queue(),
                         &self.quad_pipeline,
                         &mut rpass,
                         &row_rects,
-                        (self.config.width, self.config.height),
+                        (self.gpu.config().width, self.gpu.config().height),
                     )?;
                 }
             }
@@ -124,13 +124,13 @@ impl State {
             let wheel_angle = self.strip_motion.wheel_angle();
             if let Some((quad, _, _)) = self.logo_quad.as_mut() {
                 quad.render_many_rotated(
-                    &self.device,
-                    &self.queue,
+                    self.gpu.device(),
+                    self.gpu.queue(),
                     &self.quad_pipeline,
                     &mut rpass,
                     &strip_logo_rects,
                     wheel_angle,
-                    (self.config.width, self.config.height),
+                    (self.gpu.config().width, self.gpu.config().height),
                 )?;
             }
         }
@@ -152,7 +152,7 @@ impl State {
                 wm_h = wm_w * (*nh as f32 / (*nw).max(1) as f32);
             }
             quad.render(
-                &self.queue,
+                self.gpu.queue(),
                 &self.quad_pipeline,
                 &mut rpass,
                 ScreenRect {
@@ -161,7 +161,7 @@ impl State {
                     w: wm_w,
                     h: wm_h,
                 },
-                (self.config.width, self.config.height),
+                (self.gpu.config().width, self.gpu.config().height),
             )?;
         }
         Ok(())
@@ -179,18 +179,18 @@ impl State {
         // text. `iter_mut` yields disjoint &mut Quad, so the whole map is a
         // single mutable borrow for the pass (no per-entry borrow conflict
         // like two render_many calls on one field would hit), while
-        // &self.device/queue/quad_pipeline stay separate fields — the same
+        // self.gpu.device()/queue/quad_pipeline stay separate fields — the same
         // disjoint-field pattern as the code_bg / strike passes.
         if !border_rects_by_color.is_empty() {
             for (color, quad) in self.border_quads.iter_mut() {
                 if let Some(rects) = border_rects_by_color.get(color) {
                     quad.render_many(
-                        &self.device,
-                        &self.queue,
+                        self.gpu.device(),
+                        self.gpu.queue(),
                         &self.quad_pipeline,
                         &mut rpass,
                         rects,
-                        (self.config.width, self.config.height),
+                        (self.gpu.config().width, self.gpu.config().height),
                     )?;
                 }
             }
@@ -231,23 +231,23 @@ impl State {
             .chain(dialog_rect)
             .collect();
         if !strip_rects.is_empty() {
-            rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+            rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
             self.overlay_back_quad.render_many(
-                &self.device,
-                &self.queue,
+                self.gpu.device(),
+                self.gpu.queue(),
                 &self.quad_pipeline,
                 &mut rpass,
                 &strip_rects,
-                (self.config.width, self.config.height),
+                (self.gpu.config().width, self.gpu.config().height),
             )?;
         }
         if let (Some(rect), Some((_, quad))) = (help_overlay_rect, self.help_back_quad.as_mut()) {
-            rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
-            quad.render(&self.queue, &self.quad_pipeline, &mut rpass,
-                rect, (self.config.width, self.config.height))?;
+            rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
+            quad.render(self.gpu.queue(), &self.quad_pipeline, &mut rpass,
+                rect, (self.gpu.config().width, self.gpu.config().height))?;
         }
         if !overlay_lines.is_empty() {
-            rpass.set_scissor_rect(0, 0, self.config.width, self.config.height);
+            rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
             self.text.render_overlay(&mut rpass)?;
         }
         Ok(())

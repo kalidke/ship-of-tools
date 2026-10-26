@@ -81,8 +81,8 @@ impl State {
         let shown = self.layout_help.drawer() == DrawerContent::Monitor;
         if let Some(draw) = self.monitor.plan(cells_to_px(repl_cells), shown, mon_scale) {
             let quad = quad_from_svg_bytes(
-                &self.device,
-                &self.queue,
+                self.gpu.device(),
+                self.gpu.queue(),
                 &self.quad_pipeline,
                 draw.svg.as_bytes(),
                 draw.w,

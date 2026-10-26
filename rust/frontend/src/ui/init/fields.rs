@@ -51,10 +51,7 @@ impl State {
         Self {
             window,
             wake,
-            surface,
-            device,
-            queue,
-            config,
+            gpu: crate::ui::render::gpu::Gpu::new(surface, device, queue, config),
             text,
             background: initial_background(surface_format),
             terminal,

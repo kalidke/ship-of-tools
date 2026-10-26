@@ -85,8 +85,8 @@ impl State {
                 }
             };
             match quad_from_svg_bytes(
-                &self.device,
-                &self.queue,
+                self.gpu.device(),
+                self.gpu.queue(),
                 &self.quad_pipeline,
                 &entry.svg_bytes,
                 target_w,
@@ -276,10 +276,10 @@ impl State {
         }
 
         self.text.prepare(
-            &self.device,
-            &self.queue,
-            self.config.width,
-            self.config.height,
+            self.gpu.device(),
+            self.gpu.queue(),
+            self.gpu.config().width,
+            self.gpu.config().height,
             &lines,
             &extras,
         )?;

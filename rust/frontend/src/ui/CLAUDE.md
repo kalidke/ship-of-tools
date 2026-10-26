@@ -36,7 +36,8 @@ spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and t
 owns the status text and the hold a pushed notify keeps on it; `chrome::BatteryGauge` owns the cached battery label;
 `input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue; `proxy_arms::ProxyArms`
 owns the page proxy's proxied hosts, listener manager and armed listeners; `host_view::ActiveLink` owns the active
-connection's hello facts and `host_view::HelloRefusals` each host's refused hello.
+connection's hello facts and `host_view::HelloRefusals` each host's refused hello; `render::gpu::Gpu` owns the
+surface, device, queue and surface configuration.
 Each of these owners lives in a module (or a module tree) that holds no `impl State`, so the compiler, not
 convention, keeps the window's code out of its fields.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
@@ -279,6 +280,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   project root and its basename, backend version, revision), set only by the active host's own `Connected` and
   relabelled by a switch to an already connected host. `HelloRefusals` privately owns each host's refused hello,
   lifted only by that host's own clean hello; the active host's is the blocking overlay.
+- `Gpu` privately owns the window's GPU (the render resources' first stage): the surface, device, queue and the
+  surface's configuration, dropped in their original order. The size changes only by `resize`; `acquire_frame`
+  reconfigures a lost or outdated surface once and asks again. Device, queue and configuration are lent immutably to
+  the drawing code; the text layer, the chrome grid, the quad pipeline and the solid quads are still State's.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

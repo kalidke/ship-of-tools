@@ -157,11 +157,11 @@ impl State {
         };
         let readback = if capture_target.is_some() {
             Some(stage_capture(
-                &self.device,
+                self.gpu.device(),
                 &mut encoder,
                 &frame.texture,
-                self.config.width,
-                self.config.height,
+                self.gpu.config().width,
+                self.gpu.config().height,
             ))
         } else {
             None
@@ -180,13 +180,13 @@ impl State {
             let path = capture_target.unwrap();
             let is_selfie = !capture_now && selfie_target.is_some();
             match finish_capture(
-                &self.device,
+                self.gpu.device(),
                 buf,
                 padded_bpr,
                 unpadded_bpr,
-                self.config.width,
-                self.config.height,
-                self.config.format,
+                self.gpu.config().width,
+                self.gpu.config().height,
+                self.gpu.config().format,
                 &path,
             ) {
                 Ok(()) => {
