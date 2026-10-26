@@ -142,9 +142,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   the aim through the owner's operations; its ROI assertions stay intact.
 - `InstalledPreviewSource` privately owns what the last admitted preview reply installed: its mime and bytes, the node
   it answered (what `o`/`W`/`O` act on, never the fired target), its physical scale and, for a markdown reply with a
-  node, the document's node and workspace, which a later non-markdown reply leaves in place. It is one Clone value: a
-  row's snapshot carries it whole and restores it before the repaint, and a first visit clears it whole, so the bytes,
-  node, calibration and markdown origin are always one reply's. The coordinator repaints from an owned copy of the
+  node, the document's node and workspace. It is one Clone value: a row's snapshot carries it whole and restores it
+  before the repaint, and a first visit clears it whole, so the bytes, node and calibration are always the latest
+  reply's. The markdown origin is not: it is the last markdown reply with a node, so after markdown A with a node, a
+  PNG or a node-less markdown B replaces the bytes, node and scale and keeps A's origin (figure fetches for the shown
+  markdown still need it). The coordinator repaints from an owned copy of the
   bytes; `figure_failed` stays with the markdown media and travels beside it in the snapshot.
 - `ParkedViews` privately owns the map of parked row views. Leaving a row parks its view (replacing an earlier one),
   coming back reads a clone, a kept default row's end forgets only the parked attachment, a destroyed row's view is
