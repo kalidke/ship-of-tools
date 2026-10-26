@@ -62,7 +62,7 @@ fn an_installed_sotd_that_cannot_say_its_version_is_not_no_install() {
     let bin = dir.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     // The test binary refuses `--version`: an installed program that exits without printing one.
-    std::fs::copy(std::env::current_exe().unwrap(), bin.join(pack::exe_name("sotd"))).unwrap();
+    sot_platform::test_exec::write_executable(&bin.join(pack::exe_name("sotd")), std::fs::read(std::env::current_exe().unwrap()).unwrap());
     let before = tree(dir.path());
     let why = installed_version_within(dir.path(), std::time::Duration::from_secs(30)).unwrap_err();
     assert!(why.contains("printed no version"), "{why}");
