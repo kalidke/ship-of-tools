@@ -121,7 +121,7 @@ impl ResultLedger {
     pub(in crate::ui) fn begin_attempt(
         &mut self,
         target: &ResolvedWorkspace,
-        preview_gen: u64,
+        issue_preview: impl FnOnce() -> u64,
     ) -> Result<Option<AttemptStart>, &'static str> {
         let serial = self
             .attempt_serial
@@ -131,7 +131,7 @@ impl ResultLedger {
             return Ok(None);
         };
         self.attempt_serial = serial;
-        let preview_gen = preview_gen + 1;
+        let preview_gen = issue_preview();
         let node_id = format!("files:{}", entry.path);
         entry.attempt = Some(ResultAttempt {
             serial,

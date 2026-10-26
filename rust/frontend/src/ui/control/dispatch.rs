@@ -198,7 +198,7 @@ impl State {
                 let node_id = format!("files:{path}");
                 match roi {
                     Some(rect) => {
-                        self.pending_roi_aim = Some(RoiAim {
+                        self.preview_requests.arm_roi_aim(RoiAim {
                             row_key: key.clone(),
                             workspace: workspace.clone(),
                             path: path.clone(),
@@ -207,15 +207,7 @@ impl State {
                             ready: false,
                         });
                     }
-                    None => {
-                        if self
-                            .pending_roi_aim
-                            .as_ref()
-                            .is_some_and(|aim| aim.row_key == key && aim.node_id == node_id)
-                        {
-                            self.pending_roi_aim = None;
-                        }
-                    }
+                    None => self.preview_requests.drop_roi_aim_for(&key, &node_id),
                 }
                 match caption {
                     Some(text) => self.preview_captions.set(key, node_id, text),

@@ -477,22 +477,6 @@ struct State {
     /// Which root tree the left pane is currently showing. `f`/`m` keys
     /// switch this and fire the corresponding wire request.
     mode: Mode,
-    /// Last `preview.get` we asked for, so cursor-move-driven refresh
-    /// doesn't re-fire when the cursor is held on a row. Only files-mode
-    /// rows generate a target (`files:` prefix); modules-mode rows have
-    /// no backend-side preview.
-    preview_node_id_fired: Option<String>,
-    /// Blink guard for imperatively-driven previews (fe-command / nav.preview).
-    /// When a driven preview targets a node NOT in the current tree rows (a deep
-    /// path whose ancestors aren't expanded), the cursor stays on the OLD row,
-    /// and `maybe_fire_preview` would otherwise fire that old row's preview right
-    /// over the driven one — the deep-path blink. While this holds the old row's
-    /// node id, `maybe_fire_preview` is suppressed for that exact row; the hold
-    /// lifts the instant the cursor moves elsewhere. `None` normally. The
-    /// deep-path cursor-reveal below (`pending_reveal`) supersedes this for
-    /// same-workspace driven opens — there the cursor *does* follow the preview;
-    /// the hold only bridges the brief window while ancestors are expanding.
-    driven_preview_hold_cursor: Option<String>,
     /// Reconnect nav restore (2026-07-11): set on hello/reconnect resume so
     /// the NEXT applied tree.root re-reveals the pre-reconnect cursor (via
     /// the pending_reveal machinery — the cursor's ancestor path re-expands
@@ -561,27 +545,10 @@ struct State {
     /// position alone doesn't determine the scroll — direction of motion
     /// matters.
     tree_scroll: u16,
-    /// Switch-latency Phase 1: monotonic "latest issued" counter for the
-    /// preview slot (`preview.get` + `preview.set_scale` share one slot —
-    /// both install through the single `IncomingEvt::Preview` path).
-    /// Incremented every time a request for either op is fired and stamped
-    /// into the `OutgoingReq`/`PendingKind`/`IncomingEvt` trio unchanged;
-    /// the reply handler drops any reply whose echoed generation is behind
-    /// this counter's CURRENT value — a strictly-increasing counter means
-    /// only the most recently fired request can ever match, so an earlier,
-    /// slower reply (same workspace, a different node, a different host —
-    /// even the daemon answering requests out of order) can never overwrite
-    /// what a later cursor move already asked for. Paired with an owner
-    /// check (host/workspace/node) as defense in depth for the one case
-    /// generation alone can't see: `active_host`/`active_workspace_id`
-    /// changing without firing a fresh preview request.
-    preview_req_gen: u64,
-    /// Same mechanism as `preview_req_gen`, for the concept/annotation
-    /// slot (`concept.read`, cursor-tracking + stale-reload re-fire share
-    /// this one counter — both land in the same `IncomingEvt::ConceptRead`
-    /// consumer).
-    concept_req_gen: u64,
-    /// Same mechanism as `preview_req_gen`/`concept_req_gen`, for
+    /// Request clocks, the fired target and its re-raster, concept follow, the driven-preview hold, and the crop,
+    /// scale-save and `--roi` aim transactions.
+    preview_requests: preview::requests::PreviewRequests,
+    /// Like PreviewRequests’ slot clocks, but for
     /// `project.scan` — keyed per (host, workspace) rather than one global
     /// counter, since scans for different workspaces are independently
     /// valid in flight together (see `next_project_scan_gen`).
@@ -793,12 +760,6 @@ struct State {
     /// Pixel rect of the markdown pane from the most recent ratatui layout
     /// pass; cached so we can re-shape on resize without re-running layout.
     md_rect_px: ScreenRect,
-    /// Annotation state for the most-recently-fired `concept.read`. `target`
-    /// is what we asked for; when the response arrives with the same target,
-    /// `exists` and `content` are filled. Mismatch (cursor moved before the
-    /// reply landed) is dropped — the chrome stays on the last good answer
-    /// until the new one arrives, which keeps the status line from flickering.
-    concept_target_fired: Option<String>,
     concept: Option<ConceptInfo>,
     /// Definition line (1-indexed) the in-flight `preview.get` should
     /// anchor to once it lands — set from the selected modules-mode row's
@@ -849,7 +810,7 @@ struct State {
     preview_src: Option<(String, Vec<u8>)>,
     /// The node id of the reply that installed `preview_src` — see the
     /// `WorkspaceUiSnapshot` field of the same name for why this is a
-    /// distinct field from `preview_node_id_fired`.
+    /// distinct field from the fired target (`PreviewRequests`).
     preview_src_node_id: Option<String>,
     // ui/preview/image: the image view, ROI, pages, scalebar, captions and figures.
     preview_png: Option<Quad>,
@@ -886,19 +847,6 @@ struct State {
     /// fe-command) and surfaced in `fe-state.json` so the LLM pane knows what
     /// the user is zoomed into.
     preview_roi: Option<PreviewRoi>,
-    /// Host `capture_roi` fired its `image.crop` request against, pinned
-    /// at send time (ADR 0042 L2a codex review, item F). The
-    /// `ImageCropped`/`ImageCropFailed` reply is a multi-step op just
-    /// like an upload — the reply pastes into (or fails to paste into)
-    /// the LLM pane, and a workspace/host switch between the request and
-    /// the reply landing must not let a stray reply from a NON-owning
-    /// host drive that side effect. One-shot: consumed (`.take()`) by
-    /// whichever of the two replies lands first.
-    pending_roi_capture_host: Option<HostKey>,
-    /// ADR 0025 `preview --roi`: an armed viewport aim awaiting its image
-    /// (see `RoiAim`). Deliberately NOT per-workspace snapshot state — a
-    /// cross-workspace aim must survive the switch that consumes its badge.
-    pending_roi_aim: Option<RoiAim>,
     /// Per-directory + per-dimensions cache of the last visible SOURCE-PX
     /// ROI, so switching among same-sized image renders in one directory
     /// restores the previous view rather than snapping back to fit.
@@ -940,10 +888,6 @@ struct State {
     /// fit-sized bitmap (ADR 0021 deferred follow-up). Reset to 1.0 on a
     /// fresh page/file.
     preview_page_raster_zoom: f32,
-    /// `(page, zoom)` of an in-flight zoom re-raster. The matching reply
-    /// keeps the current zoom/pan (only the texture detail changes); a
-    /// reply for any other page is a real navigation and resets the view.
-    preview_page_raster_pending: Option<(u32, f32)>,
     /// One-shot: the next `image/png` render is a zoom re-raster of the
     /// page already on screen, so the quad swap must preserve zoom/pan
     /// rather than reset to fit. Set by the Preview handler, consumed in
@@ -954,22 +898,6 @@ struct State {
     /// scale; cleared on every `preview.get` reply (like `preview_page`).
     /// Presence gates the scalebar toggle key + overlay.
     preview_scale: Option<PhysicalScale>,
-    /// One-shot: a `preview.set_scale` is in flight, as `(node_id, typed
-    /// value)`. The success reply deliberately flows through the SHARED
-    /// preview handler (one install path for a preview and its calibration),
-    /// and that handler knows nothing about scale entry — so without this the
-    /// "saving…" status would sit there forever even though the bar had
-    /// already appeared. Taken by whichever resolves first: the preview
-    /// install (success) or `ScaleSetFailed` (rejection), so a stale marker
-    /// can't make some later unrelated preview claim "saved".
-    ///
-    /// The `node_id` is carried so the take() can require the arriving preview
-    /// to BE the save's target: navigating to another file mid-save would
-    /// otherwise let that file's `preview.get` consume the marker and announce
-    /// "saved" over an unrelated image. Cosmetic — the sidecar and bar are
-    /// correct either way — but a status line attributing a save to the wrong
-    /// file is exactly the kind of quietly-wrong message worth not shipping.
-    scale_save_pending: Option<(String, String)>,
     /// Scalebar overlay toggle (ADR 0034, `b`). Default off; sticky across
     /// navigations (renders only when `preview_scale` is present, so it can
     /// stay armed while browsing a mix of scaled / unscaled rasters).
@@ -1063,7 +991,7 @@ struct State {
     /// Node id of the markdown file backing the current `preview_md`
     /// — used to resolve relative `![](url)` paths against the
     /// markdown's own directory. Set whenever a `text/markdown`
-    /// preview lands carrying a node id; `preview_node_id_fired` is
+    /// preview lands carrying a node id; the fired target is
     /// not authoritative here because the `--capture-preview` path
     /// deliberately pins it to the root row to suppress
     /// cursor-driven re-fires.
@@ -1263,7 +1191,6 @@ pub(crate) mod render;
 use render::*;
 use self::preview::concept::{clear_drift, drift_is_stale, install_parsed_hash, split_frontmatter, ConceptInfo, FILE_PARSE_MAX_RETRIES};
 use self::preview::editor::state::EditState;
-use self::preview::reply_is_current;
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,

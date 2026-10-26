@@ -45,11 +45,11 @@ fn page_turn_key(state: &mut State, key: KeyPress<'_>, label: String) -> Control
                 if let Some(np) = next {
                     if np != page {
                         if let Some(node_id) =
-                            state.preview_node_id_fired.clone()
+                            state.preview_requests.fired_target().map(str::to_owned)
                         {
                             // New page opens at fit; drop
                             // any pending zoom re-raster.
-                            state.preview_page_raster_pending = None;
+                            state.preview_requests.cancel_reraster();
                             let (fit_w, fit_h) = state.preview_fit_px();
                             let generation = state.next_preview_gen();
                             if let Err(e) = state.send(

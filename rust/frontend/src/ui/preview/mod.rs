@@ -14,5 +14,5 @@ pub(in crate::ui) mod keys;
 mod layout;
 mod open;
 mod replies;
-pub(in crate::ui) use fetch::reply_is_current;
+pub(in crate::ui) mod requests;
 

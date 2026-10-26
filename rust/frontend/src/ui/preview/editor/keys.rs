@@ -120,7 +120,7 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
                     // maybe_fire_preview re-issue
                     // preview.get for the still-selected
                     // node.
-                    state.preview_node_id_fired = None;
+                    state.preview_requests.forget_fired();
                     state.maybe_fire_preview();
                 }
                 state.window.request_redraw();
@@ -342,7 +342,7 @@ pub(in crate::ui) fn enter_editor(state: &mut State) {
     // already in `state.concept`).
     let mut entered = false;
     if let (Some(target), Some(info)) =
-        (state.concept_target_fired.clone(), state.concept.as_ref())
+        (state.preview_requests.concept_target().map(str::to_owned), state.concept.as_ref())
     {
         if info.target == target && info.exists {
             // Split out frontmatter so the
@@ -373,7 +373,7 @@ pub(in crate::ui) fn enter_editor(state: &mut State) {
     // lands (see the FileRead handler). `pending_file_edit`
     // matches the reply to this request.
     if !entered && state.edit_state.is_none() {
-        if let Some(node_id) = state.preview_node_id_fired.clone() {
+        if let Some(node_id) = state.preview_requests.fired_target().map(str::to_owned) {
             if node_id.starts_with("files:") {
                 let ws = state.active_workspace_id.clone();
                 if let Err(e) = state.send(OutgoingReq::FileRead {

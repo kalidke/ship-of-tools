@@ -117,7 +117,7 @@ impl State {
                 // (the map's key), which is `active_host` by construction
                 // at snapshot time.
                 bl_pane_target: self.agent_pane.snapshot_target(),
-                preview_node_id_fired: self.preview_node_id_fired.clone(),
+                preview_node_id_fired: self.preview_requests.fired_target().map(str::to_owned),
                 pinned_preview_node_id: self.pinned_preview_node_id.clone(),
                 preview_src: self.preview_src.clone(),
                 preview_src_node_id: self.preview_src_node_id.clone(),
@@ -154,7 +154,7 @@ impl State {
         // was captured while that host was active, so its bare session
         // name always belonged to it.
         self.agent_pane.restore_snapshot_target(key.0.clone(), snap.bl_pane_target);
-        self.preview_node_id_fired = snap.preview_node_id_fired;
+        self.preview_requests.restore_fired(snap.preview_node_id_fired);
         self.pinned_preview_node_id = snap.pinned_preview_node_id;
         // preview_concept gets re-shaped on the next frame by the
         // cursor-tracking concept.read path (memo cleared below). The
@@ -162,7 +162,7 @@ impl State {
         // its synced_against until the fresh reply lands.
         self.preview_concept = None;
         self.concept = snap.concept;
-        self.concept_target_fired = None;
+        self.preview_requests.reset_concept_follow();
         // Not snapshotted: while this workspace was parked the daemon sent no `preview.changed` for it, so a
         // cached hash may be of bytes since edited. Each file parses again at its next view.
         clear_drift(&mut self.file_ast_hashes, &mut self.file_parse_fired, &mut self.file_parse_retry);

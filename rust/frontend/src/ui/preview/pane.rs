@@ -210,7 +210,7 @@ impl State {
     }
 
     /// Display name for the preview-pane title: the **basename** of the file
-    /// the preview pane is *showing* (`preview_node_id_fired`), not the roaming
+    /// the preview pane is *showing* (the fired target), not the roaming
     /// cursor — so while pinned (C2) the title tracks the pinned file. Only the
     /// filename (not the full relative path) so it stays short enough for the
     /// pane; the full path is still recoverable via Ctrl+C in NavTree.
@@ -218,8 +218,8 @@ impl State {
     /// before any preview has fired.
     pub(in crate::ui) fn preview_pane_name(&self) -> Option<String> {
         let rel = self
-            .preview_node_id_fired
-            .as_deref()?
+            .preview_requests
+            .fired_target()?
             .strip_prefix("files:")?;
         if rel.is_empty() {
             return None;
@@ -299,8 +299,8 @@ impl State {
                         // across pages and must reset, not inherit another
                         // page's view.
                         self.pending_roi_restore = self
-                            .preview_node_id_fired
-                            .as_deref()
+                            .preview_requests
+                            .fired_target()
                             .filter(|nid| Self::is_image_node_id(nid))
                             .and_then(|nid| {
                                 let key = png_cache_key_from_node_id(Some(nid), dims)?;

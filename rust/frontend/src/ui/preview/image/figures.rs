@@ -185,7 +185,7 @@ impl State {
     /// Fire `figure.get` for every `MediaBlock::Figure` in the latest
     /// markdown preview that isn't already cached or in flight.
     /// Resolves the literal URL against the current markdown file's
-    /// directory (`preview_node_id_fired`) so a `![](sample.png)` in
+    /// directory (the fired target) so a `![](sample.png)` in
     /// `examples/preview/foo.md` lands as
     /// `files:examples/preview/sample.png`. URLs we can't resolve
     /// (remote, absolute, `..`-walking, no current md file) are

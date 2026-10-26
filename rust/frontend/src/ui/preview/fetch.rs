@@ -20,18 +20,16 @@ impl State {
     /// generation. Call this once per fired `preview.get`/
     /// `preview.set_scale` and stamp the result into the request — every
     /// `IncomingEvt::Preview` handler compares its echoed generation
-    /// against `self.preview_req_gen`'s CURRENT value (read fresh at reply
+    /// against the owner's CURRENT value (read fresh at reply
     /// time, not the value captured here) to tell a stale reply from the
     /// latest one asked for. See the field doc for the full rationale.
     pub(in crate::ui) fn next_preview_gen(&mut self) -> u64 {
-        self.preview_req_gen += 1;
-        self.preview_req_gen
+        self.preview_requests.issue_preview()
     }
 
     /// Same mechanism as `next_preview_gen`, for the concept/annotation slot.
     pub(in crate::ui) fn next_concept_gen(&mut self) -> u64 {
-        self.concept_req_gen += 1;
-        self.concept_req_gen
+        self.preview_requests.issue_concept_reload()
     }
 
     /// If the selected tree row's node id differs from the last one we
@@ -95,13 +93,10 @@ impl State {
         // Don't fire `id`'s preview over the driven one while the cursor is still
         // parked there — that's the deep-path blink. The hold lifts as soon as
         // the cursor moves to a different row (then normal follow resumes).
-        if let Some(held) = self.driven_preview_hold_cursor.clone() {
-            if held == id {
-                return;
-            }
-            self.driven_preview_hold_cursor = None;
+        if self.preview_requests.suppress_follow(&id) {
+            return;
         }
-        if self.preview_node_id_fired.as_ref() == Some(&id) {
+        if self.preview_requests.fired_target() == Some(id.as_str()) {
             // Same file already shown — no re-fetch needed. But items within a
             // module share a file, so the cursor moving between them must still
             // re-anchor the (already rendered) code preview to the new item.
@@ -121,7 +116,7 @@ impl State {
         }
         // New target: drop any in-flight zoom re-raster so its reply can't
         // be mistaken for this fetch.
-        self.preview_page_raster_pending = None;
+        self.preview_requests.cancel_reraster();
         let (fit_w, fit_h) = self.preview_fit_px();
         let generation = self.next_preview_gen();
         if let Err(e) = self.send(crate::net::transport::OutgoingReq::PreviewGet {
@@ -137,41 +132,9 @@ impl State {
             tracing::warn!(error = %e, %id, "drop preview.get request — channel closed");
             return;
         }
-        self.preview_node_id_fired = Some(id);
+        self.preview_requests.record_fired(id);
         self.preview_anchor_line = anchor_line;
     }
-}
-
-/// Switch-latency Phase 1: the single stale-reply test shared by every
-/// single-slot consumer (the preview pane, the concept/annotation slot).
-/// A reply is only ever installed when BOTH hold:
-///   - `generation == latest_generation` — this reply answers the MOST
-///     RECENT request this session has fired for the slot. Generations are
-///     minted per fired request (`State::next_preview_gen` /
-///     `next_concept_gen`) and only ever increase, so an older one means a
-///     newer request has since superseded it — the daemon answering
-///     out-of-order (or simply slower) can never make an older answer look
-///     newer than one already in flight.
-///   - `event_host == active_host && reply_workspace == active_workspace`
-///     — this reply's owner is still what the slot currently has active. A
-///     generation match alone misses the one case where the ACTIVE (host,
-///     workspace) changes without a fresh request being fired for the new
-///     one (e.g. no in-flight preview existed there yet) — a stale reply
-///     from the abandoned owner would otherwise still read as "latest".
-///
-/// Free function (not a `State` method) so it's unit-testable without
-/// constructing the whole GPU/window state.
-pub(in crate::ui) fn reply_is_current(
-    generation: u64,
-    latest_generation: u64,
-    event_host: &HostKey,
-    active_host: &HostKey,
-    reply_workspace: &Option<String>,
-    active_workspace: &Option<String>,
-) -> bool {
-    generation == latest_generation
-        && event_host == active_host
-        && reply_workspace == active_workspace
 }
 
 #[cfg(test)]

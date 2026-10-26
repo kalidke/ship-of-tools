@@ -123,11 +123,10 @@ pub(in crate::ui) fn change_effect<'a>(node_id: &'a str, concept_target_fired: O
 impl State {
     /// A `preview.changed` for `node_id` (a `files:` id): drop the changed file's cached drift check so the next
     /// view re-parses it, and re-read the cursored annotation when it is the one that changed (a reconcile
-    /// rewrote its `synced_against`). Per file; hashing stays lazy, on view. Covered only by the native window
-    /// harness: this one call is not reached by a unit test.
+    /// rewrote its `synced_against`). Per file; hashing stays lazy, on view.
     pub(in crate::ui) fn forget_changed_file(&mut self, node_id: &str) {
-        match change_effect(node_id, self.concept_target_fired.as_deref()) {
-            ChangeEffect::ReadAnnotationAgain => self.concept_target_fired = None,
+        match self.preview_requests.invalidate_changed(node_id) {
+            ChangeEffect::ReadAnnotationAgain => {},
             ChangeEffect::ForgetFile(path) => forget_drift(
                 path,
                 &mut self.file_ast_hashes,
@@ -198,44 +197,29 @@ impl State {
             })
         };
         let node_label = row.node.label.clone();
-        if self.concept_target_fired == target {
-            // Cursor didn't move; but the cursored row might still need a
-            // file.parse fired (first time we see it). Fall through to the
-            // file-parse check below without re-firing concept.read.
-        } else {
-            if let Some(t) = target.as_ref() {
-                let generation = self.next_concept_gen();
-                if let Err(e) = self.send(crate::net::transport::OutgoingReq::ConceptRead {
-                    target: t.clone(),
-                    workspace_id: self.active_workspace_id.clone(),
-                    generation,
-                }) {
-                    tracing::warn!(error = %e, target = %t, "drop concept.read request — channel closed");
-                    return;
-                }
-            }
-            self.concept_target_fired = target;
-            // Clear stale cached result so the chrome doesn't keep showing
-            // the previous node's annotation status while the new read is
-            // in flight.
-            self.concept = None;
-            self.preview_concept = None;
-        }
-        // Drift check: ask the kernel for the file's ast_hash once per view of a path whose hash this window does not
-        // hold. The cache is lazy (no sweep) and per file: a change to the file, a workspace switch or a reconnect
-        // drops it (`forget_changed_file`, `clear_drift`).
-        if let Some(path) = files_path {
-            if take_parse_fire(&path, &self.file_ast_hashes, &mut self.file_parse_fired, &self.file_parse_retry) {
-                tracing::debug!(%path, label = %node_label, "→ file.parse for drift check");
-                if let Err(e) = self.send(crate::net::transport::OutgoingReq::FileParse {
-                    path: path.clone(),
-                    workspace_id: self.active_workspace_id.clone(),
-                }) {
-                    tracing::warn!(error = %e, %path, "drop file.parse request — channel closed");
-                    self.file_parse_fired.remove(&path);
-                }
-            }
-        }
+        let workspace_id = self.active_workspace_id.clone();
+        let follow = self.preview_requests.prepare_concept_follow(target, workspace_id.clone());
+        super::requests::continue_concept_follow(self, follow, files_path, node_label, workspace_id);
+    }
+}
+
+impl super::requests::ConceptRequestContext for State {
+    fn send_request(&mut self, request: crate::net::transport::OutgoingReq) -> Result<(), String> {
+        self.send(request).map_err(|e| e.to_string())
+    }
+
+    fn commit_follow(&mut self, commit: super::requests::ConceptCommit) {
+        let super::requests::ClearConceptCaches = self.preview_requests.commit_concept_follow(commit);
+        self.concept = None;
+        self.preview_concept = None;
+    }
+
+    fn take_drift_parse(&mut self, path: &str) -> bool {
+        take_parse_fire(path, &self.file_ast_hashes, &mut self.file_parse_fired, &self.file_parse_retry)
+    }
+
+    fn forget_drift_fire(&mut self, path: &str) {
+        self.file_parse_fired.remove(path);
     }
 }
 

@@ -59,7 +59,7 @@ impl State {
             self.window.request_redraw();
             return;
         }
-        self.pending_roi_capture_host = Some(roi_host);
+        self.preview_requests.arm_crop(roi_host);
         self.status = format!("capturing ROI {}×{} of {} → LLM…", roi.w, roi.h, name);
         self.window.request_redraw();
     }

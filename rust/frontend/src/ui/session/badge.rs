@@ -38,14 +38,12 @@ impl State {
         &mut self,
         target: &ResolvedWorkspace,
     ) -> Option<AttemptStart> {
-        match self
-            .result_ledger
-            .begin_attempt(target, self.preview_req_gen)
-        {
-            Ok(Some(start)) => {
-                self.preview_req_gen = start.preview_gen;
-                Some(start)
-            }
+        let result = {
+            let requests = &mut self.preview_requests;
+            self.result_ledger.begin_attempt(target, || requests.issue_preview())
+        };
+        match result {
+            Ok(Some(start)) => Some(start),
             Ok(None) => None,
             Err(reason) => {
                 self.refuse_result(reason);
@@ -109,7 +107,7 @@ impl State {
             self.pending_switch_reveal = None;
             self.reveal_awaiting = None;
             self.reveal_refetched = None;
-            self.driven_preview_hold_cursor = None;
+            self.preview_requests.abort_reveal();
         }
         if effects.refresh_badges {
             self.refresh_badge_index();

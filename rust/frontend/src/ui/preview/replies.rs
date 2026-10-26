@@ -3,6 +3,7 @@
 //! overlay (set on a refusal, cleared by a clean hello).
 
 use crate::ui::*;
+use super::requests::{self, RequestReplyContext, PreviewRequests};
 
 impl State {
     pub(crate) fn clear_hello_refused(&mut self, event_host: HostKey) {
@@ -45,98 +46,54 @@ impl State {
         content: String,
         generation: u64,
     ) {
-        // Switch-latency Phase 1: drop a reply that isn't the
-        // LATEST concept.read this session has fired for the
-        // slot, or that answers a (host, workspace) the chrome
-        // has since left — a daemon can now answer requests on
-        // one connection out of order, and `target` alone isn't
-        // a safe owner check (two projects can annotate the
-        // same relative path). Both consumers below (an open
-        // edit buffer, and the read-only annotation view) each
-        // additionally match on their own "current target"
-        // (`edit.target` / `concept_target_fired`) — this gate
-        // is the host/workspace/generation leg of the same
-        // owner check, common to both.
-        if !reply_is_current(
-            generation,
-            self.concept_req_gen,
-            &event_host,
-            &self.active_host,
-            &workspace_id,
-            &self.active_workspace_id,
-        ) {
-            tracing::debug!(%target, ?workspace_id, generation,
-                latest = self.concept_req_gen, %event_host,
-                active_host = %self.active_host,
-                "concept.read reply dropped — stale generation or non-active (host, workspace)");
-            return;
-        }
-        // Two consumers for concept.read replies:
-        //   1) Edit-mode stale-reload: when the user picks
-        //      `r` on the stale banner we re-fire the read
-        //      and replace the edit buffer with the on-disk
-        //      content. Matches by edit_state.target so it
-        //      doesn't collide with the cursor-tracking
-        //      read.
-        //   2) Cursor-tracking read: the usual path that
-        //      populates `concept` + `preview_concept` for
-        //      the read-only view.
-        let stale_reload = self
-            .edit_state
-            .as_ref()
-            .map(|e| e.stale_banner && e.target == target)
-            .unwrap_or(false);
-        if stale_reload {
-            if let Some(edit) = self.edit_state.as_mut() {
-                let (header, body) = split_frontmatter(&content);
-                edit.header = header;
-                edit.expected_ast_hash = if exists {
-                    sot_protocol::annotation::synced_against(&content)
-                } else {
-                    None
-                };
-                edit.original = body.clone();
-                edit.buf = EditBuffer::new(body);
-                edit.stale_banner = false;
-                edit.confirm_discard = false;
-            }
-            self.rebuild_edit_preview();
-            // Also let the cursor-tracking path update its
-            // cache so the read-only view shows fresh
-            // content if the user exits edit mode.
-        }
-        // Drop if the cursor has moved since we fired this read;
-        // the next `maybe_fire_concept_read` will issue a fresh
-        // request for the current selection.
-        if self.concept_target_fired.as_deref() == Some(target.as_str()) {
-            let synced_against = if exists {
-                sot_protocol::annotation::synced_against(&content)
+        requests::continue_concept_reply(self, event_host, workspace_id, generation, target, (exists, content));
+    }
+
+    fn reload_concept_editor(&mut self, exists: bool, content: &str) {
+        if let Some(edit) = self.edit_state.as_mut() {
+            let (header, body) = split_frontmatter(content);
+            edit.header = header;
+            edit.expected_ast_hash = if exists {
+                sot_protocol::annotation::synced_against(content)
             } else {
                 None
             };
-            if exists {
-                let body = split_frontmatter(&content).1;
-                self.preview_concept = Some(MarkdownPreview::new(
-                    self.text.font_system_mut(),
-                    &body,
-                    self.concept_rect_px.w.max(1.0),
-                    self.concept_rect_px.h.max(1.0),
-                    self.scale,
-                    &MathMetricsMap::new(),
-                    &FigureMetricsMap::new(),
-                    &self.highlight_service,
-                    &self.markdown_token_cache,
-                ));
-            } else {
-                self.preview_concept = None;
-            }
-            self.concept = Some(ConceptInfo {
-                target,
-                exists,
-                content,
-                synced_against,
-            });
+            edit.original = body.clone();
+            edit.buf = EditBuffer::new(body);
+            edit.stale_banner = false;
+            edit.confirm_discard = false;
         }
+        self.rebuild_edit_preview();
+    }
+
+    fn install_concept_read(&mut self, target: String, exists: bool, content: String) {
+        let synced_against = if exists {
+            sot_protocol::annotation::synced_against(&content)
+        } else {
+            None
+        };
+        if exists {
+            let body = split_frontmatter(&content).1;
+            self.preview_concept = Some(MarkdownPreview::new(
+                self.text.font_system_mut(),
+                &body,
+                self.concept_rect_px.w.max(1.0),
+                self.concept_rect_px.h.max(1.0),
+                self.scale,
+                &MathMetricsMap::new(),
+                &FigureMetricsMap::new(),
+                &self.highlight_service,
+                &self.markdown_token_cache,
+            ));
+        } else {
+            self.preview_concept = None;
+        }
+        self.concept = Some(ConceptInfo {
+            target,
+            exists,
+            content,
+            synced_against,
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -150,35 +107,12 @@ impl State {
         extras: Option<serde_json::Value>,
         generation: u64,
     ) {
-        // Switch-latency Phase 1: drop a reply that isn't the
-        // LATEST preview.get/preview.set_scale this session has
-        // fired for the preview slot, or that answers a (host,
-        // workspace) it's since left. The workspace-only check
-        // this replaced (2026-06-24, the A→B→A round-trip fix)
-        // caught a reply from an abandoned WORKSPACE but not one
-        // from an abandoned NODE within the still-active
-        // workspace — a slower earlier preview.get could still
-        // overwrite what a later cursor move already asked for;
-        // the generation check (a request's slot-monotonic
-        // sequence number, stamped at send time and echoed here)
-        // catches that regardless of workspace. It also folds in
-        // the host: `workspace_id: None` names "the default
-        // workspace" on EVERY host, so a workspace-only check
-        // could mistake a stale reply from a non-active host for
-        // the active one.
-        if !reply_is_current(
-            generation,
-            self.preview_req_gen,
-            &event_host,
-            &self.active_host,
-            &workspace_id,
-            &self.active_workspace_id,
-        ) {
-            tracing::debug!(?workspace_id, generation, latest = self.preview_req_gen,
-                %event_host, active_host = %self.active_host,
-                "drop stale preview.get/set_scale reply");
-            return;
-        }
+        let payload = PreviewReply { node_id, workspace_id: workspace_id.clone(), mime, bytes, extras, generation };
+        requests::continue_preview_reply(self, event_host, workspace_id, generation, payload);
+    }
+
+    fn install_preview_reply(&mut self, payload: PreviewReply) {
+        let PreviewReply { node_id, workspace_id, mime, bytes, extras, generation } = payload;
         // Cache the source so a runtime font-size change
         // can re-render at the new scale without a
         // round-trip to the backend.
@@ -210,12 +144,7 @@ impl State {
         // Only THIS save's target may resolve it — otherwise
         // navigating away mid-save lets the new file's preview
         // consume the marker and label an unrelated image "saved".
-        let scale_saved = match self.scale_save_pending.as_ref() {
-            Some((target, _)) if node_id.as_deref() == Some(target.as_str()) => {
-                self.scale_save_pending.take().map(|(_, raw)| raw)
-            }
-            _ => None,
-        };
+        let scale_saved = self.preview_requests.settle_scale_save(node_id.as_deref());
         if let Some(raw) = scale_saved {
             self.status = if self.preview_scale.is_some() {
                 format!("pixel size {raw} nm · saved")
@@ -230,19 +159,15 @@ impl State {
         // for the SAME page — a reply for a different page is a
         // real navigation (page turn / cursor move) and resets the
         // view to fit.
-        let is_reraster = matches!(
-            (self.preview_page_raster_pending, self.preview_page),
-            (Some((pend, _)), Some((cur, _))) if pend == cur
-        );
-        if is_reraster {
-            if let Some((_, z)) = self.preview_page_raster_pending.take() {
+        match self.preview_requests.settle_page_reply(self.preview_page.map(|(page, _)| page)) {
+            Some(z) => {
                 self.preview_page_raster_zoom = z;
+                self.preview_reraster_keep_view = true;
             }
-            self.preview_reraster_keep_view = true;
-        } else {
-            self.preview_page_raster_zoom = 1.0;
-            self.preview_page_raster_pending = None;
-            self.preview_reraster_keep_view = false;
+            None => {
+                self.preview_page_raster_zoom = 1.0;
+                self.preview_reraster_keep_view = false;
+            }
         }
         // For markdown previews, also remember which node
         // id + workspace served the buffer — figure URL
@@ -277,27 +202,15 @@ impl State {
         // file's quad. The solve itself stays in the render pass,
         // where the live pane geometry exists.
         let row_key = self.active_result_row_key();
-        let drop_aim = match self.pending_roi_aim.as_mut() {
-            Some(aim)
-                if !aim.ready
-                    && row_key.as_ref() == Some(&aim.row_key)
-                    && node_id.as_deref() == Some(aim.node_id.as_str()) =>
-            {
-                if is_raster_preview_mime(&mime) && self.preview_png.is_some() {
-                    aim.ready = true;
-                    false
-                } else {
-                    true
-                }
-            }
-            _ => false,
-        };
-        if drop_aim {
+        let raster_installed = is_raster_preview_mime(&mime) && self.preview_png.is_some();
+        if let Some(dropped) =
+            self.preview_requests.certify_roi_aim(row_key.as_ref(), node_id.as_deref(), raster_installed)
+        {
             // The aimed file didn't produce a raster (non-raster
             // preview or decode failure): a viewport aim is
             // meaningless — retire it rather than letting it fire
             // on a later unrelated raster.
-            let aim = self.pending_roi_aim.take();
+            let aim = Some(dropped);
             tracing::warn!(node_id = ?aim.map(|a| a.node_id),
                 "preview --roi: target has no raster preview — aim dropped");
         }
@@ -314,7 +227,7 @@ impl State {
                     && mime != "text/markdown"
                     && mime != "text/x-markdown");
             let matches_req =
-                node_id.as_deref() == self.preview_node_id_fired.as_deref();
+                node_id.as_deref() == self.preview_requests.fired_target();
             if def_line > 0 && is_code && matches_req {
                 self.preview_scroll = self
                     .preview_md
@@ -465,12 +378,12 @@ impl State {
         // into place) deliver the SAME logical update as
         // "created" — the old modified-only gate left renamed-in
         // figures stale (the reported same-filename bug).
-        // `preview_node_id_fired` is the source of truth for
+        // The fired target is the source of truth for
         // "what the pane shows right now" (same anchor the
         // reconnect re-fetch uses); hold the current page so a
         // paginated preview doesn't snap back to page 1.
         if (kind == "modified" || kind == "created")
-            && self.preview_node_id_fired.as_deref() == Some(node_id.as_str())
+            && self.preview_requests.fired_target() == Some(node_id.as_str())
         {
             let (fit_w, fit_h) = self.preview_fit_px();
             let generation = self.next_preview_gen();
@@ -601,25 +514,10 @@ impl State {
         generation: u64,
         message: String,
     ) {
-        // Same stale-reply test the success path (`Preview`,
-        // above) applies: a preview request can be superseded
-        // by a workspace switch or a different file selection
-        // before its FAILURE arrives, and an obsolete error
-        // must not overwrite the current status line any more
-        // than an obsolete success may overwrite the pane.
-        if !reply_is_current(
-            generation,
-            self.preview_req_gen,
-            &event_host,
-            &self.active_host,
-            &workspace_id,
-            &self.active_workspace_id,
-        ) {
-            tracing::debug!(?workspace_id, generation, latest = self.preview_req_gen,
-                %event_host, active_host = %self.active_host,
-                "drop stale preview.get failure");
-            return;
-        }
+        requests::continue_preview_failure(self, event_host, workspace_id, generation, (node_id, message));
+    }
+
+    fn install_preview_failure(&mut self, node_id: Option<String>, message: String) {
         // Most commonly `code: "kernel_unavailable"` — a
         // bounded-output-only file type (HDF5/video/PDF) with
         // the Julia kernel unavailable. Same status-line
@@ -634,6 +532,37 @@ impl State {
             .to_string();
         self.status = format!("preview failed · {name}: {message}");
         self.window.request_redraw();
+    }
+}
+
+pub(in crate::ui) struct PreviewReply {
+    node_id: Option<String>,
+    workspace_id: Option<String>,
+    mime: String,
+    bytes: Vec<u8>,
+    extras: Option<serde_json::Value>,
+    generation: u64,
+}
+
+impl RequestReplyContext for State {
+    type Preview = PreviewReply;
+    type Concept = (bool, String);
+    type Failure = (Option<String>, String);
+    fn requests(&self) -> &PreviewRequests { &self.preview_requests }
+    fn active_host(&self) -> &HostKey { &self.active_host }
+    fn active_workspace(&self) -> &Option<String> { &self.active_workspace_id }
+    fn install_preview(&mut self, payload: Self::Preview) { self.install_preview_reply(payload); }
+    fn stale_editor_target(&self) -> Option<&str> {
+        self.edit_state.as_ref().filter(|edit| edit.stale_banner).map(|edit| edit.target.as_str())
+    }
+    fn reload_editor(&mut self, (exists, content): &Self::Concept) {
+        self.reload_concept_editor(*exists, content);
+    }
+    fn install_concept(&mut self, target: String, (exists, content): Self::Concept) {
+        self.install_concept_read(target, exists, content);
+    }
+    fn preview_failed(&mut self, (node_id, message): Self::Failure) {
+        self.install_preview_failure(node_id, message);
     }
 }
 
