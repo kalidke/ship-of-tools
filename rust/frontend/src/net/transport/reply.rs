@@ -112,6 +112,10 @@ pub(super) enum PendingKind {
     PlutoOpen,
     VideoOpen,
     DocsOpen,
+    /// A `page.reply`: the reply is about THIS handle, whatever the window shows by the time it lands.
+    PageReply {
+        handle: String,
+    },
     QuartoOpen,
     ReplRunFile {
         eval_id: u64,
@@ -216,6 +220,13 @@ impl Drop for PendingGuard<'_> {
                         message: "the connection to the daemon ended before this eval's end".into(),
                         stacktrace: Vec::new(),
                     }],
+                },
+                // A confirmed reply is never retried, and the daemon may have typed it before the connection ended:
+                // the person is told its delivery is unknown, never that it failed.
+                PendingKind::PageReply { handle } => IncomingEvt::PageReplied {
+                    handle,
+                    outcome: "unknown".into(),
+                    detail: "the connection to the daemon ended before it answered".into(),
                 },
                 _ => continue,
             };
@@ -328,6 +339,7 @@ pub(super) fn handle_response_frame(
             PendingKind::PlutoOpen => on_pluto_open(frame, &emit),
             PendingKind::VideoOpen => on_video_open(frame, &emit),
             PendingKind::DocsOpen => on_docs_open(frame, &emit),
+            PendingKind::PageReply { handle } => on_page_reply(frame, &emit, handle),
             PendingKind::QuartoOpen => on_quarto_open(frame, blob, &emit),
             PendingKind::ReplRunFile { eval_id, path, fresh } => {
                 if frame.payload.get("frames").is_some() {

@@ -30,7 +30,8 @@ owns the scalebar toggle and label, the caption store and label, and the caption
 `preview::image::figure_store::FigureStore` owns the markdown figures' bitmaps, requests in flight and failures;
 `preview::markdown::media_store::MarkdownMedia` owns the table buffers and their scroll, the math and token caches
 with their requests in flight, and the pending reflow; `control::ControlChannel` owns the fe-commands queue and the
-last `fe-state.json` signature; `drawer::terminal::drawer::TerminalDrawer` owns the Terminal drawer's shell, its last
+last `fe-state.json` signature; `control::ReplyBar` owns the one reply a page offered, held for its person's word, whether
+it is in view and its wait before Enter; `drawer::terminal::drawer::TerminalDrawer` owns the Terminal drawer's shell, its last
 pty size and its starting folder; `drawer::monitor::MonitorPane` owns the Monitor drawer; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
 spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor; `chrome::StatusLine`
 owns the status text and the hold a pushed notify keeps on it; `chrome::BatteryGauge` owns the cached battery label;
@@ -251,6 +252,48 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `ControlChannel` privately owns the window half of the control channel (ADR 0019): the queue the command-file
   watcher fills through its producer end, drained whole under the lock alone so dispatch never holds it, and the
   signature of the last `fe-state.json` written, so the file is rewritten only when the state it reports changes.
+- `ReplyBar` privately owns a reply a page offered: the daemon it came from, the row's id and listed name, the handle
+  and the exact line, how the bar is laid out (covered by a dialog, cut off, or whole at a panel rectangle) and when
+  a presented frame last showed it whole. It never takes `State`. At most one offer is open: a second is dropped and the status line says so. `State`
+  (`control/reply_dispatch.rs`) opens the bar only for a row `RowDirectory::resolve` finds listed on the offering daemon
+  by its exact id (else the offer is dropped and said), requests the user's attention, tells the bar how it is laid out
+  before each key and with each frame's overlays, tells it when a frame has been presented (`redraw`, right after
+  `frame.present()`), and applies what it returns. A line that is not exactly
+  `page_reply::check_line`'s opens no bar, so the panel shows what will be typed. The bar is the only sender of
+  `page.reply`: Enter returns a `ReplySend`, a value only the bar can make, and `OutgoingReq::PageReply` is made from
+  nothing else; `FeCommand::PageReply` is `skip_deserializing`, so the command file cannot open a bar, and
+  `route_fe_command` makes it only from a directed `fe.command`, so a broadcast opens none. Enter sends only once a presented frame has shown the bar whole for one second and is not a repeat: layout is no
+  evidence, so a frame that fails before it presents leaves the bar unshown and Enter sends nothing, and a slow frame
+  does not shorten the second. The evidence is dropped whenever the layout changes (a dialog over the bar, a cut) and on every size event
+  or text-scale change itself (`State::resize`, `apply_text_scale`), even when the layout comes back to the same
+  rectangle before anything looks, and the second starts again from the next presented frame. Esc drops it; while the bar is not covered it
+  takes every key, plain Enter and Esc by their logical keys and never a binding. Keys follow what is drawn on top:
+  while the close dialog (the quit question, a leave's line, a stayed relaunch's notice or the quit hint) is drawn it
+  takes every key and the bar none, and nothing under a covered bar gets one (a stayed notice is dismissed, the hint
+  and a leave's line swallow the key; `covered_key_continuation`), so no Enter given to a dialog or typed while the
+  bar was hidden sends a reply or reaches a pane. A window too short, too narrow (under 20 text cells) or otherwise
+  unable to draw every row of the target and the line whole can drop the bar but not send it. The panel is the close dialog's renderer (`CloseDialogText::Reply`), titled "Reply from a page", under the
+  close dialog; the target (handle, listed name, host) and the line go through `cell_lines` and `wrap_status`, so a
+  hostile name stays on rows of its own with no control character in a cell. The mouse takes no part. The answer comes
+  back as `IncomingEvt::PageReplied` and `page_reply_status` puts it on the status line, held like a pushed notify;
+  the selected host's `Disconnected` lines that follow before a paint (a redial failing again) carry the held text,
+  kept as a part of its own, instead of overwriting it (`session::replies::show_disconnect`, tests
+  `the_disconnect_line_carries_the_text_held_on_it` and `a_reply_outcome_survives_any_number_of_disconnect_lines`): only `sent` says the line
+  and its Enter were recorded. Behavior tests: `control::reply_bar::tests::{the_bar_sends_only_on_an_armed_enter,
+  esc_drops_and_sends_nothing, the_bar_takes_every_key_while_open_and_in_view, a_second_offer_while_one_is_open_is_dropped,
+  an_offer_whose_line_is_not_the_daemons_marked_text_opens_no_bar, the_bar_shows_the_target_and_the_exact_line,
+  a_window_too_small_for_the_line_can_drop_the_bar_but_not_send, a_dialog_over_the_bar_takes_every_key_and_the_wait_starts_again,
+  the_waits_deadline_is_only_while_the_bar_is_waiting,
+  the_wait_starts_from_a_presented_frame_not_from_layout, a_resize_drops_the_evidence_that_the_bar_was_shown,
+  a_size_event_drops_the_evidence_even_if_the_layout_comes_back}`, `control::command::tests::{a_directed_page_reply_opens_the_bar_and_a_broadcast_does_not,
+  a_command_file_cannot_open_a_reply_bar}`, `input::keypress::tests::{the_quit_dialog_takes_a_key_before_the_reply_bar_and_the_bar_before_the_panes,
+  nothing_reaches_a_pane_under_a_covered_bar}`
+  and `control::replies::tests::the_status_line_says_what_became_of_a_confirmed_reply`; the native State fixture
+  `the_bars_enter_sends_page_reply_to_the_pages_host` (a reply from host B's daemon opens the bar, every other command
+  and a second offer send nothing, an Enter before any frame has presented the bar sends nothing, nor one straight
+  after the first frame, a size event or a quit question closing over the bar, the teardown's `unknown` and the host's
+  disconnect drained in one frame both show, and an Enter a second after a
+  presented frame puts one `PageReply` with the line on B's connection and none on A's) runs in the release gate with the other State fixtures.
 - `TerminalDrawer` privately owns the Terminal drawer's local shell (G2/G3): spawned the first time the drawer is
   shown, at 80x24 in the repo root; pumped before each draw (the report says when the pane looks wrong); its pty
   resized only when the drawer's cell size changes (at least 2x2). Typed and pasted input returns the view to the
@@ -470,10 +513,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `about_to_wait`, app/handler.rs, and announced in input/global_keys.rs). Never add an always-redraw path that ignores it.
 
 ## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides: `fe.command.send`, `fe.command`,
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `fe.command.send`, `fe.command`, `page_reply` (the reply bar),
 `agents/sot-fe/sot-fe-request.sh`, `sot_ui`, `agent.message`, `agents/sot-fe/sot-nav.sh`, `sot_oneshot_request`.
 Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
-`workspace.create`, `workspace.destroy`, `workspace.list`, `workspace.reauth`, `pty.input`, `pty.screen`,
+`workspace.create`, `workspace.destroy`, `workspace.list`, `workspace.reauth`, `pty.input`, `pty.screen`, `page.reply`,
 `workspace.changed`, `FeAttachClient`, `rust/backend/src/rows/run/headless.rs`,
 `rust/frontend/src/ui/agent_pane/attach.rs`, `sot_state_dir`, `sot_config_dir`, `host_name`,
 `work_state::poll`, `tree.root`, `tree.children`, `directory.list`, `nav.toggle_hidden`, `preview.get`,
@@ -509,7 +552,8 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `preview/image/`: bitmap previews as quads: figures, overlays, view, ROI.
 - `preview/markdown/`: markdown and source text shaped into cosmic-text buffers.
 - `preview/editor/`: the in-pane edit buffer.
-- `control/`: the fe.command route, its dispatch, the nav envelope and the file channel.
+- `control/`: the fe.command route, its dispatch, the reply bar (`reply_bar.rs`, with State's side in `reply_dispatch.rs`),
+  the nav envelope and the file channel.
 - `persist/`: settings, config discovery and the resume snapshot.
 - `init/`: `State::new` and the field defaults at launch.
 - Outside ui/, fe-ui also owns rust/frontend/src/main.rs (argument parsing, the connection set, the `App` build) and

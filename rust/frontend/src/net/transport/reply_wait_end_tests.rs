@@ -40,6 +40,21 @@ fn a_lost_math_render_is_failed_when_the_connection_ends() {
     );
 }
 
+/// A confirmed reply whose answer never came is reported unknown for its own handle, once, and never sent again.
+#[test]
+fn a_page_reply_without_its_answer_is_unknown_when_the_connection_ends() {
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    {
+        let mut guard = PendingGuard { map: HashMap::new(), evt_tx: &evt_tx, host: "h".into() };
+        guard.insert(21, PendingKind::PageReply { handle: "repo__box".into() });
+    }
+    assert_eq!(
+        shown(&evt_rx),
+        ["PageReplied { handle: \"repo__box\", outcome: \"unknown\", detail: \"the connection to the daemon ended before it answered\" }"]
+    );
+    assert!(evt_rx.try_recv().is_err(), "the reply was reported once");
+}
+
 #[test]
 fn a_lost_markdown_tokenize_ends_when_the_connection_ends() {
     let (evt_tx, evt_rx) = std::sync::mpsc::channel();

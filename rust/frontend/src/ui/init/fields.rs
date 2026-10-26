@@ -140,6 +140,7 @@ impl State {
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             presence: Default::default(),
             control: ControlChannel::default(),
+            reply_bar: ReplyBar::default(),
             #[cfg(all(test, feature = "test-window-progress"))]
             native_progress: native_progress_ledger(),
             editor: Editor::default(),

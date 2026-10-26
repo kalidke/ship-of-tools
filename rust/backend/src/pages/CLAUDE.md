@@ -94,7 +94,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   consumed connection available for the next request. `reply {handle, text}` resolves the handle with the same local/foreign rule, then calls wire's `page_reply::line`.
   Invalid text answers 400 `bad_text`, naming the refusal; valid text sends `page_reply {workspace, handle, line}` to
   the same owner connection and answers 202. A POST offers only: it never types or confirms delivery, and the daemon
-  keeps no pending-reply table. An older window drops the command and delivers nothing; the bar is landing 2b.
+  keeps no pending-reply table. A window shows the offer on its reply bar (fe-ui); an older window drops the command and delivers nothing.
   `fe.command.send` refuses the reserved command, so only this page server publishes an offer.
 - A quarto render starts through `Signal::spawn` and is always given the daemon's julia as `QUARTO_JULIA`, an
   inherited one overridden, and a refusal by the resolver fails the render (`run_quarto`), `--no-execute` or not,

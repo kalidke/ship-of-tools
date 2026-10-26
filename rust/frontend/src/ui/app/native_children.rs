@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 10] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 11] = [
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
         (
@@ -145,6 +145,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
             State::a_returning_link_reopens_the_runs_still_running,
         ),
         ("a_wheel_step_reports_presence", State::a_wheel_step_reports_presence),
+        (
+            "the_bars_enter_sends_page_reply_to_the_pages_host",
+            State::the_bars_enter_sends_page_reply_to_the_pages_host,
+        ),
     ];
     // Every fixture runs and reports; the child fails after the last if any failed.
     let mut failed = Vec::new();

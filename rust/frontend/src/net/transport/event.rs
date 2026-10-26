@@ -502,6 +502,14 @@ pub enum IncomingEvt {
     DocsOpened {
         result: Result<String, String>,
     },
+    /// `page.reply` reply, about the session `handle` the confirmed reply was for. `outcome` is the daemon's word
+    /// (`sent`, `refused`, `not_ready`, `not_free`, `typed_not_sent`, `unknown`) and `detail` its reason; an error
+    /// reply comes as outcome `error` with its message.
+    PageReplied {
+        handle: String,
+        outcome: String,
+        detail: String,
+    },
     /// `quarto.open` reply. Carries the rendered self-contained HTML bytes on
     /// success (the chrome writes a temp `.html` and OS-opens it, reusing the
     /// `text/html` preview path); the backend's error message otherwise.

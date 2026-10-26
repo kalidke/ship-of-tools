@@ -91,6 +91,8 @@ impl State {
         self.gpu.queue().submit(std::iter::once(encoder.finish()));
         let submitted = std::time::Instant::now();
         frame.present();
+        // A reply bar this frame laid out whole has now been shown: its wait before Enter begins here.
+        self.reply_bar_presented(std::time::Instant::now());
         if let Some(candidate) = presentation_candidate {
             self.log_presentation(candidate, [began, prepared, drawable, encoded, submitted]);
         }

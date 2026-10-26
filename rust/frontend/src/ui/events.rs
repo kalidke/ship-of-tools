@@ -231,6 +231,9 @@ impl State {
                 crate::net::transport::IncomingEvt::DocsOpened { result } => {
                     self.on_docs_opened(event_host, result)
                 }
+                crate::net::transport::IncomingEvt::PageReplied { handle, outcome, detail } => {
+                    self.on_page_replied(handle, outcome, detail)
+                }
                 crate::net::transport::IncomingEvt::VideoOpened { result } => {
                     self.on_video_opened(event_host, result)
                 }

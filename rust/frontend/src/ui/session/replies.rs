@@ -4,6 +4,27 @@
 
 use crate::ui::*;
 
+/// The status line for the selected host's disconnect: its reason, and the text that was held on the line (a
+/// notify, a reply's outcome) when it came, so a person who has not yet seen that text still does.
+pub(in crate::ui) fn disconnect_status(reason: &str, held: Option<&str>) -> String {
+    match held {
+        Some(held) => format!("disconnected \u{b7} {reason} \u{b7} {held}"),
+        None => format!("disconnected \u{b7} {reason}"),
+    }
+}
+
+/// Show the selected host's disconnect on `status`. The text held on the line is carried as a part of its own, so
+/// any number of disconnect lines (a redial that fails again) keep it until a write that is not a disconnect, or the
+/// end of its hold, replaces it; the earlier disconnect line is not carried, so they do not pile up.
+pub(in crate::ui) fn show_disconnect(status: &mut StatusLine, reason: &str) {
+    let carried = status.carried();
+    let text = disconnect_status(reason, carried.as_deref());
+    match carried {
+        Some(note) => status.set_carrying(text, note),
+        None => status.set(text),
+    }
+}
+
 impl State {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn on_connected(
@@ -239,7 +260,8 @@ impl State {
             self.clear_hello_refused(event_host.clone());
         }
         if event_host == *self.selected.host() {
-            self.status.set(format!("disconnected · {reason}"));
+            // A text a notify or a reply's outcome is holding, drained in the same frame, is carried, not overwritten.
+            show_disconnect(&mut self.status, &reason);
         } else {
             // (S9, finding S14): `host_label`,
             // not the bare dial key, so a log line names a
@@ -563,3 +585,7 @@ impl State {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "replies_tests.rs"]
+mod tests;
