@@ -54,7 +54,7 @@ impl State {
     /// three former `state.default_host()` call sites at the monitor
     /// subscribe/history/tab-label points use this instead.
     pub(in crate::ui) fn monitor_host(&self) -> HostKey {
-        resolve_monitor_host(&self.conns, self.monitor_hub.as_deref(), self.selected.host().clone())
+        resolve_monitor_host(&self.conns, self.monitor.hub(), self.selected.host().clone())
     }
 
     /// Every connection in display order (ADR 0042 L2a) — local-first,

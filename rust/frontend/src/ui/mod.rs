@@ -468,23 +468,8 @@ struct State {
     /// the fan-out to every connected daemon, and idle input sends nothing at all (no timer, no heartbeat).
     presence: PresenceClock,
     // ui/drawer: the monitor drawer.
-    /// Ctrl+M server-monitor drawer (ADR 0020): per-host metric ring + SVG
-    /// chart renderer. `monitor_quad` is the rasterised chart painted into
-    /// the drawer rect via the resvg→wgpu-quad path (same as MathJax);
-    /// `monitor_rect_px` is the drawer's pixel rect from the last layout
-    /// pass; `monitor_dirty` requests a re-render when the readings change
-    /// (a change of size, text scale or mark redraws by itself:
-    /// `MonitorView`'s `drawn`).
-    monitor_view: crate::ui::drawer::monitor::MonitorView,
-    monitor_quad: Option<Quad>,
-    monitor_rect_px: ScreenRect,
-    monitor_dirty: bool,
-    /// The declared hub's name (topology `hub = "<host>"`), loaded once at
-    /// startup the same way `selfupdate.rs` reads the topology. `None` when
-    /// no `hosts.toml` declares one. Names the monitor drawer's subscribe
-    /// target (`monitor_host`) — the drawer means "the fleet's record", so
-    /// it asks the hub, not whichever connection sorts first.
-    monitor_hub: Option<String>,
+    /// Ctrl+M server-monitor drawer (ADR 0020): its chart, raster, rect, subscription and hub.
+    monitor: crate::ui::drawer::monitor::MonitorPane,
     /// Primary monitor aspect ratio captured at startup (width /
     /// height). Used to resolve `settings.preset = "auto"` to a named
     /// preset. Locked for the session — resizing the window doesn't

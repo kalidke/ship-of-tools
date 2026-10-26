@@ -26,12 +26,12 @@ impl State {
         // drawer rect (ADR 0020), reusing the same resvg→wgpu-quad path as
         // the math SVG above.
         if self.layout_help.drawer() == DrawerContent::Monitor {
-            if let Some(q) = self.monitor_quad.as_ref() {
+            if let Some(q) = self.monitor.quad() {
                 q.render(
                     &self.queue,
                     &self.quad_pipeline,
                     &mut rpass,
-                    self.monitor_rect_px,
+                    self.monitor.rect(),
                     (self.config.width, self.config.height),
                 )?;
             }

@@ -31,7 +31,7 @@ owns the scalebar toggle and label, the caption store and label, and the caption
 `preview::markdown::media_store::MarkdownMedia` owns the table buffers and their scroll, the math and token caches
 with their requests in flight, and the pending reflow; `control::ControlChannel` owns the fe-commands queue and the
 last `fe-state.json` signature; `drawer::terminal::drawer::TerminalDrawer` owns the Terminal drawer's shell, its last
-pty size and its starting folder; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
+pty size and its starting folder; `drawer::monitor::MonitorPane` owns the Monitor drawer; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
 spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor; `chrome::StatusLine`
 owns the status text and the hold a pushed notify keeps on it; `chrome::BatteryGauge` owns the cached battery label;
 `input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue; `proxy_arms::ProxyArms`
@@ -249,8 +249,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `TerminalDrawer` privately owns the Terminal drawer's local shell (G2/G3): spawned the first time the drawer is
   shown, at 80x24 in the repo root; pumped before each draw (the report says when the pane looks wrong); its pty
   resized only when the drawer's cell size changes (at least 2x2). Typed and pasted input returns the view to the
-  live tail; a wheel the shell's app tracks is forwarded as is. The Monitor tenant stays on State: its native
-  fixture sets the subscription and hub directly, and moving it needs that fixture's own design.
+  live tail; a wheel the shell's app tracks is forwarded as is.
+- `MonitorPane` privately owns the Monitor drawer (ADR 0020): its chart model, the raster, the drawer rect, the
+  readings' dirty mark, the subscription this window holds and the declared hub it asks. Each reply marks the
+  readings dirty; the layout pass plans a chart when they changed or it was drawn for another size, text scale or set
+  of marks, State rasterizes it and installs the result (a failed raster still records what it was drawn for, so it
+  is not retried every frame), and another tenant drops it. The subscription's lifecycle (toggle, `--start-monitor`,
+  resubscribe on a hub connection) is State's in `drawer/monitor_drive.rs`; the native fixture there sets up a fresh
+  pane through its constructor and reads the raster through `quad()`.
 - `StripMotion` privately owns the session strip's motion: the scroll snaps to the active session on the first
   paint and then eases toward it, and a workspace cycle flicks the wheels (clamped), which spin down; both step on
   one frame clock and report whether they still move, so the frame loop stays alive only until they settle.

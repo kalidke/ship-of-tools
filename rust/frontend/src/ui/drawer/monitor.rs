@@ -96,7 +96,7 @@ pub struct MonitorView {
     bufs: HashMap<String, HostBuf>,
     /// Whether this window holds a monitor subscription: from the Monitor drawer's open to its close by the toggle. It
     /// is sent at the open and again at each new connection to the monitor host (`State::resubscribe_monitor`). Only
-    /// the `State` methods in this file change it.
+    /// `MonitorPane` changes it.
     subscribed: bool,
     /// What the chart was last drawn for: the drawer's size in pixels, its text scale and each host's mark; `None`
     /// before the first draw and while the drawer shows another tenant. A draw that fails to raster still records it,
@@ -409,7 +409,7 @@ fn flush_seg(out: &mut String, seg: &mut Vec<(f64, f64)>, color: &str, sw: f64, 
 }
 
 /// The window's monotonic clock, which decides staleness, and its wall clock in seconds, which ages a timestamp.
-fn clocks() -> (Instant, f64) {
+pub(super) fn clocks() -> (Instant, f64) {
     let epoch = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
     (Instant::now(), epoch)
 }
@@ -426,126 +426,104 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-impl State {
-    /// The toggle's half of the Monitor subscription's lifecycle (ADR 0020): a drawer toggled to the Monitor takes the
-    /// subscription, and one toggled to other content or closed releases it. Help, and a REPL run that takes the slot
-    /// without the toggle, keep it. Sampling is always on; the subscription gates only this connection's ticks.
-    pub(in crate::ui) fn sync_monitor_subscription(&mut self) {
-        let shown = self.layout_help.drawer() == DrawerContent::Monitor;
-        if shown && !self.monitor_view.subscribed {
-            self.subscribe_monitor();
-        } else if !shown && self.monitor_view.subscribed {
-            self.unsubscribe_monitor();
+/// The Monitor drawer (ADR 0020): its chart model, the chart rasterized for the drawer rect, that rect, whether the
+/// readings changed since the last raster, the subscription this window holds and the hub it asks.
+pub(in crate::ui) struct MonitorPane {
+    view: MonitorView,
+    /// The rasterized chart painted into the drawer rect via the resvg→wgpu-quad path (same as MathJax).
+    quad: Option<Quad>,
+    /// The drawer's pixel rect from the last layout pass.
+    rect: ScreenRect,
+    /// The readings changed since the last raster (a change of size, text scale or mark redraws by itself:
+    /// `MonitorView`'s `drawn`).
+    dirty: bool,
+    /// The declared hub's name (topology `hub = "<host>"`), loaded once at
+    /// startup the same way `selfupdate.rs` reads the topology. `None` when
+    /// no `hosts.toml` declares one. Names the monitor drawer's subscribe
+    /// target (`monitor_host`) — the drawer means "the fleet's record", so
+    /// it asks the hub, not whichever connection sorts first.
+    hub: Option<String>,
+}
+
+/// A chart the layout pass must rasterize: its SVG at `w` by `h` pixels, and what it is drawn for.
+pub(in crate::ui) struct ChartDraw {
+    pub(in crate::ui) svg: String,
+    pub(in crate::ui) w: u32,
+    pub(in crate::ui) h: u32,
+    drawn_for: (u32, u32, f64, Vec<String>),
+}
+
+impl MonitorPane {
+    pub(in crate::ui) fn new(hub: Option<String>) -> Self {
+        Self {
+            view: MonitorView::new(),
+            quad: None,
+            rect: ScreenRect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 },
+            dirty: false,
+            hub,
         }
     }
 
-    /// `--start-monitor`: the drawer opens at construction holding its subscription, which the monitor host's first
-    /// Connected sends (`resubscribe_monitor`), as every later one does.
-    pub(in crate::ui) fn hold_monitor_subscription(&mut self) {
-        self.monitor_view.subscribed = true;
+    pub(in crate::ui) fn hub(&self) -> Option<&str> { self.hub.as_deref() }
+    pub(in crate::ui) fn quad(&self) -> Option<&Quad> { self.quad.as_ref() }
+    pub(in crate::ui) fn rect(&self) -> ScreenRect { self.rect }
+
+    /// Whether this window holds a monitor subscription: from the Monitor drawer's open to its close by the toggle.
+    /// It is sent at the open and again at each new connection to the monitor host (`State::resubscribe_monitor`).
+    pub(in crate::ui) fn subscribed(&self) -> bool { self.view.subscribed }
+    /// The subscription was sent, or (`--start-monitor`) is held for the monitor host's first `Connected`.
+    pub(in crate::ui) fn hold_subscription(&mut self) { self.view.subscribed = true; }
+    pub(in crate::ui) fn release_subscription(&mut self) { self.view.subscribed = false; }
+
+    pub(in crate::ui) fn set_roster(&mut self, hosts: Vec<String>) {
+        self.view.set_roster(hosts);
+        self.dirty = true;
     }
 
-    /// Subscribe to the monitor host's ticks and prefill the chart from its history (ADR 0020). ADR 0042 L2a: always
-    /// `monitor_host`, the declared hub; the drawer never follows `active_host`.
-    fn subscribe_monitor(&mut self) {
-        let monitor_host = self.monitor_host();
-        let _ = self.send_to(&monitor_host, OutgoingReq::MonitorSubscribe);
-        let history = OutgoingReq::MonitorHistory { window_s: 300.0, points: 300, until: None, host: None };
-        let _ = self.send_to(&monitor_host, history);
-        self.monitor_view.subscribed = true;
+    pub(in crate::ui) fn apply_history(&mut self, hosts: Vec<HostSeries>) {
+        self.view.apply_history(hosts);
+        self.dirty = true;
     }
 
-    /// Release the subscription: the monitor host stops sending this connection ticks.
-    fn unsubscribe_monitor(&mut self) {
-        let monitor_host = self.monitor_host();
-        let _ = self.send_to(&monitor_host, OutgoingReq::MonitorUnsubscribe);
-        self.monitor_view.subscribed = false;
-    }
-
-    /// The daemon starts every connection unsubscribed, so a new connection to the monitor host is sent the
-    /// subscription this window holds; without it the drawer would get no reading until it was reopened.
-    pub(in crate::ui) fn resubscribe_monitor(&mut self, connected: &HostKey) {
-        if self.monitor_view.subscribed && *connected == self.monitor_host() {
-            self.subscribe_monitor();
-        }
-    }
-
-    pub(crate) fn on_monitor_subscribed(&mut self, hosts: Vec<String>) {
-        self.monitor_view.set_roster(hosts);
-        self.monitor_dirty = true;
-        self.window.request_redraw();
-    }
-
-    pub(crate) fn on_monitor_history(&mut self, hosts: Vec<sot_protocol::HostSeries>) {
-        self.monitor_view.apply_history(hosts);
-        self.monitor_dirty = true;
-        self.window.request_redraw();
-    }
-
-    pub(crate) fn on_monitor_tick(&mut self, hosts: Vec<sot_protocol::HostLatest>) {
+    pub(in crate::ui) fn apply_ticks(&mut self, hosts: Vec<HostLatest>) {
         for h in hosts {
-            self.monitor_view.apply_tick(h);
+            self.view.apply_tick(h);
         }
-        self.monitor_dirty = true;
-        self.window.request_redraw();
+        self.dirty = true;
     }
 
-    pub(in crate::ui) fn layout_drawer_px(
-        &mut self,
-        cells_to_px: impl Fn(ratatui::layout::Rect) -> ScreenRect,
-        repl_scrollback_cells: ratatui::layout::Rect,
-        repl_window: (usize, usize),
-        repl_cells: ratatui::layout::Rect,
-    ) {
-        // Ctrl+M monitor drawer (ADR 0020): the chart shares the drawer rect.
-        // Regenerate the SVG → wgpu quad whenever the readings changed
-        // (`monitor_dirty`) or the chart on screen was drawn for another size,
-        // text scale or set of marks (`MonitorView::drawn`, `None` once the
-        // drawer shows another tenant), mirroring the math-SVG rasterise path.
-        // Build into a local first so the immutable
-        // `&self.device/queue/quad_pipeline` borrows don't collide with the
-        // `self.monitor_quad` write.
-        self.repl_presentation.commit_layout(cells_to_px(repl_scrollback_cells), repl_window);
-        self.monitor_rect_px = cells_to_px(repl_cells);
-        if self.layout_help.drawer() == DrawerContent::Monitor {
-            let mw = self.monitor_rect_px.w.max(1.0) as u32;
-            let mh = self.monitor_rect_px.h.max(1.0) as u32;
-            // Scale the chart's text + gutters to match the chrome's
-            // effective text size (cell_h is BASE_CELL_H * scale), so the
-            // SVG's logical-px labels aren't tiny on a hi-DPI window.
-            let mon_scale = (self.cell_h / BASE_CELL_H) as f64;
-            // One clock read per frame. A reading that ages past GAP_S changes its host's mark with no tick to say
-            // so; the idle repaint brings this check round once a second.
-            let (now, now_epoch) = clocks();
-            let view = (mw, mh, mon_scale, self.monitor_view.marks(now, now_epoch));
-            if (self.monitor_dirty || self.monitor_view.drawn.as_ref() != Some(&view)) && mw > 1 && mh > 1 {
-                let svg = self.monitor_view.render_svg(mw, mh, mon_scale, &view.3);
-                let quad = quad_from_svg_bytes(
-                    &self.device,
-                    &self.queue,
-                    &self.quad_pipeline,
-                    svg.as_bytes(),
-                    mw,
-                    mh,
-                )
-                .ok();
-                self.monitor_quad = quad;
-                self.monitor_dirty = false;
-                self.monitor_view.drawn = Some(view);
-            }
-        } else {
-            self.monitor_quad = None;
-            self.monitor_view.drawn = None;
+    /// The layout pass: the drawer's rect, whether the Monitor is its tenant, and the chart's text scale. A chart is
+    /// due when the readings changed or it was drawn for another size, text scale or set of marks, and the rect is
+    /// more than a pixel each way; another tenant drops the chart and what it was drawn for.
+    pub(in crate::ui) fn plan(&mut self, rect: ScreenRect, shown: bool, mon_scale: f64) -> Option<ChartDraw> {
+        self.rect = rect;
+        if !shown {
+            self.quad = None;
+            self.view.drawn = None;
+            return None;
         }
+        let mw = self.rect.w.max(1.0) as u32;
+        let mh = self.rect.h.max(1.0) as u32;
+        // One clock read per frame. A reading that ages past GAP_S changes its host's mark with no tick to say
+        // so; the idle repaint brings this check round once a second.
+        let (now, now_epoch) = clocks();
+        let view = (mw, mh, mon_scale, self.view.marks(now, now_epoch));
+        if (self.dirty || self.view.drawn.as_ref() != Some(&view)) && mw > 1 && mh > 1 {
+            let svg = self.view.render_svg(mw, mh, mon_scale, &view.3);
+            return Some(ChartDraw { svg, w: mw, h: mh, drawn_for: view });
+        }
+        None
+    }
+
+    /// The planned chart's raster (`None` when it failed, which still records what it was drawn for, so a failed
+    /// draw is not retried every frame).
+    pub(in crate::ui) fn install(&mut self, draw: ChartDraw, quad: Option<Quad>) {
+        self.quad = quad;
+        self.dirty = false;
+        self.view.drawn = Some(draw.drawn_for);
     }
 }
 
 #[cfg(test)]
 #[path = "monitor_tests.rs"]
 mod tests;
-
-/// The Monitor's native State fixture: a `State` exists only inside a native window, so it runs in the
-/// window_minimized target's fixtures child (`ui/app/native_children.rs`).
-#[cfg(all(test, feature = "test-window-progress"))]
-#[path = "monitor_native_fixture_tests.rs"]
-mod native_fixture;
