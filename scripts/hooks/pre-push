@@ -99,29 +99,13 @@ walk_rounds() {
     done
 }
 build_exclusions() {
-    local shallow graft_file reached_graft platform version major minor
+    local shallow graft_file reached_graft platform audit_status
     shallow=$(git rev-parse --is-shallow-repository 2>/dev/null) || pg_fail 'cannot read old parents'
     case "$shallow" in
         true) walk_rounds old "$pg_tmp/old"; return ;;
         false) ;;
         *) pg_fail 'cannot read old parents' ;;
     esac
-    # Before Git 2.43, --missing=print still aborted on missing parents. Keep
-    # the raw walk when this behavior is unavailable or the version is unknown.
-    version=$(git --version 2>/dev/null) || pg_fail 'cannot read old parents'
-    case "$version" in
-        'git version '*.*.*) ;;
-        *) walk_rounds old "$pg_tmp/old"; return ;;
-    esac
-    version=${version#git version }; major=${version%%.*}
-    version=${version#*.}; minor=${version%%.*}
-    case "$major:$minor" in
-        *[!0-9:]*|:*|*:|*:*:*) walk_rounds old "$pg_tmp/old"; return ;;
-    esac
-    if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 43 ]; }; then
-        walk_rounds old "$pg_tmp/old"
-        return
-    fi
     # Git must see an owned empty graft file, including through native Windows
     # path handling. If it cannot select that file, retain the exact raw walk.
     graft_file="$pg_tmp/empty"
@@ -136,16 +120,28 @@ build_exclusions() {
         walk_rounds old "$pg_tmp/old"
         return
     fi
-    : > "$pg_tmp/old-commits" && : > "$pg_tmp/old-walk" || pg_fail 'cannot prepare history queue'
+    : > "$pg_tmp/old-commits" && : > "$pg_tmp/old-walk" && : > "$pg_tmp/ancestry-status" ||
+        pg_fail 'cannot prepare history queue'
     # Peel only locally available advertised/old tags. Commits become traversal
     # seeds here; this phase never walks their ancestry one generation at a time.
     walk_rounds peel "$pg_tmp/old"
     [ -s "$pg_tmp/old-commits" ] || return 0
-    GIT_GRAFT_FILE="$graft_file" git -c core.commitGraph=false rev-list \
+    if ! GIT_GRAFT_FILE="$graft_file" git -c core.commitGraph=false rev-list \
         --missing=print --ignore-missing --no-abbrev-commit --stdin -- \
-        < "$pg_tmp/old-commits" > "$pg_tmp/ancestry" 2>/dev/null || pg_fail 'cannot read old parents'
+        < "$pg_tmp/old-commits" > "$pg_tmp/ancestry" 2>/dev/null; then
+        # Older Git can fail on missing published parents. No commit has been
+        # excluded yet; discard any partial output and walk the peeled seeds.
+        walk_rounds old "$pg_tmp/old-commits"
+        return
+    fi
     run_scanner "$pg_tmp/empty" -v action=ancestry -v frontier="$pg_tmp/ancestry" \
         -v next_frontier="$pg_tmp/old-walk"
+    { IFS= read -r audit_status < "$pg_tmp/ancestry-status"; } 2>/dev/null || pg_fail 'scanner failed'
+    case "$audit_status" in
+        raw) walk_rounds old "$pg_tmp/old-commits"; return ;;
+        ok) ;;
+        *) pg_fail 'scanner failed' ;;
+    esac
     # One batch checks raw headers of the enumerated local commits. Normally
     # every parent is already included, so completion takes only one preflight.
     # Noncanonical raw parent headers and noncommit parent targets retain the

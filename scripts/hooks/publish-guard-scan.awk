@@ -106,16 +106,16 @@ function prepare(    r,s,t) {
     }
     if (r < 0 || close(frontier) != 0) fail("scanner failed")
 }
-function ancestry_ids(    r,s,missing) {
+function ancestry_ids(    r,s,missing,mismatch) {
     # --missing=print disables fetching and can report either absent commits or
     # locally present commits Git could not parse. Only catalog members are read.
     while ((r=(getline s < frontier)) > 0) {
         missing=(substr(s,1,1) == "?")
         if (missing) s=substr(s,2)
-        if (!oid_ok(s)) fail("cannot read old parents")
+        if (!oid_ok(s)) { mismatch=1; continue }
         if (type[s] == "commit") {
             if (!listed[s]++) emit(next_frontier,s)
-        } else if (!missing) fail("cannot read old parents")
+        } else if (!missing) mismatch=1
     }
     if (r < 0 || close(frontier) != 0) fail("cannot read old parents")
     # Always audit the seeds too. Raw parent completion below must not depend
@@ -125,6 +125,9 @@ function ancestry_ids(    r,s,missing) {
         if (!listed[s]++) emit(next_frontier,s)
     }
     if (r < 0 || close(old_commits) != 0) fail("cannot read old parents")
+    # A bad traversal result requests the raw fallback. Read, write and scanner
+    # failures still fail closed; the normal completion marker remains required.
+    emit(dir "/ancestry-status",(mismatch ? "raw" : "ok"))
 }
 function load_contexts(    r,s) {
     while ((r=(getline s < frontier)) > 0) {
